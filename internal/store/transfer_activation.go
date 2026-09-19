@@ -124,6 +124,12 @@ func replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, target Thread,
 			return err
 		}
 	}
+	// The replacement history reindexes itself row by row; what the deleted
+	// history left in the index has to go first, title included, because the
+	// thread row itself survives and cascades nothing.
+	if err := deleteThreadSearchThreadTx(tx, target.ID); err != nil {
+		return err
+	}
 	var fields []string
 	for _, column := range strings.Split(threadInsertColumns, ",") {
 		column = strings.TrimSpace(column)

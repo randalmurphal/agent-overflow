@@ -260,14 +260,21 @@ func (s *Store) CreateThread(t Thread) error {
 	if err != nil {
 		return err
 	}
-	if err := insertThread(s.db, prepared, lastReadAtArg); err != nil {
+	// One transaction because the row and its title's index entry are one
+	// fact: a thread that exists and is unsearchable would stay that way,
+	// the background build being a one-time pass over what already existed.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin create thread: %w", err)
+	}
+	defer tx.Rollback()
+	if err := insertThread(tx, prepared, lastReadAtArg); err != nil {
 		return fmt.Errorf("store: create thread: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit create thread: %w", err)
+	}
 	return nil
-}
-
-type threadExecer interface {
-	Exec(query string, args ...any) (sql.Result, error)
 }
 
 func prepareThreadForCreate(t Thread) (Thread, any, error) {
@@ -316,13 +323,13 @@ const threadInsertSQL = `INSERT INTO threads (` + threadInsertColumns + `)
 		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		 WHERE ? = '' OR EXISTS (SELECT 1 FROM thread_groups WHERE id = ? AND project_id = ?)`
 
-func insertThread(execer threadExecer, t Thread, lastReadAtArg any) error {
-	return writeThread(execer, t, lastReadAtArg, "")
+func insertThread(tx *sql.Tx, t Thread, lastReadAtArg any) error {
+	return writeThread(tx, t, lastReadAtArg, "")
 }
 
 // Validate group ownership in the insert so deletion cannot race a prior read.
-func writeThread(execer threadExecer, t Thread, lastReadAtArg any, conflict string) error {
-	result, err := execer.Exec(
+func writeThread(tx *sql.Tx, t Thread, lastReadAtArg any, conflict string) error {
+	result, err := tx.Exec(
 		threadInsertSQL+conflict,
 		t.ID, nilIfEmpty(t.ProjectID), t.Title, t.Provider, t.Model,
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
@@ -351,7 +358,10 @@ func writeThread(execer threadExecer, t Thread, lastReadAtArg any, conflict stri
 	if affected == 0 {
 		return ErrThreadGroupGone
 	}
-	return nil
+	// Titles are searchable, so every path that writes a thread row writes
+	// its title index entry with it: creation, the transfer import, and the
+	// activation upsert that replaces a received thread.
+	return indexThreadTitleTx(tx, t.ID, t.Title)
 }
 
 func (s *Store) GetThread(id string) (Thread, error) {
@@ -771,14 +781,29 @@ func (s *Store) UpdateThread(t Thread) error {
 		return err
 	}
 	args := append(updateThreadArgs(t), t.ID)
-	result, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin update thread %s: %w", t.ID, err)
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(
 		updateThreadSetSQL+` WHERE id=?`,
 		args...,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update thread %s: %w", t.ID, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update thread %s", t.ID))
+	if err := requireRowsAffected(result, fmt.Sprintf("store: update thread %s", t.ID)); err != nil {
+		return err
+	}
+	// The whole-row update carries the title, so it can rename a thread.
+	if err := indexThreadTitleTx(tx, t.ID, t.Title); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit update thread %s: %w", t.ID, err)
+	}
+	return nil
 }
 
 // ItemMetaUpdate names one item's replacement meta blob for
@@ -981,11 +1006,29 @@ func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 			pause()
 		}
 	}
-	result, err := s.db.Exec(`DELETE FROM threads WHERE id = ?`, id)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin delete thread %s: %w", id, err)
+	}
+	defer tx.Rollback()
+	// What the chunk loop could not name: the thread's title row and the
+	// index rows of its imported history. The mapping table cascades with
+	// the thread, but the contentless FTS rows it names do not, so they
+	// come off here rather than being left behind.
+	if err := deleteThreadSearchThreadTx(tx, id); err != nil {
+		return err
+	}
+	result, err := tx.Exec(`DELETE FROM threads WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("store: delete thread %s: %w", id, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: delete thread %s", id))
+	if err := requireRowsAffected(result, fmt.Sprintf("store: delete thread %s", id)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit delete thread %s: %w", id, err)
+	}
+	return nil
 }
 
 // deleteThreadItemsChunk removes one bounded slice while aggregating the
@@ -1011,17 +1054,17 @@ func (s *Store) deleteThreadItemsChunk(id string) (int64, error) {
 		return 0, err
 	}
 
-	result, err = tx.Exec(
+	// The search index is paced with the rows it describes: a 38k-item
+	// thread would otherwise pay for its whole index in one statement,
+	// which is the stall this chunking exists to avoid.
+	n, err := deleteItemsAndSearchRowsTx(tx, id,
 		`DELETE FROM items
-		  WHERE rowid IN (SELECT rowid FROM items WHERE thread_id = ? LIMIT ?)`,
-		id, deleteThreadItemChunk,
+		  WHERE rowid IN (SELECT rowid FROM items WHERE thread_id = ? LIMIT ?) RETURNING id`,
+		[]any{id, deleteThreadItemChunk},
+		fmt.Sprintf("store: delete thread %s items", id),
 	)
 	if err != nil {
-		return 0, fmt.Errorf("store: delete thread %s items: %w", id, err)
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("store: delete thread %s items count: %w", id, err)
+		return 0, err
 	}
 
 	result, err = tx.Exec(
@@ -1433,12 +1476,26 @@ func (s *Store) SetThreadForkResume(threadID, sessionRef, pendingForkRef, pinned
 // request creation.
 
 func (s *Store) UpdateTitle(threadID, title string) error {
-	result, err := s.db.Exec(`UPDATE threads SET title = ? WHERE id = ?`,
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin update title for %s: %w", threadID, err)
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`UPDATE threads SET title = ? WHERE id = ?`,
 		title, threadID)
 	if err != nil {
 		return fmt.Errorf("store: update title for %s: %w", threadID, err)
 	}
-	return requireRowsAffected(result, fmt.Sprintf("store: update title for %s", threadID))
+	if err := requireRowsAffected(result, fmt.Sprintf("store: update title for %s", threadID)); err != nil {
+		return err
+	}
+	if err := indexThreadTitleTx(tx, threadID, title); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit update title for %s: %w", threadID, err)
+	}
+	return nil
 }
 
 func (s *Store) UpdateTitleIfCurrent(threadID, currentTitle, newTitle string) (bool, error) {
@@ -1464,6 +1521,11 @@ func (s *Store) UpdateTitleIfCurrent(threadID, currentTitle, newTitle string) (b
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("store: compare-and-swap title rows affected for %s: %w", threadID, err)
+	}
+	if rows > 0 {
+		if err := indexThreadTitleTx(tx, threadID, newTitle); err != nil {
+			return false, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return false, err

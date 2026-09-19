@@ -1,0 +1,119 @@
+{
+  "comment": [
+    "Shared table for the thread state derivation. Consumed by",
+    "internal/threadtools/state_test.go (TestStateFixture) and, when the",
+    "frontend test lands, by a Vitest test of resolveEffectiveThreadStatus",
+    "in frontend/src/lib/utils/threadStatusPill.ts, so the two cannot",
+    "drift.",
+    "",
+    "Schema: {comment: string[], cases: Case[]}.",
+    "Case = {",
+    "  name: string,",
+    "  thread: {hasIncompleteTurn, hasFailedTurn, hasActionableProposedPlan:",
+    "    boolean, worktreeSetupState: string},",
+    "  live: {activeTurn, pendingSends: boolean, pendingApprovals,",
+    "    pendingUserInputs: number},   // Go input, threadtools.LiveState",
+    "  liveStatus: string,             // frontend input, ThreadLiveStatus,",
+    "                                  // what getThreadStatus derives from live",
+    "  want: string                    // the effective state both must return",
+    "}",
+    "",
+    "liveStatus is derived from live by the same order the Go function uses:",
+    "pending-approval, awaiting-input, running, else idle. A frontend test",
+    "feeds liveStatus to resolveEffectiveThreadStatus; the Go test feeds",
+    "live to State. Both must produce want."
+  ],
+  "cases": [
+    {
+      "name": "quiet thread is idle",
+      "thread": {"hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
+      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "liveStatus": "idle",
+      "want": "idle"
+    },
+    {
+      "name": "open turn is running",
+      "thread": {"hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
+      "live": {"activeTurn": true, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "liveStatus": "running",
+      "want": "running"
+    },
+    {
+      "name": "queued send before its echo is running",
+      "thread": {"hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
+      "live": {"activeTurn": false, "pendingSends": true, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "liveStatus": "running",
+      "want": "running"
+    },
+    {
+      "name": "pending approval outranks an open turn",
+      "thread": {"hasIncompleteTurn": true, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
+      "live": {"activeTurn": true, "pendingSends": false, "pendingApprovals": 1, "pendingUserInputs": 0},
+      "liveStatus": "pending-approval",
+      "want": "pending-approval"
+    },
+    {
+      "name": "pending approval outranks a question to the user",
+      "thread": {"hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
+      "live": {"activeTurn": true, "pendingSends": false, "pendingApprovals": 1, "pendingUserInputs": 2},
+      "liveStatus": "pending-approval",
+      "want": "pending-approval"
+    },
+    {
+      "name": "question to the user is awaiting-input",
+      "thread": {"hasIncompleteTurn": true, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": ""},
+      "live": {"activeTurn": true, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 1},
+      "liveStatus": "awaiting-input",
+      "want": "awaiting-input"
+    },
+    {
+      "name": "a blocked provider outranks a failed worktree setup",
+      "thread": {"hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": "failed"},
+      "live": {"activeTurn": true, "pendingSends": false, "pendingApprovals": 1, "pendingUserInputs": 0},
+      "liveStatus": "pending-approval",
+      "want": "pending-approval"
+    },
+    {
+      "name": "failed worktree setup is the first durable fallback",
+      "thread": {"hasIncompleteTurn": true, "hasFailedTurn": true, "hasActionableProposedPlan": true, "worktreeSetupState": "failed"},
+      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "liveStatus": "idle",
+      "want": "setup-failed"
+    },
+    {
+      "name": "a running worktree setup is not a fallback",
+      "thread": {"hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": false, "worktreeSetupState": "running"},
+      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "liveStatus": "idle",
+      "want": "idle"
+    },
+    {
+      "name": "failed turn comes before interrupted",
+      "thread": {"hasIncompleteTurn": true, "hasFailedTurn": true, "hasActionableProposedPlan": true, "worktreeSetupState": ""},
+      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "liveStatus": "idle",
+      "want": "error"
+    },
+    {
+      "name": "interrupted comes before plan-ready",
+      "thread": {"hasIncompleteTurn": true, "hasFailedTurn": false, "hasActionableProposedPlan": true, "worktreeSetupState": ""},
+      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "liveStatus": "idle",
+      "want": "interrupted"
+    },
+    {
+      "name": "actionable plan is plan-ready",
+      "thread": {"hasIncompleteTurn": false, "hasFailedTurn": false, "hasActionableProposedPlan": true, "worktreeSetupState": ""},
+      "live": {"activeTurn": false, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "liveStatus": "idle",
+      "want": "plan-ready"
+    },
+    {
+      "name": "a live turn masks every durable fallback",
+      "thread": {"hasIncompleteTurn": true, "hasFailedTurn": true, "hasActionableProposedPlan": true, "worktreeSetupState": "failed"},
+      "live": {"activeTurn": true, "pendingSends": false, "pendingApprovals": 0, "pendingUserInputs": 0},
+      "liveStatus": "running",
+      "want": "running"
+    }
+  ]
+}

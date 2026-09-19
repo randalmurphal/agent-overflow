@@ -473,7 +473,11 @@ func updateExistingItem(tx *sql.Tx, item Item) error {
 	); err != nil {
 		return fmt.Errorf("store: update item %s: %w", item.ID, err)
 	}
-	return nil
+	// This is where an assistant message or a tool call leaves the running
+	// state, so this is where its text enters the search index. A row that
+	// is still streaming indexes nothing; the streaming appends
+	// (AppendItemSummary and its siblings) never reach here at all.
+	return indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary)
 }
 
 // insertNewItem allocates the row's index through indexFn within the
@@ -665,6 +669,9 @@ func (s *Store) DeleteThreadItem(threadID, itemID string) error {
 	); err != nil {
 		return err
 	}
+	if err := deleteThreadSearchItemsTx(tx, threadID, []string{itemID}); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit delete item %s/%s: %w", threadID, itemID, err)
 	}
@@ -688,16 +695,13 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 		return 0, HistoryStamp{}, err
 	}
 
-	result, err := tx.Exec(
-		`DELETE FROM items WHERE thread_id = ? AND turn_index >= ?`,
-		threadID, fromTurnIndex,
+	n, err := deleteItemsAndSearchRowsTx(tx, threadID,
+		`DELETE FROM items WHERE thread_id = ? AND turn_index >= ? RETURNING id`,
+		[]any{threadID, fromTurnIndex},
+		fmt.Sprintf("store: delete items from turn for thread %s", threadID),
 	)
 	if err != nil {
-		return 0, HistoryStamp{}, fmt.Errorf("store: delete items from turn for thread %s: %w", threadID, err)
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return 0, HistoryStamp{}, fmt.Errorf("store: delete items from turn rows affected: %w", err)
+		return 0, HistoryStamp{}, err
 	}
 	if _, err := tx.Exec(
 		`DELETE FROM turns WHERE thread_id = ? AND turn_index >= ?`,
@@ -824,11 +828,12 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, H
 			return nil, HistoryStamp{}, fmt.Errorf("store: probe deleted turn content for thread %s: %w", threadID, err)
 		}
 	}
-	if _, err := tx.Exec(
-		`DELETE FROM items WHERE thread_id = ? AND (`+itemPredicate+`)`,
-		itemArgs...,
+	if _, err := deleteItemsAndSearchRowsTx(tx, threadID,
+		`DELETE FROM items WHERE thread_id = ? AND (`+itemPredicate+`) RETURNING id`,
+		itemArgs,
+		fmt.Sprintf("store: delete items from item for thread %s", threadID),
 	); err != nil {
-		return nil, HistoryStamp{}, fmt.Errorf("store: delete items from item for thread %s: %w", threadID, err)
+		return nil, HistoryStamp{}, err
 	}
 
 	// The anchor turn's kept-set, read AFTER the delete so it reflects
@@ -1034,6 +1039,14 @@ func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) 
 		fmt.Sprintf("store: update item fields %s/%s", threadID, id),
 	); err != nil {
 		return 0, err
+	}
+	// A partial update can be the write that settles a row (the
+	// turn-complete flip, the force-close safety net), so the row's
+	// current status and text decide whether it is indexed now.
+	if update.Status != nil || update.Summary != nil {
+		if err := indexItemByIDTx(tx, threadID, id); err != nil {
+			return 0, err
+		}
 	}
 	rev, err := readItemRevTx(tx, threadID, id)
 	if err != nil {

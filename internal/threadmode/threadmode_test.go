@@ -194,3 +194,25 @@ func TestParseOptionalRuntime_AcceptsReadOnly(t *testing.T) {
 		t.Fatalf("got = %q, want read-only", got)
 	}
 }
+
+// Scratch is not a mode the UI can set, and not one it can leave: the fork's
+// return mode lives in the scratch record, so a hand-set mode would strand
+// the record and the boot sweep would delete the thread. Promotion runs
+// through store.PromoteScratchThread instead.
+func TestScratchModeIsHiddenAndUnsettable(t *testing.T) {
+	if !IsLegal(ModeScratch) {
+		t.Fatal("scratch must be a legal thread mode")
+	}
+	if !IsHidden(ModeScratch) {
+		t.Error("scratch must be hidden from thread lists")
+	}
+	if _, err := ValidateSet(ModeScratch); err == nil {
+		t.Error("ValidateSet must refuse switching into scratch")
+	}
+	if IsPostCreationMode(ModeScratch) {
+		t.Error("a scratch thread must not be mutable into another mode")
+	}
+	if _, ok := ManualSelectionModes[ModeScratch]; ok {
+		t.Error("scratch must not be offered in the mode picker")
+	}
+}

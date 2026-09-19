@@ -37,6 +37,17 @@ overlay and immutable import chunks. Ordered, limited, and recursive reads use
 the physical arms from `timeline_arms.go`; see
 [sqlite-store.md](sqlite-store.md#logical-history).
 
+`thread_search_rows`, `thread_search`, `thread_search_build` are the agent
+search index. `thread_search` is a contentless FTS5 table, so no message text is
+stored twice; `thread_search_rows` maps each FTS rowid to its thread, item and
+arm (`item` or `import`), and snippets are produced in Go. Settled message text,
+tool-call summaries and thread titles are indexed by the write that settles
+them; streaming rows are not. Hidden modes are excluded at query time by joining
+`owned_threads`, so a mode change needs no reindex. `thread_search_build` holds
+one progress row while the background build walks the existing corpus; restore
+drops all three and inserts a fresh progress row, because the index is derived
+and FTS5 shadow tables cannot be copied row by row.
+
 `owned_threads` is the ownership-filtered thread view. It applies the latest
 non-canceled transfer epoch so catalogs and execution checks do not recover a
 conversation whose ownership moved to another computer.
@@ -59,6 +70,7 @@ conversation whose ownership moved to another computer.
 | `work_item_effects` | Idempotency ledger for first-party workflow side effects, unique by run, phase, tool, and payload hash. |
 | `workflow_provider_usage_scopes`, `workflow_provider_usage_attention` | Durable attribution and notification ownership for provider-usage parks. They do not decide provider admission. |
 | `automations`, `automation_cursors` | Automation definitions, fire receipts, and source watermarks. Fire bookkeeping does not change definition `updated_at`. |
+| `scratch_threads` | Where an ephemeral `scratch` fork came from: source thread, the mode a Keep promotion returns it to, and the request it answers. The thread itself carries only mode `scratch`, which is hidden and refused by `threadmode.ValidateSet` in both directions; `PromoteScratchThread` is the only exit. Deleting the thread cascades the row. |
 | `ui_state` | Opaque user/device settings plus legacy frontend-state migration buckets. `internal/settings` owns key meaning and scope derivation. |
 | `push_tokens`, `push_sender` | Push destinations and sender credentials used by remote notification delivery. |
 | `store_meta` | One row containing stable `backend_id` and history-lineage `replica_generation`. Restore preserves the former and remints the latter. |
@@ -98,12 +110,14 @@ atomic revocation.
 | `thread_transfers` | Move/copy journal, ownership epoch, sealed-manifest identity, retries, cancellation, and cleanup status. It intentionally has no thread foreign key so history deletion cannot erase ownership. Pending incoming rows reserve their project. |
 | `thread_transfer_sessions` | Native provider-session closure reserved by a transfer. The latest non-canceled reservation fences execution and import independently of cached AO history. |
 | `remote_jobs` | Destination-side command acceptance and bounded receipt, including a `warning` for background processes the command left behind. Request ID and immutable fingerprint prevent a delayed retry from executing twice. Output retention may clear old tails but keeps acceptance and provenance. Boot interrupts unfinished jobs and never replays them. |
+| `thread_requests` | Source-side record of one agent thread tool call: token identity, target thread or computer, state, the whole settled answer, a late reply, monotonic revision, and how the answer reached the caller. Every state change is a conditional `UPDATE ... WHERE state = ?` that reports whether it applied; a no-op is a lost race, not an error. Partial indexes serve the remote poller and the reminder clock, so both predicates appear explicitly in their queries. |
+| `thread_request_receipts` | Destination-side record for the same token, keyed by it so a retried delivery finds the acceptance it already made and spawns nothing. `target_thread_id` is NULL for a spawn or ask until the thread or scratch fork exists, and is named once afterwards; the boot sweep settles an untargeted acceptance like any other open receipt. It binds settlement to the turn that consumed the request's message, and holds the answer of record until the source acknowledges the revision. An uncollected answer expires after a day; the row stays until the retention floor so the token keeps answering. |
 | `remote_watches` | Source-side monitoring and notification ownership, with the job's `label` and its `command` display text. Registration precedes the network call. Terminal observations are monotonic. Queueing a completion and inserting its `flush_queue_items` row is one transaction. |
 
 `RestoreFrom` refuses replacement while active commands or transfer phases make
 it unsafe. It preserves the live transfer journal, reserved transfer sessions,
-remote command receipts, and remote watches instead of replacing them from the
-snapshot. It also rejects snapshots that predate current incoming transfer
+remote command receipts, remote watches, and thread requests and receipts
+instead of replacing them from the snapshot. It also rejects snapshots that predate current incoming transfer
 ownership.
 
 ## Important indexes

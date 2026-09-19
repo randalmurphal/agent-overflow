@@ -1648,6 +1648,14 @@ CREATE INDEX idx_import_history_items_joined_send_ids
    AND json_extract(meta, '$.joinedSendIds') IS NOT NULL;`,
 	},
 	{Version: 100, Name: "item_row_revision", SQL: itemRowRevisionV100SQL},
+	{
+		Version: 101,
+		Name:    "scratch_thread_mode",
+		SQL:     scratchThreadsV101SQL,
+		Rebuild: true,
+	},
+	{Version: 102, Name: "thread_requests", SQL: threadRequestsV102SQL},
+	{Version: 103, Name: "thread_search", SQL: threadSearchV103SQL},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

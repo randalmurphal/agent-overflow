@@ -77,6 +77,9 @@ func importRowsSharedTx(tx *sql.Tx, threadID string, rows []ImportRow) error {
 				chunk.id, threadID, nextOrder+i, err,
 			)
 		}
+		if err := indexImportedHistoryTx(tx, threadID, chunk.id); err != nil {
+			return err
+		}
 	}
 	return nil
 }

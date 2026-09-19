@@ -41,6 +41,9 @@ func (s *Store) RollbackImportedThread(threadID string) error {
 	if _, err := tx.Exec(`DELETE FROM usage_pending WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("store: delete rolled-back pending usage for thread %s: %w", threadID, err)
 	}
+	if err := deleteThreadSearchThreadTx(tx, threadID); err != nil {
+		return err
+	}
 	result, err := tx.Exec(`DELETE FROM threads WHERE id = ?`, threadID)
 	if err != nil {
 		return fmt.Errorf("store: delete rolled-back imported thread %s: %w", threadID, err)

@@ -275,6 +275,11 @@ func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep 
 		); err != nil {
 			return nil, fmt.Errorf("store: clone item into thread %s: %w", targetThreadID, err)
 		}
+		// This path writes items with its own prepared statement, so it owns
+		// the settle-time index hook insertItemTx would otherwise run.
+		if err := indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary); err != nil {
+			return nil, err
+		}
 		if item.UpdatedAt > maxUpdatedAt {
 			maxUpdatedAt = item.UpdatedAt
 		}

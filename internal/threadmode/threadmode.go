@@ -28,18 +28,26 @@ const (
 	ModeWorkflow       = "workflow"
 	ModeWorkflowStudio = "workflow-studio"
 	ModeWorkflowTriage = "workflow-triage"
+	// ModeScratch is an ephemeral fork: an agent's one-shot ask or a
+	// `/side-chat` companion. Hidden from every listing, deleted with the
+	// pane or the answer, and never reachable through ValidateCreate or
+	// ValidateSet — a scratch thread is created by the fork path that owns
+	// its lifetime and leaves that mode only through the Keep promotion,
+	// which restores the mode recorded beside it.
+	ModeScratch = "scratch"
 )
 
 var legalModes = map[string]struct{}{
 	ModeChat: {}, ModePlan: {}, ModeDiscussion: {},
 	ModeTerminal: {}, ModeWorkflow: {}, ModeWorkflowStudio: {}, ModeWorkflowTriage: {},
+	ModeScratch: {},
 }
 
 var sagaOwnedModes = map[string]struct{}{
 	ModeDiscussion: {}, ModeWorkflow: {}, ModeWorkflowStudio: {}, ModeWorkflowTriage: {},
 }
 
-var hiddenModes = []string{ModeWorkflow, ModeWorkflowStudio, ModeWorkflowTriage}
+var hiddenModes = []string{ModeWorkflow, ModeWorkflowStudio, ModeWorkflowTriage, ModeScratch}
 
 var hiddenModeSet = func() map[string]struct{} {
 	set := make(map[string]struct{}, len(hiddenModes))
@@ -117,11 +125,16 @@ func ValidateCreate(mode string) (string, error) {
 }
 
 // ValidateSet validates a mode for UpdateThreadMode. Only chat and
-// plan are accepted; discussion is a saga-owned immutable thread type.
-// The frontend's agent-mode toggle (chat ↔
-// plan) is the only caller that should hit UpdateThreadMode at user-
-// facing scope; internal callsites (proposed-plan saga) only ever
-// pass chat or plan.
+// plan are accepted; discussion is a saga-owned immutable thread type
+// and scratch is owned by the fork that created it. The frontend's
+// agent-mode toggle (chat ↔ plan) is the only caller that should hit
+// UpdateThreadMode at user-facing scope; internal callsites
+// (proposed-plan saga) only ever pass chat or plan.
+//
+// Switching OUT of scratch is refused by the same set through
+// IsPostCreationMode, which the caller checks against the thread's
+// current mode: promotion runs through Store.PromoteScratchThread, which
+// restores the mode recorded in `scratch_threads`.
 func ValidateSet(mode string) (string, error) {
 	trimmed := strings.TrimSpace(mode)
 	if _, ok := PostCreationModes[trimmed]; !ok {

@@ -178,9 +178,7 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	}
 
 	for _, table := range tables {
-		// A history restore cannot revoke a transfer commit. Keep local
-		// ownership/recovery records, including tombstones for deleted rows.
-		if table == "thread_transfers" || table == "thread_transfer_sessions" || table == "remote_jobs" || table == "remote_watches" {
+		if restoreSkipsTable(table) {
 			continue
 		}
 		if _, err := tx.Exec(`DELETE FROM main."` + table + `"`); err != nil {
@@ -188,7 +186,7 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 		}
 	}
 	for _, table := range tables {
-		if table == "thread_transfers" || table == "thread_transfer_sessions" || table == "remote_jobs" || table == "remote_watches" {
+		if restoreSkipsTable(table) {
 			continue
 		}
 		if !srcTables[table] {
@@ -221,6 +219,14 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 		return Identity{}, fmt.Errorf("store: restore: recreate background settle triggers: %w", err)
 	}
 
+	// The search index describes the history that was just replaced, and an
+	// FTS5 table's shadow tables cannot be copied row by row anyway. Dropping
+	// and recreating it, progress row included, leaves the background build to
+	// re-derive the index from the restored corpus.
+	if _, err := tx.Exec(threadSearchResetSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: reset search index: %w", err)
+	}
+
 	// A restore rewinds every thread's history_rev / history_epoch to the
 	// snapshot's values while attached clients may hold stamps from the
 	// future that snapshot was taken before — a divergent future the
@@ -244,6 +250,28 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 		return Identity{}, fmt.Errorf("store: commit restore: %w", err)
 	}
 	return identity, nil
+}
+
+// restoreSkipsTable reports whether the whole-database row copy leaves one
+// table alone.
+//
+// A history restore cannot revoke a transfer commit or a remote acceptance, so
+// ownership, recovery and remote-command records stay local, tombstones for
+// deleted rows included. Thread requests and their receipts join them: a
+// request another computer is already running, and the receipt that will
+// answer it, are promises this store made outside the history the snapshot
+// describes.
+//
+// The `thread_search*` family is skipped for the opposite reason: it is
+// derived, and an FTS5 table's shadow tables have no meaning apart from the
+// virtual table that owns them. RestoreFrom recreates them empty instead.
+func restoreSkipsTable(table string) bool {
+	switch table {
+	case "thread_transfers", "thread_transfer_sessions", "remote_jobs", "remote_watches",
+		"thread_requests", "thread_request_receipts":
+		return true
+	}
+	return strings.HasPrefix(table, "thread_search")
 }
 
 // migratedScratchCopy copies the snapshot beside itself and runs the

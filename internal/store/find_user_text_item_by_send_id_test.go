@@ -202,8 +202,31 @@ func TestMigrationV89IndexesExistingSendIdentities(t *testing.T) {
 	if _, err := s.CreateProject(Project{ID: defaultTestProjectID, Path: t.TempDir(), Name: "Existing project", CreatedAt: 1, UpdatedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
-	mustCreateThread(t, s, "existing-send")
-	insertUserTexts(t, s, "existing-send", "before-upgrade", "")
+	// The history fixture is written with SQL rather than the accessors:
+	// this database stops at v88, and an accessor writes against the current
+	// schema, where an item write also maintains the v103 search index.
+	if _, err := db.Exec(`
+		INSERT INTO threads (id, project_id, title, provider, workspace_path, model,
+			created_at, updated_at, archived, mode)
+		VALUES ('existing-send', ?, 'Existing', 'claude', '/tmp', '', 1, 1, 0, 'chat')`,
+		defaultTestProjectID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	for index, row := range []struct{ id, kind, role, summary, meta string }{
+		{"existing-send-user-before-upgrade", "user_text", "user", "msg", `{"sendId":"before-upgrade"}`},
+		{"existing-send-answer-before-upgrade", "assistant_text", "assistant", "answer", "{}"},
+		{"existing-send-user", "user_text", "user", "msg", "{}"},
+	} {
+		if _, err := db.Exec(`
+			INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+				summary, meta, created_at, updated_at)
+			VALUES (?, 'existing-send', 0, ?, ?, ?, 'completed', ?, ?, 1, 1)`,
+			row.id, index, row.kind, row.role, row.summary, row.meta,
+		); err != nil {
+			t.Fatalf("insert %s: %v", row.id, err)
+		}
+	}
 	if err := s.InsertFlushQueueItem(FlushQueueItem{ID: "before-queue", ThreadID: "existing-send", SendID: "queued-before-upgrade", Message: "Waiting"}); err != nil {
 		t.Fatal(err)
 	}

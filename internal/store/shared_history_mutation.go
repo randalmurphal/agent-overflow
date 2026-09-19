@@ -95,6 +95,14 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 	if err := requireRowsAffected(result, fmt.Sprintf("%s copy imported item %s/%s", label, threadID, itemID)); err != nil {
 		return false, err
 	}
+	// The override moves this item from the import arm to the item arm, so its
+	// index row moves with it. The caller's mutation re-indexes the new text.
+	if err := deleteThreadSearchItemsTx(tx, threadID, []string{itemID}); err != nil {
+		return false, err
+	}
+	if err := indexItemByIDTx(tx, threadID, itemID); err != nil {
+		return false, err
+	}
 	if err := setHistoryBulkLoadTx(tx, threadID, false, label); err != nil {
 		return false, err
 	}
@@ -211,6 +219,14 @@ func materializeSharedHistoryTx(tx *sql.Tx, threadID, label string) error {
 	}
 	if _, err := tx.Exec(`DELETE FROM thread_import_item_overrides WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("%s clear shared overrides for %s: %w", label, threadID, err)
+	}
+	// Every row is local now: drop the detached import arm's index rows and
+	// index the copies that replaced them.
+	if err := deleteThreadSearchSourceTx(tx, threadID, ThreadSearchSourceImport); err != nil {
+		return err
+	}
+	if err := indexThreadItemsTx(tx, threadID); err != nil {
+		return err
 	}
 	if err := setHistoryBulkLoadTx(tx, threadID, false, label); err != nil {
 		return err

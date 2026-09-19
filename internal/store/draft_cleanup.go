@@ -53,7 +53,12 @@ func (s *Store) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if threadID == "" {
 		return false, fmt.Errorf("store: delete empty draft thread: thread id is required")
 	}
-	result, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("store: begin delete empty draft thread %s: %w", threadID, err)
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(
 		`DELETE FROM threads
 		  WHERE id = ?
 		    AND mode IN ('chat', 'plan')
@@ -81,6 +86,16 @@ func (s *Store) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("store: delete empty draft thread %s rows affected: %w", threadID, err)
+	}
+	if affected > 0 {
+		// The thread had no items, but it had a title, and the contentless
+		// index rows do not cascade with the mapping row that names them.
+		if err := deleteThreadSearchThreadTx(tx, threadID); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("store: commit delete empty draft thread %s: %w", threadID, err)
 	}
 	return affected > 0, nil
 }

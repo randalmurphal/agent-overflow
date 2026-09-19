@@ -148,18 +148,22 @@ func itemInsertArgs(item Item) []any {
 	}
 }
 
-func insertItemTx(exec sqlExecutor, item Item, label string) error {
-	if _, err := exec.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
+// insertItemTx inserts one row and indexes its text when the row arrives
+// settled (a user message, a cloned or transferred row). A row that arrives
+// streaming is indexed later by the write that settles it. The index write
+// shares this transaction, so a rolled-back insert leaves nothing searchable.
+func insertItemTx(tx *sql.Tx, item Item, label string) error {
+	if _, err := tx.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
 		return fmt.Errorf("%s: %w", label, err)
 	}
-	return nil
+	return indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary)
 }
 
-func insertItemWithIDTx(exec sqlExecutor, item Item, label string) error {
-	if _, err := exec.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
+func insertItemWithIDTx(tx *sql.Tx, item Item, label string) error {
+	if _, err := tx.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
 		return fmt.Errorf("%s %s: %w", label, item.ID, err)
 	}
-	return nil
+	return indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary)
 }
 
 // itemColumnsSansPayload mirrors itemColumns but without the

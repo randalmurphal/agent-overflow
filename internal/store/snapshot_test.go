@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -145,5 +146,77 @@ func TestSnapshotRestoreCannotErasePendingEditRecovery(t *testing.T) {
 	rows, err := st.ListThreadDraftRecoveries()
 	if err != nil || len(rows) != 1 || rows[0].Content != "unsent edit" {
 		t.Fatalf("recovery lost: %+v %v", rows, err)
+	}
+}
+
+// A history restore replaces the corpus the search index describes, and an
+// FTS5 table's shadow tables cannot be copied row by row, so the index is
+// rebuilt from empty and the background build runs again. Requests and
+// receipts are the opposite case: they are promises made outside the history
+// the snapshot describes and stay local.
+func TestRestoreFromResetsSearchAndKeepsThreadRequests(t *testing.T) {
+	st := snapshotTestStore(t)
+	seedSnapshotFixture(t, st, "t1", "before snapshot")
+	if err := st.BuildSearchIndex(context.Background()); err != nil {
+		t.Fatalf("build search index: %v", err)
+	}
+	snap := filepath.Join(t.TempDir(), "snap.db")
+	if err := st.SnapshotTo(snap); err != nil {
+		t.Fatalf("SnapshotTo: %v", err)
+	}
+
+	if err := st.InsertThreadRequest(ThreadRequest{
+		Token: "tok-live", CallerThreadID: "t1", Kind: ThreadRequestSend,
+		State: ThreadRequestRunning, CreatedAt: 10, UpdatedAt: 10,
+	}); err != nil {
+		t.Fatalf("insert request: %v", err)
+	}
+	if _, _, err := st.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+		Token: "tok-receipt", OwnerDeviceID: "device-1", Kind: ThreadRequestSend,
+		TargetThreadID: "t1", CreatedAt: 10, UpdatedAt: 10,
+	}); err != nil {
+		t.Fatalf("accept receipt: %v", err)
+	}
+	if err := st.UpdateTitle("t1", "mutated"); err != nil {
+		t.Fatalf("UpdateTitle: %v", err)
+	}
+
+	if _, err := st.RestoreFrom(snap); err != nil {
+		t.Fatalf("RestoreFrom: %v", err)
+	}
+
+	if _, found, err := st.GetThreadRequest("tok-live"); err != nil || !found {
+		t.Errorf("restore dropped a live request: found=%v err=%v", found, err)
+	}
+	if _, found, err := st.GetThreadRequestReceipt("tok-receipt"); err != nil || !found {
+		t.Errorf("restore dropped a live receipt: found=%v err=%v", found, err)
+	}
+
+	indexing, err := st.SearchIndexing()
+	if err != nil {
+		t.Fatalf("probe indexing: %v", err)
+	}
+	if !indexing {
+		t.Fatal("a restored database must rebuild its search index")
+	}
+	var indexed int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM thread_search_rows`).Scan(&indexed); err != nil {
+		t.Fatalf("count index rows: %v", err)
+	}
+	if indexed != 0 {
+		t.Errorf("index rows after restore = %d, want an empty index", indexed)
+	}
+	if err := st.BuildSearchIndex(context.Background()); err != nil {
+		t.Fatalf("rebuild search index: %v", err)
+	}
+	hits, err := st.SearchThreads("hello", ThreadSearchFilter{})
+	if err != nil {
+		t.Fatalf("search after rebuild: %v", err)
+	}
+	if len(hits) != 1 || hits[0].ItemID != "t1-i1" {
+		t.Fatalf("hits after rebuild = %+v", hits)
+	}
+	if got, err := st.SearchThreads("mutated", ThreadSearchFilter{}); err != nil || len(got) != 0 {
+		t.Errorf("the discarded title still matches: %+v %v", got, err)
 	}
 }

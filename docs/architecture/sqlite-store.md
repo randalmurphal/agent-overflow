@@ -157,13 +157,18 @@ provider history:
 - queued accepted messages;
 - transfer journals, reserved native sessions, and ownership epochs;
 - remote command acceptance and retained receipts;
-- remote completion watches and notification ownership.
+- remote completion watches and notification ownership;
+- agent thread requests and the receipts that answer them.
 
 A full snapshot contains identity, membership, queue, and application records,
 so `RestoreFrom` replaces those rows from the snapshot. It preserves the live
-transfer journal, transfer-session reservations, remote command receipts, and
-remote watches instead, because restoring an older copy could revoke a transfer
-commit, permit command re-execution, or repeat notification delivery. History
+transfer journal, transfer-session reservations, remote command receipts,
+remote watches, and thread requests and receipts instead, because restoring an
+older copy could revoke a transfer commit, permit command re-execution, repeat
+notification delivery, or re-run a request another computer already accepted.
+The `thread_search*` family is neither replaced nor preserved: the index is
+derived from history, so restore recreates it empty and the background build
+re-derives it. History
 retention and generic table sweeps still use the broader authoritative
 classification.
 
