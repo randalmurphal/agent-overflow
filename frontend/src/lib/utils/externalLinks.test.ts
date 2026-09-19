@@ -8,6 +8,7 @@ import {
   installExternalLinkDelegate,
   installPreviewLinkActions,
   loopbackDevServerURL,
+  openableExternalURL,
   safeExternalURL,
 } from './externalLinks';
 import { buildPathLinkHref } from './pathLinkExtension';
@@ -41,6 +42,38 @@ describe('safeExternalURL', () => {
   });
 });
 
+describe('openableExternalURL', () => {
+  it('accepts any registered handler scheme, normalized', () => {
+    expect(openableExternalURL('https://example.com/path?q=1')).toBe('https://example.com/path?q=1');
+    expect(openableExternalURL('mailto:test@example.com')).toBe('mailto:test@example.com');
+    expect(openableExternalURL('tel:+15555550100')).toBe('tel:+15555550100');
+    expect(openableExternalURL('  vscode://file/tmp/x.go:12  ')).toBe('vscode://file/tmp/x.go:12');
+    expect(openableExternalURL('obsidian://open?vault=notes')).toBe('obsidian://open?vault=notes');
+  });
+
+  it('refuses the deny-list, file URLs, drive paths and relative hrefs', () => {
+    for (const raw of [
+      'javascript:alert(1)',
+      'vbscript:MsgBox',
+      'data:text/html,hi',
+      'blob:https://example.com/uuid',
+      'about:blank',
+      'ms-msdt:/id%20PCWDiagnostic',
+      'agent-overflow:open?path=/etc/passwd',
+      'file:///etc/passwd',
+      'C:\\Windows\\System32\\calc.exe',
+      '/local/path',
+      '#fragment',
+      'https:///missing-host',
+      '',
+      null,
+      undefined,
+    ]) {
+      expect(openableExternalURL(raw), String(raw)).toBeNull();
+    }
+  });
+});
+
 describe('handleExternalURL', () => {
   let originalOpen: typeof window.open;
 
@@ -66,13 +99,22 @@ describe('handleExternalURL', () => {
     expect(window.open).not.toHaveBeenCalled();
   });
 
-  it('does not call the binding for unsupported URLs', async () => {
+  it('does not call the binding for denied URLs', async () => {
     const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
 
     const handled = await handleExternalURL('javascript:alert(1)');
 
     expect(handled).toBe(false);
     expect(open).not.toHaveBeenCalled();
+  });
+
+  it('routes a handler-scheme URL through the OpenExternalURL binding', async () => {
+    const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+
+    const handled = await handleExternalURL('mailto:test@example.com');
+
+    expect(handled).toBe(true);
+    expect(open).toHaveBeenCalledWith('mailto:test@example.com');
   });
 
   it('uses browser-native opening in client mode', async () => {

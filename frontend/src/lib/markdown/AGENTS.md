@@ -39,10 +39,15 @@ volatile block on every append.
 
 ## URL and HTML boundary
 
-Path-relative and protocol-relative links or images never render as raw anchors
-or image sources. Render them only after `transformUrl` approval, or as a
-non-navigable reference. Hosts that support path or preview actions claim those
-tokens with parser extensions.
+Path-relative links or images never render as raw anchors or image sources.
+Render them only after `transformUrl` approval, or as a non-navigable reference.
+`//host/x` resolves to `https:`, never to the page origin. Hosts that support
+path, image or preview actions claim those tokens with parser extensions.
+
+The `*` wildcard admits every scheme except the deny-list in
+`render/elements/urlSchemes.ts` and `file:`; `internal/externalurl` mirrors the
+list and a Go test compares the two. `classifyLinkHref` is the one decision for
+anchor, untagged reference, or tagged blocked span; both renderers call it.
 
 Embedded forge HTML is opt-in. The extension maps supported structural and
 inline forms onto native tokens, then `render/htmlSanitize.ts` handles the

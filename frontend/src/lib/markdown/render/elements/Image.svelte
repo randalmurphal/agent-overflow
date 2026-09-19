@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { useStreamdown } from '../context.svelte';
 	import { transformUrl } from './url';
+	import { urlScheme } from './urlSchemes';
 	import Slot from './Slot.svelte';
 	import type { Tokens } from '../../parser/engine';
 	import type { Snippet } from 'svelte';
@@ -18,19 +19,28 @@
 	} = $props();
 
 	// SECURITY BOUNDARY: a path-relative src never renders a raw
-	// <img>. Upstream rendered path-relative srcs (`isPathRelativeUrl`)
-	// without consulting transformUrl — the same allowlist bypass
-	// Link.svelte had. A model-authored `![x](/anything)` issued a
-	// same-origin GET against the transport server, and
-	// `![x](//host/x)` a protocol-relative off-origin fetch. An image
-	// renders only for a transformUrl-approved src; path-relative srcs
-	// fall to the blocked-image span (no AO surface produces them —
-	// chat attachments render through dedicated components, not
-	// markdown). Cited by docs/specs/remote-access-boundaries.md; see
-	// markdown/AGENTS.md § Rendering and input validation.
+	// <img>. Upstream rendered path-relative srcs without consulting
+	// transformUrl, so a model-authored `![x](/anything)` issued a
+	// same-origin GET against the transport server. An image renders
+	// only for a transformUrl-approved src. Hosts that can load local
+	// files claim path-shaped srcs during parsing
+	// (utils/pathLinkExtension.ts) and serve them through their own
+	// image snippet; an unclaimed one falls to the span below. See
+	// markdown/AGENTS.md § URL and HTML boundary.
 	const transformedUrl = $derived(
 		transformUrl(token.href, streamdown.allowedImagePrefixes ?? [])
 	);
+
+	// An unapproved src is either a local path this surface cannot load
+	// (no workspace to resolve it against, the ordinary case on PR
+	// bodies) or an absolute URL the policy refused. Name which.
+	const unavailableTitle = $derived.by(() => {
+		const href = typeof token.href === 'string' ? token.href : '';
+		const scheme = href.startsWith('//') ? 'https' : urlScheme(href);
+		return scheme === null || scheme === 'file'
+			? `Cannot load from this surface: ${href}`
+			: `Blocked URL: ${href}`;
+	});
 </script>
 
 {#if token.href !== 'streamdown:incomplete-image'}
@@ -59,9 +69,9 @@
 		<span
 			data-streamdown-image-blocked={id}
 			class="inline-block rounded bg-surface-2 px-3 py-1 text-sm text-secondary"
-			title={`Blocked URL: ${token.href}`}
+			title={unavailableTitle}
 		>
-			[Image blocked: {token.text || 'No description'}]
+			[Image unavailable: {token.text || 'No description'}]
 		</span>
 	{/if}
 {/if}

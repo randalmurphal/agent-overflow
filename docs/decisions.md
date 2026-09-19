@@ -274,6 +274,12 @@ and anti-changes that live only here:
 - Markdown path links: rewriting happens only on a surface that passes a
   workspace path; directories are refused everywhere; never pass
   `defaultOrigin` to Streamdown.
+- Markdown URLs: nothing an agent shows is withheld unless following it
+  would run something. Links render for every scheme except the deny-list
+  in `markdown/render/elements/urlSchemes.ts` (mirrored in
+  `internal/externalurl`); path-shaped image srcs load from the thread's
+  machine on every surface with a workspace, including paired browsers.
+  Do not reintroduce an http(s)-only allowlist.
 - Voice dictation: not built; the researched options and their auth
   constraints are in `docs/references/voice-dictation.md`.
 - Wide blocks pan inside their own box on every layout: markdown tables,

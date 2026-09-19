@@ -56,7 +56,7 @@ func TestGetLocalImageDataRejectsUnsupportedAndOversizedFiles(t *testing.T) {
 	largePath := filepath.Join(workspace, "large.png")
 	large := append(
 		realPNGBytes(t),
-		[]byte(strings.Repeat("x", int(attachment.DefaultMaxSize)))...,
+		[]byte(strings.Repeat("x", int(attachment.DisplayImageMaxBytes)))...,
 	)
 	if err := os.WriteFile(largePath, large, 0o600); err != nil {
 		t.Fatalf("write oversized image: %v", err)

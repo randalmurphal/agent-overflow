@@ -47,8 +47,10 @@ func Open(ctx context.Context, rawURL string) error {
 	return open(ctx, commandCandidates(runtime.GOOS, platform.IsWSL(), safeURL), exec.LookPath, startCommand)
 }
 
-// Validate accepts only absolute HTTP(S) URLs. The UI also validates before
-// calling this binding, but the RPC boundary gets no trust.
+// Validate accepts an absolute URL whose scheme the OS may open
+// (SchemeOpenable): http(s) with a host, or any other registered handler
+// scheme such as mailto or vscode. The UI also validates before calling
+// this binding, but the RPC boundary gets no trust.
 func Validate(rawURL string) (string, error) {
 	value := strings.TrimSpace(rawURL)
 	if value == "" {
@@ -59,11 +61,16 @@ func Validate(rawURL string) (string, error) {
 	if err != nil {
 		return "", errors.New("invalid external URL")
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", errors.New("external URL must use http or https")
+	if parsed.Scheme == "" {
+		return "", errors.New("external URL must be absolute")
 	}
-	if parsed.Host == "" {
-		return "", errors.New("external URL must include a host")
+	if !SchemeOpenable(parsed.Scheme) {
+		return "", fmt.Errorf("external URL scheme %q is not opened from here", parsed.Scheme)
+	}
+	if parsed.Scheme == "http" || parsed.Scheme == "https" {
+		if parsed.Host == "" {
+			return "", errors.New("external URL must include a host")
+		}
 	}
 	return parsed.String(), nil
 }

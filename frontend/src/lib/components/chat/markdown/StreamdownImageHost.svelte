@@ -1,11 +1,24 @@
 <script lang="ts">
+  // The one image renderer for chat markdown. Three sources:
+  //
+  //   - A local image the parse claimed (`agent-overflow:image?nonce=…`,
+  //     utils/pathLinkExtension.ts): fetched through GetLocalImageData
+  //     on the thread's machine (route `selected`), served as a blob URL.
+  //     Nothing model-authored reaches the webview as a file URI.
+  //   - An http(s) or `data:image/…` src the URL gate approved: rendered
+  //     directly.
+  //   - Anything else the gate approved for a bare <Streamdown> but this
+  //     host does not paint: reported, never silently dropped.
+  //
+  // A decode failure (`onerror`) is reported the same way as a fetch
+  // failure, so a corrupt or mislabeled file never leaves a blank gap.
   import type { Tokens } from '../../../markdown';
   import { GetLocalImageData } from '../../../stores/bindings';
   import { base64ToBytes } from '../../../utils/base64';
   import { errString } from '../../../utils/errors';
   import { parseLocalImageHref } from '../../../utils/pathLinkExtension';
 
-  let { token }: { token: Tokens.Image } = $props();
+  let { token, src: approvedSrc }: { token: Tokens.Image; src: string } = $props();
 
   let src = $state('');
   let error = $state('');
@@ -13,19 +26,15 @@
   const sourceHref = $derived(parseLocalImageHref(token.href)?.sourceHref || undefined);
 
   $effect(() => {
-    const href = token.href;
-    const local = parseLocalImageHref(href);
+    const local = parseLocalImageHref(token.href);
     if (!local) {
-      try {
-        const external = new URL(href);
-        if (external.protocol !== 'http:' && external.protocol !== 'https:') {
-          throw new Error(`unsupported image URL scheme ${external.protocol}`);
-        }
-        src = external.href;
+      const direct = approvedSrc;
+      if (/^(?:https?:|data:image\/)/i.test(direct)) {
+        src = direct;
         error = '';
-      } catch (cause) {
+      } else {
         src = '';
-        error = errString(cause);
+        error = `This surface does not display ${direct.split(':', 1)[0]}: images`;
       }
       loading = false;
       return;
@@ -62,6 +71,11 @@
       if (ownedURL) URL.revokeObjectURL(ownedURL);
     };
   });
+
+  function handleDecodeError(): void {
+    src = '';
+    error = 'The file is not an image this browser can decode';
+  }
 </script>
 
 {#if src}
@@ -72,6 +86,7 @@
       alt={token.text}
       loading="lazy"
       data-markdown-image-src={sourceHref}
+      onerror={handleDecodeError}
     />
   </span>
 {:else if error}

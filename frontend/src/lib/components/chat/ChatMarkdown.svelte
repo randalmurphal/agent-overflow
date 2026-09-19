@@ -62,6 +62,7 @@
     LOCAL_IMAGE_HREF_PREFIX,
     PATH_LINK_HREF_PREFIX,
     buildPathLinkExtension,
+    type PathLinkMode,
   } from '../../utils/pathLinkExtension';
   import { buildPreviewLinkExtension } from '../../utils/previewLinkExtension';
   import {
@@ -174,13 +175,17 @@
   // Marked inline extension derived from the validated allowlist. The
   // extension is rebuilt when `pathRefs` / `workspacePath` change. A
   // missing allowlist disables prose linkification only; explicit local
-  // hrefs still normalize whenever the surface has a workspace. The shared
-  // empty array keeps that fallback identity stable across streaming frames.
-  // buildPathLinkExtension returns undefined when both halves are inert.
+  // hrefs and image srcs still normalize whenever the surface has a
+  // workspace. The shared empty array keeps that fallback identity stable
+  // across streaming frames. Link affordances follow what this page can
+  // do on the thread's machine; images load in every mode because the
+  // bytes come over the transport (see buildPathLinkExtension).
+  // buildPathLinkExtension returns undefined when every half is inert.
+  const pathLinkMode = $derived<PathLinkMode>(
+    noHost ? (filePreview ? 'html' : 'off') : filePreview ? 'files' : 'editor',
+  );
   const pathLinkExtension = $derived(
-    noHost && !filePreview
-      ? undefined
-      : buildPathLinkExtension(pathRefs ?? EMPTY_PATH_REFS, workspacePath, noHost ? 'html' : filePreview ? 'files' : 'editor'),
+    buildPathLinkExtension(pathRefs ?? EMPTY_PATH_REFS, workspacePath, pathLinkMode),
   );
 
   // `localhost:<port>` rewriting, for prose about a machine that is not the
@@ -216,8 +221,10 @@
   // `[click](agent-overflow:open?path=/etc/passwd)` cannot satisfy
   // the nonce-prefixed form and is rejected before any anchor is
   // rendered.
+  // `data:` is a denied LINK scheme (it is a document the webview would
+  // evaluate), but an inline `data:image/…` src is just bytes for an <img>.
   const allowedLinkPrefixes = ['*', PATH_LINK_HREF_PREFIX];
-  const allowedImagePrefixes = ['*', LOCAL_IMAGE_HREF_PREFIX];
+  const allowedImagePrefixes = ['*', LOCAL_IMAGE_HREF_PREFIX, 'data:image/'];
 
   // Diagram palette. Without a `mermaidConfig` the renderer falls back
   // to mermaid's built-in `'dark'`/`'default'` themes, which
@@ -410,8 +417,8 @@
     {#snippet inlineCitation({ token })}
       {token.text ?? token.raw}
     {/snippet}
-    {#snippet image({ token })}
-      <StreamdownImageHost {token} />
+    {#snippet image({ token, src })}
+      <StreamdownImageHost {token} {src} />
     {/snippet}
   </Streamdown>
 {/snippet}

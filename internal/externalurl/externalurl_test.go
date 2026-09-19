@@ -25,11 +25,32 @@ func TestValidateAcceptsHTTPAndHTTPS(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsUnsupportedOrHostlessURLs(t *testing.T) {
+func TestValidateAcceptsRegisteredHandlerSchemes(t *testing.T) {
+	cases := map[string]string{
+		"mailto:person@example.com":       "mailto:person@example.com",
+		"tel:+15555550100":                "tel:+15555550100",
+		"vscode://file/tmp/x.go:12":       "vscode://file/tmp/x.go:12",
+		"  obsidian://open?vault=notes  ": "obsidian://open?vault=notes",
+	}
+	for in, want := range cases {
+		got, err := Validate(in)
+		if err != nil {
+			t.Fatalf("Validate(%q) unexpected error: %v", in, err)
+		}
+		if got != want {
+			t.Fatalf("Validate(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestValidateRejectsDeniedHostlessOrFileURLs(t *testing.T) {
 	cases := []string{
 		"",
 		"javascript:alert(1)",
-		"mailto:person@example.com",
+		"data:text/html,hi",
+		"ms-msdt:/id PCWDiagnostic",
+		"file:///etc/passwd",
+		`C:\Windows\System32\calc.exe`,
 		"https:///missing-host",
 		"/relative/path",
 	}

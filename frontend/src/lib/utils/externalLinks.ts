@@ -7,6 +7,7 @@ import type { BackendKey } from '../transport/backendKey';
 import { errString } from './errors';
 import { isModClick } from './modClick';
 import { PATH_LINK_HREF_PREFIX } from './pathLinkExtension';
+import { isOpenableScheme, urlScheme } from '../markdown';
 
 let delegateInstallCount = 0;
 
@@ -32,6 +33,11 @@ export function installPreviewLinkActions(actions: PreviewLinkActions | null): v
   previewActions = actions;
 }
 
+/**
+ * An absolute http(s) URL with a host, normalized, or null. The web-only
+ * subset: PR pages, dev servers, approval flows, anything that must be a
+ * page. For "what a click may hand to the OS" see `openableExternalURL`.
+ */
 export function safeExternalURL(raw: string | null | undefined): string | null {
   if (!raw) return null;
   const value = raw.trim();
@@ -43,6 +49,27 @@ export function safeExternalURL(raw: string | null | undefined): string | null {
     const url = new URL(value);
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
     return url.host ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A URL a link click may open, normalized, or null. Every scheme the
+ * reader's OS registers a handler for (`mailto:`, `tel:`, `vscode://`,
+ * `obsidian://`, …) is theirs to open; the deny-list in
+ * `markdown/render/elements/urlSchemes.ts` and `file:` are not, and the
+ * backend opener (`internal/externalurl`) refuses the same set. http(s)
+ * additionally needs a host.
+ */
+export function openableExternalURL(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const value = raw.trim();
+  const scheme = urlScheme(value);
+  if (scheme === null || !isOpenableScheme(scheme)) return null;
+  if (scheme === 'http' || scheme === 'https') return safeExternalURL(value);
+  try {
+    return new URL(value).href;
   } catch {
     return null;
   }
@@ -76,7 +103,7 @@ export function devServerLabel(url: string): string {
 }
 
 export async function handleExternalURL(raw: string): Promise<boolean> {
-  const safeURL = safeExternalURL(raw);
+  const safeURL = openableExternalURL(raw);
   if (!safeURL) return false;
   if (!canUseHostOpenExternalURL()) {
     window.open(safeURL, '_blank', 'noopener,noreferrer');
@@ -118,7 +145,7 @@ export function installExternalLinkDelegate(): () => void {
  * not an outbound link. Shared by the click delegate and the right-click
  * menu host so both agree on what counts as external: path links
  * (`agent-overflow:open?path=…`) are an editor affordance, not a URL, and
- * anything that is not http(s) with a host is left to the browser.
+ * anything `openableExternalURL` refuses is left to the browser.
  */
 export function externalURLForEventTarget(target: EventTarget | null): string | null {
   if (!(target instanceof Element)) return null;
@@ -126,7 +153,7 @@ export function externalURLForEventTarget(target: EventTarget | null): string | 
   if (!link) return null;
   const rawHref = link.getAttribute('href');
   if (rawHref && rawHref.startsWith(PATH_LINK_HREF_PREFIX)) return null;
-  return safeExternalURL(rawHref);
+  return openableExternalURL(rawHref);
 }
 
 /**
@@ -210,7 +237,9 @@ function handleExternalLinkClick(event: MouseEvent): void {
   // Middle-click is deliberately not in this branch: it means "somewhere
   // other than here" in every browser, and the system browser is that
   // somewhere.
-  if (event.button === 0 && isModClick(event)) {
+  // A companion page is a browser page, so only a web URL goes there; a
+  // handler scheme (mailto:, vscode://) falls through to the OS opener.
+  if (event.button === 0 && isModClick(event) && safeExternalURL(safeURL) !== null) {
     const threadId = threadIdForTarget(event.target);
     if (threadId && threadActsHere(threadId)) {
       void openInCompanionBrowser(threadId, safeURL);

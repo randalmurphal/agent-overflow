@@ -45,3 +45,4 @@ export type {
   StreamdownLiteralHost,
   StreamdownLiteralHostHandle,
 } from './render/literalHost';
+export { DENIED_LINK_SCHEMES, isOpenableScheme, urlScheme } from './render/elements/urlSchemes';
