@@ -328,6 +328,12 @@ func (h *Harness) seedThread(projectID string, spec HarnessSeedThread) (string, 
 	if err := h.seedHistory(thread.ID, spec.Turns); err != nil {
 		return thread.ID, err
 	}
+	if spec.SessionRef != "" || len(spec.Turns) > 0 {
+		// CreateThread announced an item-less row (IsDraft=true). The
+		// history and session cursor above went in behind the store, so a
+		// page that is already open would keep the draft row until reload.
+		h.config.Host.BroadcastThreadRow(thread.ID)
+	}
 	if spec.Archived {
 		if err := h.config.Host.ArchiveThread(thread.ID); err != nil {
 			return thread.ID, fmt.Errorf("archive: %w", err)
