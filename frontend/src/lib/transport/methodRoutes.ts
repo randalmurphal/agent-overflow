@@ -86,6 +86,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2309612888: 'selected', // DiscardUnpreparedThreadTransfer
 	4113468152: 'home', // DiscoverComputers
 	115027584: 'home', // DownloadUpdate
+	1594348919: 'selected', // FetchForgeAttachment
 	1601396603: 'home', // FinishPasskeyRegistration
 	1569276637: 'home', // FinishPasskeyStepUp
 	516065248: 'home', // ForgetAccessDevice
@@ -323,6 +324,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2945903583: 'home', // RevokeAccessDevice
 	2284519219: 'home', // RevokeAccessSession
 	3025273299: 'thread', // SaveDraft
+	2960563266: 'selected', // SaveForgeAttachment
 	1537914193: 'selected', // SavePRCIJobLog
 	3576148797: 'thread', // SavePayloadToFile
 	1414650511: 'thread', // SearchThreadItems

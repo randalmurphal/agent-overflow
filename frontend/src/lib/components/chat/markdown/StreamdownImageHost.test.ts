@@ -3,6 +3,7 @@ import { render, waitFor } from '@testing-library/svelte';
 import StreamdownImageHost from './StreamdownImageHost.svelte';
 import { setBindingMock } from '../../../../test/mocks/bindings-app';
 import { buildLocalImageHref } from '../../../utils/pathLinkExtension';
+import { buildForgeAttachmentHref } from '../../../utils/forgeAttachments';
 
 function imageToken(href: string, text = 'diagram') {
   return { type: 'image' as const, raw: `![${text}](${href})`, href, title: null, text, tokens: [] };
@@ -77,6 +78,26 @@ describe('<StreamdownImageHost>', () => {
     });
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('[data-streamdown-image-error]')?.getAttribute('title')).toContain('decode');
+  });
+
+  it('hands a forge attachment to its own host rather than treating it as a scheme it cannot paint', async () => {
+    // The forge host resolves through the RPC + ticket path; with no mock
+    // installed it stays in its loading state, which is all this dispatch
+    // assertion needs. What it must NOT do is fall into the "this surface
+    // does not display agent-overflow: images" branch.
+    const href = buildForgeAttachmentHref({
+      href: '/uploads/0123456789abcdef0123456789abcdef/shot.png',
+      pr: { forge: 'gitlab', namespace: 'group', repo: 'widget', number: 3 },
+      backend: 'gpu',
+      webBase: '',
+    });
+    const { container } = render(StreamdownImageHost, {
+      props: { token: imageToken(href, 'shot'), src: href },
+    });
+    await waitFor(() => {
+      expect(container.querySelector('[data-forge-attachment-loading]')).not.toBeNull();
+    });
+    expect(container.querySelector('[data-streamdown-image-error]')).toBeNull();
   });
 
   it('names a scheme it will not paint rather than dropping the image', async () => {

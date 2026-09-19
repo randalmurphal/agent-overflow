@@ -1,6 +1,7 @@
 import { threadMachine } from './attachedBackends.svelte';
 import { companionSubjectKey } from './companionSubject';
 import { withBackendTarget } from '../transport/backends';
+import type { BackendKey } from '../transport/backendKey';
 import { composeWorkspaceKey } from '../utils/workspaceKey';
 import { threadHasScope } from '../transport/entityScopes';
 import { SvelteMap, SvelteSet } from 'svelte/reactivity';
@@ -128,6 +129,8 @@ export interface ReviewPaneState {
    *  Conversation/draft identity, ownership epoch and checkout. */
   readonly identity: string;
   readonly scope: ReviewScope;
+  /** The computer this review's PR and workspace reads are routed to. */
+  readonly backend: BackendKey;
   readonly baseBranch: string | null;
   readonly prRef: PRRef | null;
   readonly prScopeLabel: string | null;
@@ -1768,6 +1771,7 @@ function createReviewPaneState(
   return {
     identity,
     get scope() { return scope; },
+    backend,
     get baseBranch() { return baseBranch; },
     get prRef() { return prRef; },
     get prScopeLabel() { return prRef ? prScopeLabel(prRef) : null; },

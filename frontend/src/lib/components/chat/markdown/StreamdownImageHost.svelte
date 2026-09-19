@@ -1,10 +1,15 @@
 <script lang="ts">
-  // The one image renderer for chat markdown. Three sources:
+  // The one image renderer for chat markdown. Four sources:
   //
   //   - A local image the parse claimed (`agent-overflow:image?nonce=…`,
   //     utils/pathLinkExtension.ts): fetched through GetLocalImageData
   //     on the thread's machine (route `selected`), served as a blob URL.
   //     Nothing model-authored reaches the webview as a file URI.
+  //   - A forge-hosted attachment the parse claimed
+  //     (`agent-overflow:forge?nonce=…`, utils/forgeAttachments.ts): fetched
+  //     with the user's `gh`/`glab` login on the computer that owns the PR
+  //     and rendered by what the bytes turned out to be, which is why it
+  //     owns its own host rather than being an <img> branch here.
   //   - An http(s) or `data:image/…` src the URL gate approved: rendered
   //     directly.
   //   - Anything else the gate approved for a bare <Streamdown> but this
@@ -17,6 +22,8 @@
   import { base64ToBytes } from '../../../utils/base64';
   import { errString } from '../../../utils/errors';
   import { parseLocalImageHref } from '../../../utils/pathLinkExtension';
+  import { parseForgeAttachmentHref } from '../../../utils/forgeAttachments';
+  import ForgeAttachmentHost from './ForgeAttachmentHost.svelte';
 
   let { token, src: approvedSrc }: { token: Tokens.Image; src: string } = $props();
 
@@ -24,8 +31,12 @@
   let error = $state('');
   let loading = $state(false);
   const sourceHref = $derived(parseLocalImageHref(token.href)?.sourceHref || undefined);
+  const forge = $derived(parseForgeAttachmentHref(token.href) !== null);
 
   $effect(() => {
+    // A forge attachment is the other host's; this effect must not claim it
+    // as an unpaintable scheme.
+    if (parseForgeAttachmentHref(token.href) !== null) return;
     const local = parseLocalImageHref(token.href);
     if (!local) {
       const direct = approvedSrc;
@@ -78,7 +89,9 @@
   }
 </script>
 
-{#if src}
+{#if forge}
+  <ForgeAttachmentHost {token} />
+{:else if src}
   <span data-streamdown-image class="group relative my-4 mx-auto block w-fit max-w-full">
     <img
       class="max-w-full rounded-lg"

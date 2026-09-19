@@ -12,6 +12,7 @@ import {
   safeExternalURL,
 } from './externalLinks';
 import { buildPathLinkHref } from './pathLinkExtension';
+import { buildForgeAttachmentHref } from './forgeAttachments';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { resetRunMode, setRunMode } from '../../test/runMode';
 import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../test/helpers/scopes';
@@ -170,10 +171,23 @@ describe('externalURLForEventTarget', () => {
     expect(externalURLForEventTarget(hit)).toBe('https://example.com/x');
   });
 
-  it('returns null for path links, relative hrefs, and non-links', () => {
+  it('returns null for path links, forge attachments, relative hrefs, and non-links', () => {
     expect(
       externalURLForEventTarget(
         target(`<a data-hit href="${buildPathLinkHref('src/foo.ts', undefined, undefined, '')}">f</a>`),
+      ),
+    ).toBeNull();
+    // A forge attachment is a save-or-download action owned by
+    // `forgeAttachmentActions.ts`; offering it in the open-externally menu
+    // would hand the OS an unregistered custom scheme.
+    expect(
+      externalURLForEventTarget(
+        target(`<a data-hit href="${buildForgeAttachmentHref({
+          href: '/uploads/0123456789abcdef0123456789abcdef/x.pdf',
+          pr: { forge: 'gitlab', namespace: 'group', repo: 'widget', number: 3 },
+          backend: 'gpu',
+          webBase: '',
+        })}">a</a>`),
       ),
     ).toBeNull();
     expect(externalURLForEventTarget(target('<a data-hit href="/docs">d</a>'))).toBeNull();

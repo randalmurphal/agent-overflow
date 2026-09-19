@@ -863,6 +863,51 @@ var Routes = []Route{
 			"route neither sees nor mints.",
 	},
 	{
+		Pattern:    "GET /attachments/forge/{contentID}",
+		Listener:   "app transport",
+		Credential: CredTransferTicket,
+		Posture:    PostureOpaqueMedia,
+		Why: "One forge-hosted PR/MR attachment's bytes, streamed. The " +
+			"media a review references lives behind the author's gh / " +
+			"glab login — a GitLab /uploads/ image, a GitHub " +
+			"user-attachments video — so a phone, a browser on another " +
+			"machine, and any private instance behind a VPN all showed " +
+			"it as broken. The backend that owns the pull request fetches " +
+			"it with the user's own CLI session and serves it here, which " +
+			"is the same answer the review pane already gives for a diff " +
+			"and a CI log. Admission is the same single-use, " +
+			"subject-bound ticket its sibling download route uses, minted " +
+			"by a git:operate call that validated the PR reference and " +
+			"the reference's own shape before any subprocess ran; the " +
+			"subject is an opaque cache id, the path is compared against " +
+			"it rather than read from, and an id the bounded cache " +
+			"expired answers the same 404 a spent ticket does. What " +
+			"leaves is narrowed by KIND, decided from the payload's " +
+			"signature rather than from its extension or the forge's own " +
+			"header: an image, video or audio body goes out under the " +
+			"type its bytes proved, and EVERYTHING else goes out as " +
+			"application/octet-stream with an attachment disposition, so " +
+			"a PDF or an HTML document a comment linked can never render " +
+			"at the SPA origin. nosniff and Cache-Control: no-store as " +
+			"on every ticketed transfer. Not Origin-guarded and not rate " +
+			"limited, for the reasons argued on the row above: no ambient " +
+			"credential is in play, and the admission is already a " +
+			"bounded-issuance token spent by its first presentation.",
+	},
+	{
+		Pattern:    "OPTIONS /attachments/forge/{contentID}",
+		Listener:   "app transport",
+		Credential: CredNone,
+		Posture:    PostureNone,
+		Why: "The forge-attachment route's preflight, for the reason its " +
+			"two siblings have one: that route is registered " +
+			"method-qualified, and the mux answers an unmatched method " +
+			"with 405, which a browser reads as a refused preflight. No " +
+			"credential to check, no work done, 204 with the allow " +
+			"headers for the one admitted origin and the listener's " +
+			"ordinary 404 for anybody else.",
+	},
+	{
 		Pattern:    "OPTIONS /attachments/upload",
 		Listener:   "app transport",
 		Credential: CredNone,

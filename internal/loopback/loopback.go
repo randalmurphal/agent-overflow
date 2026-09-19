@@ -74,8 +74,8 @@ import (
 //
 // Callers: internal/transport's loopbackHostGuard, which wraps every
 // route on that mux except the SPA assets: /bootstrap.json, /ws,
-// /pageurl, /healthz, /rpc, the five /auth/* routes, both /attachments/
-// routes, both /bundle/ routes, /browser-cdp and the three
+// /pageurl, /healthz, /rpc, the five /auth/* routes, the three
+// /attachments/ routes, both /bundle/ routes, /browser-cdp and the three
 // attached-backend subtrees, each cross-origin route's OPTIONS preflight
 // included; and internal/clientmode's loopbackOnly, which wraps the
 // --connect stub's routes. Both rely on the name refusal specifically —

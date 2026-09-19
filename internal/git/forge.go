@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"agent-overflow/internal/forgeattach"
 )
 
 // Forge wraps the host-specific operations against a code-hosting CLI
@@ -51,6 +53,11 @@ type Forge interface {
 	ListPRCIJobs(cwd, project string, number int) (CIPipeline, error)
 	// GetCIJobLog fetches the raw log/trace for one CI job.
 	GetCIJobLog(cwd, project, jobID string) (string, error)
+	// FetchAttachment downloads one forge-hosted attachment referenced by
+	// a PR/MR body or review comment, through the user's own CLI login.
+	// A body larger than maxBytes is an error, not a truncation. See
+	// forge_attachment.go.
+	FetchAttachment(cwd string, target forgeattach.Target, maxBytes int64) ([]byte, error)
 }
 
 // MergedPRHead is one merged PR/MR's head coordinates as returned by

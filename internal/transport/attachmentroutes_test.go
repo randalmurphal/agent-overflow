@@ -31,6 +31,10 @@ type stubTransfer struct {
 	openErr error
 	// storeErr, when set, is what StoreAttachment answers after draining.
 	storeErr error
+	// forgeKind and forgeFilename are what OpenForgeAttachment reports;
+	// the kind is what decides the response headers.
+	forgeKind     string
+	forgeFilename string
 }
 
 type storedUpload struct {
@@ -56,6 +60,37 @@ func (s *stubTransfer) OpenAttachment(threadID, attachmentID string) (Attachment
 	}
 	return AttachmentContent{
 		MimeType: mime,
+		ModTime:  modTime,
+		Content:  nopSeekCloser{bytes.NewReader(s.content)},
+	}, nil
+}
+
+// OpenForgeAttachment answers the forge-media half of the seam. The
+// route never learns where these bytes came from, only what kind they
+// turned out to be.
+func (s *stubTransfer) OpenForgeAttachment(contentID string) (ForgeAttachmentContent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opened = append(s.opened, "forge/"+contentID)
+	if s.openErr != nil {
+		return ForgeAttachmentContent{}, s.openErr
+	}
+	kind := s.forgeKind
+	if kind == "" {
+		kind = "image"
+	}
+	mime := s.mime
+	if mime == "" {
+		mime = "image/png"
+	}
+	modTime := s.modTime
+	if modTime.IsZero() {
+		modTime = time.Unix(1_700_000_000, 0)
+	}
+	return ForgeAttachmentContent{
+		MimeType: mime,
+		Kind:     kind,
+		Filename: s.forgeFilename,
 		ModTime:  modTime,
 		Content:  nopSeekCloser{bytes.NewReader(s.content)},
 	}, nil

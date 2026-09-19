@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { serializeRangeToMarkdown } from './markdownSerialize';
 import { PATH_LINK_HREF_PREFIX } from './pathLinkExtension';
+import { buildForgeAttachmentHref } from './forgeAttachments';
 
 // Range over the entire content of an element. Used by most of the
 // per-shape tests below — they construct a DOM that mirrors what
@@ -112,6 +113,27 @@ describe('serializeRangeToMarkdown — inline', () => {
     );
     expect(serializeRangeToMarkdown(selectAll(host))).toBe(
       '![diagram](file:///workspace/diagram.png)',
+    );
+  });
+
+  // A forge attachment's anchor href names THIS page's PR, computer and
+  // nonce. Pasted anywhere else it means nothing, while the markdown the
+  // reader selected said `/uploads/<hex>/report.pdf`.
+  it('restores the forge href a link and an image were written with', () => {
+    const forgeHref = buildForgeAttachmentHref({
+      href: '/uploads/0123456789abcdef0123456789abcdef/report.pdf',
+      pr: { forge: 'gitlab', namespace: 'group', repo: 'widget', number: 3 },
+      backend: 'gpu',
+      webBase: 'https://gitlab.example.test/group/widget/-/merge_requests/3',
+    });
+    const host = asMarkdownBody(
+      `<p><a href="${forgeHref}">the report</a> `
+      + '<img alt="a shot" src="blob:page-local" '
+      + 'data-markdown-image-src="/uploads/0123456789abcdef0123456789abcdef/shot.png"></p>',
+    );
+    expect(serializeRangeToMarkdown(selectAll(host))).toBe(
+      '[the report](/uploads/0123456789abcdef0123456789abcdef/report.pdf) '
+      + '![a shot](/uploads/0123456789abcdef0123456789abcdef/shot.png)',
     );
   });
 

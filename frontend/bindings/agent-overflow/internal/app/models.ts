@@ -1859,6 +1859,58 @@ export class EditorInfo {
 }
 
 /**
+ * ForgeAttachment is what FetchForgeAttachment answers: the bytes of one
+ * forge-hosted attachment (an image, video or file a PR/MR body or comment
+ * references) are fetched through the user's forge CLI on the selected
+ * computer and served once through the ticketed URL. Kind is what the
+ * bytes turned out to be by signature, never what the reference claimed.
+ */
+export class ForgeAttachment {
+    /**
+     * URL is the relative, single-use, ticketed URL the client fetches the
+     * bytes from (internal/transport/attachmentroutes.go).
+     */
+    "url": string;
+    "mimeType": string;
+
+    /**
+     * Kind is "image", "video", "audio" or "file".
+     */
+    "kind": string;
+    "sizeBytes": number;
+    "filename": string;
+
+    /** Creates a new ForgeAttachment instance. */
+    constructor($$source: Partial<ForgeAttachment> = {}) {
+        if (!("url" in $$source)) {
+            this["url"] = "";
+        }
+        if (!("mimeType" in $$source)) {
+            this["mimeType"] = "";
+        }
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("sizeBytes" in $$source)) {
+            this["sizeBytes"] = 0;
+        }
+        if (!("filename" in $$source)) {
+            this["filename"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ForgeAttachment instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ForgeAttachment {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ForgeAttachment($$parsedSource as Partial<ForgeAttachment>);
+    }
+}
+
+/**
  * GeneratedCommitMessage is the structured output the frontend fills
  * the commit dialog with. Subject is capped at 72 chars (imperative,
  * no trailing period); body may be empty or multi-paragraph Markdown.

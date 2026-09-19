@@ -3348,6 +3348,22 @@ frame.**
   first), and a failed upload re-mints and re-PUTs. Snapshot fetches
   over HTTP remain open (they ride RPC today).
 
+  Forge-hosted review media rides the same prefix:
+  `GET /attachments/forge/{contentID}`
+  (`internal/transport/forgeattachmentroutes.go`), a third ticket book
+  with the same TTL and cap. `FetchForgeAttachment` (git:operate, route
+  `selected`) parses the href, downloads it on the computer that owns
+  the PR through `gh api` / `glab api` under the user's own CLI login,
+  classifies the bytes by signature, and holds them in a bounded LRU
+  (`internal/forgeattach`, 128 MiB, 10 min, 100 MiB per body). The
+  ticket subject is the opaque cache id; an expired id answers the same
+  404 a spent ticket does. Response type is narrowed by kind: image,
+  video and audio go out under the signature-derived type, every other
+  payload as `application/octet-stream` with an attachment disposition,
+  so nothing a comment linked can render at the SPA origin.
+  `SaveForgeAttachment` writes the same bytes to the host's Downloads
+  directory instead.
+
 **Initial wire budgets** — starting targets, revised by measurement,
 never by feel; a harness scenario counts actual bytes on the wire and
 fails on regression:

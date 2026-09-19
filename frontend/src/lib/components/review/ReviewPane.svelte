@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, untrack } from 'svelte';
+  import { onDestroy, onMount, setContext, untrack } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
   import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
@@ -36,6 +36,7 @@
   } from '../../utils/reviewComments';
   import { fileExtensionLabel } from '../../utils/reviewTree';
   import { threadHasScope } from '../../transport/entityScopes';
+  import { FORGE_ATTACHMENT_SOURCE_CONTEXT } from '../chat/markdown/forgeAttachmentContext';
   import Icon from '../primitives/Icon.svelte';
   import RenderBoundary from '../shared/RenderBoundary.svelte';
 
@@ -67,6 +68,16 @@
   const subject = reviewSubjectForPane(ctx);
   // svelte-ignore state_referenced_locally
   const review = subject ? reviewStateForPane(ctx.paneId, subject) : null;
+  // Forge attachments in every ChatMarkdown under this pane — the PR body,
+  // the conversation, each thread's comments, the comments list. A reader
+  // rather than a value: the PR reference and its web URL arrive after
+  // mount, and context is set once. Non-PR scopes answer null, so a
+  // workspace diff's markdown behaves exactly as it always has.
+  setContext(FORGE_ATTACHMENT_SOURCE_CONTEXT, () =>
+    review && review.scope === 'pr' && review.prRef
+      ? { pr: review.prRef, backend: review.backend, webBase: review.prDetail?.url ?? '' }
+      : null,
+  );
   // The diff body identifies itself by `review.identity` — the subject's
   // conversation, owner epoch and checkout. It is a plain string on the
   // state, available in exactly the branches that render a body, so scroll

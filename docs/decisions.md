@@ -261,6 +261,14 @@ and anti-changes that live only here:
   card ("nothing worse than GitLab"). Both header sections are
   user-resizable (bottom drag handle, remembered height). Mechanism:
   `frontend/src/lib/components/review/AGENTS.md`.
+- Forge attachments referenced by PR/MR bodies and comments (images,
+  video, audio and files) render or download in the review pane through
+  the user's `gh`/`glab` login, the same access the browser has, on the
+  computer that owns the pull request, including media a forge wrote
+  inside an HTML wrapper (`<p align="center">`, `<a>`, a table cell, a
+  `<details>` body), which PR templates use routinely. Do not
+  reintroduce direct third-party `<img>` fetches for private forge
+  assets, and do not hide a reference the browser could open.
 
 ## Miscellany
 

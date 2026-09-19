@@ -332,7 +332,11 @@
 	{#if streamdown.renderHtml}
 		{@const content =
 			typeof streamdown.renderHtml === 'function' ? streamdown.renderHtml(token) : token.raw}
-		{@html content}
+		<!-- The host may own the injection (to hydrate claimed media inside
+		     the fragment); the fallback is the plain injection. -->
+		<Slot props={{ children, token, content }} render={streamdown.snippets.html}>
+			{@html content}
+		</Slot>
 	{/if}
 {:else if token.type === 'mdx'}
 	{@const Component = streamdown.mdxComponents?.[token.tagName]}

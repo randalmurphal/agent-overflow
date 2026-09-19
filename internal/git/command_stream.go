@@ -6,6 +6,12 @@ import (
 	"io"
 )
 
+// errOutputLimitExceeded is the cap refusal, a sentinel because a
+// caller has to tell it apart from a destination that failed: the forge
+// attachment download reports it as "this attachment is too large"
+// rather than as a broken transfer.
+var errOutputLimitExceeded = errors.New("output exceeded the transfer size limit")
+
 // os/exec owns one copying goroutine and joins it before runSpec reads err.
 // A failed destination/cap cancels the child immediately instead of draining a
 // multi-gigabyte pack that the transfer can no longer use. Stderr retains the
@@ -22,7 +28,7 @@ func (w *commandStreamWriter) Write(data []byte) (int, error) {
 		return 0, w.err
 	}
 	if int64(len(data)) > w.remaining {
-		w.err = errors.New("output exceeded the transfer size limit")
+		w.err = errOutputLimitExceeded
 		w.cancel()
 		return 0, w.err
 	}

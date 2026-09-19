@@ -7,6 +7,7 @@ import type { BackendKey } from '../transport/backendKey';
 import { errString } from './errors';
 import { isModClick } from './modClick';
 import { PATH_LINK_HREF_PREFIX } from './pathLinkExtension';
+import { FORGE_ATTACHMENT_HREF_PREFIX } from './forgeAttachments';
 import { isOpenableScheme, urlScheme } from '../markdown';
 
 let delegateInstallCount = 0;
@@ -144,15 +145,18 @@ export function installExternalLinkDelegate(): () => void {
  * Resolve the external URL an event landed on, or null when the target is
  * not an outbound link. Shared by the click delegate and the right-click
  * menu host so both agree on what counts as external: path links
- * (`agent-overflow:open?path=…`) are an editor affordance, not a URL, and
- * anything `openableExternalURL` refuses is left to the browser.
+ * (`agent-overflow:open?path=…`) are an editor affordance and forge
+ * attachments (`agent-overflow:forge?…`) are a save-or-download action,
+ * neither of them a URL, and anything `openableExternalURL` refuses is left
+ * to the browser.
  */
 export function externalURLForEventTarget(target: EventTarget | null): string | null {
   if (!(target instanceof Element)) return null;
   const link = target.closest<HTMLAnchorElement>('a[href]');
   if (!link) return null;
   const rawHref = link.getAttribute('href');
-  if (rawHref && rawHref.startsWith(PATH_LINK_HREF_PREFIX)) return null;
+  if (rawHref && (rawHref.startsWith(PATH_LINK_HREF_PREFIX)
+    || rawHref.startsWith(FORGE_ATTACHMENT_HREF_PREFIX))) return null;
   return openableExternalURL(rawHref);
 }
 

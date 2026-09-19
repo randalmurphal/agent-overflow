@@ -46,11 +46,25 @@ backend opener, which re-validates against the same list
 copies identical) and refuses `file:` separately because the Windows
 shell opener executes a file URL's target. The webview itself never
 navigates: the delegate calls `preventDefault` on every openable anchor.
-Images accept `http(s)`, `data:image/`, and the nonce-prefixed local
-image scheme; a path-shaped src on a surface with a workspace is
-rewritten to that scheme during parsing and the bytes come from the
-thread's machine over the transport (`GetLocalImageData`, route
-`selected`, `files:read`), so a paired browser sees them too.
+Images accept `http(s)`, `data:image/`, the nonce-prefixed local image
+scheme, and the nonce-prefixed forge-attachment scheme; a path-shaped
+src on a surface with a workspace is rewritten to the local image scheme
+during parsing and the bytes come from the thread's machine over the
+transport (`GetLocalImageData`, route `selected`, `files:read`), so a
+paired browser sees them too. A forge attachment referenced by PR/MR
+content (a GitLab `/uploads/<hex>/` path, a GitHub user-attachment URL,
+an `<img>` or `<video>` src, including one inside an HTML wrapper the
+sanitizer handles, where the element is emitted without its `src` and
+the app hydrates the marker) is fetched by the backend with the user's
+`gh`/`glab` login on the computer that owns the pull request and served
+once through a single-use ticket, so the page never presents a forge
+credential and a private asset renders on a paired browser and the
+phone shell. The frontend renders by the kind the backend sniffed from
+the bytes, not by what the reference claimed: `file` kinds are never
+rendered, only saved to the owning computer, downloaded by the browser
+or opened on the forge, and `image/svg+xml` uses a `data:` URL rather
+than a blob URL so a navigated-to SVG cannot run script on the app
+origin.
 
 The same-origin bootstrap credential is closed: as of 2026-08-31
 (24486360) it is no longer readable by script.

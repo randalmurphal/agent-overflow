@@ -43,6 +43,7 @@ export {
     EditDiffTurnLabel,
     EditDiffVerifyFile,
     EditorInfo,
+    ForgeAttachment,
     GeneratedCommitMessage,
     GitStatusSubscriptionResult,
     GitWorkspaceState,

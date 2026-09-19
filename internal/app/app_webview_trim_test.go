@@ -1,6 +1,7 @@
 package app
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -13,17 +14,29 @@ import (
 // visible hitch mid-stream, so "skipped-active-turn" not emitting is as
 // load-bearing as "requested" emitting.
 func TestRequestWebviewMemoryTrim(t *testing.T) {
-	newApp := func(t *testing.T) (*App, *[]string) {
-		app := newTestAppWithStore(t)
-		var emitted []string
-		app.testEmitHook = func(name string, data any) {
-			emitted = append(emitted, name)
-		}
-		return app, &emitted
+	// The hook is called from whichever goroutine emitted, and a turn
+	// completing queues a notification that emits from the notification
+	// serial queue while the test emits from its own goroutine. The
+	// mutex is what makes the recorder safe to share between them.
+	type recorder struct {
+		mu    sync.Mutex
+		names []string
 	}
-	trimEmits := func(emitted []string) int {
+	newApp := func(t *testing.T) (*App, *recorder) {
+		app := newTestAppWithStore(t)
+		seen := &recorder{}
+		app.testEmitHook = func(name string, data any) {
+			seen.mu.Lock()
+			defer seen.mu.Unlock()
+			seen.names = append(seen.names, name)
+		}
+		return app, seen
+	}
+	trimEmits := func(seen *recorder) int {
+		seen.mu.Lock()
+		defer seen.mu.Unlock()
 		n := 0
-		for _, name := range emitted {
+		for _, name := range seen.names {
 			if name == string(eventchan.WebviewTrim) {
 				n++
 			}
@@ -43,7 +56,7 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 		if outcome != "requested" {
 			t.Fatalf("outcome = %q, want %q", outcome, "requested")
 		}
-		if got := trimEmits(*emitted); got != 1 {
+		if got := trimEmits(emitted); got != 1 {
 			t.Fatalf("webview:trim emissions = %d, want 1", got)
 		}
 
@@ -54,7 +67,7 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 		if outcome != "skipped-recent" {
 			t.Fatalf("second outcome = %q, want %q", outcome, "skipped-recent")
 		}
-		if got := trimEmits(*emitted); got != 1 {
+		if got := trimEmits(emitted); got != 1 {
 			t.Fatalf("webview:trim emissions after rate-limited ask = %d, want 1", got)
 		}
 	})
@@ -82,7 +95,7 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 		if outcome != "skipped-no-activity" {
 			t.Fatalf("quiet outcome = %q, want %q", outcome, "skipped-no-activity")
 		}
-		if got := trimEmits(*emitted); got != 1 {
+		if got := trimEmits(emitted); got != 1 {
 			t.Fatalf("webview:trim emissions after quiet ask = %d, want 1", got)
 		}
 
@@ -91,7 +104,7 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 		if outcome, _ := app.RequestWebviewMemoryTrim(false); outcome != "requested" {
 			t.Fatalf("post-turn outcome = %q, want %q", outcome, "requested")
 		}
-		if got := trimEmits(*emitted); got != 2 {
+		if got := trimEmits(emitted); got != 2 {
 			t.Fatalf("webview:trim emissions after a turn = %d, want 2", got)
 		}
 
@@ -100,7 +113,7 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 		if outcome, _ := app.RequestWebviewMemoryTrim(true); outcome != "requested" {
 			t.Fatalf("post-input outcome = %q, want %q", outcome, "requested")
 		}
-		if got := trimEmits(*emitted); got != 3 {
+		if got := trimEmits(emitted); got != 3 {
 			t.Fatalf("webview:trim emissions after input = %d, want 3", got)
 		}
 	})
@@ -121,7 +134,7 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 		if outcome != "skipped-active-turn" {
 			t.Fatalf("outcome = %q, want %q", outcome, "skipped-active-turn")
 		}
-		if got := trimEmits(*emitted); got != 0 {
+		if got := trimEmits(emitted); got != 0 {
 			t.Fatalf("webview:trim emissions during an active turn = %d, want 0", got)
 		}
 
@@ -135,7 +148,7 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 		if outcome != "requested" {
 			t.Fatalf("post-turn outcome = %q, want %q", outcome, "requested")
 		}
-		if got := trimEmits(*emitted); got != 1 {
+		if got := trimEmits(emitted); got != 1 {
 			t.Fatalf("webview:trim emissions after the turn ended = %d, want 1", got)
 		}
 	})
@@ -169,7 +182,7 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 		if outcome != "skipped-active-turn" {
 			t.Fatalf("mid-round outcome = %q, want %q", outcome, "skipped-active-turn")
 		}
-		if got := trimEmits(*emitted); got != 0 {
+		if got := trimEmits(emitted); got != 0 {
 			t.Fatalf("webview:trim emissions mid-round = %d, want 0", got)
 		}
 
@@ -203,7 +216,7 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 		if outcome != "skipped-active-turn" {
 			t.Fatalf("recent-wire outcome = %q, want %q", outcome, "skipped-active-turn")
 		}
-		if got := trimEmits(*emitted); got != 0 {
+		if got := trimEmits(emitted); got != 0 {
 			t.Fatalf("webview:trim emissions with recent wire = %d, want 0", got)
 		}
 

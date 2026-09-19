@@ -34,45 +34,15 @@ import type { Token, Tokens, TokensList } from '../markdown';
 import type { PathRef } from '../types/models';
 import { openInEditorLabel } from './editorLinkLabel';
 import { isHTMLFile } from './htmlFile';
+import { MARKDOWN_HREF_NONCE } from './markdownHrefNonce';
 
-// Per-page-load nonce that gates our `agent-overflow:open?…` scheme.
-// Streamdown's `transformUrl` honors a custom-scheme prefix only when
-// the URL `startsWith(prefix.href)` (see
-// `lib/markdown/render/elements/url.ts`). By baking the nonce into the
-// prefix we hand to Streamdown,
-// raw agent prose like `[click](agent-overflow:open?path=/etc/passwd)`
-// is rejected at the URL filter — the agent's input is markdown text
-// and can never observe the rendered nonce, so it cannot forge a
-// passing prefix. Our extension constructs hrefs starting with the
-// same nonce-prefixed form, so legitimate links round-trip.
-//
-// Crypto: 16 bytes (128 bits) is more than enough — the nonce only
-// needs to be unpredictable to a single page-load's worth of agent
-// turns. `crypto.getRandomValues` is available in every modern
-// browser + happy-dom + Node 18+.
-const PATH_LINK_NONCE = generatePathLinkNonce();
-
-function generatePathLinkNonce(): string {
-  const bytes = new Uint8Array(16);
-  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-    crypto.getRandomValues(bytes);
-  } else {
-    // SSR / test environments without webcrypto — fail closed by
-    // generating a session-stable value (Math.random is good enough
-    // here because there's no live browser to attack).
-    for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
-  }
-  let hex = '';
-  for (let i = 0; i < bytes.length; i += 1) hex += bytes[i].toString(16).padStart(2, '0');
-  return hex;
-}
-
-// Public href prefix — exported so the click delegate, copy
+// Public href prefixes — exported so the click delegate, copy
 // serializer, and ChatMarkdown's `allowedLinkPrefixes` can detect our
-// links by href, not by class. Includes the nonce so a raw markdown
-// link written by an agent cannot satisfy this prefix.
-export const PATH_LINK_HREF_PREFIX = `agent-overflow:open?nonce=${PATH_LINK_NONCE}&`;
-export const LOCAL_IMAGE_HREF_PREFIX = `agent-overflow:image?nonce=${PATH_LINK_NONCE}&`;
+// links by href, not by class. Both carry the shared per-page-load
+// nonce (`markdownHrefNonce.ts`) so a raw markdown link written by an
+// agent or by third-party PR text cannot satisfy either prefix.
+export const PATH_LINK_HREF_PREFIX = `agent-overflow:open?nonce=${MARKDOWN_HREF_NONCE}&`;
+export const LOCAL_IMAGE_HREF_PREFIX = `agent-overflow:image?nonce=${MARKDOWN_HREF_NONCE}&`;
 
 // Boundary chars that may legitimately precede a path token. Mirrors
 // the lookbehind set used by `pathLinkify.ts` (the legacy DOM walker)

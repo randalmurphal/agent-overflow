@@ -327,7 +327,15 @@ export function renderStaticTokenHtml(
 				}
 
 				case 'html':
-					if (streamdown.renderHtml) return false;
+					// Mirror Element.svelte's html branch. An html snippet is a
+					// component island by definition (it hydrates claimed media
+					// inside the injected fragment), and the `renderHtml`
+					// fragment is a string this path will not re-escape, so both
+					// hand the block to the Svelte renderer. Checked
+					// independently: a surface may set either without the other,
+					// and the snippet check must not depend on `renderHtml`
+					// happening to be truthy at the same time.
+					if (streamdown.snippets.html || streamdown.renderHtml) return false;
 					break;
 
 				case 'escape':
