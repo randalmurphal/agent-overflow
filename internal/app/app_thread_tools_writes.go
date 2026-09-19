@@ -54,14 +54,6 @@ func (t threadToolsApp) Remind(context.Context, threadtools.Caller, threadtools.
 	return threadtools.RequestAck{}, threadToolsWriteUnavailable("reminders")
 }
 
-func (t threadToolsApp) UpdateThreads(context.Context, threadtools.Caller, threadtools.UpdateCall) (threadtools.UpdateReport, error) {
-	return threadtools.UpdateReport{}, threadToolsWriteUnavailable("organizing threads")
-}
-
-func (t threadToolsApp) UpdateGroup(context.Context, threadtools.Caller, threadtools.GroupCall) (threadtools.GroupReport, error) {
-	return threadtools.GroupReport{}, threadToolsWriteUnavailable("organizing groups")
-}
-
 func (t threadToolsApp) ExportAnswer(context.Context, threadtools.Caller, string) (threadtools.ExportFile, error) {
 	return threadtools.ExportFile{}, threadToolsWriteUnavailable("request status")
 }
