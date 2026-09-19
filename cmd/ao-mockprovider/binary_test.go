@@ -79,6 +79,7 @@ func startMock(t *testing.T, args, extraEnv []string, dir string) *mockProc {
 		if strings.HasPrefix(kv, control.EnvAddr+"=") ||
 			strings.HasPrefix(kv, control.EnvToken+"=") ||
 			strings.HasPrefix(kv, control.EnvTranscriptHome+"=") ||
+			strings.HasPrefix(kv, control.EnvWorkspaceRoot+"=") ||
 			strings.HasPrefix(kv, envScenarioFile+"=") ||
 			strings.HasPrefix(kv, envFixtureRoot+"=") {
 			continue
@@ -512,6 +513,75 @@ func TestClaudeChunkedEmissionReassembles(t *testing.T) {
 		t.Fatalf("second line = %q", got)
 	}
 	p.closeStdinAndExpectExit(0, testTimeout)
+}
+
+// writeFileScenario writes one workspace file, then emits a marker so a test
+// can tell the scenario kept running past the step.
+func writeFileScenario(path string) *scenario.Scenario {
+	return &scenario.Scenario{
+		Version:  scenario.CurrentVersion,
+		Name:     "claude-write-file",
+		Provider: scenario.ProviderClaude,
+		Turns: []scenario.Turn{{Steps: []scenario.Step{
+			{WriteFile: &scenario.WriteFileStep{Path: path, Content: "edited\n"}},
+			{Emit: &scenario.EmitStep{Lines: []string{`{"mock":"after-write"}`}}},
+		}}},
+	}
+}
+
+// TestWriteFileHonoursTheHarnessWorkspaceRoot drives the real binary because
+// the guard reads the spawn environment: a harness booted on a store naming a
+// developer's repository spawns the mock THERE, and the workspace root is what
+// stops a scenario step from editing it.
+func TestWriteFileHonoursTheHarnessWorkspaceRoot(t *testing.T) {
+	t.Run("cwd outside the root is refused", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		env := append(writeScenarioFile(t, writeFileScenario("src/settings.ts"), ""),
+			control.EnvWorkspaceRoot+"="+root)
+		p := startMock(t, claudeSessionArgs, env, outside)
+
+		p.send(userLine)
+		p.expectLineContaining(`{"mock":"after-write"}`, testTimeout)
+		if _, err := os.Stat(filepath.Join(outside, "src", "settings.ts")); !os.IsNotExist(err) {
+			t.Fatalf("mock wrote into a workspace outside the harness root: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(outside, "src")); !os.IsNotExist(err) {
+			t.Fatalf("mock created directories outside the harness root: %v", err)
+		}
+		p.closeStdinAndExpectExit(0, testTimeout)
+		if !strings.Contains(p.stderr.String(), "writeFile step refused") {
+			t.Fatalf("refusal not reported on stderr:\n%s", p.stderr.String())
+		}
+	})
+
+	t.Run("cwd inside the root writes", func(t *testing.T) {
+		root := t.TempDir()
+		// The root reaches the mock as a symlink; the cwd is the real path.
+		// Both are resolved, so the workspace still matches.
+		link := filepath.Join(t.TempDir(), "link")
+		if err := os.Symlink(root, link); err != nil {
+			t.Fatalf("symlink workspace root: %v", err)
+		}
+		inside := filepath.Join(root, "workspaces", "proj")
+		if err := os.MkdirAll(inside, 0o755); err != nil {
+			t.Fatalf("mkdir workspace: %v", err)
+		}
+		env := append(writeScenarioFile(t, writeFileScenario("src/settings.ts"), ""),
+			control.EnvWorkspaceRoot+"="+link)
+		p := startMock(t, claudeSessionArgs, env, inside)
+
+		p.send(userLine)
+		p.expectLineContaining(`{"mock":"after-write"}`, testTimeout)
+		data, err := os.ReadFile(filepath.Join(inside, "src", "settings.ts"))
+		if err != nil {
+			t.Fatalf("read file written inside the harness root: %v", err)
+		}
+		if string(data) != "edited\n" {
+			t.Fatalf("content = %q, want %q", data, "edited\n")
+		}
+		p.closeStdinAndExpectExit(0, testTimeout)
+	})
 }
 
 func TestClaudeBuiltinFallbackWithoutScenario(t *testing.T) {

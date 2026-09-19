@@ -83,6 +83,10 @@ func runClone(e *env, args []string) error {
 	if err != nil {
 		return err
 	}
+	workspaces, err := relocateClonedWorkspaces(e, targetDB, targetRoot, targetDir, *force)
+	if err != nil {
+		return err
+	}
 	attachments, err := copyAttachments(filepath.Join(sourceDir, attachmentsDirName), filepath.Join(targetDir, attachmentsDirName))
 	if err != nil {
 		return err
@@ -91,6 +95,7 @@ func runClone(e *env, args []string) error {
 	return writeCloneReceipt(e, cloneReceipt{
 		sourceDir: sourceDir, targetRoot: targetRoot, targetDir: targetDir,
 		sourceDB: sourceDB, targetDB: targetDB, scrubbed: scrubbed,
+		workspaces:  workspaces,
 		attachments: attachments, schemaVersion: schemaVersion, schemaKnown: schemaKnown,
 	})
 }
@@ -99,6 +104,7 @@ type cloneReceipt struct {
 	sourceDir, targetRoot, targetDir string
 	sourceDB, targetDB               string
 	scrubbed                         []scrubResult
+	workspaces                       workspaceRelocation
 	attachments                      attachmentCopy
 	schemaVersion                    int64
 	schemaKnown                      bool
@@ -112,6 +118,7 @@ func writeCloneReceipt(e *env, receipt cloneReceipt) error {
 			"dataDir":       receipt.targetDir,
 			"database":      receipt.targetDB,
 			"scrub":         receipt.scrubbed,
+			"workspaces":    receipt.workspaces,
 			"attachments":   receipt.attachments,
 			"instance":      instanceinfo.ID(receipt.targetRoot),
 			"up":            fmt.Sprintf("ao-harness up --data-dir %s", receipt.targetRoot),
@@ -129,6 +136,13 @@ func writeCloneReceipt(e *env, receipt cloneReceipt) error {
 	for _, row := range receipt.scrubbed {
 		e.printf("  %-28s %s\n", row.What, row.Detail)
 	}
+	e.printf("  %-28s %d project(s) relocated to %s\n", "workspaces",
+		receipt.workspaces.Projects, receipt.workspaces.WorkspacesDir)
+	e.printf("  %-28s %d linked worktree(s) under %s\n", "worktrees",
+		receipt.workspaces.Worktrees, receipt.workspaces.WorktreesDir)
+	for _, row := range receipt.workspaces.Tables {
+		e.printf("  %-28s %s\n", row.What, row.Detail)
+	}
 	e.printf("  %-28s %d file(s) copied", "attachments", receipt.attachments.Files)
 	if receipt.attachments.Skipped > 0 {
 		e.printf(", %d skipped (not a regular file)", receipt.attachments.Skipped)
@@ -138,6 +152,8 @@ func writeCloneReceipt(e *env, receipt cloneReceipt) error {
 	e.printf("\nboot it:\n  ao-harness up --data-dir %s\n", receipt.targetRoot)
 	e.printf("\nthis copy carries your real session content verbatim. It lives only in\n")
 	e.printf("%s — never commit it, and delete it when the repro is done.\n", receipt.targetRoot)
+	e.printf("every workspace now points at a throwaway git repo under %s,\n", receipt.workspaces.WorkspacesDir)
+	e.printf("so a scenario that writes files cannot reach your real checkouts.\n")
 	return nil
 }
 

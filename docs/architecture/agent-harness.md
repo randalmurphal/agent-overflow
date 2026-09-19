@@ -116,7 +116,13 @@ Boot performs, in order (`prepareHarness`):
    doesn't pay. The mock path is additionally
    pinned at spawn-resolution time (`App.providerBinaryOverride`), so
    even an `UpdateSettings` call after boot cannot repoint a spawn at a
-   real `claude`/`codex` binary.
+   real `claude`/`codex` binary. The data root is also the workspace
+   boundary (`IsolationConfig.WorkspaceRoot`): `CreateProject` and every
+   session start refuse a path outside it, because the mock runs with the
+   thread's workspace as cwd and a scenario `writeFile` step edits that
+   directory. Seeded repos (`<dataRoot>/workspaces`) and app-made
+   worktrees (`<dataDir>/worktrees`) are inside; a real checkout added
+   through the UI, a seed by explicit path, or an unrelocated store is not.
 
 Then the mock-provider control server starts (before `App.Start`, so
 every provider spawn inherits its env), the transport comes up, and
@@ -569,7 +575,10 @@ loopback HTTP; the harness answers with its scenario (most specific
 rule wins: cwd-scoped beats catch-all). Those variables are injected
 into provider spawns only (`App.providerExtraEnv`), never exported
 process-wide, so terminals, git hooks, and other harness children don't
-inherit the control credentials. The mock then long-polls for
+inherit the control credentials. `AO_HARNESS_WORKSPACE_ROOT` (the data
+root) rides along: a mock whose cwd is outside it refuses `writeFile`
+steps with a `fixture_error`, the mock's own check behind the app-side
+workspace boundary. The mock then long-polls for
 commands and posts progress reports (`registered`, `turn_started`,
 `user_input`, `step_started`, `step_completed`, `waiting_signal`,
 `advance_released`, `advance_buffered`, `approval_pending`,
@@ -935,12 +944,24 @@ pass `up`'s own refusals plus three more: no live instance holds it, it
 is not the source or a parent of it, and an existing database needs
 `--force`.
 
+The copy's workspaces are relocated too. Every `projects.path` becomes an
+empty fixture repo at `<dataRoot>/workspaces/<slug>`, and every thread
+worktree becomes a linked worktree of that repo under
+`<dataDir>/worktrees/<slug>/<name>`, the same layout the running app
+uses; `threads.workspace_path`, `threads.worktree_path` and the workflow
+worktree columns are rewritten to match. A cloned thread therefore never
+names a real checkout, which matters because the mock is spawned with the
+thread's workspace as its cwd and scenario `writeFile` steps mutate it.
+
 That the result is SAFE to boot is structural rather than a promise from
 the scrub: credentials live under the provider home, which an isolated
-boot redirects to `<dataRoot>/home`, and provider binary paths are
+boot redirects to `<dataRoot>/home`; provider binary paths are
 re-pointed at the mock on every harness boot regardless of what any
-settings file says. What the clone DOES carry, verbatim, is real
-conversation content.
+settings file says; and the isolated app refuses any project path or
+session working directory outside its data root
+(`IsolationConfig.WorkspaceRoot`), so a store that still named a real
+repository could not spawn there. What the clone DOES carry, verbatim, is
+real conversation content.
 
 **The privacy rule, then, is one sentence: a clone lives in its target
 root and is never committed anywhere.** Not to this repo, not to a

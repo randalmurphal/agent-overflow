@@ -203,6 +203,58 @@ func TestWriteFileCreatesNestedAndAppends(t *testing.T) {
 	}
 }
 
+// TestWriteFileRefusesCwdOutsideTheWorkspaceRoot covers the mock's last line
+// of defense. A harness booted on a store that names a real repository spawns
+// the mock in that repository; the workspace root pins what the mock may
+// mutate, and a cwd outside it fails the step instead of editing the user's
+// tree.
+func TestWriteFileRefusesCwdOutsideTheWorkspaceRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	t.Setenv(control.EnvWorkspaceRoot, root)
+
+	var buf bytes.Buffer
+	rec := newRecordingReporter()
+	sc := &scenario.Scenario{Version: scenario.CurrentVersion, Name: "unit", Provider: scenario.ProviderClaude}
+	e := newEngine(sc, t.TempDir(), outside, newLineWriter(&buf), rec.reporter, scenario.Vars{"SESSION_ID": "s1"})
+
+	e.runStep(e.varsForTurn(1), 1, scenario.Step{WriteFile: &scenario.WriteFileStep{Path: "src/settings.ts", Content: "x"}})
+	if _, err := os.Stat(filepath.Join(outside, "src", "settings.ts")); !os.IsNotExist(err) {
+		t.Fatalf("writeFile mutated a cwd outside the workspace root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "src")); !os.IsNotExist(err) {
+		t.Fatalf("writeFile created directories outside the workspace root: %v", err)
+	}
+	var refusals []string
+	for _, rep := range rec.snapshot() {
+		if rep.Kind == control.ReportFixtureError {
+			refusals = append(refusals, rep.Detail)
+		}
+	}
+	if len(refusals) != 1 || !strings.Contains(refusals[0], "outside the harness workspace root") {
+		t.Fatalf("fixture_error reports = %q, want one refusal naming the workspace root", refusals)
+	}
+
+	// A cwd inside the root still writes, including through a symlink to it.
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(root, link); err != nil {
+		t.Fatalf("symlink workspace root: %v", err)
+	}
+	inside := filepath.Join(link, "ws")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	e = newEngine(sc, t.TempDir(), inside, newLineWriter(&buf), rec.reporter, scenario.Vars{"SESSION_ID": "s1"})
+	e.runStep(e.varsForTurn(1), 1, scenario.Step{WriteFile: &scenario.WriteFileStep{Path: "src/settings.ts", Content: "ok"}})
+	data, err := os.ReadFile(filepath.Join(root, "ws", "src", "settings.ts"))
+	if err != nil {
+		t.Fatalf("read file written inside the workspace root: %v", err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("content = %q, want ok", data)
+	}
+}
+
 func TestWriteFileRejectsEscapingPaths(t *testing.T) {
 	outside := t.TempDir()
 	var buf bytes.Buffer

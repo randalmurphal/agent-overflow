@@ -165,3 +165,26 @@ func runGit(dir string, args ...string) error {
 	}
 	return nil
 }
+
+// AddWorktree creates a linked worktree of the repository at repoDir,
+// checked out at worktreeDir on a new branch. Parent directories of
+// worktreeDir are created; worktreeDir itself must not exist, because
+// git refuses to attach a worktree onto occupied state and a silent
+// reuse would hand back someone else's checkout.
+func AddWorktree(repoDir, worktreeDir, branch string) error {
+	if strings.TrimSpace(branch) == "" {
+		return fmt.Errorf("harness: worktree branch must be non-empty")
+	}
+	if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
+		return fmt.Errorf("harness: %s is not a git repository: %w", repoDir, err)
+	}
+	if _, err := os.Lstat(worktreeDir); err == nil {
+		return fmt.Errorf("harness: worktree path %s already exists", worktreeDir)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("harness: inspect %s: %w", worktreeDir, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(worktreeDir), 0o755); err != nil {
+		return fmt.Errorf("harness: create worktree parent: %w", err)
+	}
+	return runGit(repoDir, "worktree", "add", "-b", branch, worktreeDir)
+}

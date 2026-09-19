@@ -41,6 +41,9 @@ control channel aligned with verified provider behavior.
   mid-turn dispatch through `turn/steer`.
 - Persist Codex thread history mode under `AO_HARNESS_TRANSCRIPT_HOME` so a new
   mock process resumes with the correct revert behavior.
+- Refuse workspace mutations (`writeFile`) when the mock's cwd is outside
+  `AO_HARNESS_WORKSPACE_ROOT`, and report the refusal as a step failure so the
+  scenario keeps running.
 - Echo Codex steer input and `clientUserMessageId`; pending-send reconciliation
   depends on that ID.
 - Unknown JSON-RPC methods return `-32601`. Implement real minimal responses for

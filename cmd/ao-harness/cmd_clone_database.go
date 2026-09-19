@@ -155,16 +155,11 @@ func restoreTableTriggers(db *sql.DB, table string, stashed []stashedTrigger) er
 // scrubClonedDatabase runs neutralization against the COPY, opened
 // read-write. The source is never opened this way.
 func scrubClonedDatabase(e *env, targetDB string) ([]scrubResult, error) {
-	escaped := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(targetDB)
-	db, err := sql.Open("sqlite", "file:"+escaped+"?_pragma=busy_timeout(10000)")
+	db, err := openClonedDatabase(targetDB)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", targetDB, err)
+		return nil, err
 	}
 	defer db.Close()
-	db.SetMaxOpenConns(1)
-	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("open %s: %w", targetDB, err)
-	}
 
 	results := make([]scrubResult, 0, len(scrubStatements()))
 	for _, statement := range scrubStatements() {
@@ -195,6 +190,22 @@ func scrubClonedDatabase(e *env, targetDB string) ([]scrubResult, error) {
 		results = append(results, scrubResult{What: statement.what, Detail: statement.detail(rows), Rows: rows})
 	}
 	return results, nil
+}
+
+// openClonedDatabase opens the COPY read-write. The source is never
+// opened this way.
+func openClonedDatabase(targetDB string) (*sql.DB, error) {
+	escaped := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(targetDB)
+	db, err := sql.Open("sqlite", "file:"+escaped+"?_pragma=busy_timeout(10000)")
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", targetDB, err)
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open %s: %w", targetDB, err)
+	}
+	return db, nil
 }
 
 func readSchemaVersion(targetDB string) (int64, bool) {

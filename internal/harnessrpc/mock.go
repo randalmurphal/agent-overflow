@@ -135,6 +135,10 @@ func StartControl(h *Harness) (*ControlServer, map[string]string, error) {
 	if h.config.CredentialHome != "" {
 		env[control.EnvTranscriptHome] = h.config.CredentialHome
 	}
+	// The mock refuses writeFile steps from a cwd outside this root.
+	if h.config.DataRoot != "" {
+		env[control.EnvWorkspaceRoot] = h.config.DataRoot
+	}
 	h.mu.Lock()
 	h.control = srv
 	h.mu.Unlock()

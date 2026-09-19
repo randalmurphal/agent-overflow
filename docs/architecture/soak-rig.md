@@ -52,8 +52,8 @@ log announces it loudly. Unset it for any run whose numbers matter.
 
 The soak backend boots through **`prepareHarness`** and
 **`newIsolatedProviderApp`** (`main_harness.go:118`), the same
-constructor `--harness` uses. That function is the single place the four
-pins are applied:
+constructor `--harness` uses. That function is the single place the
+isolation pins are applied:
 
 | pin | effect |
 | --- | --- |
@@ -61,13 +61,15 @@ pins are applied:
 | `credentialHomeOverride` | account slots / prune / canonical credential stay under `<dataRoot>/home` |
 | `fileKeychainOverride` | no OS keychain |
 | `backgroundFetchDisabled` | no network on a run that lasts hours |
+| `isolatedWorkspaceRoot` | no project path or session cwd outside the data root, so a mock scenario cannot write into a real checkout |
 
-`TestMockedBootModesShareOneIsolationHelper` (`main_soak_test.go:84`)
-scans the repo-root Go sources and fails if any of those four is
-assigned outside `main_harness.go`. That is the enforcement the
-CLAUDE.md invariant asks for: a future mocked boot mode gets all four or
-it does not compile past the test. Three-of-four is the shape that
-burned a real login (2026-07-29, 2026-08-03).
+`TestMockedBootModesShareOneIsolationHelper` (`main_soak_test.go`)
+scans the repo-root Go sources and fails if any of those pins is
+assigned outside `internal/app/bootstrap.go`. That is the enforcement the
+CLAUDE.md invariant asks for: a future mocked boot mode gets all of them
+or it does not compile past the test. A partial set is the shape that
+burned a real login (2026-07-29, 2026-08-03) and wrote a scenario fixture
+into a real repository (2026-09-17).
 
 `--data-dir` defaults to `~/.agent-overflow-soak` (`main_soak.go:69`)
 and is refused if it resolves to the OS config root or the real app data

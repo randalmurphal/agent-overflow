@@ -40,6 +40,12 @@ const (
 	// Neither ever touches a developer's provider home; without this
 	// variable both behaviours are simply absent.
 	EnvTranscriptHome = "AO_HARNESS_TRANSCRIPT_HOME"
+	// EnvWorkspaceRoot is set only by a fully isolated harness boot, to the
+	// instance data root. A mock refuses workspace mutations (writeFile)
+	// when its cwd is outside that tree, so a harness booted on a store
+	// that names a real repository cannot edit it. Absent means no
+	// restriction, which is the standalone binary-test case.
+	EnvWorkspaceRoot = "AO_HARNESS_WORKSPACE_ROOT"
 )
 
 // Registration is what a mock reports about itself at boot.

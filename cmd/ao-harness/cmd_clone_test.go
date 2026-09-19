@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,6 +26,28 @@ type cloneSourceOptions struct {
 	// lifetime, which is the state that actually matters: the real app is
 	// RUNNING while a clone is taken.
 	leaveOpen bool
+	// skipWorkItems builds a database with no workflow tables, which is
+	// what a store predating them looks like.
+	skipWorkItems bool
+}
+
+// The real paths the fixture carries. Every one of them must be gone from
+// the copy: these are the developer's checkouts a booted clone would
+// otherwise spawn a mock provider inside.
+const (
+	realProjectApp   = "/home/real/repos/app"
+	realProjectWork  = "/home/real/work/app"
+	realProjectTools = "/home/real/repos/tools"
+	realGhost        = "/home/real/repos/ghost"
+	realWorktreeX    = "/home/real/.config/agent-overflow/worktrees/app/feature-x"
+	realWorktreeY    = "/home/real/.config/agent-overflow/worktrees/app/ao-workflow-y"
+)
+
+// realClonePaths is every path spelled above, for the assertion that no
+// column in the copy still names one.
+var realClonePaths = []string{
+	realProjectApp, realProjectWork, realProjectTools, realGhost,
+	realWorktreeX, realWorktreeY,
 }
 
 // newCloneSource builds <root>/agent-overflow/agent-overflow.db plus the
@@ -50,18 +73,47 @@ func newCloneSource(t *testing.T, opts cloneSourceOptions) string {
 	// the whole point of the scrub is that it names columns correctly, and
 	// a fixture with invented names would assert nothing.
 	statements := []string{
+		// projects.slug carries the real UNIQUE index: the relocation reads
+		// slug first precisely because the store already keeps it unique.
+		// The two slugs below are distinct there and reduce to the same
+		// filesystem-safe name, which is the collision the dedupe answers.
+		`CREATE TABLE projects (
+		    id            TEXT    PRIMARY KEY,
+		    path          TEXT    NOT NULL UNIQUE,
+		    name          TEXT    NOT NULL,
+		    color         TEXT    NOT NULL DEFAULT '',
+		    sort_position INTEGER NOT NULL DEFAULT 0,
+		    created_at    INTEGER NOT NULL,
+		    updated_at    INTEGER NOT NULL,
+		    archived      INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0,1)),
+		    slug          TEXT    NOT NULL DEFAULT ''
+		)`,
+		`CREATE UNIQUE INDEX idx_projects_slug ON projects(slug)`,
+		`INSERT INTO projects (id, path, name, created_at, updated_at, slug) VALUES
+		    ('p1','` + realProjectApp + `','My App',1,1,'my app'),
+		    ('p2','` + realProjectWork + `','My App',1,1,'my/app'),
+		    ('p3','` + realProjectTools + `','',1,1,'')`,
 		`CREATE TABLE threads (
 		    id                       TEXT PRIMARY KEY,
+		    project_id               TEXT REFERENCES projects(id) ON DELETE CASCADE,
 		    title                    TEXT NOT NULL DEFAULT '',
 		    provider                 TEXT NOT NULL,
+		    workspace_path           TEXT NOT NULL,
+		    worktree_path            TEXT,
+		    branch                   TEXT,
 		    session_ref              TEXT,
 		    pending_fork_session_ref TEXT,
 		    pending_fork_resume_at   TEXT NOT NULL DEFAULT ''
 		)`,
+		// t2 and t3 share one REAL worktree, so they must share one fixture
+		// worktree. t5 has no project row at all: threads.project_id is
+		// nullable, so an orphan is a shape the relocation has to answer.
 		`INSERT INTO threads VALUES
-		    ('t1','one','claude','claude-session-aaaa','pending-bbbb','leaf-cccc'),
-		    ('t2','two','codex','codex-thread-dddd',NULL,''),
-		    ('t3','three','claude','claude-session-eeee',NULL,'')`,
+		    ('t1','p1','one','claude','` + realProjectApp + `',NULL,NULL,'claude-session-aaaa','pending-bbbb','leaf-cccc'),
+		    ('t2','p1','two','codex','` + realWorktreeX + `','` + realWorktreeX + `','feature-x','codex-thread-dddd',NULL,''),
+		    ('t3','p1','three','claude','` + realWorktreeX + `','` + realWorktreeX + `','feature-x','claude-session-eeee',NULL,''),
+		    ('t4','p2','four','codex','` + realProjectWork + `','',NULL,NULL,NULL,''),
+		    ('t5',NULL,'five','codex','` + realGhost + `',NULL,NULL,NULL,NULL,'')`,
 		`CREATE TABLE ui_state (
 		    scope      TEXT NOT NULL,
 		    key        TEXT NOT NULL,
@@ -70,6 +122,30 @@ func newCloneSource(t *testing.T, opts cloneSourceOptions) string {
 		    PRIMARY KEY (scope, key)
 		)`,
 		`INSERT INTO ui_state VALUES ('client:abc','panes','{"open":["t1"]}',1), ('client:abc','sidebar','w',1)`,
+	}
+	if !opts.skipWorkItems {
+		statements = append(statements,
+			`CREATE TABLE work_items (
+			    id            TEXT PRIMARY KEY,
+			    project_id    TEXT NOT NULL,
+			    worktree_path TEXT NOT NULL DEFAULT ''
+			)`,
+			// w1 names a worktree the thread pass rebuilds; w2 names one no
+			// thread does, which has no fixture to point at.
+			`INSERT INTO work_items VALUES
+			    ('w1','p1','`+realWorktreeX+`'),
+			    ('w2','p1','`+realWorktreeY+`'),
+			    ('w3','p2','')`,
+			`CREATE TABLE work_item_units (
+			    item_id       TEXT NOT NULL,
+			    unit_id       TEXT NOT NULL,
+			    worktree_path TEXT NOT NULL DEFAULT '',
+			    PRIMARY KEY (item_id, unit_id)
+			)`,
+			`INSERT INTO work_item_units VALUES
+			    ('w1','u1','`+realWorktreeX+`'),
+			    ('w2','u2','`+realWorktreeY+`')`,
+		)
 	}
 	if !opts.skipImportState {
 		statements = append(statements,
@@ -207,8 +283,8 @@ func TestCloneClearsEverySessionRefColumn(t *testing.T) {
 	if err := db.QueryRow(`SELECT count(*) FROM threads`).Scan(&threads); err != nil {
 		t.Fatal(err)
 	}
-	if threads != 3 {
-		t.Fatalf("threads = %d, want 3 (the clone dropped rows)", threads)
+	if threads != 5 {
+		t.Fatalf("threads = %d, want 5 (the clone dropped rows)", threads)
 	}
 }
 
@@ -461,6 +537,9 @@ func TestCloneCopiesNoFileBesidesTheDatabaseAndAttachments(t *testing.T) {
 		if name == attachmentsDirName || strings.HasPrefix(name, storeFileName) {
 			continue // the database and its own -wal / -shm sidecars
 		}
+		if name == cloneWorktreesDirName {
+			continue // generated worktree fixtures, not copied source content
+		}
 		t.Errorf("clone carried %s into the harness root", name)
 	}
 }
@@ -614,5 +693,319 @@ func TestCloneAcceptsEitherSpellingOfTheSourcePath(t *testing.T) {
 		if resolved != source {
 			t.Errorf("resolveSourceDataDir(%s) = %s, want %s", spelling, resolved, source)
 		}
+	}
+}
+
+// clonePathValue is one workspace path the copy still holds, labelled by
+// the row it came from so a failure names the row rather than a value.
+type clonePathValue struct {
+	label string
+	value string
+}
+
+func cloneWorkspacePaths(t *testing.T, db *sql.DB) []clonePathValue {
+	t.Helper()
+	queries := []struct {
+		label string
+		sql   string
+	}{
+		{"projects.path", `SELECT id, path FROM projects`},
+		{"threads.workspace_path", `SELECT id, workspace_path FROM threads`},
+		{"threads.worktree_path", `SELECT id, COALESCE(worktree_path,'') FROM threads`},
+		{"work_items.worktree_path", `SELECT id, worktree_path FROM work_items`},
+		{"work_item_units.worktree_path", `SELECT item_id || '/' || unit_id, worktree_path FROM work_item_units`},
+	}
+	var out []clonePathValue
+	for _, query := range queries {
+		rows, err := db.Query(query.sql)
+		if err != nil {
+			t.Fatalf("%s: %v", query.label, err)
+		}
+		for rows.Next() {
+			var id, value string
+			if err := rows.Scan(&id, &value); err != nil {
+				rows.Close()
+				t.Fatalf("%s: %v", query.label, err)
+			}
+			out = append(out, clonePathValue{label: query.label + " " + id, value: value})
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			t.Fatalf("%s: %v", query.label, err)
+		}
+	}
+	return out
+}
+
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	out, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %s: %v: %s", args, dir, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func resolved(t *testing.T, path string) string {
+	t.Helper()
+	out, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", path, err)
+	}
+	return out
+}
+
+func queryString(t *testing.T, db *sql.DB, query string, args ...any) string {
+	t.Helper()
+	var value string
+	if err := db.QueryRow(query, args...).Scan(&value); err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+	return value
+}
+
+// The bug this relocation exists for: a booted clone spawned the mock
+// provider with cwd inside a REAL repository, and a scenario writeFile step
+// wrote into the developer's checkout. Every workspace path in the copy has
+// to name something inside the clone's own root.
+func TestCloneRelocatesEveryWorkspacePathIntoTheTargetRoot(t *testing.T) {
+	configRootFixture(t)
+	source := newCloneSource(t, cloneSourceOptions{})
+	targetRoot := filepath.Join(t.TempDir(), "root")
+	_, targetDB := runCloneInto(t, source, targetRoot)
+	targetRoot = resolved(t, targetRoot)
+
+	db := openClone(t, targetDB)
+	for _, row := range cloneWorkspacePaths(t, db) {
+		if row.value == "" {
+			continue
+		}
+		for _, real := range realClonePaths {
+			if strings.Contains(row.value, real) {
+				t.Errorf("%s still names the real path %s: %s", row.label, real, row.value)
+			}
+		}
+		if !underDir(row.value, targetRoot) {
+			t.Errorf("%s = %s, which is outside the clone root %s", row.label, row.value, targetRoot)
+		}
+	}
+}
+
+// A relocated workspace has to be a real repository, or git status, diffs,
+// checkpoints and the branch picker all fail in the repro the clone exists
+// to serve.
+func TestCloneBuildsGitFixturesForEveryRelocatedWorkspace(t *testing.T) {
+	configRootFixture(t)
+	source := newCloneSource(t, cloneSourceOptions{})
+	targetRoot := filepath.Join(t.TempDir(), "root")
+	_, targetDB := runCloneInto(t, source, targetRoot)
+
+	db := openClone(t, targetDB)
+	rows, err := db.Query(`SELECT id, path FROM projects ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	projectPaths := make(map[string]string)
+	for rows.Next() {
+		var id, path string
+		if err := rows.Scan(&id, &path); err != nil {
+			t.Fatal(err)
+		}
+		projectPaths[id] = path
+		if head := gitIn(t, path, "rev-parse", "HEAD"); head == "" {
+			t.Errorf("project %s fixture %s has no HEAD commit", id, path)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	// t1 has no worktree, so it runs in its project's own fixture.
+	if got := queryString(t, db, `SELECT workspace_path FROM threads WHERE id = 't1'`); got != projectPaths["p1"] {
+		t.Errorf("t1 workspace = %s, want the p1 fixture %s", got, projectPaths["p1"])
+	}
+	// t4's worktree_path was '' rather than NULL; it still belongs to p2.
+	if got := queryString(t, db, `SELECT workspace_path FROM threads WHERE id = 't4'`); got != projectPaths["p2"] {
+		t.Errorf("t4 workspace = %s, want the p2 fixture %s", got, projectPaths["p2"])
+	}
+
+	// t2 and t3 named ONE real worktree, so they get one fixture worktree,
+	// and it must be a linked worktree of their project's repository.
+	worktree2 := queryString(t, db, `SELECT worktree_path FROM threads WHERE id = 't2'`)
+	worktree3 := queryString(t, db, `SELECT worktree_path FROM threads WHERE id = 't3'`)
+	if worktree2 != worktree3 {
+		t.Fatalf("threads sharing one real worktree got two fixtures: %s and %s", worktree2, worktree3)
+	}
+	if got := queryString(t, db, `SELECT workspace_path FROM threads WHERE id = 't2'`); got != worktree2 {
+		t.Errorf("t2 workspace = %s, want its worktree %s", got, worktree2)
+	}
+	common := resolved(t, gitIn(t, worktree2, "rev-parse", "--git-common-dir"))
+	if want := resolved(t, filepath.Join(projectPaths["p1"], ".git")); common != want {
+		t.Errorf("worktree %s resolves to %s, want the p1 fixture repo %s", worktree2, common, want)
+	}
+	if head := gitIn(t, worktree2, "rev-parse", "HEAD"); head == "" {
+		t.Errorf("worktree %s has no HEAD commit", worktree2)
+	}
+	// Production places worktrees under <dataDir>/worktrees/<project dir>.
+	worktreesDir := filepath.Join(targetRoot, appDataDirName, cloneWorktreesDirName)
+	if !underDir(worktree2, worktreesDir) {
+		t.Errorf("worktree %s is not under %s", worktree2, worktreesDir)
+	}
+
+	// t5 has no project row. It still gets a repository of its own rather
+	// than keeping the real path it named.
+	orphan := queryString(t, db, `SELECT workspace_path FROM threads WHERE id = 't5'`)
+	if head := gitIn(t, orphan, "rev-parse", "HEAD"); head == "" {
+		t.Errorf("orphan thread fixture %s has no HEAD commit", orphan)
+	}
+	for _, path := range projectPaths {
+		if orphan == path {
+			t.Errorf("orphan thread was pointed at a project fixture %s", orphan)
+		}
+	}
+}
+
+// Two project slugs that reduce to the same filesystem-safe name must not
+// land in one directory: the second would inherit the first's repository.
+func TestCloneGivesCollidingProjectNamesDistinctFixtures(t *testing.T) {
+	configRootFixture(t)
+	source := newCloneSource(t, cloneSourceOptions{})
+	targetRoot := filepath.Join(t.TempDir(), "root")
+	_, targetDB := runCloneInto(t, source, targetRoot)
+
+	db := openClone(t, targetDB)
+	first := queryString(t, db, `SELECT path FROM projects WHERE id = 'p1'`)
+	second := queryString(t, db, `SELECT path FROM projects WHERE id = 'p2'`)
+	if first == second {
+		t.Fatalf("p1 and p2 share the fixture %s", first)
+	}
+	// The slug is preferred, and the empty-slug project falls back to the
+	// last component of its real path.
+	if filepath.Base(first) != "my-app" {
+		t.Errorf("p1 fixture = %s, want a my-app directory", first)
+	}
+	if base := filepath.Base(second); base != "my-app-2" {
+		t.Errorf("p2 fixture = %s, want the deduped my-app-2", second)
+	}
+	third := queryString(t, db, `SELECT path FROM projects WHERE id = 'p3'`)
+	if filepath.Base(third) != "tools" {
+		t.Errorf("p3 fixture = %s, want the path-derived tools directory", third)
+	}
+}
+
+// Workflow rows carry worktree paths of their own. One that a thread also
+// named maps onto that thread's fixture; one no thread named has no fixture
+// to point at and is cleared, which falls the item back to its project.
+func TestCloneMapsWorkflowWorktreesAndClearsTheRest(t *testing.T) {
+	configRootFixture(t)
+	source := newCloneSource(t, cloneSourceOptions{})
+	targetRoot := filepath.Join(t.TempDir(), "root")
+	e, targetDB := runCloneInto(t, source, targetRoot)
+
+	db := openClone(t, targetDB)
+	threadWorktree := queryString(t, db, `SELECT worktree_path FROM threads WHERE id = 't2'`)
+	if got := queryString(t, db, `SELECT worktree_path FROM work_items WHERE id = 'w1'`); got != threadWorktree {
+		t.Errorf("work_items.w1 = %s, want the shared fixture worktree %s", got, threadWorktree)
+	}
+	if got := queryString(t, db, `SELECT worktree_path FROM work_item_units WHERE unit_id = 'u1'`); got != threadWorktree {
+		t.Errorf("work_item_units.u1 = %s, want the shared fixture worktree %s", got, threadWorktree)
+	}
+	for _, query := range []string{
+		`SELECT worktree_path FROM work_items WHERE id = 'w2'`,
+		`SELECT worktree_path FROM work_item_units WHERE unit_id = 'u2'`,
+	} {
+		if got := queryString(t, db, query); got != "" {
+			t.Errorf("%s = %s, want it cleared", query, got)
+		}
+	}
+	stdout := e.stdout.(interface{ String() string }).String()
+	for _, want := range []string{"workspaces", "worktrees", "work_items worktrees"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the receipt never mentions %q:\n%s", want, stdout)
+		}
+	}
+}
+
+// A store predating the workflow tables is not a failed clone, and the
+// skip is said out loud the way the scrub says it.
+func TestCloneReportsAbsentWorkflowTablesInsteadOfFailing(t *testing.T) {
+	configRootFixture(t)
+	source := newCloneSource(t, cloneSourceOptions{skipWorkItems: true})
+	e, _ := runCloneInto(t, source, filepath.Join(t.TempDir(), "root"))
+
+	stderr := e.stderr.(interface{ String() string }).String()
+	for _, table := range []string{"work_items", "work_item_units"} {
+		if !strings.Contains(stderr, table) {
+			t.Errorf("an absent %s table was skipped in silence; stderr = %q", table, stderr)
+		}
+	}
+}
+
+// A re-clone rebuilds the fixtures from the new database. The previous
+// clone's repos and worktrees are in the way, and git refuses to attach a
+// worktree onto occupied state, so --force clears both generated trees.
+func TestCloneForceRebuildsWorkspaceFixtures(t *testing.T) {
+	configRootFixture(t)
+	source := newCloneSource(t, cloneSourceOptions{})
+	targetRoot := filepath.Join(t.TempDir(), "root")
+	runCloneInto(t, source, targetRoot)
+
+	stale := filepath.Join(targetRoot, cloneWorkspacesDirName, "stale-fixture")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, targetDB := runCloneInto(t, source, targetRoot, "--force")
+
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the previous clone's workspace tree survived --force: %v", err)
+	}
+	db := openClone(t, targetDB)
+	for _, row := range cloneWorkspacePaths(t, db) {
+		if row.value == "" {
+			continue
+		}
+		if !underDir(row.value, resolved(t, targetRoot)) {
+			t.Errorf("%s = %s, which is outside the clone root", row.label, row.value)
+		}
+	}
+	worktree := queryString(t, db, `SELECT worktree_path FROM threads WHERE id = 't2'`)
+	project := queryString(t, db, `SELECT path FROM projects WHERE id = 'p1'`)
+	common := resolved(t, gitIn(t, worktree, "rev-parse", "--git-common-dir"))
+	if want := resolved(t, filepath.Join(project, ".git")); common != want {
+		t.Errorf("re-cloned worktree %s resolves to %s, want %s", worktree, common, want)
+	}
+	// git's own bookkeeping: a rebuilt repo must not still list the
+	// previous clone's worktrees.
+	if out := gitIn(t, project, "worktree", "list"); strings.Count(out, "\n") != 1 {
+		t.Errorf("p1 fixture lists unexpected worktrees:\n%s", out)
+	}
+}
+
+// The relocation names columns in the real schema. A store missing one is
+// not a store this code can relocate, and a partial relocation would leave
+// real paths behind.
+func TestCloneRefusesAStoreMissingAWorkspaceColumn(t *testing.T) {
+	configRootFixture(t)
+	source := newCloneSource(t, cloneSourceOptions{})
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(source, storeFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE threads DROP COLUMN worktree_path`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	e, _, _ := testEnv(t.TempDir())
+	err = runClone(e, []string{"--from", source, "--data-dir", filepath.Join(t.TempDir(), "root")})
+	if err == nil {
+		t.Fatal("clone relocated workspaces in a store it does not understand")
+	}
+	if !strings.Contains(err.Error(), "worktree_path") {
+		t.Fatalf("the error does not name the missing column: %v", err)
 	}
 }

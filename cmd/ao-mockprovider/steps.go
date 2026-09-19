@@ -185,6 +185,12 @@ func (e *engine) runWriteFile(turn int, wf *scenario.WriteFileStep) {
 		e.stepFailed(turn, fmt.Sprintf("writeFile step rejected: %v (step skipped)", err))
 		return
 	}
+	if root, outside := cwdOutsideWorkspaceRoot(e.cwd); outside {
+		e.stepFailed(turn, fmt.Sprintf(
+			"writeFile step refused: mock cwd %s is outside the harness workspace root %s (step skipped)",
+			e.cwd, root))
+		return
+	}
 	full := filepath.Join(e.cwd, rel)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		e.stepFailed(turn, fmt.Sprintf("writeFile step failed: %v (step skipped)", err))
@@ -206,6 +212,36 @@ func (e *engine) runWriteFile(turn int, wf *scenario.WriteFileStep) {
 	if werr != nil || cerr != nil {
 		e.stepFailed(turn, fmt.Sprintf("writeFile step failed: write=%v close=%v", werr, cerr))
 	}
+}
+
+// cwdOutsideWorkspaceRoot reports whether the mock's cwd sits outside the
+// tree an isolated harness boot owns (control.EnvWorkspaceRoot, the instance
+// data root). It is the mock's last line of defense: a harness booted on a
+// store that names a real repository would otherwise spawn a mock there and
+// let a writeFile step edit it. An unset variable means no restriction, which
+// is how the standalone binary tests run.
+//
+// Both paths are symlink-resolved so a symlinked root or temp dir
+// (/var vs /private/var on macOS) still matches; a resolve failure falls back
+// to Clean, which keeps a missing directory from reading as a match.
+func cwdOutsideWorkspaceRoot(cwd string) (string, bool) {
+	root := strings.TrimSpace(os.Getenv(control.EnvWorkspaceRoot))
+	if root == "" {
+		return "", false
+	}
+	return root, !pathWithin(resolvePath(root), resolvePath(cwd))
+}
+
+// pathWithin reports whether path is root itself or lives under it.
+func pathWithin(root, path string) bool {
+	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+}
+
+func resolvePath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(p)
 }
 
 // normalizeWorkspaceRel validates a workspace-relative path: non-empty,
