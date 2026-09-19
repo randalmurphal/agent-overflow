@@ -177,8 +177,14 @@ describe('<ProjectItem>', () => {
     expect(isProjectExpanded('p1')).toBe(true);
   });
 
-  it('adds top spacing when separated from a previous project', () => {
+  it('draws a divider only when separated from a previous project', () => {
     const pane = createThreadPane();
+    const first = render(ProjectItem, {
+      props: { project: wrap('p1'), threads: [], pane },
+    });
+    expect(first.queryByTestId('project-item-divider')).toBeNull();
+    first.unmount();
+
     const { getByTestId } = render(ProjectItem, {
       props: {
         project: wrap('p1'),
@@ -188,7 +194,9 @@ describe('<ProjectItem>', () => {
       },
     });
 
-    expect(getByTestId('project-item').className).toContain('mt-[3px]');
+    const divider = getByTestId('project-item-divider');
+    expect(divider.getAttribute('role')).toBe('separator');
+    expect(divider.className).toContain('border-t');
   });
 
   it('clicking the chevron toggles the project', async () => {

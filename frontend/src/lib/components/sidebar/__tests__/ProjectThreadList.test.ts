@@ -184,7 +184,7 @@ describe('<ProjectThreadList>', () => {
     expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(8);
     const firstShowMore = getByTestId('project-thread-list-show-more');
     expect(firstShowMore).toHaveTextContent('Show 20 More (23)');
-    expect(firstShowMore.className).toContain('pl-6');
+    expect(firstShowMore.className).toContain('px-2');
 
     await fireEvent.click(firstShowMore);
     expect(list.querySelectorAll('[role="listitem"]')).toHaveLength(28);
