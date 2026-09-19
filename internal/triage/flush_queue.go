@@ -229,6 +229,45 @@ func (r *Router) RegisterQueueItem(threadID string, item QueuedFlushItem) int64 
 	return item.EnqueuedAt
 }
 
+// RemoveQueuedFlushItem drops one still-queued message by id and returns it,
+// so a caller that owns the message (a cancelled agent request) can take it
+// back before the provider ever sees it.
+//
+// It refuses — false, nothing removed — once the message has left the queue:
+// a batch claimed for dispatch is already on its way to the provider, and a
+// removal that raced it would leave the caller believing a delivered message
+// was withdrawn. The claim is checked on the never-deleted identity, the same
+// place QueuedFlushItemCount reads it from, so the handoff window is covered.
+//
+// The removed item's settlement is NOT run here: the durable row belongs to
+// the caller, which deletes it with whatever bookkeeping the message carried.
+func (r *Router) RemoveQueuedFlushItem(threadID, id string) (QueuedFlushItem, bool) {
+	if threadID == "" || id == "" {
+		return QueuedFlushItem{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if identity := r.identityIfPresent(threadID); identity != nil {
+		for _, claimed := range identity.claimedFlushItems {
+			if claimed.ID == id {
+				return QueuedFlushItem{}, false
+			}
+		}
+	}
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return QueuedFlushItem{}, false
+	}
+	for index, item := range st.queuedFlushItems {
+		if item.ID != id {
+			continue
+		}
+		st.queuedFlushItems = append(st.queuedFlushItems[:index:index], st.queuedFlushItems[index+1:]...)
+		return item, true
+	}
+	return QueuedFlushItem{}, false
+}
+
 // HasQueuedFlushItems reports whether the per-thread flush queue
 // contains at least one entry. Read-only — callers may use it as a
 // short-circuit before the more expensive snapshot path.

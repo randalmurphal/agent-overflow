@@ -27,7 +27,10 @@
     userMessageCommandRanges,
     peerSessionOriginLabel,
     userMessageOrigin,
+    userMessageOriginThread,
   } from '../../utils/userMessageMeta';
+  import { agentThreadOriginChip } from './agentThreadOrigin';
+  import { threadMachine } from '../../stores/attachedBackends.svelte';
   import { imageAttachments, formatAttachmentSize } from '../../types/attachment';
   import { commandSegments } from '../../utils/commandWords';
   import { formatTimeOfDay } from '../../utils/format';
@@ -60,7 +63,7 @@
   // means a third origin is one entry here rather than a third copy of the
   // row.
   const messageOrigin = $derived(userMessageOrigin(userMeta));
-  const originBadge = $derived.by<{ testid: string; label: string } | null>(() => {
+  const originBadge = $derived.by<{ testid: string; label: string; open?: (() => void) | null } | null>(() => {
     const delivery = parseJsonObject(item.meta)?.agent_message as Record<string, unknown> | undefined;
     if (typeof delivery?.sender === 'string') return {
       testid: 'user-message-agent-origin',
@@ -77,6 +80,15 @@
           testid: 'user-message-peer-origin',
           label: peerSessionOriginLabel(userMeta),
         };
+      case 'agent-thread': {
+        // An agent in another thread wrote this row. The chip carries that
+        // thread through: its title, the computer when that is a different
+        // one, and a way in when this client can reach it.
+        const origin = userMessageOriginThread(userMeta);
+        if (!origin) return null;
+        const chip = agentThreadOriginChip(origin, threadMachine(item.threadId, null));
+        return { testid: 'user-message-thread-origin', label: chip.label, open: chip.open };
+      }
       default:
         return null;
     }
@@ -196,13 +208,25 @@
 
 {#snippet readOnlyBody()}
   {#if originBadge}
-    <div
-      class="mb-1.5 flex items-center gap-1 text-[0.625rem] font-medium uppercase tracking-wide text-fg-hint"
-      data-testid={originBadge.testid}
-    >
-      <Icon icon={Inbox} size={11} strokeWidth={2.2} />
-      <span>{originBadge.label}</span>
-    </div>
+    {#if originBadge.open}
+      <button
+        type="button"
+        class="mb-1.5 flex items-center gap-1 text-[0.625rem] font-medium uppercase tracking-wide text-fg-hint hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+        data-testid={originBadge.testid}
+        onclick={originBadge.open}
+      >
+        <Icon icon={Inbox} size={11} strokeWidth={2.2} />
+        <span>{originBadge.label}</span>
+      </button>
+    {:else}
+      <div
+        class="mb-1.5 flex items-center gap-1 text-[0.625rem] font-medium uppercase tracking-wide text-fg-hint"
+        data-testid={originBadge.testid}
+      >
+        <Icon icon={Inbox} size={11} strokeWidth={2.2} />
+        <span>{originBadge.label}</span>
+      </div>
+    {/if}
   {/if}
   {#if images.length > 0}
     <div

@@ -90,6 +90,15 @@ in-memory queue, removed only on settlement or an explicit drop, and restored
 to the composer at boot instead of being dispatched without a user present.
 See [turn-lifecycle.md](../../docs/architecture/turn-lifecycle.md).
 
+Agent thread requests settle once. Every state change on a request or receipt
+is conditional on the state it expects to find, and a change that does not
+apply is a lost race rather than an error. A settlement takes the token's
+settle lock before it writes, releases it before queue or provider work, and
+is handed to the caller by the same door
+(`app_thread_tools_settle.go`). A wake writes its durable queue row and its
+delivery mark in one store transaction. Settling runs off the provider read
+loop because it can stop or start a session.
+
 Project and thread service writes return the current row plus whether durable
 state changed. Emit updates only for changes, while still returning the row to
 the initiating caller. Keep mutation-classification tests current when adding

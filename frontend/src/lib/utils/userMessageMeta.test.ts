@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseUserMessageAttachments } from './userMessageMeta';
+import {
+  parseUserMessageAttachments,
+  parseUserMessageMeta,
+  userMessageOriginThread,
+} from './userMessageMeta';
 import {
   DEFAULT_MAX_ATTACHMENT_SIZE,
   DEFAULT_MAX_FILE_ATTACHMENT_SIZE,
@@ -81,5 +85,66 @@ describe('parseUserMessageAttachments — attachment kind', () => {
 
     expect(parsed.map((attachment) => [attachment.id, attachment.kind]))
       .toEqual([['img-1', 'image'], ['doc-1', 'file'], ['img-2', 'image']]);
+  });
+});
+
+// The origin of an agent-written row is untrusted wire content too, and the
+// chip it feeds is a link: a value that cannot name a thread is not
+// attribution and must not render one.
+describe('userMessageOriginThread', () => {
+  function parse(originThread: unknown) {
+    return userMessageOriginThread(
+      parseUserMessageMeta(JSON.stringify({ origin: 'agent-thread', originThread })),
+    );
+  }
+
+  it('reads the whole shape the tools stamp', () => {
+    expect(parse({
+      computerId: 'studio',
+      computerName: 'Studio',
+      threadId: 'thread-9',
+      title: 'Auth rewrite',
+      token: 'tok-1',
+    })).toEqual({
+      computerId: 'studio',
+      computerName: 'Studio',
+      threadId: 'thread-9',
+      title: 'Auth rewrite',
+      token: 'tok-1',
+    });
+  });
+
+  it('keeps a row with only a thread id, which is the one field the chip needs', () => {
+    expect(parse({ threadId: '  thread-9  ' })).toEqual({
+      computerId: '',
+      computerName: '',
+      threadId: 'thread-9',
+      title: '',
+      token: '',
+    });
+  });
+
+  it('refuses anything that names no thread', () => {
+    expect(parse({ title: 'Auth rewrite' })).toBeNull();
+    expect(parse({ threadId: '   ' })).toBeNull();
+    expect(parse({ threadId: 42 })).toBeNull();
+    expect(parse(['thread-9'])).toBeNull();
+    expect(parse('thread-9')).toBeNull();
+    expect(parse(null)).toBeNull();
+    expect(userMessageOriginThread({})).toBeNull();
+  });
+
+  it('drops fields that are not strings rather than rendering them', () => {
+    expect(parse({ threadId: 'thread-9', title: { text: 'Auth' }, computerName: 7 })).toEqual({
+      computerId: '',
+      computerName: '',
+      threadId: 'thread-9',
+      title: '',
+      token: '',
+    });
+  });
+
+  it('survives meta that is not JSON at all', () => {
+    expect(userMessageOriginThread(parseUserMessageMeta('{not json'))).toBeNull();
   });
 });

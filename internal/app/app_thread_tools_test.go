@@ -737,20 +737,6 @@ func TestThreadToolsPositionsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestThreadToolsWriteStubsRefuseInPublicProse pins the one shared refusal
-// the phase-4 writes carry today: a documented code and prose that says
-// the capability is not here yet rather than looking like a broken call.
-func TestThreadToolsWriteStubsRefuseInPublicProse(t *testing.T) {
-	err := threadToolsWriteUnavailable("starting a conversation")
-	code, message, ok := errorsx.PublicDetails(err)
-	if !ok || code != threadtools.CodeInvalidRequest {
-		t.Fatalf("write refusal = %q (public %t)", code, ok)
-	}
-	if !strings.Contains(message, "starting a conversation") || !strings.Contains(message, "not available yet") {
-		t.Fatalf("write refusal prose = %q", message)
-	}
-}
-
 // TestThreadToolsAdapterProjectsLiveState pins the four facts the state
 // derivation reads, taken from the live router rather than the row: an
 // idle thread, a thread mid-turn, and a thread parked on an approval.

@@ -575,3 +575,63 @@ func TestNextFlushSequence_SerializesWithDeferredEchoPersist(t *testing.T) {
 		t.Fatalf("NextFlushSequence = %d after the echo persisted user:1:flush:1, want 2", res.seq)
 	}
 }
+
+// RemoveQueuedFlushItem takes one waiting message back out of the queue. It
+// is what cancelling an agent's request does to a message that has not been
+// sent yet, so it must remove exactly that message and refuse once the
+// dispatcher has claimed the batch: at that point the message is on its way
+// and only an interrupt can stop it.
+func TestRemoveQueuedFlushItem_TakesBackOnlyWhatIsStillWaiting(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+
+	router.RegisterQueueItem("t1", makeQueueItem("queue:0", "first"))
+	router.RegisterQueueItem("t1", makeQueueItem("queue:1", "second"))
+	router.RegisterQueueItem("t2", makeQueueItem("queue:other", "elsewhere"))
+
+	if _, ok := router.RemoveQueuedFlushItem("t1", "queue:missing"); ok {
+		t.Error("removing a message that was never queued reported success")
+	}
+	if _, ok := router.RemoveQueuedFlushItem("t1", ""); ok {
+		t.Error("an empty id removed something")
+	}
+	// A thread's queue is its own: an id from another thread is not here.
+	if _, ok := router.RemoveQueuedFlushItem("t1", "queue:other"); ok {
+		t.Error("another thread's message was removed from t1")
+	}
+
+	removed, ok := router.RemoveQueuedFlushItem("t1", "queue:0")
+	if !ok || removed.ID != "queue:0" {
+		t.Fatalf("RemoveQueuedFlushItem = %+v ok=%v, want the first message", removed, ok)
+	}
+	left := router.QueuedFlushItems("t1")
+	if len(left) != 1 || left[0].ID != "queue:1" {
+		t.Fatalf("queue after removal = %+v, want only the second message", left)
+	}
+	// Removing it again is not a second removal.
+	if _, ok := router.RemoveQueuedFlushItem("t1", "queue:0"); ok {
+		t.Error("the same message was removed twice")
+	}
+
+	// Once the dispatcher holds the batch the message is being sent, and it
+	// can no longer be taken back.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	closed := false
+	closeRelease := func() {
+		if !closed {
+			closed = true
+			close(release)
+		}
+	}
+	t.Cleanup(closeRelease)
+	router.SetFlushDispatcher(func(string, []QueuedFlushItem) {
+		close(entered)
+		<-release
+	})
+	go router.tryFlushQueue("t1")
+	<-entered
+	if _, ok := router.RemoveQueuedFlushItem("t1", "queue:1"); ok {
+		t.Error("a claimed message was removed from under the dispatcher")
+	}
+	closeRelease()
+}

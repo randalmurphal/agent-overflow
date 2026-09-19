@@ -19,6 +19,7 @@ import (
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 
 	"github.com/google/uuid"
 )
@@ -573,6 +574,11 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 			// its whole life (app_send_idempotency.go). A joined row carries
 			// every member's id; joinFlushMeta owns that union.
 			sendID: payload.SendID,
+			// Attribution travels with the message, so a wake or a request
+			// send that waited on the queue lands with the same chip it
+			// would have had if the thread had been idle.
+			origin:       payload.Origin,
+			originThread: payload.OriginThread,
 		})
 		if err != nil {
 			return nil, false, requeue, err
@@ -999,6 +1005,12 @@ type injectedQueueOptions struct {
 	// persist atomically transfers an injector’s delivery responsibility to the
 	// ordinary durable queue. Nil uses the standard queue insert.
 	persist func(store.FlushQueueItem) error
+	// origin and originThread attribute the queued message to the agent
+	// thread that asked for it. They land on the payload so the dispatch
+	// that persists the row later stamps the same attribution an immediate
+	// send would have.
+	origin       string
+	originThread *usermessage.OriginThread
 }
 
 // flushQueueSettlement is the dispatch-or-restore hook every queued message
@@ -1159,6 +1171,8 @@ func (a *App) registerQueueItem(
 		RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		ExpandComposerCommands:       injected.expandComposerCommands,
 		SendID:                       opts.SendID,
+		Origin:                       injected.origin,
+		OriginThread:                 injected.originThread,
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -1219,6 +1233,63 @@ func (a *App) registerQueueItem(
 		a.triage.FlushQueuedItems(threadID)
 	}
 	return wireItem, nil
+}
+
+// removeQueuedItem takes one still-queued message back out of a thread's
+// queue by its send id, durable row and in-memory entry together. It is the
+// withdrawal path for a message the app itself queued on someone's behalf —
+// an agent request cancelled before the target's turn boundary drained it.
+//
+// It refuses once the message reached the provider, because by then there is
+// nothing to withdraw: the caller is told so and cancels the turn instead.
+// `removed` false with a nil error is that refusal; an error is a failure to
+// carry out a removal that should have applied.
+//
+// Lock order is registerQueueItem's: send admission, then the thread mutation
+// lock, then the dispatch handoff mutex. Holding the handoff mutex is what
+// keeps the removal from racing tryFlushQueue's claim window — the claim is
+// taken under triage's own lock and checked there, and this mutex is what
+// stops a fresh handoff starting between the check and the delete.
+func (a *App) removeQueuedItem(ctx context.Context, threadID, sendID string) (removed bool, err error) {
+	if strings.TrimSpace(threadID) == "" || strings.TrimSpace(sendID) == "" {
+		return false, fmt.Errorf("remove queued item: thread id and send id are required")
+	}
+	unlockAdmission, err := a.lockSendAdmission(ctx, threadID, sendID)
+	if err != nil {
+		return false, err
+	}
+	defer unlockAdmission()
+	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	a.flushDispatch.handoffMu.Lock()
+	defer a.flushDispatch.handoffMu.Unlock()
+
+	row, found, err := a.store.FindFlushQueueItemBySendID(threadID, sendID)
+	if err != nil {
+		return false, fmt.Errorf("remove queued item: %w", err)
+	}
+	if !found {
+		// Either the message was dispatched (its row is gone and the
+		// `user_text` row carries the id) or it never existed. Both answer
+		// the same way here: nothing on the queue to remove.
+		return false, nil
+	}
+	if a.triage != nil {
+		if _, taken := a.triage.RemoveQueuedFlushItem(threadID, row.ID); !taken {
+			// The in-memory entry is mid-handoff or already drained. The
+			// durable row stays: its settlement deletes it when the dispatch
+			// or the restore finishes.
+			return false, nil
+		}
+	}
+	if err := a.store.DeleteFlushQueueItem(row.ID); err != nil {
+		return false, fmt.Errorf("remove queued item: %w", err)
+	}
+	a.emitQueueStateChanged(threadID)
+	return true, nil
 }
 
 // GetQueueState returns the current queue snapshot for the thread.

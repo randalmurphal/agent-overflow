@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -586,4 +587,63 @@ func nilIfEmptyBytes(value []byte) any {
 		return nil
 	}
 	return value
+}
+
+// QueueThreadWake hands one settled request's wake to the ordinary durable
+// message queue and records the delivery in the same transaction: the queue
+// row is the message's only copy from that moment on, and `delivered_at` is
+// what keeps a second observation of the same settlement from queueing it
+// twice.
+//
+// It is the `persist` hook of the caller's registerQueueItem, so it runs
+// BEFORE the in-memory queue register, exactly where InsertFlushQueueItem
+// runs for an ordinary send.
+//
+// `late` marks the second wake (a late reply) instead of the first. A
+// delivery mark that does not apply means another path already delivered
+// this revision, and the wake is refused rather than duplicated.
+func (s *Store) QueueThreadWake(token string, late bool, item FlushQueueItem) error {
+	action := fmt.Sprintf("store: queue thread wake %s", token)
+	if token == "" {
+		return fmt.Errorf("%s: token is required", action)
+	}
+	tx, release, err := s.beginDurableTx(context.Background())
+	if err != nil {
+		return fmt.Errorf("%s: begin: %w", action, err)
+	}
+	defer release()
+	defer tx.Rollback()
+	marked, err := MarkThreadRequestDeliveredTx(tx, token, ThreadWakeQueued, item.EnqueuedAt, late)
+	if err != nil {
+		return err
+	}
+	if !marked {
+		return fmt.Errorf("%s: the answer was already delivered", action)
+	}
+	if err := insertFlushQueueItem(tx, item); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%s: commit: %w", action, err)
+	}
+	return nil
+}
+
+// MarkThreadRequestDeliveredAsDraft records that boot recovery restored a
+// queued wake into the composer instead of dispatching it. The row is
+// already `queued`; this is the correction, so it applies to a delivered
+// row rather than an undelivered one.
+func (s *Store) MarkThreadRequestDeliveredAsDraft(token string, late bool) (bool, error) {
+	action := fmt.Sprintf("store: mark thread request %s restored to draft", token)
+	query := `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
+	           WHERE token = ? AND delivered_at IS NOT NULL AND delivered_how = ?`
+	if late {
+		query = `UPDATE thread_requests SET delivered_how = ?, updated_at = ?
+		          WHERE token = ? AND late_delivered_at IS NOT NULL AND delivered_how = ?`
+	}
+	result, err := s.db.Exec(query, ThreadWakeDraft, nowMillis(), token, ThreadWakeQueued)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return rowsChanged(result, action)
 }

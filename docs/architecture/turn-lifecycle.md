@@ -912,6 +912,13 @@ place for as long as the condition lasts. A thread with no mounted pane has
 no timeline for the row to be in; its item-stream handler confirms on
 arrival, which is also what lets the sidebar's working indicator settle.
 
+**Removal before dispatch.** `removeQueuedItem` deletes a queued message that
+has not been sent: it takes the durable row and the triage entry out together
+and refuses once the dispatcher has claimed the batch, when only an interrupt
+can stop the message. Cancelling an agent's thread request is its only caller
+(`internal/app/app_thread_tools_settle.go`); a person's queued message is
+removed through the composer.
+
 The other way an entry leaves Zone 2 is the backend taking the message back.
 The eager path emits `queue_flushed` before the provider write settles, so a
 failed write requeues the item under its original queue id; the next Zone 1

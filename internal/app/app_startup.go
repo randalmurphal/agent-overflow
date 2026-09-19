@@ -168,6 +168,7 @@ func (a *App) startUnattendedWork() error {
 	a.startRemoteMCPRefresh()
 	a.startThreadSearchIndex()
 	a.startRemoteWatches()
+	a.startThreadRequestSweeps()
 	if err := a.startThreadTransfers(); err != nil {
 		return err
 	}
@@ -729,6 +730,12 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	a.attachments = attachmentStore
 	a.workspaceFiles = workspacefiles.NewSearcher(workspacefiles.Config{})
 	a.configDir = dbDir
+	// The request ledger: settle what the last run left open, then watch
+	// every thread's turn ends for the receipts bound to them. Both need the
+	// store and the data directory, and neither may run before the flush
+	// queue has been restored.
+	a.sweepThreadRequestsAtBoot()
+	a.installThreadRequestObserver()
 	if err := a.initWorkflowEngine(dbDir); err != nil {
 		return err
 	}

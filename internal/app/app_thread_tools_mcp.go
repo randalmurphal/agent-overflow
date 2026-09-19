@@ -195,6 +195,10 @@ func (a *App) callThreadMCP(w http.ResponseWriter, ctx context.Context, req thre
 		threadmcp.WriteToolError(w, req.ID, err)
 		return
 	}
+	// Work a call defers until its answer is written: the inline delivery
+	// marks, and the deletion of a scratch thread whose own agent is still
+	// inside this call.
+	ctx, pending := withThreadToolsPending(ctx)
 	result, err := a.threadToolsServer().Call(ctx, caller, call.Name, call.Arguments)
 	if err != nil {
 		if _, _, public := errorsx.PublicDetails(err); !public {
@@ -205,6 +209,7 @@ func (a *App) callThreadMCP(w http.ResponseWriter, ctx context.Context, req thre
 		return
 	}
 	threadmcp.WriteToolJSON(w, req.ID, result)
+	pending.run()
 }
 
 // threadToolsCaller names the calling thread. Everything a result, a

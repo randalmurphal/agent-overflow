@@ -59,6 +59,17 @@ This does not promise exactly-once delivery across a host crash between the
 provider write and history persistence. Provider transcripts remain crash
 recovery's authority; an unconfirmed delivery must not be blindly resent.
 
+App-injected agent sends carry their own identity. A message one thread's
+agent sends to another is admitted through the same door as a composer send,
+with a SendID naming the request it belongs to: `thread-request:<token>` for
+the request itself, `thread-wake:<token>` and `thread-wake-late:<token>` for
+the answer carried back to the sender. Retrying a request resolves to the
+existing row through that id rather than sending a second copy. These sends
+preserve the thread's draft and stamp `usermessage.Meta.Origin` =
+`agent-thread` with the sending thread's identity, on the immediate row and on
+the queued payload alike, so a message the app wrote on an agent's behalf is
+never mistaken for one a person typed.
+
 ## Confirmation and placement
 
 | Path | Visible placement | Response turn |

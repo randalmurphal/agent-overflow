@@ -16,6 +16,8 @@ import UserMessage from './UserMessage.svelte';
 import type { UserMessageActions, UserMessageEditSession } from './userMessageActions';
 import { createUserMessageEditUiState } from './userMessageEditUi.svelte';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
+import { stageBackend, resetStagedBackends, REMOTE_BACKEND_UUID } from '../../../test/helpers/backends';
+import { HOME_BACKEND } from '../../transport/backendKey';
 import { USER_MESSAGE_CLAMP_LINES } from './userMessageClamp';
 
 describe('<UserMessage>', () => {
@@ -102,6 +104,92 @@ describe('<UserMessage>', () => {
       props: { item: makeItem({ kind: 'user_text', role: 'user', summary: 'run the tests' }) },
     });
     expect(local.queryByTestId('user-message-external-origin')).toBeNull();
+  });
+
+  // A row an agent in another thread wrote carries that thread through to
+  // the reader: its title, the computer when that is a different one, and a
+  // way in when this client can reach it.
+  it('badges an agent-thread row with its source thread and opens it', () => {
+    stageBackend({ id: HOME_BACKEND, name: 'This computer', backendId: 'home-uuid' });
+    const view = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: 'the tests pass on main',
+          meta: JSON.stringify({
+            origin: 'agent-thread',
+            originThread: { computerId: '', computerName: '', threadId: 'thread-9', title: 'Auth rewrite', token: 'tok-1' },
+          }),
+        }),
+      },
+    });
+    const badge = view.getByTestId('user-message-thread-origin');
+    expect(badge.textContent).toContain('from Auth rewrite');
+    expect(badge.tagName).toBe('BUTTON');
+    view.unmount();
+    resetStagedBackends();
+  });
+
+  it('names the source computer on a row from another one', () => {
+    stageBackend({ id: HOME_BACKEND, name: 'This computer', backendId: 'home-uuid' });
+    stageBackend({ id: 'studio', backendId: REMOTE_BACKEND_UUID, name: 'Studio' });
+    const view = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: 'the deploy is green',
+          meta: JSON.stringify({
+            origin: 'agent-thread',
+            originThread: { computerId: 'studio', computerName: 'Studio', threadId: 'thread-9', title: 'Auth rewrite', token: 'tok-1' },
+          }),
+        }),
+      },
+    });
+    const badge = view.getByTestId('user-message-thread-origin');
+    expect(badge.textContent).toContain('from Auth rewrite on Studio');
+    expect(badge.tagName).toBe('BUTTON');
+    view.unmount();
+    resetStagedBackends();
+  });
+
+  it('renders the same label inert when that computer is not attached', () => {
+    stageBackend({ id: HOME_BACKEND, name: 'This computer', backendId: 'home-uuid' });
+    const view = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: 'the deploy is green',
+          meta: JSON.stringify({
+            origin: 'agent-thread',
+            originThread: { computerId: 'unpaired', computerName: 'Old laptop', threadId: 'thread-9', title: 'Auth rewrite' },
+          }),
+        }),
+      },
+    });
+    const badge = view.getByTestId('user-message-thread-origin');
+    expect(badge.textContent).toContain('from Auth rewrite on Old laptop');
+    expect(badge.tagName).not.toBe('BUTTON');
+    view.unmount();
+    resetStagedBackends();
+  });
+
+  // Attribution the row cannot back up is not rendered: a chip with no
+  // thread behind it would offer a reader a link to nothing.
+  it('renders no chip when the origin names no thread', () => {
+    const view = render(UserMessage, {
+      props: {
+        item: makeItem({
+          kind: 'user_text',
+          role: 'user',
+          summary: 'the deploy is green',
+          meta: JSON.stringify({ origin: 'agent-thread', originThread: { title: 'Auth rewrite' } }),
+        }),
+      },
+    });
+    expect(view.queryByTestId('user-message-thread-origin')).toBeNull();
   });
 
   it('shows its timestamp without requiring row hover', () => {

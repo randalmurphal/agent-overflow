@@ -80,6 +80,12 @@ func (a *App) BeginThreadTransfer(ctx context.Context, threadID, operationID, de
 		if err := a.cancelThreadRemoteCommands(ctx, threadID); err != nil {
 			return ThreadTransferIntent{}, err
 		}
+		// The thread stops being answerable here, so open receipts against it
+		// settle and the requests it made are cancelled. The receipts stay on
+		// this computer and their callers collect them as usual.
+		if err := a.stopThreadRequestsForMovedThread(ctx, threadID, a.threadRequestDestinationName(destinationBackendID)); err != nil {
+			return ThreadTransferIntent{}, err
+		}
 	}
 	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
 	if err != nil {

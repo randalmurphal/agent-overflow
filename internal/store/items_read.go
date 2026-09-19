@@ -433,6 +433,37 @@ func (s *Store) ListThreadUserMessageHistory(threadID string, limit int) ([]User
 	return entries, nil
 }
 
+// LatestHumanUserText returns the newest user message of a thread that no
+// agent wrote, and false when the thread has none.
+//
+// It is what the agent thread tools quote in a request footer, so the
+// receiving thread can see what the person behind the sender last asked
+// for. Rows an agent wrote are excluded by `meta.origin`, the same key the
+// attribution chip renders from, so a chain of agent-to-agent messages
+// never quotes another agent back at itself. Wire-only injections and
+// subagent prompts are already excluded by the shared predicate.
+func (s *Store) LatestHumanUserText(threadID string) (string, bool, error) {
+	query, args := timelineArms(threadID, timelineSelection{
+		Columns: func(string, string) string {
+			return `items.summary AS summary, items.turn_index AS turn_index, items.item_index AS item_index`
+		},
+		Where: readerAuthoredUserTextFilterFor("items.") +
+			` AND COALESCE(CASE WHEN json_valid(items.meta) THEN json_extract(items.meta, '$.origin') END, '') = ''`,
+		OrderBy: "turn_index DESC, item_index DESC",
+		Limit:   1,
+	})
+	var summary string
+	var turnIndex, itemIndex int
+	err := s.reader().QueryRow(query, args...).Scan(&summary, &turnIndex, &itemIndex)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("store: latest human user text on thread %s: %w", threadID, err)
+	}
+	return summary, true, nil
+}
+
 // TurnPreview is the nav rail's hover card for one turn: the reader's
 // ask and the turn's final top-level assistant reply.
 type TurnPreview struct {

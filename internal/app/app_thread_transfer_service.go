@@ -112,6 +112,11 @@ func (a *App) checkTransferIdle(thread store.Thread) error {
 	} else if pending {
 		return errors.New("Let remote commands finish and their completion messages reach this conversation before copying it. Moving the conversation cancels them.")
 	}
+	if open, err := a.store.HasOpenThreadRequests(thread.ID); err != nil {
+		return err
+	} else if open {
+		return errors.New("Let this conversation's thread requests finish and their answers arrive before copying it. Moving the conversation cancels them.")
+	}
 	running, err := a.store.ListRunningBackgroundToolCalls(thread.ID)
 	if err != nil {
 		return err

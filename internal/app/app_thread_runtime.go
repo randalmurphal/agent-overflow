@@ -186,6 +186,11 @@ func (a *App) deleteThreadTreeWithSubtreeLocksHeld(threadID string) error {
 func (a *App) threadDeletePorts() threadapp.DeletePorts {
 	return threadapp.DeletePorts{
 		StopRemoteWork: func(threadID string) error {
+			// Runs twice for a thread with a subtree; both halves are
+			// conditional updates, so the second pass finds nothing to do.
+			if err := a.stopThreadRequestsForDeletedThread(context.Background(), threadID); err != nil {
+				return err
+			}
 			return a.cancelThreadRemoteCommands(context.Background(), threadID)
 		},
 		CleanProviderBackground: a.cleanThreadProviderBackground,

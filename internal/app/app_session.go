@@ -847,6 +847,9 @@ func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
 	// A tool call parked on a remote command returns at once as backgrounded;
 	// the command itself keeps running and the tray still owns stopping it.
 	a.cancelRemoteWaits(threadID)
+	// A tool call parked on another thread's request returns the same way:
+	// the request keeps running and the answer arrives as a message.
+	a.cancelThreadRequestWaits(threadID)
 	// Capture before waiting on the app-level thread lock. A Codex revert holds
 	// that lock across its provider and SQLite halves; an interrupt that entered
 	// before or during the cut must not wake afterward and hit the reloaded

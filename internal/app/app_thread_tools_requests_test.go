@@ -1,0 +1,1607 @@
+package app
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"agent-overflow/internal/flushqueue"
+	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
+	"agent-overflow/internal/store"
+	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/threadmode"
+	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
+)
+
+// The request ledger end to end: a thread asks another thread for work, the
+// work runs on a mock provider, and the answer comes back the way the ack
+// promised it would.
+//
+// Every fixture here runs against a real store, the real send path and the
+// real turn observer. The only thing that is not real is the provider, which
+// is a mock script (kerneltest isolation is what keeps a real one out).
+
+type requestFixture struct {
+	app    *App
+	bus    *capturedEventBus
+	caller store.Thread
+}
+
+func newRequestFixture(t *testing.T) *requestFixture {
+	t.Helper()
+	return newRequestFixtureIn(t, t.TempDir())
+}
+
+// newRequestFixtureIn puts the caller thread in a named workspace, which is
+// what a test asserting project or worktree behavior needs.
+func newRequestFixtureIn(t *testing.T, workspace string) *requestFixture {
+	t.Helper()
+	app, bus := setupE2EApp(t)
+	// Exports and answer files land under the data directory; a fixture
+	// without one would write into the repository working directory.
+	app.configDir = t.TempDir()
+	caller, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatalf("create caller thread: %v", err)
+	}
+	app.installThreadRequestObserver()
+	return &requestFixture{app: app, bus: bus, caller: caller}
+}
+
+// mockClaude installs a provider that answers each user message with one
+// assistant message and ends the turn.
+func (f *requestFixture) mockClaude(t *testing.T, replies ...string) {
+	t.Helper()
+	responses := make([][]string, 0, len(replies))
+	for _, reply := range replies {
+		responses = append(responses, []string{
+			`{"type":"system","subtype":"init","session_id":"sess-request","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+			`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":` + quoteJSON(reply) + `}]}}`,
+			`{"type":"result","subtype":"success","is_error":false}`,
+		})
+	}
+	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), responses)
+	if _, err := f.app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set claude binary: %v", err)
+	}
+}
+
+func quoteJSON(text string) string {
+	encoded, err := json.Marshal(text)
+	if err != nil {
+		return `""`
+	}
+	return string(encoded)
+}
+
+func (f *requestFixture) callerIdentity() threadtools.Caller {
+	return threadtools.Caller{ThreadID: f.caller.ID, Title: f.caller.Title, ComputerID: "local-computer", ComputerName: "This Mac"}
+}
+
+func (f *requestFixture) adapter() threadToolsApp { return threadToolsApp{app: f.app} }
+
+func (f *requestFixture) request(t *testing.T, token string) store.ThreadRequest {
+	t.Helper()
+	row, found, err := f.app.store.GetThreadRequest(token)
+	if err != nil || !found {
+		t.Fatalf("GetThreadRequest(%s): found=%v err=%v", token, found, err)
+	}
+	return row
+}
+
+func (f *requestFixture) receipt(t *testing.T, token string) store.ThreadRequestReceipt {
+	t.Helper()
+	row, found, err := f.app.store.GetThreadRequestReceipt(token)
+	if err != nil || !found {
+		t.Fatalf("GetThreadRequestReceipt(%s): found=%v err=%v", token, found, err)
+	}
+	return row
+}
+
+// userRow returns the request's own user message in the target thread.
+func (f *requestFixture) userRow(t *testing.T, threadID, token string) store.Item {
+	t.Helper()
+	items, err := f.app.store.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	for _, item := range items {
+		if item.Kind != "user_text" {
+			continue
+		}
+		var meta usermessage.Meta
+		if json.Unmarshal([]byte(item.Meta), &meta) == nil && meta.OriginThread != nil && meta.OriginThread.Token == token {
+			return item
+		}
+	}
+	t.Fatalf("no user row in %s carries request %s: %+v", threadID, token, items)
+	return store.Item{}
+}
+
+// TestThreadSpawnRunsTheWorkAndSettlesOnItsOwnTurn is the whole happy path:
+// the spawn inherits the caller's settings, the message carries the footer
+// and the attribution, the mock answers, and the turn that consumed the
+// message settles the request with that answer.
+func TestThreadSpawnRunsTheWorkAndSettlesOnItsOwnTurn(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "the launcher builds clean now")
+
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "check the windows build", Title: "Windows build", WaitSeconds: 20,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if ack.Outcome != threadtools.OutcomeSettled || ack.State != store.ThreadRequestFinished {
+		t.Fatalf("ack = %+v, want a settled finished request", ack)
+	}
+	if ack.AnswerKind != threadtools.AnswerFinal || !strings.Contains(ack.Answer, "launcher builds clean") {
+		t.Fatalf("answer = %q (%s), want the turn's final message", ack.Answer, ack.AnswerKind)
+	}
+	if ack.Delivered != store.ThreadWakeInline {
+		t.Errorf("delivered = %q, want the reply itself to count as delivery", ack.Delivered)
+	}
+
+	spawned, err := f.app.store.GetThread(ack.ThreadID)
+	if err != nil {
+		t.Fatalf("spawned thread: %v", err)
+	}
+	if spawned.ProjectID != f.caller.ProjectID || spawned.Provider != f.caller.Provider ||
+		spawned.Model != f.caller.Model || spawned.RuntimeMode != f.caller.RuntimeMode {
+		t.Errorf("spawn did not inherit the caller: %+v vs %+v", spawned, f.caller)
+	}
+	if spawned.Title != "Windows build" {
+		t.Errorf("spawn title = %q", spawned.Title)
+	}
+
+	// The message the spawned thread read: the prompt, the footer both ends
+	// parse, and the attribution the origin chip renders.
+	row := f.userRow(t, ack.ThreadID, ack.Token)
+	if !strings.Contains(row.Summary, "check the windows build") {
+		t.Errorf("user row lost the prompt: %q", row.Summary)
+	}
+	if !strings.Contains(row.Summary, "Agent request from thread") || !strings.Contains(row.Summary, ack.Token) {
+		t.Errorf("user row carries no request footer: %q", row.Summary)
+	}
+	var meta usermessage.Meta
+	if err := json.Unmarshal([]byte(row.Meta), &meta); err != nil {
+		t.Fatalf("decode user meta: %v", err)
+	}
+	if meta.Origin != usermessage.OriginAgentThread || meta.OriginThread == nil ||
+		meta.OriginThread.ThreadID != f.caller.ID || meta.OriginThread.Token != ack.Token {
+		t.Fatalf("origin attribution = %+v", meta)
+	}
+
+	// The receipt names the turn it was consumed by, and the request is
+	// settled once, with no wake owed.
+	receipt := f.receipt(t, ack.Token)
+	if receipt.MessageItemID != row.ID {
+		t.Errorf("receipt message item = %q, want %q", receipt.MessageItemID, row.ID)
+	}
+	if receipt.TurnID != threadRequestTurnKey(ack.ThreadID, row.TurnIndex) {
+		t.Errorf("receipt turn = %q, want the turn that consumed the message", receipt.TurnID)
+	}
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Errorf("a settled wait still queued a wake: %+v", rows)
+	}
+}
+
+// A request's own turn settles it and no other turn does. A plain user
+// message in the target thread runs a turn of its own, which answers nobody.
+func TestThreadRequestSettlesOnlyOnTheTurnThatConsumedIt(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "first answer", "second answer")
+
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "start the review", WaitSeconds: 20,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	settledAt := f.request(t, ack.Token).SettledAt
+	if settledAt == 0 {
+		t.Fatalf("request did not settle: %+v", f.request(t, ack.Token))
+	}
+	// A second, human turn in the same thread.
+	if err := f.app.SendMessage(ack.ThreadID, "and now the other platform", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	f.bus.nextProviderEventOfKind(t, provider.EventTurnComplete, 10*time.Second)
+	row := f.request(t, ack.Token)
+	if row.SettledAt != settledAt || !strings.Contains(string(row.Answer), "first answer") {
+		t.Fatalf("a later turn rewrote the answer: %+v", row)
+	}
+}
+
+// busyThread is a target with an open turn: a send to it queues at the turn
+// boundary instead of starting one, which is the whole of "as if the user
+// had typed it".
+func (f *requestFixture) busyThread(t *testing.T, id string) store.Thread {
+	t.Helper()
+	thread, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatalf("create target thread: %v", err)
+	}
+	if err := f.app.store.InsertTurn(store.Turn{
+		TurnID: id + "-open", ThreadID: thread.ID, TurnIndex: 1, StartedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	return thread
+}
+
+// TestThreadSendQueuesIntoABusyThreadAndCancelTakesItBack pins both halves of
+// the queued path: a message waiting on a turn is not running, so nothing can
+// settle it, and cancelling the request takes the message back out.
+func TestThreadSendQueuesIntoABusyThreadAndCancelTakesItBack(t *testing.T) {
+	f := newRequestFixture(t)
+	target := f.busyThread(t, "busy")
+
+	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
+		ThreadID: target.ID, Message: "look at the crash report too", WaitSeconds: 0, Notify: true,
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if ack.Outcome != threadtools.OutcomeBackgrounded || ack.State != store.ThreadRequestAccepted {
+		t.Fatalf("ack = %+v, want an accepted backgrounded request", ack)
+	}
+	if receipt := f.receipt(t, ack.Token); receipt.State != store.ThreadReceiptAccepted || receipt.TurnID != "" {
+		t.Fatalf("a queued message bound a turn: %+v", receipt)
+	}
+	rows := durableQueueRows(t, f.app, target.ID)
+	if len(rows) != 1 || rows[0].SendID != threadRequestSendID(ack.Token) {
+		t.Fatalf("queued rows = %+v, want one row for this request", rows)
+	}
+	if !strings.Contains(rows[0].Message, "Agent request from thread") {
+		t.Errorf("queued message lost its footer: %q", rows[0].Message)
+	}
+
+	report, err := f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{Token: ack.Token})
+	if err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if report.Effect != threadCancelQueuedRemoved {
+		t.Fatalf("cancel effect = %q, want the queued message removed", report.Effect)
+	}
+	if rows := durableQueueRows(t, f.app, target.ID); len(rows) != 0 {
+		t.Fatalf("cancelled message is still queued: %+v", rows)
+	}
+	if queued := f.app.triage.QueuedFlushItems(target.ID); len(queued) != 0 {
+		t.Fatalf("cancelled message is still in the live queue: %+v", queued)
+	}
+	if row := f.request(t, ack.Token); row.State != store.ThreadRequestCancelled {
+		t.Fatalf("request state = %q, want cancelled", row.State)
+	}
+	// The caller stopped this itself and read the effect in the reply, so
+	// nothing is owed to it later.
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("cancelling own request woke the caller: %+v", rows)
+	}
+	if row := f.request(t, ack.Token); row.Notify {
+		t.Error("notify survived the caller's own cancel")
+	}
+}
+
+// A thread cannot send to or ask itself, whatever the tools layer resolved a
+// moment earlier.
+func TestThreadRequestRefusesSendingToTheCallersOwnThread(t *testing.T) {
+	f := newRequestFixture(t)
+	_, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{ThreadID: f.caller.ID, Message: "hello me"})
+	if code := publicCode(t, err); code != threadtools.CodeSelfSend {
+		t.Fatalf("send-to-self code = %q", code)
+	}
+	if _, err := f.adapter().Ask(t.Context(), f.callerIdentity(), threadtools.AskCall{ThreadID: f.caller.ID, Question: "what am I doing"}); err != nil {
+		if code := publicCode(t, err); code != threadtools.CodeSelfSend {
+			t.Fatalf("ask-self code = %q", code)
+		}
+	} else {
+		t.Fatal("asking itself was allowed")
+	}
+	rows, err := f.app.store.ListThreadRequestsByCaller(f.caller.ID, 10, 0)
+	if err != nil {
+		t.Fatalf("ListThreadRequestsByCaller: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("a refused call left rows behind: %+v", rows)
+	}
+}
+
+// TestThreadAskForksAReadOnlyScratchThreadAndDeletesIt pins what makes an ask
+// safe: the question goes to a hidden read-only fork of the target's tail,
+// and the fork is gone once the answer is stored somewhere that outlives it.
+func TestThreadAskForksAReadOnlyScratchThreadAndDeletesIt(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "the retry budget is three attempts")
+	target := f.forkableThread(t, "ask-source")
+
+	ack, err := f.adapter().Ask(t.Context(), f.callerIdentity(), threadtools.AskCall{
+		ThreadID: target.ID, Question: "what is the retry budget?", WaitSeconds: 20,
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	scratchID := ack.ThreadID
+	if scratchID == target.ID {
+		t.Fatal("the question went into the target thread itself")
+	}
+	if ack.Outcome != threadtools.OutcomeSettled || !strings.Contains(ack.Answer, "retry budget") {
+		t.Fatalf("ack = %+v", ack)
+	}
+	// The target never saw the question.
+	items, err := f.app.store.ListItems(target.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	for _, item := range items {
+		if strings.Contains(item.Summary, "what is the retry budget") {
+			t.Fatalf("the ask landed in the target's transcript: %+v", item)
+		}
+	}
+	// The scratch fork is gone, and its row with it.
+	if _, err := f.app.store.GetThread(scratchID); err == nil {
+		t.Fatalf("scratch thread %s outlived its answer", scratchID)
+	}
+	if _, found, err := f.app.store.GetScratchThread(scratchID); err != nil || found {
+		t.Fatalf("scratch row survived: found=%v err=%v", found, err)
+	}
+	// The whole answer is still readable after the thread that wrote it is
+	// gone, which is the point of storing it on the request.
+	row := f.request(t, ack.Token)
+	if !strings.Contains(string(row.Answer), "retry budget") {
+		t.Fatalf("answer lost with the scratch thread: %+v", row)
+	}
+}
+
+// The scratch fork runs read-only whatever the source runs: a question must
+// not be able to act on a workspace.
+func TestThreadAskScratchForkIsAlwaysReadOnly(t *testing.T) {
+	f := newRequestFixture(t)
+	target := f.forkableThread(t, "readonly-source")
+	if err := f.app.store.UpdateRuntimeMode(target.ID, string(provider.RuntimeFullAccess)); err != nil {
+		t.Fatalf("UpdateRuntimeMode: %v", err)
+	}
+	source, err := f.app.store.GetThread(target.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	fork, err := f.adapter().forkScratchThread(t.Context(), source, "token-abc")
+	if err != nil {
+		t.Fatalf("forkScratchThread: %v", err)
+	}
+	if fork.RuntimeMode != string(provider.RuntimeReadOnly) {
+		t.Errorf("scratch runtime mode = %q, want read-only", fork.RuntimeMode)
+	}
+	if fork.Mode != threadmode.ModeScratch {
+		t.Errorf("scratch mode = %q", fork.Mode)
+	}
+	if !strings.HasPrefix(fork.Title, "Ask: ") {
+		t.Errorf("scratch title = %q", fork.Title)
+	}
+	row, found, err := f.app.store.GetScratchThread(fork.ID)
+	if err != nil || !found || row.RequestToken != "token-abc" || row.SourceThreadID != target.ID {
+		t.Fatalf("scratch row = %+v found=%v err=%v", row, found, err)
+	}
+}
+
+// forkableThread builds a Claude thread an ask can fork: a session file on
+// disk, a session ref on the row, and a stamped user message to cut at.
+func (f *requestFixture) forkableThread(t *testing.T, sessionID string) store.Thread {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve isolated home: %v", err)
+	}
+	workspace := t.TempDir()
+	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"`+sessionID+`","message":{"role":"user","content":"what is the retry policy"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"`+sessionID+`","message":{"role":"assistant","content":[{"type":"text","text":"three attempts"}]}}
+`)
+	thread, err := createTestThread(t, f.app, string(provider.Claude), workspace, "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatalf("create forkable thread: %v", err)
+	}
+	thread.SessionRef = sessionID
+	if err := f.app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update session ref: %v", err)
+	}
+	insertUserItemWithMeta(t, f.app.store, thread.ID, thread.ID+":u0", 0, "what is the retry policy", `{"provider_item_id":"u0"}`)
+	insertAssistantTextItem(t, f.app.store, thread.ID, thread.ID+":a0", 0, "three attempts")
+	updated, err := f.app.store.GetThread(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	return updated
+}
+
+// awaitRequestState polls until the request reaches one of the wanted states.
+// Settlement runs off the provider read loop, so a test that is not parked on
+// a wait has to wait for it the way any other observer would.
+func (f *requestFixture) awaitRequestState(t *testing.T, token string, want ...string) store.ThreadRequest {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var last store.ThreadRequest
+	for time.Now().Before(deadline) {
+		last = f.request(t, token)
+		for _, state := range want {
+			if last.State == state {
+				return last
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("request %s stayed in %q, want one of %v", token, last.State, want)
+	return last
+}
+
+// TestThreadRequestWithNoWaitArrivesAsAMessage covers the other half of the
+// promise the ack makes: nobody is parked, so the answer is queued into the
+// caller's thread as a message it will read on its next turn.
+func TestThreadRequestWithNoWaitArrivesAsAMessage(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "the migration is reversible")
+	// The caller is mid-turn, so the wake queues at the turn boundary and
+	// stays there to be read instead of racing a session start.
+	if err := f.app.store.InsertTurn(store.Turn{
+		TurnID: "caller-open", ThreadID: f.caller.ID, TurnIndex: 1, StartedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+
+	// A person's half-written message must survive an agent's wake.
+	if _, err := f.app.store.UpsertThreadDraft(store.ThreadDraft{
+		ThreadID: f.caller.ID, Content: "half a sentence", UpdatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("UpsertThreadDraft: %v", err)
+	}
+
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "is the migration reversible?", Title: "Migration", WaitSeconds: 0, Notify: true,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if ack.Outcome != threadtools.OutcomeBackgrounded {
+		t.Fatalf("ack outcome = %q, want backgrounded", ack.Outcome)
+	}
+	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	if !strings.Contains(string(row.Answer), "reversible") {
+		t.Fatalf("answer = %q", row.Answer)
+	}
+
+	var wake store.FlushQueueItem
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, queued := range durableQueueRows(t, f.app, f.caller.ID) {
+			if queued.SendID == threadWakeSendID(ack.Token) {
+				wake = queued
+			}
+		}
+		if wake.SendID != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if wake.SendID == "" {
+		t.Fatalf("no wake was queued for %s: %+v", ack.Token, durableQueueRows(t, f.app, f.caller.ID))
+	}
+	if !strings.Contains(wake.Message, "reversible") || !strings.Contains(wake.Message, ack.Token) {
+		t.Errorf("wake body = %q, want the answer and the token", wake.Message)
+	}
+	if draft, found, err := f.app.store.GetThreadDraft(f.caller.ID); err != nil || !found || draft.Content != "half a sentence" {
+		t.Errorf("the wake consumed the person's draft: %+v found=%v err=%v", draft, found, err)
+	}
+	var payload flushqueue.Payload
+	if err := json.Unmarshal(wake.Payload, &payload); err != nil {
+		t.Fatalf("decode wake payload: %v", err)
+	}
+	if payload.Origin != string(usermessage.OriginAgentThread) || payload.OriginThread == nil {
+		t.Errorf("wake payload = %+v, want the agent-thread attribution", payload)
+	}
+	delivered := f.request(t, ack.Token)
+	if delivered.DeliveredHow != store.ThreadWakeQueued || delivered.DeliveredAt == 0 {
+		t.Errorf("delivery = %q at %d, want a queued delivery", delivered.DeliveredHow, delivered.DeliveredAt)
+	}
+}
+
+// A wait that runs out returns the work as still running and arms the wake,
+// so the answer is never dropped between the two delivery paths.
+func TestThreadRequestWaitTimeoutArmsTheWake(t *testing.T) {
+	f := newRequestFixture(t)
+	target := f.busyThread(t, "slow")
+
+	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
+		ThreadID: target.ID, Message: "take your time", WaitSeconds: 1, Notify: false,
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if ack.Outcome != threadtools.OutcomeBackgrounded {
+		t.Fatalf("ack outcome = %q, want backgrounded", ack.Outcome)
+	}
+	if !ack.Notify {
+		t.Error("ack does not say the answer will arrive as a message")
+	}
+	if row := f.request(t, ack.Token); !row.Notify {
+		t.Error("the timed-out wait left the request with no way to deliver")
+	}
+}
+
+// An interrupt of the caller's turn ends the calls it was blocking without
+// touching the work they were waiting for.
+func TestThreadRequestWaitEndsWhenTheCallersTurnIsInterrupted(t *testing.T) {
+	f := newRequestFixture(t)
+	target := f.busyThread(t, "unhurried")
+
+	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
+		ThreadID: target.ID, Message: "whenever you can", WaitSeconds: 0, Notify: true,
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	type result struct {
+		report threadtools.StatusReport
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		report, err := f.adapter().RequestStates(context.Background(), f.callerIdentity(), threadtools.StatusCall{
+			Tokens: []string{ack.Token}, WaitSeconds: 30,
+		})
+		done <- result{report, err}
+	}()
+	waitUntil(t, 10*time.Second, func() bool { return f.app.requestWaitActive(ack.Token) })
+
+	if err := f.app.interruptTurnCtx(t.Context(), f.caller.ID); err != nil {
+		t.Fatalf("interruptTurnCtx: %v", err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("RequestStates: %v", got.err)
+		}
+		if len(got.report.Requests) != 1 || got.report.Requests[0].State != store.ThreadRequestAccepted {
+			t.Fatalf("report = %+v, want the request still running", got.report)
+		}
+		if got.report.WokeOn != "" || got.report.TimedOut {
+			t.Errorf("report = %+v, want neither a settlement nor a timeout", got.report)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the interrupt did not end the parked status call")
+	}
+	if receipt := f.receipt(t, ack.Token); receipt.State != store.ThreadReceiptAccepted {
+		t.Fatalf("the interrupt disturbed the request itself: %+v", receipt)
+	}
+}
+
+// TestThreadStatusReattachesAndCountsAsDelivery is the re-attach path: the
+// agent left, the answer landed, and reading it in a status reply is what
+// delivers it. No message is owed afterwards.
+func TestThreadStatusReattachesAndCountsAsDelivery(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "the index rebuild took nine minutes")
+
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "how long did the rebuild take?", WaitSeconds: 0, Notify: false,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+
+	report, err := f.adapter().RequestStates(t.Context(), f.callerIdentity(), threadtools.StatusCall{
+		Tokens: []string{ack.Token}, WaitSeconds: 5,
+	})
+	if err != nil {
+		t.Fatalf("RequestStates: %v", err)
+	}
+	if len(report.Requests) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	state := report.Requests[0]
+	if state.State != store.ThreadRequestFinished || !strings.Contains(state.Answer, "nine minutes") {
+		t.Fatalf("state = %+v", state)
+	}
+	if report.WokeOn != ack.Token {
+		t.Errorf("woke_on = %q, want the settled token", report.WokeOn)
+	}
+	if state.Delivered != store.ThreadWakeInline {
+		t.Errorf("delivered = %q, want the status reply to count as delivery", state.Delivered)
+	}
+	if state.WakeQueued {
+		t.Error("a message was queued for an answer the agent just read")
+	}
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("a wake was queued anyway: %+v", rows)
+	}
+	if row := f.request(t, ack.Token); row.DeliveredHow != store.ThreadWakeInline || row.DeliveredAt == 0 {
+		t.Errorf("delivery was not recorded: %q at %d", row.DeliveredHow, row.DeliveredAt)
+	}
+}
+
+// mockClaudeHoldingTheTurn answers and then keeps the turn open, which is the
+// state a request is in while its agent is still working: the receipt is
+// running and a reply can still settle it.
+func (f *requestFixture) mockClaudeHoldingTheTurn(t *testing.T, text string) {
+	t.Helper()
+	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), [][]string{{
+		`{"type":"system","subtype":"init","session_id":"sess-hold","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+		`{"type":"assistant","message":{"id":"msg-hold","role":"assistant","content":[{"type":"text","text":` + quoteJSON(text) + `}]}}`,
+	}})
+	if _, err := f.app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set claude binary: %v", err)
+	}
+}
+
+// runningRequest spawns a thread whose turn stays open, so the test holds a
+// receipt in exactly the state a reply settles.
+func (f *requestFixture) runningRequest(t *testing.T, prompt string) threadtools.RequestAck {
+	t.Helper()
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: prompt, WaitSeconds: 0, Notify: true,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		row, found, err := f.app.store.GetThreadRequestReceipt(ack.Token)
+		return err == nil && found && row.State == store.ThreadReceiptRunning
+	})
+	return ack
+}
+
+func (f *requestFixture) targetIdentity(t *testing.T, threadID string) threadtools.Caller {
+	t.Helper()
+	thread, err := f.app.store.GetThread(threadID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	return threadtools.Caller{ThreadID: thread.ID, Title: thread.Title, ComputerID: "local-computer", ComputerName: "This Mac"}
+}
+
+// TestThreadReplyAnswersOnceAndRefusesASecondAnswer pins the whole reply
+// contract: the answer settles the request, the same text again is the same
+// answer, different text is a refusal, and a token belonging to another
+// thread is not answerable here at all.
+func TestThreadReplyAnswersOnceAndRefusesASecondAnswer(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "starting on it")
+	ack := f.runningRequest(t, "how many rows did the backfill touch?")
+	responder := f.targetIdentity(t, ack.ThreadID)
+
+	reply, err := f.adapter().Reply(t.Context(), responder, threadtools.ReplyCall{Token: ack.Token, Text: "41,220 rows"})
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !reply.Accepted || reply.State != threadtools.RequestReplied || reply.Late {
+		t.Fatalf("reply ack = %+v", reply)
+	}
+	row := f.request(t, ack.Token)
+	if row.State != store.ThreadRequestReplied || string(row.Answer) != "41,220 rows" {
+		t.Fatalf("request = %+v", row)
+	}
+	if row.AnswerKind != store.ThreadAnswerReply {
+		t.Errorf("answer kind = %q, want a reply", row.AnswerKind)
+	}
+
+	again, err := f.adapter().Reply(t.Context(), responder, threadtools.ReplyCall{Token: ack.Token, Text: "41,220 rows"})
+	if err != nil {
+		t.Fatalf("repeated Reply: %v", err)
+	}
+	if again.Accepted {
+		t.Error("a retry of the same reply was counted as a second answer")
+	}
+	if again.State != threadtools.RequestReplied {
+		t.Errorf("repeated reply state = %q", again.State)
+	}
+
+	_, err = f.adapter().Reply(t.Context(), responder, threadtools.ReplyCall{Token: ack.Token, Text: "on reflection, 41,221"})
+	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
+		t.Fatalf("second answer code = %q", code)
+	}
+
+	_, err = f.adapter().Reply(t.Context(), f.callerIdentity(), threadtools.ReplyCall{Token: ack.Token, Text: "me again"})
+	if code := publicCode(t, err); code != threadtools.CodeRequestNotYours {
+		t.Fatalf("answering another thread's request = %q", code)
+	}
+	_, err = f.adapter().Reply(t.Context(), responder, threadtools.ReplyCall{Token: "no-such-token", Text: "hello"})
+	if code := publicCode(t, err); code != threadtools.CodeRequestUnknown {
+		t.Fatalf("unknown token code = %q", code)
+	}
+}
+
+// A reply that arrives after the turn ended is a revision, not a refusal:
+// the sender was already told the turn produced no answer, so the late text
+// is stored and delivered as a second wake.
+func TestThreadLateReplyArrivesAsASecondWake(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "looking into it")
+	// The caller is mid-turn so both wakes stay in the queue to be read.
+	if err := f.app.store.InsertTurn(store.Turn{
+		TurnID: "caller-open", ThreadID: f.caller.ID, TurnIndex: 1, StartedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "what did the profiler say?", WaitSeconds: 0, Notify: true,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	settled := f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	waitUntil(t, 10*time.Second, func() bool { return f.request(t, ack.Token).DeliveredAt != 0 })
+
+	late, err := f.adapter().Reply(t.Context(), f.targetIdentity(t, ack.ThreadID), threadtools.ReplyCall{
+		Token: ack.Token, Text: "the profiler blames the JSON decode",
+	})
+	if err != nil {
+		t.Fatalf("late Reply: %v", err)
+	}
+	if !late.Accepted || !late.Late {
+		t.Fatalf("late reply ack = %+v", late)
+	}
+	if late.Revision <= settled.Revision {
+		t.Errorf("late revision = %d, want past the settled revision %d", late.Revision, settled.Revision)
+	}
+	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	if !strings.Contains(string(row.LateReply), "JSON decode") || row.LateReplyAt == 0 {
+		t.Fatalf("late reply was not stored: %+v", row)
+	}
+	// The first answer is untouched: a revision adds to the record, it does
+	// not rewrite it.
+	if !strings.Contains(string(row.Answer), "looking into it") {
+		t.Errorf("the late reply overwrote the first answer: %q", row.Answer)
+	}
+	waitUntil(t, 10*time.Second, func() bool { return f.request(t, ack.Token).LateDeliveredAt != 0 })
+	var sendIDs []string
+	for _, queued := range durableQueueRows(t, f.app, f.caller.ID) {
+		sendIDs = append(sendIDs, queued.SendID)
+	}
+	wantFirst, wantLate := threadWakeSendID(ack.Token), threadWakeLateSendID(ack.Token)
+	if len(sendIDs) != 2 || sendIDs[0] != wantFirst || sendIDs[1] != wantLate {
+		t.Fatalf("queued wakes = %v, want %q then %q", sendIDs, wantFirst, wantLate)
+	}
+}
+
+// A turn that fails settles the request as errored with what the provider
+// said, so the sender learns the work did not happen.
+func TestThreadRequestSettlesErroredWhenTheTurnFails(t *testing.T) {
+	f := newRequestFixture(t)
+	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), [][]string{{
+		`{"type":"system","subtype":"init","session_id":"sess-error","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+		`{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["the sandbox denied the write"]}`,
+	}})
+	if _, err := f.app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set claude binary: %v", err)
+	}
+
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "write the release notes", WaitSeconds: 20, Notify: false,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if ack.State != store.ThreadRequestErrored {
+		t.Fatalf("ack = %+v, want an errored request", ack)
+	}
+	if ack.AnswerKind != threadtools.AnswerError {
+		t.Errorf("answer kind = %q, want the error kind", ack.AnswerKind)
+	}
+	row := f.request(t, ack.Token)
+	if row.State != store.ThreadRequestErrored || len(row.Answer) == 0 {
+		t.Fatalf("request = %+v, want an errored row with an account of it", row)
+	}
+}
+
+// A target that has stopped to ask a person something ends the wait without
+// settling: the person owns the answer now.
+func TestThreadStatusReturnsBlockedWhenTheTargetNeedsAPerson(t *testing.T) {
+	f := newRequestFixture(t)
+	target := f.busyThread(t, "waiting-on-a-person")
+	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
+		ThreadID: target.ID, Message: "rerun the deploy", WaitSeconds: 0,
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	approval, err := json.Marshal(provider.ApprovalRequest{RequestID: "approval-1", Kind: "permission"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventApprovalRequest, ThreadID: target.ID, ItemID: "approval-1",
+		Meta: approval, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("approval request: %v", err)
+	}
+
+	report, err := f.adapter().RequestStates(t.Context(), f.callerIdentity(), threadtools.StatusCall{
+		Tokens: []string{ack.Token}, WaitSeconds: 10,
+	})
+	if err != nil {
+		t.Fatalf("RequestStates: %v", err)
+	}
+	if report.WokeOn != ack.Token || report.TimedOut {
+		t.Fatalf("report = %+v, want the blocked target to end the wait", report)
+	}
+	if len(report.Requests) != 1 || report.Requests[0].State != threadtools.RequestBlocked {
+		t.Fatalf("requests = %+v, want a blocked state", report.Requests)
+	}
+	// Blocked is not settled: the request is still the target's work.
+	if row := f.request(t, ack.Token); row.State != store.ThreadRequestAccepted {
+		t.Fatalf("request state = %q, want it still open", row.State)
+	}
+}
+
+// A request belongs to the thread that made it. Another thread can neither
+// read it nor stop it.
+func TestThreadRequestsAreScopedToTheirCaller(t *testing.T) {
+	f := newRequestFixture(t)
+	target := f.busyThread(t, "shared")
+	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
+		ThreadID: target.ID, Message: "mine", WaitSeconds: 0,
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	stranger := f.targetIdentity(t, target.ID)
+
+	_, err = f.adapter().RequestStates(t.Context(), stranger, threadtools.StatusCall{Tokens: []string{ack.Token}})
+	if code := publicCode(t, err); code != threadtools.CodeRequestNotYours {
+		t.Fatalf("reading another thread's request = %q", code)
+	}
+	_, err = f.adapter().Cancel(t.Context(), stranger, threadtools.CancelCall{Token: ack.Token})
+	if code := publicCode(t, err); code != threadtools.CodeRequestNotYours {
+		t.Fatalf("cancelling another thread's request = %q", code)
+	}
+	// By thread id, the caller may only stop a thread it started work in.
+	other, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatalf("create unrelated thread: %v", err)
+	}
+	_, err = f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{ThreadID: other.ID})
+	if code := publicCode(t, err); code != threadtools.CodeNotYours {
+		t.Fatalf("cancelling an unrelated thread = %q", code)
+	}
+	// The thread this caller did send to is cancellable by id.
+	report, err := f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{ThreadID: target.ID})
+	if err != nil {
+		t.Fatalf("Cancel by thread id: %v", err)
+	}
+	if report.ThreadID != target.ID {
+		t.Fatalf("cancel report = %+v", report)
+	}
+}
+
+// TestThreadSpawnOverridesWhatItIsToldAndCutsAWorktree covers the five
+// inherited settings, the refusal a bad one earns, and the worktree door: a
+// spawn that names a branch gets a fresh checkout of the caller's project.
+func TestThreadSpawnOverridesWhatItIsToldAndCutsAWorktree(t *testing.T) {
+	f := newRequestFixtureIn(t, initGitRepo(t))
+	f.mockClaude(t, "on it")
+
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "port the fix", Title: "Port the fix", Model: "claude-haiku-4-5",
+		RuntimeMode: string(provider.RuntimeReadOnly), WorktreeBranch: "port-the-fix",
+		WaitSeconds: 0,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	spawned, err := f.app.store.GetThread(ack.ThreadID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if spawned.Model != "claude-haiku-4-5" {
+		t.Errorf("model = %q, want the override", spawned.Model)
+	}
+	// The caller runs an effort its model offers and the override's does
+	// not. The inherited value is dropped rather than carried across, and
+	// thread creation's own model policy settles what replaces it.
+	if spawned.ReasoningEffort == f.caller.ReasoningEffort {
+		t.Errorf("effort = %q, want the caller's effort dropped with its model", spawned.ReasoningEffort)
+	}
+	if spawned.RuntimeMode != string(provider.RuntimeReadOnly) {
+		t.Errorf("runtime mode = %q, want the override", spawned.RuntimeMode)
+	}
+	if spawned.ProjectID != f.caller.ProjectID {
+		t.Errorf("project = %q, want the caller's %q", spawned.ProjectID, f.caller.ProjectID)
+	}
+	if spawned.WorktreePath == "" || spawned.WorktreePath == projectPathForThread(t, f.app, f.caller) {
+		t.Fatalf("worktree path = %q, want a fresh checkout", spawned.WorktreePath)
+	}
+	if !strings.Contains(spawned.Branch, "port-the-fix") {
+		t.Errorf("branch = %q, want the requested name", spawned.Branch)
+	}
+	if info, err := os.Stat(spawned.WorktreePath); err != nil || !info.IsDir() {
+		t.Fatalf("worktree was not created at %s: %v", spawned.WorktreePath, err)
+	}
+
+	// A model this computer does not have is refused with the list, not
+	// silently replaced.
+	_, err = f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{Prompt: "x", Model: "claude-imaginary-9"})
+	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
+		t.Fatalf("unknown model code = %q", code)
+	}
+	if !strings.Contains(err.Error(), "claude-haiku-4-5") {
+		t.Errorf("refusal does not list the models it has: %v", err)
+	}
+	// An effort a model does not have is refused the same way.
+	_, err = f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "x", Model: "claude-haiku-4-5", Effort: "max",
+	})
+	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
+		t.Fatalf("unknown effort code = %q", code)
+	}
+}
+
+// A spawn from a thread carries that thread's history: the new agent starts
+// with the conversation, not a description of it.
+func TestThreadSpawnFromThreadForksTheHistoryIntoAVisibleThread(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "reproduced it")
+	source := f.forkableThread(t, "spawn-source")
+
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		FromThread: source.ID, Prompt: "carry on from here", Title: "Carry on", WaitSeconds: 0,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	fork, err := f.app.store.GetThread(ack.ThreadID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if fork.ID == source.ID {
+		t.Fatal("the spawn ran in the source thread")
+	}
+	if fork.Mode == threadmode.ModeScratch {
+		t.Error("a spawned fork is a thread the person can see, not a scratch thread")
+	}
+	if fork.Title != "Carry on" {
+		t.Errorf("title = %q, want the requested one", fork.Title)
+	}
+	items, err := f.app.store.ListItems(fork.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var carried, prompt bool
+	for _, item := range items {
+		if strings.Contains(item.Summary, "what is the retry policy") {
+			carried = true
+		}
+		if strings.Contains(item.Summary, "carry on from here") {
+			prompt = true
+		}
+	}
+	if !carried {
+		t.Errorf("the fork did not carry the source's history: %+v", items)
+	}
+	if !prompt {
+		t.Errorf("the prompt never reached the fork: %+v", items)
+	}
+	// The source is untouched by the fork.
+	sourceItems, err := f.app.store.ListItems(source.ID)
+	if err != nil {
+		t.Fatalf("ListItems(source): %v", err)
+	}
+	for _, item := range sourceItems {
+		if strings.Contains(item.Summary, "carry on from here") {
+			t.Fatalf("the spawn wrote into the source thread: %+v", item)
+		}
+	}
+}
+
+// A send to an idle thread starts it. The queue path is for a thread that is
+// busy; an idle one gets the message now.
+func TestThreadSendStartsAnIdleThread(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "reading it now")
+	target, err := createTestThread(t, f.app, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+
+	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
+		ThreadID: target.ID, Message: "read the design doc", WaitSeconds: 20,
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if ack.State != store.ThreadRequestFinished {
+		t.Fatalf("ack = %+v, want the work to have run", ack)
+	}
+	if rows := durableQueueRows(t, f.app, target.ID); len(rows) != 0 {
+		t.Fatalf("an idle thread queued the message instead of running it: %+v", rows)
+	}
+	item := f.userRow(t, target.ID, ack.Token)
+	if !strings.Contains(item.Summary, "read the design doc") {
+		t.Errorf("user row = %q", item.Summary)
+	}
+	var meta usermessage.Meta
+	if err := json.Unmarshal([]byte(item.Meta), &meta); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	if meta.SendID != threadRequestSendID(ack.Token) {
+		t.Errorf("send id = %q, want the request's own", meta.SendID)
+	}
+	if meta.Origin != usermessage.OriginAgentThread || meta.OriginThread.ThreadID != f.caller.ID {
+		t.Errorf("attribution = %+v, want the caller thread", meta)
+	}
+}
+
+// restart builds a second App over the same database, which is what a
+// restart is to everything durable: the rows survive, the process state does
+// not.
+func (f *requestFixture) restart(t *testing.T) *requestFixture {
+	t.Helper()
+	bus := newCapturedEventBus()
+	app := &App{store: f.app.store, settings: f.app.settings}
+	app.triage = triage.NewRouter(app.store, bus.emitChannel)
+	app.triage.SetEventHook(bus.observeRouterEvent)
+	app.providerDiscoveryCaches = f.app.providerDiscoveryCaches
+	app.textGenerationExecutor = f.app.textGenerationExecutor
+	app.keepAwakeApply = f.app.keepAwakeApply
+	app.configDir = f.app.configDir
+	app.appCtx, app.appCancel = context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		app.appCancel()
+		app.threadRequestsWG.Wait()
+	})
+	app.installThreadRequestObserver()
+	return &requestFixture{app: app, bus: bus, caller: f.caller}
+}
+
+// holdCallerTurn keeps the caller mid-turn so wakes queue where the test can
+// read them instead of racing a session start.
+func (f *requestFixture) holdCallerTurn(t *testing.T) {
+	t.Helper()
+	if err := f.app.store.InsertTurn(store.Turn{
+		TurnID: f.caller.ID + "-open", ThreadID: f.caller.ID, TurnIndex: 1, StartedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+}
+
+// A reminder is a message to the thread's own agent, due at a time. It is a
+// row and nothing else, so a restart between setting it and its due time
+// changes nothing.
+func TestThreadReminderFiresAfterARestart(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "noted")
+	f.holdCallerTurn(t)
+
+	ack, err := f.adapter().Remind(t.Context(), f.callerIdentity(), threadtools.RemindCall{
+		DueAtUnixMs: time.Now().Add(-time.Second).UnixMilli(), Note: "check whether the deploy finished",
+	})
+	if err != nil {
+		t.Fatalf("Remind: %v", err)
+	}
+	if ack.State != store.ThreadRequestAccepted || !ack.Notify {
+		t.Fatalf("ack = %+v, want an accepted reminder that will arrive as a message", ack)
+	}
+	if row := f.request(t, ack.Token); row.Kind != store.ThreadRequestRemind || row.DueAt == 0 {
+		t.Fatalf("request = %+v, want a due reminder", row)
+	}
+
+	after := f.restart(t)
+	after.app.fireDueThreadReminders(time.Now())
+
+	row := after.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	if !strings.Contains(string(row.Answer), "deploy finished") {
+		t.Fatalf("reminder answer = %q, want the note", row.Answer)
+	}
+	var wake store.FlushQueueItem
+	for _, queued := range durableQueueRows(t, after.app, f.caller.ID) {
+		if queued.SendID == threadWakeSendID(ack.Token) {
+			wake = queued
+		}
+	}
+	if wake.SendID == "" || !strings.Contains(wake.Message, "deploy finished") {
+		t.Fatalf("no reminder arrived: %+v", durableQueueRows(t, after.app, f.caller.ID))
+	}
+}
+
+// The sweep ticker is what fires a reminder with nobody watching. The nudge
+// is what keeps one due sooner than the next tick from waiting it out.
+func TestThreadReminderSweepFiresOnItsOwn(t *testing.T) {
+	f := newRequestFixture(t)
+	// The reminder wakes the thread, and waking a thread starts its agent.
+	f.mockClaude(t, "noted")
+	f.holdCallerTurn(t)
+	f.app.appCtx, f.app.appCancel = context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		f.app.appCancel()
+		f.app.threadRequestsWG.Wait()
+	})
+	f.app.startThreadRequestSweeps()
+
+	ack, err := f.adapter().Remind(t.Context(), f.callerIdentity(), threadtools.RemindCall{
+		DueAtUnixMs: time.Now().UnixMilli(), Note: "stand up",
+	})
+	if err != nil {
+		t.Fatalf("Remind: %v", err)
+	}
+	waitUntil(t, 15*time.Second, func() bool {
+		return f.request(t, ack.Token).State == store.ThreadRequestFinished
+	})
+}
+
+// A caller that goes away stops asking. Archiving is the reversible half:
+// the asks it started are stopped and nothing is owed to it while it is out
+// of sight.
+func TestThreadRequestsStopWhenTheCallerIsArchived(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "working")
+	ask := f.runningRequest(t, "how big is the index?")
+
+	if err := f.app.ArchiveThread(f.caller.ID); err != nil {
+		t.Fatalf("ArchiveThread: %v", err)
+	}
+	row := f.request(t, ask.Token)
+	if row.Notify {
+		t.Error("an archived thread is still owed a message")
+	}
+}
+
+// Deleting the caller takes its requests with it: the ledger is the caller's
+// record, and a record with no owner is nothing to collect. The hidden work
+// it started goes too; the threads a person can see do not.
+func TestDeletingTheCallerTakesItsRequests(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "working")
+	spawn := f.runningRequest(t, "how big is the index?")
+	target := f.forkableThread(t, "delete-caller-source")
+	ask, err := f.adapter().Ask(t.Context(), f.callerIdentity(), threadtools.AskCall{
+		ThreadID: target.ID, Question: "what did you decide?", WaitSeconds: 0, Notify: true,
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+
+	if err := f.app.DeleteThread(f.caller.ID); err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+	for _, token := range []string{spawn.Token, ask.Token} {
+		if _, found, err := f.app.store.GetThreadRequest(token); err != nil || found {
+			t.Fatalf("request %s outlived its caller: found=%v err=%v", token, found, err)
+		}
+	}
+	// The scratch thread was the caller's private workspace; it goes with it.
+	if _, err := f.app.store.GetThread(ask.ThreadID); err == nil {
+		t.Errorf("the ask's scratch thread %s outlived its caller", ask.ThreadID)
+	}
+	// The spawned thread is work a person can see, and deleting the thread
+	// that asked for it is not a reason to destroy it.
+	if _, err := f.app.store.GetThread(spawn.ThreadID); err != nil {
+		t.Errorf("the spawned thread was deleted with its caller: %v", err)
+	}
+}
+
+// A target deleted mid-request cannot answer, and saying so is the only
+// honest settlement.
+func TestDeletingTheTargetErrorsTheRequest(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "starting")
+	ack := f.runningRequest(t, "what does the log say?")
+
+	if err := f.app.DeleteThread(ack.ThreadID); err != nil {
+		t.Fatalf("DeleteThread: %v", err)
+	}
+	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestErrored)
+	if !strings.Contains(string(row.Answer), "deleted") {
+		t.Fatalf("answer = %q, want an account of the deletion", row.Answer)
+	}
+}
+
+// A restart interrupts whatever was in flight. The boot sweep says so, once,
+// instead of leaving requests that can never settle.
+func TestBootSweepSettlesWhatTheRestartInterrupted(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "mid-thought")
+	ack := f.runningRequest(t, "keep going")
+	scratch := f.forkableThread(t, "boot-scratch")
+	if err := f.app.store.InsertScratchThread(store.ScratchThread{
+		ThreadID: scratch.ID, SourceThreadID: f.caller.ID, RequestToken: "stale-token",
+		ReturnMode: threadToolsScratchReturnMode(threadmode.ModeChat), CreatedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertScratchThread: %v", err)
+	}
+
+	after := f.restart(t)
+	after.app.sweepThreadRequestsAtBoot()
+
+	row := after.awaitRequestState(t, ack.Token, store.ThreadRequestInterrupted)
+	if row.State != store.ThreadRequestInterrupted {
+		t.Fatalf("request = %+v", row)
+	}
+	receipt, found, err := after.app.store.GetThreadRequestReceipt(ack.Token)
+	if err != nil || !found || receipt.State != store.ThreadReceiptInterrupted {
+		t.Fatalf("receipt = %+v found=%v err=%v", receipt, found, err)
+	}
+	// A scratch thread is a thread nobody can see; one left by a restart is
+	// swept with its row rather than kept forever.
+	if _, err := after.app.store.GetThread(scratch.ID); err == nil {
+		t.Errorf("scratch thread %s survived the boot sweep", scratch.ID)
+	}
+	if _, found, err := after.app.store.GetScratchThread(scratch.ID); err != nil || found {
+		t.Errorf("scratch row survived the boot sweep: found=%v err=%v", found, err)
+	}
+}
+
+// A status call waits on all of its tokens at once and returns on whichever
+// settles first, not on whichever was listed first.
+func TestThreadStatusEndsOnWhicheverRequestSettlesFirst(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "thinking")
+	slow := f.runningRequest(t, "the slow one")
+	fast := f.runningRequest(t, "the fast one")
+
+	type result struct {
+		report threadtools.StatusReport
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		report, err := f.adapter().RequestStates(context.Background(), f.callerIdentity(), threadtools.StatusCall{
+			Tokens: []string{slow.Token, fast.Token}, WaitSeconds: 30,
+		})
+		done <- result{report, err}
+	}()
+	waitUntil(t, 10*time.Second, func() bool { return f.app.requestWaitActive(fast.Token) })
+
+	if _, err := f.adapter().Reply(t.Context(), f.targetIdentity(t, fast.ThreadID), threadtools.ReplyCall{
+		Token: fast.Token, Text: "done first",
+	}); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("RequestStates: %v", got.err)
+		}
+		if got.report.WokeOn != fast.Token {
+			t.Fatalf("woke on %q, want the token that settled", got.report.WokeOn)
+		}
+		if len(got.report.Requests) != 2 {
+			t.Fatalf("report lists %d requests, want both", len(got.report.Requests))
+		}
+		if got.report.Requests[0].State != store.ThreadRequestRunning && got.report.Requests[0].State != store.ThreadRequestAccepted {
+			t.Errorf("the unsettled request reads as %q", got.report.Requests[0].State)
+		}
+		if got.report.Requests[1].Answer != "done first" {
+			t.Errorf("the settled request = %+v", got.report.Requests[1])
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the settlement did not end the parked status call")
+	}
+}
+
+// Two calls parked on the same token both return: a wake is a broadcast, not
+// a handoff to whoever got there first.
+func TestTwoWaitersOnOneRequestBothReturn(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "thinking")
+	ack := f.runningRequest(t, "who won?")
+
+	done := make(chan threadtools.StatusReport, 2)
+	for range 2 {
+		go func() {
+			report, err := f.adapter().RequestStates(context.Background(), f.callerIdentity(), threadtools.StatusCall{
+				Tokens: []string{ack.Token}, WaitSeconds: 30,
+			})
+			if err != nil {
+				report = threadtools.StatusReport{}
+			}
+			done <- report
+		}()
+	}
+	waitUntil(t, 10*time.Second, func() bool { return f.waitersOn(ack.Token) == 2 })
+
+	if _, err := f.adapter().Reply(t.Context(), f.targetIdentity(t, ack.ThreadID), threadtools.ReplyCall{
+		Token: ack.Token, Text: "the cache did",
+	}); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	for range 2 {
+		select {
+		case report := <-done:
+			if report.WokeOn != ack.Token {
+				t.Fatalf("a waiter returned without the settlement: %+v", report)
+			}
+		case <-time.After(15 * time.Second):
+			t.Fatal("a waiter never returned")
+		}
+	}
+	// The answer was read by a wait, so no message is owed on top of it.
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("a wake was queued for an answer two calls just read: %+v", rows)
+	}
+}
+
+// thread_status watches threads as well as tokens: a thread coming to rest
+// is what an agent waiting on somebody else's work is actually waiting for.
+func TestThreadStatusWatchesAThreadUntilItRests(t *testing.T) {
+	f := newRequestFixture(t)
+	target := f.busyThread(t, "watched")
+	// Whether a thread is running is live state, so the watch is driven
+	// through the router that owns it.
+	if err := f.app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: target.ID, TurnID: "watched-open", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+
+	type result struct {
+		report threadtools.StatusReport
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		report, err := f.adapter().RequestStates(context.Background(), f.callerIdentity(), threadtools.StatusCall{
+			ThreadIDs: []string{target.ID}, WaitSeconds: 30,
+		})
+		done <- result{report, err}
+	}()
+	waitUntil(t, 10*time.Second, func() bool { return f.app.requestWaitActive(threadWatchKey(target.ID)) })
+
+	if err := f.app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnComplete, ThreadID: target.ID, TurnID: "watched-open",
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("RequestStates: %v", got.err)
+		}
+		if len(got.report.Threads) != 1 || got.report.Threads[0].ThreadID != target.ID {
+			t.Fatalf("report = %+v, want the watched thread", got.report)
+		}
+		if !got.report.Threads[0].Resting {
+			t.Errorf("the watched thread still reads as busy: %+v", got.report.Threads[0])
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the thread coming to rest did not end the watch")
+	}
+}
+
+// Cancelling a running request stops that turn and nothing else, and the
+// interrupted turn cannot then be read as the answer.
+func TestThreadCancelInterruptsTheRequestsOwnTurn(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "working on it")
+	ack := f.runningRequest(t, "rebuild the index")
+
+	report, err := f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{Token: ack.Token})
+	if err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if report.Effect != threadCancelInterrupted {
+		t.Fatalf("effect = %q, want the turn interrupted", report.Effect)
+	}
+	row := f.request(t, ack.Token)
+	if row.State != store.ThreadRequestCancelled {
+		t.Fatalf("request = %+v, want cancelled", row)
+	}
+	// The interrupt's own turn end must not overwrite the cancellation with
+	// an answer nobody asked for.
+	time.Sleep(200 * time.Millisecond)
+	if again := f.request(t, ack.Token); again.State != store.ThreadRequestCancelled {
+		t.Fatalf("the interrupted turn re-settled the request as %q", again.State)
+	}
+}
+
+// The ledger is readable without a token: a thread can list what it asked
+// for, open work first, and read a whole answer out to a file.
+func TestThreadRequestsListAndExport(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "the answer is 42")
+	settled, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "what is the answer?", WaitSeconds: 20,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	open, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
+		ThreadID: f.busyThread(t, "listed").ID, Message: "and the question?", WaitSeconds: 0,
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	list, err := f.adapter().ListRequests(t.Context(), f.callerIdentity(), threadtools.ListCall{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	if len(list.Requests) != 2 || list.More {
+		t.Fatalf("list = %+v, want both requests and no more", list)
+	}
+	if list.Requests[0].Token != open.Token {
+		t.Errorf("list order = %q first, want the open request", list.Requests[0].Token)
+	}
+
+	export, err := f.adapter().ExportAnswer(t.Context(), f.callerIdentity(), settled.Token)
+	if err != nil {
+		t.Fatalf("ExportAnswer: %v", err)
+	}
+	body, err := os.ReadFile(export.Path)
+	if err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	if !strings.Contains(string(body), "the answer is 42") {
+		t.Fatalf("export = %q", body)
+	}
+	if export.Size != int64(len(body)) || export.SHA256 == "" {
+		t.Errorf("export = %+v, want the size and digest of what it wrote", export)
+	}
+	if !strings.HasPrefix(export.Path, f.app.configDir) {
+		t.Errorf("export path %q is outside the data directory", export.Path)
+	}
+}
+
+// A wake the previous process never delivered is restored into the composer
+// at boot, and the request says so rather than claiming the message was
+// delivered.
+func TestRestoredWakeIsRecordedAsADraft(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "the backup finished")
+	f.holdCallerTurn(t)
+
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "did the backup finish?", WaitSeconds: 0, Notify: true,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	waitUntil(t, 10*time.Second, func() bool {
+		return f.request(t, ack.Token).DeliveredHow == store.ThreadWakeQueued
+	})
+
+	after := f.restart(t)
+	after.app.restoreDurableFlushQueueAtBoot()
+
+	row := after.request(t, ack.Token)
+	if row.DeliveredHow != store.ThreadWakeDraft {
+		t.Fatalf("delivery = %q, want the draft correction", row.DeliveredHow)
+	}
+	draft, found, err := after.app.store.GetThreadDraft(f.caller.ID)
+	if err != nil || !found || !strings.Contains(draft.Content, "the backup finished") {
+		t.Fatalf("draft = %+v found=%v err=%v", draft, found, err)
+	}
+	if rows := durableQueueRows(t, after.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("the restored row was left in the queue: %+v", rows)
+	}
+}
+
+// waitersOn counts the calls parked on one key, which is how a test knows
+// both of them arrived before the settlement it is about to write.
+func (f *requestFixture) waitersOn(key string) int {
+	f.app.threadRequests.mu.Lock()
+	defer f.app.threadRequests.mu.Unlock()
+	count := 0
+	for _, wait := range f.app.threadRequests.waits {
+		if _, ok := wait.keys[key]; ok {
+			count++
+		}
+	}
+	return count
+}
+
+// TestTwoQueuedRequestsSettleOnTheOneTurnThatConsumedThem covers the join:
+// two messages that waited out a turn are sent as one, so one turn end is
+// the answer to both. Settling either alone, or twice, would be wrong.
+func TestTwoQueuedRequestsSettleOnTheOneTurnThatConsumedThem(t *testing.T) {
+	f := newRequestFixture(t)
+	workspace := initGitRepo(t)
+	target, err := createTestThread(t, f.app, string(provider.Claude), workspace, "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	now := time.Now().UnixMilli()
+	if err := f.app.store.InsertTurn(store.Turn{
+		TurnID: "merge-turn", ThreadID: target.ID, TurnIndex: 0, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	// A session that records what it is given and says nothing back: the
+	// dispatch is the behavior under test, not the provider's answer.
+	stdinLog := filepath.Join(t.TempDir(), "claude-stdin.jsonl")
+	sess, err := claude.NewSession(context.Background(), target.ID,
+		claude.Config{Binary: writeClaudeStdinRecorderBinary(t, stdinLog), WorkDir: workspace},
+		func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("claude.NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	f.app.sessionManager().put(target.ID, session{
+		Provider: string(provider.Claude), Token: "tok", Claude: sess,
+		Liveness: newSessionLiveness(time.Now()),
+	})
+
+	first, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
+		ThreadID: target.ID, Message: "check the changelog", WaitSeconds: 0,
+	})
+	if err != nil {
+		t.Fatalf("Send(first): %v", err)
+	}
+	second, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
+		ThreadID: target.ID, Message: "and the migration notes", WaitSeconds: 0,
+	})
+	if err != nil {
+		t.Fatalf("Send(second): %v", err)
+	}
+	queued := f.app.triage.QueuedFlushItems(target.ID)
+	if len(queued) != 2 {
+		t.Fatalf("queued = %+v, want both requests waiting", queued)
+	}
+	f.app.dispatchFlush(target.ID, queued)
+
+	firstReceipt, secondReceipt := f.receipt(t, first.Token), f.receipt(t, second.Token)
+	if firstReceipt.State != store.ThreadReceiptRunning || secondReceipt.State != store.ThreadReceiptRunning {
+		t.Fatalf("receipts = %q / %q, want both running", firstReceipt.State, secondReceipt.State)
+	}
+	if firstReceipt.TurnID != secondReceipt.TurnID {
+		t.Fatalf("turns = %q / %q, want the one turn that consumed both", firstReceipt.TurnID, secondReceipt.TurnID)
+	}
+	if firstReceipt.MessageItemID != secondReceipt.MessageItemID {
+		t.Errorf("message rows = %q / %q, want the one merged message", firstReceipt.MessageItemID, secondReceipt.MessageItemID)
+	}
+
+	if err := f.app.store.UpdateTurnCompleted("merge-turn", time.Now().UnixMilli(), "end_turn", "", "", ""); err != nil {
+		t.Fatalf("UpdateTurnCompleted: %v", err)
+	}
+	f.app.settleReceiptsForEndedTurn(target.ID)
+	for _, token := range []string{first.Token, second.Token} {
+		if row := f.request(t, token); row.State != store.ThreadRequestFinished {
+			t.Errorf("request %s = %q, want the shared turn to have settled it", token, row.State)
+		}
+	}
+}
+
+// An ask forks a thread that is mid-turn: the question is answered against a
+// snapshot, and the thread being asked is never interrupted to answer it.
+func TestThreadAskForksAThreadThatIsMidTurn(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "as of right now, three")
+	target := f.forkableThread(t, "mid-turn-source")
+	now := time.Now().UnixMilli()
+	if err := f.app.store.InsertTurn(store.Turn{
+		TurnID: "mid-turn-open", ThreadID: target.ID, TurnIndex: 1, StartedAt: now,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	if _, err := f.app.store.AppendItem(store.Item{
+		ID: "mid-turn-tool", ThreadID: target.ID, TurnIndex: 1, Kind: "tool_call", Role: "assistant",
+		Status: "running", Summary: "Bash", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("AppendItem: %v", err)
+	}
+
+	ack, err := f.adapter().Ask(t.Context(), f.callerIdentity(), threadtools.AskCall{
+		ThreadID: target.ID, Question: "how many retries are left?", WaitSeconds: 20,
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if ack.Outcome != threadtools.OutcomeSettled {
+		t.Fatalf("ack = %+v", ack)
+	}
+	// The thread that was asked is still mid-turn: nothing about answering
+	// a question may take its turn away from it.
+	turn, found, err := f.app.store.GetActiveTurn(target.ID)
+	if err != nil || !found {
+		t.Fatalf("the ask ended the target's turn: found=%v err=%v", found, err)
+	}
+	if turn.TurnID != "mid-turn-open" {
+		t.Fatalf("active turn = %q, want the one that was already running", turn.TurnID)
+	}
+}

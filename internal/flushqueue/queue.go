@@ -6,6 +6,7 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/usermessage"
 
 	"github.com/google/uuid"
 )
@@ -69,6 +70,12 @@ type Payload struct {
 	// re-dispatched row answering for the first member only, and a retry of
 	// any other member would send a duplicate.
 	JoinedSendIDs []string `json:"joinedSendIds,omitempty"`
+	// Origin and OriginThread attribute a queued message the app wrote on
+	// an agent's behalf. They ride the payload for the same reason SendID
+	// does: the dispatch that persists the row happens later, and the row
+	// must carry the same attribution the immediate send would have.
+	Origin       string                    `json:"origin,omitempty"`
+	OriginThread *usermessage.OriginThread `json:"originThread,omitempty"`
 }
 
 // ItemFromTriage decodes a triage QueuedFlushItem back into the

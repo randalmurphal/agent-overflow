@@ -43,6 +43,34 @@ import (
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) ForkThread(ctx context.Context, sourceThreadID string, atTurnIndex *int) (store.Thread, error) {
+	return a.forkThreadAt(ctx, sourceThreadID, atTurnIndex, forkOptions{})
+}
+
+// forkOptions overrides what the new fork inherits from its source. The zero
+// value is the plain fork the Fork button makes; the thread tools use it to
+// cut a hidden read-only scratch fork for a `thread_ask`, and `/side-chat`
+// uses the same door.
+//
+// Only fields a fork may legally differ in are here. Everything else —
+// project, workspace, provider, model, the provider resume wiring — is the
+// source's by definition: a fork that changed them would not be a fork.
+type forkOptions struct {
+	// Mode replaces the source's thread mode. Empty inherits.
+	Mode string
+	// RuntimeMode replaces the source's permission level. Empty inherits.
+	RuntimeMode string
+	// Title replaces the "<source> (fork)" default. Empty inherits.
+	Title string
+}
+
+// forkThreadTail forks a thread at its tail with the given overrides. It is
+// the internal door onto ForkThread's body for callers that are not the Fork
+// button: an agent's `thread_ask`, which forks into a scratch thread.
+func (a *App) forkThreadTail(ctx context.Context, sourceThreadID string, opts forkOptions) (store.Thread, error) {
+	return a.forkThreadAt(ctx, sourceThreadID, nil, opts)
+}
+
+func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnIndex *int, opts forkOptions) (store.Thread, error) {
 	// Hold the source thread's action lock for the duration of the fork so
 	// concurrent SendMessage / InterruptAndRevertIfClean / etc. can't write
 	// to items mid-clone (would produce a torn snapshot in the new fork).
@@ -173,6 +201,19 @@ func (a *App) ForkThread(ctx context.Context, sourceThreadID string, atTurnIndex
 	}
 
 	fork := store.BuildForkedThread(source)
+	// Overrides before the creation stamp and the row write, so the thread
+	// exists exactly once in its final shape: a scratch fork that was listed
+	// as an ordinary thread first and corrected after would show up in every
+	// attached sidebar for the width of that window.
+	if opts.Mode != "" {
+		fork.Mode = opts.Mode
+	}
+	if opts.RuntimeMode != "" {
+		fork.RuntimeMode = opts.RuntimeMode
+	}
+	if opts.Title != "" {
+		fork.Title = opts.Title
+	}
 	// Observed now, not copied from the source: a fork shares the source's
 	// workspace, and that workspace has kept moving since the source thread
 	// was created. The fork's creation coordinates are where the workspace

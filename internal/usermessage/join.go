@@ -109,6 +109,8 @@ func (in Input) Projection() Meta {
 		ExpandComposerCommands:       in.ExpandComposerCommands,
 		SendID:                       in.SendID,
 		JoinedSendIDs:                in.JoinedSendIDs,
+		Origin:                       in.Origin,
+		OriginThread:                 in.OriginThread,
 	}
 }
 
@@ -156,6 +158,12 @@ func JoinMetas(members []Meta) Meta {
 		// A crash-rebuilt row must keep the composer's slash semantics for
 		// any member that came through the composer.
 		joined.ExpandComposerCommands = joined.ExpandComposerCommands || member.ExpandComposerCommands
+		// Attribution is the first member's that has one: a joined row is
+		// one message with one author, and a merge that mixed two senders
+		// would label the row with whichever happened to sort first.
+		if joined.Origin == "" {
+			joined.Origin, joined.OriginThread = member.Origin, member.OriginThread
+		}
 		ids := member.JoinedSendIDs
 		if len(ids) == 0 {
 			ids = []string{member.SendID}
@@ -207,6 +215,8 @@ func (m Meta) isZero() bool {
 		m.Command == "" &&
 		m.SendID == "" &&
 		len(m.JoinedSendIDs) == 0 &&
+		m.Origin == "" &&
+		m.OriginThread == nil &&
 		!m.ExpandComposerCommands
 }
 
@@ -229,6 +239,8 @@ var metaTypedKeys = []string{
 	"expandComposerCommands",
 	"sendId",
 	"joinedSendIds",
+	"origin",
+	"originThread",
 }
 
 // MergeJoinedMeta rewrites the typed usermessage fields of `existing` to those

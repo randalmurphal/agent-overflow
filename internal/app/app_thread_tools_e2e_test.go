@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -195,18 +198,74 @@ func TestThreadMCPReadToolsAnswerOverTheLoopbackTransport(t *testing.T) {
 	}
 }
 
-// TestThreadMCPWriteToolsRefuseWithoutBreakingTheCall pins what the
-// phase-4 writes do today: one public refusal carrying a documented code,
-// delivered as a tool error rather than a transport failure.
-func TestThreadMCPWriteToolsRefuseWithoutBreakingTheCall(t *testing.T) {
-	app, _, _ := newMCPTestApp(t)
-	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
-	thread, token := remoteMCPThread(t, app, string(provider.Claude))
-	endpoint := threadMCPEndpoint(t, app, thread, token)
+// TestThreadMCPSpawnAndReplyRunOverTheLoopbackTransport is the write half
+// end to end: one thread spawns work over the shared loopback transport, the
+// thread that ran it answers through its own session's transport, and the
+// answer reaches the sender in the reply to its next call.
+func TestThreadMCPSpawnAndReplyRunOverTheLoopbackTransport(t *testing.T) {
+	f := newRequestFixture(t)
+	// The turn stays open, which is what lets the answer be a reply rather
+	// than the turn's last words.
+	f.mockClaudeHoldingTheTurn(t, "counting")
+	callerToken := uuid.NewString()
+	f.app.sessionManager().put(f.caller.ID, session{Token: callerToken, Provider: string(provider.Claude)})
+	t.Cleanup(func() { _ = f.app.threadMCPServer().Close() })
+	endpoint := threadMCPEndpoint(t, f.app, f.caller, callerToken)
 
-	raw := remoteMCPCall(t, endpoint, "thread_remind", map[string]any{"note": "check the queue", "after_seconds": 60}, true)
-	if !strings.Contains(string(raw), threadtools.CodeInvalidRequest) {
-		t.Fatalf("write refusal = %s", raw)
+	raw := remoteMCPCall(t, endpoint, "thread_spawn", map[string]any{
+		"prompt": "count the rows the backfill touched", "title": "Row count", "wait_seconds": 0,
+	}, false)
+	var ack threadtools.RequestAck
+	if err := json.Unmarshal(raw, &ack); err != nil {
+		t.Fatalf("decode spawn ack %s: %v", raw, err)
+	}
+	if ack.Token == "" || ack.ThreadID == "" || ack.Outcome != threadtools.OutcomeBackgrounded {
+		t.Fatalf("spawn ack = %+v", ack)
+	}
+	waitUntil(t, 15*time.Second, func() bool {
+		row, found, err := f.app.store.GetThreadRequestReceipt(ack.Token)
+		return err == nil && found && row.State == store.ThreadReceiptRunning
+	})
+
+	// The spawned thread answers through its own session's transport, with
+	// the token that session was started with.
+	spawned, live := f.app.sessionManager().get(ack.ThreadID)
+	if !live {
+		t.Fatalf("the spawn did not start a session for %s", ack.ThreadID)
+	}
+	target, err := f.app.store.GetThread(ack.ThreadID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	raw = remoteMCPCall(t, threadMCPEndpoint(t, f.app, target, spawned.Token), "thread_reply", map[string]any{
+		"token": ack.Token, "text": "41,220 rows",
+	}, false)
+	var reply threadtools.ReplyAck
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		t.Fatalf("decode reply ack %s: %v", raw, err)
+	}
+	if !reply.Accepted || reply.SourceThreadID != f.caller.ID {
+		t.Fatalf("reply ack = %+v", reply)
+	}
+
+	// The sender reads the answer in its next call, and reading it is what
+	// delivers it: nothing is owed as a message afterwards.
+	raw = remoteMCPCall(t, endpoint, "thread_status", map[string]any{"tokens": []string{ack.Token}}, false)
+	var report threadtools.StatusReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatalf("decode status %s: %v", raw, err)
+	}
+	if len(report.Requests) != 1 || report.Requests[0].Answer != "41,220 rows" {
+		t.Fatalf("status = %s", raw)
+	}
+	if report.Requests[0].State != store.ThreadRequestReplied {
+		t.Errorf("state = %q, want replied", report.Requests[0].State)
+	}
+	if row := f.request(t, ack.Token); row.DeliveredHow != store.ThreadWakeInline {
+		t.Errorf("delivery = %q, want the tool response itself", row.DeliveredHow)
+	}
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Fatalf("a wake was queued for an answer the sender just read: %+v", rows)
 	}
 }
 

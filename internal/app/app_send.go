@@ -70,6 +70,17 @@ type sendMessageOptions struct {
 	// default, so a new internal send path can never expand a `/…` opener
 	// in a prompt the app itself wrote just by forgetting a flag.
 	ExpandComposerCommands bool
+	// Origin and OriginThread attribute the row to the agent thread that
+	// asked for it (usermessage.OriginAgentThread). Set only by the thread
+	// tools' request send; every other caller leaves them empty.
+	Origin       string
+	OriginThread *usermessage.OriginThread
+	// onDurable runs once a QUEUED message has either reached the provider
+	// or been restored into the composer after a session death. It is the
+	// only hook an app-internal injector gets on the queued path, where the
+	// send returns before the message exists as a row. Ignored on the idle
+	// path, whose caller already has the persisted item.
+	onDurable func()
 	// onProviderDispatch runs under the provider-account read lock immediately
 	// before the provider write. It exists so an observer can attribute an error
 	// emitted as soon as stdin is written to the exact account generation that
@@ -102,6 +113,11 @@ type userMessageInputs struct {
 	// sendID rides through to the persisted row's meta, which is what makes
 	// the message its own idempotency record (app_send_idempotency.go).
 	sendID string
+	// origin and originThread attribute a row the app wrote on an agent's
+	// behalf (`agent-thread`). Empty for everything a person typed, which
+	// is what keeps the chip off ordinary rows.
+	origin       string
+	originThread *usermessage.OriginThread
 }
 
 var errEmptyUserMessage = errors.New("enter a message or attach a file before sending")
@@ -244,6 +260,8 @@ func (a *App) resolveUserMessageEnvelope(
 		Command:                command,
 		ExpandComposerCommands: inputs.expandComposerCommands,
 		SendID:                 inputs.sendID,
+		Origin:                 inputs.origin,
+		OriginThread:           inputs.originThread,
 	})
 	if err != nil {
 		return resolvedUserMessage{}, fmt.Errorf("user meta: %w", err)
@@ -448,7 +466,13 @@ func (a *App) sendMessageLocked(
 			RevisionSourceDiffReview:     opts.RevisionSourceDiffReview,
 			RevisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 			SendID:                       opts.SendID,
-		}, injectedQueueOptions{expandComposerCommands: opts.ExpandComposerCommands, preserveDraft: opts.PreserveDraft})
+		}, injectedQueueOptions{
+			expandComposerCommands: opts.ExpandComposerCommands,
+			preserveDraft:          opts.PreserveDraft,
+			origin:                 opts.Origin,
+			originThread:           opts.OriginThread,
+			onDurable:              opts.onDurable,
+		})
 		return store.Item{}, err
 	}
 
@@ -500,6 +524,8 @@ func (a *App) sendMessageLocked(
 		revisionSourceDiffCommentIDs: opts.RevisionSourceDiffCommentIDs,
 		expandComposerCommands:       opts.ExpandComposerCommands,
 		sendID:                       opts.SendID,
+		origin:                       opts.Origin,
+		originThread:                 opts.OriginThread,
 	})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("send message: %w", err)

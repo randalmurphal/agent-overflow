@@ -233,6 +233,9 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// about. stopIdleSessionReaper is idempotent and blocks until the
 	// goroutine returns.
 	a.remoteWatchWG.Wait()
+	// The request sweep writes rows and can queue a wake, so it is joined
+	// beside the remote watches and before the store is closed.
+	a.threadRequestsWG.Wait()
 	a.stopIdleSessionReaper()
 	record("stop idle session reaper", nil)
 

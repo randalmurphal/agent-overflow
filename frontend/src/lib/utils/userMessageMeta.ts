@@ -35,10 +35,17 @@ export interface UserMessageMeta {
    * - `peer-session` — another Claude session on this machine addressed this
    *   thread through Claude Code's cross-session inbox. Written by a MODEL.
    *   (`internal/provider/claude/session_peer.go#PeerTurnOrigin`)
+   * - `agent-thread` — an agent in another Agent Overflow thread, on this
+   *   computer or on a paired one, wrote this row through the thread tools:
+   *   a spawn's first message, a `thread_send`, or the wake carrying an
+   *   answer back. `originThread` names the source thread.
+   *   (`docs/specs/agent-thread-tools.md`, Attribution)
    *
    * Absent means locally authored, which is the overwhelmingly common case.
    */
   origin?: unknown;
+  /** The source thread of an `agent-thread` row. See userMessageOriginThread. */
+  originThread?: unknown;
   /**
    * The peer session's registered display name, on a `peer-session` row.
    * May be absent — an older CLI reports only a socket address — in which
@@ -65,6 +72,37 @@ export function userMessageOrigin(meta: UserMessageMeta): string {
 export function peerSessionOriginLabel(meta: UserMessageMeta): string {
   const name = typeof meta.cross_session_from_name === 'string' ? meta.cross_session_from_name.trim() : '';
   return name ? `From ${name} (another Claude session)` : 'From another Claude session';
+}
+
+/**
+ * The thread an `agent-thread` row came from, as the tools stamped it.
+ *
+ * `threadId` is the whole point of the chip — it is what the reader clicks
+ * through to — so a value without one is not attribution and is refused.
+ * Everything else is best effort: a missing title still renders a chip, and
+ * an absent computer means the row was written on the computer showing it.
+ */
+export interface UserMessageOriginThread {
+  computerId: string;
+  computerName: string;
+  threadId: string;
+  title: string;
+  /** The request token, so three requests from one thread stay distinct. */
+  token: string;
+}
+
+export function userMessageOriginThread(meta: UserMessageMeta): UserMessageOriginThread | null {
+  const record = objectRecord(meta.originThread);
+  if (!record) return null;
+  const threadId = stringField(record.threadId);
+  if (!threadId) return null;
+  return {
+    computerId: stringField(record.computerId),
+    computerName: stringField(record.computerName),
+    threadId,
+    title: stringField(record.title),
+    token: stringField(record.token),
+  };
 }
 
 function stringField(value: unknown): string {

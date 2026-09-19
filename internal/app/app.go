@@ -175,6 +175,14 @@ type App struct {
 	// threadMCP owns the ao-thread-tools server and the threadtools
 	// contract bound to this app. Zero value ready; built on first use.
 	threadMCP appThreadMCP
+	// threadRequests holds the agent thread-request ledger's in-process
+	// state: the parked waits, the per-token settle lock, and which
+	// threads own a receipt that a turn end could settle. Zero value
+	// ready. See app_thread_tools_wait.go.
+	threadRequests threadRequestState
+	// threadRequestsWG joins the request sweep goroutine at shutdown, the
+	// way remoteWatchWG joins the remote completion watcher.
+	threadRequestsWG sync.WaitGroup
 	// threadSearchIndex is the boot-time search index build.
 	threadSearchIndex threadSearchIndexBuild
 	remoteWatchWG     sync.WaitGroup

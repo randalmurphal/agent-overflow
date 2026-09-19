@@ -73,6 +73,29 @@ type Meta struct {
 	// written together — a joined row with a SendID outside its array
 	// would answer one member and duplicate the rest.
 	JoinedSendIDs []string `json:"joinedSendIds,omitempty"`
+	// Origin names the non-human author of a user row, in the same field
+	// and vocabulary the provider-written rows use (`external-queue`,
+	// `peer-session`). Agent thread tools write OriginAgentThread; the
+	// frontend's one attribution branch labels all three.
+	Origin string `json:"origin,omitempty"`
+	// OriginThread names the thread that wrote this row, on an
+	// `agent-thread` row. Absent on every other origin.
+	OriginThread *OriginThread `json:"originThread,omitempty"`
+}
+
+// OriginAgentThread is the Origin value of a row one thread's agent wrote
+// into another thread through the thread tools.
+const OriginAgentThread = "agent-thread"
+
+// OriginThread identifies the sending thread of an `agent-thread` row: what
+// the chip renders, and the request token that keeps three requests from one
+// thread to another distinguishable.
+type OriginThread struct {
+	ComputerID   string `json:"computerId,omitempty"`
+	ComputerName string `json:"computerName,omitempty"`
+	ThreadID     string `json:"threadId"`
+	Title        string `json:"title,omitempty"`
+	Token        string `json:"token,omitempty"`
 }
 
 // Input is the per-entry-point projection Marshal encodes. A struct
@@ -90,6 +113,8 @@ type Input struct {
 	ExpandComposerCommands bool
 	SendID                 string
 	JoinedSendIDs          []string
+	Origin                 string
+	OriginThread           *OriginThread
 }
 
 // AttachmentMeta is the per-attachment slice element. The Go side

@@ -590,6 +590,7 @@ func (a *App) restoreDurableFlushQueueAtBoot() {
 			if err := a.store.DeleteFlushQueueItem(row.ID); err != nil {
 				log.Printf("flush queue: delete restored row %s/%s at boot: %v", threadID, row.ID, err)
 			}
+			noteThreadWakeRestoredToDraft(a, row.SendID)
 		}
 		log.Printf("app: restored %d queued message(s) into the composer for thread %s", len(rows), threadID)
 	}
@@ -612,4 +613,32 @@ func draftPartFromQueueRow(row store.FlushQueueItem) composerdraft.Part {
 		AttachmentIDs:      payload.AttachmentIDs,
 		SourceProposedPlan: payload.SourceProposedPlan,
 	}
+}
+
+// noteThreadWakeRestoredToDraft corrects a thread request whose wake this
+// restore put in the composer instead of sending. The request was marked
+// delivered when the message was queued, which was true then and is still
+// true now: the answer reached the thread. Only the route changed, and a
+// reader that cannot tell a queued wake from one sitting in a draft would
+// report an answer as on its way when it is waiting on the person.
+func noteThreadWakeRestoredToDraft(a *App, sendID string) {
+	token, late, ok := threadWakeTokenFromSendID(sendID)
+	if !ok {
+		return
+	}
+	if _, err := a.store.MarkThreadRequestDeliveredAsDraft(token, late); err != nil {
+		log.Printf("thread tools: mark request %s restored to draft: %v", token, err)
+	}
+}
+
+// threadWakeTokenFromSendID recovers the request a queued wake belongs to.
+// The late prefix is tested first because the ordinary one is its prefix.
+func threadWakeTokenFromSendID(sendID string) (token string, late bool, ok bool) {
+	if rest, found := strings.CutPrefix(sendID, threadWakeLateSendID("")); found {
+		return rest, true, rest != ""
+	}
+	if rest, found := strings.CutPrefix(sendID, threadWakeSendID("")); found {
+		return rest, false, rest != ""
+	}
+	return "", false, false
 }

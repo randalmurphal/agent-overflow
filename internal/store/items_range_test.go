@@ -271,3 +271,42 @@ func TestListItemsInRangeWalksTheOrderingIndex(t *testing.T) {
 		})
 	}
 }
+
+// LatestHumanUserText is what a request's message quotes: the last thing a
+// PERSON typed in the sending thread. A message the app wrote on an agent's
+// behalf carries an origin, and quoting one of those back would quote the
+// machine to itself.
+func TestLatestHumanUserTextSkipsWhatAgentsWrote(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-quote")
+
+	if _, found, err := s.LatestHumanUserText("t-quote"); err != nil || found {
+		t.Fatalf("an empty thread reported text: found=%v err=%v", found, err)
+	}
+	rows := []struct {
+		id      string
+		index   int
+		summary string
+		meta    string
+	}{
+		{id: "u0", index: 0, summary: "look at the launcher"},
+		{id: "u1", index: 1, summary: "and the installer", meta: `{"sendId":"send-1"}`},
+		{id: "u2", index: 2, summary: "Agent request from thread", meta: `{"origin":"agent-thread","originThread":{"threadId":"t-other"}}`},
+	}
+	for _, row := range rows {
+		if _, err := s.AppendItem(Item{
+			ID: row.id, ThreadID: "t-quote", TurnIndex: row.index, Kind: "user_text", Role: "user",
+			Status: "completed", Summary: row.summary, Meta: row.meta, CreatedAt: 100, UpdatedAt: 100,
+		}); err != nil {
+			t.Fatalf("append %s: %v", row.id, err)
+		}
+	}
+
+	text, found, err := s.LatestHumanUserText("t-quote")
+	if err != nil || !found {
+		t.Fatalf("LatestHumanUserText: found=%v err=%v", found, err)
+	}
+	if text != "and the installer" {
+		t.Fatalf("text = %q, want the last thing a person typed", text)
+	}
+}
