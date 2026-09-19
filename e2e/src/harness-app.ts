@@ -27,6 +27,46 @@ interface WireEvent {
   consumed?: boolean;
 }
 
+/**
+ * One mock progress report, exactly as it rides a `harness:mock` bus
+ * event (internal/harness/control.Report).
+ */
+export interface HarnessMockReport {
+  kind: string;
+  turn?: number;
+  step?: number;
+  detail?: string;
+  /** Set on `user_input`: the text the mock received on the wire. */
+  input?: string;
+  /** Set on `user_input`: Claude's session id or Codex's thread id. */
+  sessionRef?: string;
+  gate?: string;
+  openGate?: string;
+  /** Set on `mcp_result`: the text the tool returned, or the error text. */
+  result?: string;
+  /** Set on `mcp_result`: whether the call failed. */
+  isError?: boolean;
+}
+
+/** The `harness:mock` wire shape. */
+export interface HarnessMockEventData {
+  mockId: string;
+  protocol: string;
+  cwd: string;
+  scenario: string;
+  report: HarnessMockReport;
+}
+
+/** Narrows which mock's `mcp_result` an await accepts. */
+export interface McpResultFilter {
+  mockId?: string;
+  /** The mock's working directory, the workspace the thread runs in. */
+  cwd?: string;
+  server?: string;
+  tool?: string;
+  timeoutMs?: number;
+}
+
 interface PendingRpc {
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
@@ -312,6 +352,33 @@ export class HarnessApp {
     return this.eventLog.filter(
       (ev) => ev.channel === channel && (!predicate || predicate(ev.data as T)),
     ).length;
+  }
+
+  /**
+   * Wait for an `mcpCall` step's outcome: the report the mock posts after
+   * a REAL MCP tools/call against a server this app configured. Returns
+   * the event so a spec can read `report.result` / `report.isError`, the
+   * only surface that says what a built-in tool actually answered,
+   * including a refusal whose text never reaches the timeline.
+   *
+   * `detail` is `<server>/<tool>`, which is what `server` / `tool` filter
+   * on; omit them to take the next call from any server.
+   */
+  async awaitMcpResult(filter: McpResultFilter = {}): Promise<HarnessMockEventData> {
+    const { mockId, cwd, server, tool, timeoutMs } = filter;
+    return await this.waitForEvent<HarnessMockEventData>(
+      'harness:mock',
+      (event) => {
+        if (event.report.kind !== 'mcp_result') return false;
+        if (mockId !== undefined && event.mockId !== mockId) return false;
+        if (cwd !== undefined && event.cwd !== cwd) return false;
+        const [calledServer, calledTool] = (event.report.detail ?? '').split('/');
+        if (server !== undefined && calledServer !== server) return false;
+        if (tool !== undefined && calledTool !== tool) return false;
+        return true;
+      },
+      timeoutMs,
+    );
   }
 
   /** Drop remembered events — call after a reset so stale matches can't leak. */

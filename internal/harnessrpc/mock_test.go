@@ -291,6 +291,32 @@ func TestHarnessControlRoundTrip(t *testing.T) {
 		return false
 	})
 
+	// An mcp_result report carries the tool's answer, which the bus event
+	// has to preserve: a spec awaiting an MCP call reads result/isError
+	// off this event and nothing else can answer for a refusal.
+	client.Report(control.Report{
+		Kind:    control.ReportMcpResult,
+		Turn:    1,
+		Detail:  "ao-thread-tools/thread_note",
+		Result:  "[thread_tools_disabled] Thread tools are disabled for this conversation.",
+		IsError: true,
+	})
+	waitForCond(t, "mcp_result event", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, ev := range mockEvents {
+			if ev.Report.Kind != control.ReportMcpResult {
+				continue
+			}
+			if ev.Report.Detail != "ao-thread-tools/thread_note" || !ev.Report.IsError ||
+				!strings.Contains(ev.Report.Result, "thread_tools_disabled") {
+				t.Errorf("mcp_result event lost fields: %+v", ev.Report)
+			}
+			return true
+		}
+		return false
+	})
+
 	// Live command: queued via RPC, delivered through the long-poll.
 	if err := h.HarnessMockCommand(resp.MockID, control.Command{Type: control.CommandAdvance, Name: "gate-1"}); err != nil {
 		t.Fatalf("HarnessMockCommand: %v", err)

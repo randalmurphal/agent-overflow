@@ -102,6 +102,10 @@ type claudeAdapter struct {
 	e *engine
 	w *lineWriter
 
+	// mcpServers is the `--mcp-config` payload, kept for mcpCall steps.
+	// Read-only after construction.
+	mcpServers map[string]json.RawMessage
+
 	mu      sync.Mutex
 	waiters map[string]chan bool // approval request_id → decision
 	seq     int
@@ -111,8 +115,85 @@ type claudeAdapter struct {
 	lastEchoUUID string
 }
 
-func newClaudeAdapter(e *engine, w *lineWriter) *claudeAdapter {
-	return &claudeAdapter{e: e, w: w, waiters: make(map[string]chan bool)}
+func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
+	return &claudeAdapter{
+		e:          e,
+		w:          w,
+		waiters:    make(map[string]chan bool),
+		mcpServers: claudeMCPServerSpecs(flagValue(args, "--mcp-config")),
+	}
+}
+
+// claudeMCPServerSpecs decodes the `--mcp-config` payload the app spawned
+// this mock with. The entries carry the per-thread endpoint and token an
+// mcpCall step calls, so they stay in this process: the session_config
+// report derives NAMES from the same argv separately (claudeSessionConfig).
+func claudeMCPServerSpecs(raw string) map[string]json.RawMessage {
+	var payload struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if json.Unmarshal([]byte(raw), &payload) != nil {
+		return nil
+	}
+	return payload.MCPServers
+}
+
+// mcpTarget resolves a configured server. Claude's configuration is
+// entirely argv, so it is known from process start.
+func (a *claudeAdapter) mcpTarget(name string) (mcpTarget, bool) {
+	spec, ok := a.mcpServers[name]
+	if !ok {
+		return mcpTarget{}, false
+	}
+	return mcpTargetFromSpec(spec)
+}
+
+// writeMcpToolUse emits the assistant envelope carrying the MCP tool_use
+// block. The CLI spells an MCP tool `mcp__<server>__<tool>`, which is
+// what internal/provider/claude's parser splits back into meta.mcp.
+func (a *claudeAdapter) writeMcpToolUse(vars scenario.Vars, call mcpCall) {
+	a.w.writeLine(mustJSON(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"id":    "msg-" + call.toolUseID,
+			"type":  "message",
+			"role":  "assistant",
+			"model": "claude-opus-4-7",
+			"content": []any{map[string]any{
+				"type":  "tool_use",
+				"id":    call.toolUseID,
+				"name":  "mcp__" + call.server + "__" + call.tool,
+				"input": call.args,
+			}},
+		},
+		"parent_tool_use_id": nil,
+		"session_id":         vars["SESSION_ID"],
+		"uuid":               "mock-mcp-use-" + call.toolUseID,
+	}), 0, 0)
+}
+
+// writeMcpToolResult emits the user envelope carrying the tool_result.
+// `is_error` is present only on a failure, matching the CLI: the parser
+// reads its absence as success.
+func (a *claudeAdapter) writeMcpToolResult(vars scenario.Vars, call mcpCall) {
+	block := map[string]any{
+		"type":        "tool_result",
+		"tool_use_id": call.toolUseID,
+		"content":     call.text,
+	}
+	if call.isError {
+		block["is_error"] = true
+	}
+	a.w.writeLine(mustJSON(map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"role":    "user",
+			"content": []any{block},
+		},
+		"parent_tool_use_id": nil,
+		"session_id":         vars["SESSION_ID"],
+		"uuid":               "mock-mcp-result-" + call.toolUseID,
+	}), 0, 0)
 }
 
 // readStdin drives the session until the app closes stdin, then exits

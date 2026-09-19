@@ -50,6 +50,12 @@ func (s *stubAdapter) sendApproval(*scenario.ApprovalStep, scenario.Vars) (<-cha
 
 func (s *stubAdapter) sendInterruptedTurn(scenario.Vars) {}
 
+// The stub configures no MCP servers, so an mcpCall step takes the
+// "server not configured" branch without any framing of its own.
+func (s *stubAdapter) mcpTarget(string) (mcpTarget, bool)        { return mcpTarget{}, false }
+func (s *stubAdapter) writeMcpToolUse(scenario.Vars, mcpCall)    {}
+func (s *stubAdapter) writeMcpToolResult(scenario.Vars, mcpCall) {}
+
 // recordingReporter captures every control report the engine posts, so a
 // unit test can assert on a surface whose real consumer is another
 // process.

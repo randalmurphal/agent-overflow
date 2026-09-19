@@ -127,7 +127,7 @@ type Report struct {
 	// Kind: "registered", "user_input", "turn_started",
 	// "turn_interrupted", "step_started", "step_completed",
 	// "waiting_signal", "approval_pending", "approval_decided",
-	// "history_cut", "scenario_done", "exiting".
+	// "history_cut", "mcp_result", "scenario_done", "exiting".
 	Kind string `json:"kind"`
 	// Turn is the 1-based user-turn index (0 for lifecycle reports).
 	Turn int `json:"turn,omitempty"`
@@ -155,6 +155,16 @@ type Report struct {
 	// both — an unnamed advance releases whichever gate is open, and an
 	// unnamed gate (an indefinite `stall`) is released by any advance.
 	Gate string `json:"gate,omitempty"`
+	// Result is the text an mcpCall step's tool returned, or the error
+	// text of a call that could not be made. Set only on
+	// ReportMcpResult. It is the tool's own answer, never the endpoint,
+	// headers or token the mock called it through.
+	Result string `json:"result,omitempty"`
+	// IsError marks a ReportMcpResult whose call failed: a missing
+	// server, a transport error, a timeout, a JSON-RPC error, or a tool
+	// result with `isError: true`. Result then carries the failure text
+	// the provider wire also reports.
+	IsError bool `json:"isError,omitempty"`
 	// OpenGate is the gate that was open at the moment an advance was
 	// BUFFERED, i.e. the gate the advance did not match. Empty when no
 	// gate was open at all, which is the ordinary racing-ahead case.
@@ -211,6 +221,16 @@ const (
 	// and the app sees a silent provider with no signal anywhere but the
 	// mock's stderr.
 	ReportFixtureError = "fixture_error"
+	// ReportMcpResult carries the outcome of an mcpCall step: Detail is
+	// "<server>/<tool>", Result the joined text the tool returned (or the
+	// failure text), IsError whether the call failed. Posted after the
+	// result frame reaches the provider wire, so a spec that awaits it
+	// can then assert on what the app did with the call.
+	//
+	// A call the turn's interrupt aborted reports here too, with IsError
+	// and no result frame on the wire: the interrupted turn's terminal
+	// sequence settles the row instead.
+	ReportMcpResult = "mcp_result"
 	// ReportSessionConfig carries the permission/sandbox configuration the
 	// app actually launched this session with. Posted once per mock as soon
 	// as it is observable — for Claude that is argv at boot, for Codex the

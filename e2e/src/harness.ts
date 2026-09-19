@@ -36,6 +36,11 @@ import { HarnessApp } from './harness-app.ts';
 
 export type { HarnessBootstrap, LaunchOptions } from './harness-types.ts';
 export { HarnessApp } from './harness-app.ts';
+export type {
+  HarnessMockReport,
+  HarnessMockEventData,
+  McpResultFilter,
+} from './harness-app.ts';
 
 const BOOTSTRAP_PREFIX = '__AO_HARNESS__:';
 

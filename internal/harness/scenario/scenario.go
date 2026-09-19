@@ -14,6 +14,7 @@
 package scenario
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -150,7 +151,52 @@ type Step struct {
 	// Repeat re-runs a nested step list, optionally forever — the
 	// primitive behind indefinite steady-state streaming (the soak rig).
 	Repeat *RepeatStep `json:"repeat,omitempty"`
+	// McpCall performs a REAL MCP tools/call against a server the app
+	// configured for this session, then frames the call and its result
+	// on the provider wire.
+	McpCall *McpCallStep `json:"mcpCall,omitempty"`
 }
+
+// McpCallStep invokes one of the app's built-in MCP servers
+// (`ao-thread-tools`, `ao-browser-tools`, `ao-remote-tools`) the way the
+// real CLI does: the mock resolves Server in the MCP configuration the
+// app handed it at spawn (Claude's `--mcp-config`, Codex's
+// `thread/start` `config.mcp_servers`), speaks streamable HTTP to that
+// endpoint, and writes the provider-native tool_use/tool_result pair
+// (Claude) or mcpToolCall item notifications (Codex) around it. The
+// app's parser, triage and the tool's own effects are all exercised.
+//
+// A call that cannot be made or that fails is NOT a scenario failure: a
+// missing server, a transport error, a timeout, a JSON-RPC error and a
+// tool result with `isError: true` are all framed as an error tool
+// result, exactly as the real CLI reports a failed MCP call, and posted
+// as a `mcp_result` report carrying the text. That is what lets a spec
+// assert a refusal (a disabled tool's error, say) instead of a hang.
+//
+// The endpoint URL, headers and per-thread token never leave the mock
+// process: they appear in no report, log line or wire frame.
+type McpCallStep struct {
+	// Server names the MCP server as the app configured it
+	// ("ao-thread-tools"), Tool the tool on it.
+	Server string `json:"server"`
+	Tool   string `json:"tool"`
+	// Args is the tools/call `arguments` object, carried raw and
+	// ${VAR}-substituted like an emit line. Omitted means `{}`.
+	Args json.RawMessage `json:"args,omitempty"`
+	// ToolUseID pins the correlation id the frames carry (Claude's
+	// tool_use id, Codex's item id). Minted per call when omitted.
+	// Supports ${VAR} substitution.
+	ToolUseID string `json:"toolUseId,omitempty"`
+	// TimeoutMs bounds the HTTP call; 0 means DefaultMcpCallTimeoutMs.
+	// The thread tools park a call for up to 20 minutes, so a scenario
+	// driving one needs a value well above the default.
+	TimeoutMs int `json:"timeoutMs,omitempty"`
+}
+
+// DefaultMcpCallTimeoutMs bounds an McpCallStep that names no timeout.
+// Long enough for any tool that answers promptly; a scenario driving a
+// parked call states its own.
+const DefaultMcpCallTimeoutMs = 60_000
 
 // EmitStep writes one or more wire lines. Lines support ${VAR}
 // substitution (see Vars). Pacing knobs exist to reproduce streaming
@@ -291,6 +337,13 @@ type RepeatStep struct {
 //
 // A steer's own echo is written by the adapter rather than a scenario step —
 // its text and client id exist only at steer time — so it needs no variable.
+//
+// An mcpCall step binds two more for the steps that follow it in the same turn:
+//
+//	${MCP_RESULT}       is the text the tool returned, or the error text of a
+//	                      failed call. RAW text: an author placing it inside a
+//	                      JSON string must quote it, as with any variable.
+//	${MCP_TOOL_USE_ID}  is the correlation id the emitted frames carried.
 type Vars map[string]string
 
 // Substitute replaces ${VAR} tokens for every key present in v.
@@ -466,10 +519,37 @@ func (st *Step) validate() error {
 				st.Repeat.Count)
 		}
 	}
+	if st.McpCall != nil {
+		set++
+		if strings.TrimSpace(st.McpCall.Server) == "" {
+			return fmt.Errorf("mcpCall: server must be non-empty")
+		}
+		if strings.TrimSpace(st.McpCall.Tool) == "" {
+			return fmt.Errorf("mcpCall: tool must be non-empty")
+		}
+		if len(st.McpCall.Args) > 0 && !isJSONObject(st.McpCall.Args) {
+			return fmt.Errorf("mcpCall: args must be a JSON object (the tools/call arguments)")
+		}
+		if st.McpCall.TimeoutMs < 0 {
+			return fmt.Errorf("mcpCall: timeoutMs must be >= 0")
+		}
+	}
 	if set != 1 {
 		return fmt.Errorf("step must set exactly one action, got %d", set)
 	}
 	return nil
+}
+
+// isJSONObject reports whether raw decodes as a JSON object. Checked
+// before substitution, which only ever replaces ${VAR} tokens inside
+// existing JSON values and so cannot turn an object into something else.
+func isJSONObject(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return false
+	}
+	var obj map[string]json.RawMessage
+	return json.Unmarshal(trimmed, &obj) == nil
 }
 
 // stepsPace reports whether a step list contains something that waits.

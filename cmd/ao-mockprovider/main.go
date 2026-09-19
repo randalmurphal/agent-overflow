@@ -128,7 +128,7 @@ func main() {
 	}
 	switch protocol {
 	case scenario.ProviderClaude:
-		adapter = newClaudeAdapter(e, w)
+		adapter = newClaudeAdapter(e, w, args)
 	case scenario.ProviderCodex:
 		adapter = newCodexAdapter(e, w, src.sc.Codex)
 	}
@@ -194,13 +194,7 @@ func claudeSessionConfig(args []string) *control.SessionConfig {
 }
 
 func claudeMCPServerNames(raw string) []string {
-	var payload struct {
-		MCPServers map[string]json.RawMessage `json:"mcpServers"`
-	}
-	if json.Unmarshal([]byte(raw), &payload) != nil {
-		return nil
-	}
-	return sortedMCPServerNames(payload.MCPServers)
+	return sortedMCPServerNames(claudeMCPServerSpecs(raw))
 }
 
 func sortedMCPServerNames(servers map[string]json.RawMessage) []string {

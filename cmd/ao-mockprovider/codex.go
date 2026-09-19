@@ -55,6 +55,11 @@ type codexAdapter struct {
 	// thread, so turns it never ran are history rather than nonsense.
 	// See codex_revert.go#anchorIsCuttable.
 	resumedThread bool
+	// mcpServers is `config.mcp_servers` as the app sent it on
+	// thread/start or thread/resume: the endpoints an mcpCall step
+	// calls. Guarded by mu; never reported or logged (the session_config
+	// report carries names only).
+	mcpServers map[string]json.RawMessage
 
 	// login is the account sign-in this connection is serving, if any. It
 	// carries its own lock rather than sharing mu: its completion arrives on
@@ -175,11 +180,15 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 				MCPServers:     codexMCPServerNames(params),
 			},
 		})
+		a.noteMCPServers(params)
 		// The history contract is settled here and nowhere else — a resume
 		// can only report what the thread already is.
 		a.noteThreadStart(params)
 		a.respond(id, method, a.e.currentVars())
 	case "thread/resume":
+		// A resume carries the same config bag as a start, and its MCP
+		// endpoints are freshly minted per session: take them here too.
+		a.noteMCPServers(params)
 		// Echo the requested thread id and rebind ${THREAD_ID} to it.
 		if tid := readParamString(params, "threadId"); tid != "" {
 			a.e.setThreadID(tid)
@@ -666,6 +675,13 @@ func readParamRaw(params json.RawMessage, key string) json.RawMessage {
 }
 
 func codexMCPServerNames(params json.RawMessage) []string {
+	return sortedMCPServerNames(codexMCPServerSpecs(params))
+}
+
+// codexMCPServerSpecs decodes `config.mcp_servers` out of thread/start or
+// thread/resume params. Entries carry the per-thread endpoint and token,
+// so they stay inside this process; only their names ever reach a report.
+func codexMCPServerSpecs(params json.RawMessage) map[string]json.RawMessage {
 	var config map[string]json.RawMessage
 	if json.Unmarshal(readParamRaw(params, "config"), &config) != nil {
 		return nil
@@ -674,5 +690,93 @@ func codexMCPServerNames(params json.RawMessage) []string {
 	if json.Unmarshal(config["mcp_servers"], &servers) != nil {
 		return nil
 	}
-	return sortedMCPServerNames(servers)
+	return servers
+}
+
+// noteMCPServers records the session's MCP endpoints for mcpCall steps.
+// A request carrying none leaves the previous set in place: the app sends
+// the bag only when it has servers to wire, and a later call on this
+// thread still has to reach the ones it started with.
+func (a *codexAdapter) noteMCPServers(params json.RawMessage) {
+	servers := codexMCPServerSpecs(params)
+	if len(servers) == 0 {
+		return
+	}
+	a.mu.Lock()
+	a.mcpServers = servers
+	a.mu.Unlock()
+}
+
+// mcpTarget resolves a configured server. Codex carries its MCP wiring in
+// the thread/start params, so a call before the handshake finds nothing,
+// which an mcpCall step frames as a failed call rather than a hang.
+func (a *codexAdapter) mcpTarget(name string) (mcpTarget, bool) {
+	a.mu.Lock()
+	spec, ok := a.mcpServers[name]
+	a.mu.Unlock()
+	if !ok {
+		return mcpTarget{}, false
+	}
+	return mcpTargetFromSpec(spec)
+}
+
+// writeMcpToolUse emits the item/started notification for an mcpToolCall
+// item. The field spelling is what internal/provider/codex reads
+// (protocol_meta.go#mcpToolCallMetaExtras).
+func (a *codexAdapter) writeMcpToolUse(vars scenario.Vars, call mcpCall) {
+	a.w.writeLine(mustJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "item/started",
+		"params": map[string]any{
+			"threadId": vars["THREAD_ID"],
+			"turnId":   vars["TURN_ID"],
+			"item":     codexMcpItem(call, "inProgress"),
+		},
+	}), 0, 0)
+}
+
+// writeMcpToolResult emits the item/completed notification. A failure is
+// `status: failed`: a tool that answered isError keeps its text in
+// `result.content` (which is where the app reads a tool's answer from),
+// while a call that never reached the tool carries `error.message`
+// instead, the shape protocol_item.go#mcpToolCallContent prefixes with
+// "Error: ".
+func (a *codexAdapter) writeMcpToolResult(vars scenario.Vars, call mcpCall) {
+	status := "completed"
+	if call.isError {
+		status = "failed"
+	}
+	item := codexMcpItem(call, status)
+	if call.isError && call.toolAnswered {
+		item["result"] = map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": call.text}},
+			"isError": true,
+		}
+	} else if call.isError {
+		item["error"] = map[string]any{"message": call.text}
+	} else {
+		item["result"] = map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": call.text}},
+		}
+	}
+	a.w.writeLine(mustJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"method":  "item/completed",
+		"params": map[string]any{
+			"threadId": vars["THREAD_ID"],
+			"turnId":   vars["TURN_ID"],
+			"item":     item,
+		},
+	}), 0, 0)
+}
+
+func codexMcpItem(call mcpCall, status string) map[string]any {
+	return map[string]any{
+		"id":        call.toolUseID,
+		"type":      "mcpToolCall",
+		"server":    call.server,
+		"tool":      call.tool,
+		"arguments": call.args,
+		"status":    status,
+	}
 }

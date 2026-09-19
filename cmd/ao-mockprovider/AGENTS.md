@@ -51,6 +51,11 @@ control channel aligned with verified provider behavior.
   unsupported so fallback paths remain exercised.
 - Session launch evidence may retain MCP server names, never URLs, headers,
   tokens, or credentials.
+- An `mcpCall` step makes this process a real MCP client against the server
+  the app configured for the session. The endpoint, its per-thread token and
+  its headers stay inside the process: they reach no report, log line or wire
+  frame. A call that fails for any reason is framed as an error tool result
+  and reported as `mcp_result`, never as a scenario failure.
 
 Provider wire shapes must come from current provider fixtures, upstream source,
 or an isolated spike. Do not infer them from application code. Preserve

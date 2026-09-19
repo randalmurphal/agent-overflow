@@ -444,11 +444,49 @@ list consumed per user message), and `afterTurns`
 - `stall`: hang until `advance` (or `durationMs`),
 - `repeat`: run a nested step list `count` times, or forever when
   `count <= 0`,
+- `mcpCall`: call one of the app's own MCP servers for real
+  (`server`, `tool`, `args`, optional `toolUseId` / `timeoutMs`),
 - `exit`: die with a code mid-turn.
 
 Lines substitute `${SESSION_ID}`, `${THREAD_ID}`, `${TURN}`,
-`${TURN_ID}`, `${REQUEST_ID}`, `${CWD}`, and inside a `repeat` body
-`${ITER}` (1-based iteration).
+`${TURN_ID}`, `${REQUEST_ID}`, `${CWD}`, inside a `repeat` body
+`${ITER}` (1-based iteration), and after an `mcpCall` step
+`${MCP_RESULT}` / `${MCP_TOOL_USE_ID}` for the rest of that turn.
+`${MCP_RESULT}` is raw text: an author placing it inside a JSON string
+must quote it, as with any variable.
+
+#### `mcpCall`: exercising the built-in MCP servers
+
+`mcpCall` is the one step that makes the mock a real MCP CLIENT.
+It resolves `server` in the MCP configuration the app handed this
+process at spawn (Claude's `--mcp-config`, Codex's `thread/start`
+`config.mcp_servers`), runs a streamable-HTTP session against that
+endpoint (`initialize`, `notifications/initialized`, `tools/call`,
+reading a JSON body or an SSE stream), and frames the call the way the
+CLI would: Claude an `assistant` `tool_use` named
+`mcp__<server>__<tool>` followed by the matching `tool_result`; Codex
+an `item/started` + `item/completed` pair for an `mcpToolCall` item.
+The tool_use goes out BEFORE the call, so the app renders a running
+tool row for as long as the tool takes.
+
+`ao-thread-tools`, `ao-browser-tools` and `ao-remote-tools` are reached
+the same way: the step names the server, the app's own registration
+supplies the endpoint. Endpoint, per-thread token and headers stay
+inside the mock process.
+
+Nothing about a failed call fails the scenario. A server the app did
+not configure, a transport error, a timeout (`timeoutMs`, default 60s
+because the thread tools park a call for up to 20 minutes, so a spec driving
+one states its own), a JSON-RPC error and a tool result with
+`isError: true` all reach the wire as an error tool result and the
+control channel as `mcp_result`, which is how a spec asserts a refusal
+(a disabled tool's error text) rather than waiting on a hang. An
+interrupt aborts the in-flight HTTP call: the report still lands, the
+result frame does not, and the interrupted turn's terminal sequence
+settles the row.
+
+An `mcpCall` does not pace an unbounded `repeat`: it answers as fast as
+the server does.
 
 Two scenario-level knobs sit beside the step lists. `startupDelayMs`
 delays the first frame that proves the provider is up (Claude's first
@@ -582,8 +620,8 @@ workspace boundary. The mock then long-polls for
 commands and posts progress reports (`registered`, `turn_started`,
 `user_input`, `step_started`, `step_completed`, `waiting_signal`,
 `advance_released`, `advance_buffered`, `approval_pending`,
-`approval_decided`, `turn_interrupted`, `history_cut`, `fixture_error`,
-`session_config`, `scenario_done`, `exiting`),
+`approval_decided`, `turn_interrupted`, `history_cut`, `mcp_result`,
+`fixture_error`, `session_config`, `scenario_done`, `exiting`),
 which the harness re-emits as `harness:mock` events
 (`{mockId, protocol, cwd, scenario, report}`). Tests await these
 instead of sleeping.
@@ -595,7 +633,12 @@ advance is consumed by the gate opening. `advance_buffered` fires when an advanc
 matched nothing and was parked (`report.openGate` names the gate that
 WAS open and didn't match, empty when none); its `detail` is empty for a
 real buffering and marks a DISCARD when the per-turn buffer was full.
-`fixture_error` reports a step that could not do its job (unreadable
+`mcp_result` carries an `mcpCall` step's outcome: `detail` is
+`<server>/<tool>`, `result` the joined text the tool returned (or the
+failure text), `isError` whether the call failed. It is the only
+surface that says what a built-in tool actually answered, refusals
+included; `HarnessApp.awaitMcpResult` in `e2e/src` is the spec-side
+await. `fixture_error` reports a step that could not do its job (unreadable
 fixture file, rejected `writeFile`). Without it such a turn is a silent
 provider with evidence only in the mock's stderr. `session_config`
 posts once per mock with the permission/sandbox configuration the app

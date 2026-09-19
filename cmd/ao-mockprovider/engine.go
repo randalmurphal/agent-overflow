@@ -28,6 +28,18 @@ type protocolAdapter interface {
 	// interrupted turn. The adapter has already acknowledged the inbound
 	// interrupt before this is called.
 	sendInterruptedTurn(vars scenario.Vars)
+	// mcpTarget resolves a server name in the MCP configuration the app
+	// handed this process at spawn. Where that configuration arrives is
+	// provider-specific: Claude's `--mcp-config` argv, Codex's
+	// thread/start params. ok is false for a server the app did not
+	// configure, which an mcpCall step frames as a failed call.
+	mcpTarget(name string) (target mcpTarget, ok bool)
+	// writeMcpToolUse frames the call itself (Claude's tool_use block,
+	// Codex's item/started), before the HTTP round trip runs.
+	writeMcpToolUse(vars scenario.Vars, call mcpCall)
+	// writeMcpToolResult frames the answer (Claude's tool_result, Codex's
+	// item/completed). Not called for a call the turn's interrupt aborted.
+	writeMcpToolResult(vars scenario.Vars, call mcpCall)
 }
 
 // maxPendingAdvances bounds the per-turn buffered-advance backlog. The

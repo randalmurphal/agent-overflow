@@ -57,6 +57,8 @@ func (e *engine) runStep(vars scenario.Vars, turn int, step scenario.Step) {
 		e.runExit(step.Exit)
 	case step.Repeat != nil:
 		e.runRepeat(vars, turn, step.Repeat)
+	case step.McpCall != nil:
+		e.runMcpCall(vars, turn, step.McpCall)
 	default:
 		// Parse-time Validate guarantees exactly one action; an empty
 		// step here means the schema grew without this switch.
@@ -84,6 +86,8 @@ func stepName(step scenario.Step) string {
 		return "exit"
 	case step.Repeat != nil:
 		return "repeat"
+	case step.McpCall != nil:
+		return "mcpCall"
 	}
 	return "unknown"
 }

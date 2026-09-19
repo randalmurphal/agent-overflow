@@ -230,3 +230,87 @@ func TestNewFieldsDefaultToOff(t *testing.T) {
 		}
 	}
 }
+
+// TestMcpCallStepValidation pins the step's refusals and its defaults. A
+// scenario that names no server or tool would spawn a mock that calls
+// nothing, which is the failure this catches at set time.
+func TestMcpCallStepValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		step    Step
+		wantErr string
+	}{
+		{"no server", Step{McpCall: &McpCallStep{Tool: "thread_note"}}, "server must be non-empty"},
+		{"blank server", Step{McpCall: &McpCallStep{Server: "  ", Tool: "thread_note"}}, "server must be non-empty"},
+		{"no tool", Step{McpCall: &McpCallStep{Server: "ao-thread-tools"}}, "tool must be non-empty"},
+		{"args array", Step{McpCall: &McpCallStep{Server: "s", Tool: "t", Args: []byte(`["a"]`)}}, "args must be a JSON object"},
+		{"args null", Step{McpCall: &McpCallStep{Server: "s", Tool: "t", Args: []byte(`null`)}}, "args must be a JSON object"},
+		{"args broken", Step{McpCall: &McpCallStep{Server: "s", Tool: "t", Args: []byte(`{"a":}`)}}, "args must be a JSON object"},
+		{"negative timeout", Step{McpCall: &McpCallStep{Server: "s", Tool: "t", TimeoutMs: -1}}, "timeoutMs must be >= 0"},
+		{"two actions", Step{DelayMs: 5, McpCall: &McpCallStep{Server: "s", Tool: "t"}}, "exactly one action"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			step := tc.step
+			err := step.validate()
+			if err == nil {
+				t.Fatalf("validate accepted %+v", tc.step)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q does not mention %q", err, tc.wantErr)
+			}
+		})
+	}
+
+	// Args are optional, and a ${VAR} token inside a JSON string keeps
+	// the object valid before substitution.
+	ok := Step{McpCall: &McpCallStep{Server: "ao-thread-tools", Tool: "thread_note", Args: []byte(`{"text":"${USER_INPUT}"}`)}}
+	if err := ok.validate(); err != nil {
+		t.Fatalf("valid mcpCall rejected: %v", err)
+	}
+	bare := Step{McpCall: &McpCallStep{Server: "ao-thread-tools", Tool: "thread_note"}}
+	if err := bare.validate(); err != nil {
+		t.Fatalf("mcpCall without args rejected: %v", err)
+	}
+}
+
+// TestParseMcpCallStep drives the step through the JSON schema the
+// harness actually installs, including the positional error style.
+func TestParseMcpCallStep(t *testing.T) {
+	doc := `{"version": 1, "name": "mcp", "provider": "claude", "turns": [{"steps": [
+		{"mcpCall": {"server": "ao-thread-tools", "tool": "thread_note", "args": {"text": "${USER_INPUT}"}, "toolUseId": "tu-1", "timeoutMs": 1200000}}
+	]}]}`
+	s, err := Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	step := s.Turns[0].Steps[0].McpCall
+	if step == nil || step.Server != "ao-thread-tools" || step.Tool != "thread_note" ||
+		step.ToolUseID != "tu-1" || step.TimeoutMs != 1_200_000 {
+		t.Fatalf("parsed mcpCall = %+v", step)
+	}
+	if got := string(step.Args); got != `{"text": "${USER_INPUT}"}` {
+		t.Fatalf("args = %s, want the raw object", got)
+	}
+
+	bad := `{"version": 1, "name": "mcp", "provider": "claude", "turns": [
+		{"steps":[{"delayMs":1}]},
+		{"steps":[{"delayMs":1},{"mcpCall":{"server":"s"}}]}
+	]}`
+	_, err = Parse([]byte(bad))
+	if err == nil || !strings.Contains(err.Error(), "turn 2 step 2") {
+		t.Fatalf("error %v does not locate the bad mcpCall step", err)
+	}
+}
+
+// TestMcpCallDoesNotPaceARepeat keeps the unbounded-repeat rule honest: an
+// MCP call answers as fast as the server does, so it is not a wait.
+func TestMcpCallDoesNotPaceARepeat(t *testing.T) {
+	loop := Step{Repeat: &RepeatStep{Count: 0, Steps: []Step{
+		{McpCall: &McpCallStep{Server: "ao-thread-tools", Tool: "thread_note"}},
+	}}}
+	err := loop.validate()
+	if err == nil || !strings.Contains(err.Error(), "pacing step") {
+		t.Fatalf("unbounded repeat of mcpCall accepted: %v", err)
+	}
+}

@@ -2,7 +2,7 @@
 // a blank slate before every test. Import { test, expect } from here
 // instead of '@playwright/test'.
 import { test as base, expect } from '@playwright/test';
-import { launchHarness, type HarnessApp } from '../src/harness.js';
+import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 
 interface WorkerFixtures {
   harnessWorker: HarnessApp;
@@ -68,23 +68,12 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
 
 export { expect };
 
-/** Shapes of the harness events the tests await. */
-export interface HarnessMockEvent {
-  mockId: string;
-  protocol: string;
-  cwd: string;
-  scenario: string;
-  report: {
-    kind: string;
-    turn?: number;
-    step?: number;
-    detail?: string;
-    /** Set on `user_input`: the text the mock received on the wire. */
-    input?: string;
-    /** Set on `user_input`: Claude's session id or Codex's thread id. */
-    sessionRef?: string;
-  };
-}
+/**
+ * Shapes of the harness events the tests await. One definition, owned by
+ * the wire client: a spec reading a new report field must not have to
+ * find two copies of it.
+ */
+export type HarnessMockEvent = HarnessMockEventData;
 
 export interface SeedResult {
   projects: Array<{
