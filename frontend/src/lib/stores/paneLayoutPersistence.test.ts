@@ -237,25 +237,45 @@ describe('pane layout persistence', () => {
     });
   });
 
-  it('never snapshots ephemeral take-control or browser companions', async () => {
+  it('never snapshots ephemeral take-control, browser or side-chat companions', async () => {
     const left = makeThread({ id: 'left-thread', title: 'Left' });
     installPaneMocks();
     seedPane('left', left);
+    // A side chat carries a thread like any thread pane, so the snapshot has
+    // to skip it on its KIND, not on the absence of a thread id.
+    seedPane('side-chat-left', makeThread({ id: 'scratch-thread', mode: 'scratch' }));
     setPaneLayoutItemsForTest([
       { id: 'left', paneId: 'left', kind: 'thread', widthPx: 660 },
       { id: 'take-control-left', paneId: 'take-control-left', kind: 'take-control', widthPx: 660, sourcePaneId: 'left' },
       { id: 'browser-left', paneId: 'browser-left', kind: 'browser', widthPx: 660, sourcePaneId: 'left' },
+      { id: 'side-chat-left', paneId: 'side-chat-left', kind: 'side-chat', widthPx: 660, sourcePaneId: 'left' },
     ]);
     focusPane('browser-left');
 
     persistPaneLayout();
     await waitForPaneLayoutPersistenceForTest();
 
-    // Live PTY and Chrome surfaces cannot be restored, so focus falls back
-    // to the source instead of pointing at a pane restore cannot produce.
+    // Live PTY and Chrome surfaces cannot be restored, and a side chat's
+    // scratch thread is deleted with its pane, so focus falls back to the
+    // source instead of pointing at a pane restore cannot produce.
     expect(persistedPaneLayout()).toEqual(makeSavedLayout([
       { paneId: 'left', threadId: 'left-thread', widthPx: 660 },
     ], 'left'));
+  });
+
+  it('rejects a persisted THREAD pane whose id is shaped like a side chat companion id', async () => {
+    const good = makeThread({ id: 'good-thread' });
+    const impostor = makeThread({ id: 'impostor-thread' });
+    await installUIStateMock(makeSavedLayout([
+      { paneId: 'main', threadId: good.id, widthPx: 1 },
+      { paneId: 'side-chat-main', kind: 'thread', threadId: impostor.id, widthPx: 1 },
+    ], 'side-chat-main'));
+    installPaneMocks();
+
+    await loadPersistedPaneLayout([good, impostor]);
+
+    expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['main']);
+    expect(getFocusedPaneId()).toBe('main');
   });
 
   it('round-trips an agent companion with its scope and seeds the state on restore', async () => {

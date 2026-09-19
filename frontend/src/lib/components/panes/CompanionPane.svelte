@@ -8,9 +8,10 @@
   import { getPane } from '../../stores/panes.svelte';
   import { companionSubjectKey } from '../../stores/companionSubject';
 
-  // take-control is a companion in the registry but not a panel body — it
-  // renders its own surface (TakeControlPane) through PaneHost's dedicated
-  // branch, so it never arrives here.
+  // take-control and side-chat are companions in the registry but not panel
+  // bodies: each renders its own whole surface (the PTY mirror, a ChatView
+  // over the side chat's own thread) through PaneHost's dedicated branches,
+  // so neither arrives here.
   interface Props {
     paneId: string;
     kind: CompanionPanelKind;

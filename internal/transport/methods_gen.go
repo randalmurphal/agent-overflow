@@ -120,6 +120,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "FinishPasskeyStepUp", ID: 1569276637, Scope: "session", Route: "home"},                                   // main.App.FinishPasskeyStepUp
 	{Name: "ForgetAccessDevice", ID: 516065248, Scope: "access:admin", Route: "home"},                                // main.App.ForgetAccessDevice
 	{Name: "ForgetTailnetNode", ID: 767560289, Scope: "host", Route: "home"},                                         // main.App.ForgetTailnetNode
+	{Name: "ForkSideChat", ID: 2246569884, Scope: "threads:operate", Route: "thread"},                                // main.App.ForkSideChat
 	{Name: "ForkThread", ID: 4063914461, Scope: "threads:operate", Route: "thread"},                                  // main.App.ForkThread
 	{Name: "ForkThreadFromMessage", ID: 3977213964, Scope: "threads:operate", Route: "thread"},                       // main.App.ForkThreadFromMessage
 	{Name: "GenerateCommitMessage", ID: 1669373286, Scope: "git:operate", Route: "workspace"},                        // main.App.GenerateCommitMessage
@@ -294,6 +295,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ProbeCodexAccount", ID: 2614227175, Scope: "access:admin", Route: "home"},                                // main.App.ProbeCodexAccount
 	{Name: "ProbeDevServerURL", ID: 3448359500, Scope: "host", Route: "home"},                                        // main.App.ProbeDevServerURL
 	{Name: "ProjectDeletionPreview", ID: 2575010484, Scope: "git:operate", Route: "project"},                         // main.App.ProjectDeletionPreview
+	{Name: "PromoteScratchThread", ID: 4079123887, Scope: "threads:operate", Route: "thread"},                        // main.App.PromoteScratchThread
 	{Name: "ProviderTerminalAttach", ID: 1393518281, Scope: "terminal:operate", Route: "thread"},                     // main.App.ProviderTerminalAttach
 	{Name: "ProviderTerminalDetach", ID: 2584141779, Scope: "terminal:operate", Route: "thread"},                     // main.App.ProviderTerminalDetach
 	{Name: "ProviderTerminalInput", ID: 1783659784, Scope: "terminal:operate", Route: "thread"},                      // main.App.ProviderTerminalInput

@@ -13,6 +13,7 @@ import { threadMachine } from '../../stores/attachedBackends.svelte';
 // which is where the answer belongs.
 
 import { CompactCodexThread } from '../../stores/bindings';
+import { openSideChat } from '../../stores/sideChat';
 import { makeCommandContext } from '../../stores/builtinCommands.svelte';
 import { runCommand } from '../../stores/commandRegistry.svelte';
 import { openComposerPicker } from '../../stores/composerPickerRegistry.svelte';
@@ -170,6 +171,16 @@ function requireIdleCodexThread(pane: ThreadPane, what: string): string {
   return '';
 }
 
+/**
+ * A side chat forks the thread at its tail, running turn included, so this
+ * one is available mid-turn: the fork is a snapshot and the source keeps
+ * streaming.
+ */
+async function runSideChat(pane: ThreadPane): Promise<CommandActionResult> {
+  const result = await openSideChat(pane);
+  return result.error === '' ? DONE : fail(result.error);
+}
+
 async function runCompact(pane: ThreadPane): Promise<CommandActionResult> {
   const blocked = requireIdleCodexThread(pane, '/compact');
   if (blocked !== '') return fail(blocked);
@@ -202,6 +213,8 @@ export async function runInterceptedCommand(
       return runClear(pane);
     case 'rename':
       return runRename(pane, invocation.arg);
+    case 'side-chat':
+      return runSideChat(pane);
     case 'compact':
       return runCompact(pane);
     case 'review':

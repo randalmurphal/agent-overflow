@@ -25,6 +25,7 @@
   import type { SendButtonAction } from './sendButtonTypes';
   import { asProviderID } from '../../../types/providers';
   import { providerSupports } from '../../../providers/catalog';
+  import { isScratchThreadMode } from '../../../utils/threadModes';
   import {
     measureComposerToolbarDensity,
     type ComposerToolbarDensity,
@@ -74,7 +75,7 @@
   let backend = $derived(threadMachine(pane.threadId ?? '', pane.thread?.projectId));
 
   // Discussion has its own composer flow; ordinary threads expose the
-  // chat ↔ plan agent-mode toggle here.
+  // chat/plan agent-mode toggle here.
   let isDiscussionThread = $derived(pane.thread?.mode === 'discussion');
 
   // Rate-limit rings appear once the thread is "locked in" — the
@@ -118,6 +119,12 @@
   // AO-mediated runtime-mode, plan, and MCP affordances are omitted — the
   // human reaches them inside the terminal via take-control.
   let supportsPlanMode = $derived(providerSupports(providerID, 'planMode'));
+  // A side chat renders as a chat thread but has no mode toggle: its mode is
+  // `scratch` until Keep restores the one recorded at the fork, and
+  // UpdateThreadMode refuses to move it.
+  let showModeToggle = $derived(
+    !isDiscussionThread && supportsPlanMode && !isScratchThreadMode(pane.thread?.mode),
+  );
   let supportsRuntimeModes = $derived(providerSupports(providerID, 'runtimeModes'));
   let supportsMcp = $derived(providerSupports(providerID, 'mcp'));
   // Pickers render against either a persisted thread or a draft
@@ -168,7 +175,7 @@
          chord would, anchored to the roll-up button. -->
     <div class="flex items-center gap-0.5 shrink-0" data-composer-toolbar-pickers>
       <EffortMenu {pane} />
-      {#if !isDiscussionThread && supportsPlanMode}
+      {#if showModeToggle}
         <AgentModeToggle {pane} />
       {/if}
       {#if supportsRuntimeModes}
@@ -182,7 +189,7 @@
     <div class="flex shrink-0 items-center" data-composer-toolbar-rollup>
       <ComposerPickersRollup
         {pane}
-        showMode={!isDiscussionThread && supportsPlanMode}
+        showMode={showModeToggle}
         showAccess={supportsRuntimeModes}
         showMcp={supportsMcp}
         showPlan={hasCurrentPlan}

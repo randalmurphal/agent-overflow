@@ -303,11 +303,13 @@ const SINGLE_ENTITY_BY_METHOD: Readonly<Record<number, 'thread' | 'project'>> = 
   969543070: 'project', // CreateProject
   2579322833: 'thread', // CreateThread
   1716017387: 'thread', // CreateThreadFromPR
+  2246569884: 'thread', // ForkSideChat
   4063914461: 'thread', // ForkThread
   3977213964: 'thread', // ForkThreadFromMessage
   1098302047: 'thread', // GetThread
   1748405812: 'thread', // PinThread
   2870364785: 'thread', // PrepareThreadWorktree
+  4079123887: 'thread', // PromoteScratchThread
   3728890856: 'project', // RenameProject
   2317109106: 'thread', // SendDiffReviewComments
   3632185196: 'thread', // SendMessageWithOptions

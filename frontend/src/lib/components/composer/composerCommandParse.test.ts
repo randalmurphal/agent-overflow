@@ -49,7 +49,14 @@ describe('leadingCommandArgument', () => {
 });
 
 describe('parseInterceptedCommand', () => {
-  const intercepted = new Set(['model', 'clear', 'review']);
+  const intercepted = new Set(['model', 'clear', 'review', 'side-chat']);
+
+  it('matches a hyphenated name whole', () => {
+    expect(parseInterceptedCommand('/side-chat', intercepted)).toEqual({
+      name: 'side-chat',
+      arg: '',
+    });
+  });
 
   it('matches a registered name at position 0 and splits the argument', () => {
     expect(parseInterceptedCommand('/model', intercepted)).toEqual({ name: 'model', arg: '' });

@@ -418,7 +418,7 @@ func (t threadToolsApp) forkScratchThread(ctx context.Context, source store.Thre
 	if err := t.app.store.InsertScratchThread(store.ScratchThread{
 		ThreadID:       fork.ID,
 		SourceThreadID: source.ID,
-		ReturnMode:     threadToolsScratchReturnMode(source.Mode),
+		ReturnMode:     scratchReturnMode(source.Mode),
 		RequestToken:   token,
 	}); err != nil {
 		// The fork exists and nothing owns it yet. Take it back rather than
@@ -439,11 +439,12 @@ func threadToolsAskTitle(sourceTitle string) string {
 	return "Ask: " + title
 }
 
-// threadToolsScratchReturnMode is the mode a Keep promotion returns the
-// scratch fork to. The table's CHECK refuses `scratch` itself, and a hidden
-// workflow mode is not something a person can keep, so both fall back to
-// chat, which is what a promoted side conversation actually is.
-func threadToolsScratchReturnMode(sourceMode string) string {
+// scratchReturnMode is the mode a Keep promotion returns a scratch fork to,
+// for both of its creators: an agent's ask and `/side-chat`. The table's
+// CHECK refuses `scratch` itself, and a hidden workflow mode is not
+// something a person can keep, so both fall back to chat, which is what a
+// promoted side conversation actually is.
+func scratchReturnMode(sourceMode string) string {
 	switch sourceMode {
 	case threadmode.ModeChat, threadmode.ModePlan:
 		return sourceMode

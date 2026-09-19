@@ -1138,6 +1138,35 @@ describe('mode.cycle command', () => {
     await Promise.resolve();
     expect(calls.length).toBe(0);
   });
+
+  it('is a no-op on a side chat: only Keep moves a scratch thread', async () => {
+    const pane = readyPane({ mode: 'scratch' });
+    const calls: Array<[string, string]> = [];
+    setBindingMock('UpdateThreadMode', async (id: unknown, mode: unknown) => {
+      calls.push([id as string, mode as string]);
+      return {
+        id: id as string,
+        title: 'Side chat: Test thread',
+        provider: 'claude',
+        workspacePath: '/tmp',
+        projectPath: '/tmp',
+        mode: mode as string,
+        model: 'claude-sonnet-4-6',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+      };
+    });
+    registerFixtureCommands(pane);
+    const ctx = makeCommandContext(pane, {}) as CommandContext;
+    runCommand('mode.cycle', ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    // UpdateThreadMode refuses to move a scratch thread; the command must not
+    // reach it and collect a backend error for a chord the user pressed.
+    expect(calls.length).toBe(0);
+  });
 });
 
 describe('git.ship command', () => {

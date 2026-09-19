@@ -477,7 +477,20 @@
           <!-- Every pane body sits in its own boundary: a render throw in one
                pane tears down and reports that pane alone, never the strip. -->
           <RenderBoundary label="This panel" testId="pane-render-error">
-            {#if item.kind === 'take-control'}
+            {#if item.kind === 'side-chat'}
+              <!-- A side chat is a companion by lifetime, not by surface: it
+                   hosts an ordinary ChatView over its own scratch thread,
+                   registered in the pane registry under this companion pane
+                   id. -->
+              {@const sideChatPane = getPane(item.paneId)}
+              {#if sideChatPane}
+                <ChatView pane={sideChatPane} />
+              {:else}
+                <div class="flex h-full items-center justify-center px-4 text-sm text-error" data-testid="side-chat-pane-missing">
+                  Side chat unavailable.
+                </div>
+              {/if}
+            {:else if item.kind === 'take-control'}
               <!-- Lazy: TakeControlPane pulls the xterm stack; a static
                    import here would drag the terminal chunks into the eager
                    startup graph (see the TerminalView mount in ChatView). -->

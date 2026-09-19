@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import TerminalView from './TerminalView.svelte';
-import { destroyPane, getFocusedPaneId } from '../../stores/panes.svelte';
+import { getFocusedPaneId } from '../../stores/panes.svelte';
+import { closePaneById } from '../../stores/companionPanes.svelte';
 import { getProject } from '../../stores/projects.svelte';
 import { resetThreadTerminalStatesForTest } from './terminalStore.svelte';
 import { setupEventListeners } from '../../stores/events';
@@ -75,6 +76,13 @@ vi.mock('../../stores/panes.svelte', () => ({
   syncThread: vi.fn(),
 }));
 
+// The close X routes through the companion registry, which owns the
+// companion-vs-thread branch (a side chat's pane deletes its scratch thread).
+vi.mock('../../stores/companionPanes.svelte', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/companionPanes.svelte')>()),
+  closePaneById: vi.fn(),
+}));
+
 // The header shows the project name; a home terminal (no project) shows "~".
 vi.mock('../../stores/projects.svelte', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../stores/projects.svelte')>()),
@@ -119,7 +127,7 @@ function makePane(opts: MakePaneOpts = {}) {
 beforeEach(() => {
   callLog.length = 0;
   resetThreadTerminalStatesForTest();
-  vi.mocked(destroyPane).mockClear();
+  vi.mocked(closePaneById).mockClear();
   vi.mocked(getFocusedPaneId).mockReturnValue(null);
   vi.mocked(getProject).mockReturnValue(undefined as never);
   resetWailsMocks();
@@ -195,13 +203,13 @@ describe('TerminalView', () => {
     expect(queryByTestId('terminal-collapse')).toBeNull();
   });
 
-  it('closes the pane via destroyPane when the close button is clicked', async () => {
+  it('closes the pane by id when the close button is clicked', async () => {
     const pane = makePane({ paneId: 'pane-xyz' });
     const { getByTestId } = render(TerminalView, { pane: pane as never });
     await tick();
 
     getByTestId('terminal-pane-close').click();
-    expect(vi.mocked(destroyPane)).toHaveBeenCalledWith('pane-xyz');
+    expect(vi.mocked(closePaneById)).toHaveBeenCalledWith('pane-xyz');
   });
 
   it('auto-opens a fresh terminal on mount (no manual flag — the plan correction)', async () => {

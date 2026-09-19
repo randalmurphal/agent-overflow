@@ -7,11 +7,15 @@ import { UpdateThreadMode } from '../../../stores/bindings';
 import { syncThread } from '../../../stores/panes.svelte';
 import { addToast } from '../../../stores/toast.svelte';
 import { cycleMode, type CycleMode } from '../../../utils/modeCycle';
+import { isScratchThreadMode, renderedThreadMode } from '../../../utils/threadModes';
 import { errString } from '../../../utils/errors';
 
-/** The thread's mode as the toggle presents it; an unset mode reads as chat. */
+/**
+ * The thread's mode as the toggle presents it; an unset mode, and a side
+ * chat's `scratch`, read as chat.
+ */
 export function currentAgentMode(pane: ThreadPane): CycleMode {
-  return (pane.thread?.mode as CycleMode | undefined) ?? 'chat';
+  return (renderedThreadMode(pane.thread?.mode) as CycleMode) || 'chat';
 }
 
 /**
@@ -21,6 +25,10 @@ export function currentAgentMode(pane: ThreadPane): CycleMode {
  */
 export async function cycleAgentMode(pane: ThreadPane): Promise<void> {
   if (!pane.thread) return;
+  // A side chat's mode is `scratch` until Keep restores the one recorded at
+  // the fork; UpdateThreadMode refuses to move it, and the toolbar hides the
+  // toggle. This is the same refusal for any other caller.
+  if (isScratchThreadMode(pane.thread.mode)) return;
   const next = cycleMode(currentAgentMode(pane));
   if (pane.hasDraftPlaceholder) {
     pane.setDraftPlaceholderMode(next);

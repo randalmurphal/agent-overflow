@@ -4,6 +4,7 @@ import {
   destroyPane,
   focusPane,
   getFocusedPaneId,
+  getPane,
   resetPanesForTest,
 } from './panes.svelte';
 import { REVEAL_PANE_EVENT } from './eventNames';
@@ -17,6 +18,7 @@ import {
 import {
   closeCompanion,
   closeCompanionsForSource,
+  closePaneById,
   getCompanionPane,
   installCompanionPanes,
   isCompanionOpen,
@@ -24,6 +26,10 @@ import {
   resetCompanionPanesForTest,
   toggleCompanion,
 } from './companionPanes.svelte';
+import { getThreads, replaceAllThreads } from './threads.svelte';
+import { getToasts } from './toast.svelte';
+import { makeThread } from '../../test/helpers/chat';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 
 function threadItem(paneId: string, widthPx = 560): PaneLayoutItem {
   return { id: paneId, paneId, kind: 'thread', widthPx };
@@ -269,5 +275,136 @@ describe('companionPanes store', () => {
     expect(isCompanionOpen('p1', 'browser')).toBe(false);
     expect(isCompanionOpen('p1', 'take-control')).toBe(false);
     expect(getPaneLayoutItems()).toEqual([]);
+  });
+});
+
+describe('side chat companions', () => {
+  // A side chat is the one companion that IS a thread pane: it owns a scratch
+  // thread that exists only while the pane does, so every close path has to
+  // delete it.
+  function openSideChatPane(sourcePaneId: string, threadId: string): string {
+    const companion = openCompanion(sourcePaneId, 'side-chat');
+    if (!companion) throw new Error('side chat companion did not open');
+    const pane = createPane(companion.paneId);
+    pane.replaceThread(makeThread({ id: threadId, mode: 'scratch' }));
+    return companion.paneId;
+  }
+
+  beforeEach(() => {
+    resetBindingMocks();
+    replaceAllThreads([]);
+    setBindingMock('DeleteThread', async () => {});
+  });
+
+  afterEach(() => {
+    resetBindingMocks();
+    replaceAllThreads([]);
+  });
+
+  it('deletes the scratch thread and drops the pane when the companion is closed', async () => {
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    createPane('main');
+    replaceAllThreads([makeThread({ id: 'side-1', mode: 'scratch' })]);
+    const paneId = openSideChatPane('main', 'side-1');
+    expect(paneIds()).toEqual(['main', 'side-chat-main']);
+
+    closeCompanion(paneId);
+
+    expect(isCompanionOpen('main', 'side-chat')).toBe(false);
+    expect(getCompanionPane(paneId)).toBeNull();
+    // destroyPane takes the layout item and the ThreadPane with it.
+    expect(paneIds()).toEqual(['main']);
+    expect(getPane(paneId)).toBeUndefined();
+    await vi.waitFor(() => {
+      expect(getBindingMock('DeleteThread')?.mock.calls).toEqual([['side-1']]);
+    });
+    // The deleted row leaves the frontend list too, so nothing can reopen it.
+    expect(getThreads().map((thread) => thread.id)).toEqual([]);
+  });
+
+  it('deletes the scratch thread when the source pane is destroyed', async () => {
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    createPane('main');
+    openSideChatPane('main', 'side-1');
+
+    destroyPane('main');
+
+    expect(getPaneLayoutItems()).toEqual([]);
+    await vi.waitFor(() => {
+      expect(getBindingMock('DeleteThread')?.mock.calls).toEqual([['side-1']]);
+    });
+  });
+
+  it('deletes the scratch thread when the source pane changes thread', async () => {
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    createPane('main');
+    openSideChatPane('main', 'side-1');
+
+    // What ThreadPane calls on a switch, clear or draft start: the companion
+    // belonged to the thread the fork was cut from.
+    closeCompanionsForSource('main');
+
+    expect(isCompanionOpen('main', 'side-chat')).toBe(false);
+    expect(paneIds()).toEqual(['main']);
+    await vi.waitFor(() => {
+      expect(getBindingMock('DeleteThread')?.mock.calls).toEqual([['side-1']]);
+    });
+  });
+
+  it('routes a pane-header close through the companion path, deleting the fork', async () => {
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    createPane('main');
+    const paneId = openSideChatPane('main', 'side-1');
+
+    closePaneById(paneId);
+
+    expect(getCompanionPane(paneId)).toBeNull();
+    expect(paneIds()).toEqual(['main']);
+    await vi.waitFor(() => {
+      expect(getBindingMock('DeleteThread')?.mock.calls).toEqual([['side-1']]);
+    });
+  });
+
+  it('leaves an ordinary thread pane alone when closed by id', () => {
+    setPaneLayoutItemsForTest([threadItem('main'), threadItem('right')]);
+    createPane('main');
+    createPane('right');
+
+    closePaneById('right');
+
+    expect(paneIds()).toEqual(['main']);
+    expect(getBindingMock('DeleteThread')?.mock.calls ?? []).toEqual([]);
+  });
+
+  it('reports a failed delete to the user rather than dropping it', async () => {
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    createPane('main');
+    setBindingMock('DeleteThread', async () => {
+      throw new Error('backend unreachable');
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const paneId = openSideChatPane('main', 'side-1');
+
+    closeCompanion(paneId);
+
+    await vi.waitFor(() => {
+      expect(getToasts().some((toast) => toast.type === 'error')).toBe(true);
+    });
+    consoleError.mockRestore();
+  });
+
+  it('drops the registration when the side chat pane is destroyed directly', () => {
+    // Keep destroys the pane after promoting the thread, and a remote
+    // thread:deleted closes panes showing the thread. Neither may leave a
+    // registry entry pointing at a pane that no longer exists.
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    createPane('main');
+    const paneId = openSideChatPane('main', 'side-1');
+
+    destroyPane(paneId);
+
+    expect(getCompanionPane(paneId)).toBeNull();
+    expect(isCompanionOpen('main', 'side-chat')).toBe(false);
+    expect(paneIds()).toEqual(['main']);
   });
 });

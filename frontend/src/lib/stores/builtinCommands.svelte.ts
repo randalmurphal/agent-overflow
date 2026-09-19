@@ -66,6 +66,7 @@ import {
   UserInputResponse,
 } from './bindings';
 import { cycleMode } from '../utils/modeCycle';
+import { isScratchThreadMode } from '../utils/threadModes';
 import { runInterruptOrRevert } from './revertOnInterrupt.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { getSettings, updateSetting } from './settings.svelte';
@@ -552,13 +553,15 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
   registerCommand({
     id: 'mode.cycle',
     label: 'Agent Mode: Toggle Chat ↔ Plan',
-    description: 'Toggle the active chat thread between chat and plan agent modes. No-op on discussion threads.',
+    description: 'Toggle the active chat thread between chat and plan agent modes. No-op on discussion threads and side chats.',
     icon: '⇆',
     when: 'hasActiveThread && threadsOperate && !paletteOpen && !anyModalOpen',
     editableReachable: true,
     run: (ctx) =>
       withActiveThread(ctx, async (t, pane) => {
-        if (t.mode === 'discussion') return;
+        // A side chat's mode is `scratch` until Keep restores the one
+        // recorded at the fork, and UpdateThreadMode refuses to move it.
+        if (t.mode === 'discussion' || isScratchThreadMode(t.mode)) return;
         const next = cycleMode(t.mode);
         if (pane.hasDraftPlaceholder) {
           pane.setDraftPlaceholderMode(next);

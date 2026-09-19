@@ -77,6 +77,7 @@ export const INTERCEPTED_COMMANDS: readonly InterceptedCommandDef[] = [
   { name: 'config', description: 'Open settings' },
   { name: 'clear', description: 'Start a new thread in this project' },
   { name: 'rename', description: 'Rename this thread', argumentHint: '[title]' },
+  { name: 'side-chat', description: 'Fork this thread into a side chat beside it' },
   {
     name: 'compact',
     description: 'Compact this thread’s context now',

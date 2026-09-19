@@ -91,6 +91,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1569276637: 'home', // FinishPasskeyStepUp
 	516065248: 'home', // ForgetAccessDevice
 	767560289: 'home', // ForgetTailnetNode
+	2246569884: 'thread', // ForkSideChat
 	4063914461: 'thread', // ForkThread
 	3977213964: 'thread', // ForkThreadFromMessage
 	1669373286: 'workspace', // GenerateCommitMessage
@@ -265,6 +266,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2614227175: 'home', // ProbeCodexAccount
 	3448359500: 'home', // ProbeDevServerURL
 	2575010484: 'project', // ProjectDeletionPreview
+	4079123887: 'thread', // PromoteScratchThread
 	1393518281: 'thread', // ProviderTerminalAttach
 	2584141779: 'thread', // ProviderTerminalDetach
 	1783659784: 'thread', // ProviderTerminalInput

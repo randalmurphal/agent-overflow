@@ -32,6 +32,8 @@ export {
   DeleteThread,
   ForkThread,
   ForkThreadFromMessage,
+  ForkSideChat,
+  PromoteScratchThread,
   BeginThreadTransfer,
   GetThreadTransferDestinationProject,
   BindThreadTransferDestination,

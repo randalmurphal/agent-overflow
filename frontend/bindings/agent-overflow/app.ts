@@ -1098,6 +1098,21 @@ export function ForgetTailnetNode(): $CancellablePromise<network$0.Settings> {
 }
 
 /**
+ * ForkSideChat forks a thread at its tail into a hidden scratch thread and
+ * records where it came from, so the fork can be kept or deleted later.
+ * 
+ * The fork inherits the source's runtime mode, unlike an agent's
+ * `thread_ask` fork: a person is present in this pane continuing their own
+ * conversation, and a side chat that could not act where its source can
+ * would not be the conversation they forked.
+ */
+export function ForkSideChat(threadID: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(2246569884, threadID).then(($result: any) => {
+        return $$createType7($result);
+    });
+}
+
+/**
  * ForkThread copies a source thread's timeline into a new fork and wires
  * the provider-specific resume state. The whole sequence is atomic from
  * the caller's point of view: if any step fails, the partially-created
@@ -3486,6 +3501,21 @@ export function ProbeDevServerURL(rawURL: string): $CancellablePromise<boolean> 
 export function ProjectDeletionPreview(projectID: string): $CancellablePromise<app$0.ProjectDeletionPreview> {
     return $Call.ByID(2575010484, projectID).then(($result: any) => {
         return $$createType161($result);
+    });
+}
+
+/**
+ * PromoteScratchThread is Keep: the scratch thread takes back the mode
+ * recorded for it at the fork, which puts it in the sidebar, and its scratch
+ * record goes. The row is broadcast as listed so every attached client shows
+ * it, exactly as a fork is.
+ * 
+ * A thread with no scratch record is refused: it is already an ordinary
+ * thread, and moving its mode here would be a mode change nobody asked for.
+ */
+export function PromoteScratchThread(threadID: string): $CancellablePromise<store$0.Thread> {
+    return $Call.ByID(4079123887, threadID).then(($result: any) => {
+        return $$createType7($result);
     });
 }
 

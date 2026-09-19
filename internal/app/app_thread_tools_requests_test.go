@@ -1210,7 +1210,7 @@ func TestBootSweepSettlesWhatTheRestartInterrupted(t *testing.T) {
 	scratch := f.forkableThread(t, "boot-scratch")
 	if err := f.app.store.InsertScratchThread(store.ScratchThread{
 		ThreadID: scratch.ID, SourceThreadID: f.caller.ID, RequestToken: "stale-token",
-		ReturnMode: threadToolsScratchReturnMode(threadmode.ModeChat), CreatedAt: time.Now().UnixMilli(),
+		ReturnMode: scratchReturnMode(threadmode.ModeChat), CreatedAt: time.Now().UnixMilli(),
 	}); err != nil {
 		t.Fatalf("InsertScratchThread: %v", err)
 	}

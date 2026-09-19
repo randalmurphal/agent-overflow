@@ -1,14 +1,16 @@
 // Companion pane registry + lifecycle for every pane paired to a source
-// thread pane: plan, review, browser, and take-control.
+// thread pane: plan, review, browser, take-control, and side-chat.
 //
 // Companions are snapped immediately to the source pane's right by
 // paneLayout.svelte.ts, and they belong to the THREAD the source pane was
 // showing when they opened — ThreadPane closes them (closeCompanionsForSource)
 // whenever that thread changes.
 //
-// take-control renders its own raw PTY surface. It and browser are ephemeral;
-// browser follows a live Chrome target that cannot be restored. The other
-// kinds are persisted and restored by paneLayoutPersistence.ts.
+// take-control renders its own raw PTY surface, and side-chat an ordinary
+// thread pane over its own scratch thread. Those two and browser are
+// ephemeral: browser follows a live Chrome target that cannot be restored,
+// and a side chat's thread is deleted when its pane closes. The other kinds
+// are persisted and restored by paneLayoutPersistence.ts.
 
 import {
   addPaneLayoutItem,
@@ -22,18 +24,36 @@ import { isCompactLayout, onScreenCompactPaneId } from './layoutMode.svelte';
 import {
   addPaneDestroyedObserver,
   closeFocusedPane,
+  destroyPane,
   focusPane,
   getFocusedPaneId,
+  getPane,
   revealPane,
 } from './panes.svelte';
+import { deleteSideChatThread } from './sideChatThread';
 
 export type CompanionKind = CompanionPaneKind;
-/** The kinds CompanionPane hosts as panel bodies (everything but take-control). */
-export type CompanionPanelKind = Exclude<CompanionKind, 'take-control'>;
-export type PersistedCompanionKind = Exclude<CompanionKind, 'take-control' | 'browser'>;
+/**
+ * The kinds CompanionPane hosts as panel bodies. take-control and side-chat
+ * render whole surfaces of their own through PaneHost's dedicated branches.
+ */
+export type CompanionPanelKind = Exclude<CompanionKind, 'take-control' | 'side-chat'>;
+export type PersistedCompanionKind = Exclude<
+  CompanionKind,
+  'take-control' | 'browser' | 'side-chat'
+>;
 
 function isEphemeralCompanionKind(kind: CompanionKind): boolean {
-  return kind === 'take-control' || kind === 'browser';
+  return kind === 'take-control' || kind === 'browser' || kind === 'side-chat';
+}
+
+/**
+ * A side chat is the one companion that owns a ThreadPane of its own (the
+ * registry entry under its companion pane id), so its close goes through
+ * destroyPane and takes its scratch thread with it.
+ */
+function isThreadHostingCompanionKind(kind: CompanionKind): boolean {
+  return kind === 'side-chat';
 }
 
 export interface CompanionPaneState {
@@ -112,7 +132,7 @@ export function openCompanion(
     // nothing may sit between them. Panel companions append after the
     // source's existing companion run.
     kind === 'take-control' ? sourceIndex + 1 : companionInsertIndex(sourcePaneId),
-    // take-control is ephemeral — buildSnapshot skips it, so opening one
+    // Ephemeral companions are skipped by buildSnapshot, so opening one
     // must not schedule a settings write it can't contribute to.
     { persist: !isEphemeralCompanionKind(kind) },
   );
@@ -133,7 +153,16 @@ export function closeCompanion(paneId: string): void {
   // rather than glide to whichever sibling companion is left.
   const wasOnScreen = isCompactLayout() && onScreenCompactPaneId() === paneId;
   unregisterCompanionPane(paneId);
-  removePaneLayoutItem(paneId, { persist: !isEphemeralCompanionKind(state.kind) });
+  if (isThreadHostingCompanionKind(state.kind)) {
+    // Read before the registry entry goes: the fork exists only for this
+    // pane, so closing the pane deletes it. destroyPane removes the layout
+    // item itself.
+    const threadId = getPane(paneId)?.threadId ?? '';
+    destroyPane(paneId);
+    void deleteSideChatThread(threadId);
+  } else {
+    removePaneLayoutItem(paneId, { persist: !isEphemeralCompanionKind(state.kind) });
+  }
   // A focused companion hands focus back to its source. During a source-pane
   // destroy cascade the source is already gone — focusPane no-ops on the
   // missing id and destroyPane's own dangling-focus fixup takes over.
@@ -155,6 +184,18 @@ export function closeFocusedPaneOrCompanion(): void {
   const companion = focusedId ? companionPanes.get(focusedId) : null;
   if (companion) closeCompanion(companion.paneId);
   else closeFocusedPane();
+}
+
+/**
+ * Close one pane by id, whichever kind it is. The pane-header close control
+ * uses it so a companion closes as a companion (its registration dropped,
+ * its source refocused, a side chat's thread deleted) rather than as a bare
+ * pane destroy.
+ */
+export function closePaneById(paneId: string): void {
+  const companion = companionPanes.get(paneId);
+  if (companion) closeCompanion(companion.paneId);
+  else destroyPane(paneId);
 }
 
 export function toggleCompanion(sourcePaneId: string, kind: CompanionKind): boolean {
@@ -193,15 +234,19 @@ export function closeCompanionsForSource(sourcePaneId: string): void {
   for (const paneId of paneIds) closeCompanion(paneId);
 }
 
-// Only source panes can arrive here: companions are not ThreadPanes, so
-// destroyPane never targets them (same invariant takeControl relies on).
-function onSourcePaneDestroyed(destroyedPaneId: string): void {
+// Source panes and side chats both arrive here: a side chat IS a ThreadPane,
+// so destroyPane can name one directly (its thread was deleted elsewhere, or
+// Keep replaced the pane). Dropping its registration first keeps a stale
+// entry out of the registry; the cascade below is then the ordinary
+// source-pane case.
+function onPaneDestroyed(destroyedPaneId: string): void {
+  unregisterCompanionPane(destroyedPaneId);
   closeCompanionsForSource(destroyedPaneId);
 }
 
 export function installCompanionPanes(): void {
   unsubscribePaneDestroyed?.();
-  unsubscribePaneDestroyed = addPaneDestroyedObserver(onSourcePaneDestroyed);
+  unsubscribePaneDestroyed = addPaneDestroyedObserver(onPaneDestroyed);
 }
 
 export function resetCompanionPanesForTest(): void {

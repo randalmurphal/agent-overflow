@@ -3312,6 +3312,7 @@ describe('<Composer>', () => {
         'config',
         'clear',
         'rename',
+        'side-chat',
       ]);
 
       await typeInto(textarea, '/work');

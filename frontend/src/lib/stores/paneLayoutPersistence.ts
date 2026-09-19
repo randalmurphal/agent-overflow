@@ -98,7 +98,7 @@ function isSafePersistedPaneId(paneId: string): boolean {
 // for a same-named source pane (companionPaneIdFor('main','plan') ===
 // 'plan-main'), so reject it at the parse edge. Real companion entries
 // keep the shape — this guard applies to thread panes only.
-const COMPANION_SHAPED_PANE_ID = /^(?:plan|review|take-control|browser|agent)-/;
+const COMPANION_SHAPED_PANE_ID = /^(?:plan|review|take-control|browser|agent|side-chat)-/;
 
 function isSafePersistedThreadPaneId(paneId: string): boolean {
   return isSafePersistedPaneId(paneId) && !COMPANION_SHAPED_PANE_ID.test(paneId);
@@ -108,7 +108,9 @@ function isSafePersistedThreadId(threadId: string): boolean {
   return threadId.length > 0 && threadId.length <= MAX_THREAD_ID_LENGTH;
 }
 
-// Live PTY/browser surfaces are deliberately absent: neither can be restored.
+// Live PTY/browser surfaces and side chats are deliberately absent: none of
+// them can be restored (a side chat's scratch thread is deleted with its pane,
+// and the boot sweep deletes any a restart left behind).
 function isPersistedCompanionKind(kind: unknown): kind is PersistedCompanionKind {
   return kind === 'plan' || kind === 'review' || kind === 'agent';
 }

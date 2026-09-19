@@ -83,7 +83,20 @@ describe('mergeStaticClaudeCommands', () => {
 describe('interceptedCommandsFor', () => {
   it('exposes the provider-agnostic reroutes everywhere', () => {
     const names = interceptedCommandNames('claude');
-    expect([...names].sort()).toEqual(['clear', 'config', 'effort', 'fast', 'model', 'rename']);
+    expect([...names].sort()).toEqual([
+      'clear', 'config', 'effort', 'fast', 'model', 'rename', 'side-chat',
+    ]);
+  });
+
+  it('offers /side-chat on every provider, described in one line', () => {
+    for (const provider of ['claude', 'codex', '']) {
+      const sideChat = interceptedCommandsFor(provider).find((c) => c.name === 'side-chat');
+      expect(sideChat, provider).toBeDefined();
+      expect(sideChat?.description).toBeTruthy();
+      // Nothing to complete: the fork takes the thread as it stands.
+      expect(sideChat?.argumentHint).toBeUndefined();
+      expect(sideChat?.providerTurn).toBeUndefined();
+    }
   });
 
   it('adds Codex’s own two only on a Codex thread', () => {

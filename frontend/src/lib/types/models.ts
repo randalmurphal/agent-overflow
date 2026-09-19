@@ -30,17 +30,20 @@ export interface Thread {
   /**
    * Canonical mode column.
    * "chat" | "plan" | "discussion" | "terminal" plus the
-   * workflow-owned modes, which listing surfaces exclude by mode.
-   * Optional in the TS layer so older fixtures omit it cleanly; new UI
+   * workflow-owned modes and "scratch", which listing surfaces exclude by
+   * mode. Optional in the TS layer so older fixtures omit it cleanly; new UI
    * code defaults to "chat" when missing. "terminal" threads are
    * persistent terminal panes — no provider session, rendered by
-   * TerminalView instead of the chat surface.
+   * TerminalView instead of the chat surface. A "scratch" thread is a side
+   * chat or an agent's ask: an ordinary chat that renders through the same
+   * surface, hidden from listings until Keep restores its recorded mode.
    */
   mode?:
     | "chat"
     | "plan"
     | "discussion"
     | "terminal"
+    | "scratch"
     | "workflow"
     | "workflow-studio"
     | "workflow-triage";
