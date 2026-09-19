@@ -75,8 +75,11 @@ that outlasts the wait returns a `backgrounded` receipt with the output so far;
 the job continues on the destination and its completion arrives as a message.
 Interrupting the turn ends a parked wait the same way. The providers are
 configured to tolerate a call of that length (`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS`
-and the server `timeout` for Claude, `tool_timeout_sec` for Codex); AO's wait,
-not the provider, decides when a remote call returns. The command itself has
+and the server `timeout` for Claude, `tool_timeout_sec` for Codex), and the
+loopback transport streams every call as server-sent events with a keepalive
+comment every fifteen seconds, because Claude's HTTP client otherwise abandons
+a response that has not started after six minutes whatever those settings say.
+AO's wait, not the provider, decides when a remote call returns. The command itself has
 no time limit unless `timeout_seconds` sets one, up to seven days. Neither adds
 reboot survival or automatic restart.
 

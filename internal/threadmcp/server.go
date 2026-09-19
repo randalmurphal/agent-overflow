@@ -215,10 +215,128 @@ func (s *Server[T]) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			WriteToolError(w, req.ID, fmt.Errorf("MCP tools are disabled"))
 			return
 		}
-		s.call(w, r.Context(), req, access)
+		s.serveCall(w, r, req, access)
 	default:
 		WriteError(w, req.ID, http.StatusOK, -32601, "method not found")
 	}
+}
+
+// callKeepaliveInterval paces the comment lines a streamed call emits while
+// its handler runs. Claude Code's HTTP client abandons a call whose response
+// has not started after six minutes, whatever timeouts its configuration
+// names (verified 2026-09-19, claude 2.1.261, with the server `timeout`,
+// MCP_TOOL_TIMEOUT and CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT all raised); a
+// response that is already streaming with a comment every fifteen seconds
+// survives the full call ceiling. Codex reads the same stream.
+var callKeepaliveInterval = 15 * time.Second
+
+// serveCall runs the tool handler. A client that accepts text/event-stream
+// (both provider CLIs do) gets the response as one event stream: headers and
+// a keepalive comment before the handler starts, a comment every
+// callKeepaliveInterval while it runs, and the JSON-RPC response the handler
+// wrote as the final message event. Any other client gets the handler's JSON
+// body unchanged.
+func (s *Server[T]) serveCall(w http.ResponseWriter, r *http.Request, req Request, access T) {
+	flusher, ok := w.(http.Flusher)
+	if !ok || !acceptsEventStream(r.Header.Get("Accept")) {
+		s.call(w, r.Context(), req, access)
+		return
+	}
+	stream := newCallStream(w, flusher, r.Context())
+	s.call(stream, r.Context(), req, access)
+	stream.finish(req.ID)
+}
+
+// acceptsEventStream reports whether an Accept header lists
+// text/event-stream. Both provider clients send it beside application/json;
+// a wildcard alone does not opt in, so a plain JSON client keeps JSON.
+func acceptsEventStream(accept string) bool {
+	for _, item := range strings.Split(accept, ",") {
+		mediaType, _, _ := strings.Cut(item, ";")
+		if strings.EqualFold(strings.TrimSpace(mediaType), "text/event-stream") {
+			return true
+		}
+	}
+	return false
+}
+
+// callStream is the ResponseWriter a streamed tools/call handler writes to.
+// The handler's status and headers are irrelevant once the stream has
+// started (every handler answers 200 with a JSON-RPC body); its body is
+// buffered and sent as the final event. Writes to the underlying connection
+// are serialized so a keepalive never lands inside the final event.
+type callStream struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+	header  http.Header
+	body    bytes.Buffer
+	mu      sync.Mutex
+	stop    chan struct{}
+	done    chan struct{}
+}
+
+func newCallStream(w http.ResponseWriter, flusher http.Flusher, ctx context.Context) *callStream {
+	c := &callStream{w: w, flusher: flusher, header: make(http.Header), stop: make(chan struct{}), done: make(chan struct{})}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	c.keepalive()
+	go c.run(ctx)
+	return c
+}
+
+func (c *callStream) run(ctx context.Context) {
+	defer close(c.done)
+	ticker := time.NewTicker(callKeepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.stop:
+			return
+		case <-ctx.Done():
+			// The client is gone; the handler still runs to completion
+			// under its own context and finish writes into the void.
+			return
+		case <-ticker.C:
+			c.keepalive()
+		}
+	}
+}
+
+func (c *callStream) keepalive() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, _ = io.WriteString(c.w, ": keepalive\n\n")
+	c.flusher.Flush()
+}
+
+func (c *callStream) Header() http.Header { return c.header }
+
+func (c *callStream) WriteHeader(int) {}
+
+func (c *callStream) Write(p []byte) (int, error) { return c.body.Write(p) }
+
+// finish stops the keepalives and sends the buffered response as the final
+// event. A handler that wrote nothing would leave the client waiting for a
+// reply that never comes, so that becomes a JSON-RPC error instead.
+func (c *callStream) finish(id json.RawMessage) {
+	close(c.stop)
+	<-c.done
+	body := bytes.TrimSpace(c.body.Bytes())
+	if len(body) == 0 {
+		body, _ = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": -32603, "message": "tool produced no response"}})
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, _ = io.WriteString(c.w, "event: message\n")
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		_, _ = io.WriteString(c.w, "data: ")
+		_, _ = c.w.Write(line)
+		_, _ = io.WriteString(c.w, "\n")
+	}
+	_, _ = io.WriteString(c.w, "\n")
+	c.flusher.Flush()
 }
 
 // validMCPRequest applies the request checks every request clears before

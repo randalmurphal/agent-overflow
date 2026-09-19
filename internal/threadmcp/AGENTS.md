@@ -6,6 +6,13 @@ listener lifecycle; callers own tool definitions, arguments and authorization.
 
 Every POST requires a loopback socket peer, no Origin and application/json.
 OPTIONS receives no CORS permission. Bound bodies and reject trailing JSON.
+A tools/call from a client whose Accept lists text/event-stream (both
+provider CLIs) is answered as an event stream: a keepalive comment before
+the handler runs and every callKeepaliveInterval while it runs, then the
+handler's JSON-RPC body as the final message event. Claude Code drops a call
+whose response has not started after six minutes regardless of configured
+timeouts, so a handler that parks a call must run under this transport, not
+answer with one JSON body. Other clients receive the JSON body unchanged.
 The 8 MiB envelope bound includes JSON escaping of a remote tool's 1 MiB
 script; decoded tool arguments retain their own smaller limits.
 Neither tokens nor endpoint URLs belong in errors or logs.

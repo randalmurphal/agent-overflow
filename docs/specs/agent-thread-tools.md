@@ -890,8 +890,8 @@ codex 0.153.4); outcomes recorded in the
   started fails at six minutes regardless of every configured timeout,
   and completes when the loopback server streams the response as
   server-sent events with a keepalive comment every fifteen seconds.
-  The shared `threadmcp` transport streams every call that way, which
-  also repairs `remote_run` waits above six minutes on Claude.
+  The shared `threadmcp` transport now streams every call that way,
+  which also repaired `remote_run` waits above six minutes on Claude.
 
 ## Success criteria
 

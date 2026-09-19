@@ -294,9 +294,9 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
   response that carries a `: keepalive` comment every 15 s and the
   JSON-RPC result as its final event completes (7 minutes verified;
   `notifications/progress` events work the same and are not needed).
-  `internal/threadmcp` answers every call as one JSON body today, so
-  `remote_run` waits above six minutes fail on Claude the same way; the
-  fix is in `threadmcp` and covers all three servers.
+  `internal/threadmcp` now streams every call that way for a client
+  whose Accept lists `text/event-stream` (both CLIs), which also
+  repaired `remote_run` waits above six minutes on Claude.
 - `receiveRemoteArtifact(ctx, directory, path, threadID, read)` is
   already generic over its chunk reader and verifies a whole-file
   SHA-256; only the destination side is tied to jobs and workspaces.
@@ -699,20 +699,13 @@ row before returning `backgrounded`.
 
 A parked call only reaches the model if the HTTP response is already
 open: Claude drops a call whose response has not started after six
-minutes, whatever the configured timeouts say (spike). So
-`threadmcp` answers `tools/call` as a `text/event-stream` response:
-headers and a `: keepalive` comment at once, another comment every
-15 s while the handler runs, and the JSON-RPC result as the final
-`message` event, then end of stream. Both clients advertise
-`text/event-stream` in `Accept`, and Codex read the streamed result in
-the spike as well. This is one change in `threadmcp.Server.call` (a
-streaming writer that the handler's `ResponseWriter` wraps) and it
-applies to `ao-browser-tools` and `ao-remote-tools` too, which fixes
-`remote_run` waits above six minutes on Claude at the same time; the
-`WriteTimeout` of 35 minutes already covers the ceiling. Errors that
-happen before the handler runs keep their JSON bodies. Phase 2 lands
-this first, with a test that reads the stream with an MCP client and
-one that asserts a comment arrives within the interval.
+minutes, whatever the configured timeouts say (spike). `threadmcp`
+therefore answers `tools/call` as a `text/event-stream` response for a
+client whose Accept lists it (both CLIs do): a `: keepalive` comment
+before the handler runs, another every 15 s while it runs, and the
+JSON-RPC body as the final `message` event. That landed with the
+spikes and applies to all three servers, so the waits here need
+nothing more than the existing `remoteMCPCallCeiling` decoration.
 
 ### Settlement (destination side)
 
