@@ -44,11 +44,19 @@ type rowWrite struct {
 	ChangeArgs []any
 }
 
-// applyThreadRowWrite runs a thread-row write and reads the changed row back
-// through the full threadColumns projection.
+// applyThreadRowWrite runs one thread-row write in its own transaction.
 func (s *Store) applyThreadRowWrite(write rowWrite) (Thread, bool, error) {
+	return commitRowWrite(s, write, applyThreadRowWriteTx)
+}
+
+// applyThreadRowWriteTx runs a thread-row write inside the caller's
+// transaction and reads the changed row back through the full threadColumns
+// projection. A write that is one step of a larger all-or-nothing change
+// (ApplyThreadOrganize) takes this form, so a later step's refusal rolls it
+// back with the rest.
+func applyThreadRowWriteTx(tx *sql.Tx, write rowWrite) (Thread, bool, error) {
 	write.table = "threads"
-	return applyRowWrite(s, write, func(tx *sql.Tx, id string) (Thread, error) {
+	return applyRowWriteTx(tx, write, func(tx *sql.Tx, id string) (Thread, error) {
 		rows, err := listThreadsByIDTx(tx, []string{id})
 		if err != nil {
 			return Thread{}, err
@@ -60,17 +68,47 @@ func (s *Store) applyThreadRowWrite(write rowWrite) (Thread, bool, error) {
 	})
 }
 
-// applyProjectRowWrite runs a project-row write and reads the changed row back
-// through the projectColumns projection.
+// applyProjectRowWrite runs one project-row write in its own transaction.
 func (s *Store) applyProjectRowWrite(write rowWrite) (Project, bool, error) {
+	return commitRowWrite(s, write, applyProjectRowWriteTx)
+}
+
+// applyProjectRowWriteTx reads the changed row back through the
+// projectColumns projection.
+func applyProjectRowWriteTx(tx *sql.Tx, write rowWrite) (Project, bool, error) {
 	write.table = "projects"
-	return applyRowWrite(s, write, func(tx *sql.Tx, id string) (Project, error) {
+	return applyRowWriteTx(tx, write, func(tx *sql.Tx, id string) (Project, error) {
 		return scanProject(tx.QueryRow(`SELECT `+projectColumns+` FROM projects WHERE id = ?`, id))
 	})
 }
 
-// applyRowWrite runs the write and reads back exactly the row it changed,
-// inside one transaction — the shape UpdateBranchForWorkspace established.
+// commitRowWrite gives a lone row write the transaction applyRowWriteTx
+// runs in. A no-op commits too, as it did when that transaction lived
+// inside the write itself: the miss probe ran in it.
+func commitRowWrite[T any](s *Store, write rowWrite, apply func(*sql.Tx, rowWrite) (T, bool, error)) (T, bool, error) {
+	var zero T
+	tx, err := s.db.Begin()
+	if err != nil {
+		return zero, false, fmt.Errorf("%s: begin: %w", write.Action, err)
+	}
+	defer tx.Rollback()
+
+	row, changed, err := apply(tx, write)
+	if err != nil {
+		return zero, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		if !changed {
+			return zero, false, fmt.Errorf("%s: commit no-op: %w", write.Action, err)
+		}
+		return zero, false, fmt.Errorf("%s: commit: %w", write.Action, err)
+	}
+	return row, changed, nil
+}
+
+// applyRowWriteTx runs the write and reads back exactly the row it changed,
+// inside the caller's transaction — the shape UpdateBranchForWorkspace
+// established.
 // `RETURNING id` anchors the read on the write, so neither a concurrent writer
 // nor a row the Change predicate excluded can widen the answer, and the
 // read-back projection is paid only when something actually moved. RETURNING
@@ -83,7 +121,7 @@ func (s *Store) applyProjectRowWrite(write rowWrite) (Project, bool, error) {
 // Match predicate excluded the row keeps reporting sql.ErrNoRows, the answer
 // requireRowsAffected gave before, so a missing id and an ineligible row stay
 // distinguishable from a no-op. The second probe runs only on the miss path.
-func applyRowWrite[T any](s *Store, write rowWrite, readBack func(*sql.Tx, string) (T, error)) (T, bool, error) {
+func applyRowWriteTx[T any](tx *sql.Tx, write rowWrite, readBack func(*sql.Tx, string) (T, error)) (T, bool, error) {
 	var zero T
 	conditions := []string{"id = ?"}
 	args := append([]any{}, write.SetArgs...)
@@ -99,14 +137,8 @@ func applyRowWrite[T any](s *Store, write rowWrite, readBack func(*sql.Tx, strin
 		args = append(args, write.ChangeArgs...)
 	}
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return zero, false, fmt.Errorf("%s: begin: %w", write.Action, err)
-	}
-	defer tx.Rollback()
-
 	var id string
-	err = tx.QueryRow(
+	err := tx.QueryRow(
 		`UPDATE `+write.table+` SET `+write.Set+` WHERE `+strings.Join(conditions, " AND ")+` RETURNING id`,
 		args...,
 	).Scan(&id)
@@ -123,9 +155,6 @@ func applyRowWrite[T any](s *Store, write rowWrite, readBack func(*sql.Tx, strin
 			}
 			return zero, false, fmt.Errorf("%s: probe row: %w", write.Action, probeErr)
 		}
-		if err := tx.Commit(); err != nil {
-			return zero, false, fmt.Errorf("%s: commit no-op: %w", write.Action, err)
-		}
 		return zero, false, nil
 	default:
 		return zero, false, fmt.Errorf("%s: %w", write.Action, err)
@@ -134,9 +163,6 @@ func applyRowWrite[T any](s *Store, write rowWrite, readBack func(*sql.Tx, strin
 	row, err := readBack(tx, id)
 	if err != nil {
 		return zero, false, fmt.Errorf("%s: read back: %w", write.Action, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return zero, false, fmt.Errorf("%s: commit: %w", write.Action, err)
 	}
 	return row, true, nil
 }

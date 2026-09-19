@@ -1093,13 +1093,7 @@ func (s *Store) deleteThreadItemsChunk(id string) (int64, error) {
 // nothing, so it must not bump updated_at and must not broadcast. A missing
 // id is still sql.ErrNoRows.
 func (s *Store) ArchiveThread(id string) (Thread, bool, error) {
-	return s.applyThreadRowWrite(rowWrite{
-		Action:  fmt.Sprintf("store: archive thread %s", id),
-		ID:      id,
-		Set:     "archived = 1, updated_at = ?",
-		SetArgs: []any{nowMillis()},
-		Change:  "archived IS NOT 1",
-	})
+	return s.applyThreadRowWrite(threadArchivedWrite(id, true))
 }
 
 // UnarchiveThread flips the archived column back to 0 for a thread and bumps
@@ -1108,13 +1102,24 @@ func (s *Store) ArchiveThread(id string) (Thread, bool, error) {
 // that was already active is a no-op, not a reshuffle. Returns sql.ErrNoRows
 // if no row matches the id.
 func (s *Store) UnarchiveThread(id string) (Thread, bool, error) {
-	return s.applyThreadRowWrite(rowWrite{
-		Action:  fmt.Sprintf("store: unarchive thread %s", id),
+	return s.applyThreadRowWrite(threadArchivedWrite(id, false))
+}
+
+// threadArchivedWrite is the one definition of the archive flip, shared by
+// the two accessors and by the organize transaction that writes it beside a
+// title, a group and a pin.
+func threadArchivedWrite(id string, archived bool) rowWrite {
+	flag, action := "1", "archive"
+	if !archived {
+		flag, action = "0", "unarchive"
+	}
+	return rowWrite{
+		Action:  fmt.Sprintf("store: %s thread %s", action, id),
 		ID:      id,
-		Set:     "archived = 0, updated_at = ?",
+		Set:     "archived = " + flag + ", updated_at = ?",
 		SetArgs: []any{nowMillis()},
-		Change:  "archived IS NOT 0",
-	})
+		Change:  "archived IS NOT " + flag,
+	}
 }
 
 // MarkThreadActivity bumps threads.updated_at to `at`. Sidebar sort and
@@ -1343,10 +1348,27 @@ func (s *Store) UnpinThread(id string) (Thread, bool, error) {
 // An unpinned row is still refused with sql.ErrNoRows; a pinned row already
 // in the requested group is a no-op that changes nothing.
 func (s *Store) SetThreadPinGroup(id string, group int) (Thread, bool, error) {
-	if group != PinGroupFront && group != PinGroupBack {
-		return Thread{}, false, fmt.Errorf("%w: %d", ErrInvalidPinGroup, group)
+	write, err := threadPinGroupWrite(id, group)
+	if err != nil {
+		return Thread{}, false, err
 	}
-	return s.applyThreadRowWrite(rowWrite{
+	return s.applyThreadRowWrite(write)
+}
+
+// setThreadPinGroupTx is SetThreadPinGroup inside the caller's transaction.
+func setThreadPinGroupTx(tx *sql.Tx, id string, group int) (Thread, bool, error) {
+	write, err := threadPinGroupWrite(id, group)
+	if err != nil {
+		return Thread{}, false, err
+	}
+	return applyThreadRowWriteTx(tx, write)
+}
+
+func threadPinGroupWrite(id string, group int) (rowWrite, error) {
+	if group != PinGroupFront && group != PinGroupBack {
+		return rowWrite{}, fmt.Errorf("%w: %d", ErrInvalidPinGroup, group)
+	}
+	return rowWrite{
 		Action:     fmt.Sprintf("store: update pin_group for pinned thread %s", id),
 		ID:         id,
 		Set:        "pin_group = ?",
@@ -1354,7 +1376,7 @@ func (s *Store) SetThreadPinGroup(id string, group int) (Thread, bool, error) {
 		Match:      "pinned_at IS NOT NULL",
 		Change:     "pin_group IS NOT ?",
 		ChangeArgs: []any{group},
-	})
+	}, nil
 }
 
 // setThreadPinnedAt is the shared pin/unpin primitive. We deliberately do NOT
@@ -1362,6 +1384,17 @@ func (s *Store) SetThreadPinGroup(id string, group int) (Thread, bool, error) {
 // thread activity, and bumping updated_at would shuffle the project's
 // `lastActivity` ordering.
 func (s *Store) setThreadPinnedAt(id string, ts *int64) (Thread, bool, error) {
+	row, changed, err := s.applyThreadRowWrite(threadPinnedAtWrite(id, ts))
+	return row, changed, namePinRefusal(s.db, id, ts, err)
+}
+
+// setThreadPinnedAtTx is setThreadPinnedAt inside the caller's transaction.
+func setThreadPinnedAtTx(tx *sql.Tx, id string, ts *int64) (Thread, bool, error) {
+	row, changed, err := applyThreadRowWriteTx(tx, threadPinnedAtWrite(id, ts))
+	return row, changed, namePinRefusal(tx, id, ts, err)
+}
+
+func threadPinnedAtWrite(id string, ts *int64) rowWrite {
 	write := rowWrite{
 		Action: fmt.Sprintf("store: update pin state for %s", id),
 		ID:     id,
@@ -1369,27 +1402,33 @@ func (s *Store) setThreadPinnedAt(id string, ts *int64) (Thread, bool, error) {
 	if ts == nil {
 		write.Set = "pinned_at = NULL, pin_group = NULL"
 		write.Change = "pinned_at IS NOT NULL"
-	} else {
-		write.Set = "pinned_at = ?, pin_group = ?"
-		write.SetArgs = []any{*ts, PinGroupFront}
-		// A grouped row holds no pin of its own (the v76 CHECK). Making
-		// that the write's eligibility predicate keeps the refusal from
-		// surfacing as a raw constraint failure; a grouped row misses the
-		// same predicate in the miss probe, and threadIsGrouped names it.
-		write.Match = "group_id IS NULL"
+		return write
 	}
-	row, changed, err := s.applyThreadRowWrite(write)
-	if ts != nil && errors.Is(err, sql.ErrNoRows) && s.threadIsGrouped(id) {
-		return Thread{}, false, fmt.Errorf("store: pin %s: %w", id, ErrThreadGrouped)
+	write.Set = "pinned_at = ?, pin_group = ?"
+	write.SetArgs = []any{*ts, PinGroupFront}
+	// A grouped row holds no pin of its own (the v76 CHECK). Making that
+	// the write's eligibility predicate keeps the refusal from surfacing as
+	// a raw constraint failure; a grouped row misses the same predicate in
+	// the miss probe, and threadIsGrouped names it.
+	write.Match = "group_id IS NULL"
+	return write
+}
+
+// namePinRefusal turns a pin's miss on a grouped row into ErrThreadGrouped.
+// It reads through the caller's own handle so the answer describes the same
+// state the write saw, transaction or pool alike.
+func namePinRefusal(q sqlQueryer, id string, ts *int64, err error) error {
+	if ts != nil && errors.Is(err, sql.ErrNoRows) && threadIsGrouped(q, id) {
+		return fmt.Errorf("store: pin %s: %w", id, ErrThreadGrouped)
 	}
-	return row, changed, err
+	return err
 }
 
 // threadIsGrouped is the failure-path probe behind ErrThreadGrouped. A
 // missing row reads as ungrouped so the caller's sql.ErrNoRows stands.
-func (s *Store) threadIsGrouped(id string) bool {
+func threadIsGrouped(q sqlQueryer, id string) bool {
 	var grouped bool
-	if err := s.db.QueryRow(
+	if err := q.QueryRow(
 		`SELECT group_id IS NOT NULL FROM threads WHERE id = ?`, id,
 	).Scan(&grouped); err != nil {
 		return false
@@ -1481,6 +1520,18 @@ func (s *Store) UpdateTitle(threadID, title string) error {
 		return fmt.Errorf("store: begin update title for %s: %w", threadID, err)
 	}
 	defer tx.Rollback()
+	if err := updateTitleTx(tx, threadID, title); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit update title for %s: %w", threadID, err)
+	}
+	return nil
+}
+
+// updateTitleTx writes the display name and its search index entry inside
+// the caller's transaction. The two always move together.
+func updateTitleTx(tx *sql.Tx, threadID, title string) error {
 	result, err := tx.Exec(`UPDATE threads SET title = ? WHERE id = ?`,
 		title, threadID)
 	if err != nil {
@@ -1489,13 +1540,7 @@ func (s *Store) UpdateTitle(threadID, title string) error {
 	if err := requireRowsAffected(result, fmt.Sprintf("store: update title for %s", threadID)); err != nil {
 		return err
 	}
-	if err := indexThreadTitleTx(tx, threadID, title); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit update title for %s: %w", threadID, err)
-	}
-	return nil
+	return indexThreadTitleTx(tx, threadID, title)
 }
 
 func (s *Store) UpdateTitleIfCurrent(threadID, currentTitle, newTitle string) (bool, error) {

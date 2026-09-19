@@ -116,11 +116,12 @@ type OrganizeResult struct {
 // ApplyOrganizePatch validates patch against threadID's whole resulting
 // state and then applies it.
 //
-// Order is load-bearing rather than incidental: grouping strips a thread's
-// own pin and pinning refuses a grouped row, so the group move runs before
-// the pin. The row is read back once at the end because the writes are
-// separate accessors and only a fresh read is a coherent picture of all of
-// them.
+// The refusals are decided here, before the first write, because they are
+// policy: a patch that pins a thread its group already pins is refused
+// whole rather than renamed first. The writes themselves are ONE store
+// call, because the same rule has to survive a failure the plan cannot
+// foresee (a group deleted by a second client between the plan and the
+// write), and only a transaction can undo the writes that already landed.
 //
 // Call it under the thread's mutation lock, after CheckMutable, as every
 // other thread write is called.
@@ -140,67 +141,22 @@ func (s *Service) ApplyOrganizePatch(threadID string, patch OrganizePatch) (Orga
 	if err != nil {
 		return OrganizeResult{}, err
 	}
-
-	result := OrganizeResult{Thread: thread}
-	if plan.title != "" {
-		if err := database.UpdateTitle(threadID, plan.title); err != nil {
-			return OrganizeResult{}, err
-		}
-		result.Changed = true
-	}
-	if plan.createGroup {
-		// Created only here, past every refusal: a patch that names a new
-		// group and is then refused for its pin must not leave an empty
-		// group behind in the sidebar.
-		created, err := database.CreateThreadGroup(thread.ProjectID, plan.groupName)
-		if err != nil {
-			return OrganizeResult{}, err
-		}
-		result.CreatedGroup = &created
-		plan.groupID = created.ID
-	}
-	if plan.moveGroup {
-		moved, err := database.SetThreadGroup([]string{threadID}, plan.groupID)
-		if err != nil {
-			return OrganizeResult{}, err
-		}
-		for _, row := range moved {
-			if row.ID != threadID {
-				result.Carried = append(result.Carried, row)
-			}
-		}
-		result.Changed = true
-	}
-	if plan.pin != "" {
-		changed, err := applyPinTier(database, threadID, thread, plan.pin)
-		if err != nil {
-			return OrganizeResult{}, err
-		}
-		result.Changed = result.Changed || changed
-	}
-	if plan.archive != nil {
-		var changed bool
-		if *plan.archive {
-			_, changed, err = database.ArchiveThread(threadID)
-		} else {
-			_, changed, err = database.UnarchiveThread(threadID)
-		}
-		if err != nil {
-			return OrganizeResult{}, err
-		}
-		result.Changed = result.Changed || changed
-		result.ArchivedChanged = changed
-	}
-
-	if !result.Changed {
-		return result, nil
-	}
-	current, err := database.GetThread(threadID)
+	write, err := plan.write(thread)
 	if err != nil {
 		return OrganizeResult{}, err
 	}
-	result.Thread = current
-	return result, nil
+
+	applied, err := database.ApplyThreadOrganize(threadID, write)
+	if err != nil {
+		return OrganizeResult{}, err
+	}
+	return OrganizeResult{
+		Thread:          applied.Thread,
+		Changed:         applied.Changed,
+		ArchivedChanged: applied.ArchivedChanged,
+		Carried:         applied.Carried,
+		CreatedGroup:    applied.CreatedGroup,
+	}, nil
 }
 
 // organizePlan is the patch resolved against one thread: what actually has
@@ -294,29 +250,37 @@ func currentPinTier(thread store.Thread) string {
 	return PinFront
 }
 
-// applyPinTier writes one tier, taking the same two-step the sidebar takes
-// for the back burner: a row is pinned first and moved between burners
-// second, because the store refuses a burner on an unpinned row.
-func applyPinTier(database *store.Store, threadID string, thread store.Thread, tier string) (bool, error) {
-	switch tier {
-	case PinNone:
-		_, changed, err := database.UnpinThread(threadID)
-		return changed, err
-	case PinFront:
-		_, changed, err := database.PinThread(threadID)
-		return changed, err
-	case PinBack:
-		if thread.PinnedAt == nil {
-			if _, _, err := database.PinThread(threadID); err != nil {
-				return false, err
-			}
-		}
-		if _, _, err := database.SetThreadPinGroup(threadID, store.PinGroupBack); err != nil {
-			return false, err
-		}
-		return true, nil
+// write renders the plan as the store's one organize write. A field the
+// plan left alone stays nil here, so the transaction writes exactly what
+// this thread's patch resolved to and nothing else.
+func (p organizePlan) write(thread store.Thread) (store.ThreadOrganizeWrite, error) {
+	write := store.ThreadOrganizeWrite{
+		MoveGroup: p.moveGroup,
+		GroupID:   p.groupID,
+		Archived:  p.archive,
 	}
-	return false, fmt.Errorf("threadapp: unknown pin tier %q", tier)
+	if p.title != "" {
+		title := p.title
+		write.Title = &title
+	}
+	if p.createGroup {
+		// Created inside the write's transaction, past every refusal: a
+		// patch that names a new group and is then refused must not leave
+		// an empty group behind in the sidebar.
+		write.CreateGroup = &store.ThreadGroupCreate{ProjectID: thread.ProjectID, Name: p.groupName}
+	}
+	switch p.pin {
+	case "":
+	case PinNone:
+		write.Pin = &store.ThreadPinWrite{}
+	case PinFront:
+		write.Pin = &store.ThreadPinWrite{Pinned: true, Burner: store.PinGroupFront}
+	case PinBack:
+		write.Pin = &store.ThreadPinWrite{Pinned: true, Burner: store.PinGroupBack}
+	default:
+		return store.ThreadOrganizeWrite{}, fmt.Errorf("threadapp: unknown pin tier %q", p.pin)
+	}
+	return write, nil
 }
 
 // findGroupInProject returns the id of the named group in projectID, or the

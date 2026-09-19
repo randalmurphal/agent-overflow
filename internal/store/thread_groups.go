@@ -123,6 +123,13 @@ func (s *Store) GetThreadGroup(id string) (ThreadGroup, error) {
 // package has a reason to choose one, and the wire is not a place to
 // accept a primary key from.
 func (s *Store) CreateThreadGroup(projectID, name string) (ThreadGroup, error) {
+	return createThreadGroup(s.db, projectID, name)
+}
+
+// createThreadGroup is the insert itself, on the pool or on a caller's
+// transaction: a group a thread's organize patch has to create is created
+// inside that patch's transaction, so a later refusal takes it with it.
+func createThreadGroup(exec sqlExecutor, projectID, name string) (ThreadGroup, error) {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
 		return ThreadGroup{}, ErrEmptyThreadGroupName
@@ -135,7 +142,7 @@ func (s *Store) CreateThreadGroup(projectID, name string) (ThreadGroup, error) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if _, err := s.db.Exec(
+	if _, err := exec.Exec(
 		`INSERT INTO thread_groups (id, project_id, name, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?)`,
 		group.ID, group.ProjectID, group.Name, group.CreatedAt, group.UpdatedAt,
@@ -255,16 +262,30 @@ func (s *Store) setThreadGroupPinnedAt(id string, ts *int64) error {
 //     grouped row holds no pin by that CHECK, and a bulk selection may name
 //     ungrouped rows too, whose pins are theirs to keep.
 func (s *Store) SetThreadGroup(threadIDs []string, groupID string) ([]Thread, error) {
-	ids := uniqueNonEmptyStrings(threadIDs)
-	if len(ids) == 0 {
-		return []Thread{}, nil
-	}
-
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("store: begin thread group move: %w", err)
 	}
 	defer tx.Rollback()
+
+	moved, err := setThreadGroupTx(tx, threadIDs, groupID)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit thread group move: %w", err)
+	}
+	return moved, nil
+}
+
+// setThreadGroupTx is the move inside the caller's transaction, which is
+// where its refusals and its read-back belong: ApplyThreadOrganize writes a
+// title and a pin around it under the same all-or-nothing rule.
+func setThreadGroupTx(tx *sql.Tx, threadIDs []string, groupID string) ([]Thread, error) {
+	ids := uniqueNonEmptyStrings(threadIDs)
+	if len(ids) == 0 {
+		return []Thread{}, nil
+	}
 
 	const rootOrChild = `((id = ? AND COALESCE(parent_thread_id, '') = '') OR parent_thread_id = ?)`
 	const groupSQL = `UPDATE threads
@@ -331,9 +352,6 @@ func (s *Store) SetThreadGroup(threadIDs []string, groupID string) ([]Thread, er
 	moved, err := listThreadsByIDTx(tx, uniqueNonEmptyStrings(touched))
 	if err != nil {
 		return nil, fmt.Errorf("store: read back moved threads: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("store: commit thread group move: %w", err)
 	}
 	return moved, nil
 }
