@@ -26,8 +26,8 @@ func TestMarkPromotedAtInterruptEmptyMeta(t *testing.T) {
 	if err := json.Unmarshal([]byte(got), &m); err != nil {
 		t.Fatalf("marked meta is not valid JSON: %v", err)
 	}
-	if len(m) != 2 || m["pendingFlush"] != false {
-		t.Errorf("marked empty meta = %q, want promoted and visible row", got)
+	if len(m) != 1 {
+		t.Errorf("marked empty meta = %q, want single-key object", got)
 	}
 }
 

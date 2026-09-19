@@ -100,11 +100,12 @@ func DecodePromotionState(raw string) (PromotionState, error) {
 }
 
 // MarkPromotedAtInterrupt returns raw with the promoted-at-interrupt
-// marker set and pending-flush visibility cleared. Malformed metas
+// marker set and the pending-flush marker removed, in one decode and
+// encode. An empty meta becomes a one-key object. Malformed metas
 // return an error — the caller is about to persist this row and must
 // not silently drop the marker.
 func MarkPromotedAtInterrupt(raw string) (string, error) {
-	return mergeKeys(raw, map[string]any{promotedAtInterruptKey: true, pendingFlushKey: false})
+	return editKeys(raw, map[string]any{promotedAtInterruptKey: true}, []string{pendingFlushKey})
 }
 
 // MarkPromotedEchoBoundary returns raw with the echo boundary set.
@@ -129,6 +130,22 @@ func mergeKey(raw, key string, value any) (string, error) {
 // marker plus the state qualifying it) cannot leave the row carrying
 // only the first.
 func mergeKeys(raw string, values map[string]any) (string, error) {
+	return editKeys(raw, values, nil)
+}
+
+// removeKeys deletes keys from raw. Clearing a presence marker removes
+// it: a row that never carried the marker and a row whose marker was
+// cleared must be indistinguishable, so neither the readers nor the
+// live/import parity gate can tell them apart.
+func removeKeys(raw string, keys ...string) (string, error) {
+	return editKeys(raw, nil, keys)
+}
+
+// editKeys is the one decode/encode behind mergeKeys and removeKeys, so
+// a caller that sets one key and clears another does both atomically.
+// A meta left with no keys encodes as the empty string, the absent-meta
+// shape a row that never carried metadata stores.
+func editKeys(raw string, values map[string]any, remove []string) (string, error) {
 	merged := map[string]any{}
 	if raw != "" {
 		decoder := json.NewDecoder(strings.NewReader(raw))
@@ -142,6 +159,12 @@ func mergeKeys(raw string, values map[string]any) (string, error) {
 	}
 	for key, value := range values {
 		merged[key] = value
+	}
+	for _, key := range remove {
+		delete(merged, key)
+	}
+	if len(merged) == 0 {
+		return "", nil
 	}
 	encoded, err := json.Marshal(merged)
 	if err != nil {

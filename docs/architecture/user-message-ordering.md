@@ -93,9 +93,11 @@ A client renders a flushed message in exactly one place at a time and hands
 it from the marker to the timeline when the row actually renders
 (`docs/architecture/turn-lifecycle.md` § Per-thread send queue). Quiet rows
 carry `pendingFlush: true`; loading one from SQLite does not hand its live
-preview over to the timeline. Confirmation and interrupt promotion clear the
-flag atomically with placement. The live pending-send registry owns the preview,
-so a retained row after session loss still follows normal history recovery.
+preview over to the timeline. Confirmation and interrupt promotion remove the
+key atomically with placement, so a settled row carries no trace of it and
+matches the same row imported from a session file. The live pending-send
+registry owns the preview, so a retained row after session loss still follows
+normal history recovery.
 Rows anchored at an interrupt are revealed deliberately and carry no preview.
 
 The first matched echo captures placement before fallible cache writes. A stable

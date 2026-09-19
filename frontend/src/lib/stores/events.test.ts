@@ -3656,6 +3656,9 @@ describe('setupEventListeners', () => {
     emitWailsEvent('provider:item_event', { action: 'upsert', threadId: row.threadId, item: row });
     await nextFrame();
     expect(getFlushedForThread(row.threadId)).toHaveLength(1);
+    // `false` is the shape rows persisted before the marker became
+    // presence-only still carry; confirmation now drops the key, and
+    // both read as confirmed.
     emitWailsEvent('provider:item_event', { action: 'upsert', threadId: row.threadId, item: { ...row, meta: '{"pendingFlush":false}', updatedAt: 1 } });
     await nextFrame();
     expect(getFlushedForThread(row.threadId)).toHaveLength(0);

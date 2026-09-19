@@ -26,7 +26,12 @@ func TestQuietFlushVisibilityTransitions(t *testing.T) {
 				if err := json.Unmarshal([]byte(stored.Meta), &meta); err != nil {
 					t.Fatal(err)
 				}
-				if string(meta["pendingFlush"]) != map[bool]string{true: "true", false: "false"}[want] {
+				// The marker carries one meaning: present while pending,
+				// and REMOVED once confirmed, so a settled live row is
+				// indistinguishable from the same row imported from a
+				// session file.
+				raw, present := meta["pendingFlush"]
+				if present != want || (want && string(raw) != "true") {
 					t.Fatalf("meta = %s, want pending=%v", stored.Meta, want)
 				}
 				if string(meta["sendId"]) != `"send-1"` || string(meta["counter"]) != "9007199254740993" {

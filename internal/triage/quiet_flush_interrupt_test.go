@@ -1877,11 +1877,13 @@ func TestSelfHealUnanchoredFailureRestoresFrozenPlacement(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("healed row after drain: found=%v err=%v", found, err)
 	}
-	var healedMeta map[string]any
-	if err := json.Unmarshal([]byte(healed.Meta), &healedMeta); err != nil {
-		t.Fatal(err)
+	healedMeta := map[string]any{}
+	if healed.Meta != "" {
+		if err := json.Unmarshal([]byte(healed.Meta), &healedMeta); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if healedMeta["pendingFlush"] != false {
+	if _, pending := healedMeta["pendingFlush"]; pending {
 		t.Fatalf("self-heal left the consumed row pending: %s", healed.Meta)
 	}
 	if healed.ItemIndex <= preEchoRow.ItemIndex {

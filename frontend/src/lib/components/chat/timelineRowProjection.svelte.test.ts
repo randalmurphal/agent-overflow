@@ -224,7 +224,9 @@ describe('quiet queue reservations', () => {
       applyFlushedLifecycle(pane.threadId!, row.id, { state: 'queued' });
       flushSync();
       expect(view.evaluations).toBe(evaluations);
-      pane.applyProviderItemUpserts([{ ...row, threadId: pane.threadId!, meta: '{"pendingFlush":false,"provider_item_id":"echo-1"}' }]);
+      // Confirmation REMOVES the marker rather than storing false, so a
+      // settled row is byte-identical to an imported one.
+      pane.applyProviderItemUpserts([{ ...row, threadId: pane.threadId!, meta: '{"provider_item_id":"echo-1"}' }]);
       flushSync();
       expect(view.nodes).toHaveLength(1);
       expect(getFlushedForThread(pane.threadId!)).toHaveLength(0);
