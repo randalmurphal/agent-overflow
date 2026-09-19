@@ -106,10 +106,49 @@ func (a *App) threadToolsSwitchOn() bool {
 }
 
 // threadToolsOpenForeign reports whether this thread must keep serving
-// thread tools regardless of the switch because a paired computer reaches
-// it. Cross-computer reach is a later phase; the seam exists here so the
-// effective flag has one definition.
-func (a *App) threadToolsOpenForeign(string) bool { return false }
+// thread tools regardless of the switch.
+//
+// A thread answering a paired computer's request has the tools on for that
+// request's life, so it can reply to what it was asked: the sender's own
+// computer said yes by making the request, and this computer's switch
+// governs what its own agents may start, not whether they may answer.
+func (a *App) threadToolsOpenForeign(threadID string) bool {
+	if threadID == "" || a.store == nil {
+		return false
+	}
+	receipts, err := a.store.ListThreadRequestReceiptsForThread(threadID)
+	if err != nil {
+		log.Printf("thread tools: read receipts for %s: %v", threadID, err)
+		return false
+	}
+	for _, receipt := range receipts {
+		if receipt.OwnerDeviceID == threadReceiptLocalOwner {
+			continue
+		}
+		switch receipt.State {
+		case store.ThreadReceiptAccepted, store.ThreadReceiptRunning:
+			return true
+		}
+	}
+	return false
+}
+
+// refreshThreadToolsAdmission re-applies the effective switch to one live
+// session. A thread that has just taken a paired computer's request serves
+// the tools whether or not this computer's own switch is on, and that
+// change has to reach a session that is already running.
+func (a *App) refreshThreadToolsAdmission(threadID string) {
+	if threadID == "" || a.threadToolsSwitchOn() {
+		return
+	}
+	server := a.threadMCPServer()
+	if !server.HasThread(threadID) || !server.ThreadEnabled(threadID) {
+		return
+	}
+	if err := a.mcpService().ApplyManagedServerEnabled(threadID, threadMCPName, a.threadToolsEnabledFor(threadID)); err != nil && a.lifeCtx().Err() == nil {
+		log.Printf("thread tools: admit foreign request on %s: %v", threadID, err)
+	}
+}
 
 // threadMCPConfigForThread registers the calling thread and returns its
 // MCP server entry. Every interactive Claude and Codex session gets one

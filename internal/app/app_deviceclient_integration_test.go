@@ -55,7 +55,14 @@ type pairedBackend struct {
 // internal/transport's TestUpgradeAdmitsAPairedDeviceOffHostOverPinnedTLS.
 func newPairedBackend(t *testing.T, configure ...func(*transport.Config)) *pairedBackend {
 	t.Helper()
-	app := identityApp(t)
+	return servePairedApp(t, identityApp(t), configure...)
+}
+
+// servePairedApp puts an App that is already built on that wire. A fixture
+// needing more than identityApp supplies, such as a destination that runs
+// mock provider turns, serves the same real listener through it.
+func servePairedApp(t *testing.T, app *App, configure ...func(*transport.Config)) *pairedBackend {
+	t.Helper()
 	// Every minted payload names the backend, and a link that named none
 	// would refuse to mint. Start publishes this from the store; a fixture
 	// that builds the App directly has to do the same.

@@ -126,7 +126,7 @@ func TestFrontendOpensAndManagesItsComputersWithoutContactingThem(t *testing.T) 
 	if result := call("GetThread", "irrelevant"); result.Error == nil || result.Error.Code != transport.ErrCodeMethodNotFound {
 		t.Fatalf("controller exposed execution: %+v", result)
 	}
-	if result := call("RemoveBackend", cfg.ComputerID); result.Error != nil {
+	if result := call("RemoveBackend", cfg.ComputerID, false); result.Error != nil {
 		t.Fatalf("remove: %+v", result)
 	}
 	if len(bootstrap().Backends) != 1 {

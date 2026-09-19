@@ -388,7 +388,17 @@ func (t threadToolsApp) ExportTranscript(ctx context.Context, q threadtools.Expo
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return threadtools.ExportFile{}, fmt.Errorf("thread tools: create export directory: %w", err)
 	}
-	path := filepath.Join(dir, thread.ID+".txt")
+	// An export a paired computer asked for is named by an export id, is
+	// never overwritten by the next render, and is reported without this
+	// computer's path: the model that reads it is on the other computer and
+	// gets a path in its own export directory once the copy lands.
+	name := thread.ID + ".txt"
+	exportID := ""
+	if threadPeerCall(ctx) {
+		exportID = threadPeerExportName(thread.ID)
+		name = exportID
+	}
+	path := filepath.Join(dir, name)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return threadtools.ExportFile{}, fmt.Errorf("thread tools: open export file: %w", err)
@@ -410,6 +420,16 @@ func (t threadToolsApp) ExportTranscript(ctx context.Context, q threadtools.Expo
 	if closeErr != nil {
 		os.Remove(path)
 		return threadtools.ExportFile{}, fmt.Errorf("thread tools: close export file: %w", closeErr)
+	}
+	if exportID != "" {
+		if size > remoteArtifactMaxBytes {
+			// Refused here rather than half transferred: the file exists and
+			// nobody will fetch it, so it goes now instead of waiting for
+			// the sweep.
+			os.Remove(path)
+			return threadtools.ExportFile{}, threadExportTooLarge(size)
+		}
+		return threadtools.ExportFile{ExportID: exportID, Size: size, SHA256: hex.EncodeToString(digest.Sum(nil))}, nil
 	}
 	return threadtools.ExportFile{Path: path, Size: size, SHA256: hex.EncodeToString(digest.Sum(nil))}, nil
 }

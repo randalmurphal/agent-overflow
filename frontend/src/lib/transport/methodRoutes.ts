@@ -376,6 +376,11 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1289411773: 'home', // SyncOwnDevices
 	3841902986: 'thread', // SyncThreadWindow
 	870653875: 'thread', // TerminateCodexBackgroundTerminal
+	894716875: 'selected', // ThreadToolCall
+	1295284198: 'selected', // ThreadToolExportChunk
+	2624544009: 'selected', // ThreadToolQuery
+	4150382574: 'selected', // ThreadToolRequestStatus
+	1018082581: 'selected', // ThreadToolResolve
 	1291217507: 'thread', // TriggerMcpAuth
 	417766274: 'selected', // TriggerWorkspaceMcpAuth
 	2561521885: 'project', // UnarchiveProject

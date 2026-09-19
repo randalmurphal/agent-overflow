@@ -361,7 +361,7 @@ func TestRemoteAdmissionLateRefusalCannotHideAcceptedReceipt(t *testing.T) {
 	if watch.Notification != "pending" || watch.Receipt.ID != receipt.ID || watch.Error != "" {
 		t.Fatalf("late refusal hid accepted job: %#v", watch)
 	}
-	if err := source.RemoveBackend(input.ComputerID); err == nil || !strings.Contains(err.Error(), "awaiting completion") {
+	if err := source.RemoveBackend(input.ComputerID, false); err == nil || !strings.Contains(err.Error(), "awaiting completion") {
 		t.Fatalf("forgot pending job's cancellation credentials: %v", err)
 	}
 	if _, err := source.AgentRemoteStatus(ctx, input.ComputerID, input.Request.ID); err != nil {
@@ -370,7 +370,7 @@ func TestRemoteAdmissionLateRefusalCannotHideAcceptedReceipt(t *testing.T) {
 	if err := source.store.QueueRemoteCompletion(input.ComputerID, input.Request.ID, store.FlushQueueItem{ID: uuid.NewString(), ThreadID: watch.ThreadID, Message: "finished", SendID: "remote-completion-test"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.RemoveBackend(input.ComputerID); err != nil {
+	if err := source.RemoveBackend(input.ComputerID, false); err != nil {
 		t.Fatalf("completion queue still prevented forgetting: %v", err)
 	}
 }

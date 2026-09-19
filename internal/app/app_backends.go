@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 
 	"agent-overflow/internal/attachedbackends"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/store"
 )
 
 // The attached-backend admin surface: adding, naming and removing the
@@ -149,9 +152,15 @@ func (a *App) awaitAttachment(id string) {
 // this DEVICE, and the far side adopts its row again by thumbprint if
 // this installation ever pairs with that machine a second time.
 //
+// `abandon` is the confirmation for the agent thread requests this
+// computer still has open there. Without it they are listed and the call
+// refuses; with it they are settled locally as errored, their wakes are
+// dropped, and the pairing goes. The other computer is not told, because
+// forgetting it is exactly the decision to stop talking to it.
+//
 //ao:scope host
 //ao:route home
-func (a *App) RemoveBackend(id string) error {
+func (a *App) RemoveBackend(id string, abandon bool) error {
 	if a.backends == nil {
 		return errNoBackendProfiles
 	}
@@ -162,7 +171,62 @@ func (a *App) RemoveBackend(id string) error {
 	} else if pending {
 		return errors.New("This computer has remote commands awaiting completion or confirmation. Stop them from their conversations and wait for confirmation before forgetting the computer. If it is offline, reconnect it first so cancellation remains available.")
 	}
+	if err := a.releaseThreadRequestsForComputer(id, abandon); err != nil {
+		return err
+	}
 	return a.backends.Remove(id)
+}
+
+// releaseThreadRequestsForComputer refuses once with the open requests
+// named, then settles them when the caller confirms.
+func (a *App) releaseThreadRequestsForComputer(id string, abandon bool) error {
+	rows, err := a.store.ListOpenThreadRequestsForComputer(id, threadForgetRequestListing)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	if !abandon {
+		// Public, so the listing reaches a connected browser too and so
+		// the confirm affordance keys on the code rather than the prose.
+		return errorsx.Public("thread_requests_open",
+			"This computer has agent thread requests still open there: "+
+				describeOpenThreadRequests(rows)+
+				". Forgetting it stops them from ever being collected. Confirm to forget it anyway; the other computer is not told and any work it started keeps running there.", nil)
+	}
+	for _, row := range rows {
+		// The wake goes first: the caller asked for an answer that can no
+		// longer arrive, and the settlement below must not deliver one.
+		if _, err := a.store.SetThreadRequestNotify(row.Token, false); err != nil {
+			return err
+		}
+		row.Notify = false
+		if err := a.settleRemoteThreadRequest(row, store.ThreadRequestSettlement{
+			State:      store.ThreadRequestErrored,
+			Answer:     []byte("This computer was forgotten, so this request can no longer be collected. The other computer was not told, and any work it started keeps running there."),
+			AnswerKind: store.ThreadAnswerError,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// threadForgetRequestListing bounds the refusal's list. More open requests
+// than this against one computer is a number, not a list.
+const threadForgetRequestListing = 20
+
+func describeOpenThreadRequests(rows []store.ThreadRequest) string {
+	parts := make([]string, 0, len(rows))
+	for _, row := range rows {
+		part := row.Kind + " " + row.Token
+		if row.TargetThreadID != "" {
+			part += " on thread " + row.TargetThreadID
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // RenameBackend sets what this installation calls one machine, or clears

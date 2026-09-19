@@ -96,16 +96,48 @@ func (m *Manager) CallAgentPeer(ctx context.Context, id, method string, result a
 	if !access[id] && method != "RemoteCommandStatus" && method != "RemoteCommandCancel" && method != "RemoteCommandReadLog" && method != "RemoteCommandSearchLog" && method != "RemoteCommandArtifact" && method != "RemoteCommandLogArtifact" {
 		return errorsx.Public("remote_access_disabled", "Agent commands are not enabled for this computer. Ask the user to enable the destination in Remote access → Agent remote tools on the originating computer.", nil)
 	}
-	return m.callAgentPeer(ctx, id, method, result, params...)
+	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, method, result, params...)
 }
 
 // CheckAgentPeer proves the pairing, protocol, and command scope before an
 // owner opts in. It runs no command and does not enable access on its own.
 func (m *Manager) CheckAgentPeer(ctx context.Context, id string) error {
-	return m.callAgentPeer(ctx, id, "RemoteCommandProjects", nil)
+	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, "RemoteCommandProjects", nil)
 }
 
-func (m *Manager) callAgentPeer(ctx context.Context, id, method string, result any, params ...any) error {
+// threadPeerMethods is the whole surface agent thread tools reach on a
+// paired computer. It is separate from the command allowlist because the
+// two carry different authority: a thread call never runs a shell.
+var threadPeerMethods = map[string]struct{}{
+	"ThreadToolResolve": {}, "ThreadToolQuery": {}, "ThreadToolCall": {},
+	"ThreadToolRequestStatus": {}, "ThreadToolExportChunk": {},
+}
+
+// CallThreadPeer opens one authenticated RPC exchange for the agent thread
+// tools, on the same rotating credential CallAgentPeer uses.
+//
+// There is no opt-in check: reach is pairing alone. Pairing a computer is
+// the user saying these two computers are theirs, and the destination
+// authorizes every call itself against the authenticated device
+// (docs/specs/agent-thread-tools.md, "Reaching another computer"). The
+// agent-commands opt-in exists because a remote command runs a shell;
+// nothing here does.
+func (m *Manager) CallThreadPeer(ctx context.Context, id, method string, result any, params ...any) error {
+	if !entityid.Valid(id) {
+		return errorsx.Public("thread_unreachable", "computer_id must be a computer UUID from thread_options.", nil)
+	}
+	if _, ok := threadPeerMethods[method]; !ok {
+		return errors.New("this method is not available to agent thread tools")
+	}
+	return m.callPeer(ctx, id, transport.CapabilityThreadTools, method, result, params...)
+}
+
+// callPeer is the shared body: load the carrier, open an RPC that proves
+// the destination advertises `capability`, and make the call. The
+// capability is the only thing that differs between the two surfaces, and
+// it is what turns an older destination into a clear refusal instead of a
+// method error.
+func (m *Manager) callPeer(ctx context.Context, id, capability, method string, result any, params ...any) error {
 	held, err := m.carrier(id)
 	if err != nil {
 		if errors.Is(err, deviceclient.ErrNoSession) {
@@ -113,11 +145,11 @@ func (m *Manager) callAgentPeer(ctx context.Context, id, method string, result a
 		}
 		return errorsx.Public("remote_pairing_unavailable", "The originating computer could not load this pairing. Check its Remote access settings and local configuration file permissions before retrying.", err)
 	}
-	rpc, err := held.openRPC(ctx, transport.CapabilityRemoteCommands)
+	rpc, err := held.openRPC(ctx, capability)
 	if err != nil {
 		switch {
 		case errors.Is(err, errUnsupportedPeerOperation):
-			return errorsx.Public("remote_unsupported", "This destination version does not support remote commands. Update Agent Overflow on that computer.", err)
+			return unsupportedPeerError(capability, err)
 		case errors.Is(err, deviceclient.ErrAwaitingConfirmation):
 			return errorsx.Public("remote_pairing_pending", "Pairing is waiting for approval. Confirm the matching verification number on the destination computer.", err)
 		case errors.Is(err, deviceclient.ErrSessionEnded), errors.Is(err, deviceclient.ErrNoSession):
@@ -127,4 +159,14 @@ func (m *Manager) callAgentPeer(ctx context.Context, id, method string, result a
 	}
 	defer rpc.Close()
 	return rpc.Call(ctx, method, result, params...)
+}
+
+// unsupportedPeerError names the surface an older destination does not
+// advertise, so the caller reads a refusal about the feature it asked for
+// rather than a method error.
+func unsupportedPeerError(capability string, cause error) error {
+	if capability == transport.CapabilityThreadTools {
+		return errorsx.Public("thread_unsupported", "This destination version does not support agent thread tools. Update Agent Overflow on that computer.", cause)
+	}
+	return errorsx.Public("remote_unsupported", "This destination version does not support remote commands. Update Agent Overflow on that computer.", cause)
 }

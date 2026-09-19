@@ -405,6 +405,11 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SyncOwnDevices", ID: 1289411773, Scope: "session", Route: "home"},                                        // main.App.SyncOwnDevices
 	{Name: "SyncThreadWindow", ID: 3841902986, Scope: "threads:read", Route: "thread"},                               // main.App.SyncThreadWindow
 	{Name: "TerminateCodexBackgroundTerminal", ID: 870653875, Scope: "threads:operate", Route: "thread"},             // main.App.TerminateCodexBackgroundTerminal
+	{Name: "ThreadToolCall", ID: 894716875, Scope: "terminal:operate", Route: "selected"},                            // main.App.ThreadToolCall
+	{Name: "ThreadToolExportChunk", ID: 1295284198, Scope: "threads:read", Route: "selected"},                        // main.App.ThreadToolExportChunk
+	{Name: "ThreadToolQuery", ID: 2624544009, Scope: "threads:read", Route: "selected"},                              // main.App.ThreadToolQuery
+	{Name: "ThreadToolRequestStatus", ID: 4150382574, Scope: "threads:read", Route: "selected"},                      // main.App.ThreadToolRequestStatus
+	{Name: "ThreadToolResolve", ID: 1018082581, Scope: "threads:read", Route: "selected"},                            // main.App.ThreadToolResolve
 	{Name: "TriggerMcpAuth", ID: 1291217507, Scope: "settings:write", Route: "thread"},                               // main.App.TriggerMcpAuth
 	{Name: "TriggerWorkspaceMcpAuth", ID: 417766274, Scope: "settings:write", Route: "selected"},                     // main.App.TriggerWorkspaceMcpAuth
 	{Name: "UnarchiveProject", ID: 2561521885, Scope: "threads:operate", Route: "project"},                           // main.App.UnarchiveProject

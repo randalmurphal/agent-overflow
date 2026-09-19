@@ -180,8 +180,13 @@ export async function addSystem(pairingLink: string): Promise<PendingAttachment>
   return row;
 }
 
-export async function removeSystem(id: string): Promise<void> {
-  await RemoveBackend(id);
+/**
+ * Forget one computer. `abandon` confirms the agent thread requests this
+ * computer still has open there: without it the host refuses and names
+ * them, and the caller re-asks with it once the person has agreed.
+ */
+export async function removeSystem(id: string, abandon = false): Promise<void> {
+  await RemoveBackend(id, abandon);
   forgetSystem(id);
 }
 

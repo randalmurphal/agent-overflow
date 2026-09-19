@@ -278,6 +278,18 @@ func (c *session) showOnPeer(ctx context.Context, target Target, args showArgs) 
 		return nil, err
 	}
 	result.ComputerID, result.Computer = c.stamp(Computer{ID: target.ComputerID, Name: target.Computer})
+	if result.File != nil {
+		// The destination wrote the window to its own disk. Copy it here
+		// and replace both the path and the note it came with, because
+		// neither describes a file this computer's model can open.
+		local, err := peer.FetchExport(ctx, *result.File)
+		if err != nil {
+			return nil, err
+		}
+		result.File = &local
+		result.Note = "The whole window was copied from " + nameOf(Computer{ID: result.ComputerID, Name: result.Computer}) +
+			" to that path on this computer. Read it with your own file tools; included items are written whole."
+	}
 	if note := partialNote(target.Partial); note != "" {
 		result.Note = appendNote(result.Note, note)
 	}

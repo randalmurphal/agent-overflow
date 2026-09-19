@@ -461,6 +461,24 @@ func (s *Store) ListThreadRequestsByCaller(callerThreadID string, limit, offset 
 	return collectThreadRequests(rows, fmt.Sprintf("store: list thread requests for %s", callerThreadID))
 }
 
+// ListOpenThreadRequestsForComputer returns the unsettled requests one
+// paired computer owes this one, oldest first. Forgetting that computer
+// reads it twice: once to refuse with the list, once to settle them.
+func (s *Store) ListOpenThreadRequestsForComputer(computerID string, limit int) ([]ThreadRequest, error) {
+	if limit < 1 {
+		limit = 50
+	}
+	rows, err := s.reader().Query(
+		`SELECT `+threadRequestColumns+` FROM thread_requests
+		  WHERE target_computer_id = ? AND settled_at IS NULL
+		  ORDER BY created_at ASC, token ASC LIMIT ?`,
+		computerID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list open thread requests for computer %s: %w", computerID, err)
+	}
+	return collectThreadRequests(rows, fmt.Sprintf("store: list open thread requests for computer %s", computerID))
+}
+
 // DueThreadReminders returns the `remind` rows whose clock has passed. The
 // partial index idx_thread_requests_due serves the predicate, which is
 // restated here in full so SQLite can prove it.

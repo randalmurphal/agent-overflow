@@ -318,6 +318,48 @@ func TestThreadRequestNotifyFlag(t *testing.T) {
 	}
 }
 
+// A settled receipt is the answer a paired computer has not collected yet,
+// so it must outlive the thread it ran in: an ask's scratch fork is deleted
+// as soon as it answers, and the thread binding cascades.
+func TestThreadRequestReceiptSurvivesTheThreadItRanIn(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-answered")
+	mustCreateThread(t, s, "t-open")
+	for token, thread := range map[string]string{"tok-answered": "t-answered", "tok-open": "t-open"} {
+		if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+			Token: token, OwnerDeviceID: "device-1", SourceComputerID: "backend-2",
+			SourceThreadID: "t-remote", Kind: ThreadRequestSend, TargetThreadID: thread,
+		}); err != nil {
+			t.Fatalf("accept %s: %v", token, err)
+		}
+	}
+	if _, err := s.SettleThreadRequestReceipt("tok-answered", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		State: ThreadReceiptFinished, Answer: []byte("the answer"), AnswerKind: ThreadAnswerFinal,
+	}); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+
+	detached, err := s.DetachThreadReceiptsFromThread("t-answered")
+	if err != nil || detached != 1 {
+		t.Fatalf("detach settled receipts = %d, %v", detached, err)
+	}
+	// An open receipt keeps its thread: its own caller settles it first.
+	if detached, err := s.DetachThreadReceiptsFromThread("t-open"); err != nil || detached != 0 {
+		t.Fatalf("detach open receipts = %d, %v", detached, err)
+	}
+	if err := s.DeleteThread("t-answered"); err != nil {
+		t.Fatalf("delete the thread the request ran in: %v", err)
+	}
+
+	receipt, found, err := s.GetThreadRequestReceipt("tok-answered")
+	if err != nil || !found {
+		t.Fatalf("the answer went with the thread: found=%v err=%v", found, err)
+	}
+	if string(receipt.Answer) != "the answer" || receipt.TargetThreadID != "" {
+		t.Fatalf("detached receipt = %+v", receipt)
+	}
+}
+
 // The destination row is keyed by the token, so a retried delivery of the
 // same request finds the acceptance it already made and spawns nothing.
 func TestThreadRequestReceiptAcceptanceIsIdempotent(t *testing.T) {

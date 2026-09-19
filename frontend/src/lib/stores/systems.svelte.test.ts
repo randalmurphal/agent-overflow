@@ -184,7 +184,7 @@ describe('systems store', () => {
     await loadSystems();
     const remove = setBindingMock('RemoveBackend', async () => {});
     await removeSystem('laptop');
-    expect(remove).toHaveBeenCalledWith('laptop');
+    expect(remove).toHaveBeenCalledWith('laptop', false);
     expect(manifestBackendDescriptors()).toEqual([]);
     expect(attachedBackends().some((b) => b.id === 'laptop')).toBe(false);
   });

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -305,7 +306,11 @@ func (t threadToolsApp) requestState(ctx context.Context, row store.ThreadReques
 	if !threadRequestSettled(row) && t.app.threadRequestBlocked(row) {
 		state.State = threadtools.RequestBlocked
 	}
-	if row.TargetThreadID != "" {
+	if row.TargetThreadID != "" && row.TargetComputerID != "" {
+		// A thread on another computer has no row here. Its title is what
+		// that computer reported when it was last polled.
+		state.Title = t.app.remoteRequestLiveState(row.Token).title
+	} else if row.TargetThreadID != "" {
 		if thread, err := t.app.store.GetThread(row.TargetThreadID); err == nil {
 			state.Title = thread.Title
 		} else if row.OriginThreadID != "" {
@@ -422,11 +427,14 @@ func (t threadToolsApp) ExportAnswer(ctx context.Context, caller threadtools.Cal
 // Cancel stops one request the caller made, or interrupts a thread it
 // started.
 func (t threadToolsApp) Cancel(ctx context.Context, caller threadtools.Caller, call threadtools.CancelCall) (threadtools.CancelReport, error) {
-	if err := t.requireLocalDestination(call.ComputerID); err != nil {
-		return threadtools.CancelReport{}, err
-	}
 	if call.Token != "" {
+		// The token names its own destination: the row records where the
+		// request went, and a computer_id the caller passed with it is
+		// either the same computer or a mistake.
 		return t.cancelRequest(ctx, caller, call.Token)
+	}
+	if call.ComputerID != "" {
+		return t.cancelRemoteThread(ctx, caller, call)
 	}
 	return t.cancelThread(ctx, caller, call.ThreadID)
 }
@@ -448,6 +456,9 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 	if threadRequestSettled(row) {
 		report.State, report.Effect = row.State, threadCancelNothing
 		return report, nil
+	}
+	if row.TargetComputerID != "" {
+		return t.cancelRemoteRequest(ctx, row)
 	}
 	// A reminder is nothing but a row: there is no work to stop, and the
 	// caller cancelling it wants it gone rather than settled as cancelled.
@@ -477,6 +488,91 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 	report.State = threadtools.RequestCancelled
 	if settled, found, err := t.app.store.GetThreadRequest(token); err == nil && found {
 		report.State = settled.State
+	}
+	return report, nil
+}
+
+// threadCancelTimeout bounds one forwarded cancel. It matches the remote
+// command stop: a cancel that cannot be delivered must not hold the calling
+// turn while an offline computer times out its whole call budget.
+const threadCancelTimeout = 20 * time.Second
+
+// cancelRemoteRequest stops one request on the computer that accepted it.
+//
+// The destination settles its own receipt, because it is the only side that
+// can take back a queued message or interrupt a turn. The source row is
+// settled from the receipt the reply carries, through the same collector a
+// poll would have used.
+func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, row store.ThreadRequest) (threadtools.CancelReport, error) {
+	report := threadtools.CancelReport{Token: row.Token, ThreadID: row.TargetThreadID, ComputerID: row.TargetComputerID}
+	if row.Notify {
+		if _, err := t.app.store.SetThreadRequestNotify(row.Token, false); err != nil {
+			return threadtools.CancelReport{}, err
+		}
+		row.Notify = false
+	}
+	if _, err := t.Peer(ctx, row.TargetComputerID); err != nil {
+		return threadtools.CancelReport{}, err
+	}
+	call, cancel := context.WithTimeout(ctx, threadCancelTimeout)
+	defer cancel()
+	var reply ThreadPeerReply
+	err := t.app.backends.CallThreadPeer(call, row.TargetComputerID, "ThreadToolCall", &reply, ThreadPeerCall{
+		Tool:   "thread_cancel",
+		Token:  row.Token,
+		Source: threadtools.Caller{ThreadID: row.CallerThreadID},
+	})
+	if err != nil {
+		return threadtools.CancelReport{}, t.app.threadOperationError("cancel", row.TargetComputerID, row.TargetThreadID, err)
+	}
+	report.Effect = reply.Effect
+	if report.Effect == "" {
+		report.Effect = threadCancelNothing
+	}
+	if reply.Request != nil {
+		if _, err := t.app.applyThreadPeerRequest(row.Token, row.TargetComputerID, *reply.Request); err != nil {
+			return threadtools.CancelReport{}, err
+		}
+	}
+	report.State = threadtools.RequestCancelled
+	if settled, found, err := t.app.store.GetThreadRequest(row.Token); err == nil && found {
+		report.State = settled.State
+	}
+	return report, nil
+}
+
+// cancelRemoteThread interrupts a thread on another computer the caller
+// started there. The lineage check runs on the destination, against the
+// receipts it holds for this source.
+func (t threadToolsApp) cancelRemoteThread(ctx context.Context, caller threadtools.Caller, call threadtools.CancelCall) (threadtools.CancelReport, error) {
+	if _, err := t.Peer(ctx, call.ComputerID); err != nil {
+		return threadtools.CancelReport{}, err
+	}
+	args, err := json.Marshal(threadtools.CancelCall{ThreadID: call.ThreadID})
+	if err != nil {
+		return threadtools.CancelReport{}, fmt.Errorf("thread tools: encode cancel for %s: %w", call.ComputerID, err)
+	}
+	rpc, cancel := context.WithTimeout(ctx, threadCancelTimeout)
+	defer cancel()
+	var reply ThreadPeerReply
+	err = t.app.backends.CallThreadPeer(rpc, call.ComputerID, "ThreadToolCall", &reply, ThreadPeerCall{
+		Tool:   "thread_cancel",
+		Args:   args,
+		Token:  newThreadRequestToken(),
+		Source: caller,
+	})
+	if err != nil {
+		return threadtools.CancelReport{}, t.app.threadOperationError("cancel", call.ComputerID, call.ThreadID, err)
+	}
+	report := threadtools.CancelReport{
+		ThreadID:   call.ThreadID,
+		ComputerID: call.ComputerID,
+		State:      threadtools.RequestRunning,
+		Effect:     reply.Effect,
+	}
+	if report.Effect == "" || report.Effect == threadCancelNothing {
+		report.Effect = threadCancelNothing
+		report.State = threadtools.RequestFinished
 	}
 	return report, nil
 }
@@ -511,6 +607,43 @@ func (t threadToolsApp) cancelThread(ctx context.Context, caller threadtools.Cal
 	}
 	report.Effect = threadCancelInterrupted
 	return report, nil
+}
+
+// interruptForeignThread is the destination half of a thread_cancel by
+// thread id: the same lineage rule as cancelThread, read from the receipts
+// this computer holds for the calling thread rather than from source rows
+// it does not have.
+func (t threadToolsApp) interruptForeignThread(ctx context.Context, origin threadRequestOrigin, threadID string) (string, error) {
+	thread, err := t.localThread(threadID)
+	if err != nil {
+		return "", err
+	}
+	receipts, err := t.app.store.ListThreadRequestReceiptsForThread(thread.ID)
+	if err != nil {
+		return "", err
+	}
+	linked := false
+	for _, receipt := range receipts {
+		if receipt.OwnerDeviceID == origin.ownerDevice && receipt.SourceThreadID == origin.caller.ThreadID {
+			linked = true
+			break
+		}
+	}
+	if !linked {
+		return "", errorsx.Public(threadtools.CodeNotYours,
+			fmt.Sprintf("That thread did not start %s, so it cannot interrupt it. Interrupt the threads you spawned, sent to or asked.", threadID), nil)
+	}
+	live, err := t.LiveState(ctx, thread.ID)
+	if err != nil {
+		return "", err
+	}
+	if !live.ActiveTurn {
+		return threadCancelNothing, nil
+	}
+	if err := t.app.interruptTurnCtx(ctx, thread.ID); err != nil {
+		return "", err
+	}
+	return threadCancelInterrupted, nil
 }
 
 // callerStartedThread reports whether any request, settled or not, links this

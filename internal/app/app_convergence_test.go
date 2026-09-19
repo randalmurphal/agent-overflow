@@ -297,7 +297,7 @@ func TestBackendSetMutationsAnnounceThemselves(t *testing.T) {
 
 	// No profile directory on a bare fixture: both methods refuse, and a
 	// refusal must say nothing at all.
-	if err := app.RemoveBackend("machine-1"); err == nil {
+	if err := app.RemoveBackend("machine-1", false); err == nil {
 		t.Fatal("RemoveBackend() on an App with no profiles should refuse")
 	}
 	if err := app.RenameBackend("machine-1", "laptop"); err == nil {

@@ -91,7 +91,7 @@ describe('<SystemsSection>', () => {
     await fireEvent.click(getByText('Connect'));
     const pending = await findByTestId('pending-attachment');
     await fireEvent.click(within(pending).getByText('Cancel'));
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', false));
     await waitFor(() => expect(queryByTestId('pending-attachment')).toBeNull());
   });
 
@@ -122,7 +122,29 @@ describe('<SystemsSection>', () => {
     await fireEvent.click(within(await findByTestId('attached-system')).getByText('Remove'));
     expect(remove).not.toHaveBeenCalled();
     await fireEvent.click(getByText('Confirm remove'));
-    await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', false));
+    await waitFor(() => expect(queryByTestId('attached-system')).toBeNull());
+  });
+
+  it('carries the abandon the host asked for when agent thread requests are open', async () => {
+    stageBackend();
+    setBindingMock('ListBackends', async () => [LAPTOP]);
+    const remove = setBindingMock('RemoveBackend', async (_id: string, abandon: boolean) => {
+      if (!abandon) {
+        throw Object.assign(new Error('spawn tok-1 is still open there. Confirm to forget it anyway'), {
+          code: 'thread_requests_open',
+        });
+      }
+    });
+    const { getByText, findByTestId, queryByTestId } = render(SystemsSection);
+    await fireEvent.click(within(await findByTestId('attached-system')).getByText('Remove'));
+    await fireEvent.click(getByText('Confirm remove'));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', false));
+    // The refusal is shown and the button asks for the confirmation the
+    // host named instead of repeating the call that cannot succeed.
+    await waitFor(() => expect(getToasts()[0]?.message).toMatch(/still open there/));
+    await fireEvent.click(await findByTestId('attached-system').then(() => getByText('Forget anyway')));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('laptop', true));
     await waitFor(() => expect(queryByTestId('attached-system')).toBeNull());
   });
 

@@ -323,10 +323,16 @@ type ExportQuery struct {
 }
 
 // ExportFile is a rendered file on the computer that holds the thread.
+//
+// Path is the only field the model reads, and it is always a path on the
+// computer the model is running on. An export rendered for another
+// computer carries ExportID instead, which that computer fetches the
+// bytes by and then reports under a path of its own.
 type ExportFile struct {
-	Path   string `json:"path"`
-	Size   int64  `json:"size"`
-	SHA256 string `json:"sha256,omitempty"`
+	Path     string `json:"path,omitempty"`
+	ExportID string `json:"export_id,omitempty"`
+	Size     int64  `json:"size"`
+	SHA256   string `json:"sha256,omitempty"`
 }
 
 // CatalogQuery narrows a large thread_options answer.

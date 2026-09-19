@@ -85,6 +85,7 @@ var serverCapabilities = []string{
 	CapabilityDeviceName,
 	CapabilityComputerRoutes,
 	CapabilityHeartbeat,
+	CapabilityThreadTools,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose
@@ -101,6 +102,12 @@ var serverCapabilitiesWithBrowserAndTransfers = append(slices.Clone(serverCapabi
 const CapabilityConversationTransfer = "conversation.transfer.v1"
 
 const CapabilityRemoteCommands = "commands.remote.v1"
+
+// CapabilityThreadTools names the ao-thread-tools peer surface: thread
+// resolution, the read tools, the write tools that mint a request, the
+// request status poll and the export chunk reader. A destination without
+// it answers thread_unsupported rather than method_not_found.
+const CapabilityThreadTools = "thread-tools.v1"
 
 // CapabilityPairingNetworks allows an invitation to name LAN or Tailscale
 // explicitly, without changing the host's enabled network listeners.

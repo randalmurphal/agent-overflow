@@ -59,16 +59,34 @@ func newRequestFixtureIn(t *testing.T, workspace string) *requestFixture {
 // assistant message and ends the turn.
 func (f *requestFixture) mockClaude(t *testing.T, replies ...string) {
 	t.Helper()
-	responses := make([][]string, 0, len(replies))
+	installMockClaudeReplies(t, f.app, replies...)
+}
+
+// installMockClaudeReplies gives one app a provider that answers each user
+// message with one assistant message and ends the turn.
+func installMockClaudeReplies(t *testing.T, app *App, replies ...string) {
+	t.Helper()
+	turns := make([][]string, 0, len(replies))
 	for _, reply := range replies {
-		responses = append(responses, []string{
-			`{"type":"system","subtype":"init","session_id":"sess-request","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+		turns = append(turns, []string{
+			mockClaudeInitLine,
 			`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":` + quoteJSON(reply) + `}]}}`,
 			`{"type":"result","subtype":"success","is_error":false}`,
 		})
 	}
-	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), responses)
-	if _, err := f.app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+	installMockClaudeTurns(t, app, turns)
+}
+
+// mockClaudeInitLine opens a mock turn. It is shared so a test that needs
+// a turn the mock leaves running writes only the lines it cares about.
+const mockClaudeInitLine = `{"type":"system","subtype":"init","session_id":"sess-request","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`
+
+// installMockClaudeTurns installs a mock provider whose n-th user message
+// produces the n-th batch of wire lines verbatim.
+func installMockClaudeTurns(t *testing.T, app *App, turns [][]string) {
+	t.Helper()
+	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), turns)
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
 		t.Fatalf("set claude binary: %v", err)
 	}
 }

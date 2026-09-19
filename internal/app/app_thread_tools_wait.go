@@ -47,6 +47,24 @@ type threadRequestState struct {
 	// is started, which is what makes a nudge from a test with no sweep a
 	// no-op rather than a leak.
 	nudge chan struct{}
+	// polling is the single poll slot. A pass whose rows are still in
+	// flight has not rescheduled them, so a second pass would ask the same
+	// destination about the same tokens.
+	polling bool
+	// remote caches what only the destination knows about a request on
+	// another computer, refreshed by every poll of it. It is not state:
+	// the record is the source row, this is the live reading beside it,
+	// and after a restart it is empty until the next poll fills it in.
+	remote map[string]remoteRequestLive
+}
+
+// remoteRequestLive is one remote request's live properties: whether its
+// target is waiting on a person right now, and what that thread is called.
+// Neither has a column on the source row, because neither is this
+// computer's to record.
+type remoteRequestLive struct {
+	blocked bool
+	title   string
 }
 
 // threadRequestWait is one parked tool call.
@@ -289,15 +307,48 @@ func threadRequestSettled(row store.ThreadRequest) bool {
 	}
 }
 
-// threadRequestBlocked reports whether a LOCAL target is waiting on a person
-// right now. A blocked target ends a wait without settling the request: the
-// person owns the answer, and the agent is told to leave it to them.
+// noteRemoteRequestLive records what a destination reported about one of
+// its receipts. forgetRemoteRequestLive drops it once the request has
+// settled, because a settled request has no live target to describe.
+func (a *App) noteRemoteRequestLive(token string, blocked bool, title string) {
+	if token == "" {
+		return
+	}
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	if a.threadRequests.remote == nil {
+		a.threadRequests.remote = make(map[string]remoteRequestLive)
+	}
+	a.threadRequests.remote[token] = remoteRequestLive{blocked: blocked, title: title}
+}
+
+func (a *App) forgetRemoteRequestLive(token string) {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	delete(a.threadRequests.remote, token)
+}
+
+func (a *App) remoteRequestLiveState(token string) remoteRequestLive {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	return a.threadRequests.remote[token]
+}
+
+// threadRequestBlocked reports whether a request's target is waiting on a
+// person right now. A blocked target ends a wait without settling the
+// request: the person owns the answer, and the agent is told to leave it to
+// them.
+//
+// A local target is read from the live router. A remote one is read from
+// what its own computer reported in the last poll, which is the same
+// property observed by the only process that can see it; there is no second
+// state model, because neither reading is stored.
 func (a *App) threadRequestBlocked(row store.ThreadRequest) bool {
-	if row.TargetComputerID != "" || row.TargetThreadID == "" {
+	if row.TargetThreadID == "" || threadRequestSettled(row) {
 		return false
 	}
-	if threadRequestSettled(row) {
-		return false
+	if row.TargetComputerID != "" {
+		return a.remoteRequestLiveState(row.Token).blocked
 	}
 	live, err := a.threadToolsAdapter().LiveState(context.Background(), row.TargetThreadID)
 	if err != nil {

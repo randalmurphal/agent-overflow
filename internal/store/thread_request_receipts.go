@@ -196,6 +196,34 @@ func (s *Store) SetThreadReceiptTarget(token, threadID string) (bool, error) {
 	return rowsChanged(result, action)
 }
 
+// DetachThreadReceiptsFromThread clears the thread binding of every settled
+// receipt of one thread, and returns how many it cleared.
+//
+// It is called where that thread is about to stop existing here: deleted,
+// moved away, or the hidden fork an ask ran in. The binding is a foreign
+// key with ON DELETE CASCADE, so without this the answer would go with the
+// thread, and the answer is the record a paired computer has not collected
+// yet. An open receipt keeps its thread: its caller settles it first.
+func (s *Store) DetachThreadReceiptsFromThread(threadID string) (int64, error) {
+	action := fmt.Sprintf("store: detach thread receipts from %s", threadID)
+	if threadID == "" {
+		return 0, nil
+	}
+	result, err := s.db.Exec(
+		`UPDATE thread_request_receipts SET target_thread_id = NULL, updated_at = ?
+		  WHERE target_thread_id = ? AND settled_at IS NOT NULL`,
+		nowMillis(), threadID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", action, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("%s: rows affected: %w", action, err)
+	}
+	return affected, nil
+}
+
 // MarkThreadReceiptRunning records the user row the request wrote and the
 // turn that consumed it, and moves the receipt out of `accepted`. Until it
 // applies, the request's message is still queued and no turn can settle it.

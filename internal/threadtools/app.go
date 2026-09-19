@@ -148,4 +148,11 @@ type Peer interface {
 	// Invoke runs one write tool there and returns its JSON result
 	// unchanged: thread_update and thread_group.
 	Invoke(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error)
+
+	// FetchExport copies a file that peer rendered onto the calling
+	// computer and returns it with a path the caller's model can open. A
+	// path on the destination is of no use to a model that cannot read
+	// that filesystem, so `to_file` on another computer's thread always
+	// goes through here.
+	FetchExport(ctx context.Context, file ExportFile) (ExportFile, error)
 }

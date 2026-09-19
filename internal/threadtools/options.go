@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+
+	"agent-overflow/internal/errorsx"
 )
 
 // thread_options: what a spawn can choose from, rendered from the
@@ -181,18 +183,26 @@ func (c *session) optionsOne(ctx context.Context, computer Computer, local bool,
 	if err != nil {
 		return computerOptions{}, err
 	}
-	row.Defaults = &defaults
+	row.Defaults = defaults
 	return row, nil
 }
 
 // callerDefaults reads the calling thread's own settings. They are what a
 // spawn inherits, so the row that carries them is the caller's own.
-func (c *session) callerDefaults(ctx context.Context) (SpawnDefaults, error) {
+//
+// A forwarded call names a thread on the computer it came from, which this
+// one does not have. The source drops the defaults of a peer row anyway, so
+// a caller thread that is not here leaves them out instead of failing the
+// answer this computer alone can give about its projects and models.
+func (c *session) callerDefaults(ctx context.Context) (*SpawnDefaults, error) {
 	thread, err := c.app.Thread(ctx, c.caller.ThreadID)
 	if err != nil {
-		return SpawnDefaults{}, err
+		if code, _, public := errorsx.PublicDetails(err); public && code == CodeNotFound {
+			return nil, nil
+		}
+		return nil, err
 	}
-	return SpawnDefaults{
+	return &SpawnDefaults{
 		Provider:    thread.Provider,
 		Model:       thread.Model,
 		Effort:      thread.Effort,

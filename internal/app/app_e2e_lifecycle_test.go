@@ -248,14 +248,30 @@ func summarizeEvents(events []capturedEvent) string {
 // everything into the returned *capturedEventBus.
 func setupE2EApp(t *testing.T) (*App, *capturedEventBus) {
 	t.Helper()
+	return setupE2EAppOn(t, storetest.ClonePath(t), t.TempDir())
+}
+
+// setupE2EAppOn builds the same fixture on a named database file and
+// settings directory, so a test can boot a second App over the durable
+// state the first one left and prove what survives a restart.
+func setupE2EAppOn(t *testing.T, dbPath, settingsDir string) (*App, *capturedEventBus) {
+	t.Helper()
 
 	bus := newCapturedEventBus()
 
-	st := storetest.Clone(t)
+	st, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("store.New(%s) error = %v", dbPath, err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
 
 	app := &App{
 		store:    st,
-		settings: settings.NewService(t.TempDir()),
+		settings: settings.NewService(settingsDir),
 	}
 	app.triage = triage.NewRouter(st, bus.emitChannel)
 	app.triage.SetEventHook(bus.observeRouterEvent)

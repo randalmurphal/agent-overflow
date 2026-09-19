@@ -697,10 +697,11 @@ func TestThreadToolsAdapterAnswersTheCatalog(t *testing.T) {
 	}
 }
 
-// TestThreadToolsAdapterHasNoPeersInThisBuild pins the single-computer
-// shape: no pairings are offered, and a forwarded computer id is refused
-// in prose the model can read.
-func TestThreadToolsAdapterHasNoPeersInThisBuild(t *testing.T) {
+// TestThreadToolsAdapterHasNoPeersWithoutPairings pins the
+// single-computer shape an unpaired computer has: no pairings are offered,
+// and a computer id that arrives anyway is refused in prose the model can
+// read rather than run here as if it had named this computer.
+func TestThreadToolsAdapterHasNoPeersWithoutPairings(t *testing.T) {
 	f := newThreadToolsFixture(t)
 	computers, err := f.adapter.PairedComputers(t.Context())
 	if err != nil || len(computers) != 0 {

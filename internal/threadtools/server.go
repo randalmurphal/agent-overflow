@@ -36,6 +36,10 @@ func (s *Server) Call(ctx context.Context, caller Caller, name string, args json
 	if err != nil {
 		return nil, err
 	}
+	// The calling thread travels on the context as well as in the session,
+	// because a forwarded call names the thread it came from and the App
+	// interface's Peer takes nothing but a context.
+	ctx = WithCaller(ctx, caller)
 	call := &session{app: s.app, caller: caller, computers: computers, now: s.clock()}
 	switch name {
 	case "thread_search":
@@ -67,6 +71,23 @@ func (s *Server) Call(ctx context.Context, caller Caller, name string, args json
 	default:
 		return nil, invalidf("There is no tool named %q. The thread tools are: %s.", name, joinNames(ToolNames))
 	}
+}
+
+// callerKey carries the calling thread on a call's context.
+type callerKey struct{}
+
+// WithCaller stamps the calling thread on ctx. Server.Call does it for
+// every tool; an app implementing Peer reads it back with CallerFrom so a
+// forwarded call can name the thread and computer it came from.
+func WithCaller(ctx context.Context, caller Caller) context.Context {
+	return context.WithValue(ctx, callerKey{}, caller)
+}
+
+// CallerFrom reads back what WithCaller stamped. The second result is
+// false outside a tool call.
+func CallerFrom(ctx context.Context) (Caller, bool) {
+	caller, ok := ctx.Value(callerKey{}).(Caller)
+	return caller, ok
 }
 
 // session is one call's view of the world: who is calling and which

@@ -390,6 +390,7 @@ type serverPeer struct {
 	caller   Caller
 	queries  []string
 	invokes  []string
+	fetched  []string
 	resolves int
 }
 
@@ -408,6 +409,13 @@ func (p *serverPeer) Query(ctx context.Context, name string, args json.RawMessag
 func (p *serverPeer) Invoke(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
 	p.invokes = append(p.invokes, name)
 	return p.run(ctx, name, args)
+}
+
+// FetchExport stands in for the copy a real peer client makes: the
+// destination's export id becomes a path on the calling computer.
+func (p *serverPeer) FetchExport(_ context.Context, file ExportFile) (ExportFile, error) {
+	p.fetched = append(p.fetched, file.ExportID)
+	return ExportFile{Path: "/local/exports/" + file.ExportID, Size: file.Size, SHA256: file.SHA256}, nil
 }
 
 func (p *serverPeer) run(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
@@ -433,6 +441,9 @@ func (p brokenPeer) Query(context.Context, string, json.RawMessage) (json.RawMes
 }
 func (p brokenPeer) Invoke(context.Context, string, json.RawMessage) (json.RawMessage, error) {
 	return nil, p.err
+}
+func (p brokenPeer) FetchExport(context.Context, ExportFile) (ExportFile, error) {
+	return ExportFile{}, p.err
 }
 
 // call runs one tool and returns the result as a generic JSON map, which

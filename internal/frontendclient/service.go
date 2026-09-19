@@ -178,7 +178,11 @@ func (s *service) AddBackend(link string) (attachedbackends.Attachment, error) {
 func (s *service) RepairBackendAddress(ctx context.Context, id, endpoint string) (string, error) {
 	return s.computers.RepairAddress(ctx, id, endpoint)
 }
-func (s *service) RemoveBackend(id string) error           { return s.computers.Remove(id) }
+
+// RemoveBackend takes the host's `abandon` parameter and ignores it: a
+// frontend-only desktop keeps no store, so it holds no agent thread
+// requests to abandon. The signature matches so one wire shape serves both.
+func (s *service) RemoveBackend(id string, _ bool) error   { return s.computers.Remove(id) }
 func (s *service) RenameBackend(id, nickname string) error { return s.computers.Rename(id, nickname) }
 func (s *service) StartSSHConnection(request sshsetup.Request) (sshsetup.Status, error) {
 	return s.ssh.Begin(s.ctx, request)

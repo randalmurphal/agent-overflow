@@ -240,25 +240,6 @@ func (t threadToolsApp) threadToolsBackendName(backendID string) (name, id strin
 	return "", backendID
 }
 
-// PairedComputers returns no computers in this build.
-//
-// Cross-computer reach is its own phase: nothing here can call a peer yet,
-// and reporting a pairing that no call can use would put computer_id in
-// every schema and a computer column on every row for tools that would
-// then refuse the id. The single-computer shape is the honest one until
-// Peer answers.
-func (t threadToolsApp) PairedComputers(context.Context) ([]threadtools.Computer, error) {
-	return nil, nil
-}
-
-// Peer has no implementation in this build; PairedComputers returns none,
-// so nothing in this package reaches it. The refusal is public prose
-// because it can still reach the model through a forwarded id.
-func (t threadToolsApp) Peer(_ context.Context, computerID string) (threadtools.Peer, error) {
-	return nil, errorsx.Public(threadtools.CodeUnreachable,
-		fmt.Sprintf("Computer %s is not reachable in this build. Thread tools reach this computer's own threads.", computerID), nil)
-}
-
 // Catalog answers thread_options from the catalogs the app already keeps.
 func (t threadToolsApp) Catalog(_ context.Context, q threadtools.CatalogQuery) (threadtools.Catalog, error) {
 	catalog := threadtools.Catalog{Reachable: true, OS: threadToolsOS()}

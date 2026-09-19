@@ -201,9 +201,10 @@ func (a *App) settleThreadReceipt(token string, from []string, settlement store.
 	}
 	a.forgetReceiptRunning(receipt.TargetThreadID, token)
 	a.collectLocalThreadRequest(token, false)
-	// The scratch thread has done its work. The answer lives in the receipt
-	// and the source row, so deleting the thread loses nothing; a responder
-	// settling its own ask deletes it after its reply is written instead.
+	// The scratch thread has done its work. The answer lives in the receipt,
+	// which the drop detaches from the thread first so a paired computer
+	// that has not collected it yet still can; a responder settling its own
+	// ask deletes the thread after its reply is written instead.
 	a.dropScratchThreadForRequest(token, receipt.TargetThreadID)
 	return nil
 }
@@ -342,6 +343,12 @@ func (a *App) dropScratchThreadForRequest(token, threadID string) {
 	if !found || row.RequestToken != token {
 		return
 	}
+	// The receipt is what a paired computer collects, and its thread
+	// binding would cascade it away with the thread.
+	if _, err := a.store.DetachThreadReceiptsFromThread(threadID); err != nil {
+		log.Printf("thread tools: detach receipts from scratch thread %s: %v", threadID, err)
+		return
+	}
 	if err := a.DeleteThread(threadID); err != nil {
 		log.Printf("thread tools: delete scratch thread %s for request %s: %v", threadID, token, err)
 		return
@@ -402,13 +409,24 @@ func (a *App) collectLocalThreadRequest(token string, late bool) {
 	if _, err := a.store.AckThreadRequestReceipt(token, receipt.Revision, 0); err != nil {
 		log.Printf("thread tools: acknowledge receipt %s: %v", token, err)
 	}
-	// A parked wait is the delivery: it returns the answer in the reply to
-	// the call that is waiting, so no message is owed.
-	a.wakeRequestWaits(token)
-	if !row.Notify || a.requestWaitActive(token) {
+	a.finishThreadRequestCollection(row, late)
+}
+
+// finishThreadRequestCollection hands a stored settlement to the caller. It
+// is the delivery half of collection, shared by the local door above and
+// the poller that collects from another computer, so a remote answer
+// arrives exactly the way a local one does.
+//
+// A parked wait IS the delivery: it returns the answer in the reply to the
+// call that is waiting, so no message is owed. The caller holds the token's
+// settle lock, which is what makes that decision exclusive with a
+// timing-out wait.
+func (a *App) finishThreadRequestCollection(row store.ThreadRequest, late bool) {
+	a.wakeRequestWaits(row.Token)
+	if !row.Notify || a.requestWaitActive(row.Token) {
 		return
 	}
-	a.deliverThreadWake(token, late)
+	a.deliverThreadWake(row.Token, late)
 }
 
 // threadRequestStateForReceipt maps a destination state onto the source's
@@ -708,14 +726,40 @@ func (a *App) cancelThreadRequests(ctx context.Context, callerThreadID string) e
 		if threadRequestSettled(row) || row.Kind != store.ThreadRequestAsk {
 			continue
 		}
-		if _, err := a.stopThreadRequestWork(ctx, row.Token); err != nil {
+		if err := a.cancelOwnedAsk(ctx, row); err != nil {
 			// Best effort by design: the caller's own operation is what is
 			// being served, and a scratch thread left running is swept at the
-			// next boot.
+			// next boot, here or on the computer that holds it.
 			log.Printf("thread tools: cancel ask %s for %s: %v", row.Token, callerThreadID, err)
 		}
 	}
 	return nil
+}
+
+// cancelOwnedAsk stops one ask this caller owns, wherever it is running.
+func (a *App) cancelOwnedAsk(ctx context.Context, row store.ThreadRequest) error {
+	if row.TargetComputerID == "" {
+		_, err := a.stopThreadRequestWork(ctx, row.Token)
+		return err
+	}
+	if a.backends == nil {
+		return nil
+	}
+	call, cancel := context.WithTimeout(ctx, threadCancelTimeout)
+	defer cancel()
+	var reply ThreadPeerReply
+	if err := a.backends.CallThreadPeer(call, row.TargetComputerID, "ThreadToolCall", &reply, ThreadPeerCall{
+		Tool:   "thread_cancel",
+		Token:  row.Token,
+		Source: threadtools.Caller{ThreadID: row.CallerThreadID},
+	}); err != nil {
+		return a.threadOperationError("cancel", row.TargetComputerID, row.TargetThreadID, err)
+	}
+	if reply.Request == nil {
+		return nil
+	}
+	_, err := a.applyThreadPeerRequest(row.Token, row.TargetComputerID, *reply.Request)
+	return err
 }
 
 // settleReceiptsForThread is the target side: a thread that is being deleted
@@ -746,6 +790,13 @@ func (a *App) settleReceiptsForThread(threadID, state, reason string) {
 				log.Printf("thread tools: settle receipt %s as %s: %v", receipt.Token, state, err)
 			}
 		}()
+	}
+	// This thread is going: deleted, or handed to another computer. The
+	// settlements above are what their callers collect, and a receipt still
+	// bound to the thread would cascade away with it before a paired
+	// computer's poller could read one.
+	if _, err := a.store.DetachThreadReceiptsFromThread(threadID); err != nil {
+		log.Printf("thread tools: detach receipts from %s: %v", threadID, err)
 	}
 }
 

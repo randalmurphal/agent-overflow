@@ -48,7 +48,7 @@ it('refuses a mismatch and removes its provisional profile', async () => {
   const remove = setBindingMock('RemoveBackend', async () => {});
   const view = await start();
   expect((await view.findByRole('alert')).textContent).toContain('do not match');
-  await waitFor(() => expect(remove).toHaveBeenCalledWith('gpu-id'));
+  await waitFor(() => expect(remove).toHaveBeenCalledWith('gpu-id', false));
   expect(cancel).toHaveBeenCalledWith('console');
   expect(confirm).not.toHaveBeenCalled();
 });
@@ -117,5 +117,5 @@ it('retires a connection whose confirmation is refused after the dialog closed',
   await fireEvent.click(view.getByText('Close'));
   refuse(new Error('declined'));
   await waitFor(() => expect(cancel).toHaveBeenCalledWith('console'));
-  expect(remove).toHaveBeenCalledWith('gpu-id');
+  expect(remove).toHaveBeenCalledWith('gpu-id', false);
 });

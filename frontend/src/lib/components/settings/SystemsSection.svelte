@@ -101,6 +101,10 @@
   let connectionError = $state('');
   let acting = $state(false);
   let armedRemove: string | null = $state(null);
+  // The computer the host refused to forget because agent thread requests
+  // are still open there. The refusal toast says what confirming costs, so
+  // the next click carries the abandon the host asked for.
+  let armedAbandon: string | null = $state(null);
 
   onMount(() => {
     if (hostList) void loadSystems().catch((err) => addToast('error', errString(err)));
@@ -168,17 +172,27 @@
   async function remove(id: string): Promise<void> {
     if (armedRemove !== id) {
       armedRemove = id;
+      armedAbandon = null;
       return;
     }
     acting = true;
     try {
-      await removeSystem(id);
+      await removeSystem(id, armedAbandon === id);
       armedRemove = null;
+      armedAbandon = null;
     } catch (err) {
       addToast('error', errString(err));
+      armedAbandon = openThreadRequests(err) ? id : null;
     } finally {
       acting = false;
     }
+  }
+
+  /** The one refusal a second confirm can answer. */
+  function openThreadRequests(err: unknown): boolean {
+    return (
+      !!err && typeof err === 'object' && (err as { code?: unknown }).code === 'thread_requests_open'
+    );
   }
 
   /**
@@ -309,7 +323,11 @@
               disabled={!nativeShell && acting}
               onclick={() => (nativeShell ? detachMachine(computer.id) : void remove(computer.id))}
             >
-              {armedRemove === computer.id ? 'Confirm remove' : 'Remove'}
+              {armedAbandon === computer.id
+                ? 'Forget anyway'
+                : armedRemove === computer.id
+                  ? 'Confirm remove'
+                  : 'Remove'}
             </Button>
           </div>
           <ComputerNickname backend={computer.id} />
