@@ -16,6 +16,7 @@ import { resetPanesForTest } from '../lib/stores/panes.svelte';
 import { resetAttachmentTransferMocks } from './mocks/attachmentTransfer';
 import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
 import { resetDiffReviewCommentsForTest } from '../lib/stores/diffReviewComments.svelte';
+import { resetReviewScrollPositionsForTest } from '../lib/components/review/reviewScroll';
 import {
   __resetActivityRailUiPrefsForTest,
   __resetLiveTodoUiPrefsForTest,
@@ -249,6 +250,10 @@ beforeEach(() => {
 afterEach(() => {
   resetDiffReviewCommentsForTest();
   cleanup();
+  // The review pane remembers scroll positions per subject for the
+  // session in module state, saved at unmount. Clear them after cleanup
+  // so a jump in one test does not restore into the next test's mount.
+  resetReviewScrollPositionsForTest();
   // Panes built through helpers/chat.ts#buildPane register here and hold
   // timers against their thread (the replica write-back). Clear them
   // while the binding mocks they would call are still installed.

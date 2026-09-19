@@ -190,14 +190,13 @@ describe('<ReviewPane>', () => {
 
   it('applies the extension filter to the diff when the dropdown toggle is checked', async () => {
     const view = render(ReviewPane, { ctx: makeCtx() });
-    await waitFor(() => {
-      expect(view.getAllByTestId('review-file-header')).toHaveLength(2);
-    });
-
     // Distinct paths, because the sticky overlay can duplicate the top
     // file's header row.
     const headerPaths = () =>
       [...new Set(view.getAllByTestId('review-file-header').map((node) => node.getAttribute('data-path')))];
+    await waitFor(() => {
+      expect(headerPaths()).toEqual(['src/app.ts', 'pnpm-lock.yaml']);
+    });
 
     await fireEvent.click(view.getByTestId('review-tree-ext-trigger'));
     await fireEvent.click(view.getByRole('menuitem', { name: /^\.ts/ }));
