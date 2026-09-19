@@ -153,6 +153,11 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	if err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
+	// Before anything is torn down, so a refused start leaves the existing
+	// session running (app_isolated_workspace.go).
+	if err := a.requireIsolatedWorkspace(opts.WorkDir); err != nil {
+		return fmt.Errorf("start session: %w", err)
+	}
 	// Spawn-only, and the one place the settings-level override is decided
 	// for this session. The resolution travels to ensureClaudeMemoryDir
 	// below so the directory we create and the prompt we rendered come from

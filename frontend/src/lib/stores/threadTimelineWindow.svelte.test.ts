@@ -16,6 +16,7 @@ import {
   ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS,
   ACTIVE_TIMELINE_WINDOW_MAX_ITEMS,
   ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
+  SLICE_AROUND_ITEM_BUDGET,
 } from './threadPaneShared';
 
 describe('threadTimelineWindow', () => {
@@ -371,7 +372,7 @@ describe('threadTimelineWindow', () => {
       expect(pane.items.some((it) => it.id === 'stale')).toBe(false);
     });
 
-    it('loadUntilItem returns true when the item is already in-window', async () => {
+    it('loadUntilItem reports loaded when the item is already in-window', async () => {
       const pane = createThreadPane();
       setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 'here', threadId: 't', turnIndex: 5 })],
@@ -385,7 +386,7 @@ describe('threadTimelineWindow', () => {
       });
       await pane.switchThread(makeThread({ id: 't' }));
       const ok = await pane.loadUntilItem('here');
-      expect(ok).toBe(true);
+      expect(ok).toBe('loaded');
       expect(fetched).toBe(0);
     });
 
@@ -431,7 +432,7 @@ describe('threadTimelineWindow', () => {
       const revisionBeforeLoadUntil = pane.timelineRevision;
       const ok = await pane.loadUntilItem('target');
 
-      expect(ok).toBe(true);
+      expect(ok).toBe('loaded');
       expect(pane.timelineRevision).toBeGreaterThan(revisionBeforeLoadUntil);
       expect(pane.oldestLoadedTurnIndex).toBe(1);
       expect(pane.newestLoadedTurnIndex).toBe(3);
@@ -440,7 +441,94 @@ describe('threadTimelineWindow', () => {
       expect(sliceCalls).toBe(2);
     });
 
-    it('loadUntilItem returns false when the item is unknown to the backend', async () => {
+    it('loadUntilItem re-centers a held run on a member the page did not ship', async () => {
+      // The window holds b..d of a five-member run and a stub counting a
+      // and e (timeline-window-pages §6). A jump to `e` is one members
+      // call, not a window reload: the rest of the window stays put.
+      const pane = createThreadPane();
+      const member = (id: string, itemIndex: number) =>
+        makeItem({ id, threadId: 't', turnIndex: 0, itemIndex, kind: 'tool_call', toolName: 'Bash', rev: 1 });
+      const sliceCalls = vi.fn(async () => ({
+        items: [
+          makeItem({ id: 'p0', threadId: 't', turnIndex: 0, itemIndex: 0, kind: 'assistant_text' }),
+          member('b', 2), member('c', 3), member('d', 4),
+        ],
+        oldestTurnIndex: 0, newestTurnIndex: 0,
+        hasMore: false, hasMoreOlder: false, hasMoreNewer: false,
+        runs: [{
+          firstItemId: 'a', lastItemId: 'e', memberCount: 5,
+          firstTurnIndex: 0, firstItemIndex: 1, lastTurnIndex: 0, lastItemIndex: 5,
+          loadedFirstItemId: 'b', loadedLastItemId: 'd',
+          unshippedBefore: 1, unshippedAfter: 1, unshippedDigest: '0000000000000000',
+          unshippedGroups: [], unshippedPairedLaunchIds: [], shippedSupersededLaunchIds: [],
+          unshippedFailed: false, runningBefore: null, runningAfter: null,
+        }],
+      }));
+      setBindingMock('ListThreadSliceAround', sliceCalls);
+      setBindingMock('GetThreadItem', async () => member('e', 5));
+      const members = vi.fn(async (..._args: unknown[]) => ({
+        items: [member('c', 3), member('d', 4), member('e', 5)],
+        stub: {
+          firstItemId: 'a', lastItemId: 'e', memberCount: 5,
+          firstTurnIndex: 0, firstItemIndex: 1, lastTurnIndex: 0, lastItemIndex: 5,
+          loadedFirstItemId: 'c', loadedLastItemId: 'e',
+          unshippedBefore: 2, unshippedAfter: 0, unshippedDigest: '0000000000000000',
+          unshippedGroups: [], unshippedPairedLaunchIds: [], shippedSupersededLaunchIds: [],
+          unshippedFailed: false, runningBefore: null, runningAfter: null,
+        },
+      }));
+      setBindingMock('ListActivityRunMembers', members);
+      await pane.switchThread(makeThread({ id: 't' }));
+      expect(sliceCalls).toHaveBeenCalledTimes(1);
+
+      expect(await pane.loadUntilItem('e')).toBe('loaded');
+      expect(members).toHaveBeenCalledOnce();
+      expect(members.mock.calls[0]?.[1]).toMatchObject({ direction: 'around', aroundItemId: 'e' });
+      expect(sliceCalls).toHaveBeenCalledTimes(1);
+      expect(pane.items.map((it) => it.id)).toEqual(['p0', 'c', 'd', 'e']);
+    });
+
+    it('loadUntilItem reloads the window for a row older than a run the window opens on', async () => {
+      // The tail page's oldest unit is a run: the window holds b..d, the
+      // stub counts a before them, and the turn's user message u0 sits
+      // older than a. Jumping to u0 is a whole-window slice, not a members
+      // call: u0 is not a member, and asking the run for it is refused.
+      const pane = createThreadPane();
+      const member = (id: string, itemIndex: number) =>
+        makeItem({ id, threadId: 't', turnIndex: 0, itemIndex, kind: 'tool_call', toolName: 'Bash', rev: 1 });
+      const u0 = makeItem({ id: 'u0', threadId: 't', turnIndex: 0, itemIndex: 0, kind: 'user_message', role: 'user' });
+      const runStub = {
+        firstItemId: 'a', lastItemId: 'e', memberCount: 5,
+        firstTurnIndex: 0, firstItemIndex: 1, lastTurnIndex: 0, lastItemIndex: 5,
+        loadedFirstItemId: 'b', loadedLastItemId: 'd',
+        unshippedBefore: 1, unshippedAfter: 1, unshippedDigest: '0000000000000000',
+        unshippedGroups: [], unshippedPairedLaunchIds: [], shippedSupersededLaunchIds: [],
+        unshippedFailed: false, runningBefore: null, runningAfter: null,
+      };
+      const page = (items: Item[]) => ({
+        items,
+        oldestTurnIndex: 0, newestTurnIndex: 0,
+        hasMore: false, hasMoreOlder: false, hasMoreNewer: false,
+        runs: [runStub],
+      });
+      const sliceCalls = vi.fn(async (_threadId: unknown, anchor: unknown) =>
+        anchor === 'u0'
+          ? page([u0, member('b', 2), member('c', 3), member('d', 4)])
+          : page([member('b', 2), member('c', 3), member('d', 4)]));
+      setBindingMock('ListThreadSliceAround', sliceCalls);
+      setBindingMock('GetThreadItem', async () => u0);
+      const members = vi.fn(async (..._args: unknown[]) => ({ items: [], stub: runStub }));
+      setBindingMock('ListActivityRunMembers', members);
+      await pane.switchThread(makeThread({ id: 't' }));
+      expect(pane.items.map((it) => it.id)).toEqual(['b', 'c', 'd']);
+
+      expect(await pane.loadUntilItem('u0')).toBe('loaded');
+      expect(members).not.toHaveBeenCalled();
+      expect(sliceCalls).toHaveBeenCalledTimes(2);
+      expect(pane.items.map((it) => it.id)).toEqual(['u0', 'b', 'c', 'd']);
+    });
+
+    it('loadUntilItem reports missing when the item is unknown to the backend', async () => {
       const pane = createThreadPane();
       setBindingMock('ListThreadSliceAround', async () => ({
         items: [makeItem({ id: 't5', turnIndex: 5 })],
@@ -450,7 +538,79 @@ describe('threadTimelineWindow', () => {
       setBindingMock('GetThreadItem', async () => makeItem({ id: '' }));
       await pane.switchThread(makeThread({ id: 't' }));
       const ok = await pane.loadUntilItem('ghost');
-      expect(ok).toBe(false);
+      expect(ok).toBe('missing');
+    });
+
+    it('loadUntilItem reports failed and toasts when the loaded window does not contain the item', async () => {
+      // The backend confirmed the row exists; the window it shipped lacks
+      // it. That is a contract fault, not a deleted row, so the caller
+      // must not tell the reader the message is gone.
+      const { getToasts } = await import('./toast.svelte');
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [makeItem({ id: 't5', threadId: 't', turnIndex: 5 })],
+        oldestTurnIndex: 5,
+        newestTurnIndex: 5,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: false,
+      }));
+      setBindingMock('GetThreadItem', async () =>
+        makeItem({ id: 'dropped', threadId: 't', turnIndex: 1 }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      const toastsBefore = getToasts().length;
+      const ok = await pane.loadUntilItem('dropped');
+      expect(ok).toBe('failed');
+      const added = getToasts().slice(toastsBefore);
+      expect(added.map((t) => t.type)).toEqual(['error']);
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('window loaded around dropped does not contain dropped'),
+      );
+      consoleError.mockRestore();
+    });
+
+    it('loadUntilItem reports failed and toasts when the item lookup rejects', async () => {
+      const { getToasts } = await import('./toast.svelte');
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: [makeItem({ id: 't5', threadId: 't', turnIndex: 5 })],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      setBindingMock('GetThreadItem', async () => {
+        throw new Error('socket closed');
+      });
+      const toastsBefore = getToasts().length;
+      const ok = await pane.loadUntilItem('anything');
+      expect(ok).toBe('failed');
+      expect(getToasts().slice(toastsBefore).map((t) => t.type)).toEqual(['error']);
+      consoleError.mockRestore();
+    });
+
+    it('loadUntilItem reports superseded, silently, when a thread switch lands mid-flight', async () => {
+      const { getToasts } = await import('./toast.svelte');
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async (threadId: string) => ({
+        items: [makeItem({ id: `${threadId}-tail`, threadId, turnIndex: 5 })],
+        oldestTurnIndex: 5,
+        hasMore: true,
+      }));
+      let releaseLookup: (() => void) | undefined;
+      setBindingMock('GetThreadItem', () => new Promise<Item>((resolve) => {
+        releaseLookup = () => resolve(makeItem({ id: 'deep', threadId: 't', turnIndex: 1 }));
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+      const toastsBefore = getToasts().length;
+      const pending = pane.loadUntilItem('deep');
+      await flushMicrotasks();
+      await pane.switchThread(makeThread({ id: 'u' }));
+      releaseLookup?.();
+      expect(await pending).toBe('superseded');
+      expect(getToasts().length).toBe(toastsBefore);
+      expect(pane.items.map((it) => it.id)).toEqual(['u-tail']);
     });
 
     it('requestScrollToItem bumps the nonce observed by the timeline', () => {
@@ -526,7 +686,7 @@ describe('threadTimelineWindow', () => {
       expect(pane.oldestLoadedTurnIndex).toBeNull();
 
       const ok = await pane.loadUntilItem('deep');
-      expect(ok).toBe(true);
+      expect(ok).toBe('loaded');
       expect(sliceAnchor).toBe('deep');
       expect(pane.items.some((it) => it.id === 'deep')).toBe(true);
       expect(pane.oldestLoadedTurnIndex).toBe(3);
@@ -556,7 +716,7 @@ describe('threadTimelineWindow', () => {
       await pane.switchThread(makeThread({ id: 't' }));
 
       const ok = await pane.loadUntilItem('wrong');
-      expect(ok).toBe(false);
+      expect(ok).toBe('missing');
       expect(paged).toBe(0);
     });
 
@@ -666,7 +826,7 @@ describe('threadTimelineWindow', () => {
 
       const ok = await pane.loadUntilItem('deep-child');
 
-      expect(ok).toBe(true);
+      expect(ok).toBe('loaded');
       expect(sliceAnchors.at(-1)).toBe('root-launch');
       expect(pane.items.map((it) => it.id)).toEqual([
         'root-launch',
@@ -996,7 +1156,7 @@ describe('threadTimelineWindow', () => {
       await pane.switchThread(makeThread({ id: 't' }));
       expect(pane.oldestLoadedTurnIndex).toBeNull();
       const ok = await pane.loadUntilItem('deep');
-      expect(ok).toBe(true);
+      expect(ok).toBe('loaded');
       expect(capturedAnchor).toBe('deep');
       expect(capturedTargetCount).toBeLessThanOrEqual(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(capturedTargetCount).toBeGreaterThan(0);
@@ -1201,7 +1361,7 @@ describe('threadTimelineWindow', () => {
 
       await pane.switchThread(makeThread({ id: 't' }));
       const ok = await pane.loadUntilItem('deep');
-      expect(ok).toBe(true);
+      expect(ok).toBe('loaded');
       expect(pane.items.filter((it) => it.id === 'ancestor').length).toBe(1);
       expect(pane.items.some((it) => it.id === 'deep')).toBe(true);
       expect(pane.hasMoreNewer).toBe(true);
@@ -1646,6 +1806,53 @@ describe('threadTimelineWindow', () => {
       expect(pane.hasMoreNewer).toBe(true);
     });
 
+    it('pulls a cut\'s newer edge back off the inside of an activity run', async () => {
+      // A record can only account for members shed off its span's OLDER
+      // side (timeline-window-pages §6), so a cut that would land inside
+      // a run takes the whole run instead — the rows it drops are offered
+      // back as newer history.
+      const pane = createThreadPane();
+      const runFrom = 595;
+      const runTo = 605;
+      const slice = Array.from({ length: 1010 }, (_, index) =>
+        makeItem({
+          id: `s${index}`,
+          threadId: 't',
+          turnIndex: 1000,
+          itemIndex: index,
+          ...(index >= runFrom && index < runTo
+            ? { kind: 'tool_call', role: 'assistant', toolName: 'Bash' }
+            : {}),
+        }),
+      );
+      const older = Array.from({ length: 200 }, (_, index) =>
+        makeItem({ id: `o${index}`, threadId: 't', turnIndex: 999, itemIndex: index }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: slice,
+        oldestTurnIndex: 1000,
+        newestTurnIndex: 1000,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: false,
+      }));
+      setBindingMock('ListItemsBeforeCursor', async () => ({
+        items: older,
+        oldestTurnIndex: 999,
+        hasMore: false,
+        hasMoreOlder: false,
+      }));
+
+      await pane.switchThread(makeThread({ id: 't' }));
+      await pane.loadOlder();
+
+      // The unconstrained cut would have kept 800 rows, which is merged
+      // index 800 — inside the run at merged 795..804.
+      expect(pane.items).toHaveLength(older.length + runFrom);
+      expect(pane.items.at(-1)?.id).toBe(`s${runFrom - 1}`);
+      expect(pane.hasMoreNewer).toBe(true);
+    });
+
     it('loadOlder does not invent a newer-history gap from the older page response', async () => {
       const pane = createThreadPane();
       setBindingMock('ListThreadSliceAround', async () => ({
@@ -1710,7 +1917,10 @@ describe('threadTimelineWindow', () => {
       setBindingMock('ListThreadSliceAround', slice);
       setBindingMock('ListItemsBeforeCursor', older);
       await pane.refreshFromBackend(true);
-      expect(slice.mock.calls[0][2]).toBe(1200);
+      // One page's row ceiling, not the whole retained budget: every page
+      // is now sized in bytes under `SLICE_AROUND_ITEM_BUDGET` rows, and
+      // the loop below walks the rest.
+      expect(slice.mock.calls[0][2]).toBe(SLICE_AROUND_ITEM_BUDGET);
       expect(older).toHaveBeenCalledOnce();
       expect(pane.items.map(item => item.id)).toEqual(rows.map(item => item.id));
       expect(pane.hasMoreHistory).toBe(false);

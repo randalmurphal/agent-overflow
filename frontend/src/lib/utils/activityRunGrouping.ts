@@ -52,6 +52,19 @@ export interface ActivityRunResolution {
    * is the cost this whole node exists to avoid.
    */
   membershipEpoch: number;
+  /**
+   * What the registry's run record knows about the members the pane does
+   * NOT hold (docs/architecture/timeline-window-pages.md §6). Stamped onto
+   * the node so a boundary can price "N earlier" and decide whether
+   * mounting past the loaded span is a window move or a fetch, without
+   * reading the registry at render time. Equal to the loaded membership
+   * for a run with no stub, which is every run the pane holds whole.
+   */
+  memberCount: number;
+  unshippedBefore: number;
+  unshippedAfter: number;
+  loadedFirstItemId: string;
+  loadedLastItemId: string;
 }
 
 /**
@@ -442,6 +455,11 @@ function mintRunNode(
     membershipEpoch: resolved.membershipEpoch,
     memberItemIds: build.memberItemIds,
     summaryItemIds: build.summaryItemIds,
+    memberCount: resolved.memberCount,
+    unshippedBefore: resolved.unshippedBefore,
+    unshippedAfter: resolved.unshippedAfter,
+    loadedFirstItemId: resolved.loadedFirstItemId,
+    loadedLastItemId: resolved.loadedLastItemId,
   };
 }
 

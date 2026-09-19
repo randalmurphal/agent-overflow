@@ -55,8 +55,9 @@ type LocalImageData struct {
 
 // GetLocalImageData reads a local markdown image through the same path gate
 // used by editor links. It accepts existing regular files only, caps bytes at
-// the attachment limit, and validates the content signature before returning
-// it. This method is LocalOnly because its arguments select a host file.
+// attachment.DisplayImageMaxBytes, and sniffs the content for a format a
+// browser displays before returning it. Routed `selected` so a page reading
+// a thread on another computer fetches the image from that computer.
 //
 //ao:scope files:read
 //ao:route selected
@@ -66,15 +67,15 @@ func (a *App) GetLocalImageData(path, workspacePath string) (LocalImageData, err
 		return LocalImageData{}, fmt.Errorf("load local image: %w", err)
 	}
 
-	data, err := readWorkspaceFileBytes(resolved, attachment.DefaultMaxSize)
+	data, err := readWorkspaceFileBytes(resolved, attachment.DisplayImageMaxBytes)
 	if err != nil {
 		return LocalImageData{}, fmt.Errorf("load local image: read %q: %w", resolved, err)
 	}
-	mimeType, err := attachment.DetectImageMIME(data)
+	mimeType, err := attachment.DetectDisplayImageMIME(data)
 	if err != nil {
 		return LocalImageData{}, fmt.Errorf("load local image: %w", err)
 	}
-	if err := attachment.ValidateImageDimensions(data); err != nil {
+	if err := attachment.ValidateDisplayImage(data, mimeType); err != nil {
 		return LocalImageData{}, fmt.Errorf("load local image: %w", err)
 	}
 	return LocalImageData{

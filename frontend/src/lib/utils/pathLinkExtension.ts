@@ -34,45 +34,15 @@ import type { Token, Tokens, TokensList } from '../markdown';
 import type { PathRef } from '../types/models';
 import { openInEditorLabel } from './editorLinkLabel';
 import { isHTMLFile } from './htmlFile';
+import { MARKDOWN_HREF_NONCE } from './markdownHrefNonce';
 
-// Per-page-load nonce that gates our `agent-overflow:open?…` scheme.
-// Streamdown's `transformUrl` honors a custom-scheme prefix only when
-// the URL `startsWith(prefix.href)` (see
-// `lib/markdown/render/elements/url.ts`). By baking the nonce into the
-// prefix we hand to Streamdown,
-// raw agent prose like `[click](agent-overflow:open?path=/etc/passwd)`
-// is rejected at the URL filter — the agent's input is markdown text
-// and can never observe the rendered nonce, so it cannot forge a
-// passing prefix. Our extension constructs hrefs starting with the
-// same nonce-prefixed form, so legitimate links round-trip.
-//
-// Crypto: 16 bytes (128 bits) is more than enough — the nonce only
-// needs to be unpredictable to a single page-load's worth of agent
-// turns. `crypto.getRandomValues` is available in every modern
-// browser + happy-dom + Node 18+.
-const PATH_LINK_NONCE = generatePathLinkNonce();
-
-function generatePathLinkNonce(): string {
-  const bytes = new Uint8Array(16);
-  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-    crypto.getRandomValues(bytes);
-  } else {
-    // SSR / test environments without webcrypto — fail closed by
-    // generating a session-stable value (Math.random is good enough
-    // here because there's no live browser to attack).
-    for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
-  }
-  let hex = '';
-  for (let i = 0; i < bytes.length; i += 1) hex += bytes[i].toString(16).padStart(2, '0');
-  return hex;
-}
-
-// Public href prefix — exported so the click delegate, copy
+// Public href prefixes — exported so the click delegate, copy
 // serializer, and ChatMarkdown's `allowedLinkPrefixes` can detect our
-// links by href, not by class. Includes the nonce so a raw markdown
-// link written by an agent cannot satisfy this prefix.
-export const PATH_LINK_HREF_PREFIX = `agent-overflow:open?nonce=${PATH_LINK_NONCE}&`;
-export const LOCAL_IMAGE_HREF_PREFIX = `agent-overflow:image?nonce=${PATH_LINK_NONCE}&`;
+// links by href, not by class. Both carry the shared per-page-load
+// nonce (`markdownHrefNonce.ts`) so a raw markdown link written by an
+// agent or by third-party PR text cannot satisfy either prefix.
+export const PATH_LINK_HREF_PREFIX = `agent-overflow:open?nonce=${MARKDOWN_HREF_NONCE}&`;
+export const LOCAL_IMAGE_HREF_PREFIX = `agent-overflow:image?nonce=${MARKDOWN_HREF_NONCE}&`;
 
 // Boundary chars that may legitimately precede a path token. Mirrors
 // the lookbehind set used by `pathLinkify.ts` (the legacy DOM walker)
@@ -102,6 +72,9 @@ const PATH_SUFFIX_RUN_AT_END_RE = /(?::\d+(?:-\d+)?)+$/;
 // URI scheme shape (RFC 3986). Hoisted so it isn't re-allocated per
 // markdown link per lex pass.
 const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
+// A drive-rooted Windows path. Matches SCHEME_RE too, so it is checked
+// alongside it wherever a scheme would reject a path.
+const WINDOWS_DRIVE_RE = /^[a-zA-Z]:[\\/]/;
 
 function isBoundary(ch: string | undefined): boolean {
   return ch === undefined || BOUNDARY_CHARS.has(ch);
@@ -147,10 +120,25 @@ interface ParsedPathTarget {
 }
 
 /**
+ * What a click on a rewritten LINK can do from this surface. Images are
+ * independent of it: a path-shaped image src is rewritten to the guarded
+ * local-image scheme in every mode, because the bytes are fetched from
+ * the thread's machine over the RPC transport rather than acted on here.
+ *
+ * - `editor`: open in the host desktop's editor.
+ * - `files`: editor, plus HTML files open as an authenticated preview.
+ * - `html`: only HTML previews (no host desktop, but a preview origin).
+ * - `off`: no link affordance at all; prose and hrefs stay as written.
+ */
+export type PathLinkMode = 'editor' | 'files' | 'html' | 'off';
+
+/**
  * Build a marked inline extension that linkifies the allowlisted
- * paths in PROSE, and rewrites path-shaped markdown-link HREFS
+ * paths in PROSE, rewrites path-shaped markdown-link HREFS
  * (`[label](/abs/file.md)`, `[x](~/notes.md)`, `[x](docs/foo.md)`)
- * to the same nonce'd editor scheme.
+ * to the same nonce'd editor scheme, and rewrites path-shaped IMAGE
+ * srcs (`![x](/tmp/shot.png)`, `![x](file:///…)`, `![x](docs/a.png)`)
+ * to the guarded local-image scheme.
  *
  * The two halves have different trust models, on purpose:
  *   - Prose linkification only ever consumes the server-validated
@@ -184,15 +172,18 @@ interface ParsedPathTarget {
 export function buildPathLinkExtension(
   pathRefs: readonly PathRef[],
   workspacePath: string,
-  mode: 'editor' | 'files' | 'html' = 'editor',
+  mode: PathLinkMode = 'editor',
 ): PathLinkExtension | undefined {
   // Dedupe by path (multiple refs for the same file may exist when
   // the same file is mentioned with different :line:col suffixes —
   // the suffix is extracted from the matched text, not the allowlist,
-  // so a set of paths is the only data we need here).
+  // so a set of paths is the only data we need here). `off` keeps the
+  // set empty: with no way to act on a click there is no prose link.
   const allowed = new Set<string>();
-  for (const ref of pathRefs) {
-    if (ref?.path && (mode !== 'html' || isHTMLFile(ref.path))) allowed.add(ref.path);
+  if (mode !== 'off') {
+    for (const ref of pathRefs) {
+      if (ref?.path && (mode !== 'html' || isHTMLFile(ref.path))) allowed.add(ref.path);
+    }
   }
 
   // Longest-first ordering ensures `src/lib/foo.ts` matches before the
@@ -200,8 +191,8 @@ export function buildPathLinkExtension(
   const paths = Array.from(allowed).sort((a, b) => b.length - a.length);
 
   if (paths.length === 0 && workspacePath === '') {
-    // No prose allowlist and no workspace to anchor href rewriting:
-    // the extension would match nothing. Hand marked nothing instead.
+    // No prose allowlist and no workspace to anchor href or image
+    // rewriting: the extension would match nothing. Hand marked nothing.
     return undefined;
   }
 
@@ -489,19 +480,24 @@ function markdownLocalResourceToken(
   ctx: unknown,
   parseAllowlistedTarget: (target: string) => ParsedPathTarget | null,
   workspacePath: string,
-  mode: 'editor' | 'files' | 'html',
+  mode: PathLinkMode,
 ): GenericLinkToken | GenericImageToken | undefined {
   const tokenizerContext = ctx as PathLinkTokenizerContext;
   const token = tokenizerContext.lexer?.tokenizer?.link?.(src);
   if (!token || (token.type !== 'link' && token.type !== 'image')) return undefined;
   const fileTarget = parseLocalFileHref(token.href, workspacePath);
   if (token.type === 'image') {
-    if (!fileTarget || mode === 'html') return token as GenericImageToken;
+    // Every path shape, in every mode: the image host fetches the bytes
+    // from the thread's machine (GetLocalImageData), so a page with no
+    // host desktop still shows what the agent showed.
+    const path = fileTarget?.path ?? pathShapedImageSrc(token.href, workspacePath);
+    if (path === null) return token as GenericImageToken;
     return {
       ...token,
-      href: buildLocalImageHref(fileTarget.path, workspacePath, token.href),
+      href: buildLocalImageHref(path, workspacePath, token.href),
     } as GenericImageToken;
   }
+  if (mode === 'off') return token;
   const parsed = fileTarget ?? parseAllowlistedTarget(token.href) ?? parsePathShapedHref(token.href, workspacePath);
   if (!parsed || (mode === 'html' && !isHTMLFile(parsed.path))) return token;
   return {
@@ -585,6 +581,33 @@ function parseLocalFileHref(href: unknown, workspacePath: string): ParsedPathTar
  * click, not a render-time stat per link.
  */
 function parsePathShapedHref(href: unknown, workspacePath: string): ParsedPathTarget | null {
+  const target = pathShapedTarget(href, workspacePath);
+  if (target === null) return null;
+
+  // Suffix split runs BEFORE the scheme check so `[x](Makefile:12)`
+  // reads as path + line rather than as a `Makefile:` URI scheme. Port
+  // shapes still land right: `http://host:8080` strips `:8080`, then
+  // the remainder fails the scheme check anyway.
+  const parsed = splitPathSuffix(target);
+  if (isUrlScheme(parsed.path)) return null;
+  parsed.path = decodePathComponent(parsed.path);
+  return parsed;
+}
+
+/**
+ * The image counterpart of parsePathShapedHref: same refusals, same
+ * workspace requirement, no `:line` split (a colon in an image name is
+ * part of the name). Returns the decoded path or null.
+ */
+function pathShapedImageSrc(href: unknown, workspacePath: string): string | null {
+  const target = pathShapedTarget(href, workspacePath);
+  if (target === null || isUrlScheme(target)) return null;
+  return decodePathComponent(target);
+}
+
+// The refusals both path-shaped parsers share, and the `#fragment` /
+// `?query` cut. Null when the href is not a candidate at all.
+function pathShapedTarget(href: unknown, workspacePath: string): string | null {
   if (typeof href !== 'string' || href.length === 0) return null;
   if (workspacePath === '') return null;
   // Any leading backslash is refused, not just literal `\\`: markdown
@@ -594,17 +617,13 @@ function parsePathShapedHref(href: unknown, workspacePath: string): ParsedPathTa
   if (href.startsWith('#') || href.startsWith('?')) return null;
   const cut = href.search(/[#?]/);
   const target = cut === -1 ? href : href.slice(0, cut);
-  if (target === '') return null;
+  return target === '' ? null : target;
+}
 
-  // Suffix split runs BEFORE the scheme check so `[x](Makefile:12)`
-  // reads as path + line rather than as a `Makefile:` URI scheme. Port
-  // shapes still land right: `http://host:8080` strips `:8080`, then
-  // the remainder fails the scheme check anyway.
-  const parsed = splitPathSuffix(target);
-  const { path } = parsed;
-  if (SCHEME_RE.test(path)) return null;
-  parsed.path = decodePathComponent(path);
-  return parsed;
+// A URI scheme prefix, except the one-letter kind: a Windows drive
+// (`C:\x`, `c:/x`) matches SCHEME_RE and is a path.
+function isUrlScheme(target: string): boolean {
+  return SCHEME_RE.test(target) && !WINDOWS_DRIVE_RE.test(target);
 }
 
 // Percent-decode a path-shaped href component; a malformed escape

@@ -35,6 +35,7 @@ type testHost struct {
 	browserScreenshot func(string, string) ([]byte, error)
 	pushSent          []PushMessage
 	droppedRetained   int
+	broadcastRows     []string
 }
 
 func newHarnessTestHost(t *testing.T) (*Harness, *testHost) {
@@ -133,6 +134,9 @@ func (h *testHost) CreateThread(options ThreadOptions) (store.Thread, error) {
 func (h *testHost) ArchiveThread(threadID string) error {
 	_, _, err := h.store.ArchiveThread(threadID)
 	return err
+}
+func (h *testHost) BroadcastThreadRow(threadID string) {
+	h.broadcastRows = append(h.broadcastRows, threadID)
 }
 func (h *testHost) StopSession(string) error              { return nil }
 func (h *testHost) DeleteProject(projectID string) error  { return h.store.DeleteProject(projectID) }

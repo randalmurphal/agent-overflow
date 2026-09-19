@@ -11,6 +11,11 @@
 //   - **Path-link click** — routes clicks on `agent-overflow:open?…`
 //     anchors to the `OpenInEditor` Go binding. Installed once per
 //     page lifetime.
+//   - **Forge-attachment click** — routes clicks on
+//     `agent-overflow:forge?…` anchors through the save / download /
+//     open-externally ladder in `forgeAttachmentActions.ts`. A separate
+//     listener from the path-link one because the two schemes are
+//     independent and either surface may exist without the other.
 //
 // Neither delegate cares which surface mounted the markdown; both
 // match on attributes / classes that any rendered tree can carry.
@@ -20,6 +25,8 @@ import { openInEditor } from '../stores/openInEditor';
 import { addToast } from '../stores/toast.svelte';
 import { errString } from './errors';
 import { PATH_LINK_HREF_PREFIX, parsePathLinkHref } from './pathLinkExtension';
+import { FORGE_ATTACHMENT_HREF_PREFIX, parseForgeAttachmentHref } from './forgeAttachments';
+import { openForgeAttachment } from './forgeAttachmentActions';
 import { hasScope } from '../transport/scopes';
 import { canPreviewFiles, openFilePreview } from '../stores/filePreviews';
 import { isHTMLFile } from './htmlFile';
@@ -30,6 +37,7 @@ export {
 } from './markdownCopyDelegate';
 
 let pathLinkDelegateInstalled = false;
+let forgeAttachmentDelegateInstalled = false;
 
 /**
  * Install the document-level click delegate that intercepts clicks on
@@ -42,6 +50,44 @@ export function ensurePathLinkClickDelegate(): void {
   pathLinkDelegateInstalled = true;
   document.addEventListener('click', handlePathLinkClick);
   document.addEventListener('auxclick', suppressPathLinkAuxClick);
+}
+
+/**
+ * Install the document-level click delegate for forge-attachment anchors.
+ * Idempotent: subsequent calls are no-ops.
+ */
+export function ensureForgeAttachmentClickDelegate(): void {
+  if (forgeAttachmentDelegateInstalled) return;
+  if (typeof document === 'undefined') return;
+  forgeAttachmentDelegateInstalled = true;
+  document.addEventListener('click', handleForgeAttachmentClick);
+  document.addEventListener('auxclick', suppressForgeAttachmentAuxClick);
+}
+
+function forgeAttachmentAnchor(target: EventTarget | null): HTMLAnchorElement | null {
+  if (!(target instanceof Element)) return null;
+  const link = target.closest<HTMLAnchorElement>('a[href]');
+  if (!link) return null;
+  const href = link.getAttribute('href');
+  return href && href.startsWith(FORGE_ATTACHMENT_HREF_PREFIX) ? link : null;
+}
+
+function handleForgeAttachmentClick(event: MouseEvent): void {
+  if (event.defaultPrevented) return;
+  if (event.button !== 0) return;
+  const link = forgeAttachmentAnchor(event.target);
+  if (!link) return;
+  const parsed = parseForgeAttachmentHref(link.getAttribute('href'));
+  if (!parsed) return;
+  event.preventDefault();
+  void openForgeAttachment(parsed);
+}
+
+// Same reasoning as the path-link suppression below: the href is an
+// unregistered custom scheme, and a middle-click "open in new tab" would
+// become an external-protocol-handler request carrying the PR reference.
+function suppressForgeAttachmentAuxClick(event: MouseEvent): void {
+  if (forgeAttachmentAnchor(event.target)) event.preventDefault();
 }
 
 function handlePathLinkClick(event: MouseEvent): void {
@@ -108,4 +154,12 @@ export function __resetPathLinkDelegateForTest(): void {
     document.removeEventListener('auxclick', suppressPathLinkAuxClick);
   }
   pathLinkDelegateInstalled = false;
+}
+
+export function __resetForgeAttachmentDelegateForTest(): void {
+  if (forgeAttachmentDelegateInstalled && typeof document !== 'undefined') {
+    document.removeEventListener('click', handleForgeAttachmentClick);
+    document.removeEventListener('auxclick', suppressForgeAttachmentAuxClick);
+  }
+  forgeAttachmentDelegateInstalled = false;
 }

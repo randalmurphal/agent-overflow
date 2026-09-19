@@ -142,17 +142,24 @@ const CORPUS: Array<[string, string, LinkRender]> = [
   ['schemeless parent-relative', '../up.md', blockedUntagged('../up.md')],
   ['fragment only', '#frag', blockedUntagged('#frag')],
   ['empty href', '', blockedUntagged('')],
-  // `//host/x` names a real host, so it is excluded from the schemeless class
-  // in both paths and keeps the tag: rendered as a live anchor it would be a
-  // top-level cross-origin navigation off the app origin.
-  ['protocol-relative', '//host.test/x', blockedTagged('//host.test/x')],
+  // `//host/x` names a real host and resolves to https, never to a URL on
+  // the app origin.
+  ['protocol-relative', '//host.test/x', anchor('https://host.test/x')],
   [
     'non-http scheme (script URL)',
     'javascript:void(0)',
     blockedTagged('javascript:void(0)'),
   ],
   ['non-http scheme (data)', 'data:text/plain,hi', blockedTagged('data:text/plain,hi')],
-  ['non-http scheme (mailto)', 'mailto:x@y.test', blockedTagged('mailto:x@y.test')],
+  // Handler schemes render as anchors; the click delegate hands them to the
+  // OS opener, which refuses the same deny-list (urlSchemes.ts).
+  ['handler scheme (mailto)', 'mailto:x@y.test', anchor('mailto:x@y.test')],
+  ['handler scheme (vscode)', 'vscode://file/tmp/x.go:12', anchor('vscode://file/tmp/x.go:12')],
+  ['handler scheme (tel)', 'tel:+15555550100', anchor('tel:+15555550100')],
+  ['unclaimed file URL', 'file:///etc/hosts', blockedUntagged('file:///etc/hosts')],
+  ['windows drive path', 'C:\\repo\\notes.md', blockedUntagged('C:\\repo\\notes.md')],
+  ['blob URL', 'blob:https://example.test/uuid', blockedTagged('blob:https://example.test/uuid')],
+  ['windows protocol handler (ms-msdt)', 'ms-msdt:/id%20PCWDiagnostic', blockedTagged('ms-msdt:/id%20PCWDiagnostic')],
   [
     'non-http scheme (vbscript)',
     'vbscript:MsgBox',
@@ -173,7 +180,7 @@ const CORPUS: Array<[string, string, LinkRender]> = [
   [
     'space-prefixed protocol-relative',
     '< //host.test/x>',
-    blockedUntagged(' //host.test/x'),
+    anchor('https://host.test/x'),
   ],
 ];
 

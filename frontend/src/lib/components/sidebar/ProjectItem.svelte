@@ -80,7 +80,7 @@
     orderedIds?: readonly string[];
     /** Commit a new ordering. Caller updates store + persists. */
     onReorder?: (newOrderedIds: string[]) => void;
-    /** Adds the project-to-project rhythm used after the first item. */
+    /** Draws the hairline divider that separates this project from the one above. */
     separatedFromPrevious?: boolean;
   }
 
@@ -304,10 +304,23 @@
   ondragend={handleDragEnd}
   class={
     'group relative flex flex-col transition-opacity ' +
-    (separatedFromPrevious ? 'mt-[3px] ' : '') +
     (isDragging ? 'opacity-40' : '')
   }
 >
+  {#if separatedFromPrevious}
+    <!--
+      Project boundary. The rails and the row gaps alone do not tell the
+      eye where one project's threads stop and the next header starts, so
+      each project after the first opens with an inset hairline. The drop
+      indicator above it marks the same boundary during a reorder.
+    -->
+    <div
+      role="separator"
+      aria-hidden="true"
+      data-testid="project-item-divider"
+      class="mx-2 my-1.5 border-t border-border-subtle"
+    ></div>
+  {/if}
   {#if dropMarker === 'before'}
     <div
       aria-hidden="true"
@@ -444,9 +457,10 @@
     <!--
       Active-thread pin: the user is reading this thread but the project
       is collapsed. Render the row inline so they don't lose context.
-      Indent=1 matches a top-level row under an expanded project.
+      Indent=1 and the ml-4 rail match a top-level row under an expanded
+      project, so expanding the project does not move the row.
     -->
-    <div class="flex flex-col gap-px ml-2 pl-2 border-l border-border-subtle/60" data-testid="project-item-active-pin">
+    <div class="flex flex-col gap-px ml-4 border-l border-border-subtle/60" data-testid="project-item-active-pin">
       <ThreadRow thread={activeWhenCollapsed} {pane} indent={1} />
     </div>
   {/if}

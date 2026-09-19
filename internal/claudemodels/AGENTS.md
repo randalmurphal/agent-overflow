@@ -14,6 +14,20 @@ flags for rows it reports. Add wire-only models, deriving names from slugs and
 windows from the nearest catalog family. Without a match, use 200k and widen
 only when `[1m]` is explicit.
 
+`Export` and `Seed` carry one identity's answer across a restart. `Export`
+returns the exact key's entry only, with no same-binary fallback; `Seed`
+rebuilds the models, learned models and wire rows `Store` would have produced
+from that snapshot, and an empty snapshot creates nothing. A seeded entry
+carries no drift report: dedup is per process, so each process's log keeps
+reporting a stale catalog. This package cannot see the filesystem, so the caller
+proves the record still describes the binary behind the key. The application
+layer persists an export per account (`internal/provideraccounts`) and seeds at
+boot while the binary identity is unchanged.
+
+`ModelsFor` reports whether the answer came from an entry. That flag is the
+catalog's provenance, not a quality claim: absence from an entry-backed answer
+still carries no information about a model.
+
 Never promote an unavailable effort default to a costlier tier.
 `SupportsAutoMode` remains `*bool`; nil means unknown, and consumers restrict
 Auto only on explicit false. Drift is a deduplicated maintainer signal, not a

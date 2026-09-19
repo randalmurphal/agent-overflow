@@ -176,6 +176,14 @@ func stashAgentTerminal(t *testing.T, router *Router, threadID, itemID, taskID s
 // naming an output file and carrying the run's final usage.
 func notifyAgent(t *testing.T, router *Router, threadID, itemID, taskID, outputFile string, usage map[string]any) {
 	t.Helper()
+	notifyAgentWithSummary(t, router, threadID, itemID, taskID, outputFile, usage, `Agent "review the file" completed`)
+}
+
+// notifyAgentWithSummary is notifyAgent with the envelope's `summary`
+// chosen by the test: for a local_agent task the first envelope carries
+// the agent's final report there, a later one only the finished bell.
+func notifyAgentWithSummary(t *testing.T, router *Router, threadID, itemID, taskID, outputFile string, usage map[string]any, summary string) {
+	t.Helper()
 	fields := map[string]any{
 		"task_id": taskID, "tool_use_id": itemID, "status": "completed", "source": "task_notification",
 		"uuid": "notif-" + taskID,
@@ -189,7 +197,7 @@ func notifyAgent(t *testing.T, router *Router, threadID, itemID, taskID, outputF
 	meta, _ := json.Marshal(fields)
 	if err := router.Handle(provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskNotification, ThreadID: threadID, ItemID: itemID,
-		Meta: meta, Content: `Agent "review the file" completed`, Timestamp: time.Now(),
+		Meta: meta, Content: summary, Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("task_notification: %v", err)
 	}
@@ -902,61 +910,85 @@ func outputFilePreview(t *testing.T, st *store.Store, threadID, launchID string)
 	return text, present
 }
 
-// An agent's `output_file` is its sidechain JSONL, so the payload's
-// collapsed answer line is the agent's final report (the last assistant
-// text, flattened to one line), the same preview a Codex completion
-// carries for its FINAL_ANSWER, and never the file's first JSON envelope.
+// The card's collapsed answer line is the agent's final report. The
+// notification envelope carries it in `summary` and that copy wins: the
+// CLI emits the envelope before it appends the report row to the JSONL,
+// so the file's last assistant text at read time can be the agent's
+// previous message. The file is the fallback when the envelope carried
+// no report (the later `Agent "…" finished` bell, or no summary at all),
+// and the raw file head is never the preview.
 func TestSubagentOutputFilePreviewIsTheFinalReport(t *testing.T) {
-	t.Run("last assistant text, flattened", func(t *testing.T) {
+	// The transcript's report row has not been appended yet: its last
+	// assistant text is a mid-run remark.
+	laggingTranscript := func(t *testing.T, name string) string {
+		return writeSubagentTranscript(t, name,
+			sidechainPromptRow("s1", "review the file", 1),
+			sidechainTextRow("s2", "s1", "msg_open", "Now the new Go files.", 2),
+			sidechainToolUseRow("s3", "s2", "msg_tool", "toolu_sub_read", "Read", 3),
+			sidechainToolResultRow("s4", "s3", "toolu_sub_read", "package main", 4),
+		)
+	}
+
+	t.Run("the envelope's report, flattened", func(t *testing.T) {
 		router, st, _ := newTestRouter(t)
 		createTestThread(t, st, "t1")
 		seedOpenTurn(t, router, st, "t1", 0)
 
 		startAgentLaunch(t, router, "t1", "agent-report", "", "task-report")
-		transcript := writeSubagentTranscript(t, "agent-report.jsonl",
-			sidechainPromptRow("s1", "review the file", 1),
-			sidechainTextRow("s2", "s1", "msg_open", "Reading it now.", 2),
-			sidechainToolUseRow("s3", "s2", "msg_tool", "toolu_sub_read", "Read", 3),
-			sidechainToolResultRow("s4", "s3", "toolu_sub_read", "package main", 4),
-			sidechainTextRow("s5", "s4", "msg_close", "\n\nReviewed 3 files.\nNo blocking issues.\n", 5),
-		)
-
 		stashAgentTerminal(t, router, "t1", "agent-report", "task-report")
-		notifyAgent(t, router, "t1", "agent-report", "task-report", transcript, nil)
+		notifyAgentWithSummary(t, router, "t1", "agent-report", "task-report",
+			laggingTranscript(t, "agent-report.jsonl"), nil, "\n\nReviewed 3 files.\nNo blocking issues.\n")
 		router.WaitForPendingSettles()
 
 		if preview, _ := outputFilePreview(t, st, "t1", "agent-report"); preview != "Reviewed 3 files. No blocking issues." {
-			t.Fatalf("preview = %q, want the final report", preview)
+			t.Fatalf("preview = %q, want the envelope's report", preview)
 		}
 	})
 
-	t.Run("every text block of the last message", func(t *testing.T) {
+	t.Run("the finished bell falls back to the transcript's final text", func(t *testing.T) {
 		router, st, _ := newTestRouter(t)
 		createTestThread(t, st, "t1")
 		seedOpenTurn(t, router, st, "t1", 0)
 
-		startAgentLaunch(t, router, "t1", "agent-blocks", "", "task-blocks")
+		startAgentLaunch(t, router, "t1", "agent-bell", "", "task-bell")
 		last := sidechainTextRow("s3", "s2", "msg_close", "Summary first.", 3)
 		last["message"].(map[string]any)["content"] = []any{
 			map[string]any{"type": "text", "text": "Summary first."},
 			map[string]any{"type": "text", "text": "Detail second."},
 		}
-		transcript := writeSubagentTranscript(t, "agent-blocks.jsonl",
+		transcript := writeSubagentTranscript(t, "agent-bell.jsonl",
 			sidechainPromptRow("s1", "review the file", 1),
 			sidechainTextRow("s2", "s1", "msg_open", "An earlier message, not the report.", 2),
 			last,
 		)
 
-		stashAgentTerminal(t, router, "t1", "agent-blocks", "task-blocks")
-		notifyAgent(t, router, "t1", "agent-blocks", "task-blocks", transcript, nil)
+		stashAgentTerminal(t, router, "t1", "agent-bell", "task-bell")
+		notifyAgentWithSummary(t, router, "t1", "agent-bell", "task-bell", transcript, nil,
+			`Agent "review the file" finished`)
 		router.WaitForPendingSettles()
 
-		if preview, _ := outputFilePreview(t, st, "t1", "agent-blocks"); preview != "Summary first. Detail second." {
-			t.Fatalf("preview = %q, want both blocks of the last message", preview)
+		if preview, _ := outputFilePreview(t, st, "t1", "agent-bell"); preview != "Summary first. Detail second." {
+			t.Fatalf("preview = %q, want every text block of the transcript's last message", preview)
 		}
 	})
 
-	t.Run("no assistant text, no preview", func(t *testing.T) {
+	t.Run("no summary falls back to the transcript's final text", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 0)
+
+		startAgentLaunch(t, router, "t1", "agent-quiet", "", "task-quiet")
+		stashAgentTerminal(t, router, "t1", "agent-quiet", "task-quiet")
+		notifyAgentWithSummary(t, router, "t1", "agent-quiet", "task-quiet",
+			laggingTranscript(t, "agent-quiet.jsonl"), nil, "")
+		router.WaitForPendingSettles()
+
+		if preview, _ := outputFilePreview(t, st, "t1", "agent-quiet"); preview != "Now the new Go files." {
+			t.Fatalf("preview = %q, want the transcript's last assistant text", preview)
+		}
+	})
+
+	t.Run("no report anywhere, no preview", func(t *testing.T) {
 		router, st, _ := newTestRouter(t)
 		createTestThread(t, st, "t1")
 		seedOpenTurn(t, router, st, "t1", 0)
@@ -967,11 +999,12 @@ func TestSubagentOutputFilePreviewIsTheFinalReport(t *testing.T) {
 		)
 
 		stashAgentTerminal(t, router, "t1", "agent-silent", "task-silent")
-		notifyAgent(t, router, "t1", "agent-silent", "task-silent", transcript, nil)
+		notifyAgentWithSummary(t, router, "t1", "agent-silent", "task-silent", transcript, nil,
+			`Agent "review the file" finished`)
 		router.WaitForPendingSettles()
 
 		if preview, present := outputFilePreview(t, st, "t1", "agent-silent"); present {
-			t.Fatalf("a transcript with no assistant text must carry no preview, got %q", preview)
+			t.Fatalf("a transcript with no assistant text and no report must carry no preview, got %q", preview)
 		}
 	})
 }

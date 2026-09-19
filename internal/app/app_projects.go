@@ -71,6 +71,10 @@ func (a *App) ListProjects() ([]store.ProjectWithCounts, error) {
 //ao:scope git:operate
 //ao:route selected
 func (a *App) CreateProject(path string) (store.Project, error) {
+	// Isolated boots admit only fixture workspaces (app_isolated_workspace.go).
+	if err := a.requireIsolatedWorkspace(path); err != nil {
+		return store.Project{}, err
+	}
 	row, err := a.projectApplication().Create(path)
 	if err != nil {
 		return store.Project{}, err

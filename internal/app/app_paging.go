@@ -45,19 +45,29 @@ const (
 )
 
 // ListThreadSliceAround loads the bounded active-pane window around an anchor.
-// Roughly `targetItemCount` items are returned (defaulting to
-// sliceAroundDefaultItems when <= 0): half at-or-before and half after the
-// anchor's item coordinate. When `anchorItemID` is "" or no longer exists,
-// the function returns the tail `targetItemCount` items — the bottom-snapshot
-// restore case.
+// The window covers roughly `targetItemCount` rows of history (defaulting to
+// sliceAroundDefaultItems when <= 0), half at-or-before and half after the
+// anchor's item coordinate, composed in whole units: it SHIPS every prose row
+// in that range plus `shape.RunWindowRows` members of each activity run, and
+// a stub accounting for every member it did not ship
+// (docs/architecture/timeline-window-pages.md §2). The anchor's run ships its
+// window centered on the anchor, so a jump lands on a row the page carries.
+// When `anchorItemID` is "" or no longer exists, the window is the thread's
+// tail — the bottom-snapshot restore case.
 //
 //ao:scope threads:read
-func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int, inlinePreviews bool) (store.PagedItems, error) {
-	paged, err := a.store.ListThreadSliceAround(threadID, anchorItemID, clampSliceItemBudget(targetItemCount))
+func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int, shape PageShape) (store.PagedItems, error) {
+	shape = shape.normalize()
+	paged, err := a.store.ListThreadSliceAround(
+		threadID, anchorItemID, clampSliceItemBudget(targetItemCount), shape.RunWindowRows)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list thread slice around: %w", err)
 	}
-	return projectPage(paged, inlinePreviews, keepNewest), nil
+	anchor, err := a.pageAnchorIndex(threadID, anchorItemID, paged.Items)
+	if err != nil {
+		return store.PagedItems{}, fmt.Errorf("list thread slice around: %w", err)
+	}
+	return projectPage(paged, shape, anchor), nil
 }
 
 // clampSliceItemBudget normalizes a caller-supplied slice-window budget:
@@ -77,24 +87,33 @@ func clampSliceItemBudget(targetItemCount int) int {
 	return targetItemCount
 }
 
-// ListItemsBeforeCursor loads older items on demand, strictly before the
-// frontend's current item-coordinate window floor. The item budget is a hard
-// primary-row cap; render-support ancestors can be stitched in above it, but
-// same-turn rows outside the cursor range stay omitted until explicitly paged.
-//
-//ao:scope threads:read
-func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor, itemBudget int, inlinePreviews bool) (store.PagedItems, error) {
+// clampPaginationItemBudget is clampSliceItemBudget for the cursor
+// pagers: one click's worth of rows by default, the same DoS cap above.
+func clampPaginationItemBudget(itemBudget int) int {
 	if itemBudget <= 0 {
-		itemBudget = paginationItems
+		return paginationItems
 	}
 	if itemBudget > maxWindowItems {
-		itemBudget = maxWindowItems
+		return maxWindowItems
 	}
-	paged, err := a.store.ListItemsBeforeCursor(threadID, before, itemBudget)
+	return itemBudget
+}
+
+// ListItemsBeforeCursor loads older items on demand, strictly before the
+// frontend's current item-coordinate window floor. The item budget caps the
+// rows the page SHIPS; the page is composed in whole units, so its range can
+// reach past the budget across a run whose members the stub accounts for.
+// Same-turn rows outside the cursor range stay omitted until explicitly paged.
+//
+//ao:scope threads:read
+func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor, itemBudget int, shape PageShape) (store.PagedItems, error) {
+	shape = shape.normalize()
+	paged, err := a.store.ListItemsBeforeCursor(
+		threadID, before, clampPaginationItemBudget(itemBudget), shape.RunWindowRows)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items before cursor: %w", err)
 	}
-	return projectPage(paged, inlinePreviews, keepNewest), nil
+	return projectPage(paged, shape, newestIndex(paged.Items)), nil
 }
 
 // ListItemsAfterCursor loads newer items on demand, strictly after the
@@ -102,18 +121,14 @@ func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor
 // companion to ListItemsBeforeCursor.
 //
 //ao:scope threads:read
-func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, itemBudget int, inlinePreviews bool) (store.PagedItems, error) {
-	if itemBudget <= 0 {
-		itemBudget = paginationItems
-	}
-	if itemBudget > maxWindowItems {
-		itemBudget = maxWindowItems
-	}
-	paged, err := a.store.ListItemsAfterCursor(threadID, after, itemBudget)
+func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, itemBudget int, shape PageShape) (store.PagedItems, error) {
+	shape = shape.normalize()
+	paged, err := a.store.ListItemsAfterCursor(
+		threadID, after, clampPaginationItemBudget(itemBudget), shape.RunWindowRows)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items after cursor: %w", err)
 	}
-	return projectPage(paged, inlinePreviews, keepOldest), nil
+	return projectPage(paged, shape, 0), nil
 }
 
 // ListSubagentDescendants loads the full child transcript under a
@@ -131,7 +146,7 @@ func (a *App) ListSubagentDescendants(threadID, rootItemID string, inlinePreview
 	if err != nil {
 		return nil, fmt.Errorf("list subagent descendants: %w", err)
 	}
-	return projectItemSlice(items, inlinePreviews, keepNewest), nil
+	return projectItemSlice(items, inlinePreviews), nil
 }
 
 // ListThreadProposedPlans returns the current proposed-plan item for a thread,
@@ -147,7 +162,7 @@ func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 	// 0-or-1 plan rows, never a diff carrier: the projection is here so
 	// no item reaches a client unprojected, not because these rows have
 	// bytes to give up. Previews stay on for the same reason.
-	return projectItemSlice(items, true, keepNewest), nil
+	return projectItemSlice(items, true), nil
 }
 
 // ListLiveBackgroundTasks returns running launches plus their
@@ -187,7 +202,7 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	// Running launches, so no completed diff previews to weigh: the
 	// projection is here to keep the "no item reaches a client
 	// unprojected" rule total, not for the bytes.
-	return projectItemSlice(items, true, keepNewest), nil
+	return projectItemSlice(items, true), nil
 }
 
 // GetThreadUserMessageTicks returns every reader-authored user message

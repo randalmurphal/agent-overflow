@@ -339,21 +339,25 @@ export interface UseStickToBottomController {
    */
   markAtBottom(): void;
   /**
-   * Set the escape flag. Public so `handleLoadOlder` / `scrollToItem`
-   * can opt out of auto-restick on programmatic jumps.
+   * The reader left the bottom. Flag-only counterpart to `markAtBottom`.
    *
-   * Calling with `next=true` also (a) cancels any in-flight spring
+   * Escape is a reader fact, never derived from a placement: only reader
+   * gestures (the intent machine, an overlay-scrollbar drag, a nested
+   * clip gesture) and reader-asked navigation (a jump to an item, the
+   * mid-thread anchor restore of a position the reader left) may call
+   * this. A load, a fill or a restore never writes intent; a prepend that
+   * lands under a following reader leaves them following, and asserting
+   * escape there is what stranded the chip over a bottom-pinned viewport
+   * and froze that state into the thread's scroll snapshot.
+   *
+   * Also (a) cancels any in-flight spring
    * chase and (b) clears any pending `armRestoreSnap()` consent — a
    * fresh escape invalidates a yet-to-be-consumed restore-snap.
-   * `armRestoreSnap()` itself runs its defensive escape through here
-   * BEFORE arming, so its arm survives this clear while any stale
-   * consent from an earlier path does not.
-   *
-   * Calling with `next=false` flips intent only — it does not consume
-   * the restore-snap consent (that's `forceStick({reason:'restore'})`
-   * or `markAtBottom()`'s job).
+   * `armRestoreSnap()` runs its own defensive escape through the same
+   * intent-machine setter BEFORE arming, so its arm survives this clear
+   * while any stale consent from an earlier path does not.
    */
-  setEscapedFromLock(next: boolean): void;
+  markEscaped(): void;
   /**
    * Re-arm the warm-up gate WITHOUT writing scrollTop or changing
    * intent / escape flags. Sets `isWarm` to false and restarts the
@@ -418,7 +422,7 @@ export interface UseStickToBottomController {
    * convergence passes) through the controller chokepoint, so the write
    * is tagged programmatic and can never be classified as user scroll
    * intent. Intent semantics stay with the caller: flip
-   * `setEscapedFromLock` / `markAtBottom` alongside the navigation this
+   * `markEscaped` / `markAtBottom` alongside the navigation this
    * write serves.
    *
    * Wired as

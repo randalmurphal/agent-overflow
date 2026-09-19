@@ -10,6 +10,20 @@ before using them as path components. Saved slots contain only the provider's
 native credential file. Normal provider processes always use the canonical
 native home.
 
+`Account` is the frontend-facing card. Backend-only per-account state belongs
+beside the rows on `ProviderState`, not on `Account`, or every client gets a
+copy of it with every card. `ProviderState.ClaudeCatalogs` holds the last Claude
+probe's model answer per account id that way, through `RememberClaudeCatalog`
+and `ClaudeCatalog`.
+
+`Remove` is the only path that shrinks `ProviderState.Accounts`, so it is the
+one place a keyed sibling map is forgotten. A new one deletes its entry there
+too.
+
+A saved catalog is bound to the binary identity that produced it. It is
+metadata, not a promise: a consumer serves it only while the configured path
+and the resolved file, size and mtime still match.
+
 ## Claude identity and rotation
 
 Claude credentials and `oauthAccount` are separate. AO may retire

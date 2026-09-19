@@ -58,6 +58,10 @@ import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import { createLiveTodoState } from './liveTodoState.svelte';
 import { createThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import { createThreadActivityRuns } from './threadActivityRuns.svelte';
+import { mergeItemsById } from './threadItems';
+import { addToast } from './toast.svelte';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import { errString } from '../utils/errors';
 import { activityRunDefaultCollapsed, activityRunWindowRows } from './activityRunPrefs.svelte';
 import type { TimelineTurnFacet } from './threadTurnProjection';
 import { createThreadRowUiState, type RowUiStateRetention } from './threadRowUiState.svelte';
@@ -84,7 +88,9 @@ import {
 import { createThreadChannelState } from './threadChannelState.svelte';
 import {
   nowForLiveContent,
+  timelinePageShape,
   type LoadOlderResult,
+  type LoadUntilItemResult,
   type PaneScrollController,
   type ThreadPaneOptions,
 } from './threadPaneShared';
@@ -108,6 +114,7 @@ export type {
   DraftPlaceholderMode,
   DraftThreadPlaceholder,
   LoadOlderResult,
+  LoadUntilItemResult,
   PaneErrorKind,
   PaneScrollController,
   PreserveViewportBottomOptions,
@@ -329,6 +336,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // (hoisted function declaration; called lazily, so the late
     // definition is safe, same as the subagentMemory arrow above).
     getHeldRowIds: () => agentPaneHeldRowIds(),
+    // Declared below; the arrow keeps the read lazy, like the
+    // subagentMemory one above.
+    activityRuns: () => activityRuns,
   });
   const pendingInteractiveState = createThreadPendingInteractiveState();
   // Activity-run registry: stable run identity across window edges, plus
@@ -341,6 +351,43 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // history retry; a window is verified once it is false.
     windowVerified: () => !loading,
     scrollController: () => paneScroll.controller,
+    items: getItems,
+    threadId: () => thread?.id ?? null,
+    pageShape: timelinePageShape,
+    // Fetched run members are top-level rows INSIDE the window's range,
+    // so they go through the wholesale replacement chokepoint rather than
+    // the streaming upsert path, whose floor/ceiling filters exist to
+    // refuse exactly this shape of row.
+    mountRunMembers: (rows, dropIds) => {
+      const kept = dropIds.size === 0
+        ? getItems()
+        : getItems().filter((item) => !dropIds.has(item.id));
+      replaceTimelineItems(mergeItemsById(rows as Item[], kept), {
+        disposeDropped: true,
+      });
+    },
+    // The run moved under a members call, so nothing the pane holds for
+    // it can be trusted. Reload around the row the reader is looking at,
+    // or the tail when no geometry is mounted.
+    reloadWindow: () => {
+      const visible = paneScroll.controller?.visibleTimelineItemIds?.() ?? null;
+      const anchor = visible
+        ? (getItems().find((item) => visible.has(item.id))?.id ?? '')
+        : '';
+      void (anchor === ''
+        ? timelineWindow.loadRecentTail()
+        : timelineWindow.loadUntilItem(anchor));
+    },
+    reportFetchFailure: (message, err, silent) => {
+      // A background stub refresh is not a gesture: it leaves the record
+      // dirty and retries, so it records evidence without interrupting.
+      if (silent) {
+        reportFrontendDiagnostic(`threadActivityRuns: ${message}`, errString(err));
+        return;
+      }
+      console.error(`${message}:`, err);
+      addToast('error', message);
+    },
   });
   // Rate-limit snapshots live in the global `rateLimitsInfo.svelte.ts`
   // store keyed by provider and account — they are account cache state,
@@ -702,6 +749,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     timelineWindow,
     subagentMemory,
     streamingReveal,
+    activityRuns,
   });
 
   /**
@@ -1143,7 +1191,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
 
     /** Ensure `itemID` is present in the loaded window. See threadTimelineWindow.svelte.ts. */
-    loadUntilItem(itemID: string): Promise<boolean> {
+    loadUntilItem(itemID: string): Promise<LoadUntilItemResult> {
       return timelineWindow.loadUntilItem(itemID);
     },
 

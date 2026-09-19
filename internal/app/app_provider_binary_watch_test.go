@@ -224,7 +224,7 @@ func TestProviderBinaryUpgradeDropsLearnedClaudeModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetModelsForProvider: %v", err)
 	}
-	if !slices.ContainsFunc(models, func(m provider.ModelInfo) bool { return m.Slug == "claude-newthing-1" }) {
+	if !slices.ContainsFunc(models.Models, func(m provider.ModelInfo) bool { return m.Slug == "claude-newthing-1" }) {
 		t.Fatal("the learned model did not land in the served catalog")
 	}
 
@@ -236,8 +236,14 @@ func TestProviderBinaryUpgradeDropsLearnedClaudeModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetModelsForProvider after upgrade: %v", err)
 	}
-	if slices.ContainsFunc(models, func(m provider.ModelInfo) bool { return m.Slug == "claude-newthing-1" }) {
+	if slices.ContainsFunc(models.Models, func(m provider.ModelInfo) bool { return m.Slug == "claude-newthing-1" }) {
 		t.Fatal("the old binary's learned model survived the upgrade")
+	}
+	// The recheck is itself a probe of the NEW binary, so the answer is
+	// authoritative again the moment it lands — it just carries nothing the
+	// shipped catalog does not already have.
+	if models.Provenance != provider.CatalogProbed {
+		t.Fatalf("provenance after upgrade = %q, want probed", models.Provenance)
 	}
 }
 

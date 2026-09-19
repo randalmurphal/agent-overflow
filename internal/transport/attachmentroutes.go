@@ -225,6 +225,11 @@ type AttachmentTransfer interface {
 	// StoreAttachment persists one streamed upload and answers the created
 	// row.
 	StoreAttachment(req AttachmentUpload) (json.RawMessage, error)
+	// OpenForgeAttachment resolves one cached forge-hosted attachment by
+	// the opaque content id its ticket names. An id the cache has
+	// evicted or expired is an error, which the route answers 404. See
+	// forgeattachmentroutes.go.
+	OpenForgeAttachment(contentID string) (ForgeAttachmentContent, error)
 }
 
 // attachmentSubjectSeparator joins the fields of a ticket subject. NUL

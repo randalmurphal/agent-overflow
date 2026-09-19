@@ -193,6 +193,10 @@ func TestSoakScenarioIsShipped(t *testing.T) {
 // and the failure is a browser silently launched on an unattended rig.
 // One assignment site keeps "default-on, lifted in exactly one function"
 // checkable.
+//
+// isolatedWorkspaceRoot is the same rule for the workspace boundary: a
+// mocked spawn runs in the thread's workspace, so a mode that set only the
+// provider pins would still let a scenario write into a real repository.
 func TestMockedBootModesShareOneIsolationHelper(t *testing.T) {
 	pins := []string{
 		"providerBinaryOverride",
@@ -200,6 +204,7 @@ func TestMockedBootModesShareOneIsolationHelper(t *testing.T) {
 		"credentialHomeOverride",
 		"backgroundFetchDisabled",
 		"mockEngine",
+		"isolatedWorkspaceRoot",
 	}
 	assignment := make([]*regexp.Regexp, len(pins))
 	for i, pin := range pins {

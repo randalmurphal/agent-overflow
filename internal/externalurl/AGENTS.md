@@ -1,14 +1,24 @@
 # internal/externalurl
 
-Opens user-visible HTTP(S) links in the host operating system's browser.
+Opens user-visible links in the host operating system's registered handler:
+the browser for `http(s)`, the mail client for `mailto:`, an editor for
+`vscode://`, and so on.
 
 ## Contract
 
 - Validate URLs here before the backend opens them. Frontend checks are UX
   only and must not be treated as authorization.
-- Only `http` and `https` URLs are allowed. Do not expand this to arbitrary
-  schemes without first documenting and reviewing which applications they can
-  launch, what supplied input they accept, and how that input is constrained.
+- `Validate` accepts `http(s)` with a host and any other scheme
+  `SchemeOpenable` admits: everything except the deny-list in `schemes.go`,
+  `file:`, and one-letter schemes (Windows drive paths). The deny-list is
+  script and document URLs the host browser would evaluate, Windows protocol
+  handlers with remote-code-execution history, and the app's own scheme.
+  `file:` is refused because the Windows shell opener executes the target;
+  files open through `internal/editor.ResolvePath`. The frontend renders
+  links from the same list (`markdown/render/elements/urlSchemes.ts`) and
+  `TestDeniedSchemesMatchFrontend` fails when the two differ; change both.
+  The opener never sees a shell, so a URL cannot become an argument to the
+  handler beyond what that handler parses from the URL itself.
 - Do not invoke a shell. Build commands as argv slices so URLs cannot become
   shell syntax.
 - WSL opens through Windows interop because the visible desktop is Windows.

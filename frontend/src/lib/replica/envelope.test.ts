@@ -41,6 +41,7 @@ function body(overrides: Partial<ReplicaBody> = {}): ReplicaBody {
     hasMoreNewer: false,
     latestSettledTurn: null,
     subagentFolds: null,
+    runs: [],
     ...overrides,
   };
 }
@@ -78,6 +79,48 @@ describe('replica envelope', () => {
       }),
     ).toBeNull();
     expect(readEnvelope(null)).toBeNull();
+  });
+
+  it('round-trips the activity-run stubs the window needs', () => {
+    // A window is only paintable with the stubs describing the run
+    // members it does not hold (timeline-window-pages §6): without them
+    // the restored pane would render every run as complete.
+    const stub = {
+      firstItemId: 'a',
+      lastItemId: 'e',
+      firstTurnIndex: 3,
+      firstItemIndex: 1,
+      lastTurnIndex: 3,
+      lastItemIndex: 5,
+      memberCount: 5,
+      loadedFirstItemId: 'b',
+      loadedLastItemId: 'd',
+      unshippedBefore: 1,
+      unshippedAfter: 1,
+      unshippedDigest: '0123456789abcdef',
+      unshippedGroups: [{ kind: 'tool_call', toolName: 'Bash', mcp: '', rows: 2 }],
+      unshippedPairedLaunchIds: ['a'],
+      shippedSupersededLaunchIds: [],
+      unshippedFailed: true,
+      runningBefore: { kind: 'tool_call', toolName: 'Task', mcp: '' },
+      runningAfter: null,
+    } as unknown as ReplicaBody['runs'][number];
+    const read = readEnvelope(wrapEnvelope(normalizeBody(body({ runs: [stub] }))));
+    expect(read?.runs).toEqual([stub]);
+  });
+
+  it('drops a body written before the runs field existed', () => {
+    // Never migrate, always drop: a stored window with no stubs was
+    // written by a build that could not describe its runs.
+    const legacy = normalizeBody(body()) as unknown as { runs?: unknown };
+    delete legacy.runs;
+    expect(readEnvelope({ v: 1, cipher: 'none', body: legacy })).toBeNull();
+  });
+
+  it('drops a body with a malformed stub', () => {
+    const broken = normalizeBody(body()) as unknown as { runs: unknown[] };
+    broken.runs = [{ firstItemId: 'a' }];
+    expect(readEnvelope({ v: 1, cipher: 'none', body: broken })).toBeNull();
   });
 
   it('drops a body whose rows predate the item rev', () => {

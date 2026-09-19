@@ -9,6 +9,7 @@ import {
 import { resetForTest as resetAccountInfo } from './accountInfo.svelte';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import type { ModelInfo } from '../types/settings';
+import { modelCatalog } from '../../test/helpers/modelCatalog';
 
 function model(slug: string): ModelInfo {
   return {
@@ -34,7 +35,7 @@ describe('provider:account refreshes the model catalog', () => {
   // un-enriched catalog for the rest of the session.
   it('picks up models that only exist after the probe lands', async () => {
     let models = [model('claude-opus-5')];
-    setBindingMock('GetModelsForProvider', async () => models);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog(models));
 
     await ensureProviderModels('claude');
     expect(getProviderModels('claude').map((m) => m.slug)).toEqual(['claude-opus-5']);
@@ -59,7 +60,7 @@ describe('provider:account refreshes the model catalog', () => {
 
   it('refreshes on an account being cleared too', async () => {
     let models = [model('claude-opus-6')];
-    setBindingMock('GetModelsForProvider', async () => models);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog(models));
     await ensureProviderModels('claude');
 
     models = [model('claude-opus-5')];
@@ -71,7 +72,7 @@ describe('provider:account refreshes the model catalog', () => {
   });
 
   it('ignores an event for an unknown provider', async () => {
-    setBindingMock('GetModelsForProvider', async () => [model('claude-opus-5')]);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([model('claude-opus-5')]));
     await ensureProviderModels('claude');
 
     applyProviderAccount({ provider: 'nope', generation: 1 } as never);

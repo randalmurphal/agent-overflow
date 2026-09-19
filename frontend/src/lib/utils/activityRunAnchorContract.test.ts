@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { wholeRunNodeFields } from '../../test/helpers/activityRuns';
 import { groupActivityRuns } from './activityRunGrouping';
 import { timelineNodeHasRail } from './timelineRail';
 import { timelineNodeItemId, type ActivityRunNode, type TimelineNode } from './subagentGrouping';
@@ -95,6 +96,7 @@ function activityRunNode(): ActivityRunNode {
     membershipEpoch: 1,
     memberItemIds: [],
     summaryItemIds: [],
+    ...wholeRunNodeFields(),
   };
 }
 
@@ -137,6 +139,12 @@ function capturingIdentity(): {
     windowRows: () => 30,
     windowVerified: () => true,
     scrollController: () => null,
+    items: () => [],
+    threadId: () => null,
+    pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
+    mountRunMembers: () => {},
+    reloadWindow: () => {},
+    reportFetchFailure: () => {},
   });
   let captured: readonly (readonly string[])[] = [];
   const registry: ThreadActivityRuns = {

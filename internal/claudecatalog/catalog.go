@@ -102,7 +102,20 @@ func Commands(key provider.ProbeCacheKey) ([]provider.SlashCommand, bool) {
 	return commandCache().AnswerFor(key)
 }
 
-// Models returns the picker catalog for one Claude-family provider.
-func Models(key provider.ProbeCacheKey, providerName string) []provider.ModelInfo {
+// Models returns the picker catalog for one Claude-family provider, and
+// whether a probe answer backs it. A false enriched is the shipped list.
+func Models(key provider.ProbeCacheKey, providerName string) (models []provider.ModelInfo, enriched bool) {
 	return modelCatalog().ModelsFor(key, providerName)
+}
+
+// Export returns the evidence behind one identity's model entry so the
+// application layer can persist it per account.
+func Export(key provider.ProbeCacheKey) (claudemodels.Snapshot, bool) {
+	return modelCatalog().Export(key)
+}
+
+// Seed restores a persisted model answer for one identity at boot. The caller
+// owns checking that the snapshot still describes the binary behind the key.
+func Seed(key provider.ProbeCacheKey, snapshot claudemodels.Snapshot) {
+	modelCatalog().Seed(key, snapshot)
 }

@@ -26,6 +26,10 @@ type IsolationConfig struct {
 	// boot has no display and must never open a real one, yet its pane chrome
 	// and host rect still have to render (spec §10).
 	MockBrowserEngine bool
+	// WorkspaceRoot bounds every project path and session working directory
+	// (app_isolated_workspace.go). Empty disables the check, which only unit
+	// tests do.
+	WorkspaceRoot string
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -39,6 +43,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.fileKeychainOverride = config.UseFileKeychain
 	a.backgroundFetchDisabled = config.DisableBackgroundFetch
 	a.browser.mockEngine = config.MockBrowserEngine
+	a.isolatedWorkspaceRoot = config.WorkspaceRoot
 }
 
 // UseFileKeychain moves provider credentials and the browser companion's

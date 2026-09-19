@@ -223,6 +223,10 @@ func (h *harnessHost) ArchiveThread(threadID string) error {
 	return h.app.ArchiveThread(threadID)
 }
 
+func (h *harnessHost) BroadcastThreadRow(threadID string) {
+	h.app.broadcastThreadRowByID(threadID)
+}
+
 func (h *harnessHost) StopSession(threadID string) error {
 	return h.app.StopSession(threadID)
 }

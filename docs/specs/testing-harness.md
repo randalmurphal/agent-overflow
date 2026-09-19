@@ -37,7 +37,7 @@ Every addition below wraps these; nothing forks them.
 1. **One isolation story.** Every new mode boots through `prepareHarness`
    and `newIsolatedProviderApp`. A new spawn path (textgen one-shot,
    probes) resolves to the mock like every other spawn. No exceptions,
-   no three-of-four.
+   no partial pin set.
 2. **Transport boundary stays clean.** All new control and inspection
    flows are Harness RPCs + event channels on the existing wire. The
    frontend bridge answers over the same WS; no side channel.

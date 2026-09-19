@@ -26,6 +26,17 @@
   // intercepts clicks on `agent-overflow:open?path=…` hrefs and forwards
   // to the `OpenInEditor` binding.
   //
+  // **Forge attachments** arrive by CONTEXT, not by prop: the PR a body
+  // belongs to is the review pane's fact, and five call sites under it
+  // would otherwise thread the same value through two intermediate
+  // components. With the context set, image and link tokens pointing at
+  // forge-hosted media are claimed by `forgeAttachmentExtension.ts` and
+  // rendered by `markdown/ForgeAttachmentHost.svelte`. Media a forge
+  // wrote inside an HTML wrapper is one html block with no token to
+  // claim, so the sanitizer marks it instead and
+  // `markdown/EmbeddedHtmlHost.svelte` hydrates the marks. Without the
+  // context (agent chat, settings previews) nothing changes.
+  //
   // **Markdown-aware copy** still runs through the document-level copy
   // delegate, reading `.markdown-body` and serializing the selected
   // range back to markdown. Outer wrapper still carries that class.
@@ -38,8 +49,10 @@
     EMBEDDED_HTML_EXTENSIONS,
     Streamdown,
     sanitizeEmbeddedHtmlToken,
+    type ClaimEmbeddedMedia,
     type Extension,
     type ProvenAppend,
+    type Tokens,
   } from '../../markdown';
   import {
     CHAT_MARKDOWN_PRESENCE_CONTEXT,
@@ -55,6 +68,7 @@
   } from './markdown/streamdownConfig';
   import { MarkdownFenceUnwrapper } from './markdown/unwrapMarkdownFence';
   import {
+    ensureForgeAttachmentClickDelegate,
     ensureMarkdownCopyDelegate,
     ensurePathLinkClickDelegate,
   } from '../../utils/markdownEnhance';
@@ -62,14 +76,26 @@
     LOCAL_IMAGE_HREF_PREFIX,
     PATH_LINK_HREF_PREFIX,
     buildPathLinkExtension,
+    type PathLinkMode,
   } from '../../utils/pathLinkExtension';
   import { buildPreviewLinkExtension } from '../../utils/previewLinkExtension';
+  import {
+    FORGE_ATTACHMENT_HREF_PREFIX,
+    buildForgeAttachmentHref,
+    isForgeAttachmentHref,
+  } from '../../utils/forgeAttachments';
+  import { buildForgeAttachmentExtension } from '../../utils/forgeAttachmentExtension';
+  import {
+    FORGE_ATTACHMENT_SOURCE_CONTEXT,
+    type ForgeAttachmentSourceReader,
+  } from './markdown/forgeAttachmentContext';
   import {
     previewLinkTargetFor,
     previewRewriteKey,
   } from '../../stores/devServers.svelte';
   import { EMPTY_PATH_REFS } from '../../utils/pathLinkify';
   import StreamdownImageHost from './markdown/StreamdownImageHost.svelte';
+  import EmbeddedHtmlHost from './markdown/EmbeddedHtmlHost.svelte';
   import {
     captureStreamingAssistantSelection,
     restoreStreamingAssistantSelection,
@@ -168,19 +194,24 @@
   $effect(() => {
     ensureMarkdownCopyDelegate();
     ensurePathLinkClickDelegate();
+    ensureForgeAttachmentClickDelegate();
     ensureStaticCodeDelegate();
   });
 
   // Marked inline extension derived from the validated allowlist. The
   // extension is rebuilt when `pathRefs` / `workspacePath` change. A
   // missing allowlist disables prose linkification only; explicit local
-  // hrefs still normalize whenever the surface has a workspace. The shared
-  // empty array keeps that fallback identity stable across streaming frames.
-  // buildPathLinkExtension returns undefined when both halves are inert.
+  // hrefs and image srcs still normalize whenever the surface has a
+  // workspace. The shared empty array keeps that fallback identity stable
+  // across streaming frames. Link affordances follow what this page can
+  // do on the thread's machine; images load in every mode because the
+  // bytes come over the transport (see buildPathLinkExtension).
+  // buildPathLinkExtension returns undefined when every half is inert.
+  const pathLinkMode = $derived<PathLinkMode>(
+    noHost ? (filePreview ? 'html' : 'off') : filePreview ? 'files' : 'editor',
+  );
   const pathLinkExtension = $derived(
-    noHost && !filePreview
-      ? undefined
-      : buildPathLinkExtension(pathRefs ?? EMPTY_PATH_REFS, workspacePath, noHost ? 'html' : filePreview ? 'files' : 'editor'),
+    buildPathLinkExtension(pathRefs ?? EMPTY_PATH_REFS, workspacePath, pathLinkMode),
   );
 
   // `localhost:<port>` rewriting, for prose about a machine that is not the
@@ -197,11 +228,75 @@
     return untrack(() => buildPreviewLinkExtension(previewLinkTargetFor(threadId)));
   });
 
-  // Preview first: the path-link extension claims every `[…](…)` link it is
-  // offered, so behind it the preview one would never see one. The embedded
-  // HTML pair claims only `<tag` starts, disjoint from both.
+  // Forge attachments, for a surface that renders one PR's content
+  // (`ReviewPane` setContexts the source for its whole subtree). Every field
+  // is read out as a SCALAR before the extension is built: the review store
+  // hands back a fresh object whenever the PR detail is replaced, and an
+  // object dependency would re-lex every block of every rendered body on
+  // each PR update frame. Primitives compare equal, so the build below runs
+  // only when the PR, its computer, its web URL or the HTML mode changes.
+  const readForgeSource = getContext<ForgeAttachmentSourceReader | undefined>(
+    FORGE_ATTACHMENT_SOURCE_CONTEXT,
+  );
+  const forgeSource = $derived(readForgeSource?.() ?? null);
+  const forgeForge = $derived(forgeSource?.pr.forge ?? '');
+  const forgeNamespace = $derived(forgeSource?.pr.namespace ?? '');
+  const forgeRepo = $derived(forgeSource?.pr.repo ?? '');
+  const forgeNumber = $derived(forgeSource?.pr.number ?? 0);
+  const forgeBackend = $derived(forgeSource?.backend ?? '');
+  const forgeWebBase = $derived(forgeSource?.webBase ?? '');
+  const forgeAttachmentExtensions = $derived.by(() => {
+    if (forgeForge !== 'github' && forgeForge !== 'gitlab') return undefined;
+    return buildForgeAttachmentExtension({
+      pr: {
+        forge: forgeForge,
+        namespace: forgeNamespace,
+        repo: forgeRepo,
+        number: forgeNumber,
+      },
+      backend: forgeBackend,
+      webBase: forgeWebBase,
+      embeddedHtml,
+    });
+  });
+
+  // The same claim, for media the parser never sees as a token: a forge
+  // wrapper (`<p align="center"><img …>`, `<a href><img>`, a screenshot
+  // table, a `<details>` body) is ONE html block, so the sanitizer asks this
+  // hook per `<img>`/`<video>`/`<source>` and `EmbeddedHtmlHost` mounts a
+  // real attachment host over each claim. Both derivations key on the same
+  // scalars as the extension above, so the function identity is stable
+  // across renders for one PR — a fresh closure per render would invalidate
+  // the renderer's per-block caches on every frame.
+  const forgeClaimMedia = $derived.by<ClaimEmbeddedMedia | undefined>(() => {
+    if (forgeForge !== 'github' && forgeForge !== 'gitlab') return undefined;
+    const pr = {
+      forge: forgeForge,
+      namespace: forgeNamespace,
+      repo: forgeRepo,
+      number: forgeNumber,
+    };
+    const backend = forgeBackend;
+    const webBase = forgeWebBase;
+    return (_tag, src) =>
+      isForgeAttachmentHref(pr.forge, src)
+        ? buildForgeAttachmentHref({ href: src, pr, backend, webBase })
+        : null;
+  });
+  const renderEmbeddedHtml = $derived.by(() => {
+    const claimMedia = forgeClaimMedia;
+    const options = claimMedia ? { claimMedia } : undefined;
+    return (token: Tokens.HTML | Tokens.Tag) => sanitizeEmbeddedHtmlToken(token, options);
+  });
+
+  // Forge attachments first, then preview: both the path-link extension and
+  // the embedded-HTML pair claim starts the forge one needs (`[`, `![`,
+  // `<img`, `<video`), and it returns undefined for everything that is not a
+  // forge-shaped href, so nothing behind it loses a token. Preview then
+  // precedes path links, which claim every remaining `[…](…)`.
   const extensions = $derived.by(() => {
     const list: Extension[] = [];
+    if (forgeAttachmentExtensions) list.push(...forgeAttachmentExtensions);
     if (previewLinkExtension) list.push(previewLinkExtension);
     if (pathLinkExtension) list.push(pathLinkExtension);
     if (embeddedHtml) list.push(...EMBEDDED_HTML_EXTENSIONS);
@@ -216,8 +311,15 @@
   // `[click](agent-overflow:open?path=/etc/passwd)` cannot satisfy
   // the nonce-prefixed form and is rejected before any anchor is
   // rendered.
-  const allowedLinkPrefixes = ['*', PATH_LINK_HREF_PREFIX];
-  const allowedImagePrefixes = ['*', LOCAL_IMAGE_HREF_PREFIX];
+  // `data:` is a denied LINK scheme (it is a document the webview would
+  // evaluate), but an inline `data:image/…` src is just bytes for an <img>.
+  const allowedLinkPrefixes = ['*', PATH_LINK_HREF_PREFIX, FORGE_ATTACHMENT_HREF_PREFIX];
+  const allowedImagePrefixes = [
+    '*',
+    LOCAL_IMAGE_HREF_PREFIX,
+    FORGE_ATTACHMENT_HREF_PREFIX,
+    'data:image/',
+  ];
 
   // Diagram palette. Without a `mermaidConfig` the renderer falls back
   // to mermaid's built-in `'dark'`/`'default'` themes, which
@@ -378,6 +480,20 @@
   message renders as a single `md-committed` container and never matches
   the seam rule.
 -->
+<!-- Declared outside the component so it can be passed CONDITIONALLY: with
+     `embeddedHtml` off the snippet must be absent, or the compact static
+     renderer would hand every html token to a component island on surfaces
+     that render no HTML at all. -->
+{#snippet embeddedHtmlFragment({
+  token,
+  content,
+}: {
+  token: Tokens.HTML | Tokens.Tag;
+  content: string;
+})}
+  <EmbeddedHtmlHost {token} {content} />
+{/snippet}
+
 {#snippet streamdownInstance(
   content: string,
   parseIncompleteMarkdown: boolean,
@@ -397,7 +513,8 @@
     {mermaidConfig}
     {allowedLinkPrefixes}
     {allowedImagePrefixes}
-    renderHtml={embeddedHtml ? sanitizeEmbeddedHtmlToken : false}
+    renderHtml={embeddedHtml ? renderEmbeddedHtml : false}
+    html={embeddedHtml ? embeddedHtmlFragment : undefined}
     compactStaticHtml={true}
     {trimFirstBlockMargin}
     {trimLastBlockMargin}
@@ -410,8 +527,8 @@
     {#snippet inlineCitation({ token })}
       {token.text ?? token.raw}
     {/snippet}
-    {#snippet image({ token })}
-      <StreamdownImageHost {token} />
+    {#snippet image({ token, src })}
+      <StreamdownImageHost {token} {src} />
     {/snippet}
   </Streamdown>
 {/snippet}

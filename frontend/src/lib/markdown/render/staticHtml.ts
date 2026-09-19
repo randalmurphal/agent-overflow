@@ -1,7 +1,7 @@
 import type { StreamdownContext } from './context.svelte';
 import type { StreamdownToken } from '../parser/index';
 import type { Tokens } from '../parser/engine';
-import { transformUrl } from './elements/url';
+import { classifyLinkHref } from './elements/url';
 import {
 	PREVIEW_ALLOW_CLASS,
 	PREVIEW_ALLOW_LABEL,
@@ -219,10 +219,11 @@ export function renderStaticTokenHtml(
 
 				case 'link': {
 					if (streamdown.snippets.link) return false;
-					const href = transformUrl(
+					const linkClass = classifyLinkHref(
 						token.href,
 						streamdown.allowedLinkPrefixes ?? [],
 					);
+					const href = linkClass.kind === 'anchor' ? linkClass.href : null;
 					// Mirrors Link.svelte's first branch: a preview anchor is an
 					// ordinary anchor plus the data attributes the click delegate
 					// reads (render/previewLink.ts owns both spellings).
@@ -261,18 +262,14 @@ export function renderStaticTokenHtml(
 						if (!render(children)) return false;
 						output.push('</a>');
 					} else {
-						const schemeless =
-							typeof token.href === 'string' &&
-							!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(token.href) &&
-							!token.href.startsWith('//');
 						output.push(
 							`<span data-streamdown-link-blocked="${dataId}"` +
 							attribute('class', streamdown.theme.link.blocked) +
-							attribute('title', schemeless ? token.href : `Blocked URL: ${token.href}`) +
+							attribute('title', linkClass.kind === 'anchor' ? undefined : linkClass.title) +
 							'>',
 						);
 						if (!render(children)) return false;
-						if (!schemeless) output.push(' [blocked]');
+						if (linkClass.kind === 'blocked') output.push(' [blocked]');
 						output.push('</span>');
 					}
 					break;
@@ -330,7 +327,15 @@ export function renderStaticTokenHtml(
 				}
 
 				case 'html':
-					if (streamdown.renderHtml) return false;
+					// Mirror Element.svelte's html branch. An html snippet is a
+					// component island by definition (it hydrates claimed media
+					// inside the injected fragment), and the `renderHtml`
+					// fragment is a string this path will not re-escape, so both
+					// hand the block to the Svelte renderer. Checked
+					// independently: a surface may set either without the other,
+					// and the snippet check must not depend on `renderHtml`
+					// happening to be truthy at the same time.
+					if (streamdown.snippets.html || streamdown.renderHtml) return false;
 					break;
 
 				case 'escape':

@@ -27,6 +27,10 @@ PR stores; components own presentation and interaction.
   measured rows do not move unnecessarily.
 - Embedded forge HTML uses `ChatMarkdown`'s opt-in sanitized mode. Do not render
   arbitrary HTML or bypass URL transformation.
+- `ReviewPane` publishes `FORGE_ATTACHMENT_SOURCE_CONTEXT`
+  (`components/chat/markdown/forgeAttachmentContext.ts`) for its whole subtree;
+  every `ChatMarkdown` under it renders forge-hosted attachments through
+  `utils/forgeAttachments.ts`. Do not pass the PR source as a prop.
 - Collapse and load large files explicitly. Avoid mounting hidden diff bodies or
   preloading every payload.
 - Wrap the review surface in `shared/RenderBoundary.svelte`.

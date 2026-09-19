@@ -91,7 +91,7 @@ func syncStatusFor(t *testing.T, s *Store, held HeldWindow) SyncStatus {
 	t.Helper()
 	stale := historyStampOf(t, s, "t")
 	stale.Rev--
-	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, stale, &held)
+	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}

@@ -6,7 +6,9 @@
 
 import type { ActivityRunResolution } from '../../lib/utils/activityRunGrouping';
 import { createThreadActivityRuns } from '../../lib/stores/threadActivityRuns.svelte';
+import type { ThreadActivityRunsOptions } from '../../lib/stores/threadActivityRuns.svelte';
 import type { PaneScrollController } from '../../lib/stores/threadPaneShared';
+import type { Item } from '../../lib/types/models';
 
 export type ActivityRunRegistry = ReturnType<typeof createThreadActivityRuns>;
 
@@ -25,6 +27,18 @@ export function registry(
      * open hold. Pass a getter to drive a switch's cached-paint phase.
      */
     windowVerified?: () => boolean;
+    /**
+     * The pane's loaded window. Only the run-record half of the registry
+     * reads it; the identity/collapse suites drive `resolve` directly and
+     * leave it empty.
+     */
+    items?: () => readonly Item[];
+    /** Default null, which makes every members fetch a no-op. */
+    threadId?: () => string | null;
+    /** Records every mount a members answer asked for. */
+    mountRunMembers?: ThreadActivityRunsOptions['mountRunMembers'];
+    reloadWindow?: () => void;
+    reportFetchFailure?: ThreadActivityRunsOptions['reportFetchFailure'];
   } = {},
 ): ActivityRunRegistry {
   return createThreadActivityRuns({
@@ -32,7 +46,28 @@ export function registry(
     windowRows: () => overrides.windowRows ?? 30,
     windowVerified: overrides.windowVerified ?? (() => true),
     scrollController: () => overrides.scrollController ?? null,
+    items: overrides.items ?? (() => []),
+    threadId: overrides.threadId ?? (() => null),
+    pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
+    mountRunMembers: overrides.mountRunMembers ?? (() => {}),
+    reloadWindow: overrides.reloadWindow ?? (() => {}),
+    reportFetchFailure: overrides.reportFetchFailure ?? (() => {}),
   });
+}
+
+/**
+ * The five run-record fields `resolve` stamps on a node, as a run the
+ * pane holds WHOLE reports them. Node literals in tests spread this so
+ * adding a field to the contract does not rewrite every fixture.
+ */
+export function wholeRunNodeFields(memberIds: readonly string[] = []) {
+  return {
+    memberCount: memberIds.length,
+    unshippedBefore: 0,
+    unshippedAfter: 0,
+    loadedFirstItemId: memberIds[0] ?? '',
+    loadedLastItemId: memberIds[memberIds.length - 1] ?? '',
+  };
 }
 
 /**

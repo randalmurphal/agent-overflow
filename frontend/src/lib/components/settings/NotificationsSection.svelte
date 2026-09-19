@@ -135,7 +135,7 @@
     { value: 'knock', label: 'Knock' },
     { value: 'pop', label: 'Pop' },
     { value: 'hum', label: 'Low hum' },
-    { value: 'boop', label: 'Boop' },
+    { value: 'chime', label: 'Chime' },
     { value: 'system', label: 'System sound' },
   ];
 

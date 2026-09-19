@@ -3,6 +3,7 @@ import { fireEvent, render, waitFor } from "@testing-library/svelte";
 
 import EffortMenu from "./EffortMenu.svelte";
 import type { Thread } from "../../../types/models";
+import type { ModelCatalog } from "../../../types/settings";
 import {
   getBindingMock,
   resetBindingMocks,
@@ -17,6 +18,7 @@ import {
   buildPane as buildRegisteredPane,
   makeThread as makeBaseThread,
 } from "../../../../test/helpers/chat";
+import { modelCatalog } from "../../../../test/helpers/modelCatalog";
 import {
   applyFastModeState,
   resetForTest as resetFastModeStateForTest,
@@ -48,7 +50,7 @@ describe("<EffortMenu>", () => {
     resetBindingMocks();
     resetProviderModelsForTest();
     resetFastModeStateForTest();
-    setBindingMock("GetModelsForProvider", async () => []);
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([], "shipped"));
   });
 
   // The fast-mode toggle records what the thread ASKED for. When the
@@ -56,7 +58,7 @@ describe("<EffortMenu>", () => {
   // say so instead of showing an unqualified "Fast".
   describe("provider fast-mode contradiction", () => {
     async function buildFastClaudePane() {
-      setBindingMock("GetModelsForProvider", async () => [
+      setBindingMock("GetModelsForProvider", async () => modelCatalog([
         {
           slug: "claude-opus-4-6",
           name: "Claude Opus 4.6",
@@ -65,7 +67,7 @@ describe("<EffortMenu>", () => {
           contextWindows: [{ tokens: 200000, label: "200k", tier: "standard" }],
           reasoningEfforts: [{ slug: "high", label: "High", default: true }],
         },
-      ]);
+      ]));
       await ensureProviderModels("claude");
       return buildPane(
         makeThread({
@@ -129,7 +131,7 @@ describe("<EffortMenu>", () => {
   });
 
   it("renders context for models with multiple selectable windows", async () => {
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "gpt-5.4",
         name: "GPT-5.4",
@@ -144,7 +146,7 @@ describe("<EffortMenu>", () => {
           { slug: "high", label: "High", default: true },
         ],
       },
-    ]);
+    ]));
     await ensureProviderModels("codex");
     const pane = await buildPane(
       makeThread({ provider: "codex", model: "gpt-5.4", contextWindow: 272000 }),
@@ -158,7 +160,7 @@ describe("<EffortMenu>", () => {
     // user opened the effort or model picker, because the catalog only loaded on
     // picker open. EffortMenu now loads it eagerly, so the label is complete on
     // first render. Mirrors the claude-tui Opus 4.8 case from the bug report.
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "claude-opus-4-8",
         name: "Claude Opus 4.8",
@@ -173,7 +175,7 @@ describe("<EffortMenu>", () => {
           { slug: "xhigh", label: "xHigh", default: true },
         ],
       },
-    ]);
+    ]));
     const pane = await buildPane(
       makeThread({
         provider: "claude-tui",
@@ -220,7 +222,7 @@ describe("<EffortMenu>", () => {
   });
 
   it("hides context for models with one selectable window", async () => {
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "gpt-5.3-codex-spark",
         name: "GPT-5.3 Codex Spark",
@@ -229,7 +231,7 @@ describe("<EffortMenu>", () => {
         contextWindows: [{ tokens: 128000, label: "128k", tier: "standard" }],
         reasoningEfforts: [{ slug: "high", label: "High", default: true }],
       },
-    ]);
+    ]));
     await ensureProviderModels("codex");
     const pane = await buildPane(
       makeThread({
@@ -247,7 +249,7 @@ describe("<EffortMenu>", () => {
   // list is for the other case — no catalog entry at all — and conflating the
   // two offered tiers the model does not have.
   it("hides the effort section for a model that reports no effort tiers", async () => {
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "claude-haiku-4-5",
         name: "Claude Haiku 4.5",
@@ -259,7 +261,7 @@ describe("<EffortMenu>", () => {
         ],
         reasoningEfforts: [],
       },
-    ]);
+    ]));
     await ensureProviderModels("claude");
     const pane = await buildPane(
       makeThread({
@@ -281,7 +283,7 @@ describe("<EffortMenu>", () => {
   });
 
   it("disables the trigger when the model has nothing to configure", async () => {
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "claude-haiku-4-5",
         name: "Claude Haiku 4.5",
@@ -290,7 +292,7 @@ describe("<EffortMenu>", () => {
         contextWindows: [{ tokens: 200000, label: "200k", tier: "standard", default: true }],
         reasoningEfforts: [],
       },
-    ]);
+    ]));
     await ensureProviderModels("claude");
     const pane = await buildPane(
       makeThread({
@@ -317,7 +319,7 @@ describe("<EffortMenu>", () => {
   // header, and the On row's tooltip — without a code change, and must still
   // toggle the same boolean.
   it("labels fast mode from the model's declared service tier", async () => {
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "gpt-5.5",
         name: "GPT-5.5",
@@ -327,7 +329,7 @@ describe("<EffortMenu>", () => {
         contextWindows: [{ tokens: 272000, label: "272k", tier: "standard" }],
         reasoningEfforts: [{ slug: "high", label: "High", default: true }],
       },
-    ]);
+    ]));
     await ensureProviderModels("codex");
     const pane = await buildPane(
       makeThread({
@@ -351,7 +353,7 @@ describe("<EffortMenu>", () => {
   // absent: Claude declares no tier at all, and a catalog cached before the
   // field existed deserializes without it.
   it("falls back to the Fast literals when the model declares no tier", async () => {
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "claude-opus-4-6",
         name: "Claude Opus 4.6",
@@ -360,7 +362,7 @@ describe("<EffortMenu>", () => {
         contextWindows: [{ tokens: 200000, label: "200k", tier: "standard" }],
         reasoningEfforts: [{ slug: "high", label: "High", default: true }],
       },
-    ]);
+    ]));
     await ensureProviderModels("claude");
     const pane = await buildPane(
       makeThread({
@@ -383,7 +385,7 @@ describe("<EffortMenu>", () => {
   // A tier that still calls itself "Fast" — the shape of every catalog today —
   // must not render "Fast Mode Mode".
   it("keeps the section header as Fast Mode when the tier is named Fast", async () => {
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "gpt-5.5",
         name: "GPT-5.5",
@@ -393,7 +395,7 @@ describe("<EffortMenu>", () => {
         contextWindows: [{ tokens: 272000, label: "272k", tier: "standard" }],
         reasoningEfforts: [{ slug: "high", label: "High", default: true }],
       },
-    ]);
+    ]));
     await ensureProviderModels("codex");
     const pane = await buildPane(
       makeThread({
@@ -447,10 +449,10 @@ describe("<EffortMenu>", () => {
   });
 
   it("keeps fast-mode OFF available after the catalog removes support", async () => {
-    setBindingMock("GetModelsForProvider", async () => [{
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([{
       slug: "gpt-known", name: "Known", provider: "codex",
       reasoningEfforts: [], capabilities: [], contextWindows: [],
-    }]);
+    }]));
     await ensureProviderModels("codex");
     const pane = await buildPane(makeThread({ provider: "codex", model: "gpt-known", fastMode: true }));
     setBindingMock("UpdateThreadFastMode", async () => makeThread({ provider: "codex", model: "gpt-known", fastMode: false }));
@@ -467,7 +469,7 @@ describe("<EffortMenu>", () => {
         fastMode: false,
       }),
     );
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "claude-opus-4-6",
         name: "Claude Opus 4.6",
@@ -481,7 +483,7 @@ describe("<EffortMenu>", () => {
           { slug: "max", label: "Max" },
         ],
       },
-    ]);
+    ]));
     setBindingMock("UpdateThreadFastMode", async () =>
       makeThread({ fastMode: true }),
     );
@@ -514,7 +516,7 @@ describe("<EffortMenu>", () => {
       contextWindow: 272000,
     });
     setBindingMock("UpdateThreadReasoningEffort", async () => updated);
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "gpt-5.6-sol",
         name: "GPT 5.6 Sol",
@@ -528,7 +530,7 @@ describe("<EffortMenu>", () => {
           { slug: "ultra", label: "" },
         ],
       },
-    ]);
+    ]));
     const pane = await buildPane(
       makeThread({
         provider: "codex",
@@ -562,7 +564,7 @@ describe("<EffortMenu>", () => {
         contextWindow: 272000,
       }),
     );
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "gpt-5.5",
         name: "GPT-5.5",
@@ -576,7 +578,7 @@ describe("<EffortMenu>", () => {
           { slug: "xhigh", label: "Extra High" },
         ],
       },
-    ]);
+    ]));
     const { getByTestId, queryByRole, findByRole } = render(EffortMenu, {
       props: { pane },
     });
@@ -590,7 +592,7 @@ describe("<EffortMenu>", () => {
   });
 
   it("uses preloaded model metadata without fetching when opened", async () => {
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "gpt-5.5",
         name: "GPT-5.5",
@@ -605,7 +607,7 @@ describe("<EffortMenu>", () => {
           { slug: "xhigh", label: "Extra High" },
         ],
       },
-    ]);
+    ]));
     await ensureProviderModels("codex");
 
     const pane = await buildPane(
@@ -628,14 +630,8 @@ describe("<EffortMenu>", () => {
   });
 
   it("updates open menus when model metadata finishes loading", async () => {
-    type PendingModel = {
-      slug: string;
-      name: string;
-      provider: string;
-      contextWindows: Array<{ tokens: number; label: string; tier: string }>;
-    };
-    let resolveModels!: (models: PendingModel[]) => void;
-    const pendingModels = new Promise<PendingModel[]>((resolve) => {
+    let resolveModels!: (catalog: ModelCatalog) => void;
+    const pendingModels = new Promise<ModelCatalog>((resolve) => {
       resolveModels = resolve;
     });
     const pane = await buildPane(
@@ -653,7 +649,7 @@ describe("<EffortMenu>", () => {
     expect(queryByRole("menuitem", { name: /^Max$/ })).toBeNull();
     expect(queryByRole("menuitem", { name: /^Ultra$/ })).toBeNull();
 
-    resolveModels([
+    resolveModels(modelCatalog([
       {
         slug: "gpt-5.5",
         name: "GPT-5.5",
@@ -663,7 +659,7 @@ describe("<EffortMenu>", () => {
           { tokens: 1000000, label: "1m", tier: "extended" },
         ],
       },
-    ]);
+    ]));
 
     expect(await findByRole("menuitem", { name: /^1m$/ })).toBeInTheDocument();
   });
@@ -676,7 +672,7 @@ describe("<EffortMenu>", () => {
         contextWindow: 272000,
       }),
     );
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "gpt-5.5",
         name: "GPT-5.5",
@@ -687,7 +683,7 @@ describe("<EffortMenu>", () => {
           { tokens: 1000000, label: "1m", tier: "extended" },
         ],
       },
-    ]);
+    ]));
     setBindingMock("UpdateThreadContextWindow", async () =>
       makeThread({
         provider: "codex",
@@ -717,7 +713,7 @@ describe("<EffortMenu>", () => {
         contextWindow: 272000,
       }),
     );
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "gpt-5.2",
         name: "GPT-5.2",
@@ -731,7 +727,7 @@ describe("<EffortMenu>", () => {
           { slug: "xhigh", label: "Extra High" },
         ],
       },
-    ]);
+    ]));
     const { getByTestId, queryByText } = render(EffortMenu, { props: { pane } });
 
     await fireEvent.click(getByTestId("composer-effort-trigger"));
@@ -750,7 +746,7 @@ describe("<EffortMenu>", () => {
     let contextWindows = [
       { tokens: 272000, label: "272k", tier: "standard" },
     ];
-    setBindingMock("GetModelsForProvider", async () => [
+    setBindingMock("GetModelsForProvider", async () => modelCatalog([
       {
         slug: "gpt-5.5",
         name: "GPT-5.5",
@@ -758,7 +754,7 @@ describe("<EffortMenu>", () => {
         capabilities: [],
         contextWindows,
       },
-    ]);
+    ]));
     const { getByTestId, queryByRole, findByRole } = render(EffortMenu, { props: { pane } });
 
     await fireEvent.click(getByTestId("composer-effort-trigger"));

@@ -205,9 +205,9 @@ func ParseConnectURL(raw string) (Config, error) {
 // reports the upstream's verdict on the configured token — see
 // handleBootstrap), /ws, which carries the SPA's WebSocket to the upstream
 // with the upstream credential attached here rather than in the page (see
-// handleWS), and /attachments/, which carries attachment BODIES the same
-// way but attaches nothing, because their admission is a single-use ticket
-// the page already holds (see handleAttachmentTransfer).
+// handleWS), and /attachments/, which carries attachment and forge-media
+// BODIES the same way but attaches nothing, because their admission is a
+// single-use ticket the page already holds (see handleAttachmentTransfer).
 //
 // Still no RPC dispatch, no event bus, no method table: the proxy is a
 // byte carrier that adds one header, not a second backend.
@@ -442,7 +442,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 // attachmentPrefix is the subtree both of the upstream's attachment byte
-// routes live under, and the only pattern this stub needs for them.
+// routes live under, and the only pattern this stub needs for them: the
+// two thread-attachment routes and the forge-media read.
 //
 // A literal rather than a slice of the transport's own constants, because
 // the surfaces gate reads registrations out of the source and a selector

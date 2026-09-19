@@ -159,7 +159,7 @@ describe('<AgentPane>', () => {
     const loadUntilItem = vi.fn(async (itemId: string) => {
       expect(itemId).toBe('launch-1');
       pane.upsertItem(launchItem());
-      return true;
+      return 'loaded' as const;
     });
     (pane as { loadUntilItem: ThreadPane['loadUntilItem'] }).loadUntilItem = loadUntilItem;
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'General Purpose');
@@ -344,7 +344,7 @@ describe('<AgentPane>', () => {
     // window: the carrier carries the original's `subagent_model`, so the
     // chip must not fall back to the thread model.
     const { pane, ctx } = await setup([resumeCarrier()]);
-    (pane as { loadUntilItem: ThreadPane['loadUntilItem'] }).loadUntilItem = async () => false;
+    (pane as { loadUntilItem: ThreadPane['loadUntilItem'] }).loadUntilItem = async () => 'missing' as const;
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
 
     const { getByTestId } = render(AgentPane, { props: { ctx } });

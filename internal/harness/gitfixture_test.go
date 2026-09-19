@@ -140,3 +140,58 @@ func TestCreateRepoIgnoresInheritedGitDir(t *testing.T) {
 		t.Fatalf("fixture history = %q, want init", log)
 	}
 }
+
+func TestAddWorktreeLinksToTheSourceRepository(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "workspaces", "app")
+	if err := CreateRepo(repo, RepoSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(root, "worktrees", "app", "feature-x")
+	if err := AddWorktree(repo, worktree, "feature-x"); err != nil {
+		t.Fatalf("AddWorktree: %v", err)
+	}
+
+	common := strings.TrimSpace(gitOut(t, worktree, "rev-parse", "--git-common-dir"))
+	resolved, err := filepath.EvalSymlinks(common)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCommon, err := filepath.EvalSymlinks(filepath.Join(repo, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != wantCommon {
+		t.Fatalf("--git-common-dir = %s, want %s", resolved, wantCommon)
+	}
+	if branch := strings.TrimSpace(gitOut(t, worktree, "branch", "--show-current")); branch != "feature-x" {
+		t.Fatalf("worktree branch = %q, want feature-x", branch)
+	}
+	if branch := strings.TrimSpace(gitOut(t, repo, "branch", "--show-current")); branch != "main" {
+		t.Fatalf("source repo moved off main: %q", branch)
+	}
+	if head := strings.TrimSpace(gitOut(t, worktree, "rev-parse", "HEAD")); head == "" {
+		t.Fatal("worktree has no HEAD commit")
+	}
+}
+
+func TestAddWorktreeRefusesBlankBranchExistingPathAndNonRepo(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	if err := CreateRepo(repo, RepoSpec{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddWorktree(repo, filepath.Join(root, "wt"), "  "); err == nil {
+		t.Fatal("AddWorktree accepted a blank branch name")
+	}
+	occupied := filepath.Join(root, "occupied")
+	if err := os.MkdirAll(occupied, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddWorktree(repo, occupied, "b1"); err == nil {
+		t.Fatal("AddWorktree accepted an existing worktree path")
+	}
+	if err := AddWorktree(filepath.Join(root, "missing"), filepath.Join(root, "wt2"), "b2"); err == nil {
+		t.Fatal("AddWorktree accepted a directory that is not a repository")
+	}
+}

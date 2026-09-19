@@ -9,6 +9,7 @@ import { type ApplyItemUpsertsToWindowResult, applyItemUpsertsToWindow } from '.
 import type { ThreadTimelineWindow } from './threadTimelineWindow.svelte';
 import type { ThreadSubagentMemory } from './threadSubagentMemory';
 import type { ThreadStreamingReveal } from './threadStreamingReveal.svelte';
+import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
 import { isSmoothLiveContentKind } from './threadPaneShared';
 
 export interface ThreadItemStreamApplyOptions {
@@ -48,6 +49,7 @@ export interface ThreadItemStreamApplyOptions {
   timelineWindow: ThreadTimelineWindow;
   subagentMemory: ThreadSubagentMemory;
   streamingReveal: ThreadStreamingReveal;
+  activityRuns: ThreadActivityRuns;
 }
 
 /** Distinct itemIds a pane will warn about before the ledger resets. */
@@ -92,7 +94,7 @@ export interface ThreadItemStreamApply {
 export function createThreadItemStreamApply(
   options: ThreadItemStreamApplyOptions,
 ): ThreadItemStreamApply {
-  const { itemIndexById, subagentMemory, streamingReveal, timelineWindow } =
+  const { activityRuns, itemIndexById, subagentMemory, streamingReveal, timelineWindow } =
     options;
 
   /**
@@ -176,8 +178,13 @@ export function createThreadItemStreamApply(
         newestLoadedTurnIndex: timelineWindow.newestLoadedTurnIndex,
         hasMoreHistory: timelineWindow.hasMoreHistory,
         hasMoreNewer: timelineWindow.hasMoreNewer,
+        runCoveringUnshipped: (item) => activityRuns.runCoveringUnshipped(item),
     });
     if (!next) return null;
+    // Refused because the row belongs to a part of a held run the pane
+    // does not hold: the record is marked dirty and the debounced stub
+    // refresh restates the run (see `ApplyItemUpsertsToWindowOptions`).
+    for (const runKey of next.dirtiedRunKeys) activityRuns.markRunDirty(runKey);
     // Admission is decided inside the merge itself (see
     // `rejectedParentedItems`): a new child lands only when its anchor
     // is loaded or landed earlier in the same batch, so the

@@ -20,6 +20,8 @@ absolute row positioning, scroll-event input, scroll-end synthesis, and the
 - A pending `scrollToIndex` may converge through later measurement passes only
   while the viewport remains where that journey last placed it. Cancel after
   unrelated motion rather than overriding reader input or another controller.
+  It follows its destination row by key across data changes; an index is only
+  a per-pass cache.
 
 Read [`frontend-scroll.md`](../../../../../docs/architecture/frontend-scroll.md)
 before changing measurement, compensation, anchoring, or write ownership.

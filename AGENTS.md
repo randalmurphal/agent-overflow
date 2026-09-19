@@ -95,7 +95,7 @@ code changed; run broader checks when the impact crosses areas or is uncertain.
 
 For Go changes, use the Make targets so platform build settings are applied:
 `make go-build` and `make go-test`, and run `gofmt -w` on every changed Go
-file before committing. For frontend changes, run
+file before finishing. For frontend changes, run
 `cd frontend && pnpm run check`, `cd frontend && pnpm run build`, and the
 relevant Vitest tests. Changes to shared bindings, transport or build settings
 may require checks on both sides. Documentation-only changes need checks of
@@ -107,7 +107,7 @@ compact layout, the harness wire, and any spec whose header names the changed
 behavior. Run the affected specs with `bin/ao-harness-e2e tests/<spec>` and
 `make e2e` when the affected set is unclear. No CI runs these suites; the
 author's run is the gate. A failing check in a relevant suite belongs to the
-change whether the code or the test is wrong: fix it before committing, never
+change whether the code or the test is wrong: fix it before finishing, never
 record it as pre-existing.
 
 `make help` lists supported commands; [Development](docs/architecture/development.md)

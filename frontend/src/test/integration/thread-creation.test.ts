@@ -7,6 +7,7 @@ import { describe, expect, it, beforeAll, beforeEach } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import App from '../../App.svelte';
 import { setBindingMock } from '../mocks/bindings-app';
+import { modelCatalog } from '../helpers/modelCatalog';
 import { getProviderModels } from '../../lib/stores/providerModels.svelte';
 import {
   flush,
@@ -63,7 +64,7 @@ describe('App integration — thread creation', () => {
     }));
     const getModels = setBindingMock('GetModelsForProvider', async (provider) => {
       const providerName = String(provider);
-      return [{ slug: `${providerName}-model`, name: `${providerName} model`, provider: providerName }];
+      return modelCatalog([{ slug: `${providerName}-model`, name: `${providerName} model`, provider: providerName }]);
     });
 
     render(App);
@@ -81,7 +82,7 @@ describe('App integration — thread creation', () => {
     setBindingMock('GetSettings', async () => {
       throw new Error('settings unavailable');
     });
-    const getModels = setBindingMock('GetModelsForProvider', async () => []);
+    const getModels = setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
 
     render(App);
     await flush(10);

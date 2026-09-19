@@ -5,6 +5,7 @@ import { createThreadPane, type ThreadPane } from '../../lib/stores/thread.svelt
 import type { PaneScrollController } from '../../lib/stores/threadPaneShared';
 import type { ItemDeltaEvent } from '../../lib/types/events';
 import type { Item, Thread } from '../../lib/types/models';
+import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
 import { setBindingMock } from '../mocks/bindings-app';
 import { emitWailsEvent } from '../mocks/wailsio-runtime';
 
@@ -97,7 +98,7 @@ export function emitItemEventDelta(delta: ItemDeltaEvent): void {
   });
 }
 
-export function installPaneMocks(items: Item[] = []): void {
+export function installPaneMocks(items: Item[] = [], runs: ActivityRunStub[] = []): void {
   setBindingMock('SwitchThread', async (threadId: unknown) =>
     makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }));
   // ChatView may mark the active thread read as completed turns settle;
@@ -111,10 +112,14 @@ export function installPaneMocks(items: Item[] = []): void {
   setBindingMock('AutoResumeThread', async () => {});
   // The pane loads the initial slice of history via ListThreadSliceAround
   // on switch (works for both bottom-snapshot and saved-anchor cases).
+  // `runs` are the page's activity run stubs: a run whose members the
+  // page did not all ship is described by one, and the pane's registry
+  // folds it against the rows it holds.
   setBindingMock('ListThreadSliceAround', async () => ({
     items,
     oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
     hasMore: false,
+    runs,
   }));
   setBindingMock('ListPendingInteractiveRequests', async () => ({
     approvals: [],
@@ -169,8 +174,9 @@ export async function buildPane(
   thread: Thread = makeThread(),
   items: Item[] = [],
   paneKey = 'main',
+  runs: ActivityRunStub[] = [],
 ): Promise<ThreadPane> {
-  installPaneMocks(items);
+  installPaneMocks(items, runs);
   setBindingMock('SwitchThread', async () => thread);
   // The pane's own id matches the registry key: production panes are always
   // registered under their paneId, and pane-focus-gated behavior (the

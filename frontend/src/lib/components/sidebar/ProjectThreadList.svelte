@@ -341,7 +341,7 @@
 {:else}
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
-    class="flex flex-col gap-px ml-2 border-l border-border-subtle/60 rounded-[var(--radius-field)]
+    class="flex flex-col gap-px ml-4 border-l border-border-subtle/60 rounded-[var(--radius-field)]
       {showUngroupOutline ? 'outline-1 outline-dashed -outline-offset-1 outline-border-subtle' : ''}"
     role="list"
     aria-label="Project Threads"
@@ -420,7 +420,7 @@
             type="button"
             onclick={handleShowMore}
             data-testid="project-thread-list-show-more"
-            class="group/more flex items-center gap-1.5 h-6 compact:h-9 pl-6 pr-2 rounded-[var(--radius-field)] text-[0.625rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            class="group/more flex items-center gap-1.5 h-6 compact:h-9 px-2 rounded-[var(--radius-field)] text-[0.625rem] text-fg-hint hover:bg-surface-2/30 hover:text-fg cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           >
             {#if hiddenStatus}
               <span

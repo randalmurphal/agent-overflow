@@ -102,3 +102,37 @@ func TestHarnessSeedWorkflowCountIsBoundedBeforeMutation(t *testing.T) {
 		t.Fatalf("oversized seed mutated projects: %+v, %v", projects, listErr)
 	}
 }
+
+// Seeded history goes in behind the store, so the row CreateThread announced
+// (IsDraft=true, no items) must be re-broadcast once the items exist. A thread
+// seeded without history has nothing new to say.
+func TestHarnessSeedBroadcastsRowsWhoseHistoryLandedBehindTheStore(t *testing.T) {
+	receiver, host := newHarnessTestHost(t)
+	result, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name: "broadcast-after-seed",
+		Repo: &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{
+			{Title: "with history", Turns: []HarnessSeedTurn{{
+				UserText: "hi",
+				Items:    []HarnessSeedItem{{Kind: "assistant_text", Summary: "Done."}},
+			}}},
+			{Title: "with session ref", SessionRef: "session-1"},
+			{Title: "empty"},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ids := result.Projects[0].ThreadIDs
+	want := []string{ids[0], ids[1]}
+	if strings.Join(host.broadcastRows, ",") != strings.Join(want, ",") {
+		t.Fatalf("broadcast rows = %v, want %v", host.broadcastRows, want)
+	}
+	row, err := host.store.GetThread(ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.IsDraft {
+		t.Fatal("seeded thread with history still reads as a draft; the broadcast would re-announce a draft row")
+	}
+}

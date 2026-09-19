@@ -5,6 +5,7 @@ import FootnotePopoverHost from './FootnotePopoverHost.svelte';
 import { CHAT_MARKDOWN_PRESENCE_CONTEXT } from './markdownSettledContext';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { setPageGrantsFromBootstrap } from '../../transport/scopes';
+import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../../test/helpers/scopes';
 
 // Integration coverage for the path-link primitive flowing through
 // Streamdown's URL gate. The unit suite in `pathLinkExtension.test.ts`
@@ -20,6 +21,7 @@ import { setPageGrantsFromBootstrap } from '../../transport/scopes';
 describe('<ChatMarkdown> path-link rendering', () => {
   afterEach(() => {
     setPageGrantsFromBootstrap(false);
+    resetToLocalPage();
   });
 
   it('renders an agent-overflow:open anchor when the path is on the allowlist', async () => {
@@ -366,20 +368,93 @@ describe('<ChatMarkdown> path-link rendering', () => {
 
   it('never renders a raw same-origin img for a /-leading image src', async () => {
     // Image.svelte carried the same isPathRelativeUrl bypass Link.svelte
-    // lost (markdown/AGENTS.md § Rendering and input validation): `![x](/api/whatever)`
-    // rendered a raw <img> issuing a model-authored same-origin GET.
+    // lost (markdown/AGENTS.md § URL and HTML boundary): `![x](/api/whatever)`
+    // rendered a raw <img> issuing a model-authored same-origin GET. On a
+    // surface with a workspace the src is a LOCAL PATH and loads through the
+    // guarded backend read; the transport server is never asked for it.
+    const calls: string[] = [];
+    setBindingMock('GetLocalImageData', async (path: string) => {
+      calls.push(path);
+      throw new Error('load local image: read: no such file');
+    });
     const { container } = render(ChatMarkdown, {
       props: {
-        source: '![beacon](/api/whatever) and ![off](//evil.example/x.png)',
+        source: '![beacon](/api/whatever)',
         workspacePath: '/repo',
         pathRefs: [],
       },
     });
 
     await waitFor(() => {
-      expect(container.querySelector('[data-streamdown-image-blocked]')).not.toBeNull();
+      expect(container.querySelector('[data-streamdown-image-error]')).not.toBeNull();
     });
 
+    expect(calls).toEqual(['/api/whatever']);
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('loads a bare-path image the agent wrote, on a surface with no host desktop', async () => {
+    // `![baseline](/tmp/shots/baseline.png)` is how an agent shows a
+    // screenshot. The bytes come over the transport from the thread's
+    // machine, so a page without `host` (a paired browser) still sees it.
+    setBindingMock('GetLocalImageData', async () => ({
+      data: 'iVBORw0KGgo=',
+      mimeType: 'image/png',
+    }));
+    await pairWithScopes(OBSERVE_SCOPES);
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '![baseline](/tmp/shots/baseline.png) and ![rel](docs/flow.png) and ![home](~/shot.png)',
+        workspacePath: '/repo',
+        pathRefs: [],
+      },
+    });
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('img')).toHaveLength(3);
+    });
+    expect(container.querySelector('[data-streamdown-image-blocked]')).toBeNull();
+    expect(container.querySelector('a')).toBeNull();
+  });
+
+  it('renders an inline data:image src and reports a decode failure instead of leaving a gap', async () => {
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '![dot](data:image/gif;base64,R0lGODlhAQABAAAAACw=)',
+        pathRefs: [],
+      },
+    });
+
+    let img: HTMLImageElement | null = null;
+    await waitFor(() => {
+      img = container.querySelector('img');
+      expect(img).not.toBeNull();
+    });
+    expect(img!.getAttribute('src')).toBe('data:image/gif;base64,R0lGODlhAQABAAAAACw=');
+
+    img!.dispatchEvent(new Event('error'));
+    await waitFor(() => {
+      expect(container.querySelector('[data-streamdown-image-error]')).not.toBeNull();
+    });
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('shows a path-shaped image as unavailable, not blocked, on a workspace-less surface', async () => {
+    // A PR body's `![x](/uploads/…)` has nothing to resolve against here.
+    const { container } = render(ChatMarkdown, {
+      props: {
+        source: '![screenshot](/uploads/abc/image.png) and ![evil](javascript:alert(1))',
+        pathRefs: [],
+      },
+    });
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-streamdown-image-blocked]')).toHaveLength(2);
+    });
+    const [upload, script] = Array.from(container.querySelectorAll('[data-streamdown-image-blocked]'));
+    expect(upload.textContent).toContain('[Image unavailable: screenshot]');
+    expect(upload.getAttribute('title')).toBe('Cannot load from this surface: /uploads/abc/image.png');
+    expect(script.getAttribute('title')).toBe('Blocked URL: javascript:alert(1)');
     expect(container.querySelector('img')).toBeNull();
   });
 
@@ -411,18 +486,15 @@ describe('<ChatMarkdown> path-link rendering', () => {
   it.each([
     ['settled (compact static path)', false],
     ['streaming (component path)', true],
-  ])('never renders a raw anchor for a //-leading href — %s', async (_name, streaming) => {
-    // `//host/x` is a protocol-relative reference: it names a real host, so
-    // a live anchor is a top-level cross-origin navigation off the app
-    // origin. Both halves of the gate have to reject it — `transformUrl`
-    // parses with no base, so it throws and fails closed, and the schemeless
-    // predicate excludes `//` explicitly so the rejection keeps its tag
-    // rather than reading as ordinary repo-relative prose.
+  ])('resolves a //-leading href to https, never to the app origin — %s', async (_name, streaming) => {
+    // `//host/x` names a real host. `parseUrl` resolves it against a fixed
+    // `https:`, never against the page, so the anchor is an ordinary
+    // off-origin link and no relative form can land on the transport server.
     //
     // Asserted through the real component on BOTH render paths, because a
     // settled ChatMarkdown serializes through `staticHtml.ts` and only a
     // streaming one mounts `Link.svelte` — see markdown/AGENTS.md
-    // § Rendering and input validation and the corpus in
+    // § URL and HTML boundary and the corpus in
     // ChatMarkdown.compactStaticLinkUrls.test.ts.
     const { container } = render(ChatMarkdown, {
       props: {
@@ -433,13 +505,13 @@ describe('<ChatMarkdown> path-link rendering', () => {
     });
 
     await waitFor(() => {
-      const span = container.querySelector('[data-streamdown-link-blocked]');
-      expect(span).not.toBeNull();
-      expect(span?.textContent).toContain('my notes [blocked]');
-      expect(span?.getAttribute('title')).toBe('Blocked URL: //example.test/path');
+      const anchor = container.querySelector('a[data-streamdown-link]');
+      expect(anchor).not.toBeNull();
+      expect(anchor?.getAttribute('href')).toBe('https://example.test/path');
+      expect(anchor?.textContent).toBe('my notes');
     });
 
-    expect(container.querySelector('a')).toBeNull();
+    expect(container.querySelector('[data-streamdown-link-blocked]')).toBeNull();
   });
 
   it('renders a half-typed link as an inert anchor while the tail streams', async () => {

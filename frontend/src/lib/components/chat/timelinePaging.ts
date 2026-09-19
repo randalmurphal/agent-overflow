@@ -9,11 +9,13 @@ import { tick } from 'svelte';
 import type {
   PaneSession,
   ScrollHost,
+  TimelineSource,
   TimelineWindow,
 } from '../../stores/threadPaneRoles';
 import type { UseStickToBottomController } from '../../utils/scroll/index.svelte';
 import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
 import type { TimelineNode } from '../../utils/subagentGrouping';
+import { ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS } from '../../stores/threadPaneShared';
 import {
   autoLoadZonesDisjoint,
   bottomEdgeGeometry,
@@ -45,7 +47,7 @@ const AUTO_LOAD_ZONE: AutoLoadZoneThresholds = {
 };
 
 export interface TimelinePagingOptions {
-  getPane(): PaneSession & TimelineWindow & ScrollHost;
+  getPane(): PaneSession & TimelineWindow & ScrollHost & Pick<TimelineSource, 'items'>;
   stick: UseStickToBottomController;
   getListRef(): TimelineVirtualizerHandle | undefined;
   getScrollEl(): HTMLDivElement | undefined;
@@ -66,6 +68,17 @@ export interface TimelinePaging {
    */
   probeOlderOnUpwardGesture(): boolean;
   maybeAutoLoadNewer(offset: number): boolean;
+  /**
+   * Height-driven fill, run from the quiet scheduler. A page is sized in
+   * rows, and a window whose rows collapse into a few activity runs can
+   * be shorter than the viewport plus both auto-load zones — a height at
+   * which no scroll offset ever reaches a trigger, so the reader sits
+   * under a "Load older" button with most of the screen empty. Pages one
+   * section per pass until the window is tall enough, there is nothing
+   * more to page, or the window holds what retention would cut anyway.
+   * Returns whether it started a load.
+   */
+  maybeFillViewport(): boolean;
   handleLoadOlder(): Promise<void>;
   handleLoadNewer(): Promise<void>;
   handleLoadNewerAuto(): Promise<void>;
@@ -170,6 +183,27 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     return true;
   }
 
+  function maybeFillViewport(): boolean {
+    const pane = options.getPane();
+    const viewport = options.getScrollEl();
+    // A hidden pane reports no height; filling against zero would page
+    // the whole thread in behind a screen nobody is looking at.
+    if (!options.getListRef() || !viewport || viewport.clientHeight <= 0) return false;
+    if (viewport.scrollHeight >= viewport.clientHeight + 2 * AUTO_LOAD_OFFSET_PX) return false;
+    if (pane.items.length >= ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS) return false;
+    // Older first: the reader entered at the tail, so history is what a
+    // short window is missing. Newer only exists after a jump away from it.
+    if (pane.hasMoreHistory && !pane.loadingOlder) {
+      void handleLoadOlder();
+      return true;
+    }
+    if (pane.hasMoreNewer && !pane.loadingNewer) {
+      void handleLoadNewerAuto();
+      return true;
+    }
+    return false;
+  }
+
   // Shared shape behind all three load handlers below: pause auto-scroll
   // for the duration of the load, run the caller's load body, then disarm
   // the gate — UNLESS a thread switch happened mid-load (that switch
@@ -201,13 +235,18 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
   // pre-request restore here. Scroll input keeps the virtualizer's candidate
   // current while the request is in flight, so a user who keeps moving is
   // never pulled back to the request's starting position. The pause lease
-  // keeps scrollHeight growth from re-sticking; `escaped` marks the user as
-  // reading older.
+  // keeps scrollHeight growth from re-sticking.
+  //
+  // Intent is not written here. A load is not a reader gesture: the
+  // upward-scroll trigger has already escaped through the intent machine,
+  // and the viewport fill and the button fire under a reader who may be
+  // following the bottom, where the prepend lands above them and leaves
+  // them following. Marking escape here showed the jump chip over a
+  // bottom-pinned viewport and saved that state as the thread's snapshot.
   async function handleLoadOlder(): Promise<void> {
     if (!options.getListRef()) return;
     const pane = options.getPane();
     await withGuardedDisarm(autoLoadOlderGate, async () => {
-      options.stick.setEscapedFromLock(true);
       await pane.loadOlder();
       await tick();
       options.saveScrollSnapshot();
@@ -234,7 +273,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
       if (lastIndex < 0) return;
       // Explicit navigation into the middle of history (more-newer may
       // remain below): escape bottom follow, then jump.
-      options.stick.setEscapedFromLock(true);
+      options.stick.markEscaped();
       // scrollToIndex(end) below can land in the bottom trigger zone;
       // withGuardedDisarm's disarm keeps that programmatic scroll from
       // auto-firing another load.
@@ -290,6 +329,7 @@ export function createTimelinePaging(options: TimelinePagingOptions): TimelinePa
     maybeAutoLoadOlder,
     probeOlderOnUpwardGesture,
     maybeAutoLoadNewer,
+    maybeFillViewport,
     handleLoadOlder,
     handleLoadNewer,
     handleLoadNewerAuto,

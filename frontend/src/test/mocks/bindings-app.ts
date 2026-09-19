@@ -624,6 +624,7 @@ export const SyncThreadWindow = async (
   );
   return { status: 'stale', epoch: 1, rev: 1, generation: 'test-generation', page };
 };
+export const ListActivityRunMembers = dispatch('ListActivityRunMembers');
 export const ListItemsBeforeCursor = dispatch('ListItemsBeforeCursor');
 export const ListItemsAfterCursor = dispatch('ListItemsAfterCursor');
 export const ListSubagentDescendants = dispatch('ListSubagentDescendants');
@@ -648,6 +649,8 @@ export const GetMergeConflictFile = dispatch('GetMergeConflictFile');
 export const GetPRCIJobs = dispatch('GetPRCIJobs');
 export const GetPRCIJobLog = dispatch('GetPRCIJobLog');
 export const SavePRCIJobLog = dispatch('SavePRCIJobLog');
+export const FetchForgeAttachment = dispatch('FetchForgeAttachment');
+export const SaveForgeAttachment = dispatch('SaveForgeAttachment');
 export const ListPRReviewThreads = dispatch('ListPRReviewThreads');
 export const SubmitPRReview = dispatch('SubmitPRReview');
 export const ReplyToPRThread = dispatch('ReplyToPRThread');

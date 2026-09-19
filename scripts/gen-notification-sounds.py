@@ -11,24 +11,32 @@ this repository's licence and nothing else's. Output is deterministic (the
 noise sources are seeded), so a rerun with no edits is a no-op diff.
 
 One list of cues serves every notification event; the defaults per event are
-`settings.DefaultSettings`. The cues are chosen to differ by TEXTURE rather
-than by melody, so a person tells them apart without listening for pitch:
+`settings.DefaultSettings`. The cues differ by TEXTURE rather than by melody,
+so a person tells them apart without listening for pitch:
 
   swoosh   air sweeping high to low, no pitch        default: turn complete
   marimba  two wooden notes rising a fifth
-  chord    a warm electric-piano pair
+  chord    a warm two-note pad
   knock    two low knocks, like a door               default: input needed
-  pop      two soft blips, rising
+  pop      two glass notes rising
   hum      one low note sliding down                 default: attention
-  boop     a rounded low double blip
+  chime    two glass notes falling a fifth, C6 to F5
 
-Everything sits below ~2.6 kHz where laptop speakers are least shrill, the
-partials above each fundamental decay faster than it (which is what makes a
-tone read as struck rather than beeped), and the attacks are soft. Peak
-levels stay well under full scale: a cue is a foreground interruption played
-over whatever else is running, and one that clips is one the user turns off.
-The fade at the tail of every cue keeps a hard stop from clicking on the
-platforms that do not ramp the last buffer down.
+What makes a cue sound finished rather than synthetic is not the instrument,
+it is the ROOM and the ATTACK. The OS cues these sit beside are near-pure
+tones with a 1 ms attack, a 60 ms decay, and a reverb tail that starts 25 dB
+below the hit and fades over a second and a half. So every cue here is a dry
+voice with an instant (or deliberately slow) attack, sent through the same
+stereo reverb (`reverb`), and the file runs long enough for the tail to
+reach silence. The audible part of a cue is still well under a second; the
+tail is what stops it sounding like it was cut off.
+
+Every cue is normalised by SHORT-TERM LOUDNESS (`LOUDNESS_DB`), the RMS of its
+loudest 100 ms, which is the measure that tracks how loud a short sound is
+heard. The target sits between the Windows default notification sound
+(-19.3 dBFS) and the macOS one (-14.8 dBFS) measured the same way, so
+switching an event between a built-in cue and "System sound" does not change
+how loud notifications are on either platform.
 """
 
 from __future__ import annotations
@@ -40,69 +48,67 @@ import struct
 import wave
 
 SAMPLE_RATE = 44_100
-CHANNELS = 1
+CHANNELS = 2
 SAMPLE_WIDTH = 2  # 16-bit PCM
 FULL_SCALE = 32_767
 
-# Every cue is normalised by SHORT-TERM LOUDNESS, not peak: the RMS of its
-# loudest 100 ms window, which is the measure that tracks how loud a short
-# sound is heard. Peak normalisation put a sharp knock and a sustained hum at
-# the same peak and very different loudness, and left the whole set about
-# 4 dB hotter than the OS sounds they sit beside.
-#
-# The target is the Windows default notification sound (Windows Notify System
-# Generic.wav) measured the same way: -19.3 dBFS. Matching it means switching
-# an event between a built-in cue and "System sound" does not change how loud
-# notifications are.
-LOUDNESS_DB = -19.3
+LOUDNESS_DB = -17.0
+LOUDNESS_WINDOW = 0.100
 # Broadband noise is heard louder than a tone at the same RMS (it fills the
 # whole hearing range), so the swoosh sits below the tonal target.
 SWOOSH_OFFSET_DB = -4.0
-LOUDNESS_WINDOW = 0.100
 CEILING = 0.85
 
 # Seconds of linear fade at the very end of a cue, so playback stopping on a
 # non-zero sample cannot click.
 TAIL_FADE = 0.012
 
+# Total length of every cue. The voices finish inside the first half second;
+# the rest is the reverb tail reaching silence.
+CUE_SECONDS = 2.0
+
 OUTPUT_DIR = pathlib.Path("frontend/src/lib/assets/sounds")
 
 # A timbre is a list of partials: (frequency ratio, gain, decay rate). The
 # decay rate is the exponent of the envelope, so a bigger number dies sooner.
-EPIANO = [(1.0, 1.0, 4.0), (2.0, 0.30, 7.0), (3.0, 0.10, 11.0), (4.0, 0.04, 16.0)]
-MARIMBA = [(1.0, 1.0, 7.0), (4.0, 0.22, 20.0), (9.9, 0.05, 40.0)]
-SOFT = [(1.0, 1.0, 5.0), (2.0, 0.12, 9.0)]
-HUM = [(1.0, 1.0, 3.0), (2.0, 0.45, 5.0), (3.0, 0.15, 8.0)]
-BLIP = [(1.0, 1.0, 9.0), (2.0, 0.18, 14.0), (3.0, 0.05, 20.0)]
-BLIP_LONG = [(1.0, 1.0, 7.0), (2.0, 0.18, 12.0), (3.0, 0.05, 18.0)]
+# Partials above the fundamental die faster than it, which is what makes a
+# tone read as struck rather than beeped.
+GLASS = [(1.0, 1.0, 14.0), (3.0, 0.02, 30.0)]
+CHIME = [(1.0, 1.0, 42.0), (2.0, 0.03, 60.0), (3.0, 0.015, 80.0)]
+MARIMBA = [(1.0, 1.0, 9.0), (3.98, 0.18, 26.0), (9.3, 0.04, 50.0)]
+PAD = [(1.0, 1.0, 3.2), (2.0, 0.28, 5.0), (3.0, 0.08, 8.0), (4.0, 0.03, 12.0)]
+HUM = [(1.0, 1.0, 2.6), (2.0, 0.40, 4.5), (3.0, 0.10, 7.0)]
 
 
-def empty(seconds: float) -> list[float]:
-    return [0.0] * int(seconds * SAMPLE_RATE)
+def empty() -> list[float]:
+    return [0.0] * int(CUE_SECONDS * SAMPLE_RATE)
 
 
 def tone(
     buf: list[float],
     start: float,
     freq: float,
-    dur: float,
     gain: float,
     partials: list[tuple[float, float, float]],
-    attack: float = 0.012,
+    attack: float = 0.0015,
     glide_to: float | None = None,
     glide_time: float = 0.0,
     detune_hz: float = 0.0,
 ) -> None:
-    """Add one additive tone to buf.
+    """Add one additive tone to buf, running until its partials have decayed.
 
     glide_to / glide_time slide the fundamental from freq to glide_to over
     glide_time seconds (an ease-out, so the bend is heard at the start).
     detune_hz adds a quieter copy of the fundamental offset by that many Hz;
-    the slow beat between the two is what reads as warmth on a mono signal.
+    the slow beat between the two is what reads as warmth.
     """
     first = int(start * SAMPLE_RATE)
-    frames = int(dur * SAMPLE_RATE)
-    for ratio, partial_gain, decay in partials:
+    slowest = min(decay for _, _, decay in partials)
+    frames = min(len(buf) - first, int(8.0 / slowest * SAMPLE_RATE))
+    voices = [(ratio, g, decay, 0.0) for ratio, g, decay in partials]
+    if detune_hz:
+        voices.append((1.0, partials[0][1] * 0.6, partials[0][2], detune_hz))
+    for ratio, partial_gain, decay, offset in voices:
         phase = 0.0
         for i in range(frames):
             t = i / SAMPLE_RATE
@@ -112,27 +118,23 @@ def tone(
             else:
                 f0 = freq
             envelope = min(1.0, t / attack) * math.exp(-decay * t)
-            phase += 2.0 * math.pi * f0 * ratio / SAMPLE_RATE
-            index = first + i
-            if index < len(buf):
-                buf[index] += gain * partial_gain * envelope * math.sin(phase)
-    if detune_hz:
-        phase = 0.0
-        decay = partials[0][2]
-        for i in range(frames):
-            t = i / SAMPLE_RATE
-            envelope = min(1.0, t / attack) * math.exp(-decay * t)
-            phase += 2.0 * math.pi * (freq + detune_hz) / SAMPLE_RATE
-            index = first + i
-            if index < len(buf):
-                buf[index] += gain * partials[0][1] * 0.6 * envelope * math.sin(phase)
+            phase += 2.0 * math.pi * (f0 * ratio + offset) / SAMPLE_RATE
+            buf[first + i] += gain * partial_gain * envelope * math.sin(phase)
+
+
+def tick(buf: list[float], start: float, gain: float, seed: int, cutoff: float = 2_400.0) -> None:
+    """The contact of a strike: 3 ms of low-passed noise. Almost inaudible on
+    its own, it is what tells the ear a note was hit rather than switched on."""
+    rng = random.Random(seed)
+    first = int(start * SAMPLE_RATE)
+    frames = int(0.004 * SAMPLE_RATE)
+    for i, value in enumerate(lowpass([rng.uniform(-1, 1) for _ in range(frames)], cutoff)):
+        buf[first + i] += gain * value * math.exp(-900.0 * i / SAMPLE_RATE)
 
 
 def lowpass(samples: list[float], cutoff: float) -> list[float]:
     """One-pole low-pass, for taking the hiss off a noise burst."""
-    rc = 1.0 / (2.0 * math.pi * cutoff)
-    dt = 1.0 / SAMPLE_RATE
-    a = dt / (rc + dt)
+    a = (1.0 / SAMPLE_RATE) / ((1.0 / (2.0 * math.pi * cutoff)) + (1.0 / SAMPLE_RATE))
     y = 0.0
     out = []
     for x in samples:
@@ -143,9 +145,9 @@ def lowpass(samples: list[float], cutoff: float) -> list[float]:
 
 def knock(buf: list[float], start: float, freq: float, gain: float, seed: int) -> None:
     """A soft wooden knock: a pitched thump whose pitch drops fast, plus a
-    tiny low-passed noise burst for the contact."""
+    low-passed noise burst for the contact."""
     rng = random.Random(seed)
-    frames = int(0.12 * SAMPLE_RATE)
+    frames = int(0.14 * SAMPLE_RATE)
     noise = lowpass([rng.uniform(-1, 1) for _ in range(int(0.015 * SAMPLE_RATE))], 900.0)
     first = int(start * SAMPLE_RATE)
     phase = 0.0
@@ -153,13 +155,11 @@ def knock(buf: list[float], start: float, freq: float, gain: float, seed: int) -
         t = i / SAMPLE_RATE
         f0 = freq * (1.0 + 0.9 * math.exp(-t * 90))
         phase += 2.0 * math.pi * f0 / SAMPLE_RATE
-        envelope = min(1.0, t / 0.002) * math.exp(-28.0 * t)
+        envelope = min(1.0, t / 0.0015) * math.exp(-26.0 * t)
         value = gain * envelope * (math.sin(phase) + 0.25 * math.sin(2 * phase))
         if i < len(noise):
             value += gain * 0.35 * noise[i] * math.exp(-260.0 * t)
-        index = first + i
-        if index < len(buf):
-            buf[index] += value
+        buf[first + i] += value
 
 
 def swoosh(
@@ -172,7 +172,7 @@ def swoosh(
     attack: float,
     decay: float,
     seed: int,
-    pre_lowpass: float = 6_000.0,
+    pre_lowpass: float = 5_000.0,
 ) -> None:
     """Air: low-passed white noise through two cascaded resonant band-passes
     whose centre sweeps exponentially from f_from to f_to over dur. The
@@ -195,9 +195,62 @@ def swoosh(
         low2 += f * band2
         band2 += f * (band1 - low2 - damping * band2)
         envelope = min(1.0, t / attack) * math.exp(-decay * t)
-        index = first + i
-        if index < len(buf):
-            buf[index] += envelope * band2
+        buf[first + i] += envelope * band2
+
+
+# ----------------------------------------------------------------- the room
+
+# Freeverb's tuning (Jezar at Dreampoint, public domain): eight parallel
+# feedback combs with a damping low-pass in the loop, then four series
+# all-passes. The right channel runs every delay STEREO_SPREAD samples longer,
+# which decorrelates the two tails just enough to read as a room around the
+# listener rather than a mono echo. Lengths are in samples at 44.1 kHz.
+COMB_LENGTHS = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617]
+ALLPASS_LENGTHS = [556, 441, 341, 225]
+STEREO_SPREAD = 23
+
+
+def reverb(
+    dry: list[float],
+    room: float = 0.92,
+    damp: float = 0.25,
+    predelay: float = 0.012,
+) -> tuple[list[float], list[float]]:
+    """The wet signal for dry, as (left, right), unscaled.
+
+    room is the comb feedback (0.92 fades the tail about 2 dB per 100 ms,
+    the rate the OS cues' rooms do, so -60 dB arrives near the file's end);
+    damp is how much high end each pass through the loop loses, so the tail
+    darkens as it fades the way a real room's does. predelay separates the
+    hit from the first reflection, which keeps the attack clean."""
+    delay = int(predelay * SAMPLE_RATE)
+    out: list[list[float]] = []
+    for spread in (0, STEREO_SPREAD):
+        combs = [[0.0] * (n + spread) for n in COMB_LENGTHS]
+        comb_idx = [0] * len(COMB_LENGTHS)
+        comb_store = [0.0] * len(COMB_LENGTHS)
+        allpasses = [[0.0] * (n + spread) for n in ALLPASS_LENGTHS]
+        allpass_idx = [0] * len(ALLPASS_LENGTHS)
+        channel = [0.0] * len(dry)
+        for n in range(len(dry)):
+            x = dry[n - delay] if n >= delay else 0.0
+            acc = 0.0
+            for c in range(len(combs)):
+                buffer = combs[c]
+                y = buffer[comb_idx[c]]
+                comb_store[c] = y * (1.0 - damp) + comb_store[c] * damp
+                buffer[comb_idx[c]] = x + comb_store[c] * room
+                comb_idx[c] = (comb_idx[c] + 1) % len(buffer)
+                acc += y
+            for a in range(len(allpasses)):
+                buffer = allpasses[a]
+                y = buffer[allpass_idx[a]]
+                buffer[allpass_idx[a]] = acc + y * 0.5
+                allpass_idx[a] = (allpass_idx[a] + 1) % len(buffer)
+                acc = y - acc
+            channel[n] = acc
+        out.append(channel)
+    return out[0], out[1]
 
 
 def loudness(buf: list[float]) -> float:
@@ -211,20 +264,33 @@ def loudness(buf: list[float]) -> float:
     return loudest
 
 
-def normalise(buf: list[float], offset_db: float = 0.0) -> list[float]:
-    scale = 10 ** ((LOUDNESS_DB + offset_db) / 20) / max(loudness(buf), 1e-9)
-    return [max(-CEILING, min(CEILING, v * scale)) for v in buf]
+def place(dry: list[float], wet_db: float, offset_db: float = 0.0, **room: float) -> list[list[float]]:
+    """Put the dry voice in the room and bring the mix to the loudness target.
+
+    wet_db is the reverb's loudest moment relative to the dry voice's. The
+    OS cues sit their tails 22 to 26 dB under the hit; a pad wants more room
+    than a knock, so each cue states its own. Returns [left, right]."""
+    left, right = reverb(dry, **room)
+    wet_scale = 10 ** (wet_db / 20) * loudness(dry) / max(loudness(left), 1e-9)
+    mix = [
+        [d + w * wet_scale for d, w in zip(dry, left)],
+        [d + w * wet_scale for d, w in zip(dry, right)],
+    ]
+    mono = [(a + b) / 2 for a, b in zip(*mix)]
+    scale = 10 ** ((LOUDNESS_DB + offset_db) / 20) / max(loudness(mono), 1e-9)
+    return [[max(-CEILING, min(CEILING, v * scale)) for v in channel] for channel in mix]
 
 
-def quantise(buf: list[float]) -> list[int]:
+def quantise(channels: list[list[float]]) -> list[int]:
+    """Interleave to 16-bit frames with the anti-click fade on the tail."""
     fade = int(TAIL_FADE * SAMPLE_RATE)
-    frames = len(buf)
+    frames = len(channels[0])
     samples = []
-    for index, value in enumerate(buf):
+    for index in range(frames):
         remaining = frames - index
-        if remaining < fade:
-            value *= remaining / fade
-        samples.append(int(max(-1.0, min(1.0, value)) * FULL_SCALE))
+        gain = remaining / fade if remaining < fade else 1.0
+        for channel in channels:
+            samples.append(int(max(-1.0, min(1.0, channel[index] * gain)) * FULL_SCALE))
     return samples
 
 
@@ -241,57 +307,69 @@ def write_wav(path: pathlib.Path, samples: list[int]) -> None:
 
 
 def cue_swoosh() -> list[int]:
-    buf = empty(0.70)
-    swoosh(buf, 0.0, 0.70, 3_800.0, 380.0, q=2.5, attack=0.09, decay=3.8, seed=21)
-    return quantise(normalise(buf, SWOOSH_OFFSET_DB))
+    dry = empty()
+    swoosh(dry, 0.0, 0.60, 2_800.0, 320.0, q=2.6, attack=0.08, decay=4.2, seed=21)
+    return quantise(place(dry, wet_db=-20.0, offset_db=SWOOSH_OFFSET_DB, room=0.88))
 
 
-# G4 up to D5 on a mallet timbre: a rising fifth reads as "done" without
+# A4 up to E5 on a mallet timbre: a rising fifth reads as "done" without
 # sounding like a fanfare.
 def cue_marimba() -> list[int]:
-    buf = empty(0.62)
-    tone(buf, 0.00, 392.0, 0.40, 1.0, MARIMBA, attack=0.004)
-    tone(buf, 0.14, 587.3, 0.48, 0.9, MARIMBA, attack=0.004)
-    return quantise(normalise(buf))
+    dry = empty()
+    tone(dry, 0.00, 440.0, 1.0, MARIMBA, attack=0.001)
+    tick(dry, 0.00, 0.12, seed=3)
+    tone(dry, 0.15, 659.3, 0.9, MARIMBA, attack=0.001)
+    tick(dry, 0.15, 0.10, seed=4)
+    return quantise(place(dry, wet_db=-24.0))
 
 
-# A4 then E5 with the slow attack and detuned warmth of an electric piano.
+# A4 and E5 together over a low A: a slow-attack pad with detuned warmth,
+# given more room than anything else here because a pad is all sustain.
 def cue_chord() -> list[int]:
-    buf = empty(0.75)
-    tone(buf, 0.00, 440.0, 0.55, 1.0, EPIANO, attack=0.020, detune_hz=1.2)
-    tone(buf, 0.16, 659.3, 0.59, 0.85, EPIANO, attack=0.020, detune_hz=1.4)
-    return quantise(normalise(buf))
+    dry = empty()
+    tone(dry, 0.00, 220.0, 0.55, PAD, attack=0.030, detune_hz=0.6)
+    tone(dry, 0.00, 440.0, 1.0, PAD, attack=0.030, detune_hz=1.2)
+    tone(dry, 0.03, 659.3, 0.75, PAD, attack=0.035, detune_hz=1.5)
+    return quantise(place(dry, wet_db=-18.0, room=0.93, damp=0.4))
 
 
-# Two knocks. No pitch to speak of, so it never clashes with what is playing.
+# Two knocks. No pitch to speak of, so it never clashes with what is playing;
+# a small room so it stays a knock and not a drum.
 def cue_knock() -> list[int]:
-    buf = empty(0.45)
-    knock(buf, 0.00, 190.0, 1.0, seed=1)
-    knock(buf, 0.15, 205.0, 0.9, seed=2)
-    return quantise(normalise(buf))
+    dry = empty()
+    knock(dry, 0.00, 185.0, 1.0, seed=1)
+    knock(dry, 0.16, 200.0, 0.9, seed=2)
+    return quantise(place(dry, wet_db=-26.0, room=0.86, damp=0.5, predelay=0.008))
 
 
-# Two blips that each bend downward, the second a little higher.
+# Two glass notes rising a fourth, G5 to C6, 70 ms apart: bright and quick.
 def cue_pop() -> list[int]:
-    buf = empty(0.45)
-    tone(buf, 0.00, 620.0, 0.16, 1.0, SOFT, attack=0.003, glide_to=420.0, glide_time=0.05)
-    tone(buf, 0.13, 740.0, 0.30, 0.9, SOFT, attack=0.003, glide_to=520.0, glide_time=0.05)
-    return quantise(normalise(buf))
+    dry = empty()
+    tone(dry, 0.00, 784.0, 1.0, GLASS)
+    tick(dry, 0.00, 0.08, seed=5, cutoff=4_000.0)
+    tone(dry, 0.07, 1_046.5, 0.95, GLASS)
+    tick(dry, 0.07, 0.08, seed=6, cutoff=4_000.0)
+    return quantise(place(dry, wet_db=-24.0))
 
 
 # One low B-flat sliding down a semitone: "something is wrong" without alarm.
 def cue_hum() -> list[int]:
-    buf = empty(0.80)
-    tone(buf, 0.0, 233.1, 0.80, 1.0, HUM, attack=0.030, glide_to=207.7, glide_time=0.5, detune_hz=0.7)
-    return quantise(normalise(buf))
+    dry = empty()
+    tone(dry, 0.0, 233.1, 1.0, HUM, attack=0.030, glide_to=207.7, glide_time=0.5, detune_hz=0.7)
+    return quantise(place(dry, wet_db=-22.0, room=0.92, damp=0.45))
 
 
-# A rounded low double blip.
-def cue_boop() -> list[int]:
-    buf = empty(0.50)
-    tone(buf, 0.00, 520.0, 0.20, 1.0, BLIP, attack=0.006, glide_to=390.0, glide_time=0.09)
-    tone(buf, 0.17, 640.0, 0.30, 1.0, BLIP_LONG, attack=0.006, glide_to=470.0, glide_time=0.10)
-    return quantise(normalise(buf))
+# Two glass notes falling a fifth, C6 to F5, 62 ms apart, in a long bright
+# room. Tuned to the measured shape of the macOS default notification tone
+# (a 1 ms attack, a decay of roughly 22 dB in 60 ms, the second note 3 dB
+# under the first, a tail 28 dB under the hit fading 2.5 dB per 100 ms).
+def cue_chime() -> list[int]:
+    dry = empty()
+    tone(dry, 0.000, 1_046.5, 1.0, CHIME, attack=0.001)
+    tick(dry, 0.000, 0.05, seed=7, cutoff=5_000.0)
+    tone(dry, 0.062, 698.5, 0.7, CHIME, attack=0.001)
+    tick(dry, 0.062, 0.04, seed=8, cutoff=5_000.0)
+    return quantise(place(dry, wet_db=-22.0, room=0.94, damp=0.18, predelay=0.075))
 
 
 CUES = {
@@ -301,7 +379,7 @@ CUES = {
     "knock": cue_knock,
     "pop": cue_pop,
     "hum": cue_hum,
-    "boop": cue_boop,
+    "chime": cue_chime,
 }
 
 

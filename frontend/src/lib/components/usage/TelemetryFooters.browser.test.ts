@@ -25,13 +25,15 @@ it.each([360, 1280])('fits multiple named computer stats and usage filters at %i
   host.style.width = '280px';
   document.body.append(host);
   const footer = render(SystemStatsFooter, { target: host });
+  // Compare the row's flex items. The inline CPU/RAM labels report their glyph
+  // box, which overhangs the tight line-height by a font-dependent amount.
   function expectInlineStats(named: boolean) {
     for (const row of footer.getAllByTestId('system-stats-computer')) {
       const wsl = within(row).getByText('WSL').getBoundingClientRect();
-      const cpu = within(row).getByText('CPU').getBoundingClientRect();
-      const ram = within(row).getByText('RAM').getBoundingClientRect();
-      expect(wsl.top).toBeCloseTo(cpu.top, 0);
-      expect(wsl.top).toBeCloseTo(ram.top, 0);
+      const cpu = within(row).getByText('CPU').parentElement!.getBoundingClientRect();
+      const ram = within(row).getByText('RAM').parentElement!.getBoundingClientRect();
+      expect(wsl.top).toBe(cpu.top);
+      expect(wsl.top).toBe(ram.top);
       if (named) expect(row.getBoundingClientRect().top).toBeLessThan(wsl.top);
       else expect(row.getBoundingClientRect().top).toBeCloseTo(wsl.top, 0);
     }

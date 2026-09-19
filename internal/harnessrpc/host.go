@@ -50,6 +50,10 @@ type Host interface {
 	CreateProject(path string) (store.Project, error)
 	CreateThread(ThreadOptions) (store.Thread, error)
 	ArchiveThread(threadID string) error
+	// BroadcastThreadRow re-reads one thread and emits it to connected
+	// clients as a full row. The seeder writes history behind the store,
+	// which changes derived row columns (IsDraft) no store write announces.
+	BroadcastThreadRow(threadID string)
 	StopSession(threadID string) error
 	DeleteProject(projectID string) error
 	RecoverCrashedTurns() error

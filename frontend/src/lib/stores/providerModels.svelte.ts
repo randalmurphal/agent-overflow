@@ -5,7 +5,7 @@ import { hasScope, pageGrantsResolved } from '../transport/scopes';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { backendById, onBackendDetached, withBackendTarget } from '../transport/backends';
 import { compositeKey } from '../utils/compositeKey';
-import type { ModelInfo } from '../types/settings';
+import type { ModelCatalog, ModelInfo } from '../types/settings';
 import { asProviderID, PROVIDER_IDS, type ProviderID } from '../types/providers';
 import {
   providerIsEnabled, PROVIDER_SETTINGS_ORDER, type ProviderEnablementSettings,
@@ -14,14 +14,17 @@ import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { iterPanes } from './panes.svelte';
 import { threadMachine } from './attachedBackends.svelte';
 import { addToast } from './toast.svelte';
-import type { ThreadPane } from './thread.svelte';
-import { catalogContradiction } from '../utils/catalogContradiction';
+import { catalogWithdrawals, describeWithdrawals } from '../utils/catalogWithdrawals';
 
 const models = createKeyedSignalRegistry<ModelInfo[] | null>(null);
 const inFlight = new Map<string, Promise<ModelInfo[]>>();
 const generations = new Map<string, number>();
 const refreshAfter = new Map<string, number>();
-let warnedSelections = new WeakMap<ThreadPane, string>();
+// The last catalog the backend vouched for per key. A shipped list is a
+// placeholder until the account probe answers, so it neither warns nor
+// becomes the baseline; a warning names what an authoritative answer
+// withdrew relative to the previous authoritative one.
+const authoritative = new Map<string, ModelInfo[]>();
 const EMPTY: ModelInfo[] = [];
 
 export function getProviderModels(provider: ProviderID, backend: BackendKey = HOME_BACKEND): ModelInfo[] {
@@ -64,24 +67,13 @@ function loadProviderModels(provider: ProviderID, backend: BackendKey): Promise<
       if (cached) return cached;
       return ensureProviderModels(provider, backend);
     }
-    const list = Array.isArray(result) ? result as ModelInfo[] : [];
+    const catalog = result as ModelCatalog;
+    const list = Array.isArray(catalog?.models) ? catalog.models : [];
     models.set(key, list);
-    const emitted = new Set<string>();
-    for (const pane of iterPanes()) {
-      const thread = pane.thread;
-      if (!thread || thread.provider !== provider || threadMachine(pane.threadId ?? '', thread.projectId) !== backend) continue;
-      const contradiction = catalogContradiction(thread, list);
-      if (!contradiction) {
-        warnedSelections.delete(pane);
-        continue;
-      }
-      const selection = JSON.stringify([backend, thread.id, thread.model, thread.reasoningEffort, thread.fastMode, contradiction]);
-      if (warnedSelections.get(pane) === selection) continue;
-      warnedSelections.set(pane, selection);
-      if (!emitted.has(selection)) {
-        emitted.add(selection);
-        addToast('warning', `${contradiction} Your selection has been kept; you can still send.`);
-      }
+    if (catalog?.provenance === 'probed' || catalog?.provenance === 'live') {
+      const previous = authoritative.get(key);
+      authoritative.set(key, list);
+      if (previous) warnWithdrawnSelections(provider, backend, previous, list);
     }
     return list;
   })();
@@ -94,6 +86,21 @@ function loadProviderModels(provider: ProviderID, backend: BackendKey): Promise<
   };
   void request.then(() => clear(5 * 60_000), () => clear(15_000));
   return request;
+}
+
+function warnWithdrawnSelections(provider: ProviderID, backend: BackendKey, previous: ModelInfo[], current: ModelInfo[]): void {
+  const emitted = new Set<string>();
+  for (const pane of iterPanes()) {
+    const thread = pane.thread;
+    if (!thread || thread.provider !== provider || threadMachine(pane.threadId ?? '', thread.projectId) !== backend) continue;
+    const before = catalogWithdrawals(thread, previous);
+    const withdrawn = catalogWithdrawals(thread, current).filter((part) => !before.includes(part));
+    if (!withdrawn.length) continue;
+    const message = describeWithdrawals(thread, withdrawn);
+    if (emitted.has(message)) continue;
+    emitted.add(message);
+    addToast('warning', `${message} Your selection has been kept; you can still send.`);
+  }
 }
 
 export async function preloadProviderModelsForSettings(
@@ -127,7 +134,10 @@ export function resetProviderModelsForTest(): void {
   models.reset();
   inFlight.clear();
   refreshAfter.clear();
-  warnedSelections = new WeakMap();
+  authoritative.clear();
 }
 
-onBackendDetached(({ backendId }) => invalidateProviderModels(null, backendId));
+onBackendDetached(({ backendId }) => {
+  invalidateProviderModels(null, backendId);
+  for (const id of PROVIDER_IDS) authoritative.delete(compositeKey(backendId, id));
+});

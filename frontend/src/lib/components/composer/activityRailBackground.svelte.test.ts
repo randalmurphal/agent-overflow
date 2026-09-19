@@ -134,3 +134,37 @@ describe('background tray recovery', () => {
     expect(read).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('completion retention', () => {
+  let release = () => {};
+  afterEach(() => release());
+
+  it('asks for the clock on a nested completion so the pair can prune', async () => {
+    const pane = await buildPane();
+    const threadId = pane.threadId!;
+    const now = Date.now();
+    const agent = makeItem({ id: 'agent', threadId, status: 'running', isBackground: true, toolName: 'Agent', createdAt: now - 60_000 });
+    const bash = makeItem({ id: 'bash', threadId, status: 'running', isBackground: true, toolName: 'Bash', parentId: 'agent', createdAt: now - 5_000 });
+    const done = makeItem({ id: 'bash-done', threadId, status: 'completed', completionOf: 'bash', parentId: 'agent', createdAt: now });
+    setBindingMock('ListLiveBackgroundTasks', async () => [agent, bash, done]);
+    // The shared clock last ticked before the completion landed; it only
+    // advances again once the controller asks for it.
+    let clock = $state(now - 30_000);
+    let controller!: ReturnType<typeof createBackgroundController>;
+    release = $effect.root(() => {
+      controller = createBackgroundController(() => pane, () => clock);
+      return controller.mount();
+    });
+    await flush();
+    expect(controller.tasks.map((task) => [task.rowId, task.depth, task.status])).toEqual([
+      ['agent', 0, 'running'],
+      ['bash', 1, 'completed'],
+    ]);
+    expect(controller.hasPendingCompletion).toBe(true);
+    clock = now + 1_000;
+    await flush();
+    expect(controller.tasks.map((task) => task.rowId)).toEqual(['agent']);
+    expect(controller.count).toBe(1);
+    expect(controller.hasPendingCompletion).toBe(false);
+  });
+});

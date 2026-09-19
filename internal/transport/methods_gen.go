@@ -115,6 +115,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "DiscardUnpreparedThreadTransfer", ID: 2309612888, Scope: "threads:operate", Route: "selected"},           // main.App.DiscardUnpreparedThreadTransfer
 	{Name: "DiscoverComputers", ID: 4113468152, Scope: "host", Route: "home"},                                        // main.App.DiscoverComputers
 	{Name: "DownloadUpdate", ID: 115027584, Scope: "host", Route: "home"},                                            // main.App.DownloadUpdate
+	{Name: "FetchForgeAttachment", ID: 1594348919, Scope: "git:operate", Route: "selected"},                          // main.App.FetchForgeAttachment
 	{Name: "FinishPasskeyRegistration", ID: 1601396603, Scope: "access:admin", Route: "home"},                        // main.App.FinishPasskeyRegistration
 	{Name: "FinishPasskeyStepUp", ID: 1569276637, Scope: "session", Route: "home"},                                   // main.App.FinishPasskeyStepUp
 	{Name: "ForgetAccessDevice", ID: 516065248, Scope: "access:admin", Route: "home"},                                // main.App.ForgetAccessDevice
@@ -222,6 +223,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "InterruptTurn", ID: 850013031, Scope: "threads:operate", Route: "thread"},                                // main.App.InterruptTurn
 	{Name: "IntroduceOwnDevice", ID: 2219602920, Scope: "session", Route: "home"},                                    // main.App.IntroduceOwnDevice
 	{Name: "IsWSL", ID: 2789068977, Scope: "threads:read", Route: "home"},                                            // main.App.IsWSL
+	{Name: "ListActivityRunMembers", ID: 1602023272, Scope: "threads:read", Route: "thread"},                         // main.App.ListActivityRunMembers
 	{Name: "ListAgentComputers", ID: 2526318276, Scope: "terminal:operate", Route: "selected"},                       // main.App.ListAgentComputers
 	{Name: "ListArchivedThreads", ID: 2451527188, Scope: "threads:read", Route: "all"},                               // main.App.ListArchivedThreads
 	{Name: "ListAttachments", ID: 1730798413, Scope: "threads:read", Route: "thread"},                                // main.App.ListAttachments
@@ -351,6 +353,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "RevokeAccessDevice", ID: 2945903583, Scope: "access:admin", Route: "home"},                               // main.App.RevokeAccessDevice
 	{Name: "RevokeAccessSession", ID: 2284519219, Scope: "access:admin", Route: "home"},                              // main.App.RevokeAccessSession
 	{Name: "SaveDraft", ID: 3025273299, Scope: "threads:operate", Route: "thread"},                                   // main.App.SaveDraft
+	{Name: "SaveForgeAttachment", ID: 2960563266, Scope: "git:operate", Route: "selected"},                           // main.App.SaveForgeAttachment
 	{Name: "SavePRCIJobLog", ID: 1537914193, Scope: "git:operate", Route: "selected"},                                // main.App.SavePRCIJobLog
 	{Name: "SavePayloadToFile", ID: 3576148797, Scope: "host", Route: "thread"},                                      // main.App.SavePayloadToFile
 	{Name: "SearchThreadItems", ID: 1414650511, Scope: "threads:read", Route: "thread"},                              // main.App.SearchThreadItems

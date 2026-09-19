@@ -1,0 +1,984 @@
+{
+  "note": "Shared activity-run vectors. Each case is a sequence of visible top-level rows in timeline order. `runs` is the maximal-run classification of docs/architecture/timeline-window-pages.md §1: a row is a member when it is a rail row (kind tool_call, tool_completion, terminal_interaction or thinking, payload kind not proposed_plan) or a notification with a member immediately before it. Each run's `stubs` state §4's aggregate for one shipped span: `shippedIds` are the members a page shipped, in order, and the remaining fields are what the server's ActivityRunStub and the client's own classification of the same rows must both produce. `unshippedGroups` is sorted by (kind, toolName, mcp) and `unshippedPairedLaunchIds` by id. Shared by internal/store/activity_runs.go and frontend/src/lib/utils/activityRunGrouping.ts with components/chat/activityRunSummary.ts; the two copies of this file must stay byte-identical.",
+  "cases": [
+    {
+      "name": "a proposed plan breaks the run",
+      "why": "A tool_call whose payload is a proposed_plan renders as a full-width card, so it leaves the rail and ends the run it sits in rather than joining it.",
+      "items": [
+        {
+          "id": "u1",
+          "kind": "user_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "t1",
+          "kind": "tool_call",
+          "toolName": "Bash",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "t2",
+          "kind": "thinking",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "p1",
+          "kind": "tool_call",
+          "toolName": "ExitPlanMode",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "proposed_plan",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "t3",
+          "kind": "tool_call",
+          "toolName": "Read",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "a1",
+          "kind": "assistant_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "t1",
+          "lastItemId": "t2",
+          "memberIds": [
+            "t1",
+            "t2"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "t2"
+              ],
+              "memberCount": 2,
+              "loadedFirstItemId": "t2",
+              "loadedLastItemId": "t2",
+              "unshippedBefore": 1,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Bash",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "t1",
+                "t2"
+              ],
+              "memberCount": 2,
+              "loadedFirstItemId": "t1",
+              "loadedLastItemId": "t2",
+              "unshippedBefore": 0,
+              "unshippedAfter": 0,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        },
+        {
+          "firstItemId": "t3",
+          "lastItemId": "t3",
+          "memberIds": [
+            "t3"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "t3"
+              ],
+              "memberCount": 1,
+              "loadedFirstItemId": "t3",
+              "loadedLastItemId": "t3",
+              "unshippedBefore": 0,
+              "unshippedAfter": 0,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [],
+              "memberCount": 1,
+              "loadedFirstItemId": "",
+              "loadedLastItemId": "",
+              "unshippedBefore": 1,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Read",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bells are absorbed only after a member",
+      "why": "A notification with a run member immediately before it joins the run and stays joined once prose settles it; one after prose is a standalone row and no run at all.",
+      "items": [
+        {
+          "id": "a0",
+          "kind": "assistant_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "n0",
+          "kind": "notification",
+          "toolName": "task_notification",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "t1",
+          "kind": "tool_call",
+          "toolName": "Bash",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "n1",
+          "kind": "notification",
+          "toolName": "task_notification",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "t2",
+          "kind": "thinking",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "n2",
+          "kind": "notification",
+          "toolName": "task_notification",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "a1",
+          "kind": "assistant_text",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "t1",
+          "lastItemId": "n2",
+          "memberIds": [
+            "t1",
+            "n1",
+            "t2",
+            "n2"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "t2",
+                "n2"
+              ],
+              "memberCount": 4,
+              "loadedFirstItemId": "t2",
+              "loadedLastItemId": "n2",
+              "unshippedBefore": 2,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "notification",
+                  "toolName": "task_notification",
+                  "mcp": "",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "Bash",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "t1"
+              ],
+              "memberCount": 4,
+              "loadedFirstItemId": "t1",
+              "loadedLastItemId": "t1",
+              "unshippedBefore": 0,
+              "unshippedAfter": 3,
+              "unshippedGroups": [
+                {
+                  "kind": "notification",
+                  "toolName": "task_notification",
+                  "mcp": "",
+                  "rows": 2
+                },
+                {
+                  "kind": "thinking",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a shipped completion supersedes its unshipped failed launch",
+      "why": "A completion in the same run covers the launch's status and counts zero rows of its own; the launch still counts its rows, is not reported failed, and is named so a client holding only the completion can apply the same rule.",
+      "items": [
+        {
+          "id": "c1",
+          "kind": "tool_call",
+          "toolName": "Bash",
+          "status": "errored",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "c1r",
+          "kind": "tool_completion",
+          "toolName": "Bash",
+          "status": "completed",
+          "completionOf": "c1",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "c2",
+          "kind": "tool_call",
+          "toolName": "Read",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "c1",
+          "lastItemId": "c2",
+          "memberIds": [
+            "c1",
+            "c1r",
+            "c2"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "c1r",
+                "c2"
+              ],
+              "memberCount": 3,
+              "loadedFirstItemId": "c1r",
+              "loadedLastItemId": "c2",
+              "unshippedBefore": 1,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Bash",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [
+                "c1"
+              ],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "c2"
+              ],
+              "memberCount": 3,
+              "loadedFirstItemId": "c2",
+              "loadedLastItemId": "c2",
+              "unshippedBefore": 2,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Bash",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "c1"
+              ],
+              "memberCount": 3,
+              "loadedFirstItemId": "c1",
+              "loadedLastItemId": "c1",
+              "unshippedBefore": 0,
+              "unshippedAfter": 2,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Read",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [
+                "c1"
+              ],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "an orphan completion and an unsuperseded failure count",
+      "why": "A completion whose launch is not a member of the run counts under its own identity, and a launch nothing completed reports its failure.",
+      "items": [
+        {
+          "id": "o1",
+          "kind": "tool_completion",
+          "toolName": "Grep",
+          "status": "completed",
+          "completionOf": "gone",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "o2",
+          "kind": "tool_call",
+          "toolName": "Write",
+          "status": "killed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "o3",
+          "kind": "thinking",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "o1",
+          "lastItemId": "o3",
+          "memberIds": [
+            "o1",
+            "o2",
+            "o3"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "o3"
+              ],
+              "memberCount": 3,
+              "loadedFirstItemId": "o3",
+              "loadedLastItemId": "o3",
+              "unshippedBefore": 2,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Write",
+                  "mcp": "",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_completion",
+                  "toolName": "Grep",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": true,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "o1",
+                "o2"
+              ],
+              "memberCount": 3,
+              "loadedFirstItemId": "o1",
+              "loadedLastItemId": "o2",
+              "unshippedBefore": 0,
+              "unshippedAfter": 1,
+              "unshippedGroups": [
+                {
+                  "kind": "thinking",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "file-change rows count files, not calls",
+      "why": "inlineDiff.totalFiles wins, then inlineDiff.files, then the non-empty string paths of meta.input.files, then one row. A zero totalFiles does not stop the next source, and a tool that is not a file-change tool is always one row.",
+      "items": [
+        {
+          "id": "f1",
+          "kind": "tool_call",
+          "toolName": "Edit",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "diff",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": "{\"inlineDiff\":{\"totalFiles\":4,\"files\":[{\"path\":\"a\"},{\"path\":\"b\"}]}}"
+        },
+        {
+          "id": "f2",
+          "kind": "tool_call",
+          "toolName": "MultiEdit",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "diff",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": "{\"inlineDiff\":{\"files\":[{\"path\":\"a\"},{\"path\":\"b\"},{\"path\":\"c\"}]}}"
+        },
+        {
+          "id": "f3",
+          "kind": "tool_call",
+          "toolName": "apply_patch",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"input\":{\"files\":[\"a\",\"  \",\"b\"]}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "f4",
+          "kind": "tool_call",
+          "toolName": "Edit",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "diff",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": "{\"inlineDiff\":{\"totalFiles\":0,\"files\":[{\"path\":\"a\"},{\"path\":\"b\"}]}}"
+        },
+        {
+          "id": "f5",
+          "kind": "tool_call",
+          "toolName": "Bash",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"input\":{\"files\":[\"a\",\"b\"]}}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "f1",
+          "lastItemId": "f5",
+          "memberIds": [
+            "f1",
+            "f2",
+            "f3",
+            "f4",
+            "f5"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [],
+              "memberCount": 5,
+              "loadedFirstItemId": "",
+              "loadedLastItemId": "",
+              "unshippedBefore": 5,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Bash",
+                  "mcp": "",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "Edit",
+                  "mcp": "",
+                  "rows": 6
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "MultiEdit",
+                  "mcp": "",
+                  "rows": 3
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "apply_patch",
+                  "mcp": "",
+                  "rows": 2
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "f3"
+              ],
+              "memberCount": 5,
+              "loadedFirstItemId": "f3",
+              "loadedLastItemId": "f3",
+              "unshippedBefore": 2,
+              "unshippedAfter": 2,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Bash",
+                  "mcp": "",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "Edit",
+                  "mcp": "",
+                  "rows": 6
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "MultiEdit",
+                  "mcp": "",
+                  "rows": 3
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "MCP tools group by server and tool, and running is per side",
+      "why": "meta.mcp is part of the group identity because the client builds an MCP tool's label from it; the newest running member on each side of the shipped span is reported separately.",
+      "items": [
+        {
+          "id": "m1",
+          "kind": "tool_call",
+          "toolName": "MCP/browser_click",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"mcp\":{\"server\":\"ao-browser-tools\",\"tool\":\"browser_click\"}}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r1",
+          "kind": "tool_call",
+          "toolName": "Bash",
+          "status": "running",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r2",
+          "kind": "tool_call",
+          "toolName": "Bash",
+          "status": "running",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "mid",
+          "kind": "thinking",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "r3",
+          "kind": "tool_call",
+          "toolName": "Read",
+          "status": "streaming",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "m2",
+          "kind": "tool_call",
+          "toolName": "MCP/remote_run",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{\"mcp\":{\"server\":\"ao-remote\",\"tool\":\"remote_run\"}}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "m1",
+          "lastItemId": "m2",
+          "memberIds": [
+            "m1",
+            "r1",
+            "r2",
+            "mid",
+            "r3",
+            "m2"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "mid"
+              ],
+              "memberCount": 6,
+              "loadedFirstItemId": "mid",
+              "loadedLastItemId": "mid",
+              "unshippedBefore": 3,
+              "unshippedAfter": 2,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Bash",
+                  "mcp": "",
+                  "rows": 2
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "MCP/browser_click",
+                  "mcp": "{\"server\":\"ao-browser-tools\",\"tool\":\"browser_click\"}",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "MCP/remote_run",
+                  "mcp": "{\"server\":\"ao-remote\",\"tool\":\"remote_run\"}",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "Read",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": {
+                "kind": "tool_call",
+                "toolName": "Bash",
+                "mcp": ""
+              },
+              "runningAfter": {
+                "kind": "tool_call",
+                "toolName": "Read",
+                "mcp": ""
+              }
+            },
+            {
+              "shippedIds": [
+                "r2",
+                "mid",
+                "r3"
+              ],
+              "memberCount": 6,
+              "loadedFirstItemId": "r2",
+              "loadedLastItemId": "r3",
+              "unshippedBefore": 2,
+              "unshippedAfter": 1,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Bash",
+                  "mcp": "",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "MCP/browser_click",
+                  "mcp": "{\"server\":\"ao-browser-tools\",\"tool\":\"browser_click\"}",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "MCP/remote_run",
+                  "mcp": "{\"server\":\"ao-remote\",\"tool\":\"remote_run\"}",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": {
+                "kind": "tool_call",
+                "toolName": "Bash",
+                "mcp": ""
+              },
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "a background launch stays running until a member completes it",
+      "why": "A detached launch is persisted running forever, so a run that holds it reports running; the run that holds its completion supersedes it, exactly as the client's own classification does.",
+      "items": [
+        {
+          "id": "b1",
+          "kind": "tool_call",
+          "toolName": "Task",
+          "status": "running",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": true,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "b2",
+          "kind": "thinking",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "b3",
+          "kind": "tool_completion",
+          "toolName": "Task",
+          "status": "completed",
+          "completionOf": "b1",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "b1",
+          "lastItemId": "b3",
+          "memberIds": [
+            "b1",
+            "b2",
+            "b3"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "b2"
+              ],
+              "memberCount": 3,
+              "loadedFirstItemId": "b2",
+              "loadedLastItemId": "b2",
+              "unshippedBefore": 1,
+              "unshippedAfter": 1,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Task",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "b1",
+                "b2"
+              ],
+              "memberCount": 3,
+              "loadedFirstItemId": "b1",
+              "loadedLastItemId": "b2",
+              "unshippedBefore": 0,
+              "unshippedAfter": 1,
+              "unshippedGroups": [],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [
+                "b1"
+              ],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

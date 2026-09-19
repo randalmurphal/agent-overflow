@@ -23,12 +23,14 @@ import (
 const UnstampedItemRev int64 = -1
 
 // MaxHeldWindowItems is the largest held window SyncThreadWindow will
-// verify. It matches the app layer's window budget cap: a window bigger
-// than a page could ever be did not come from a page, and verifying one
-// would let an unintended LAN-attached caller spend the read pool on an
-// arbitrarily long range scan. Beyond the cap the answer is a page, which
-// is bounded by the same number.
-const MaxHeldWindowItems = 2000
+// verify, counted in PHYSICAL rows
+// (docs/architecture/timeline-window-pages.md §5). It is far larger than
+// a page's shipped-row budget because a page no longer ships every row in
+// its range: a window holding a handful of long runs is described by
+// their stubs, and the verification read is `(id, rev)` off the ordering
+// index, so a large range still costs less than one page. Beyond the cap
+// the answer is a page.
+const MaxHeldWindowItems = 8000
 
 // HeldWindow is the caller's description of the rows it already holds for
 // a thread (docs/architecture/thread-replica-sync.md §5). It is the
@@ -69,40 +71,52 @@ type WindowDigestRow struct {
 	Rev int64  `json:"rev"`
 }
 
-// Window digest framing bytes. Unit separator between a row's id and its
-// rev, record separator after each row, so no concatenation of ids and
-// decimal digits can produce another window's canonical string. Both are
-// outside the id alphabet (entity ids are ASCII words, ':' and '-').
-const (
-	windowDigestFieldSep = 0x1f
-	windowDigestRowSep   = 0x1e
-)
+// windowDigestFieldSep separates a row's id from its rev, so no
+// concatenation of an id and decimal digits can produce another row's
+// canonical string. It is outside the id alphabet (entity ids are ASCII
+// words, ':' and '-').
+const windowDigestFieldSep = 0x1f
 
-// FNV-1a 64 parameters. The fold is written out rather than taken from
-// hash/fnv because the canonical string is hashed as UTF-16 code units,
-// not bytes: that is the unit the TypeScript side reads without an
-// allocation, and folding the same units here makes the contract hold for
-// every id rather than only for ASCII ones.
+// FNV-1a 64 parameters.
 const (
 	windowDigestOffset uint64 = 0xcbf29ce484222325
 	windowDigestPrime  uint64 = 0x100000001b3
 )
 
-// WindowDigest folds an ordered run of timeline rows into the 16-hex-char
-// digest a client sends with a held window.
+// WindowDigest folds a set of timeline rows into the 16-hex-char digest a
+// client sends with a held window
+// (docs/architecture/timeline-window-pages.md §5).
 //
-// The canonical string is `id + 0x1f + decimal rev + 0x1e` per row, in
-// (turn_index, item_index) order, hashed with FNV-1a 64 over its UTF-16
-// code units. The shared fixture at testdata/window_digest_vectors.json is
-// the executable half of this contract; the TypeScript implementation
+// Each row is hashed on its own — `id + 0x1f + decimal rev`, FNV-1a 64
+// over the string's UTF-16 code units — and the row hashes are XORed
+// together. XOR is order-free and composable, which is the whole point: a
+// client that holds part of a run, shed part of it and has a stub for the
+// rest folds three digests into one instead of re-deriving a canonical
+// string it no longer has the rows for.
+//
+// UTF-16 code units, not bytes, because that is the unit the TypeScript
+// side reads without an allocation; folding the same units here makes the
+// contract hold for every id rather than only for ASCII ones. The shared
+// fixture at testdata/window_digest_vectors.json is the executable half
+// of this contract; the TypeScript implementation
 // (frontend/src/lib/utils/fnv1a.ts, framed by
 // frontend/src/lib/stores/threadWindowDigest.ts) reads a byte-identical
 // copy.
 //
-// The empty run has a digest (the FNV offset basis rendered as hex) and it
-// is never confusable with a real one, because every non-empty run appends
-// at least one separator.
+// The empty set folds to zero, which is the identity XOR needs: a client
+// with nothing held contributes nothing.
 func WindowDigest(rows []WindowDigestRow) string {
+	var digest uint64
+	for _, row := range rows {
+		digest ^= windowDigestRowHash(row)
+	}
+	return formatWindowDigest(digest)
+}
+
+// windowDigestRowHash is one row's FNV-1a 64 over `id + 0x1f + decimal
+// rev`, folded as UTF-16 code units. The fold is written out rather than
+// taken from hash/fnv because that unit is the contract.
+func windowDigestRowHash(row WindowDigestRow) uint64 {
 	h := windowDigestOffset
 	unit := func(u uint16) {
 		h = (h ^ uint64(u)) * windowDigestPrime
@@ -118,14 +132,15 @@ func WindowDigest(rows []WindowDigestRow) string {
 			unit(uint16(r))
 		}
 	}
+	fold(row.ID)
+	unit(windowDigestFieldSep)
 	var buf [20]byte
-	for _, row := range rows {
-		fold(row.ID)
-		unit(windowDigestFieldSep)
-		fold(string(strconv.AppendInt(buf[:0], row.Rev, 10)))
-		unit(windowDigestRowSep)
-	}
-	return fmt.Sprintf("%016x", h)
+	fold(string(strconv.AppendInt(buf[:0], row.Rev, 10)))
+	return h
+}
+
+func formatWindowDigest(digest uint64) string {
+	return fmt.Sprintf("%016x", digest)
 }
 
 // verifyHeldWindowTx reports whether the rows a caller says it holds are

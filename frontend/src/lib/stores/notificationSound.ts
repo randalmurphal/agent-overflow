@@ -33,7 +33,7 @@
 //     DefaultSettings, so nothing here consults what the user chose.
 
 import { SETTINGS_DEFAULTS } from '../generated/settingsDefaults';
-import boopCue from '../assets/sounds/boop.wav?url';
+import chimeCue from '../assets/sounds/chime.wav?url';
 import chordCue from '../assets/sounds/chord.wav?url';
 import humCue from '../assets/sounds/hum.wav?url';
 import knockCue from '../assets/sounds/knock.wav?url';
@@ -56,7 +56,7 @@ const CUE_URLS: Readonly<Record<string, string>> = {
   knock: knockCue,
   pop: popCue,
   hum: humCue,
-  boop: boopCue,
+  chime: chimeCue,
 };
 
 /** The prefix a cue value carries when it names a file, not a bundled asset. */
@@ -74,9 +74,11 @@ const EVENT_DEFAULT_CUE: Readonly<Record<string, string>> = {
 };
 
 /**
- * Minimum spacing between cues. Long enough that the longest cue (~0.8 s) has
- * finished before another can start, so two never overlap, and short enough
- * that two genuinely separate events a couple of seconds apart are both heard.
+ * Minimum spacing between cues. Long enough that the audible part of any cue
+ * (well under a second; the rest of the 2 s file is a reverb tail 25 dB down)
+ * has finished before another can start, so two never overlap, and short
+ * enough that two genuinely separate events a couple of seconds apart are
+ * both heard.
  */
 export const NOTIFICATION_SOUND_COOLDOWN_MS = 1_500;
 

@@ -1087,6 +1087,16 @@
   // Imperative scrolls (handle)
   // ------------------------------------------------------------------
   interface PendingIndexScroll {
+    /** The destination ROW, by key. A navigation outlives its first write
+     * by settle windows of real time, and the data can change under it
+     * meanwhile: the viewport fill's load-older prepends a page, a
+     * subtree hydrates, a run folds. Its index is re-resolved from the
+     * key on every pass, so a head splice moves the navigation with its
+     * row instead of redirecting it to whichever row now sits at the old
+     * index (the rail's "latest" jump landing a page early,
+     * bug-report-20260918T143935Z). */
+    key: unknown;
+    /** The key's index as of the last pass; a cache, never the truth. */
     index: number;
     align: ScrollToIndexAlign;
     extraOffset: number;
@@ -1138,6 +1148,16 @@
   function convergeIndexScroll(): void {
     const pending = pendingIndexScroll;
     if (!pending) return;
+    // The row, wherever the current data put it. Gone means the data
+    // dropped it (a prune, a window replaced under a stale navigation):
+    // nothing to land on, and no row that happens to share its old index
+    // is a substitute.
+    const index = prevKeys.indexOf(pending.key);
+    if (index < 0) {
+      clearIndexScroll();
+      return;
+    }
+    pending.index = index;
     const scroller = observedScroller;
     if (scroller && Number.isFinite(pending.expectedPosition)) {
       // Where should the viewport be if nobody but this navigation (and
@@ -1217,8 +1237,13 @@
     opts: { align?: ScrollToIndexAlign; offset?: number } = {},
   ): void {
     clearIndexScroll();
+    // Same clamp as the engine's target math: a navigation past either
+    // end lands on the end row. No rows means nothing to navigate to.
+    if (prevKeys.length === 0) return;
+    const clamped = Math.min(Math.max(0, index), prevKeys.length - 1);
     pendingIndexScroll = {
-      index,
+      key: prevKeys[clamped],
+      index: clamped,
       align: opts.align ?? 'start',
       extraOffset: opts.offset ?? 0,
       lastTarget: Number.NaN,

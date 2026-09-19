@@ -165,7 +165,7 @@ func TestSyncThreadWindowBindingNormalizesItemBudget(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := seedSyncBindingThread(t, app)
 
-	want, err := app.ListThreadSliceAround(thread.ID, "", 0, true)
+	want, err := app.ListThreadSliceAround(thread.ID, "", 0, PageShape{InlinePreviews: true})
 	if err != nil {
 		t.Fatalf("list thread slice around: %v", err)
 	}

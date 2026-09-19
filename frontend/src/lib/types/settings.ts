@@ -52,7 +52,7 @@ export type NotifyQuietWhen = "never" | "focused" | "threadVisible" | "focusedAn
  * maps it to a URL. `system` names no asset: the OS banner plays its own
  * sound and no cue frame is sent.
  */
-export type BuiltinNotifyCue = "swoosh" | "marimba" | "chord" | "knock" | "pop" | "hum" | "boop" | "system";
+export type BuiltinNotifyCue = "swoosh" | "marimba" | "chord" | "knock" | "pop" | "hum" | "chime" | "system";
 
 /**
  * What a `notifySoundCue*` key may carry: a built-in, or `custom:<id>` naming
@@ -640,6 +640,17 @@ export interface FastModeTier {
   id: string;
   name?: string;
   description?: string;
+}
+
+// Where a catalog answer came from, mirroring provider.CatalogProvenance.
+// "shipped" is the static list the app carries and says nothing about the
+// account; "probed" is Claude's list enriched by an account probe of the
+// configured binary; "live" is Codex's app-server answer.
+export type CatalogProvenance = 'shipped' | 'probed' | 'live';
+
+export interface ModelCatalog {
+  models: ModelInfo[];
+  provenance: CatalogProvenance;
 }
 
 export interface ModelInfo {

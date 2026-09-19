@@ -352,6 +352,33 @@ export interface ActivityRunNode {
    * which is also the positional anchor of another run.
    */
   summaryItemIds: readonly string[];
+  /**
+   * Every PHYSICAL member of the run, whether or not the pane holds it
+   * (docs/architecture/timeline-window-pages.md §6). A history page ships
+   * a window of a run's members plus a stub counting the rest, so
+   * `children` is a slice of the run and this is its true length. Equal to
+   * the loaded membership for a run the pane holds whole.
+   */
+  memberCount: number;
+  /**
+   * Members outside the loaded span on each side: the server's counts plus,
+   * on the older side, the members a window cut shed. The boundaries add
+   * their own unmounted loaded rows — "N earlier" is
+   * `unshippedBefore + (mountedFrom)` and "N later" is
+   * `(children.length - mountedFrom - mountedRows) + unshippedAfter`.
+   */
+  unshippedBefore: number;
+  unshippedAfter: number;
+  /**
+   * The edges of the span the pane holds as rows. Mounting past either one
+   * is what a boundary has to FETCH rather than reveal
+   * (`ThreadActivityRuns.fetchMembers`); inside them it is a window move.
+   * Both empty only for a run with no loaded member, which cannot be
+   * projected — they are the first and last member of `children` for a run
+   * the pane holds whole.
+   */
+  loadedFirstItemId: string;
+  loadedLastItemId: string;
 }
 
 /**

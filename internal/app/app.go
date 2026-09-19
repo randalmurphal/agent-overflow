@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/codexthread"
 	"agent-overflow/internal/devserverprobe"
 	"agent-overflow/internal/discussionapp"
+	"agent-overflow/internal/forgeattach"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/gitwatch"
@@ -250,6 +251,14 @@ type App struct {
 	// Wails/event façades.
 	providerLifecycleOnce sync.Once
 	providerLifecycle     *providerlifecycleapp.Service
+	// forgeAttachCache holds the bytes of forge-hosted PR/MR attachments
+	// between the bound method that fetched them and the ticketed byte
+	// route that serves them (app_forge_attachments.go). Lazily
+	// constructed under forgeAttachOnce, the same contract keybindings
+	// and theme use: a bare App{} in a test is usable, and a boot that
+	// never opens a review pane allocates nothing.
+	forgeAttachOnce  sync.Once
+	forgeAttachCache *forgeattach.Cache
 	// transportServer is the Phase C HTTP+WS transport. Set by main.go
 	// via SetTransportServer before app.Run() so Shutdown can drain
 	// in-flight RPCs BEFORE App subsystems (store, telemetry, sessions)
@@ -586,6 +595,11 @@ type App struct {
 	// reach it — they build *App directly and never call Start. Set once
 	// before Start; never mutated afterwards.
 	backgroundFetchDisabled bool
+	// isolatedWorkspaceRoot, when non-empty, bounds every project path and
+	// session working directory (app_isolated_workspace.go). Empty disables
+	// the check, which only unit tests do. Set once before Start; never
+	// mutated afterwards.
+	isolatedWorkspaceRoot string
 	// idleReaperNowFn is a test-only clock injection for the reaper.
 	// Production leaves it nil and reaperNow reads time.Now directly.
 	idleReaperNowFn func() time.Time
@@ -694,7 +708,7 @@ func (a *App) ListItems(threadID string, inlinePreviews bool) ([]store.Item, err
 	if err != nil {
 		return nil, err
 	}
-	return projectItemSlice(items, inlinePreviews, keepNewest), nil
+	return projectItemSlice(items, inlinePreviews), nil
 }
 
 // --- Payload operations ---

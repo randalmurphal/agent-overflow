@@ -421,6 +421,19 @@ bound every cut:
 - **A dropped edge is loadable again.** The commit sets `hasMoreHistory`
   or `hasMoreNewer` for whichever side it dropped, so the rows are one
   page away and the auto-load probes bring them back.
+- **An edge never lands inside a run the registry cannot describe.**
+  `snapCutEdgesOffRuns` moves a cut's edge off an activity run unless the
+  run's record can count the members past it, in which case the dropped
+  members are shed into the record and the run keeps its header honest
+  ([timeline-window-pages](timeline-window-pages.md) §6).
+
+Pages are sized in rows, and a window whose rows collapse into a few
+activity runs can be shorter than the viewport plus both auto-load
+zones, a height at which no scroll offset reaches a trigger. The quiet
+scheduler's `viewport-fill` pass (`timelinePaging.ts#maybeFillViewport`)
+pages one section per pass, older first, until the window is taller
+than `clientHeight + 2 × AUTO_LOAD_OFFSET_PX`, there is nothing more to
+page, or the window holds `ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS` rows.
 
 A mounted timeline normally defers the
 cut to visual quiet because reconciling hundreds of rows is still expensive
@@ -514,7 +527,14 @@ nothing left to animate.
 
 Both restores rely on `scrollToIndex` converging: the target is recomputed as
 measurements land, so one `tick()` is enough to schedule a restore whose rows
-have not been measured yet. The pending navigation outlives the transaction by
+have not been measured yet. The navigation holds its destination by row KEY
+and re-resolves the index on every pass: the data can change inside its
+settle window (the viewport fill's load-older prepending a page, a subtree
+hydrating), and an absolute index would re-fire onto whichever row then sat at
+it, a page above the target (the rail's "latest" jump landing rows early,
+bug-report-20260918T143935Z; regression: the prepend-mid-convergence test in
+`timelineVirtualizer.browser.test.ts`). A destination the data dropped ends
+the navigation. The pending navigation outlives the transaction by
 settle windows of real time, so it carries a takeover guard: a pass only
 continues while the viewport still sits where the navigation's own writes (and
 compensations delivered on its behalf, and the browser's clamp when the
@@ -743,6 +763,11 @@ Programmatic scrolls go through the controller:
   consume the consent, through the restore itself or
   `clearRestoreConsent()`.
 - `markAtBottom()` for empty-timeline restore without writing scrollTop.
+- `markEscaped()` for reader-asked navigation away from the bottom (a
+  jump to an item, the anchor restore of a position the reader left).
+  Loads, fills and restores never write intent: a prepend under a
+  following reader leaves them following, and an escape asserted there
+  is saved into the thread snapshot and replayed on every later visit.
 - `requestBottom({ takeover })` for every out-of-band "put the reader at
   the bottom" placement: transaction restores
   (`timelineWindowAnchor.svelte.ts`), the pause-release re-pin, and the

@@ -12,6 +12,7 @@ import {
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../../test/helpers/settings';
+import { modelCatalog } from '../../../../test/helpers/modelCatalog';
 import {
   buildPane as buildRegisteredPane,
   makeItem as makeBaseItem,
@@ -86,11 +87,11 @@ describe('<ModelProviderMenu>', () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-fable-5' }));
     pane.setEffectiveModel('claude-opus-4-8');
     setBindingMock('GetModelsForProvider', async (provider: unknown) => {
-      if (provider !== 'claude') return [];
-      return [
+      if (provider !== 'claude') return modelCatalog([], 'shipped');
+      return modelCatalog([
         { slug: 'claude-fable-5', name: 'Fable 5', provider: 'claude', capabilities: [] },
         { slug: 'claude-opus-4-8', name: 'Opus 4.8', provider: 'claude', capabilities: [] },
-      ];
+      ]);
     });
     const reconnect = setBindingMock('ReconnectSession', async () => {});
     const update = setBindingMock('UpdateThreadModelSelection', async () => pane.thread);
@@ -158,9 +159,9 @@ describe('<ModelProviderMenu>', () => {
 
   it('warms the active provider cache on open', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude' }));
-    const modelsMock = setBindingMock('GetModelsForProvider', async () => [
+    const modelsMock = setBindingMock('GetModelsForProvider', async () => modelCatalog([
       { slug: 'claude-opus-4-5', name: 'Opus 4.5', provider: 'claude', capabilities: [] },
-    ]);
+    ]));
     const { getByTestId } = render(ModelProviderMenu, { props: { pane } });
     await fireEvent.click(getByTestId('composer-model-menu-trigger'));
     await waitFor(() => {
@@ -171,7 +172,7 @@ describe('<ModelProviderMenu>', () => {
 
   it('renders DB-backed favorites above provider sections with normalized provider icons', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-opus-4-7' }));
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     // A discussion favorite is only visible once at least one discussion
     // definition exists — see ensureDiscussions/showDiscussions.
     setBindingMock('ListDiscussionsForThread', async () => [architects]);
@@ -203,7 +204,7 @@ describe('<ModelProviderMenu>', () => {
 
   it('loads the favorites list once and updates EVERY mounted menu when it changes', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-opus-4-7' }));
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     const opus = {
       kind: 'model' as const,
       provider: 'claude',
@@ -234,7 +235,7 @@ describe('<ModelProviderMenu>', () => {
 
   it('shows a failed favorites load instead of an empty list', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-opus-4-7' }));
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     setBindingMock('ListChatBarFavorites', async () => {
       throw new Error('favorites unavailable');
     });
@@ -248,7 +249,7 @@ describe('<ModelProviderMenu>', () => {
 
   it('filters favorites whose model is hidden in settings (star survives for re-show)', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }));
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     setBindingMock('GetSettings', async () =>
       makeSettings({ claudeHiddenModels: ['claude-opus-4-7'] }));
     await loadSettings();
@@ -275,10 +276,10 @@ describe('<ModelProviderMenu>', () => {
     setBindingMock('GetSettings', async () =>
       makeSettings({ claudeTuiEnabled: true, claudeHiddenModels: ['claude-opus-4-7'] }));
     await loadSettings();
-    setBindingMock('GetModelsForProvider', async () => [
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([
       { slug: 'claude-opus-4-8', name: 'Claude Opus 4.8', provider: 'claude-tui', capabilities: [] },
       { slug: 'claude-opus-4-7', name: 'Claude Opus 4.7', provider: 'claude-tui', capabilities: [] },
-    ]);
+    ]));
 
     const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, { props: { pane } });
     await fireEvent.click(getByTestId('composer-model-menu-trigger'));
@@ -294,11 +295,11 @@ describe('<ModelProviderMenu>', () => {
     setBindingMock('GetSettings', async () =>
       makeSettings({ claudeHiddenModels: ['claude-opus-4-5', 'claude-opus-4-7'] }));
     await loadSettings();
-    setBindingMock('GetModelsForProvider', async () => [
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([
       { slug: 'claude-opus-4-8', name: 'Claude Opus 4.8', provider: 'claude', capabilities: [] },
       { slug: 'claude-opus-4-7', name: 'Claude Opus 4.7', provider: 'claude', capabilities: [] },
       { slug: 'claude-opus-4-5', name: 'Claude Opus 4.5', provider: 'claude', capabilities: [] },
-    ]);
+    ]));
 
     const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, { props: { pane } });
     await fireEvent.click(getByTestId('composer-model-menu-trigger'));
@@ -315,9 +316,9 @@ describe('<ModelProviderMenu>', () => {
 
   it('renders provider model rows with the favorite star before the label', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }));
-    setBindingMock('GetModelsForProvider', async () => [
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([
       { slug: 'claude-opus-4-7', name: 'Claude Opus 4.7', provider: 'claude', capabilities: [] },
-    ]);
+    ]));
     setBindingMock('ListChatBarFavorites', async () => [
       {
         kind: 'model',
@@ -356,9 +357,9 @@ describe('<ModelProviderMenu>', () => {
     );
     setBindingMock('GetModelsForProvider', async (provider: unknown) => {
       if (provider === 'codex') {
-        return [{ slug: 'gpt-5.4', name: 'GPT 5.4', provider: 'codex', capabilities: [] }];
+        return modelCatalog([{ slug: 'gpt-5.4', name: 'GPT 5.4', provider: 'codex', capabilities: [] }]);
       }
-      return [];
+      return modelCatalog([], 'shipped');
     });
     const modelUpdate = makeThread({ provider: 'codex', model: 'gpt-5.4' });
     setBindingMock('UpdateThreadModelSelection', async () => modelUpdate);
@@ -396,9 +397,9 @@ describe('<ModelProviderMenu>', () => {
     const pane = await buildPane(makeThread({ provider: 'claude' }));
     setBindingMock('GetModelsForProvider', async (provider: unknown) => {
       if (provider === 'codex') {
-        return [{ slug: 'gpt-5.4', name: 'GPT 5.4', provider: 'codex', capabilities: [] }];
+        return modelCatalog([{ slug: 'gpt-5.4', name: 'GPT 5.4', provider: 'codex', capabilities: [] }]);
       }
-      return [];
+      return modelCatalog([], 'shipped');
     });
 
     const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
@@ -440,9 +441,9 @@ describe('<ModelProviderMenu>', () => {
     );
     setBindingMock('GetModelsForProvider', async (provider: unknown) => {
       if (provider === 'codex') {
-        return [{ slug: 'gpt-5.4', name: 'GPT 5.4', provider: 'codex', capabilities: [] }];
+        return modelCatalog([{ slug: 'gpt-5.4', name: 'GPT 5.4', provider: 'codex', capabilities: [] }]);
       }
-      return [];
+      return modelCatalog([], 'shipped');
     });
     setBindingMock(
       'UpdateThreadModelSelection',
@@ -489,7 +490,7 @@ describe('<ModelProviderMenu>', () => {
       makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
       [makeItem()],
     );
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
 
     const { getByTestId, queryByRole, findByRole } = render(ModelProviderMenu, {
       props: { pane },
@@ -510,7 +511,7 @@ describe('<ModelProviderMenu>', () => {
     );
     setBindingMock('GetSettings', async () => makeSettings({ claudeTuiEnabled: true }));
     await loadSettings();
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     setBindingMock('ListDiscussionsForThread', async () => [architects]);
 
     const { getByTestId, findByRole } = render(ModelProviderMenu, {
@@ -536,7 +537,7 @@ describe('<ModelProviderMenu>', () => {
     );
     setBindingMock('GetSettings', async () => makeSettings());
     await loadSettings();
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
 
     const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
       props: { pane },
@@ -556,7 +557,7 @@ describe('<ModelProviderMenu>', () => {
     setBindingMock('GetSettings', async () =>
       makeSettings({ claudeEnabled: false, claudeTuiEnabled: true }));
     await loadSettings();
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
 
     const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
       props: { pane },
@@ -578,9 +579,9 @@ describe('<ModelProviderMenu>', () => {
     );
     setBindingMock('GetSettings', async () => makeSettings());
     await loadSettings();
-    setBindingMock('GetModelsForProvider', async () => [
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([
       { slug: 'claude-opus-4-8', name: 'Claude Opus 4.8', provider: 'claude-tui', capabilities: [] },
-    ]);
+    ]));
 
     const { getByTestId, findByRole } = render(ModelProviderMenu, {
       props: { pane },
@@ -596,7 +597,7 @@ describe('<ModelProviderMenu>', () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }));
     setBindingMock('GetSettings', async () => makeSettings());
     await loadSettings();
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     setBindingMock('ListChatBarFavorites', async () => [
       {
         kind: 'model',
@@ -631,7 +632,7 @@ describe('<ModelProviderMenu>', () => {
     const pane = await buildPane(
       makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
     );
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     setBindingMock('ListDiscussionsForThread', async () => []);
 
     const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
@@ -651,7 +652,7 @@ describe('<ModelProviderMenu>', () => {
     const pane = await buildPane(
       makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
     );
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     setBindingMock('ListDiscussionsForThread', async () => [architects]);
 
     const { getByTestId, findByRole } = render(ModelProviderMenu, {
@@ -666,7 +667,7 @@ describe('<ModelProviderMenu>', () => {
     const pane = await buildPane(
       makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
     );
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     setBindingMock('ListDiscussionsForThread', async () => null);
 
     const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
@@ -684,7 +685,7 @@ describe('<ModelProviderMenu>', () => {
     const pane = await buildPane(
       makeThread({ provider: 'claude', model: 'claude-sonnet-4-6' }),
     );
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     setBindingMock('ListDiscussionsForThread', async () => {
       throw new Error('db offline');
     });
@@ -703,7 +704,7 @@ describe('<ModelProviderMenu>', () => {
 
   it('hides the Discussions entry for a draft/unstarted thread without calling the binding', async () => {
     const pane = await buildPane(makeThread({ id: '', provider: 'claude', model: 'claude-sonnet-4-6' }));
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     const listDiscussions = setBindingMock('ListDiscussionsForThread', async () => [architects]);
 
     const { getByTestId, findByRole, queryByRole } = render(ModelProviderMenu, {
@@ -735,7 +736,7 @@ describe('<ModelProviderMenu>', () => {
       archived: false,
     });
     expect(pane.thread?.id ?? '').toMatch(/^draft:/);
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     const listDiscussions = setBindingMock('ListDiscussionsForThread', async () => {
       throw new Error('store: get thread draft:...: sql: no rows in result set');
     });
@@ -754,7 +755,7 @@ describe('<ModelProviderMenu>', () => {
 
   it('a discussion favorite is hidden when definitions are empty and visible once they exist', async () => {
     const pane = await buildPane(makeThread({ provider: 'claude', model: 'claude-opus-4-7' }));
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     setBindingMock('ListChatBarFavorites', async () => [
       {
         kind: 'discussion',

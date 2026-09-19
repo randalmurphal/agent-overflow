@@ -2,6 +2,14 @@
 @import "./styles/tokens.css";
 @import "./styles/syntax.css";
 
+/* Rules that match many elements write border-width / border-style /
+   border-color, not the `border` shorthand; the reason is in the preflight
+   patch (patches/tailwindcss@*.patch, index.css). Lightning CSS folds a
+   constant width + style + color back into the shorthand, so a longhand
+   color must be a var() or live in its own rule. Selectors that match a
+   handful of elements may keep the shorthand; styles/appCssPipeline.test.ts
+   lists them and pins the emitted CSS. */
+
 /* Layout mode (stores/layoutMode.svelte.ts): `compact:` utilities apply
    under the phone shell, keyed on the class the store stamps on <html>. */
 @custom-variant compact (&:where(.layout-compact, .layout-compact *));
@@ -390,6 +398,18 @@ html.light {
   --color-md-marker: var(--md-marker);
 }
 
+/* Spacing is inlined so utilities compile to `calc(0.25rem * N)` instead of
+   `calc(var(--spacing) * N)`. A var() declaration is re-substituted and
+   re-parsed per element on every style recalc (measured 2026-09-18 at
+   ~250KB of Oilpan garbage per timeline mount), while a literal calc is
+   parsed once with the stylesheet. Nothing reads --spacing at runtime.
+   The font and color tokens above stay non-inline on purpose: fonts.ts
+   overrides --font-* on <html>, and the color tokens already resolve to
+   runtime variables. */
+@theme inline {
+  --spacing: 0.25rem;
+}
+
 html,
 body,
 #app {
@@ -439,8 +459,8 @@ body::selection {
 }
 
 /* Mask icons. Every static line-art icon (lucide via the @lucide/svelte
-   mask-icons patch — see frontend/AGENTS.md §Vendor Patches — plus
-   ToolKindIcon and the brand marks) renders as a <span> whose shape is a
+   mask-icons patch in frontend/patches, plus ToolKindIcon and the brand
+   marks) renders as a <span> whose shape is a
    same-document sprite `mask` reference (url(#id) into a hidden <svg> of
    <mask> elements — utils/maskSprite.ts) and whose color is its background.
    An <svg> root rendered at a size other than its viewBox is a scaled
@@ -451,12 +471,22 @@ body::selection {
    mask-image instead costs an isolated SVG document per distinct URI whose
    singletons pin near-empty Oilpan pages (renderer floor ratchet, measured
    2026-08-25). A sprite-masked span has none of those costs. The component
-   owns only the shape (--mask-icon) and box size; color stays in the
-   cascade via currentColor.
+   owns only the shape (an inline `mask-image`) and box size; color stays
+   in the cascade via currentColor.
 
-   The position/size/repeat components below are inert for a mask-element
-   reference (the mask's own objectBoundingBox units do that job) but keep
-   the shorthand valid for any image mask a future caller passes.
+   The shape is an inline mask-image rather than an inline custom property
+   consumed by `mask: var(--mask-icon) ...` (what shipped first): a custom
+   property on an element costs Blink inherited-variable trie nodes per
+   element, and a var() declaration is re-substituted and re-parsed per
+   element on every style recalc (measured 2026-09-18: ~200KB of Oilpan
+   garbage per timeline mount). An inline mask-image (with its -webkit-
+   twin, since inline styles never pass through the build's prefixer) is
+   parsed once when the attribute is set, and the rule below holds only
+   shared constants.
+
+   size/position/repeat are inert for a mask-element reference (the mask's
+   own objectBoundingBox units do that job) but keep any image mask a
+   future caller passes rendering the same way.
 
    The forced-colors block is load-bearing, not polish: High Contrast mode
    strips background-color, so without it every icon in the app renders as
@@ -465,7 +495,9 @@ body::selection {
 .mask-icon {
   display: inline-block;
   background-color: currentColor;
-  mask: var(--mask-icon) center / contain no-repeat;
+  mask-size: contain;
+  mask-position: center;
+  mask-repeat: no-repeat;
 }
 
 @media (forced-colors: active) {
@@ -845,7 +877,9 @@ input[type="search"]::-webkit-search-cancel-button {
      named separately so a future code theme can restyle blocks without
      moving that tier for everything else on it (see tokens.css). */
   background: var(--code-block);
-  border: 1px solid var(--border-subtle);
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border-subtle);
   border-radius: var(--radius-field);
   padding: 0.75rem;
   margin: 0.5rem 0;
@@ -889,7 +923,9 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 .markdown-body th,
 .markdown-body td {
-  border: 1px solid var(--border);
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border);
   padding: 0.35rem 0.625rem;
   text-align: left;
   vertical-align: top;
@@ -983,7 +1019,7 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 .markdown-body pre.mermaid.mermaid-rendered {
   background: transparent;
-  border: none;
+  border-style: none;
   padding: 0.25rem 0;
   overflow-x: auto;
   max-width: 100%;
@@ -991,7 +1027,9 @@ input[type="search"]::-webkit-search-cancel-button {
 
 /* Collapsible <details>/<summary> passed through sanitized client markdown. */
 .markdown-body details {
-  border: 1px solid var(--border);
+  border-width: 1px;
+  border-style: solid;
+  border-color: var(--border);
   border-radius: 0.375rem;
   padding: 0.375rem 0.625rem;
   margin: 0.5rem 0;

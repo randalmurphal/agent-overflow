@@ -8,9 +8,11 @@ import {
   installExternalLinkDelegate,
   installPreviewLinkActions,
   loopbackDevServerURL,
+  openableExternalURL,
   safeExternalURL,
 } from './externalLinks';
 import { buildPathLinkHref } from './pathLinkExtension';
+import { buildForgeAttachmentHref } from './forgeAttachments';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { resetRunMode, setRunMode } from '../../test/runMode';
 import { OBSERVE_SCOPES, pairWithScopes, resetToLocalPage } from '../../test/helpers/scopes';
@@ -41,6 +43,38 @@ describe('safeExternalURL', () => {
   });
 });
 
+describe('openableExternalURL', () => {
+  it('accepts any registered handler scheme, normalized', () => {
+    expect(openableExternalURL('https://example.com/path?q=1')).toBe('https://example.com/path?q=1');
+    expect(openableExternalURL('mailto:test@example.com')).toBe('mailto:test@example.com');
+    expect(openableExternalURL('tel:+15555550100')).toBe('tel:+15555550100');
+    expect(openableExternalURL('  vscode://file/tmp/x.go:12  ')).toBe('vscode://file/tmp/x.go:12');
+    expect(openableExternalURL('obsidian://open?vault=notes')).toBe('obsidian://open?vault=notes');
+  });
+
+  it('refuses the deny-list, file URLs, drive paths and relative hrefs', () => {
+    for (const raw of [
+      'javascript:alert(1)',
+      'vbscript:MsgBox',
+      'data:text/html,hi',
+      'blob:https://example.com/uuid',
+      'about:blank',
+      'ms-msdt:/id%20PCWDiagnostic',
+      'agent-overflow:open?path=/etc/passwd',
+      'file:///etc/passwd',
+      'C:\\Windows\\System32\\calc.exe',
+      '/local/path',
+      '#fragment',
+      'https:///missing-host',
+      '',
+      null,
+      undefined,
+    ]) {
+      expect(openableExternalURL(raw), String(raw)).toBeNull();
+    }
+  });
+});
+
 describe('handleExternalURL', () => {
   let originalOpen: typeof window.open;
 
@@ -66,13 +100,22 @@ describe('handleExternalURL', () => {
     expect(window.open).not.toHaveBeenCalled();
   });
 
-  it('does not call the binding for unsupported URLs', async () => {
+  it('does not call the binding for denied URLs', async () => {
     const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
 
     const handled = await handleExternalURL('javascript:alert(1)');
 
     expect(handled).toBe(false);
     expect(open).not.toHaveBeenCalled();
+  });
+
+  it('routes a handler-scheme URL through the OpenExternalURL binding', async () => {
+    const open = setBindingMock('OpenExternalURL', vi.fn(async () => undefined));
+
+    const handled = await handleExternalURL('mailto:test@example.com');
+
+    expect(handled).toBe(true);
+    expect(open).toHaveBeenCalledWith('mailto:test@example.com');
   });
 
   it('uses browser-native opening in client mode', async () => {
@@ -128,10 +171,23 @@ describe('externalURLForEventTarget', () => {
     expect(externalURLForEventTarget(hit)).toBe('https://example.com/x');
   });
 
-  it('returns null for path links, relative hrefs, and non-links', () => {
+  it('returns null for path links, forge attachments, relative hrefs, and non-links', () => {
     expect(
       externalURLForEventTarget(
         target(`<a data-hit href="${buildPathLinkHref('src/foo.ts', undefined, undefined, '')}">f</a>`),
+      ),
+    ).toBeNull();
+    // A forge attachment is a save-or-download action owned by
+    // `forgeAttachmentActions.ts`; offering it in the open-externally menu
+    // would hand the OS an unregistered custom scheme.
+    expect(
+      externalURLForEventTarget(
+        target(`<a data-hit href="${buildForgeAttachmentHref({
+          href: '/uploads/0123456789abcdef0123456789abcdef/x.pdf',
+          pr: { forge: 'gitlab', namespace: 'group', repo: 'widget', number: 3 },
+          backend: 'gpu',
+          webBase: '',
+        })}">a</a>`),
       ),
     ).toBeNull();
     expect(externalURLForEventTarget(target('<a data-hit href="/docs">d</a>'))).toBeNull();

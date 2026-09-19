@@ -50,7 +50,7 @@ it('a prepared replacement follows through the send spring from an escaped reade
   try {
     controller.attach(scroller, content);
     deliver(3000); controller.skipWarmup();
-    controller.setEscapedFromLock(true);
+    controller.markEscaped();
     scroller.scrollTop = 400;
     await raf();
     controller.markAtBottom();

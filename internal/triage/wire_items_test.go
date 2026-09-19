@@ -82,6 +82,7 @@ func TestSubagentTurnLeavesEveryPushedRowProvable(t *testing.T) {
 
 	held := make([]store.WindowDigestRow, 0, len(topLevel))
 	sawDecoratedAnchor := false
+	sawDecoratedSibling := false
 	for _, item := range topLevel {
 		pushed, ok := last.get(item.ID)
 		if !ok {
@@ -97,10 +98,18 @@ func TestSubagentTurnLeavesEveryPushedRowProvable(t *testing.T) {
 		if item.ID == "agent-1" && strings.Contains(pushed.Meta, `"subagentDescendantCount":4`) {
 			sawDecoratedAnchor = true
 		}
+		// The card of a detached launch sits at the sibling and reads its
+		// count there, so the sibling's push must carry the same aggregate.
+		if item.ID == ToolCompletionID("agent-1") && strings.Contains(pushed.Meta, `"subagentDescendantCount":4`) {
+			sawDecoratedSibling = true
+		}
 		held = append(held, store.WindowDigestRow{ID: item.ID, Rev: pushed.Rev})
 	}
 	if !sawDecoratedAnchor {
 		t.Fatal("the launch's last push does not carry its four transitive descendants; the anchor was never refreshed from a page read")
+	}
+	if !sawDecoratedSibling {
+		t.Fatal("the completion sibling's last push does not carry the launch's four descendants; the card that sits at it would count zero")
 	}
 
 	stamp, _, err := st.ThreadHistoryStamp("t1")
@@ -114,7 +123,7 @@ func TestSubagentTurnLeavesEveryPushedRowProvable(t *testing.T) {
 		Count:        len(topLevel),
 		Digest:       store.WindowDigest(held),
 	}
-	sync, err := st.SyncThreadWindow(context.Background(), "t1", "", 200, stamp, &window)
+	sync, err := st.SyncThreadWindow(context.Background(), "t1", "", 200, 200, stamp, &window)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}

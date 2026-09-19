@@ -135,12 +135,12 @@ func TestNotificationSoundPerEventToggleIsIndependent(t *testing.T) {
 
 func TestNotificationSoundPlaysTheChosenCue(t *testing.T) {
 	app, recorder := soundApp(t)
-	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueBoop})
+	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueChime})
 
 	if err := app.notifyOS(kindSend(notify.KindTurnComplete)); err != nil {
 		t.Fatalf("notifyOS: %v", err)
 	}
-	wantOneCue(t, recorder, notify.SoundTurnComplete, settings.NotifyCueBoop)
+	wantOneCue(t, recorder, notify.SoundTurnComplete, settings.NotifyCueChime)
 }
 
 // The per-kind half of the banner gate. A kind the user silenced raises no
@@ -443,12 +443,12 @@ func TestPreviewNotificationSoundRaisesTheSystemSound(t *testing.T) {
 func TestPreviewNotificationSoundPlaysTheCueForABuiltIn(t *testing.T) {
 	app, recorder := soundApp(t)
 	sender := app.osNotifications.(*recordingNotificationSender)
-	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueBoop})
+	updateSoundSettings(t, app, map[string]any{"notifySoundCueTurnComplete": settings.NotifyCueChime})
 
 	if err := app.PreviewNotificationSound(string(notify.SoundTurnComplete)); err != nil {
 		t.Fatalf("PreviewNotificationSound: %v", err)
 	}
-	wantOneCue(t, recorder, notify.SoundTurnComplete, settings.NotifyCueBoop)
+	wantOneCue(t, recorder, notify.SoundTurnComplete, settings.NotifyCueChime)
 	wantSilent(t, sender.snapshot(), true, "built-in cue preview")
 }
 

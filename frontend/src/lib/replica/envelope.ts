@@ -16,6 +16,11 @@
 //    as a plain object, so a caller cannot hand IndexedDB something it
 //    will reject at write time.
 import type { Item } from '../types/models';
+import type {
+  ActivityRunGroup,
+  ActivityRunGroupKey,
+  ActivityRunStub,
+} from '../../../bindings/agent-overflow/internal/store/models';
 import type { SubagentFoldSnapshot } from '../utils/subagentFold';
 import type { TimelineCursorLike } from '../stores/threadItems';
 import type { SettledTurn } from '../stores/threadTurnProjection';
@@ -33,9 +38,11 @@ export const REPLICA_ENVELOPE_VERSION = 1;
  * changes — including a change to the wire `Item` DTO, since items ride
  * the envelope verbatim. A mismatch drops the whole database.
  */
-// The wire `Item` DTO gained `rev`, so stored rows from an earlier build
-// cannot describe a held window.
-export const REPLICA_SCHEMA_VERSION = 3;
+// Schema 4 gave the body `runs`: a window is only paintable with the
+// stubs that describe the activity-run members it does not hold. Schema 5
+// gave each stub its edge coordinates, which is how a jump tells a member
+// the pane does not hold from a row that is merely older than the run.
+export const REPLICA_SCHEMA_VERSION = 5;
 
 /**
  * Per-envelope caps, deliberately the same numbers `threadItemCache`
@@ -79,6 +86,16 @@ export interface ReplicaBody {
   newestCursor: TimelineCursorLike | null;
   hasMoreOlder: boolean;
   hasMoreNewer: boolean;
+  /**
+   * The page's activity-run stubs, one per run the window touches
+   * (docs/architecture/timeline-window-pages.md §2). Stored because a
+   * painted window without them would claim every run it holds is
+   * complete: its headers would under-count, and the held window it
+   * describes to `SyncThreadWindow` would omit every unshipped member and
+   * be refused. Always present from schema 4 on — an empty array is a
+   * window with no runs, which is a different fact from "not stored".
+   */
+  runs: ActivityRunStub[];
   /** Paint-only; `ListRecentTurns` re-fetches it on every open. */
   latestSettledTurn: SettledTurn | null;
   subagentFolds: SubagentFoldSnapshot | null;
@@ -130,6 +147,40 @@ function plainFolds(folds: SubagentFoldSnapshot | null | undefined): SubagentFol
   };
 }
 
+function plainGroupKey(key: ActivityRunGroupKey | null | undefined): ActivityRunGroupKey | null {
+  if (!key || typeof key !== 'object') return null;
+  return { kind: key.kind, toolName: key.toolName, mcp: key.mcp };
+}
+
+function plainRuns(runs: readonly ActivityRunStub[] | null | undefined): ActivityRunStub[] {
+  if (!Array.isArray(runs)) return [];
+  return runs.map((run) => ({
+    firstItemId: run.firstItemId,
+    lastItemId: run.lastItemId,
+    firstTurnIndex: run.firstTurnIndex,
+    firstItemIndex: run.firstItemIndex,
+    lastTurnIndex: run.lastTurnIndex,
+    lastItemIndex: run.lastItemIndex,
+    memberCount: run.memberCount,
+    loadedFirstItemId: run.loadedFirstItemId,
+    loadedLastItemId: run.loadedLastItemId,
+    unshippedBefore: run.unshippedBefore,
+    unshippedAfter: run.unshippedAfter,
+    unshippedDigest: run.unshippedDigest,
+    unshippedGroups: (run.unshippedGroups ?? []).map((group: ActivityRunGroup) => ({
+      kind: group.kind,
+      toolName: group.toolName,
+      mcp: group.mcp,
+      rows: group.rows,
+    })),
+    unshippedPairedLaunchIds: [...(run.unshippedPairedLaunchIds ?? [])],
+    shippedSupersededLaunchIds: [...(run.shippedSupersededLaunchIds ?? [])],
+    unshippedFailed: run.unshippedFailed === true,
+    runningBefore: plainGroupKey(run.runningBefore),
+    runningAfter: plainGroupKey(run.runningAfter),
+  }));
+}
+
 function plainSettledTurn(turn: SettledTurn | null | undefined): SettledTurn | null {
   if (!turn) return null;
   return {
@@ -153,6 +204,7 @@ export function normalizeBody(input: ReplicaBody): ReplicaBody {
     newestCursor: plainCursor(input.newestCursor),
     hasMoreOlder: input.hasMoreOlder === true,
     hasMoreNewer: input.hasMoreNewer === true,
+    runs: plainRuns(input.runs),
     latestSettledTurn: plainSettledTurn(input.latestSettledTurn),
     subagentFolds: plainFolds(input.subagentFolds),
   };
@@ -174,6 +226,12 @@ export function estimateBodyChars(body: ReplicaBody): number {
     chars += item.meta?.length ?? 0;
     chars += item.payloadMeta?.length ?? 0;
     chars += item.payloadPreviewSpans?.length ?? 0;
+  }
+  for (const run of body.runs) {
+    chars += run.unshippedDigest.length;
+    for (const group of run.unshippedGroups) chars += group.toolName.length + group.mcp.length;
+    for (const id of run.unshippedPairedLaunchIds) chars += id.length;
+    for (const id of run.shippedSupersededLaunchIds) chars += id.length;
   }
   for (const anchor of body.subagentFolds?.anchors ?? []) {
     chars += anchor.terminalPreview.length;
@@ -215,6 +273,23 @@ export function readEnvelope(raw: unknown): ReplicaBody | null {
     }
     if (!Number.isInteger((item as Item).rev)) return null;
   }
+  // A body without `runs` was written by a build that could not describe
+  // its runs, and is dropped rather than painted as if every run were
+  // whole; one whose stubs lack their edge coordinates would let a jump
+  // ask the wrong run for a row.
+  if (!Array.isArray(body.runs)) return null;
+  for (const run of body.runs) {
+    if (!run || typeof run !== 'object') return null;
+    if (typeof (run as ActivityRunStub).firstItemId !== 'string') return null;
+    if (!isFiniteNumber((run as ActivityRunStub).firstTurnIndex)) return null;
+    if (!isFiniteNumber((run as ActivityRunStub).firstItemIndex)) return null;
+    if (!isFiniteNumber((run as ActivityRunStub).lastTurnIndex)) return null;
+    if (!isFiniteNumber((run as ActivityRunStub).lastItemIndex)) return null;
+    if (typeof (run as ActivityRunStub).unshippedDigest !== 'string') return null;
+    if (!isFiniteNumber((run as ActivityRunStub).memberCount)) return null;
+    if (!Array.isArray((run as ActivityRunStub).unshippedPairedLaunchIds)) return null;
+    if (!Array.isArray((run as ActivityRunStub).shippedSupersededLaunchIds)) return null;
+  }
   return {
     epoch: body.epoch,
     rev: body.rev,
@@ -224,6 +299,7 @@ export function readEnvelope(raw: unknown): ReplicaBody | null {
     newestCursor: plainCursor(body.newestCursor),
     hasMoreOlder: body.hasMoreOlder === true,
     hasMoreNewer: body.hasMoreNewer === true,
+    runs: plainRuns(body.runs as ActivityRunStub[]),
     latestSettledTurn: (body.latestSettledTurn as SettledTurn | null) ?? null,
     subagentFolds: plainFolds(body.subagentFolds),
   };

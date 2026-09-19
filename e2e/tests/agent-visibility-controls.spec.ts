@@ -212,7 +212,7 @@ test('backgrounding a running inline agent returns the turn and the transcript c
       },
       emit([
         taskUpdatedLine('task-sweep', { status: 'completed', end_time: 1787419835322 }),
-        taskNotificationLine('task-sweep', 'tu-agent', 'Sweep complete.', {
+        taskNotificationLine('task-sweep', 'tu-agent', BACKFILL_TEXT, {
           outputFile: '${CWD}/sweep-output.jsonl',
           usage: { total_tokens: 24110, tool_uses: 2, duration_ms: 9312 },
         }),
@@ -286,12 +286,15 @@ test('backgrounding a running inline agent returns the turn and the transcript c
   // the launch row — a backgrounded agent's live ticks are gone by then.
   await expect(pane.getByTestId('workspace-strip-usage')).toHaveText('24.1k');
 
-  // The backfilled rows belong to the agent, not the main thread.
+  // The backfilled rows belong to the agent, not the main thread. The
+  // notification row carries the same text as its summary (the wire's
+  // local_agent summary is the report) and is the thread's bell, not a
+  // transcript row.
   await expect
     .poll(async () => {
       const items = await listItems(harness, threadId);
       return items
-        .filter((i) => i.summary?.includes('Backfilled:'))
+        .filter((i) => i.kind !== 'notification' && i.summary?.includes('Backfilled:'))
         .map((i) => i.parentId ?? '');
     })
     .toEqual(['tu-agent']);

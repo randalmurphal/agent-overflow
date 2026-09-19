@@ -478,6 +478,11 @@ export {
   GetPRCIJobs,
   GetPRCIJobLog,
   SavePRCIJobLog,
+  // Forge-hosted attachments referenced by PR/MR content: one mints a
+  // single-use ticketed URL for the bytes, the other writes the file into
+  // the owning computer's Downloads folder.
+  FetchForgeAttachment,
+  SaveForgeAttachment,
   ListPRReviewThreads,
   SubmitPRReview,
   ReplyToPRThread,
@@ -951,16 +956,20 @@ export interface SyncThreadWindowInput {
   haveEpoch: number;
   haveRev: number;
   /**
-   * The client's stated projection preference — `wantsInlinePreviews()`
-   * in threadPaneShared, never a literal.
+   * The page shape this pane asks every other history page for —
+   * `threadPaneShared.timelinePageShape()`, spread in, never literals.
    *
-   * Required here although the generated request class types it optional
-   * (Go's `omitempty`): the positional item-window bindings make the
-   * preference impossible to omit, and the one path that passes a request
-   * object should be no easier to under-specify. Omitting it would ask
-   * for a different projection than the rest of the window.
+   * Required here although the generated request class types each field
+   * optional (Go's `omitempty`): the positional item-window bindings make
+   * the shape impossible to omit, and the one path that passes a request
+   * object should be no easier to under-specify. A sync page composed
+   * under a different shape than the pane's other pages would ship a
+   * different projection and a different run window, and the rows it
+   * replaced would not match the ones around them.
    */
   inlinePreviews: boolean;
+  runWindowRows: number;
+  maxBytes: number;
   /**
    * The rows the caller already holds, or omitted when it holds none
    * (`stores/threadWindowDigest.ts#heldWindowOf`). Optional because most
@@ -989,4 +998,51 @@ export function SyncThreadWindow(
     threadId,
     new SyncThreadWindowRequestClass(req),
   ) as unknown as Promise<SyncThreadWindowResult>;
+}
+
+// ListActivityRunMembers wrapper. Same plain-object-in / class-wrap
+// pattern as SyncThreadWindow: the generated signature types the request
+// as a class instance and every call site wants to hand a literal
+// (docs/architecture/timeline-window-pages.md §3).
+import {
+  ListActivityRunMembers as ListActivityRunMembersRaw,
+} from '../../../bindings/agent-overflow/app.js';
+import {
+  ActivityRunMembersRequest as ActivityRunMembersRequestClass,
+} from '../../../bindings/agent-overflow/internal/app/models.js';
+import type { PageShape } from '../../../bindings/agent-overflow/internal/app/models';
+import type { ActivityRunMembers } from '../../../bindings/agent-overflow/internal/store/models';
+
+/** Which members of a run the caller wants, relative to the span it holds. */
+export type ActivityRunMembersDirection = 'before' | 'after' | 'around';
+
+export interface ActivityRunMembersInput {
+  /** The run's first physical member; the call is refused if it moved. */
+  runFirstItemId: string;
+  /** The span the caller already holds. Both empty when it holds none. */
+  loadedFirstItemId?: string;
+  loadedLastItemId?: string;
+  direction: ActivityRunMembersDirection;
+  /** Required for `around`: the member the replacement span centers on. */
+  aroundItemId?: string;
+  /** 0 returns no rows and refreshes the stub for the span already held. */
+  limit?: number;
+  /**
+   * The pane's page shape — `timelinePageShape()` in threadPaneShared,
+   * never a literal. `runWindowRows` has no meaning here (the caller
+   * names the count with `limit`); `inlinePreviews` and `maxBytes` apply
+   * exactly as they do to a page, so a members response cannot arrive in
+   * a different projection than the window it mounts into.
+   */
+  shape: PageShape;
+}
+
+export function ListActivityRunMembers(
+  threadId: string,
+  req: ActivityRunMembersInput,
+): Promise<ActivityRunMembers> {
+  return ListActivityRunMembersRaw(
+    threadId,
+    new ActivityRunMembersRequestClass(req),
+  ) as unknown as Promise<ActivityRunMembers>;
 }

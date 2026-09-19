@@ -481,13 +481,20 @@ func TestMergeDoesNotMutateTheBaseCatalog(t *testing.T) {
 
 // --- Catalog ---
 
+// modelsFor drops the enriched flag for the tests that only care about the
+// list. Provenance has its own tests.
+func modelsFor(c *Catalog, key provider.ProbeCacheKey, providerName string) []provider.ModelInfo {
+	models, _ := c.ModelsFor(key, providerName)
+	return models
+}
+
 func testKey(account string) provider.ProbeCacheKey {
 	return provider.ProbeCacheKey{Binary: "/usr/bin/claude", AccountID: account, WorkDir: "/home/u"}
 }
 
 func TestCatalogFallsBackToTheShippedListBeforeAnyProbe(t *testing.T) {
 	catalog := NewCatalog()
-	models := catalog.ModelsFor(testKey("a"), string(provider.Claude))
+	models, _ := catalog.ModelsFor(testKey("a"), string(provider.Claude))
 	if !slices.Equal(slugs(models), slugs(provider.ClaudeModels)) {
 		t.Errorf("models = %v, want the shipped catalog", slugs(models))
 	}
@@ -496,13 +503,14 @@ func TestCatalogFallsBackToTheShippedListBeforeAnyProbe(t *testing.T) {
 func TestCatalogStampsTheRequestedProvider(t *testing.T) {
 	catalog := NewCatalog()
 	for _, name := range []string{string(provider.Claude), string(provider.ClaudeTUI)} {
-		for _, model := range catalog.ModelsFor(testKey("a"), name) {
+		models := modelsFor(catalog, testKey("a"), name)
+		for _, model := range models {
 			if model.Provider != name {
 				t.Fatalf("ModelsFor(%q) returned a %q model", name, model.Provider)
 			}
 		}
 	}
-	if models := catalog.ModelsFor(testKey("a"), string(provider.Codex)); models != nil {
+	if models := modelsFor(catalog, testKey("a"), string(provider.Codex)); models != nil {
 		t.Errorf("ModelsFor(codex) = %v, want nil — Claude models must not be served under another provider", slugs(models))
 	}
 }
@@ -522,7 +530,7 @@ func TestCatalogServesTheNewestSameBinaryAnswerToAnUnprobedIdentity(t *testing.T
 		Value: "claude-newthing-1", DisplayName: "Newthing",
 	}}, nil)
 
-	unprobed := catalog.ModelsFor(testKey("account-c"), string(provider.Claude))
+	unprobed := modelsFor(catalog, testKey("account-c"), string(provider.Claude))
 	if _, ok := findModel(unprobed, "claude-newthing-1"); !ok {
 		t.Error("an unprobed identity must be served the newest same-binary answer")
 	}
@@ -533,7 +541,7 @@ func TestCatalogServesTheNewestSameBinaryAnswerToAnUnprobedIdentity(t *testing.T
 	catalog.Store(testKey("account-c"), []claude.WireModel{{
 		Value: "claude-ownthing-1", DisplayName: "Ownthing",
 	}}, nil)
-	own := catalog.ModelsFor(testKey("account-c"), string(provider.Claude))
+	own := modelsFor(catalog, testKey("account-c"), string(provider.Claude))
 	if _, ok := findModel(own, "claude-ownthing-1"); !ok {
 		t.Error("a probed identity must see its own enrichment")
 	}
@@ -542,7 +550,7 @@ func TestCatalogServesTheNewestSameBinaryAnswerToAnUnprobedIdentity(t *testing.T
 	}
 
 	other := provider.ProbeCacheKey{Binary: "/opt/claude", AccountID: "account-c", WorkDir: "/home/u"}
-	if !slices.Equal(slugs(catalog.ModelsFor(other, string(provider.Claude))), slugs(provider.ClaudeModels)) {
+	if !slices.Equal(slugs(modelsFor(catalog, other, string(provider.Claude))), slugs(provider.ClaudeModels)) {
 		t.Error("a binary that never reported must serve the shipped catalog, not another binary's answer")
 	}
 }
@@ -584,12 +592,12 @@ func TestCatalogRetainsEnrichmentThroughDegradedAnswers(t *testing.T) {
 	wire := []claude.WireModel{{Value: "claude-newthing-1", DisplayName: "Newthing"}}
 
 	catalog.Store(key, wire, nil)
-	if _, ok := findModel(catalog.ModelsFor(key, string(provider.Claude)), "claude-newthing-1"); !ok {
+	if _, ok := findModel(modelsFor(catalog, key, string(provider.Claude)), "claude-newthing-1"); !ok {
 		t.Fatal("enrichment did not land")
 	}
 
 	drift := catalog.Store(key, nil, errors.New("models: unreadable"))
-	if _, ok := findModel(catalog.ModelsFor(key, string(provider.Claude)), "claude-newthing-1"); !ok {
+	if _, ok := findModel(modelsFor(catalog, key, string(provider.Claude)), "claude-newthing-1"); !ok {
 		t.Error("an unreadable array is no information: the previous answer must stand")
 	}
 	if len(drift) != 1 || drift[0].Kind != DriftUnreadable {
@@ -597,7 +605,7 @@ func TestCatalogRetainsEnrichmentThroughDegradedAnswers(t *testing.T) {
 	}
 
 	drift = catalog.Store(key, nil, nil)
-	if _, ok := findModel(catalog.ModelsFor(key, string(provider.Claude)), "claude-newthing-1"); !ok {
+	if _, ok := findModel(modelsFor(catalog, key, string(provider.Claude)), "claude-newthing-1"); !ok {
 		t.Error("an empty answer from the same binary must keep the learned model")
 	}
 	if len(drift) != 1 || drift[0].Kind != DriftRetained {
@@ -613,7 +621,7 @@ func TestCatalogRetainsEnrichmentThroughDegradedAnswers(t *testing.T) {
 	if drift := catalog.Store(fresh, nil, nil); len(drift) != 0 {
 		t.Errorf("empty wire with no previous enrichment reported %s", FormatDrift(drift))
 	}
-	if !slices.Equal(slugs(catalog.ModelsFor(fresh, string(provider.Claude))), slugs(provider.ClaudeModels)) {
+	if !slices.Equal(slugs(modelsFor(catalog, fresh, string(provider.Claude))), slugs(provider.ClaudeModels)) {
 		t.Error("no-enrichment identity must serve the shipped catalog")
 	}
 }
@@ -633,7 +641,7 @@ func TestCatalogRetainsLearnedModelsAcrossPartialWires(t *testing.T) {
 
 	catalog.Store(key, full, nil)
 	drift := catalog.Store(key, degraded, nil)
-	if _, ok := findModel(catalog.ModelsFor(key, string(provider.Claude)), "claude-newthing-1"); !ok {
+	if _, ok := findModel(modelsFor(catalog, key, string(provider.Claude)), "claude-newthing-1"); !ok {
 		t.Fatal("a partial wire must not subtract the learned model")
 	}
 	if !slices.Contains(driftKinds(drift, "claude-newthing-1"), DriftRetained) {
@@ -647,7 +655,7 @@ func TestCatalogRetainsLearnedModelsAcrossPartialWires(t *testing.T) {
 	if slices.Contains(driftKinds(drift, "claude-newthing-1"), DriftRetained) {
 		t.Errorf("the wire re-listing the model must own it again, drift = %s", FormatDrift(drift))
 	}
-	if _, ok := findModel(catalog.ModelsFor(key, string(provider.Claude)), "claude-newthing-1"); !ok {
+	if _, ok := findModel(modelsFor(catalog, key, string(provider.Claude)), "claude-newthing-1"); !ok {
 		t.Error("the re-listed model must still be served")
 	}
 }
@@ -665,13 +673,13 @@ func TestCatalogDropBinary(t *testing.T) {
 	if dropped := catalog.DropBinary(upgraded.Binary); dropped != 1 {
 		t.Fatalf("DropBinary dropped %d entries, want 1", dropped)
 	}
-	if _, ok := findModel(catalog.ModelsFor(upgraded, string(provider.Claude)), "claude-newthing-1"); ok {
+	if _, ok := findModel(modelsFor(catalog, upgraded, string(provider.Claude)), "claude-newthing-1"); ok {
 		t.Error("the upgraded binary's learned model must be gone")
 	}
-	if !slices.Equal(slugs(catalog.ModelsFor(upgraded, string(provider.Claude))), slugs(provider.ClaudeModels)) {
+	if !slices.Equal(slugs(modelsFor(catalog, upgraded, string(provider.Claude))), slugs(provider.ClaudeModels)) {
 		t.Error("the dropped identity must fall back to the shipped catalog")
 	}
-	if _, ok := findModel(catalog.ModelsFor(other, string(provider.Claude)), "claude-newthing-1"); !ok {
+	if _, ok := findModel(modelsFor(catalog, other, string(provider.Claude)), "claude-newthing-1"); !ok {
 		t.Error("another binary's entry must be untouched")
 	}
 
@@ -681,7 +689,7 @@ func TestCatalogDropBinary(t *testing.T) {
 	if slices.Contains(driftKinds(drift, "claude-newthing-1"), DriftRetained) {
 		t.Errorf("a dropped binary's models must not resurrect, drift = %s", FormatDrift(drift))
 	}
-	if _, ok := findModel(catalog.ModelsFor(upgraded, string(provider.Claude)), "claude-newthing-1"); ok {
+	if _, ok := findModel(modelsFor(catalog, upgraded, string(provider.Claude)), "claude-newthing-1"); ok {
 		t.Error("a dropped binary's models must not resurrect into the picker")
 	}
 }
@@ -732,11 +740,11 @@ func TestCatalogReturnsIndependentCopies(t *testing.T) {
 	key := testKey("a")
 	catalog.Store(key, capturedWireModels(t), nil)
 
-	first := catalog.ModelsFor(key, string(provider.Claude))
+	first := modelsFor(catalog, key, string(provider.Claude))
 	first[0].Slug = "mutated"
 	first[0].ContextWindows[0].Tokens = 1
 
-	second := catalog.ModelsFor(key, string(provider.Claude))
+	second := modelsFor(catalog, key, string(provider.Claude))
 	if second[0].Slug == "mutated" || second[0].ContextWindows[0].Tokens == 1 {
 		t.Error("callers mutate what they get; the cached list must not follow")
 	}
@@ -884,5 +892,241 @@ func TestMergeCarriesSupportsAutoModeThreeState(t *testing.T) {
 	*wire[0].SupportsAutoMode = false
 	if v := byName["claude-fable-5"].SupportsAutoMode; v == nil || !*v {
 		t.Error("merged value aliases the wire row")
+	}
+}
+
+// --- Export / Seed ---
+
+// TestCatalogSeedReproducesTheProbedEntry: a seeded entry is not an
+// approximation of the probe's answer, it is the answer. Anything less would
+// make the picker change under the user between the cold start and the boot
+// probe landing.
+func TestCatalogSeedReproducesTheProbedEntry(t *testing.T) {
+	key := testKey("a")
+	wire := capturedWireModels(t)
+
+	probed := NewCatalog()
+	probed.Store(key, wire, nil)
+	snapshot, ok := probed.Export(key)
+	if !ok {
+		t.Fatal("Export found no entry for a key that was just stored")
+	}
+
+	seeded := NewCatalog()
+	seeded.Seed(key, snapshot)
+
+	want, _ := probed.ModelsFor(key, string(provider.Claude))
+	got, enriched := seeded.ModelsFor(key, string(provider.Claude))
+	if !enriched {
+		t.Error("a seeded identity must report an enriched answer")
+	}
+	if !slices.Equal(slugs(got), slugs(want)) {
+		t.Errorf("seeded catalog = %v, want the probed catalog %v", slugs(got), slugs(want))
+	}
+	for i := range want {
+		if !modelsEquivalent(got[i], want[i]) {
+			t.Errorf("seeded %s = %+v, want %+v", want[i].Slug, got[i], want[i])
+		}
+	}
+
+	// Re-exporting the seeded entry returns the same evidence, so a second
+	// restart is not a second approximation.
+	again, ok := seeded.Export(key)
+	if !ok {
+		t.Fatal("a seeded entry must be exportable")
+	}
+	if len(again.Wire) != len(snapshot.Wire) || !slices.Equal(slugs(again.Learned), slugs(snapshot.Learned)) {
+		t.Errorf("re-export = %d wire rows / %v learned, want %d / %v",
+			len(again.Wire), slugs(again.Learned), len(snapshot.Wire), slugs(snapshot.Learned))
+	}
+}
+
+// TestSeedDoesNotInheritTheDriftDedupState: the models are restored, the
+// previous process's log is not. Drift is deduped per process so every log
+// carries each distinct report once; a seeded dedup state would silence a
+// stale-catalog signal for as long as the catalog stays stale.
+func TestSeedDoesNotInheritTheDriftDedupState(t *testing.T) {
+	base := []provider.ModelInfo{{
+		Slug:         "claude-opus-5",
+		Name:         "Claude Opus 5",
+		Provider:     "claude",
+		Capabilities: []string{provider.ModelCapabilityFastMode},
+	}}
+	// The wire disagrees with the catalog's fast-mode flag, which is a
+	// DriftCapability report on every fresh Store.
+	wire := []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5"}}
+	key := testKey("a")
+
+	probed := NewCatalogWith(base)
+	if drift := probed.Store(key, wire, nil); len(drift) == 0 {
+		t.Fatal("the fixture must produce drift on a first store")
+	}
+	if repeat := probed.Store(key, wire, nil); len(repeat) != 0 {
+		t.Fatalf("the same report must dedupe inside one process: %s", FormatDrift(repeat))
+	}
+	snapshot, ok := probed.Export(key)
+	if !ok {
+		t.Fatal("Export found no entry")
+	}
+
+	restarted := NewCatalogWith(base)
+	restarted.Seed(key, snapshot)
+	if drift := restarted.Store(key, wire, nil); len(drift) == 0 {
+		t.Error("the first probe after a restart must report the drift again")
+	}
+	// And this process dedupes from there, exactly as the previous one did.
+	if repeat := restarted.Store(key, wire, nil); len(repeat) != 0 {
+		t.Errorf("the second identical report must dedupe: %s", FormatDrift(repeat))
+	}
+}
+
+func modelsEquivalent(a, b provider.ModelInfo) bool {
+	return a.Slug == b.Slug && a.Name == b.Name &&
+		slices.Equal(a.Capabilities, b.Capabilities) &&
+		slices.Equal(a.ContextWindows, b.ContextWindows) &&
+		slices.Equal(a.ReasoningEfforts, b.ReasoningEfforts)
+}
+
+// TestCatalogSeedCarriesLearnedModelsIntoTheNextProbe: the retention rule has
+// to survive the restart too. A model this binary taught AO about in a
+// previous process must not be subtracted by the first degraded probe of the
+// next one — that is the 2026-09-03 shape with a reboot in the middle.
+func TestCatalogSeedCarriesLearnedModelsIntoTheNextProbe(t *testing.T) {
+	key := testKey("a")
+	catalog := NewCatalog()
+	catalog.Seed(key, Snapshot{
+		Wire: []claude.WireModel{{Value: "claude-newthing-1", DisplayName: "Newthing"}},
+	})
+	if _, ok := findModel(modelsFor(catalog, key, string(provider.Claude)), "claude-newthing-1"); !ok {
+		t.Fatal("the seeded wire-only model must be served before any probe")
+	}
+
+	drift := catalog.Store(key, []claude.WireModel{{Value: "opus", ResolvedModel: "claude-opus-5"}}, nil)
+	if !slices.Contains(driftKinds(drift, "claude-newthing-1"), DriftRetained) {
+		t.Errorf("drift = %s, want a retained line for the seeded model", FormatDrift(drift))
+	}
+	if _, ok := findModel(modelsFor(catalog, key, string(provider.Claude)), "claude-newthing-1"); !ok {
+		t.Error("a probe omitting the seeded model must not subtract it")
+	}
+
+	// And the retained model is exported again, so the record stays complete
+	// across a second restart.
+	snapshot, ok := catalog.Export(key)
+	if !ok {
+		t.Fatal("Export found no entry")
+	}
+	if !slices.Contains(slugs(snapshot.Learned), "claude-newthing-1") {
+		t.Errorf("exported learned = %v, want the retained model", slugs(snapshot.Learned))
+	}
+}
+
+// TestCatalogSeedIgnoresAnEmptySnapshot: an entry carrying nothing would still
+// claim this identity was probed, which costs the same-binary fallback a real
+// answer and reports enrichment that does not exist.
+func TestCatalogSeedIgnoresAnEmptySnapshot(t *testing.T) {
+	catalog := NewCatalog()
+	key := testKey("a")
+	catalog.Seed(key, Snapshot{})
+	if _, ok := catalog.Export(key); ok {
+		t.Error("an empty snapshot must not create an entry")
+	}
+	if _, enriched := catalog.ModelsFor(key, string(provider.Claude)); enriched {
+		t.Error("an empty snapshot must not make the answer look probed")
+	}
+}
+
+// TestCatalogExportIsIndependentOfTheEntry: the snapshot crosses into a
+// persistence layer that owns what it is handed. Sharing backing arrays would
+// let a writer mutate the served catalog.
+func TestCatalogExportIsIndependentOfTheEntry(t *testing.T) {
+	catalog := NewCatalog()
+	key := testKey("a")
+	enabled := true
+	catalog.Store(key, []claude.WireModel{{
+		Value:                 "claude-newthing-1",
+		DisplayName:           "Newthing",
+		SupportsEffort:        true,
+		SupportedEffortLevels: []string{"low", "high"},
+		SupportsAutoMode:      &enabled,
+	}}, nil)
+
+	snapshot, ok := catalog.Export(key)
+	if !ok {
+		t.Fatal("Export found no entry")
+	}
+	snapshot.Wire[0].Value = "mutated"
+	snapshot.Wire[0].SupportedEffortLevels[0] = "mutated"
+	*snapshot.Wire[0].SupportsAutoMode = false
+	snapshot.Learned[0].Slug = "mutated"
+
+	again, _ := catalog.Export(key)
+	if again.Wire[0].Value != "claude-newthing-1" ||
+		again.Wire[0].SupportedEffortLevels[0] != "low" ||
+		*again.Wire[0].SupportsAutoMode != true {
+		t.Errorf("a caller's mutation reached the stored wire: %+v", again.Wire[0])
+	}
+	if again.Learned[0].Slug != "claude-newthing-1" {
+		t.Errorf("a caller's mutation reached the stored learned models: %v", slugs(again.Learned))
+	}
+	if _, ok := findModel(modelsFor(catalog, key, string(provider.Claude)), "claude-newthing-1"); !ok {
+		t.Error("a caller's mutation reached the served catalog")
+	}
+}
+
+// TestCatalogExportRequiresTheExactIdentity: ModelsFor may borrow the newest
+// same-binary answer, but a persisted record is filed against one account, and
+// writing another account's guess into it would outlive the guess.
+func TestCatalogExportRequiresTheExactIdentity(t *testing.T) {
+	catalog := NewCatalog()
+	catalog.Store(testKey("a"), []claude.WireModel{{Value: "claude-newthing-1"}}, nil)
+	if _, ok := catalog.Export(testKey("b")); ok {
+		t.Error("Export must not borrow another identity's entry")
+	}
+	if _, enriched := catalog.ModelsFor(testKey("b"), string(provider.Claude)); !enriched {
+		t.Error("ModelsFor still serves the same-binary fallback, and reports it as enriched")
+	}
+}
+
+// TestCatalogDropBinaryDropsSeededEntries: a seeded entry is a claim about a
+// binary exactly as a probed one is, so the one subtraction event voids it
+// too.
+func TestCatalogDropBinaryDropsSeededEntries(t *testing.T) {
+	catalog := NewCatalog()
+	key := testKey("a")
+	catalog.Seed(key, Snapshot{Wire: []claude.WireModel{{Value: "claude-newthing-1"}}})
+	if dropped := catalog.DropBinary(key.Binary); dropped != 1 {
+		t.Fatalf("DropBinary dropped %d entries, want 1", dropped)
+	}
+	models, enriched := catalog.ModelsFor(key, string(provider.Claude))
+	if enriched {
+		t.Error("a dropped identity must report an un-enriched answer")
+	}
+	if !slices.Equal(slugs(models), slugs(provider.ClaudeModels)) {
+		t.Errorf("models = %v, want the shipped catalog", slugs(models))
+	}
+}
+
+// TestCatalogReportsEnrichmentProvenance: the flag is what lets a client tell
+// "no probe has answered yet" from "this is what the binary says", so it must
+// follow entry existence, including through the same-binary fallback.
+func TestCatalogReportsEnrichmentProvenance(t *testing.T) {
+	catalog := NewCatalog()
+	key := testKey("a")
+	if _, enriched := catalog.ModelsFor(key, string(provider.Claude)); enriched {
+		t.Error("an identity with no entry must not claim enrichment")
+	}
+	catalog.Seed(key, Snapshot{Wire: []claude.WireModel{{Value: "claude-newthing-1"}}})
+	if _, enriched := catalog.ModelsFor(key, string(provider.Claude)); !enriched {
+		t.Error("a seeded identity must claim enrichment")
+	}
+	if _, enriched := catalog.ModelsFor(testKey("b"), string(provider.Claude)); !enriched {
+		t.Error("the same-binary fallback is an enriched answer")
+	}
+	other := provider.ProbeCacheKey{Binary: "/opt/claude", AccountID: "a", WorkDir: "/home/u"}
+	if _, enriched := catalog.ModelsFor(other, string(provider.Claude)); enriched {
+		t.Error("a binary that never reported must not claim enrichment")
+	}
+	if _, enriched := catalog.ModelsFor(key, string(provider.Codex)); enriched {
+		t.Error("a provider this catalog does not serve must not claim enrichment")
 	}
 }

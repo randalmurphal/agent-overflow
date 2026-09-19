@@ -10,6 +10,315 @@ import { Create as $Create } from "@wailsio/runtime";
 import * as json$0 from "../../../encoding/json/models.js";
 
 /**
+ * ActivityRunGroup is one group's contribution to a run header.
+ */
+export class ActivityRunGroup {
+    "kind": string;
+    "toolName": string;
+
+    /**
+     * MCP is `json_extract(items.meta, '$.mcp')`, the `{server, tool}`
+     * object both providers stamp on a tool a server served, as JSON
+     * text. "" for native tools.
+     */
+    "mcp": string;
+
+    /**
+     * Rows is the sum of DISPLAY rows (§4), not the member count: one
+     * file-change call standing for four files counts four, and a
+     * completion paired with a launch in the same run counts zero.
+     */
+    "rows": number;
+
+    /** Creates a new ActivityRunGroup instance. */
+    constructor($$source: Partial<ActivityRunGroup> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("toolName" in $$source)) {
+            this["toolName"] = "";
+        }
+        if (!("mcp" in $$source)) {
+            this["mcp"] = "";
+        }
+        if (!("rows" in $$source)) {
+            this["rows"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ActivityRunGroup instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ActivityRunGroup {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ActivityRunGroup($$parsedSource as Partial<ActivityRunGroup>);
+    }
+}
+
+/**
+ * ActivityRunGroupKey identifies one presented group of run members.
+ * Presentation — label, icon, provider aliasing, MCP family — stays in
+ * TypeScript; this is the raw identity it builds from, exactly as it
+ * builds it from a loaded Item.
+ */
+export class ActivityRunGroupKey {
+    "kind": string;
+    "toolName": string;
+
+    /**
+     * MCP is `json_extract(items.meta, '$.mcp')`, the `{server, tool}`
+     * object both providers stamp on a tool a server served, as JSON
+     * text. "" for native tools.
+     */
+    "mcp": string;
+
+    /** Creates a new ActivityRunGroupKey instance. */
+    constructor($$source: Partial<ActivityRunGroupKey> = {}) {
+        if (!("kind" in $$source)) {
+            this["kind"] = "";
+        }
+        if (!("toolName" in $$source)) {
+            this["toolName"] = "";
+        }
+        if (!("mcp" in $$source)) {
+            this["mcp"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ActivityRunGroupKey instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ActivityRunGroupKey {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new ActivityRunGroupKey($$parsedSource as Partial<ActivityRunGroupKey>);
+    }
+}
+
+/**
+ * ActivityRunMembers is one answer: the rows to mount, and the stub that
+ * describes the run for the span the caller holds after mounting them.
+ */
+export class ActivityRunMembers {
+    "items": Item[];
+    "stub": ActivityRunStub;
+
+    /** Creates a new ActivityRunMembers instance. */
+    constructor($$source: Partial<ActivityRunMembers> = {}) {
+        if (!("items" in $$source)) {
+            this["items"] = [];
+        }
+        if (!("stub" in $$source)) {
+            this["stub"] = (new ActivityRunStub());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ActivityRunMembers instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ActivityRunMembers {
+        const $$createField0_0 = $$createType1;
+        const $$createField1_0 = $$createType2;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("items" in $$parsedSource) {
+            $$parsedSource["items"] = $$createField0_0($$parsedSource["items"]);
+        }
+        if ("stub" in $$parsedSource) {
+            $$parsedSource["stub"] = $$createField1_0($$parsedSource["stub"]);
+        }
+        return new ActivityRunMembers($$parsedSource as Partial<ActivityRunMembers>);
+    }
+}
+
+/**
+ * ActivityRunStub describes one activity run to a client that holds only
+ * part of it. Every physical row of the run is either shipped in the
+ * page's Items or counted here, which is what lets a client fold the stub
+ * into a held-window description (§5) and drop rows without asking the
+ * server (§6).
+ */
+export class ActivityRunStub {
+    /**
+     * FirstItemID and LastItemID are the run's physical edges. A run is
+     * identified by FirstItemID: runs grow only at their newer end, so
+     * the first member is stable for the life of the window.
+     */
+    "firstItemId": string;
+    "lastItemId": string;
+
+    /**
+     * FirstTurnIndex/FirstItemIndex and LastTurnIndex/LastItemIndex are
+     * the coordinates of those edges. A run is contiguous over the rows a
+     * page returns, so a client can decide from these alone whether a
+     * top-level row it does not hold is a member: it is exactly when its
+     * coordinates fall between the edges (§6 jumps).
+     */
+    "firstTurnIndex": number;
+    "firstItemIndex": number;
+    "lastTurnIndex": number;
+    "lastItemIndex": number;
+
+    /**
+     * MemberCount counts every physical member, shipped or not.
+     */
+    "memberCount": number;
+
+    /**
+     * LoadedFirstItemID and LoadedLastItemID bound the shipped span, and
+     * are "" when the page ships no member of this run.
+     */
+    "loadedFirstItemId": string;
+    "loadedLastItemId": string;
+
+    /**
+     * UnshippedBefore and UnshippedAfter count the members outside the
+     * shipped span on each side. With an empty shipped span every member
+     * counts as UnshippedBefore: the run reads as entirely earlier
+     * history, which is the direction a first fetch takes.
+     */
+    "unshippedBefore": number;
+    "unshippedAfter": number;
+
+    /**
+     * UnshippedDigest is WindowDigest over every unshipped member, so a
+     * client can XOR it into the window digest it holds (§5).
+     */
+    "unshippedDigest": string;
+
+    /**
+     * UnshippedGroups is the header contribution of the unshipped
+     * members, sorted by (kind, toolName, mcp) so two reads of the same
+     * run produce the same bytes.
+     */
+    "unshippedGroups": ActivityRunGroup[];
+
+    /**
+     * UnshippedPairedLaunchIDs lists unshipped members whose completion
+     * IS shipped, sorted by id. The client holds such a completion
+     * without its launch; this is how it applies §4's pairing rule to it
+     * and counts it zero.
+     */
+    "unshippedPairedLaunchIds": string[];
+
+    /**
+     * ShippedSupersededLaunchIDs is the mirror: shipped members whose
+     * completion in this run is NOT shipped, sorted by id. The client
+     * holds such a launch without its completion; this is how it knows
+     * the launch's status is superseded (§4) instead of reading it live.
+     * Together the two lists cover every launch/completion pair the
+     * shipped span splits.
+     */
+    "shippedSupersededLaunchIds": string[];
+
+    /**
+     * UnshippedFailed reports an unshipped member the header must show as
+     * failed: errored or killed, and not superseded by a completion in
+     * the same run.
+     */
+    "unshippedFailed": boolean;
+
+    /**
+     * RunningBefore and RunningAfter name the newest running member on
+     * each side of the shipped span, or nil.
+     */
+    "runningBefore": ActivityRunGroupKey | null;
+    "runningAfter": ActivityRunGroupKey | null;
+
+    /** Creates a new ActivityRunStub instance. */
+    constructor($$source: Partial<ActivityRunStub> = {}) {
+        if (!("firstItemId" in $$source)) {
+            this["firstItemId"] = "";
+        }
+        if (!("lastItemId" in $$source)) {
+            this["lastItemId"] = "";
+        }
+        if (!("firstTurnIndex" in $$source)) {
+            this["firstTurnIndex"] = 0;
+        }
+        if (!("firstItemIndex" in $$source)) {
+            this["firstItemIndex"] = 0;
+        }
+        if (!("lastTurnIndex" in $$source)) {
+            this["lastTurnIndex"] = 0;
+        }
+        if (!("lastItemIndex" in $$source)) {
+            this["lastItemIndex"] = 0;
+        }
+        if (!("memberCount" in $$source)) {
+            this["memberCount"] = 0;
+        }
+        if (!("loadedFirstItemId" in $$source)) {
+            this["loadedFirstItemId"] = "";
+        }
+        if (!("loadedLastItemId" in $$source)) {
+            this["loadedLastItemId"] = "";
+        }
+        if (!("unshippedBefore" in $$source)) {
+            this["unshippedBefore"] = 0;
+        }
+        if (!("unshippedAfter" in $$source)) {
+            this["unshippedAfter"] = 0;
+        }
+        if (!("unshippedDigest" in $$source)) {
+            this["unshippedDigest"] = "";
+        }
+        if (!("unshippedGroups" in $$source)) {
+            this["unshippedGroups"] = [];
+        }
+        if (!("unshippedPairedLaunchIds" in $$source)) {
+            this["unshippedPairedLaunchIds"] = [];
+        }
+        if (!("shippedSupersededLaunchIds" in $$source)) {
+            this["shippedSupersededLaunchIds"] = [];
+        }
+        if (!("unshippedFailed" in $$source)) {
+            this["unshippedFailed"] = false;
+        }
+        if (!("runningBefore" in $$source)) {
+            this["runningBefore"] = null;
+        }
+        if (!("runningAfter" in $$source)) {
+            this["runningAfter"] = null;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ActivityRunStub instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ActivityRunStub {
+        const $$createField12_0 = $$createType4;
+        const $$createField13_0 = $$createType5;
+        const $$createField14_0 = $$createType5;
+        const $$createField16_0 = $$createType7;
+        const $$createField17_0 = $$createType7;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("unshippedGroups" in $$parsedSource) {
+            $$parsedSource["unshippedGroups"] = $$createField12_0($$parsedSource["unshippedGroups"]);
+        }
+        if ("unshippedPairedLaunchIds" in $$parsedSource) {
+            $$parsedSource["unshippedPairedLaunchIds"] = $$createField13_0($$parsedSource["unshippedPairedLaunchIds"]);
+        }
+        if ("shippedSupersededLaunchIds" in $$parsedSource) {
+            $$parsedSource["shippedSupersededLaunchIds"] = $$createField14_0($$parsedSource["shippedSupersededLaunchIds"]);
+        }
+        if ("runningBefore" in $$parsedSource) {
+            $$parsedSource["runningBefore"] = $$createField16_0($$parsedSource["runningBefore"]);
+        }
+        if ("runningAfter" in $$parsedSource) {
+            $$parsedSource["runningAfter"] = $$createField17_0($$parsedSource["runningAfter"]);
+        }
+        return new ActivityRunStub($$parsedSource as Partial<ActivityRunStub>);
+    }
+}
+
+/**
  * Attachment is the persisted metadata for a file attached to a thread.
  */
 export class Attachment {
@@ -319,7 +628,7 @@ export class DiffReviewPRContext {
      * Creates a new DiffReviewPRContext instance from a string or object.
      */
     static createFrom($$source: any = {}): DiffReviewPRContext {
-        const $$createField2_0 = $$createType1;
+        const $$createField2_0 = $$createType9;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("comments" in $$parsedSource) {
             $$parsedSource["comments"] = $$createField2_0($$parsedSource["comments"]);
@@ -375,7 +684,7 @@ export class DiffReviewSourceRef {
      * Creates a new DiffReviewSourceRef instance from a string or object.
      */
     static createFrom($$source: any = {}): DiffReviewSourceRef {
-        const $$createField3_0 = $$createType3;
+        const $$createField3_0 = $$createType11;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("pr" in $$parsedSource) {
             $$parsedSource["pr"] = $$createField3_0($$parsedSource["pr"]);
@@ -432,8 +741,8 @@ export class DiscussionDefinition {
      * Creates a new DiscussionDefinition instance from a string or object.
      */
     static createFrom($$source: any = {}): DiscussionDefinition {
-        const $$createField5_0 = $$createType5;
-        const $$createField6_0 = $$createType6;
+        const $$createField5_0 = $$createType13;
+        const $$createField6_0 = $$createType14;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("participants" in $$parsedSource) {
             $$parsedSource["participants"] = $$createField5_0($$parsedSource["participants"]);
@@ -682,11 +991,26 @@ export class Item {
 }
 
 /**
- * PagedItems is the return shape for windowed item loads. `Items` is sorted
- * by (turn_index, item_index) ASC so callers can append or replace the slice
- * directly in a timeline. `OldestCursor` / `NewestCursor` are the inclusive
- * item-coordinate bounds of the page. Cursor turn/item indexes are -1 when
- * `Items` is empty.
+ * PagedItems is the return shape for windowed item loads
+ * (docs/architecture/timeline-window-pages.md §2).
+ * 
+ * `Items` is sorted by (turn_index, item_index) ASC so callers can append
+ * or replace the slice directly in a timeline. It holds the page's PROSE
+ * rows plus, for each activity run in the page, only the members that
+ * would mount; `Runs` carries one stub per run in the range, counting
+ * every member the page did not ship.
+ * 
+ * `OldestCursor` / `NewestCursor` are the inclusive item-coordinate bounds
+ * of the page's RANGE, which holds only whole units — prose rows and whole
+ * runs. Either cursor may therefore name a row that is not in `Items`: a
+ * page whose newest unit is a run ends at that run's last member even when
+ * the shipped span stops earlier. The cursor pagers accept such a cursor.
+ * Cursor turn/item indexes are -1 when the page is empty.
+ * 
+ * Every physical row in [OldestCursor, NewestCursor] is either in `Items`
+ * or counted by exactly one stub. That invariant is what lets a client
+ * fold stubs into a held-window description (§5) and drop rows without
+ * asking the server (§6).
  * 
  * `OldestTurnIndex` / `NewestTurnIndex` are legacy turn-only aliases derived
  * from the cursors. Active-pane callers should use the cursor fields so one
@@ -699,6 +1023,7 @@ export class Item {
  */
 export class PagedItems {
     "items": Item[];
+    "runs": ActivityRunStub[];
     "oldestCursor": TimelineCursor;
     "newestCursor": TimelineCursor;
     "oldestTurnIndex": number;
@@ -711,6 +1036,9 @@ export class PagedItems {
     constructor($$source: Partial<PagedItems> = {}) {
         if (!("items" in $$source)) {
             this["items"] = [];
+        }
+        if (!("runs" in $$source)) {
+            this["runs"] = [];
         }
         if (!("oldestCursor" in $$source)) {
             this["oldestCursor"] = (new TimelineCursor());
@@ -741,18 +1069,22 @@ export class PagedItems {
      * Creates a new PagedItems instance from a string or object.
      */
     static createFrom($$source: any = {}): PagedItems {
-        const $$createField0_0 = $$createType8;
-        const $$createField1_0 = $$createType9;
-        const $$createField2_0 = $$createType9;
+        const $$createField0_0 = $$createType1;
+        const $$createField1_0 = $$createType15;
+        const $$createField2_0 = $$createType16;
+        const $$createField3_0 = $$createType16;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("items" in $$parsedSource) {
             $$parsedSource["items"] = $$createField0_0($$parsedSource["items"]);
         }
+        if ("runs" in $$parsedSource) {
+            $$parsedSource["runs"] = $$createField1_0($$parsedSource["runs"]);
+        }
         if ("oldestCursor" in $$parsedSource) {
-            $$parsedSource["oldestCursor"] = $$createField1_0($$parsedSource["oldestCursor"]);
+            $$parsedSource["oldestCursor"] = $$createField2_0($$parsedSource["oldestCursor"]);
         }
         if ("newestCursor" in $$parsedSource) {
-            $$parsedSource["newestCursor"] = $$createField2_0($$parsedSource["newestCursor"]);
+            $$parsedSource["newestCursor"] = $$createField3_0($$parsedSource["newestCursor"]);
         }
         return new PagedItems($$parsedSource as Partial<PagedItems>);
     }
@@ -860,7 +1192,7 @@ export class ProjectWithCounts {
      * Creates a new ProjectWithCounts instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectWithCounts {
-        const $$createField0_0 = $$createType10;
+        const $$createField0_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("project" in $$parsedSource) {
             $$parsedSource["project"] = $$createField0_0($$parsedSource["project"]);
@@ -1360,7 +1692,7 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField36_0 = $$createType11;
+        const $$createField36_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("origin" in $$parsedSource) {
             $$parsedSource["origin"] = $$createField36_0($$parsedSource["origin"]);
@@ -2136,15 +2468,22 @@ export class WorkItemUsage {
 }
 
 // Private type creation functions
-const $$createType0 = DiffReviewPRContextEntry.createFrom;
+const $$createType0 = Item.createFrom;
 const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = DiffReviewPRContext.createFrom;
-const $$createType3 = $Create.Nullable($$createType2);
-const $$createType4 = DiscussionParticipant.createFrom;
-const $$createType5 = $Create.Array($$createType4);
-const $$createType6 = DiscussionSettings.createFrom;
-const $$createType7 = Item.createFrom;
-const $$createType8 = $Create.Array($$createType7);
-const $$createType9 = TimelineCursor.createFrom;
-const $$createType10 = Project.createFrom;
-const $$createType11 = ThreadOrigin.createFrom;
+const $$createType2 = ActivityRunStub.createFrom;
+const $$createType3 = ActivityRunGroup.createFrom;
+const $$createType4 = $Create.Array($$createType3);
+const $$createType5 = $Create.Array($Create.Any);
+const $$createType6 = ActivityRunGroupKey.createFrom;
+const $$createType7 = $Create.Nullable($$createType6);
+const $$createType8 = DiffReviewPRContextEntry.createFrom;
+const $$createType9 = $Create.Array($$createType8);
+const $$createType10 = DiffReviewPRContext.createFrom;
+const $$createType11 = $Create.Nullable($$createType10);
+const $$createType12 = DiscussionParticipant.createFrom;
+const $$createType13 = $Create.Array($$createType12);
+const $$createType14 = DiscussionSettings.createFrom;
+const $$createType15 = $Create.Array($$createType2);
+const $$createType16 = TimelineCursor.createFrom;
+const $$createType17 = Project.createFrom;
+const $$createType18 = ThreadOrigin.createFrom;

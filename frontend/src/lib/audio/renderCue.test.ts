@@ -3,7 +3,7 @@ import {
   CUE_FADE_MS,
   CUE_HEADER_BYTES,
   CUE_MAX_SECONDS,
-  CUE_PEAK,
+  CUE_LOUDNESS_DB,
   CUE_SAMPLE_RATE,
   TOO_LONG_MESSAGE,
   encodeCueWav,
@@ -173,15 +173,16 @@ describe('renderCueWav', () => {
 
     expect(cue.seconds).toBeCloseTo(0.5, 5);
     const view = new DataView(cue.wav.buffer);
-    // Normalised: the loudest sample sits at CUE_PEAK, not at the 0.1 the
-    // engine produced.
-    expect(view.getInt16(CUE_HEADER_BYTES, true)).toBe(Math.round(CUE_PEAK * 0x7fff));
+    // Normalised: a constant signal's RMS is its value, so every sample now
+    // sits at the loudness target rather than the 0.1 the engine produced.
+    const target = Math.round(10 ** (CUE_LOUDNESS_DB / 20) * 0x7fff);
+    expect(view.getInt16(CUE_HEADER_BYTES, true)).toBe(target);
     // Faded: the last sample of the tail ramp is silent, so the file cannot
     // end on a discontinuity.
     expect(view.getInt16(cue.wav.length - 2, true)).toBe(0);
     const fadeFrames = Math.round((CUE_FADE_MS / 1000) * CUE_SAMPLE_RATE);
     const beforeFade = cue.wav.length - (fadeFrames + 1) * 2;
-    expect(view.getInt16(beforeFade, true)).toBe(Math.round(CUE_PEAK * 0x7fff));
+    expect(view.getInt16(beforeFade, true)).toBe(target);
   });
 
   // decodeAudioData DETACHES the buffer it is handed. Passing the caller's

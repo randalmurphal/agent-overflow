@@ -607,9 +607,20 @@ An expanded payload is not activity. It is content the reader explicitly
 asked for, so the cap grows by exactly what expansion added and reading a
 diff inside a run never means scroll-within-scroll.
 
-`observeActivityRunExpansion` (`utils/activityRunClip.ts`) pairs a
-MutationObserver on `aria-expanded` (which bodies count) with a
-ResizeObserver on those bodies (what each contributes). Bodies are found
+`observeActivityRunExpansion` (`utils/activityRunClip.ts`) owns the clip's
+`max-height` after mount. It pairs a MutationObserver on `aria-expanded`
+(which bodies count) with a ResizeObserver on those bodies (what each
+contributes) and a MutationObserver on the expanded bodies' content (a
+payload or streamed text landing). A body change and its cap must reach one
+paint together: the clip pins or clamps its inner `scrollTop` against the
+cap current at layout time, so a cap landing a frame late moved the clicked
+row by the body's height and back. Mutation-announced changes are measured
+and written on the microtask after their flush, before layout and before the
+toggle's anchor hold reads geometry. Only a resize with no mutation (width
+reflow, a font or image load) takes the ResizeObserver path, which measures
+on the next frame because writing an observed ancestor from inside a
+delivery is the loop Chromium reports. Retargeting from the mounted-set
+effect reads no geometry. Bodies are found
 through the disclosure contract (`aria-expanded` + `aria-controls` on a
 `TranscriptDisclosureHeader`) rather than a marker attribute rows have to
 remember: a body that skipped the query would be an accessibility defect
@@ -693,7 +704,7 @@ A zero-width bar makes `offsetWidth - clientWidth === 0`, so `intent.ts`'s
 geometric scrollbar-gutter hit test can never fire for the clip. That is the
 correct outcome (no false positives from a bar that is not there), but it
 means a drag has to state its intent rather than have it inferred:
-`pointerdown` → `setEscapedFromLock(true)`, and a release at the bottom
+`pointerdown` → `markEscaped()`, and a release at the bottom
 re-sticks via `markAtBottom()`. That matches the package's own rule that
 intent is event-sourced, never geometry-inferred.
 
@@ -797,6 +808,22 @@ the default.
 `utils/activityRunWindow.ts` owns the math; the registry resolves the pair to
 `(mountedFrom, mountedRows)` per pass, dropping an anchor whose row has left
 the run and clamping one too late to fit a full window.
+
+The rows the window slides over are themselves a window. A history page
+ships a run's members only around what would mount and counts the rest in a
+stub ([timeline-window-pages](timeline-window-pages.md) §2, §6), so
+`ActivityRunNode.children` is the loaded span and `memberCount`,
+`unshippedBefore`, `unshippedAfter` and the `loadedFirst/LastItemId` edges
+say what lies past it. The boundaries count both kinds of hidden row, and
+mounting past the loaded span fetches first (`ThreadActivityRuns.fetchMembers`,
+a chunk `before` or `after`) and grows the window over the rows that land.
+The later edge pins the window's head before it fetches: rows land below the
+span, and a tail-following window would slide onto them and take the reader
+along. A jump whose target is a counted member re-centers the run's loaded
+span on it (`loadUnshippedMember`, `around`) instead of reloading the pane's
+whole window. The header sums the loaded rows, the rows a window cut shed,
+and the stub's aggregate (`summaryFacts`), so a collapsed run reports its
+whole self whatever part of it is loaded.
 
 ### Following the tail is a fact about the reader
 

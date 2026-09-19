@@ -1,0 +1,74 @@
+diff --git a/index.css b/index.css
+index 74c779aaa75427c6a1407a61c4cecb66e432d2b6..694619ffa52ae3d842462339c271d0cf10870e8d 100644
+--- a/index.css
++++ b/index.css
+@@ -547,7 +547,20 @@
+     box-sizing: border-box; /* 1 */
+     margin: 0; /* 2 */
+     padding: 0; /* 2 */
+-    border: 0 solid; /* 3 */
++    /* Agent Overflow patch (mirrored in preflight.css): upstream writes
++       `border: 0 solid`. The shorthand also resets the five border-image-*
++       longhands, and Blink's generated border-image builder copies a
++       NinePieceImageData for every element style it applies them to
++       (measured 2026-09-18: ~2300 copies per timeline mount, 18% of the
++       Oilpan garbage of a thread switch). Width and style here, color in
++       its own rule after the html rule: Tailwind merges adjacent rules with
++       one selector list and Lightning CSS then folds width + style + color
++       back into the shorthand; neither touches separated rules. Only the
++       border-image-* longhands are no longer reset; nothing in the app or
++       the UA sheets sets them.
++       frontend/src/styles/appCssPipeline.test.ts pins the emitted CSS. */
++    border-width: 0; /* 3 */
++    border-style: solid; /* 3 */
+   }
+ 
+   /*
+@@ -591,6 +604,15 @@
+     -webkit-tap-highlight-color: transparent; /* 7 */
+   }
+ 
++  /* Agent Overflow patch, second half of the border reset (see the `*` rule). */
++  *,
++  ::after,
++  ::before,
++  ::backdrop,
++  ::file-selector-button {
++    border-color: currentcolor;
++  }
++
+   /*
+   1. Add the correct height in Firefox.
+   2. Correct the inheritance of border color in Firefox. (https://bugzilla.mozilla.org/show_bug.cgi?id=190655)
+diff --git a/preflight.css b/preflight.css
+index 04e87905cbb1334537c12835fb7d7db8e39ff01d..23d3b8a0657241309efb9a041c490ee35761eb11 100644
+--- a/preflight.css
++++ b/preflight.css
+@@ -12,7 +12,10 @@
+   box-sizing: border-box; /* 1 */
+   margin: 0; /* 2 */
+   padding: 0; /* 2 */
+-  border: 0 solid; /* 3 */
++  /* Agent Overflow patch: same border reset as index.css (see the comment
++     there); this file is not read by `@import "tailwindcss"`. */
++  border-width: 0; /* 3 */
++  border-style: solid; /* 3 */
+ }
+ 
+ /*
+@@ -50,6 +53,15 @@ html,
+   -webkit-tap-highlight-color: transparent; /* 7 */
+ }
+ 
++/* Agent Overflow patch, second half of the border reset (see the `*` rule). */
++*,
++::after,
++::before,
++::backdrop,
++::file-selector-button {
++  border-color: currentcolor;
++}
++
+ /*
+   1. Add the correct height in Firefox.
+   2. Correct the inheritance of border color in Firefox. (https://bugzilla.mozilla.org/show_bug.cgi?id=190655)

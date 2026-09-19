@@ -11,7 +11,7 @@
 // ResizeObserver timing, real fonts) through the shared harness, because both
 // behaviors are reached the way a user reaches them: a click on the boundary,
 // and `pane.requestScrollToItem` from search / review / the jump tray.
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 // Real production cascade: the clip's cap, the rail indent, and row heights
 // all come from app.css, and every number below is measured against them.
 import '../../../app.css';
@@ -24,10 +24,12 @@ import {
   userScrollTo,
   type QuietBottomOptions,
 } from '../../../test/helpers/timelineBrowserHarness';
+import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { ACTIVITY_RUN_WINDOW_ROWS_DEFAULT as WINDOW_ROWS } from '../../utils/activityRunWindow';
 import type { Item } from '../../types/models';
 
 setupTimelineHarness();
+beforeEach(resetBindingMocks);
 
 
 // The mount settle only has to reach a quiet bottom; 2px absorbs
@@ -846,5 +848,144 @@ describe('activity run — collapsing an expanded body keeps the tail pinned', (
     clip.style.maxHeight = `${clip.clientHeight - 80}px`;
     await waitFor(() => bottomGap() <= DRIFT_PX, 'viewport shrink to re-pin the bottom', 240);
     expect(bottomGap()).toBeLessThanOrEqual(DRIFT_PX);
+  });
+});
+
+describe('activity run — a body toggle inside the clip paints once', () => {
+  // The body's height and the cap it lifts (observeActivityRunExpansion →
+  // the clip's max-height) must land in one paint. Landing the cap a frame
+  // after the body let the clip pin or clamp its inner scrollTop against the
+  // old cap, so the row the reader clicked moved by the body's height for
+  // one frame and back: the expand flicker and the collapse "shimmy". The
+  // same split repeated when a fetched payload landed in the open body.
+  const THREAD_ID = 'thread-run-toggle-paints';
+  const THOUGHT = 'Deciding how the fixture should behave in detail: this reasoning row '
+    + 'carries several full clauses so that, once expanded past its three-line clamp, '
+    + 'the revealed body is far taller than the clamp it replaces. The delta between '
+    + 'the expanded body and the clamp is exactly the cap lift under test, so the text '
+    + 'keeps going for a few more lines of deliberate, unhurried reasoning about '
+    + 'nothing in particular, purely to buy the run interior height it can lose again.';
+  const PAYLOAD = `${THOUGHT}\n\n${THOUGHT}\n\n${THOUGHT}`;
+  // The fetch resolves after the expand's first paint, so the payload's
+  // arrival is a second, separate change the cap has to follow.
+  const PAYLOAD_DELAY_MS = 40;
+
+  function items(tailRun: boolean): Item[] {
+    const built: Item[] = [prose('p0', 0, THREAD_ID)];
+    let index = 1;
+    // Enough scrollback above the run that an escaped reader has room to
+    // hold, and the run itself sits at a stable offset.
+    for (let i = 0; i < 30; i += 1) {
+      built.push(makeItem({
+        id: `q${i}`,
+        threadId: THREAD_ID,
+        itemIndex: index,
+        summary: `Filler ${i}\n\nsecond paragraph\n\nthird paragraph`,
+        createdAt: index,
+        updatedAt: index,
+      }));
+      index += 1;
+    }
+    for (let i = 0; i < 20; i += 1) built.push(tool(`a${i}`, index++, THREAD_ID));
+    built.push(makeItem({
+      id: 'th-mid',
+      threadId: THREAD_ID,
+      itemIndex: index++,
+      kind: 'thinking',
+      summary: THOUGHT,
+      payloadId: 'pl-th-mid',
+      status: 'completed',
+      createdAt: index,
+      updatedAt: index,
+    }));
+    for (let i = 0; i < 4; i += 1) built.push(tool(`b${i}`, index++, THREAD_ID));
+    if (!tailRun) built.push(prose('p1', index++, THREAD_ID));
+    return built;
+  }
+
+  /** Resolves after this frame has painted (a task queued from its rAF). */
+  function afterPaint(): Promise<void> {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => resolve();
+        channel.port2.postMessage(0);
+      });
+    });
+  }
+
+  /**
+   * The clicked header's top after each of the next `frames` paints,
+   * collapsed to its distinct consecutive values. A change that paints once
+   * yields one value; a change that lands in two frames yields the transient
+   * and then the settled value, which is exactly the motion under test.
+   */
+  async function paintedTops(scrollEl: HTMLElement, header: HTMLElement, frames: number): Promise<number[]> {
+    const host = scrollEl.getBoundingClientRect().top;
+    const tops: number[] = [];
+    for (let f = 0; f < frames; f += 1) {
+      await afterPaint();
+      const top = Math.round((header.getBoundingClientRect().top - host) * 2) / 2;
+      if (tops.length === 0 || tops[tops.length - 1] !== top) tops.push(top);
+    }
+    return tops;
+  }
+
+  async function mountWithPayload(tailRun: boolean) {
+    setBindingMock('GetPayloadData', async () => {
+      await new Promise((resolve) => setTimeout(resolve, PAYLOAD_DELAY_MS));
+      return { data: PAYLOAD };
+    });
+    const { scrollEl } = await mountTimeline(THREAD_ID, items(tailRun), QUIET_BOTTOM);
+    const runs = scrollEl.querySelectorAll('[data-testid="activity-run"]');
+    const run = runs[runs.length - 1] as HTMLElement;
+    const clip = run.querySelector('[data-testid="activity-run-clip"]') as HTMLElement;
+    const toggle = run.querySelector('[data-testid="thinking-toggle"]') as HTMLElement;
+    expect(clip.scrollHeight).toBeGreaterThan(clip.clientHeight);
+    return { scrollEl, run, clip, toggle };
+  }
+
+  function click(toggle: HTMLElement): void {
+    toggle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    toggle.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+    toggle.click();
+  }
+
+  it('keeps the clicked header still for an escaped reader, through expand, payload and collapse', async () => {
+    const { scrollEl, run, clip, toggle } = await mountWithPayload(false);
+    expect(run.dataset.live).toBe('false');
+    await userScrollTo(scrollEl, scrollEl.scrollTop - 200);
+    await raf();
+    await raf();
+    const [before] = await paintedTops(scrollEl, toggle, 1);
+    const capBefore = clip.clientHeight;
+
+    click(toggle);
+    // Expand, then the payload: two changes, each one paint, and neither
+    // moves the header the reader is holding under the pointer.
+    expect(await paintedTops(scrollEl, toggle, 12)).toEqual([before]);
+    expect(clip.clientHeight).toBeGreaterThan(capBefore + 200);
+
+    click(toggle);
+    expect(await paintedTops(scrollEl, toggle, 12)).toEqual([before]);
+    expect(clip.clientHeight).toBe(capBefore);
+  });
+
+  it('moves the header once per change for a bottom-held reader on the live run', async () => {
+    const { scrollEl, run, toggle } = await mountWithPayload(true);
+    expect(run.dataset.live).toBe('true');
+    const [before] = await paintedTops(scrollEl, toggle, 1);
+
+    click(toggle);
+    // Bottom-follow keeps the pane's bottom, so the header climbs by what
+    // opened: once for the expand and once for the payload. A value that
+    // recurs is a paint that showed the body before its cap.
+    const expandTops = await paintedTops(scrollEl, toggle, 12);
+    expect(expandTops.length).toBeLessThanOrEqual(2);
+    expect(new Set(expandTops).size).toBe(expandTops.length);
+    for (const top of expandTops) expect(top).toBeLessThan(before);
+
+    click(toggle);
+    expect(await paintedTops(scrollEl, toggle, 12)).toEqual([before]);
   });
 });

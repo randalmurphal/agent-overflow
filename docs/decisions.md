@@ -116,9 +116,13 @@ qualifies costs nothing.
 ## Providers and accounts
 
 - Model, effort and fast-mode selections trust previously observed capabilities
-  and remembered choices. Catalog expiry never blocks a selection. Refresh
-  contradictions are advisory toasts; keep the selection and allow sending.
-  Provider rejections remain timeline errors without a duplicate toast.
+  and remembered choices. Catalog expiry never blocks a selection. A refresh
+  warns only when a probed or live catalog withdraws a part of the selection
+  the previous probed or live catalog listed; the shipped list is a placeholder
+  and never warns. Warnings are advisory toasts; keep the selection and allow
+  sending. Provider rejections remain timeline errors without a duplicate toast.
+  The Claude catalog learned by an account probe is persisted per account and
+  seeded at boot while the binary is unchanged (`internal/claudemodels/AGENTS.md`).
 
 - AO never calls Codex `thread/queue/add`; a mid-turn send is `turn/steer`
   (`internal/provider/codex/AGENTS.md`).
@@ -257,6 +261,14 @@ and anti-changes that live only here:
   card ("nothing worse than GitLab"). Both header sections are
   user-resizable (bottom drag handle, remembered height). Mechanism:
   `frontend/src/lib/components/review/AGENTS.md`.
+- Forge attachments referenced by PR/MR bodies and comments (images,
+  video, audio and files) render or download in the review pane through
+  the user's `gh`/`glab` login, the same access the browser has, on the
+  computer that owns the pull request, including media a forge wrote
+  inside an HTML wrapper (`<p align="center">`, `<a>`, a table cell, a
+  `<details>` body), which PR templates use routinely. Do not
+  reintroduce direct third-party `<img>` fetches for private forge
+  assets, and do not hide a reference the browser could open.
 
 ## Miscellany
 
@@ -270,6 +282,12 @@ and anti-changes that live only here:
 - Markdown path links: rewriting happens only on a surface that passes a
   workspace path; directories are refused everywhere; never pass
   `defaultOrigin` to Streamdown.
+- Markdown URLs: nothing an agent shows is withheld unless following it
+  would run something. Links render for every scheme except the deny-list
+  in `markdown/render/elements/urlSchemes.ts` (mirrored in
+  `internal/externalurl`); path-shaped image srcs load from the thread's
+  machine on every surface with a workspace, including paired browsers.
+  Do not reintroduce an http(s)-only allowlist.
 - Voice dictation: not built; the researched options and their auth
   constraints are in `docs/references/voice-dictation.md`.
 - Wide blocks pan inside their own box on every layout: markdown tables,

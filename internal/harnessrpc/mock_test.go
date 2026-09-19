@@ -428,6 +428,14 @@ func TestStartControlAlwaysPinsTheMockTranscriptHome(t *testing.T) {
 				t.Fatalf("%s = %q, want the credential home %q",
 					control.EnvTranscriptHome, got, credentialHome)
 			}
+			// Same spawn env carries the workspace root: every workspace an
+			// isolated boot may hand a mock lives under the data root, and a
+			// mock spawned anywhere else refuses to mutate its cwd.
+			dataRoot := filepath.Dir(credentialHome)
+			if got := env[control.EnvWorkspaceRoot]; got != dataRoot {
+				t.Fatalf("%s = %q, want the data root %q",
+					control.EnvWorkspaceRoot, got, dataRoot)
+			}
 		})
 	}
 }

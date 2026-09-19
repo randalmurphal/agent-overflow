@@ -56,6 +56,7 @@ func (a *App) providerDiscoveryService() *providerdiscoveryapp.Service {
 			CheckCodexTransferAccount: func(ctx context.Context, binary string) error {
 				return a.ensureProviderAccountManager().CheckCodexTransferAccount(ctx, binary)
 			},
+			RememberClaudeCatalog: a.rememberClaudeCatalog,
 		}, caches)
 	})
 	return a.providerDiscovery

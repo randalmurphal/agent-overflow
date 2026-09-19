@@ -1248,7 +1248,7 @@ export function createUseStickToBottomController(
     requestBottom,
     beginReconnectRecovery,
     markAtBottom,
-    setEscapedFromLock: intent.setEscapedFromLock,
+    markEscaped: () => intent.setEscapedFromLock(true),
     armWarmup: observers.beginWarmup,
     skipWarmup: observers.skipWarmup,
     notifyQuietContextSignalChanged: observers.notifyQuietContextSignalChanged,

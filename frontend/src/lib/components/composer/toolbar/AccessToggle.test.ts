@@ -10,6 +10,7 @@ import {
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
 import { buildPane as buildRegisteredPane } from '../../../../test/helpers/chat';
+import { modelCatalog } from '../../../../test/helpers/modelCatalog';
 import {
   ensureProviderModels,
   resetProviderModelsForTest,
@@ -52,7 +53,7 @@ describe('<AccessToggle>', () => {
   beforeEach(() => {
     resetBindingMocks();
     resetProviderModelsForTest();
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   });
 
   it('renders the current tier label', async () => {
@@ -256,7 +257,7 @@ describe('<AccessToggle>', () => {
     }
 
     it('disables Auto when the model explicitly refuses it', async () => {
-      setBindingMock('GetModelsForProvider', async () => [catalogRow(false)]);
+      setBindingMock('GetModelsForProvider', async () => modelCatalog([catalogRow(false)]));
       await ensureProviderModels('claude');
       const pane = await buildPane('approval-required');
       setBindingMock('UpdateThreadRuntimeMode', async () => makeThread('auto'));
@@ -273,7 +274,7 @@ describe('<AccessToggle>', () => {
     });
 
     it('keeps Auto selectable when the wire never answered', async () => {
-      setBindingMock('GetModelsForProvider', async () => [catalogRow()]);
+      setBindingMock('GetModelsForProvider', async () => modelCatalog([catalogRow()]));
       await ensureProviderModels('claude');
       const pane = await buildPane('approval-required');
       const update = setBindingMock('UpdateThreadRuntimeMode', async () => makeThread('auto'));
@@ -289,9 +290,9 @@ describe('<AccessToggle>', () => {
     });
 
     it('keeps Auto selectable for a model the catalog does not list', async () => {
-      setBindingMock('GetModelsForProvider', async () => [
+      setBindingMock('GetModelsForProvider', async () => modelCatalog([
         { slug: 'some-other-model', name: 'Other', provider: 'claude', supportsAutoMode: false },
-      ]);
+      ]));
       await ensureProviderModels('claude');
       const pane = await buildPane('approval-required');
       const update = setBindingMock('UpdateThreadRuntimeMode', async () => makeThread('auto'));

@@ -176,7 +176,7 @@ func runHarness(flags cliFlags) {
 }
 
 // isolationOptions carries the ONE isolation decision a mocked boot mode
-// is allowed to make for itself. The four provider-safety pins are
+// is allowed to make for itself. The provider-safety pins are
 // deliberately absent: they are unconditional in every mode, which is what
 // TestMockedBootModesShareOneIsolationHelper proves. Anything added here
 // must be defaulted SAFE by its zero value, so a caller that forgets to
@@ -191,8 +191,8 @@ type isolationOptions struct {
 // newIsolatedProviderApp builds the App for a boot mode whose providers
 // are mocked: the agent test harness (--harness) and the soak rig
 // (--soak). It is the ONE place these pins are applied, so a second
-// mocked boot mode cannot ship with only some of them — the four
-// provider-safety pins are enforced by
+// mocked boot mode cannot ship with only some of them; the pins are
+// enforced by
 // TestMockedBootModesShareOneIsolationHelper.
 //
 // Every pin here is structural, not advisory: settings stay editable at
@@ -218,6 +218,8 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		// renderable (spec §10) with no browser behind them — and what keeps
 		// `make go-test` / `make e2e` display-free.
 		MockBrowserEngine: !opts.RealBrowserEngine,
+		// Workspace boundary; see internal/app/app_isolated_workspace.go.
+		WorkspaceRoot: paths.DataRoot,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

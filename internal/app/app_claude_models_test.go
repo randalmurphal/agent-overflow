@@ -66,21 +66,28 @@ func TestGetModelsForProviderIsEnrichedByTheAccountProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetModelsForProvider before probe: %v", err)
 	}
-	if slices.Contains(modelSlugs(before), "claude-opus-6") {
+	if before.Provenance != provider.CatalogShipped {
+		t.Errorf("pre-probe provenance = %q, want shipped", before.Provenance)
+	}
+	if slices.Contains(modelSlugs(before.Models), "claude-opus-6") {
 		t.Fatal("the wire model must not appear before a probe has reported it")
 	}
-	if !slices.Equal(modelSlugs(before), modelSlugs(provider.ClaudeModels)) {
-		t.Errorf("pre-probe catalog = %v, want the shipped list", modelSlugs(before))
+	if !slices.Equal(modelSlugs(before.Models), modelSlugs(provider.ClaudeModels)) {
+		t.Errorf("pre-probe catalog = %v, want the shipped list", modelSlugs(before.Models))
 	}
 
 	if _, err := app.ProbeClaudeAccount(); err != nil {
 		t.Fatalf("ProbeClaudeAccount: %v", err)
 	}
 
-	after, err := app.GetModelsForProvider("claude")
+	answer, err := app.GetModelsForProvider("claude")
 	if err != nil {
 		t.Fatalf("GetModelsForProvider after probe: %v", err)
 	}
+	if answer.Provenance != provider.CatalogProbed {
+		t.Errorf("post-probe provenance = %q, want probed", answer.Provenance)
+	}
+	after := answer.Models
 	if !slices.Contains(modelSlugs(after), "claude-opus-6") {
 		t.Fatalf("wire-only model missing from the picker: %v", modelSlugs(after))
 	}
@@ -112,10 +119,11 @@ func TestGetModelsForProviderIsEnrichedByTheAccountProbe(t *testing.T) {
 
 	// claude-tui shares the binary and the login, so it shares the answer —
 	// stamped as its own provider.
-	tui, err := app.GetModelsForProvider("claude-tui")
+	tuiAnswer, err := app.GetModelsForProvider("claude-tui")
 	if err != nil {
 		t.Fatalf("GetModelsForProvider(claude-tui): %v", err)
 	}
+	tui := tuiAnswer.Models
 	if !slices.Contains(modelSlugs(tui), "claude-opus-6") {
 		t.Errorf("claude-tui catalog = %v, want the same enrichment", modelSlugs(tui))
 	}
@@ -142,8 +150,8 @@ func TestClaudeModelEnrichmentFollowsTheProbeIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetModelsForProvider: %v", err)
 	}
-	if !slices.Contains(modelSlugs(enriched), "claude-newthing-1") {
-		t.Fatalf("enrichment did not land: %v", modelSlugs(enriched))
+	if !slices.Contains(modelSlugs(enriched.Models), "claude-newthing-1") {
+		t.Fatalf("enrichment did not land: %v", modelSlugs(enriched.Models))
 	}
 
 	other := writeProbeMockBinaryWithModels(t, `{}`, `[]`)
@@ -155,11 +163,14 @@ func TestClaudeModelEnrichmentFollowsTheProbeIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetModelsForProvider after binary swap: %v", err)
 	}
-	if slices.Contains(modelSlugs(models), "claude-newthing-1") {
+	if slices.Contains(modelSlugs(models.Models), "claude-newthing-1") {
 		t.Error("a different binary must not be served the previous binary's model list")
 	}
-	if !slices.Equal(modelSlugs(models), modelSlugs(provider.ClaudeModels)) {
-		t.Errorf("catalog = %v, want the shipped list for an unprobed binary", modelSlugs(models))
+	if !slices.Equal(modelSlugs(models.Models), modelSlugs(provider.ClaudeModels)) {
+		t.Errorf("catalog = %v, want the shipped list for an unprobed binary", modelSlugs(models.Models))
+	}
+	if models.Provenance != provider.CatalogShipped {
+		t.Errorf("provenance after binary swap = %q, want shipped", models.Provenance)
 	}
 }
 
@@ -176,8 +187,8 @@ func TestClaudeProbeWithoutModelsLeavesTheCatalogAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetModelsForProvider: %v", err)
 	}
-	if !slices.Equal(modelSlugs(models), modelSlugs(provider.ClaudeModels)) {
-		t.Errorf("catalog = %v, want the shipped list untouched", modelSlugs(models))
+	if !slices.Equal(modelSlugs(models.Models), modelSlugs(provider.ClaudeModels)) {
+		t.Errorf("catalog = %v, want the shipped list untouched", modelSlugs(models.Models))
 	}
 }
 

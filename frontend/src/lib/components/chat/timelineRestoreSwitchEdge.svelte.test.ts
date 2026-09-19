@@ -52,7 +52,7 @@ interface Harness {
     scrollStateKey: string | null;
     items: unknown[];
     loading: boolean;
-    loadUntilItem(itemId: string): Promise<boolean>;
+    loadUntilItem(itemId: string): Promise<'loaded' | 'missing'>;
   };
   /** Withhold the virtualizer handle, as a pre-mount flush does. */
   setListRefPresent(present: boolean): void;
@@ -78,7 +78,7 @@ function makeHarness(nodes: TimelineNode[]): Harness {
     items: [] as unknown[],
     loading: false,
     loadUntilItem: async (itemId: string) =>
-      nodes.some((node) => (node as { item?: { id?: string } }).item?.id === itemId),
+      nodes.some((node) => (node as { item?: { id?: string } }).item?.id === itemId) ? 'loaded' : 'missing',
   };
   let listRefPresent = true;
 

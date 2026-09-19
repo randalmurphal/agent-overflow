@@ -69,6 +69,7 @@ How the app works today. Under [`architecture/`](architecture/).
 | [`frontend-scroll.md`](architecture/frontend-scroll.md) | The durable scroll contract for chat and discussion panes. Read before touching `ThreadPane`, `MessageTimeline`, or the virtualizer. |
 | [`scroll-contracts.md`](architecture/scroll-contracts.md) | C1–C27: the user-observable scroll behaviors, each with regression provenance and the test that pins it. |
 | [`activity-runs.md`](architecture/activity-runs.md) | One maximal stretch of activity rows as a single timeline row: the nested scroller, its expansion lease, and collapse. |
+| [`timeline-window-pages.md`](architecture/timeline-window-pages.md) | History pages as prose rows plus per-run stubs and the loaded member span; on-demand members, the composable held-window digest, and screen-height fill. |
 | [`theme-system.md`](architecture/theme-system.md) | The token vocabulary, the two independent appearance axes, and the client-side `themes/` directory. |
 | [`chat-rewrite.md`](architecture/chat-rewrite.md) | The item-model spec of record: item ID schemas, channels, the background tray. Cited by invariants and the event types. |
 | [`settle-flicker-analysis.md`](architecture/settle-flicker-analysis.md) | Root-cause record for the settle-flicker class; the standing-oracle tests cite it. |

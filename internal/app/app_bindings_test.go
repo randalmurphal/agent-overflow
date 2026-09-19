@@ -123,33 +123,44 @@ func TestGetModelsForProvider(t *testing.T) {
 	}
 	app := &App{settings: svc}
 
-	claudeModels, err := app.GetModelsForProvider("claude")
+	claude, err := app.GetModelsForProvider("claude")
 	if err != nil {
 		t.Fatalf("GetModelsForProvider(claude) error = %v", err)
 	}
-	if len(claudeModels) == 0 {
+	if len(claude.Models) == 0 {
 		t.Fatal("expected claude models")
 	}
-	if claudeModels[0].Provider != "claude" {
-		t.Fatalf("Provider = %q, want claude", claudeModels[0].Provider)
+	if claude.Models[0].Provider != "claude" {
+		t.Fatalf("Provider = %q, want claude", claude.Models[0].Provider)
 	}
-	codexModels, err := app.GetModelsForProvider("codex")
+	// No probe has reported for this app, so the answer is the shipped list
+	// and must say so.
+	if claude.Provenance != provider.CatalogShipped {
+		t.Fatalf("claude provenance = %q, want shipped", claude.Provenance)
+	}
+	codex, err := app.GetModelsForProvider("codex")
 	if err != nil {
 		t.Fatalf("GetModelsForProvider(codex) error = %v", err)
 	}
-	if len(codexModels) == 0 {
+	if len(codex.Models) == 0 {
 		t.Fatal("expected codex models")
 	}
-	if codexModels[0].Slug != "gpt-5.5" {
-		t.Fatalf("first codex model = %q, want fake app-server gpt-5.5", codexModels[0].Slug)
+	if codex.Models[0].Slug != "gpt-5.5" {
+		t.Fatalf("first codex model = %q, want fake app-server gpt-5.5", codex.Models[0].Slug)
+	}
+	if codex.Provenance != provider.CatalogLive {
+		t.Fatalf("codex provenance = %q, want live", codex.Provenance)
 	}
 
 	unknown, err := app.GetModelsForProvider("unknown")
 	if err != nil {
 		t.Fatalf("GetModelsForProvider(unknown) error = %v", err)
 	}
-	if unknown != nil {
-		t.Fatalf("unknown provider models = %v, want nil", unknown)
+	if unknown.Models != nil {
+		t.Fatalf("unknown provider models = %v, want nil", unknown.Models)
+	}
+	if unknown.Provenance != provider.CatalogShipped {
+		t.Fatalf("unknown provenance = %q, want shipped", unknown.Provenance)
 	}
 }
 
@@ -166,7 +177,7 @@ func TestGetModelsForProviderCachesCodexCatalogByBinary(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetModelsForProvider(codex) #%d: %v", i+1, err)
 		}
-		if len(models) != 1 || models[0].Slug != "gpt-5.5" {
+		if len(models.Models) != 1 || models.Models[0].Slug != "gpt-5.5" {
 			t.Fatalf("models #%d = %#v, want gpt-5.5", i+1, models)
 		}
 	}
@@ -196,7 +207,7 @@ func TestUpdateSettingsInvalidatesCodexCatalogOnBinaryChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetModelsForProvider second: %v", err)
 	}
-	if len(models) != 1 || models[0].Slug != "gpt-5.5" {
+	if len(models.Models) != 1 || models.Models[0].Slug != "gpt-5.5" {
 		t.Fatalf("models after binary change = %#v, want gpt-5.5", models)
 	}
 	if got := strings.TrimSpace(readFileForTest(t, counter)); got != "2" {

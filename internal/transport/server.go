@@ -640,6 +640,11 @@ type Server struct {
 	// different shapes of traffic.
 	attachmentDownloadTickets *ticketBook
 	attachmentUploadTickets   *ticketBook
+	// forgeAttachmentTickets is a THIRD book, not a reuse of the
+	// download one: a ticket minted for a thread-owned attachment and a
+	// ticket minted for a forge cache entry admit different things, and
+	// one book would mean a subject minted for either decoding at both.
+	forgeAttachmentTickets *ticketBook
 
 	// remoteConns counts live non-loopback WebSocket connections.
 	// Feeds HasRemoteClient, which gates work that only benefits
@@ -715,6 +720,7 @@ func New(cfg Config) (*Server, error) {
 
 		attachmentDownloadTickets: newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 		attachmentUploadTickets:   newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
+		forgeAttachmentTickets:    newTicketBook(maxOutstandingAttachmentTickets, attachmentTicketTTL),
 	}
 	if !cfg.RequireReadyForBootstrap {
 		s.ready.Store(true)
@@ -935,6 +941,13 @@ func (s *Server) buildHTTPServer() *http.Server {
 	mux.HandleFunc(AttachmentUploadPath, withShellCORS(http.MethodPut,
 		s.loopbackHostGuard(s.handleAttachmentUpload)))
 	mux.HandleFunc(AttachmentUploadPreflightPath, shellPreflightHandler(http.MethodPut))
+	// The forge-attachment read, same admission and same subtree. Its
+	// literal `forge` segment is strictly more specific than the
+	// download route's {threadID}, so the mux prefers it for a path both
+	// patterns match and neither registration conflicts with the other.
+	mux.HandleFunc(ForgeAttachmentDownloadPath, withShellCORS(http.MethodGet,
+		s.loopbackHostGuard(s.handleForgeAttachmentDownload)))
+	mux.HandleFunc(ForgeAttachmentDownloadPreflightPath, shellPreflightHandler(http.MethodGet))
 	// The bundle routes. Registered unconditionally for the reason the
 	// attachment pair is: a route whose presence depended on when the mux
 	// happened to be built would be a boot whose shape varies. With no

@@ -37,7 +37,19 @@ export type {
 } from './parser/index';
 export { parseIncompleteMarkdown } from './parser/incompleteMarkdown';
 export { EMBEDDED_HTML_EXTENSIONS } from './parser/extensions/embeddedHtml';
-export { sanitizeEmbeddedHtmlToken } from './render/htmlSanitize';
+// The inline half on its own, so an app extension that must claim an
+// `<img>` before this set sees it can reuse the same attribute parsing
+// rather than re-implementing it (utils/forgeAttachmentExtension.ts).
+export { markedEmbeddedInlineHtml } from './parser/extensions/embeddedHtml';
+export {
+  MEDIA_CLAIM_ATTR,
+  MEDIA_KIND_ATTR,
+  sanitizeEmbeddedHtmlToken,
+} from './render/htmlSanitize';
+export type {
+  ClaimEmbeddedMedia,
+  SanitizeEmbeddedHtmlOptions,
+} from './render/htmlSanitize';
 export { acquireDocumentInteraction } from './render/documentInteraction';
 export type { DocumentInteraction } from './render/documentInteraction';
 export { attachStreamdownLiteralHost, streamdownLiteralHostOf } from './render/literalHost';
@@ -45,3 +57,4 @@ export type {
   StreamdownLiteralHost,
   StreamdownLiteralHostHandle,
 } from './render/literalHost';
+export { DENIED_LINK_SCHEMES, isOpenableScheme, urlScheme } from './render/elements/urlSchemes';

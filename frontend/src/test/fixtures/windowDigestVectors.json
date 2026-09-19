@@ -1,12 +1,12 @@
 {
-  "algorithm": "fnv1a64",
-  "note": "Canonical string per row: id + 0x1f + decimal rev + 0x1e, in (turnIndex, itemIndex) order. Both sides fold that string's UTF-16 code units, so the digest agrees for any id. Digest is 16 lowercase hex chars. Shared by internal/store/window_digest.go and frontend/src/lib/stores/threadWindowDigest.ts; the two copies of this file must stay byte-identical.",
-  "maxHeldWindowItems": 2000,
+  "algorithm": "fnv1a64-xor",
+  "note": "Each row hashes alone: id + 0x1f + decimal rev, FNV-1a 64 over that string's UTF-16 code units. The window digest is the XOR of its rows' hashes, rendered as 16 lowercase hex chars, so the empty window is 0 and the digest is order-free and composable: a client folds loaded rows, shed rows and one UnshippedDigest per held activity run into the same value the server derives from the range. Both sides fold UTF-16 code units, so the digest agrees for any id. Shared by internal/store/window_digest.go and frontend/src/lib/stores/threadWindowDigest.ts; the two copies of this file must stay byte-identical.",
+  "maxHeldWindowItems": 8000,
   "cases": [
     {
       "name": "empty window",
       "rows": [],
-      "digest": "cbf29ce484222325"
+      "digest": "0000000000000000"
     },
     {
       "name": "one row",
@@ -16,7 +16,7 @@
           "rev": 1
         }
       ],
-      "digest": "37e28832145d52b1"
+      "digest": "c66c5d458f0dc015"
     },
     {
       "name": "three rows",
@@ -34,7 +34,7 @@
           "rev": 3
         }
       ],
-      "digest": "3e1801d1969d09ba"
+      "digest": "12e8b8191ac843d0"
     },
     {
       "name": "non-sequential revs",
@@ -52,7 +52,7 @@
           "rev": 41
         }
       ],
-      "digest": "a0558f89fb23e637"
+      "digest": "25899492b6bd2539"
     },
     {
       "name": "punctuated ids",
@@ -66,10 +66,10 @@
           "rev": 12
         }
       ],
-      "digest": "0c165acd3d1ba7c2"
+      "digest": "af302c78888247bf"
     },
     {
-      "name": "order matters",
+      "name": "order free",
       "rows": [
         {
           "id": "b",
@@ -80,7 +80,7 @@
           "rev": 1
         }
       ],
-      "digest": "e3901d64f1af7be1"
+      "digest": "e5fc040017207e9c"
     },
     {
       "name": "rev zero",
@@ -90,7 +90,7 @@
           "rev": 0
         }
       ],
-      "digest": "146b3ee7db9591a2"
+      "digest": "3b4f8a8a3e4c42c8"
     },
     {
       "name": "large rev",
@@ -100,7 +100,7 @@
           "rev": 9007199254740991
         }
       ],
-      "digest": "4ff410610576bba0"
+      "digest": "2d7f8486670045fe"
     },
     {
       "name": "negative rev",
@@ -110,7 +110,7 @@
           "rev": -1
         }
       ],
-      "digest": "149d5edd8be59732"
+      "digest": "38ebe9d7505bbf18"
     },
     {
       "name": "non-ascii id",
@@ -124,7 +124,7 @@
           "rev": 4
         }
       ],
-      "digest": "118e4155fd4a8e0f"
+      "digest": "a4ea3825c1825c70"
     }
   ]
 }

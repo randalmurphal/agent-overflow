@@ -26,19 +26,48 @@ open), and UNC paths plus out-of-workspace scaffolding remain refused.
 (svelte-streamdown was adopted into `src/` since the original audit).
 Both render paths — the component path and the compact fixed-tag HTML
 path, a pair `markdown/AGENTS.md` flags as a silent-fork hazard —
-agree and call the same gate, and the gate fails closed structurally:
-`parseUrl` is `new URL()` with the upstream base parameter deleted, so
-`/x`, `//host/x`, and `*` all throw rather than resolve. `//`-leading
-is explicitly excluded from the schemeless class in both paths, so it
-renders as a tagged blocked span.
+share one classifier (`classifyLinkHref` in `render/elements/url.ts`),
+and the gate fails closed structurally: `parseUrl` is `new URL()` with
+the upstream base parameter deleted, so `/x` and `*` throw rather than
+resolve. `//host/x` is the one relative form that resolves, against a
+fixed `https:` and never the page origin.
 
-Two things the markdown fix did not touch, both still true today. The
-click delegate (`utils/externalLinks.ts`) returns *without*
-`preventDefault` when `safeExternalURL` yields null, so a non-`http(s)`
-anchor performs its default navigation — unreachable from markdown now,
-still app-wide policy for every other anchor. The second one is closed:
-as of 2026-08-31 (24486360) the same-origin bootstrap credential is
-no longer readable by script.
+**URL scheme policy (2026-09-18).** A link renders as a live anchor for
+any scheme except a deny-list (`render/elements/urlSchemes.ts`:
+`javascript`, `vbscript`, `data`, `blob`, `about`, `jar`, the Windows
+handlers `ms-msdt`, `search-ms`, `ms-officecmd`, `ms-cxh`,
+`ms-cxh-full`, and the app's own `agent-overflow` outside its nonce
+prefix). Denied schemes render as a tagged blocked span; schemeless
+paths, Windows drive paths and unclaimed `file:` URLs render as an
+untagged reference. A click on any anchor goes through the click
+delegate (`utils/externalLinks.ts`, `openableExternalURL`) to the
+backend opener, which re-validates against the same list
+(`internal/externalurl`, `TestDeniedSchemesMatchFrontend` keeps the
+copies identical) and refuses `file:` separately because the Windows
+shell opener executes a file URL's target. The webview itself never
+navigates: the delegate calls `preventDefault` on every openable anchor.
+Images accept `http(s)`, `data:image/`, the nonce-prefixed local image
+scheme, and the nonce-prefixed forge-attachment scheme; a path-shaped
+src on a surface with a workspace is rewritten to the local image scheme
+during parsing and the bytes come from the thread's machine over the
+transport (`GetLocalImageData`, route `selected`, `files:read`), so a
+paired browser sees them too. A forge attachment referenced by PR/MR
+content (a GitLab `/uploads/<hex>/` path, a GitHub user-attachment URL,
+an `<img>` or `<video>` src, including one inside an HTML wrapper the
+sanitizer handles, where the element is emitted without its `src` and
+the app hydrates the marker) is fetched by the backend with the user's
+`gh`/`glab` login on the computer that owns the pull request and served
+once through a single-use ticket, so the page never presents a forge
+credential and a private asset renders on a paired browser and the
+phone shell. The frontend renders by the kind the backend sniffed from
+the bytes, not by what the reference claimed: `file` kinds are never
+rendered, only saved to the owning computer, downloaded by the browser
+or opened on the forge, and `image/svg+xml` uses a `data:` URL rather
+than a blob URL so a navigated-to SVG cannot run script on the app
+origin.
+
+The same-origin bootstrap credential is closed: as of 2026-08-31
+(24486360) it is no longer readable by script.
 `sessionStorage['ao:bootstrap-token']` and `window.__AO_BOOTSTRAP__` are
 gone with every reader of either; the page holds an HttpOnly cookie its
 one-time `?t=` ticket bought at the first `/bootstrap.json`, and the WS
@@ -48,8 +77,8 @@ The Android shell's cross-origin paired session is separate: its web
 code holds that credential and the device key signs each presentation.
 
 The rest of the render pipeline audited clean and should not be
-re-litigated: raw HTML disabled (`renderHtml={false}`), non-`http(s)`
-URL schemes rejected for links and images, path-link prefix carries a
+re-litigated: raw HTML disabled (`renderHtml={false}`), URL schemes
+gated by the deny-list above for links and images, path-link prefix carries a
 128-bit per-page-load nonce so it cannot be forged from model text,
 KaTeX runs with `trust: false`, mermaid runs `securityLevel: 'strict'`
 and sanitizes labels with the DOMPurify copy it bundles (we no longer

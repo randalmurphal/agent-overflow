@@ -106,6 +106,7 @@ type TokenSnippet = {
     descriptionDetail: DescriptionDetailToken;
     inlineCitation: CitationToken;
     mdx: MdxToken;
+    html: Tokens.HTML | Tokens.Tag;
 };
 type PredefinedElements = keyof TokenSnippet;
 export type Snippets = {
@@ -115,6 +116,13 @@ export type Snippets = {
             token: TokenSnippet[K];
         } & (K extends 'mdx' ? {
             props: Record<string, number | string | boolean | null | undefined>;
+        } : {}) & (K extends 'image' ? {
+            /** The transformUrl-approved src; the snippet renders no other. */
+            src: string;
+        } : {}) & (K extends 'html' ? {
+            /** The `renderHtml` output this snippet injects; the snippet
+             *  renders no other HTML for the token. */
+            content: string;
         } : {})
     ]>;
 };

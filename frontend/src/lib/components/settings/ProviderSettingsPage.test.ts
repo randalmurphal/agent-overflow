@@ -13,6 +13,7 @@ import {
 } from "../../../test/mocks/bindings-app";
 import type { Settings } from "../../types/settings";
 import { makeSettings } from "../../../test/helpers/settings";
+import { modelCatalog } from "../../../test/helpers/modelCatalog";
 import { resetForTest as resetProviderAccounts } from "../../stores/providerAccounts.svelte";
 import { resetForTest as resetAccountInfo } from "../../stores/accountInfo.svelte";
 import { resetForTest as resetRateLimits } from "../../stores/rateLimitsInfo.svelte";
@@ -40,7 +41,7 @@ async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
     return { ...merged, ...p };
   });
   setBindingMock("GetProviderStatuses", async () => []);
-  setBindingMock("GetModelsForProvider", async () => []);
+  setBindingMock("GetModelsForProvider", async () => modelCatalog([], "shipped"));
   setBindingMock("ListProviderAccounts", async () => []);
   await loadSettings();
   return merged;
@@ -60,7 +61,7 @@ describe("provider page — model visibility toggles", () => {
 	it("renders friendly Codex model aliases", async () => {
 		await seed();
 		setBindingMock("GetModelsForProvider", async (provider: unknown) =>
-			provider === "codex" ? CODEX_CATALOG : [],
+			provider === "codex" ? modelCatalog(CODEX_CATALOG) : modelCatalog([], "shipped"),
 		);
 		const { findByTestId } = render(CodexSettings);
 
@@ -70,7 +71,7 @@ describe("provider page — model visibility toggles", () => {
 
   it("hides a model on this frontend when clicking its chip", async () => {
     await seed();
-    setBindingMock("GetModelsForProvider", async () => CLAUDE_CATALOG);
+    setBindingMock("GetModelsForProvider", async () => modelCatalog(CLAUDE_CATALOG));
     const { findByTestId } = render(ClaudeSettings);
 
     const chip = await findByTestId("settings-model-toggle-claude-claude-opus-4-8");
@@ -84,7 +85,7 @@ describe("provider page — model visibility toggles", () => {
 
   it("unhides a model on this frontend when clicking its chip", async () => {
     await seed({ claudeHiddenModels: ["claude-opus-4-8"] });
-    setBindingMock("GetModelsForProvider", async () => CLAUDE_CATALOG);
+    setBindingMock("GetModelsForProvider", async () => modelCatalog(CLAUDE_CATALOG));
     const { findByTestId } = render(ClaudeSettings);
 
     const chip = await findByTestId("settings-model-toggle-claude-claude-opus-4-8");
@@ -98,7 +99,7 @@ describe("provider page — model visibility toggles", () => {
 
   it("refuses to hide the last visible model", async () => {
     await seed({ claudeHiddenModels: ["claude-opus-4-8"] });
-    setBindingMock("GetModelsForProvider", async () => CLAUDE_CATALOG);
+    setBindingMock("GetModelsForProvider", async () => modelCatalog(CLAUDE_CATALOG));
     const { findByTestId } = render(ClaudeSettings);
 
     const chip = await findByTestId("settings-model-toggle-claude-claude-fable-5");

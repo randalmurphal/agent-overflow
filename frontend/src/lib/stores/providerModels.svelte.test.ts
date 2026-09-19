@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ModelInfo } from '../types/settings';
+import type { ModelCatalog, ModelInfo } from '../types/settings';
+import { modelCatalog } from '../../test/helpers/modelCatalog';
 import {
   ensureProviderModels,
   getProviderModels,
@@ -28,7 +29,7 @@ describe('provider model catalog', () => {
     const models: ModelInfo[] = [
       { slug: 'gpt-5.4-mini', name: 'GPT-5.4 mini', provider: 'codex' },
     ];
-    const getModels = setBindingMock('GetModelsForProvider', async () => models);
+    const getModels = setBindingMock('GetModelsForProvider', async () => modelCatalog(models));
 
     await expect(ensureProviderModels('codex')).resolves.toEqual(models);
     await expect(ensureProviderModels('codex')).resolves.toEqual(models);
@@ -38,9 +39,9 @@ describe('provider model catalog', () => {
   });
 
   it('invalidates one provider without clearing the other', async () => {
-    setBindingMock('GetModelsForProvider', async (provider) => [
+    setBindingMock('GetModelsForProvider', async (provider) => modelCatalog([
       { slug: `${provider}-model`, name: '', provider: String(provider) },
-    ]);
+    ]));
 
     await ensureProviderModels('claude');
     await ensureProviderModels('codex');
@@ -62,7 +63,7 @@ describe('provider model catalog', () => {
     const models: ModelInfo[] = [
       { slug: 'gpt-5.5', name: 'GPT-5.5', provider: 'codex' },
     ];
-    const getModels = setBindingMock('GetModelsForProvider', async () => models);
+    const getModels = setBindingMock('GetModelsForProvider', async () => modelCatalog(models));
 
     await expect(ensureProviderModels('codex')).resolves.toEqual(models);
     expect(getModels).toHaveBeenCalledOnce();
@@ -70,9 +71,9 @@ describe('provider model catalog', () => {
   });
 
   it('preloads enabled provider model lists', async () => {
-    const getModels = setBindingMock('GetModelsForProvider', async (provider) => [
+    const getModels = setBindingMock('GetModelsForProvider', async (provider) => modelCatalog([
       { slug: `${provider}-model`, name: '', provider: String(provider) },
-    ]);
+    ]));
 
     await preloadProviderModelsForSettings({
       claudeEnabled: true,
@@ -92,9 +93,9 @@ describe('provider model catalog', () => {
   });
 
   it('does not preload a provider whose parent is disabled', async () => {
-    const getModels = setBindingMock('GetModelsForProvider', async (provider) => [
+    const getModels = setBindingMock('GetModelsForProvider', async (provider) => modelCatalog([
       { slug: `${provider}-model`, name: '', provider: String(provider) },
-    ]);
+    ]));
 
     await preloadProviderModelsForSettings({
       claudeEnabled: false,
@@ -108,8 +109,8 @@ describe('provider model catalog', () => {
   });
 
   it('preload coalesces with in-flight provider loads', async () => {
-    let resolveModels!: (models: ModelInfo[]) => void;
-    const pendingModels = new Promise<ModelInfo[]>((resolve) => {
+    let resolveModels!: (catalog: ModelCatalog) => void;
+    const pendingModels = new Promise<ModelCatalog>((resolve) => {
       resolveModels = resolve;
     });
     const getModels = setBindingMock('GetModelsForProvider', async () => pendingModels);
@@ -124,7 +125,7 @@ describe('provider model catalog', () => {
     expect(getModels).toHaveBeenCalledOnce();
 
     const models = [{ slug: 'gpt-5.5', name: 'GPT-5.5', provider: 'codex' }];
-    resolveModels(models);
+    resolveModels(modelCatalog(models));
 
     await expect(ensurePromise).resolves.toEqual(models);
     await expect(preloadPromise).resolves.toBeUndefined();
@@ -133,8 +134,8 @@ describe('provider model catalog', () => {
   });
 
   it('retries when an in-flight load is invalidated before it resolves', async () => {
-    let resolveStaleModels!: (models: ModelInfo[]) => void;
-    const staleModels = new Promise<ModelInfo[]>((resolve) => {
+    let resolveStaleModels!: (catalog: ModelCatalog) => void;
+    const staleModels = new Promise<ModelCatalog>((resolve) => {
       resolveStaleModels = resolve;
     });
     const freshModels: ModelInfo[] = [
@@ -142,14 +143,14 @@ describe('provider model catalog', () => {
     ];
     const getModels = setBindingMock('GetModelsForProvider', () => {
       if (getModels.mock.calls.length === 1) return staleModels;
-      return Promise.resolve(freshModels);
+      return Promise.resolve(modelCatalog(freshModels));
     });
 
     const firstLoad = ensureProviderModels('codex');
     invalidateProviderModels('codex');
-    resolveStaleModels([
+    resolveStaleModels(modelCatalog([
       { slug: 'old-model', name: 'Old Model', provider: 'codex' },
-    ]);
+    ]));
 
     await expect(firstLoad).resolves.toEqual(freshModels);
     expect(getModels).toHaveBeenCalledTimes(2);
@@ -175,7 +176,7 @@ describe('provider model catalog', () => {
     expect(getProviderModels('codex')).toEqual([]);
 
     const models = [{ slug: 'gpt-5.5', name: 'GPT-5.5', provider: 'codex' }];
-    const getModels = setBindingMock('GetModelsForProvider', async () => models);
+    const getModels = setBindingMock('GetModelsForProvider', async () => modelCatalog(models));
 
     await expect(ensureProviderModels('codex')).resolves.toEqual(models);
     expect(getModels).toHaveBeenCalledOnce();

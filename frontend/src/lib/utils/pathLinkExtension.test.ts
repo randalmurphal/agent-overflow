@@ -649,13 +649,67 @@ describe('buildPathLinkExtension', () => {
     expect(images[0].href).toContain('workspace=%2Fworkspace');
   });
 
-  it('does not rewrite remote-authority or non-file image URLs', () => {
+  it('rewrites every path-shaped image src, in every link mode', () => {
+    const cases: Array<[string, string]> = [
+      ['/tmp/shots/baseline.png', '/tmp/shots/baseline.png'],
+      ['~/shot.png', '~/shot.png'],
+      ['docs/flow.png', 'docs/flow.png'],
+      ['./out/a%20b.png', './out/a b.png'],
+      ['C:/repo/shot.png', 'C:/repo/shot.png'],
+      ['C:\\repo\\shot.png', 'C:\\repo\\shot.png'],
+      // No `:line` split for an image: the colon is part of the name.
+      ['/tmp/frame:12', '/tmp/frame:12'],
+      ['docs/flow.png?raw=1#top', 'docs/flow.png'],
+    ];
+    for (const mode of ['editor', 'files', 'html', 'off'] as const) {
+      const ext = buildPathLinkExtension([], '/workspace', mode);
+      for (const [href, path] of cases) {
+        const images = findImages(lex(`![shot](${href})`, ext));
+        expect(images, `${mode} ${href}`).toHaveLength(1);
+        expect(parseLocalImageHref(images[0].href), `${mode} ${href}`).toEqual({
+          path,
+          workspacePath: '/workspace',
+          sourceHref: href,
+        });
+      }
+    }
+  });
+
+  it('does not rewrite remote-authority, network-path, UNC or URL image srcs', () => {
     const ext = buildPathLinkExtension([], '/workspace');
-    for (const href of ['file://fileserver/share/x.png', 'https://example.com/x.png']) {
+    for (const href of [
+      'file://fileserver/share/x.png',
+      'https://example.com/x.png',
+      '//host/x.png',
+      '\\\\host\\share\\x.png',
+      'data:image/png;base64,AAAA',
+      'javascript:alert(1)',
+    ]) {
       const images = findImages(lex(`![diagram](${href})`, ext));
       expect(images).toHaveLength(1);
       expect(images[0].href.startsWith(LOCAL_IMAGE_HREF_PREFIX), href).toBe(false);
     }
+  });
+
+  it('needs a workspace to rewrite an image src, like a link href', () => {
+    const ext = buildPathLinkExtension([{ path: 'main.ts' }] as never, '');
+    const images = findImages(lex('![x](/uploads/abc/image.png)', ext));
+    expect(images).toHaveLength(1);
+    expect(images[0].href).toBe('/uploads/abc/image.png');
+  });
+
+  it('in off mode rewrites no link and linkifies no prose, images aside', () => {
+    const ext = buildPathLinkExtension([{ path: 'src/foo.ts' }] as never, '/workspace', 'off');
+    const tokens = lex('see src/foo.ts and [x](/workspace/a.md) and ![s](/tmp/s.png)', ext);
+    expect(findLinks(tokens).filter(link => link.href.startsWith(PATH_LINK_HREF_PREFIX))).toHaveLength(0);
+    expect(findImages(tokens)[0].href.startsWith(LOCAL_IMAGE_HREF_PREFIX)).toBe(true);
+  });
+
+  it('reads a Windows drive path href as a path, not a URL scheme', () => {
+    const ext = buildPathLinkExtension([], 'C:/repo');
+    const links = findLinks(lex('[notes](C:/repo/notes.md:12) [also](c:\\repo\\x.md)', ext));
+    expect(links.map(link => parsePathLinkHref(link.href)?.path)).toEqual(['C:/repo/notes.md', 'c:\\repo\\x.md']);
+    expect(parsePathLinkHref(links[0].href)?.line).toBe(12);
   });
 });
 

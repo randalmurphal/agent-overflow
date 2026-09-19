@@ -111,7 +111,7 @@
     contentGeometry={scrollbarGeometry}
     ariaLabel="Scroll agent activity"
     ownerDrivenPosition={() => stick.positionOwnerDriven}
-    onUserScrollStart={() => stick.setEscapedFromLock(true)}
+    onUserScrollStart={() => stick.markEscaped()}
     onUserScrollEnd={(atBottom) => {
       if (atBottom) stick.markAtBottom();
     }}

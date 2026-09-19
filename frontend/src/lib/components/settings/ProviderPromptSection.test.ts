@@ -8,6 +8,7 @@ import {
 } from '../../stores/providerModels.svelte';
 import { setBindingMock, getBindingMock } from '../../../test/mocks/bindings-app';
 import { makeSettings } from '../../../test/helpers/settings';
+import { modelCatalog } from '../../../test/helpers/modelCatalog';
 import { getProviderDefinition } from '../../providers/catalog';
 import type { ModelInfo, PromptOverride, Settings } from '../../types/settings';
 
@@ -31,7 +32,7 @@ async function seed(overrides: Partial<Settings> = {}): Promise<Settings> {
     ...((patch as Record<string, unknown>) ?? {}),
   }));
   setBindingMock('GetModelsForProvider', async (provider: unknown) =>
-    provider === 'codex' ? CODEX_CATALOG : CLAUDE_CATALOG,
+    modelCatalog(provider === 'codex' ? CODEX_CATALOG : CLAUDE_CATALOG),
   );
   await loadSettings();
   return merged;
@@ -143,7 +144,7 @@ describe('<ProviderPromptSection>', () => {
 
   it('does not call a selected slug missing when the catalog came back empty', async () => {
     await seed({ claudePromptOverrides: [ENTRY({ models: ['claude-retired-1'] })] });
-    setBindingMock('GetModelsForProvider', async () => []);
+    setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
     // Awaited here so the catalog is definitively loaded-and-empty before the
     // chip renders — an unsettled load would pass this assertion for the
     // wrong reason.

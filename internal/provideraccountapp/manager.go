@@ -278,6 +278,27 @@ func (m *Manager) RememberRateLimits(providerName, accountID string, snapshot pr
 	return m.store.RememberRateLimits(providerName, accountID, snapshot)
 }
 
+// RememberClaudeCatalog persists one Claude account's probe-reported model
+// answer and the identity of the binary that reported it.
+func (m *Manager) RememberClaudeCatalog(accountID string, record provideraccounts.ClaudeCatalogRecord) error {
+	if m == nil || m.store == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.store.RememberClaudeCatalog(accountID, record)
+}
+
+// ClaudeCatalog returns the model answer saved for one Claude account.
+func (m *Manager) ClaudeCatalog(accountID string) (provideraccounts.ClaudeCatalogRecord, bool) {
+	if m == nil || m.store == nil {
+		return provideraccounts.ClaudeCatalogRecord{}, false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.store.ClaudeCatalog(accountID)
+}
+
 func (m *Manager) applySelection(providerName string, generation uint64, accountID string) {
 	if m.deps.Sessions == nil {
 		return

@@ -21,6 +21,7 @@ import { setPageGrantsFromBootstrap } from '../lib/transport/scopes';
 import { resetForTest as resetThreadStatusesForTest } from '../lib/stores/threadStatuses.svelte';
 import { clearThreadItemCacheForTest } from '../lib/stores/threadItemCache';
 import { clearThreadScrollSnapshotsForTest } from '../lib/utils/threadScrollSnapshots';
+import { resetReviewScrollPositionsForTest } from '../lib/components/review/reviewScroll';
 import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
 import { resetFrontendPreferencesForTest } from '../lib/stores/frontendPreferences.svelte';
 import { resetClientDeviceNameForTest } from '../lib/stores/clientDeviceName.svelte';
@@ -57,6 +58,10 @@ afterEach(() => {
   // mount() manually (the prevailing browser-suite pattern) keep owning
   // their own unmount in a local afterEach.
   cleanup();
+  // The review pane remembers scroll positions per subject for the
+  // session in module state, saved at unmount. Clear them after cleanup
+  // so a jump in one test does not restore into the next test's mount.
+  resetReviewScrollPositionsForTest();
   // Same as setup.ts: clear registered panes and their timers before the
   // binding mocks they would call are reset.
   resetPanesForTest();

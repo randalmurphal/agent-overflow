@@ -16,6 +16,7 @@
 // point to revisit (with a markdown library that exposes positions).
 
 import { PATH_LINK_HREF_PREFIX, parsePathLinkHref } from './pathLinkExtension';
+import { FORGE_ATTACHMENT_HREF_PREFIX, parseForgeAttachmentHref } from './forgeAttachments';
 
 type ListContext = {
   kind: 'ol' | 'ul';
@@ -220,15 +221,25 @@ function serializeAnchor(el: HTMLElement, ctx: SerializeContext): string {
     if (text === dest || text === formatInlineCode(dest)) return text;
     return `[${escapeLinkText(text)}](${escapeLinkHref(dest)})`;
   }
+  // Forge attachments are the same problem one scheme along: the anchor's
+  // href names this page's PR and computer, which is meaningless anywhere
+  // else, while the markdown the reader copied said `/uploads/<hex>/x.pdf`.
+  // Re-emit what was written.
+  if (href && href.startsWith(FORGE_ATTACHMENT_HREF_PREFIX)) {
+    const parsed = parseForgeAttachmentHref(href);
+    if (!parsed) return text;
+    return `[${escapeLinkText(text)}](${escapeLinkHref(parsed.href)})`;
+  }
   if (!href || href === '#') return text;
   return `[${escapeLinkText(text)}](${escapeLinkHref(href)})`;
 }
 
 function serializeImage(el: HTMLElement): string {
   const alt = el.getAttribute('alt') ?? '';
-  // Local markdown images render from short-lived blob URLs. Their
-  // nonce-gated host preserves the original file URI so copy-as-markdown
-  // does not leak an unusable page-local blob destination.
+  // Local markdown images and forge attachments render from short-lived
+  // blob URLs. Their nonce-gated hosts preserve the original file URI or
+  // forge href so copy-as-markdown does not leak an unusable page-local
+  // blob destination.
   const src = el.dataset.markdownImageSrc || el.getAttribute('src') || '';
   // Filter unsafe data: URIs so a sanitization bypass upstream
   // can't smuggle, e.g., `data:text/html,...` into someone's

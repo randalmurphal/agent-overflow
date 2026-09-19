@@ -70,6 +70,7 @@ import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import type { TimelineCursorLike } from './threadItems';
 import type {
   LoadOlderResult,
+  LoadUntilItemResult,
   PaneErrorKind,
   PaneScrollController,
   ScrollToItemRequest,
@@ -181,7 +182,7 @@ export interface TimelineWindow {
   readonly loadOlder: () => Promise<LoadOlderResult>;
   readonly loadNewer: () => Promise<LoadOlderResult>;
   readonly loadRecentTail: () => Promise<boolean>;
-  readonly loadUntilItem: (itemID: string) => Promise<boolean>;
+  readonly loadUntilItem: (itemID: string) => Promise<LoadUntilItemResult>;
   readonly ensureSubagentChildren: (rootItemID: string) => Promise<boolean>;
   /** Set when a wire settle deferred its window prune to visual quiet. */
   readonly hasDeferredRecentWindowPrune: boolean;

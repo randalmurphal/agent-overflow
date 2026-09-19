@@ -6,6 +6,7 @@
 // worker. Every test should call `resetAppState()` in beforeEach to return
 // to a known-good baseline.
 
+import { modelCatalog } from '../helpers/modelCatalog';
 import { tick } from 'svelte';
 import { clearCommandRegistry } from '../../lib/stores/commandRegistry.svelte';
 import { closePalette } from '../../lib/stores/palette.svelte';
@@ -108,7 +109,7 @@ export function installAppDefaults(): void {
   setBindingMock('ListThreadGroups', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('GetProviderStatuses', async () => []);
-  setBindingMock('GetModelsForProvider', async () => []);
+  setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   setBindingMock('GetRateLimitsSnapshots', async () => []);
   setBindingMock('ListProviderAccounts', async () => []);
   // Sidebar fetches projects on mount. Default to an empty list — tests
@@ -136,6 +137,11 @@ export function installAppDefaults(): void {
     lastError: '',
     registeredDevices: 0,
   }));
+  // The idle memory trim (utils/idleMemoryTrim.ts) polls every 5s and asks
+  // for a trim once the page has been idle 10s. A suite that runs longer
+  // than that under a loaded full run reaches this binding from a timer,
+  // not from any assertion. Answer as a backend with nothing to trim.
+  setBindingMock('RequestWebviewMemoryTrim', async () => 'skipped-recent');
 }
 
 /**

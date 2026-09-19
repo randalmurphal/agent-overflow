@@ -503,6 +503,15 @@
           return pane.timelineRevision !== revision;
         },
       },
+      // The height-driven fill (timeline-window-pages §3). Each load it
+      // starts bumps `timelineRevision`, which schedules the next pass,
+      // so a short window pages one section at a time until it is tall
+      // enough — never inside a glide, and never past what retention keeps.
+      {
+        key: 'viewport-fill',
+        when: 'quiet',
+        run: () => paging.maybeFillViewport(),
+      },
       createTimelineActivityRunAutoCollapse({
         getPane: () => pane,
         getListRef: () => listRef,
@@ -1199,7 +1208,7 @@
     ariaLabel="Scroll message history"
     placement="inset-y-0 right-0.5 w-1.5"
     ownerDrivenPosition={() => stick.positionOwnerDriven}
-    onUserScrollStart={() => stick.setEscapedFromLock(true)}
+    onUserScrollStart={() => stick.markEscaped()}
     onUserScrollEnd={(atBottom) => {
       if (atBottom) stick.forceStick();
     }}

@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import '../../../app.css';
 import {
   ACTIVITY_RUN_CAP_REM_PX,
+  activityRunClipLiftPx,
   activityRunClipMaxHeight,
   observeActivityRunExpansion,
 } from '../../utils/activityRunClip';
@@ -39,18 +40,24 @@ function expectHeightNear(actual: number, expected: number): void {
 }
 
 /**
- * Past the next ResizeObserver delivery. The observer reports its height from
- * the RO callback (post-layout, where the reads are free — see
- * observeActivityRunExpansion), so an assertion right after observe/toggle
- * would read the pre-delivery value. Two rAFs: the first fires before the
- * same frame's RO deliveries, the second lands after them.
+ * Past the resize path: two frames for the ResizeObserver to deliver, one
+ * more for the measurement it defers (`observeActivityRunExpansion`). The
+ * mount and style-only cases below go this way.
  */
-/** Two frames for the observers to deliver, one more for the deferred report
- *  (`observeActivityRunExpansion` reports on the frame after delivery). */
 function afterDelivery(): Promise<void> {
   return new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   });
+}
+
+/**
+ * Past the mutation path only: the MutationObserver callback queued by a DOM
+ * change runs before a microtask queued after it, and no frame has elapsed
+ * when this resolves. A cap asserted here landed in the same flush as the
+ * change, which is the whole contract (a frame later moves the clicked row).
+ */
+function afterMutationObservers(): Promise<void> {
+  return Promise.resolve();
 }
 
 /**
@@ -176,16 +183,12 @@ describe('activity run clip — the cap', () => {
     body.style.cssText = 'height: 220px;';
     content.append(trigger, body);
 
-    let reported = -1;
-    const stop = observeActivityRunExpansion(clip, (px) => {
-      reported = px;
-    });
+    const stop = observeActivityRunExpansion(clip);
     await afterDelivery();
-    clip.style.maxHeight = activityRunClipMaxHeight(reported);
 
     // Reading a diff inside a run must not mean scroll-within-scroll: the cap
     // gives back exactly the height the expansion asked for.
-    expect(reported).toBe(220);
+    expect(activityRunClipLiftPx(clip)).toBe(220);
     expectHeightNear(clip.clientHeight, CAP_PX + 220);
     stop();
   });
@@ -204,19 +207,16 @@ describe('activity run clip — the cap', () => {
     body.style.cssText = 'height: 58px;';
     content.append(trigger, body);
 
-    let reported = -1;
-    const stop = observeActivityRunExpansion(clip, (px) => {
-      reported = px;
-    });
+    const stop = observeActivityRunExpansion(clip);
     await afterDelivery();
     // Collapsed contributes nothing — the preview is activity, not expansion.
-    expect(reported).toBe(0);
+    expect(activityRunClipLiftPx(clip)).toBe(0);
 
     trigger.setAttribute('aria-expanded', 'true');
     body.style.height = '220px';
-    await afterDelivery();
+    await afterMutationObservers();
 
-    expect(reported).toBe(220 - 58);
+    expect(activityRunClipLiftPx(clip)).toBe(220 - 58);
     stop();
   });
 
@@ -235,13 +235,10 @@ describe('activity run clip — the cap', () => {
     body.style.cssText = 'height: 220px; line-height: 20px;';
     content.append(trigger, body);
 
-    let reported = -1;
-    const stop = observeActivityRunExpansion(clip, (px) => {
-      reported = px;
-    });
+    const stop = observeActivityRunExpansion(clip);
     await afterDelivery();
 
-    expect(reported).toBe(220 - 3 * 20);
+    expect(activityRunClipLiftPx(clip)).toBe(220 - 3 * 20);
     stop();
   });
 
@@ -260,13 +257,10 @@ describe('activity run clip — the cap', () => {
     body.style.cssText = 'height: 40px; line-height: 20px;';
     content.append(trigger, body);
 
-    let reported = -1;
-    const stop = observeActivityRunExpansion(clip, (px) => {
-      reported = px;
-    });
+    const stop = observeActivityRunExpansion(clip);
     await afterDelivery();
 
-    expect(reported).toBe(0);
+    expect(activityRunClipLiftPx(clip)).toBe(0);
     stop();
   });
 
@@ -286,18 +280,15 @@ describe('activity run clip — the cap', () => {
     body.style.cssText = 'height: 40px; line-height: 20px;';
     content.append(trigger, body);
 
-    let reported = -1;
-    const stop = observeActivityRunExpansion(clip, (px) => {
-      reported = px;
-    });
+    const stop = observeActivityRunExpansion(clip);
     await afterDelivery();
-    expect(reported).toBe(0); // measured at 40 while collapsed
+    expect(activityRunClipLiftPx(clip)).toBe(0); // measured at 40 while collapsed
 
     trigger.setAttribute('aria-expanded', 'true');
     body.style.height = '220px';
-    await afterDelivery();
+    await afterMutationObservers();
 
-    expect(reported).toBe(220 - 3 * 20);
+    expect(activityRunClipLiftPx(clip)).toBe(220 - 3 * 20);
     stop();
   });
 
@@ -312,18 +303,117 @@ describe('activity run clip — the cap', () => {
     body.style.cssText = 'height: 220px;';
     content.append(trigger, body);
 
-    const seen: number[] = [];
-    const stop = observeActivityRunExpansion(clip, (px) => {
-      seen.push(px);
-    });
-    trigger.setAttribute('aria-expanded', 'false');
-    // The mutation observer delivers on a microtask, the height on the
-    // ResizeObserver pass after it.
+    const stop = observeActivityRunExpansion(clip);
     await afterDelivery();
+    expect(activityRunClipLiftPx(clip)).toBe(220);
 
-    expect(seen.at(-1)).toBe(0);
-    clip.style.maxHeight = activityRunClipMaxHeight(0);
+    trigger.setAttribute('aria-expanded', 'false');
+    body.remove();
+    await afterMutationObservers();
+
+    expect(activityRunClipLiftPx(clip)).toBe(0);
     expectHeightNear(clip.clientHeight, CAP_PX);
+    stop();
+  });
+
+  it('keeps a sibling lift applied while one of two open bodies collapses', async () => {
+    // The collapse is announced by a mutation, and the measurement it needs
+    // forces a layout. Taken with the sibling's lift dropped, that layout
+    // would clamp the clip's scrollTop by the sibling's height. The last
+    // measured lift of the bodies still open is written first, so the read
+    // happens against a cap that already excludes only the collapsed body.
+    const { clip, content } = mountColumn();
+    rows(content, 40);
+    const bodies = [1, 2].map((n) => {
+      const trigger = document.createElement('button');
+      trigger.setAttribute('aria-expanded', 'true');
+      trigger.setAttribute('aria-controls', `body-${n}`);
+      const body = document.createElement('div');
+      body.id = `body-${n}`;
+      body.style.cssText = 'height: 100px;';
+      content.append(trigger, body);
+      return { trigger, body };
+    });
+    const stop = observeActivityRunExpansion(clip);
+    await afterDelivery();
+    expect(activityRunClipLiftPx(clip)).toBe(200);
+    clip.scrollTop = clip.scrollHeight;
+    const bottomGap = () => clip.scrollHeight - clip.scrollTop - clip.clientHeight;
+    expect(bottomGap()).toBeLessThanOrEqual(ROUND_PX);
+
+    const seen: number[] = [];
+    // Every geometry read the collapse takes must see the sibling's cap.
+    const origGBCR = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      seen.push(activityRunClipLiftPx(clip));
+      return origGBCR.call(this);
+    };
+    try {
+      bodies[0].trigger.setAttribute('aria-expanded', 'false');
+      bodies[0].body.remove();
+      await afterMutationObservers();
+    } finally {
+      Element.prototype.getBoundingClientRect = origGBCR;
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    for (const lift of seen) expect(lift).toBe(100);
+    expect(activityRunClipLiftPx(clip)).toBe(100);
+    // The clip lost exactly the collapsed body: still resting on its last row.
+    expect(bottomGap()).toBeLessThanOrEqual(ROUND_PX);
+    stop();
+  });
+
+  it('follows content landing inside an open body in the same flush', async () => {
+    // A payload arriving, or streamed text growing an expanded reasoning
+    // row: the body's mutation is the signal, and the cap must not wait for
+    // the resize path (a frame later, the clip pins against the old cap and
+    // the rows above the body move by the growth and back).
+    const { clip, content } = mountColumn();
+    rows(content, 40);
+    const trigger = document.createElement('button');
+    trigger.setAttribute('aria-expanded', 'true');
+    trigger.setAttribute('aria-controls', 'body-1');
+    const body = document.createElement('div');
+    body.id = 'body-1';
+    content.append(trigger, body);
+    const stop = observeActivityRunExpansion(clip);
+    await afterDelivery();
+    expect(activityRunClipLiftPx(clip)).toBe(0);
+
+    const loaded = document.createElement('div');
+    loaded.style.cssText = 'height: 150px;';
+    body.appendChild(loaded);
+    await afterMutationObservers();
+    expect(activityRunClipLiftPx(clip)).toBe(150);
+
+    loaded.firstChild?.remove();
+    loaded.append(document.createTextNode('more'));
+    loaded.style.height = '190px';
+    await afterMutationObservers();
+    expect(activityRunClipLiftPx(clip)).toBe(190);
+    stop();
+  });
+
+  it('follows a resize with no mutation on the next frame', async () => {
+    // Width reflow, a font or an image load: nothing mutates, so only the
+    // ResizeObserver sees it, and writing the clip from inside that delivery
+    // is the loop Chromium reports. The deferral is confined to this path.
+    const { clip, content } = mountColumn();
+    rows(content, 40);
+    const trigger = document.createElement('button');
+    trigger.setAttribute('aria-expanded', 'true');
+    trigger.setAttribute('aria-controls', 'body-1');
+    const body = document.createElement('div');
+    body.id = 'body-1';
+    body.style.cssText = 'height: 100px;';
+    content.append(trigger, body);
+    const stop = observeActivityRunExpansion(clip);
+    await afterDelivery();
+    expect(activityRunClipLiftPx(clip)).toBe(100);
+
+    body.style.height = '160.5px';
+    await afterDelivery();
+    expect(activityRunClipLiftPx(clip)).toBe(160.5);
     stop();
   });
 });

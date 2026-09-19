@@ -1,7 +1,7 @@
 /**
  * Same-document mask sprite: one hidden <svg> of <mask> elements that icon
- * spans reference via `--mask-icon: url(#id)` through the shared
- * `.lucide-icon`/`.mask-icon` rule in app.css.
+ * spans reference as an inline `mask-image: url(#id)`; the shared
+ * `.lucide-icon`/`.mask-icon` rule in app.css owns size/position/repeat.
  *
  * Why not `mask-image: url(data:image/svg+xml,...)` (what shipped first):
  * Blink builds an ISOLATED SVG document — internal page, LocalDOMWindow and
@@ -51,7 +51,7 @@ function ensureRoot(): SVGSVGElement {
 
 /**
  * Register (idempotently, keyed) a mask shape and return the `url(#id)`
- * reference for `--mask-icon`.
+ * reference for the inline `mask-image`.
  *
  * @param key      stable identity for the shape (e.g. `tool:terminal`)
  * @param viewBoxW natural width of the shape's coordinate space
