@@ -261,9 +261,11 @@ func TestThreadMCPSpawnAndReplyRunOverTheLoopbackTransport(t *testing.T) {
 	if report.Requests[0].State != store.ThreadRequestReplied {
 		t.Errorf("state = %q, want replied", report.Requests[0].State)
 	}
-	if row := f.request(t, ack.Token); row.DeliveredHow != store.ThreadWakeInline {
-		t.Errorf("delivery = %q, want the tool response itself", row.DeliveredHow)
-	}
+	// The mark is written once the response has left the server, which is
+	// after this client has read it.
+	waitUntilE2E(t, 10*time.Second, "the inline delivery is recorded", func() bool {
+		return f.request(t, ack.Token).DeliveredHow == store.ThreadWakeInline
+	})
 	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
 		t.Fatalf("a wake was queued for an answer the sender just read: %+v", rows)
 	}
