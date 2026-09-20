@@ -109,7 +109,7 @@ func TestItemReadsALineRange(t *testing.T) {
 	if note, _ := past["note"].(string); !strings.Contains(note, "fewer than 9 lines") {
 		t.Errorf("note = %q", note)
 	}
-	for _, spec := range []string{"0-2", "3-1", "x", "-4", ""} {
+	for _, spec := range []string{"0-2", "3-1", "x", "-4"} {
 		callErr(t, server, localCaller(), "thread_item", mustJSON(t, map[string]any{"thread_id": localThreadID, "item_id": "i3", "lines": spec}), CodeInvalidRequest)
 	}
 }
@@ -192,14 +192,27 @@ func TestItemQueryCapsMatchesAndPagesTheRest(t *testing.T) {
 
 // TestItemTakesExactlyOneSelector, so a result is never a mix of two
 // readings of the same payload.
-func TestItemTakesExactlyOneSelector(t *testing.T) {
+// TestItemWithNoSelectorReadsFromTheStart: a bare item id is the first
+// read an agent makes after thread_show points at an item, and for most
+// items it is the whole item.
+func TestItemWithNoSelectorReadsFromTheStart(t *testing.T) {
+	app := itemApp("Laptop", localThreadID, "i3", "tool_output", "body")
+	result := call(t, New(app), localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3"}`)
+	if result["text"] != "body" || result["eof"] != true {
+		t.Fatalf("result = %v", result)
+	}
+	if result["offset"] != float64(0) {
+		t.Fatalf("offset = %v, want 0", result["offset"])
+	}
+}
+
+func TestItemTakesAtMostOneSelector(t *testing.T) {
 	app := itemApp("Laptop", localThreadID, "i3", "tool_output", "body")
 	server := New(app)
-	message := callErr(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3"}`, CodeInvalidRequest)
-	if !strings.Contains(message, "exactly one selector") {
+	message := callErr(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","offset":0,"lines":"1-2"}`, CodeInvalidRequest)
+	if !strings.Contains(message, "at most one selector") {
 		t.Errorf("message = %q", message)
 	}
-	callErr(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","offset":0,"lines":"1-2"}`, CodeInvalidRequest)
 	callErr(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","query":"a","lines":"1-2"}`, CodeInvalidRequest)
 	callErr(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","offset":0}`, CodeInvalidRequest)
 	callErr(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","offset":0,"max_bytes":99999999}`, CodeInvalidRequest)

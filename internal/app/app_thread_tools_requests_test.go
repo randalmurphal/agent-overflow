@@ -912,7 +912,7 @@ func TestThreadSpawnOverridesWhatItIsToldAndCutsAWorktree(t *testing.T) {
 	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
 		Prompt: "port the fix", Title: "Port the fix", Model: "claude-haiku-4-5",
 		RuntimeMode: string(provider.RuntimeReadOnly), WorktreeBranch: "port-the-fix",
-		WaitSeconds: 0,
+		Group: "Port sweep", WaitSeconds: 0,
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -923,6 +923,26 @@ func TestThreadSpawnOverridesWhatItIsToldAndCutsAWorktree(t *testing.T) {
 	}
 	if spawned.Model != "claude-haiku-4-5" {
 		t.Errorf("model = %q, want the override", spawned.Model)
+	}
+	// The group named by the call exists in the new thread's project and
+	// holds it, created by the spawn itself.
+	group, err := f.app.store.GetThreadGroup(spawned.GroupID)
+	if err != nil {
+		t.Fatalf("GetThreadGroup(%q): %v", spawned.GroupID, err)
+	}
+	if group.Name != "Port sweep" || group.ProjectID != spawned.ProjectID {
+		t.Errorf("group = %+v, want %q in project %q", group, "Port sweep", spawned.ProjectID)
+	}
+	// A second spawn naming the same group joins it rather than making
+	// another of the same name.
+	again, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "port the other fix", Group: "Port sweep", WaitSeconds: 0,
+	})
+	if err != nil {
+		t.Fatalf("Spawn(again): %v", err)
+	}
+	if second, err := f.app.store.GetThread(again.ThreadID); err != nil || second.GroupID != spawned.GroupID {
+		t.Errorf("second spawn group = %q (%v), want %q", second.GroupID, err, spawned.GroupID)
 	}
 	// The caller runs an effort its model offers and the override's does
 	// not. The inherited value is dropped rather than carried across, and
@@ -972,7 +992,7 @@ func TestThreadSpawnFromThreadForksTheHistoryIntoAVisibleThread(t *testing.T) {
 	source := f.forkableThread(t, "spawn-source")
 
 	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
-		FromThread: source.ID, Prompt: "carry on from here", Title: "Carry on", WaitSeconds: 0,
+		FromThread: source.ID, Prompt: "carry on from here", Title: "Carry on", Group: "Approaches", WaitSeconds: 0,
 	})
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -983,6 +1003,10 @@ func TestThreadSpawnFromThreadForksTheHistoryIntoAVisibleThread(t *testing.T) {
 	}
 	if fork.ID == source.ID {
 		t.Fatal("the spawn ran in the source thread")
+	}
+	// The group lives in the fork's own project, which is the source's.
+	if group, err := f.app.store.GetThreadGroup(fork.GroupID); err != nil || group.Name != "Approaches" || group.ProjectID != source.ProjectID {
+		t.Errorf("fork group = %+v (%v), want %q in the source's project", group, err, "Approaches")
 	}
 	if fork.Mode == threadmode.ModeScratch {
 		t.Error("a spawned fork is a thread the person can see, not a scratch thread")

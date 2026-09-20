@@ -22,6 +22,10 @@ type SpawnCall struct {
 	// same draft-worktree path the sidebar uses. Empty means no worktree,
 	// so there is no worktree without a branch name.
 	WorktreeBranch string `json:"worktree_branch,omitempty"`
+	// Group is a sidebar group NAME inside the new thread's own project,
+	// created there when it does not exist. Empty leaves the thread
+	// ungrouped.
+	Group string `json:"group,omitempty"`
 	// FromThread forks that thread's history at its tail first. The fork
 	// runs on the source thread's computer, in its project and workspace.
 	FromThread         string `json:"from_thread,omitempty"`

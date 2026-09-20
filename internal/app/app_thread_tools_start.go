@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/usermessage"
@@ -835,8 +836,27 @@ func scratchReturnMode(sourceMode string) string {
 }
 
 // createSpawnedThread makes the thread a spawn runs in: a fork of another
-// thread when from_thread names one, a fresh thread otherwise.
+// thread when from_thread names one, a fresh thread otherwise. A group the
+// call names is joined once the thread exists, through the organize patch
+// the sidebar's own grouping uses, so the group is created in the NEW
+// thread's project: a fork's source project, or the destination's.
 func (t threadToolsApp) createSpawnedThread(
+	ctx context.Context, call threadtools.SpawnCall, create CreateThreadOptions,
+) (store.Thread, error) {
+	thread, err := t.createSpawnedThreadUngrouped(ctx, call, create)
+	if err != nil || call.Group == "" {
+		return thread, err
+	}
+	group := call.Group
+	applied, err := t.app.applyThreadOrganizePatch(ctx, thread.ID, threadapp.OrganizePatch{Group: &group})
+	if err != nil {
+		return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("The thread was created as %s but could not join group %q: %v", thread.ID, group, err), err)
+	}
+	return applied.Thread, nil
+}
+
+func (t threadToolsApp) createSpawnedThreadUngrouped(
 	ctx context.Context, call threadtools.SpawnCall, create CreateThreadOptions,
 ) (store.Thread, error) {
 	if call.FromThread == "" {

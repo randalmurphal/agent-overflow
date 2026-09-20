@@ -79,8 +79,14 @@ func (c *session) item(ctx context.Context, raw json.RawMessage) (any, error) {
 	if page.Query != "" && trim(args.Query) == "" {
 		args.Query = page.Query
 	}
-	if selectors := exactlyOne(args.Offset != nil, trim(args.Lines) != "", trim(args.Query) != ""); selectors != 1 {
-		return nil, invalidf("Pass exactly one selector: offset with max_bytes to read a byte range, lines for a line range, or query to search inside the item. This call passed %d.", selectors)
+	switch selectors := exactlyOne(args.Offset != nil, trim(args.Lines) != "", trim(args.Query) != ""); selectors {
+	case 0:
+		// A bare item id is the common first read: the start of the item,
+		// max_bytes of it, which for most items is the whole thing.
+		args.Offset = new(int64)
+	case 1:
+	default:
+		return nil, invalidf("Pass at most one selector: offset with max_bytes to read a byte range, lines for a line range, or query to search inside the item. This call passed %d.", selectors)
 	}
 	if args.MaxBytes < 0 || args.MaxBytes > MaxItemBytes {
 		return nil, invalidf("max_bytes must be between 1 and %d.", MaxItemBytes)

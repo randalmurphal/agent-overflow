@@ -18,7 +18,7 @@ func spawnApp() *fakeApp {
 // and what to do with it.
 func TestSpawnPassesThePromptAndSettingsThrough(t *testing.T) {
 	app := spawnApp()
-	result := call(t, New(app), localCaller(), "thread_spawn", `{"prompt":"port the parser","title":"Port","project_id":"p1","provider":"codex","model":"gpt-5","effort":"high","mode":"plan","runtime_mode":"read-only","worktree":"port","wait_seconds":120,"notify":true}`)
+	result := call(t, New(app), localCaller(), "thread_spawn", `{"prompt":"port the parser","title":"Port","project_id":"p1","provider":"codex","model":"gpt-5","effort":"high","mode":"plan","runtime_mode":"read-only","worktree":"port","group":"Port sweep","wait_seconds":120,"notify":true}`)
 
 	if len(app.spawns) != 1 {
 		t.Fatalf("spawns = %v", app.spawns)
@@ -30,7 +30,7 @@ func TestSpawnPassesThePromptAndSettingsThrough(t *testing.T) {
 	if spawn.Provider != "codex" || spawn.Model != "gpt-5" || spawn.Effort != "high" || spawn.Mode != "plan" || spawn.RuntimeMode != "read-only" {
 		t.Fatalf("settings did not reach the app: %+v", spawn)
 	}
-	if spawn.WorktreeBranch != "port" || spawn.WaitSeconds != 120 || !spawn.Notify {
+	if spawn.WorktreeBranch != "port" || spawn.Group != "Port sweep" || spawn.WaitSeconds != 120 || !spawn.Notify {
 		t.Fatalf("spawn = %+v", spawn)
 	}
 	if result["token"] != "tok-1" || result["kind"] != "spawn" || result["outcome"] != OutcomeBackgrounded {

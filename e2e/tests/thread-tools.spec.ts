@@ -1967,6 +1967,7 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
                   prompt: 'Try the lock-free version on a branch of your own.',
                   title: 'Worktree work',
                   worktree: 'agent/experiment',
+                  group: 'Approaches',
                   wait_seconds: 0,
                 },
               },
@@ -1983,6 +1984,7 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
                   prompt: 'Take the same history and try the channel version instead.',
                   title: 'Second approach',
                   from_thread: source,
+                  group: 'Approaches',
                   wait_seconds: 0,
                 },
               },
@@ -2015,6 +2017,9 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
   expect(worktreeRow.worktreePath).toBeTruthy();
   expect(worktreeRow.worktreePath).not.toBe(callerPath);
   expect(worktreeRow.workspacePath).toBe(worktreeRow.worktreePath);
+  // The group the call named was created in the caller's project and
+  // holds the new thread.
+  expect(worktreeRow.groupId).toBeTruthy();
 
   // The new thread really runs in the checkout that was cut for it.
   const inWorktree = await harness.waitForEvent<HarnessMockEvent>(
@@ -2039,6 +2044,9 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
   expect(forkRow.projectId).toBe(sourceProject);
   expect(forkRow.workspacePath).toBe(sourcePath);
   expect(forkRow.title).toBe('Second approach');
+  // The same group name in the fork's own project is a different group.
+  expect(forkRow.groupId).toBeTruthy();
+  expect(forkRow.groupId).not.toBe(worktreeRow.groupId);
 
   const items = await harness.rpc<Array<{ summary?: string }>>('ListItems', forked, true);
   expect(items.some((item) => (item.summary ?? '').includes('The original approach used a mutex.'))).toBe(

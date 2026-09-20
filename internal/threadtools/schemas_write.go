@@ -32,7 +32,12 @@ func spawnSchema(shape Shape) map[string]any {
 		},
 		"worktree": map[string]any{
 			"type":        "string",
-			"description": "Branch name of a fresh worktree to run in instead of an existing checkout. The worktree is cut from the project through the same draft-worktree path the sidebar's new-worktree draft uses; on another computer it is cut from project_id's repository there. Pass workspace_path or worktree, not both.",
+			"description": "Branch name of a fresh worktree to run in instead of an existing checkout. The worktree is cut from the project through the same draft-worktree path the sidebar's new-worktree draft uses: from the project's current branch as origin has it, or from the local branch when origin cannot be reached, so local commits not yet pushed are not in it. On another computer it is cut from project_id's repository there. Pass workspace_path or worktree, not both.",
+		},
+		"group": map[string]any{
+			"type":        "string",
+			"maxLength":   MaxTitleRunes,
+			"description": "Sidebar group to put the new thread in, by name inside the thread's own project, created when it does not exist. The same name in another project is a different group. Put your own thread there with thread_update to keep a sweep of threads together.",
 		},
 		"provider": map[string]any{
 			"type":        "string",
@@ -59,7 +64,7 @@ func spawnSchema(shape Shape) map[string]any {
 	}
 	waitProperties(properties, 0, "the new thread to answer")
 	computerIDProperty(shape, properties, "the project the thread should run in")
-	description := "Open a new visible sidebar thread, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them. The new thread is an ordinary thread with no special marking: the user sees it in the sidebar and can take it over. Use it when the user asks for a separate thread, when another provider or model should do the work, or when the work should be visible and outlive your turn; use your own subagents for pieces of your current task."
+	description := "Open a new visible sidebar thread, send prompt as its first user message, start its turn, and return the thread id and a request token. It inherits your project, workspace, provider, model, effort, mode and runtime mode unless you override them, and joins a sidebar group when group names one. The new thread is an ordinary thread with no special marking: the user sees it in the sidebar and can take it over. Use it when the user asks for a separate thread, when another provider or model should do the work, or when the work should be visible and outlive your turn; use your own subagents for pieces of your current task."
 	if shape.Paired() {
 		description += " With computer_id the thread is created on that computer, runs on its account, appears in its sidebar, and project_id must name one of its projects."
 	}

@@ -144,7 +144,7 @@ func (c *session) statusTokens(ctx context.Context, args statusArgs, wait, budge
 	}
 	// Clone before stamping and clipping: the rows belong to the app and
 	// a later read of the same request must still see the whole answer.
-	result := statusResult{Requests: slices.Clone(report.Requests), WokeOn: report.WokeOn, TimedOut: report.TimedOut}
+	result := statusResult{Requests: slices.Clone(report.Requests), WokeOn: report.WokeOn, TimedOut: report.TimedOut && wait > 0}
 	c.stampRequests(result.Requests)
 	note, clipped := c.clipAnswers(result.Requests, budget, page, tokens)
 	result.Note = note
@@ -224,7 +224,8 @@ func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) 
 	if err != nil {
 		return nil, err
 	}
-	result := statusResult{WokeOn: woke, TimedOut: woke == ""}
+	// A wait of zero is a read, not a wait that ran out.
+	result := statusResult{WokeOn: woke, TimedOut: woke == "" && wait > 0}
 	byID := make(map[string]ThreadState, len(states))
 	for _, state := range states {
 		byID[state.ThreadID] = state
@@ -476,7 +477,7 @@ func (c *session) cancel(ctx context.Context, raw json.RawMessage) (any, error) 
 	return cancelResult{
 		Token: report.Token, ThreadID: report.ThreadID, ComputerID: id, Computer: name,
 		State: report.State, Effect: report.Effect,
-		Note: "This interrupted the work; it did not undo anything already done.",
+		Note: cancelNote(report.Effect),
 	}, nil
 }
 
@@ -522,4 +523,19 @@ func (c *session) remind(ctx context.Context, raw json.RawMessage) (any, error) 
 	result := c.ack(ack, "remind")
 	result.Note = "This thread will wake with that note at " + unixMsToRFC3339(due) + ". End your turn: the reminder starts a new one. Stop it with thread_cancel token " + ack.Token + "."
 	return result, nil
+}
+
+// cancelNote says what the cancel did, in the effect's own words, so a
+// cancel that found nothing running is not reported as an interruption.
+func cancelNote(effect string) string {
+	switch effect {
+	case "nothing_to_stop":
+		return "Nothing was running or queued for this, so nothing was stopped. The request is settled as reported."
+	case "reminder_dropped":
+		return "The reminder was dropped; it will not fire."
+	case "queued_message_removed":
+		return "The queued message was removed before it ran; nothing was interrupted."
+	default:
+		return "This interrupted the work; it did not undo anything already done."
+	}
 }

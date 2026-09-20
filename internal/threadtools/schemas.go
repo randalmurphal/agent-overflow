@@ -116,8 +116,8 @@ func searchSchema(shape Shape) map[string]any {
 			"enum":        AllStates,
 			"description": "Only threads in this state right now. running is a turn in flight; pending-approval and awaiting-input mean the thread is blocked on the user; plan-ready, error, interrupted and setup-failed are states the sidebar shows after a turn ended.",
 		},
-		"archived":      map[string]any{"type": "boolean", "description": "Include or exclude archived threads. Default: included with a query, excluded without one."},
-		"spawned_by_me": map[string]any{"type": "boolean", "description": "Only threads this thread spawned, sent to or asked."},
+		"archived":      map[string]any{"type": "boolean", "description": "true lists only archived threads, false only unarchived ones. Omitted, a query searches both and a listing shows unarchived threads only, as the sidebar does."},
+		"spawned_by_me": map[string]any{"type": "boolean", "description": "Only threads this thread spawned, forks included. A thread it merely sent to or asked is not listed; thread_status lists those requests."},
 		"since":         map[string]any{"type": "string", "description": "RFC 3339 timestamp with an offset. Only threads active since then."},
 		"limit": map[string]any{
 			"type":        "integer",
@@ -228,7 +228,7 @@ func itemSchema(shape Shape) map[string]any {
 		"cursor": map[string]any{"type": "string", "description": "Opaque cursor from a previous thread_item result, passed back unchanged to continue the same query past its matches."},
 	}
 	computerIDProperty(shape, properties, "the thread")
-	description := "Read inside one item once you know which one: the whole payload of a tool output, a diff, a subagent run or a long message, in ranges. Exactly one selector per call: offset with max_bytes, or lines, or query. This is what makes a multi-megabyte tool call inspectable without ever pulling it whole; the item renders on the computer that holds it and only the requested bytes cross."
+	description := "Read inside one item once you know which one: the whole payload of a tool output, a diff, a subagent run or a long message, in ranges. At most one selector per call: offset with max_bytes, or lines, or query; none reads from the start, max_bytes at a time. This is what makes a multi-megabyte tool call inspectable without ever pulling it whole; the item renders on the computer that holds it and only the requested bytes cross."
 	return tool("thread_item", description+dataNotice, properties, "thread_id", "item_id")
 }
 
@@ -257,7 +257,7 @@ func runtimeModeEnum() []string {
 }
 
 var runtimeModeMeanings = map[provider.RuntimeMode]string{
-	provider.RuntimeReadOnly:         "refuses every write and mutating command outright and never asks a person, so unattended work keeps moving",
+	provider.RuntimeReadOnly:         "never asks a person, so unattended work keeps moving: Codex runs commands in a read-only sandbox, while Claude Code refuses every shell command and every write, so a Claude thread here reads files with its own tools and cannot run git",
 	provider.RuntimeApprovalRequired: "asks the user before every tool use",
 	provider.RuntimeAutoAcceptEdits:  "applies file edits in the workspace without asking but still asks for shell commands",
 	provider.RuntimeAuto:             "lets a model-based reviewer approve or deny each sensitive tool use instead of the user",

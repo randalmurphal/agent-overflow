@@ -29,6 +29,7 @@ type spawnArgs struct {
 	ProjectID     string `json:"project_id"`
 	WorkspacePath string `json:"workspace_path"`
 	Worktree      string `json:"worktree"`
+	Group         string `json:"group"`
 	Provider      string `json:"provider"`
 	Model         string `json:"model"`
 	Effort        string `json:"effort"`
@@ -89,6 +90,7 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 		ProjectID:      trim(args.ProjectID),
 		WorkspacePath:  trim(args.WorkspacePath),
 		WorktreeBranch: trim(args.Worktree),
+		Group:          trim(args.Group),
 		Provider:       trim(args.Provider),
 		Model:          trim(args.Model),
 		Effort:         trim(args.Effort),
@@ -101,6 +103,9 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	if utf8.RuneCountInString(call.Title) > MaxTitleRunes {
 		return nil, invalidf("title must be at most %d characters.", MaxTitleRunes)
+	}
+	if utf8.RuneCountInString(call.Group) > MaxTitleRunes {
+		return nil, invalidf("group must be at most %d characters.", MaxTitleRunes)
 	}
 	if call.Mode != "" && !slices.Contains([]string{"chat", "plan"}, call.Mode) {
 		return nil, invalidf("mode must be chat or plan. The permission level is runtime_mode, a separate parameter.")

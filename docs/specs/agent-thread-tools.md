@@ -132,7 +132,10 @@ computer plus every paired one; `["local"]` means only the caller's),
 `thread_id` (search within one thread), `kind` (user | assistant |
 tool | title), `project_id`, `provider`, `state`, `archived`,
 `spawned_by_me`, `since`, `limit`, and `cursor` to continue a listing
-or a ranked result past `limit`. Defaults: every computer, all
+or a ranked result past `limit`. `archived` true lists only archived
+threads and false only unarchived ones; `spawned_by_me` is the spawn
+ledger, forks included, and not the threads merely sent to or asked.
+Defaults: every computer, all
 projects, archived included with a query and excluded without one,
 workflow-mode threads included, scratch threads excluded, 20 rows per
 computer with a query and 30 without.
@@ -201,7 +204,8 @@ threads included.
 
 Reads inside one item once the agent knows which one: the full payload
 of a tool output, diff, subagent run, or long message, by `item_id`.
-Exactly one selector per call: `offset` with `max_bytes` (default 16KB,
+At most one selector per call, and none reads from the start, `max_bytes`
+at a time: `offset` with `max_bytes` (default 16KB,
 absolute byte offsets, a negative offset reads from the end, a range
 is widened to whole UTF-8 characters); `lines` for a line range; or
 `query`, a literal search returning up to 50 matches with each match's
@@ -235,7 +239,12 @@ a request token. Locally it inherits the caller's project, workspace,
 provider, model, effort, mode, and runtime mode; each has an override
 param, plus `title`. `worktree` (optional branch name) creates a fresh
 worktree through the existing draft-worktree path instead of inheriting
-the workspace. `from_thread` forks that thread's history at its tail
+the workspace; that path cuts from the project's current branch as
+origin has it, so unpushed local commits are not in the worktree, and
+the parameter says so. `group` (optional name) puts the new thread in
+that sidebar group inside its own project, creating the group when it
+does not exist, through the same organize patch `thread_update` uses;
+a fork's group lives in its source's project. `from_thread` forks that thread's history at its tail
 (the same fork `thread_ask` uses, visible instead of hidden) and sends
 `prompt` there, for "try approach B in a fork"; the fork runs on the
 source thread's computer in its project and workspace and keeps that
@@ -283,10 +292,12 @@ The scratch thread is deleted (DB rows only, Q21) as soon as its answer
 is stored. If the answer is a clarifying question, the caller re-asks
 or switches to `thread_send` on the real thread.
 
-`read-only` exists for unattended work: writes and mutating commands are
-refused immediately and the refusal goes straight back to the model on
-both providers, so an ephemeral thread never waits on a human. If it
-needed a write to answer, it says so in its reply.
+`read-only` exists for unattended work: the refusal goes straight back
+to the model on both providers, so an ephemeral thread never waits on a
+human. Codex runs commands in a read-only sandbox; Claude Code's
+`dontAsk` mode refuses every shell command as well as every write, so a
+read-only Claude thread reads with its own file tools and cannot run
+git. If it needed a write to answer, it says so in its reply.
 
 A remote target is forked on its own computer, with that computer's
 provider account and session files, and runs there. The scratch thread
@@ -424,7 +435,9 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 >
 > Starting work. `thread_spawn` opens a new visible thread and runs
 > your `prompt` there; `from_thread` gives it an existing thread's
-> history first. `thread_send` continues an existing thread as if the
+> history first, `worktree` cuts it a fresh checkout on that branch, and
+> `group` files it in a sidebar group beside the threads of one sweep.
+> `thread_send` continues an existing thread as if the
 > user typed your `message`, queued after its current turn. `thread_ask`
 > asks a question of a hidden, read-only, throwaway copy of a thread, so
 > the real thread is never touched and the copy cannot wait on a person.
