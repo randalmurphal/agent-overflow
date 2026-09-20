@@ -1,6 +1,7 @@
 package store
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
@@ -405,5 +406,91 @@ func seedCompletedOutgoingMove(t *testing.T, s *Store, threadID string) {
 		"transfer-"+threadID, threadID, threadID,
 	); err != nil {
 		t.Fatalf("seed completed outgoing move for %s: %v", threadID, err)
+	}
+}
+
+// TestScratchThreadOwnershipFollowsTheRequestReceipt pins who a scratch
+// fork belongs to: the thread whose ask minted it, which is the receipt's
+// source thread and not the thread the fork was taken from. A /side-chat
+// fork carries no token and belongs to nobody.
+func TestScratchThreadOwnershipFollowsTheRequestReceipt(t *testing.T) {
+	s := newTestStore(t)
+	seedLookupThread(t, s, "asking-thread", nil)
+	seedLookupThread(t, s, "asked-thread", nil)
+	scratch := func(id, token string) {
+		t.Helper()
+		seedLookupThread(t, s, id, func(th *Thread) { th.Mode = threadmode.ModeScratch })
+		if token != "" {
+			if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+				Token: token, OwnerDeviceID: "local", SourceThreadID: "asking-thread",
+				Kind: ThreadRequestAsk, TargetThreadID: id,
+			}); err != nil {
+				t.Fatalf("AcceptThreadRequestReceipt(%s): %v", token, err)
+			}
+		}
+		if err := s.InsertScratchThread(ScratchThread{
+			ThreadID: id, SourceThreadID: "asked-thread", ReturnMode: threadmode.ModeChat, RequestToken: token,
+		}); err != nil {
+			t.Fatalf("InsertScratchThread(%s): %v", id, err)
+		}
+	}
+	scratch("ask-fork", "tok-ask")
+	scratch("side-chat-fork", "")
+
+	for _, tc := range []struct {
+		threadID string
+		owner    string
+		scratch  bool
+	}{
+		{"ask-fork", "asking-thread", true},
+		{"side-chat-fork", "", true},
+		{"asked-thread", "", false},
+	} {
+		owner, isScratch, err := s.ScratchThreadCaller(tc.threadID)
+		if err != nil || owner != tc.owner || isScratch != tc.scratch {
+			t.Errorf("ScratchThreadCaller(%s) = %q, %v, %v", tc.threadID, owner, isScratch, err)
+		}
+	}
+
+	owned, err := s.ListCallerScratchThreadIDs("asking-thread")
+	if err != nil || strings.Join(owned, ",") != "ask-fork" {
+		t.Fatalf("the asking thread owns %v, %v", owned, err)
+	}
+	// The thread that was asked owns nothing, and neither does a caller
+	// with no asks or an empty caller.
+	for _, caller := range []string{"asked-thread", "someone-else", ""} {
+		if ids, err := s.ListCallerScratchThreadIDs(caller); err != nil || len(ids) != 0 {
+			t.Errorf("ListCallerScratchThreadIDs(%q) = %v, %v", caller, ids, err)
+		}
+	}
+}
+
+// TestListOwnedThreadsByIDReadsAPageInOneQuery pins the batched read the
+// ranked search resolves its hits with: the ids this computer owns come
+// back whatever order they were asked in, and one it gave away does not.
+func TestListOwnedThreadsByIDReadsAPageInOneQuery(t *testing.T) {
+	s := newTestStore(t)
+	seedLookupThread(t, s, "batch-one", nil)
+	seedLookupThread(t, s, "batch-two", func(th *Thread) { th.Mode = threadmode.ModeScratch })
+	seedLookupThread(t, s, "batch-gone", nil)
+	seedCompletedOutgoingMove(t, s, "batch-gone")
+
+	before := s.ReadCount()
+	rows, err := s.ListOwnedThreadsByID([]string{"batch-two", "batch-gone", "batch-one", "batch-missing"})
+	if err != nil {
+		t.Fatalf("ListOwnedThreadsByID: %v", err)
+	}
+	if reads := s.ReadCount() - before; reads != 1 {
+		t.Errorf("reading four ids cost %d queries, want one", reads)
+	}
+	ids := threadIDsOf(rows)
+	sort.Strings(ids)
+	// Mode is the caller's rule, not this read's: the batch answers for
+	// every thread this computer still owns.
+	if strings.Join(ids, ",") != "batch-one,batch-two" {
+		t.Fatalf("batched rows = %v", ids)
+	}
+	if empty, err := s.ListOwnedThreadsByID(nil); err != nil || len(empty) != 0 {
+		t.Errorf("an empty id list = %v, %v", threadIDsOf(empty), err)
 	}
 }

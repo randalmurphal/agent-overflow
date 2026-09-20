@@ -137,8 +137,14 @@ threads and false only unarchived ones; `spawned_by_me` is the spawn
 ledger, forks included, and not the threads merely sent to or asked.
 Defaults: every computer, all
 projects, archived included with a query and excluded without one,
-workflow-mode threads included, scratch threads excluded, 20 rows per
-computer with a query and 30 without.
+workflow-mode threads included, scratch threads excluded except the
+caller's own ask forks, 20 rows per computer with a query and 30
+without.
+
+Continuing with `cursor` neither repeats nor skips a row. The cursor
+advances by the rows a page returned, so every rule that can hide a
+thread from the caller, transfer state and scratch ownership included,
+is part of the index query rather than a filter applied to its result.
 
 Search is FTS5 over `items.summary` for `user_text`, `assistant_text`,
 and `tool_call` rows, plus thread titles, plus the imported-history
@@ -939,7 +945,8 @@ codex 0.153.4); outcomes recorded in the
       restart.
 - [x] `thread_search` finds a phrase from an imported Codex session and
       from an archived Claude thread in another project by default,
-      never a scratch thread, and flags `indexing` while building;
+      never another thread's scratch fork, and flags `indexing` while
+      building;
       without a query it lists running threads with their state.
 - [x] `thread_search` returns rows from two isolated computers grouped
       per computer, `computers` narrows to one, and an offline third

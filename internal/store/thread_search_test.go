@@ -410,3 +410,106 @@ func TestSearchThreadsRejectsMalformedQueries(t *testing.T) {
 		t.Error("an unknown kind filter must be refused")
 	}
 }
+
+// seedTransfer writes one transfer row directly, so the agreement test can
+// stand every combination of direction, kind and phase beside the probe
+// without driving the phase machine to reach each one.
+func seedTransfer(t *testing.T, s *Store, threadID, direction, kind, phase string, archiveSize int64) {
+	t.Helper()
+	if _, err := s.db.Exec(
+		`INSERT INTO thread_transfers (id, thread_id, target_thread_id, peer_backend_id, kind,
+		     direction, phase, activation_hash, private_state, archive_size, created_at, updated_at)
+		 VALUES (?, ?, '', 'peer', ?, ?, ?, '', '{}', ?, 1, 1)`,
+		threadID+":"+phase, threadID, kind, direction, phase, archiveSize,
+	); err != nil {
+		t.Fatalf("insert %s %s transfer in phase %s: %v", direction, kind, phase, err)
+	}
+}
+
+// TestThreadTransferFilterMatchesTheAccessProbe pins the SQL half of the
+// transfer rule against CheckThreadTransferAccess. A listing that offered a
+// row the read then refused would leave the caller's page offset counting
+// rows it never received.
+func TestThreadTransferFilterMatchesTheAccessProbe(t *testing.T) {
+	index := 0
+	for _, direction := range []string{"incoming", "outgoing"} {
+		for _, kind := range []string{"move", "copy"} {
+			for _, phase := range []string{"preparing", "prepared", "committed", "complete", "canceled"} {
+				for _, archiveSize := range []int64{0, 128} {
+					index++
+					id := fmt.Sprintf("t-%02d", index)
+					t.Run(fmt.Sprintf("%s-%s-%s-%d", direction, kind, phase, archiveSize), func(t *testing.T) {
+						s := newTestStore(t)
+						mustCreateThread(t, s, id)
+						seedTransfer(t, s, id, direction, kind, phase, archiveSize)
+
+						readable := s.CheckThreadTransferAccess(id) == nil
+						listed, err := s.ListThreadsByActivity(ThreadSearchFilter{Limit: 10})
+						if err != nil {
+							t.Fatalf("ListThreadsByActivity: %v", err)
+						}
+						if kept := len(listed) == 1; kept != readable {
+							t.Fatalf("the listing %s the thread, the probe %s it",
+								transferVerdict(kept), transferVerdict(readable))
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func transferVerdict(kept bool) string {
+	if kept {
+		return "kept"
+	}
+	return "refused"
+}
+
+// TestSearchThreadsPagesByOffset pins the paging both halves promise: the
+// offset counts the rows the caller received, so consecutive pages neither
+// repeat a row nor skip one.
+func TestSearchThreadsPagesByOffset(t *testing.T) {
+	s := newTestStore(t)
+	for index := range 5 {
+		id := fmt.Sprintf("t-page-%d", index)
+		mustCreateThread(t, s, id)
+		if err := s.InsertItem(Item{
+			ID: id + "-msg", ThreadID: id, TurnIndex: 0, ItemIndex: 0, Kind: "user_text",
+			Role: "user", Status: "completed", Summary: "bilby report", CreatedAt: 1, UpdatedAt: 1,
+		}); err != nil {
+			t.Fatalf("insert message in %s: %v", id, err)
+		}
+		seedCompletedTurn(t, s, id, 0, int64(1_000+index*10), int64(1_005+index*10))
+	}
+
+	whole := hitIDs(mustSearch(t, s, "bilby", ThreadSearchFilter{Limit: 10}))
+	if len(whole) != 5 {
+		t.Fatalf("unpaged hits = %v, want five", whole)
+	}
+	var paged []string
+	for offset := 0; offset < 5; offset += 2 {
+		page := mustSearch(t, s, "bilby", ThreadSearchFilter{Limit: 2, Offset: offset})
+		if want := min(2, 5-offset); len(page) != want {
+			t.Fatalf("page at offset %d = %d hits, want %d", offset, len(page), want)
+		}
+		paged = append(paged, hitIDs(page)...)
+	}
+	sort.Strings(paged)
+	if strings.Join(paged, ",") != strings.Join(whole, ",") {
+		t.Fatalf("paged hits = %v, want %v with no repeat and no skip", paged, whole)
+	}
+
+	// The listing pages the same way, in its own order.
+	var listed []string
+	for offset := 0; offset < 5; offset += 2 {
+		page, err := s.ListThreadsByActivity(ThreadSearchFilter{Limit: 2, Offset: offset})
+		if err != nil {
+			t.Fatalf("ListThreadsByActivity(offset %d): %v", offset, err)
+		}
+		listed = append(listed, threadIDsOf(page)...)
+	}
+	if strings.Join(listed, ",") != "t-page-4,t-page-3,t-page-2,t-page-1,t-page-0" {
+		t.Fatalf("paged listing = %v", listed)
+	}
+}

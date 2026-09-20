@@ -56,9 +56,58 @@ func (t threadToolsApp) Thread(_ context.Context, threadID string) (threadtools.
 	return t.projectThread(thread), nil
 }
 
-// projectThread turns a store row into the tools' DTO, resolving the two
-// names the model reads beside their ids.
+// projectThread turns one store row into the tools' DTO.
 func (t threadToolsApp) projectThread(thread store.Thread) threadtools.Thread {
+	return t.newThreadProjector().thread(thread)
+}
+
+// threadProjector renders store rows as the tools' DTO, resolving the two
+// names the model reads beside their ids once per id rather than once per
+// row: a search page is usually a handful of projects and groups over
+// dozens of rows, and the `state` filter reads far more rows than it keeps.
+//
+// A name is decoration on a row whose id is already correct, so a lookup
+// that fails is logged and leaves the name empty rather than failing the
+// page. It is cached per page: a projector lives for one call.
+type threadProjector struct {
+	app      *App
+	projects map[string]string
+	groups   map[string]string
+}
+
+func (t threadToolsApp) newThreadProjector() *threadProjector {
+	return &threadProjector{app: t.app, projects: map[string]string{}, groups: map[string]string{}}
+}
+
+func (p *threadProjector) projectName(projectID string) string {
+	if name, ok := p.projects[projectID]; ok {
+		return name
+	}
+	name := ""
+	if project, err := p.app.store.GetProject(projectID); err != nil {
+		log.Printf("thread tools: read project %s: %v", projectID, err)
+	} else {
+		name = project.Name
+	}
+	p.projects[projectID] = name
+	return name
+}
+
+func (p *threadProjector) groupName(groupID string) string {
+	if name, ok := p.groups[groupID]; ok {
+		return name
+	}
+	name := ""
+	if group, err := p.app.store.GetThreadGroup(groupID); err != nil {
+		log.Printf("thread tools: read thread group %s: %v", groupID, err)
+	} else {
+		name = group.Name
+	}
+	p.groups[groupID] = name
+	return name
+}
+
+func (p *threadProjector) thread(thread store.Thread) threadtools.Thread {
 	out := threadtools.Thread{
 		ID:            thread.ID,
 		Title:         thread.Title,
@@ -84,14 +133,10 @@ func (t threadToolsApp) projectThread(thread store.Thread) threadtools.Thread {
 		out.WorkspacePath = thread.WorktreePath
 	}
 	if thread.ProjectID != "" {
-		if project, err := t.app.store.GetProject(thread.ProjectID); err == nil {
-			out.Project = project.Name
-		}
+		out.Project = p.projectName(thread.ProjectID)
 	}
 	if thread.GroupID != "" {
-		if group, err := t.app.store.GetThreadGroup(thread.GroupID); err == nil {
-			out.Group = group.Name
-		}
+		out.Group = p.groupName(thread.GroupID)
 	}
 	out.Pin = threadPin(thread.PinnedAt, thread.PinGroup)
 	return out
@@ -141,28 +186,36 @@ func (t threadToolsApp) LiveState(_ context.Context, threadID string) (threadtoo
 }
 
 // ResolveThreadRef matches a full id or a prefix against this computer's
-// threads.
-func (t threadToolsApp) ResolveThreadRef(_ context.Context, ref string) (threadtools.Resolution, error) {
+// threads, as the thread that called the tools may see them.
+func (t threadToolsApp) ResolveThreadRef(ctx context.Context, ref string) (threadtools.Resolution, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return threadtools.Resolution{}, nil
 	}
+	caller, _ := threadtools.CallerFrom(ctx)
 	// A thread this computer handed away is a move, not a miss, and the
 	// transfer record is the only place that says so.
 	if err := t.app.store.CheckThreadTransferAccess(ref); err != nil {
 		var moved *store.ThreadTransferError
-		if errors.As(err, &moved) && moved.Moved {
+		if !errors.As(err, &moved) {
+			return threadtools.Resolution{}, err
+		}
+		if moved.Moved {
 			name, id := t.threadToolsBackendName(moved.BackendID)
 			return threadtools.Resolution{MovedTo: id, MovedToName: name}, nil
 		}
 	}
 	if thread, err := t.app.store.GetThread(ref); err == nil {
-		if visible, owned := t.threadVisibleToTools(thread); visible && owned {
+		visible, err := t.threadVisibleToTools(thread, caller.ThreadID)
+		if err != nil {
+			return threadtools.Resolution{}, err
+		}
+		if visible {
 			return threadtools.Resolution{Matches: []threadtools.Candidate{{ThreadID: thread.ID, Title: thread.Title}}}, nil
 		}
 		return threadtools.Resolution{}, nil
 	}
-	candidates, err := t.prefixCandidates(ref)
+	candidates, err := t.prefixCandidates(ref, caller.ThreadID)
 	if err != nil {
 		return threadtools.Resolution{}, err
 	}
@@ -177,15 +230,18 @@ func (t threadToolsApp) ResolveThreadRef(_ context.Context, ref string) (threadt
 // answer holds. The over-fetch is what bounds the walk: a prefix matching
 // more than that is ambiguous several times over, and the refusal the
 // candidates render says so with the rows it has.
-func (t threadToolsApp) prefixCandidates(ref string) ([]threadtools.Candidate, error) {
+func (t threadToolsApp) prefixCandidates(ref, callerThreadID string) ([]threadtools.Candidate, error) {
 	rows, err := t.app.store.ResolveThreadPrefix(ref, threadToolsPrefixScan)
 	if err != nil {
 		return nil, err
 	}
 	var matches []threadtools.Candidate
 	for _, thread := range rows {
-		visible, owned := t.threadVisibleToTools(thread)
-		if !visible || !owned {
+		visible, err := t.threadVisibleToTools(thread, callerThreadID)
+		if err != nil {
+			return nil, err
+		}
+		if !visible {
 			continue
 		}
 		matches = append(matches, threadtools.Candidate{ThreadID: thread.ID, Title: thread.Title})
@@ -200,21 +256,33 @@ func (t threadToolsApp) prefixCandidates(ref string) ([]threadtools.Candidate, e
 // reads to fill MaxResolutionCandidates visible ones.
 const threadToolsPrefixScan = 4 * threadtools.MaxResolutionCandidates
 
-// threadVisibleToTools answers the two questions resolution asks of a row:
-// hidden workflow threads are reachable, a scratch thread is not unless
-// the tools themselves made it, and a thread this computer gave away is
-// gone. owned is false for a thread whose transfer moved it.
-func (t threadToolsApp) threadVisibleToTools(thread store.Thread) (visible, owned bool) {
+// threadVisibleToTools answers what resolution asks of a row the id lookup
+// returned: hidden workflow threads are reachable, a thread this computer
+// gave away or is in the middle of giving away is gone, and a scratch
+// thread belongs to the one thread whose `thread_ask` minted it.
+//
+// A fork answering someone else's ask is that agent's private context and
+// is mid-turn besides, so another caller may neither read it nor send to
+// it; a `/side-chat` fork is the person's and belongs to no caller at all.
+//
+// The search and the listing do not come through here: their rules are
+// store filters, so a page never drops a row it read.
+func (t threadToolsApp) threadVisibleToTools(thread store.Thread, callerThreadID string) (bool, error) {
 	if err := t.app.store.CheckThreadTransferAccess(thread.ID); err != nil {
-		return false, false
-	}
-	if thread.Mode == threadmode.ModeScratch {
-		row, found, err := t.app.store.GetScratchThread(thread.ID)
-		if err != nil || !found || row.RequestToken == "" {
-			return false, true
+		var moved *store.ThreadTransferError
+		if errors.As(err, &moved) {
+			return false, nil
 		}
+		return false, err
 	}
-	return true, true
+	if thread.Mode != threadmode.ModeScratch {
+		return true, nil
+	}
+	owner, scratch, err := t.app.store.ScratchThreadCaller(thread.ID)
+	if err != nil {
+		return false, err
+	}
+	return scratch && owner != "" && owner == callerThreadID, nil
 }
 
 // threadToolsBackendName names the computer a moved thread went to. An
@@ -384,10 +452,11 @@ func (t threadToolsApp) projectOptions(projectID string) ([]threadtools.ProjectO
 // SearchThreads answers the ranked search and the plain listing.
 //
 // Every filter but one is a store filter: provider, project, archived,
-// since, spawned-by and the hidden-mode rules are SQL terms, so LIMIT and
-// OFFSET count the rows this method returns and the cursor threadtools
-// mints out of them continues the same page. The exception is `state`,
-// which is derived from the live router and has no column at all.
+// since, spawned-by, the hidden-mode rules and the transfer rule are SQL
+// terms, so LIMIT and OFFSET count the rows this method returns and the
+// cursor threadtools mints out of them continues the same page. The
+// exception is `state`, which is derived from the live router and has no
+// column at all.
 func (t threadToolsApp) SearchThreads(ctx context.Context, q threadtools.SearchQuery) (threadtools.SearchPage, error) {
 	indexing, err := t.app.store.SearchIndexing()
 	if err != nil {
@@ -430,8 +499,13 @@ const (
 
 // threadToolsFilter renders the store filter both halves share. Kinds is
 // a search-only field; the listing ignores it.
-func (t threadToolsApp) threadToolsFilter(q threadtools.SearchQuery) (store.ThreadSearchFilter, error) {
-	scratch, err := t.callerScratchThreads(q.SpawnedBy)
+//
+// The scratch set is the calling thread's own: Server.Call stamps the
+// caller on the context, and a forwarded call carries the thread it came
+// from, which is the same id the receipt on this computer records.
+func (t threadToolsApp) threadToolsFilter(ctx context.Context, q threadtools.SearchQuery) (store.ThreadSearchFilter, error) {
+	caller, _ := threadtools.CallerFrom(ctx)
+	scratch, err := t.app.store.ListCallerScratchThreadIDs(caller.ThreadID)
 	if err != nil {
 		return store.ThreadSearchFilter{}, err
 	}
@@ -454,17 +528,23 @@ func (t threadToolsApp) threadToolsFilter(q threadtools.SearchQuery) (store.Thre
 
 // threadToolsPage assembles one page from a filtered store listing.
 //
-// With no `state` filter the store's LIMIT and OFFSET are the page: the
-// offset the caller passed counts the rows it received, and one extra row
-// answers More without reading a second page.
+// The offset threadtools pages by counts the rows a caller RECEIVED, so
+// every rule that can reject a row has to be in the store filter: a page
+// that read a row and then dropped it would leave the next page's offset
+// pointing one row short, which repeats the tail of the page before it.
+// The single exception is `state`, and the walk below pays for it.
+//
+// With no `state` filter the store's LIMIT and OFFSET are the page, and
+// one extra row answers More without reading a second page. The only row
+// this half can still drop is a thread deleted between the index query and
+// the read behind it, which is a row the next query no longer returns
+// either, so the offset stays aligned.
 //
 // A `state` filter has no column to match, so the only way to find the
-// rows it rejects is to read them. The walk then pages the store itself, skips
-// the caller's offset over the rows that SURVIVED the filter, and gives
-// up at threadSearchScanCap with More set. A page that drops a row for
-// any other reason returns short rather than reaching past its offset,
-// so the next page re-reads that row instead of skipping the one behind
-// it.
+// rows it rejects is to read them. The walk then pages the store itself,
+// skips the caller's offset over the rows that SURVIVED the filter, and
+// gives up at threadSearchScanCap with More set. More is exact otherwise:
+// it is reported once a surviving row past the page has been seen.
 func threadToolsPage[Row any](
 	ctx context.Context,
 	q threadtools.SearchQuery,
@@ -537,16 +617,21 @@ func threadToolsPage[Row any](
 }
 
 func (t threadToolsApp) searchIndex(ctx context.Context, q threadtools.SearchQuery, limit int) ([]threadtools.Hit, bool, error) {
-	filter, err := t.threadToolsFilter(q)
+	filter, err := t.threadToolsFilter(ctx, q)
 	if err != nil {
 		return nil, false, err
 	}
-	// One thread is resolved once however many of its items match.
-	cache := map[string]*threadtools.Hit{}
+	rows := t.newSearchRows()
 	return threadToolsPage(ctx, q, limit, filter,
-		func(filter store.ThreadSearchFilter) ([]store.ThreadSearchHit, error) { return t.searchHits(q, filter) },
+		func(filter store.ThreadSearchFilter) ([]store.ThreadSearchHit, error) {
+			hits, err := t.searchHits(q, filter)
+			if err != nil {
+				return nil, err
+			}
+			return hits, rows.load(hits)
+		},
 		func(hit store.ThreadSearchHit) (threadtools.Hit, bool, error) {
-			row, keep, err := t.searchRow(ctx, cache, hit.ThreadID, q)
+			row, keep, err := rows.hit(ctx, hit.ThreadID, q)
 			if err != nil || !keep {
 				return threadtools.Hit{}, false, err
 			}
@@ -554,6 +639,77 @@ func (t threadToolsApp) searchIndex(ctx context.Context, q threadtools.SearchQue
 			out.ItemID, out.Snippet = hit.ItemID, hit.Snippet
 			return out, true, nil
 		})
+}
+
+// searchRows resolves the threads one ranked page names. The index answers
+// in ITEM rows, so a thread arrives once per matching item: its row is read
+// once per page in a single batched query, and its projection once per
+// thread.
+type searchRows struct {
+	tools threadToolsApp
+	names *threadProjector
+	// threads holds every id this page has looked up. A nil value is a
+	// thread that is no longer this computer's.
+	threads map[string]*store.Thread
+	hits    map[string]*threadtools.Hit
+}
+
+func (t threadToolsApp) newSearchRows() *searchRows {
+	return &searchRows{
+		tools:   t,
+		names:   t.newThreadProjector(),
+		threads: map[string]*store.Thread{},
+		hits:    map[string]*threadtools.Hit{},
+	}
+}
+
+// load reads the thread rows one batch of hits needs and have not been read
+// yet, in one query.
+func (r *searchRows) load(hits []store.ThreadSearchHit) error {
+	var missing []string
+	for _, hit := range hits {
+		if _, known := r.threads[hit.ThreadID]; known {
+			continue
+		}
+		r.threads[hit.ThreadID] = nil
+		missing = append(missing, hit.ThreadID)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	rows, err := r.tools.app.store.ListOwnedThreadsByID(missing)
+	if err != nil {
+		return err
+	}
+	for index := range rows {
+		r.threads[rows[index].ID] = &rows[index]
+	}
+	return nil
+}
+
+// hit projects one thread of the page, once however many of its items
+// matched, and answers whether the `state` filter keeps it.
+func (r *searchRows) hit(ctx context.Context, threadID string, q threadtools.SearchQuery) (*threadtools.Hit, bool, error) {
+	if row, ok := r.hits[threadID]; ok {
+		return row, row != nil, nil
+	}
+	thread := r.threads[threadID]
+	if thread == nil {
+		// Deleted between the index query and this read. The next page's
+		// query will not return it either, so the offset stays aligned.
+		r.hits[threadID] = nil
+		return nil, false, nil
+	}
+	row, keep, err := r.tools.threadHit(ctx, r.names, *thread, q)
+	if err != nil {
+		return nil, false, err
+	}
+	if !keep {
+		r.hits[threadID] = nil
+		return nil, false, nil
+	}
+	r.hits[threadID] = &row
+	return &row, true, nil
 }
 
 // searchHits runs one index page and turns a rejected query into the
@@ -567,38 +723,11 @@ func (t threadToolsApp) searchHits(q threadtools.SearchQuery, filter store.Threa
 	return hits, nil
 }
 
-// searchRow resolves one thread once per call and answers whether the
-// adapter-side filter keeps it.
-func (t threadToolsApp) searchRow(ctx context.Context, cache map[string]*threadtools.Hit, threadID string, q threadtools.SearchQuery) (*threadtools.Hit, bool, error) {
-	if row, ok := cache[threadID]; ok {
-		return row, row != nil, nil
-	}
-	thread, err := t.app.store.GetThread(threadID)
-	if err != nil {
-		cache[threadID] = nil
-		return nil, false, nil
-	}
-	row, keep, err := t.threadHit(ctx, thread, q)
-	if err != nil {
-		return nil, false, err
-	}
-	if !keep {
-		cache[threadID] = nil
-		return nil, false, nil
-	}
-	cache[threadID] = &row
-	return &row, true, nil
-}
-
-// threadHit projects one thread row and applies the two rules the store
-// filter cannot: a thread mid-transfer, which is this computer's row
-// until the handover settles but is not readable through the tools, and
-// the derived live state.
-func (t threadToolsApp) threadHit(ctx context.Context, thread store.Thread, q threadtools.SearchQuery) (threadtools.Hit, bool, error) {
-	if visible, owned := t.threadVisibleToTools(thread); !visible || !owned {
-		return threadtools.Hit{}, false, nil
-	}
-	projected := t.projectThread(thread)
+// threadHit projects one thread row and applies the one rule the store
+// filter cannot: the live state, which is derived from the router and has
+// no column to match.
+func (t threadToolsApp) threadHit(ctx context.Context, names *threadProjector, thread store.Thread, q threadtools.SearchQuery) (threadtools.Hit, bool, error) {
+	projected := names.thread(thread)
 	live, err := t.LiveState(ctx, thread.ID)
 	if err != nil {
 		return threadtools.Hit{}, false, err
@@ -612,28 +741,12 @@ func (t threadToolsApp) threadHit(ctx context.Context, thread store.Thread, q th
 // listThreads answers a query-less thread_search: this computer's threads
 // by last activity, newest first.
 func (t threadToolsApp) listThreads(ctx context.Context, q threadtools.SearchQuery, limit int) ([]threadtools.Hit, bool, error) {
-	filter, err := t.threadToolsFilter(q)
+	filter, err := t.threadToolsFilter(ctx, q)
 	if err != nil {
 		return nil, false, err
 	}
+	names := t.newThreadProjector()
 	return threadToolsPage(ctx, q, limit, filter,
 		t.app.store.ListThreadsByActivity,
-		func(thread store.Thread) (threadtools.Hit, bool, error) { return t.threadHit(ctx, thread, q) })
-}
-
-// callerScratchThreads names the scratch threads a caller may see: the
-// ones a thread_ask minted, which carry a request token. A scratch thread
-// a person made with /side-chat has none and stays hidden.
-func (t threadToolsApp) callerScratchThreads(string) ([]string, error) {
-	rows, err := t.app.store.ListScratchThreads()
-	if err != nil {
-		return nil, err
-	}
-	var ids []string
-	for _, row := range rows {
-		if row.RequestToken != "" {
-			ids = append(ids, row.ThreadID)
-		}
-	}
-	return ids, nil
+		func(thread store.Thread) (threadtools.Hit, bool, error) { return t.threadHit(ctx, names, thread, q) })
 }

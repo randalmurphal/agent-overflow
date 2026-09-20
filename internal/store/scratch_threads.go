@@ -87,6 +87,61 @@ func (s *Store) ListScratchThreads() ([]ScratchThread, error) {
 	return out, nil
 }
 
+// ScratchThreadCaller names the thread whose `thread_ask` minted one
+// scratch fork, through the request receipt the fork records. The bool
+// reports whether the thread is a scratch fork at all, so a caller can tell
+// an ordinary thread from a fork nobody owns.
+//
+// The owner is the receipt's source thread, not the record's own
+// source_thread_id: that one names the thread that was ASKED, which is the
+// thread the asking agent already knows about. A `/side-chat` fork carries
+// no token and is owned by nobody, which is what keeps a person's side
+// conversation out of every agent's reach.
+func (s *Store) ScratchThreadCaller(threadID string) (callerThreadID string, scratch bool, err error) {
+	err = s.reader().QueryRow(
+		`SELECT COALESCE(receipts.source_thread_id, '')
+		   FROM scratch_threads
+		   LEFT JOIN thread_request_receipts receipts ON receipts.token = scratch_threads.request_token
+		  WHERE scratch_threads.thread_id = ?`, threadID).Scan(&callerThreadID)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("store: read scratch thread caller %s: %w", threadID, err)
+	}
+	return callerThreadID, true, nil
+}
+
+// ListCallerScratchThreadIDs returns the scratch threads one calling thread
+// owns: the forks its own asks minted. An empty caller owns none.
+func (s *Store) ListCallerScratchThreadIDs(callerThreadID string) ([]string, error) {
+	if callerThreadID == "" {
+		return nil, nil
+	}
+	rows, err := s.reader().Query(
+		`SELECT scratch_threads.thread_id
+		   FROM scratch_threads
+		   JOIN thread_request_receipts receipts ON receipts.token = scratch_threads.request_token
+		  WHERE receipts.source_thread_id = ?
+		  ORDER BY scratch_threads.thread_id ASC`, callerThreadID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list scratch threads for caller %s: %w", callerThreadID, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: scan caller scratch thread: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate caller scratch threads: %w", err)
+	}
+	return ids, nil
+}
+
 // DeleteScratchThread drops the record without touching the thread. It
 // reports whether a row was there, so a caller that expects to own the
 // record can tell a double delete from a first one. Deleting the thread

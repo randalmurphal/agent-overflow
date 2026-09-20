@@ -184,11 +184,8 @@ func (a *App) lastAssistantText(threadID string, turnIndex int) (string, error) 
 		if row.Kind != "assistant_text" || row.ParentID != "" {
 			continue
 		}
-		size, err := adapter.itemBodySize(row)
-		if err != nil {
-			return "", err
-		}
-		return adapter.itemBodyText(row, int(size))
+		text, _, err := adapter.itemBody(row, threadItemWholeBody)
+		return text, err
 	}
 	return "", nil
 }
