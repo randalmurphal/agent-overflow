@@ -529,16 +529,57 @@ func TestExpireThreadRequestAnswersOnlyDropsUncollected(t *testing.T) {
 		t.Errorf("an unsettled receipt was expired: %+v", stillOpen)
 	}
 
-	// A late reply is a new uncollected revision with its own hold.
-	if _, err := s.StoreThreadReceiptLateReply("tok-collected", []byte("more"), 3000); err != nil {
-		t.Fatalf("store receipt late reply: %v", err)
+	// A late reply inside the hold is a new uncollected revision with its
+	// own hold.
+	stored, err := s.StoreThreadReceiptLateReply("tok-collected", []byte("more"), 1900)
+	if err != nil || !stored {
+		t.Fatalf("store receipt late reply: stored=%v err=%v", stored, err)
 	}
-	dropped, err = s.ExpireThreadRequestAnswers(3000 + threadAnswerHoldMillis)
+	dropped, err = s.ExpireThreadRequestAnswers(1900 + threadAnswerHoldMillis)
 	if err != nil {
 		t.Fatalf("late expiry sweep: %v", err)
 	}
 	if dropped != 1 {
 		t.Errorf("late reply sweep dropped %d, want 1", dropped)
+	}
+}
+
+// A late reply is only worth storing while the source still polls for it,
+// which is the hold on the first answer: at or past `expires_at` the reply is
+// refused rather than parked where nothing will ever collect it.
+func TestStoreThreadReceiptLateReplyRefusesPastTheHold(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-target")
+	if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
+		Token: "tok-stale", OwnerDeviceID: "device-1", Kind: ThreadRequestAsk,
+		TargetThreadID: "t-target", CreatedAt: 100, UpdatedAt: 100,
+	}); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if _, err := s.SettleThreadRequestReceipt("tok-stale", ThreadReceiptOpenStates(), ThreadRequestSettlement{
+		State: ThreadReceiptFinished, AnswerKind: ThreadAnswerNote, SettledAt: 1000, ExpiresAt: 2000,
+	}); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	for _, at := range []int64{2000, 2001} {
+		stored, err := s.StoreThreadReceiptLateReply("tok-stale", []byte("too late"), at)
+		if err != nil {
+			t.Fatalf("late reply at %d: %v", at, err)
+		}
+		if stored {
+			t.Fatalf("a late reply at %d was stored past the hold ending at 2000", at)
+		}
+	}
+	stored, err := s.StoreThreadReceiptLateReply("tok-stale", []byte("in time"), 1999)
+	if err != nil || !stored {
+		t.Fatalf("late reply inside the hold: stored=%v err=%v", stored, err)
+	}
+	row, _, err := s.GetThreadRequestReceipt("tok-stale")
+	if err != nil {
+		t.Fatalf("read receipt: %v", err)
+	}
+	if string(row.LateReply) != "in time" || row.ExpiresAt != 1999+threadAnswerHoldMillis {
+		t.Errorf("late reply row = %+v", row)
 	}
 }
 

@@ -1002,6 +1002,45 @@ func TestThreadReplyAnswersOnceAndRefusesASecondAnswer(t *testing.T) {
 	}
 }
 
+// Past the day the destination holds an answer the sender has stopped polling
+// for a late reply, so the reply is refused with a pointer at thread_send
+// instead of being stored where nothing will collect it.
+func TestThreadLateReplyIsRefusedOnceTheHoldHasRunOut(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "looking into it")
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "what did the profiler say?", WaitSeconds: 0, Notify: true,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	waitUntil(t, 10*time.Second, func() bool { return f.request(t, ack.Token).DeliveredAt != 0 })
+
+	// Age the receipt: its hold ended a minute ago.
+	receipt := f.receipt(t, ack.Token)
+	aged, err := f.app.store.SettleThreadRequestReceipt(ack.Token, []string{store.ThreadReceiptFinished}, store.ThreadRequestSettlement{
+		State: store.ThreadReceiptFinished, Answer: receipt.Answer, AnswerKind: receipt.AnswerKind,
+		SettledAt: receipt.SettledAt, ExpiresAt: time.Now().Add(-time.Minute).UnixMilli(),
+	})
+	if err != nil || !aged {
+		t.Fatalf("age receipt: aged=%v err=%v", aged, err)
+	}
+
+	_, err = f.adapter().Reply(t.Context(), f.targetIdentity(t, ack.ThreadID), threadtools.ReplyCall{
+		Token: ack.Token, Text: "the profiler blames the JSON decode",
+	})
+	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
+		t.Fatalf("stale late reply code = %q, err = %v", code, err)
+	}
+	if !strings.Contains(err.Error(), "thread_send") {
+		t.Errorf("refusal does not point at thread_send: %v", err)
+	}
+	if row := f.receipt(t, ack.Token); len(row.LateReply) != 0 {
+		t.Errorf("a refused late reply was stored: %+v", row)
+	}
+}
+
 // A reply that arrives after the turn ended is a revision, not a refusal:
 // the sender was already told the turn produced no answer, so the late text
 // is stored and delivered as a second wake.

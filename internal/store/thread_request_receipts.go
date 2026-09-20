@@ -287,8 +287,10 @@ const threadAnswerHoldMillis = 24 * 60 * 60 * 1000
 // StoreThreadReceiptLateReply records a thread_reply that arrived after the
 // receipt had already finished without one. It is a new revision, so the
 // source's poller collects it and a second wake lands. Only a `finished`
-// receipt with no late reply yet accepts it; every other state is refused by
-// the caller with its state as the reason.
+// receipt with no late reply yet and a hold still running accepts it: the
+// source stops polling once the hold on the first answer runs out, so a reply
+// after that would never be collected. Every other state is refused by the
+// caller with its state as the reason.
 func (s *Store) StoreThreadReceiptLateReply(token string, reply []byte, at int64) (bool, error) {
 	action := fmt.Sprintf("store: store thread receipt late reply %s", token)
 	if at == 0 {
@@ -298,8 +300,9 @@ func (s *Store) StoreThreadReceiptLateReply(token string, reply []byte, at int64
 		`UPDATE thread_request_receipts
 		    SET late_reply = ?, late_reply_at = ?, revision = revision + 1,
 		        expires_at = ?, updated_at = ?
-		  WHERE token = ? AND state = 'finished' AND late_reply IS NULL`,
-		nilIfEmptyBytes(reply), at, at+threadAnswerHoldMillis, nowMillis(), token,
+		  WHERE token = ? AND state = 'finished' AND late_reply IS NULL
+		    AND expires_at > ?`,
+		nilIfEmptyBytes(reply), at, at+threadAnswerHoldMillis, nowMillis(), token, at,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)

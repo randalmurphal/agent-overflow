@@ -412,7 +412,14 @@ func (t threadToolsApp) replyLocked(caller threadtools.Caller, call threadtools.
 			ack.State = threadtools.RequestFinished
 			break
 		}
-		stored, err := t.app.store.StoreThreadReceiptLateReply(call.Token, text, 0)
+		// The sender polls for a late reply only while the hold on the
+		// first answer runs, so past it the reply would never be collected.
+		now := time.Now().UnixMilli()
+		if receipt.ExpiresAt != 0 && now >= receipt.ExpiresAt {
+			return threadtools.ReplyAck{}, work, errorsx.Public(threadtools.CodeInvalidRequest,
+				"That request finished more than a day ago and its sender has stopped listening for a reply. Use thread_send to reach it.", nil)
+		}
+		stored, err := t.app.store.StoreThreadReceiptLateReply(call.Token, text, now)
 		if err != nil {
 			return threadtools.ReplyAck{}, work, err
 		}

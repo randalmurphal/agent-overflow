@@ -748,7 +748,10 @@ column on the request, so a retired row stays out of the poller's due
 set across a restart.
 
 An answer waits for its caller for one day from settlement, and the
-destination reports the `expires_at` with it. A source that reconnects
+destination reports the `expires_at` with it. That same day is the window
+for a late `thread_reply`: after it the destination refuses the reply and
+points the replier at `thread_send`, because the source has stopped
+polling for one. A source that reconnects
 within that window collects it and the wake lands then, its status line
 naming the answer's age. After a day the destination drops the answer
 text but keeps the request's identity, so the source settles the
