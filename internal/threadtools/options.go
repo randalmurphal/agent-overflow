@@ -3,7 +3,6 @@ package threadtools
 import (
 	"context"
 	"encoding/json"
-	"sync"
 
 	"agent-overflow/internal/errorsx"
 )
@@ -101,26 +100,16 @@ func (c *session) options(ctx context.Context, raw json.RawMessage) (any, error)
 // first failure as its own error, which a single-computer call returns
 // rather than describing this computer as unreachable.
 func (c *session) runOptions(ctx context.Context, targets []Computer, args optionsArgs) ([]computerOptions, []errorRow, error) {
-	bounded, cancel := context.WithTimeout(ctx, SearchTimeout)
-	defer cancel()
-
 	type answer struct {
 		computer Computer
 		row      computerOptions
 		err      error
 	}
-	answers := make([]answer, len(targets))
-	var wg sync.WaitGroup
-	for index, computer := range targets {
-		wg.Add(1)
-		go func(slot int, computer Computer) {
-			defer wg.Done()
-			_, local, _ := c.computerByID(computer.ID)
-			row, err := c.optionsOne(bounded, computer, local, args)
-			answers[slot] = answer{computer: computer, row: row, err: err}
-		}(index, computer)
-	}
-	wg.Wait()
+	answers := eachComputer(ctx, SearchTimeout, targets, func(ctx context.Context, computer Computer) answer {
+		_, local, _ := c.computerByID(computer.ID)
+		row, err := c.optionsOne(ctx, computer, local, args)
+		return answer{computer: computer, row: row, err: err}
+	})
 
 	rows := make([]computerOptions, 0, len(answers))
 	var failures []errorRow

@@ -3,7 +3,6 @@ package threadtools
 import (
 	"context"
 	"strings"
-	"sync"
 
 	"agent-overflow/internal/entityid"
 )
@@ -179,25 +178,13 @@ func (c *session) askPeer(ctx context.Context, computer Computer, ref string) re
 // under one bound. A peer that misses it is an error for that computer
 // only; the others still answer.
 func (c *session) askEveryone(ctx context.Context, ref string) []resolveAnswer {
-	bounded, cancel := context.WithTimeout(ctx, ResolutionTimeout)
-	defer cancel()
-
-	answers := make([]resolveAnswer, len(c.computers)+1)
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		answers[0] = c.askLocal(bounded, ref)
-	}()
-	for index, computer := range c.computers {
-		wg.Add(1)
-		go func(slot int, computer Computer) {
-			defer wg.Done()
-			answers[slot] = c.askPeer(bounded, computer, ref)
-		}(index+1, computer)
-	}
-	wg.Wait()
-	return answers
+	everyone := append([]Computer{c.self()}, c.computers...)
+	return eachComputer(ctx, ResolutionTimeout, everyone, func(ctx context.Context, computer Computer) resolveAnswer {
+		if _, local, _ := c.computerByID(computer.ID); local {
+			return c.askLocal(ctx, ref)
+		}
+		return c.askPeer(ctx, computer, ref)
+	})
 }
 
 // withComputer stamps one computer's candidates with that computer.

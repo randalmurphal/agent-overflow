@@ -3,6 +3,7 @@ package threadtools
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/mcpargs"
@@ -145,6 +146,26 @@ func (c *session) paired() bool { return len(c.computers) > 0 }
 // self is the caller's own computer, as this computer names itself.
 func (c *session) self() Computer {
 	return Computer{ID: c.caller.ComputerID, Name: c.caller.ComputerName}
+}
+
+// eachComputer asks every computer concurrently under one bound and
+// returns the answers in the computers' order. A computer that is slow or
+// fails costs its own slot, never the call: the bound is the whole
+// fan-out's, and each answer carries its own error.
+func eachComputer[T any](ctx context.Context, timeout time.Duration, computers []Computer, ask func(ctx context.Context, computer Computer) T) []T {
+	bounded, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	answers := make([]T, len(computers))
+	var wg sync.WaitGroup
+	for index, computer := range computers {
+		wg.Add(1)
+		go func(slot int, computer Computer) {
+			defer wg.Done()
+			answers[slot] = ask(bounded, computer)
+		}(index, computer)
+	}
+	wg.Wait()
+	return answers
 }
 
 // computerByID finds a paired computer. The caller's own id resolves to

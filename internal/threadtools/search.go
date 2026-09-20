@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -246,20 +245,10 @@ type searchAnswer struct {
 // first failure as its own error, which a single-computer call returns
 // rather than answering "no threads" for a search that never ran.
 func (c *session) runSearch(ctx context.Context, targets []Computer, query SearchQuery, offsets map[string]int) ([]searchGroup, []errorRow, error) {
-	bounded, cancel := context.WithTimeout(ctx, SearchTimeout)
-	defer cancel()
-
-	answers := make([]searchAnswer, len(targets))
-	var wg sync.WaitGroup
-	for index, computer := range targets {
-		wg.Add(1)
-		go func(slot int, computer Computer) {
-			defer wg.Done()
-			_, local, _ := c.computerByID(computer.ID)
-			answers[slot] = c.searchOne(bounded, computer, local, query, offsets[offsetKey(computer, local)])
-		}(index, computer)
-	}
-	wg.Wait()
+	answers := eachComputer(ctx, SearchTimeout, targets, func(ctx context.Context, computer Computer) searchAnswer {
+		_, local, _ := c.computerByID(computer.ID)
+		return c.searchOne(ctx, computer, local, query, offsets[offsetKey(computer, local)])
+	})
 
 	groups := make([]searchGroup, 0, len(answers))
 	var failures []errorRow
