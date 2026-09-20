@@ -94,7 +94,8 @@ type ThreadSearchFilter struct {
 	Kinds []string
 	// ScratchThreadIDs are the scratch threads the caller may see. Scratch
 	// is a hidden mode, so a scratch thread is invisible to a search unless
-	// its id is named here.
+	// its id is named here. ListCallerScratchThreadIDs reads the set one
+	// calling thread owns.
 	ScratchThreadIDs []string
 	Limit            int
 	Offset           int
@@ -119,19 +120,28 @@ func threadLastActivityExpr(alias string) string {
 // threadRowConditions renders the predicates that narrow a thread ROW, for
 // the ranked search and the listing alike. Visibility comes first: scratch
 // threads are out unless the caller named one of its own, which is the rule
-// that keeps another agent's side chat out of both answers.
+// that keeps another agent's side chat out of both answers, and a thread
+// whose handover to another computer is in flight is out of both answers
+// for as long as it lasts.
 //
-// The exclusion is scratch alone, not the sidebar's hidden set: an agent
-// searching for a thread may find a workflow-mode one, which is work it can
-// read and answer about (docs/specs/agent-thread-tools.md, thread_search
-// defaults). hiddenThreadModesClause keeps serving the UI listings, where
-// hidden means hidden from the person.
+// Every rule a caller would otherwise apply to the rows it received belongs
+// here: LIMIT and OFFSET count the rows the caller keeps only while the
+// caller keeps all of them, and a page that drops one of its own rows can
+// no longer say where the next page starts.
+//
+// The mode exclusion is scratch alone, not the sidebar's hidden set: an
+// agent searching for a thread may find a workflow-mode one, which is work
+// it can read and answer about (docs/specs/agent-thread-tools.md,
+// thread_search defaults). hiddenThreadModesClause keeps serving the UI
+// listings, where hidden means hidden from the person.
 //
 // It does not render the ThreadIDs restriction: the search applies that to
 // the index row it already has in hand, the listing to the thread id.
 func (f ThreadSearchFilter) threadRowConditions(alias string) ([]string, []any) {
 	var conditions []string
 	var args []any
+
+	conditions = append(conditions, threadTransferReadableExpr(alias))
 
 	visible := alias + "mode <> ?"
 	if len(f.ScratchThreadIDs) > 0 {

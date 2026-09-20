@@ -201,26 +201,40 @@ func (t threadToolsApp) Transcript(ctx context.Context, q threadtools.Transcript
 		return slice, nil
 	}
 	slice.HighWater = cursorPosition(last)
-	limit := q.Limit
-	if limit <= 0 {
-		return slice, nil
-	}
-	if err := ctx.Err(); err != nil {
-		return threadtools.TranscriptSlice{}, err
-	}
-	rows, err := t.app.store.ListItemsInRange(q.ThreadID, positionCursor(q.From), positionCursor(q.To), limit,
-		threadToolsIncludes(q.Include, "subagent"))
+	items, err := t.transcriptPage(ctx, q)
 	if err != nil {
 		return threadtools.TranscriptSlice{}, err
 	}
+	slice.Items = append(slice.Items, items...)
+	return slice, nil
+}
+
+// transcriptPage reads one page of a position range, oldest first.
+//
+// Resolving the thread and its bounds belongs to the caller: Transcript
+// answers one page and does it per call, while an export walks a whole
+// window and resolves once for the file.
+func (t threadToolsApp) transcriptPage(ctx context.Context, q threadtools.TranscriptQuery) ([]threadtools.Item, error) {
+	if q.Limit <= 0 {
+		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	rows, err := t.app.store.ListItemsInRange(q.ThreadID, positionCursor(q.From), positionCursor(q.To), q.Limit,
+		threadToolsIncludes(q.Include, "subagent"))
+	if err != nil {
+		return nil, err
+	}
+	items := make([]threadtools.Item, 0, len(rows))
 	for _, row := range rows {
 		item, err := t.projectItem(q, row, itemPosition(row))
 		if err != nil {
-			return threadtools.TranscriptSlice{}, err
+			return nil, err
 		}
-		slice.Items = append(slice.Items, item)
+		items = append(items, item)
 	}
-	return slice, nil
+	return items, nil
 }
 
 // projectItem turns one store row into a transcript row. A subagent child
@@ -238,21 +252,22 @@ func (t threadToolsApp) projectItem(q threadtools.TranscriptQuery, row store.Ite
 		TurnID:   strconv.Itoa(row.TurnIndex),
 		Name:     row.ToolName,
 	}
-	size, err := t.itemBodySize(row)
+	// A row the include list leaves out states its size and carries no
+	// body, so it asks for the size alone and never reads the payload.
+	maxBytes := 0
+	if threadToolsIncludes(q.Include, kind) {
+		maxBytes = q.MaxItemBytes
+		if maxBytes <= 0 {
+			maxBytes = threadItemWholeBody
+		}
+	}
+	text, size, err := t.itemBody(row, maxBytes)
 	if err != nil {
 		return threadtools.Item{}, err
 	}
 	item.Size = size
-	if size == 0 || !threadToolsIncludes(q.Include, kind) {
+	if maxBytes == 0 || size == 0 {
 		return item, nil
-	}
-	maxBytes := q.MaxItemBytes
-	if maxBytes <= 0 || int64(maxBytes) > size {
-		maxBytes = int(size)
-	}
-	text, err := t.itemBodyText(row, maxBytes)
-	if err != nil {
-		return threadtools.Item{}, err
 	}
 	item.Text = text
 	item.Clipped = int64(len(text)) < size
@@ -306,38 +321,60 @@ func threadToolsIncludes(include []string, kind string) bool {
 	return false
 }
 
-// itemBodySize is the whole stored size of the row's body: the linked
-// payload when there is one, otherwise the summary the row carries
-// inline. A zero-byte read of the payload answers the size without
-// materializing it.
-func (t threadToolsApp) itemBodySize(row store.Item) (int64, error) {
-	if row.PayloadID == "" {
-		return int64(len(row.Summary)), nil
-	}
-	_, total, _, err := t.app.store.GetPayloadChunk(row.ThreadID, row.PayloadID, 0, 0)
+// threadItemWholeBody asks itemBody for everything the row holds. The
+// store clips the range it reads to the payload's own length, so this
+// stands in for a size the caller has not paid to learn yet.
+const threadItemWholeBody = 1<<31 - 1
+
+// itemBody reads one row's body and reports its whole stored size: the
+// linked payload when there is one, otherwise the summary the row carries
+// inline. maxBytes clips what comes back, and zero asks for the size
+// alone; one store read answers both, which is what keeps a transcript
+// page to one read per item that has a payload.
+func (t threadToolsApp) itemBody(row store.Item, maxBytes int) (string, int64, error) {
+	data, size, err := t.itemBodyRange(row, 0, maxBytes)
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
-	return int64(total), nil
+	return string(data), size, nil
 }
 
-func (t threadToolsApp) itemBodyText(row store.Item, maxBytes int) (string, error) {
+// itemBodyRange reads a byte range of a row a caller already holds, and
+// reports the whole stored size. An offset at or past the end is an empty
+// read with the size, never an error.
+func (t threadToolsApp) itemBodyRange(row store.Item, offset int64, maxBytes int) ([]byte, int64, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if maxBytes < 0 {
+		maxBytes = 0
+	}
 	if row.PayloadID == "" {
-		if maxBytes < len(row.Summary) {
-			return row.Summary[:maxBytes], nil
+		size := int64(len(row.Summary))
+		if maxBytes == 0 || offset >= size {
+			return nil, size, nil
 		}
-		return row.Summary, nil
+		end := offset + int64(maxBytes)
+		if end > size {
+			end = size
+		}
+		return []byte(row.Summary[offset:end]), size, nil
 	}
-	data, _, _, err := t.app.store.GetPayloadChunk(row.ThreadID, row.PayloadID, 0, maxBytes)
+	data, total, _, err := t.app.store.GetPayloadChunk(row.ThreadID, row.PayloadID, int(offset), maxBytes)
 	if err != nil {
-		return "", err
+		return nil, 0, err
 	}
-	return string(data), nil
+	return data, int64(total), nil
 }
 
 // ItemPayload reads a byte range of one item's stored body. An offset at
 // or past the end is an empty read reporting the size.
-func (t threadToolsApp) ItemPayload(_ context.Context, q threadtools.PayloadQuery) (threadtools.Payload, error) {
+func (t threadToolsApp) ItemPayload(ctx context.Context, q threadtools.PayloadQuery) (threadtools.Payload, error) {
+	// A large item is streamed through repeated calls, so a cancelled
+	// read must stop here rather than at the end of the item.
+	if err := ctx.Err(); err != nil {
+		return threadtools.Payload{}, err
+	}
 	if _, err := t.localThread(q.ThreadID); err != nil {
 		return threadtools.Payload{}, err
 	}
@@ -346,28 +383,17 @@ func (t threadToolsApp) ItemPayload(_ context.Context, q threadtools.PayloadQuer
 		return threadtools.Payload{}, err
 	}
 	kind, _ := threadToolsItemKind(row)
-	size, err := t.itemBodySize(row)
+	offset := q.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	// One read answers the size and the range alike, including the empty
+	// read an offset past the end gets.
+	data, size, err := t.itemBodyRange(row, offset, int(q.MaxBytes))
 	if err != nil {
 		return threadtools.Payload{}, err
 	}
-	payload := threadtools.Payload{Kind: kind, Size: size, Offset: q.Offset}
-	if q.MaxBytes <= 0 || q.Offset >= size {
-		return payload, nil
-	}
-	if row.PayloadID == "" {
-		end := q.Offset + q.MaxBytes
-		if end > size {
-			end = size
-		}
-		payload.Bytes = []byte(row.Summary[q.Offset:end])
-		return payload, nil
-	}
-	data, _, _, err := t.app.store.GetPayloadChunk(row.ThreadID, row.PayloadID, int(q.Offset), int(q.MaxBytes))
-	if err != nil {
-		return threadtools.Payload{}, err
-	}
-	payload.Bytes = data
-	return payload, nil
+	return threadtools.Payload{Kind: kind, Size: size, Offset: offset, Bytes: data}, nil
 }
 
 // threadExportDirName is the directory under the app's data directory
@@ -460,7 +486,16 @@ func removeThreadExportTemp(temp string) {
 // threadExportChunkBytes is how much of a clipped item's remainder the
 // export reads at a time. A file is written whole, but never through a
 // whole item in memory.
-const threadExportChunkBytes = 256 << 10
+//
+// threadExportBatchBytes is the same promise for a batch of items. The
+// store's LIMIT counts rows, so the row count is the byte budget divided
+// by the most one row can carry, and whatever a row holds past that is
+// streamed by writeExportBody.
+const (
+	threadExportChunkBytes = 256 << 10
+	threadExportBatchBytes = 8 << 20
+	threadExportBatchItems = threadExportBatchBytes / threadExportChunkBytes
+)
 
 // writeExportBody writes one included item's body whole.
 //
@@ -477,20 +512,26 @@ func (t threadToolsApp) writeExportBody(
 	if err := write(item.Text); err != nil {
 		return err
 	}
+	// The row is read once for the whole remainder: resolving it per chunk
+	// would cost two lookups for every 256KB of a multi-megabyte item.
+	row, err := t.itemRow(threadID, item.ID)
+	if err != nil {
+		return err
+	}
 	for offset := int64(len(item.Text)); offset < item.Size; {
-		payload, err := t.ItemPayload(ctx, threadtools.PayloadQuery{
-			ThreadID: threadID, ItemID: item.ID,
-			Offset: offset, MaxBytes: threadExportChunkBytes,
-		})
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		data, _, err := t.itemBodyRange(row, offset, threadExportChunkBytes)
 		if err != nil {
 			return err
 		}
-		if len(payload.Bytes) == 0 {
+		if len(data) == 0 {
 			return fmt.Errorf("thread tools: export item %s: body ended at %d of %d bytes",
 				item.ID, offset, item.Size)
 		}
-		offset += int64(len(payload.Bytes))
-		text := string(payload.Bytes)
+		offset += int64(len(data))
+		text := string(data)
 		if offset >= item.Size {
 			text = strings.TrimRight(text, "\n")
 		}
@@ -501,6 +542,9 @@ func (t threadToolsApp) writeExportBody(
 	return nil
 }
 
+// writeExport walks the window in batches. The thread is resolved by the
+// export that called it, and the window's bounds are fixed for the whole
+// file, so a batch is one range query and nothing is re-resolved per pass.
 func (t threadToolsApp) writeExport(ctx context.Context, q threadtools.ExportQuery, write func(string) error) error {
 	if q.Bounds.Empty {
 		return write("(no items)\n")
@@ -508,17 +552,17 @@ func (t threadToolsApp) writeExport(ctx context.Context, q threadtools.ExportQue
 	from := q.Bounds.From
 	turn := ""
 	for from <= q.Bounds.To {
-		slice, err := t.Transcript(ctx, threadtools.TranscriptQuery{
-			ThreadID: q.ThreadID, From: from, To: q.Bounds.To, Limit: 200,
-			Include: q.Include, MaxItemBytes: threadtools.MaxItemBytes,
+		items, err := t.transcriptPage(ctx, threadtools.TranscriptQuery{
+			ThreadID: q.ThreadID, From: from, To: q.Bounds.To, Limit: threadExportBatchItems,
+			Include: q.Include, MaxItemBytes: threadExportChunkBytes,
 		})
 		if err != nil {
 			return err
 		}
-		if len(slice.Items) == 0 {
+		if len(items) == 0 {
 			return nil
 		}
-		for _, item := range slice.Items {
+		for _, item := range items {
 			if item.TurnID != "" && item.TurnID != turn {
 				turn = item.TurnID
 				if err := write("--- turn " + turn + " ---\n"); err != nil {

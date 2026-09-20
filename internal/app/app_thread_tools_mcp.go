@@ -30,6 +30,14 @@ type appThreadMCP struct {
 	once   sync.Once
 	server *threadmcp.Server[threadMCPAccess]
 	tools  *threadtools.Server
+
+	// computers is the last pairing list a shape was computed from. The
+	// schemas and the guide are recomputed per handshake and per call, and
+	// a read that fails must not answer them with the single-computer
+	// shape: that would take computer_id out of every schema mid-session
+	// while the calls that need it still refuse without one.
+	computersMu sync.Mutex
+	computers   []threadtools.Computer
 }
 
 // threadMCPCallCeiling is what each provider is told to tolerate for one
@@ -66,9 +74,7 @@ func (a *App) threadToolsServer() *threadtools.Server {
 func (a *App) threadToolsShape(threadID string) threadtools.Shape {
 	shape := threadtools.Shape{}
 	adapter := a.threadToolsAdapter()
-	if computers, err := adapter.PairedComputers(context.Background()); err == nil {
-		shape.Computers = computers
-	}
+	shape.Computers = a.threadToolsShapeComputers(adapter)
 	thread, err := adapter.Thread(context.Background(), threadID)
 	if err != nil {
 		return shape
@@ -81,6 +87,25 @@ func (a *App) threadToolsShape(threadID string) threadtools.Shape {
 		RuntimeMode: thread.RuntimeMode,
 	}
 	return shape
+}
+
+// threadToolsShapeComputers answers with the pairing list, or with the
+// last one a read succeeded with when this read failed.
+//
+// A failure here is transient: threadtools.Server.Call refuses the call
+// that hits it, which is how the model learns the reach is unreadable. The
+// shape it publishes must not disagree with that refusal by quietly
+// dropping the computers a working session was already told about.
+func (a *App) threadToolsShapeComputers(adapter threadtools.App) []threadtools.Computer {
+	computers, err := adapter.PairedComputers(context.Background())
+	a.threadMCP.computersMu.Lock()
+	defer a.threadMCP.computersMu.Unlock()
+	if err != nil {
+		log.Printf("thread tools: list paired computers for the tool shape: %v", err)
+		return a.threadMCP.computers
+	}
+	a.threadMCP.computers = computers
+	return computers
 }
 
 func (a *App) threadMCPTools(access threadMCPAccess) []map[string]any {

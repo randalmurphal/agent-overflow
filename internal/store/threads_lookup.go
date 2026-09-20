@@ -132,6 +132,36 @@ func (s *Store) ListThreadsByActivity(filter ThreadSearchFilter) ([]Thread, erro
 	return threads, rows.Err()
 }
 
+// ListOwnedThreadsByID reads the threads this computer owns by id, in one
+// statement. The ranked search answers in ITEM rows, and resolving each
+// hit's thread on its own would pay the correlated subqueries of
+// `threadColumns` once per hit rather than once per page.
+//
+// An id this computer does not own is simply absent, so the caller matches
+// the result by id rather than by position.
+func (s *Store) ListOwnedThreadsByID(ids []string) ([]Thread, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	clause, args := inClause("threads.id", ids)
+	rows, err := s.reader().Query(
+		`SELECT `+threadColumns+` FROM owned_threads AS threads WHERE `+clause, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list threads by id: %w", err)
+	}
+	defer rows.Close()
+
+	var threads []Thread
+	for rows.Next() {
+		thread, err := scanThread(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan thread by id: %w", err)
+		}
+		threads = append(threads, thread)
+	}
+	return threads, rows.Err()
+}
+
 // ThreadWorktreeWorkspace is one worktree checkout this computer's threads
 // run in, with the branch of the most recently touched thread that names
 // it.

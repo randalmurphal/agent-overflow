@@ -287,7 +287,7 @@ func (s *Server[T]) serveCall(w http.ResponseWriter, r *http.Request, req Reques
 		hook.run(tracked.err == nil && r.Context().Err() == nil)
 		return
 	}
-	stream := newCallStream(w, flusher, r.Context())
+	stream := newCallStream(r.Context(), w, flusher)
 	s.call(stream, ctx, req, access)
 	err := stream.finish(req.ID)
 	hook.run(err == nil && r.Context().Err() == nil)
@@ -384,7 +384,7 @@ type callStream struct {
 	done    chan struct{}
 }
 
-func newCallStream(w http.ResponseWriter, flusher http.Flusher, ctx context.Context) *callStream {
+func newCallStream(ctx context.Context, w http.ResponseWriter, flusher http.Flusher) *callStream {
 	c := &callStream{w: w, flusher: flusher, header: make(http.Header), stop: make(chan struct{}), done: make(chan struct{})}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -448,10 +448,18 @@ func (c *callStream) finish(id json.RawMessage) error {
 		}
 	}
 	send(io.WriteString(c.w, "event: message\n"))
-	for _, line := range bytes.Split(body, []byte("\n")) {
+	// One `data:` line per line of the body, written straight out of the
+	// buffer: a result is megabytes of JSON and splitting it would hold a
+	// second copy of every line at once.
+	for rest := body; ; {
+		line, remainder, more := bytes.Cut(rest, []byte("\n"))
 		send(io.WriteString(c.w, "data: "))
 		send(c.w.Write(line))
 		send(io.WriteString(c.w, "\n"))
+		if !more {
+			break
+		}
+		rest = remainder
 	}
 	send(io.WriteString(c.w, "\n"))
 	c.flusher.Flush()

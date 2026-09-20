@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
@@ -230,26 +233,66 @@ func TestThreadToolsAdapterResolvesRefs(t *testing.T) {
 		t.Fatalf("miss = %#v, %v", res, err)
 	}
 
-	// A /side-chat scratch thread carries no request token and stays
-	// invisible; the one a thread_ask minted is reachable.
+	// A /side-chat scratch thread carries no request token and belongs to
+	// nobody; the fork a thread_ask minted belongs to the thread that
+	// asked, and to no other caller.
 	hidden := f.thread(t, "5c4a7c00-hidden", func(th *store.Thread) { th.Mode = threadmode.ModeScratch })
 	if err := f.app.store.InsertScratchThread(store.ScratchThread{
 		ThreadID: hidden.ID, SourceThreadID: first.ID, ReturnMode: threadmode.ModeChat,
 	}); err != nil {
 		t.Fatalf("InsertScratchThread: %v", err)
 	}
-	asked := f.thread(t, "5c4a7c11-asked", func(th *store.Thread) { th.Mode = threadmode.ModeScratch })
-	if err := f.app.store.InsertScratchThread(store.ScratchThread{
-		ThreadID: asked.ID, SourceThreadID: first.ID, ReturnMode: threadmode.ModeChat, RequestToken: "tok-1",
+	asked := f.askedScratchThread(t, "5c4a7c11-asked", "tok-1", first.ID, second.ID)
+
+	owner := threadCallerContext(t, first.ID)
+	other := threadCallerContext(t, second.ID)
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		ref  string
+		want int
+	}{
+		{"side chat, owner of neither", owner, hidden.ID, 0},
+		{"side chat, no caller", t.Context(), hidden.ID, 0},
+		{"ask fork, its own caller", owner, asked.ID, 1},
+		{"ask fork, another caller", other, asked.ID, 0},
+		{"ask fork, no caller", t.Context(), asked.ID, 0},
+		{"ask fork by prefix, another caller", other, "5c4a7c11", 0},
+		{"ask fork by prefix, its own caller", owner, "5c4a7c11", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := f.adapter.ResolveThreadRef(tc.ctx, tc.ref)
+			if err != nil || len(res.Matches) != tc.want {
+				t.Fatalf("ResolveThreadRef(%s) = %#v, %v, want %d matches", tc.ref, res, err, tc.want)
+			}
+		})
+	}
+}
+
+// threadCallerContext stamps a calling thread on a context the way
+// threadtools.Server.Call does for every tool.
+func threadCallerContext(t *testing.T, threadID string) context.Context {
+	t.Helper()
+	return threadtools.WithCaller(t.Context(), threadtools.Caller{ThreadID: threadID})
+}
+
+// askedScratchThread mints the hidden fork a thread_ask answers in: the
+// fork of source, owned by the caller its receipt names.
+func (f *threadToolsFixture) askedScratchThread(t *testing.T, id, token, callerThreadID, sourceThreadID string) store.Thread {
+	t.Helper()
+	fork := f.thread(t, id, func(th *store.Thread) { th.Mode = threadmode.ModeScratch })
+	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: token, OwnerDeviceID: threadReceiptLocalOwner, SourceThreadID: callerThreadID,
+		Kind: store.ThreadRequestAsk, TargetThreadID: fork.ID,
 	}); err != nil {
-		t.Fatalf("InsertScratchThread: %v", err)
+		t.Fatalf("AcceptThreadRequestReceipt(%s): %v", token, err)
 	}
-	if res, err = f.adapter.ResolveThreadRef(t.Context(), hidden.ID); err != nil || len(res.Matches) != 0 {
-		t.Fatalf("a /side-chat scratch thread resolved: %#v, %v", res, err)
+	if err := f.app.store.InsertScratchThread(store.ScratchThread{
+		ThreadID: fork.ID, SourceThreadID: sourceThreadID, ReturnMode: threadmode.ModeChat, RequestToken: token,
+	}); err != nil {
+		t.Fatalf("InsertScratchThread(%s): %v", id, err)
 	}
-	if res, err = f.adapter.ResolveThreadRef(t.Context(), asked.ID); err != nil || len(res.Matches) != 1 {
-		t.Fatalf("an asked scratch thread did not resolve: %#v, %v", res, err)
-	}
+	return fork
 }
 
 // TestThreadToolsAdapterResolvesWindows pins each window kind against a
@@ -1064,6 +1107,164 @@ func TestThreadToolsAdapterListingFiltersInTheStore(t *testing.T) {
 	}
 }
 
+// TestThreadToolsSearchReachesOnlyTheCallersOwnScratchForks pins the
+// ownership half of the scratch rule on both search halves: the fork one
+// thread's ask minted answers to that thread alone, and a /side-chat fork
+// answers to nobody.
+func TestThreadToolsSearchReachesOnlyTheCallersOwnScratchForks(t *testing.T) {
+	f := newThreadToolsFixture(t)
+	owner := f.thread(t, "scratch-owner", func(th *store.Thread) { th.Title = "owner quokka" })
+	stranger := f.thread(t, "scratch-stranger", func(th *store.Thread) { th.Title = "stranger quokka" })
+	source := f.thread(t, "scratch-source", func(th *store.Thread) { th.Title = "source quokka" })
+	f.turn(t, owner.ID, 0, 1_000, textItem("o0", "user_text", "quokka work"))
+	f.turn(t, stranger.ID, 0, 1_100, textItem("o1", "user_text", "quokka work"))
+	f.turn(t, source.ID, 0, 1_200, textItem("o2", "user_text", "quokka work"))
+
+	fork := f.askedScratchThread(t, "scratch-fork", "tok-own", owner.ID, source.ID)
+	f.turn(t, fork.ID, 0, 1_300, textItem("o3", "user_text", "quokka work"))
+	sideChat := f.thread(t, "scratch-side", func(th *store.Thread) {
+		th.Title = "side quokka"
+		th.Mode = threadmode.ModeScratch
+	})
+	if err := f.app.store.InsertScratchThread(store.ScratchThread{
+		ThreadID: sideChat.ID, SourceThreadID: source.ID, ReturnMode: threadmode.ModeChat,
+	}); err != nil {
+		t.Fatalf("InsertScratchThread: %v", err)
+	}
+	f.turn(t, sideChat.ID, 0, 1_400, textItem("o4", "user_text", "quokka work"))
+	if err := f.app.store.BuildSearchIndex(t.Context()); err != nil {
+		t.Fatalf("BuildSearchIndex: %v", err)
+	}
+
+	ids := func(t *testing.T, ctx context.Context, q threadtools.SearchQuery) map[string]bool {
+		t.Helper()
+		q.Limit = 20
+		page, err := f.adapter.SearchThreads(ctx, q)
+		if err != nil {
+			t.Fatalf("SearchThreads(%#v): %v", q, err)
+		}
+		seen := map[string]bool{}
+		for _, hit := range page.Rows {
+			seen[hit.Thread.ID] = true
+		}
+		return seen
+	}
+
+	for _, half := range []struct {
+		name  string
+		query threadtools.SearchQuery
+	}{
+		{"listing", threadtools.SearchQuery{}},
+		{"ranked", threadtools.SearchQuery{Query: "quokka"}},
+	} {
+		t.Run(half.name, func(t *testing.T) {
+			own := ids(t, threadCallerContext(t, owner.ID), half.query)
+			if !own[fork.ID] {
+				t.Errorf("the thread that asked cannot see its own fork: %v", own)
+			}
+			if own[sideChat.ID] {
+				t.Errorf("a /side-chat fork reached an agent: %v", own)
+			}
+			other := ids(t, threadCallerContext(t, stranger.ID), half.query)
+			if other[fork.ID] || other[sideChat.ID] {
+				t.Errorf("another caller saw a scratch fork: %v", other)
+			}
+			if !other[owner.ID] {
+				t.Errorf("the ordinary threads went missing: %v", other)
+			}
+			none := ids(t, t.Context(), half.query)
+			if none[fork.ID] || none[sideChat.ID] {
+				t.Errorf("a call with no caller saw a scratch fork: %v", none)
+			}
+		})
+	}
+}
+
+// TestThreadToolsListingPagesOverAThreadItCannotRead pins the paging
+// contract against the row kind that used to break it: a thread whose
+// handover to another computer is in flight is refused by the store
+// filter, so the offset the caller pages by still counts the rows it
+// received and the next page neither repeats nor skips one.
+func TestThreadToolsListingPagesOverAThreadItCannotRead(t *testing.T) {
+	f := newThreadToolsFixture(t)
+	var want []string
+	for index := range 4 {
+		thread := f.thread(t, fmt.Sprintf("page-%d", index))
+		f.turn(t, thread.ID, 0, int64(1_000+index*10), textItem(fmt.Sprintf("pg%d", index), "user_text", "row"))
+		want = append(want, thread.ID)
+	}
+	// Newest first, and the second row of that order is mid-transfer.
+	slices.Reverse(want)
+	blocked := want[1]
+	if _, err := f.app.store.CreateThreadTransfer(store.ThreadTransfer{
+		ID: uuid.NewString(), ThreadID: blocked, PeerBackendID: uuid.NewString(),
+		Kind: "move", Direction: "outgoing", ActivationHash: strings.Repeat("a", 64),
+		PrivateState: json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatalf("CreateThreadTransfer: %v", err)
+	}
+	if err := f.app.store.CheckThreadTransferAccess(blocked); err == nil {
+		t.Fatalf("%s is still readable, so this test proves nothing", blocked)
+	}
+	want = slices.Delete(want, 1, 2)
+
+	ctx := t.Context()
+	var got []string
+	for offset := 0; ; {
+		page, err := f.adapter.SearchThreads(ctx, threadtools.SearchQuery{Limit: 2, Offset: offset})
+		if err != nil {
+			t.Fatalf("SearchThreads(offset %d): %v", offset, err)
+		}
+		for _, hit := range page.Rows {
+			got = append(got, hit.Thread.ID)
+		}
+		offset += len(page.Rows)
+		if !page.More {
+			break
+		}
+		if offset > len(want)+2 {
+			t.Fatalf("paging did not finish: %v", got)
+		}
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("paged rows = %v, want %v with no repeat and no skip", got, want)
+	}
+}
+
+// TestThreadToolsListingCostsTheSameQueriesWhateverThePageHolds pins the
+// per-row reads out of the listing: the project and group names a page
+// resolves are read once per id, and no row costs a query of its own.
+func TestThreadToolsListingCostsTheSameQueriesWhateverThePageHolds(t *testing.T) {
+	f := newThreadToolsFixture(t)
+	group, err := f.app.store.CreateThreadGroup(f.project.ID, "Sweep")
+	if err != nil {
+		t.Fatalf("CreateThreadGroup: %v", err)
+	}
+	for index := range 24 {
+		thread := f.thread(t, fmt.Sprintf("count-%02d", index), func(th *store.Thread) { th.GroupID = group.ID })
+		f.turn(t, thread.ID, 0, int64(1_000+index*10), textItem(fmt.Sprintf("c%02d", index), "user_text", "row"))
+	}
+	ctx := t.Context()
+
+	reads := func(limit int) uint64 {
+		t.Helper()
+		before := f.app.store.ReadCount()
+		page, err := f.adapter.SearchThreads(ctx, threadtools.SearchQuery{Limit: limit})
+		if err != nil {
+			t.Fatalf("SearchThreads(limit %d): %v", limit, err)
+		}
+		if len(page.Rows) != limit {
+			t.Fatalf("page of %d = %d rows", limit, len(page.Rows))
+		}
+		return f.app.store.ReadCount() - before
+	}
+
+	small, large := reads(2), reads(20)
+	if small != large {
+		t.Fatalf("a 20-row page cost %d store reads, a 2-row page %d", large, small)
+	}
+}
+
 // TestThreadToolsExportWritesIncludedItemsWholeAndNeverReusesAPath pins the
 // two promises a to_file export makes: an included item is written whole
 // however large it is, and the path handed back names this render alone.
@@ -1131,6 +1332,74 @@ func TestThreadToolsExportWritesIncludedItemsWholeAndNeverReusesAPath(t *testing
 				t.Errorf("a finished export left %s behind", entry.Name())
 			}
 		}
+	}
+}
+
+// TestThreadToolsExportWalksTheWindowInBoundedBatches pins the working set
+// of a file export: a batch holds at most threadExportBatchItems rows, and
+// a row's text at most threadExportChunkBytes, with the rest streamed
+// behind it. A thread of any size is written through the same bound.
+func TestThreadToolsExportWalksTheWindowInBoundedBatches(t *testing.T) {
+	f := newThreadToolsFixture(t)
+	ctx := t.Context()
+
+	// exportReads renders one thread of `count` items of `size` bytes and
+	// reports what the render cost. Summary rows cost no read of their
+	// own, so the count is the walk's own queries.
+	exportReads := func(id string, count, size int, payload bool) uint64 {
+		t.Helper()
+		thread := f.thread(t, id)
+		items := make([]store.Item, 0, count)
+		for index := range count {
+			rowID := fmt.Sprintf("%s-%d", id, index)
+			body := strings.Repeat("y", size)
+			row := textItem(rowID, "assistant_text", body)
+			if payload {
+				row = payloadItem(rowID, "Bash", body)
+			}
+			row.ItemIndex = index
+			items = append(items, row)
+		}
+		f.turn(t, thread.ID, 0, 1_000, items...)
+		bounds, err := f.adapter.ResolveWindow(ctx, threadtools.WindowQuery{ThreadID: thread.ID, Kind: threadtools.WindowAll})
+		if err != nil {
+			t.Fatalf("ResolveWindow(%s): %v", id, err)
+		}
+		before := f.app.store.ReadCount()
+		file, err := f.adapter.ExportTranscript(ctx, threadtools.ExportQuery{
+			ThreadID: thread.ID, Bounds: bounds, Include: []string{threadtools.IncludeAll},
+		})
+		if err != nil {
+			t.Fatalf("ExportTranscript(%s): %v", id, err)
+		}
+		reads := f.app.store.ReadCount() - before
+		data, err := os.ReadFile(file.Path)
+		if err != nil {
+			t.Fatalf("read export %s: %v", id, err)
+		}
+		if got := strings.Count(string(data), " "+id+"-"); got != count {
+			t.Fatalf("export of %s wrote %d rows, want %d", id, got, count)
+		}
+		return reads
+	}
+
+	under := exportReads("batch-under", threadExportBatchItems-1, 8, false)
+	also := exportReads("batch-also-under", threadExportBatchItems-2, 8, false)
+	if under != also {
+		t.Fatalf("two exports inside one batch cost %d and %d store reads", under, also)
+	}
+	over := exportReads("batch-over", threadExportBatchItems+1, 8, false)
+	if over <= under {
+		t.Fatalf("a window past the batch size cost %d store reads, one inside it %d", over, under)
+	}
+
+	// A row is read in chunks of at most threadExportChunkBytes, so the
+	// same row count costs more reads when its rows are larger than one
+	// chunk. A batch that took whole rows would cost the same either way.
+	small := exportReads("chunk-small", 4, threadExportChunkBytes/2, true)
+	large := exportReads("chunk-large", 4, threadExportChunkBytes*2, true)
+	if large <= small {
+		t.Fatalf("rows twice the chunk cost %d store reads, half-chunk rows %d", large, small)
 	}
 }
 

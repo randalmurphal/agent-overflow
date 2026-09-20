@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -544,5 +546,40 @@ func TestThreadReplyAnswersBeforeItsScratchThreadIsDeleted(t *testing.T) {
 	row, found, err := app.store.GetThreadRequestReceipt("reply-token")
 	if err != nil || !found || row.State != store.ThreadReceiptReplied || string(row.Answer) != "the answer" {
 		t.Fatalf("receipt after the reply: %+v, found=%v, %v", row, found, err)
+	}
+}
+
+// pairedComputersStub answers PairedComputers and nothing else; computing
+// the shape's computer list touches no other adapter method.
+type pairedComputersStub struct {
+	threadtools.App
+	computers []threadtools.Computer
+	err       error
+}
+
+func (s pairedComputersStub) PairedComputers(context.Context) ([]threadtools.Computer, error) {
+	return s.computers, s.err
+}
+
+// TestThreadToolsShapeKeepsTheKnownComputersWhenThePairingReadFails pins
+// the shape to the reach the calls actually have. Server.Call refuses a
+// call whose pairing read fails, so a shape that answered the same failure
+// with the single-computer form would drop computer_id from every schema
+// while the refusals still demand one.
+func TestThreadToolsShapeKeepsTheKnownComputersWhenThePairingReadFails(t *testing.T) {
+	a := &App{}
+	paired := []threadtools.Computer{{ID: "c1", Name: "laptop"}, {ID: "c2", Name: "desk"}}
+
+	if got := a.threadToolsShapeComputers(pairedComputersStub{err: errors.New("pairing unreadable")}); len(got) != 0 {
+		t.Fatalf("a first failing read invented computers: %#v", got)
+	}
+	if got := a.threadToolsShapeComputers(pairedComputersStub{computers: paired}); !slices.Equal(got, paired) {
+		t.Fatalf("read paired computers = %#v, want %#v", got, paired)
+	}
+	if got := a.threadToolsShapeComputers(pairedComputersStub{err: errors.New("pairing unreadable")}); !slices.Equal(got, paired) {
+		t.Fatalf("a failing read published %#v, want the last known %#v", got, paired)
+	}
+	if got := a.threadToolsShapeComputers(pairedComputersStub{}); len(got) != 0 {
+		t.Fatalf("an empty read kept %#v, want the single-computer shape", got)
 	}
 }

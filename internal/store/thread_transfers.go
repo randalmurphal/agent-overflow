@@ -308,3 +308,23 @@ ORDER BY rowid DESC LIMIT 1`, threadID).Scan(&id, &backend, &direction, &kind, &
 	}
 	return &ThreadTransferError{OperationID: id, BackendID: backend, Moved: direction == "outgoing" && kind == "move" && (phase == "committed" || phase == "complete")}
 }
+
+// threadTransferReadableExpr is checkThreadTransferAccess as a SQL
+// predicate, for the queries that filter many threads at once instead of
+// probing one. alias is the qualified thread-row prefix ("t." or
+// "threads.").
+//
+// `owned_threads` is the weaker rule: it drops a thread this computer gave
+// away, and keeps one whose handover is still in flight. Both must agree
+// with the probe, so a listing never offers a row a read would refuse;
+// TestThreadTransferFilterMatchesTheAccessProbe pins the two together.
+func threadTransferReadableExpr(alias string) string {
+	return `COALESCE((SELECT CASE
+		      WHEN phase = 'complete' AND NOT (direction = 'outgoing' AND kind = 'move') THEN 1
+		      WHEN direction = 'outgoing' AND kind = 'copy' AND archive_size > 0 THEN 1
+		      ELSE 0
+		    END
+		    FROM thread_transfers
+		   WHERE thread_transfers.thread_id = ` + alias + `id AND phase <> 'canceled'
+		   ORDER BY rowid DESC LIMIT 1), 1) = 1`
+}

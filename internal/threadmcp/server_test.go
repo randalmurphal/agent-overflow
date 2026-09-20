@@ -131,8 +131,12 @@ func TestStreamedCallKeepsAliveAndDeliversTheResultAsTheFinalEvent(t *testing.T)
 	previous := callKeepaliveInterval
 	callKeepaliveInterval = 10 * time.Millisecond
 	t.Cleanup(func() { callKeepaliveInterval = previous })
+	// The handler parks until the test has read a keepalive the ticker
+	// produced, so the stream's promise is what is asserted rather than
+	// one duration outrunning another.
+	release := make(chan struct{})
 	url := streamedCallServer(t, func(w http.ResponseWriter, req Request) {
-		time.Sleep(80 * time.Millisecond)
+		<-release
 		WriteResult(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": "done"}}})
 	})
 	resp := postToolCall(t, url, "application/json, text/event-stream")
@@ -140,18 +144,26 @@ func TestStreamedCallKeepsAliveAndDeliversTheResultAsTheFinalEvent(t *testing.T)
 		t.Fatalf("content type %q", got)
 	}
 	reader := bufio.NewReader(resp.Body)
-	first, err := reader.ReadString('\n')
-	if err != nil || first != ": keepalive\n" {
-		t.Fatalf("stream did not open with a keepalive: %q, %v", first, err)
+	// The first keepalive opens the stream before the handler runs; the
+	// second is the ticker's, which is what keeps a long call alive.
+	for keepalives := 0; keepalives < 2; {
+		line, err := reader.ReadString('\n')
+		switch {
+		case err != nil:
+			t.Fatalf("reading the stream: %v", err)
+		case line == ": keepalive\n":
+			keepalives++
+		case line == "\n":
+		default:
+			t.Fatalf("stream carried %q before the handler answered", line)
+		}
 	}
+	close(release)
 	raw, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := string(raw)
-	if strings.Count(body, ": keepalive\n") < 2 {
-		t.Fatalf("expected keepalives while the handler ran:\n%s", body)
-	}
 	_, data, ok := strings.Cut(body, "event: message\ndata: ")
 	if !ok || !strings.HasSuffix(data, "\n\n") {
 		t.Fatalf("no final message event:\n%s", body)
