@@ -729,7 +729,10 @@ caller's thread identity) and `ThreadToolRequestStatus`, added to the
 `CallAgentPeer` allowlist and advertised as a `thread-tools` capability
 in the manifest so an older destination fails as `thread_unsupported`
 ("Update Agent Overflow on that computer") rather than with a confusing
-method error. The destination authorizes every call with the
+method error. An isolated boot with `AO_HARNESS_OLD_THREAD_TOOLS_PEER=1`
+leaves that capability out of its hello, which is how an end-to-end test
+stands up such a destination; no other boot honors it. The destination
+authorizes every call with the
 authenticated device of the originating computer (the same principal
 that owns remote jobs there) and runs the handler with a caller scope
 naming the source computer and thread. Read tools carry `threads:read`;
@@ -912,15 +915,12 @@ codex 0.153.4); outcomes recorded in the
       without a query it lists running threads with their state.
       (The imported-session hit is verified in the store, not through
       the tool.)
-- [ ] `thread_search` returns rows from two isolated computers grouped
+- [x] `thread_search` returns rows from two isolated computers grouped
       per computer, `computers` narrows to one, and an offline third
       computer yields an `errors` row without failing the call.
-      (Narrowing to a named computer and the third computer's error row
-      beside live rows are unverified.)
-- [ ] A bare thread id that lives on another computer resolves there;
+- [x] A bare thread id that lives on another computer resolves there;
       an ambiguous prefix is refused with candidates; a thread moved
       between computers resolves to its new owner.
-      (A real moved thread resolving to its new owner is unverified.)
 - [x] `thread_show` with `around` returns the surrounding turns within
       the byte budget on a 38k-item thread, locally and on another
       computer; `all` pages the same thread to its end through `cursor`;
@@ -930,12 +930,11 @@ codex 0.153.4); outcomes recorded in the
       `thread_show`; `thread_item` finds a phrase inside it by `query`,
       reads the range around the match, and reads its last 16KB with a
       negative offset, locally and on another computer.
-- [ ] `thread_spawn` with `worktree` and `notify` yields a sidebar thread
+- [x] `thread_spawn` with `worktree` and `notify` yields a sidebar thread
       on a new worktree whose first row carries the origin chip, and the
       caller receives a wake when it rests. The same on another computer
       with an explicit project, with the chip naming the computer on
       both ends; omitting the project lists that computer's projects.
-      (The chip naming the computer is unverified on either end.)
 - [ ] `thread_ask` with the default wait returns the answer inline when
       it arrives in time; a longer answer backgrounds and arrives as a
       message; `thread_status` on the token waits and returns it, and
@@ -981,15 +980,12 @@ codex 0.153.4); outcomes recorded in the
       note; `thread_cancel` on its token stops it.
 - [x] The footer on a spawned thread's first message quotes the user's
       latest message from the caller's thread.
-- [ ] Deleting the caller cancels its scratch asks on another computer;
+- [x] Deleting the caller cancels its scratch asks on another computer;
       a destination with its switch off still accepts spawns and asks,
       its responder can `thread_reply`, and the server is off again in
       that session once the request settles; revoking the pairing
       settles outstanding requests `errored`; an older destination
       fails as `thread_unsupported`.
-      (The remote scratch-ask cancel, a reply from a switched-off
-      destination, and a peer whose hello lacks the capability are
-      unverified.)
 - [x] `/side-chat` opens a companion fork during a running turn,
       survives nothing across restart, closes with its source or a
       thread switch, and Keep promotes it to the sidebar in place.

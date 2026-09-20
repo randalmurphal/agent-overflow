@@ -742,16 +742,21 @@ const (
 	threadRequestWakeRetryBatch    = 32
 )
 
-// threadWakeOrigin attributes a wake to the thread that answered.
+// threadWakeOrigin attributes a wake to the thread that answered, from the
+// same two sources threadWakeBody reads: a thread on this computer has a
+// row here, and a thread on another computer has only what that computer
+// reported when it was last polled.
 func (a *App) threadWakeOrigin(row store.ThreadRequest) *usermessage.OriginThread {
 	origin := &usermessage.OriginThread{ThreadID: row.TargetThreadID, Token: row.Token}
+	if row.TargetComputerID != "" {
+		origin.Title = a.remoteRequestLiveState(row.Token).title
+		origin.ComputerName, origin.ComputerID = threadToolsApp{app: a}.threadToolsBackendName(row.TargetComputerID)
+		return origin
+	}
 	if row.TargetThreadID != "" {
 		if thread, err := a.store.GetThread(row.TargetThreadID); err == nil {
 			origin.Title = thread.Title
 		}
-	}
-	if row.TargetComputerID != "" {
-		origin.ComputerName, origin.ComputerID = threadToolsApp{app: a}.threadToolsBackendName(row.TargetComputerID)
 	}
 	return origin
 }
@@ -948,10 +953,19 @@ func (a *App) cancelOwnedAsk(ctx context.Context, row store.ThreadRequest) error
 	call, cancel := context.WithTimeout(ctx, threadCancelTimeout)
 	defer cancel()
 	var reply ThreadPeerReply
+	// A forwarded call is refused unless it names both the thread and the
+	// computer it came from, and this one is forwarded like any other. The
+	// identity comes from the backend rather than the thread row because
+	// this runs while that thread is being deleted, archived or moved.
+	backendID, _ := a.backendIdentity()
 	if err := a.backends.CallThreadPeer(call, row.TargetComputerID, "ThreadToolCall", &reply, ThreadPeerCall{
-		Tool:   "thread_cancel",
-		Token:  row.Token,
-		Source: threadtools.Caller{ThreadID: row.CallerThreadID},
+		Tool:  "thread_cancel",
+		Token: row.Token,
+		Source: threadtools.Caller{
+			ThreadID:     row.CallerThreadID,
+			ComputerID:   backendID,
+			ComputerName: a.backendDisplayName(),
+		},
 	}); err != nil {
 		return a.threadOperationError("cancel", row.TargetComputerID, row.TargetThreadID, err)
 	}

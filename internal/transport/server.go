@@ -472,6 +472,13 @@ type Config struct {
 	// ordinary boots, which do not expose the harness bridge.
 	PageMarker string
 
+	// OmitThreadToolsCapability drops CapabilityThreadTools from the hello
+	// frame so this backend stands in for a build older than the agent
+	// thread tools. Test isolation only: main.go sets it from
+	// diagenv.HarnessOldPeer and only on a harness boot, which is what an
+	// end-to-end test needs to reach the thread_unsupported refusal.
+	OmitThreadToolsCapability bool
+
 	// CrossOriginIsolate makes every asset response carry
 	// cross-origin isolation headers (COOP/COEP/CORP) so the SPA runs
 	// crossOriginIsolated and measureUserAgentSpecificMemory works.
@@ -2100,7 +2107,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			// Resolved per accept, not at boot: the browser Manager picks
 			// its engine during the App's startup, which runs after this
 			// Config is built.
-			Capabilities: advertisedCapabilities(s.cfg.BrowserAvailable, s.cfg.ThreadTransfers != nil, s.cfg.FilePreviews),
+			Capabilities: advertisedCapabilities(s.cfg.BrowserAvailable, s.cfg.ThreadTransfers != nil, s.cfg.FilePreviews, s.cfg.OmitThreadToolsCapability),
 			BackendID:    backendID,
 			LaunchID:     s.launchID,
 			BackendName:  s.backendName(),

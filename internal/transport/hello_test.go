@@ -222,14 +222,36 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 func TestFilePreviewCapabilityRequiresExecutionHostSupport(t *testing.T) {
 	for _, browser := range []bool{false, true} {
 		for _, transfers := range []bool{false, true} {
-			base := advertisedCapabilities(func() bool { return browser }, transfers, false)
+			base := advertisedCapabilities(func() bool { return browser }, transfers, false, false)
 			for _, flag := range base {
 				if flag == CapabilityFilePreview {
 					t.Fatal("frontend controller advertised file previews")
 				}
 			}
-			withFiles := advertisedCapabilities(func() bool { return browser }, transfers, true)
+			withFiles := advertisedCapabilities(func() bool { return browser }, transfers, true, false)
 			assertCapabilities(t, withFiles, append(append([]string{}, base...), "preview.files.v1"))
+		}
+	}
+}
+
+// The one subtraction the set allows, and the reason it exists: an
+// isolated boot standing in for a build older than the agent thread
+// tools, so an end-to-end test can reach the thread_unsupported refusal.
+// It takes that name and nothing else, in every deployment shape.
+func TestThreadToolsCapabilityCanBeOmittedForAnOldPeerStandIn(t *testing.T) {
+	for _, browser := range []bool{false, true} {
+		for _, transfers := range []bool{false, true} {
+			for _, previews := range []bool{false, true} {
+				full := advertisedCapabilities(func() bool { return browser }, transfers, previews, false)
+				if !slices.Contains(full, CapabilityThreadTools) {
+					t.Fatal("an ordinary backend did not advertise the thread tools")
+				}
+				want := slices.DeleteFunc(slices.Clone(full), func(name string) bool {
+					return name == CapabilityThreadTools
+				})
+				omitted := advertisedCapabilities(func() bool { return browser }, transfers, previews, true)
+				assertCapabilities(t, omitted, want)
+			}
 		}
 	}
 }

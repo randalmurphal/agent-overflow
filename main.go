@@ -433,6 +433,11 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// has no harness methods on it.
 		Harness:    opts.HarnessReceiver != nil,
 		PageMarker: opts.HarnessPageMarker,
+		// Test isolation: a harness backend that stands in for a build
+		// older than the agent thread tools, so a paired computer calling
+		// it gets thread_unsupported. Gated on the harness receiver, so an
+		// ordinary boot cannot be talked out of a capability it has.
+		OmitThreadToolsCapability: opts.HarnessReceiver != nil && envTruthy(os.Getenv(diagenv.HarnessOldPeer)),
 		// Late-bound for the same reason: the store opens during
 		// ServiceStartup, after this config is built. The transport only
 		// ever sees two strings.

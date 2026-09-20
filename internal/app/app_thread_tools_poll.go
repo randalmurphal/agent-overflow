@@ -355,7 +355,10 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 	}
 	if threadRequestSettled(row) && answer.Revision <= row.Revision {
 		// Already collected. The row stays in the poll only because a
-		// `finished` request can still take a late reply.
+		// `finished` request can still take a late reply, and the reading
+		// noted above is only needed once that reply arrives, when the
+		// poll carrying it notes it again.
+		a.forgetRemoteRequestLive(token)
 		return 0, nil
 	}
 	return a.collectRemoteThreadRequest(row, answer)
@@ -398,6 +401,10 @@ func (a *App) collectRemoteThreadRequest(row store.ThreadRequest, answer ThreadP
 	if lateWake {
 		a.deliverThreadWake(row.Token, true)
 	}
+	// The live reading goes only now: both wakes above name the target by
+	// the title this holds. The row is settled here whichever side settled
+	// it, and a late reply's own poll notes the reading again first.
+	a.forgetRemoteRequestLive(row.Token)
 	return answer.Revision, nil
 }
 
@@ -424,7 +431,6 @@ func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer T
 			return false, false, err
 		}
 		if settled {
-			a.forgetRemoteRequestLive(row.Token)
 			wake = a.finishThreadRequestCollection(row.Token, false)
 		}
 	}
@@ -451,7 +457,6 @@ func (a *App) settleRemoteThreadRequest(row store.ThreadRequest, settlement stor
 		if err != nil || !settled {
 			return false, err
 		}
-		a.forgetRemoteRequestLive(row.Token)
 		return a.finishThreadRequestCollection(row.Token, false), nil
 	}()
 	if err != nil {
@@ -460,6 +465,9 @@ func (a *App) settleRemoteThreadRequest(row store.ThreadRequest, settlement stor
 	if wake {
 		a.deliverThreadWake(row.Token, false)
 	}
+	// After the wake, for the reason collectRemoteThreadRequest gives: the
+	// title it holds is what names the target in the wake it just rendered.
+	a.forgetRemoteRequestLive(row.Token)
 	return nil
 }
 

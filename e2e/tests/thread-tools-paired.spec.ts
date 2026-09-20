@@ -6,13 +6,18 @@
 // the destination lacks; a spawn that runs on the other computer and wakes
 // the caller through the source-side poller; an ask that forks and answers
 // there with only the answer crossing; thread_status and a thread-id prefix
-// resolved across computers; a 38k-item thread over there windowed, paged
-// and exported to a path here; a multi-megabyte tool output over there read
-// by query, range and negative offset; a destination whose own switch is
-// off still serving a forwarded request; a cancel that stops work there;
-// and forgetting a computer with open requests.
+// resolved across computers; a thread moved between the two resolving to
+// its new owner; a 38k-item thread over there windowed, paged and exported
+// to a path here; a multi-megabyte tool output over there read by query,
+// range and negative offset; the origin chip naming the other computer on
+// both ends; a destination whose own switch is off still serving a
+// forwarded request and replying through thread_reply; a cancel that stops
+// work there; a deleted caller stopping the scratch ask it left there; a
+// destination too old to carry the tools; and forgetting a computer with
+// open requests.
 // Spec: docs/specs/agent-thread-tools.md.
 import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { test, expect } from '@playwright/test';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
@@ -727,6 +732,488 @@ test('a cancel stops a turn the caller started on the other computer', async () 
   // The interrupted turn never reached its own completion text there.
   const items = await remote.rpc<Array<{ summary?: string }>>('ListItems', target, true);
   expect(items.some((item) => (item.summary ?? '').includes('Long remote job done.'))).toBe(false);
+});
+
+test('a thread moved to the other computer resolves there by its bare id', async () => {
+  test.setTimeout(180_000);
+  const caller = await seed(home, 'remote-moved-caller', ['Moved caller']);
+  const landing = await seed(remote, 'remote-moved-landing', []);
+
+  // A move carries the thread's native provider session, so the source
+  // needs one: an inert transcript in the harness's own provider home,
+  // the fixture shape conversation-transfer-flow uses. No real provider.
+  const nativeID = randomUUID();
+  const source = (
+    await home.rpc<{ projects: SeededProject[] }>('HarnessSeed', {
+      projects: [
+        {
+          name: 'remote-moved-source',
+          repo: {},
+          threads: [
+            {
+              title: 'Portable thread',
+              provider: 'claude',
+              sessionRef: nativeID,
+              turns: [
+                {
+                  userText: 'remember this before you travel',
+                  items: [{ kind: 'assistant_text', summary: 'This thread is portable.' }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+  ).projects[0];
+  const moved = source.threadIds[0];
+  await home.rpc('HarnessSeed', {
+    providerHome: [
+      {
+        path: `.claude/projects/transfer-fixture/${nativeID}.jsonl`,
+        content:
+          JSON.stringify({
+            type: 'user',
+            sessionId: nativeID,
+            uuid: randomUUID(),
+            parentUuid: null,
+            message: { role: 'user', content: 'remember this before you travel' },
+          }) + '\n',
+      },
+    ],
+  });
+
+  // The real move: BeginThreadTransfer here, the offer there, the bind
+  // back here, and then the two hosts own it (conversation-transfer.md).
+  const backend = (await home.rpc<Array<{ id: string; backendId: string }>>('ListBackends')).find(
+    (row) => row.id === remoteID,
+  )!;
+  const operation = randomUUID();
+  const intent = await home.rpc<Record<string, unknown>>(
+    'BeginThreadTransfer',
+    moved,
+    operation,
+    backend.backendId,
+    'move',
+    false,
+  );
+  const offer = await remote.rpc<Record<string, unknown>>(
+    'CreateThreadTransferOffer',
+    intent,
+    landing.projectId,
+    '',
+    '',
+  );
+  const transfer = await home.rpc<{ id: string }>('BindThreadTransferDestination', moved, offer);
+  interface TransferRow {
+    id: string;
+    kind: string;
+    phase: string;
+    error?: string;
+  }
+  await expect
+    .poll(
+      async () => {
+        const rows = await home.rpc<TransferRow[]>('GetThreadTransfers');
+        const row = rows.find((candidate) => candidate.id === transfer.id);
+        if (row?.phase === 'complete') return 'complete';
+        const received = (await remote.rpc<TransferRow[]>('GetThreadTransfers')).find(
+          (candidate) => candidate.id === transfer.id,
+        );
+        // Both sides' errors, so a stall reports why instead of a phase.
+        return [row?.error, received?.error, row?.phase].filter(Boolean).join(' | ');
+      },
+      { timeout: 60_000 },
+    )
+    .toBe('complete');
+
+  // The thread is gone from this computer and keeps its id on the other.
+  expect((await threadRows(home)).some((row) => row.id === moved)).toBe(false);
+  expect((await threadRows(remote)).some((row) => row.id === moved)).toBe(true);
+
+  await setScenario(
+    home,
+    caller.path,
+    threadToolsScenario({
+      name: 'remote-moved-caller-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [{ call: { tool: 'thread_show', args: { thread_id: moved }, timeoutMs: 60_000 } }],
+          text: 'Followed it to its new computer.',
+        },
+      ],
+    }),
+  );
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'read the thread I moved', null);
+
+  // The id this computer handed away is a move, not a miss: resolution
+  // reads the transfer record and asks the new owner.
+  interface ShowAnswer {
+    thread_id: string;
+    computer_id?: string;
+    computer?: string;
+    title?: string;
+  }
+  const show = await awaitToolAnswer<ShowAnswer>(home, { tool: 'thread_show', timeoutMs: 90_000 });
+  expect(show.isError, show.text).toBe(false);
+  expect(show.value!.thread_id).toBe(moved);
+  expect(show.value!.computer_id).toBe(remoteID);
+  expect(show.value!.computer).toBe('GPU computer');
+  expect(show.value!.title).toBe('Portable thread');
+});
+
+test('the origin chip names the other computer on both ends of a spawn', async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(20_000);
+  const caller = await seed(home, 'remote-chip-caller', ['Chip caller']);
+  const there = await seed(remote, 'remote-chip-work', []);
+  // The chip renders the name the VIEWER's pairing profile gives the other
+  // computer, so the remote needs its own name for this one.
+  await remote.rpc('RenameBackend', homeID, 'Laptop computer');
+
+  await setScenario(
+    remote,
+    there.path,
+    plainScenario({
+      name: 'remote-chip-worker',
+      provider: 'claude',
+      texts: ['The chip run finished.'],
+    }),
+  );
+  await setScenario(
+    home,
+    caller.path,
+    threadToolsScenario({
+      name: 'remote-chip-caller-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_spawn',
+                args: {
+                  prompt: 'Run the chip job.',
+                  title: 'Chip work',
+                  computer_id: remoteID,
+                  project_id: there.projectId,
+                  notify: true,
+                },
+                timeoutMs: 120_000,
+              },
+            },
+          ],
+          text: 'Started it over there.',
+        },
+        { text: 'Read the wake.' },
+      ],
+    }),
+  );
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'have the GPU computer run the chip job', null);
+
+  interface SpawnAnswer {
+    token: string;
+    thread_id: string;
+    outcome: string;
+  }
+  const spawn = await awaitToolAnswer<SpawnAnswer>(home, {
+    tool: 'thread_spawn',
+    timeoutMs: 120_000,
+  });
+  expect(spawn.isError, spawn.text).toBe(false);
+  // Wait for the wake, which is the caller-side row that carries a chip.
+  await home.waitForEvent<HarnessMockEventData>(
+    'harness:mock',
+    (ev) =>
+      ev.report.kind === 'user_input' &&
+      ev.cwd === caller.path &&
+      (ev.report.input ?? '').includes(spawn.value!.token),
+    90_000,
+  );
+
+  const sidebarRow = (title: string) =>
+    page.getByTestId('thread-row-title').filter({ hasText: title }).first();
+
+  // The destination's first message says which computer asked for it.
+  await remote.open(page);
+  await sidebarRow('Chip work').click();
+  await expect(page.getByTestId('user-message-thread-origin').first()).toHaveText(
+    'from Chip caller on Laptop computer',
+  );
+
+  // The caller's wake says which computer answered.
+  await home.open(page);
+  await sidebarRow('Chip caller').click();
+  await expect(page.getByTestId('user-message-thread-origin').first()).toHaveText(
+    'from Chip work on GPU computer',
+  );
+});
+
+test('deleting the caller cancels the scratch ask it left running on the other computer', async () => {
+  test.setTimeout(180_000);
+  const caller = await seed(home, 'remote-delete-caller', ['Delete caller']);
+  const there = await seed(remote, 'remote-delete-target', ['Ask target']);
+  const target = there.threadIds[0];
+
+  // One real turn first, so the ask's hidden fork has a provider session
+  // on that computer to be cut from.
+  await setScenario(
+    remote,
+    there.path,
+    plainScenario({
+      name: 'remote-delete-source',
+      provider: 'claude',
+      texts: ['The import path is hot.'],
+    }),
+  );
+  await remote.rpc('StartSession', target);
+  await remote.rpc('SendMessage', target, 'profile the import path', null);
+  await remote.waitForEvent<{ threadId: string }>(
+    'provider:turn_completed',
+    (ev) => ev.threadId === target,
+    60_000,
+  );
+
+  // The fork never answers: it parks, so the ask is still open when the
+  // caller is deleted.
+  await setScenario(
+    remote,
+    there.path,
+    threadToolsScenario({
+      name: 'remote-delete-fork',
+      provider: 'claude',
+      turns: [{ steps: [{ gate: 'hold-remote-delete' }], text: 'Never answered.' }],
+    }),
+  );
+  await setScenario(
+    home,
+    caller.path,
+    threadToolsScenario({
+      name: 'remote-delete-caller-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_ask',
+                args: {
+                  thread_id: target,
+                  computer_id: remoteID,
+                  question: 'What did the profiler blame?',
+                  wait_seconds: 0,
+                  notify: true,
+                },
+                timeoutMs: 120_000,
+              },
+            },
+          ],
+          text: 'Asked it; it is thinking.',
+        },
+      ],
+    }),
+  );
+
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'ask the GPU computer what it profiled', null);
+
+  interface AskAnswer {
+    token: string;
+    thread_id: string;
+    outcome: string;
+  }
+  const ask = await awaitToolAnswer<AskAnswer>(home, { tool: 'thread_ask', timeoutMs: 120_000 });
+  expect(ask.isError, ask.text).toBe(false);
+  expect(ask.value!.outcome).toBe('backgrounded');
+
+  // The scratch copy exists over there and is parked on its gate.
+  await awaitGate(remote, 'hold-remote-delete', there.path);
+  expect(
+    (await threadRows(remote)).some(
+      (row) => row.id === ask.value!.thread_id && row.mode === 'scratch',
+    ),
+  ).toBe(true);
+
+  // Deleting the caller stops the ask wherever it is running.
+  await home.rpc('DeleteThread', caller.threadIds[0]);
+  await expect
+    .poll(async () => (await threadRows(remote)).filter((row) => row.mode === 'scratch').length, {
+      timeout: 60_000,
+    })
+    .toBe(0);
+
+  // The thread it asked is untouched; only the copy was ever at risk.
+  expect((await threadRows(remote)).some((row) => row.id === target)).toBe(true);
+});
+
+test('a responder on a switched-off destination answers with thread_reply', async () => {
+  test.setTimeout(180_000);
+  const caller = await seed(home, 'remote-reply-off-caller', ['Reply off caller']);
+  const there = await seed(remote, 'remote-reply-off-target', ['Reply off target'], true);
+  const target = there.threadIds[0];
+
+  await remote.rpc('UpdateSettings', { threadToolsEnabled: false });
+  try {
+    // The thread tools are off on that computer, so this responder only
+    // has thread_reply because an open request from here admits it.
+    await setScenario(
+      remote,
+      there.path,
+      threadToolsScenario({
+        name: 'remote-reply-off-responder',
+        provider: 'claude',
+        turns: [
+          {
+            steps: [
+              { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+              {
+                call: {
+                  tool: 'thread_reply',
+                  args: { token: '${TOKEN}', text: 'Replied with the switch off.' },
+                  timeoutMs: 60_000,
+                },
+              },
+            ],
+            text: 'Answered through thread_reply.',
+          },
+        ],
+      }),
+    );
+    await setScenario(
+      home,
+      caller.path,
+      threadToolsScenario({
+        name: 'remote-reply-off-caller-script',
+        provider: 'claude',
+        turns: [
+          {
+            steps: [
+              {
+                call: {
+                  tool: 'thread_send',
+                  args: {
+                    thread_id: target,
+                    computer_id: remoteID,
+                    message: 'answer me from over there',
+                    wait_seconds: 120,
+                  },
+                  timeoutMs: 180_000,
+                },
+              },
+            ],
+            text: 'It replied.',
+          },
+        ],
+      }),
+    );
+
+    await home.rpc('StartSession', caller.threadIds[0]);
+    await home.rpc('SendMessage', caller.threadIds[0], 'ask the GPU computer to reply', null);
+
+    // The responder's own tool call succeeded on the switched-off computer.
+    const reply = await awaitToolAnswer<{ state: string }>(remote, {
+      tool: 'thread_reply',
+      cwd: there.path,
+      timeoutMs: 150_000,
+    });
+    expect(reply.isError, reply.text).toBe(false);
+
+    interface SendAnswer {
+      state: string;
+      outcome: string;
+      answer_kind?: string;
+      answer?: string;
+    }
+    // Filtered by this caller's own project: earlier tests in this file
+    // leave their own thread_send answers in the log unread.
+    const send = await awaitToolAnswer<SendAnswer>(home, {
+      tool: 'thread_send',
+      cwd: caller.path,
+      timeoutMs: 180_000,
+    });
+    expect(send.isError, send.text).toBe(false);
+    expect(send.value!.outcome).toBe('settled');
+    // `replied` is the reply's own state; a turn that only rested would
+    // settle `answered` with the assistant text instead.
+    expect(send.value!.state).toBe('replied');
+    expect(send.value!.answer).toContain('Replied with the switch off.');
+  } finally {
+    await remote.rpc('UpdateSettings', { threadToolsEnabled: true });
+  }
+});
+
+test('a computer whose hello lacks the thread-tools capability fails as thread_unsupported', async () => {
+  test.setTimeout(180_000);
+  // A backend that advertises everything except thread-tools.v1, which is
+  // what a build older than these tools looks like on the wire.
+  const older = await launchHarness({ env: { AO_HARNESS_OLD_THREAD_TOOLS_PEER: '1' } });
+  let olderID = '';
+  try {
+    const pairing = await headlessPairing(older);
+    try {
+      const attachment = await home.rpc<{ id: string; verificationNumber: string }>(
+        'AddBackend',
+        pairing.invite.url,
+      );
+      await pairing.confirm(attachment.verificationNumber);
+      olderID = attachment.id;
+    } finally {
+      pairing.close();
+    }
+    await home.rpc('RenameBackend', olderID, 'Old computer');
+    const project = await seed(older, 'remote-old-work', []);
+
+    const caller = await seed(home, 'remote-old-caller', ['Old peer caller']);
+    await setScenario(
+      home,
+      caller.path,
+      threadToolsScenario({
+        name: 'remote-old-caller-script',
+        provider: 'claude',
+        turns: [
+          {
+            steps: [
+              {
+                call: {
+                  tool: 'thread_spawn',
+                  args: {
+                    prompt: 'Try to work on the old computer.',
+                    title: 'Old work',
+                    computer_id: olderID,
+                    project_id: project.projectId,
+                    notify: true,
+                  },
+                  timeoutMs: 120_000,
+                },
+              },
+            ],
+            text: 'That computer is too old.',
+          },
+        ],
+      }),
+    );
+    await home.rpc('StartSession', caller.threadIds[0]);
+    await home.rpc('SendMessage', caller.threadIds[0], 'spawn on the old computer', null);
+
+    const spawn = await awaitToolAnswer(home, {
+      tool: 'thread_spawn',
+      cwd: caller.path,
+      timeoutMs: 120_000,
+    });
+    expect(spawn.isError).toBe(true);
+    expect(spawn.text).toContain('does not support agent thread tools');
+    expect(spawn.text).toContain('Update Agent Overflow on that computer');
+
+    // Nothing was started there, and nothing is left open here: the
+    // refusal happened before the destination ever saw the call.
+    expect((await threadRows(older)).some((row) => row.title === 'Old work')).toBe(false);
+  } finally {
+    if (olderID !== '') await home.rpc('RemoveBackend', olderID, true);
+    await older.close();
+  }
 });
 
 // Last: this test forgets the pairing the whole file is built on.

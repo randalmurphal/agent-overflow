@@ -18,6 +18,7 @@ import (
 
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/store"
@@ -611,6 +612,64 @@ func TestThreadToolsRemoteRequestsRunThereAndAreCollectedHere(t *testing.T) {
 	}
 }
 
+// Deleting the caller stops the ask it left running on another computer.
+// That cancel is a forwarded call like any other, so it has to name both
+// the thread and the computer it came from: without the computer the
+// destination refuses it and the hidden fork keeps running.
+func TestThreadToolsDeletingTheCallerCancelsItsAskOnTheOtherComputer(t *testing.T) {
+	pair := newReachPair(t)
+	// A spawn first, because an ask forks the thread it names and a thread
+	// with no messages cannot be forked.
+	const done = "the spawn finished"
+	installMockClaudeReplies(t, pair.dest, done)
+	spawn := pair.spawnThere(t, "start work over there", nil)
+	target := pair.collect(t, spawn.Token, done)
+
+	// From here the destination's turns have no result line, so the ask
+	// never answers and is still open when the caller goes away.
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ask, err := pair.adapter().Ask(ctx, pair.callerIdentity(), threadtools.AskCall{
+		ThreadID: target, ComputerID: pair.computer, Question: "what did you do?",
+	})
+	if err != nil {
+		t.Fatalf("remote ask: %v", err)
+	}
+	scratch := ""
+	waitUntilE2E(t, 30*time.Second, "the destination forks the ask", func() bool {
+		receipt, found, err := pair.dest.store.GetThreadRequestReceipt(ask.Token)
+		if err != nil || !found || receipt.TargetThreadID == "" {
+			return false
+		}
+		scratch = receipt.TargetThreadID
+		return true
+	})
+	if scratch == target {
+		t.Fatal("an ask ran in the target thread instead of its own scratch fork")
+	}
+
+	if err := pair.source.DeleteThread(pair.caller.ID); err != nil {
+		t.Fatalf("delete the caller: %v", err)
+	}
+	waitUntilE2E(t, 30*time.Second, "the destination drops the fork", func() bool {
+		_, err := pair.dest.store.GetThread(scratch)
+		return err != nil
+	})
+	receipt, found, err := pair.dest.store.GetThreadRequestReceipt(ask.Token)
+	if err != nil || !found {
+		t.Fatalf("read receipt %s: %v", ask.Token, err)
+	}
+	if receipt.State != store.ThreadReceiptCancelled {
+		t.Errorf("the destination left %s %q, want %q", ask.Token, receipt.State, store.ThreadReceiptCancelled)
+	}
+	// The thread the question was about was never the request's to delete.
+	if _, err := pair.dest.store.GetThread(target); err != nil {
+		t.Errorf("the ask's target thread went with the fork: %v", err)
+	}
+}
+
 // collect waits for the destination to settle one request, runs the
 // poller, and asserts the answer landed on the source row with the
 // destination told it was stored. It returns the thread that ran.
@@ -639,6 +698,51 @@ func (p *reachPair) collect(t *testing.T, token, answer string) string {
 		t.Fatalf("the destination was not told the answer was stored: %+v", collected)
 	}
 	return row.TargetThreadID
+}
+
+// A wake for work that ran on another computer names that thread the way a
+// local one does, in its body and in the attribution a client renders as
+// the origin chip. The caller has no row for that thread, so the only name
+// it has is what the destination reported while the request was open.
+func TestThreadToolsRemoteWakeNamesTheThreadAndComputerThatAnswered(t *testing.T) {
+	pair := newReachPair(t)
+	const answer = "the kernel build finished clean"
+	installMockClaudeReplies(t, pair.dest, answer)
+	// The wake starts the caller's own session to read it, so this
+	// computer needs a mock of its own.
+	installMockClaudeReplies(t, pair.source, "read the wake")
+
+	spawn := pair.spawnThere(t, "build the kernel", map[string]any{"title": "Kernel build", "notify": true})
+	target := pair.collect(t, spawn.Token, answer)
+
+	var wake store.FlushQueueItem
+	waitUntilE2E(t, 30*time.Second, "the caller's wake is queued", func() bool {
+		for _, queued := range durableQueueRows(t, pair.source, pair.caller.ID) {
+			if queued.SendID == threadWakeSendID(spawn.Token) {
+				wake = queued
+				return true
+			}
+		}
+		return false
+	})
+	name, id := threadToolsApp{app: pair.source}.threadToolsBackendName(pair.computer)
+	if name == "" || id == "" {
+		t.Fatalf("the source has no name for computer %q", pair.computer)
+	}
+	if !strings.Contains(wake.Message, "Kernel build") || !strings.Contains(wake.Message, name) {
+		t.Errorf("wake body = %q, want the thread %q on %q", wake.Message, "Kernel build", name)
+	}
+	var payload flushqueue.Payload
+	if err := json.Unmarshal(wake.Payload, &payload); err != nil {
+		t.Fatalf("decode wake payload: %v", err)
+	}
+	if payload.OriginThread == nil {
+		t.Fatalf("the wake carries no attribution: %+v", payload)
+	}
+	got := *payload.OriginThread
+	if got.Title != "Kernel build" || got.ThreadID != target || got.ComputerID != id || got.ComputerName != name {
+		t.Errorf("wake origin = %+v, want %q (%s) on %q (%s)", got, "Kernel build", target, name, id)
+	}
 }
 
 // TestThreadToolsRemoteRequestRetriesOneTokenWithoutRunningTwice proves the

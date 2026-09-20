@@ -128,7 +128,13 @@ const CapabilityFilePreview = "preview.files.v1"
 // and never from the caller.
 //
 // A nil hook means the same thing false does: no browser tools here.
-func advertisedCapabilities(browserAvailable func() bool, transfers, filePreviews bool) []string {
+//
+// omitThreadTools is the one subtraction, and it is test isolation only:
+// an isolated boot standing in for a build older than the agent thread
+// tools, so a caller takes the thread_unsupported path rather than a
+// method error. Config.OmitThreadToolsCapability says when, and only a
+// harness boot can set it.
+func advertisedCapabilities(browserAvailable func() bool, transfers, filePreviews, omitThreadTools bool) []string {
 	var capabilities []string
 	if browserAvailable != nil && browserAvailable() {
 		if transfers {
@@ -142,9 +148,14 @@ func advertisedCapabilities(browserAvailable func() bool, transfers, filePreview
 		capabilities = serverCapabilities
 	}
 	if filePreviews {
-		return append(slices.Clone(capabilities), CapabilityFilePreview)
+		capabilities = append(slices.Clone(capabilities), CapabilityFilePreview)
 	}
-	return capabilities
+	if !omitThreadTools {
+		return capabilities
+	}
+	return slices.DeleteFunc(slices.Clone(capabilities), func(name string) bool {
+		return name == CapabilityThreadTools
+	})
 }
 
 // CapabilityRemoteNotifications says this backend delivers the

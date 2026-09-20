@@ -1302,8 +1302,10 @@ usable increment.
   per device) and covers the caller's switch, a destination serving with
   its own switch off, ownership by device, fan-out resolution,
   lost-reply retry on one token, unconfirmed reconciliation, expiry,
-  collection after a restart of either side, revocation, a moved target
-  and forgetting a computer. It drives `pollRemoteThreadRequests`,
+  collection after a restart of either side, revocation, a moved target,
+  forgetting a computer, the wake naming the thread and computer that
+  answered, and a deleted caller cancelling the ask it left running
+  there. It drives `pollRemoteThreadRequests`,
   `expireThreadRequests` and `sweepThreadRequestsAtBoot` directly rather
   than waiting on the ticker.
 - Frontend: Vitest for `agentThreadOrigin` and `userMessageMeta`, the
@@ -1311,8 +1313,10 @@ usable increment.
   switch, and the shared thread-state values; `pnpm run check` and
   `pnpm run build`.
 - Playwright (`e2e/tests`): `thread-tools.spec.ts` (16 tests),
-  `side-chat.spec.ts` (4) and `thread-tools-paired.spec.ts` (7, on two
-  harness hosts). Run one with `bin/ao-harness-e2e tests/<spec>`. The
+  `side-chat.spec.ts` (4), `thread-tools-paired.spec.ts` (12, on two
+  harness hosts) and `thread-tools-three-computers.spec.ts` (2, on
+  three, the third stopped mid-file for the search error row).
+  Run one with `bin/ao-harness-e2e tests/<spec>`. The
   mock provider makes real MCP calls through its `mcpCall` scenario step
   ([agent-harness.md](agent-harness.md)).
 - Go: `make go-build`, `make go-test`, `gofmt -w`, `make methodgen`

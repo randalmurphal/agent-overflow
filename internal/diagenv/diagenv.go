@@ -27,6 +27,14 @@ const (
 	// inside the distro (`make harness-wsl`) while the operator sets the
 	// variable in a WSL shell on the other side of two WSLENV hops.
 	HarnessRealBrowser = "AO_HARNESS_REAL_BROWSER"
+
+	// HarnessOldPeer makes an isolated boot leave thread-tools.v1 out of
+	// its hello frame, so a paired computer calling it sees the
+	// thread_unsupported refusal a build older than the agent thread
+	// tools produces. Test isolation only: honored solely by a harness
+	// boot, ignored by every other one, and the only way an end-to-end
+	// test can stand up a destination that does not have the surface.
+	HarnessOldPeer = "AO_HARNESS_OLD_THREAD_TOOLS_PEER"
 )
 
 // Passthrough lists every variable the launchers forward across the WSL

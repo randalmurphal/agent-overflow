@@ -326,7 +326,10 @@ func threadRequestSettled(row store.ThreadRequest) bool {
 
 // noteRemoteRequestLive records what a destination reported about one of
 // its receipts. forgetRemoteRequestLive drops it once the request has
-// settled, because a settled request has no live target to describe.
+// settled AND the wakes that settlement owed have been rendered: the
+// target's title is the only name a wake and its origin chip have for a
+// thread on another computer, so dropping it any earlier renders both
+// unnamed. A late reply re-notes it from the poll that carries it.
 func (a *App) noteRemoteRequestLive(token string, blocked bool, title string) {
 	if token == "" {
 		return
