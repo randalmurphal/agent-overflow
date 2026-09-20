@@ -1,10 +1,10 @@
 {
   "comment": [
     "Shared table for the thread state derivation. Consumed by",
-    "internal/threadtools/state_test.go (TestStateFixture) and, when the",
-    "frontend test lands, by a Vitest test of resolveEffectiveThreadStatus",
-    "in frontend/src/lib/utils/threadStatusPill.ts, so the two cannot",
-    "drift.",
+    "internal/threadtools/state_test.go (TestStateFixture). Each case also",
+    "states the frontend's input, so a Vitest test of",
+    "resolveEffectiveThreadStatus in frontend/src/lib/utils/threadStatusPill.ts",
+    "can run the same table and the two cannot drift.",
     "",
     "Schema: {comment: string[], cases: Case[]}.",
     "Case = {",
@@ -19,9 +19,9 @@
     "}",
     "",
     "liveStatus is derived from live by the same order the Go function uses:",
-    "pending-approval, awaiting-input, running, else idle. A frontend test",
-    "feeds liveStatus to resolveEffectiveThreadStatus; the Go test feeds",
-    "live to State. Both must produce want."
+    "pending-approval, awaiting-input, running, else idle. The Go test feeds",
+    "live to State; a frontend test feeds liveStatus to",
+    "resolveEffectiveThreadStatus. Both must produce want."
   ],
   "cases": [
     {

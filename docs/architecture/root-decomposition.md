@@ -55,6 +55,7 @@ that recreates App's surface moves files without moving authority.
 | workflow application runtime | `internal/workflowapp` |
 | workflow provider execution | `internal/workflowhost` |
 | MCP coordination | `internal/mcpapp` |
+| agent thread tool contract and rendering | `internal/threadtools` |
 
 Consult the nearest package guide before changing an owner boundary.
 
@@ -74,6 +75,9 @@ several owners:
   restart;
 - conversation transfer and remote command placement across ownership,
   filesystem handoff, provider state, and execution admission;
+- agent thread request acceptance, settlement, and wake delivery across
+  provider turns, the durable queue, session admission, and paired
+  computers;
 - platform lifecycle operations whose build tags or shutdown order are part of
   the boundary.
 

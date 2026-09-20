@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// The fixture's own shape. Documented beside the file itself; the Go test
-// reads live, a Vitest test of resolveEffectiveThreadStatus reads
-// liveStatus, and both must produce want.
+// The fixture's own shape. Documented beside the file itself. The Go test
+// reads live; liveStatus is the same case stated as the frontend's input
+// to resolveEffectiveThreadStatus, so both must produce want.
 type stateFixture struct {
 	Cases []struct {
 		Name   string `json:"name"`

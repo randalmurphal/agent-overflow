@@ -21,6 +21,7 @@ All non-main Go packages live under `internal/`. Root `main*.go` and
 | Application services and their boundaries | [Application composition](../docs/architecture/root-decomposition.md) |
 | Repository/worktree lookup and operations | [gitroot/](gitroot/AGENTS.md), [git/](git/AGENTS.md), [gitapp/](gitapp/AGENTS.md) |
 | Browser engines and thread browser tools | [browser/](browser/AGENTS.md) |
+| Agent thread tools and `/side-chat` | `threadtools/`, `threadmcp/`, `app/app_thread_tools*.go`; contract in [agent-thread-tools.md](../docs/specs/agent-thread-tools.md) |
 | Settings ownership and persistence | [settings/](settings/AGENTS.md) |
 | Test fixtures and provider isolation | [kerneltest/](kerneltest/AGENTS.md), [testutil/](testutil/AGENTS.md) |
 | Backend harness and scenarios | [harness/](harness/AGENTS.md) |

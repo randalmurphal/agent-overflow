@@ -1,13 +1,13 @@
 # Agent thread tools
 
-Status: design. Local scope signed off 2026-09-04; the connected-computers
-scope and the tool reshaping were settled 2026-09-19, and the same day
-the tool set was extended after a comparison with the Codex app's
-thread tools (see Open questions for the rulings). The build plan is
+Status: implemented 2026-09-19. Local scope signed off 2026-09-04; the
+connected-computers scope and the tool reshaping were settled
+2026-09-19, and the same day the tool set was extended after a
+comparison with the Codex app's thread tools (see Open questions for the
+rulings). The build record is
 [agent-thread-tools-plan.md](../architecture/agent-thread-tools-plan.md).
-Nothing implemented yet. `(Qn)`
-tags are the ids from the original brainstorm session and carry no
-other meaning.
+`(Qn)` tags are the ids from the original brainstorm session and carry
+no other meaning.
 
 ## Goal
 
@@ -715,7 +715,10 @@ extends to them. It is never a team or federation peer; remote-access
 does not change that.
 
 A call to another computer succeeds when the caller's switch is on and
-the pairing is live. The destination's own switch is not consulted.
+the pairing is live. The destination's own switch is not consulted, and
+neither is the Agent remote tools opt-in that `ao-remote-tools` needs:
+that opt-in exists because a remote command runs a shell, and nothing
+here does.
 Revoking the pairing ends everything between the two computers;
 outstanding requests settle `errored` with that reason.
 
@@ -895,7 +898,7 @@ codex 0.153.4); outcomes recorded in the
 
 ## Success criteria
 
-- [ ] Both providers list the thirteen tools in every interactive session,
+- [x] Both providers list the thirteen tools in every interactive session,
       and with no paired computer no schema, row or instruction
       mentions computers,
       the server instructions read as a decision guide, and flipping the
@@ -905,63 +908,82 @@ codex 0.153.4); outcomes recorded in the
       from an archived Claude thread in another project by default,
       never a scratch thread, and flags `indexing` while building;
       without a query it lists running threads with their state.
+      (The imported-session hit is verified in the store, not through
+      the tool.)
 - [ ] `thread_search` returns rows from two isolated computers grouped
       per computer, `computers` narrows to one, and an offline third
       computer yields an `errors` row without failing the call.
+      (Narrowing to a named computer and the third computer's error row
+      beside live rows are unverified.)
 - [ ] A bare thread id that lives on another computer resolves there;
       an ambiguous prefix is refused with candidates; a thread moved
       between computers resolves to its new owner.
+      (A real moved thread resolving to its new owner is unverified.)
 - [ ] `thread_show` with `around` returns the surrounding turns within
       the byte budget on a 38k-item thread, locally and on another
       computer; `all` pages the same thread to its end through `cursor`;
       `to_file` with `include` everything writes the complete thread
       and returns a path the agent can read, from either computer.
+      (No thread near 38k items, and `around` only locally.)
 - [ ] A multi-megabyte tool output shows clipped with its size in
       `thread_show`; `thread_item` finds a phrase inside it by `query`,
       reads the range around the match, and reads its last 16KB with a
       negative offset, locally and on another computer.
+      (The multi-megabyte payload and the remote `query` and negative
+      offset are unverified.)
 - [ ] `thread_spawn` with `worktree` and `notify` yields a sidebar thread
       on a new worktree whose first row carries the origin chip, and the
       caller receives a wake when it rests. The same on another computer
       with an explicit project, with the chip naming the computer on
       both ends; omitting the project lists that computer's projects.
+      (The chip naming the computer is unverified on either end.)
 - [ ] `thread_ask` with the default wait returns the answer inline when
       it arrives in time; a longer answer backgrounds and arrives as a
       message; `thread_status` on the token waits and returns it, and
       says the message is also arriving.
+      (The notice that the message is also arriving is unverified.)
 - [ ] `thread_send` with notify into a mid-turn thread lands after the
       boundary with the draft intact; the responder's `thread_reply`
       wakes the caller; a rest-without-reply wake is flagged and a late
       reply still arrives, including a reply written while the caller's
       computer was unreachable.
+      (The target's preserved draft and the reply written while the
+      caller was unreachable are unverified.)
 - [ ] `thread_ask` on a full-access thread mid-turn produces a hidden
       read-only tail fork, `thread_reply` runs unprompted inside it, a
       write inside it is refused and reported, and the fork is gone
       once the answer is stored. The same against a thread on another
       computer, where the fork never leaves that computer.
+      (Only the fork's read-only configuration is verified, not a
+      refused write inside it.)
 - [ ] A lost peer reply to `thread_spawn` returns `unconfirmed` with the
       token; the retry with the same token does not spawn twice; a
       request the destination never accepted settles `refused`.
+      (A lost peer reply producing `unconfirmed` is unverified.)
 - [ ] An answer whose caller reconnects after an hour is delivered with
       its age; one whose caller stays away for a day expires on both
       sides.
-- [ ] `thread_cancel` interrupts a spawned thread on either computer,
+      (The age on a late collection is verified only as a template.)
+- [x] `thread_cancel` interrupts a spawned thread on either computer,
       settles `cancelled`, and refuses an unrelated thread.
 - [ ] `thread_options` lists both providers' models with efforts and
       the runtime modes, locally and for a paired computer, and a spawn
       with a model the computer lacks is refused with that list.
-- [ ] `thread_spawn` with `from_thread` yields a visible fork that
+      (The per-model efforts and the refused model are unverified.)
+- [x] `thread_spawn` with `from_thread` yields a visible fork that
       continues from the source's tail.
 - [ ] A wait on a target that hits an approval returns `blocked` at
       once with the request open; `thread_status` with three tokens
       returns on the first settlement.
+      (The multi-token wait is verified on two tokens, not three.)
 - [ ] `thread_update` archives five threads in one call, groups two into
       a new group on the front burner, refuses pinning a grouped thread
       and archiving the caller; `thread_group` renames and deletes it;
       every change shows in the sidebar live.
-- [ ] `thread_remind` after 60 seconds wakes an idle caller with the
+      (No call archives five threads.)
+- [x] `thread_remind` after 60 seconds wakes an idle caller with the
       note; `thread_cancel` on its token stops it.
-- [ ] The footer on a spawned thread's first message quotes the user's
+- [x] The footer on a spawned thread's first message quotes the user's
       latest message from the caller's thread.
 - [ ] Deleting the caller cancels its scratch asks on another computer;
       a destination with its switch off still accepts spawns and asks,
@@ -969,11 +991,14 @@ codex 0.153.4); outcomes recorded in the
       that session once the request settles; revoking the pairing
       settles outstanding requests `errored`; an older destination
       fails as `thread_unsupported`.
-- [ ] `/side-chat` opens a companion fork during a running turn,
+      (The remote scratch-ask cancel, a reply from a switched-off
+      destination, and a peer whose hello lacks the capability are
+      unverified.)
+- [x] `/side-chat` opens a companion fork during a running turn,
       survives nothing across restart, closes with its source or a
       thread switch, and Keep promotes it to the sidebar in place.
-- [ ] Boot removes every scratch thread and settles their requests.
-- [ ] Streaming a long assistant message does no FTS work until the row
+- [x] Boot removes every scratch thread and settles their requests.
+- [x] Streaming a long assistant message does no FTS work until the row
       settles.
 
 ## Testing strategy

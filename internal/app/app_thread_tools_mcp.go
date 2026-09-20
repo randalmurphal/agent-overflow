@@ -91,9 +91,9 @@ func (a *App) threadMCPTools(access threadMCPAccess) []map[string]any {
 }
 
 // threadToolsEnabledFor is the effective per-thread answer. The settings
-// switch governs this computer's own sessions; openForeign is the second
-// half, which a paired computer's reach will supply, so a switched-off
-// computer still answers calls that arrive from elsewhere.
+// switch governs this computer's own sessions; an open request from a
+// paired computer is the other half, so a switched-off computer still
+// answers calls that arrive from elsewhere.
 func (a *App) threadToolsEnabledFor(threadID string) bool {
 	return a.threadToolsSwitchOn() || a.threadToolsOpenForeign(threadID)
 }

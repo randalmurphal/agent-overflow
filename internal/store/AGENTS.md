@@ -25,7 +25,8 @@ provider cost estimates is also cache content and may be discarded when stale.
 Some SQLite rows are authoritative because no provider history can reconstruct
 them. This includes account and credential records, personal membership,
 accepted messages awaiting dispatch, transfer ownership and recovery state,
-remote command acceptance, and remote completion notification ownership. Never
+remote command acceptance, remote completion notification ownership, and
+agent thread requests with the receipts that answer them. Never
 apply generic history retention or cleanup logic to these tables. Snapshot
 restore must handle each authoritative family deliberately rather than treating
 it as disposable provider history.

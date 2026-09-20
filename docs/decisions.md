@@ -205,6 +205,11 @@ and anti-changes that live only here:
 - Every thread/workspace event reaches any client with visibility; channel
   audience is by data class, loopback-only is for host directives only. A
   mutation that persists without emitting is a bug.
+- Agent thread tools are admitted in every runtime mode on both providers
+  with no per-call prompt (`docs/specs/agent-thread-tools.md`, Availability
+  and permissions). `ao-browser-tools` and `ao-remote-tools` stay denied in
+  read-only sessions: both act outside the thread, and read-only is the
+  mode for unattended work.
 - Phone chat chrome (2026-09-13): header row one is back, title, diff
   badge, menu; row two is the full-width `machine · project · branch ·
   worktree` line with every segment a direct tap into its picker. The

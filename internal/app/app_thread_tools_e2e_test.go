@@ -66,8 +66,8 @@ func TestThreadMCPHandshakeListsEveryToolAndTheGuide(t *testing.T) {
 		if tool.Description == "" || tool.InputSchema == nil {
 			t.Errorf("tool %q is not fully described: %#v", tool.Name, tool)
 		}
-		// This build reaches only this computer, so no schema may offer a
-		// computer parameter the call would then refuse.
+		// This app has no pairings, so no schema may offer a computer
+		// parameter the call would then refuse.
 		properties, _ := tool.InputSchema["properties"].(map[string]any)
 		if _, present := properties["computer_id"]; present {
 			t.Errorf("tool %q offers computer_id with no pairings in this build", tool.Name)

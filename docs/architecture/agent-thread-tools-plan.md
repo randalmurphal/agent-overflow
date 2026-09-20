@@ -1,14 +1,11 @@
 # Agent thread tools implementation plan
 
-Status: plan, 2026-09-19. Implements
+Status: implemented 2026-09-19. Implements
 [`agent-thread-tools.md`](../specs/agent-thread-tools.md). The spec is
-the contract; this file is the build order, the data model, the code
-ownership, the edge cases, and the reasons behind each choice. Nothing
-here is implemented yet.
+the contract; this file is the build record: the data model, the code
+ownership, the edge cases, and the reasons behind each choice.
 
-Every path and symbol named below was checked against the tree on the
-plan date. Where a hook has to be found during the phase that needs it,
-the text says so instead of naming a guess.
+Every path and symbol named below names shipped code.
 
 ## Amendments to the spec found while planning
 
@@ -218,7 +215,8 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
     Every session admits the server (Claude `--allowedTools
     "mcp__ao-thread-tools__*"`, Codex `default_tools_approval_mode =
     "approve"` on the entry). The spec's "every other runtime mode
-    keeps its normal behavior" line is replaced. Owner ruling pending.
+    keeps its normal behavior" line is replaced. Ruled 2026-09-19:
+    admit in every mode.
 
 ## Verified facts the design rests on
 
@@ -256,7 +254,8 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
   "New Thread".
 - `threads.mode` has a CHECK constraint (last rebuilt in v72);
   `threadmode.hiddenModes` holds the workflow modes; six store queries
-  use `hiddenThreadModesClause`. Latest migration is v100.
+  use `hiddenThreadModesClause`. The chain stood at v100 before this
+  work.
 - `DeleteThread` runs paced in 500-row chunks; `threadapp.DeleteTree`
   calls `StopRemoteWork` before and after the session stop.
 - Move keeps the thread id and records the new owner
@@ -267,11 +266,11 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
   and `thread_transfer_sessions` local. The new request tables join that
   list.
 - Claude read-only mode is `--permission-mode dontAsk` plus
-  `--disallowedTools` for the write tools; `Config.AllowedTools` exists
-  but nothing sets it. Under `dontAsk` an MCP call is denied unless the
-  server's tools are allowlisted; `--allowedTools "mcp__<server>__*"`
-  admits every tool of that server and widens nothing else (spike,
-  claude 2.1.261, 2026-09-19).
+  `--disallowedTools` for the write tools; `Config.AllowedTools` existed
+  unused and now carries this server. Under `dontAsk` an MCP call is
+  denied unless the server's tools are allowlisted;
+  `--allowedTools "mcp__<server>__*"` admits every tool of that server
+  and widens nothing else (spike, claude 2.1.261, 2026-09-19).
 - Codex read-only is approval `never` plus the read-only sandbox. Under
   `never` an MCP call is auto-approved only when the sandbox has full
   disk write or the server entry sets
@@ -305,9 +304,9 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
 
 | Piece | Where | Owns |
 |---|---|---|
-| Tool contract | `internal/threadtools` (new) | Tool schemas, the instructions text, argument parsing, id resolution rules, transcript rendering, paging, item range reads and search, result shapes, the thread state derivation. Depends on an `App` interface it declares; never on `internal/app`. |
+| Tool contract | `internal/threadtools` | Tool schemas, the instructions text, argument parsing, id resolution rules, transcript rendering, paging, item range reads and search, result shapes, the thread state derivation. Depends on an `App` interface it declares; never on `internal/app`. |
 | Request ledger | `internal/store` | Migrations, `thread_requests`, `thread_request_receipts`, `scratch_threads`, the FTS index and its build progress, all queries. |
-| App glue | `internal/app/app_thread_tools*.go` (new files) | Server registration, the switch, live toggles, spawn/send/ask/reply/status/cancel handlers, waits, settlement observer, wake delivery, the poller, peer methods, lifecycle hooks, boot sweep. |
+| App glue | `internal/app/app_thread_tools*.go` | Server registration, the switch, live toggles, spawn/send/ask/reply/status/cancel handlers, waits, settlement observer, wake delivery, the poller, peer methods, lifecycle hooks, boot sweep. |
 | Peer transport | `internal/attachedbackends`, `internal/transport` | `CallThreadPeer`, `CapabilityThreadTools`, method annotations. |
 | Providers | `internal/provider/claude`, `internal/provider/codex` | Claude `AllowedTools` on the argv; Codex `DeveloperInstructions` on start, resume and fork. Nothing else. |
 | UI | `frontend/src/lib` | Origin chip, settings switch, `/side-chat`, `side-chat` companion pane, `aoTools` registry entry. |
@@ -432,10 +431,10 @@ settles the text:
 
 - a `user_text` item at insert;
 - an `assistant_text` or `tool_call` item when it leaves the running
-  state (the store call that finalizes an item, found in phase 1;
-  `AppendItemSummaryTail` and every other streaming append stay
-  untouched, pinned by a test that streams a long message and asserts
-  zero FTS rows until settlement);
+  state, through the one settle hook `indexSettledItemTx` that every item
+  write path calls; `AppendItemSummaryTail` and every other streaming
+  append stay untouched, pinned by a test that streams a long message and
+  asserts zero FTS rows until settlement;
 - an import chunk when written, and again when an import override is
   applied or removed;
 - a title when set or changed;
@@ -443,8 +442,8 @@ settles the text:
   (`DeleteThreadPaced` gains the two tables in its chunk loop).
 
 `scratch` and workflow-mode filtering happens at query time by joining
-`threads`, not at index time, so promoting a scratch thread needs no
-reindex.
+`owned_threads`, not at index time, so promoting a scratch thread needs
+no reindex and a thread whose ownership moved leaves the results.
 
 Background build: `initSubsystems` starts one goroutine when
 `thread_search_build` has a row. It walks `items` in `(thread_id, id)`
@@ -476,24 +475,26 @@ func (s *Server) Instructions(shape Shape) string
 func (s *Server) Call(ctx context.Context, caller Caller, name string, args json.RawMessage) (any, error)
 ```
 
-`Shape{Computers []Computer}` is what amendment 3 needs: an empty list
-produces the single-computer schemas and text. `Caller{ThreadID,
-ComputerID, ComputerName, Title}` identifies who is calling, local or
-via a peer.
+`Shape{Computers, Defaults}` is what amendment 3 needs: an empty
+computer list produces the single-computer schemas and text, and
+`Defaults` carries the calling thread's live provider settings into the
+spawn schema descriptions. `Caller{ThreadID, ComputerID, ComputerName,
+Title}` identifies who is calling, local or via a peer.
 
 `App` is the interface the package needs, satisfied by `*app.App` on
 the local side and by the destination app on the peer side:
 
-- reads: `Thread(id)`, `ResolveThreadPrefix(prefix)`, `ThreadState(id)`,
-  `Turns(threadID, window)`, `ItemPayload(threadID, itemID, offset,
-  maxBytes)`, `Search(query, filters)`, `Export(threadID, window,
-  include)`, `Options()` (providers, models, runtime modes, projects);
-- writes: `Spawn(...)` (with `FromThread`), `Send(...)`, `Ask(...)`,
-  `Reply(token, text)`, `RequestStatus(tokens)`,
-  `ListRequests(callerThreadID)`, `Cancel(...)`, `Remind(...)`,
-  `UpdateThreads(ids, patch)`, `UpdateGroup(ref, patch)`;
-- reach: `PairedComputers()`, `Peer(computerID)` returning a client with
+- reads: `Thread`, `LiveState`, `ResolveThreadRef`, `ResolveWindow`,
+  `Transcript`, `ItemPayload`, `SearchThreads`, `ExportTranscript`,
+  `ExportAnswer`, `Catalog` (providers, models, runtime modes, projects);
+- writes: `Spawn` (with `FromThread`), `Send`, `Ask`, `Reply`,
+  `RequestStates`, `ListRequests`, `Cancel`, `Remind`, `UpdateThreads`,
+  `UpdateGroup`;
+- reach: `PairedComputers`, `Peer(computerID)` returning a client with
   the same five operations the peer methods expose.
+
+Each method's input, output and failure contract is a comment on the
+interface in `app.go`; this list is the shape, not the contract.
 
 Everything about how a result looks lives here: the transcript renderer
 (role and item id prefixes, turn delimiters, tool call one-liners with
@@ -515,8 +516,10 @@ frontend's `resolveEffectiveThreadStatus` in `threadStatusPill.ts` is
 the reference. `threadtools.State(thread, live)` reimplements it from
 `LiveStateSnapshot` and the thread columns (`hasIncompleteTurn`,
 `hasFailedTurn`, `hasActionableProposedPlan`, `worktreeSetupState`), and
-one JSON fixture, `internal/threadtools/testdata/thread_states.json`, is
-consumed by both the Go test and a Vitest test so the two cannot drift.
+one JSON fixture, `internal/threadtools/testdata/thread_states.json`,
+holds the shared table: the Go test runs every case, and each case also
+carries the frontend input `resolveEffectiveThreadStatus` derives from,
+so the sidebar's rule can be pinned to the same table.
 
 The instructions string is the spec's "Server instructions" blockquote,
 kept in `instructions.go` as two variants assembled from paragraphs;
@@ -548,12 +551,13 @@ schemas for that shape.
   The transport refuses a call unless both `enabled` and
   `ThreadEnabled(threadID)` are true, so the switch never touches the
   server-wide flag (it stays true for the process lifetime). The
-  per-thread flag holds the effective value, `switch || openForeign(threadID)`,
-  recomputed by `setThreadToolsEnabled`, `openReceipt` and
-  `closeReceipt`. The composer's own per-conversation toggle is a
-  separate bit in `mcpapp` that the effective value is ANDed with, so a
-  user who turned the server off for one conversation keeps that. A
-  racing call is refused with `thread_tools_disabled`.
+  per-thread flag holds the effective value, `threadToolsEnabledFor`:
+  the switch, or `threadToolsOpenForeign(threadID)`, reapplied by
+  `setThreadToolsEnabled` and `refreshThreadToolsAdmission`. The
+  composer's own per-conversation toggle is a separate bit in `mcpapp`
+  that the effective value is ANDed with, so a user who turned the
+  server off for one conversation keeps that. A racing call is refused
+  with `thread_tools_disabled`.
 - The per-thread composer toggle is already generic: `mcpapp` addresses
   managed servers by name. No new code beyond listing the server.
 - `startThreadMCPRefresh` is not a new worker: `startRemoteMCPRefresh`
@@ -562,14 +566,15 @@ schemas for that shape.
 
 ### Responder enable
 
-`openReceipt(receipt)` in `app_thread_tools_requests.go` recomputes the
-target's effective flag and, when it flipped on and the session is
-live, calls `ApplyManagedServerEnabled(target, name, true)`.
-`closeReceipt` recomputes when the receipt settles and applies the
-flip off if nothing else keeps it on. A settled receipt still accepts a
-late `thread_reply` through the transport only while the flag is on,
-so a responder whose switch is off has until its receipt settles to
-reply, and afterwards its late reply is accepted through the ordinary
+`refreshThreadToolsAdmission(threadID)` recomputes the target's
+effective flag when a paired computer's request is accepted against it
+and, when it flipped on and the session is live, calls
+`ApplyManagedServerEnabled(target, name, true)`.
+`threadToolsOpenForeign` reads the thread's open receipts, so the flag
+falls back to the switch as soon as the last one settles. A settled
+receipt still accepts a late `thread_reply` through the transport only
+while the flag is on, so a responder whose switch is off has until its
+receipt settles to reply, and afterwards its late reply is accepted through the ordinary
 tool call only if the switch is on; that matches the spec's "server on
 for as long as the request is open". Local receipts never touch this:
 the switch already governs the caller, and a local target is the same
@@ -601,21 +606,19 @@ contradict the Codex live-override contract. Admitting in every mode is
 the only shape that is the same on both providers and survives a mode
 change. The tools are AO's own actions, each visible in the sidebar
 (a spawned thread, a queued message, a renamed title), which is what a
-per-call prompt would have shown. Owner ruling requested on this
-(see amendment 15); the spec's Availability section carries the
-same text.
+per-call prompt would have shown. Ruled 2026-09-19 (amendment 15); the
+spec's Availability section carries the same text.
 
 The read-only sandbox still applies to the responder itself: with the
 key set, the spike's Codex read-only session ran the tool and the
 sandbox refused its shell write.
 
-The same denial applies today to `ao-browser-tools` and
-`ao-remote-tools` in read-only sessions on both providers: neither is
-allowlisted, neither sets the approve key, and neither declares tool
-annotations, so a read-only Claude or Codex thread cannot use them. No
-spec or decision records that as intended. It is a product ruling
-(admit them, or leave read-only without them), raised with the owner
-and not changed by this work until ruled.
+The same denial applies to `ao-browser-tools` and `ao-remote-tools` in
+read-only sessions on both providers: neither is allowlisted, neither
+sets the approve key, and neither declares tool annotations, so a
+read-only Claude or Codex thread cannot use them. Ruled 2026-09-19:
+they stay denied, because both act outside the thread
+([decisions.md](../decisions.md#remote-access-browser-pane-phone)).
 
 ### Decision guide delivery
 
@@ -634,10 +637,9 @@ string and come from the same `instructions.go`, so the two channels
 cannot drift. A pairing change reaches a live Codex thread only at its
 next start or resume, unlike the tool list, which reloads live; the
 `thread_options` result carries the computer list, so a stale guide
-costs one call. Phase 2 checks that the `developer_instructions: nil`
-AO sends in every turn's collaboration-mode settings leaves the
-thread-level text in place; if it does not, the guide moves into the
-collaboration-mode settings instead.
+costs one call. The `developer_instructions: null` AO sends in every
+turn's collaboration-mode settings is the mode's own field and leaves
+the thread-level text in place, which a Codex test pins.
 
 ### Spawn, send, ask
 
@@ -1213,7 +1215,8 @@ Switch and sessions:
 
 ## Build order
 
-Each phase ends green on its own tests and leaves a usable increment.
+The build ran in these phases, each green on its own tests and each a
+usable increment.
 
 0. **Spikes**, done 2026-09-19 in a scratch directory per the spike
    policy against a throwaway loopback MCP server (claude 2.1.261,
@@ -1259,52 +1262,59 @@ Each phase ends green on its own tests and leaves a usable increment.
    after the `app_remote_mcp_extended_test.go` recipe.
 6. **`/side-chat`**: intercepted command, `ForkSideChat`, companion kind,
    close-deletes, Keep, remote-owned threads.
-7. **End to end and docs**: Playwright specs (below), the spec's
-   success-criteria boxes ticked, `docs/README.md` rows, `internal/app`
-   and `internal/store` guides updated, this file marked shipped with
-   any rationale that still matters moved to `docs/architecture/agent-thread-tools.md`.
+7. **End to end and docs**: the three Playwright specs below, the
+   spec's success criteria, the `docs/README.md` rows, and the guide and
+   architecture-doc updates ([schema.md](schema.md),
+   [sqlite-store.md](sqlite-store.md),
+   [turn-lifecycle.md](turn-lifecycle.md),
+   [user-message-ordering.md](user-message-ordering.md),
+   [agent-harness.md](agent-harness.md), `internal/app/AGENTS.md`,
+   `internal/threadmcp/AGENTS.md`). This document is the record; the
+   mechanism has no separate architecture file.
 
 ## Validation
 
-- Store: `make go-test ./internal/store/...` with the new tests above;
-  a migration test that upgrades a v100 fixture holding every thread
-  mode and an imported session.
-- `internal/threadtools`: unit tests only, no app, fast.
-- App: `kerneltest`-isolated tests with the mock providers, following
-  `app_remote_watch_test.go` (capturing Claude session, Codex steer
-  session): registration and its absence for phase sessions, the switch
-  on both providers, the allowlist in the Claude argv and the approve
-  key in the Codex `mcp_servers` entry, spawn
-  inheritance and overrides including worktree creation, send queue
-  versus lazy start, wait settle and timeout and interrupt, status
-  re-attach and inline delivery, reply once and late reply, rest without
-  reply, errored turn, deleted and archived callers, scratch forced
-  read-only, mid-turn tail fork, deletion once stored, boot sweep,
-  cancel scoping, blocked return on a pending approval, multi-token
-  wait ordering, `from_thread`, `thread_update` per-thread atomicity
-  and refusals with the sidebar events, `thread_group`, reminders
-  across a restart, cancel of a queued message, settlement bound to the
-  consuming turn, self-send refusal, late-reply revisions, watching by
-  thread id, whole answers after scratch deletion, `delivered: draft`
-  after a restart, the effective enable rule against the transport's
-  double guard, prefix fan-out ambiguity and partial resolution.
-- Two computers: `newPairedBackend` plus `attachedbackends.New`, the
-  caller's switch, destination switch off and still serving, ownership
-  by device (a second device's token is refused), fan-out resolution,
-  lost-reply retry with one token, unconfirmed reconciliation to
-  `refused`, expiry, collection after a restart of either side,
-  revocation, moved target, older peer (a hello without the capability).
-  Drive `checkThreadRequests` directly rather than waiting on the
-  ticker, as the remote watch test does.
-- Frontend: Vitest for `originBadge` branches, `userMessageMeta`,
-  companion persistence rules for `side-chat`, the settings switch, the
-  shared state fixture; `pnpm run check` and `pnpm run build`.
-- Playwright (`e2e/tests`): `thread-tools.spec.ts` after
-  `browser-tools.spec.ts` for session config and the switch;
-  `side-chat.spec.ts` for open mid-turn, close with source, Keep;
-  `thread-tools-paired.spec.ts` on two harness hosts after
-  `agent-computers.spec.ts` for a spawn and wake round trip and a
-  destination with its switch off. Run with `bin/ao-harness-e2e`.
+- Store: `make go-test ./internal/store/...`.
+  `migration_thread_tools_test.go` upgrades a populated fixture through
+  v101 to v103; `thread_search_test.go` covers the index against the
+  `timeline_items` view, zero writes while a row streams, and build
+  resume; `thread_requests_test.go` covers both sides of the ledger,
+  receipt idempotency, revisions and expiry; `thread_organize_test.go`,
+  `threads_lookup_test.go` and `items_range_test.go` cover the organize
+  transaction, prefix resolution and the range reads.
+- `internal/threadtools`: unit tests against the fake app in
+  `fake_app_test.go`, no app, fast. Schemas and instructions in both
+  shapes, resolution, rendering budgets and cursors, item ranges and
+  search, per-computer grouping and error rows, footers and wake
+  templates, the state fixture.
+- App: `kerneltest`-isolated tests with the mock providers.
+  `app_thread_tools_mcp_test.go` (registration and its absence for phase
+  sessions, the switch on both providers, the admission flags, the
+  per-conversation toggle ANDed with the switch),
+  `app_thread_tools_requests_test.go` (spawn, send, ask, reply, waits,
+  wakes, `thread_status`, cancel, reminders, lifecycle hooks, the boot
+  sweep), `app_thread_tools_organize_test.go`,
+  `app_thread_tools_test.go` (the adapter against real store rows),
+  `app_thread_tools_e2e_test.go` (every read tool over the loopback
+  transport), `app_side_chat_test.go`.
+- Two computers: `app_thread_tools_reach_test.go` pairs two isolated
+  apps over a real TLS connection (`newReachPair`, `attachedbackends.New`
+  per device) and covers the caller's switch, a destination serving with
+  its own switch off, ownership by device, fan-out resolution,
+  lost-reply retry on one token, unconfirmed reconciliation, expiry,
+  collection after a restart of either side, revocation, a moved target
+  and forgetting a computer. It drives `pollRemoteThreadRequests`,
+  `expireThreadRequests` and `sweepThreadRequestsAtBoot` directly rather
+  than waiting on the ticker.
+- Frontend: Vitest for `agentThreadOrigin` and `userMessageMeta`, the
+  `sideChat` store and the companion persistence rules, the settings
+  switch, and the shared thread-state values; `pnpm run check` and
+  `pnpm run build`.
+- Playwright (`e2e/tests`): `thread-tools.spec.ts` (16 tests),
+  `side-chat.spec.ts` (4) and `thread-tools-paired.spec.ts` (7, on two
+  harness hosts). Run one with `bin/ao-harness-e2e tests/<spec>`. The
+  mock provider makes real MCP calls through its `mcpCall` scenario step
+  ([agent-harness.md](agent-harness.md)).
 - Go: `make go-build`, `make go-test`, `gofmt -w`, `make methodgen`
   committed (the generator diff test fails otherwise), Wails bindings
   regenerated for the new methods.
