@@ -401,7 +401,7 @@ func (c *Core) createWorktreeAt(cwd, path, startPoint, newBranch string, noTrack
 	if noTrack {
 		args = append(args, "--no-track")
 	}
-	args = append(args, "-b", newBranch, path)
+	args = append(args, "-b", newBranch, "--", path)
 	if startPoint != "" {
 		args = append(args, startPoint)
 	}
