@@ -81,6 +81,13 @@ test.beforeAll(async () => {
   [{ id: homeID }] = await remote.rpc<Array<{ id: string }>>('ListAgentComputers');
 });
 
+// The two backends live for the whole file, so an answer one test never
+// awaited would otherwise be the next test's match for the same tool.
+test.beforeEach(() => {
+  home.clearEvents();
+  remote.clearEvents();
+});
+
 test.afterAll(async () => {
   try {
     await home?.close();

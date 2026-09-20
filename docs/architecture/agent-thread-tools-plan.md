@@ -1312,8 +1312,8 @@ usable increment.
   `sideChat` store and the companion persistence rules, the settings
   switch, and the shared thread-state values; `pnpm run check` and
   `pnpm run build`.
-- Playwright (`e2e/tests`): `thread-tools.spec.ts` (16 tests),
-  `side-chat.spec.ts` (4), `thread-tools-paired.spec.ts` (12, on two
+- Playwright (`e2e/tests`): `thread-tools.spec.ts` (21 tests),
+  `side-chat.spec.ts` (4), `thread-tools-paired.spec.ts` (16, on two
   harness hosts) and `thread-tools-three-computers.spec.ts` (2, on
   three, the third stopped mid-file for the search error row).
   Run one with `bin/ao-harness-e2e tests/<spec>`. The

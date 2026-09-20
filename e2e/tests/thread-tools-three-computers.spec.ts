@@ -46,6 +46,14 @@ test.beforeAll(async () => {
   expect(studioID).not.toBe(benchID);
 });
 
+// The backends live for the whole file, so an answer one test never awaited
+// would otherwise be the next test's match for the same tool.
+test.beforeEach(() => {
+  home.clearEvents();
+  studio.clearEvents();
+  bench.clearEvents();
+});
+
 test.afterAll(async () => {
   await home?.close();
   await studio?.close();
