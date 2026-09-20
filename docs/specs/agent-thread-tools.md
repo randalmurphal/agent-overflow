@@ -958,10 +958,9 @@ codex 0.153.4); outcomes recorded in the
       computer, where the fork never leaves that computer.
       (Only the fork's read-only configuration is verified, not a
       refused write inside it.)
-- [ ] A lost peer reply to `thread_spawn` returns `unconfirmed` with the
+- [x] A lost peer reply to `thread_spawn` returns `unconfirmed` with the
       token; the retry with the same token does not spawn twice; a
       request the destination never accepted settles `refused`.
-      (A lost peer reply producing `unconfirmed` is unverified.)
 - [ ] An answer whose caller reconnects after an hour is delivered with
       its age; one whose caller stays away for a day expires on both
       sides.
