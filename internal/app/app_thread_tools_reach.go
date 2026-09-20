@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/rpcclient"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
 )
 
@@ -213,4 +215,140 @@ func threadPairingEnded(code string) bool {
 		return true
 	}
 	return false
+}
+
+// startRemoteRequest is the source half of a spawn, send or ask on another
+// computer.
+//
+// The row is written `unconfirmed` first, so a reply lost on the way back
+// leaves a token the poller can ask about rather than work nobody records.
+// The destination owns everything the row cannot say: which thread ran, and
+// what it answered.
+func (t threadToolsApp) startRemoteRequest(
+	ctx context.Context, caller threadtools.Caller, row store.ThreadRequest,
+	computerID, tool string, call any, waitSeconds int,
+) (threadtools.RequestAck, error) {
+	origin, err := t.localOrigin(caller)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	peer, err := t.Peer(ctx, computerID)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	args, err := json.Marshal(call)
+	if err != nil {
+		return threadtools.RequestAck{}, fmt.Errorf("thread tools: encode %s for %s: %w", tool, computerID, err)
+	}
+	latest, _, err := t.app.store.LatestHumanUserText(caller.ThreadID)
+	if err != nil {
+		return threadtools.RequestAck{}, err
+	}
+
+	row.Token = newThreadRequestToken()
+	row.CallerThreadID = caller.ThreadID
+	row.TargetComputerID = computerID
+	row.State = store.ThreadRequestUnconfirmed
+	// The poll is the recovery path for a reply that never arrives, and it
+	// must not run while this call is still being attempted: a destination
+	// that has not been asked yet answers `unknown`, which for an
+	// unconfirmed row means refused. The fence covers the whole attempt
+	// sequence and is cut to the normal delay the moment the call returns,
+	// which is what makes "no retry is in flight" durable.
+	row.NextCheck = time.Now().Add(threadRequestAdmissionFence).UnixMilli()
+	if err := t.app.store.InsertThreadRequest(row); err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	reply, uncertain, err := t.app.callThreadPeerRequest(ctx, peer.Computer(), ThreadPeerCall{
+		Tool:        tool,
+		Args:        args,
+		Token:       row.Token,
+		Source:      caller,
+		UserMessage: latest,
+		Inherit:     origin.inherit,
+	})
+	issue := ""
+	if err != nil {
+		_, issue, _ = threadErrorDetails(tool, err)
+	}
+	t.app.rescheduleThreadRequest(row, threadPollNormalDelay, issue)
+	if err != nil {
+		if !uncertain {
+			return threadtools.RequestAck{}, t.settleUnconfirmedRequest(row.Token, err)
+		}
+		// Every attempt ended without an answer, so the destination may be
+		// running this request. The model is given the token and told to
+		// check it rather than an error it would answer by starting the
+		// same work again; the poller reconciles the row either way.
+		return t.ackRequest(ctx, caller, row.Token, waitSeconds)
+	}
+	if _, err := t.app.applyThreadPeerRequest(row.Token, computerID, reply); err != nil {
+		return threadtools.RequestAck{}, err
+	}
+	return t.ackRequest(ctx, caller, row.Token, waitSeconds)
+}
+
+// threadPeerAdmissionAttempts is how many times one request-minting call is
+// sent before the source stops waiting to hear whether it was accepted.
+// Every attempt carries the same token, so a destination that already
+// accepted answers with the acceptance it holds instead of starting a
+// second piece of work.
+const threadPeerAdmissionAttempts = 3
+
+// threadRequestAdmissionFence keeps a freshly written source row out of the
+// poller for as long as the attempts can take, plus the normal poll delay.
+const threadRequestAdmissionFence = threadPeerCallTimeout*threadPeerAdmissionAttempts + threadPollNormalDelay
+
+// callThreadPeerRequest forwards one request-minting call and returns the
+// receipt the destination reports.
+//
+// A failure that leaves the acceptance unknown is retried with the same
+// token, because what was lost is the reply and not the work. `uncertain`
+// is true when every attempt ended that way: the destination may be running
+// the request, so the row stays open for the poller rather than being
+// refused here.
+func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Computer, call ThreadPeerCall) (ThreadPeerRequest, bool, error) {
+	for attempt := 1; ; attempt++ {
+		rpc, cancel := context.WithTimeout(ctx, threadPeerCallTimeout)
+		var reply ThreadPeerReply
+		err := a.backends.CallThreadPeer(rpc, computer.ID, "ThreadToolCall", &reply, call)
+		cancel()
+		if err != nil {
+			code, _, uncertain := threadErrorDetails(call.Tool, err)
+			if uncertain && !threadRequestNeverSent(code) && attempt < threadPeerAdmissionAttempts {
+				continue
+			}
+			return ThreadPeerRequest{}, uncertain, a.threadOperationError(call.Tool, computer.ID, "", err)
+		}
+		if reply.Request == nil {
+			return ThreadPeerRequest{}, false, errorsx.Public(threadtools.CodeUnreachable,
+				fmt.Sprintf("%s accepted %s without reporting the request.", threadtools.NameOfComputer(computer), call.Tool), nil)
+		}
+		return *reply.Request, false, nil
+	}
+}
+
+// settleUnconfirmedRequest ends a remote request whose call failed with an
+// answer the destination gave, and returns the original error.
+//
+// A refusal raised before the destination could see the call is `refused`:
+// nothing ran there, and the row would otherwise be polled forever against
+// a computer that already said why. A refusal the destination itself wrote
+// is left `unconfirmed` for the poller, which reads that computer's own
+// record of the token rather than trusting one failed call. A call whose
+// answer never came back does not reach here at all: it is unconfirmed to
+// the model, with the token.
+func (t threadToolsApp) settleUnconfirmedRequest(token string, cause error) error {
+	code, message, _ := threadErrorDetails("request", cause)
+	if !threadRequestNeverSent(code) {
+		return cause
+	}
+	if _, err := t.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+		State:      store.ThreadRequestRefused,
+		Answer:     []byte(message),
+		AnswerKind: store.ThreadAnswerError,
+	}); err != nil {
+		log.Printf("thread tools: settle unsent request %s: %v", token, err)
+	}
+	return cause
 }
