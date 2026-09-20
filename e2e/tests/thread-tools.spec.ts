@@ -209,7 +209,24 @@ test('the composer MCP toggle turns the server off for one conversation', async 
       },
     ],
   });
-  const caller = seed.projects[0].threadIds[0];
+  const { path, threadIds } = seed.projects[0];
+  const caller = threadIds[0];
+
+  // Each turn lists what the live session can see, which is the only
+  // surface that says the toggle reached the running provider rather than
+  // only the row the menu reads back.
+  await setScenario(
+    harness,
+    path,
+    threadToolsScenario({
+      name: 'tt-composer-caller',
+      provider: 'claude',
+      turns: [
+        { steps: [{ list: {} }], text: 'Tools are gone.' },
+        { steps: [{ list: {} }], text: 'Tools are back.' },
+      ],
+    }),
+  );
   await harness.rpc('StartSession', caller);
 
   await harness.open(page);
@@ -228,6 +245,14 @@ test('the composer MCP toggle turns the server off for one conversation', async 
     })
     .toBe(true);
 
+  // The session this conversation is already running offers nothing from
+  // the server: the endpoint is still wired, and it lists no tools.
+  await harness.rpc('SendMessage', caller, 'look after the toggle', null);
+  const off = await harness.awaitMcpTools({ server: THREAD_TOOLS_SERVER });
+  expect(off.isError, off.error).toBe(false);
+  expect(off.tools).toEqual([]);
+  await awaitTurnCompleted(harness, caller);
+
   await harness.rpc('SetThreadMcpServerEnabled', caller, THREAD_TOOLS_SERVER, true);
   await expect
     .poll(async () => {
@@ -235,6 +260,11 @@ test('the composer MCP toggle turns the server off for one conversation', async 
       return rows.find((entry) => entry.name === THREAD_TOOLS_SERVER)?.disabled;
     })
     .toBe(false);
+
+  await harness.rpc('SendMessage', caller, 'look once more', null);
+  const back = await harness.awaitMcpTools({ server: THREAD_TOOLS_SERVER });
+  expect(back.isError, back.error).toBe(false);
+  expect(back.tools).toEqual(TOOL_NAMES);
 });
 
 test('the settings switch is a real toggle in the SPA', async ({ harness, page }) => {
@@ -2464,7 +2494,11 @@ test('a backgrounded ask arrives as a message and thread_status returns the same
     (await harness.rpc<TimelineItem[]>('ListItems', caller, true)).find(
       (item) => item.kind === 'user_text' && (item.meta ?? '').includes(wakeSendId),
     );
-  await expect.poll(async () => (await findWakeRow()) !== undefined).toBe(true);
+  // A turn boundary plus the queued write behind it is past expect's 10s
+  // default, so every poll that waits on one names its own bound.
+  await expect
+    .poll(async () => (await findWakeRow()) !== undefined, { timeout: 30_000 })
+    .toBe(true);
   const wakeRow = (await findWakeRow())!;
   expect(wakeRow.summary).toContain('Three attempts, then it gives up.');
   expect(wakeRow.summary).toContain(ask.value!.token);
@@ -2501,6 +2535,7 @@ test('a backgrounded ask arrives as a message and thread_status returns the same
       (await harness.rpc<TimelineItem[]>('ListItems', caller, true)).some((item) =>
         (item.summary ?? '').includes('Read the wake message as well.'),
       ),
+      { timeout: 30_000 },
     )
     .toBe(true);
   // Whether the reply also says the message is still coming depends on
@@ -2612,8 +2647,11 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
   const landedRequest = async () =>
     (await targetItems()).find((item) => (item.summary ?? '').includes('look at the crash report too'));
   // The request takes the queued path into a thread that is mid-turn: the
-  // message is written for the target's agent to pick up at its boundary.
-  await expect.poll(async () => (await landedRequest()) !== undefined).toBe(true);
+  // message is written for the target's agent to pick up at its boundary,
+  // which is past expect's 10s default.
+  await expect
+    .poll(async () => (await landedRequest()) !== undefined, { timeout: 30_000 })
+    .toBe(true);
   const landed = (await landedRequest())!;
   expect(landed.kind).toBe('user_text');
   expect(landed.summary).toContain('Agent request from thread');
@@ -2654,6 +2692,7 @@ test('thread_send with notify into a mid-turn thread lands after the boundary wi
       (await harness.rpc<TimelineItem[]>('ListItems', caller, true)).some((item) =>
         (item.summary ?? '').includes('Read the answer when it arrived.'),
       ),
+      { timeout: 30_000 },
     )
     .toBe(true);
 });

@@ -15,7 +15,9 @@ test.describe.configure({ mode: 'serial' });
 
 let home: HarnessApp;
 let studio: HarnessApp;
-let bench: HarnessApp;
+// Cleared once the last test takes this computer down for good, so nothing
+// after that point addresses a backend that has already been reaped.
+let bench: HarnessApp | undefined;
 let studioID = '';
 let benchID = '';
 
@@ -38,6 +40,9 @@ async function pair(host: HarnessApp, peer: HarnessApp, name: string): Promise<s
 }
 
 test.beforeAll(async () => {
+  // Three backends and two pairing handshakes are past the 60s the hook
+  // otherwise inherits from the suite timeout.
+  test.setTimeout(180_000);
   home = await launchHarness();
   studio = await launchHarness();
   bench = await launchHarness();
@@ -51,7 +56,7 @@ test.beforeAll(async () => {
 test.beforeEach(() => {
   home.clearEvents();
   studio.clearEvents();
-  bench.clearEvents();
+  bench?.clearEvents();
 });
 
 test.afterAll(async () => {
@@ -108,7 +113,7 @@ test('computers narrows a search to the one computer it names', async () => {
   test.setTimeout(120_000);
   caller = await seed(home, 'three-caller', 'Quasar caller');
   onStudio = await seed(studio, 'three-studio', 'Quasar on studio');
-  onBench = await seed(bench, 'three-bench', 'Quasar on bench');
+  onBench = await seed(bench!, 'three-bench', 'Quasar on bench');
 
   await setScenario(
     home,
@@ -228,7 +233,11 @@ test('a paired computer that is down becomes an errors row beside the live rows'
       ],
     }),
   );
-  await bench.close();
+  // Down for the rest of the file: the reference goes first, so afterAll
+  // has nothing left to close even if this teardown throws.
+  const down = bench!;
+  bench = undefined;
+  await down.close();
   await home.rpc('StartSession', offlineCaller.threadIds[0]);
   await home.rpc('SendMessage', offlineCaller.threadIds[0], 'search every computer again', null);
 

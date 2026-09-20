@@ -6,7 +6,8 @@
 // Keep promotes the scratch thread into an ordinary sidebar thread
 // (`PromoteScratchThread`) and swaps the companion for a normal pane;
 // closing the side chat, and closing the source pane it hangs from, delete
-// the scratch thread. Spec: docs/specs/agent-thread-tools.md.
+// the scratch thread; and a reload restores the source pane alone, because
+// no side-chat pane is ever persisted. Spec: docs/specs/agent-thread-tools.md.
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
@@ -67,6 +68,20 @@ interface ScratchRow {
   title: string;
   mode: string;
   forkedFromThreadId?: string;
+}
+
+/** localStorage key this context's appStorage bucket lives under. */
+const APP_STORAGE_BUCKET_KEY = 'agent-overflow:uistate:bucket';
+
+/**
+ * The pane layout this browser context persisted, as the raw JSON it holds.
+ * That bucket is the durable copy a reload restores from.
+ */
+async function persistedPaneLayout(page: Page): Promise<string> {
+  return await page.evaluate((key) => {
+    const bucket = JSON.parse(localStorage.getItem(key) ?? '{}') as Record<string, string>;
+    return bucket.paneLayout ?? '';
+  }, APP_STORAGE_BUCKET_KEY);
 }
 
 /** The scratch fork of `source`, or undefined once it is deleted. */
@@ -200,4 +215,37 @@ test('closing the source pane takes its side chat and the thread with it', async
   await expect
     .poll(async () => (await threadRows(harness)).some((row) => row.id === fork!.id))
     .toBe(false);
+});
+
+test('a reload brings the source pane back without its side chat', async ({ harness, page }) => {
+  const source = await seedSource(harness);
+  await setScenario(
+    harness,
+    source.path,
+    plainScenario({ name: 'side-chat-reload', provider: 'claude', texts: ['On it.'] }),
+  );
+
+  await harness.open(page);
+  await page.getByTestId('thread-row').filter({ hasText: SOURCE_TITLE }).click();
+  await runOneTurn(page, harness, 'reread the migration');
+  await runSideChat(page);
+  const fork = await scratchFork(harness, source.threadId);
+  expect(fork).toBeDefined();
+
+  // The persisted layout is the source pane alone: a side chat is left out
+  // of it deliberately, since its thread cannot outlive the pane. Waiting
+  // for the source pane's own entry is what makes the reload below restore
+  // a layout written while the side chat was open.
+  await expect.poll(() => persistedPaneLayout(page)).toContain(source.threadId);
+  expect(await persistedPaneLayout(page)).not.toContain(fork!.id);
+
+  await page.reload();
+  await expect(sourcePane(page)).toHaveCount(1);
+  await expect(sourcePane(page).getByTestId('assistant-message-body').first()).toContainText(
+    'The migration starts in schema.sql.',
+  );
+  await expect(sideChatPane(page)).toHaveCount(0);
+  // Nor is the thread it held anywhere a person can reach it: the boot
+  // sweep on the next restart is what finally deletes it.
+  await expect(page.getByTestId('thread-row').filter({ hasText: 'Side chat' })).toHaveCount(0);
 });
