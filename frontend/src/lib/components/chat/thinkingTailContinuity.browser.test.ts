@@ -35,16 +35,26 @@ setupTimelineHarness();
 
 const QUIET_BOTTOM: QuietBottomOptions = { epsilonPx: 2, stableFrames: 12, frameBudget: 480 };
 const LINE_PX = 19.5;
+const FRAME_MS = 1000 / 60;
+// The sampler's rAF is registered before every animation loop's (it starts
+// before the feed, and a loop a feed task restarts queues behind it), so a
+// sample reads the state the PREVIOUS frame painted, before this frame's
+// tracker steps run. The change between sample i-1 and sample i was
+// therefore produced in frame i-1 with the wall time since frame i-2:
+// under a steady 60Hz that is one frame, across a stalled main thread it
+// is the whole gap, and the dt-based trackers legitimately catch up by it.
+const paintedDt = (frames: Frame[], i: number): number =>
+  i >= 2 ? frames[i - 1]!.t - frames[i - 2]!.t : frames[i]!.t - frames[i - 1]!.t;
 // Between two samples the slide tracker moves a glyph by exactly one drain
 // step of the offset that was pending at the first sample; anything past
-// that (with slack for sub-pixel geometry) is a teleport. Samples use the
-// same frame timestamp as the tracker, independent of layout-read cost.
+// that (with slack for sub-pixel geometry) is a teleport.
 const GLYPH_SLACK_PX = 3;
 const legitGlyphMove = (pendingTy: number, dtMs: number): number =>
   pendingTy - stepSlide(pendingTy, dtMs) + GLYPH_SLACK_PX;
 // A scroll offset that moves once, alone, is a snap: a glide accelerates in
 // over several frames and decelerates out, so its neighbours are never this
-// much smaller.
+// much smaller. Compared per frame of wall time so a gap's catch-up step
+// reads as the glide it is.
 const SNAP_MIN_PX = 8;
 const SNAP_ISOLATION = 3;
 
@@ -158,14 +168,37 @@ function glyphRect(node: Text, i: number): DOMRect | null {
   return range.getBoundingClientRect();
 }
 
+// First non-space glyph on the line that holds glyph `idx`. The tracked
+// glyph must be one an append cannot relocate: appending to the last WORD
+// can pull the whole word onto a new line, but a line's start stays put,
+// because earlier line breaks never move under append-only text. Glyph
+// bottoms are monotone in index, so the line start binary-searches; a
+// collapsed whitespace glyph (empty rect) reads as same-line and the
+// forward skip steps over it.
+function lineStartIndex(node: Text, idx: number): number {
+  const line = glyphRect(node, idx);
+  if (!line) return idx;
+  let lo = 0;
+  let hi = idx;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const r = glyphRect(node, mid);
+    if (r && r.height > 0 && r.bottom < line.bottom - 1) lo = mid + 1;
+    else hi = mid;
+  }
+  const text = node.textContent ?? '';
+  while (lo < idx && /\s/.test(text[lo]!)) lo += 1;
+  return lo;
+}
+
 type Frame = {
   f: number;
   t: number;
   item: string;
-  /** Last glyph's bottom, pane-relative. */
+  /** Tracked glyph's bottom, pane-relative: the start of the last line. */
   y: number | null;
   idx: number;
-  /** Where LAST frame's last glyph sits this frame (same index). */
+  /** Where LAST frame's tracked glyph sits this frame (same index). */
   yPrevIdx: number | null;
   /** First glyph's top, pane-relative. */
   y0: number | null;
@@ -228,7 +261,7 @@ async function runScenario(s: Scenario): Promise<Frame[]> {
       const node = body ? textNodeOf(body) : null;
       const paneRect = scrollEl.getBoundingClientRect();
       const item = pane.items.find((i) => i.id === watched);
-      const idx = node ? lastGlyphIndex(node) : -1;
+      const idx = node ? lineStartIndex(node, lastGlyphIndex(node)) : -1;
       const prev = frames.length ? frames[frames.length - 1]! : null;
       const prevIdx = prev && prev.item === watched ? prev.idx : -1;
       const r = (v: number | null | undefined) =>
@@ -295,11 +328,11 @@ function fmt(fr: Frame): string {
 
 type Finding = { at: number; what: string };
 
-function isolatedSnap(deltas: number[], i: number): boolean {
-  const d = Math.abs(deltas[i] ?? 0);
-  if (d < SNAP_MIN_PX) return false;
-  const before = Math.abs(deltas[i - 1] ?? 0);
-  const after = Math.abs(deltas[i + 1] ?? 0);
+function isolatedSnap(deltas: number[], perFrame: number[], i: number): boolean {
+  if (Math.abs(deltas[i] ?? 0) < SNAP_MIN_PX) return false;
+  const d = Math.abs(perFrame[i] ?? 0);
+  const before = Math.abs(perFrame[i - 1] ?? 0);
+  const after = Math.abs(perFrame[i + 1] ?? 0);
   return d > SNAP_ISOLATION * Math.max(before, after);
 }
 
@@ -307,6 +340,10 @@ function analyse(frames: Frame[]): Finding[] {
   const findings: Finding[] = [];
   const clipDeltas = frames.map((fr, i) => (i === 0 ? 0 : fr.clipTop - frames[i - 1]!.clipTop));
   const paneDeltas = frames.map((fr, i) => (i === 0 ? 0 : fr.paneTop - frames[i - 1]!.paneTop));
+  const perFrame = (deltas: number[]): number[] =>
+    deltas.map((d, i) => (i === 0 ? 0 : (d * FRAME_MS) / Math.max(FRAME_MS, paintedDt(frames, i))));
+  const clipPerFrame = perFrame(clipDeltas);
+  const panePerFrame = perFrame(paneDeltas);
   let restFrames = 0;
   for (let i = 1; i < frames.length; i += 1) {
     const a = frames[i - 1]!;
@@ -316,13 +353,13 @@ function analyse(frames: Frame[]): Finding[] {
     //    glyph on screen legitimately, so they are factored out.
     if (a.item === b.item && a.y !== null && b.yPrevIdx !== null) {
       const dyContent = b.yPrevIdx - a.y + (clipDeltas[i] ?? 0) + (paneDeltas[i] ?? 0);
-      if (Math.abs(dyContent) > legitGlyphMove(a.ty, b.t - a.t)) {
+      if (Math.abs(dyContent) > legitGlyphMove(a.ty, paintedDt(frames, i))) {
         findings.push({ at: i, what: `glyph teleport dy=${dyContent.toFixed(1)} (ty ${a.ty.toFixed(1)}->${b.ty.toFixed(1)}, len ${a.len}->${b.len}, box ${a.boxH}->${b.boxH})` });
       }
     }
     // 2. The clip or the pane moved once, alone: a snap, not a glide.
-    if (isolatedSnap(clipDeltas, i)) findings.push({ at: i, what: `clip snap ${clipDeltas[i]!.toFixed(1)}px` });
-    if (isolatedSnap(paneDeltas, i)) findings.push({ at: i, what: `pane snap ${paneDeltas[i]!.toFixed(1)}px` });
+    if (isolatedSnap(clipDeltas, clipPerFrame, i)) findings.push({ at: i, what: `clip snap ${clipDeltas[i]!.toFixed(1)}px` });
+    if (isolatedSnap(paneDeltas, panePerFrame, i)) findings.push({ at: i, what: `pane snap ${paneDeltas[i]!.toFixed(1)}px` });
     // 3. A completed block at rest (no slide pending, geometry unchanged for
     //    a few frames) never has a blank line above or below its text.
     const atRest =
