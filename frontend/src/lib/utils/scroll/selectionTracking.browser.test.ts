@@ -48,17 +48,25 @@ describe('selection tracking survives a native drag-and-drop', () => {
     expect(isSelectingInside(scroller)).toBe(false);
   });
 
-  it('a drag of selected text inside an attached scroller never becomes a drag session', async () => {
+  // Chromium under CDP input never turns a press on selected text into a
+  // native drag: the move extends the selection instead, headed or headless.
+  // So the veto is proven against the offers the engine can make: a real
+  // drag of a draggable element inside the attached scroller goes through,
+  // and a dragstart offered for anything else is cancelled with the held
+  // state re-read from the vetoed event's own button bitmask.
+  it("an attached scroller vetoes every dragstart but a draggable element's", async () => {
     document.body.innerHTML = `
       <div style="padding:20px">
         <div id="scroller" style="height:100px;overflow:auto">
           <p id="text" style="user-select:text">select this whole line and then drag it</p>
+          <div id="src" draggable="true" style="width:80px;height:40px;background:#c33">drag me</div>
           <div style="height:1000px"></div>
         </div>
         <div id="dst" style="width:200px;height:120px;background:#3c3;margin-top:40px">drop here</div>
       </div>`;
     const scroller = document.getElementById('scroller')!;
     const text = document.getElementById('text')!;
+    const src = document.getElementById('src')!;
     const dst = document.getElementById('dst')!;
     const intent = createScrollIntent(new Proxy({}, { get: () => () => 0 }) as never);
     intent.attach(scroller);
@@ -68,19 +76,30 @@ describe('selection tracking survives a native drag-and-drop', () => {
       // Read after the target's capture listener ran: document bubble phase.
       if (e.defaultPrevented) seen.dragstartCanceled += 1;
     });
+    src.addEventListener('dragstart', (e) => e.dataTransfer?.setData('text/plain', 'x'));
     dst.addEventListener('dragover', (e) => e.preventDefault());
     dst.addEventListener('drop', (e) => { e.preventDefault(); seen.drop += 1; });
 
+    // The engine's own drag of the draggable element is left alone.
+    await userEvent.dragAndDrop(src, dst);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(seen.dragstart, 'the engine offered the drag').toBe(1);
+    expect(seen.dragstartCanceled, 'and it was not vetoed').toBe(0);
+    expect(seen.drop, 'so it dropped').toBe(1);
+
+    // A drag offered for the selected line is vetoed. The document-level
+    // clear has already released the held state; the veto re-reads it from
+    // the event, whose button is still down because the pointer never left.
     await userEvent.tripleClick(text);
     expect(window.getSelection()?.toString().trim(), 'the line is selected').toContain('select this whole line');
+    const offer = new DragEvent('dragstart', { bubbles: true, cancelable: true, buttons: 1 });
+    text.dispatchEvent(offer);
+    expect(offer.defaultPrevented, 'the selection drag was vetoed').toBe(true);
+    expect(seen.dragstartCanceled).toBe(1);
+    expect(isSelectingInside(scroller), 'the press on the selection still counts as selecting').toBe(true);
 
-    // Press on the selection and move it onto the drop target: the gesture
-    // that starts a native drag of selected text.
-    await userEvent.dragAndDrop(text, dst);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    expect(seen.dragstart, 'the engine offered the drag').toBeGreaterThan(0);
-    expect(seen.dragstartCanceled, 'and every offer was vetoed').toBe(seen.dragstart);
-    expect(seen.drop, 'so nothing was ever dropped').toBe(0);
+    // Once the button is up the same offer no longer counts as a held press.
+    text.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, buttons: 0 }));
+    expect(isSelectingInside(scroller)).toBe(false);
   });
 });
