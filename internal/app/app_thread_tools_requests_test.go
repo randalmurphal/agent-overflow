@@ -1367,8 +1367,12 @@ func TestBootSweepSettlesWhatTheRestartInterrupted(t *testing.T) {
 func TestThreadStatusEndsOnWhicheverRequestSettlesFirst(t *testing.T) {
 	f := newRequestFixture(t)
 	f.mockClaudeHoldingTheTurn(t, "thinking")
-	slow := f.runningRequest(t, "the slow one")
+	// Three tokens, and the one that settles is neither the first nor the
+	// last listed: a wait that returned on list order rather than on a
+	// settlement would pass on two tokens and fail here.
+	first := f.runningRequest(t, "the first one")
 	fast := f.runningRequest(t, "the fast one")
+	last := f.runningRequest(t, "the last one")
 
 	type result struct {
 		report threadtools.StatusReport
@@ -1377,7 +1381,7 @@ func TestThreadStatusEndsOnWhicheverRequestSettlesFirst(t *testing.T) {
 	done := make(chan result, 1)
 	go func() {
 		report, err := f.adapter().RequestStates(context.Background(), f.callerIdentity(), threadtools.StatusCall{
-			Tokens: []string{slow.Token, fast.Token}, WaitSeconds: 30,
+			Tokens: []string{first.Token, fast.Token, last.Token}, WaitSeconds: 30,
 		})
 		done <- result{report, err}
 	}()
@@ -1396,11 +1400,17 @@ func TestThreadStatusEndsOnWhicheverRequestSettlesFirst(t *testing.T) {
 		if got.report.WokeOn != fast.Token {
 			t.Fatalf("woke on %q, want the token that settled", got.report.WokeOn)
 		}
-		if len(got.report.Requests) != 2 {
-			t.Fatalf("report lists %d requests, want both", len(got.report.Requests))
+		if len(got.report.Requests) != 3 {
+			t.Fatalf("report lists %d requests, want all three", len(got.report.Requests))
 		}
-		if got.report.Requests[0].State != store.ThreadRequestRunning && got.report.Requests[0].State != store.ThreadRequestAccepted {
-			t.Errorf("the unsettled request reads as %q", got.report.Requests[0].State)
+		for _, index := range []int{0, 2} {
+			open := got.report.Requests[index]
+			if open.State != store.ThreadRequestRunning && open.State != store.ThreadRequestAccepted {
+				t.Errorf("the unsettled request %d reads as %q", index, open.State)
+			}
+			if open.Answer != "" {
+				t.Errorf("the unsettled request %d carries an answer: %+v", index, open)
+			}
 		}
 		if got.report.Requests[1].Answer != "done first" {
 			t.Errorf("the settled request = %+v", got.report.Requests[1])
@@ -1809,4 +1819,163 @@ func TestThreadSpawnFromThreadTakesTheCallersSettings(t *testing.T) {
 	if !strings.Contains(err.Error(), "provider") {
 		t.Errorf("the refusal does not name the axis: %v", err)
 	}
+}
+
+// TestThreadStatusSaysTheQueuedMessageIsStillComing is the other half of a
+// backgrounded answer: the agent reads it off the token, and the reply tells
+// it that the message carrying the same answer is still on its way, so it
+// does not read the answer twice without knowing why.
+//
+// It runs the notice through the tool itself, because the sentence is the
+// tool's, and over both halves of the queued path: the wake waiting in the
+// durable queue of a caller with nothing to take it, and the wake already
+// handed to a live session, which is where an agent calling thread_status
+// actually is.
+func TestThreadStatusSaysTheQueuedMessageIsStillComing(t *testing.T) {
+	type statusReply struct {
+		Requests []struct {
+			Token      string `json:"token"`
+			State      string `json:"state"`
+			Answer     string `json:"answer"`
+			Delivered  string `json:"delivered"`
+			WakeQueued bool   `json:"wake_queued"`
+		} `json:"requests"`
+		Note string `json:"note"`
+	}
+	const notice = "A message carrying this answer is already queued in this thread and will still arrive."
+	readStatus := func(t *testing.T, f *requestFixture, token string) statusReply {
+		t.Helper()
+		answer, err := f.app.threadToolsServer().Call(t.Context(), f.callerIdentity(), "thread_status",
+			json.RawMessage(`{"tokens":["`+token+`"],"wait_seconds":5}`))
+		if err != nil {
+			t.Fatalf("thread_status: %v", err)
+		}
+		encoded, err := json.Marshal(answer)
+		if err != nil {
+			t.Fatalf("encode thread_status reply: %v", err)
+		}
+		var reply statusReply
+		if err := json.Unmarshal(encoded, &reply); err != nil {
+			t.Fatalf("decode thread_status reply %s: %v", encoded, err)
+		}
+		if len(reply.Requests) != 1 {
+			t.Fatalf("reply = %s, want the one request", encoded)
+		}
+		return reply
+	}
+	awaitQueuedWake := func(t *testing.T, f *requestFixture, token string) {
+		t.Helper()
+		waitUntil(t, 10*time.Second, func() bool {
+			row, found, err := f.app.store.GetThreadRequest(token)
+			return err == nil && found && row.DeliveredHow == store.ThreadWakeQueued
+		})
+	}
+
+	t.Run("waiting in the queue", func(t *testing.T) {
+		f := newRequestFixture(t)
+		f.mockClaudeHoldingTheTurn(t, "starting on it")
+		// No session on the caller, so the wake sits in the durable queue
+		// until the thread has somewhere to put it.
+		f.holdCallerTurn(t)
+		ack := f.runningRequest(t, "how many rows did the backfill touch?")
+		if _, err := f.adapter().Reply(t.Context(), f.targetIdentity(t, ack.ThreadID), threadtools.ReplyCall{
+			Token: ack.Token, Text: "the backfill touched 412 rows",
+		}); err != nil {
+			t.Fatalf("Reply: %v", err)
+		}
+		awaitQueuedWake(t, f, ack.Token)
+
+		reply := readStatus(t, f, ack.Token)
+		request := reply.Requests[0]
+		if request.State != store.ThreadRequestReplied || !strings.Contains(request.Answer, "412 rows") {
+			t.Fatalf("request = %+v, want the reply read off the token", request)
+		}
+		if !request.WakeQueued {
+			t.Errorf("request = %+v, want the queued wake reported", request)
+		}
+		if !strings.Contains(reply.Note, notice) {
+			t.Errorf("note = %q, want it to name the message still coming", reply.Note)
+		}
+	})
+
+	t.Run("already handed to the session", func(t *testing.T) {
+		f := newRequestFixture(t)
+		f.mockClaudeHoldingTheTurn(t, "starting on it")
+		// The production queue, which hands a message to a live session
+		// instead of holding it until the thread is started again.
+		f.app.configureTriageQueueCallbacks()
+		t.Cleanup(func() { f.app.flushDispatch.wg.Wait() })
+		// The caller is live and mid-turn, which is where every agent that
+		// calls thread_status is. Its queue hands the wake straight to the
+		// session, where it waits for the turn boundary: no durable queue
+		// row is left, and the message has still not arrived.
+		if err := f.app.SendMessage(f.caller.ID, "look into the backfill", nil); err != nil {
+			t.Fatalf("SendMessage: %v", err)
+		}
+		waitUntil(t, 10*time.Second, func() bool {
+			_, live := f.app.sessionManager().get(f.caller.ID)
+			return live
+		})
+		ack := f.runningRequest(t, "how many rows did the backfill touch?")
+		if _, err := f.adapter().Reply(t.Context(), f.targetIdentity(t, ack.ThreadID), threadtools.ReplyCall{
+			Token: ack.Token, Text: "the backfill touched 412 rows",
+		}); err != nil {
+			t.Fatalf("Reply: %v", err)
+		}
+		awaitQueuedWake(t, f, ack.Token)
+		waitUntil(t, 10*time.Second, func() bool {
+			_, found, err := f.app.store.FindFlushQueueItemBySendID(f.caller.ID, threadWakeSendID(ack.Token))
+			return err == nil && !found
+		})
+		wake := f.wakeRow(t, ack.Token)
+		if usermessage.ReadProviderItemID(wake.Meta) != "" {
+			t.Fatalf("the provider already took the wake up: %+v", wake)
+		}
+
+		reply := readStatus(t, f, ack.Token)
+		request := reply.Requests[0]
+		if request.State != store.ThreadRequestReplied || !strings.Contains(request.Answer, "412 rows") {
+			t.Fatalf("request = %+v, want the reply read off the token", request)
+		}
+		if !request.WakeQueued {
+			t.Errorf("request = %+v, want the dispatched wake still reported as coming", request)
+		}
+		if !strings.Contains(reply.Note, notice) {
+			t.Errorf("note = %q, want it to name the message still coming", reply.Note)
+		}
+
+		// Once the provider echoes the message back, the model has read it
+		// and the notice stops: nothing is owed twice.
+		if err := f.app.store.UpdateItemMeta(f.caller.ID, wake.ID, `{"sendId":"`+threadWakeSendID(ack.Token)+`","provider_item_id":"u-taken-up"}`); err != nil {
+			t.Fatalf("UpdateItemMeta: %v", err)
+		}
+		read := readStatus(t, f, ack.Token)
+		if read.Requests[0].WakeQueued || strings.Contains(read.Note, notice) {
+			t.Errorf("the notice outlived the message: %+v note=%q", read.Requests[0], read.Note)
+		}
+	})
+}
+
+// wakeRow returns the caller's `user_text` row carrying one request's wake.
+func (f *requestFixture) wakeRow(t *testing.T, token string) store.Item {
+	t.Helper()
+	sendID := threadWakeSendID(token)
+	var found store.Item
+	waitUntil(t, 10*time.Second, func() bool {
+		items, err := f.app.store.ListItems(f.caller.ID)
+		if err != nil {
+			return false
+		}
+		for _, item := range items {
+			if item.Kind == "user_text" && strings.Contains(item.Meta, sendID) {
+				found = item
+				return true
+			}
+		}
+		return false
+	})
+	if found.ID == "" {
+		t.Fatalf("no wake message was written to the caller for %s", token)
+	}
+	return found
 }

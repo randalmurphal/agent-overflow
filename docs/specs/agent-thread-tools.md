@@ -909,12 +909,10 @@ codex 0.153.4); outcomes recorded in the
       the server instructions read as a decision guide, and flipping the
       switch removes and restores them in a running session without a
       restart.
-- [ ] `thread_search` finds a phrase from an imported Codex session and
+- [x] `thread_search` finds a phrase from an imported Codex session and
       from an archived Claude thread in another project by default,
       never a scratch thread, and flags `indexing` while building;
       without a query it lists running threads with their state.
-      (The imported-session hit is verified in the store, not through
-      the tool.)
 - [x] `thread_search` returns rows from two isolated computers grouped
       per computer, `computers` narrows to one, and an offline third
       computer yields an `errors` row without failing the call.
@@ -935,32 +933,26 @@ codex 0.153.4); outcomes recorded in the
       caller receives a wake when it rests. The same on another computer
       with an explicit project, with the chip naming the computer on
       both ends; omitting the project lists that computer's projects.
-- [ ] `thread_ask` with the default wait returns the answer inline when
+- [x] `thread_ask` with the default wait returns the answer inline when
       it arrives in time; a longer answer backgrounds and arrives as a
       message; `thread_status` on the token waits and returns it, and
       says the message is also arriving.
-      (The notice that the message is also arriving is unverified.)
-- [ ] `thread_send` with notify into a mid-turn thread lands after the
+- [x] `thread_send` with notify into a mid-turn thread lands after the
       boundary with the draft intact; the responder's `thread_reply`
       wakes the caller; a rest-without-reply wake is flagged and a late
       reply still arrives, including a reply written while the caller's
       computer was unreachable.
-      (The target's preserved draft and the reply written while the
-      caller was unreachable are unverified.)
-- [ ] `thread_ask` on a full-access thread mid-turn produces a hidden
+- [x] `thread_ask` on a full-access thread mid-turn produces a hidden
       read-only tail fork, `thread_reply` runs unprompted inside it, a
       write inside it is refused and reported, and the fork is gone
       once the answer is stored. The same against a thread on another
       computer, where the fork never leaves that computer.
-      (Only the fork's read-only configuration is verified, not a
-      refused write inside it.)
 - [x] A lost peer reply to `thread_spawn` returns `unconfirmed` with the
       token; the retry with the same token does not spawn twice; a
       request the destination never accepted settles `refused`.
-- [ ] An answer whose caller reconnects after an hour is delivered with
+- [x] An answer whose caller reconnects after an hour is delivered with
       its age; one whose caller stays away for a day expires on both
       sides.
-      (The age on a late collection is verified only as a template.)
 - [x] `thread_cancel` interrupts a spawned thread on either computer,
       settles `cancelled`, and refuses an unrelated thread.
 - [x] `thread_options` lists both providers' models with efforts and
@@ -968,10 +960,9 @@ codex 0.153.4); outcomes recorded in the
       with a model the computer lacks is refused with that list.
 - [x] `thread_spawn` with `from_thread` yields a visible fork that
       continues from the source's tail.
-- [ ] A wait on a target that hits an approval returns `blocked` at
+- [x] A wait on a target that hits an approval returns `blocked` at
       once with the request open; `thread_status` with three tokens
       returns on the first settlement.
-      (The multi-token wait is verified on two tokens, not three.)
 - [x] `thread_update` archives five threads in one call, groups two into
       a new group on the front burner, refuses pinning a grouped thread
       and archiving the caller; `thread_group` renames and deletes it;

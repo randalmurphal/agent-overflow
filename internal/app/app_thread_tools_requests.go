@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/usermessage"
 )
 
 // thread_status and thread_cancel: reading, waiting on and stopping requests
@@ -380,19 +381,34 @@ func threadRequestDelivered(row store.ThreadRequest, late bool) bool {
 	return row.DeliveredAt != 0
 }
 
-// wakeQueued reports whether a message carrying this answer is already in the
-// caller's queue, so a reply that also carries it can say so rather than
+// wakeQueued reports whether a message carrying this answer is still on its
+// way to the caller, so a reply that also carries it can say so rather than
 // leaving the agent to read the same answer twice without knowing why.
+//
+// It spans both halves of the queued path, because an agent reading this is
+// mid-turn by definition and a live thread's queue hands its message to the
+// provider at once: the durable queue row holds the wake only while the
+// thread has no session to take it, and after that the dispatched user row
+// waits in the provider's own queue until the turn boundary. The echo that
+// stamps provider_item_id on that row is the model reading the message, so an
+// unstamped row is a message that has not arrived yet. Probing the queue row
+// alone answers no for almost the whole window this notice exists for.
 func (t threadToolsApp) wakeQueued(row store.ThreadRequest, late bool) bool {
 	if !threadRequestDelivered(row, late) || row.DeliveredHow != store.ThreadWakeQueued {
 		return false
 	}
-	_, found, err := t.app.store.FindFlushQueueItemBySendID(row.CallerThreadID, threadWakeSendIDFor(row.Token, late))
+	record, found, err := t.app.findRecordedSend(row.CallerThreadID, threadWakeSendIDFor(row.Token, late))
 	if err != nil {
 		log.Printf("thread tools: probe queued wake %s: %v", row.Token, err)
 		return false
 	}
-	return found
+	if !found {
+		return false
+	}
+	if !record.dispatched {
+		return true
+	}
+	return usermessage.ReadProviderItemID(record.item.Meta) == ""
 }
 
 // ListRequests lists the caller's own requests, open first then newest first.

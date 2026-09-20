@@ -2224,3 +2224,538 @@ test('a wait ends as blocked when the target stops to ask the user', async ({ ha
   expect(row.state).toBe('finished');
   expect(row.answer).toContain('Wrote the note.');
 });
+
+test('a backgrounded ask arrives as a message and thread_status returns the same answer', async ({
+  harness,
+}) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: 'tt-bg-caller', repo: {}, threads: [{ title: 'Background caller', provider: 'claude' }] },
+      { name: 'tt-bg-target', repo: {}, threads: [{ title: 'Retry budget', provider: 'claude' }] },
+    ],
+  });
+  const caller = seed.projects[0].threadIds[0];
+  const callerPath = seed.projects[0].path;
+  const target = seed.projects[1].threadIds[0];
+  const targetPath = seed.projects[1].path;
+
+  // One real turn first, so the ask has a session to fork.
+  await setScenario(
+    harness,
+    targetPath,
+    plainScenario({
+      name: 'tt-bg-target-script',
+      provider: 'claude',
+      texts: ['The retry budget is three attempts.'],
+    }),
+  );
+  await harness.rpc('StartSession', target);
+  await harness.rpc('SendMessage', target, 'look at the retry budget', null);
+  await harness.waitForEvent('provider:turn_completed');
+
+  // The fork holds its answer past the caller's wait, so the ask
+  // backgrounds and the answer is owed as a message instead.
+  await setScenario(
+    harness,
+    targetPath,
+    threadToolsScenario({
+      name: 'tt-bg-fork',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+            { gate: 'hold-answer' },
+            {
+              call: {
+                tool: 'thread_reply',
+                args: { token: '${TOKEN}', text: 'Three attempts, then it gives up.' },
+              },
+            },
+          ],
+          text: 'Answered late.',
+        },
+      ],
+    }),
+  );
+  // The caller asks, backgrounds, and stays in the same turn while the
+  // answer lands: the wake is still in its queue when it reads the token.
+  await setScenario(
+    harness,
+    callerPath,
+    threadToolsScenario({
+      name: 'tt-bg-caller-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_ask',
+                args: { thread_id: target, question: 'what is the retry budget?', wait_seconds: 1 },
+                timeoutMs: 60_000,
+              },
+            },
+            { capture: { var: 'ASK', from: '${MCP_RESULT}', pattern: RESULT_TOKEN_PATTERN } },
+            { gate: 'caller-reads' },
+            {
+              call: {
+                tool: 'thread_status',
+                args: { tokens: ['${ASK}'], wait_seconds: 30 },
+                timeoutMs: 60_000,
+              },
+            },
+          ],
+          text: 'Read the answer off the token.',
+        },
+        // The wake message starts a turn of its own once this one ends.
+        { text: 'Read the wake message as well.' },
+      ],
+    }),
+  );
+
+  await harness.rpc('StartSession', caller);
+  await harness.rpc('SendMessage', caller, 'ask the other thread about the retry budget', null);
+
+  interface AskAck {
+    token: string;
+    state: string;
+    outcome: string;
+    notify: boolean;
+  }
+  const ask = await awaitToolAnswer<AskAck>(harness, { tool: 'thread_ask', timeoutMs: 60_000 });
+  expect(ask.isError, ask.text).toBe(false);
+  // The wait ran out, so the answer is owed as a message and notify is on.
+  expect(ask.value!.outcome).toBe('backgrounded');
+  expect(ask.value!.notify).toBe(true);
+
+  const forkMock = await awaitGate(harness, 'hold-answer', targetPath);
+  const callerMock = await awaitGate(harness, 'caller-reads', callerPath);
+  await advanceGate(harness, forkMock.mockId, 'hold-answer');
+
+  interface TimelineItem {
+    kind: string;
+    summary?: string;
+    meta?: string;
+  }
+  const wakeSendId = `thread-wake:${ask.value!.token}`;
+  // The caller is mid-turn, so the wake takes the queued path: the answer
+  // reaches the thread as a message of its own, attributed to the thread
+  // that answered, without the caller having asked for it again.
+  const findWakeRow = async () =>
+    (await harness.rpc<TimelineItem[]>('ListItems', caller, true)).find(
+      (item) => item.kind === 'user_text' && (item.meta ?? '').includes(wakeSendId),
+    );
+  await expect.poll(async () => (await findWakeRow()) !== undefined).toBe(true);
+  const wakeRow = (await findWakeRow())!;
+  expect(wakeRow.summary).toContain('Three attempts, then it gives up.');
+  expect(wakeRow.summary).toContain(ask.value!.token);
+
+  await advanceGate(harness, callerMock.mockId, 'caller-reads');
+
+  interface StatusAnswer {
+    requests: Array<{
+      token: string;
+      state: string;
+      answer_kind?: string;
+      answer?: string;
+      delivered?: string;
+      wake_queued?: boolean;
+    }>;
+    woke_on?: string;
+    timed_out?: boolean;
+    note?: string;
+  }
+  const status = await awaitToolAnswer<StatusAnswer>(harness, {
+    tool: 'thread_status',
+    timeoutMs: 60_000,
+  });
+  expect(status.isError, status.text).toBe(false);
+  const request = status.value!.requests[0];
+  expect(request.token).toBe(ask.value!.token);
+  expect(request.state).toBe('replied');
+  expect(request.answer_kind).toBe('reply');
+  expect(request.answer).toContain('Three attempts, then it gives up.');
+  expect(status.value!.timed_out).toBeFalsy();
+  // The wake's own turn runs to its end, so the thread is left idle.
+  await expect
+    .poll(async () =>
+      (await harness.rpc<TimelineItem[]>('ListItems', caller, true)).some((item) =>
+        (item.summary ?? '').includes('Read the wake message as well.'),
+      ),
+    )
+    .toBe(true);
+  // Whether the reply also says the message is still coming depends on
+  // whether the provider has taken it up yet, and this mock picks every
+  // queued message up the moment it is written (cmd/ao-mockprovider
+  // claude.go). The notice itself is pinned in
+  // TestThreadStatusSaysTheQueuedMessageIsStillComing, over both halves of
+  // the queued path.
+  expect(request.delivered).toBe('queued');
+});
+
+test('thread_send with notify into a mid-turn thread lands after the boundary with the draft intact', async ({
+  harness,
+}) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: 'tt-draft-caller', repo: {}, threads: [{ title: 'Draft caller', provider: 'claude' }] },
+      { name: 'tt-draft-target', repo: {}, threads: [{ title: 'Busy target', provider: 'claude' }] },
+    ],
+  });
+  const caller = seed.projects[0].threadIds[0];
+  const callerPath = seed.projects[0].path;
+  const target = seed.projects[1].threadIds[0];
+  const targetPath = seed.projects[1].path;
+  const draft = 'half a sentence the person is still typing';
+
+  // The target's first turn parks, so the send arrives mid-turn and the
+  // only way into the thread is the turn boundary.
+  await setScenario(
+    harness,
+    targetPath,
+    threadToolsScenario({
+      name: 'tt-draft-target-script',
+      provider: 'claude',
+      turns: [
+        { steps: [{ gate: 'hold-target' }], text: 'Still on the first task.' },
+        {
+          steps: [
+            { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+            {
+              call: {
+                tool: 'thread_reply',
+                args: { token: '${TOKEN}', text: 'The stall is in the watchdog.' },
+              },
+            },
+          ],
+          text: 'Answered at the boundary.',
+        },
+      ],
+    }),
+  );
+  await setScenario(
+    harness,
+    callerPath,
+    threadToolsScenario({
+      name: 'tt-draft-caller-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_send',
+                args: {
+                  thread_id: target,
+                  message: 'look at the crash report too',
+                  wait_seconds: 0,
+                  notify: true,
+                },
+              },
+            },
+          ],
+          text: 'Queued it for the boundary.',
+        },
+        // The wake the reply sends back starts a turn of its own here.
+        { text: 'Read the answer when it arrived.' },
+      ],
+    }),
+  );
+
+  await harness.rpc('StartSession', target);
+  await harness.rpc('SendMessage', target, 'start on the first task', null);
+  const targetMock = await awaitGate(harness, 'hold-target', targetPath);
+
+  // A person is half-way through a message in that thread's composer.
+  await harness.rpc('SaveDraft', target, draft, [], [], null);
+
+  await harness.rpc('StartSession', caller);
+  await harness.rpc('SendMessage', caller, 'tell the busy thread about the crash report', null);
+
+  interface SendAck {
+    token: string;
+    state: string;
+    outcome: string;
+    notify: boolean;
+  }
+  const send = await awaitToolAnswer<SendAck>(harness, { tool: 'thread_send', timeoutMs: 60_000 });
+  expect(send.isError, send.text).toBe(false);
+  expect(send.value!.outcome).toBe('backgrounded');
+  expect(send.value!.state).toBe('accepted');
+  expect(send.value!.notify).toBe(true);
+
+  interface TimelineItem {
+    id: string;
+    kind: string;
+    summary?: string;
+  }
+  const targetItems = async () => await harness.rpc<TimelineItem[]>('ListItems', target, true);
+  const landedRequest = async () =>
+    (await targetItems()).find((item) => (item.summary ?? '').includes('look at the crash report too'));
+  // The request takes the queued path into a thread that is mid-turn: the
+  // message is written for the target's agent to pick up at its boundary.
+  await expect.poll(async () => (await landedRequest()) !== undefined).toBe(true);
+  const landed = (await landedRequest())!;
+  expect(landed.kind).toBe('user_text');
+  expect(landed.summary).toContain('Agent request from thread');
+
+  const composer = () => harness.rpc<{ content: string }>('GetDraft', target);
+  // A message the person did not type must not take the message they were
+  // typing, on either side of the boundary.
+  expect((await composer()).content).toBe(draft);
+  // The target is still on its first task: the request has not been
+  // answered, and its own turn has not started.
+  expect((await targetItems()).some((item) => (item.summary ?? '').includes('Answered at the boundary'))).toBe(
+    false,
+  );
+
+  // The boundary is what lets the target act on it, and its reply wakes
+  // the caller.
+  await advanceGate(harness, targetMock.mockId, 'hold-target');
+  const reply = await awaitToolAnswer<{ token: string; state: string }>(harness, {
+    tool: 'thread_reply',
+    timeoutMs: 60_000,
+  });
+  expect(reply.isError, reply.text).toBe(false);
+  expect(reply.value!.token).toBe(send.value!.token);
+  expect((await composer()).content).toBe(draft);
+
+  const wake = await harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (ev) =>
+      ev.report.kind === 'user_input' &&
+      ev.cwd === callerPath &&
+      (ev.report.input ?? '').includes(send.value!.token),
+    60_000,
+  );
+  expect(wake.report.input).toContain('The stall is in the watchdog.');
+  // The wake's own turn runs to its end, so both threads are left idle.
+  await expect
+    .poll(async () =>
+      (await harness.rpc<TimelineItem[]>('ListItems', caller, true)).some((item) =>
+        (item.summary ?? '').includes('Read the answer when it arrived.'),
+      ),
+    )
+    .toBe(true);
+});
+
+test('a write inside the ask fork is refused by its session and the refusal comes back in the answer', async ({
+  harness,
+}) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: 'tt-refuse-caller', repo: {}, threads: [{ title: 'Refusal caller', provider: 'claude' }] },
+      {
+        name: 'tt-refuse-target',
+        repo: {},
+        // full-access is the contrast: the fork is read-only whatever the
+        // thread it was cut from may do.
+        threads: [{ title: 'Migration work', provider: 'claude', runtimeMode: 'full-access' }],
+      },
+    ],
+  });
+  const caller = seed.projects[0].threadIds[0];
+  const callerPath = seed.projects[0].path;
+  const target = seed.projects[1].threadIds[0];
+  const targetPath = seed.projects[1].path;
+  const notePath = `${targetPath}/rollback.md`;
+
+  // Turn one settles so the fork has a session file; turn two parks, so
+  // the ask below forks a thread that is mid-turn.
+  await setScenario(
+    harness,
+    targetPath,
+    threadToolsScenario({
+      name: 'tt-refuse-target-script',
+      provider: 'claude',
+      turns: [
+        { text: 'The migration renames two columns.' },
+        { steps: [{ gate: 'target-busy' }], text: 'Finished the long job.' },
+      ],
+    }),
+  );
+  await harness.rpc('StartSession', target);
+  await harness.rpc('SendMessage', target, 'describe the migration', null);
+  await harness.waitForEvent('provider:turn_completed');
+  await harness.rpc('SendMessage', target, 'now run the long job', null);
+  const targetMock = await awaitGate(harness, 'target-busy', targetPath);
+
+  // The fork tries to write, is refused before any prompt (read-only
+  // denies rather than asking), and says so in its answer.
+  await setScenario(
+    harness,
+    targetPath,
+    threadToolsScenario({
+      name: 'tt-refuse-fork',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+            {
+              emitLines: [
+                JSON.stringify({
+                  type: 'assistant',
+                  message: {
+                    id: 'msg-fork-write',
+                    role: 'assistant',
+                    model: 'claude-mock-1',
+                    content: [
+                      {
+                        type: 'tool_use',
+                        id: 'tu-forkwrite',
+                        name: 'Write',
+                        input: { file_path: notePath, content: 'rollback plan' },
+                      },
+                    ],
+                  },
+                }),
+                // What a read-only session returns for a stripped tool: a
+                // pre-ask refusal, so nothing waits on a person.
+                JSON.stringify({
+                  type: 'system',
+                  subtype: 'permission_denied',
+                  tool_name: 'Write',
+                  tool_use_id: 'tu-forkwrite',
+                  decision_reason_type: 'mode',
+                  decision_reason: 'Write is not available in a read-only session',
+                  message: 'Permission to use Write has been denied.',
+                  uuid: 'pd-tu-forkwrite',
+                }),
+                JSON.stringify({
+                  type: 'user',
+                  message: {
+                    role: 'user',
+                    content: [
+                      {
+                        type: 'tool_result',
+                        tool_use_id: 'tu-forkwrite',
+                        is_error: true,
+                        content: 'Permission to use Write has been denied.',
+                      },
+                    ],
+                  },
+                }),
+              ],
+            },
+            { gate: 'fork-refused' },
+            {
+              call: {
+                tool: 'thread_reply',
+                args: {
+                  token: '${TOKEN}',
+                  text: 'It renames two columns. I could not write the rollback note: Write was denied in this read-only copy.',
+                },
+              },
+            },
+          ],
+          text: 'Answered without writing.',
+        },
+      ],
+    }),
+  );
+  await setScenario(
+    harness,
+    callerPath,
+    threadToolsScenario({
+      name: 'tt-refuse-caller-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_ask',
+                args: {
+                  thread_id: target,
+                  question: 'what does the migration do, and write me a rollback note',
+                  wait_seconds: 120,
+                },
+                timeoutMs: 180_000,
+              },
+            },
+          ],
+          text: 'It answered and told me what it could not do.',
+        },
+      ],
+    }),
+  );
+
+  await harness.rpc('StartSession', caller);
+  await harness.rpc('SendMessage', caller, 'ask the migration thread about rollback', null);
+
+  const forkMock = await awaitGate(harness, 'fork-refused', targetPath);
+
+  // The fork is a live scratch thread at this point, and the refusal is
+  // recorded in it: a notice row of its own and a declined tool row.
+  const rows = await threadRows(harness);
+  const fork = rows.find((row) => row.mode === 'scratch');
+  expect(fork, 'the ask made no scratch fork').toBeDefined();
+  expect(fork!.runtimeMode).toBe('read-only');
+  expect(fork!.id).not.toBe(target);
+
+  interface TimelineItem {
+    id: string;
+    kind: string;
+    decision?: string;
+    summary?: string;
+  }
+  await expect
+    .poll(async () => {
+      const items = await harness.rpc<TimelineItem[]>('ListItems', fork!.id, true);
+      const notice = items.find((item) => item.id === 'permission-denied:tu-forkwrite');
+      if (!notice) return null;
+      return {
+        noticeKind: notice.kind,
+        writeDecision: items.find((item) => item.id === 'tu-forkwrite')?.decision ?? '',
+      };
+    })
+    .toEqual({ noticeKind: 'notification', writeDecision: 'declined' });
+
+  // The refusal is the session AO gave the fork, not the script's good
+  // manners: Claude's write tools are stripped from it, which no allow
+  // rule can put back, and the thread it was cut from kept its own.
+  interface MockRow {
+    mockId: string;
+    registration: { cwd: string };
+    sessionConfig?: { disallowedTools?: string[]; permissionMode?: string };
+  }
+  const mocks = await harness.rpc<MockRow[]>('HarnessListMocks');
+  const forkConfig = mocks.find((mock) => mock.mockId === forkMock.mockId)?.sessionConfig;
+  expect(forkConfig?.disallowedTools).toEqual(
+    expect.arrayContaining(['Write', 'Edit', 'NotebookEdit']),
+  );
+  const targetConfig = mocks.find((mock) => mock.mockId === targetMock.mockId)?.sessionConfig;
+  expect(targetConfig?.disallowedTools ?? []).toEqual([]);
+
+  await advanceGate(harness, forkMock.mockId, 'fork-refused');
+
+  interface AskAnswer {
+    token: string;
+    thread_id: string;
+    state: string;
+    outcome: string;
+    answer_kind?: string;
+    answer?: string;
+  }
+  const ask = await awaitToolAnswer<AskAnswer>(harness, { tool: 'thread_ask', timeoutMs: 120_000 });
+  expect(ask.isError, ask.text).toBe(false);
+  expect(ask.value!.outcome).toBe('settled');
+  expect(ask.value!.state).toBe('replied');
+  expect(ask.value!.answer).toContain('renames two columns');
+  // The caller learns the write was refused rather than reading an answer
+  // that quietly left it out.
+  expect(ask.value!.answer).toContain('Write was denied in this read-only copy');
+
+  // Nothing was written, the thread that was asked is still running its
+  // own turn, and the fork is gone once its answer was stored.
+  const noteExists = await harness.rpc<TimelineItem[]>('ListItems', target, true);
+  expect(
+    noteExists.some((item) => (item.summary ?? '').includes('what does the migration do')),
+  ).toBe(false);
+  await expect
+    .poll(async () => (await threadRows(harness)).some((row) => row.mode === 'scratch'))
+    .toBe(false);
+  await advanceGate(harness, targetMock.mockId, 'target-busy');
+});

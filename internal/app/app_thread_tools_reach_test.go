@@ -1564,3 +1564,68 @@ func TestThreadPeerRepliesLargerThanAMegabyteCrossTheWire(t *testing.T) {
 		t.Fatal("the bytes the destination read did not survive the crossing")
 	}
 }
+
+// TestThreadToolsLateCollectionStatesTheAnswersAge proves what a caller that
+// was away reads when it comes back: the wake names how old the answer is,
+// so an agent that resumes an hour later is not told a stale reply is news.
+//
+// The hour is injected as the destination's settled-at, which is the only
+// clock the age is measured against (threadWakeBody). Nothing else is
+// arranged: the destination holds the answer in its own receipt, the source
+// never polled while it was written, and the pass that collects it is the
+// production poller.
+func TestThreadToolsLateCollectionStatesTheAnswersAge(t *testing.T) {
+	pair := newReachPair(t)
+	// The destination's turn stays open, so its own observer settles
+	// nothing and the answer below is the receipt's first settlement.
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	installMockClaudeReplies(t, pair.source, "noted")
+	// The caller is mid-turn, so the wake queues at the turn boundary and
+	// stays there to be read instead of racing a session start.
+	if err := pair.source.store.InsertTurn(store.Turn{
+		TurnID: pair.caller.ID + "-open", ThreadID: pair.caller.ID, TurnIndex: 1, StartedAt: time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	spawn := pair.spawnThere(t, "how many rows did the backfill touch?", map[string]any{"notify": true})
+	waitUntilE2E(t, 30*time.Second, "the destination starts the spawn", func() bool {
+		receipt, found, err := pair.dest.store.GetThreadRequestReceipt(spawn.Token)
+		return err == nil && found && receipt.State == store.ThreadReceiptRunning
+	})
+
+	answeredAt := time.Now().Add(-time.Hour).UnixMilli()
+	settled, err := pair.dest.store.SettleThreadRequestReceipt(spawn.Token, store.ThreadReceiptOpenStates(),
+		store.ThreadRequestSettlement{
+			State:      store.ThreadReceiptReplied,
+			Answer:     []byte("the backfill touched 412 rows"),
+			AnswerKind: store.ThreadAnswerReply,
+			SettledAt:  answeredAt,
+		})
+	if err != nil || !settled {
+		t.Fatalf("settle the receipt an hour ago: settled=%v err=%v", settled, err)
+	}
+
+	pair.poll(t)
+
+	row := pair.request(t, spawn.Token)
+	if row.State != store.ThreadRequestReplied || row.SettledAt != answeredAt {
+		t.Fatalf("the source collected %q settled at %d, want the destination's %d",
+			row.State, row.SettledAt, answeredAt)
+	}
+	var wake store.FlushQueueItem
+	waitUntilE2E(t, 10*time.Second, "the answer is queued for the caller", func() bool {
+		for _, queued := range durableQueueRows(t, pair.source, pair.caller.ID) {
+			if queued.SendID == threadWakeSendID(spawn.Token) {
+				wake = queued
+				return true
+			}
+		}
+		return false
+	})
+	if !strings.Contains(wake.Message, ", answered 1h ago)") {
+		t.Errorf("wake status line = %q, want the answer's age", wake.Message)
+	}
+	if !strings.Contains(wake.Message, "the backfill touched 412 rows") {
+		t.Errorf("wake body = %q, want the answer itself", wake.Message)
+	}
+}

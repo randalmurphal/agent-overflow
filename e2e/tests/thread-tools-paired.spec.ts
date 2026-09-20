@@ -5,20 +5,24 @@
 // with each computer's per-model efforts and a spawn refused for a model
 // the destination lacks; a spawn that runs on the other computer and wakes
 // the caller through the source-side poller; an ask that forks and answers
-// there with only the answer crossing; thread_status and a thread-id prefix
-// resolved across computers; a thread moved between the two resolving to
+// there with only the answer crossing, and a write inside that fork refused
+// there; thread_status and a thread-id prefix resolved across computers; a thread moved between the two resolving to
 // its new owner; a 38k-item thread over there windowed, paged and exported
 // to a path here; a multi-megabyte tool output over there read by query,
 // range and negative offset; the origin chip naming the other computer on
 // both ends; a destination whose own switch is off still serving a
 // forwarded request and replying through thread_reply; a cancel that stops
 // work there; a deleted caller stopping the scratch ask it left there; a
-// destination too old to carry the tools; and forgetting a computer with
+// destination too old to carry the tools; a reply written while the calling
+// computer was off arriving once it is back; and forgetting a computer with
 // open requests.
 // Spec: docs/specs/agent-thread-tools.md.
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { test, expect } from '@playwright/test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
 import type { ProviderOptionRow } from './thread-tools-helpers.js';
@@ -45,9 +49,17 @@ let home: HarnessApp;
 let remote: HarnessApp;
 let remoteID = '';
 let homeID = '';
+// The calling computer is launched on a data directory this file owns, so a
+// test can stop it and start it again on the same state: an agent whose
+// computer was off when its answer was written is a case only a restart of
+// the same computer can show.
+let homeRoot = '';
+let homeDataDir = '';
 
 test.beforeAll(async () => {
-  home = await launchHarness();
+  homeRoot = await mkdtemp(join(tmpdir(), 'ao-thread-tools-home-'));
+  homeDataDir = join(homeRoot, 'state');
+  home = await launchHarness({ dataDir: homeDataDir });
   remote = await launchHarness();
   // Own-device enrollment: the personal pairing the thread tools require,
   // and the one that introduces the reverse connection as well.
@@ -70,8 +82,12 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await home?.close();
-  await remote?.close();
+  try {
+    await home?.close();
+    await remote?.close();
+  } finally {
+    if (homeRoot) await rm(homeRoot, { recursive: true, force: true });
+  }
 });
 
 interface SeededProject {
@@ -417,6 +433,240 @@ test('an ask forks the thread on the other computer and only the answer crosses'
     })
     .toBe(0);
   expect((await threadRows(home)).some((row) => row.id === ask.value!.thread_id)).toBe(false);
+});
+
+test('a write inside the ask fork on the other computer is refused there and only the answer crosses', async () => {
+  test.setTimeout(180_000);
+  const caller = await seed(home, 'remote-refuse-caller', ['Remote refusal caller']);
+  // full-access is the contrast: the fork is read-only whatever the thread
+  // it was cut from may do, and the mode is the destination computer's to
+  // impose on a thread the caller cannot see.
+  const seeded = await remote.rpc<{ projects: SeededProject[] }>('HarnessSeed', {
+    projects: [
+      {
+        name: 'remote-refuse-target',
+        repo: {},
+        threads: [{ title: 'Remote migration work', provider: 'claude', runtimeMode: 'full-access' }],
+      },
+    ],
+  });
+  const there = seeded.projects[0];
+  const target = there.threadIds[0];
+  const notePath = `${there.path}/rollback.md`;
+
+  // Turn one settles so the fork has a session there to cut from; turn two
+  // parks, so the ask forks a thread that is mid-turn on that computer.
+  await setScenario(
+    remote,
+    there.path,
+    threadToolsScenario({
+      name: 'remote-refuse-target-script',
+      provider: 'claude',
+      turns: [
+        { text: 'The migration renames two columns.' },
+        { steps: [{ gate: 'remote-target-busy' }], text: 'Finished the long job.' },
+      ],
+    }),
+  );
+  await remote.rpc('StartSession', target);
+  await remote.rpc('SendMessage', target, 'describe the migration', null);
+  // This file keeps one backend for every test, so the wait names the
+  // thread: an earlier test's completion is still in the event log.
+  await remote.waitForEvent<{ threadId: string }>(
+    'provider:turn_completed',
+    (ev) => ev.threadId === target,
+    60_000,
+  );
+  await remote.rpc('SendMessage', target, 'now run the long job', null);
+  const targetMock = await awaitGate(remote, 'remote-target-busy', there.path);
+
+  await setScenario(
+    remote,
+    there.path,
+    threadToolsScenario({
+      name: 'remote-refuse-fork',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+            {
+              emitLines: [
+                JSON.stringify({
+                  type: 'assistant',
+                  message: {
+                    id: 'msg-remote-fork-write',
+                    role: 'assistant',
+                    model: 'claude-mock-1',
+                    content: [
+                      {
+                        type: 'tool_use',
+                        id: 'tu-remotewrite',
+                        name: 'Write',
+                        input: { file_path: notePath, content: 'rollback plan' },
+                      },
+                    ],
+                  },
+                }),
+                // What a read-only session returns for a stripped tool: a
+                // pre-ask refusal, so nothing waits on a person who is not
+                // even at this computer.
+                JSON.stringify({
+                  type: 'system',
+                  subtype: 'permission_denied',
+                  tool_name: 'Write',
+                  tool_use_id: 'tu-remotewrite',
+                  decision_reason_type: 'mode',
+                  decision_reason: 'Write is not available in a read-only session',
+                  message: 'Permission to use Write has been denied.',
+                  uuid: 'pd-tu-remotewrite',
+                }),
+                JSON.stringify({
+                  type: 'user',
+                  message: {
+                    role: 'user',
+                    content: [
+                      {
+                        type: 'tool_result',
+                        tool_use_id: 'tu-remotewrite',
+                        is_error: true,
+                        content: 'Permission to use Write has been denied.',
+                      },
+                    ],
+                  },
+                }),
+              ],
+            },
+            { gate: 'remote-fork-refused' },
+            {
+              call: {
+                tool: 'thread_reply',
+                args: {
+                  token: '${TOKEN}',
+                  text: 'It renames two columns. I could not write the rollback note: Write was denied in this read-only copy.',
+                },
+              },
+            },
+          ],
+          text: 'Answered without writing.',
+        },
+      ],
+    }),
+  );
+  await setScenario(
+    home,
+    caller.path,
+    threadToolsScenario({
+      name: 'remote-refuse-caller-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_ask',
+                args: {
+                  thread_id: target,
+                  computer_id: remoteID,
+                  question: 'what does the migration do, and write me a rollback note',
+                  wait_seconds: 120,
+                },
+                timeoutMs: 180_000,
+              },
+            },
+          ],
+          text: 'It answered and told me what it could not do.',
+        },
+      ],
+    }),
+  );
+
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'ask the GPU computer about rollback', null);
+
+  const forkMock = await awaitGate(remote, 'remote-fork-refused', there.path);
+
+  // The fork lives on the destination computer only, read-only, with the
+  // refusal recorded in it.
+  const fork = (await threadRows(remote)).find((row) => row.mode === 'scratch');
+  expect(fork, 'the forwarded ask made no scratch fork there').toBeDefined();
+  expect(fork!.runtimeMode).toBe('read-only');
+  expect(fork!.id).not.toBe(target);
+  expect((await threadRows(home)).some((row) => row.mode === 'scratch')).toBe(false);
+
+  interface TimelineItem {
+    id: string;
+    kind: string;
+    decision?: string;
+    summary?: string;
+  }
+  await expect
+    .poll(async () => {
+      const items = await remote.rpc<TimelineItem[]>('ListItems', fork!.id, true);
+      const notice = items.find((item) => item.id === 'permission-denied:tu-remotewrite');
+      if (!notice) return null;
+      return {
+        noticeKind: notice.kind,
+        writeDecision: items.find((item) => item.id === 'tu-remotewrite')?.decision ?? '',
+      };
+    })
+    .toEqual({ noticeKind: 'notification', writeDecision: 'declined' });
+
+  // The refusal is the session that computer gave the fork, not the
+  // script's good manners: the write tools are stripped from it, and the
+  // thread it was cut from kept its own.
+  interface MockRow {
+    mockId: string;
+    registration: { cwd: string };
+    sessionConfig?: { disallowedTools?: string[]; permissionMode?: string };
+  }
+  const mocks = await remote.rpc<MockRow[]>('HarnessListMocks');
+  expect(mocks.find((mock) => mock.mockId === forkMock.mockId)?.sessionConfig?.disallowedTools).toEqual(
+    expect.arrayContaining(['Write', 'Edit', 'NotebookEdit']),
+  );
+  expect(mocks.find((mock) => mock.mockId === targetMock.mockId)?.sessionConfig?.disallowedTools ?? []).toEqual(
+    [],
+  );
+
+  await advanceGate(remote, forkMock.mockId, 'remote-fork-refused');
+
+  interface AskAnswer {
+    token: string;
+    thread_id: string;
+    computer_id?: string;
+    state: string;
+    outcome: string;
+    answer?: string;
+  }
+  // Scoped to this test's workspace: the backend lives for the whole file,
+  // so the previous test's ask answer is still in the event log.
+  const ask = await awaitToolAnswer<AskAnswer>(home, {
+    tool: 'thread_ask',
+    cwd: caller.path,
+    timeoutMs: 150_000,
+  });
+  expect(ask.isError, ask.text).toBe(false);
+  expect(ask.value!.outcome).toBe('settled');
+  expect(ask.value!.state).toBe('replied');
+  expect(ask.value!.computer_id).toBe(remoteID);
+  expect(ask.value!.answer).toContain('renames two columns');
+  // The caller learns the write was refused rather than reading an answer
+  // that quietly left it out.
+  expect(ask.value!.answer).toContain('Write was denied in this read-only copy');
+
+  // Only the answer crossed: no copy of the fork here, nothing written
+  // there, and the thread that was asked never saw the question.
+  expect((await threadRows(home)).some((row) => row.id === ask.value!.thread_id)).toBe(false);
+  const targetItems = await remote.rpc<TimelineItem[]>('ListItems', target, true);
+  expect(
+    targetItems.some((item) => (item.summary ?? '').includes('what does the migration do')),
+  ).toBe(false);
+  await expect
+    .poll(async () => (await threadRows(remote)).filter((row) => row.mode === 'scratch').length, {
+      timeout: 30_000,
+    })
+    .toBe(0);
+  await advanceGate(remote, targetMock.mockId, 'remote-target-busy');
 });
 
 test('thread_status watches a request running on the other computer, and a prefix resolves across computers', async () => {
@@ -1216,7 +1466,127 @@ test('a computer whose hello lacks the thread-tools capability fails as thread_u
   }
 });
 
-// Last: this test forgets the pairing the whole file is built on.
+test('a reply written while the calling computer was off arrives when it comes back', async () => {
+  test.setTimeout(240_000);
+  const caller = await seed(home, 'away-caller', ['Away caller']);
+  const there = await seed(remote, 'away-target', ['Nightly build']);
+  const target = there.threadIds[0];
+
+  // The answering thread holds its reply until the caller's computer is
+  // gone, so the answer is written with nowhere to deliver it.
+  await setScenario(
+    remote,
+    there.path,
+    threadToolsScenario({
+      name: 'away-target-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            { capture: { var: 'TOKEN', from: '${USER_INPUT}', pattern: FOOTER_TOKEN_PATTERN } },
+            { gate: 'caller-offline' },
+            {
+              call: {
+                tool: 'thread_reply',
+                args: { token: '${TOKEN}', text: 'The nightly finished at 03:14.' },
+              },
+            },
+          ],
+          text: 'Replied while they were away.',
+        },
+      ],
+    }),
+  );
+  await setScenario(
+    home,
+    caller.path,
+    threadToolsScenario({
+      name: 'away-caller-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_send',
+                args: {
+                  thread_id: target,
+                  computer_id: remoteID,
+                  message: 'when did the nightly finish?',
+                  wait_seconds: 0,
+                  notify: true,
+                },
+                timeoutMs: 60_000,
+              },
+            },
+          ],
+          text: 'Asked and ended my turn.',
+        },
+      ],
+    }),
+  );
+
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'ask the GPU computer about the nightly', null);
+
+  interface SendAck {
+    token: string;
+    state: string;
+    outcome: string;
+    notify: boolean;
+  }
+  // Scoped to this test's workspace: the backend lives for the whole file,
+  // so an earlier test's answer is still in the event log.
+  const send = await awaitToolAnswer<SendAck>(home, {
+    tool: 'thread_send',
+    cwd: caller.path,
+    timeoutMs: 120_000,
+  });
+  expect(send.isError, send.text).toBe(false);
+  expect(send.value!.outcome).toBe('backgrounded');
+  expect(send.value!.notify).toBe(true);
+  const token = send.value!.token;
+
+  const targetMock = await awaitGate(remote, 'caller-offline', there.path);
+
+  // The caller's computer goes away with the request open.
+  expect(await home.stop()).toBe(true);
+
+  await advanceGate(remote, targetMock.mockId, 'caller-offline');
+  const reply = await awaitToolAnswer<{ token: string; state: string }>(remote, {
+    tool: 'thread_reply',
+    cwd: there.path,
+    timeoutMs: 60_000,
+  });
+  expect(reply.isError, reply.text).toBe(false);
+  expect(reply.value!.token).toBe(token);
+  expect(reply.value!.state).toBe('replied');
+
+  // Back on the same data directory: the source-side poller collects the
+  // answer that was written while nobody here could hear it, and the wake
+  // reaches the thread that asked.
+  home = await launchHarness({ dataDir: homeDataDir });
+  await setScenario(
+    home,
+    caller.path,
+    plainScenario({
+      name: 'away-caller-back',
+      provider: 'claude',
+      texts: ['Read the late answer.'],
+    }),
+  );
+  const wake = await home.waitForEvent<HarnessMockEventData>(
+    'harness:mock',
+    (ev) =>
+      ev.report.kind === 'user_input' &&
+      ev.cwd === caller.path &&
+      (ev.report.input ?? '').includes(token),
+    150_000,
+  );
+  expect(wake.report.input).toContain('The nightly finished at 03:14.');
+  expect(wake.report.input).toContain('GPU computer');
+});
+
 test('a thread of 38k items on the other computer is windowed, paged and exported here', async () => {
   test.setTimeout(420_000);
   const big = bigThreadFixture('PAIRBIG', 'Remote kernel sweep');
