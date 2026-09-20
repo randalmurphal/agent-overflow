@@ -29,6 +29,10 @@ const SessionsDirName = "sessions"
 // answers.
 var ErrNoSession = errors.New("deviceclient: this profile holds no session for that backend")
 
+// ErrInvalidBackendID is the id a session could never be filed under: not
+// a UUID-shaped name, so no profile of it can exist.
+var ErrInvalidBackendID = errors.New("deviceclient: not a backend id this client can file a session under")
+
 // Session is one paired backend as this installation holds it: what to
 // dial, what to pin, and the credential pair to present.
 //
@@ -294,8 +298,7 @@ func sessionPath(dir, backendID string) (string, error) {
 		return "", errors.New("deviceclient: no profile directory to keep sessions in")
 	}
 	if !validBackendID(backendID) {
-		return "", fmt.Errorf(
-			"deviceclient: %q is not a backend id this client can file a session under", backendID)
+		return "", fmt.Errorf("%w: %q", ErrInvalidBackendID, backendID)
 	}
 	return filepath.Join(dir, SessionsDirName, backendID+".json"), nil
 }

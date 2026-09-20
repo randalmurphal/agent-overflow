@@ -307,26 +307,17 @@ func (t threadToolsApp) threadToolsBackendName(backendID string) (name, id strin
 	return label, row.ID
 }
 
-// threadToolsPairing finds the pairing for a computer id, matched on either
-// identity a pairing carries: the id this computer filed it under, and the
-// backend id that computer calls itself by. Its second result is the
-// directional reach answer, so a caller can tell an unknown computer from
-// one with no name.
+// threadToolsPairing finds the pairing for a computer id, the backend id
+// that computer calls itself by, which is also the id this computer files
+// it under. Its second result is the directional reach answer, so a caller
+// can tell an unknown computer from one with no name.
 func (t threadToolsApp) threadToolsPairing(backendID string) (attachedbackends.Attached, bool) {
-	if backendID == "" || t.app.backends == nil {
-		return attachedbackends.Attached{}, false
-	}
-	attached, err := t.app.backends.List()
+	row, paired, err := t.pairing(backendID)
 	if err != nil {
-		log.Printf("thread tools: list pairings for %s: %v", backendID, err)
+		log.Printf("thread tools: read pairing %s: %v", backendID, err)
 		return attachedbackends.Attached{}, false
 	}
-	for _, row := range attached {
-		if row.BackendID == backendID || row.ID == backendID {
-			return row, true
-		}
-	}
-	return attachedbackends.Attached{}, false
+	return row, paired
 }
 
 // remoteDestination reports whether a destination id names another

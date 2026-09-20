@@ -219,23 +219,43 @@ func (m *Manager) List() ([]Attached, error) {
 	}
 	out := make([]Attached, 0, len(sessions))
 	for _, session := range sessions {
-		row := Attached{
-			ID:        session.BackendID,
-			BackendID: session.BackendID,
-			Name:      displayName(session),
-			Nickname:  session.Nickname,
-			Endpoint:  session.Endpoint,
-		}
-		m.mu.Lock()
-		if held, ok := m.carriers[session.BackendID]; ok {
-			row.LastReachedMs = held.lastReachedMs.Load()
-			row.DeviceNameSyncError = held.nameError()
-			row.OwnDeviceSyncError = held.ownError()
-		}
-		m.mu.Unlock()
-		out = append(out, row)
+		out = append(out, m.attached(session))
 	}
 	return out, nil
+}
+
+// Lookup reads one attached machine by id. The second result is false when
+// nothing is paired under that id, an id no profile could be filed under
+// included; a profile that exists but cannot be read is an error.
+func (m *Manager) Lookup(id string) (Attached, bool, error) {
+	session, err := deviceclient.LoadSession(m.dir, id)
+	if err != nil {
+		if errors.Is(err, deviceclient.ErrNoSession) || errors.Is(err, deviceclient.ErrInvalidBackendID) {
+			return Attached{}, false, nil
+		}
+		return Attached{}, false, err
+	}
+	return m.attached(session), true, nil
+}
+
+// attached is one session as the app reads it, with the live hop's
+// reachability when one has been built.
+func (m *Manager) attached(session deviceclient.Session) Attached {
+	row := Attached{
+		ID:        session.BackendID,
+		BackendID: session.BackendID,
+		Name:      displayName(session),
+		Nickname:  session.Nickname,
+		Endpoint:  session.Endpoint,
+	}
+	m.mu.Lock()
+	if held, ok := m.carriers[session.BackendID]; ok {
+		row.LastReachedMs = held.lastReachedMs.Load()
+		row.DeviceNameSyncError = held.nameError()
+		row.OwnDeviceSyncError = held.ownError()
+	}
+	m.mu.Unlock()
+	return row
 }
 
 // Attachment is what an attach attempt answers immediately: the pairing

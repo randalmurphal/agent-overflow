@@ -171,3 +171,32 @@ func TestListReportsNoReachabilityBeforeAnythingAnswered(t *testing.T) {
 		t.Errorf("row = %+v, want the stored profile", rows[0])
 	}
 }
+
+// Lookup reads one profile by id, the way a per-peer client build needs it
+// during a fan-out, and tells a missing pairing apart from an unreadable one.
+func TestLookupReadsOneProfileByID(t *testing.T) {
+	manager, dir := newManager(t)
+	seed(t, dir, deviceclient.Session{
+		BackendID: "aaa", BackendName: "mini", Endpoint: "https://mini.local:8443",
+		SessionID: "s1", Credential: "c1", Nickname: "Mini",
+	})
+	row, found, err := manager.Lookup("aaa")
+	if err != nil || !found {
+		t.Fatalf("lookup aaa: found=%v err=%v", found, err)
+	}
+	if row.ID != "aaa" || row.Nickname != "Mini" || row.Name != "Mini" {
+		t.Errorf("row = %+v, want the stored profile", row)
+	}
+	for _, id := range []string{"bbb", "", "../escape", "not a uuid!"} {
+		row, found, err := manager.Lookup(id)
+		if err != nil || found {
+			t.Errorf("lookup %q: row=%+v found=%v err=%v, want not paired", id, row, found, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, deviceclient.SessionsDirName, "ccc.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write a damaged profile: %v", err)
+	}
+	if _, _, err := manager.Lookup("ccc"); err == nil {
+		t.Error("a damaged profile read as not paired instead of failing")
+	}
+}

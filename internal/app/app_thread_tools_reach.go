@@ -64,20 +64,32 @@ func attachedComputerName(row attachedbackends.Attached) string {
 
 // Peer returns a client for one paired computer. An unknown or unpaired
 // id is a public refusal, because it reaches the model as an errors row.
+// One pairing is read, not the whole list: a fan-out asks for every peer.
 func (t threadToolsApp) Peer(ctx context.Context, computerID string) (threadtools.Peer, error) {
-	computers, err := t.PairedComputers(ctx)
+	row, paired, err := t.pairing(computerID)
 	if err != nil {
 		return nil, errorsx.Public(threadtools.CodeUnreachable,
 			"This computer could not read its pairings. Check Remote access on it and try again.", err)
 	}
-	source, _ := threadtools.CallerFrom(ctx)
-	for _, computer := range computers {
-		if computer.ID == computerID {
-			return threadPeerClient{app: t.app, computer: computer, source: source}, nil
-		}
+	if !paired {
+		return nil, errorsx.Public(threadtools.CodeUnreachable,
+			fmt.Sprintf("Computer %s is not paired with this computer. thread_options lists the computers it can reach.", computerID), nil)
 	}
-	return nil, errorsx.Public(threadtools.CodeUnreachable,
-		fmt.Sprintf("Computer %s is not paired with this computer. thread_options lists the computers it can reach.", computerID), nil)
+	source, _ := threadtools.CallerFrom(ctx)
+	computer := threadtools.Computer{ID: row.ID, Name: attachedComputerName(row)}
+	return threadPeerClient{app: t.app, computer: computer, source: source}, nil
+}
+
+// pairing reads one pairing by the backend id that computer calls itself
+// by. This computer's own id is never a pairing.
+func (t threadToolsApp) pairing(backendID string) (attachedbackends.Attached, bool, error) {
+	if backendID == "" || t.app == nil || t.app.backends == nil {
+		return attachedbackends.Attached{}, false, nil
+	}
+	if self, _ := t.app.backendIdentity(); backendID == self {
+		return attachedbackends.Attached{}, false, nil
+	}
+	return t.app.backends.Lookup(backendID)
 }
 
 // threadPeerClient is one paired computer as threadtools reaches it. Every
