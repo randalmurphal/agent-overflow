@@ -48,8 +48,7 @@ var heldHarnessLock *harnessInstanceLock
 //
 // This is the ONLY liveness guard on an isolated boot, and it lives here
 // rather than in a launcher because every entry point has to be covered:
-// `make harness` and the wails3 dev harness path boot the backend
-// DIRECTLY, and `ao-harness up`'s registry pre-check is both skippable
+// `make harness` boots the backend DIRECTLY, and `ao-harness up`'s registry pre-check is both skippable
 // and TOCTOU (it reads the registry, then spawns). Two backends on one
 // data root is not a cosmetic clash — they open the same SQLite file, and
 // the second publishInstance overwrites the first's registry row, so the

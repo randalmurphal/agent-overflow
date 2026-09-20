@@ -129,9 +129,8 @@ func TestHarnessBootModeNamesTheFlag(t *testing.T) {
 }
 
 // TestPrepareHarnessTakesTheInstanceLock proves the guard is on the BOOT
-// path, not just available to it — `make harness` and the wails3 dev
-// harness path call prepareHarness directly and have no other liveness
-// check at all.
+// path, not just available to it — `make harness` calls prepareHarness
+// directly and has no other liveness check at all.
 func TestPrepareHarnessTakesTheInstanceLock(t *testing.T) {
 	root := t.TempDir()
 	// prepareHarness fails later (no mock provider binary resolvable in a

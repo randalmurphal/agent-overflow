@@ -268,16 +268,15 @@ are not:
   instead of `pprofserve`'s fixed `127.0.0.1:6363`. Isolated boots are
   the one shape deliberately run N-at-a-time (a soak beside your own app,
   a harness per checkout), and the variable is usually INHERITED from a
-  `make dev` shell rather than chosen, so the second instance's listener
+  debug shell rather than chosen, so the second instance's listener
   used to fail to bind and log an error for a port nobody asked it to
   claim. An explicit `host:port` is honoured verbatim.
 - **Frontend assets.** `--harness` / `--soak` honour
   `FRONTEND_DEVSERVER_URL` even in a production-stamped binary (an
-  isolated boot is already an explicit operator act). That variable is
-  EXPORTED by `make dev`, so a harness launched from that terminal
-  silently serves an unminified, HMR-instrumented bundle, and every
-  number a perf run or a soak then produces describes a build nobody
-  ships. The boot logs a loud `WARNING:` line naming the dev server when
+  isolated boot is already an explicit operator act). A shell that still
+  exports that variable makes a harness launched from it silently serve
+  an unminified, HMR-instrumented bundle, and every number a perf run or
+  a soak then produces describes a build nobody ships. The boot logs a loud `WARNING:` line naming the dev server when
   this is actually happening.
 
 ## RPC surface

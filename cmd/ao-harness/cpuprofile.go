@@ -334,7 +334,7 @@ func renderProfileRollup(rollup profileRollup, path string) string {
 	if rollup.SplitBlind {
 		b.WriteString("  NOTE: no named svelte frames matched, but svelte-vendor time is in the script table —\n")
 		b.WriteString("  this build is minified, so the flush/marking split cannot see into it.\n")
-		b.WriteString("  For the named split, profile an instance serving the dev server (make dev / make harness with FRONTEND_DEVSERVER_URL).\n")
+		b.WriteString("  For the named split, profile an instance serving a Vite dev server (ao-harness up --dev-assets).\n")
 	}
 	if len(rollup.Scripts) > 0 {
 		b.WriteString("\nby script (self time):\n")

@@ -548,22 +548,6 @@ var Listeners = []Listener{
 			"a different surface.",
 	},
 	{
-		Name:       "dev supervisor port probe",
-		Package:    "cmd/agent-overflow-dev",
-		Binding:    BindLoopback,
-		Credential: CredNone,
-		Posture:    PostureNone,
-		Sites:      []string{"cmd/agent-overflow-dev/main.go"},
-		Why: "Not a server. It binds the frontend dev port for as long as " +
-			"it takes to learn whether the port is free, then closes it, " +
-			"so no handler is ever attached and no byte is ever written. " +
-			"Enumerated because the gate matches on the bind, and a row " +
-			"saying 'this one serves nothing' is the answer to why it is " +
-			"exempt — an exclusion list would say the same thing " +
-			"somewhere harder to find. Lives in the dev-only supervisor " +
-			"binary, which no release artifact contains.",
-	},
-	{
 		Name:       "CDP relay endpoint",
 		Package:    "internal/cdprelay",
 		Binding:    BindLoopback,
@@ -590,8 +574,7 @@ var Listeners = []Listener{
 		Credential: CredNone,
 		Posture:    PostureNone,
 		Sites:      []string{"internal/webview2host/host_windows.go"},
-		Why: "Not a server, and the same answer as the dev supervisor's " +
-			"port probe: freeLoopbackPort binds 127.0.0.1:0 to learn a " +
+		Why: "Not a server: freeLoopbackPort binds 127.0.0.1:0 to learn a " +
 			"free port number and closes it in the same function, so no " +
 			"handler is ever attached and no byte is ever written. The " +
 			"number then goes to Chromium's --remote-debugging-port, and " +
@@ -1260,8 +1243,8 @@ var Routes = []Route{
 }
 
 // Origins is every scheme+host+port that serves bytes, recorded by whose
-// bytes they are. The one listener absent from this list serves none:
-// the dev supervisor's probe never attaches a handler.
+// bytes they are. Listeners absent from this list serve none: a port
+// probe binds to learn a number and never attaches a handler.
 var Origins = []Origin{
 	{
 		Name: "nearby computer DNS-SD", Listener: "nearby computer discovery",

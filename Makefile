@@ -257,9 +257,13 @@ FRONTEND_DEPS := frontend/node_modules/.pnpm/lock.yaml
 $(FRONTEND_DEPS): frontend/pnpm-lock.yaml
 	cd frontend && pnpm install --frozen-lockfile
 
+# dev: one build of the dev bundle (frontend embedded, DEV=true), then one
+# launch. Nothing watches the tree: a code change needs another `make dev`,
+# the same as `make dev-wsl`. A supervisor that rebuilt and relaunched on
+# every save made the app unusable while editing.
 dev: $(FRONTEND_DEPS)
-	go build -o bin/agent-overflow-dev ./cmd/agent-overflow-dev
-	AGENT_OVERFLOW_DEBUG=$(AGENT_OVERFLOW_DEBUG) AGENT_OVERFLOW_PPROF=$(AGENT_OVERFLOW_PPROF) VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) bin/agent-overflow-dev
+	VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) wails3 build DEV=true
+	AGENT_OVERFLOW_DEBUG=$(AGENT_OVERFLOW_DEBUG) AGENT_OVERFLOW_PPROF=$(AGENT_OVERFLOW_PPROF) wails3 task run
 
 # dev-wsl: cross-compiles the Linux ELF + Windows .exe launcher inside
 # this WSL distro, copies the .exe to a versioned Windows-native path,

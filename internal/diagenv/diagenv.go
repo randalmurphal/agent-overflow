@@ -1,8 +1,7 @@
 // Package diagenv names the opt-in diagnostic and isolated-boot
 // environment variables, and the passthrough list the WSL-boundary
-// launchers forward. It exists so the Windows launcher and dev supervisor
-// can reference the full set without importing the packages that
-// implement each one.
+// launchers forward. It exists so the Windows launcher can reference the
+// full set without importing the packages that implement each one.
 package diagenv
 
 const (

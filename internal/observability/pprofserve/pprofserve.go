@@ -12,10 +12,9 @@
 //	AGENT_OVERFLOW_PPROF=1              # binds the default 127.0.0.1:6363
 //	AGENT_OVERFLOW_PPROF=127.0.0.1:7777 # binds an explicit loopback addr
 //
-// The Windows launcher and the dev supervisor forward the variable
-// across the WSL boundary via WSLENV, so setting it in the shell that
-// runs `make dev` (or on the Windows side for the production launcher)
-// reaches the WSL backend.
+// The Windows launcher forwards the variable across the WSL boundary via
+// WSLENV, so setting it in the shell that runs `make dev-wsl` (or on the
+// Windows side for the production launcher) reaches the WSL backend.
 package pprofserve
 
 import (

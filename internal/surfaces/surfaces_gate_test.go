@@ -295,7 +295,7 @@ func TestEveryListenerHasAnInventoryRow(t *testing.T) {
 			"Add a Listener row naming the binding class, the credential a caller must "+
 			"present, what bytes leave it, and a Why that says what capability sits "+
 			"behind that credential. A listener that serves nothing still gets a row "+
-			"(see \"dev supervisor port probe\") — the row is where the reader learns why.",
+			"(see \"WebView2 debug-port reservation\") — the row is where the reader learns why.",
 			len(unclaimed), strings.Join(unclaimed, "\n  "))
 	}
 }

@@ -1165,9 +1165,9 @@ func unpinIsolatedPprofPort() {
 // dev server's assets instead of the embedded bundle. Empty when
 // FRONTEND_DEVSERVER_URL is unset, i.e. the ordinary case.
 //
-// It exists because the opt-in is INHERITED, not chosen: the variable is
-// exported by `make dev` and by the wails3 dev shell, so a harness or
-// soak launched from that terminal silently measures an unminified,
+// It exists because the opt-in is INHERITED, not chosen: a shell that
+// still exports the variable makes a harness or soak launched from it
+// silently measure an unminified,
 // HMR-instrumented bundle. Every number a perf run or a renderer-hang
 // soak produces then describes a build nobody ships, and nothing on
 // screen says so. Loud at boot is the only place it can be said before
@@ -1246,8 +1246,8 @@ func attachedBackendsSeam(manager *attachedbackends.Manager) transport.AttachedB
 // at "/" for non-RPC requests. Two cases:
 //
 //   - allowDevAssets + FRONTEND_DEVSERVER_URL set: a Vite dev server is
-//     running (either `wails3 dev`, which stamps nativeMode=dev, or
-//     harness mode's explicit opt-in). We proxy every request through so
+//     running (harness mode's explicit opt-in, `ao-harness up
+//     --dev-assets`). We proxy every request through so
 //     HMR's WebSocket and module fetches reach the live bundler.
 //     Production binaries outside harness mode deliberately ignore the
 //     env var so a dirty shell cannot replace the embedded release

@@ -53,9 +53,9 @@ func TestUnpinIsolatedPprofPortRewritesTheEnvironment(t *testing.T) {
 }
 
 // TestIsolatedDevAssetWarning: --harness/--soak honor
-// FRONTEND_DEVSERVER_URL, and that variable is EXPORTED by `make dev` —
-// so a harness launched from that terminal silently measures the dev
-// bundle. The warning is the only thing that says so.
+// FRONTEND_DEVSERVER_URL, so a harness launched from a shell that still
+// exports it silently measures the dev bundle. The warning is the only
+// thing that says so.
 func TestIsolatedDevAssetWarning(t *testing.T) {
 	if got := isolatedDevAssetWarning(""); got != "" {
 		t.Fatalf("warned with no dev server: %q", got)

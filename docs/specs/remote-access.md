@@ -3217,7 +3217,7 @@ Classes to enumerate:
   connection's precomputed visible set.
 - **Listeners**: loopback, LAN, tsnet, plus the auxiliary
   loopback servers (browser MCP, harness control, claudetui gateway +
-  hook relay, pprof, the `--connect` client stub, the dev supervisor)
+  hook relay, pprof, the `--connect` client stub)
   and the **implicit** ones our own child processes open — chromedp
   gives every managed Chrome a loopback DevTools port, which no
   inventory named until this audit. Each declares what capability it

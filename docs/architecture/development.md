@@ -16,8 +16,9 @@ and `gcc`. Wails uses GTK4/WebKitGTK 6.0. The SQLite driver is pure Go;
 syntax highlighting and platform webview glue require cgo.
 
 `make install` installs the Wails CLI and frontend dependencies, including
-Chromium for the browser tests. `make dev` starts the local dev supervisor;
-`make dev-wsl` runs the Windows launcher path. Use the root validation
+Chromium for the browser tests. `make dev` builds the dev bundle once and
+launches it; `make dev-wsl` does the same through the Windows launcher.
+Nothing watches the tree for changes: rerun the target after editing. Use the root validation
 commands for completion: the Go Make targets apply platform flags and
 `go-build` also compiles the `nogui` variant.
 
@@ -34,10 +35,10 @@ commands for completion: the Go Make targets apply platform flags and
   with `method: none`. Do not use Task source fingerprints for outputs
   embedded in the binary: its file walker can omit inputs after a glob or
   symlink error and leave stale output marked current.
-- Keep `.claude/` and `.playwright-mcp/` explicitly excluded in both
-  `build/config.yml` under `dev_mode.ignore.dir` and
-  `frontend/vite.config.ts` under `server.watch.ignored`. Git-ignore handling
-  alone does not prevent recursive watches of nested checkouts.
+- Keep `.claude/` and `.playwright-mcp/` explicitly excluded in
+  `frontend/vite.config.ts` under `server.watch.ignored`; the Vite dev server
+  runs only for `ao-harness up --dev-assets`. Git-ignore handling alone does
+  not prevent recursive watches of nested checkouts.
 
 ## Bootstrap and process lifetime
 
