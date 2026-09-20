@@ -1,22 +1,33 @@
 // ao-thread-tools across two paired computers, both of them real harness
 // backends with their own stores, settings and mock providers.
 //
-// Coverage: the paired (grouped) shape of thread_options and thread_search;
-// a spawn that runs on the other computer and wakes the caller through the
-// source-side poller; an ask that forks and answers there with only the
-// answer crossing; thread_status and a thread-id prefix resolved across
-// computers; a destination whose own switch is off still serving a
-// forwarded request; a cancel that stops work there; and forgetting a
-// computer with open requests. Spec: docs/specs/agent-thread-tools.md.
+// Coverage: the paired (grouped) shape of thread_options and thread_search,
+// with each computer's per-model efforts and a spawn refused for a model
+// the destination lacks; a spawn that runs on the other computer and wakes
+// the caller through the source-side poller; an ask that forks and answers
+// there with only the answer crossing; thread_status and a thread-id prefix
+// resolved across computers; a 38k-item thread over there windowed, paged
+// and exported to a path here; a multi-megabyte tool output over there read
+// by query, range and negative offset; a destination whose own switch is
+// off still serving a forwarded request; a cancel that stops work there;
+// and forgetting a computer with open requests.
+// Spec: docs/specs/agent-thread-tools.md.
+import { readFile } from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
 import { launchHarness, type HarnessApp, type HarnessMockEventData } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
+import type { ProviderOptionRow } from './thread-tools-helpers.js';
 import {
   FOOTER_TOKEN_PATTERN,
   RESULT_TOKEN_PATTERN,
+  SHOW_CURSOR_PATTERN,
   advanceGate,
   awaitGate,
   awaitToolAnswer,
+  awaitTurnCompleted,
+  bigItemFixture,
+  bigThreadFixture,
+  expectEffortsPerModel,
   plainScenario,
   setScenario,
   threadRows,
@@ -111,6 +122,21 @@ test('thread_options and thread_search answer in the paired shape and reach the 
           steps: [
             { call: { tool: 'thread_options', args: {} } },
             { call: { tool: 'thread_search', args: { query: 'Kernel profiling' } } },
+            // A model the destination does not have is refused by the
+            // destination, with the models the destination does have.
+            {
+              call: {
+                tool: 'thread_spawn',
+                args: {
+                  prompt: 'try this',
+                  computer_id: remoteID,
+                  project_id: there.projectId,
+                  provider: 'codex',
+                  model: 'gpt-9000-imaginary',
+                },
+                timeoutMs: 60_000,
+              },
+            },
           ],
           text: 'Both computers answered.',
         },
@@ -127,7 +153,8 @@ test('thread_options and thread_search answer in the paired shape and reach the 
       local?: boolean;
       reachable: boolean;
       projects: Array<{ project_id: string; project: string }>;
-      providers: Array<{ provider: string }>;
+      providers: ProviderOptionRow[];
+      runtime_modes?: Array<{ runtime_mode: string; meaning?: string }>;
     }>;
   }
   const options = await awaitToolAnswer<OptionsAnswer>(home, {
@@ -160,6 +187,28 @@ test('thread_options and thread_search answer in the paired shape and reach the 
   const remoteGroup = search.value!.computers.find((group) => group.computer_id === remoteID)!;
   expect(remoteGroup).toBeDefined();
   expect(remoteGroup.rows.map((row) => row.thread_id)).toContain(there.threadIds[0]);
+
+  // Every model of both providers states the efforts it offers, on the
+  // caller's own computer and on the paired one, which is what a spawn
+  // picks an effort from. Each row carries that computer's runtime modes
+  // with what each one means.
+  for (const row of [options.value!.computers[0], paired]) {
+    expectEffortsPerModel(row.providers);
+    expect(row.runtime_modes?.map((mode) => mode.runtime_mode)).toEqual(
+      expect.arrayContaining(['read-only', 'approval-required', 'full-access']),
+    );
+    expect(row.runtime_modes?.every((mode) => (mode.meaning ?? '') !== '')).toBe(true);
+  }
+
+  // The destination refuses a model it does not offer and answers with
+  // the ones it does, so discovery is never a second round trip.
+  const codex = paired.providers.find((row) => row.provider === 'codex')!;
+  const refused = await awaitToolAnswer(home, { tool: 'thread_spawn', timeoutMs: 60_000 });
+  expect(refused.isError).toBe(true);
+  expect(refused.text).toContain('does not offer model "gpt-9000-imaginary"');
+  for (const model of codex.models) expect(refused.text).toContain(model.model);
+  // A spawn refused on its model created nothing over there.
+  expect(await threadRows(remote)).toHaveLength(1);
 });
 
 test('a spawn on the other computer runs there and its answer wakes the caller', async () => {
@@ -681,6 +730,298 @@ test('a cancel stops a turn the caller started on the other computer', async () 
 });
 
 // Last: this test forgets the pairing the whole file is built on.
+test('a thread of 38k items on the other computer is windowed, paged and exported here', async () => {
+  test.setTimeout(420_000);
+  const big = bigThreadFixture('PAIRBIG', 'Remote kernel sweep');
+  const caller = await seed(home, 'remote-window-caller', ['Remote window caller']);
+  const seeded = await remote.rpc<{ projects: SeededProject[] }>('HarnessSeed', {
+    projects: [{ name: 'remote-window-target', repo: {}, threads: [big.thread] }],
+  });
+  const target = seeded.projects[0].threadIds[0];
+
+  await setScenario(
+    home,
+    caller.path,
+    threadToolsScenario({
+      name: 'remote-window-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_search',
+                args: { query: big.anchor, limit: 5 },
+                timeoutMs: 90_000,
+              },
+            },
+            // A search hit names the computer, the thread and the item, so
+            // `around` opens across the pairing with nothing else looked up.
+            { capture: { var: 'ITEM', from: '${MCP_RESULT}', pattern: '"item_id":"([^"]+)"' } },
+            {
+              call: {
+                tool: 'thread_show',
+                args: { thread_id: target, window: 'around', item_id: '${ITEM}', context: 2 },
+                timeoutMs: 120_000,
+              },
+            },
+            {
+              call: {
+                tool: 'thread_show',
+                args: { thread_id: target, window: 'all', include: ['all'], to_file: true },
+                timeoutMs: 300_000,
+              },
+            },
+          ],
+          text: 'Opened the middle over there and wrote the whole thing out here.',
+        },
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_show',
+                args: { thread_id: target, window: 'all', max_bytes: 1_048_576 },
+                timeoutMs: 300_000,
+              },
+            },
+            { capture: { var: 'CURSOR', from: '${MCP_RESULT}', pattern: SHOW_CURSOR_PATTERN } },
+          ],
+          text: 'First page.',
+        },
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_show',
+                args: { thread_id: target, cursor: '${CURSOR}', max_bytes: 1_048_576 },
+                timeoutMs: 300_000,
+              },
+            },
+            { capture: { var: 'CURSOR', from: '${MCP_RESULT}', pattern: SHOW_CURSOR_PATTERN } },
+          ],
+          text: 'Next page.',
+        },
+      ],
+    }),
+  );
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc('SendMessage', caller.threadIds[0], 'read the middle of the sweep over there', null);
+
+  interface SearchAnswer {
+    computers: Array<{ computer_id?: string; rows: Array<{ thread_id: string; item_id?: string }> }>;
+  }
+  const search = await awaitToolAnswer<SearchAnswer>(home, {
+    tool: 'thread_search',
+    timeoutMs: 90_000,
+  });
+  expect(search.isError, search.text).toBe(false);
+  const group = search.value!.computers.find((row) => row.computer_id === remoteID)!;
+  expect(group.rows.map((row) => row.thread_id)).toContain(target);
+
+  interface ShowAnswer {
+    window: string;
+    computer_id?: string;
+    transcript?: string;
+    items: number;
+    bytes: number;
+    done: boolean;
+    cursor?: string;
+    file?: { path: string; size: number; sha256: string };
+  }
+  // `around` reads the turns surrounding one item of a thread this
+  // computer does not hold, inside the default budget.
+  const around = await awaitToolAnswer<ShowAnswer>(home, {
+    tool: 'thread_show',
+    timeoutMs: 120_000,
+  });
+  expect(around.isError, around.text).toBe(false);
+  expect(around.value!.window).toBe('around');
+  expect(around.value!.computer_id).toBe(remoteID);
+  expect(around.value!.done).toBe(true);
+  expect(around.value!.items).toBe(big.aroundItems);
+  expect(around.value!.bytes).toBeLessThanOrEqual(64 * 1024);
+  expect(around.value!.transcript).toContain(big.anchor);
+  expect(around.value!.transcript).not.toContain(big.head);
+  expect(around.value!.transcript).not.toContain(big.tail);
+
+  // to_file renders over there and copies here, so the path the model
+  // reads is one THIS computer can open.
+  const exported = await awaitToolAnswer<ShowAnswer>(home, {
+    tool: 'thread_show',
+    timeoutMs: 300_000,
+  });
+  expect(exported.isError, exported.text).toBe(false);
+  expect(exported.value!.transcript).toBeUndefined();
+  expect(exported.value!.file!.sha256).toMatch(/^[0-9a-f]{64}$/);
+  const rendered = await readFile(exported.value!.file!.path, 'utf8');
+  expect(rendered.length).toBe(exported.value!.file!.size);
+  expect(rendered).toContain(big.head);
+  expect(rendered).toContain(big.anchor);
+  expect(rendered).toContain(big.tail);
+  expect(rendered.match(/^--- turn \d+ ---$/gm)!.length).toBe(big.turns);
+
+  // `all` pages the remote thread to its end through the cursor, one page
+  // per turn because a thread that is still working refuses a send.
+  await awaitTurnCompleted(home, caller.threadIds[0], 300_000);
+  const pages: ShowAnswer[] = [];
+  let done = false;
+  while (!done) {
+    await home.rpc('SendMessage', caller.threadIds[0], `page ${pages.length + 1} over there`, null);
+    const answer = await awaitToolAnswer<ShowAnswer>(home, {
+      tool: 'thread_show',
+      timeoutMs: 300_000,
+    });
+    expect(answer.isError, answer.text).toBe(false);
+    const page = answer.value!;
+    expect(page.window).toBe('all');
+    expect(page.computer_id).toBe(remoteID);
+    expect(page.bytes).toBeLessThanOrEqual(1_048_576);
+    pages.push(page);
+    done = page.done;
+    expect(pages.length).toBeLessThan(12);
+    await awaitTurnCompleted(home, caller.threadIds[0], 300_000);
+  }
+
+  expect(pages.length).toBeGreaterThan(1);
+  expect(pages[0].transcript).toContain(big.head);
+  expect(pages.reduce((sum, entry) => sum + entry.items, 0)).toBe(big.items);
+  const last = pages[pages.length - 1];
+  expect(last.transcript).toContain(big.tail);
+  expect(last.cursor).toBeUndefined();
+});
+
+test('a multi-megabyte tool output on the other computer is searched and read in ranges', async () => {
+  test.setTimeout(300_000);
+  const bigItem = bigItemFixture('PAIRHUGE', 'Remote fuzzer crash');
+  const caller = await seed(home, 'remote-item-caller', ['Remote item caller']);
+  const seeded = await remote.rpc<{ projects: SeededProject[] }>('HarnessSeed', {
+    projects: [{ name: 'remote-item-target', repo: {}, threads: [bigItem.thread] }],
+  });
+  const target = seeded.projects[0].threadIds[0];
+  const lastChunk = 16 * 1024;
+
+  await setScenario(
+    home,
+    caller.path,
+    threadToolsScenario({
+      name: 'remote-item-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_show',
+                args: { thread_id: target, window: 'tail' },
+                timeoutMs: 120_000,
+              },
+            },
+            { capture: { var: 'ITEM', from: '${MCP_RESULT}', pattern: 'item_id=([A-Za-z0-9-]+)' } },
+            {
+              call: {
+                tool: 'thread_item',
+                args: { thread_id: target, item_id: '${ITEM}', query: bigItem.needle.trim() },
+                timeoutMs: 180_000,
+              },
+            },
+            {
+              call: {
+                tool: 'thread_item',
+                args: {
+                  thread_id: target,
+                  item_id: '${ITEM}',
+                  offset: bigItem.needleOffset - 512,
+                  max_bytes: 1024,
+                },
+                timeoutMs: 120_000,
+              },
+            },
+            {
+              call: {
+                tool: 'thread_item',
+                args: { thread_id: target, item_id: '${ITEM}', offset: -lastChunk },
+                timeoutMs: 120_000,
+              },
+            },
+          ],
+          text: 'Found it over there.',
+        },
+      ],
+    }),
+  );
+  await home.rpc('StartSession', caller.threadIds[0]);
+  await home.rpc(
+    'SendMessage',
+    caller.threadIds[0],
+    'what did the fuzzer crash on over there?',
+    null,
+  );
+
+  interface ShowAnswer {
+    computer_id?: string;
+    transcript?: string;
+  }
+  // The row renders on the computer that holds it, so the megabytes never
+  // cross: the transcript is one line naming the size and the reader.
+  const collapsed = await awaitToolAnswer<ShowAnswer>(home, {
+    tool: 'thread_show',
+    timeoutMs: 120_000,
+  });
+  expect(collapsed.isError, collapsed.text).toBe(false);
+  expect(collapsed.value!.computer_id).toBe(remoteID);
+  expect(collapsed.value!.transcript).toContain('3.8 MB, not shown; read it with thread_item');
+  expect(collapsed.value!.transcript!.length).toBeLessThan(64 * 1024);
+  expect(collapsed.value!.transcript).not.toContain(bigItem.needle.trim());
+
+  interface ItemAnswer {
+    computer_id?: string;
+    size: number;
+    offset: number;
+    bytes: number;
+    text?: string;
+    eof: boolean;
+    match_count?: number;
+    matches?: Array<{ offset: number; context: string }>;
+  }
+  // The query runs over there and only the matches cross.
+  const matched = await awaitToolAnswer<ItemAnswer>(home, {
+    tool: 'thread_item',
+    timeoutMs: 180_000,
+  });
+  expect(matched.isError, matched.text).toBe(false);
+  expect(matched.value!.computer_id).toBe(remoteID);
+  expect(matched.value!.size).toBe(bigItem.size);
+  expect(matched.value!.match_count).toBe(1);
+  expect(matched.value!.matches![0].offset).toBe(bigItem.needleOffset);
+  expect(matched.value!.matches![0].context).toContain(bigItem.needle.trim());
+
+  const range = await awaitToolAnswer<ItemAnswer>(home, {
+    tool: 'thread_item',
+    timeoutMs: 120_000,
+  });
+  expect(range.isError, range.text).toBe(false);
+  expect(range.value!.offset).toBe(bigItem.needleOffset - 512);
+  expect(range.value!.bytes).toBe(1024);
+  expect(range.value!.text).toContain(bigItem.needle.trim());
+  expect(range.value!.text).toContain('pad before');
+  expect(range.value!.text).toContain('pad after');
+  expect(range.value!.eof).toBe(false);
+
+  // A negative offset reads the last 16KB of a 3.8MB row held elsewhere.
+  const tail = await awaitToolAnswer<ItemAnswer>(home, {
+    tool: 'thread_item',
+    timeoutMs: 120_000,
+  });
+  expect(tail.isError, tail.text).toBe(false);
+  expect(tail.value!.offset).toBe(bigItem.size - lastChunk);
+  expect(tail.value!.bytes).toBe(lastChunk);
+  expect(tail.value!.eof).toBe(true);
+  expect(tail.value!.text).toContain('pad after');
+  expect(tail.value!.text).not.toContain(bigItem.needle.trim());
+});
+
+// Last in the file: this one removes the pairing, and the tests run in
+// serial order against the two backends beforeAll launched.
 test('forgetting a computer with open requests refuses once, then abandons them', async () => {
   test.setTimeout(180_000);
   const caller = await seed(home, 'remote-forget-caller', ['Forget caller']);

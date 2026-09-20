@@ -358,7 +358,13 @@ a test has to plan around:
 ### Seeding vs. live turns
 
 `HarnessSeed` writes ordinary thread *completed history*, the rows the app
-itself would have persisted after the fact. Workflow items are different: the
+itself would have persisted after the fact. A thread's whole history goes in
+as one `Store.InsertThreadHistory` batch, so size is a seed's shape and not
+its cost. Two fields describe fixtures too large to spell: a turn's `repeat`
+seeds that turn that many times in a row, each at its own turn index and
+minute, and a payload's `padBefore` / `padAfter` wrap its `data` in that many
+bytes of generated filler lines. A 38k-item thread with a multi-megabyte tool
+output in it is a few lines of spec. Workflow items are different: the
 seeder writes definitions/profile files to the production project config layout
 and calls `WorkflowStartRun`, the one start path every producer uses; the run
 executes through the real engine and mock provider. It never inserts work-item,

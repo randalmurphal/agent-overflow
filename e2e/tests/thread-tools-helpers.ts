@@ -10,6 +10,8 @@
 // workspace: two threads that must run different scripts have to live in
 // different projects. Every helper takes that cwd explicitly.
 
+import { expect } from '@playwright/test';
+
 import type { HarnessApp } from '../src/harness.js';
 
 export const THREAD_TOOLS_SERVER = 'ao-thread-tools';
@@ -292,4 +294,201 @@ export interface ThreadRow {
 /** Every non-archived thread row the backend holds, drafts included. */
 export async function threadRows(harness: HarnessApp): Promise<ThreadRow[]> {
   return await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
+}
+
+/**
+ * One filler line of a seeded payload's padding
+ * (internal/harnessrpc.appendSeedPad). Every line is this wide, whichever
+ * side it is on, so a fixture's own data sits at an offset a spec can
+ * compute instead of searching for.
+ */
+const PAD_LINE_BYTES = 'pad before 000001: generated filler line\n'.length;
+
+/** Padding of `bytes` rounds up to whole filler lines. */
+function paddedBytes(bytes: number): number {
+  return Math.ceil(bytes / PAD_LINE_BYTES) * PAD_LINE_BYTES;
+}
+
+/** A seeded thread plus what a spec has to know about it. */
+export interface SeededThreadFixture {
+  /** The `threads` entry of a HarnessSeed spec. */
+  thread: Record<string, unknown>;
+}
+
+/** A thread near 38k items, with a marker at its head, middle and tail. */
+export interface BigThreadFixture extends SeededThreadFixture {
+  /** Items the thread holds, all told. */
+  items: number;
+  /** Turns the thread holds. */
+  turns: number;
+  /** Phrase in the first turn. */
+  head: string;
+  /** Phrase in the middle turn, which is what `around` is anchored on. */
+  anchor: string;
+  /** Phrase in the last turn. */
+  tail: string;
+  /** Items in the five-turn window `around` the anchor with context 2. */
+  aroundItems: number;
+}
+
+/**
+ * A thread of 38006 items: two blocks of a thousand bulk turns with one
+ * distinctive turn at the head, the middle and the tail. `tag` makes every
+ * marker unique, so a search that fans out over two computers can name the
+ * one thread it means.
+ */
+export function bigThreadFixture(tag: string, title: string): BigThreadFixture {
+  const bulkTurns = 1000;
+  const bulkItems = 18;
+  const bulk = {
+    userText: 'keep sweeping',
+    items: Array.from({ length: bulkItems }, (_unused, index) => ({
+      kind: 'assistant_text',
+      summary: `swept region ${index + 1}`,
+    })),
+    repeat: bulkTurns,
+  };
+  const head = `${tag}HEAD`;
+  const anchor = `${tag}ANOMALY`;
+  const tail = `${tag}TAIL`;
+  return {
+    thread: {
+      title,
+      provider: 'claude',
+      turns: [
+        {
+          userText: 'begin the sweep',
+          items: [{ kind: 'assistant_text', summary: `${head} sweep started` }],
+        },
+        bulk,
+        {
+          userText: 'what went wrong in the middle',
+          items: [{ kind: 'assistant_text', summary: `${anchor} the scheduler stalled at tick 41` }],
+        },
+        bulk,
+        {
+          userText: 'wrap up',
+          items: [{ kind: 'assistant_text', summary: `${tail} sweep complete` }],
+        },
+      ],
+    },
+    // Three single turns of two rows each, plus two blocks of a thousand
+    // turns carrying a user row and eighteen answers.
+    items: 3 * 2 + 2 * bulkTurns * (bulkItems + 1),
+    turns: 3 + 2 * bulkTurns,
+    head,
+    anchor,
+    tail,
+    // context 2 takes the anchor turn and two bulk turns on each side.
+    aroundItems: 2 + 4 * (bulkItems + 1),
+  };
+}
+
+/** A thread whose one tool call holds a multi-megabyte output. */
+export interface BigItemFixture extends SeededThreadFixture {
+  /** The whole payload's size in bytes. */
+  size: number;
+  /** The phrase buried in the middle of it. */
+  needle: string;
+  /** Byte offset of `needle` inside the payload. */
+  needleOffset: number;
+}
+
+/**
+ * A tool output of about 4MB with one phrase buried halfway through it,
+ * which is the only shape `thread_item`'s query and range reads exist for.
+ */
+export function bigItemFixture(tag: string, title: string): BigItemFixture {
+  const needle = `${tag}NEEDLE panic: tokenizer overran the escape\n`;
+  const padBefore = 2_000_000;
+  const padAfter = 2_000_000;
+  return {
+    thread: {
+      title,
+      provider: 'codex',
+      turns: [
+        {
+          userText: 'run the fuzzer and tell me what it found',
+          items: [
+            { kind: 'assistant_text', summary: 'It crashed; the log is long.' },
+            {
+              kind: 'tool_call',
+              toolName: 'Bash',
+              summary: 'go test -run Fuzz ./internal/lex',
+              payload: { kind: 'tool_call_result', data: needle, padBefore, padAfter },
+            },
+          ],
+        },
+      ],
+    },
+    size: paddedBytes(padBefore) + needle.length + paddedBytes(padAfter),
+    needle,
+    needleOffset: paddedBytes(padBefore),
+  };
+}
+
+/**
+ * Wait for one thread's turn to settle.
+ *
+ * A thread that is still working refuses the next send, so a test that
+ * drives several turns waits here between them. The thread id matters:
+ * a harness shared by a whole spec file carries the completions of every
+ * earlier test, and an unfiltered wait would consume one of those and
+ * send into a turn that is still open.
+ */
+export async function awaitTurnCompleted(
+  harness: HarnessApp,
+  threadID: string,
+  timeoutMs = 120_000,
+): Promise<void> {
+  await harness.waitForEvent<{ threadId?: string }>(
+    'provider:turn_completed',
+    (data) => data.threadId === threadID,
+    timeoutMs,
+  );
+}
+
+/**
+ * The cursor out of a paged answer.
+ *
+ * The alternation binds an empty ${CURSOR} on the final page, which
+ * carries `done` and no cursor: a capture that matched nothing is a
+ * fixture error, and the last call of a paging loop is not one.
+ */
+export const SHOW_CURSOR_PATTERN = '"cursor":"([^"]+)"|"done":true';
+
+/** One provider's row of a thread_options answer, as far as efforts go. */
+export interface ProviderOptionRow {
+  provider: string;
+  models: Array<{ model: string; efforts?: string[]; default_effort?: string }>;
+}
+
+/**
+ * Per-model efforts, the half of a catalog a spawn's `effort` comes from.
+ * Shared by the single-computer and the paired spec: the row a paired
+ * computer answers with has the same shape as this computer's own.
+ *
+ * Efforts are the catalog's, not a list of the tool's own: a model that
+ * offers no reasoning tiers (Claude Haiku 4.5) states none and marks no
+ * default, and one that offers tiers marks its default among them. Both
+ * providers offer tiers on at least one model, so an empty catalog cannot
+ * pass this as "no model has efforts".
+ */
+export function expectEffortsPerModel(providers: ProviderOptionRow[]): void {
+  for (const name of ['claude', 'codex']) {
+    const entry = providers.find((row) => row.provider === name);
+    expect(entry, `provider ${name}`).toBeDefined();
+    expect(entry!.models.length).toBeGreaterThan(0);
+    for (const model of entry!.models) {
+      const efforts = model.efforts ?? [];
+      const label = `${name}/${model.model} efforts`;
+      if (efforts.length === 0) {
+        expect(model.default_effort ?? '', label).toBe('');
+        continue;
+      }
+      expect(efforts, label).toContain(model.default_effort);
+    }
+    const offered = entry!.models.filter((model) => (model.efforts ?? []).length > 0);
+    expect(offered.length, `${name} models offering efforts`).toBeGreaterThan(0);
+  }
 }

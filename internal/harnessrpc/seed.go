@@ -80,6 +80,12 @@ type HarnessSeedThread struct {
 type HarnessSeedTurn struct {
 	UserText string            `json:"userText"`
 	Items    []HarnessSeedItem `json:"items,omitempty"`
+	// Repeat seeds this turn that many times in a row (default 1), each
+	// at its own turn index and minute. It is how a fixture describes a
+	// thread of tens of thousands of items without shipping one row per
+	// item: put the rows a test reads in their own single turns and the
+	// bulk between them.
+	Repeat int `json:"repeat,omitempty"`
 	// Incomplete leaves the turn without completed_at — the state a
 	// crash recovery or "still running" UI probe sees.
 	Incomplete bool `json:"incomplete,omitempty"`
@@ -107,6 +113,13 @@ type HarnessSeedPayload struct {
 	Kind string `json:"kind"`
 	Meta string `json:"meta,omitempty"`
 	Data string `json:"data"`
+	// PadBefore and PadAfter wrap Data in at least that many bytes of
+	// generated filler lines, rounded up to a whole line, so a fixture can
+	// describe a multi-megabyte tool output without shipping one over the
+	// wire. Every filler line is seedPadLineBytes wide, so the offset Data
+	// lands at is one a test can compute.
+	PadBefore int `json:"padBefore,omitempty"`
+	PadAfter  int `json:"padAfter,omitempty"`
 }
 
 // HarnessSeedResult reports what was created, in spec order.
@@ -345,50 +358,67 @@ func (h *Harness) seedThread(projectID string, spec HarnessSeedThread) (string, 
 // seedHistory writes turns + items with naturally spaced timestamps:
 // the transcript ends "now" and each turn is a minute apart, so
 // relative times and sidebar ordering look like a real session.
+//
+// The whole history goes in as one Store.InsertThreadHistory batch. A
+// fixture can be tens of thousands of rows (`repeat`), and a transaction
+// per row is the entire cost of seeding one.
 func (h *Harness) seedHistory(threadID string, turns []HarnessSeedTurn) error {
 	if len(turns) == 0 {
 		return nil
 	}
-	base := h.config.Now().Add(-time.Duration(len(turns)) * time.Minute).UnixMilli()
-	for i, turn := range turns {
-		// Turn indexes are 0-based, exactly as sendMessageLocked
-		// allocates them: the first turn of a live thread is 0
-		// (LastTurnIndex on an empty thread, un-incremented because
-		// there are no prior items). Seeding from 1 made every seeded
-		// thread one index off from the same conversation produced
-		// live, which silently put turn-0-specific behavior out of
-		// reach of the whole e2e suite — the conversation rollback
-		// branches on `anchor.TurnIndex == 0` to drop the provider
-		// session reference instead of slicing its transcript, and no
-		// seeded fixture could ever reach it.
-		turnIndex := i
-		at := base + int64(i)*time.Minute.Milliseconds()
-		if err := h.seedTurn(threadID, turnIndex, at, turn); err != nil {
-			return fmt.Errorf("turn %d: %w", turnIndex, err)
-		}
-	}
-	return nil
-}
-
-func (h *Harness) seedTurn(threadID string, turnIndex int, at int64, spec HarnessSeedTurn) error {
-	if spec.UserText == "" {
-		return fmt.Errorf("userText must be non-empty")
-	}
-	turnID := fmt.Sprintf("%s:%d", threadID, turnIndex)
 	database := h.store()
 	if database == nil {
 		return fmt.Errorf("store unavailable")
 	}
-	if err := database.InsertTurn(store.Turn{
+	total := 0
+	for _, turn := range turns {
+		total += turnRepeat(turn)
+	}
+	base := h.config.Now().Add(-time.Duration(total) * time.Minute).UnixMilli()
+	batch := store.ThreadHistoryBatch{}
+	turnIndex := 0
+	for i, turn := range turns {
+		for range turnRepeat(turn) {
+			// Turn indexes are 0-based, exactly as sendMessageLocked
+			// allocates them: the first turn of a live thread is 0
+			// (LastTurnIndex on an empty thread, un-incremented because
+			// there are no prior items). Seeding from 1 made every seeded
+			// thread one index off from the same conversation produced
+			// live, which silently put turn-0-specific behavior out of
+			// reach of the whole e2e suite — the conversation rollback
+			// branches on `anchor.TurnIndex == 0` to drop the provider
+			// session reference instead of slicing its transcript, and no
+			// seeded fixture could ever reach it.
+			at := base + int64(turnIndex)*time.Minute.Milliseconds()
+			if err := appendSeedTurn(&batch, threadID, turnIndex, at, turn); err != nil {
+				return fmt.Errorf("turn %d (spec %d): %w", turnIndex, i+1, err)
+			}
+			turnIndex++
+		}
+	}
+	return database.InsertThreadHistory(threadID, batch)
+}
+
+// turnRepeat is how many consecutive turns one turn spec seeds.
+func turnRepeat(spec HarnessSeedTurn) int {
+	if spec.Repeat > 1 {
+		return spec.Repeat
+	}
+	return 1
+}
+
+func appendSeedTurn(batch *store.ThreadHistoryBatch, threadID string, turnIndex int, at int64, spec HarnessSeedTurn) error {
+	if spec.UserText == "" {
+		return fmt.Errorf("userText must be non-empty")
+	}
+	turnID := fmt.Sprintf("%s:%d", threadID, turnIndex)
+	batch.Turns = append(batch.Turns, store.Turn{
 		TurnID:    turnID,
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
 		StartedAt: at,
-	}); err != nil {
-		return fmt.Errorf("insert turn: %w", err)
-	}
-
-	if err := database.InsertItem(store.Item{
+	})
+	batch.Rows = append(batch.Rows, store.HistoryRow{Item: store.Item{
 		ID:        uuid.NewString(),
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
@@ -398,15 +428,15 @@ func (h *Harness) seedTurn(threadID string, turnIndex int, at int64, spec Harnes
 		Summary:   spec.UserText,
 		CreatedAt: at,
 		UpdatedAt: at,
-	}); err != nil {
-		return fmt.Errorf("insert user item: %w", err)
-	}
+	}})
 
 	for ii, itemSpec := range spec.Items {
 		itemAt := at + int64(ii+1)*1000
-		if err := h.seedItem(threadID, turnIndex, ii+1, itemAt, itemSpec); err != nil {
+		row, err := seedItemRow(threadID, turnIndex, ii+1, itemAt, itemSpec)
+		if err != nil {
 			return fmt.Errorf("item %d: %w", ii+1, err)
 		}
+		batch.Rows = append(batch.Rows, row)
 	}
 
 	if !spec.Incomplete {
@@ -414,17 +444,18 @@ func (h *Harness) seedTurn(threadID string, turnIndex int, at int64, spec Harnes
 		if stopReason == "" {
 			stopReason = "end_turn"
 		}
-		completedAt := at + int64(len(spec.Items)+1)*1000
-		if err := database.UpdateTurnCompleted(turnID, completedAt, stopReason, "", "", ""); err != nil {
-			return fmt.Errorf("complete turn: %w", err)
-		}
+		batch.Completions = append(batch.Completions, store.TurnCompletion{
+			TurnID:      turnID,
+			CompletedAt: at + int64(len(spec.Items)+1)*1000,
+			StopReason:  stopReason,
+		})
 	}
 	return nil
 }
 
-func (h *Harness) seedItem(threadID string, turnIndex, itemIndex int, at int64, spec HarnessSeedItem) error {
+func seedItemRow(threadID string, turnIndex, itemIndex int, at int64, spec HarnessSeedItem) (store.HistoryRow, error) {
 	if spec.Kind == "" {
-		return fmt.Errorf("kind must be non-empty")
+		return store.HistoryRow{}, fmt.Errorf("kind must be non-empty")
 	}
 	role := spec.Role
 	if role == "" {
@@ -445,17 +476,60 @@ func (h *Harness) seedItem(threadID string, turnIndex, itemIndex int, at int64, 
 		UpdatedAt: at,
 	}
 	if spec.Payload == nil {
-		return h.store().InsertItem(item)
+		return store.HistoryRow{Item: item}, nil
+	}
+	data, err := seedPayloadData(*spec.Payload)
+	if err != nil {
+		return store.HistoryRow{}, err
 	}
 	payload := store.Payload{
 		ID:        uuid.NewString(),
 		Kind:      spec.Payload.Kind,
 		Meta:      spec.Payload.Meta,
-		Data:      []byte(spec.Payload.Data),
+		Data:      data,
 		CreatedAt: at,
 	}
 	item.PayloadID = payload.ID
-	return h.store().InsertItemWithPayload(item, payload)
+	return store.HistoryRow{Item: item, Payload: &payload}, nil
+}
+
+// seedPadLineLimit bounds one payload's generated filler. A fixture that
+// asks for more than this has a bug, and the store write it would produce
+// is large enough to be worth refusing loudly.
+const seedPadLineLimit = 64 << 20
+
+// seedPayloadData renders Data with its generated filler around it.
+func seedPayloadData(spec HarnessSeedPayload) ([]byte, error) {
+	if spec.PadBefore < 0 || spec.PadAfter < 0 {
+		return nil, fmt.Errorf("payload padBefore/padAfter must not be negative")
+	}
+	if spec.PadBefore+spec.PadAfter > seedPadLineLimit {
+		return nil, fmt.Errorf("payload padding %d exceeds the %d byte limit",
+			spec.PadBefore+spec.PadAfter, seedPadLineLimit)
+	}
+	if spec.PadBefore == 0 && spec.PadAfter == 0 {
+		return []byte(spec.Data), nil
+	}
+	out := make([]byte, 0, spec.PadBefore+len(spec.Data)+spec.PadAfter)
+	out = appendSeedPad(out, "before", spec.PadBefore)
+	out = append(out, spec.Data...)
+	return appendSeedPad(out, "after", spec.PadAfter), nil
+}
+
+// seedPadLineBytes is the width of one filler line. Every line is the same
+// width, whichever side it is on, so a fixture's own `data` sits at an
+// offset its test can compute rather than search for.
+const seedPadLineBytes = len("pad before 000001: generated filler line\n")
+
+// appendSeedPad writes numbered filler lines until at least bytes of them
+// exist. Each line names its side and its number so a read of any range
+// inside the padding says where in the payload it landed.
+func appendSeedPad(out []byte, side string, bytes int) []byte {
+	target := len(out) + bytes
+	for line := 1; len(out) < target; line++ {
+		out = append(out, fmt.Sprintf("pad %-6s %06d: generated filler line\n", side, line)...)
+	}
+	return out
 }
 
 // HarnessReset returns the harness to a blank slate without a process

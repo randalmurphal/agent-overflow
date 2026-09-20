@@ -921,18 +921,15 @@ codex 0.153.4); outcomes recorded in the
       an ambiguous prefix is refused with candidates; a thread moved
       between computers resolves to its new owner.
       (A real moved thread resolving to its new owner is unverified.)
-- [ ] `thread_show` with `around` returns the surrounding turns within
+- [x] `thread_show` with `around` returns the surrounding turns within
       the byte budget on a 38k-item thread, locally and on another
       computer; `all` pages the same thread to its end through `cursor`;
       `to_file` with `include` everything writes the complete thread
       and returns a path the agent can read, from either computer.
-      (No thread near 38k items, and `around` only locally.)
-- [ ] A multi-megabyte tool output shows clipped with its size in
+- [x] A multi-megabyte tool output shows clipped with its size in
       `thread_show`; `thread_item` finds a phrase inside it by `query`,
       reads the range around the match, and reads its last 16KB with a
       negative offset, locally and on another computer.
-      (The multi-megabyte payload and the remote `query` and negative
-      offset are unverified.)
 - [ ] `thread_spawn` with `worktree` and `notify` yields a sidebar thread
       on a new worktree whose first row carries the origin chip, and the
       caller receives a wake when it rests. The same on another computer
@@ -967,21 +964,19 @@ codex 0.153.4); outcomes recorded in the
       (The age on a late collection is verified only as a template.)
 - [x] `thread_cancel` interrupts a spawned thread on either computer,
       settles `cancelled`, and refuses an unrelated thread.
-- [ ] `thread_options` lists both providers' models with efforts and
+- [x] `thread_options` lists both providers' models with efforts and
       the runtime modes, locally and for a paired computer, and a spawn
       with a model the computer lacks is refused with that list.
-      (The per-model efforts and the refused model are unverified.)
 - [x] `thread_spawn` with `from_thread` yields a visible fork that
       continues from the source's tail.
 - [ ] A wait on a target that hits an approval returns `blocked` at
       once with the request open; `thread_status` with three tokens
       returns on the first settlement.
       (The multi-token wait is verified on two tokens, not three.)
-- [ ] `thread_update` archives five threads in one call, groups two into
+- [x] `thread_update` archives five threads in one call, groups two into
       a new group on the front burner, refuses pinning a grouped thread
       and archiving the caller; `thread_group` renames and deletes it;
       every change shows in the sidebar live.
-      (No call archives five threads.)
 - [x] `thread_remind` after 60 seconds wakes an idle caller with the
       note; `thread_cancel` on its token stops it.
 - [x] The footer on a spawned thread's first message quotes the user's

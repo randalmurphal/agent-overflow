@@ -136,3 +136,111 @@ func TestHarnessSeedBroadcastsRowsWhoseHistoryLandedBehindTheStore(t *testing.T)
 		t.Fatal("seeded thread with history still reads as a draft; the broadcast would re-announce a draft row")
 	}
 }
+
+// TestHarnessSeedRepeatsTurnsAndPadsPayloads covers the two primitives a
+// windowing or paging fixture needs: a thread far larger than a literal
+// fixture can describe, and one payload far larger than a fixture can
+// ship. Both write through the store's ordinary item path.
+func TestHarnessSeedRepeatsTurnsAndPadsPayloads(t *testing.T) {
+	receiver, host := newHarnessTestHost(t)
+	result, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name: "bulk-seed",
+		Repo: &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{{
+			Title: "Long thread",
+			Turns: []HarnessSeedTurn{
+				{
+					UserText: "keep sweeping",
+					Items: []HarnessSeedItem{
+						{Kind: "assistant_text", Summary: "swept"},
+						{Kind: "assistant_text", Summary: "swept again"},
+					},
+					Repeat: 50,
+				},
+				{
+					UserText: "show the log",
+					Items: []HarnessSeedItem{{
+						Kind:     "tool_call",
+						ToolName: "Bash",
+						Summary:  "go test ./...",
+						Payload: &HarnessSeedPayload{
+							Kind:      "tool_call_result",
+							Data:      "NEEDLE the tokenizer overran the escape\n",
+							PadBefore: 4096,
+							PadAfter:  8192,
+						},
+					}},
+				},
+			},
+		}},
+	}}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	threadID := result.Projects[0].ThreadIDs[0]
+
+	items, err := host.store.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	// 50 repeats of (user + 2 items), then the one tool turn's user row
+	// and its tool row.
+	if len(items) != 50*3+2 {
+		t.Fatalf("seeded %d items, want %d", len(items), 50*3+2)
+	}
+	// Every repeat is its own turn at its own index, in order.
+	for i, item := range items[:150] {
+		if item.TurnIndex != i/3 {
+			t.Fatalf("item %d has turn index %d, want %d", i, item.TurnIndex, i/3)
+		}
+	}
+	tool := items[len(items)-1]
+	if tool.PayloadID == "" {
+		t.Fatal("the tool row carries no payload")
+	}
+
+	data, total, _, err := host.store.GetPayloadChunk(threadID, tool.PayloadID, 0, 1<<20)
+	if err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	needle := "NEEDLE the tokenizer overran the escape\n"
+	if total < 4096+len(needle)+8192 {
+		t.Fatalf("payload is %d bytes, want at least the padding plus the data", total)
+	}
+	at := strings.Index(string(data), needle)
+	if at < 4096 {
+		t.Fatalf("data sits at offset %d, want it after the leading padding", at)
+	}
+	if strings.Count(string(data), needle) != 1 {
+		t.Fatalf("data appears %d times, want once", strings.Count(string(data), needle))
+	}
+	if !strings.HasPrefix(string(data), "pad before 000001:") {
+		t.Fatalf("payload starts with %q, want the generated leading padding", string(data[:32]))
+	}
+	if !strings.Contains(string(data[at+len(needle):]), "pad after  000001:") {
+		t.Fatal("the payload has no trailing padding after the data")
+	}
+	// Every filler line is one width, so the data's offset is computable.
+	if want := ((4096 + seedPadLineBytes - 1) / seedPadLineBytes) * seedPadLineBytes; at != want {
+		t.Fatalf("data sits at offset %d, want %d (whole padding lines)", at, want)
+	}
+}
+
+func TestHarnessSeedRefusesOversizedPayloadPadding(t *testing.T) {
+	receiver, _ := newHarnessTestHost(t)
+	_, err := Seed(receiver, HarnessSeedSpec{Projects: []HarnessSeedProject{{
+		Name: "bad-padding",
+		Repo: &harness.RepoSpec{},
+		Threads: []HarnessSeedThread{{Turns: []HarnessSeedTurn{{
+			UserText: "hi",
+			Items: []HarnessSeedItem{{
+				Kind:    "tool_call",
+				Summary: "Bash",
+				Payload: &HarnessSeedPayload{Kind: "tool_call_result", Data: "x", PadAfter: seedPadLineLimit + 1},
+			}},
+		}}}},
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "exceeds the") {
+		t.Fatalf("err = %v, want the padding limit refusal", err)
+	}
+}

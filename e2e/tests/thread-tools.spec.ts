@@ -3,7 +3,9 @@
 // Coverage: the server in both providers' session configs and the
 // composer's MCP menu; the real tools/list a session sees and the guide
 // it carries; the settings switch removing and restoring the tools inside
-// a running session; read tools (search, show, item, options); spawn with
+// a running session; read tools (search, show, item, options), including a
+// 38k-item thread windowed, paged and exported and a multi-megabyte tool
+// output read in ranges; spawn with
 // its origin chip, footer and wake; send, reply, late reply and status;
 // ask on a hidden read-only fork that is deleted once it answers; cancel
 // by token and by thread; reminders; organizing threads and groups; and
@@ -12,15 +14,21 @@
 // Everything a tool does here runs through a mock provider making REAL
 // MCP calls (scenario `mcpCall` / `mcpList`), so the assertions are about
 // what a provider session actually received.
+import { readFile } from 'node:fs/promises';
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
 import { sessionConfigs } from './workflows-helpers.js';
 import {
   FOOTER_TOKEN_PATTERN,
   RESULT_TOKEN_PATTERN,
+  SHOW_CURSOR_PATTERN,
   THREAD_TOOLS_SERVER,
   advanceGate,
   awaitGate,
   awaitToolAnswer,
+  awaitTurnCompleted,
+  bigItemFixture,
+  bigThreadFixture,
+  expectEffortsPerModel,
   plainScenario,
   setScenario,
   threadRows,
@@ -252,7 +260,7 @@ test('the settings switch is a real toggle in the SPA', async ({ harness, page }
   }
 });
 
-test('thread_options renders the catalogs, the caller defaults and the projects', async ({
+test('thread_options renders the catalogs with per-model efforts, and a model this computer lacks is refused with the list', async ({
   harness,
 }) => {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
@@ -271,7 +279,22 @@ test('thread_options renders the catalogs, the caller defaults and the projects'
     threadToolsScenario({
       name: 'tt-options-caller',
       provider: 'claude',
-      turns: [{ steps: [{ call: { tool: 'thread_options' } }], text: 'Read the options.' }],
+      turns: [
+        {
+          steps: [
+            { call: { tool: 'thread_options' } },
+            // A model this computer does not have is refused with what it
+            // does have, so discovery is never a second round trip.
+            {
+              call: {
+                tool: 'thread_spawn',
+                args: { prompt: 'try this', model: 'gpt-9000-imaginary', provider: 'codex' },
+              },
+            },
+          ],
+          text: 'Read the options.',
+        },
+      ],
     }),
   );
   await harness.rpc('StartSession', caller);
@@ -320,6 +343,19 @@ test('thread_options renders the catalogs, the caller defaults and the projects'
   // Both seeded projects are offered with the checkout each one has.
   const projects = computer.projects.map((entry) => entry.project);
   expect(projects).toEqual(expect.arrayContaining(['tt-options', 'tt-options-other']));
+
+  // Every model of both providers states the efforts it offers and marks
+  // its default among them, which is what a spawn picks an effort from.
+  expectEffortsPerModel(computer.providers);
+
+  const codex = computer.providers.find((entry) => entry.provider === 'codex')!;
+  const refused = await awaitToolAnswer(harness, { tool: 'thread_spawn' });
+  expect(refused.isError).toBe(true);
+  expect(refused.text).toContain('does not offer model "gpt-9000-imaginary"');
+  for (const model of codex.models) expect(refused.text).toContain(model.model);
+  // A spawn refused on its model created nothing: the two seeded threads
+  // are still the only rows.
+  expect(await threadRows(harness)).toHaveLength(2);
 });
 
 test('a self-send and a self-ask are refused by name', async ({ harness }) => {
@@ -730,6 +766,286 @@ test('the read tools find a thread, render its window and read inside one item',
   expect(exported.value!.file!.path).toContain(target);
   expect(exported.value!.file!.size).toBeGreaterThan(output.length);
   expect(exported.value!.file!.sha256).toMatch(/^[0-9a-f]{64}$/);
+});
+
+test('thread_show windows, pages and exports a thread of 38k items', async ({ harness }) => {
+  test.setTimeout(240_000);
+  const big = bigThreadFixture('BIG', 'Kernel sweep');
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: 'tt-window', repo: {}, threads: [{ title: 'Window caller', provider: 'claude' }] },
+      { name: 'tt-window-target', repo: {}, threads: [big.thread] },
+    ],
+  });
+  const caller = seed.projects[0].threadIds[0];
+  const callerPath = seed.projects[0].path;
+  const target = seed.projects[1].threadIds[0];
+
+  await setScenario(
+    harness,
+    callerPath,
+    threadToolsScenario({
+      name: 'tt-window-caller',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            { call: { tool: 'thread_search', args: { query: big.anchor, limit: 5 } } },
+            // A search hit carries thread_id and item_id together, which is
+            // exactly what `around` is opened with.
+            { capture: { var: 'ITEM', from: '${MCP_RESULT}', pattern: '"item_id":"([^"]+)"' } },
+            {
+              call: {
+                tool: 'thread_show',
+                args: { thread_id: target, window: 'around', item_id: '${ITEM}', context: 2 },
+              },
+            },
+            {
+              call: {
+                tool: 'thread_show',
+                args: { thread_id: target, window: 'all', include: ['all'], to_file: true },
+                timeoutMs: 120_000,
+              },
+            },
+          ],
+          text: 'Opened the middle and wrote the whole thing out.',
+        },
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_show',
+                args: { thread_id: target, window: 'all', max_bytes: 1_048_576 },
+                timeoutMs: 120_000,
+              },
+            },
+            { capture: { var: 'CURSOR', from: '${MCP_RESULT}', pattern: SHOW_CURSOR_PATTERN } },
+          ],
+          text: 'First page.',
+        },
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_show',
+                args: { thread_id: target, cursor: '${CURSOR}', max_bytes: 1_048_576 },
+                timeoutMs: 120_000,
+              },
+            },
+            { capture: { var: 'CURSOR', from: '${MCP_RESULT}', pattern: SHOW_CURSOR_PATTERN } },
+          ],
+          text: 'Next page.',
+        },
+      ],
+    }),
+  );
+  await harness.rpc('StartSession', caller);
+  await harness.rpc('SendMessage', caller, 'read the middle of the sweep thread', null);
+
+  interface SearchAnswer {
+    rows: Array<{ thread_id: string; item_id?: string }>;
+  }
+  const search = await awaitToolAnswer<SearchAnswer>(harness, {
+    tool: 'thread_search',
+    timeoutMs: 60_000,
+  });
+  expect(search.isError, search.text).toBe(false);
+  expect(search.value!.rows[0].thread_id).toBe(target);
+
+  interface ShowAnswer {
+    window: string;
+    transcript?: string;
+    items: number;
+    bytes: number;
+    done: boolean;
+    cursor?: string;
+    file?: { path: string; size: number; sha256: string };
+  }
+  // `around` reads the turns surrounding one item, inside the default
+  // budget, and never walks the rest of the thread to get there.
+  const around = await awaitToolAnswer<ShowAnswer>(harness, {
+    tool: 'thread_show',
+    timeoutMs: 60_000,
+  });
+  expect(around.isError, around.text).toBe(false);
+  expect(around.value!.window).toBe('around');
+  expect(around.value!.done).toBe(true);
+  expect(around.value!.items).toBe(big.aroundItems);
+  expect(around.value!.bytes).toBeLessThanOrEqual(64 * 1024);
+  expect(around.value!.transcript).toContain(big.anchor);
+  expect(around.value!.transcript).not.toContain(big.head);
+  expect(around.value!.transcript).not.toContain(big.tail);
+
+  const exported = await awaitToolAnswer<ShowAnswer>(harness, {
+    tool: 'thread_show',
+    timeoutMs: 120_000,
+  });
+  expect(exported.isError, exported.text).toBe(false);
+  expect(exported.value!.transcript).toBeUndefined();
+  expect(exported.value!.file!.sha256).toMatch(/^[0-9a-f]{64}$/);
+  const rendered = await readFile(exported.value!.file!.path, 'utf8');
+  expect(rendered.length).toBe(exported.value!.file!.size);
+  expect(rendered).toContain(big.head);
+  expect(rendered).toContain(big.anchor);
+  expect(rendered).toContain(big.tail);
+  // Every turn of the thread is in the file, which is what "the whole
+  // window, written whole" means for a thread this size.
+  expect(rendered.match(/^--- turn \d+ ---$/gm)!.length).toBe(big.turns);
+
+  // `all` walks to the end through the cursor, a page at a time, and every
+  // page is a snapshot: the counts add up to the thread exactly once. One
+  // page per turn, because a thread that is still working refuses a send.
+  await awaitTurnCompleted(harness, caller);
+  const pages: ShowAnswer[] = [];
+  let done = false;
+  while (!done) {
+    await harness.rpc('SendMessage', caller, `page ${pages.length + 1} of the sweep thread`, null);
+    const answer = await awaitToolAnswer<ShowAnswer>(harness, {
+      tool: 'thread_show',
+      timeoutMs: 120_000,
+    });
+    expect(answer.isError, answer.text).toBe(false);
+    const page = answer.value!;
+    expect(page.window).toBe('all');
+    expect(page.bytes).toBeLessThanOrEqual(1_048_576);
+    pages.push(page);
+    done = page.done;
+    // A budget this size pages a thread of this size in a handful of
+    // calls; a loop that runs away is a cursor that stopped advancing.
+    expect(pages.length).toBeLessThan(12);
+    await awaitTurnCompleted(harness, caller);
+  }
+
+  expect(pages.length).toBeGreaterThan(1);
+  expect(pages[0].transcript).toContain(big.head);
+  expect(pages.reduce((sum, entry) => sum + entry.items, 0)).toBe(big.items);
+  const last = pages[pages.length - 1];
+  expect(last.transcript).toContain(big.tail);
+  expect(last.cursor).toBeUndefined();
+});
+
+test('a multi-megabyte tool output is clipped in the transcript and read in ranges by thread_item', async ({
+  harness,
+}) => {
+  test.setTimeout(180_000);
+  const bigItem = bigItemFixture('HUGE', 'Fuzzer crash');
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: 'tt-bigitem', repo: {}, threads: [{ title: 'Item caller', provider: 'claude' }] },
+      { name: 'tt-bigitem-target', repo: {}, threads: [bigItem.thread] },
+    ],
+  });
+  const caller = seed.projects[0].threadIds[0];
+  const callerPath = seed.projects[0].path;
+  const target = seed.projects[1].threadIds[0];
+  const lastChunk = 16 * 1024;
+
+  await setScenario(
+    harness,
+    callerPath,
+    threadToolsScenario({
+      name: 'tt-bigitem-caller',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            { call: { tool: 'thread_show', args: { thread_id: target, window: 'tail' } } },
+            { capture: { var: 'ITEM', from: '${MCP_RESULT}', pattern: 'item_id=([A-Za-z0-9-]+)' } },
+            {
+              call: {
+                tool: 'thread_show',
+                args: { thread_id: target, window: 'tail', include: ['tool_outputs'] },
+              },
+            },
+            {
+              call: {
+                tool: 'thread_item',
+                args: { thread_id: target, item_id: '${ITEM}', query: bigItem.needle.trim() },
+                timeoutMs: 120_000,
+              },
+            },
+            {
+              call: {
+                tool: 'thread_item',
+                args: {
+                  thread_id: target,
+                  item_id: '${ITEM}',
+                  offset: bigItem.needleOffset - 512,
+                  max_bytes: 1024,
+                },
+              },
+            },
+            {
+              call: {
+                tool: 'thread_item',
+                args: { thread_id: target, item_id: '${ITEM}', offset: -lastChunk },
+              },
+            },
+          ],
+          text: 'Found it.',
+        },
+      ],
+    }),
+  );
+  await harness.rpc('StartSession', caller);
+  await harness.rpc('SendMessage', caller, 'what did the fuzzer crash on?', null);
+
+  interface ShowAnswer {
+    transcript?: string;
+    done: boolean;
+  }
+  // Collapsed: the row is one line naming its size and the tool that reads
+  // it, and the transcript never carries megabytes for one row.
+  const collapsed = await awaitToolAnswer<ShowAnswer>(harness, { tool: 'thread_show' });
+  expect(collapsed.isError, collapsed.text).toBe(false);
+  expect(collapsed.value!.transcript).toContain('3.8 MB, not shown; read it with thread_item');
+  expect(collapsed.value!.transcript!.length).toBeLessThan(64 * 1024);
+  expect(collapsed.value!.transcript).not.toContain(bigItem.needle.trim());
+
+  // Included: the row is clipped at the per-item budget and still states
+  // the whole size, with the pointer to read the rest.
+  const clipped = await awaitToolAnswer<ShowAnswer>(harness, { tool: 'thread_show' });
+  expect(clipped.isError, clipped.text).toBe(false);
+  expect(clipped.value!.transcript).toMatch(/… clipped at [\d.]+ KB of 3\.8 MB; read the rest with thread_item/);
+  expect(clipped.value!.transcript!.length).toBeLessThan(64 * 1024);
+
+  interface ItemAnswer {
+    size: number;
+    offset: number;
+    bytes: number;
+    text?: string;
+    eof: boolean;
+    match_count?: number;
+    matches?: Array<{ offset: number; context: string }>;
+  }
+  const matched = await awaitToolAnswer<ItemAnswer>(harness, {
+    tool: 'thread_item',
+    timeoutMs: 120_000,
+  });
+  expect(matched.isError, matched.text).toBe(false);
+  expect(matched.value!.size).toBe(bigItem.size);
+  expect(matched.value!.match_count).toBe(1);
+  expect(matched.value!.matches![0].offset).toBe(bigItem.needleOffset);
+  expect(matched.value!.matches![0].context).toContain(bigItem.needle.trim());
+
+  // The range around the match, which is what the query's offset is for.
+  const range = await awaitToolAnswer<ItemAnswer>(harness, { tool: 'thread_item' });
+  expect(range.isError, range.text).toBe(false);
+  expect(range.value!.offset).toBe(bigItem.needleOffset - 512);
+  expect(range.value!.bytes).toBe(1024);
+  expect(range.value!.text).toContain(bigItem.needle.trim());
+  expect(range.value!.text).toContain('pad before');
+  expect(range.value!.text).toContain('pad after');
+  expect(range.value!.eof).toBe(false);
+
+  // A negative offset reads from the end: the last 16KB of a 3.8MB row.
+  const tail = await awaitToolAnswer<ItemAnswer>(harness, { tool: 'thread_item' });
+  expect(tail.isError, tail.text).toBe(false);
+  expect(tail.value!.offset).toBe(bigItem.size - lastChunk);
+  expect(tail.value!.bytes).toBe(lastChunk);
+  expect(tail.value!.eof).toBe(true);
+  expect(tail.value!.text).toContain('pad after');
+  expect(tail.value!.text).not.toContain(bigItem.needle.trim());
 });
 
 test('thread_ask answers from a hidden read-only fork that is deleted once it has answered', async ({
@@ -1388,6 +1704,9 @@ test('thread_remind wakes the caller later and a pending reminder can be cancell
   expect(tokens).not.toContain(later.value!.token);
 });
 
+/** The five threads one thread_update call archives together. */
+const SWEEP_TITLES = ['Sweep one', 'Sweep two', 'Sweep three', 'Sweep four', 'Sweep five'];
+
 test('thread_update and thread_group organize the sidebar and refuse what the sidebar refuses', async ({
   harness,
   page,
@@ -1400,7 +1719,14 @@ test('thread_update and thread_group organize the sidebar and refuse what the si
         // Each organized thread carries history: a thread with no
         // messages is still a draft and the sidebar does not list it.
         threads: [
-          ...['Organize caller', 'Alpha notes', 'Beta notes', 'Gamma notes', 'Delta notes'].map((title) => ({
+          ...[
+            'Organize caller',
+            'Alpha notes',
+            'Beta notes',
+            'Gamma notes',
+            'Delta notes',
+            ...SWEEP_TITLES,
+          ].map((title) => ({
             title,
             provider: 'claude',
             turns: [
@@ -1413,6 +1739,8 @@ test('thread_update and thread_group organize the sidebar and refuse what the si
   });
   const { projectId, path: callerPath, threadIds } = seed.projects[0];
   const [caller, alpha, beta, gamma, delta] = threadIds;
+  const sweep = threadIds.slice(5);
+  expect(sweep).toHaveLength(SWEEP_TITLES.length);
 
   await setScenario(
     harness,
@@ -1440,6 +1768,14 @@ test('thread_update and thread_group organize the sidebar and refuse what the si
               call: {
                 tool: 'thread_update',
                 args: { thread_ids: [caller, delta], archived: true },
+              },
+            },
+            // One call covers "archive these five", which is the shape the
+            // tool exists for.
+            {
+              call: {
+                tool: 'thread_update',
+                args: { thread_ids: sweep, archived: true },
               },
             },
             // A group carries the pin, so the two together are refused for
@@ -1503,6 +1839,13 @@ test('thread_update and thread_group organize the sidebar and refuse what the si
   expect(archived.value!.results[1]).toMatchObject({ thread_id: delta, updated: true });
   expect(archived.value!.note).toContain('left untouched');
 
+  const archivedFive = await awaitToolAnswer<UpdateAnswer>(harness, { tool: 'thread_update' });
+  expect(archivedFive.isError, archivedFive.text).toBe(false);
+  expect(archivedFive.value!.results).toHaveLength(5);
+  expect(archivedFive.value!.results.map((row) => row.thread_id)).toEqual(sweep);
+  expect(archivedFive.value!.results.every((row) => row.updated)).toBe(true);
+  expect(archivedFive.value!.results.every((row) => !row.error)).toBe(true);
+
   const contradictory = await awaitToolAnswer<UpdateAnswer>(harness, { tool: 'thread_update' });
   expect(contradictory.isError).toBe(true);
   expect(contradictory.text).toContain('thread_grouped');
@@ -1546,6 +1889,11 @@ test('thread_update and thread_group organize the sidebar and refuse what the si
   // gone from it and the caller, which refused to archive itself, is not.
   expect(byId.has(delta)).toBe(false);
   expect(byId.get(caller)!.archived).toBe(false);
+  // All five of the one call are gone from the listing and the sidebar.
+  expect(sweep.filter((id) => byId.has(id))).toEqual([]);
+  for (const title of SWEEP_TITLES) {
+    await expect(page.getByTestId('thread-row').filter({ hasText: title })).toHaveCount(0);
+  }
 
   // Deleting a group ungroups its threads, exactly as the sidebar does.
   await harness.rpc('SendMessage', caller, 'drop the group again', null);
