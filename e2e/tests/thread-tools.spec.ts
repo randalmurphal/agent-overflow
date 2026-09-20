@@ -1565,6 +1565,7 @@ test('thread_cancel takes a queued message back and interrupts a turn it started
     state: string;
     effect: string;
   }
+  await awaitTurnCompleted(harness, caller);
   await harness.rpc('SendMessage', caller, 'take it back', null);
   const byToken = await awaitToolAnswer<CancelAnswer>(harness, { tool: 'thread_cancel' });
   expect(byToken.isError, byToken.text).toBe(false);
@@ -1581,6 +1582,7 @@ test('thread_cancel takes a queued message back and interrupts a turn it started
 
   // The other half: a turn this caller's own message started, stopped by
   // thread id.
+  await awaitTurnCompleted(harness, caller);
   await harness.rpc('SendMessage', caller, 'give the other thread the long job', null);
   const busyMock = await awaitGate(harness, 'hold-busy', busyPath);
   expect(busyMock.mockId).not.toBe('');
@@ -1593,6 +1595,7 @@ test('thread_cancel takes a queued message back and interrupts a turn it started
     'harness:mock',
     (ev) => ev.report.kind === 'turn_interrupted' && ev.cwd === busyPath,
   );
+  await awaitTurnCompleted(harness, caller);
   await harness.rpc('SendMessage', caller, 'now stop it', null);
   const byThread = await awaitToolAnswer<CancelAnswer>(harness, {
     tool: 'thread_cancel',
@@ -1678,6 +1681,7 @@ test('thread_remind wakes the caller later and a pending reminder can be cancell
   const soon = await awaitToolAnswer<RemindAck>(harness, { tool: 'thread_remind', timeoutMs: 60_000 });
   expect(soon.isError, soon.text).toBe(false);
   expect(soon.value!.token).not.toBe(later.value!.token);
+  await awaitTurnCompleted(harness, caller);
 
   // The reminder fires into this same thread as a user message and starts
   // its next turn.
@@ -1722,7 +1726,9 @@ test('thread_remind wakes the caller later and a pending reminder can be cancell
   expect(cancelled.value!.state).toBe('cancelled');
 
   // The caller's own ledger is how it recovers its tokens: the fired
-  // reminder is there, settled, and the cancelled one is gone.
+  // reminder is there, settled, and the cancelled one is gone. The wake's
+  // turn has to end first: a composer send into a working thread is refused.
+  await awaitTurnCompleted(harness, caller);
   await harness.rpc('SendMessage', caller, 'what is still outstanding?', null);
   const ledger = await awaitToolAnswer<StatusAnswer>(harness, {
     tool: 'thread_status',
@@ -1926,6 +1932,7 @@ test('thread_update and thread_group organize the sidebar and refuse what the si
   }
 
   // Deleting a group ungroups its threads, exactly as the sidebar does.
+  await awaitTurnCompleted(harness, caller);
   await harness.rpc('SendMessage', caller, 'drop the group again', null);
   const deleted = await awaitToolAnswer<GroupAnswer>(harness, {
     tool: 'thread_group',
@@ -1978,7 +1985,7 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
   // before anything forks it.
   await harness.rpc('StartSession', source);
   await harness.rpc('SendMessage', source, 'explain the approach you took', null);
-  await harness.waitForEvent('provider:turn_completed');
+  await awaitTurnCompleted(harness, source);
   expect((await harness.rpc<{ sessionRef: string }>('GetThread', source)).sessionRef).not.toBe('');
 
   await setScenario(
@@ -2062,6 +2069,7 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
   );
   expect(inWorktree.report.input).toContain('Try the lock-free version');
 
+  await awaitTurnCompleted(harness, caller);
   await harness.rpc('SendMessage', caller, 'now fork the source thread', null);
   const forkSpawn = await awaitToolAnswer<SpawnAnswer>(harness, {
     tool: 'thread_spawn',
@@ -2128,7 +2136,7 @@ test('thread_spawn forks a live Codex thread on a process of its own, and the fo
   );
   await harness.rpc('StartSession', source);
   await harness.rpc('SendMessage', source, 'answer once, then stay up', null);
-  await harness.waitForEvent('provider:turn_completed');
+  await awaitTurnCompleted(harness, source);
   const sourceRef = (await harness.rpc<{ sessionRef: string }>('GetThread', source)).sessionRef;
   expect(sourceRef).not.toBe('');
 
@@ -2352,6 +2360,7 @@ test('a wait ends as blocked when the target stops to ask the user', async ({ ha
   // Answering the prompt lets the turn finish, and the caller's own watch
   // is what picks the settlement up.
   const pending = await approval;
+  await awaitTurnCompleted(harness, caller);
   await harness.rpc('SendMessage', caller, 'watch it until it is done', null);
   await harness.rpc('RespondToApproval', target, {
     requestId: pending.request!.requestId,
@@ -2399,7 +2408,7 @@ test('a backgrounded ask arrives as a message and thread_status returns the same
   );
   await harness.rpc('StartSession', target);
   await harness.rpc('SendMessage', target, 'look at the retry budget', null);
-  await harness.waitForEvent('provider:turn_completed');
+  await awaitTurnCompleted(harness, target);
 
   // The fork holds its answer past the caller's wait, so the ask
   // backgrounds and the answer is owed as a message instead.
@@ -2734,7 +2743,7 @@ test('a write inside the ask fork is refused by its session and the refusal come
   );
   await harness.rpc('StartSession', target);
   await harness.rpc('SendMessage', target, 'describe the migration', null);
-  await harness.waitForEvent('provider:turn_completed');
+  await awaitTurnCompleted(harness, target);
   await harness.rpc('SendMessage', target, 'now run the long job', null);
   const targetMock = await awaitGate(harness, 'target-busy', targetPath);
 
