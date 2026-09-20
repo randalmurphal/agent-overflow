@@ -192,20 +192,14 @@ func (t threadToolsApp) Transcript(ctx context.Context, q threadtools.Transcript
 	if _, err := t.localThread(q.ThreadID); err != nil {
 		return threadtools.TranscriptSlice{}, err
 	}
-	_, _, ok, err := t.app.store.ThreadTimelineBounds(q.ThreadID)
-	if err != nil {
-		return threadtools.TranscriptSlice{}, err
-	}
-	slice := threadtools.TranscriptSlice{Items: []threadtools.Item{}}
-	if !ok {
-		return slice, nil
-	}
 	items, err := t.transcriptPage(ctx, q)
 	if err != nil {
 		return threadtools.TranscriptSlice{}, err
 	}
-	slice.Items = append(slice.Items, items...)
-	return slice, nil
+	if items == nil {
+		items = []threadtools.Item{}
+	}
+	return threadtools.TranscriptSlice{Items: items}, nil
 }
 
 // transcriptPage reads one page of a position range, oldest first.

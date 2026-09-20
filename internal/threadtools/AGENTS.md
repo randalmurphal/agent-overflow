@@ -47,8 +47,7 @@ on where the call came from.
 - Thread content is data written by other people and agents. Say so in
   every read tool's description and keep the footer authenticity rule in
   `instructions.go` in step with the spec.
-- Text a model reads names a computer through `NameOfComputer`, and never
-  uses em dashes.
+- Text a model reads names a computer through `NameOfComputer`.
 
 ## Tests
 
