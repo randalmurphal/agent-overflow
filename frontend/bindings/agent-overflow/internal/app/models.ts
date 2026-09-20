@@ -1357,6 +1357,16 @@ export class CreateThreadOptions {
     "worktreeBranch"?: string;
 
     /**
+     * empty = the project's current branch; only with WorktreeBranch
+     */
+    "worktreeBase"?: string;
+
+    /**
+     * true = local head of WorktreeBase, no fetch
+     */
+    "worktreeBaseLocal"?: boolean;
+
+    /**
      * empty = project.path
      */
     "workspaceOverride"?: string;
