@@ -123,7 +123,7 @@ func (p threadPeerClient) forward(ctx context.Context, method, name string, args
 	}
 	if len(reply.Result) == 0 {
 		return nil, errorsx.Public(threadtools.CodeUnreachable,
-			fmt.Sprintf("%s answered %s with no result.", nameOfComputer(p.computer), name), nil)
+			fmt.Sprintf("%s answered %s with no result.", threadtools.NameOfComputer(p.computer), name), nil)
 	}
 	return reply.Result, nil
 }
@@ -132,16 +132,6 @@ func (p threadPeerClient) forward(ctx context.Context, method, name string, args
 // own export directory, so the path the model reads is one it can open.
 func (p threadPeerClient) FetchExport(ctx context.Context, file threadtools.ExportFile) (threadtools.ExportFile, error) {
 	return p.app.fetchThreadExport(ctx, p.computer, file)
-}
-
-func nameOfComputer(computer threadtools.Computer) string {
-	if computer.Name != "" {
-		return computer.Name
-	}
-	if computer.ID != "" {
-		return "computer " + computer.ID
-	}
-	return "the other computer"
 }
 
 // threadOperationError names the operation, the computer and the thread a

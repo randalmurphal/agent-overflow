@@ -65,7 +65,7 @@ func (a *App) fetchThreadExport(ctx context.Context, computer threadtools.Comput
 	threadID, ok := threadPeerExportThread(file.ExportID)
 	if !ok {
 		return threadtools.ExportFile{}, errorsx.Public(threadtools.CodeUnreachable,
-			fmt.Sprintf("%s answered to_file without an export this computer can fetch.", nameOfComputer(computer)), nil)
+			fmt.Sprintf("%s answered to_file without an export this computer can fetch.", threadtools.NameOfComputer(computer)), nil)
 	}
 	if a.configDir == "" {
 		return threadtools.ExportFile{}, errorsx.Public(threadtools.CodeInvalidRequest,

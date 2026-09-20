@@ -389,7 +389,7 @@ func (a *App) runThreadPeerRequest(ctx context.Context, owner string, call Threa
 	if err := a.refuseForeignToken(token, owner); err != nil {
 		return ThreadPeerReply{}, err
 	}
-	adapter := threadToolsApp{app: a}
+	adapter := a.threadTools()
 	var err error
 	switch call.Tool {
 	case "thread_spawn":
@@ -459,7 +459,7 @@ func (a *App) cancelPeerThreadRequest(ctx context.Context, origin threadRequestO
 		}
 	}
 	if cancel.ThreadID != "" {
-		report, err := threadToolsApp{app: a}.interruptForeignThread(ctx, origin, cancel.ThreadID)
+		report, err := a.threadTools().interruptForeignThread(ctx, origin, cancel.ThreadID)
 		if err != nil {
 			return ThreadPeerReply{}, a.publicThreadToolError("thread_cancel", origin.caller.ThreadID, err)
 		}

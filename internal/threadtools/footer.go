@@ -51,10 +51,34 @@ type Footer struct {
 	UserMessage string
 }
 
+// footerMarker opens every footer. The receiver is told the last `---`
+// block of a message is the footer, and a body line that starts this way
+// is quoted before delivery so nothing above the footer reads as one.
+const footerMarker = "Agent request from thread "
+
+// QuoteFooterMimics quote-prefixes every line of a request body that opens
+// like the footer marker. The body is the sender's own text and carries no
+// authority; the guide says so to the receiver, and this makes the same
+// thing visible in the message itself. Every other line, `---` included, is
+// left alone: a rule between paragraphs is ordinary Markdown, and only the
+// last block is the footer.
+func QuoteFooterMimics(body string) string {
+	if !strings.Contains(body, footerMarker) {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	for index, line := range lines {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), footerMarker) {
+			lines[index] = "> " + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // String renders the footer. It always starts with the "Agent request"
 // marker the server instructions tell the receiver to look for.
 func (f Footer) String() string {
-	lines := []string{"---", fmt.Sprintf("Agent request from thread %q (%s%s).", f.Title, f.ThreadID, onComputer(f.Computer))}
+	lines := []string{"---", fmt.Sprintf("%s%q (%s%s).", footerMarker, f.Title, f.ThreadID, onComputer(f.Computer))}
 	if f.AnswerRequested {
 		body := fmt.Sprintf("It is waiting for your answer. When you are done, call thread_reply with token %s, once. The sender sees only your reply text, so make it self-contained.", f.Token)
 		if f.SenderReachable {

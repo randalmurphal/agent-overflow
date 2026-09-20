@@ -180,7 +180,7 @@ func (a *App) lastAssistantText(threadID string, turnIndex int) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	adapter := threadToolsApp{app: a}
+	adapter := a.threadTools()
 	for index := len(items) - 1; index >= 0; index-- {
 		row := items[index]
 		if row.Kind != "assistant_text" || row.ParentID != "" {
@@ -813,7 +813,7 @@ func (a *App) threadWakeOrigin(row store.ThreadRequest) *usermessage.OriginThrea
 	origin := &usermessage.OriginThread{ThreadID: row.TargetThreadID, Token: row.Token}
 	if row.TargetComputerID != "" {
 		origin.Title = row.TargetThreadTitle
-		origin.ComputerName, origin.ComputerID = threadToolsApp{app: a}.threadToolsBackendName(row.TargetComputerID)
+		origin.ComputerName, origin.ComputerID = a.threadTools().threadToolsBackendName(row.TargetComputerID)
 		return origin
 	}
 	if row.TargetThreadID != "" {
@@ -842,7 +842,7 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 		// after a restart still names it, and the computer is named the way
 		// every other row names it.
 		wake.Title = row.TargetThreadTitle
-		wake.Computer, _ = threadToolsApp{app: a}.threadToolsBackendName(row.TargetComputerID)
+		wake.Computer, _ = a.threadTools().threadToolsBackendName(row.TargetComputerID)
 	} else if row.TargetThreadID != "" {
 		if thread, err := a.store.GetThread(row.TargetThreadID); err == nil {
 			wake.Title = thread.Title
@@ -1103,6 +1103,6 @@ func (a *App) stopThreadRequestsForMovedThread(ctx context.Context, threadID, de
 // the settlement text its open receipts carry. An unknown backend leaves the
 // reason unqualified rather than naming an id nobody reads.
 func (a *App) threadRequestDestinationName(backendID string) string {
-	name, _ := threadToolsApp{app: a}.threadToolsBackendName(backendID)
+	name, _ := a.threadTools().threadToolsBackendName(backendID)
 	return name
 }

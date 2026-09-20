@@ -446,7 +446,7 @@ func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Co
 		}
 		if reply.Request == nil {
 			return ThreadPeerRequest{}, false, errorsx.Public(threadtools.CodeUnreachable,
-				fmt.Sprintf("%s accepted %s without reporting the request.", nameOfComputer(computer), call.Tool), nil)
+				fmt.Sprintf("%s accepted %s without reporting the request.", threadtools.NameOfComputer(computer), call.Tool), nil)
 		}
 		return *reply.Request, false, nil
 	}
@@ -779,7 +779,10 @@ func (t threadToolsApp) requestMessageBody(
 		SenderReachable: t.senderReachable(origin),
 		UserMessage:     latest,
 	}
-	return strings.TrimRight(text, "\n") + "\n\n" + footer.String(), nil
+	// The body is the sender's text and the footer is this computer's; a
+	// body line that opens like the footer is quoted so only the footer
+	// reads as one.
+	return threadtools.QuoteFooterMimics(strings.TrimRight(text, "\n")) + "\n\n" + footer.String(), nil
 }
 
 // senderComputerName is what the footer calls the sender's computer: what

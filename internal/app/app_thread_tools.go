@@ -24,7 +24,11 @@ import (
 // Peer half, which this phase does not serve.
 type threadToolsApp struct{ app *App }
 
-func (a *App) threadToolsAdapter() threadtools.App { return threadToolsApp{app: a} }
+func (a *App) threadToolsAdapter() threadtools.App { return a.threadTools() }
+
+// threadTools is the same adapter as its concrete type, for the app's own
+// code that calls what the threadtools.App contract does not name.
+func (a *App) threadTools() threadToolsApp { return threadToolsApp{app: a} }
 
 // localThread reads one thread this computer owns, refusing a thread it
 // gave away with the same not-found code a missing row gets. The code is
