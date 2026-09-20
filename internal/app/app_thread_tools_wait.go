@@ -57,9 +57,10 @@ type threadRequestState struct {
 	// flight has not rescheduled them, so a second pass would ask the same
 	// destination about the same tokens.
 	polling bool
-	// deliveries is how many wakes the sweep is handing over right now,
-	// bounded by threadWakeDeliveryFanOut.
-	deliveries int
+	// deliveries is the slots the sweep hands wakes over through, one per
+	// delivery in flight, threadWakeDeliveryFanOut of them. Built on first
+	// use.
+	deliveries chan struct{}
 	// blocked records which remote requests their own computer last
 	// reported as waiting on a person. It is not state: the record is the
 	// source row, this is the live reading beside it, and after a restart

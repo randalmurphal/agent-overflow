@@ -961,3 +961,63 @@ func TestMarkThreadRequestDeliveredAsDraftCorrectsAQueuedWake(t *testing.T) {
 		t.Fatalf("an inline delivery was rewritten as a draft: corrected=%v err=%v", corrected, err)
 	}
 }
+
+func TestNextThreadRequestWorkReportsEachPassApart(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+
+	schedule, err := s.NextThreadRequestWork()
+	if err != nil {
+		t.Fatalf("NextThreadRequestWork: %v", err)
+	}
+	if schedule.Reminder.Set || schedule.Poll.Set || schedule.Wake.Set {
+		t.Fatalf("empty ledger schedule = %+v, want nothing set", schedule)
+	}
+
+	if err := s.InsertThreadRequest(ThreadRequest{
+		Token: "tok-remind", CallerThreadID: "t-caller", Kind: ThreadRequestRemind,
+		State: ThreadRequestAccepted, DueAt: 5000,
+	}); err != nil {
+		t.Fatalf("insert reminder: %v", err)
+	}
+	if err := s.InsertThreadRequest(ThreadRequest{
+		Token: "tok-poll", CallerThreadID: "t-caller", Kind: ThreadRequestSend,
+		State: ThreadRequestUnconfirmed, TargetComputerID: "backend-2", TargetThreadID: "t-far",
+	}); err != nil {
+		t.Fatalf("insert remote request: %v", err)
+	}
+	if err := s.RescheduleThreadRequest("tok-poll", 7000, 0, ""); err != nil {
+		t.Fatalf("reschedule: %v", err)
+	}
+	seedThreadRequest(t, s, "tok-wake", "t-caller", ThreadRequestSend, 100)
+	if _, err := s.SetThreadRequestNotify("tok-wake", true); err != nil {
+		t.Fatalf("arm notify: %v", err)
+	}
+	if _, err := s.SettleThreadRequest("tok-wake", ThreadRequestOpenStates(), ThreadRequestSettlement{
+		State: ThreadRequestFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: 200,
+	}); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if err := s.ScheduleThreadRequestWake("tok-wake", 9000, 1); err != nil {
+		t.Fatalf("schedule wake: %v", err)
+	}
+
+	schedule, err = s.NextThreadRequestWork()
+	if err != nil {
+		t.Fatalf("NextThreadRequestWork: %v", err)
+	}
+	want := ThreadRequestSchedule{
+		Reminder: ScheduledMoment{At: 5000, Set: true},
+		Poll:     ScheduledMoment{At: 7000, Set: true},
+		Wake:     ScheduledMoment{At: 9000, Set: true},
+	}
+	if schedule != want {
+		t.Fatalf("schedule = %+v, want %+v", schedule, want)
+	}
+	if _, err := s.RetireThreadRequestPoll("tok-poll"); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	if schedule, err = s.NextThreadRequestWork(); err != nil || schedule.Poll.Set {
+		t.Fatalf("after retirement poll = %+v err=%v, want nothing to poll", schedule.Poll, err)
+	}
+}

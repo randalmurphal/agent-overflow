@@ -646,16 +646,30 @@ func (s *Store) UndeliveredThreadRequestWakes(now int64, limit int) ([]ThreadReq
 	return collectThreadRequests(rows, "store: list undelivered thread request wakes")
 }
 
-// NextThreadRequestWork returns the earliest moment the unattended passes
-// have anything to do: a reminder to fire, a remote request to poll, or a
-// wake to retry. The bool is false when the ledger has nothing scheduled,
-// which on most computers it always has: the sweep sleeps on that answer
+// ScheduledMoment is a time the ledger has something due, or nothing (Set is
+// false). It is separate from the moment because a row waiting on the zero
+// moment is due now, not idle.
+type ScheduledMoment struct {
+	At  int64
+	Set bool
+}
+
+// ThreadRequestSchedule is the earliest moment each unattended pass has
+// anything to do: a reminder to fire, a remote request to poll, a wake to
+// retry. They are reported apart because the sweep can leave one out (a poll
+// already in flight) without going blind to the others.
+type ThreadRequestSchedule struct {
+	Reminder ScheduledMoment
+	Poll     ScheduledMoment
+	Wake     ScheduledMoment
+}
+
+// NextThreadRequestWork reports when the unattended passes next have work.
+// On most computers nothing is scheduled, and the sweep sleeps on that answer
 // rather than asking three questions a second for the life of the process.
-// It is separate from the moment because a row waiting on the zero moment
-// is due now, not idle.
 //
 // One query, three indexed minima, so the answer describes one snapshot.
-func (s *Store) NextThreadRequestWork() (int64, bool, error) {
+func (s *Store) NextThreadRequestWork() (ThreadRequestSchedule, error) {
 	var reminder, poll, wake sql.NullInt64
 	if err := s.reader().QueryRow(
 		`SELECT
@@ -669,18 +683,12 @@ func (s *Store) NextThreadRequestWork() (int64, bool, error) {
 		       AND ((settled_at IS NOT NULL AND delivered_at IS NULL)
 		         OR (late_reply IS NOT NULL AND late_delivered_at IS NULL)))`,
 	).Scan(&reminder, &poll, &wake); err != nil {
-		return 0, false, fmt.Errorf("store: read next thread request work: %w", err)
+		return ThreadRequestSchedule{}, fmt.Errorf("store: read next thread request work: %w", err)
 	}
-	next, scheduled := int64(0), false
-	for _, candidate := range []sql.NullInt64{reminder, poll, wake} {
-		if !candidate.Valid {
-			continue
-		}
-		if !scheduled || candidate.Int64 < next {
-			next, scheduled = candidate.Int64, true
-		}
+	moment := func(value sql.NullInt64) ScheduledMoment {
+		return ScheduledMoment{At: value.Int64, Set: value.Valid}
 	}
-	return next, scheduled, nil
+	return ThreadRequestSchedule{Reminder: moment(reminder), Poll: moment(poll), Wake: moment(wake)}, nil
 }
 
 // HasOpenThreadRequests reports whether a thread still owns an undelivered

@@ -143,14 +143,26 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 // A poll already in flight is left out of the answer. Its rows are still due
 // by their own column, because the pass that owns them has not rescheduled
 // them yet, and sleeping on that would be sleeping for no time at all; the
-// poll nudges the sweep when it is done.
+// poll nudges the sweep when it is done. The reminders and wake retries
+// beside it stay in, so a reminder due during a slow poll is not held to
+// the poll's timeout.
 func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
 	delay := threadRequestExpiryInterval - time.Since(lastExpiry)
-	if next, scheduled, err := a.store.NextThreadRequestWork(); err != nil {
+	schedule, err := a.store.NextThreadRequestWork()
+	if err != nil {
 		logThreadRequestSweep("read the next scheduled request work", err)
-	} else if scheduled && !a.threadRequestPollInFlight() {
-		if until := time.Until(time.UnixMilli(next)); until < delay {
-			delay = until
+	} else {
+		due := []store.ScheduledMoment{schedule.Reminder, schedule.Wake}
+		if !a.threadRequestPollInFlight() {
+			due = append(due, schedule.Poll)
+		}
+		for _, moment := range due {
+			if !moment.Set {
+				continue
+			}
+			if until := time.Until(time.UnixMilli(moment.At)); until < delay {
+				delay = until
+			}
 		}
 	}
 	if delay < threadRequestSweepFloor {
@@ -231,35 +243,32 @@ func (a *App) threadRequestPollInFlight() bool {
 //
 // A delivery takes the caller thread's own lock and can start its session,
 // which is arbitrarily slower than the pass that decided it was owed; done
-// in line, one thread that is busy holds up every reminder behind it. A
-// wake that finds no free goroutine is not lost: it is still undelivered,
-// and the retry pass comes back to it.
+// in line, one thread that is busy holds up every reminder behind it. It
+// waits for a free slot rather than dropping the wake: the retry pass has
+// already booked the attempt this delivery is, and a wake skipped here
+// would spend that attempt without being tried.
 func (a *App) deliverThreadWakeDetached(token string, late bool) {
-	if a.lifeCtx().Err() != nil || !a.beginThreadWakeDelivery() {
+	slots := a.threadWakeDeliverySlots()
+	select {
+	case slots <- struct{}{}:
+	case <-a.lifeCtx().Done():
 		return
 	}
 	a.threadRequestsWG.Add(1)
 	go func() {
 		defer a.threadRequestsWG.Done()
-		defer a.endThreadWakeDelivery()
+		defer func() { <-slots }()
 		a.deliverThreadWake(token, late)
 	}()
 }
 
-func (a *App) beginThreadWakeDelivery() bool {
+func (a *App) threadWakeDeliverySlots() chan struct{} {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
-	if a.threadRequests.deliveries >= threadWakeDeliveryFanOut {
-		return false
+	if a.threadRequests.deliveries == nil {
+		a.threadRequests.deliveries = make(chan struct{}, threadWakeDeliveryFanOut)
 	}
-	a.threadRequests.deliveries++
-	return true
-}
-
-func (a *App) endThreadWakeDelivery() {
-	a.threadRequests.mu.Lock()
-	a.threadRequests.deliveries--
-	a.threadRequests.mu.Unlock()
+	return a.threadRequests.deliveries
 }
 
 // threadWakeDeliveryFanOut is how many wakes the sweep hands over at once,

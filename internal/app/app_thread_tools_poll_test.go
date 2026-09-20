@@ -365,3 +365,39 @@ func TestWakeUnarchivesTheCallerItIsFor(t *testing.T) {
 		t.Fatalf("wake message = %q", wake.Message)
 	}
 }
+
+// The sweep sleeps on the ledger's own schedule. A poll in flight owns the
+// rows it read, so their due moment is left out of that schedule, but the
+// reminders and wake retries beside them are not: a reminder due during a
+// slow poll is served on its own clock, not the poll's timeout.
+func TestSweepScheduleKeepsRemindersWhileAPollIsInFlight(t *testing.T) {
+	f := newRequestFixture(t)
+	remote := f.seedRemoteRequest(t, uuid.NewString())
+	if err := f.app.store.RescheduleThreadRequest(remote, time.Now().Add(time.Minute).UnixMilli(), 0, ""); err != nil {
+		t.Fatalf("reschedule: %v", err)
+	}
+	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{
+		Token: uuid.NewString(), CallerThreadID: f.caller.ID, Kind: store.ThreadRequestRemind,
+		State: store.ThreadRequestAccepted, DueAt: time.Now().Add(3 * time.Second).UnixMilli(),
+	}); err != nil {
+		t.Fatalf("insert reminder: %v", err)
+	}
+	lastExpiry := time.Now()
+
+	if delay := f.app.threadRequestSweepDelay(lastExpiry); delay > 3*time.Second {
+		t.Fatalf("delay = %v, want the reminder's three seconds", delay)
+	}
+	if !f.app.beginThreadRequestPoll() {
+		t.Fatal("the poll slot was taken")
+	}
+	defer f.app.endThreadRequestPoll()
+	if delay := f.app.threadRequestSweepDelay(lastExpiry); delay > 3*time.Second {
+		t.Fatalf("delay with a poll in flight = %v, want the reminder still served", delay)
+	}
+	if err := f.app.store.RescheduleThreadRequest(remote, time.Now().Add(time.Second).UnixMilli(), 0, ""); err != nil {
+		t.Fatalf("reschedule: %v", err)
+	}
+	if delay := f.app.threadRequestSweepDelay(lastExpiry); delay < 2*time.Second {
+		t.Fatalf("delay = %v, want the in-flight poll's rows left out", delay)
+	}
+}
