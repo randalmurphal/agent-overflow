@@ -42,7 +42,7 @@ const FRAME_MS = 1000 / 60;
 // tracker steps run. The change between sample i-1 and sample i was
 // therefore produced in frame i-1 with the wall time since frame i-2:
 // under a steady 60Hz that is one frame, across a stalled main thread it
-// is the whole gap, and the dt-based trackers legitimately catch up by it.
+// is the whole gap, which each tracker's own catch-up rule bounds.
 const paintedDt = (frames: Frame[], i: number): number =>
   i >= 2 ? frames[i - 1]!.t - frames[i - 2]!.t : frames[i]!.t - frames[i - 1]!.t;
 // Between two samples the slide tracker moves a glyph by exactly one drain

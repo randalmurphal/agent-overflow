@@ -75,6 +75,18 @@ export const SLIDE_MAX_WINDOWS = 2;
  */
 export const SLIDE_MIN_STEP_PX = 1;
 
+/**
+ * Most frames of drain one painted frame may apply, however long the
+ * gap since the last one. A stalled main thread (a long task, a GC
+ * pause, a compositor drop) paints nothing while it lasts; catching up
+ * the whole gap on the next paint moved every visible line by most of
+ * the pending offset at once, the snap the slide exists to prevent.
+ * The ticker resumes where it was instead, at its normal pace, the same
+ * rule the scroll spring applies (SPRING_MAX_CATCHUP_STEPS) so text,
+ * lines and scroll recover from a stall together.
+ */
+export const SLIDE_MAX_CATCHUP_FRAMES = 1;
+
 const FRAME_MS = 1000 / 60;
 
 /**
@@ -128,13 +140,13 @@ export function slideDecision(
 }
 
 /**
- * One drain step of the pending offset after `dtMs` of wall time. Frame
- * independent: a 33ms frame drains what two 16.7ms frames would, so a
- * dropped frame never shows as a slower ticker.
+ * One drain step of the pending offset after `dtMs` of wall time: a
+ * sub-frame dt drains its share, anything past SLIDE_MAX_CATCHUP_FRAMES
+ * drains one frame's worth.
  */
 export function stepSlide(offset: number, dtMs: number): number {
   if (offset <= 0) return 0;
-  const frames = Math.max(0, dtMs) / FRAME_MS;
+  const frames = Math.min(SLIDE_MAX_CATCHUP_FRAMES, Math.max(0, dtMs) / FRAME_MS);
   const drained = offset * (1 - Math.pow(1 - SLIDE_DRAIN_PER_FRAME, frames));
   const next = offset - Math.max(drained, SLIDE_MIN_STEP_PX * frames);
   return next > EPS ? next : 0;

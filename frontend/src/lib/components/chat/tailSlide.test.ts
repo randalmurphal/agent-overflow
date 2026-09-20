@@ -142,9 +142,15 @@ describe('stepSlide', () => {
     expect(stepSlide(BOX, FRAME)).toBeCloseTo(BOX * (1 - SLIDE_DRAIN_PER_FRAME), 3);
   });
 
-  it('is frame-rate independent: one 33ms frame equals two 16.7ms frames', () => {
-    const two = stepSlide(stepSlide(BOX, FRAME), FRAME);
-    expect(stepSlide(BOX, 2 * FRAME)).toBeCloseTo(two, 3);
+  it('drains a sub-frame dt by its share of a frame', () => {
+    expect(stepSlide(BOX, FRAME / 2)).toBeCloseTo(BOX * Math.pow(1 - SLIDE_DRAIN_PER_FRAME, 0.5), 3);
+  });
+
+  it('resumes after a gap instead of catching it up: a dropped frame and a stall both drain one step', () => {
+    const one = stepSlide(BOX, FRAME);
+    expect(stepSlide(BOX, 2 * FRAME)).toBeCloseTo(one, 3);
+    expect(stepSlide(BOX, 120)).toBeCloseTo(one, 3);
+    expect(stepSlide(BOX, 5000)).toBeCloseTo(one, 3);
   });
 
   it('never drains slower than the minimum step, and lands on exactly zero', () => {
