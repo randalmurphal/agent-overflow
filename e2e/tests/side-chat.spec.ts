@@ -5,9 +5,10 @@
 // pane beside its source, without touching the running turn or the sidebar;
 // Keep promotes the scratch thread into an ordinary sidebar thread
 // (`PromoteScratchThread`) and swaps the companion for a normal pane;
-// closing the side chat, and closing the source pane it hangs from, delete
-// the scratch thread; and a reload restores the source pane alone, because
-// no side-chat pane is ever persisted. Spec: docs/specs/agent-thread-tools.md.
+// closing the side chat, closing the source pane it hangs from, and
+// switching that pane to another thread delete the scratch thread; and a
+// reload restores the source pane alone, because no side-chat pane is ever
+// persisted. Spec: docs/specs/agent-thread-tools.md.
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
@@ -24,29 +25,34 @@ function sideChatPane(page: Page) {
   return page.locator('section[data-pane-kind="side-chat"]');
 }
 
-/** Seed one project with the thread a side chat is cut from. */
-async function seedSource(harness: HarnessApp): Promise<{ threadId: string; path: string }> {
+/**
+ * Seed one project with the thread a side chat is cut from, plus any other
+ * thread a test switches to. Each carries a turn so the sidebar lists it.
+ */
+async function seedSource(
+  harness: HarnessApp,
+  otherTitles: string[] = [],
+): Promise<{ threadId: string; path: string; otherIds: string[] }> {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
       {
         name: 'side-chat',
         repo: {},
-        threads: [
-          {
-            title: SOURCE_TITLE,
-            provider: 'claude',
-            turns: [
-              {
-                userText: 'start the migration',
-                items: [{ kind: 'assistant_text', summary: 'The migration starts in schema.sql.' }],
-              },
-            ],
-          },
-        ],
+        threads: [SOURCE_TITLE, ...otherTitles].map((title) => ({
+          title,
+          provider: 'claude',
+          turns: [
+            {
+              userText: 'start the migration',
+              items: [{ kind: 'assistant_text', summary: 'The migration starts in schema.sql.' }],
+            },
+          ],
+        })),
       },
     ],
   });
-  return { threadId: seed.projects[0].threadIds[0], path: seed.projects[0].path };
+  const [threadId, ...otherIds] = seed.projects[0].threadIds;
+  return { threadId, path: seed.projects[0].path, otherIds };
 }
 
 /** Run one turn in the source pane so the thread has a session to fork. */
@@ -212,6 +218,36 @@ test('closing the source pane takes its side chat and the thread with it', async
 
   await sourcePane(page).getByTestId('pane-close').click();
   await expect(sideChatPane(page)).toHaveCount(0);
+  await expect
+    .poll(async () => (await threadRows(harness)).some((row) => row.id === fork!.id))
+    .toBe(false);
+});
+
+test('switching the source pane to another thread closes its side chat and deletes the fork', async ({
+  harness,
+  page,
+}) => {
+  const source = await seedSource(harness, ['Other work']);
+  const other = source.otherIds[0];
+  await setScenario(
+    harness,
+    source.path,
+    plainScenario({ name: 'side-chat-switch', provider: 'claude', texts: ['On it.'] }),
+  );
+
+  await harness.open(page);
+  await page.getByTestId('thread-row').filter({ hasText: SOURCE_TITLE }).click();
+  await runOneTurn(page, harness, 'read the migration');
+  await runSideChat(page);
+  const fork = await scratchFork(harness, source.threadId);
+  expect(fork).toBeDefined();
+
+  // The side chat is a fork of the thread the pane showed when it opened;
+  // the pane moving to another thread takes it down like a close would.
+  await page.getByTestId('thread-row').filter({ hasText: 'Other work' }).click();
+  await expect(sideChatPane(page)).toHaveCount(0);
+  await expect(sourcePane(page)).toHaveCount(1);
+  await expect(sourcePane(page).locator(`[data-ui-surface="chat"][data-thread-id="${other}"]`)).toBeVisible();
   await expect
     .poll(async () => (await threadRows(harness)).some((row) => row.id === fork!.id))
     .toBe(false);

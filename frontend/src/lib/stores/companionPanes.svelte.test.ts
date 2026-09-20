@@ -5,6 +5,7 @@ import {
   focusPane,
   getFocusedPaneId,
   getPane,
+  openThreadFromNavigation,
   resetPanesForTest,
 } from './panes.svelte';
 import { REVEAL_PANE_EVENT } from './eventNames';
@@ -330,6 +331,35 @@ describe('side chat companions', () => {
     destroyPane('main');
 
     expect(getPaneLayoutItems()).toEqual([]);
+    await vi.waitFor(() => {
+      expect(getBindingMock('DeleteThread')?.mock.calls).toEqual([['side-1']]);
+    });
+  });
+
+  it('opens a thread aimed at the focused side chat in the source pane instead, closing the side chat', async () => {
+    setPaneLayoutItemsForTest([threadItem('main')]);
+    const main = createPane('main');
+    const original = makeThread({ id: 'orig' });
+    replaceAllThreads([original, makeThread({ id: 'side-1', mode: 'scratch' })]);
+    main.replaceThread(original);
+    const sidePaneId = openSideChatPane('main', 'side-1');
+    focusPane(sidePaneId);
+
+    // The sidebar opens into the focused pane; a side chat is a thread pane,
+    // so without the redirect this would replace the fork it exists for.
+    const other = makeThread({ id: 'other' });
+    setBindingMock('SwitchThread', async () => other);
+    setBindingMock('ListThreadSliceAround', async () => ({ items: [], oldestTurnIndex: -1, hasMore: false }));
+    setBindingMock('ListRecentTurns', async () => []);
+    setBindingMock('GetThreadLiveState', async () => null);
+    setBindingMock('ListPendingInteractiveRequests', async () => null);
+    const landed = await openThreadFromNavigation(other, sidePaneId);
+
+    expect(landed).toBe(main);
+    expect(main.threadId).toBe('other');
+    expect(isCompanionOpen('main', 'side-chat')).toBe(false);
+    expect(paneIds()).toEqual(['main']);
+    expect(getFocusedPaneId()).toBe('main');
     await vi.waitFor(() => {
       expect(getBindingMock('DeleteThread')?.mock.calls).toEqual([['side-1']]);
     });

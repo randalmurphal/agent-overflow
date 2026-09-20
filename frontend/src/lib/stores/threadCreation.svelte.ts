@@ -6,6 +6,7 @@ import {
   getFocusedPaneOrNull,
   mountThreadInPane,
   openEmptyPane,
+  threadHostPane,
 } from './panes.svelte';
 import { expandProject, isGroupExpanded, toggleGroup } from './sidebar.svelte';
 import { prependThread } from './threads.svelte';
@@ -203,7 +204,7 @@ export async function openDraftThreadForProject(
   if (groupId && !isGroupExpanded(groupId)) toggleGroup(groupId);
   const pane: ThreadPane = openInNewPane
     ? openEmptyPane()
-    : (targetPane ?? getFocusedPaneOrNull() ?? ensureMainPane());
+    : threadHostPane(targetPane ?? getFocusedPaneOrNull() ?? ensureMainPane());
   // The placeholder is in-memory only — it doesn't go through
   // openThreadInPane, so we need to make sure the pane is mounted in
   // the layout grid ourselves. openEmptyPane already attaches itself.

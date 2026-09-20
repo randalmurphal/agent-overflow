@@ -530,17 +530,33 @@ function reportDuplicateMount(threadId: string, targetPaneId: string): void {
  * through `mountThreadInPane`, which probes for an existing mount first.
  * Calling this directly is how a thread ends up in two panes.
  */
+/**
+ * The pane a thread open or a new draft lands in when `pane` is the target.
+ * A side chat is a ThreadPane, so focus resolves to it, but it holds one
+ * thread for its whole life: the fork it was cut for, mounted while the pane
+ * is still empty. Once that is in place, anything else the user opens goes
+ * to the source pane beside it, whose thread switch then closes the side
+ * chat. Layout-level, so it needs nothing from the companion store.
+ */
+export function threadHostPane(pane: ThreadPane): ThreadPane {
+  if (!pane.threadId) return pane;
+  const sourceId = sourcePaneIdOf(pane.paneId);
+  const source = sourceId ? panes.get(sourceId) : undefined;
+  return source ?? pane;
+}
+
 async function replaceThreadInPane(
   thread: Thread,
   targetPane: string | ThreadPane,
   activation: PaneActivation,
 ): Promise<ThreadPane> {
-  const target = typeof targetPane === 'string'
+  const requested = typeof targetPane === 'string'
     ? panes.get(targetPane)
     : targetPane;
-  if (!target) {
+  if (!requested) {
     throw new Error(`Target pane "${targetPane}" is not registered.`);
   }
+  const target = threadHostPane(requested);
   reportDuplicateMount(thread.id, target.paneId);
   if (!panes.has(target.paneId)) {
     registerPane(target.paneId, target, activation);
