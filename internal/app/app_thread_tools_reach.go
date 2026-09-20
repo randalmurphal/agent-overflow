@@ -192,13 +192,22 @@ func threadErrorDetails(action string, err error) (code, message string, uncerta
 
 // threadRequestNeverSent reports whether a dispatch failure happened
 // before the destination could see the request. These are the refusals
-// callPeer raises while loading the pairing or opening the RPC, so the
-// source row can be deleted instead of left unconfirmed for a poller that
-// would only confirm the same answer.
+// attachedbackends raises while addressing the call, loading the pairing or
+// opening the RPC, so the source row is settled `refused`
+// (settleUnconfirmedRequest) instead of left unconfirmed for a poller that
+// would only collect the same answer.
+//
+// threadtools.CodeUnreachable is deliberately NOT in the set, close as it
+// reads: it is also what this computer raises for a destination that DID
+// answer, without a usable result (threadPeerClient.forward,
+// callThreadPeerRequest). Those requests may be running on the other
+// computer, and settling one refused would tell the caller nothing happened
+// while the work continues.
 func threadRequestNeverSent(code string) bool {
 	switch code {
-	case "thread_unsupported", "thread_unreachable", "remote_not_paired",
-		"remote_pairing_pending", "remote_pairing_unavailable", "remote_pairing_expired":
+	case attachedbackends.CodeThreadUnsupported, attachedbackends.CodeThreadUnreachable,
+		"remote_not_paired", "remote_pairing_pending", "remote_pairing_unavailable",
+		"remote_pairing_expired":
 		return true
 	}
 	return false

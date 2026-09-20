@@ -10,7 +10,7 @@ package store
 // row be deleted and re-indexed by rowid without replaying its old text.
 //
 // `source` is `item` or `import`; `kind` is `user`, `assistant`, `tool` or
-// `title`, and a title row has `item_id = ”`. Hidden-mode and scratch
+// `title`, and a title row has an empty `item_id`. Hidden-mode and scratch
 // filtering happens at query time by joining threads, so promoting a scratch
 // thread needs no reindex.
 //

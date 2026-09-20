@@ -92,7 +92,7 @@ func (t threadToolsApp) updateOneThread(ctx context.Context, caller threadtools.
 //
 // Archiving releases the thread's provider session (app_thread_archive.go
 // says why), and that release is serialized by the ACTION lock, so a patch
-// that archives takes action then mutation — the order transfer takes, and
+// that archives takes action then mutation, the order transfer takes, and
 // never the reverse. A patch that does not archive takes the mutation lock
 // alone, exactly as the pin and rename bindings do.
 func (a *App) applyThreadOrganizePatch(ctx context.Context, threadID string, patch threadapp.OrganizePatch) (threadapp.OrganizeResult, error) {

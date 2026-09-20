@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
 )
@@ -240,14 +241,15 @@ done
 	}
 }
 
-// TestForkThreadCutsOnAThreadlessAppServer: the sidebar fork runs on a
-// process of its own that never loads the source, so the child it loads
-// dies with the process and its writer lock with it. The source id travels
-// in the fork params, nothing else names it.
-func TestForkThreadCutsOnAThreadlessAppServer(t *testing.T) {
-	dir := t.TempDir()
-	requestLog := dir + "/requests.jsonl"
+// forkThreadMockBinary writes the threadless app-server the ForkThread tests
+// drive: it logs every request, answers initialize, replies to thread/fork
+// with forkReply (a JSON-RPC `result` or `error` member), and serves one turn
+// for an anchored cut's tail read. The EXIT trap is what lets a test prove
+// the throwaway process does not outlive the call.
+func forkThreadMockBinary(t *testing.T, dir, requestLog, forkReply string) string {
+	t.Helper()
 	script := `#!/bin/bash
+trap 'echo closed >> "` + requestLog + `"' EXIT
 while IFS= read -r line; do
     echo "$line" >> "` + requestLog + `"
     id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
@@ -259,7 +261,7 @@ while IFS= read -r line; do
         continue
     fi
     if echo "$line" | grep -q '"method":"thread/fork"'; then
-        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"detached-fork\",\"turns\":[]}}}"
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,` + forkReply + `}"
         continue
     fi
     if echo "$line" | grep -q '"method":"thread/turns/list"'; then
@@ -269,10 +271,27 @@ while IFS= read -r line; do
     echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{\"code\":-32601,\"message\":\"unexpected $line\"}}"
 done
 `
-	scriptPath := dir + "/codex"
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+	path := dir + "/codex"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write mock script: %v", err)
 	}
+	return path
+}
+
+// The two fork replies the tests below drive the mock with.
+const (
+	forkResultReply = `\"result\":{\"thread\":{\"id\":\"detached-fork\",\"turns\":[]}}`
+	forkErrorReply  = `\"error\":{\"code\":-32600,\"message\":\"no such thread\"}`
+)
+
+// TestForkThreadCutsOnAThreadlessAppServer: the sidebar fork runs on a
+// process of its own that never loads the source, so the child it loads
+// dies with the process and its writer lock with it. The source id travels
+// in the fork params, nothing else names it.
+func TestForkThreadCutsOnAThreadlessAppServer(t *testing.T) {
+	dir := t.TempDir()
+	requestLog := dir + "/requests.jsonl"
+	scriptPath := forkThreadMockBinary(t, dir, requestLog, forkResultReply)
 
 	forked, err := ForkThread(context.Background(), ForkSpec{
 		Binary:         scriptPath,
@@ -310,6 +329,69 @@ done
 	}
 	if strings.Contains(fork, "developerInstructions") {
 		t.Fatalf("thread/fork on a threadless process carried developer instructions: %s", fork)
+	}
+}
+
+// A fork with no anchor keeps the whole history: no lastTurnId travels, and
+// no tail is read, because there is no cut to validate against one.
+func TestForkThreadWithoutAnAnchorSendsNoLastTurnIdAndReadsNoTail(t *testing.T) {
+	dir := t.TempDir()
+	requestLog := dir + "/requests.jsonl"
+	binary := forkThreadMockBinary(t, dir, requestLog, forkResultReply)
+
+	forked, err := ForkThread(context.Background(), ForkSpec{
+		Binary:         binary,
+		WorkDir:        dir,
+		SourceThreadID: "source-thread",
+	})
+	if err != nil {
+		t.Fatalf("ForkThread() error = %v", err)
+	}
+	if forked != "detached-fork" {
+		t.Fatalf("ForkThread() = %q, want detached-fork", forked)
+	}
+	data, err := os.ReadFile(requestLog)
+	if err != nil {
+		t.Fatalf("read request log: %v", err)
+	}
+	log := string(data)
+	if strings.Contains(log, "lastTurnId") {
+		t.Fatalf("a full fork carried an anchor:\n%s", log)
+	}
+	if strings.Contains(log, `"method":"thread/turns/list"`) {
+		t.Fatalf("a full fork read the tail it has nothing to validate:\n%s", log)
+	}
+}
+
+// A destination that refuses the cut fails the fork with its own words, and
+// the throwaway process it ran on does not outlive the call.
+func TestForkThreadSurfacesTheAppServersRefusalAndClosesTheProcess(t *testing.T) {
+	dir := t.TempDir()
+	requestLog := dir + "/requests.jsonl"
+	binary := forkThreadMockBinary(t, dir, requestLog, forkErrorReply)
+
+	forked, err := ForkThread(context.Background(), ForkSpec{
+		Binary:         binary,
+		WorkDir:        dir,
+		SourceThreadID: "gone",
+		LastTurnID:     "turn-7",
+	})
+	if err == nil {
+		t.Fatalf("ForkThread() = %q, want the destination's refusal", forked)
+	}
+	if !strings.Contains(err.Error(), "no such thread") {
+		t.Fatalf("ForkThread() error = %v, want the app-server's message", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		data, readErr := os.ReadFile(requestLog)
+		if readErr == nil && strings.Contains(string(data), "closed") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the fork's app-server is still running after the refusal:\n%s", data)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

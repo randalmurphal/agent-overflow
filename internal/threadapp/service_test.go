@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -48,19 +49,28 @@ type testWorkspace struct {
 	findBranch    string
 	createPath    string
 	createBranch  string
+	// createErr fails the cut, and cuts records what each CreateWorktree call
+	// was asked for, which is the only place a test can see that the caller's
+	// base choice reached git.
+	createErr error
+	cuts      []WorktreeCut
 	// origin is what ObserveOrigin reports for any path. Zero by default, so
 	// a test that says nothing about git provenance asserts the "workspace is
 	// not a repository" shape for free.
 	origin store.ThreadOrigin
 }
 
-func (w testWorkspace) CurrentBranch(string) string { return w.currentBranch }
+func (w *testWorkspace) CurrentBranch(string) string { return w.currentBranch }
 
-func (w testWorkspace) ObserveOrigin(string) store.ThreadOrigin { return w.origin }
-func (w testWorkspace) FindWorktree(string, string) (string, string, bool, error) {
+func (w *testWorkspace) ObserveOrigin(string) store.ThreadOrigin { return w.origin }
+func (w *testWorkspace) FindWorktree(string, string) (string, string, bool, error) {
 	return w.findPath, w.findBranch, w.findPath != "", nil
 }
-func (w testWorkspace) CreateWorktree(context.Context, string, WorktreeCut) (string, string, error) {
+func (w *testWorkspace) CreateWorktree(_ context.Context, _ string, cut WorktreeCut) (string, string, error) {
+	w.cuts = append(w.cuts, cut)
+	if w.createErr != nil {
+		return "", "", w.createErr
+	}
 	return w.createPath, w.createBranch, nil
 }
 
@@ -113,7 +123,7 @@ func newServiceFixture(t *testing.T) (*Service, *store.Store, *testModels) {
 	service := New(Deps{
 		Store:     database,
 		Models:    models,
-		Workspace: testWorkspace{currentBranch: "main"},
+		Workspace: &testWorkspace{currentBranch: "main"},
 		Now:       func() time.Time { return time.UnixMilli(1234) },
 		NewID:     func() string { return "thread" },
 	})
@@ -124,7 +134,7 @@ func TestCreatePreservesProjectAndWorkspaceDistinction(t *testing.T) {
 	service, database, models := newServiceFixture(t)
 	setup := &setupRecorder{store: database}
 	recent := &recentRecorder{}
-	service.deps.Workspace = testWorkspace{
+	service.deps.Workspace = &testWorkspace{
 		findPath: "/repo-worktrees/feature", findBranch: "feature/one",
 	}
 	service.deps.WorktreeSetup = setup
@@ -159,11 +169,17 @@ func TestCreatePreservesProjectAndWorkspaceDistinction(t *testing.T) {
 func TestCreateStartsSetupOnlyForWorktreeItCuts(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	setup := &setupRecorder{store: database}
-	service.deps.Workspace = testWorkspace{
+	workspace := &testWorkspace{
 		createPath: "/repo-worktrees/new", createBranch: "feature/new",
 	}
+	service.deps.Workspace = workspace
 	service.deps.WorktreeSetup = setup
-	thread, err := service.Create(CreateOptions{ProjectID: "project", WorktreeBranch: "feature/new"})
+	thread, err := service.Create(CreateOptions{
+		ProjectID:         "project",
+		WorktreeBranch:    "feature/new",
+		WorktreeBase:      "  release/2  ",
+		WorktreeBaseLocal: true,
+	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -172,6 +188,38 @@ func TestCreateStartsSetupOnlyForWorktreeItCuts(t *testing.T) {
 	}
 	if len(setup.started) != 1 {
 		t.Fatalf("setup calls = started %v", setup.started)
+	}
+	want := WorktreeCut{Branch: "feature/new", Base: "release/2", BaseLocal: true}
+	if len(workspace.cuts) != 1 || workspace.cuts[0] != want {
+		t.Fatalf("cuts = %+v, want one %+v", workspace.cuts, want)
+	}
+}
+
+// A worktree that cannot be cut has no thread to belong to, so the failure
+// is the whole creation's failure: no row, no setup run, and the git reason
+// travels out to the caller.
+func TestCreateFailsWhenTheWorktreeCannotBeCut(t *testing.T) {
+	service, database, _ := newServiceFixture(t)
+	setup := &setupRecorder{store: database}
+	service.deps.Workspace = &testWorkspace{createErr: errors.New("branch already checked out")}
+	service.deps.WorktreeSetup = setup
+
+	_, err := service.Create(CreateOptions{ProjectID: "project", WorktreeBranch: "feature/new"})
+	if err == nil {
+		t.Fatal("Create reported a thread for a worktree git refused to cut")
+	}
+	if !strings.Contains(err.Error(), "branch already checked out") {
+		t.Fatalf("Create error = %v, want git's reason", err)
+	}
+	threads, listErr := database.ListThreads()
+	if listErr != nil {
+		t.Fatalf("ListThreads: %v", listErr)
+	}
+	if len(threads) != 0 {
+		t.Fatalf("threads = %+v, want none", threads)
+	}
+	if len(setup.started) != 0 {
+		t.Fatalf("setup ran for a worktree that was never cut: %v", setup.started)
 	}
 }
 

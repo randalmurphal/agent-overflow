@@ -1656,6 +1656,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	},
 	{Version: 102, Name: "thread_requests", SQL: threadRequestsV102SQL},
 	{Version: 103, Name: "thread_search", SQL: threadSearchV103SQL},
+	{Version: 104, Name: "thread_group_names", SQL: threadGroupNamesV104SQL},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

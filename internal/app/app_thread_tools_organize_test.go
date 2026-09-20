@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"sync"
 	"testing"
 
 	"agent-overflow/internal/eventchan"
@@ -294,6 +296,57 @@ func TestThreadToolsUpdateCreatesTheGroupInTheThreadsOwnProject(t *testing.T) {
 	}
 	if frames := f.groupFrames(t); len(frames) != 0 {
 		t.Fatalf("reusing a group emitted %+v", frames)
+	}
+}
+
+// Two spawns naming one group that does not exist yet end in ONE group.
+// Both plans are made from a read that found no such group; the destination
+// resolves the name again inside the write's own transaction, so the second
+// joins the first's group instead of inserting a row nobody could tell apart
+// from it.
+func TestConcurrentSpawnsNamingOneNewGroupShareIt(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "on it")
+	const group = "Release sweep"
+
+	acks := make([]threadtools.RequestAck, 2)
+	errs := make([]error, len(acks))
+	var wg sync.WaitGroup
+	for i := range acks {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			acks[i], errs[i] = f.adapter().Spawn(context.Background(), f.callerIdentity(), threadtools.SpawnCall{
+				Prompt: "start the sweep", Group: group,
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	groups, err := f.app.store.ListThreadGroups()
+	if err != nil {
+		t.Fatalf("ListThreadGroups: %v", err)
+	}
+	named := []store.ThreadGroup{}
+	for _, candidate := range groups {
+		if candidate.Name == group {
+			named = append(named, candidate)
+		}
+	}
+	if len(named) != 1 {
+		t.Fatalf("groups named %q = %+v, want exactly one", group, named)
+	}
+	for i, ack := range acks {
+		if errs[i] != nil {
+			t.Fatalf("Spawn %d: %v", i, errs[i])
+		}
+		spawned, err := f.app.store.GetThread(ack.ThreadID)
+		if err != nil {
+			t.Fatalf("GetThread(%s): %v", ack.ThreadID, err)
+		}
+		if spawned.GroupID != named[0].ID {
+			t.Errorf("spawn %d joined group %q, want %s", i, spawned.GroupID, named[0].ID)
+		}
 	}
 }
 

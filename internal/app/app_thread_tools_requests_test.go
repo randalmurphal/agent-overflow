@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/flushqueue"
+	"agent-overflow/internal/identity"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -17,6 +18,7 @@ import (
 	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
@@ -309,6 +311,50 @@ func TestThreadSendQueuesIntoABusyThreadAndCancelTakesItBack(t *testing.T) {
 	}
 }
 
+// A request that is already settled has nothing left to stop, so cancelling
+// it again reports what it settled as rather than failing or settling it a
+// second time. An agent retrying a cancel it lost the answer to must not be
+// able to rewrite the outcome.
+func TestThreadCancelOfASettledRequestChangesNothing(t *testing.T) {
+	f := newRequestFixture(t)
+	target := f.busyThread(t, "busy-settled")
+
+	ack, err := f.adapter().Send(t.Context(), f.callerIdentity(), threadtools.SendCall{
+		ThreadID: target.ID, Message: "take this back", Notify: true,
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if _, err := f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{Token: ack.Token}); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	settled := f.request(t, ack.Token)
+	if settled.State != store.ThreadRequestCancelled {
+		t.Fatalf("request state = %q, want cancelled", settled.State)
+	}
+
+	report, err := f.adapter().Cancel(t.Context(), f.callerIdentity(), threadtools.CancelCall{Token: ack.Token})
+	if err != nil {
+		t.Fatalf("second Cancel: %v", err)
+	}
+	if report.Effect != threadCancelNothing {
+		t.Errorf("second cancel effect = %q, want nothing to stop", report.Effect)
+	}
+	if report.State != threadtools.RequestCancelled {
+		t.Errorf("second cancel state = %q, want the state it settled as", report.State)
+	}
+	if report.Token != ack.Token || report.ThreadID != target.ID {
+		t.Errorf("second cancel report = %+v, want the request it named", report)
+	}
+	again := f.request(t, ack.Token)
+	if again.State != settled.State || again.SettledAt != settled.SettledAt {
+		t.Errorf("the second cancel re-settled the request: %+v, was %+v", again, settled)
+	}
+	if rows := durableQueueRows(t, f.app, f.caller.ID); len(rows) != 0 {
+		t.Errorf("cancelling a settled request woke the caller: %+v", rows)
+	}
+}
+
 // A thread cannot send to or ask itself, whatever the tools layer resolved a
 // moment earlier.
 func TestThreadRequestRefusesSendingToTheCallersOwnThread(t *testing.T) {
@@ -382,21 +428,86 @@ func TestThreadAskForksAReadOnlyScratchThreadAndDeletesIt(t *testing.T) {
 	}
 }
 
+// Every value a request row can hold has to arrive at the model as a word
+// its tool schema declares. The literals here are that schema: a rename on
+// either side of the mapping, or a new stored state nobody translated, has
+// to break this test rather than reach an agent as an unknown word.
+func TestEveryStoredRequestValueHasAToolWord(t *testing.T) {
+	states := map[string]string{
+		store.ThreadRequestUnconfirmed: "unconfirmed",
+		store.ThreadRequestAccepted:    "accepted",
+		store.ThreadRequestRunning:     "running",
+		store.ThreadRequestReplied:     "replied",
+		store.ThreadRequestFinished:    "finished",
+		store.ThreadRequestErrored:     "errored",
+		store.ThreadRequestCancelled:   "cancelled",
+		store.ThreadRequestInterrupted: "interrupted",
+		store.ThreadRequestExpired:     "expired",
+		store.ThreadRequestRefused:     "refused",
+	}
+	if len(threadRequestStateWords) != len(states) {
+		t.Errorf("the state vocabulary has %d entries, this test pins %d", len(threadRequestStateWords), len(states))
+	}
+	for stored, want := range states {
+		if got := threadRequestStateWord(stored); got != want {
+			t.Errorf("state %q reads as %q, want %q", stored, got, want)
+		}
+	}
+	// blocked is derived from the target's live state at read time, so it is
+	// a word with no row behind it.
+	if _, mapped := threadRequestStateWords[threadtools.RequestBlocked]; mapped {
+		t.Error("blocked is stored as a request state, but nothing writes it")
+	}
+
+	kinds := map[string]string{
+		"":                      "",
+		store.ThreadAnswerReply: "reply",
+		store.ThreadAnswerFinal: "final",
+		store.ThreadAnswerError: "error",
+		store.ThreadAnswerNote:  "note",
+	}
+	if len(threadAnswerKindWords) != len(kinds) {
+		t.Errorf("the answer vocabulary has %d entries, this test pins %d", len(threadAnswerKindWords), len(kinds))
+	}
+	for stored, want := range kinds {
+		if got := threadAnswerKindWord(stored); got != want {
+			t.Errorf("answer kind %q reads as %q, want %q", stored, got, want)
+		}
+	}
+
+	// A value the maps do not know is still the caller's best evidence, so
+	// it passes through instead of arriving blank.
+	if got := threadRequestStateWord("from-a-newer-build"); got != "from-a-newer-build" {
+		t.Errorf("an unmapped state read as %q, want it passed through", got)
+	}
+	if got := threadAnswerKindWord("from-a-newer-build"); got != "from-a-newer-build" {
+		t.Errorf("an unmapped answer kind read as %q, want it passed through", got)
+	}
+}
+
 // The scratch fork runs read-only whatever the source runs: a question must
-// not be able to act on a workspace.
+// not be able to act on a workspace. Driven through Ask itself, because the
+// mode is chosen on the way to the fork and a test that forks directly would
+// not notice the tool handing it a different one.
 func TestThreadAskScratchForkIsAlwaysReadOnly(t *testing.T) {
 	f := newRequestFixture(t)
+	// The turn stays open, so the fork is still there to read: an ask that
+	// settles deletes its scratch thread.
+	f.mockClaudeHoldingTheTurn(t, "reading the workspace")
 	target := f.forkableThread(t, "readonly-source")
 	if err := f.app.store.UpdateRuntimeMode(target.ID, string(provider.RuntimeFullAccess)); err != nil {
 		t.Fatalf("UpdateRuntimeMode: %v", err)
 	}
-	source, err := f.app.store.GetThread(target.ID)
+
+	ack, err := f.adapter().Ask(t.Context(), f.callerIdentity(), threadtools.AskCall{
+		ThreadID: target.ID, Question: "what does this workspace do?",
+	})
 	if err != nil {
-		t.Fatalf("GetThread: %v", err)
+		t.Fatalf("Ask: %v", err)
 	}
-	fork, err := f.adapter().forkScratchThread(t.Context(), source, "token-abc")
+	fork, err := f.app.store.GetThread(ack.ThreadID)
 	if err != nil {
-		t.Fatalf("forkScratchThread: %v", err)
+		t.Fatalf("GetThread(scratch): %v", err)
 	}
 	if fork.RuntimeMode != string(provider.RuntimeReadOnly) {
 		t.Errorf("scratch runtime mode = %q, want read-only", fork.RuntimeMode)
@@ -408,9 +519,153 @@ func TestThreadAskScratchForkIsAlwaysReadOnly(t *testing.T) {
 		t.Errorf("scratch title = %q", fork.Title)
 	}
 	row, found, err := f.app.store.GetScratchThread(fork.ID)
-	if err != nil || !found || row.RequestToken != "token-abc" || row.SourceThreadID != target.ID {
+	if err != nil || !found || row.RequestToken != ack.Token || row.SourceThreadID != target.ID {
 		t.Fatalf("scratch row = %+v found=%v err=%v", row, found, err)
 	}
+}
+
+// The autonomy gate stands on the thread tools' write paths too.
+//
+// A call one of this computer's own agents makes carries no session and is
+// unaffected, which is the case the last subtest pins: the tools' MCP server
+// is its own listener and its calls are in-process. A call a paired computer
+// forwarded arrives on that computer's session, and a session that may
+// operate threads but not act without approval must not be able to start
+// autonomous work through thread_spawn or thread_send.
+func TestThreadToolsWritesNeedAutonomyForAnAutonomousThread(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "on it")
+	f.app.initIdentity("backend-under-test")
+	limited := pairSessionWithScopes(t, f.app, "thumb-thread-tools", []identity.Scope{
+		identity.ScopeThreadsRead, identity.ScopeThreadsOperate, identity.ScopeTerminalOperate,
+	})
+	forwarded := callFrom(limited.ID, false)
+
+	source := f.forkableThread(t, "autonomy-source")
+	// The precondition, asserted rather than assumed: these threads resolve
+	// to full-access, which is the mode the gate is about.
+	if f.caller.RuntimeMode != string(provider.RuntimeFullAccess) {
+		t.Fatalf("caller runtime mode = %q, want full-access; this test no longer covers what it was written for", f.caller.RuntimeMode)
+	}
+
+	t.Run("fresh spawn", func(t *testing.T) {
+		_, err := f.adapter().Spawn(forwarded, f.callerIdentity(), threadtools.SpawnCall{Prompt: "start"})
+		wantScopeRefusal(t, err, transport.ScopeThreadsAutonomy)
+	})
+	t.Run("from_thread spawn", func(t *testing.T) {
+		_, err := f.adapter().Spawn(forwarded, f.callerIdentity(), threadtools.SpawnCall{
+			FromThread: source.ID, Prompt: "carry on",
+		})
+		wantScopeRefusal(t, err, transport.ScopeThreadsAutonomy)
+	})
+	t.Run("send", func(t *testing.T) {
+		_, err := f.adapter().Send(forwarded, f.callerIdentity(), threadtools.SendCall{
+			ThreadID: source.ID, Message: "keep going",
+		})
+		wantScopeRefusal(t, err, transport.ScopeThreadsAutonomy)
+	})
+	t.Run("no threads were started", func(t *testing.T) {
+		threads := threadIDsInStore(t, f.app)
+		if len(threads) != 2 {
+			t.Fatalf("threads = %v, want only the caller and the source", threads)
+		}
+	})
+	t.Run("a local agent is unaffected", func(t *testing.T) {
+		ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+			FromThread: source.ID, Prompt: "carry on",
+		})
+		if err != nil {
+			t.Fatalf("Spawn from an in-process caller: %v", err)
+		}
+		spawned, err := f.app.store.GetThread(ack.ThreadID)
+		if err != nil {
+			t.Fatalf("GetThread(spawned): %v", err)
+		}
+		if spawned.RuntimeMode != string(provider.RuntimeFullAccess) {
+			t.Fatalf("spawned runtime mode = %q, want the caller's full-access", spawned.RuntimeMode)
+		}
+	})
+}
+
+// A receipt accepted whose thread was never created is settled here, not
+// left for the next boot: the retry that finds it reads a refusal, the
+// receipt reads interrupted, and no second thread is created for it.
+func TestThreadSpawnSettlesAReceiptWhoseThreadWasNeverCreated(t *testing.T) {
+	f := newRequestFixture(t)
+	adapter := f.adapter()
+	origin, err := adapter.localOrigin(f.callerIdentity())
+	if err != nil {
+		t.Fatalf("localOrigin: %v", err)
+	}
+
+	// The state a crash between the two writes leaves behind: an accepted
+	// receipt with no target thread.
+	const token = "half-created-token"
+	if _, _, err := f.app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token:            token,
+		OwnerDeviceID:    threadReceiptLocalOwner,
+		SourceComputerID: "local-computer",
+		SourceThreadID:   f.caller.ID,
+		Kind:             store.ThreadRequestSpawn,
+	}); err != nil {
+		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
+	}
+	before := threadIDsInStore(t, f.app)
+
+	_, err = adapter.acceptSpawn(t.Context(), origin, token, threadtools.SpawnCall{Prompt: "try again"})
+	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
+		t.Fatalf("retry of a half-created request: code = %q, err = %v", code, err)
+	}
+	if receipt := f.receipt(t, token); receipt.State != store.ThreadReceiptInterrupted {
+		t.Fatalf("receipt state = %q, want interrupted", receipt.State)
+	}
+	if after := threadIDsInStore(t, f.app); len(after) != len(before) {
+		t.Fatalf("threads after the refusal = %v, want the %v it started with", after, before)
+	}
+}
+
+// A spawn that cannot join the group it named leaves no thread behind. The
+// caller reads a refusal and makes the request again, and a retry that found
+// the first thread still there would be spawning the same work twice.
+func TestThreadSpawnRemovesTheThreadWhenItsGroupPatchFails(t *testing.T) {
+	f := newRequestFixture(t)
+	// A thread with no project has nowhere to create a group, which is the
+	// refusal that can only be reached once the new thread exists.
+	source := testThread("spawn-group-failure-source")
+	source.ProjectID = ""
+	source.Provider = string(provider.Claude)
+	source.SessionRef = "spawn-group-failure"
+	source.WorkspacePath = t.TempDir()
+	if err := f.app.store.CreateThread(source); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	insertForkTestItems(t, f.app.store, source.ID)
+	before := threadIDsInStore(t, f.app)
+
+	_, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		FromThread: source.ID, Prompt: "carry on", Group: "Release",
+	})
+	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
+		t.Fatalf("spawn into an impossible group: code = %q, err = %v", code, err)
+	}
+	if after := threadIDsInStore(t, f.app); len(after) != len(before) {
+		t.Fatalf("the refused spawn left a thread behind: %v, started with %v", after, before)
+	}
+}
+
+// threadIDsInStore is every thread row, for a test asserting that a refused
+// call created none.
+func threadIDsInStore(t *testing.T, app *App) []string {
+	t.Helper()
+	threads, err := app.store.ListThreads()
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	ids := make([]string, 0, len(threads))
+	for _, thread := range threads {
+		ids = append(ids, thread.ID)
+	}
+	return ids
 }
 
 // forkableThread builds a Claude thread an ask can fork: a session file on
@@ -1626,9 +1881,17 @@ func TestThreadCancelInterruptsTheRequestsOwnTurn(t *testing.T) {
 	if row.State != store.ThreadRequestCancelled {
 		t.Fatalf("request = %+v, want cancelled", row)
 	}
-	// The interrupt's own turn end must not overwrite the cancellation with
-	// an answer nobody asked for.
-	time.Sleep(200 * time.Millisecond)
+	// The interrupt's own turn end cannot overwrite the cancellation with an
+	// answer nobody asked for, and that is structural rather than a matter
+	// of timing: settling took the receipt out of the observer's gate, so
+	// the turn end has no token to look at, and the receipt it would settle
+	// is already settled.
+	if tokens, armed := f.app.runningReceiptTokens(ack.ThreadID); armed {
+		t.Fatalf("the cancelled request is still armed for its turn end: %v", tokens)
+	}
+	if receipt := f.receipt(t, ack.Token); receipt.State != store.ThreadReceiptCancelled {
+		t.Fatalf("receipt = %q, want cancelled", receipt.State)
+	}
 	if again := f.request(t, ack.Token); again.State != store.ThreadRequestCancelled {
 		t.Fatalf("the interrupted turn re-settled the request as %q", again.State)
 	}

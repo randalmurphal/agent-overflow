@@ -329,6 +329,41 @@ func TestWorktreeSeedRejectsANonRepository(t *testing.T) {
 	}
 }
 
+// A base that exists only on origin is cut from the tracking ref even when
+// the fetch fails: BaseBranchKnown told the caller this base works, and the
+// bare name it would otherwise fall back to is not a ref in this clone.
+func TestWorktreeSeedUsesTheTrackingRefForAnOriginOnlyBaseAfterAFailedFetch(t *testing.T) {
+	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	sibling := t.TempDir()
+	testutil.RunGit(t, sibling, "clone", bare, ".")
+	testutil.RunGit(t, sibling, "checkout", "-b", "release/2.4")
+	testutil.RunGit(t, sibling, "push", "origin", "release/2.4")
+	testutil.RunGit(t, repo, "fetch", "origin")
+
+	core := NewCore()
+	known, err := core.BaseBranchKnown(repo, "release/2.4", false)
+	if err != nil || !known {
+		t.Fatalf("BaseBranchKnown(release/2.4) = %v, %v; the fixture must admit this base", known, err)
+	}
+	failure := errors.New("remote hung up")
+	core.fetchFn = func(context.Context, string) error { return failure }
+
+	worktree := filepath.Join(t.TempDir(), "origin-only")
+	seed, err := core.CreateWorktreeFromFreshBase(t.Context(), repo, worktree, "release/2.4", "ao-origin-only")
+	if err != nil {
+		t.Fatalf("CreateWorktreeFromFreshBase: %v", err)
+	}
+	if !errors.Is(seed.FetchErr, failure) {
+		t.Fatalf("seed.FetchErr = %v, want %v", seed.FetchErr, failure)
+	}
+	if !seed.FromRemote || seed.Ref != "origin/release/2.4" {
+		t.Fatalf("seed = %+v, want the tracking ref: there is no local release/2.4 to fall back to", seed)
+	}
+	if head := revParse(t, worktree, "HEAD"); head != revParse(t, repo, "origin/release/2.4") {
+		t.Fatalf("worktree HEAD = %s, want origin/release/2.4", head)
+	}
+}
+
 func TestBaseBranchKnownSeesLocalAndOriginBranches(t *testing.T) {
 	repo, bare := testutil.InitGitRepoWithOrigin(t)
 	// A branch only origin has, fetched so the tracking ref exists here.

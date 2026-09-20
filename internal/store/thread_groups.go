@@ -118,22 +118,72 @@ func (s *Store) GetThreadGroup(id string) (ThreadGroup, error) {
 	return g, nil
 }
 
-// CreateThreadGroup inserts an empty group in the named project. The id is
-// minted here rather than taken from the caller: nothing outside this
-// package has a reason to choose one, and the wire is not a place to
-// accept a primary key from.
+// CreateThreadGroup returns the named group of that project, inserting it
+// when the project has none. The id is minted here rather than taken from
+// the caller: nothing outside this package has a reason to choose one, and
+// the wire is not a place to accept a primary key from.
+//
+// A name identifies a group inside its project (migration v104), so every
+// creator resolves before it inserts and two callers naming the same new
+// group end up in one group rather than in two rows a reader cannot tell
+// apart.
 func (s *Store) CreateThreadGroup(projectID, name string) (ThreadGroup, error) {
-	return createThreadGroup(s.db, projectID, name)
+	group, _, err := ensureThreadGroup(s.db, projectID, name)
+	return group, err
 }
 
-// createThreadGroup is the insert itself, on the pool or on a caller's
-// transaction: a group a thread's organize patch has to create is created
-// inside that patch's transaction, so a later refusal takes it with it.
-func createThreadGroup(exec sqlExecutor, projectID, name string) (ThreadGroup, error) {
+// threadGroupWriter is the pool or a caller's transaction. The
+// resolve-or-insert needs both halves on the same connection, so the
+// decision it makes is the one its transaction commits.
+type threadGroupWriter interface {
+	sqlExecutor
+	sqlQueryer
+}
+
+// ensureThreadGroup is the resolve-or-insert itself, on the pool or on a
+// caller's transaction: a group a thread's organize patch has to create is
+// created inside that patch's transaction, so a later refusal takes it with
+// it, and the read that decides is inside that same transaction. The bool
+// reports whether this call inserted the row, which is what tells a caller
+// to announce a new sidebar group.
+//
+// The store runs one writer connection, so the read and the insert cannot
+// interleave with another writer's.
+func ensureThreadGroup(exec threadGroupWriter, projectID, name string) (ThreadGroup, bool, error) {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
-		return ThreadGroup{}, ErrEmptyThreadGroupName
+		return ThreadGroup{}, false, ErrEmptyThreadGroupName
 	}
+	existing, found, err := findThreadGroupByName(exec, projectID, trimmed)
+	if err != nil {
+		return ThreadGroup{}, false, err
+	}
+	if found {
+		return existing, false, nil
+	}
+	created, err := insertThreadGroup(exec, projectID, trimmed)
+	if err != nil {
+		return ThreadGroup{}, false, err
+	}
+	return created, true, nil
+}
+
+// findThreadGroupByName reads the named group of one project, matching case
+// insensitively exactly as the unique index does.
+func findThreadGroupByName(exec sqlQueryer, projectID, name string) (ThreadGroup, bool, error) {
+	group, err := scanThreadGroup(exec.QueryRow(
+		`SELECT `+threadGroupColumns+` FROM thread_groups
+		  WHERE project_id = ? AND name = ? COLLATE NOCASE`, projectID, name))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ThreadGroup{}, false, nil
+	}
+	if err != nil {
+		return ThreadGroup{}, false, fmt.Errorf("store: find thread group %q in project %s: %w", name, projectID, err)
+	}
+	return group, true, nil
+}
+
+func insertThreadGroup(exec sqlExecutor, projectID, trimmed string) (ThreadGroup, error) {
 	now := nowMillis()
 	group := ThreadGroup{
 		ID:        uuid.NewString(),
