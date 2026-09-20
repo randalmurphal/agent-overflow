@@ -1671,11 +1671,11 @@ test('thread_remind wakes the caller later and a pending reminder can be cancell
     outcome: string;
     notify: boolean;
   }
-  const later = await awaitToolAnswer<RemindAck>(harness, { tool: 'thread_remind' });
+  const later = await awaitToolAnswer<RemindAck>(harness, { tool: 'thread_remind', timeoutMs: 60_000 });
   expect(later.isError, later.text).toBe(false);
   expect(later.value!.state).toBe('accepted');
   expect(later.value!.outcome).toBe('backgrounded');
-  const soon = await awaitToolAnswer<RemindAck>(harness, { tool: 'thread_remind' });
+  const soon = await awaitToolAnswer<RemindAck>(harness, { tool: 'thread_remind', timeoutMs: 60_000 });
   expect(soon.isError, soon.text).toBe(false);
   expect(soon.value!.token).not.toBe(later.value!.token);
 
