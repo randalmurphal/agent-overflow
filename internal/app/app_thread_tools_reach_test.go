@@ -543,7 +543,6 @@ func attachDestination(t *testing.T, pair *reachPair, wire *pairedBackend, dest 
 }
 
 // shutdownReachDestination stops the destination's listener, which is what
-// a computer that is asleep or offline looks like from the source.// shutdownReachDestination stops the destination's listener, which is what
 // a computer that is asleep or offline looks like from the source.
 func shutdownReachDestination(t *testing.T, pair *reachPair) {
 	t.Helper()
@@ -551,6 +550,39 @@ func shutdownReachDestination(t *testing.T, pair *reachPair) {
 	defer cancel()
 	if err := pair.destWire.srv.Shutdown(ctx); err != nil {
 		t.Fatalf("stop the destination: %v", err)
+	}
+}
+
+// A cancel that never reached the destination stops nothing: the request is
+// still running there and still owes its answer, so the wake must survive.
+// Disarming the notify before the call would leave that answer with nobody
+// to tell, and the caller with a request it was told it had cancelled.
+func TestThreadToolsCancelKeepsTheWakeWhenTheDestinationIsUnreachable(t *testing.T) {
+	pair := newReachPair(t)
+	// The spawned thread takes a real turn on the destination`s mock and
+	// keeps it open: a request still running over there is what a cancel is
+	// for.
+	installMockClaudeTurns(t, pair.dest, [][]string{{
+		mockClaudeInitLine,
+		`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"text","text":"working"}]}}`,
+	}})
+	ack := pair.spawnThere(t, "keep working", map[string]any{"notify": true})
+	if row := pair.request(t, ack.Token); !row.Notify {
+		t.Fatalf("the spawn did not arm a wake: %+v", row)
+	}
+	shutdownReachDestination(t, pair)
+
+	if _, err := pair.adapter().Cancel(t.Context(), pair.callerIdentity(), threadtools.CancelCall{
+		Token: ack.Token,
+	}); err == nil {
+		t.Fatal("cancelling through a destination that is gone was reported as done")
+	}
+	row := pair.request(t, ack.Token)
+	if !row.Notify {
+		t.Error("the wake was disarmed by a cancel the destination never saw")
+	}
+	if threadRequestSettled(row) {
+		t.Errorf("the request was settled as %q by a cancel that never arrived", row.State)
 	}
 }
 

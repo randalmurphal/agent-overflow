@@ -159,7 +159,7 @@ func TestThreadMCPProviderEntriesAdmitTheToolsWithoutPrompting(t *testing.T) {
 }
 
 // TestStartSession_ClaudeAllowsTheThreadToolsWithoutAPrompt asserts the
-// whole chain — registration → Config.AllowedTools → buildArgs → argv — by
+// whole chain (registration, Config.AllowedTools, buildArgs, argv) by
 // recording the real argv the spawned binary was given.
 func TestStartSession_ClaudeAllowsTheThreadToolsWithoutAPrompt(t *testing.T) {
 	app, _ := setupE2EApp(t)

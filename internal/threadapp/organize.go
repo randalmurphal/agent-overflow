@@ -16,7 +16,7 @@ import (
 // tools send all four at once, and the spec's rule for them is that a
 // thread is either fully updated or untouched with a reason: a patch that
 // pins a thread that its group already pins must not land a rename first
-// and refuse afterwards. ApplyOrganizePatch is that rule — every field of
+// and refuse afterwards. ApplyOrganizePatch is that rule: every field of
 // the RESULTING state is checked against the row as it stands before the
 // first write.
 
@@ -180,7 +180,7 @@ type organizePlan struct {
 
 // planOrganizePatch decides every write and every refusal before the first
 // one runs. A field that already holds the requested value plans no write,
-// which is what keeps the changed flag — and so the sidebar frame — honest.
+// which is what keeps the changed flag, and so the sidebar frame, honest.
 func planOrganizePatch(database *store.Store, thread store.Thread, patch OrganizePatch) (organizePlan, error) {
 	plan := organizePlan{}
 	if patch.Title != nil {
@@ -200,8 +200,9 @@ func planOrganizePatch(database *store.Store, thread store.Thread, patch Organiz
 	// The group is resolved first because it decides whether a pin is
 	// allowed at all: the destination group, not the current one, is what
 	// carries the pin once this patch lands. Resolution only READS here;
-	// a group that has to be created is created while the patch is
-	// applied, past every refusal.
+	// a group this read did not find is resolved again inside the write's
+	// transaction and created there, past every refusal, so two patches
+	// naming one new group end up in one group.
 	grouped := thread.GroupID != ""
 	if patch.Group != nil {
 		name := strings.TrimSpace(*patch.Group)
@@ -264,9 +265,11 @@ func (p organizePlan) write(thread store.Thread) (store.ThreadOrganizeWrite, err
 		write.Title = &title
 	}
 	if p.createGroup {
-		// Created inside the write's transaction, past every refusal: a
-		// patch that names a new group and is then refused must not leave
-		// an empty group behind in the sidebar.
+		// Resolved and created inside the write's transaction, past every
+		// refusal: a patch that names a new group and is then refused must
+		// not leave an empty group behind in the sidebar, and a second
+		// patch naming the same new name must join the group the first one
+		// created rather than add a row of the same name.
 		write.CreateGroup = &store.ThreadGroupCreate{ProjectID: thread.ProjectID, Name: p.groupName}
 	}
 	switch p.pin {

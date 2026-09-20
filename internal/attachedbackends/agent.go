@@ -105,6 +105,20 @@ func (m *Manager) CheckAgentPeer(ctx context.Context, id string) error {
 	return m.callPeer(ctx, id, transport.CapabilityRemoteCommands, "RemoteCommandProjects", nil)
 }
 
+// The refusals this package raises for the agent thread tools. They are
+// named because the source side reads them to decide whether a request was
+// ever made: both say the call never left this computer, which is what lets
+// a source settle its row instead of polling a destination that never heard
+// of it (app.threadRequestNeverSent).
+const (
+	// CodeThreadUnreachable is a call that could not be addressed at all:
+	// the computer id does not name a computer.
+	CodeThreadUnreachable = "thread_unreachable"
+	// CodeThreadUnsupported is a destination whose version does not serve
+	// the thread tools.
+	CodeThreadUnsupported = "thread_unsupported"
+)
+
 // threadPeerMethods is the whole surface agent thread tools reach on a
 // paired computer. It is separate from the command allowlist because the
 // two carry different authority: a thread call never runs a shell.
@@ -124,7 +138,7 @@ var threadPeerMethods = map[string]struct{}{
 // nothing here does.
 func (m *Manager) CallThreadPeer(ctx context.Context, id, method string, result any, params ...any) error {
 	if !entityid.Valid(id) {
-		return errorsx.Public("thread_unreachable", "computer_id must be a computer UUID from thread_options.", nil)
+		return errorsx.Public(CodeThreadUnreachable, "computer_id must be a computer UUID from thread_options.", nil)
 	}
 	if _, ok := threadPeerMethods[method]; !ok {
 		return errors.New("this method is not available to agent thread tools")
@@ -166,7 +180,7 @@ func (m *Manager) callPeer(ctx context.Context, id, capability, method string, r
 // rather than a method error.
 func unsupportedPeerError(capability string, cause error) error {
 	if capability == transport.CapabilityThreadTools {
-		return errorsx.Public("thread_unsupported", "This destination version does not support agent thread tools. Update Agent Overflow on that computer.", cause)
+		return errorsx.Public(CodeThreadUnsupported, "This destination version does not support agent thread tools. Update Agent Overflow on that computer.", cause)
 	}
 	return errorsx.Public("remote_unsupported", "This destination version does not support remote commands. Update Agent Overflow on that computer.", cause)
 }

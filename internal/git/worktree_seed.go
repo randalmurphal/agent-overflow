@@ -57,12 +57,17 @@ type WorktreeSeed struct {
 //     the git common dir and shared with MaybeFetchRemotes /
 //     FetchRemotesBackground / PruneRemotes) says someone already fetched
 //     recently. A recent fetch is as good as ours.
-//   - The remote-tracking ref is used ONLY when the refs can be trusted:
-//     the fetch succeeded, or it was skipped because the window was fresh.
-//     A failed or timed-out fetch falls back to the local base — a stale
-//     `origin/<base>` is not a better answer than the branch the user can
-//     see, and this call must never surprise anyone with a start point it
-//     could not verify.
+//   - The remote-tracking ref is used when the refs can be trusted: the
+//     fetch succeeded, or it was skipped because the window was fresh. A
+//     failed or timed-out fetch falls back to the local base, because a
+//     stale `origin/<base>` is not a better answer than the branch the user
+//     can see, and this call must never surprise anyone with a start point
+//     it could not verify.
+//   - Unless there is no local branch of that name, in which case the
+//     unverified `origin/<base>` is the only start point there is.
+//     BaseBranchKnown admits a base that exists on origin alone, so the
+//     caller was told this base works; cutting from the bare name would
+//     then fail inside git with nothing anyone could act on.
 //   - `origin/<base>` only. This function fetches origin and nothing else,
 //     so seeding from a remote it never refreshed (a fork's `upstream/*`)
 //     would promise a freshness it did not deliver.
@@ -83,13 +88,18 @@ func (c *Core) CreateWorktreeFromFreshBase(
 		if err := validateBranchName(baseBranch); err != nil {
 			return seed, err
 		}
-		trusted, err := c.fetchOriginForSeed(ctx, cwd)
-		seed.FetchErr = err
-		if trusted {
-			if remoteRef, ok := c.originTrackingRef(cwd, baseBranch); ok {
-				seed.Ref = remoteRef
-				seed.FromRemote = true
-			}
+		// Read before the fetch, which cannot create a local branch: it is
+		// what decides whether an unverified tracking ref is a downgrade or
+		// the only start point there is.
+		local, err := c.branchExistsChecked(cwd, baseBranch)
+		if err != nil {
+			return seed, err
+		}
+		trusted, fetchErr := c.fetchOriginForSeed(ctx, cwd)
+		seed.FetchErr = fetchErr
+		if remoteRef, ok := c.originTrackingRef(cwd, baseBranch); ok && (trusted || !local) {
+			seed.Ref = remoteRef
+			seed.FromRemote = true
 		}
 	}
 	if err := c.createWorktreeAt(cwd, path, seed.Ref, newBranch, seed.FromRemote); err != nil {

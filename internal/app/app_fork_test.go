@@ -18,8 +18,6 @@ import (
 )
 
 func TestForkThreadClaudePersistsPendingForkStateAndClonesTimeline(t *testing.T) {
-	// Isolate from the developer's real ~/.claude/projects.
-	t.Setenv("HOME", t.TempDir())
 	app := newTestAppWithStore(t)
 
 	source := testThread("thread-claude-fork-source")
@@ -98,7 +96,6 @@ func TestForkThreadCodexUsesStoredResumeStateWhenSessionInactive(t *testing.T) {
 }
 
 func TestForkThreadRejectsThreadsWithoutMessages(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
 	app := newTestAppWithStore(t)
 
 	source := testThread("thread-empty-fork-source")
@@ -169,6 +166,80 @@ func TestForkThreadCodexCutsOutsideTheLiveSession(t *testing.T) {
 	if _, ok := app.sessionManager().get(source.ID); !ok {
 		t.Fatal("the source's live session was stopped by the fork")
 	}
+}
+
+// TestForkThreadCodexBoundsAHangingAppServer: the cut runs under the SOURCE
+// thread's action lock, so an app-server that accepts the connection and then
+// answers nothing must cost the fork its own timeout and release the thread.
+// Without the bound the call waits forever and the source thread can never be
+// used again. The fork row does not survive the failure: the saga's cleanup
+// stack removes the half-built thread.
+func TestForkThreadCodexBoundsAHangingAppServer(t *testing.T) {
+	restore := codexForkTimeout
+	codexForkTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { codexForkTimeout = restore })
+
+	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	if _, err := app.settings.Update(map[string]any{
+		"codexBinaryPath": writeHangingCodexForkBinary(t),
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	source := testThread("thread-codex-fork-hang")
+	source.Provider = string(provider.Codex)
+	source.SessionRef = "resume-provider-thread"
+	source.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(source); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	insertForkTestItems(t, app.store, source.ID)
+
+	started := time.Now()
+	_, err := app.ForkThread(t.Context(), source.ID, nil)
+	if err == nil {
+		t.Fatal("ForkThread() error = nil, want the fork timeout")
+	}
+	if !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("ForkThread() error = %v, want a deadline failure", err)
+	}
+	if waited := time.Since(started); waited > 20*time.Second {
+		t.Fatalf("ForkThread() waited %s, want roughly the fork timeout", waited)
+	}
+
+	threads, err := app.store.ListThreads()
+	if err != nil {
+		t.Fatalf("ListThreads() error = %v", err)
+	}
+	for _, thread := range threads {
+		if thread.ID != source.ID {
+			t.Fatalf("thread %s survived the failed fork", thread.ID)
+		}
+	}
+}
+
+// writeHangingCodexForkBinary is an app-server that completes the handshake
+// and then answers nothing, which is how a wedged process looks from AO: the
+// pipe is open, the process is alive, and the request never returns.
+func writeHangingCodexForkBinary(t *testing.T) string {
+	t.Helper()
+	script := `#!/bin/sh
+while IFS= read -r line; do
+    id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then
+        printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+    fi
+done
+`
+	path := filepath.Join(t.TempDir(), "codex-hang.sh")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write hanging codex binary: %v", err)
+	}
+	return path
 }
 
 // TestForkThreadCodexRejectsForkTailMismatch: `thread/fork` with a
@@ -592,6 +663,11 @@ func TestForkThreadFromMessageSlicesClaudeSessionByTurnBoundary(t *testing.T) {
 	if len(items) != 1 || items[0].Summary != "user-0" {
 		t.Fatalf("fork items = %+v, want only turn 0 user", items)
 	}
+	// The slice already happened, so a pending ref left behind would make
+	// the fork's first start fork the source a second time.
+	if forked.PendingForkRef != "" || forked.PendingForkResumeAt != "" {
+		t.Fatalf("sliced fork still pends a fork: %q/%q", forked.PendingForkRef, forked.PendingForkResumeAt)
+	}
 }
 
 func TestForkThreadFromMessageSlicesClaudeSessionFromPendingForkRef(t *testing.T) {
@@ -695,7 +771,6 @@ func TestForkThreadFromMessageCanForkOlderAnchorAfterClaudeSessionFork(t *testin
 
 // TestForkThreadAtTurnRejectsOutOfRange pins the validation guard.
 func TestForkThreadAtTurnRejectsOutOfRange(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
 	app := newTestAppWithStore(t)
 	source := testThread("thread-fork-bounds")
 	source.Provider = string(provider.Claude)
@@ -829,15 +904,9 @@ func TestForkThreadRollsBackOnResumeFailure(t *testing.T) {
 	}
 }
 
-// TestForkThreadPropagatesCleanupError covers the second half of A5:
-// cleanupForkThread's error must be joined with the primary error, not
-// silently dropped. We drive a failure (missing SessionRef) AND cause
-// cleanup itself to fail by deleting the fork row between the fork
-// write and the rollback attempt — the cleanup DeleteThread will return
-// "no row affected" which should no longer crash or swallow.
+// A fork row that is already gone is what cleanup wanted, so rolling back
+// twice, or rolling back a fork that was never written, is not a failure.
 func TestForkThreadCleanupIsIdempotentOnMissingFork(t *testing.T) {
-	// This test verifies: cleanupForkThread treats a missing row as
-	// success. It's a regression guard for the ErrNoRows branch.
 	app := newTestAppWithStore(t)
 	if err := app.cleanupForkThread("does-not-exist"); err != nil {
 		t.Errorf("cleanupForkThread on missing fork should be nil, got %v", err)
@@ -847,9 +916,8 @@ func TestForkThreadCleanupIsIdempotentOnMissingFork(t *testing.T) {
 	}
 }
 
-// TestForkThreadPropagatesResumeAndCleanupErrors asserts that when
-// BOTH the primary fork error AND a cleanup error happen, both surface
-// via errors.Join so the caller can see the full picture.
+// A fork that cannot resolve its resume state fails with the reason, so the
+// caller learns what was wrong rather than that something was.
 func TestForkThreadPropagatesResumeAndCleanupErrors(t *testing.T) {
 	app := newTestAppWithStore(t)
 
@@ -872,18 +940,49 @@ func TestForkThreadPropagatesResumeAndCleanupErrors(t *testing.T) {
 	}
 }
 
-// TestCleanupForkThreadReturnsErrorWhenCleanupFails confirms the
-// signature-level change: cleanupForkThread now returns error rather
-// than silently swallowing. We drive a cleanup against a fork that has
-// been re-parented (via a FK constraint that prevents deletion) — if
-// that path is ever exercised the error must surface.
-func TestCleanupForkThreadReturnsErrorWhenCleanupFails(t *testing.T) {
-	// There isn't a clean way to make DeleteThread fail in the test
-	// harness without mocking. The signature change itself is the
-	// regression guard — verify the function returns an error type,
-	// and that the nil/missing-id cases are idempotent.
+// Attachment bytes the fork already wrote are part of the rollback, so a
+// directory that will not go away has to reach the caller: the row is gone
+// and the disk is not, and only the error says so.
+func TestCleanupForkThreadReportsAttachmentFilesItCouldNotRemove(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory permissions this test relies on")
+	}
 	app := newTestAppWithStore(t)
-	var _ error = app.cleanupForkThread("") // compile-time assertion
+	root := t.TempDir()
+	attachments, err := attachmentstore.NewStore(attachmentstore.Config{RootDir: root}, app.store)
+	if err != nil {
+		t.Fatalf("attachment.NewStore: %v", err)
+	}
+	app.attachments = attachments
+
+	fork := testThread("fork-cleanup-undeletable")
+	if err := app.store.CreateThread(fork); err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	threadDir := filepath.Join(attachments.Root(), fork.ID)
+	if err := os.MkdirAll(threadDir, 0o755); err != nil {
+		t.Fatalf("create thread attachment dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(threadDir, "note.txt"), []byte("bytes"), 0o644); err != nil {
+		t.Fatalf("write attachment file: %v", err)
+	}
+	// A directory nothing may be unlinked from is the plainest way to make
+	// the removal fail without mocking the store.
+	if err := os.Chmod(threadDir, 0o555); err != nil {
+		t.Fatalf("chmod thread attachment dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(threadDir, 0o755) })
+
+	err = app.cleanupForkThread(fork.ID)
+	if err == nil {
+		t.Fatal("cleanup reported success while the fork's attachment files are still on disk")
+	}
+	if !containsText(err.Error(), fork.ID) {
+		t.Errorf("cleanup error = %v, want the fork it could not finish removing", err)
+	}
+	if _, getErr := app.store.GetThread(fork.ID); getErr == nil {
+		t.Error("the fork row survived a cleanup that only failed on its files")
+	}
 }
 
 func containsText(haystack, needle string) bool {

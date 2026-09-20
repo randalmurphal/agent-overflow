@@ -547,7 +547,7 @@ func TestForkThreadCodexAnchoredForkRefusesTheInFlightTurn(t *testing.T) {
 	}
 
 	atTurn := 1
-	if _, err := app.forkCodexThread(source, &atTurn); err == nil ||
+	if _, err := app.forkCodexThread(t.Context(), source, &atTurn); err == nil ||
 		!strings.Contains(err.Error(), "in-flight turn") {
 		t.Fatalf("forkCodexThread(anchor = in-flight turn) = %v, want a refusal", err)
 	}

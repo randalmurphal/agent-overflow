@@ -18,8 +18,9 @@ import (
 // refused before any of them runs, belongs to the caller
 // (threadapp.ApplyOrganizePatch). This is the atomic write it plans.
 
-// ThreadGroupCreate names a group the organize write has to create before
-// it can move the thread into it.
+// ThreadGroupCreate names the group the organize write moves the thread
+// into by NAME: the write resolves it inside its own transaction and
+// creates it only when that project has none of that name.
 type ThreadGroupCreate struct {
 	ProjectID string
 	Name      string
@@ -37,8 +38,10 @@ type ThreadPinWrite struct {
 type ThreadOrganizeWrite struct {
 	// Title replaces the display name and its search index entry.
 	Title *string
-	// CreateGroup is a group to insert before the move, in its own project.
-	// MoveGroup then moves the thread into the group it created.
+	// CreateGroup is the destination named by project and name, resolved
+	// or inserted before the move. MoveGroup then moves the thread into it,
+	// and ThreadOrganizeResult.CreatedGroup is set only when this write
+	// inserted the row.
 	CreateGroup *ThreadGroupCreate
 	// MoveGroup writes group_id; GroupID is the destination, empty to
 	// ungroup. It is ignored when CreateGroup minted the destination.
@@ -62,7 +65,8 @@ type ThreadOrganizeResult struct {
 	// Carried are the OTHER rows the group move wrote: the discussion
 	// children that travel with their root.
 	Carried []Thread
-	// CreatedGroup is the group this write had to create, if any.
+	// CreatedGroup is the group this write inserted, if any. A destination
+	// that already existed is not announced: every client already has it.
 	CreatedGroup *ThreadGroup
 }
 
@@ -98,12 +102,18 @@ func (s *Store) ApplyThreadOrganize(threadID string, write ThreadOrganizeWrite) 
 	}
 	groupID := write.GroupID
 	if write.CreateGroup != nil {
-		created, err := createThreadGroup(tx, write.CreateGroup.ProjectID, write.CreateGroup.Name)
+		// Resolved inside this transaction, not from the caller's plan: two
+		// calls naming the same new group are two plans that both read "no
+		// such group", and the second must join the first's group rather
+		// than insert a second row of the same name.
+		group, created, err := ensureThreadGroup(tx, write.CreateGroup.ProjectID, write.CreateGroup.Name)
 		if err != nil {
 			return ThreadOrganizeResult{}, err
 		}
-		result.CreatedGroup = &created
-		groupID = created.ID
+		if created {
+			result.CreatedGroup = &group
+		}
+		groupID = group.ID
 	}
 	if write.MoveGroup {
 		moved, err := setThreadGroupTx(tx, []string{threadID}, groupID)

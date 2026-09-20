@@ -261,7 +261,7 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
-	resume, err := a.resolveForkResumeState(source, atTurnIndex, midTurnCut)
+	resume, err := a.resolveForkResumeState(ctx, source, atTurnIndex, midTurnCut)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
@@ -409,7 +409,7 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
-	resume, err := a.resolveMessageForkResumeState(source, anchor, item)
+	resume, err := a.resolveMessageForkResumeState(ctx, source, anchor, item)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
@@ -526,10 +526,10 @@ type forkResumeState struct {
 // timeline was cloned at. On a live source the cut must be pinned —
 // deferring it unpinned snapshots the transcript at a nondeterministic
 // later point (the 2026-08-22 44s-skew incident).
-func (a *App) resolveForkResumeState(source store.Thread, atTurnIndex *int, midTurnCut *claudeMidTurnCut) (forkResumeState, error) {
+func (a *App) resolveForkResumeState(ctx context.Context, source store.Thread, atTurnIndex *int, midTurnCut *claudeMidTurnCut) (forkResumeState, error) {
 	switch source.Provider {
 	case string(provider.Codex):
-		ref, err := a.forkCodexThread(source, atTurnIndex)
+		ref, err := a.forkCodexThread(ctx, source, atTurnIndex)
 		if err != nil {
 			return forkResumeState{}, fmt.Errorf("fork thread: fork codex provider state: %w", err)
 		}
@@ -557,7 +557,7 @@ func (a *App) settleForkAsInterrupted(forkThreadID string) error {
 	return a.threadApplication().SettleForkAsInterrupted(forkThreadID)
 }
 
-func (a *App) resolveMessageForkResumeState(source store.Thread, anchor store.MessageAnchor, anchorItem store.Item) (forkResumeState, error) {
+func (a *App) resolveMessageForkResumeState(ctx context.Context, source store.Thread, anchor store.MessageAnchor, anchorItem store.Item) (forkResumeState, error) {
 	switch source.Provider {
 	case string(provider.Codex):
 		// Codex forks are turn-granular (thread/fork cuts at a turn
@@ -568,7 +568,7 @@ func (a *App) resolveMessageForkResumeState(source store.Thread, anchor store.Me
 			return forkResumeState{}, nil
 		}
 		lastKeptTurn := anchor.TurnIndex - 1
-		ref, err := a.forkCodexThread(source, &lastKeptTurn)
+		ref, err := a.forkCodexThread(ctx, source, &lastKeptTurn)
 		if err != nil {
 			return forkResumeState{}, fmt.Errorf("fork thread from message: fork codex provider state: %w", err)
 		}

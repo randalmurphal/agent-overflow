@@ -34,9 +34,12 @@ func (a *App) ListThreadGroups() ([]store.ThreadGroup, error) {
 	return a.threadApplication().ListGroups()
 }
 
-// CreateThreadGroup adds an empty group to a project. The name is trimmed
-// and a blank one is refused — a nameless row is the one state the sidebar
-// cannot render.
+// CreateThreadGroup adds an empty group to a project, or returns the one
+// that name already names there: a group name identifies a group inside its
+// project, and the agent tools resolve by name, so a second row of the same
+// name would be a row nobody can tell from the first. The name is trimmed
+// and a blank one is refused, because a nameless row is the one state the
+// sidebar cannot render.
 //
 //ao:scope threads:operate
 func (a *App) CreateThreadGroup(projectID string, name string) (store.ThreadGroup, error) {

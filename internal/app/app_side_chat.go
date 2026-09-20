@@ -41,9 +41,44 @@ func (a *App) ForkSideChat(ctx context.Context, threadID string) (store.Thread, 
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("side chat: %w", err)
 	}
+	// Runtime mode is left empty so the fork keeps the source's, which is
+	// what the doc comment above promises.
+	return a.forkScratchThread(ctx, source, scratchForkOptions{TitlePrefix: sideChatTitlePrefix})
+}
+
+// sideChatTitlePrefix and askScratchTitlePrefix label the two kinds of
+// scratch fork wherever a person can still see one: a side-chat pane's
+// header, and the sidebar a kept fork lands in.
+const (
+	sideChatTitlePrefix   = "Side chat"
+	askScratchTitlePrefix = "Ask"
+)
+
+// scratchForkOptions is what distinguishes the two scratch forks. Everything
+// else about them is the same, which is why they share one creator.
+type scratchForkOptions struct {
+	// TitlePrefix names the kind of fork this is.
+	TitlePrefix string
+	// RuntimeMode is the fork's, empty to inherit the source's.
+	RuntimeMode string
+	// RequestToken is the agent request an ask fork answers. A side chat has
+	// none: a person is driving it.
+	RequestToken string
+}
+
+// forkScratchThread forks source at its tail into a hidden scratch thread and
+// records where it came from, so the fork can be kept, deleted or swept.
+//
+// Both creators come through here, `/side-chat` and an agent's thread_ask,
+// because the pair a scratch thread is, the fork row and the scratch record,
+// has to be written together or neither.
+func (a *App) forkScratchThread(
+	ctx context.Context, source store.Thread, opts scratchForkOptions,
+) (store.Thread, error) {
 	fork, err := a.forkThreadTail(ctx, source.ID, forkOptions{
-		Mode:  threadmode.ModeScratch,
-		Title: sideChatTitle(source.Title),
+		Mode:        threadmode.ModeScratch,
+		RuntimeMode: opts.RuntimeMode,
+		Title:       scratchForkTitle(opts.TitlePrefix, source.Title),
 	})
 	if err != nil {
 		return store.Thread{}, err
@@ -52,6 +87,7 @@ func (a *App) ForkSideChat(ctx context.Context, threadID string) (store.Thread, 
 		ThreadID:       fork.ID,
 		SourceThreadID: source.ID,
 		ReturnMode:     scratchReturnMode(source.Mode),
+		RequestToken:   opts.RequestToken,
 	}); err != nil {
 		// The fork exists and nothing owns it yet: no pane has opened on it
 		// and no sweep knows about it. Take it back rather than leave a
@@ -62,6 +98,19 @@ func (a *App) ForkSideChat(ctx context.Context, threadID string) (store.Thread, 
 		return store.Thread{}, err
 	}
 	return fork, nil
+}
+
+// scratchReturnMode is the mode a Keep promotion returns a scratch fork to,
+// for both of its creators. The table's CHECK refuses `scratch` itself, and a
+// hidden workflow mode is not something a person can keep, so both fall back
+// to chat, which is what a promoted side conversation actually is.
+func scratchReturnMode(sourceMode string) string {
+	switch sourceMode {
+	case threadmode.ModeChat, threadmode.ModePlan:
+		return sourceMode
+	default:
+		return threadmode.ModeChat
+	}
 }
 
 // PromoteScratchThread is Keep: the scratch thread takes back the mode
@@ -98,10 +147,12 @@ func (a *App) PromoteScratchThread(ctx context.Context, threadID string) (store.
 	return promoted, nil
 }
 
-func sideChatTitle(sourceTitle string) string {
+// scratchForkTitle names a hidden fork after the thread it came from, with a
+// fallback for a source that has not been titled yet.
+func scratchForkTitle(prefix, sourceTitle string) string {
 	title := strings.TrimSpace(sourceTitle)
 	if title == "" {
 		title = "thread"
 	}
-	return "Side chat: " + title
+	return prefix + ": " + title
 }

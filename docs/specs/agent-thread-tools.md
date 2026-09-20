@@ -267,11 +267,18 @@ the workspace. `base` names the branch it starts from, default the
 project's current branch; the cut starts from origin's head of that
 branch after a fetch, so unpushed local commits are not in the
 worktree, unless `base_local` asks for the local head with no fetch.
+A fetch that fails leaves the tracking ref as it stands, so the cut
+falls back to the local branch of that name, and to the stale tracking
+ref when there is no local branch: a base that exists only on origin
+still cuts from origin.
 A `base` the project has neither locally nor on origin (or, with
 `base_local`, not locally) is refused before a request exists, through
 `git.Core.BaseBranchKnown`. `group` (optional name) puts the new thread in
 that sidebar group inside its own project, creating the group when it
-does not exist, through the same organize patch `thread_update` uses;
+does not exist, through the same organize patch `thread_update` uses.
+A group name is unique per project, compared without case, and the
+lookup and the insert share one write transaction, so two spawns
+naming the same new group land in one group rather than two;
 a fork's group lives in its source's project. `from_thread` forks that thread's history at its tail
 (the same fork `thread_ask` uses, visible instead of hidden) and sends
 `prompt` there, for "try approach B in a fork"; the fork runs on the
@@ -418,6 +425,12 @@ every request the caller ever made to that thread, settled or not),
 on whichever computer it runs. Interrupt only, never a revert; a turn
 that some other request or the user started is never interrupted
 through a token. Refused for any other thread with the reason.
+Cancelling a request the caller made disarms its `notify`, because the
+report already says what happened, but only once the cancel has been
+accepted: a cancel that never reached the destination leaves the wake
+armed, since the work is still running there and still owes an answer.
+A request that already settled reports its settled state and
+`nothing_to_stop`, and is not settled a second time.
 
 ### `thread_update`
 
@@ -425,8 +438,9 @@ Organizes threads the way the sidebar does, through the bindings the
 sidebar already calls: `thread_ids` (one to fifty) and any of `title`,
 `archived`, `pin` (`front` / `back` / `none`; the app's front and back
 burner are the two pin tiers), `group` (a group name in the thread's
-project, created when it does not exist; `null` ungroups). One call
-covers "archive these five" or "group these as auth work". Refusals
+project, unique there without case and created when it does not
+exist; `null` ungroups). One call covers "archive these five" or
+"group these as auth work". Refusals
 mirror the store: a grouped thread cannot be pinned because the group
 carries the pin, the calling thread cannot archive itself, and a title
 is trimmed and refused when empty. Works on another computer's threads;
@@ -838,7 +852,13 @@ that owns remote jobs there) and runs the handler with a caller scope
 naming the source computer and thread. Read tools carry `threads:read`;
 spawn, send, ask and cancel carry `terminal:operate`, the execute tier
 an own-device peer session already holds. Each call rechecks all of
-that; a tool-list omission is not an execution permission check.
+that; a tool-list omission is not an execution permission check. A
+forwarded spawn or send is judged again on the runtime mode it would
+actually run at, the mode a fresh spawn resolves or the mode the target
+thread already runs in: an autonomous one needs `threads:autonomy` from
+the calling computer, so thread tools are not a way around the boundary
+the sidebar's own create and send obey. A local agent's call carries no
+transport session and is not gated by it.
 
 Errors follow the remote-commands shape: stable codes, prose that names
 the operation, the computer and the thread with the ids beside the

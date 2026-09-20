@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -134,25 +135,41 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 	// Everything this computer can refuse is refused BEFORE the row exists,
 	// so an unknown provider or project costs the model one call and leaves
 	// no request behind to explain.
-	if _, err := t.spawnThreadOptions(origin, call); err != nil {
+	if _, err := t.spawnThreadOptions(ctx, origin, call); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-
-	token := newThreadRequestToken()
-	if err := t.app.store.InsertThreadRequest(store.ThreadRequest{
-		Token:          token,
-		CallerThreadID: caller.ThreadID,
+	return t.startLocalRequest(ctx, caller, store.ThreadRequest{
 		Kind:           store.ThreadRequestSpawn,
 		OriginThreadID: call.FromThread,
 		Notify:         call.Notify,
-		State:          store.ThreadRequestUnconfirmed,
-	}); err != nil {
+	}, call.WaitSeconds, func(token string) (string, error) {
+		return t.acceptSpawn(ctx, origin, token, call)
+	})
+}
+
+// startLocalRequest is the source half of a spawn, send or ask this computer
+// answers itself: write the row, accept it here, and return the receipt the
+// caller reads.
+//
+// The row is written before the acceptance, as the remote path writes it: the
+// token exists before any work can run under it, so a failure part way
+// through names a request the caller can ask about rather than leaving a
+// thread nothing records. Everything the call can refuse without writing has
+// been refused by the time this runs.
+func (t threadToolsApp) startLocalRequest(
+	ctx context.Context, caller threadtools.Caller, row store.ThreadRequest,
+	waitSeconds int, accept func(token string) (string, error),
+) (threadtools.RequestAck, error) {
+	row.Token = newThreadRequestToken()
+	row.CallerThreadID = caller.ThreadID
+	row.State = store.ThreadRequestUnconfirmed
+	if err := t.app.store.InsertThreadRequest(row); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	if _, err := t.acceptSpawn(ctx, origin, token, call); err != nil {
+	if _, err := accept(row.Token); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	return t.ackRequest(ctx, caller, token, call.WaitSeconds)
+	return t.ackRequest(ctx, caller, row.Token, waitSeconds)
 }
 
 // acceptSpawn is the destination half of a spawn: create the thread,
@@ -163,7 +180,7 @@ func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, ca
 // the source row it advances exists only on the computer that made the
 // request.
 func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOrigin, token string, call threadtools.SpawnCall) (string, error) {
-	create, err := t.spawnThreadOptions(origin, call)
+	create, err := t.spawnThreadOptions(ctx, origin, call)
 	if err != nil {
 		return "", t.failRequest(token, err)
 	}
@@ -208,22 +225,13 @@ func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, cal
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
-
-	token := newThreadRequestToken()
-	if err := t.app.store.InsertThreadRequest(store.ThreadRequest{
-		Token:          token,
-		CallerThreadID: caller.ThreadID,
+	return t.startLocalRequest(ctx, caller, store.ThreadRequest{
 		Kind:           store.ThreadRequestSend,
 		TargetThreadID: target.ID,
 		Notify:         call.Notify,
-		State:          store.ThreadRequestUnconfirmed,
-	}); err != nil {
-		return threadtools.RequestAck{}, err
-	}
-	if _, err := t.acceptSend(ctx, origin, token, call); err != nil {
-		return threadtools.RequestAck{}, err
-	}
-	return t.ackRequest(ctx, caller, token, call.WaitSeconds)
+	}, call.WaitSeconds, func(token string) (string, error) {
+		return t.acceptSend(ctx, origin, token, call)
+	})
 }
 
 // acceptSend is the destination half of a send: accept the receipt against
@@ -293,22 +301,13 @@ func (t threadToolsApp) Ask(ctx context.Context, caller threadtools.Caller, call
 	if err != nil {
 		return threadtools.RequestAck{}, err
 	}
-
-	token := newThreadRequestToken()
-	if err := t.app.store.InsertThreadRequest(store.ThreadRequest{
-		Token:          token,
-		CallerThreadID: caller.ThreadID,
+	return t.startLocalRequest(ctx, caller, store.ThreadRequest{
 		Kind:           store.ThreadRequestAsk,
 		OriginThreadID: source.ID,
 		Notify:         call.Notify,
-		State:          store.ThreadRequestUnconfirmed,
-	}); err != nil {
-		return threadtools.RequestAck{}, err
-	}
-	if _, err := t.acceptAsk(ctx, origin, token, call); err != nil {
-		return threadtools.RequestAck{}, err
-	}
-	return t.ackRequest(ctx, caller, token, call.WaitSeconds)
+	}, call.WaitSeconds, func(token string) (string, error) {
+		return t.acceptAsk(ctx, origin, token, call)
+	})
 }
 
 // acceptAsk is the destination half of an ask: fork the named thread into
@@ -319,7 +318,14 @@ func (t threadToolsApp) acceptAsk(ctx context.Context, origin threadRequestOrigi
 		return "", t.failRequest(token, err)
 	}
 	target, fresh, err := t.acceptRequest(origin, token, store.ThreadRequestAsk, "", func() (store.Thread, error) {
-		return t.forkScratchThread(ctx, source, token)
+		return t.app.forkScratchThread(ctx, source, scratchForkOptions{
+			TitlePrefix: askScratchTitlePrefix,
+			// Read-only WHATEVER the source runs: an ask is a question, and
+			// a fork that could write would act on a workspace whose owner
+			// never agreed to this conversation.
+			RuntimeMode:  string(provider.RuntimeReadOnly),
+			RequestToken: token,
+		})
 	})
 	if err != nil {
 		return "", t.failRequest(token, err)
@@ -515,11 +521,19 @@ func (t threadToolsApp) acceptRequest(
 	if target == "" && create != nil {
 		if !created {
 			// The receipt exists with no thread: the attempt that accepted
-			// it died between the two writes. The boot sweep settles it, and
-			// a second thread now would be a second piece of work nobody
-			// asked for.
+			// it died between the two writes. Settle it here rather than
+			// leave it for the next boot sweep, which is the only other
+			// thing that would ever look at it; a second thread now would be
+			// a second piece of work nobody asked for.
+			if err := t.app.settleThreadReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+				State:      store.ThreadReceiptInterrupted,
+				Answer:     []byte(threadReceiptNeverStarted),
+				AnswerKind: store.ThreadAnswerError,
+			}); err != nil {
+				return "", false, err
+			}
 			return "", false, errorsx.Public(threadtools.CodeInvalidRequest,
-				"That request was accepted but its thread was never created. It is settled as interrupted; make the request again.", nil)
+				threadReceiptNeverStarted+" It is settled as interrupted; make the request again.", nil)
 		}
 		thread, err := create()
 		if err != nil {
@@ -551,6 +565,11 @@ func (t threadToolsApp) acceptRequest(
 	}
 	return target, created, nil
 }
+
+// threadReceiptNeverStarted is what a receipt accepted without its thread
+// says on both ends: the answer stored on the settled receipt, and the
+// refusal the retry that found it reads.
+const threadReceiptNeverStarted = "That request was accepted but its thread was never created."
 
 // failRequest settles a source row on this computer whose acceptance or
 // dispatch failed before the destination ever ran it, and returns the
@@ -611,6 +630,13 @@ func (t threadToolsApp) failRequest(token string, cause error) error {
 func (t threadToolsApp) dispatchRequest(
 	ctx context.Context, origin threadRequestOrigin, token, targetThreadID, text string, wantsAnswer bool,
 ) error {
+	// The message drives the target thread in the mode that thread already
+	// runs in, which is what SendMessageWithOptions judges for the composer.
+	// A forwarded request arrives on a paired computer's session, so the
+	// same gate has to stand here or thread_send would be the way around it.
+	if err := t.app.requireAutonomyForThread(ctx, targetThreadID, ""); err != nil {
+		return err
+	}
 	caller := origin.caller
 	body, err := t.requestMessageBody(origin, token, text, wantsAnswer)
 	if err != nil {
@@ -785,57 +811,6 @@ func (t threadToolsApp) senderReachable(origin threadRequestOrigin) bool {
 	return paired
 }
 
-// forkScratchThread makes the hidden thread an ask is answered in and records
-// what it is for. Read-only WHATEVER the source runs: an ask is a question,
-// and a fork that could write would act on a workspace whose owner never
-// agreed to this conversation.
-func (t threadToolsApp) forkScratchThread(ctx context.Context, source store.Thread, token string) (store.Thread, error) {
-	fork, err := t.app.forkThreadTail(ctx, source.ID, forkOptions{
-		Mode:        threadmode.ModeScratch,
-		RuntimeMode: string(provider.RuntimeReadOnly),
-		Title:       threadToolsAskTitle(source.Title),
-	})
-	if err != nil {
-		return store.Thread{}, err
-	}
-	if err := t.app.store.InsertScratchThread(store.ScratchThread{
-		ThreadID:       fork.ID,
-		SourceThreadID: source.ID,
-		ReturnMode:     scratchReturnMode(source.Mode),
-		RequestToken:   token,
-	}); err != nil {
-		// The fork exists and nothing owns it yet. Take it back rather than
-		// leave a scratch thread no sweep knows about.
-		if deleteErr := t.app.DeleteThread(fork.ID); deleteErr != nil {
-			log.Printf("thread tools: delete orphaned scratch fork %s: %v", fork.ID, deleteErr)
-		}
-		return store.Thread{}, err
-	}
-	return fork, nil
-}
-
-func threadToolsAskTitle(sourceTitle string) string {
-	title := strings.TrimSpace(sourceTitle)
-	if title == "" {
-		title = "thread"
-	}
-	return "Ask: " + title
-}
-
-// scratchReturnMode is the mode a Keep promotion returns a scratch fork to,
-// for both of its creators: an agent's ask and `/side-chat`. The table's
-// CHECK refuses `scratch` itself, and a hidden workflow mode is not
-// something a person can keep, so both fall back to chat, which is what a
-// promoted side conversation actually is.
-func scratchReturnMode(sourceMode string) string {
-	switch sourceMode {
-	case threadmode.ModeChat, threadmode.ModePlan:
-		return sourceMode
-	default:
-		return threadmode.ModeChat
-	}
-}
-
 // createSpawnedThread makes the thread a spawn runs in: a fork of another
 // thread when from_thread names one, a fresh thread otherwise. A group the
 // call names is joined once the thread exists, through the organize patch
@@ -850,11 +825,20 @@ func (t threadToolsApp) createSpawnedThread(
 	}
 	group := call.Group
 	applied, err := t.app.applyThreadOrganizePatch(ctx, thread.ID, threadapp.OrganizePatch{Group: &group})
-	if err != nil {
-		return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest,
-			fmt.Sprintf("The thread was created as %s but could not join group %q: %v", thread.ID, group, err), err)
+	if err == nil {
+		return applied.Thread, nil
 	}
-	return applied.Thread, nil
+	// The thread exists and nothing owns it yet: no receipt names it and its
+	// prompt has not been sent. Take it back, as the scratch fork does,
+	// rather than leave a thread behind a refusal the caller will retry.
+	if deleteErr := t.app.DeleteThread(thread.ID); deleteErr != nil {
+		log.Printf("thread tools: delete spawned thread %s after its group patch failed: %v", thread.ID, deleteErr)
+		return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+			"Thread %s was created but could not join group %q (%v), and removing it failed too. It is on this computer, ungrouped.",
+			thread.ID, group, err), errors.Join(err, deleteErr))
+	}
+	return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+		"That spawn could not join group %q: %v. No thread was left behind; make the request again.", group, err), err)
 }
 
 func (t threadToolsApp) createSpawnedThreadUngrouped(
@@ -888,7 +872,26 @@ func (t threadToolsApp) createSpawnedThreadUngrouped(
 // Every refusal names what this computer offers, because the caller cannot
 // know another provider's model ids and a wrong guess should cost one call,
 // not a discovery round trip.
-func (t threadToolsApp) spawnThreadOptions(origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
+func (t threadToolsApp) spawnThreadOptions(ctx context.Context, origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
+	opts, err := t.resolveSpawnOptions(origin, call)
+	if err != nil {
+		return CreateThreadOptions{}, err
+	}
+	// Judged here, on the mode the new thread will actually RUN in, because
+	// this is the one place both spawn shapes resolve it: a fresh thread
+	// reaches CreateThread's AuthorizeRuntimeMode hook, and a from_thread
+	// fork never does. A local call carries no session and passes; a call a
+	// paired computer forwarded is judged against that computer's grants,
+	// the same rule the sidebar's own create obeys.
+	if err := t.app.requireAutonomy(ctx, opts.RuntimeMode); err != nil {
+		return CreateThreadOptions{}, err
+	}
+	return opts, nil
+}
+
+// resolveSpawnOptions is the resolution itself, split from the gate above so
+// the gate sees one answer for both shapes.
+func (t threadToolsApp) resolveSpawnOptions(origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
 	if call.FromThread != "" {
 		return t.forkSpawnOptions(origin, call)
 	}
@@ -981,6 +984,12 @@ func (t threadToolsApp) forkSpawnOptions(origin threadRequestOrigin, call thread
 	}
 	if call.RuntimeMode != "" {
 		opts.RuntimeMode = call.RuntimeMode
+	}
+	if opts.RuntimeMode == "" {
+		// The fork would inherit the source's mode. Naming it makes the
+		// resolved mode the one the caller's gate judges, instead of an
+		// empty string that means "whatever the source runs".
+		opts.RuntimeMode = source.RuntimeMode
 	}
 	if err := t.applySpawnModel(&opts, call); err != nil {
 		return CreateThreadOptions{}, err

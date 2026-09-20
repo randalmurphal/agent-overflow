@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
@@ -32,7 +33,7 @@ import (
 // `InsertTurn` stamps provider_turn_id at insert, so an OPEN turn row
 // really can carry an anchor codex would refuse, and the failure mode is
 // a fork whose provider history disagrees with its cloned items.
-func (a *App) forkCodexThread(source store.Thread, atTurnIndex *int) (string, error) {
+func (a *App) forkCodexThread(ctx context.Context, source store.Thread, atTurnIndex *int) (string, error) {
 	const op = "fork codex thread"
 	lastTurnID := ""
 	if atTurnIndex != nil {
@@ -64,7 +65,7 @@ func (a *App) forkCodexThread(source store.Thread, atTurnIndex *int) (string, er
 	if source.SessionRef == "" {
 		return "", fmt.Errorf("%s: source thread %q is missing a Codex thread reference", op, source.ID)
 	}
-	forkedID, err := a.forkCodexThreadAt(source, lastTurnID)
+	forkedID, err := a.forkCodexThreadAt(ctx, source, lastTurnID)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", op, err)
 	}
@@ -90,6 +91,16 @@ func (a *App) resolveCodexForkAnchor(threadID string, lastKeptTurnIndex int) (st
 	)
 }
 
+// codexForkTimeout bounds one `thread/fork`: the app-server spawn, its
+// initialize, the cut and the anchored cut's tail read. The whole fork runs
+// under the SOURCE thread's action lock, so an app-server that accepts the
+// connection and never answers would otherwise wedge that thread for as
+// long as the process lives. It sits well above a cold spawn and well below
+// any wait a person would accept on a thread they can no longer use. A var
+// so tests can drive the timeout path without sleeping; never reassigned in
+// production code.
+var codexForkTimeout = 60 * time.Second
+
 // forkCodexThreadAt issues `thread/fork` (cut at lastTurnID, or full
 // history when "") over a throwaway app-server that loads no thread. Never
 // through the source's live session, even when one is running: the cut
@@ -97,8 +108,10 @@ func (a *App) resolveCodexForkAnchor(threadID string, lastKeptTurnIndex int) (st
 // the child's writer and the child's own first start would be refused
 // (codex.ForkThread). The source is read from the thread store, which a
 // live source's recorder flushes on every write.
-func (a *App) forkCodexThreadAt(source store.Thread, lastTurnID string) (string, error) {
-	return codex.ForkThread(context.Background(), codex.ForkSpec{
+func (a *App) forkCodexThreadAt(ctx context.Context, source store.Thread, lastTurnID string) (string, error) {
+	cut, cancel := context.WithTimeout(ctx, codexForkTimeout)
+	defer cancel()
+	return codex.ForkThread(cut, codex.ForkSpec{
 		Binary:         a.providerBinaryPath(source.Provider),
 		WorkDir:        source.WorkspacePath,
 		Env:            a.sessionProcessEnv(source.Provider, nil, aoSessionCredential{}),

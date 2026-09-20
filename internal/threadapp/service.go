@@ -31,8 +31,6 @@ type ModelPolicy interface {
 	Remember(thread store.Thread)
 }
 
-// Workspace is the explicit git/worktree subprocess port. Thread policy asks
-// for outcomes; root owns the real git implementation and app lifetime.
 // WorktreeCut describes one fresh worktree. Branch is the new branch, or
 // empty for a generated name. Base is the branch it starts from, empty for
 // the project's current branch. BaseLocal starts from Base's local head
@@ -44,6 +42,8 @@ type WorktreeCut struct {
 	BaseLocal bool
 }
 
+// Workspace is the explicit git/worktree subprocess port. Thread policy asks
+// for outcomes; root owns the real git implementation and app lifetime.
 type Workspace interface {
 	CurrentBranch(workspacePath string) string
 	FindWorktree(projectPath, candidate string) (path, branch string, found bool, err error)
@@ -51,8 +51,8 @@ type Workspace interface {
 	// it is and the branch name it settled on.
 	CreateWorktree(ctx context.Context, projectPath string, cut WorktreeCut) (path, resolvedBranch string, err error)
 	// ObserveOrigin reads the workspace's git coordinates as they stand right
-	// now. It has no error return because every failure — no repository, no
-	// remote, an unborn branch — means the same thing to a caller recording
+	// now. It has no error return because every failure, no repository, no
+	// remote, an unborn branch, means the same thing to a caller recording
 	// provenance: that coordinate is not known. Empty fields say so.
 	ObserveOrigin(workspacePath string) store.ThreadOrigin
 }

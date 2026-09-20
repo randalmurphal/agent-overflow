@@ -13,7 +13,7 @@ func TestACreatedThreadRecordsWhereItsWorkspaceStood(t *testing.T) {
 		RemoteURL:  "git@example.com:owner/repo.git",
 		HeadCommit: "0123456789abcdef0123456789abcdef01234567",
 	}
-	service.deps.Workspace = testWorkspace{currentBranch: "feature/one", origin: observed}
+	service.deps.Workspace = &testWorkspace{currentBranch: "feature/one", origin: observed}
 
 	thread, err := service.Create(CreateOptions{ProjectID: "project", CreatedByDevice: "device-a"})
 	if err != nil {
@@ -41,7 +41,7 @@ func TestACreatedThreadRecordsWhereItsWorkspaceStood(t *testing.T) {
 // directory terminal. Creation must succeed and report nothing known.
 func TestAWorkspaceWithNoGitCoordinatesCreatesAnyway(t *testing.T) {
 	service, _, _ := newServiceFixture(t)
-	service.deps.Workspace = testWorkspace{}
+	service.deps.Workspace = &testWorkspace{}
 
 	thread, err := service.Create(CreateOptions{ProjectID: "project"})
 	if err != nil {
@@ -61,7 +61,7 @@ func TestAWorkspaceWithNoGitCoordinatesCreatesAnyway(t *testing.T) {
 func TestATerminalRecordsItsWorkspaceCoordinates(t *testing.T) {
 	service, _, _ := newServiceFixture(t)
 	observed := store.ThreadOrigin{Branch: "main", RemoteURL: "https://example.com/o/r.git", HeadCommit: "abc"}
-	service.deps.Workspace = testWorkspace{origin: observed}
+	service.deps.Workspace = &testWorkspace{origin: observed}
 
 	thread, err := service.StartTerminal(TerminalOptions{ProjectID: "project", CreatedByDevice: "device-b"})
 	if err != nil {
@@ -78,7 +78,7 @@ func TestATerminalRecordsItsWorkspaceCoordinates(t *testing.T) {
 func TestALaterUpdateCannotRestateCreationProvenance(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	observed := store.ThreadOrigin{Branch: "main", RemoteURL: "https://example.com/o/r.git", HeadCommit: "abc"}
-	service.deps.Workspace = testWorkspace{origin: observed}
+	service.deps.Workspace = &testWorkspace{origin: observed}
 
 	thread, err := service.Create(CreateOptions{ProjectID: "project", CreatedByDevice: "device-a"})
 	if err != nil {
