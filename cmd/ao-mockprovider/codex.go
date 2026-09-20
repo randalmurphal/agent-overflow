@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +56,14 @@ type codexAdapter struct {
 	// thread, so turns it never ran are history rather than nonsense.
 	// See codex_revert.go#anchorIsCuttable.
 	resumedThread bool
+	// loadedThread records that this connection started or resumed a
+	// thread at all. A connection that did neither is threadless: its
+	// `thread/fork` reads the source out of the store, where every anchor
+	// is history it can vouch for. See codex_writer_lock.go.
+	loadedThread bool
+	// writerLocks holds the cross-process writer locks this process took,
+	// for its whole life, as upstream does. See codex_writer_lock.go.
+	writerLocks []*os.File
 	// mcpServers is `config.mcp_servers` as the app sent it on
 	// thread/start or thread/resume: the endpoints an mcpCall step
 	// calls. Guarded by mu; never reported or logged (the session_config
@@ -184,6 +193,7 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		// The history contract is settled here and nowhere else — a resume
 		// can only report what the thread already is.
 		a.noteThreadStart(params)
+		a.markThreadLoaded()
 		a.respond(id, method, a.e.currentVars())
 	case "thread/resume":
 		// A resume carries the same config bag as a start, and its MCP
@@ -191,9 +201,17 @@ func (a *codexAdapter) handleRequest(id json.RawMessage, method string, params j
 		a.noteMCPServers(params)
 		// Echo the requested thread id and rebind ${THREAD_ID} to it.
 		if tid := readParamString(params, "threadId"); tid != "" {
+			// The one refusal a resume has: the thread is loaded in
+			// another live process. Raised before anything here changes,
+			// as upstream refuses before the thread is loaded.
+			if err := a.takeThreadWriter(tid, false); err != nil {
+				a.writeRPCError(id, -32600, err.Error())
+				return
+			}
 			a.e.setThreadID(tid)
 		}
 		a.noteThreadResume(a.e.currentVars()["THREAD_ID"])
+		a.markThreadLoaded()
 		a.respond(id, method, a.e.currentVars())
 	case "turn/start":
 		// The app-server validates outputSchema per turn rather than at spawn,
@@ -395,6 +413,13 @@ func (a *codexAdapter) handleReadRequest(id json.RawMessage, method string, para
 // wins; this synthesis only fills the default.
 func (a *codexAdapter) forkThread(id json.RawMessage, params json.RawMessage) {
 	anchor := readParamString(params, "lastTurnId")
+	// The source is the one the request names. A threadless process (the
+	// app cuts every fork on one) has no thread of its own to fall back to,
+	// so ${THREAD_ID} there is only the scenario's seed.
+	source := readParamString(params, "threadId")
+	if source == "" {
+		source = a.e.currentVars()["THREAD_ID"]
+	}
 	// Reported before the answer, like thread/revert's, and before the
 	// scripted-response branch: the two cuts are alternatives chosen by a
 	// version + history-mode gate, so a test asserting the choice must be
@@ -403,7 +428,7 @@ func (a *codexAdapter) forkThread(id json.RawMessage, params json.RawMessage) {
 		Kind:       control.ReportHistoryCut,
 		Detail:     "thread/fork",
 		Input:      anchor,
-		SessionRef: a.e.currentVars()["THREAD_ID"],
+		SessionRef: source,
 	})
 	if _, scripted := a.responses["thread/fork"]; scripted {
 		a.respond(id, "thread/fork", a.e.currentVars())
@@ -427,7 +452,18 @@ func (a *codexAdapter) forkThread(id json.RawMessage, params json.RawMessage) {
 	for _, turnID := range turnIDs {
 		turns = append(turns, map[string]any{"id": turnID})
 	}
-	forked := fmt.Sprintf("%s-fork-%d", a.e.currentVars()["THREAD_ID"], a.forkSeq.Add(1))
+	// Unique across processes, as upstream's fresh thread ids are: two
+	// mock processes fork the same seed id, and the child's writer lock
+	// below is keyed by the id.
+	forked := fmt.Sprintf("%s-fork-%d-%s", source, a.forkSeq.Add(1), randomHex(2))
+	// The child is loaded HERE, in the process that answered, and stays
+	// this process's for its life: another process resuming it is refused
+	// until this one exits. This is what makes cutting a fork on a live
+	// source session a bug the harness can see.
+	if err := a.takeThreadWriter(forked, true); err != nil {
+		a.writeRPCError(id, -32600, err.Error())
+		return
+	}
 	a.mu.Lock()
 	a.forkTurns[forked] = append([]string(nil), turnIDs...)
 	a.mu.Unlock()
@@ -537,14 +573,16 @@ func codexDecisionAllows(result, errRaw json.RawMessage) bool {
 // sendApproval emits a command-approval server request (Codex approvals
 // are requests FROM the server carrying a JSON-RPC id; the app answers
 // with a response we correlate by that id).
-func (a *codexAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan bool, func(), error) {
+func (a *codexAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan bool, func(bool), error) {
 	rpcID := a.approvalSeq.Add(1)
 	ch := make(chan bool, 1)
 	a.mu.Lock()
 	a.waiters[rpcID] = ch
 	a.mu.Unlock()
 
-	cancel := func() {
+	// The app-server answers an abandoned request through turn/interrupt,
+	// so an abandoned approval writes nothing here.
+	cancel := func(bool) {
 		a.mu.Lock()
 		delete(a.waiters, rpcID)
 		a.mu.Unlock()
@@ -563,7 +601,7 @@ func (a *codexAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.V
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
-		cancel()
+		cancel(false)
 		return nil, nil, fmt.Errorf("marshal approval request: %w", err)
 	}
 	a.w.writeLine(string(data), 0, 0)

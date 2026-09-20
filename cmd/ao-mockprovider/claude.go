@@ -663,7 +663,13 @@ func writeClaudeControlError(w *lineWriter, requestID, message string) {
 // sendApproval emits a CanUseTool control_request and registers a
 // waiter for the app's control_response (routed by request_id in
 // handleLine).
-func (a *claudeAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan bool, func(), error) {
+//
+// An interrupt that lands while the request is outstanding abandons it the
+// way the real CLI does (claude 2.1.261, structuredIO.ts): the abort writes
+// a `control_cancel_request` naming the request id, and the CLI never waits
+// for an answer to it. The app clears its pending prompt on that line, so
+// a scenario that is interrupted mid-approval leaves no prompt behind.
+func (a *claudeAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (<-chan bool, func(bool), error) {
 	a.mu.Lock()
 	a.seq++
 	requestID := fmt.Sprintf("mock-req-%d", a.seq)
@@ -671,10 +677,13 @@ func (a *claudeAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.
 	a.waiters[requestID] = ch
 	a.mu.Unlock()
 
-	cancel := func() {
+	cancel := func(abandoned bool) {
 		a.mu.Lock()
 		delete(a.waiters, requestID)
 		a.mu.Unlock()
+		if abandoned {
+			a.w.writeLine(fmt.Sprintf(`{"type":"control_cancel_request","request_id":%s}`, mustJSON(requestID)), 0, 0)
+		}
 	}
 
 	input := json.RawMessage(vars.Substitute(string(step.Input)))
@@ -702,7 +711,7 @@ func (a *claudeAdapter) sendApproval(step *scenario.ApprovalStep, vars scenario.
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {
-		cancel()
+		cancel(false)
 		return nil, nil, fmt.Errorf("marshal can_use_tool request: %w", err)
 	}
 	a.w.writeLine(string(data), 0, 0)

@@ -141,7 +141,7 @@ test('editing a message falls back to a fork when the app-server predates thread
   // The cost of the fallback, made visible: the thread the user is
   // editing now points at a different Codex thread.
   const after = await harness.rpc<Thread>('GetThread', threadId);
-  expect(after.sessionRef).toBe('mock-codex-revert-legacy-fork-1');
+  expect(after.sessionRef).toMatch(/^mock-codex-revert-legacy-fork-1-[0-9a-f]{4}$/);
 
   await expect
     .poll(async () => {

@@ -67,7 +67,7 @@ func TestForkThreadCodexUsesStoredResumeStateWhenSessionInactive(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
-		"codexBinaryPath": writeCodexForkBinary(t, "resume-provider-thread", "fork-provider-thread"),
+		"codexBinaryPath": writeCodexForkBinary(t, "resume-provider-thread", "fork-provider-thread", ""),
 	}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -117,8 +117,23 @@ func TestForkThreadRejectsThreadsWithoutMessages(t *testing.T) {
 	}
 }
 
-func TestForkThreadUsesActiveCodexSession(t *testing.T) {
+// TestForkThreadCodexCutsOutsideTheLiveSession: a `thread/fork` loads
+// the CHILD into the app-server that answered, where it stays until that
+// process exits. Cut on the source's live session, the fork's first send
+// would find its thread "open in another Codex process". So the cut runs
+// on a throwaway process even when the source is live, and the live
+// session never sees a fork request.
+func TestForkThreadCodexCutsOutsideTheLiveSession(t *testing.T) {
 	app := newTestAppWithStore(t)
+	app.settings = settings.NewService(t.TempDir())
+	if _, err := app.settings.Update(map[string]any{
+		"codexBinaryPath": writeCodexForkAtBinary(t, codexForkMock{
+			resumedThreadID: "resume-provider-thread",
+			forkedThreadID:  "fork-from-throwaway",
+		}),
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
 
 	source := testThread("thread-codex-active-source")
 	source.Provider = string(provider.Codex)
@@ -129,8 +144,9 @@ func TestForkThreadUsesActiveCodexSession(t *testing.T) {
 	}
 	insertForkTestItems(t, app.store, source.ID)
 
+	liveLog := filepath.Join(t.TempDir(), "live-requests.jsonl")
 	session, err := codex.NewSession(context.Background(), source.ID, codex.Config{
-		Binary:         writeCodexForkBinary(t, "resume-provider-thread", "fork-from-active-session"),
+		Binary:         writeCodexForkBinary(t, "resume-provider-thread", "fork-from-active-session", liveLog),
 		WorkDir:        source.WorkspacePath,
 		ResumeThreadID: source.SessionRef,
 	}, func(provider.ProviderEvent) {})
@@ -144,8 +160,14 @@ func TestForkThreadUsesActiveCodexSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForkThread() error = %v", err)
 	}
-	if forked.SessionRef != "fork-from-active-session" {
-		t.Fatalf("fork session ref = %q, want %q", forked.SessionRef, "fork-from-active-session")
+	if forked.SessionRef != "fork-from-throwaway" {
+		t.Fatalf("fork session ref = %q, want %q", forked.SessionRef, "fork-from-throwaway")
+	}
+	if data, err := os.ReadFile(liveLog); err == nil && strings.Contains(string(data), `"method":"thread/fork"`) {
+		t.Fatalf("the live source session answered the fork:\n%s", data)
+	}
+	if _, ok := app.sessionManager().get(source.ID); !ok {
+		t.Fatal("the source's live session was stopped by the fork")
 	}
 }
 
@@ -725,11 +747,18 @@ func insertForkTestItems(t *testing.T, st *store.Store, threadID string) {
 	}
 }
 
-func writeCodexForkBinary(t *testing.T, resumedThreadID string, forkedThreadID string) string {
+// writeCodexForkBinary answers a resume and a fork. requestLogPath, when
+// set, receives every request line.
+func writeCodexForkBinary(t *testing.T, resumedThreadID string, forkedThreadID string, requestLogPath string) string {
 	t.Helper()
 
+	logRequest := ":"
+	if requestLogPath != "" {
+		logRequest = fmt.Sprintf(`/bin/echo "$line" >> '%s'`, requestLogPath)
+	}
 	script := fmt.Sprintf(`#!/bin/sh
 while IFS= read -r line; do
+    %s
     id=$(/bin/echo "$line" | /usr/bin/grep -o '"id":[0-9]*' | /usr/bin/head -1 | /usr/bin/grep -o '[0-9]*')
     if [ -z "$id" ]; then
         continue
@@ -750,7 +779,7 @@ while IFS= read -r line; do
         printf '{"jsonrpc":"2.0","id":%%s,"result":{"thread":{"id":"%s"}}}\n' "$id"
     fi
 done
-`, resumedThreadID, resumedThreadID, forkedThreadID)
+`, logRequest, resumedThreadID, resumedThreadID, forkedThreadID)
 
 	path := filepath.Join(t.TempDir(), "codex-fork.sh")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {

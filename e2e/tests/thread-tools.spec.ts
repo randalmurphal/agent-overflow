@@ -2049,6 +2049,113 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
   ).toBe(true);
 });
 
+test('thread_spawn forks a live Codex thread on a process of its own, and the fork runs', async ({
+  harness,
+}) => {
+  // A Codex `thread/fork` loads the CHILD into the app-server that
+  // answered and keeps its writer lock until that process exits. Cut on
+  // the source's live session, the fork's first send would be refused as
+  // "open in another Codex process". The mock holds the same lock, so this
+  // spec fails the same way the product did if the cut ever moves back.
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: 'tt-fork-codex-caller',
+        repo: {},
+        threads: [{ title: 'Codex fork caller', provider: 'claude' }],
+      },
+      {
+        name: 'tt-fork-codex-source',
+        repo: {},
+        threads: [{ title: 'Live Codex source', provider: 'codex' }],
+      },
+    ],
+  });
+  const caller = seed.projects[0].threadIds[0];
+  const callerPath = seed.projects[0].path;
+  const source = seed.projects[1].threadIds[0];
+  const sourcePath = seed.projects[1].path;
+
+  await setScenario(
+    harness,
+    sourcePath,
+    plainScenario({
+      name: 'tt-fork-codex-source-script',
+      provider: 'codex',
+      texts: ['The Codex source answered first.'],
+    }),
+  );
+  await harness.rpc('StartSession', source);
+  await harness.rpc('SendMessage', source, 'answer once, then stay up', null);
+  await harness.waitForEvent('provider:turn_completed');
+  const sourceRef = (await harness.rpc<{ sessionRef: string }>('GetThread', source)).sessionRef;
+  expect(sourceRef).not.toBe('');
+
+  await setScenario(
+    harness,
+    callerPath,
+    threadToolsScenario({
+      name: 'tt-fork-codex-caller-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_spawn',
+                args: {
+                  prompt: 'Carry on from the Codex history.',
+                  title: 'Codex continuation',
+                  from_thread: source,
+                  wait_seconds: 0,
+                },
+              },
+            },
+          ],
+          text: 'Codex fork opened.',
+        },
+      ],
+    }),
+  );
+
+  await harness.rpc('StartSession', caller);
+  await harness.rpc('SendMessage', caller, 'fork the live codex thread', null);
+  const spawn = await awaitToolAnswer<{ thread_id: string }>(harness, {
+    tool: 'thread_spawn',
+    timeoutMs: 60_000,
+  });
+  expect(spawn.isError, spawn.text).toBe(false);
+  const forked = spawn.value!.thread_id;
+
+  // The prompt reaches the fork's OWN Codex thread: a fresh id minted from
+  // the source's, resumed in a fresh process while the source stays live.
+  const delivered = await harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (ev) =>
+      ev.report.kind === 'user_input' &&
+      ev.cwd === sourcePath &&
+      (ev.report.input ?? '').includes('Carry on from the Codex history.'),
+    60_000,
+  );
+  expect(delivered.report.sessionRef).toMatch(new RegExp(`^${sourceRef}-fork-\\d+-[0-9a-f]{4}$`));
+  const forkRow = (await threadRows(harness)).find((row) => row.id === forked)!;
+  expect(forkRow.forkedFromThreadId).toBe(source);
+  const items = await harness.rpc<Array<{ kind: string; summary?: string }>>('ListItems', forked, true);
+  expect(items.filter((item) => item.kind === 'error').map((item) => item.summary)).toEqual([]);
+  expect(items.some((item) => (item.summary ?? '').includes('The Codex source answered first.'))).toBe(true);
+
+  // The source kept its session and its thread: a later message still
+  // runs there, on the same Codex thread id.
+  await harness.rpc('SendMessage', source, 'and again', null);
+  const again = await harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (ev) =>
+      ev.report.kind === 'user_input' && ev.cwd === sourcePath && (ev.report.input ?? '').includes('and again'),
+    30_000,
+  );
+  expect(again.report.sessionRef).toBe(sourceRef);
+});
+
 test('a wait ends as blocked when the target stops to ask the user', async ({ harness }) => {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
@@ -2758,4 +2865,189 @@ test('a write inside the ask fork is refused by its session and the refusal come
     .poll(async () => (await threadRows(harness)).some((row) => row.mode === 'scratch'))
     .toBe(false);
   await advanceGate(harness, targetMock.mockId, 'target-busy');
+});
+
+test('cancelling a request blocked on an approval clears the prompt in the sidebar and the pane', async ({
+  harness,
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      { name: 'tt-cancel-caller', repo: {}, threads: [{ title: 'Cancel caller', provider: 'claude' }] },
+      {
+        name: 'tt-cancel-target',
+        repo: {},
+        threads: [
+          {
+            title: 'Cancel approval target',
+            provider: 'claude',
+            runtimeMode: 'approval-required',
+            // A prior turn so the sidebar lists it as a thread, not a draft.
+            turns: [{ userText: 'Ready?', items: [{ kind: 'assistant_text', summary: 'Ready.' }] }],
+          },
+        ],
+      },
+    ],
+  });
+  const caller = seed.projects[0].threadIds[0];
+  const callerPath = seed.projects[0].path;
+  const target = seed.projects[1].threadIds[0];
+  const targetPath = seed.projects[1].path;
+  const notePath = `${targetPath}/note.txt`;
+
+  // The target stops on a write it needs a person to allow, exactly as the
+  // blocked-wait spec above; nobody answers it this time.
+  await setScenario(
+    harness,
+    targetPath,
+    threadToolsScenario({
+      name: 'tt-cancel-target-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              emitLines: [
+                JSON.stringify({
+                  type: 'assistant',
+                  message: {
+                    id: 'msg-write',
+                    role: 'assistant',
+                    model: 'claude-mock-1',
+                    content: [
+                      {
+                        type: 'tool_use',
+                        id: 'tu-write',
+                        name: 'Write',
+                        input: { file_path: notePath, content: 'hello' },
+                      },
+                    ],
+                  },
+                }),
+              ],
+            },
+            {
+              approval: {
+                toolName: 'Write',
+                input: { file_path: notePath, content: 'hello' },
+                toolUseId: 'tu-write',
+                onAllow: [],
+                onDeny: [],
+              },
+            },
+          ],
+          text: 'Wrote the note.',
+        },
+      ],
+    }),
+  );
+  await setScenario(
+    harness,
+    callerPath,
+    threadToolsScenario({
+      name: 'tt-cancel-caller-script',
+      provider: 'claude',
+      turns: [
+        {
+          steps: [
+            {
+              call: {
+                tool: 'thread_send',
+                args: { thread_id: target, message: 'write the note', wait_seconds: 45 },
+                timeoutMs: 90_000,
+              },
+            },
+            { capture: { var: 'TOKEN', from: '${MCP_RESULT}', pattern: RESULT_TOKEN_PATTERN } },
+          ],
+          text: 'It is waiting on you.',
+        },
+        {
+          steps: [{ call: { tool: 'thread_cancel', args: { token: '${TOKEN}' }, timeoutMs: 60_000 } }],
+          text: 'Stopped it.',
+        },
+      ],
+    }),
+  );
+
+  const asked = harness.waitForEvent<HarnessMockEvent>(
+    'harness:mock',
+    (ev) => ev.report.kind === 'approval_pending' && ev.cwd === targetPath,
+    60_000,
+  );
+  const approval = harness.waitForEvent<{
+    action: string;
+    request?: { requestId: string; threadId: string };
+  }>(
+    'provider:approval',
+    (ev) => ev.action === 'request' && ev.request?.threadId === target,
+    60_000,
+  );
+
+  // The person is looking at the target thread when the agent stops it.
+  await harness.open(page);
+  await page.getByText('Cancel approval target').click();
+  const row = page.locator(`[data-sidebar-thread-id="${target}"]`);
+
+  await harness.rpc('StartSession', caller);
+  await harness.rpc('SendMessage', caller, 'have the other thread write the note', null);
+
+  interface SendAck {
+    token: string;
+    state: string;
+    outcome: string;
+  }
+  const blocked = await awaitToolAnswer<SendAck>(harness, {
+    tool: 'thread_send',
+    timeoutMs: 90_000,
+  });
+  expect(blocked.isError, blocked.text).toBe(false);
+  expect(blocked.value!.outcome).toBe('blocked');
+  await asked;
+  const pending = await approval;
+  await expect(page.getByTestId('composer-pending-approval')).toBeVisible();
+  await expect(row).toHaveAttribute('data-effective-status', 'pending-approval');
+  // The caller was seeded without a turn, so the sidebar listed it as a
+  // draft. Its first message landed without any screen sending it, and
+  // the row still has to stop being a draft everywhere.
+  const callerRow = page.locator(`[data-sidebar-thread-id="${caller}"]`);
+  await expect(callerRow).toBeVisible();
+  await expect(callerRow.getByTestId('thread-row-draft-icon')).toHaveCount(0);
+
+  // The cancel interrupts the target's turn while its prompt is open. The
+  // CLI abandons the prompt on the wire, and everything that showed it
+  // clears: the composer's prompt, the sidebar pill, and the live state
+  // the tools report.
+  const resolved = harness.waitForEvent<{ action: string; requestId?: string; threadId?: string }>(
+    'provider:approval',
+    (ev) => ev.action === 'resolve' && ev.requestId === pending.request!.requestId,
+    20_000,
+  );
+  const targetDone = awaitTurnCompleted(harness, target);
+  await harness.rpc('SendMessage', caller, 'stop it', null);
+
+  interface CancelReport {
+    token: string;
+    state: string;
+    effect: string;
+  }
+  const cancelled = await awaitToolAnswer<CancelReport>(harness, {
+    tool: 'thread_cancel',
+    timeoutMs: 60_000,
+  });
+  expect(cancelled.isError, cancelled.text).toBe(false);
+  expect(cancelled.value!.effect).toBe('turn_interrupted');
+  expect(cancelled.value!.state).toBe('cancelled');
+  await resolved;
+  await targetDone;
+
+  await expect(page.getByTestId('composer-pending-approval')).toHaveCount(0);
+  await expect(row).not.toHaveAttribute('data-effective-status', 'pending-approval');
+  await expect(row).not.toHaveAttribute('data-effective-status', 'running');
+
+  const live = await harness.rpc<{ interactive?: { approvals?: unknown[] } }>(
+    'GetThreadLiveState',
+    target,
+  );
+  expect(live.interactive?.approvals ?? []).toHaveLength(0);
 });

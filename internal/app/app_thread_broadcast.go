@@ -49,6 +49,14 @@ func (a *App) broadcastThreadRowIfChanged(action string, row store.Thread, chang
 // of the row the RPC returned. Log-and-continue: the write already succeeded
 // and the sidebar converges on the next ListThreads.
 func (a *App) broadcastThreadRowByID(threadID string) {
+	a.broadcastThreadRowByIDAs(triage.ThreadActionFull, threadID)
+}
+
+// broadcastThreadRowByIDAs is broadcastThreadRowByID with the receiver's
+// instruction chosen by the caller. `listed` is for a write that admits the
+// row to the active sidebar, which a client that never fetched the row can
+// only learn from a listed frame; a full frame for a row it lacks is dropped.
+func (a *App) broadcastThreadRowByIDAs(action, threadID string) {
 	if threadID == "" {
 		return
 	}
@@ -57,7 +65,7 @@ func (a *App) broadcastThreadRowByID(threadID string) {
 		log.Printf("broadcast thread row %s: %v", threadID, err)
 		return
 	}
-	a.broadcastThreadRow(triage.ThreadActionFull, row)
+	a.broadcastThreadRow(action, row)
 }
 
 // broadcastThreadDeleted announces a row that no longer exists in SQLite. It

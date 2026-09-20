@@ -45,6 +45,10 @@ control channel aligned with verified provider behavior.
   mid-turn dispatch through `turn/steer`.
 - Persist Codex thread history mode under `AO_HARNESS_TRANSCRIPT_HOME` so a new
   mock process resumes with the correct revert behavior.
+- Hold the Codex writer lock for a thread `thread/fork` minted, under the same
+  home, for the life of the process that answered; another process resuming it
+  meanwhile gets `-32600` "already has an active writer". Fork ids are unique
+  across processes. Ids no fork minted are shared and never contend.
 - Refuse workspace mutations (`writeFile`) when the mock's cwd is outside
   `AO_HARNESS_WORKSPACE_ROOT`, and report the refusal as a step failure so the
   scenario keeps running.

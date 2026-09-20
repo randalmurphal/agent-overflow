@@ -646,7 +646,7 @@ func TestControlCancelRequestClearsPendingApproval(t *testing.T) {
 		t.Fatalf("write cancel: %v", err)
 	}
 
-	// 3. Expect EventApprovalResolved with decision:"cancel".
+	// 3. Expect EventApprovalResolved with decision:"lost".
 	deadline := time.After(2 * time.Second)
 	var gotResolved bool
 	for !gotResolved {
@@ -657,8 +657,8 @@ func TestControlCancelRequestClearsPendingApproval(t *testing.T) {
 				if err := json.Unmarshal(evt.Meta, &meta); err != nil {
 					t.Fatalf("unmarshal resolved meta: %v", err)
 				}
-				if meta["decision"] != "cancel" {
-					t.Fatalf("resolved decision: got %v, want cancel", meta["decision"])
+				if meta["decision"] != "lost" {
+					t.Fatalf("resolved decision: got %v, want lost", meta["decision"])
 				}
 				gotResolved = true
 			}
@@ -683,7 +683,7 @@ func TestControlCancelRequestClearsPendingApproval(t *testing.T) {
 
 // TestControlCancelRequestClearsPendingUserInput is the AskUserQuestion
 // flavour: when the CLI cancels a pending user-input prompt, the
-// resolved event must carry empty answers and decision="cancel" so
+// resolved event must carry empty answers and decision="lost" so
 // the panel above the composer clears.
 func TestControlCancelRequestClearsPendingUserInput(t *testing.T) {
 	s, eventCh := newTestClaudeSessionWithPendingRequests(t)
@@ -719,8 +719,8 @@ func TestControlCancelRequestClearsPendingUserInput(t *testing.T) {
 				if err := json.Unmarshal(evt.Meta, &meta); err != nil {
 					t.Fatalf("unmarshal resolved meta: %v", err)
 				}
-				if meta["decision"] != "cancel" {
-					t.Fatalf("resolved decision: got %v, want cancel", meta["decision"])
+				if meta["decision"] != "lost" {
+					t.Fatalf("resolved decision: got %v, want lost", meta["decision"])
 				}
 				answers, ok := meta["answers"].(map[string]any)
 				if !ok {

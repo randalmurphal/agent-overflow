@@ -315,6 +315,7 @@ func (r *Router) handleApprovalResolved(evt provider.ProviderEvent) error {
 		itemID = approvalItemID(evt, pending.Request)
 	}
 
+	var applyErr error
 	if itemID != "" && decision != "" {
 		r.rememberApprovalDecision(evt.ThreadID, itemID, decision)
 		// When the user amended the input, overlay it onto the request so
@@ -325,7 +326,11 @@ func (r *Router) handleApprovalResolved(evt provider.ProviderEvent) error {
 			pending.Request.Input = updatedInput
 		}
 		if err := r.applyApprovalDecision(evt.ThreadID, itemID, pending.Request, decision, eventTimestampMillis(evt)); err != nil {
-			return err
+			// The pending entry is already taken, so this resolution is
+			// the frontend's only chance to drop its prompt. A row write
+			// that failed must not leave the sidebar on pending approval
+			// with a card nobody can answer.
+			applyErr = fmt.Errorf("approval %s resolved %s: %w", requestID, decision, err)
 		}
 	}
 
@@ -335,7 +340,7 @@ func (r *Router) handleApprovalResolved(evt provider.ProviderEvent) error {
 		RequestID: requestID,
 		Decision:  decision,
 	})
-	return nil
+	return applyErr
 }
 
 func (r *Router) applyApprovalDecision(

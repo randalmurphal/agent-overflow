@@ -325,10 +325,10 @@ func (e *engine) runApproval(vars scenario.Vars, turn int, ap *scenario.Approval
 			timer.Stop()
 		case <-e.turnAbortSignal(turn):
 			timer.Stop()
-			cancel()
+			cancel(true)
 			return
 		case <-timer.C:
-			cancel()
+			cancel(false)
 			detail = "timeout"
 			log.Printf("approval step: no %s decision within %dms (running onDeny)", ap.ToolName, ap.TimeoutMs)
 		}
@@ -336,7 +336,7 @@ func (e *engine) runApproval(vars scenario.Vars, turn int, ap *scenario.Approval
 		select {
 		case allow = <-decisionCh:
 		case <-e.turnAbortSignal(turn):
-			cancel()
+			cancel(true)
 			return
 		}
 	}

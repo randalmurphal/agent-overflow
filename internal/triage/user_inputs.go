@@ -116,9 +116,13 @@ func (r *Router) handleUserInputResolved(evt provider.ProviderEvent) error {
 		requestID = evt.ItemID
 	}
 	request, ok := r.takePendingUserInput(evt.ThreadID, requestID)
+	var persistErr error
 	if ok {
+		// The pending entry is already taken, so this resolution is the
+		// frontend's only chance to drop its prompt: emit it even when the
+		// row write failed, then report the failure.
 		if err := r.persistResolvedUserInput(evt, request, decision, answers); err != nil {
-			return err
+			persistErr = fmt.Errorf("user input %s resolved %s: %w", requestID, decision, err)
 		}
 	}
 	r.emit(eventchan.ProviderUserInput, provider.UserInputEvent{
@@ -127,7 +131,7 @@ func (r *Router) handleUserInputResolved(evt provider.ProviderEvent) error {
 		RequestID: requestID,
 		Decision:  decision,
 	})
-	return nil
+	return persistErr
 }
 
 // persistResolvedUserInput writes the user's submitted answers onto the

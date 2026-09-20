@@ -239,3 +239,82 @@ done
 		t.Fatalf("Fork() = %q, want %q", forkedThreadID, "mock-thread-fork-456")
 	}
 }
+
+// TestForkThreadCutsOnAThreadlessAppServer: the sidebar fork runs on a
+// process of its own that never loads the source, so the child it loads
+// dies with the process and its writer lock with it. The source id travels
+// in the fork params, nothing else names it.
+func TestForkThreadCutsOnAThreadlessAppServer(t *testing.T) {
+	dir := t.TempDir()
+	requestLog := dir + "/requests.jsonl"
+	script := `#!/bin/bash
+while IFS= read -r line; do
+    echo "$line" >> "` + requestLog + `"
+    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | grep -o '[0-9]*')
+    if [ -z "$id" ]; then
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"initialize"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}"
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"thread/fork"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"thread\":{\"id\":\"detached-fork\",\"turns\":[]}}}"
+        continue
+    fi
+    if echo "$line" | grep -q '"method":"thread/turns/list"'; then
+        echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"data\":[{\"id\":\"turn-7\"}],\"nextCursor\":null}}"
+        continue
+    fi
+    echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{\"code\":-32601,\"message\":\"unexpected $line\"}}"
+done
+`
+	scriptPath := dir + "/codex"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write mock script: %v", err)
+	}
+
+	forked, err := ForkThread(context.Background(), ForkSpec{
+		Binary:         scriptPath,
+		WorkDir:        dir,
+		SourceThreadID: "source-thread",
+		LastTurnID:     "turn-7",
+	})
+	if err != nil {
+		t.Fatalf("ForkThread() error = %v", err)
+	}
+	if forked != "detached-fork" {
+		t.Fatalf("ForkThread() = %q, want detached-fork", forked)
+	}
+
+	data, err := os.ReadFile(requestLog)
+	if err != nil {
+		t.Fatalf("read request log: %v", err)
+	}
+	log := string(data)
+	for _, method := range []string{`"method":"thread/start"`, `"method":"thread/resume"`} {
+		if strings.Contains(log, method) {
+			t.Fatalf("fork process loaded a thread of its own:\n%s", log)
+		}
+	}
+	var fork string
+	for _, line := range strings.Split(log, "\n") {
+		if strings.Contains(line, `"method":"thread/fork"`) {
+			fork = line
+		}
+	}
+	for _, want := range []string{`"threadId":"source-thread"`, `"lastTurnId":"turn-7"`, `"excludeTurns":true`} {
+		if !strings.Contains(fork, want) {
+			t.Fatalf("thread/fork params = %s, want %s", fork, want)
+		}
+	}
+	if strings.Contains(fork, "developerInstructions") {
+		t.Fatalf("thread/fork on a threadless process carried developer instructions: %s", fork)
+	}
+}
+
+func TestForkThreadRequiresASource(t *testing.T) {
+	if _, err := ForkThread(context.Background(), ForkSpec{Binary: "/nonexistent/codex"}); err == nil {
+		t.Fatal("ForkThread() error = nil, want missing source failure")
+	}
+}

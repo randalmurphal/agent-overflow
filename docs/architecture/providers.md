@@ -17,7 +17,14 @@ the provider process owns turn state.
 - `session_ref` on `threads` records the provider-side session file path
   (`~/.claude/...` or `~/.codex/...`). This is what resume feeds back in.
 - Fork creates a new thread row; `parent_thread_id` records the lineage.
-  Codex has a native `thread/fork` method. A Claude tail fork is LAZY:
+  Codex has a native `thread/fork` method. It reads the source out of the
+  thread store but loads the CHILD into the app-server that answered, with
+  the child's writer lock, until that process exits. A fork cut on the
+  source's live session would leave the fork's first send refused as
+  "open in another Codex process", so `codex.ForkThread` cuts every
+  sidebar and agent fork on a throwaway threadless app-server that exits
+  with the cut (`app_thread_fork_codex.go`). Only the revert fallback
+  forks on the session it is about to stop. A Claude tail fork is LAZY:
   `pending_fork_session_ref` stamps the source session and the fork's
   first send spawns `claude --resume <source> --fork-session`, so the
   CLI itself copies the transcript at startup. An anchored (fork-at-turn

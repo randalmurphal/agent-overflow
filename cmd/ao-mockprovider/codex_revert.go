@@ -118,7 +118,8 @@ func (a *codexAdapter) revertAnchorState(turnID string) (recognised, live bool) 
 
 // forkAnchorIsCuttable keeps thread/fork's stricter contract: a named live
 // turn is not a stable inclusive boundary, while an unknown anchor on a
-// resumed thread may belong to history this process did not execute.
+// resumed thread, or on a thread this threadless process reads out of the
+// store, may belong to history this process did not execute.
 func (a *codexAdapter) forkAnchorIsCuttable(turnID string) bool {
 	if turnID == "" {
 		return false
@@ -128,7 +129,7 @@ func (a *codexAdapter) forkAnchorIsCuttable(turnID string) bool {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.resumedThread
+	return a.resumedThread || !a.loadedThread
 }
 
 func (a *codexAdapter) currentHistoryMode() string {

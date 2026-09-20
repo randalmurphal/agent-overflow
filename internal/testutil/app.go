@@ -102,11 +102,28 @@ func MockClaudeStreamedText(msgID, text string) []string {
 // request_id) and does NOT advance the index counter. This matches the
 // real CLI's wire behaviour and keeps the responses[] slot numbering
 // aligned to user-message turns rather than every stdin line.
+//
+// A can_use_tool request the app has not answered when the interrupt
+// arrives is abandoned the way the real CLI abandons it (claude 2.1.261,
+// structuredIO.ts): the interrupt ack is followed by a
+// control_cancel_request naming that request id, and the script does not
+// wait for any answer to it.
 func WriteMockClaudeScript(t *testing.T, dir string, responses [][]string) string {
 	t.Helper()
 	var b strings.Builder
 	b.WriteString("#!/bin/bash\n")
 	b.WriteString("idx=0\n")
+	b.WriteString("pending=''\n")
+	// emit prints one wire line and remembers a can_use_tool request id
+	// until the app answers it, so an interrupt can abandon it.
+	b.WriteString("emit() {\n")
+	b.WriteString("  printf '%s\\n' \"$1\"\n")
+	b.WriteString("  case \"$1\" in\n")
+	b.WriteString("    *'\"subtype\":\"can_use_tool\"'*)\n")
+	b.WriteString("      pending=$(printf '%s' \"$1\" | sed -n 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/p')\n")
+	b.WriteString("      ;;\n")
+	b.WriteString("  esac\n")
+	b.WriteString("}\n")
 	b.WriteString("while IFS= read -r line; do\n")
 	b.WriteString("  case \"$line\" in\n")
 	// Case alternation accepts either field order — json.Marshal on
@@ -115,14 +132,21 @@ func WriteMockClaudeScript(t *testing.T, dir string, responses [][]string) strin
 	b.WriteString("    *'\"type\":\"control_request\"'*'\"subtype\":\"interrupt\"'* | *'\"subtype\":\"interrupt\"'*'\"type\":\"control_request\"'*)\n")
 	b.WriteString("      reqid=$(printf '%s' \"$line\" | sed -n 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/p')\n")
 	b.WriteString("      printf '{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"%s\",\"response\":{}}}\\n' \"$reqid\"\n")
+	b.WriteString("      if [ -n \"$pending\" ]; then\n")
+	b.WriteString("        printf '{\"type\":\"control_cancel_request\",\"request_id\":\"%s\"}\\n' \"$pending\"\n")
+	b.WriteString("        pending=''\n")
+	b.WriteString("      fi\n")
 	b.WriteString("      continue\n")
+	b.WriteString("      ;;\n")
+	b.WriteString("    *'\"type\":\"control_response\"'*)\n")
+	b.WriteString("      pending=''\n")
 	b.WriteString("      ;;\n")
 	b.WriteString("  esac\n")
 	b.WriteString("  case $idx in\n")
 	for i, batch := range responses {
 		b.WriteString(fmt.Sprintf("    %d)\n", i))
 		for _, line := range batch {
-			b.WriteString("      printf '%s\\n' ")
+			b.WriteString("      emit ")
 			b.WriteString(shellSingleQuote(line))
 			b.WriteString("\n")
 		}

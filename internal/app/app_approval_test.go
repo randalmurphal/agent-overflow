@@ -23,7 +23,7 @@ func TestRespondToApprovalRejectsUntrackedCodexRequest(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	binary := writeCodexForkBinary(t, "codex-session-approval", "codex-session-approval-fork")
+	binary := writeCodexForkBinary(t, "codex-session-approval", "codex-session-approval-fork", "")
 	sess, err := codex.NewSession(
 		context.Background(),
 		thread.ID,
@@ -65,7 +65,7 @@ func TestRespondToApprovalPropagatesProviderError(t *testing.T) {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
 
-	binary := writeCodexForkBinary(t, "codex-session-approval-err", "codex-session-approval-err-fork")
+	binary := writeCodexForkBinary(t, "codex-session-approval-err", "codex-session-approval-err-fork", "")
 	sess, err := codex.NewSession(
 		context.Background(),
 		thread.ID,

@@ -2160,3 +2160,108 @@ func TestSendMessageClearsPendingSendOnFailure(t *testing.T) {
 		t.Error("expected error item after failed send — existing optimistic-send contract regressed")
 	}
 }
+
+// The first persisted item is what admits a row to the sidebar list and
+// flips its derived isDraft. A send nobody made from a screen (an agent's
+// spawn, a queued dispatch) has no client applying its own result, so the
+// row must be broadcast as listed once that item exists, and only once.
+func TestSendMessageBroadcastsListedRowOnFirstItem(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := testThread("thread-send-first-item")
+	thread.Provider = string(provider.Claude)
+	thread.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+
+	var mu sync.Mutex
+	var listed []store.Thread
+	app.emitEventFn = func(name string, data any) {
+		if name != "thread:updated" {
+			return
+		}
+		evt, ok := data.(triage.ThreadUpdateEvent)
+		if !ok {
+			t.Fatalf("thread:updated payload type = %T, want triage.ThreadUpdateEvent", data)
+		}
+		if evt.Action != triage.ThreadActionListed || evt.Thread == nil {
+			return
+		}
+		mu.Lock()
+		listed = append(listed, *evt.Thread)
+		mu.Unlock()
+	}
+
+	sess, err := claude.NewSession(
+		context.Background(),
+		thread.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: thread.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Close() })
+	app.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Claude),
+		Token:    "test-token",
+		Claude:   sess,
+	})
+
+	if err := app.SendMessage(thread.ID, "first", nil); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	mu.Lock()
+	got := append([]store.Thread(nil), listed...)
+	mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("listed frames after first send = %d, want 1", len(got))
+	}
+	if got[0].ID != thread.ID || got[0].IsDraft {
+		t.Fatalf("listed frame = id %q isDraft %v, want the row with isDraft false", got[0].ID, got[0].IsDraft)
+	}
+
+	// A thread that already has an item was listed long ago; its send says
+	// nothing about membership.
+	seeded := testThread("thread-send-later-item")
+	seeded.Provider = string(provider.Claude)
+	seeded.WorkspacePath = t.TempDir()
+	if err := app.store.CreateThread(seeded); err != nil {
+		t.Fatalf("CreateThread() error = %v", err)
+	}
+	if _, err := app.store.UpsertItem(store.Item{
+		ID: "prior", ThreadID: seeded.ID, Kind: "user_text", Role: "user", Status: "completed", Summary: "earlier",
+	}, nil); err != nil {
+		t.Fatalf("UpsertItem() error = %v", err)
+	}
+	seededSess, err := claude.NewSession(
+		context.Background(),
+		seeded.ID,
+		claude.Config{
+			Binary:  writeClaudePassthroughBinary(t),
+			WorkDir: seeded.WorkspacePath,
+		},
+		func(provider.ProviderEvent) {},
+	)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	t.Cleanup(func() { _ = seededSess.Close() })
+	app.sessionManager().put(seeded.ID, session{
+		Provider: string(provider.Claude),
+		Token:    "test-token",
+		Claude:   seededSess,
+	})
+	if err := app.SendMessage(seeded.ID, "later", nil); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	mu.Lock()
+	n := len(listed)
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("listed frames after a send on a thread with items = %d, want the first thread's only", n)
+	}
+}

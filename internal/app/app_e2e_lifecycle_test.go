@@ -1157,6 +1157,71 @@ func TestE2E_ClaudeApprovalRoundTrip(t *testing.T) {
 	_ = app.StopSession(thread.ID)
 }
 
+// TestE2E_InterruptCancelsPendingApproval: the CLI abandons an unanswered
+// can_use_tool request when the turn is interrupted, and the abandoned prompt
+// must resolve for the frontend the same as an answered one. A prompt that
+// stays open after the turn ended pins the sidebar on pending approval and
+// leaves a dead card in the composer.
+func TestE2E_InterruptCancelsPendingApproval(t *testing.T) {
+	app, bus := setupE2EApp(t)
+	workspace := t.TempDir()
+	thread, err := createTestThread(t, app, string(provider.Claude), workspace, "claude-opus-4-7", "chat")
+	if err != nil {
+		t.Fatalf("CreateThread: %v", err)
+	}
+	if _, err := app.UpdateThreadRuntimeMode(context.Background(), thread.ID, string(provider.RuntimeApprovalRequired)); err != nil {
+		t.Fatalf("UpdateThreadRuntimeMode: %v", err)
+	}
+
+	responses := [][]string{
+		{
+			`{"type":"system","subtype":"init","session_id":"sess-cancel","model":"claude-opus-4-7","cwd":"/tmp","tools":[],"claude_code_version":"1.0"}`,
+			`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"tool_use","id":"tu-1","name":"Bash","input":{"command":"ls"}}]}}`,
+			`{"type":"control_request","request_id":"req-1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"},"tool_use_id":"tu-1"}}`,
+		},
+	}
+	binary := testutil.WriteMockClaudeScript(t, t.TempDir(), responses)
+	if _, err := app.settings.Update(map[string]any{"claudeBinaryPath": binary}); err != nil {
+		t.Fatalf("set binary: %v", err)
+	}
+
+	if err := app.StartSession(thread.ID); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if err := app.SendMessage(thread.ID, "go", nil); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	approval := bus.nextApprovalEvent(t, "request", 5*time.Second)
+	if approval.Request == nil || approval.Request.RequestID != "req-1" {
+		t.Fatalf("approval request = %+v", approval)
+	}
+
+	if err := app.InterruptTurn(thread.ID); err != nil {
+		t.Fatalf("InterruptTurn: %v", err)
+	}
+
+	resolved := bus.nextApprovalEvent(t, "resolve", 5*time.Second)
+	if resolved.RequestID != "req-1" || resolved.Decision != "lost" {
+		t.Fatalf("resolved approval = %+v, want requestId=req-1 decision=lost", resolved)
+	}
+	item, found, err := app.store.GetThreadItem(thread.ID, "tu-1")
+	if err != nil || !found {
+		t.Fatalf("GetThreadItem(tu-1): found=%v err=%v", found, err)
+	}
+	if item.Status != "errored" || item.Decision != "lost" {
+		t.Fatalf("abandoned tool row = status %q decision %q, want errored/lost", item.Status, item.Decision)
+	}
+	live, err := app.GetThreadLiveState(thread.ID)
+	if err != nil {
+		t.Fatalf("GetThreadLiveState: %v", err)
+	}
+	if len(live.Interactive.Approvals) != 0 {
+		t.Fatalf("live state still lists %d approvals after the interrupt", len(live.Interactive.Approvals))
+	}
+
+	_ = app.StopSession(thread.ID)
+}
+
 // TestE2E_StopSessionWithoutStartIsClean: calling StopSession on a thread
 // that never had a session must not error; it also must clean up any
 // lingering triage state. Covers the no-op path explicitly.

@@ -47,9 +47,15 @@ type codexHistoryCut struct {
 // AO can name", which is not an error: the fork cut needs no such anchor,
 // so the call simply forks.
 //
-// Both cuts run inside ONE app-server connection (withCodexThreadSession),
-// which is what keeps the version/history-mode probe free: the answer is
-// already on the session that would have forked anyway.
+// Both cuts run inside ONE app-server connection
+// (withCodexThreadSessionPreparedBy), which is what keeps the
+// version/history-mode probe free: the answer is already on the session
+// that would have forked anyway. A fork cut on that connection loads the
+// child there, with the child's writer; that is safe here and nowhere
+// else, because the rollback stops a live source session before the thread
+// is next started on the fork and the throwaway connection closes with
+// the cut. The sidebar fork keeps its source running and cuts elsewhere
+// (forkCodexThreadAt).
 //
 // Falling back to the fork after a REFUSED revert is only safe because
 // every refusal that reaches ErrThreadRevertUnsupported is raised before

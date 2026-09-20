@@ -1,7 +1,6 @@
 // Codex half of the fork saga (app_thread_fork.go): the `thread/fork`
-// call over the live app-server session (or a throwaway resume session),
-// anchor resolution to a provider turn id, and the in-flight-turn anchor
-// guard.
+// cut over a throwaway threadless app-server, anchor resolution to a
+// provider turn id, and the in-flight-turn anchor guard.
 package app
 
 import (
@@ -92,34 +91,33 @@ func (a *App) resolveCodexForkAnchor(threadID string, lastKeptTurnIndex int) (st
 }
 
 // forkCodexThreadAt issues `thread/fork` (cut at lastTurnID, or full
-// history when "") through the thread's live app-server session, or a
-// throwaway resume session when none is active.
+// history when "") over a throwaway app-server that loads no thread. Never
+// through the source's live session, even when one is running: the cut
+// loads the child into the answering process, so a live source would keep
+// the child's writer and the child's own first start would be refused
+// (codex.ForkThread). The source is read from the thread store, which a
+// live source's recorder flushes on every write.
 func (a *App) forkCodexThreadAt(source store.Thread, lastTurnID string) (string, error) {
-	forkedID := ""
-	err := a.withCodexThreadSession(source, func(session *codex.Session) error {
-		var forkErr error
-		forkedID, forkErr = session.ForkAt(context.Background(), lastTurnID)
-		return forkErr
+	return codex.ForkThread(context.Background(), codex.ForkSpec{
+		Binary:         a.providerBinaryPath(source.Provider),
+		WorkDir:        source.WorkspacePath,
+		Env:            a.sessionProcessEnv(source.Provider, nil, aoSessionCredential{}),
+		SourceThreadID: source.SessionRef,
+		LastTurnID:     lastTurnID,
 	})
-	return forkedID, err
 }
 
-// withCodexThreadSession runs fn against an app-server connection for
-// source: the thread's live session when one is running, otherwise a
-// throwaway resume session closed on the way out.
+// withCodexThreadSessionPreparedBy runs fn against an app-server connection
+// for source: the thread's live session when one is running, otherwise a
+// throwaway resume session closed on the way out. The in-place history cut
+// (`thread/revert`, app_codex_revert.go) runs here: a live paginated
+// rollback stays on its existing session so thread/revert can own
+// active-turn shutdown, and the cold path resumes the thread once to cut
+// it. The fork cut does not: it must not load its child into a session
+// that outlives it (forkCodexThreadAt).
 //
-// Extracted so the two history cuts (`thread/fork` here,
-// `thread/revert` in app_codex_revert.go) share ONE connection. The
-// cold rollback path stops the live session before cutting, while a live
-// paginated rollback stays on its existing session so thread/revert can own
-// active-turn shutdown. In either case, deciding between cuts across two
-// brackets would spawn needless app-servers.
-func (a *App) withCodexThreadSession(source store.Thread, fn func(*codex.Session) error) error {
-	return a.withCodexThreadSessionPreparedBy(source, nil, fn)
-}
-
-// withCodexThreadSessionPreparedBy is the same bracket with a hook that runs
-// against the connection BEFORE the thread is loaded.
+// prepare is a hook that runs against the connection BEFORE the thread is
+// loaded.
 //
 // The distinction only exists on the throwaway branch, and it is the whole
 // point of the hook: `thread/resume` LOADS the thread, and a loaded thread's

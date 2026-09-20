@@ -29,9 +29,11 @@ type ResolvedApproval struct {
 }
 
 // Meta builds the resolved-event meta both providers emit for a released
-// request. `decision` is the word the frontend and triage branch on —
-// "lost" for a session that died mid-prompt (triage flips the row to
-// errored), "cancel" for a request the provider itself abandoned.
+// request. `decision` is the word the frontend and triage branch on: "lost"
+// for a prompt nobody answered, whether the session died or the provider
+// abandoned the request after an interrupt (triage flips the row to
+// errored). It is the only unanswered-prompt word the item row's decision
+// column accepts.
 //
 // A user-input resolution additionally carries an empty `answers` map: the
 // frontend types answers as present on every UserInputResolved event, so

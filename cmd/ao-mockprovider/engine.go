@@ -21,9 +21,13 @@ const turnQueueCap = 128
 type protocolAdapter interface {
 	// sendApproval writes the protocol-native approval request. The
 	// returned channel yields the decision (true = allow) exactly once
-	// when the app responds; cancel unregisters the waiter after a
-	// timeout so a late response is dropped instead of leaking.
-	sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (decision <-chan bool, cancel func(), err error)
+	// when the app responds; cancel unregisters the waiter so a late
+	// response is dropped instead of leaking. abandoned is true when an
+	// interrupt ended the turn while the request was outstanding, and the
+	// adapter then tells the app the way its CLI does: Claude Code writes a
+	// control_cancel_request for the abandoned can_use_tool callback, Codex
+	// writes nothing and lets turn/interrupt settle the request.
+	sendApproval(step *scenario.ApprovalStep, vars scenario.Vars) (decision <-chan bool, cancel func(abandoned bool), err error)
 	// sendInterruptedTurn writes the protocol-native terminal frame for an
 	// interrupted turn. The adapter has already acknowledged the inbound
 	// interrupt before this is called.

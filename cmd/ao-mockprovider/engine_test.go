@@ -40,12 +40,12 @@ type stubAdapter struct {
 	allow   bool
 }
 
-func (s *stubAdapter) sendApproval(*scenario.ApprovalStep, scenario.Vars) (<-chan bool, func(), error) {
+func (s *stubAdapter) sendApproval(*scenario.ApprovalStep, scenario.Vars) (<-chan bool, func(bool), error) {
 	ch := make(chan bool, 1)
 	if s.respond {
 		ch <- s.allow
 	}
-	return ch, func() {}, nil
+	return ch, func(bool) {}, nil
 }
 
 func (s *stubAdapter) sendInterruptedTurn(scenario.Vars) {}

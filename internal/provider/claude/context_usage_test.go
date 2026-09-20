@@ -238,6 +238,12 @@ done
 	return header + body + footer
 }
 
+// answeringContextUsageTimeout bounds a round trip the script DOES answer.
+// The answer costs a shell and a sed fork, which a saturated test host
+// stretches past a second; only the silent case measures the timeout
+// itself, and it picks its own.
+const answeringContextUsageTimeout = 10 * time.Second
+
 func newContextUsageResponderSession(t *testing.T, mode string, timeout time.Duration) *Session {
 	t.Helper()
 	scriptPath := t.TempDir() + "/fake-claude"
@@ -263,8 +269,8 @@ func newContextUsageResponderSession(t *testing.T, mode string, timeout time.Dur
 }
 
 func TestSession_GetContextUsage_RoundTrip(t *testing.T) {
-	s := newContextUsageResponderSession(t, "success", 2*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	s := newContextUsageResponderSession(t, "success", answeringContextUsageTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*answeringContextUsageTimeout)
 	defer cancel()
 
 	usage, err := s.GetContextUsage(ctx)
@@ -280,8 +286,8 @@ func TestSession_GetContextUsage_RoundTrip(t *testing.T) {
 }
 
 func TestSession_GetContextUsage_ErrorSubtype(t *testing.T) {
-	s := newContextUsageResponderSession(t, "error-subtype", 2*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	s := newContextUsageResponderSession(t, "error-subtype", answeringContextUsageTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*answeringContextUsageTimeout)
 	defer cancel()
 
 	if _, err := s.GetContextUsage(ctx); err == nil {
@@ -292,8 +298,8 @@ func TestSession_GetContextUsage_ErrorSubtype(t *testing.T) {
 }
 
 func TestSession_GetContextUsage_SuccessWithNoPayload(t *testing.T) {
-	s := newContextUsageResponderSession(t, "success-no-payload", 2*time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	s := newContextUsageResponderSession(t, "success-no-payload", answeringContextUsageTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*answeringContextUsageTimeout)
 	defer cancel()
 
 	if _, err := s.GetContextUsage(ctx); err == nil {

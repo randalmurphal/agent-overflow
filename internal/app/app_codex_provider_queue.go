@@ -268,7 +268,7 @@ func (a *App) refuseRollbackOverUnreachableQueue(threadID string) error {
 // A rolled-back thread whose session was already stopped still has its rows in
 // codex's SQLite, and the in-place `thread/revert` keeps the thread id, so the
 // next resume dispatches a message the user just removed. The rollback already
-// resumes that exact thread to cut it (`withCodexThreadSession`), so the purge
+// resumes that exact thread to cut it (`withCodexThreadSessionPreparedBy`), so the purge
 // costs one `thread/queue/list` on a connection that exists, not a spawn.
 //
 // Called BEFORE the `thread/resume` itself, through the bracket's pre-resume

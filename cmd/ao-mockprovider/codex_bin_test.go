@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
@@ -303,4 +304,94 @@ func TestCodexApprovalRoundTrip(t *testing.T) {
 
 	t.Run("accept", func(t *testing.T) { run(t, "accept", "completed") })
 	t.Run("decline", func(t *testing.T) { run(t, "decline", "failed") })
+}
+
+// TestCodexForkChildStaysThisProcessesWriter: the thread a fork mints is
+// loaded in the process that answered, and stays its writer until that
+// process exits. A second process resuming it meanwhile is refused the
+// way upstream refuses (-32600, "already has an active writer"); after
+// the exit the resume goes through. Ids no fork minted are shared by every
+// mock process of a harness and never contend.
+func TestCodexForkChildStaysThisProcessesWriter(t *testing.T) {
+	sc := &scenario.Scenario{
+		Version:  scenario.CurrentVersion,
+		Name:     "codex-fork-writer",
+		Provider: scenario.ProviderCodex,
+		Turns: []scenario.Turn{
+			{Steps: []scenario.Step{{Emit: &scenario.EmitStep{Lines: []string{
+				`{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}"}}}`,
+				`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"${THREAD_ID}","turn":{"id":"${TURN_ID}","status":"completed"}}}`,
+			}}}}},
+		},
+		AfterTurns: "repeatLast",
+	}
+	home := t.TempDir()
+	env := append(writeScenarioFile(t, sc, ""), control.EnvTranscriptHome+"="+home)
+	dir := t.TempDir()
+
+	forkOn := func(p *mockProc, id int, source string) string {
+		t.Helper()
+		p.send(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"thread/fork","params":{"threadId":%q}}`, id, source))
+		line := p.expectLineContaining(fmt.Sprintf(`"id":%d`, id), testTimeout)
+		var resp struct {
+			Result struct {
+				Thread struct {
+					ID string `json:"id"`
+				} `json:"thread"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal([]byte(line), &resp); err != nil || resp.Result.Thread.ID == "" {
+			t.Fatalf("thread/fork answered %q (%v)", line, err)
+		}
+		return resp.Result.Thread.ID
+	}
+
+	// The source is loaded, and run, in one process.
+	source := startMock(t, []string{"app-server"}, env, dir)
+	source.send(`{"jsonrpc":"2.0","id":1,"method":"thread/start","params":{}}`)
+	source.expectLineContaining(`"id":1`, testTimeout)
+	source.send(`{"jsonrpc":"2.0","id":2,"method":"turn/start","params":{"threadId":"mock-codex-thread","input":[]}}`)
+	source.expectLineContaining(`"method":"turn/completed"`, testTimeout)
+
+	// A threadless process cuts the source out of the store, with the
+	// anchor it never ran, and holds the child.
+	cutter := startMock(t, []string{"app-server"}, env, dir)
+	cutter.send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	cutter.expectLineContaining(`"id":1`, testTimeout)
+	cutter.send(`{"jsonrpc":"2.0","id":2,"method":"thread/fork","params":{"threadId":"mock-codex-thread","lastTurnId":"turn-1","excludeTurns":true}}`)
+	cut := cutter.expectLineContaining(`"id":2`, testTimeout)
+	if !strings.Contains(cut, `"id":"mock-codex-thread-fork-1-`) {
+		t.Fatalf("threadless fork = %q, want the source's id as the base", cut)
+	}
+	child := forkOn(cutter, 3, "mock-codex-thread")
+	if strings.Contains(cut, `"id":"`+child+`"`) {
+		t.Fatalf("two forks minted one id %q", child)
+	}
+
+	// While the cutter lives, its child is nobody else's to resume.
+	resumer := startMock(t, []string{"app-server"}, env, dir)
+	resumer.send(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"thread/resume","params":{"threadId":%q}}`, child))
+	refused := resumer.expectLineContaining(`"id":1`, testTimeout)
+	if !strings.Contains(refused, `"code":-32600`) || !strings.Contains(refused, "thread "+child+" already has an active writer") {
+		t.Fatalf("resume of a held child = %q, want the writer conflict", refused)
+	}
+	// The shared seed id is never locked, whoever runs it.
+	resumer.send(`{"jsonrpc":"2.0","id":2,"method":"thread/resume","params":{"threadId":"mock-codex-thread"}}`)
+	if shared := resumer.expectLineContaining(`"id":2`, testTimeout); strings.Contains(shared, `"error"`) {
+		t.Fatalf("resume of the shared id = %q, want success", shared)
+	}
+	// A fork the resumer cuts in turn is the resumer's own child.
+	own := forkOn(resumer, 3, "mock-codex-thread")
+	if own == child {
+		t.Fatalf("resumer's fork reused the held child id %q", own)
+	}
+
+	// The cutter's exit releases its children.
+	cutter.closeStdinAndExpectExit(0, testTimeout)
+	resumer.send(fmt.Sprintf(`{"jsonrpc":"2.0","id":4,"method":"thread/resume","params":{"threadId":%q}}`, child))
+	if released := resumer.expectLineContaining(`"id":4`, testTimeout); strings.Contains(released, `"error"`) {
+		t.Fatalf("resume after the writer exited = %q, want success", released)
+	}
+	resumer.closeStdinAndExpectExit(0, testTimeout)
+	source.closeStdinAndExpectExit(0, testTimeout)
 }

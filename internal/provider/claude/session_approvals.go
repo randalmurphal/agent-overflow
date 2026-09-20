@@ -199,11 +199,11 @@ func (s *Session) trackPendingApprovalWithQuestions(requestID string, resolveKin
 // clearPendingApprovals resolves every outstanding interactive request
 // with a "lost" decision and latches the registry shut.
 //
-// "lost" is the session-ended-mid-prompt signal triage maps to
-// status=errored (internal/triage/approvals.go). It is deliberately a
-// different word from the "cancel" the control_cancel_request handler emits:
-// that one means the CLI abandoned the request after an interrupt while the
-// session lives on, this one means the session is going away.
+// "lost" is the prompt-never-answered signal triage maps to status=errored
+// (internal/triage/approvals.go), and the only such word the item row's
+// decision column accepts. The control_cancel_request handler resolves with
+// the same word: whether the CLI abandoned the request after an interrupt
+// or the session is going away, the tool did not run.
 //
 // Claude writes nothing back to the CLI here — unlike codex, whose drain
 // releases the app-server's in-flight server request. A Claude session is
@@ -313,12 +313,11 @@ func (s *Session) handleExitPlanModeRequest(raw controlRequestEnvelope) (bool, e
 // matching pending approval / user-input state without writing a
 // control_response.
 //
-// The cancellation payload mirrors t3-code's AbortSignal handlers:
-// pending approvals resolve as `decision: "cancel"` (matching
-// ClaudeAdapter.ts:2764 — "User cancelled tool execution."), pending
-// user-inputs resolve with empty `answers: {}` (matching
-// ClaudeAdapter.ts:2612). The frontend panel listens for the matching
-// EventApprovalResolved / EventUserInputResolved kind and clears.
+// Pending approvals resolve as `decision: "lost"`, pending user-inputs
+// with empty `answers: {}`. The frontend panel listens for the matching
+// EventApprovalResolved / EventUserInputResolved kind and clears; triage
+// marks the tool row errored, which the interrupt's own bookkeeping has
+// usually done already.
 func (s *Session) handleControlCancelRequestLine(line []byte) {
 	var raw struct {
 		Type      string `json:"type"`
@@ -353,7 +352,7 @@ func (s *Session) cancelPendingApproval(requestID string) {
 		Kind:      released.ResolveKind,
 		ThreadID:  s.threadID,
 		ItemID:    released.RequestID,
-		Meta:      released.Meta("cancel"),
+		Meta:      released.Meta("lost"),
 		Timestamp: time.Now(),
 	})
 }

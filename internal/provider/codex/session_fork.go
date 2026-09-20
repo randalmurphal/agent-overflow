@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Fork asks the Codex app-server to create a full-history fork of the
@@ -64,20 +65,81 @@ func (s *Session) Fork(ctx context.Context) (string, error) {
 // kept turns we asked to drop (or vice versa), and building local truncation on
 // top of that is worse than failing the whole operation.
 func (s *Session) ForkAt(ctx context.Context, lastTurnID string) (string, error) {
+	// A fork is a new thread and resolves developer instructions from
+	// config like any cold start, so the composed value has to ride the
+	// request or the child loses it.
+	return forkThreadWith(ctx, s.sendRequest, s.rootThreadID(), lastTurnID, s.developerInstructionsValue())
+}
+
+// rpcCaller is one JSON-RPC request over some app-server connection. A
+// session's sendRequest and a one-shot client's request both have this shape,
+// which is what lets the fork cut run over either.
+type rpcCaller func(ctx context.Context, method string, params any) (json.RawMessage, error)
+
+// ForkSpec describes a fork cut over a throwaway app-server that loads no
+// thread.
+type ForkSpec struct {
+	// Binary is the codex CLI path. Empty falls back to "codex" on PATH.
+	Binary string
+	// WorkDir is the source thread's workspace: the app-server resolves
+	// project configuration from its cwd.
+	WorkDir string
+	// Env is the per-provider environment for the spawned process.
+	Env map[string]string
+	// SourceThreadID is the provider thread to fork.
+	SourceThreadID string
+	// LastTurnID is the inclusive cut; empty forks the full history.
+	LastTurnID string
+}
+
+// ForkThread cuts a fork of SourceThreadID over a threadless app-server and
+// returns the new provider thread id.
+//
+// This is the only way a fork may be cut, live source or not. `thread/fork`
+// reads its source from the thread store, so it needs neither the source
+// loaded nor the source's writer, but it LOADS THE CHILD into the process
+// that answered: the child's live recorder, and with it the child's
+// cross-process writer lock, belong to that app-server until it exits. A
+// fork issued through the source's live session would therefore leave the
+// child open in the source's process, and the child's own first start would
+// be refused as "open in another Codex process". The throwaway process
+// here exits with the cut, which releases the child.
+//
+// The child's developer instructions are not composed here: its own first
+// resume carries the app's composed value like every session start does.
+func ForkThread(ctx context.Context, spec ForkSpec) (string, error) {
+	if strings.TrimSpace(spec.SourceThreadID) == "" {
+		return "", fmt.Errorf("codex: thread/fork: source thread id is required")
+	}
+	client, err := startOneshotClient(ctx, oneshotSpec{
+		Binary:     spec.Binary,
+		WorkDir:    spec.WorkDir,
+		Env:        spec.Env,
+		ClientName: "agent-overflow-fork",
+		Label:      "thread fork",
+	})
+	if err != nil {
+		return "", err
+	}
+	defer client.close()
+	return forkThreadWith(ctx, client.request, spec.SourceThreadID, spec.LastTurnID, "")
+}
+
+// forkThreadWith is the cut itself: the request, the response check and,
+// for an anchored fork, the tail validation, over whichever connection the
+// caller holds.
+func forkThreadWith(ctx context.Context, call rpcCaller, sourceThreadID, lastTurnID, developerInstructions string) (string, error) {
 	params := map[string]any{
-		"threadId":     s.rootThreadID(),
+		"threadId":     sourceThreadID,
 		"excludeTurns": true,
 	}
 	if lastTurnID != "" {
 		params["lastTurnId"] = lastTurnID
 	}
-	// A fork is a new thread and resolves developer instructions from
-	// config like any cold start, so the composed value has to ride the
-	// request or the child loses it.
-	if instructions := s.developerInstructionsValue(); instructions != "" {
-		params["developerInstructions"] = instructions
+	if developerInstructions != "" {
+		params["developerInstructions"] = developerInstructions
 	}
-	resp, err := s.sendRequest(ctx, "thread/fork", params)
+	resp, err := call(ctx, "thread/fork", params)
 	if err != nil {
 		return "", fmt.Errorf("codex: thread/fork: %w", classifyThreadWriterConflict(err))
 	}
@@ -86,7 +148,7 @@ func (s *Session) ForkAt(ctx context.Context, lastTurnID string) (string, error)
 		return "", fmt.Errorf("codex: thread/fork: %w", err)
 	}
 	if lastTurnID != "" {
-		newestTurnID, err := s.newestThreadTurnID(ctx, forked.ThreadID)
+		newestTurnID, err := newestThreadTurnIDWith(ctx, call, forked.ThreadID)
 		if err != nil {
 			return "", fmt.Errorf("codex: thread/fork: validate fork %s tail: %w", forked.ThreadID, err)
 		}

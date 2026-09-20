@@ -525,7 +525,7 @@ func TestForkThreadCodexAnchoredForkRefusesTheInFlightTurn(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 	if _, err := app.settings.Update(map[string]any{
-		"codexBinaryPath": writeCodexForkBinary(t, "resume-provider-thread", "fork-provider-thread"),
+		"codexBinaryPath": writeCodexForkBinary(t, "resume-provider-thread", "fork-provider-thread", ""),
 	}); err != nil {
 		t.Fatalf("settings Update: %v", err)
 	}

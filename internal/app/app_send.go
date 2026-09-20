@@ -641,6 +641,14 @@ func (a *App) sendMessageLocked(
 		opts.onUserMessageReady(userItem)
 		a.emit(eventchan.ProviderItemEvent, triage.NewItemStreamUpsert(userItem))
 	}
+	if !hasPriorItems {
+		// The first item admits the row to the sidebar list and flips its
+		// derived isDraft, and nothing else on this path re-sends the row: a
+		// send the user did not make from this screen (an agent's spawn, a
+		// queued dispatch, a workflow) would otherwise keep the draft icon in
+		// every sidebar, or never reach one that had not listed the draft.
+		a.broadcastThreadRowByIDAs(triage.ThreadActionListed, threadID)
+	}
 	if !opts.PreserveDraft {
 		// Attributed to the screen that sent: it has already cleared its
 		// composer, and an anonymous frame would make it re-read the row it

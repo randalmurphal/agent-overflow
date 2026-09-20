@@ -22,6 +22,18 @@ func (s *Session) threadTurnIDsPage(
 	cursor string,
 	limit int,
 ) (threadTurnIDPage, error) {
+	return threadTurnIDsPageWith(ctx, s.sendRequest, threadID, cursor, limit)
+}
+
+// threadTurnIDsPageWith is threadTurnIDsPage over any app-server connection:
+// a session's, or the threadless one a fork is cut on (ForkThread).
+func threadTurnIDsPageWith(
+	ctx context.Context,
+	call rpcCaller,
+	threadID string,
+	cursor string,
+	limit int,
+) (threadTurnIDPage, error) {
 	threadID = strings.TrimSpace(threadID)
 	if threadID == "" {
 		return threadTurnIDPage{}, fmt.Errorf("codex: %s: thread id is required", threadTurnsListMethod)
@@ -38,7 +50,7 @@ func (s *Session) threadTurnIDsPage(
 	if cursor != "" {
 		params["cursor"] = cursor
 	}
-	resp, err := s.sendRequest(ctx, threadTurnsListMethod, params)
+	resp, err := call(ctx, threadTurnsListMethod, params)
 	if err != nil {
 		return threadTurnIDPage{}, fmt.Errorf("codex: %s: %w", threadTurnsListMethod, err)
 	}
@@ -70,7 +82,11 @@ func (s *Session) threadTurnIDsPage(
 }
 
 func (s *Session) newestThreadTurnID(ctx context.Context, threadID string) (string, error) {
-	page, err := s.threadTurnIDsPage(ctx, threadID, "", 1)
+	return newestThreadTurnIDWith(ctx, s.sendRequest, threadID)
+}
+
+func newestThreadTurnIDWith(ctx context.Context, call rpcCaller, threadID string) (string, error) {
+	page, err := threadTurnIDsPageWith(ctx, call, threadID, "", 1)
 	if err != nil {
 		return "", err
 	}
