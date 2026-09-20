@@ -180,10 +180,20 @@ func TestSpawnWorktreeIsABranchName(t *testing.T) {
 			t.Errorf("paired=%v: worktree is %v, want a branch name string", shape.Paired(), worktree["type"])
 		}
 		description, _ := worktree["description"].(string)
-		for _, want := range []string{"Branch name", "draft-worktree path", "project_id"} {
+		for _, want := range []string{"Branch name", "starts from base", "origin's head", "project_id"} {
 			if !strings.Contains(description, want) {
 				t.Errorf("paired=%v: the worktree description does not say %q: %q", shape.Paired(), want, description)
 			}
+		}
+		// The base is chosen by name and by side: origin's head unless
+		// base_local asks for this computer's.
+		base, _ := properties["base"].(map[string]any)
+		if base["type"] != "string" {
+			t.Errorf("paired=%v: base = %v, want a branch name string", shape.Paired(), base)
+		}
+		baseLocal, _ := properties["base_local"].(map[string]any)
+		if baseLocal["type"] != "boolean" {
+			t.Errorf("paired=%v: base_local = %v, want a boolean", shape.Paired(), baseLocal)
 		}
 		if _, present := properties["branch"]; present {
 			t.Errorf("paired=%v: thread_spawn still carries a separate branch parameter", shape.Paired())

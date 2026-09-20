@@ -239,9 +239,13 @@ a request token. Locally it inherits the caller's project, workspace,
 provider, model, effort, mode, and runtime mode; each has an override
 param, plus `title`. `worktree` (optional branch name) creates a fresh
 worktree through the existing draft-worktree path instead of inheriting
-the workspace; that path cuts from the project's current branch as
-origin has it, so unpushed local commits are not in the worktree, and
-the parameter says so. `group` (optional name) puts the new thread in
+the workspace. `base` names the branch it starts from, default the
+project's current branch; the cut starts from origin's head of that
+branch after a fetch, so unpushed local commits are not in the
+worktree, unless `base_local` asks for the local head with no fetch.
+A `base` the project has neither locally nor on origin (or, with
+`base_local`, not locally) is refused before a request exists, through
+`git.Core.BaseBranchKnown`. `group` (optional name) puts the new thread in
 that sidebar group inside its own project, creating the group when it
 does not exist, through the same organize patch `thread_update` uses;
 a fork's group lives in its source's project. `from_thread` forks that thread's history at its tail
@@ -297,7 +301,10 @@ to the model on both providers, so an ephemeral thread never waits on a
 human. Codex runs commands in a read-only sandbox; Claude Code's
 `dontAsk` mode refuses every shell command as well as every write, so a
 read-only Claude thread reads with its own file tools and cannot run
-git. If it needed a write to answer, it says so in its reply.
+git, build, test or grep. If it needed a write to answer, it says so in
+its reply. That is why the guide, the `runtime_mode` parameter and the
+`thread_options` meaning all discourage it for spawns: it is only for
+work that needs nothing but reading files, never a cautious default.
 
 A remote target is forked on its own computer, with that computer's
 provider account and session files, and runs there. The scratch thread
@@ -435,7 +442,8 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 >
 > Starting work. `thread_spawn` opens a new visible thread and runs
 > your `prompt` there; `from_thread` gives it an existing thread's
-> history first, `worktree` cuts it a fresh checkout on that branch, and
+> history first, `worktree` cuts it a fresh checkout on that branch,
+> starting from `base` (origin's head of it unless `base_local`), and
 > `group` files it in a sidebar group beside the threads of one sweep.
 > `thread_send` continues an existing thread as if the
 > user typed your `message`, queued after its current turn. `thread_ask`
@@ -452,7 +460,9 @@ The text, maintained beside the tool schemas in `internal/threadtools`:
 > yours. Use `thread_options` when you want another provider, model,
 > project, workspace or computer: it lists what exists, with the
 > defaults marked. Choose a different runtime mode only when the task
-> requires it; `thread_ask` selects its own.
+> requires it, and `read-only` only for work that needs nothing but
+> reading files, since it blocks every shell command on Claude Code;
+> `thread_ask` selects its own.
 >
 > Waiting. Spawn and send return at once unless you pass
 > `wait_seconds` (up to 900); ask waits 300 seconds. `wait_seconds` is

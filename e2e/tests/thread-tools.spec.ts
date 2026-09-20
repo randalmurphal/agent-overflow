@@ -1967,6 +1967,9 @@ test('thread_spawn cuts a worktree and forks an existing thread when asked to', 
                   prompt: 'Try the lock-free version on a branch of your own.',
                   title: 'Worktree work',
                   worktree: 'agent/experiment',
+                  // The local head of the current branch, no fetch: the
+                  // harness project has no origin to fetch from.
+                  base_local: true,
                   group: 'Approaches',
                   wait_seconds: 0,
                 },

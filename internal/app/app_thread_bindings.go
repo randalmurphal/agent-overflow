@@ -38,6 +38,8 @@ type CreateThreadOptions struct {
 	AutoCompactExtendedPercent *int   `json:"autoCompactExtendedPercent,omitempty"` // nil = latest model profile compact setting
 	RuntimeMode                string `json:"runtimeMode,omitempty"`                // empty = latest model profile runtime mode
 	WorktreeBranch             string `json:"worktreeBranch,omitempty"`             // empty = no worktree
+	WorktreeBase               string `json:"worktreeBase,omitempty"`               // empty = the project's current branch; only with WorktreeBranch
+	WorktreeBaseLocal          bool   `json:"worktreeBaseLocal,omitempty"`          // true = local head of WorktreeBase, no fetch
 	WorkspaceOverride          string `json:"workspaceOverride,omitempty"`          // empty = project.path
 	WorktreePath               string `json:"worktreePath,omitempty"`               // non-empty = inherit existing worktree, skip git ops
 	Branch                     string `json:"branch,omitempty"`                     // non-empty = use directly, skip currentGitBranch lookup
@@ -130,6 +132,8 @@ func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store
 		AutoCompactExtendedPercent: opts.AutoCompactExtendedPercent,
 		RuntimeMode:                opts.RuntimeMode,
 		WorktreeBranch:             opts.WorktreeBranch,
+		WorktreeBase:               opts.WorktreeBase,
+		WorktreeBaseLocal:          opts.WorktreeBaseLocal,
 		WorkspaceOverride:          opts.WorkspaceOverride,
 		WorktreePath:               opts.WorktreePath,
 		Branch:                     opts.Branch,

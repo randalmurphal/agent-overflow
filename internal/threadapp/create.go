@@ -30,9 +30,14 @@ type CreateOptions struct {
 	AutoCompactExtendedPercent *int
 	RuntimeMode                string
 	WorktreeBranch             string
-	WorkspaceOverride          string
-	WorktreePath               string
-	Branch                     string
+	// WorktreeBase is the branch WorktreeBranch starts from; empty means
+	// the project's current branch. WorktreeBaseLocal starts from its local
+	// head with no fetch instead of origin's head.
+	WorktreeBase      string
+	WorktreeBaseLocal bool
+	WorkspaceOverride string
+	WorktreePath      string
+	Branch            string
 	// CreatedByDevice names the screen this call came from, or "" when the
 	// backend created the thread on its own behalf. Root reads it off the
 	// connection; this package only records it.
@@ -213,7 +218,11 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 			return store.Thread{}, fmt.Errorf("create thread: worktree: workspace resolver unavailable")
 		}
 		path, resolvedBranch, createErr := s.deps.Workspace.CreateWorktree(
-			s.deps.LifeContext(), project.Path, strings.TrimSpace(opts.WorktreeBranch),
+			s.deps.LifeContext(), project.Path, WorktreeCut{
+				Branch:    strings.TrimSpace(opts.WorktreeBranch),
+				Base:      strings.TrimSpace(opts.WorktreeBase),
+				BaseLocal: opts.WorktreeBaseLocal,
+			},
 		)
 		if createErr != nil {
 			return store.Thread{}, fmt.Errorf("create thread: worktree: %w", createErr)

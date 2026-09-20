@@ -257,7 +257,7 @@ func runtimeModeEnum() []string {
 }
 
 var runtimeModeMeanings = map[provider.RuntimeMode]string{
-	provider.RuntimeReadOnly:         "never asks a person, so unattended work keeps moving: Codex runs commands in a read-only sandbox, while Claude Code refuses every shell command and every write, so a Claude thread here reads files with its own tools and cannot run git",
+	provider.RuntimeReadOnly:         "is only for work that needs nothing but reading, and blocks much more than writes: Claude Code refuses every shell command, so no git, build, test or search command runs, and Codex runs commands in a read-only sandbox. It never asks a person, so unattended reading keeps moving. Never pick it for caution: a thread that turns out to need a command or a write fails at it",
 	provider.RuntimeApprovalRequired: "asks the user before every tool use",
 	provider.RuntimeAutoAcceptEdits:  "applies file edits in the workspace without asking but still asks for shell commands",
 	provider.RuntimeAuto:             "lets a model-based reviewer approve or deny each sensitive tool use instead of the user",

@@ -29,6 +29,8 @@ type spawnArgs struct {
 	ProjectID     string `json:"project_id"`
 	WorkspacePath string `json:"workspace_path"`
 	Worktree      string `json:"worktree"`
+	Base          string `json:"base"`
+	BaseLocal     bool   `json:"base_local"`
 	Group         string `json:"group"`
 	Provider      string `json:"provider"`
 	Model         string `json:"model"`
@@ -84,19 +86,21 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	call := SpawnCall{
-		Prompt:         trim(args.Prompt),
-		Title:          trim(args.Title),
-		ComputerID:     trim(args.ComputerID),
-		ProjectID:      trim(args.ProjectID),
-		WorkspacePath:  trim(args.WorkspacePath),
-		WorktreeBranch: trim(args.Worktree),
-		Group:          trim(args.Group),
-		Provider:       trim(args.Provider),
-		Model:          trim(args.Model),
-		Effort:         trim(args.Effort),
-		Mode:           trim(args.Mode),
-		RuntimeMode:    trim(args.RuntimeMode),
-		Notify:         args.Notify,
+		Prompt:            trim(args.Prompt),
+		Title:             trim(args.Title),
+		ComputerID:        trim(args.ComputerID),
+		ProjectID:         trim(args.ProjectID),
+		WorkspacePath:     trim(args.WorkspacePath),
+		WorktreeBranch:    trim(args.Worktree),
+		WorktreeBase:      trim(args.Base),
+		WorktreeBaseLocal: args.BaseLocal,
+		Group:             trim(args.Group),
+		Provider:          trim(args.Provider),
+		Model:             trim(args.Model),
+		Effort:            trim(args.Effort),
+		Mode:              trim(args.Mode),
+		RuntimeMode:       trim(args.RuntimeMode),
+		Notify:            args.Notify,
 	}
 	if err := checkText(call.Prompt, "prompt"); err != nil {
 		return nil, err
@@ -115,6 +119,9 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 	}
 	if call.WorktreeBranch != "" && call.WorkspacePath != "" {
 		return nil, invalidf("Pass either workspace_path to run in an existing checkout or worktree to cut a fresh one on that branch, not both.")
+	}
+	if call.WorktreeBranch == "" && (call.WorktreeBase != "" || call.WorktreeBaseLocal) {
+		return nil, invalidf("base and base_local describe the worktree that worktree cuts, so pass worktree with them.")
 	}
 	wait, err := waitSeconds(args.WaitSeconds, 0)
 	if err != nil {

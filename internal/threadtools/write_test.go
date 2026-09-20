@@ -18,7 +18,7 @@ func spawnApp() *fakeApp {
 // and what to do with it.
 func TestSpawnPassesThePromptAndSettingsThrough(t *testing.T) {
 	app := spawnApp()
-	result := call(t, New(app), localCaller(), "thread_spawn", `{"prompt":"port the parser","title":"Port","project_id":"p1","provider":"codex","model":"gpt-5","effort":"high","mode":"plan","runtime_mode":"read-only","worktree":"port","group":"Port sweep","wait_seconds":120,"notify":true}`)
+	result := call(t, New(app), localCaller(), "thread_spawn", `{"prompt":"port the parser","title":"Port","project_id":"p1","provider":"codex","model":"gpt-5","effort":"high","mode":"plan","runtime_mode":"read-only","worktree":"port","base":"release/2.4","base_local":true,"group":"Port sweep","wait_seconds":120,"notify":true}`)
 
 	if len(app.spawns) != 1 {
 		t.Fatalf("spawns = %v", app.spawns)
@@ -32,6 +32,9 @@ func TestSpawnPassesThePromptAndSettingsThrough(t *testing.T) {
 	}
 	if spawn.WorktreeBranch != "port" || spawn.Group != "Port sweep" || spawn.WaitSeconds != 120 || !spawn.Notify {
 		t.Fatalf("spawn = %+v", spawn)
+	}
+	if spawn.WorktreeBase != "release/2.4" || !spawn.WorktreeBaseLocal {
+		t.Fatalf("worktree base did not reach the app: %+v", spawn)
 	}
 	if result["token"] != "tok-1" || result["kind"] != "spawn" || result["outcome"] != OutcomeBackgrounded {
 		t.Fatalf("result = %v", result)
@@ -52,6 +55,8 @@ func TestSpawnValidatesEverythingItCan(t *testing.T) {
 		"bad runtime mode":      `{"prompt":"go","runtime_mode":"yolo"}`,
 		"workspace and tree":    `{"prompt":"go","workspace_path":"/src/x","worktree":"feature"}`,
 		"worktree not a string": `{"prompt":"go","worktree":true}`,
+		"base without worktree": `{"prompt":"go","base":"main"}`,
+		"base_local alone":      `{"prompt":"go","base_local":true}`,
 		"wait too long":         `{"prompt":"go","wait_seconds":100000}`,
 		"negative wait":         `{"prompt":"go","wait_seconds":-1}`,
 		"long title":            `{"prompt":"go","title":"` + strings.Repeat("t", MaxTitleRunes+1) + `"}`,

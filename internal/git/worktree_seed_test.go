@@ -328,3 +328,40 @@ func TestWorktreeSeedRejectsANonRepository(t *testing.T) {
 		t.Fatalf("fetch ran %d times outside a repository, want 0", got)
 	}
 }
+
+func TestBaseBranchKnownSeesLocalAndOriginBranches(t *testing.T) {
+	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	// A branch only origin has, fetched so the tracking ref exists here.
+	sibling := t.TempDir()
+	testutil.RunGit(t, sibling, "clone", bare, ".")
+	testutil.RunGit(t, sibling, "checkout", "-b", "release/2.4")
+	testutil.RunGit(t, sibling, "push", "origin", "release/2.4")
+	testutil.RunGit(t, repo, "fetch", "origin")
+	// A branch only this clone has.
+	testutil.RunGit(t, repo, "branch", "scratch")
+
+	core := NewCore()
+	for _, tc := range []struct {
+		branch    string
+		localOnly bool
+		want      bool
+	}{
+		{"main", false, true},
+		{"main", true, true},
+		{"release/2.4", false, true},
+		{"release/2.4", true, false},
+		{"scratch", true, true},
+		{"nowhere", false, false},
+	} {
+		got, err := core.BaseBranchKnown(repo, tc.branch, tc.localOnly)
+		if err != nil {
+			t.Fatalf("BaseBranchKnown(%q, localOnly=%v): %v", tc.branch, tc.localOnly, err)
+		}
+		if got != tc.want {
+			t.Errorf("BaseBranchKnown(%q, localOnly=%v) = %v, want %v", tc.branch, tc.localOnly, got, tc.want)
+		}
+	}
+	if _, err := core.BaseBranchKnown(repo, "--output=/tmp/x", false); err == nil {
+		t.Fatal("a flag-shaped base was accepted")
+	}
+}

@@ -86,14 +86,26 @@ func (p threadWorkspacePort) FindWorktree(projectPath, candidate string) (string
 
 func (p threadWorkspacePort) CreateWorktree(
 	ctx context.Context,
-	projectPath, branch string,
+	projectPath string,
+	cut threadapp.WorktreeCut,
 ) (string, string, error) {
-	resolvedBranch := p.app.resolveWorktreeBranch(branch)
+	resolvedBranch := p.app.resolveWorktreeBranch(cut.Branch)
 	worktreePath, err := p.app.defaultWorktreePath(projectPath, resolvedBranch)
 	if err != nil {
 		return "", "", err
 	}
-	baseBranch := p.app.gitCore().CurrentBranch(projectPath)
+	baseBranch := strings.TrimSpace(cut.Base)
+	if baseBranch == "" {
+		baseBranch = p.app.gitCore().CurrentBranch(projectPath)
+	}
+	if cut.BaseLocal {
+		// The caller asked for this computer's head of the base, unpushed
+		// commits included, so origin is not consulted at all.
+		if err := p.app.gitCore().CreateWorktreeFromBranch(projectPath, worktreePath, baseBranch, resolvedBranch); err != nil {
+			return "", "", err
+		}
+		return worktreePath, resolvedBranch, nil
+	}
 	if err := p.app.cutWorktreeFromFreshBase(ctx, projectPath, worktreePath, baseBranch, resolvedBranch); err != nil {
 		return "", "", err
 	}

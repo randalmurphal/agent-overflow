@@ -1056,6 +1056,33 @@ func threadToolsModelSlugs(models []threadtools.ModelOption) []string {
 	return slugs
 }
 
+// checkSpawnWorktreeBase refuses a named base the project does not have
+// before the request exists, naming what would have worked. A base that is
+// only on origin cannot seed a base_local cut, so that case is refused too.
+func (t threadToolsApp) checkSpawnWorktreeBase(projectID string, call threadtools.SpawnCall) error {
+	if call.WorktreeBase == "" {
+		return nil
+	}
+	project, err := t.app.store.GetProject(projectID)
+	if err != nil {
+		return err
+	}
+	known, err := t.app.gitCore().BaseBranchKnown(project.Path, call.WorktreeBase, call.WorktreeBaseLocal)
+	if err != nil {
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("base %q cannot be used: %v", call.WorktreeBase, err), err)
+	}
+	if known {
+		return nil
+	}
+	if call.WorktreeBaseLocal {
+		return errorsx.Public(threadtools.CodeInvalidRequest,
+			fmt.Sprintf("This computer has no local branch %q to start from. Omit base_local to start from origin's head of it, or name a local branch.", call.WorktreeBase), nil)
+	}
+	return errorsx.Public(threadtools.CodeInvalidRequest,
+		fmt.Sprintf("Neither this computer nor origin has a branch %q as of the last fetch. Name an existing branch as base.", call.WorktreeBase), nil)
+}
+
 // applySpawnWorkspace picks the checkout the new thread runs in: a fresh
 // worktree on a named branch, a named checkout of the project, or the
 // caller's own.
@@ -1065,7 +1092,9 @@ func (t threadToolsApp) applySpawnWorkspace(opts *CreateThreadOptions, caller st
 		// records its path and branch. Nothing here may name a path as well,
 		// or the two would describe different checkouts.
 		opts.WorktreeBranch = call.WorktreeBranch
-		return nil
+		opts.WorktreeBase = call.WorktreeBase
+		opts.WorktreeBaseLocal = call.WorktreeBaseLocal
+		return t.checkSpawnWorktreeBase(opts.ProjectID, call)
 	}
 	if call.WorkspacePath != "" {
 		projects, err := t.projectOptions(opts.ProjectID)

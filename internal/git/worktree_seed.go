@@ -153,6 +153,26 @@ func (c *Core) fetchOriginForSeed(ctx context.Context, cwd string) (bool, error)
 	}
 }
 
+// BaseBranchKnown reports whether branch can seed a worktree cut: as a
+// local branch, or, unless localOnly, as origin's tracking ref from the
+// last fetch. It is a pre-flight check so a caller can refuse a base by
+// name before anything durable exists; the cut itself still validates.
+func (c *Core) BaseBranchKnown(cwd, branch string, localOnly bool) (bool, error) {
+	branch = strings.TrimSpace(branch)
+	if err := validateBranchName(branch); err != nil {
+		return false, err
+	}
+	local, err := c.branchExistsChecked(cwd, branch)
+	if err != nil {
+		return false, err
+	}
+	if local || localOnly {
+		return local, nil
+	}
+	_, remote := c.originTrackingRef(cwd, branch)
+	return remote, nil
+}
+
 // originTrackingRef reports origin's tracking ref for branch
 // ("origin/<branch>") when it exists as a commit. The lookup is
 // fully-qualified (`refs/remotes/...`) so a local branch or tag of the same

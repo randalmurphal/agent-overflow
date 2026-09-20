@@ -902,6 +902,80 @@ func TestThreadRequestsAreScopedToTheirCaller(t *testing.T) {
 	}
 }
 
+// TestThreadSpawnCutsAWorktreeFromTheBaseItIsGiven: base names the branch
+// the worktree starts from, origin's head of it by default so the thread
+// works on what was pushed, and the local head with base_local so unpushed
+// commits are in it. A base the project does not have is refused before a
+// request exists.
+func TestThreadSpawnCutsAWorktreeFromTheBaseItIsGiven(t *testing.T) {
+	repo, bare := testutil.InitGitRepoWithOrigin(t)
+	// A release branch origin has and this clone does not, and a local
+	// commit on main that is not pushed.
+	sibling := t.TempDir()
+	testutil.RunGit(t, sibling, "clone", bare, ".")
+	testutil.RunGit(t, sibling, "checkout", "-b", "release/2.4")
+	testutil.RunGit(t, sibling, "push", "origin", "release/2.4")
+	releaseTip := gitRevParse(t, sibling, "HEAD")
+	writeFile(t, repo, "unpushed.txt", "local only\n")
+	runGit(t, repo, "add", "unpushed.txt")
+	runGit(t, repo, "commit", "-m", "unpushed")
+	localMain := gitRevParse(t, repo, "main")
+	originMain := gitRevParse(t, repo, "origin/main")
+
+	f := newRequestFixtureIn(t, repo)
+	f.mockClaude(t, "on it")
+	spawnAt := func(call threadtools.SpawnCall) store.Thread {
+		t.Helper()
+		ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), call)
+		if err != nil {
+			t.Fatalf("Spawn(%+v): %v", call, err)
+		}
+		spawned, err := f.app.store.GetThread(ack.ThreadID)
+		if err != nil {
+			t.Fatalf("GetThread: %v", err)
+		}
+		if spawned.WorktreePath == "" {
+			t.Fatalf("spawn %+v cut no worktree", call)
+		}
+		return spawned
+	}
+
+	fromOrigin := spawnAt(threadtools.SpawnCall{Prompt: "review", WorktreeBranch: "review-main", WorktreeBase: "main"})
+	if head := gitRevParse(t, fromOrigin.WorktreePath, "HEAD"); head != originMain {
+		t.Errorf("base main starts at %s, want origin's head %s (local main is %s)", head, originMain, localMain)
+	}
+	fromLocal := spawnAt(threadtools.SpawnCall{Prompt: "review", WorktreeBranch: "review-local", WorktreeBase: "main", WorktreeBaseLocal: true})
+	if head := gitRevParse(t, fromLocal.WorktreePath, "HEAD"); head != localMain {
+		t.Errorf("base_local main starts at %s, want the local head %s", head, localMain)
+	}
+	fromRelease := spawnAt(threadtools.SpawnCall{Prompt: "review", WorktreeBranch: "review-release", WorktreeBase: "release/2.4"})
+	if head := gitRevParse(t, fromRelease.WorktreePath, "HEAD"); head != releaseTip {
+		t.Errorf("base release/2.4 starts at %s, want origin's %s", head, releaseTip)
+	}
+
+	countRequests := func() int {
+		rows, err := f.app.store.ListThreadRequestsByCaller(f.caller.ID, 100, 0)
+		if err != nil {
+			t.Fatalf("ListThreadRequestsByCaller: %v", err)
+		}
+		return len(rows)
+	}
+	before := countRequests()
+	for name, call := range map[string]threadtools.SpawnCall{
+		"unknown base":           {Prompt: "x", WorktreeBranch: "b", WorktreeBase: "nowhere"},
+		"origin-only base local": {Prompt: "x", WorktreeBranch: "b", WorktreeBase: "release/2.4", WorktreeBaseLocal: true},
+		"flag-shaped base":       {Prompt: "x", WorktreeBranch: "b", WorktreeBase: "--output=x"},
+	} {
+		_, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), call)
+		if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
+			t.Errorf("%s: code = %q (%v), want invalid request", name, code, err)
+		}
+	}
+	if after := countRequests(); after != before {
+		t.Errorf("refused spawns left %d request rows behind", after-before)
+	}
+}
+
 // TestThreadSpawnOverridesWhatItIsToldAndCutsAWorktree covers the five
 // inherited settings, the refusal a bad one earns, and the worktree door: a
 // spawn that names a branch gets a fresh checkout of the caller's project.

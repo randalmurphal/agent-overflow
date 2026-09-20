@@ -32,7 +32,15 @@ func spawnSchema(shape Shape) map[string]any {
 		},
 		"worktree": map[string]any{
 			"type":        "string",
-			"description": "Branch name of a fresh worktree to run in instead of an existing checkout. The worktree is cut from the project through the same draft-worktree path the sidebar's new-worktree draft uses: from the project's current branch as origin has it, or from the local branch when origin cannot be reached, so local commits not yet pushed are not in it. On another computer it is cut from project_id's repository there. Pass workspace_path or worktree, not both.",
+			"description": "Branch name of a fresh worktree to run in instead of an existing checkout. The new branch starts from base, or from the project's current branch when base is omitted: from origin's head of that branch after a fetch, or from the local head when origin cannot be reached or does not have it. On another computer it is cut from project_id's repository there. Pass workspace_path or worktree, not both.",
+		},
+		"base": map[string]any{
+			"type":        "string",
+			"description": "Branch the worktree starts from, for example main or release/2.4. Omit to start from the project's current branch. Only with worktree. Use it to review or continue an existing branch: name that branch here and give worktree a new name.",
+		},
+		"base_local": map[string]any{
+			"type":        "boolean",
+			"description": "Start from the local head of base instead of origin's, with no fetch: commits on this computer that are not pushed yet are then in the worktree. Only with worktree. Default false, which starts from origin's head so the thread works on what was pushed.",
 		},
 		"group": map[string]any{
 			"type":        "string",
@@ -59,7 +67,7 @@ func spawnSchema(shape Shape) map[string]any {
 		"runtime_mode": map[string]any{
 			"type":        "string",
 			"enum":        runtimeModeEnum(),
-			"description": spawnDefaultText("Permission level of the new thread, a separate axis from mode", defaults.RuntimeMode) + " " + runtimeModeSentence() + ".",
+			"description": spawnDefaultText("Permission level of the new thread, a separate axis from mode", defaults.RuntimeMode) + " Keep the inherited one unless the task needs another. " + runtimeModeSentence() + ".",
 		},
 	}
 	waitProperties(properties, 0, "the new thread to answer")

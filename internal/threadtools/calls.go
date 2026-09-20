@@ -22,6 +22,13 @@ type SpawnCall struct {
 	// same draft-worktree path the sidebar uses. Empty means no worktree,
 	// so there is no worktree without a branch name.
 	WorktreeBranch string `json:"worktree_branch,omitempty"`
+	// WorktreeBase names the branch the worktree starts from. Empty means
+	// the project's current branch. WorktreeBaseLocal cuts from the local
+	// head of that branch with no fetch; otherwise the cut fetches origin
+	// and starts from origin's head of it, falling back to the local head
+	// when origin cannot be reached. Both are only set with WorktreeBranch.
+	WorktreeBase      string `json:"worktree_base,omitempty"`
+	WorktreeBaseLocal bool   `json:"worktree_base_local,omitempty"`
 	// Group is a sidebar group NAME inside the new thread's own project,
 	// created there when it does not exist. Empty leaves the thread
 	// ungrouped.

@@ -60,7 +60,7 @@ func (w testWorkspace) ObserveOrigin(string) store.ThreadOrigin { return w.origi
 func (w testWorkspace) FindWorktree(string, string) (string, string, bool, error) {
 	return w.findPath, w.findBranch, w.findPath != "", nil
 }
-func (w testWorkspace) CreateWorktree(context.Context, string, string) (string, string, error) {
+func (w testWorkspace) CreateWorktree(context.Context, string, WorktreeCut) (string, string, error) {
 	return w.createPath, w.createBranch, nil
 }
 

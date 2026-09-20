@@ -103,13 +103,17 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
    of it:
 
    > Defaults. A spawn inherits your provider, model, effort, and
-   > runtime mode. Keep them unless the task needs something else: a
-   > different provider or model for a second opinion, or `read-only`
-   > when the work is certainly reading and nothing more. Do not choose
-   > `read-only` "to be safe"; a thread that needs to write and cannot
-   > will fail and tell you so. `thread_ask` is always read-only and
-   > needs no choice. `thread_options` lists what a computer offers
-   > when you need something you do not have.
+   > runtime mode. Keep them unless the task needs something else, such
+   > as a different provider or model for a second opinion. `read-only`
+   > is the exception, not the safe choice: it blocks every shell
+   > command on Claude Code, so no git, build, test or grep, and
+   > sandboxes commands on Codex. Choose it only when the work needs
+   > nothing but reading files; a review that runs tests, a thread that
+   > commits or a thread that searches with a command needs the
+   > inherited mode. A read-only thread that turns out to need a command
+   > fails at it and tells you so. `thread_ask` is always read-only and
+   > needs no choice. `thread_options` lists what a computer offers when
+   > you need something you do not have.
 
 12. **The footers and wake texts are fixed templates.** Both ends read
    them, so they say where a message came from and what to do, in one

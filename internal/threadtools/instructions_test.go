@@ -113,9 +113,10 @@ func TestPairedInstructionsCarryTheOtherComputersParagraph(t *testing.T) {
 
 // TestInstructionsKeepTheDefaultsParagraphVerbatim: amendment 11's wording
 // is the point of the paragraph. Agents given a choice deliberate over it,
-// and this is the text that forbids the deliberation.
+// and this is the text that forbids the deliberation and names read-only
+// as the exception that blocks commands, not the cautious default.
 func TestInstructionsKeepTheDefaultsParagraphVerbatim(t *testing.T) {
-	want := "Defaults. A spawn inherits your provider, model, effort, and runtime mode. Keep them unless the task needs something else: a different provider or model for a second opinion, or `read-only` when the work is certainly reading and nothing more. Do not choose `read-only` \"to be safe\"; a thread that needs to write and cannot will fail and tell you so. `thread_ask` is always read-only and needs no choice. `thread_options` lists what a computer offers when you need something you do not have."
+	want := "Defaults. A spawn inherits your provider, model, effort, and runtime mode. Keep them unless the task needs something else, such as a different provider or model for a second opinion. `read-only` is the exception, not the safe choice: it blocks every shell command on Claude Code, so no git, build, test or grep, and sandboxes commands on Codex. Choose it only when the work needs nothing but reading files; a review that runs tests, a thread that commits or a thread that searches with a command needs the inherited mode. A read-only thread that turns out to need a command fails at it and tells you so. `thread_ask` is always read-only and needs no choice. `thread_options` lists what a computer offers when you need something you do not have."
 	for _, shape := range []Shape{soloShape(), pairedShape()} {
 		if !strings.Contains(instructionsFor(shape), want) {
 			t.Errorf("paired=%v: the Defaults paragraph is not the amendment 11 text", shape.Paired())
