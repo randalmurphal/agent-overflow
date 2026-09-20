@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"agent-overflow/internal/mcpargs"
 	"agent-overflow/internal/threadmcp"
 	"context"
 	"encoding/base64"
@@ -65,7 +66,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			URL    string `json:"url"`
 			PageID string `json:"page_id"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Open(ctx, access, a.URL, OpenOptions{PageID: a.PageID})
 		}
@@ -76,7 +77,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			Path   string `json:"path"`
 			PageID string `json:"page_id"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.OpenFile(ctx, access, a.Path, OpenOptions{PageID: a.PageID})
 		}
@@ -86,7 +87,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		var a struct {
 			PageID string `json:"page_id"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.SelectPage(ctx, access, a.PageID)
 		}
@@ -95,7 +96,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			PageID string `json:"page_id"`
 			Label  string `json:"label"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.LabelPage(ctx, access, a.PageID, a.Label)
 		}
@@ -103,7 +104,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		var a struct {
 			Name string `json:"name"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.NameSession(ctx, access, a.Name)
 		}
@@ -112,13 +113,13 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			Visible *bool  `json:"visible"`
 			PageID  string `json:"page_id"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Visibility(ctx, access, a.Visible, a.PageID)
 		}
 	case "browser_viewport":
 		var a ViewportOptions
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Viewport(ctx, access, a)
 		}
@@ -126,7 +127,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		var a struct {
 			PageID string `json:"page_id"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			err = s.controller.ClosePage(ctx, access, a.PageID)
 			result = map[string]any{"closed": err == nil}
@@ -135,7 +136,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		var a struct {
 			PageID string `json:"page_id"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Snapshot(ctx, access, a.PageID)
 		}
@@ -145,7 +146,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			FullPage bool      `json:"full_page"`
 			Clip     *ClipRect `json:"clip"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			var data []byte
 			data, err = s.controller.Screenshot(ctx, access, ScreenshotOptions{PageID: a.PageID, FullPage: a.FullPage, Clip: a.Clip})
@@ -159,25 +160,25 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			PageID   string `json:"page_id"`
 			Selector string `json:"selector"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Click(ctx, access, a.PageID, a.Selector)
 		}
 	case "browser_locator":
 		var a LocatorOptions
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Locator(ctx, access, a)
 		}
 	case "browser_pointer":
 		var a PointerOptions
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Pointer(ctx, access, a)
 		}
 	case "browser_dom":
 		var a DOMActionOptions
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.DOMAction(ctx, access, a)
 		}
@@ -188,7 +189,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			Text     string `json:"text"`
 			Clear    bool   `json:"clear"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Type(ctx, access, TypeOptions{PageID: a.PageID, Selector: a.Selector, Text: a.Text, Clear: a.Clear})
 		}
@@ -198,7 +199,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			Key    string   `json:"key"`
 			Keys   []string `json:"keys"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			key := strings.TrimSpace(a.Key)
 			if key == "" {
@@ -219,13 +220,13 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			X        float64 `json:"x"`
 			Y        float64 `json:"y"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Scroll(ctx, access, a.PageID, a.Selector, a.X, a.Y)
 		}
 	case "browser_wait":
 		var a WaitOptions
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.WaitAdvanced(ctx, access, a)
 		}
@@ -234,7 +235,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			PageID string `json:"page_id"`
 			Action string `json:"action"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.History(ctx, access, a.PageID, a.Action)
 		}
@@ -243,7 +244,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			PageID     string `json:"page_id"`
 			Expression string `json:"expression"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Evaluate(ctx, access, a.PageID, a.Expression)
 		}
@@ -254,7 +255,7 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 			Argument   json.RawMessage `json:"argument"`
 			TimeoutMS  int             `json:"timeout_ms"`
 		}
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			var timeout time.Duration
 			timeout, err = boundedTimeout(a.TimeoutMS)
@@ -268,25 +269,25 @@ func (s *MCPServer) handleToolCall(w http.ResponseWriter, ctx context.Context, r
 		}
 	case "browser_clipboard":
 		var a ClipboardOptions
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Clipboard(ctx, access, a)
 		}
 	case "browser_console_logs":
 		var a ConsoleOptions
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.ConsoleLogs(ctx, access, a)
 		}
 	case "browser_downloads":
 		var a DownloadOptions
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Downloads(ctx, access, a)
 		}
 	case "browser_assets":
 		var a AssetOptions
-		err = threadmcp.DecodeArgs(call.Arguments, &a)
+		err = mcpargs.Decode(call.Arguments, &a)
 		if err == nil {
 			result, err = s.controller.Assets(ctx, access, a)
 		}

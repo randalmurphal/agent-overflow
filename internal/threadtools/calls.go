@@ -168,26 +168,21 @@ const (
 	OutcomeUnconfirmed  = "unconfirmed"
 )
 
-// RequestAck is what a spawn, send, ask or remind returns.
+// Cancel effects, as reported to the model. They are the vocabulary of
+// CancelReport.Effect, shared with the App implementation that decides
+// which one happened.
+const (
+	EffectNothing         = "nothing_to_stop"
+	EffectQueuedRemoved   = "queued_message_removed"
+	EffectInterrupted     = "turn_interrupted"
+	EffectReminderDropped = "reminder_dropped"
+)
+
+// RequestAck is what a spawn, send, ask or remind returns: the request's
+// state as thread_status would report it, plus how the call itself ended.
 type RequestAck struct {
-	Token      string `json:"token"`
-	Kind       string `json:"kind,omitempty"`
-	ThreadID   string `json:"thread_id,omitempty"`
-	ComputerID string `json:"computer_id,omitempty"`
-	Computer   string `json:"computer,omitempty"`
-	Title      string `json:"title,omitempty"`
-	State      string `json:"state"`
-	Outcome    string `json:"outcome"`
-	AnswerKind string `json:"answer_kind,omitempty"`
-	Answer     string `json:"answer,omitempty"`
-	Revision   int64  `json:"revision"`
-	Notify     bool   `json:"notify"`
-	// Delivered is inline, queued or draft once a wake has been handed
-	// over, and empty while nothing has been delivered.
-	Delivered string `json:"delivered,omitempty"`
-	// ExpiresAt is when an uncollected answer is dropped on the computer
-	// that holds it, in Unix milliseconds.
-	ExpiresAt int64 `json:"expires_at,omitempty"`
+	RequestState
+	Outcome string `json:"outcome"`
 }
 
 // ReplyAck is what thread_reply returns.
@@ -229,8 +224,12 @@ type RequestState struct {
 	Answer     string `json:"answer,omitempty"`
 	Revision   int64  `json:"revision"`
 	Notify     bool   `json:"notify"`
-	Delivered  string `json:"delivered,omitempty"`
-	ExpiresAt  int64  `json:"expires_at,omitempty"`
+	// Delivered is inline, queued or draft once a wake has been handed
+	// over, and empty while nothing has been delivered.
+	Delivered string `json:"delivered,omitempty"`
+	// ExpiresAt is when an uncollected answer is dropped on the computer
+	// that holds it, in Unix milliseconds.
+	ExpiresAt int64 `json:"expires_at,omitempty"`
 	// DueAt is set for a reminder that has not fired.
 	DueAt int64 `json:"due_at,omitempty"`
 	// WakeQueued is true when a wake for this answer is already in the
@@ -263,8 +262,7 @@ type CancelReport struct {
 	ComputerID string `json:"computer_id,omitempty"`
 	Computer   string `json:"computer,omitempty"`
 	State      string `json:"state"`
-	// Effect says what actually happened: queued_message_removed,
-	// turn_interrupted, reminder_dropped or nothing_to_stop.
+	// Effect is one of the Effect constants above.
 	Effect string `json:"effect"`
 }
 

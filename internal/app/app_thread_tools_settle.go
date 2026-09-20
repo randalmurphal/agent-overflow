@@ -817,7 +817,7 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 		return "", err
 	}
 	if !found {
-		return threadCancelNothing, nil
+		return threadtools.EffectNothing, nil
 	}
 	state := receipt.State
 	// The door takes the settle lock for the settlement and releases it
@@ -840,7 +840,7 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 			return "", err
 		}
 		if removal == queueRemovalRemoved {
-			return threadCancelQueuedRemoved, nil
+			return threadtools.EffectQueuedRemoved, nil
 		}
 		// It is not on the queue any more: the dispatch claimed it while the
 		// cancel was running, or it reached the provider before the receipt
@@ -850,7 +850,7 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 	case store.ThreadReceiptRunning:
 		index, ok := threadRequestTurnIndex(receipt.TargetThreadID, receipt.TurnID)
 		if !ok {
-			return threadCancelNothing, nil
+			return threadtools.EffectNothing, nil
 		}
 		turn, found, err := a.store.GetTurnByThreadIndex(receipt.TargetThreadID, index)
 		if err != nil {
@@ -866,11 +866,11 @@ func (a *App) stopThreadRequestWork(ctx context.Context, token string) (string, 
 		// what stops it; on a thread that turns out to be idle it is a
 		// no-op.
 		if found && turn.CompletedAt != nil {
-			return threadCancelNothing, nil
+			return threadtools.EffectNothing, nil
 		}
 		return a.interruptRequestTurn(ctx, receipt.TargetThreadID, index)
 	}
-	return threadCancelNothing, nil
+	return threadtools.EffectNothing, nil
 }
 
 // interruptDispatchedRequest stops the turn a request's message started, for
@@ -885,7 +885,7 @@ func (a *App) interruptDispatchedRequest(ctx context.Context, threadID, sendID s
 	}
 	if !found || !record.dispatched {
 		// The message was never sent, or it was restored into the composer.
-		return threadCancelNothing, nil
+		return threadtools.EffectNothing, nil
 	}
 	return a.interruptRequestTurn(ctx, threadID, record.item.TurnIndex)
 }
@@ -898,9 +898,9 @@ func (a *App) interruptRequestTurn(ctx context.Context, threadID string, turnInd
 		return "", err
 	}
 	if !interrupted {
-		return threadCancelNothing, nil
+		return threadtools.EffectNothing, nil
 	}
-	return threadCancelInterrupted, nil
+	return threadtools.EffectInterrupted, nil
 }
 
 // Lifecycle: what happens to a request when one of its two threads goes

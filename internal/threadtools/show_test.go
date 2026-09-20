@@ -148,6 +148,18 @@ func TestShowRefusesAForeignCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	callErr(t, server, localCaller(), "thread_show", mustJSON(t, map[string]any{"thread_id": localThreadID, "cursor": other}), CodeInvalidRequest)
+
+	// A cursor this tool did mint still names one thread: its positions
+	// mean nothing in another.
+	transcriptThread(app, twinThreadID)
+	mine, err := encodeCursor(cursor{Kind: cursorShow, Thread: localThreadID, Window: WindowAll, From: 1, To: 5, High: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := callErr(t, server, localCaller(), "thread_show", mustJSON(t, map[string]any{"thread_id": twinThreadID, "cursor": mine}), CodeInvalidRequest)
+	if !strings.Contains(message, "belongs to another thread") {
+		t.Errorf("message = %q", message)
+	}
 }
 
 // TestShowWindows: each window resolves to its own bounds and the result

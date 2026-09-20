@@ -115,7 +115,7 @@ func (c *session) status(ctx context.Context, raw json.RawMessage) (any, error) 
 	case len(args.ThreadIDs) > 0:
 		return c.statusThreads(ctx, args, wait)
 	default:
-		return c.listRequests(ctx, args.Cursor)
+		return c.listRequests(ctx, args.Cursor, budget)
 	}
 }
 
@@ -146,14 +146,20 @@ func (c *session) statusTokens(ctx context.Context, args statusArgs, wait, budge
 	// a later read of the same request must still see the whole answer.
 	result := statusResult{Requests: slices.Clone(report.Requests), WokeOn: report.WokeOn, TimedOut: report.TimedOut && wait > 0}
 	c.stampRequests(result.Requests)
-	note, clipped := c.clipAnswers(result.Requests, budget, page, tokens)
-	result.Note = note
-	if clipped != "" && len(tokens) == 1 {
-		encoded, err := encodeCursor(cursor{Kind: cursorStatus, Token: clipped, Offset: page.Offset + int64(len(result.Requests[0].Answer))})
-		if err != nil {
-			return nil, err
+	clipped := clipAnswers(result.Requests, budget, page, tokens)
+	if clipped != "" {
+		if len(tokens) == 1 {
+			encoded, err := encodeCursor(cursor{Kind: cursorStatus, Token: clipped, Offset: page.Offset + int64(len(result.Requests[0].Answer))})
+			if err != nil {
+				return nil, err
+			}
+			result.Cursor, result.More = encoded, true
+			result.Note = "An answer was longer than max_bytes and is clipped here. Continue it with the cursor, read the whole of it with thread_status to_file, or raise max_bytes."
+		} else {
+			// With several tokens each answer holds a share of the budget
+			// and there is no one answer for a cursor to continue.
+			result.Note = "An answer was longer than its share of max_bytes and is clipped here. Read the whole of one with thread_status token " + clipped + " alone, or with to_file."
 		}
-		result.Cursor, result.More = encoded, true
 	}
 	for _, request := range result.Requests {
 		if request.WakeQueued {
@@ -164,14 +170,16 @@ func (c *session) statusTokens(ctx context.Context, args statusArgs, wait, budge
 	return result, nil
 }
 
-// clipAnswers keeps the reply inside its budget. Each answer is clipped to
-// an equal share and says how to read the rest; the whole answer stays in
-// the request record for the request's lifetime, even after the thread
-// that wrote it is gone. It names the first request it actually clipped,
-// so an answer that fitted whole is never offered a continuation.
-func (c *session) clipAnswers(requests []RequestState, budget int, page cursor, tokens []string) (note, clipped string) {
+// clipAnswers keeps a reply inside its budget. Each answer is clipped to an
+// equal share of it; the whole answer stays in the request record for the
+// request's lifetime, even after the thread that wrote it is gone. It
+// returns the token of the first request it actually clipped, so an answer
+// that fitted whole is never offered a continuation, and the caller states
+// what to read the rest with. The rows are the caller's own clone: this
+// rewrites them.
+func clipAnswers(requests []RequestState, budget int, page cursor, tokens []string) (clipped string) {
 	if len(requests) == 0 {
-		return "", ""
+		return ""
 	}
 	share := budget / len(requests)
 	if share < MinShowBytes {
@@ -191,11 +199,10 @@ func (c *session) clipAnswers(requests []RequestState, budget int, page cursor, 
 			if clipped == "" {
 				clipped = requests[index].Token
 			}
-			note = appendNote(note, "An answer was longer than max_bytes and is clipped here. Continue it with the cursor, read the whole of it with thread_status to_file, or raise max_bytes.")
 		}
 		requests[index].Answer = answer
 	}
-	return note, clipped
+	return clipped
 }
 
 // statusThreads answers the thread_ids half of thread_status. A thread is
@@ -220,7 +227,7 @@ func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) 
 	if duplicate, found := dedupe(ids); found {
 		return nil, invalidf("thread %s is listed twice. Each thread may appear once per call.", duplicate)
 	}
-	states, woke, err := c.watchThreadGroups(ctx, threadWatchGroups(targets), wait, args.AfterRevision)
+	states, woke, err := c.watchThreadGroups(ctx, targets, groupTargetsByComputer(targets), wait, args.AfterRevision)
 	if err != nil {
 		return nil, err
 	}
@@ -248,36 +255,13 @@ func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) 
 	return result, nil
 }
 
-// threadWatchGroup is the threads of one call that live on one computer.
-type threadWatchGroup struct {
-	computer Computer
-	local    bool
-	ids      []string
-}
-
-// threadWatchGroups splits resolved targets by the computer that holds
-// them, keeping the order the call listed them in.
-func threadWatchGroups(targets []Target) []threadWatchGroup {
-	groups := make([]threadWatchGroup, 0, 2)
-	// "local" cannot collide with a computer id, which is a UUID.
-	slots := make(map[string]int, 2)
-	for _, target := range targets {
-		key := "local"
-		if !target.Local {
-			key = target.ComputerID
-		}
-		if slot, seen := slots[key]; seen {
-			groups[slot].ids = append(groups[slot].ids, target.ThreadID)
-			continue
-		}
-		slots[key] = len(groups)
-		groups = append(groups, threadWatchGroup{
-			computer: Computer{ID: target.ComputerID, Name: target.Computer},
-			local:    target.Local,
-			ids:      []string{target.ThreadID},
-		})
+// threadIDs reads one group's thread ids out of the targets it indexes.
+func threadIDs(targets []Target, group targetGroup) []string {
+	ids := make([]string, 0, len(group.indexes))
+	for _, index := range group.indexes {
+		ids = append(ids, targets[index].ThreadID)
 	}
-	return groups
+	return ids
 }
 
 // threadWatchAnswer is one group's half of the call.
@@ -292,9 +276,9 @@ type threadWatchAnswer struct {
 // wants the one that rested, not the one it happened to list first. The
 // groups that were still waiting are cancelled and read once more without
 // a wait, so every thread the call named is still reported.
-func (c *session) watchThreadGroups(ctx context.Context, groups []threadWatchGroup, wait int, after int64) ([]ThreadState, string, error) {
+func (c *session) watchThreadGroups(ctx context.Context, targets []Target, groups []targetGroup, wait int, after int64) ([]ThreadState, string, error) {
 	if len(groups) == 1 {
-		answer := c.watchThreadGroup(ctx, groups[0], wait, after)
+		answer := c.watchThreadGroup(ctx, targets, groups[0], wait, after)
 		return answer.threads, answer.wokeOn, answer.err
 	}
 	racing, cancel := context.WithCancel(ctx)
@@ -302,8 +286,8 @@ func (c *session) watchThreadGroups(ctx context.Context, groups []threadWatchGro
 	answers := make([]threadWatchAnswer, len(groups))
 	finished := make(chan int, len(groups))
 	for index, group := range groups {
-		go func(slot int, group threadWatchGroup) {
-			answers[slot] = c.watchThreadGroup(racing, group, wait, after)
+		go func(slot int, group targetGroup) {
+			answers[slot] = c.watchThreadGroup(racing, targets, group, wait, after)
 			finished <- slot
 		}(index, group)
 	}
@@ -333,7 +317,7 @@ func (c *session) watchThreadGroups(ctx context.Context, groups []threadWatchGro
 		if answers[index].err != nil {
 			// Cancelled mid-wait. Its threads are read as they stand now,
 			// on the call's own context rather than the cancelled one.
-			answers[index] = c.watchThreadGroup(ctx, groups[index], 0, after)
+			answers[index] = c.watchThreadGroup(ctx, targets, groups[index], 0, after)
 			if answers[index].err != nil {
 				return nil, "", answers[index].err
 			}
@@ -345,9 +329,10 @@ func (c *session) watchThreadGroups(ctx context.Context, groups []threadWatchGro
 
 // watchThreadGroup answers one group: this computer's threads through the
 // app, another computer's through one forwarded thread_status call.
-func (c *session) watchThreadGroup(ctx context.Context, group threadWatchGroup, wait int, after int64) threadWatchAnswer {
+func (c *session) watchThreadGroup(ctx context.Context, targets []Target, group targetGroup, wait int, after int64) threadWatchAnswer {
+	ids := threadIDs(targets, group)
 	if group.local {
-		report, err := c.app.RequestStates(ctx, c.caller, StatusCall{ThreadIDs: group.ids, WaitSeconds: wait, AfterRevision: after})
+		report, err := c.app.RequestStates(ctx, c.caller, StatusCall{ThreadIDs: ids, WaitSeconds: wait, AfterRevision: after})
 		if err != nil {
 			return threadWatchAnswer{err: err}
 		}
@@ -364,7 +349,7 @@ func (c *session) watchThreadGroup(ctx context.Context, group threadWatchGroup, 
 			slice = MaxForwardedWaitSeconds
 		}
 		args, err := json.Marshal(map[string]any{
-			"thread_ids":     group.ids,
+			"thread_ids":     ids,
 			"wait_seconds":   slice,
 			"after_revision": after,
 		})
@@ -398,7 +383,7 @@ func (c *session) stampThreads(computer Computer, threads []ThreadState) []Threa
 	return out
 }
 
-func (c *session) listRequests(ctx context.Context, rawCursor string) (any, error) {
+func (c *session) listRequests(ctx context.Context, rawCursor string, budget int) (any, error) {
 	page, err := decodeCursor(rawCursor, cursorList)
 	if err != nil {
 		return nil, err
@@ -413,6 +398,12 @@ func (c *session) listRequests(ctx context.Context, rawCursor string) (any, erro
 		result.Requests = []RequestState{}
 	}
 	result.Note = "Open requests first, then newest first. These are every request this thread has made; you never have to remember a token."
+	// A listing carries thirty answers, so each gets a share of the budget
+	// the same way a multi-token read does. Without this one long answer
+	// would spend the whole reply.
+	if clipped := clipAnswers(result.Requests, budget, cursor{}, nil); clipped != "" {
+		result.Note = appendNote(result.Note, "An answer was longer than its share of max_bytes and is clipped here. Read the whole of one with thread_status token "+clipped+" alone, or with to_file.")
+	}
 	if listing.More {
 		encoded, err := encodeCursor(cursor{Kind: cursorList, Offset: page.Offset + int64(len(listing.Requests))})
 		if err != nil {
@@ -455,7 +446,7 @@ func (c *session) cancel(ctx context.Context, raw json.RawMessage) (any, error) 
 		return nil, err
 	}
 	token, ref := trim(args.Token), trim(args.ThreadID)
-	if count := exactlyOne(token != "", ref != ""); count != 1 {
+	if count := countSet(token != "", ref != ""); count != 1 {
 		return nil, invalidf("Pass exactly one of token, to cancel a request you made, or thread_id, to interrupt a thread you started. This call passed %d.", count)
 	}
 	call := CancelCall{Token: token}
@@ -500,7 +491,7 @@ func (c *session) remind(ctx context.Context, raw json.RawMessage) (any, error) 
 		return nil, invalidf("note must be at most %d characters.", MaxNoteRunes)
 	}
 	at := trim(args.At)
-	if count := exactlyOne(args.AfterSeconds != 0, at != ""); count != 1 {
+	if count := countSet(args.AfterSeconds != 0, at != ""); count != 1 {
 		return nil, invalidf("Pass exactly one of after_seconds or at. This call passed %d.", count)
 	}
 	var due int64
@@ -529,11 +520,11 @@ func (c *session) remind(ctx context.Context, raw json.RawMessage) (any, error) 
 // cancel that found nothing running is not reported as an interruption.
 func cancelNote(effect string) string {
 	switch effect {
-	case "nothing_to_stop":
+	case EffectNothing:
 		return "Nothing was running or queued for this, so nothing was stopped. The request is settled as reported."
-	case "reminder_dropped":
+	case EffectReminderDropped:
 		return "The reminder was dropped; it will not fire."
-	case "queued_message_removed":
+	case EffectQueuedRemoved:
 		return "The queued message was removed before it ran; nothing was interrupted."
 	default:
 		return "This interrupted the work; it did not undo anything already done."

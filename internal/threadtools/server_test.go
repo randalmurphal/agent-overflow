@@ -108,7 +108,7 @@ func TestAForwardedCallDoesNotFanOutAgain(t *testing.T) {
 		if _, present := paired["computers"]; !present {
 			t.Fatalf("%s answered a local call in the solo shape", name)
 		}
-		forwarded, err := server.Call(WithForwarded(context.Background()), localCaller(), name, json.RawMessage(`{}`))
+		forwarded, err := server.CallForwarded(context.Background(), localCaller(), name, json.RawMessage(`{}`))
 		if err != nil {
 			t.Fatalf("forwarded %s: %v", name, err)
 		}

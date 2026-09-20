@@ -234,11 +234,10 @@ const (
 	IncludeAll         = "all"
 )
 
-// TranscriptSlice is one page of items.
+// TranscriptSlice is one page of items. The window's high water comes from
+// ResolveWindow, which is what the cursor carries; a page reports only rows.
 type TranscriptSlice struct {
 	Items []Item
-	// HighWater is the greatest position that existed at read time.
-	HighWater int64
 }
 
 // Item is one timeline row.

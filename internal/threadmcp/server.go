@@ -5,12 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -548,58 +546,13 @@ type ToolCall struct {
 }
 
 // MCP envelopes may carry client metadata and protocol extensions. Only the
-// tool's arguments use the closed schema enforced by DecodeArgs.
+// tool's arguments use the closed schema mcpargs.Decode enforces.
 func DecodeToolCall(raw json.RawMessage) (ToolCall, error) {
 	var call ToolCall
 	if err := json.Unmarshal(raw, &call); err != nil || call.Name == "" {
 		return ToolCall{}, fmt.Errorf("invalid tools/call params")
 	}
 	return call, nil
-}
-
-func DecodeArgs(raw json.RawMessage, target any) error {
-	if len(raw) == 0 {
-		raw = []byte("{}")
-	}
-	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 || raw[0] != '{' {
-		return fmt.Errorf("Tool arguments must be a JSON object with the fields listed in the tool schema.")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		var mismatch *json.UnmarshalTypeError
-		if errors.As(err, &mismatch) {
-			kind := mismatch.Type.Kind()
-			expected := kind.String()
-			switch kind {
-			case reflect.Int, reflect.Int64:
-				expected = "an integer"
-			case reflect.Float64:
-				expected = "a number"
-			case reflect.String:
-				expected = "a string"
-			case reflect.Bool:
-				expected = "a boolean"
-			case reflect.Slice, reflect.Array:
-				expected = "an array"
-			case reflect.Struct, reflect.Map:
-				expected = "an object"
-			}
-			return fmt.Errorf("Argument %q must be %s. Check the tool schema.", mismatch.Field, expected)
-		}
-		if field, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
-			if len(field) > 128 {
-				field = field[:128] + "…"
-			}
-			return fmt.Errorf("Unknown argument %s. Use only fields listed in the tool schema.", field)
-		}
-		return fmt.Errorf("Invalid argument JSON. Supply one object matching the tool schema.")
-	}
-	if err := ensureJSONEOF(decoder); err != nil {
-		return fmt.Errorf("Tool arguments contain extra JSON. Supply exactly one object.")
-	}
-	return nil
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {

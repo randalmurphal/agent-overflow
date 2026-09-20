@@ -20,6 +20,8 @@ type cursor struct {
 	Version int    `json:"v"`
 	Kind    string `json:"k"`
 	Thread  string `json:"t,omitempty"`
+	// Item is the thread_item payload a match page is walking.
+	Item string `json:"it,omitempty"`
 	// Window and its resolved bounds.
 	Window string `json:"w,omitempty"`
 	From   int64  `json:"f,omitempty"`
@@ -36,6 +38,9 @@ type cursor struct {
 	Offset int64 `json:"o,omitempty"`
 	// Offsets is the per-computer row offset of a grouped search page.
 	Offsets map[string]int `json:"co,omitempty"`
+	// Filters fingerprints the thread_search filters a page continues, so
+	// a cursor cannot be taken with a different search than minted it.
+	Filters string `json:"fp,omitempty"`
 	// Query is the literal thread_item search a match page continues.
 	Query string `json:"q,omitempty"`
 	// Token names the request whose answer a status page continues.

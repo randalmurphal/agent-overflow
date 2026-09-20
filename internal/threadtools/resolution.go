@@ -90,7 +90,7 @@ func (c *session) resolveOn(ctx context.Context, ref, id string, followMoves boo
 			return target, err
 		}
 	}
-	return Target{}, publicf(CodeNotFound, "No thread matches %q on %s.", ref, nameOf(computer))
+	return Target{}, publicf(CodeNotFound, "No thread matches %q on %s.", ref, NameOfComputer(computer))
 }
 
 // follow chases one recorded move. It never chases a second one: a chain
@@ -233,12 +233,51 @@ func partialNote(silent []Computer) string {
 	return "Partial: " + computerList(silent) + " did not answer in time, so a thread of the same id there was not considered."
 }
 
-func nameOf(computer Computer) string {
-	if computer.Name != "" {
+// NameOfComputer is the one way a computer is named in text a model reads,
+// here and in the App implementation. A computer whose pairing profile
+// carries no name is named by its id rather than left anonymous, because
+// the id is what the next call has to pass.
+func NameOfComputer(computer Computer) string {
+	switch {
+	case computer.Name != "":
 		return computer.Name
+	case computer.ID != "":
+		return "computer " + computer.ID
+	default:
+		return "this computer"
 	}
-	if computer.ID != "" {
-		return computer.ID
+}
+
+// targetGroup is the resolved targets of one call that live on one
+// computer. Indexes are positions in the slice the group was built from,
+// so a caller keeps whatever it holds beside each target.
+type targetGroup struct {
+	computer Computer
+	local    bool
+	indexes  []int
+}
+
+// groupTargetsByComputer splits resolved targets by the computer that
+// holds them, keeping the order the call listed them in. Every local
+// target lands in one group whether or not its row names this computer.
+func groupTargetsByComputer(targets []Target) []targetGroup {
+	groups := make([]targetGroup, 0, 2)
+	slots := make(map[string]int, 2)
+	for index, target := range targets {
+		key := target.ComputerID
+		if target.Local {
+			key = ""
+		}
+		if slot, seen := slots[key]; seen {
+			groups[slot].indexes = append(groups[slot].indexes, index)
+			continue
+		}
+		slots[key] = len(groups)
+		groups = append(groups, targetGroup{
+			computer: Computer{ID: target.ComputerID, Name: target.Computer},
+			local:    target.Local,
+			indexes:  []int{index},
+		})
 	}
-	return "this computer"
+	return groups
 }

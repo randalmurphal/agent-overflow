@@ -311,10 +311,11 @@ All folded into the spec on 2026-09-19; kept here as the record of why.
 | Tool contract | `internal/threadtools` | Tool schemas, the instructions text, argument parsing, id resolution rules, transcript rendering, paging, item range reads and search, result shapes, the thread state derivation. Depends on an `App` interface it declares; never on `internal/app`. |
 | Request ledger | `internal/store` | Migrations, `thread_requests`, `thread_request_receipts`, `scratch_threads`, the FTS index and its build progress, all queries. |
 | App glue | `internal/app/app_thread_tools*.go` | Server registration, the switch, live toggles, spawn/send/ask/reply/status/cancel handlers, waits, settlement observer, wake delivery, the poller, peer methods, lifecycle hooks, boot sweep. |
+| Argument decoding | `internal/mcpargs` | The closed schema every built-in tool server's arguments are decoded under. A leaf package, so the tool contract does not depend on the transport. |
 | Peer transport | `internal/attachedbackends`, `internal/transport` | `CallThreadPeer`, `CapabilityThreadTools`, method annotations. |
 | Providers | `internal/provider/claude`, `internal/provider/codex` | Claude `AllowedTools` on the argv; Codex `DeveloperInstructions` on start, resume and fork. Nothing else. |
 | UI | `frontend/src/lib` | Origin chip, settings switch, `/side-chat`, `side-chat` companion pane, `aoTools` registry entry. |
-| Tests | beside each piece, `e2e/tests` | See Validation. |
+| Tests | beside each piece, `e2e/tests` | Unit tests beside each package, application tests in `internal/app`, browser specs in `e2e/tests`. |
 
 `internal/threadtools` is the piece with the most logic and the least
 dependency, so it is testable against a fake app and reusable unchanged
@@ -521,12 +522,14 @@ the reference. `threadtools.State(thread, live)` reimplements it from
 `LiveStateSnapshot` and the thread columns (`hasIncompleteTurn`,
 `hasFailedTurn`, `hasActionableProposedPlan`, `worktreeSetupState`), and
 one JSON fixture, `internal/threadtools/testdata/thread_states.json`,
-holds the shared table: the Go test runs every case, and each case also
-carries the frontend input `resolveEffectiveThreadStatus` derives from,
-so the sidebar's rule can be pinned to the same table.
+holds the shared table: `state_test.go` runs every case against the Go
+function, and `threadStatusPill.test.ts` runs the same cases against the
+reference, each from the field that states its own input.
 
 The instructions string is the spec's "Server instructions" blockquote,
-kept in `instructions.go` as two variants assembled from paragraphs;
+kept in `instructions.go` as paragraphs, with the fragments that name a
+computer parameter substituted per shape so the two variants cannot
+drift in the sentences that have nothing to do with pairing;
 a test asserts every tool name and parameter it mentions exists in the
 schemas for that shape.
 
@@ -1216,116 +1219,3 @@ Switch and sessions:
   receipt to a computer that never accepted it, or re-addressing from
   the source, both add a path for the rare case; settling
   `interrupted` on the accepting computer and resending is one call.
-
-## Build order
-
-The build ran in these phases, each green on its own tests and each a
-usable increment.
-
-0. **Spikes**, done 2026-09-19 in a scratch directory per the spike
-   policy against a throwaway loopback MCP server (claude 2.1.261,
-   codex 0.153.4); nothing from them is kept. Outcomes, all folded into
-   Verified facts and the wiring above: Claude under `dontAsk` denies
-   MCP calls without `--allowedTools "mcp__<server>__*"` and admits
-   every tool of the server with it, and nothing else widens (A1, A2);
-   Claude reads the server `instructions` and Codex does not (B1, B2);
-   Codex read-only denies MCP calls until the server entry sets
-   `default_tools_approval_mode = "approve"`, after which the call runs
-   and the sandbox still refuses a shell write (C, C2); a Codex
-   `developer_instructions` override reaches the model (B3); a
-   15-minute MCP call parked under the ceiling
-   returns on Codex with `tool_timeout_sec` = 1200 (D2) but fails on
-   Claude at six minutes whatever timeout is configured (D1, three
-   runs), and completes once the response is a server-sent event stream
-   with a keepalive comment every 15 s (E, two variants). See Verified
-   facts and the Waiting section.
-1. **Store**: v101 to v103, `scratch_threads`, request tables and their
-   queries, FTS index with settle-time hooks, background build,
-   `DeleteThreadPaced` and `RestoreFrom` updates. Tests: migration on a
-   populated store, index correctness against the `timeline_items`
-   view, zero writes during streaming, build resume after a simulated
-   restart, request state transitions, receipt idempotency, expiry.
-2. **`internal/threadtools`** read side against a fake app: schemas and
-   instructions for both shapes, resolution rules, transcript rendering
-   with budgets and cursors, `thread_item` ranges and search, grouping
-   and error rows, state derivation with the shared fixture.
-3. **App wiring for reads**: registration in `app_session.go`, the
-   settings switch and live toggle on both providers, per-thread toggle,
-   `aoTools` registry entry, settings UI. After this phase the three
-   read tools and `thread_options` work locally on both providers.
-4. **Local start and settle**: `forkThreadTail` refactor, spawn (with
-   `from_thread`), send, ask, reply, status (multi-token, blocked
-   return), cancel, waits, settlement observer, wakes, scratch deletion,
-   boot sweep, lifecycle hooks, origin chip, admission flags,
-   `thread_update`, `thread_group`, `thread_remind`. After this phase
-   everything in the spec works on one computer.
-5. **Cross-computer**: capability, `CallThreadPeer`, the five peer
-   methods, `methodgen`, resolution fan-out, poller, acknowledgement and
-   expiry, export chunks, moved-target handling, forget-computer
-   refusal, shape switching on pairing changes. Two-computer TLS tests
-   after the `app_remote_mcp_extended_test.go` recipe.
-6. **`/side-chat`**: intercepted command, `ForkSideChat`, companion kind,
-   close-deletes, Keep, remote-owned threads.
-7. **End to end and docs**: the three Playwright specs below, the
-   spec's success criteria, the `docs/README.md` rows, and the guide and
-   architecture-doc updates ([schema.md](schema.md),
-   [sqlite-store.md](sqlite-store.md),
-   [turn-lifecycle.md](turn-lifecycle.md),
-   [user-message-ordering.md](user-message-ordering.md),
-   [agent-harness.md](agent-harness.md), `internal/app/AGENTS.md`,
-   `internal/threadmcp/AGENTS.md`). This document is the record; the
-   mechanism has no separate architecture file.
-
-## Validation
-
-- Store: `make go-test ./internal/store/...`.
-  `migration_thread_tools_test.go` upgrades a populated fixture through
-  v101 to v103; `thread_search_test.go` covers the index against the
-  `timeline_items` view, zero writes while a row streams, and build
-  resume; `thread_requests_test.go` covers both sides of the ledger,
-  receipt idempotency, revisions and expiry; `thread_organize_test.go`,
-  `threads_lookup_test.go` and `items_range_test.go` cover the organize
-  transaction, prefix resolution and the range reads.
-- `internal/threadtools`: unit tests against the fake app in
-  `fake_app_test.go`, no app, fast. Schemas and instructions in both
-  shapes, resolution, rendering budgets and cursors, item ranges and
-  search, per-computer grouping and error rows, footers and wake
-  templates, the state fixture.
-- App: `kerneltest`-isolated tests with the mock providers.
-  `app_thread_tools_mcp_test.go` (registration and its absence for phase
-  sessions, the switch on both providers, the admission flags, the
-  per-conversation toggle ANDed with the switch),
-  `app_thread_tools_requests_test.go` (spawn, send, ask, reply, waits,
-  wakes, `thread_status`, cancel, reminders, lifecycle hooks, the boot
-  sweep), `app_thread_tools_organize_test.go`,
-  `app_thread_tools_test.go` (the adapter against real store rows),
-  `app_thread_tools_e2e_test.go` (every read tool over the loopback
-  transport), `app_side_chat_test.go`.
-- Two computers: `app_thread_tools_reach_test.go` pairs two isolated
-  apps over a real TLS connection (`newReachPair`, `attachedbackends.New`
-  per device) and covers the caller's switch, a destination serving with
-  its own switch off, ownership by device, fan-out resolution,
-  lost-reply retry on one token, unconfirmed reconciliation, expiry,
-  collection after a restart of either side, revocation, a moved target,
-  forgetting a computer, the wake naming the thread and computer that
-  answered, and a deleted caller cancelling the ask it left running
-  there. It drives `pollRemoteThreadRequests`,
-  `expireThreadRequests` and `sweepThreadRequestsAtBoot` directly rather
-  than waiting on the ticker.
-- Frontend: Vitest for `agentThreadOrigin` and `userMessageMeta`, the
-  `sideChat` store and the companion persistence rules, the settings
-  switch, and the shared thread-state values; `pnpm run check` and
-  `pnpm run build`.
-- Playwright (`e2e/tests`): `thread-tools.spec.ts` (21 tests),
-  `side-chat.spec.ts` (4), `thread-tools-paired.spec.ts` (16, on two
-  harness hosts) and `thread-tools-three-computers.spec.ts` (2, on
-  three, the third stopped mid-file for the search error row).
-  Run one with `bin/ao-harness-e2e tests/<spec>`. The
-  mock provider makes real MCP calls through its `mcpCall` scenario step
-  ([agent-harness.md](agent-harness.md)).
-- Go: `make go-build`, `make go-test`, `gofmt -w`, `make methodgen`
-  committed (the generator diff test fails otherwise), Wails bindings
-  regenerated for the new methods.
-- Manual provider smoke, only when explicitly requested: one real
-  `thread_ask` per provider on a read-only fork, to confirm the spike
-  results survive a real session.

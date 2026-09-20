@@ -17,10 +17,6 @@ import (
 // line range walks chunks counting newlines, and a query scans chunks with
 // an overlap that keeps a match's context available without a second pass.
 
-// maxQueryBytes bounds a literal search string. A query longer than the
-// scan overlap could straddle a chunk in ways the scan cannot see.
-const maxQueryBytes = 4096
-
 type itemArgs struct {
 	ThreadID   string `json:"thread_id"`
 	ComputerID string `json:"computer_id"`
@@ -79,7 +75,7 @@ func (c *session) item(ctx context.Context, raw json.RawMessage) (any, error) {
 	if page.Query != "" && trim(args.Query) == "" {
 		args.Query = page.Query
 	}
-	switch selectors := exactlyOne(args.Offset != nil, trim(args.Lines) != "", trim(args.Query) != ""); selectors {
+	switch selectors := countSet(args.Offset != nil, trim(args.Lines) != "", trim(args.Query) != ""); selectors {
 	case 0:
 		// A bare item id is the common first read: the start of the item,
 		// max_bytes of it, which for most items is the whole thing.
@@ -98,6 +94,17 @@ func (c *session) item(ctx context.Context, raw json.RawMessage) (any, error) {
 	target, err := c.resolve(ctx, args.ThreadID, trim(args.ComputerID))
 	if err != nil {
 		return nil, err
+	}
+	// A cursor is a byte offset inside one payload, so it names the thread
+	// and the item it was minted for. The same offset in another item is a
+	// different place entirely.
+	if page.Kind == cursorItem {
+		if page.Thread != target.ThreadID {
+			return nil, invalidf("That cursor belongs to another thread. Pass the cursor from this thread's own thread_item result.")
+		}
+		if page.Item != trim(args.ItemID) {
+			return nil, invalidf("That cursor belongs to another item. Pass the cursor from this item's own thread_item result.")
+		}
 	}
 	if !target.Local {
 		return c.itemOnPeer(ctx, target, args)
@@ -199,8 +206,13 @@ func widenRight(data []byte, index int) int {
 	return index
 }
 
-// itemLines walks the payload counting newlines and returns the requested
-// 1-based inclusive range, clipped to the byte budget.
+// itemLines walks the payload a line at a time and returns the requested
+// 1-based inclusive range, clipped to the byte budget at a whole character.
+//
+// EOF is derived from the bytes the walk actually consumed, not from the
+// chunks it read: a range that stopped at its last line has not reached the
+// end of the item, and saying it had would tell the agent there is nothing
+// after it.
 func (c *session) itemLines(ctx context.Context, reader payloadReader, meta Payload, result itemResult, spec string, maxBytes int64) (any, error) {
 	first, last, err := parseLineRange(spec)
 	if err != nil {
@@ -208,46 +220,55 @@ func (c *session) itemLines(ctx context.Context, reader payloadReader, meta Payl
 	}
 	var out strings.Builder
 	line := 1
-	var offset int64
-	started := false
-	var startOffset int64
-	truncated := false
-	for offset < meta.Size {
+	var offset, consumed, startOffset int64
+	started, truncated, stopped := false, false, false
+	for offset < meta.Size && !stopped {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		payload, err := reader.read(ctx, offset, itemScanChunk)
 		if err != nil {
 			return nil, err
 		}
-		if len(payload.Bytes) == 0 {
+		buffer := payload.Bytes
+		if len(buffer) == 0 {
 			break
 		}
-		for index := 0; index < len(payload.Bytes); index++ {
+		for at := 0; at < len(buffer); {
 			if line > last {
+				stopped = true
 				break
+			}
+			// A segment with no newline is the tail of this chunk: either
+			// the end of the item, or a line the next chunk finishes. Both
+			// carry on without counting a line.
+			end := len(buffer)
+			newline := bytes.IndexByte(buffer[at:], '\n')
+			if newline >= 0 {
+				end = at + newline + 1
 			}
 			if line >= first {
 				if !started {
-					started, startOffset = true, offset+int64(index)
+					started, startOffset = true, offset+int64(at)
 				}
-				if int64(out.Len()) >= maxBytes {
-					truncated = true
+				if !appendWithin(&out, buffer[at:end], maxBytes) {
+					truncated, stopped = true, true
 					break
 				}
-				out.WriteByte(payload.Bytes[index])
 			}
-			if payload.Bytes[index] == '\n' {
+			consumed = offset + int64(end)
+			at = end
+			if newline >= 0 {
 				line++
 			}
 		}
-		offset += int64(len(payload.Bytes))
-		if line > last || truncated {
-			break
-		}
+		offset += int64(len(buffer))
 	}
 	result.FirstLine, result.LastLine = first, min(last, line)
 	result.Offset = startOffset
 	result.Text = out.String()
 	result.Bytes = out.Len()
-	result.EOF = offset >= meta.Size && !truncated
+	result.EOF = consumed >= meta.Size && !truncated
 	if truncated {
 		result.Note = appendNote(result.Note, "The line range was longer than max_bytes and stopped early. Read the rest with offset "+strconv.FormatInt(startOffset+int64(out.Len()), 10)+", or ask for fewer lines.")
 	}
@@ -255,6 +276,27 @@ func (c *session) itemLines(ctx context.Context, reader payloadReader, meta Payl
 		result.Note = appendNote(result.Note, "The item has fewer than "+strconv.Itoa(first)+" lines; it holds "+strconv.Itoa(line)+".")
 	}
 	return result, nil
+}
+
+// appendWithin writes as much of segment as the budget leaves room for,
+// cutting at a whole character the way clipBytes does, and reports whether
+// the whole segment fitted. Half a character is not text, and a line range
+// that split one would hand the model a broken rune.
+func appendWithin(out *strings.Builder, segment []byte, budget int64) bool {
+	room := budget - int64(out.Len())
+	if room <= 0 {
+		return false
+	}
+	if int64(len(segment)) <= room {
+		out.Write(segment)
+		return true
+	}
+	cut := int(room)
+	for cut > 0 && !utf8.RuneStart(segment[cut]) {
+		cut--
+	}
+	out.Write(segment[:cut])
+	return false
 }
 
 func parseLineRange(spec string) (int, int, error) {
@@ -280,8 +322,8 @@ func parseLineRange(spec string) (int, int, error) {
 // itemQuery scans for a literal string and reports up to MaxItemMatches
 // offsets with a little context each, plus a cursor for the rest.
 func (c *session) itemQuery(ctx context.Context, reader payloadReader, meta Payload, result itemResult, query string, from int64) (any, error) {
-	if len(query) > maxQueryBytes {
-		return nil, invalidf("query must be at most %d bytes of literal text.", maxQueryBytes)
+	if len(query) > MaxQueryBytes {
+		return nil, invalidf("query must be at most %d bytes of literal text.", MaxQueryBytes)
 	}
 	needle := []byte(query)
 	result.Query = query
@@ -289,6 +331,9 @@ func (c *session) itemQuery(ctx context.Context, reader payloadReader, meta Payl
 	matches := make([]itemMatch, 0, MaxItemMatches)
 	more := false
 	for scanFrom < meta.Size {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		bufStart := scanFrom - ItemMatchContext
 		if bufStart < 0 {
 			bufStart = 0
@@ -334,17 +379,18 @@ func (c *session) itemQuery(ctx context.Context, reader payloadReader, meta Payl
 			}
 			break
 		}
-		if next := limit; next > scanFrom {
-			scanFrom = next
-		} else {
-			break
+		// The last match of this chunk can end at or past the limit, which
+		// is not the end of the payload: the scan resumes at whichever is
+		// further on. The guard above is what keeps that a real advance.
+		if limit > scanFrom {
+			scanFrom = limit
 		}
 	}
 	result.Matches, result.MatchCount, result.More = matches, len(matches), more
 	result.Offset = 0
 	result.EOF = !more
 	if more {
-		encoded, err := encodeCursor(cursor{Kind: cursorItem, Thread: result.ThreadID, Query: query, Offset: scanFrom})
+		encoded, err := encodeCursor(cursor{Kind: cursorItem, Thread: result.ThreadID, Item: result.ItemID, Query: query, Offset: scanFrom})
 		if err != nil {
 			return nil, err
 		}

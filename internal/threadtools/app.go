@@ -6,9 +6,11 @@ import (
 )
 
 // App is everything this package needs from the application that owns the
-// threads it reads and writes. internal/app implements it in-process; the
-// destination app implements the same interface behind a peer call, which
-// is why every type here is provider-neutral and JSON-friendly.
+// threads it reads and writes. internal/app implements it in-process. A
+// thread on another computer is not reached through this interface at all:
+// the Peer half below forwards the call to the same Server running on that
+// computer, which is why every type here is provider-neutral and
+// JSON-friendly.
 //
 // Contract for every implementation:
 //   - Reads name a thread that lives on THIS computer. A thread that does

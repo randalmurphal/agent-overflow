@@ -20,7 +20,7 @@ func spawnSchema(shape Shape) map[string]any {
 		},
 		"from_thread": map[string]any{
 			"type":        "string",
-			"description": "Fork this thread's history at its tail first, then send prompt there, for trying a second approach without disturbing the original. The fork is a normal visible thread. It runs on the source thread's computer, in its project and workspace, and keeps that thread's provider, which a fork cannot change; every other setting still defaults to yours. A source mid-turn is forked at its tail with that turn settled as interrupted.",
+			"description": "Fork this thread's history at its tail first, then send prompt there, for trying a second approach without disturbing the original. The fork is a normal visible thread. It runs on the source thread's computer, in its project and workspace, and keeps that thread's provider, which a fork cannot change; every other setting still defaults to yours. A source mid-turn is forked at its tail with that turn settled as interrupted. A fork runs in its source's workspace, so from_thread cannot be combined with workspace_path, worktree, base or base_local.",
 		},
 		"project_id": map[string]any{
 			"type":        "string",
@@ -32,7 +32,7 @@ func spawnSchema(shape Shape) map[string]any {
 		},
 		"worktree": map[string]any{
 			"type":        "string",
-			"description": "Branch name of a fresh worktree to run in instead of an existing checkout. The new branch starts from base, or from the project's current branch when base is omitted: from origin's head of that branch after a fetch, or from the local head when origin cannot be reached or does not have it. On another computer it is cut from project_id's repository there. Pass workspace_path or worktree, not both.",
+			"description": "Branch name of a fresh worktree to run in instead of an existing checkout. The new branch starts from base, or from the project's current branch when base is omitted: from origin's head of that branch after a fetch, or from the local head when origin cannot be reached or does not have it. On another computer it is cut from project_id's repository there. Pass workspace_path or worktree, not both, and neither with from_thread.",
 		},
 		"base": map[string]any{
 			"type":        "string",

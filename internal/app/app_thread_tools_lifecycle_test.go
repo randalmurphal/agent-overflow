@@ -203,7 +203,7 @@ func TestCancellingADispatchedRequestStopsItsTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if report.Effect != threadCancelInterrupted {
+	if report.Effect != threadtools.EffectInterrupted {
 		t.Fatalf("cancel effect = %q, want the dispatched turn interrupted", report.Effect)
 	}
 }

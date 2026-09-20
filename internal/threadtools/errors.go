@@ -2,6 +2,7 @@ package threadtools
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	"agent-overflow/internal/errorsx"
@@ -84,11 +85,7 @@ func resolutionIncomplete(ref string, silent []Computer) error {
 func computerList(computers []Computer) string {
 	names := make([]string, 0, len(computers))
 	for _, computer := range computers {
-		name := computer.Name
-		if name == "" {
-			name = computer.ID
-		}
-		names = append(names, name)
+		names = append(names, NameOfComputer(computer))
 	}
 	switch len(names) {
 	case 0:
@@ -102,9 +99,11 @@ func computerList(computers []Computer) string {
 	}
 }
 
-// publicMessage returns the reviewed prose of err, or its plain text when
-// it carries none. Result rows that report a per-item failure use it so a
-// private cause never reaches the model.
+// publicMessage returns the reviewed prose of err. Result rows that report
+// a per-item failure use it, and those rows reach the model, so an error
+// that carries no reviewed prose becomes a fixed refusal and its own text
+// stays in the host log: a raw cause can name a path, a query or an id the
+// model has no business reading.
 func publicMessage(err error) (code, message string) {
 	if err == nil {
 		return "", ""
@@ -112,5 +111,6 @@ func publicMessage(err error) (code, message string) {
 	if code, message, ok := errorsx.PublicDetails(err); ok {
 		return code, message
 	}
-	return "", err.Error()
+	log.Printf("thread tools: %v", err)
+	return CodeInvalidRequest, "Thread tools could not complete that part of the call. The cause is in this computer's log."
 }

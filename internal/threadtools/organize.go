@@ -43,8 +43,10 @@ func (c *session) update(ctx context.Context, raw json.RawMessage) (any, error) 
 	}
 
 	results := make([]ThreadUpdateResult, len(args.ThreadIDs))
-	byComputer := map[string][]int{}
-	computers := map[string]Computer{}
+	// Only the ids that resolved and passed the per-thread rules are
+	// patched. slots maps each of them back to its row in results.
+	var targets []Target
+	var slots []int
 	for index, ref := range args.ThreadIDs {
 		target, err := c.resolve(ctx, ref, "")
 		if err != nil {
@@ -59,26 +61,18 @@ func (c *session) update(ctx context.Context, raw json.RawMessage) (any, error) 
 			results[index].ErrorCode = CodeIsCaller
 			continue
 		}
-		key := target.ComputerID
-		if target.Local {
-			key = ""
-		}
-		byComputer[key] = append(byComputer[key], index)
-		computers[key] = Computer{ID: target.ComputerID, Name: target.Computer}
+		targets = append(targets, target)
+		slots = append(slots, index)
 	}
 
-	for key, indexes := range byComputer {
-		ids := make([]string, 0, len(indexes))
-		for _, index := range indexes {
-			ids = append(ids, results[index].ThreadID)
-		}
+	for _, group := range groupTargetsByComputer(targets) {
 		call := patch
-		call.ThreadIDs = ids
-		applied, err := c.applyUpdate(ctx, key, computers[key], call)
+		call.ThreadIDs = threadIDs(targets, group)
+		applied, err := c.applyUpdate(ctx, group, call)
 		if err != nil {
 			code, message := publicMessage(err)
-			for _, index := range indexes {
-				results[index].Error, results[index].ErrorCode = message, code
+			for _, index := range group.indexes {
+				results[slots[index]].Error, results[slots[index]].ErrorCode = message, code
 			}
 			continue
 		}
@@ -86,16 +80,17 @@ func (c *session) update(ctx context.Context, raw json.RawMessage) (any, error) 
 		for _, row := range applied {
 			byID[row.ThreadID] = row
 		}
-		for _, index := range indexes {
-			row, ok := byID[results[index].ThreadID]
+		for _, index := range group.indexes {
+			slot := slots[index]
+			row, ok := byID[results[slot].ThreadID]
 			if !ok {
-				results[index].Error = "That computer did not report a result for this thread."
-				results[index].ErrorCode = CodeUnreachable
+				results[slot].Error = "That computer did not report a result for this thread."
+				results[slot].ErrorCode = CodeUnreachable
 				continue
 			}
-			results[index].Updated, results[index].Error, results[index].ErrorCode = row.Updated, row.Error, row.ErrorCode
+			results[slot].Updated, results[slot].Error, results[slot].ErrorCode = row.Updated, row.Error, row.ErrorCode
 			if row.Title != "" {
-				results[index].Title = row.Title
+				results[slot].Title = row.Title
 			}
 		}
 	}
@@ -171,15 +166,15 @@ func decodeNullableString(raw json.RawMessage, field string) (*string, error) {
 	return &value, nil
 }
 
-func (c *session) applyUpdate(ctx context.Context, key string, computer Computer, call UpdateCall) ([]ThreadUpdateResult, error) {
-	if key == "" {
+func (c *session) applyUpdate(ctx context.Context, group targetGroup, call UpdateCall) ([]ThreadUpdateResult, error) {
+	if group.local {
 		report, err := c.app.UpdateThreads(ctx, c.caller, call)
 		if err != nil {
 			return nil, err
 		}
 		return report.Results, nil
 	}
-	peer, err := c.app.Peer(ctx, computer.ID)
+	peer, err := c.app.Peer(ctx, group.computer.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -250,10 +245,10 @@ func (c *session) group(ctx context.Context, raw json.RawMessage) (any, error) {
 		Pin:       trim(args.Pin),
 		Delete:    args.Delete,
 	}
-	if count := exactlyOne(call.Group != "", call.GroupID != ""); count != 1 {
+	if count := countSet(call.Group != "", call.GroupID != ""); count != 1 {
 		return nil, invalidf("Name the group with group plus project_id, or with group_id. This call passed %d of the two.", count)
 	}
-	if count := exactlyOne(call.Rename != "", call.Pin != "", call.Delete); count != 1 {
+	if count := countSet(call.Rename != "", call.Pin != "", call.Delete); count != 1 {
 		return nil, invalidf("Pass exactly one of rename, pin or delete. This call passed %d.", count)
 	}
 	if call.Rename != "" && utf8.RuneCountInString(call.Rename) > MaxTitleRunes {

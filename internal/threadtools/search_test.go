@@ -258,3 +258,91 @@ func TestSearchByThreadIdRunsOnlyWhereThatThreadLives(t *testing.T) {
 		t.Errorf("the destination was not given the thread filter: %+v", p.remote.searches[0])
 	}
 }
+
+// TestSearchPagesEveryComputerPastItsOwnRows. A computer that ran out of
+// rows on page one still has to resume past them, or its whole first page
+// comes back again beside the other computer's second.
+func TestSearchPagesEveryComputerPastItsOwnRows(t *testing.T) {
+	p := newPair(t)
+	for index := range 25 {
+		p.local.hits = append(p.local.hits, hit(localThreadID[:len(localThreadID)-2]+string(rune('a'+index/10))+string(rune('a'+index%10)), "Local", LiveState{}))
+	}
+	p.remote.hits = []Hit{hit(remoteThreadID, "Remote", LiveState{})}
+
+	first := call(t, p.server, localCaller(), "thread_search", `{"limit":10}`)
+	if first["cursor"] == nil {
+		t.Fatalf("first page = %v", first)
+	}
+	if got := len(rows(t, field(t, rows(t, first["computers"])[1], "rows"))); got != 1 {
+		t.Fatalf("the peer's first page has %d rows, want 1", got)
+	}
+
+	second := call(t, p.server, localCaller(), "thread_search", mustJSON(t, map[string]any{"limit": 10, "cursor": first["cursor"]}))
+	groups := rows(t, second["computers"])
+	if len(groups) != 2 {
+		t.Fatalf("computers = %v", second["computers"])
+	}
+	if got := len(rows(t, field(t, groups[1], "rows"))); got != 0 {
+		t.Fatalf("the peer repeated %d rows on the second page", got)
+	}
+	if p.remote.searches[1].Offset != 1 {
+		t.Fatalf("the peer's second page asked for offset %d, want 1", p.remote.searches[1].Offset)
+	}
+	if p.local.searches[1].Offset != 10 {
+		t.Fatalf("this computer's second page asked for offset %d, want 10", p.local.searches[1].Offset)
+	}
+}
+
+// TestSearchCursorCarriesTheFiltersItContinues. A cursor is a row offset
+// into one filtered set; spending it on another set would skip rows and
+// say nothing about it.
+func TestSearchCursorCarriesTheFiltersItContinues(t *testing.T) {
+	app := newFakeApp("Laptop")
+	for index := range 25 {
+		app.hits = append(app.hits, hit(localThreadID[:len(localThreadID)-2]+string(rune('a'+index/10))+string(rune('a'+index%10)), "Thread", LiveState{}))
+	}
+	server := New(app)
+
+	first := call(t, server, localCaller(), "thread_search", `{"query":"parser","limit":10}`)
+	if first["cursor"] == nil {
+		t.Fatalf("first page = %v", first)
+	}
+	message := callErr(t, server, localCaller(), "thread_search",
+		mustJSON(t, map[string]any{"query": "parser", "project_id": "p2", "limit": 10, "cursor": first["cursor"]}), CodeInvalidRequest)
+	if !strings.Contains(message, "carries the filters") {
+		t.Errorf("message = %q", message)
+	}
+	callErr(t, server, localCaller(), "thread_search",
+		mustJSON(t, map[string]any{"query": "other", "limit": 10, "cursor": first["cursor"]}), CodeInvalidRequest)
+
+	// The same filters with a different page size are the same search.
+	call(t, server, localCaller(), "thread_search", mustJSON(t, map[string]any{"query": "parser", "limit": 5, "cursor": first["cursor"]}))
+}
+
+// TestSearchByThreadIdSaysWhenTheFanOutWasIncomplete: the id resolved to
+// this computer only because another one never answered, so the result has
+// to say a thread of that id there was not considered.
+func TestSearchByThreadIdSaysWhenTheFanOutWasIncomplete(t *testing.T) {
+	p := newPair(t)
+	p.local.addThread(Thread{ID: localThreadID, Title: "Local"})
+	p.local.hits = []Hit{hit(localThreadID, "Local", LiveState{})}
+	p.local.peers["studio"] = brokenPeer{computer: Computer{ID: "studio", Name: "Studio"}, err: publicf(CodeUnreachable, "Studio is offline.")}
+
+	result := call(t, p.server, localCaller(), "thread_search", mustJSON(t, map[string]any{"thread_id": localThreadID[:12]}))
+	note, _ := result["note"].(string)
+	if !strings.Contains(note, "Partial:") || !strings.Contains(note, "Studio") {
+		t.Fatalf("note = %q", note)
+	}
+}
+
+// TestSearchQueryIsBounded: past a few kilobytes a query is not a search
+// term, and the index refuses it far less clearly than this does.
+func TestSearchQueryIsBounded(t *testing.T) {
+	server := New(newFakeApp("Laptop"))
+	message := callErr(t, server, localCaller(), "thread_search",
+		mustJSON(t, map[string]any{"query": strings.Repeat("q", MaxQueryBytes+1)}), CodeInvalidRequest)
+	if !strings.Contains(message, "at most 4096 bytes") {
+		t.Errorf("message = %q", message)
+	}
+	call(t, server, localCaller(), "thread_search", mustJSON(t, map[string]any{"query": strings.Repeat("q", MaxQueryBytes)}))
+}

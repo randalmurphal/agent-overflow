@@ -3,10 +3,11 @@
 // resolution, transcript rendering and paging, item range reads, the
 // message footers and wake headers, and the thread state derivation.
 //
-// It depends on the App interface declared in app.go and on nothing in
-// internal/app or internal/store, so the same code runs in the calling
-// thread's process and, unchanged, on the computer that owns a thread
-// reached over a peer call.
+// It depends on the App interface declared in app.go, on internal/mcpargs
+// for the closed argument schema, and on nothing in internal/app or
+// internal/store, so the same code runs in the calling thread's process
+// and, unchanged, on the computer that owns a thread reached over a peer
+// call.
 //
 // Two shapes exist. With no paired computers the schemas carry no
 // computers/computer_id parameter, no result row carries a computer field,

@@ -313,11 +313,10 @@ const BROWSER_TOOLS: Record<string, AoToolSpec> = {
   browser_assets: { label: 'assets', what: (input) => str(input, 'action') },
 };
 
-
 /**
  * A thread by the title the result carried, else by the reference the call
  * made. `thread_id` accepts an unambiguous prefix, so the input alone is
- * often eight characters of a UUID; `threadResultTitle` recovers the name
+ * often eight characters of a UUID; `threadResultView` recovers the name
  * from the reply and the row prefers it.
  */
 function threadRef(input: Input): string {

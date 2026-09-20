@@ -287,7 +287,7 @@ func TestThreadSendQueuesIntoABusyThreadAndCancelTakesItBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if report.Effect != threadCancelQueuedRemoved {
+	if report.Effect != threadtools.EffectQueuedRemoved {
 		t.Fatalf("cancel effect = %q, want the queued message removed", report.Effect)
 	}
 	if rows := durableQueueRows(t, f.app, target.ID); len(rows) != 0 {
@@ -1619,7 +1619,7 @@ func TestThreadCancelInterruptsTheRequestsOwnTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if report.Effect != threadCancelInterrupted {
+	if report.Effect != threadtools.EffectInterrupted {
 		t.Fatalf("effect = %q, want the turn interrupted", report.Effect)
 	}
 	row := f.request(t, ack.Token)

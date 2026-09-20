@@ -102,20 +102,8 @@ func (t threadToolsApp) ackRequest(ctx context.Context, caller threadtools.Calle
 	}
 	state := t.requestState(ctx, row)
 	return threadtools.RequestAck{
-		Token:      state.Token,
-		Kind:       state.Kind,
-		ThreadID:   state.ThreadID,
-		ComputerID: state.ComputerID,
-		Computer:   state.Computer,
-		Title:      state.Title,
-		State:      state.State,
-		Outcome:    threadRequestOutcome(row, state.State == threadtools.RequestBlocked),
-		AnswerKind: state.AnswerKind,
-		Answer:     state.Answer,
-		Revision:   state.Revision,
-		Notify:     state.Notify,
-		Delivered:  state.Delivered,
-		ExpiresAt:  state.ExpiresAt,
+		RequestState: state,
+		Outcome:      threadRequestOutcome(row, state.State == threadtools.RequestBlocked),
 	}, nil
 }
 
@@ -489,14 +477,6 @@ func (t threadToolsApp) Cancel(ctx context.Context, caller threadtools.Caller, c
 	return t.cancelThread(ctx, caller, call.ThreadID)
 }
 
-// Cancel effects, as reported to the model.
-const (
-	threadCancelQueuedRemoved = "queued_message_removed"
-	threadCancelInterrupted   = "turn_interrupted"
-	threadCancelReminderGone  = "reminder_dropped"
-	threadCancelNothing       = "nothing_to_stop"
-)
-
 func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Caller, token string) (threadtools.CancelReport, error) {
 	row, err := t.ownRequest(caller, token)
 	if err != nil {
@@ -504,7 +484,7 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 	}
 	report := threadtools.CancelReport{Token: token, ThreadID: row.TargetThreadID, ComputerID: row.TargetComputerID}
 	if threadRequestSettled(row) {
-		report.State, report.Effect = row.State, threadCancelNothing
+		report.State, report.Effect = row.State, threadtools.EffectNothing
 		return report, nil
 	}
 	if row.TargetComputerID != "" {
@@ -517,7 +497,7 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 			return threadtools.CancelReport{}, err
 		}
 		t.app.wakeRequestWaits(token)
-		report.State, report.Effect = threadtools.RequestCancelled, threadCancelReminderGone
+		report.State, report.Effect = threadtools.RequestCancelled, threadtools.EffectReminderDropped
 		return report, nil
 	}
 
@@ -584,7 +564,7 @@ func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadto
 	}
 	report.Effect = reply.Effect
 	if report.Effect == "" {
-		report.Effect = threadCancelNothing
+		report.Effect = threadtools.EffectNothing
 	}
 	if reply.Request != nil {
 		if _, err := t.app.applyThreadPeerRequest(row.Token, row.TargetComputerID, *reply.Request); err != nil {
@@ -627,8 +607,8 @@ func (t threadToolsApp) cancelRemoteThread(ctx context.Context, caller threadtoo
 		State:      threadtools.RequestRunning,
 		Effect:     reply.Effect,
 	}
-	if report.Effect == "" || report.Effect == threadCancelNothing {
-		report.Effect = threadCancelNothing
+	if report.Effect == "" || report.Effect == threadtools.EffectNothing {
+		report.Effect = threadtools.EffectNothing
 		report.State = threadtools.RequestFinished
 	}
 	return report, nil
@@ -650,7 +630,7 @@ func (t threadToolsApp) cancelThread(ctx context.Context, caller threadtools.Cal
 		return threadtools.CancelReport{}, errorsx.Public(threadtools.CodeNotYours,
 			fmt.Sprintf("This thread did not start %s, so it cannot interrupt it. Interrupt the threads you spawned, sent to or asked.", threadID), nil)
 	}
-	report := threadtools.CancelReport{ThreadID: thread.ID, State: threadtools.RequestRunning, Effect: threadCancelNothing}
+	report := threadtools.CancelReport{ThreadID: thread.ID, State: threadtools.RequestRunning, Effect: threadtools.EffectNothing}
 	live, err := t.LiveState(ctx, threadID)
 	if err != nil {
 		return threadtools.CancelReport{}, err
@@ -662,7 +642,7 @@ func (t threadToolsApp) cancelThread(ctx context.Context, caller threadtools.Cal
 	if err := t.app.interruptTurnCtx(ctx, threadID); err != nil {
 		return threadtools.CancelReport{}, err
 	}
-	report.Effect = threadCancelInterrupted
+	report.Effect = threadtools.EffectInterrupted
 	return report, nil
 }
 
@@ -695,12 +675,12 @@ func (t threadToolsApp) interruptForeignThread(ctx context.Context, origin threa
 		return "", err
 	}
 	if !live.ActiveTurn {
-		return threadCancelNothing, nil
+		return threadtools.EffectNothing, nil
 	}
 	if err := t.app.interruptTurnCtx(ctx, thread.ID); err != nil {
 		return "", err
 	}
-	return threadCancelInterrupted, nil
+	return threadtools.EffectInterrupted, nil
 }
 
 // callerStartedThread reports whether any request, settled or not, links this
