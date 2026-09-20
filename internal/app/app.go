@@ -168,10 +168,7 @@ type App struct {
 	transfers  appThreadTransfers
 	terminals  *terminal.Manager
 	remoteJobs *remotejobs.Manager
-	// remoteWaitsRegistry holds tool calls parked on remote commands; see
-	// app_remote_wait.go.
-	remoteWaitsRegistry remoteWaits
-	remoteMCP           appRemoteMCP
+	remoteMCP  appRemoteMCP
 	// threadMCP owns the ao-thread-tools server and the threadtools
 	// contract bound to this app. Zero value ready; built on first use.
 	threadMCP appThreadMCP

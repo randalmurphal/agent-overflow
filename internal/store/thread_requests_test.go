@@ -826,7 +826,7 @@ func TestSetThreadRequestTargetRecordsWhereItRuns(t *testing.T) {
 	mustCreateThread(t, s, "t-caller")
 	seedThreadRequest(t, s, "tok-target", "t-caller", ThreadRequestAsk, 100)
 
-	set, err := s.SetThreadRequestTarget("tok-target", "", "t-scratch-fork")
+	set, err := s.SetThreadRequestTarget("tok-target", "", "t-scratch-fork", "")
 	if err != nil || !set {
 		t.Fatalf("set target: set=%v err=%v", set, err)
 	}
@@ -840,13 +840,18 @@ func TestSetThreadRequestTargetRecordsWhereItRuns(t *testing.T) {
 	if _, err := s.AdvanceThreadRequestState("tok-target", ThreadRequestUnconfirmed, ThreadRequestRunning); err != nil {
 		t.Fatalf("advance state: %v", err)
 	}
-	set, err = s.SetThreadRequestTarget("tok-target", "backend-2", "t-moved")
+	set, err = s.SetThreadRequestTarget("tok-target", "backend-2", "t-moved", "Release notes")
 	if err != nil || !set {
 		t.Fatalf("repoint target: set=%v err=%v", set, err)
 	}
 	row = mustGetThreadRequest(t, s, "tok-target")
 	if row.TargetComputerID != "backend-2" || row.TargetThreadID != "t-moved" || row.State != ThreadRequestRunning {
 		t.Fatalf("repointed row = %+v", row)
+	}
+	// The answering thread is on another computer, so its name has no local
+	// row to read after a restart. The dispatch records it here instead.
+	if row.TargetThreadTitle != "Release notes" {
+		t.Fatalf("target title = %q", row.TargetThreadTitle)
 	}
 	// It is now a remote request, so the poller must see it.
 	polls, err := s.DueThreadRequestPolls(nowMillis(), 10)
@@ -857,7 +862,7 @@ func TestSetThreadRequestTargetRecordsWhereItRuns(t *testing.T) {
 		t.Fatalf("due polls = %+v", polls)
 	}
 
-	set, err = s.SetThreadRequestTarget("tok-unknown", "backend-2", "t-moved")
+	set, err = s.SetThreadRequestTarget("tok-unknown", "backend-2", "t-moved", "")
 	if err != nil || set {
 		t.Fatalf("unknown token: set=%v err=%v", set, err)
 	}

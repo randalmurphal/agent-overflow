@@ -183,6 +183,9 @@ func (t threadToolsApp) RequestStates(ctx context.Context, caller threadtools.Ca
 	if len(call.ThreadIDs) > 0 {
 		return t.watchThreads(ctx, caller, call)
 	}
+	if err := refuseForeignLedgerRead(ctx, "a token"); err != nil {
+		return threadtools.StatusReport{}, err
+	}
 	rows := make([]store.ThreadRequest, 0, len(call.Tokens))
 	for _, token := range call.Tokens {
 		row, err := t.ownRequest(caller, token)
@@ -328,8 +331,8 @@ func (t threadToolsApp) requestState(ctx context.Context, row store.ThreadReques
 	}
 	if row.TargetThreadID != "" && row.TargetComputerID != "" {
 		// A thread on another computer has no row here. Its title is what
-		// that computer reported when it was last polled.
-		state.Title = t.app.remoteRequestLiveState(row.Token).title
+		// that computer reported when the target was recorded.
+		state.Title = row.TargetThreadTitle
 	} else if row.TargetThreadID != "" {
 		if thread, err := t.app.store.GetThread(row.TargetThreadID); err == nil {
 			state.Title = thread.Title
@@ -401,6 +404,9 @@ func (t threadToolsApp) wakeQueued(row store.ThreadRequest, late bool) bool {
 
 // ListRequests lists the caller's own requests, open first then newest first.
 func (t threadToolsApp) ListRequests(ctx context.Context, caller threadtools.Caller, call threadtools.ListCall) (threadtools.RequestListing, error) {
+	if err := refuseForeignLedgerRead(ctx, "a thread's requests"); err != nil {
+		return threadtools.RequestListing{}, err
+	}
 	limit := call.Limit
 	if limit <= 0 {
 		limit = threadtools.DefaultRequestListLimit
@@ -424,6 +430,9 @@ func (t threadToolsApp) ListRequests(ctx context.Context, caller threadtools.Cal
 // directory. The answer outlives the thread that wrote it, so this works
 // after an ask's scratch fork is long gone.
 func (t threadToolsApp) ExportAnswer(ctx context.Context, caller threadtools.Caller, token string) (threadtools.ExportFile, error) {
+	if err := refuseForeignLedgerRead(ctx, "a token"); err != nil {
+		return threadtools.ExportFile{}, err
+	}
 	row, err := t.ownRequest(caller, token)
 	if err != nil {
 		return threadtools.ExportFile{}, err

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
+	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
@@ -122,15 +124,6 @@ type ThreadPeerPollReply struct {
 // and a batch larger than this is a defect rather than work.
 const threadPeerTokenLimit = 256
 
-// threadToolOwner is the principal a receipt belongs to: the
-// authenticated device of the calling computer, never a caller-supplied
-// id, and "local" for an in-process call. It is the same derivation
-// remote jobs use, so the two surfaces cannot disagree about who owns
-// work one computer started on another.
-func (a *App) threadToolOwner(ctx context.Context) (string, error) {
-	return a.remoteCommandOwner(ctx)
-}
-
 // ThreadToolResolve answers one thread reference against this computer's
 // threads. It is typed rather than a tool call so the caller can compare
 // an ambiguity across computers without decoding rendered text.
@@ -138,7 +131,7 @@ func (a *App) threadToolOwner(ctx context.Context) (string, error) {
 //ao:scope threads:read
 //ao:route selected
 func (a *App) ThreadToolResolve(ctx context.Context, prefix string) (threadtools.Resolution, error) {
-	if _, err := a.threadToolOwner(ctx); err != nil {
+	if _, err := a.remoteCommandOwner(ctx); err != nil {
 		return threadtools.Resolution{}, err
 	}
 	if err := a.requireScope(ctx, transport.ScopeThreadsRead, "resolve a thread"); err != nil {
@@ -155,7 +148,7 @@ func (a *App) ThreadToolResolve(ctx context.Context, prefix string) (threadtools
 //ao:scope threads:read
 //ao:route selected
 func (a *App) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
-	if _, err := a.threadToolOwner(ctx); err != nil {
+	if _, err := a.remoteCommandOwner(ctx); err != nil {
 		return ThreadPeerReply{}, err
 	}
 	if err := a.requireScope(ctx, transport.ScopeThreadsRead, "read a thread"); err != nil {
@@ -177,7 +170,7 @@ func (a *App) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadP
 //ao:scope terminal:operate
 //ao:route selected
 func (a *App) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
-	owner, err := a.threadToolOwner(ctx)
+	owner, err := a.remoteCommandOwner(ctx)
 	if err != nil {
 		return ThreadPeerReply{}, err
 	}
@@ -201,7 +194,7 @@ func (a *App) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPe
 //ao:scope threads:read
 //ao:route selected
 func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) (ThreadPeerPollReply, error) {
-	owner, err := a.threadToolOwner(ctx)
+	owner, err := a.remoteCommandOwner(ctx)
 	if err != nil {
 		return ThreadPeerPollReply{}, err
 	}
@@ -245,7 +238,7 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 //ao:scope threads:read
 //ao:route selected
 func (a *App) ThreadToolExportChunk(ctx context.Context, exportID string, offset int64) (RemoteArtifactChunk, error) {
-	if _, err := a.threadToolOwner(ctx); err != nil {
+	if _, err := a.remoteCommandOwner(ctx); err != nil {
 		return RemoteArtifactChunk{}, err
 	}
 	if err := a.requireScope(ctx, transport.ScopeThreadsRead, "read a thread export"); err != nil {
@@ -284,17 +277,55 @@ func (a *App) runThreadPeerTool(ctx context.Context, call ThreadPeerCall) (Threa
 // threadPeerCaller names the calling thread for a forwarded read or
 // organize call: the source's thread, this computer's identity.
 func (a *App) threadPeerCaller(call ThreadPeerCall) (threadtools.Caller, error) {
-	if strings.TrimSpace(call.Source.ThreadID) == "" {
+	if !entityid.Valid(strings.TrimSpace(call.Source.ThreadID)) {
 		return threadtools.Caller{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			"A forwarded thread tools call must name the thread it came from.", nil)
 	}
 	backendID, _ := a.backendIdentity()
 	return threadtools.Caller{
-		ThreadID:     call.Source.ThreadID,
-		Title:        call.Source.Title,
+		ThreadID:     strings.TrimSpace(call.Source.ThreadID),
+		Title:        threadPeerTitle(call.Source.Title),
 		ComputerID:   backendID,
 		ComputerName: a.backendDisplayName(),
 	}, nil
+}
+
+// threadPeerTitle clips a title another computer chose to the bound this
+// computer's own tools enforce. It is rendered into the trusted "Agent
+// request" footer of a user message, so its length and its line count are
+// this computer's business, not the sender's.
+func threadPeerTitle(title string) string {
+	title = strings.Join(strings.Fields(title), " ")
+	if utf8.RuneCountInString(title) <= threadtools.MaxTitleRunes {
+		return title
+	}
+	count := 0
+	for index := range title {
+		if count == threadtools.MaxTitleRunes {
+			return title[:index]
+		}
+		count++
+	}
+	return title
+}
+
+// refuseForeignLedgerRead refuses a call that reads the CALLER's own request
+// ledger when the caller is another computer's thread.
+//
+// A forwarded call names a thread on the computer it came from, and this
+// computer answers it with its own rows: those two meanings of "the caller's
+// thread" are the same only for a local call. A forwarded `thread_status`
+// with tokens or with no arguments would read whatever local thread the
+// sender named, so it is refused here rather than answered. The thread_ids
+// branch is the one that is legitimately forwarded, and it reads threads
+// rather than the ledger.
+func refuseForeignLedgerRead(ctx context.Context, what string) error {
+	if !threadtools.Forwarded(ctx) {
+		return nil
+	}
+	return errorsx.Public(threadtools.CodeInvalidRequest,
+		"A request record belongs to the computer whose thread made it, so "+what+
+			" cannot be read from another computer. Call thread_status on your own computer.", nil)
 }
 
 // publicThreadToolError keeps an unreviewed cause out of the wire. The
@@ -314,28 +345,36 @@ func (a *App) publicThreadToolError(tool, threadID string, err error) error {
 // the existing receipt back instead of starting a second piece of work.
 func (a *App) runThreadPeerRequest(ctx context.Context, owner string, call ThreadPeerCall) (ThreadPeerReply, error) {
 	token := strings.TrimSpace(call.Token)
-	if token == "" {
+	// Every one of these is written into a receipt and rendered into the
+	// trusted "Agent request" footer of a user message on this computer.
+	// They are ids this app mints, so they are checked for the shape this
+	// app mints them in rather than for being non-empty.
+	if !entityid.Valid(token) {
 		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			"A forwarded request must carry the token its source minted.", nil)
 	}
-	if strings.TrimSpace(call.Source.ThreadID) == "" || strings.TrimSpace(call.Source.ComputerID) == "" {
+	source := call.Source
+	source.ThreadID = strings.TrimSpace(source.ThreadID)
+	source.ComputerID = strings.TrimSpace(source.ComputerID)
+	if !entityid.Valid(source.ThreadID) || !entityid.Valid(source.ComputerID) {
 		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			"A forwarded request must name the thread and computer it came from.", nil)
 	}
+	source.Title = threadPeerTitle(source.Title)
 	origin := threadRequestOrigin{
-		caller:      call.Source,
+		caller:      source,
 		foreign:     true,
 		ownerDevice: owner,
 		userMessage: call.UserMessage,
 		inherit:     call.Inherit,
 	}
-	adapter := threadToolsApp{app: a}
 	if call.Tool == "thread_cancel" {
 		return a.cancelPeerThreadRequest(ctx, origin, token, call)
 	}
 	if err := a.refuseForeignToken(token, owner); err != nil {
 		return ThreadPeerReply{}, err
 	}
+	adapter := threadToolsApp{app: a}
 	var err error
 	switch call.Tool {
 	case "thread_spawn":

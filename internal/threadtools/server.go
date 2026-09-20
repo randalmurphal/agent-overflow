@@ -51,7 +51,7 @@ func (s *Server) call(ctx context.Context, caller Caller, name string, args json
 		// The App reads this back for the one decision that turns on where
 		// the call came from: an export is written under a name the asking
 		// computer can fetch.
-		ctx = withForwarded(ctx)
+		ctx = WithForwarded(ctx)
 	} else {
 		var err error
 		computers, err = s.app.PairedComputers(ctx)
@@ -99,13 +99,16 @@ func (s *Server) call(ctx context.Context, caller Caller, name string, args json
 // forwardedKey marks a call that arrived from another computer.
 type forwardedKey struct{}
 
-func withForwarded(ctx context.Context) context.Context {
+// WithForwarded marks ctx as carrying a call from another computer. It is
+// what CallForwarded stamps, and an App test that exercises a forwarded read
+// directly; the app itself never calls it, so an ordinary call cannot claim
+// to be a peer's.
+func WithForwarded(ctx context.Context) context.Context {
 	return context.WithValue(ctx, forwardedKey{}, true)
 }
 
 // Forwarded reports whether the call an App method is serving arrived from
-// another computer. CallForwarded is the only thing that stamps it, so an
-// ordinary call cannot claim to be a peer's.
+// another computer.
 func Forwarded(ctx context.Context) bool {
 	value, _ := ctx.Value(forwardedKey{}).(bool)
 	return value

@@ -85,14 +85,10 @@ func remoteOutputHead(output string, budget int) string {
 	return output[:end]
 }
 
-// errRemoteWaitInterrupted marks a wait ended by this app, not by the
-// provider's request: the user stopped the turn, or the session ended. The
-// accepted command keeps running and the caller gets a backgrounded receipt.
-var errRemoteWaitInterrupted = errors.New("remote wait interrupted")
-
 // waitRemoteResult polls the destination until the command settles or the
 // wait ends. ctx is the provider's request; waitCtx is derived from it and
-// additionally canceled with errRemoteWaitInterrupted by an interrupt.
+// additionally canceled by an interrupt, which leaves the accepted command
+// running and gives the caller a backgrounded receipt.
 func (a *App) waitRemoteResult(ctx, waitCtx context.Context, computerID string, command RemoteCommand, options remoteResultOptions) (remoteMCPResult, error) {
 	if command.State == "running" && options.WaitSeconds != nil && *options.WaitSeconds > 0 {
 		wait, cancel := context.WithTimeout(waitCtx, time.Duration(*options.WaitSeconds*float64(time.Second)))

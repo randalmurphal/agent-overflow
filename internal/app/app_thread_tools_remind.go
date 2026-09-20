@@ -75,7 +75,10 @@ func (a *App) fireDueThreadReminders(now time.Time) {
 
 func (a *App) fireThreadReminder(row store.ThreadRequest, now time.Time) {
 	if a.settleThreadReminder(row, now) {
-		a.deliverThreadWake(row.Token, false)
+		// Off the sweep's goroutine: the delivery takes the caller
+		// thread's own lock and can start its session, and the reminders
+		// behind this one are due now.
+		a.deliverThreadWakeDetached(row.Token, false)
 	}
 }
 

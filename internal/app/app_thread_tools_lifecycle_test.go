@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
@@ -397,8 +398,10 @@ func TestAPeerCannotReplayAnOutboundToken(t *testing.T) {
 		Tool:  "thread_send",
 		Args:  args,
 		Token: token,
+		// A well-formed source: the replay is refused for whose token it
+		// is, not for the shape of the ids it claims.
 		Source: threadtools.Caller{
-			ThreadID: "their-thread", ComputerID: "attacker-computer", ComputerName: "Their Mac",
+			ThreadID: entityid.New(), ComputerID: entityid.New(), ComputerName: "Their Mac",
 		},
 	})
 	if code := publicCode(t, err); code != threadtools.CodeRequestNotYours {
@@ -439,7 +442,7 @@ func TestAFailedForwardedRequestSettlesItsReceipt(t *testing.T) {
 		Args:  args,
 		Token: token,
 		Source: threadtools.Caller{
-			ThreadID: "their-thread", ComputerID: "peer-computer", ComputerName: "Their Mac",
+			ThreadID: entityid.New(), ComputerID: entityid.New(), ComputerName: "Their Mac",
 		},
 	}); err == nil {
 		t.Fatal("asking a thread that cannot be forked was accepted")

@@ -370,9 +370,12 @@ func TestThreadToolsReceiptBelongsToTheDeviceThatMadeIt(t *testing.T) {
 
 	var reply ThreadPeerReply
 	err := second.CallThreadPeer(ctx, computer, "ThreadToolCall", &reply, ThreadPeerCall{
-		Tool:   "thread_send",
-		Token:  ack.Token,
-		Source: threadtools.Caller{ThreadID: pair.caller.ID, ComputerID: "another-computer"},
+		Tool:  "thread_send",
+		Token: ack.Token,
+		// A well-formed source that is simply not the one that minted the
+		// token: ownership is decided by the authenticated device, not by
+		// what the sender claims about itself.
+		Source: threadtools.Caller{ThreadID: pair.caller.ID, ComputerID: uuid.NewString()},
 		Args:   json.RawMessage(`{"thread_id":"` + pair.receipt(t, ack.Token).TargetThreadID + `","message":"steal it"}`),
 	})
 	if code := peerCode(t, err); code != threadtools.CodeRequestNotYours {

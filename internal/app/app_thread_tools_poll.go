@@ -23,13 +23,16 @@ import (
 // goroutine is one thing to cancel and join at shutdown.
 
 const (
-	// threadRequestSweepInterval is the reminder clock's resolution. A
-	// reminder is a message to the person's own agent, so a second of slack
-	// is invisible and the query behind it is an index seek on an empty
-	// table.
-	threadRequestSweepInterval = time.Second
+	// threadRequestSweepFloor is the shortest gap between two passes, and
+	// so the reminder clock's resolution. A reminder is a message to the
+	// person's own agent, so a second of slack is invisible. It is a floor
+	// rather than a tick: the sweep sleeps until the ledger's next due
+	// moment, and the floor is what keeps work the pass could not finish
+	// (a settlement the store refused) from spinning the loop.
+	threadRequestSweepFloor = time.Second
 	// threadRequestExpiryInterval is how often the retention work runs. It
-	// writes, so it runs on its own much slower clock.
+	// writes, so it runs on its own much slower clock, and it is the
+	// longest the sweep ever sleeps.
 	threadRequestExpiryInterval = 10 * time.Minute
 	// threadRequestPollBatch bounds one pass over the remote rows.
 	threadRequestPollBatch = 32
@@ -44,6 +47,16 @@ const (
 	threadPollNormalDelay  = 5 * time.Second
 	threadPollWaitingDelay = 2 * time.Second
 	threadPollErrorDelay   = 30 * time.Second
+	// threadPollLateCap is the ceiling of the settled row's cadence. A
+	// settled request is polled for one thing only, a late reply, and
+	// nobody is waiting on it: the delay doubles from the normal one up to
+	// this, so a request answered an hour ago costs a call every ten
+	// minutes rather than every five seconds.
+	threadPollLateCap = 10 * time.Minute
+	// threadLateReplyWindow is how long a settled request is still polled
+	// for a late reply when the destination reported no deadline of its
+	// own. It matches the destination's answer hold.
+	threadLateReplyWindow = 24 * time.Hour
 	// threadPollCallTimeout bounds one status call. It reads rows and one
 	// live state per open request and never starts work, so it sits well
 	// below the call timeout a forwarded tool gets.
@@ -85,18 +98,17 @@ func (a *App) nudgeThreadRequestSweep() {
 	}
 }
 
+// runThreadRequestSweeps runs a pass whenever the ledger says one is due.
+//
+// The clock is the ledger's own: after every pass the store reports the
+// earliest moment anything is scheduled, and the sweep sleeps until then,
+// until the retention clock comes round, or until a nudge says a row was
+// written. A computer with no requests wakes twice an hour rather than
+// three thousand times, and a due reminder is still served to the second.
 func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
-	ticker := time.NewTicker(threadRequestSweepInterval)
-	defer ticker.Stop()
 	done := a.lifeCtx().Done()
 	lastExpiry := time.Now()
 	for {
-		select {
-		case <-done:
-			return
-		case <-ticker.C:
-		case <-nudge:
-		}
 		if a.shuttingDown.Load() {
 			return
 		}
@@ -108,7 +120,43 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 			lastExpiry = now
 			a.expireThreadRequests(now)
 		}
+		// Drained before the schedule is read, so a nudge raised by this
+		// pass's own writes is answered by the read rather than by another
+		// pass. A nudge that lands after the read interrupts the sleep.
+		select {
+		case <-nudge:
+		default:
+		}
+		select {
+		case <-done:
+			return
+		case <-nudge:
+		case <-time.After(a.threadRequestSweepDelay(lastExpiry)):
+		}
 	}
+}
+
+// threadRequestSweepDelay is how long the sweep sleeps before its next pass:
+// until the ledger's next due moment, bounded below by the floor and above
+// by the retention clock.
+//
+// A poll already in flight is left out of the answer. Its rows are still due
+// by their own column, because the pass that owns them has not rescheduled
+// them yet, and sleeping on that would be sleeping for no time at all; the
+// poll nudges the sweep when it is done.
+func (a *App) threadRequestSweepDelay(lastExpiry time.Time) time.Duration {
+	delay := threadRequestExpiryInterval - time.Since(lastExpiry)
+	if next, scheduled, err := a.store.NextThreadRequestWork(); err != nil {
+		logThreadRequestSweep("read the next scheduled request work", err)
+	} else if scheduled && !a.threadRequestPollInFlight() {
+		if until := time.Until(time.UnixMilli(next)); until < delay {
+			delay = until
+		}
+	}
+	if delay < threadRequestSweepFloor {
+		return threadRequestSweepFloor
+	}
+	return delay
 }
 
 // pollRemoteThreadRequests collects the requests this computer's threads
@@ -165,7 +213,58 @@ func (a *App) endThreadRequestPoll() {
 	a.threadRequests.mu.Lock()
 	a.threadRequests.polling = false
 	a.threadRequests.mu.Unlock()
+	// The rows this pass rescheduled are the sweep's next deadline, and the
+	// sweep left them out of its schedule while the pass held them.
+	a.nudgeThreadRequestSweep()
 }
+
+// threadRequestPollInFlight reports whether a poll pass holds the rows it
+// read. The sweep's schedule leaves them out for as long as it does.
+func (a *App) threadRequestPollInFlight() bool {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	return a.threadRequests.polling
+}
+
+// deliverThreadWakeDetached hands one wake to the bounded set of goroutines
+// the sweep delivers through.
+//
+// A delivery takes the caller thread's own lock and can start its session,
+// which is arbitrarily slower than the pass that decided it was owed; done
+// in line, one thread that is busy holds up every reminder behind it. A
+// wake that finds no free goroutine is not lost: it is still undelivered,
+// and the retry pass comes back to it.
+func (a *App) deliverThreadWakeDetached(token string, late bool) {
+	if a.lifeCtx().Err() != nil || !a.beginThreadWakeDelivery() {
+		return
+	}
+	a.threadRequestsWG.Add(1)
+	go func() {
+		defer a.threadRequestsWG.Done()
+		defer a.endThreadWakeDelivery()
+		a.deliverThreadWake(token, late)
+	}()
+}
+
+func (a *App) beginThreadWakeDelivery() bool {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	if a.threadRequests.deliveries >= threadWakeDeliveryFanOut {
+		return false
+	}
+	a.threadRequests.deliveries++
+	return true
+}
+
+func (a *App) endThreadWakeDelivery() {
+	a.threadRequests.mu.Lock()
+	a.threadRequests.deliveries--
+	a.threadRequests.mu.Unlock()
+}
+
+// threadWakeDeliveryFanOut is how many wakes the sweep hands over at once,
+// the bound the poll fan-out uses for the same reason.
+const threadWakeDeliveryFanOut = 4
 
 // runThreadRequestPoll groups the due rows by destination and asks each one
 // about its whole set.
@@ -247,7 +346,7 @@ func (a *App) pollThreadRequestsOn(computerID string, rows []store.ThreadRequest
 		if revision > 0 {
 			acks = append(acks, ThreadPeerAck{Token: row.Token, Revision: revision})
 		}
-		a.rescheduleThreadRequest(row, a.threadPollDelay(row.Token), "")
+		a.scheduleNextThreadPoll(row)
 	}
 	if len(acks) == 0 {
 		return
@@ -310,8 +409,87 @@ func (a *App) rescheduleThreadRequest(row store.ThreadRequest, delay time.Durati
 	if issue == "" {
 		attempts = 0
 	}
-	if err := a.store.RescheduleThreadRequest(row.Token, time.Now().Add(delay).UnixMilli(), attempts, issue); err != nil {
-		logThreadRequestSweep("reschedule request "+row.Token, err)
+	a.rescheduleThreadRequestAt(row.Token, delay, attempts, issue)
+}
+
+func (a *App) rescheduleThreadRequestAt(token string, delay time.Duration, attempts int64, issue string) {
+	if err := a.store.RescheduleThreadRequest(token, time.Now().Add(delay).UnixMilli(), attempts, issue); err != nil {
+		logThreadRequestSweep("reschedule request "+token, err)
+		return
+	}
+	// The sweep sleeps on the ledger's schedule, and this row just changed
+	// it. A reschedule from a dispatching call is the one that matters: it
+	// is the first poll of a request made while nothing else was due.
+	a.nudgeThreadRequestSweep()
+}
+
+// scheduleNextThreadPoll decides when the poller returns to one row it has
+// just heard about, and retires it when there is nothing left to hear.
+//
+// An open request keeps the cadence its caller is paying for. A settled one
+// is visited for one thing only, a late `thread_reply`, so its delay doubles
+// towards the ten-minute ceiling and it leaves the poll for good once the
+// late reply lands or the destination's hold on the request runs out.
+func (a *App) scheduleNextThreadPoll(row store.ThreadRequest) {
+	// Re-read: the answer this poll applied may have settled the row, and
+	// the schedule a settled row gets is not the one it had.
+	current, found, err := a.store.GetThreadRequest(row.Token)
+	if err != nil {
+		logThreadRequestSweep("read request "+row.Token+" to reschedule", err)
+		return
+	}
+	if !found || !current.Polling {
+		return
+	}
+	if !threadRequestSettled(current) {
+		a.rescheduleThreadRequest(current, a.threadPollDelay(current.Token), "")
+		return
+	}
+	if !threadLateReplyAwaited(current, time.Now()) {
+		a.retireThreadRequestPoll(current.Token)
+		return
+	}
+	// `attempts` counts the consecutive polls that reported nothing new,
+	// which is what an error reschedule counts too, so a destination that
+	// is also unreachable backs off on one clock rather than two.
+	attempts := current.Attempts + 1
+	a.rescheduleThreadRequestAt(current.Token, threadLatePollDelay(attempts), attempts, "")
+}
+
+// threadLateReplyAwaited reports whether a settled request could still be
+// given a late reply by its destination: it has none yet, and the
+// destination's hold on the answer has not run out.
+func threadLateReplyAwaited(row store.ThreadRequest, now time.Time) bool {
+	if len(row.LateReply) > 0 || row.State != store.ThreadRequestFinished {
+		// Only a finished request takes a late reply; every other
+		// settlement is the last word on it.
+		return false
+	}
+	deadline := row.ExpiresAt
+	if deadline == 0 {
+		// A destination that reported no deadline still holds the answer
+		// for its own hold, which is what this one assumes.
+		deadline = row.SettledAt + threadLateReplyWindow.Milliseconds()
+	}
+	return now.UnixMilli() < deadline
+}
+
+// threadLatePollDelay doubles the normal cadence for each poll that reported
+// nothing new, up to the ceiling.
+func threadLatePollDelay(attempts int64) time.Duration {
+	delay := threadPollNormalDelay
+	for range attempts {
+		delay *= 2
+		if delay >= threadPollLateCap {
+			return threadPollLateCap
+		}
+	}
+	return delay
+}
+
+func (a *App) retireThreadRequestPoll(token string) {
+	if _, err := a.store.RetireThreadRequestPoll(token); err != nil {
+		logThreadRequestSweep("retire request "+token+" from the poll", err)
 	}
 }
 
@@ -330,9 +508,9 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 	if !answer.Known {
 		return 0, a.settleUnknownRemoteRequest(row)
 	}
-	a.noteRemoteRequestLive(token, answer.Blocked, answer.Title)
-	if answer.TargetThreadID != "" && answer.TargetThreadID != row.TargetThreadID {
-		if _, err := a.store.SetThreadRequestTarget(token, computerID, answer.TargetThreadID); err != nil {
+	a.noteRemoteRequestBlocked(token, answer.Blocked)
+	if target := threadPeerTarget(row, answer); target != "" {
+		if _, err := a.store.SetThreadRequestTarget(token, computerID, target, answer.Title); err != nil {
 			return 0, err
 		}
 	}
@@ -355,13 +533,40 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 	}
 	if threadRequestSettled(row) && answer.Revision <= row.Revision {
 		// Already collected. The row stays in the poll only because a
-		// `finished` request can still take a late reply, and the reading
-		// noted above is only needed once that reply arrives, when the
-		// poll carrying it notes it again.
-		a.forgetRemoteRequestLive(token)
+		// `finished` request can still take a late reply, and a settled
+		// request blocks nobody.
+		a.forgetRemoteRequestBlocked(token)
 		return 0, nil
 	}
 	return a.collectRemoteThreadRequest(row, answer)
+}
+
+// threadPeerTarget reports the target thread to record for one answer, empty
+// when the row already names it under the name the destination gave it.
+//
+// The title is recorded beside the id because a thread on another computer
+// has no row here: it is what names the target in a wake, in the origin chip
+// on that wake, and in `thread_status`, including after a restart, which the
+// live reading beside it does not survive.
+func threadPeerTarget(row store.ThreadRequest, answer ThreadPeerRequest) string {
+	target := answer.TargetThreadID
+	if target == "" {
+		target = row.TargetThreadID
+	}
+	switch {
+	case target == "":
+		return ""
+	case target != row.TargetThreadID:
+		// The destination named its thread, or moved the request to
+		// another one.
+		return target
+	case answer.Title != "" && answer.Title != row.TargetThreadTitle:
+		// Renamed there. An answer that carries no title at all leaves the
+		// name this row already holds alone: a destination that has
+		// deleted the thread still owes the answer a name.
+		return target
+	}
+	return ""
 }
 
 // settleUnknownRemoteRequest answers a token the destination does not hold.
@@ -371,6 +576,13 @@ func (a *App) applyThreadPeerRequest(token, computerID string, answer ThreadPeer
 // retention floor, or restored from a backup. Neither can be collected, and
 // the two read differently to the agent that is waiting.
 func (a *App) settleUnknownRemoteRequest(row store.ThreadRequest) error {
+	if threadRequestSettled(row) {
+		// Nothing left to settle, and nothing left to ask: a destination
+		// that no longer holds the receipt cannot take the late reply this
+		// row was still being polled for.
+		a.retireThreadRequestPoll(row.Token)
+		return nil
+	}
 	settlement := store.ThreadRequestSettlement{
 		State:      store.ThreadRequestErrored,
 		Answer:     []byte("The other computer no longer knows this request."),
@@ -401,10 +613,7 @@ func (a *App) collectRemoteThreadRequest(row store.ThreadRequest, answer ThreadP
 	if lateWake {
 		a.deliverThreadWake(row.Token, true)
 	}
-	// The live reading goes only now: both wakes above name the target by
-	// the title this holds. The row is settled here whichever side settled
-	// it, and a late reply's own poll notes the reading again first.
-	a.forgetRemoteRequestLive(row.Token)
+	a.forgetRemoteRequestBlocked(row.Token)
 	return answer.Revision, nil
 }
 
@@ -465,9 +674,7 @@ func (a *App) settleRemoteThreadRequest(row store.ThreadRequest, settlement stor
 	if wake {
 		a.deliverThreadWake(row.Token, false)
 	}
-	// After the wake, for the reason collectRemoteThreadRequest gives: the
-	// title it holds is what names the target in the wake it just rendered.
-	a.forgetRemoteRequestLive(row.Token)
+	a.forgetRemoteRequestBlocked(row.Token)
 	return nil
 }
 
