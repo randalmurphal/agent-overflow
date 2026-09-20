@@ -82,6 +82,10 @@ type ThreadRequest struct {
 	// id. It is rewritten when the target moves.
 	TargetComputerID string `json:"targetComputerId,omitempty"`
 	TargetThreadID   string `json:"targetThreadId,omitempty"`
+	// TargetThreadTitle is the answering thread's name on another computer,
+	// as that computer reported it. A local target has a row here and is
+	// named from it, so this stays empty for one.
+	TargetThreadTitle string `json:"targetThreadTitle,omitempty"`
 	// OriginThreadID is the thread an `ask` forked; empty otherwise.
 	OriginThreadID string `json:"originThreadId,omitempty"`
 	// Notify is whether a wake is owed on settlement. Every positive wait
@@ -99,12 +103,20 @@ type ThreadRequest struct {
 	DeliveredHow    string `json:"deliveredHow,omitempty"`
 	LateDeliveredAt int64  `json:"lateDeliveredAt,omitempty"`
 	// ExpiresAt is the destination's deadline for collecting the answer.
-	ExpiresAt int64  `json:"expiresAt,omitempty"`
+	ExpiresAt int64 `json:"expiresAt,omitempty"`
+	// Polling is whether the poller still visits this row. It is turned off
+	// when a settled request's destination has nothing left to report.
+	Polling   bool   `json:"-"`
 	NextCheck int64  `json:"-"`
 	Attempts  int64  `json:"-"`
 	Issue     string `json:"issue,omitempty"`
-	CreatedAt int64  `json:"createdAt"`
-	UpdatedAt int64  `json:"updatedAt"`
+	// WakeAttempts, WakeNextCheck and WakeIssue schedule and bound the
+	// retry of a wake the settlement could not hand over.
+	WakeAttempts  int64  `json:"-"`
+	WakeNextCheck int64  `json:"-"`
+	WakeIssue     string `json:"wakeIssue,omitempty"`
+	CreatedAt     int64  `json:"createdAt"`
+	UpdatedAt     int64  `json:"updatedAt"`
 }
 
 // ThreadRequestSettlement is one settled answer, written identically to the
@@ -131,24 +143,27 @@ func (s ThreadRequestSettlement) validate(action string, states map[string]struc
 }
 
 const threadRequestColumns = `token, caller_thread_id, kind, COALESCE(due_at, 0),
-    target_computer_id, target_thread_id, origin_thread_id, notify, state,
+    target_computer_id, target_thread_id, target_thread_title, origin_thread_id, notify, state,
     answer, answer_kind, late_reply, COALESCE(late_reply_at, 0), revision,
     COALESCE(settled_at, 0), COALESCE(delivered_at, 0), delivered_how,
     COALESCE(late_delivered_at, 0), COALESCE(expires_at, 0),
-    next_check, attempts, issue, created_at, updated_at`
+    polling, next_check, attempts, issue,
+    wake_attempts, wake_next_check, wake_issue, created_at, updated_at`
 
 func scanThreadRequest(row rowScanner) (ThreadRequest, error) {
 	var r ThreadRequest
-	var notify int
+	var notify, polling int
 	err := row.Scan(
 		&r.Token, &r.CallerThreadID, &r.Kind, &r.DueAt,
-		&r.TargetComputerID, &r.TargetThreadID, &r.OriginThreadID, &notify, &r.State,
+		&r.TargetComputerID, &r.TargetThreadID, &r.TargetThreadTitle, &r.OriginThreadID, &notify, &r.State,
 		&r.Answer, &r.AnswerKind, &r.LateReply, &r.LateReplyAt, &r.Revision,
 		&r.SettledAt, &r.DeliveredAt, &r.DeliveredHow,
 		&r.LateDeliveredAt, &r.ExpiresAt,
-		&r.NextCheck, &r.Attempts, &r.Issue, &r.CreatedAt, &r.UpdatedAt,
+		&polling, &r.NextCheck, &r.Attempts, &r.Issue,
+		&r.WakeAttempts, &r.WakeNextCheck, &r.WakeIssue, &r.CreatedAt, &r.UpdatedAt,
 	)
 	r.Notify = notify != 0
+	r.Polling = polling != 0
 	return r, err
 }
 
@@ -314,11 +329,14 @@ func MarkThreadRequestDeliveredTx(tx *sql.Tx, token, how string, at int64, late 
 		return false, err
 	}
 	settled := " AND NOT (" + openStates + ")"
-	query := `UPDATE thread_requests SET delivered_at = ?, delivered_how = ?, updated_at = ?
-	           WHERE token = ? AND delivered_at IS NULL` + settled
+	// The retry schedule is cleared with the delivery: what it counted is
+	// over, and the row's second wake starts its own attempts from zero.
+	retry := `, wake_attempts = 0, wake_next_check = 0, wake_issue = ''`
+	query := `UPDATE thread_requests SET delivered_at = ?, delivered_how = ?, updated_at = ?` + retry +
+		` WHERE token = ? AND delivered_at IS NULL` + settled
 	if late {
-		query = `UPDATE thread_requests SET late_delivered_at = ?, delivered_how = ?, updated_at = ?
-		          WHERE token = ? AND late_reply IS NOT NULL AND late_delivered_at IS NULL` + settled
+		query = `UPDATE thread_requests SET late_delivered_at = ?, delivered_how = ?, updated_at = ?` + retry +
+			` WHERE token = ? AND late_reply IS NOT NULL AND late_delivered_at IS NULL` + settled
 	}
 	args := append([]any{at, how, nowMillis(), token}, states...)
 	result, err := tx.Exec(query, args...)
@@ -352,12 +370,17 @@ func (s *Store) MarkThreadRequestDelivered(token, how string, at int64, late boo
 // on state because the target moves for reasons the state says nothing about:
 // a conversation transferred to another computer is re-pointed while the
 // request is still running. It reports whether the row existed.
-func (s *Store) SetThreadRequestTarget(token, computerID, threadID string) (bool, error) {
+//
+// `title` names that thread on another computer, where this store has no row
+// to read it from. A local target is named from its own row, so it passes an
+// empty title.
+func (s *Store) SetThreadRequestTarget(token, computerID, threadID, title string) (bool, error) {
 	action := fmt.Sprintf("store: set thread request %s target", token)
 	result, err := s.db.Exec(
-		`UPDATE thread_requests SET target_computer_id = ?, target_thread_id = ?, updated_at = ?
+		`UPDATE thread_requests
+		    SET target_computer_id = ?, target_thread_id = ?, target_thread_title = ?, updated_at = ?
 		  WHERE token = ?`,
-		computerID, threadID, nowMillis(), token,
+		computerID, threadID, title, nowMillis(), token,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
@@ -412,6 +435,77 @@ func (s *Store) RescheduleThreadRequest(token string, nextCheck int64, attempts 
 		return fmt.Errorf("store: reschedule thread request %s: %w", token, err)
 	}
 	return requireRowsAffected(result, fmt.Sprintf("store: reschedule thread request %s", token))
+}
+
+// RetireThreadRequestPoll takes one row out of the poller for good. A
+// settled request whose destination has nothing left to report is retired:
+// the late reply landed, or the destination's hold on the request ran out.
+// It reports whether the row was still being polled.
+//
+// Retirement is durable because the alternative is a row that costs a call
+// to another computer every few seconds until the retention floor deletes
+// it, and because nothing recomputes the decision after a restart.
+func (s *Store) RetireThreadRequestPoll(token string) (bool, error) {
+	action := fmt.Sprintf("store: retire thread request poll %s", token)
+	result, err := s.db.Exec(
+		`UPDATE thread_requests SET polling = 0, attempts = 0, issue = '', updated_at = ?
+		  WHERE token = ? AND polling = 1`,
+		nowMillis(), token,
+	)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return rowsChanged(result, action)
+}
+
+// ScheduleThreadRequestWake books the next attempt at one undelivered wake.
+// It is written before the attempt, so a delivery that fails or hangs cannot
+// bring the retry round again at once.
+func (s *Store) ScheduleThreadRequestWake(token string, nextCheck, attempts int64) error {
+	action := fmt.Sprintf("store: schedule thread request wake %s", token)
+	result, err := s.db.Exec(
+		`UPDATE thread_requests SET wake_next_check = ?, wake_attempts = ?, updated_at = ?
+		  WHERE token = ?`,
+		nextCheck, attempts, nowMillis(), token,
+	)
+	if err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	return requireRowsAffected(result, action)
+}
+
+// NoteThreadRequestWakeIssue records why a wake could not be handed over.
+// It is the reason the retry gives up with, and it is kept on the row so a
+// person reading the ledger can see what stopped it.
+func (s *Store) NoteThreadRequestWakeIssue(token, issue string) error {
+	action := fmt.Sprintf("store: note thread request wake issue %s", token)
+	if _, err := s.db.Exec(
+		`UPDATE thread_requests SET wake_issue = ?, updated_at = ? WHERE token = ?`,
+		issue, nowMillis(), token,
+	); err != nil {
+		return fmt.Errorf("%s: %w", action, err)
+	}
+	return nil
+}
+
+// AbandonThreadRequestWake ends the retry of a wake that cannot be handed
+// over, recording the reason. It disarms `notify`, which is what takes the
+// row out of the undelivered set: the answer is still on the row and
+// `thread_status` still returns it, so nothing is lost but the message.
+func (s *Store) AbandonThreadRequestWake(token, issue string) (bool, error) {
+	action := fmt.Sprintf("store: abandon thread request wake %s", token)
+	if issue == "" {
+		return false, fmt.Errorf("%s: a reason is required", action)
+	}
+	result, err := s.db.Exec(
+		`UPDATE thread_requests SET notify = 0, wake_issue = ?, updated_at = ?
+		  WHERE token = ? AND notify = 1`,
+		issue, nowMillis(), token,
+	)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", action, err)
+	}
+	return rowsChanged(result, action)
 }
 
 // GetThreadRequest reads one source row. The bool separates "no such token"
@@ -509,14 +603,16 @@ func (s *Store) DueThreadReminders(now int64, limit int) ([]ThreadRequest, error
 
 // DueThreadRequestPolls returns the remote requests the poller should visit.
 // The predicate matches idx_thread_requests_poll exactly, including the
-// `finished` state a late reply still needs polling for.
+// `finished` state a late reply still needs polling for and the `polling`
+// gate that retires a row once there is nothing left to ask about.
 func (s *Store) DueThreadRequestPolls(now int64, limit int) ([]ThreadRequest, error) {
 	if limit < 1 {
 		limit = 32
 	}
 	rows, err := s.reader().Query(
 		`SELECT `+threadRequestColumns+` FROM thread_requests
-		  WHERE target_computer_id <> ''
+		  WHERE polling = 1
+		    AND target_computer_id <> ''
 		    AND state IN ('unconfirmed','accepted','running','finished')
 		    AND next_check <= ?
 		  ORDER BY next_check ASC LIMIT ?`, now, limit)
@@ -527,26 +623,64 @@ func (s *Store) DueThreadRequestPolls(now int64, limit int) ([]ThreadRequest, er
 }
 
 // UndeliveredThreadRequestWakes returns the settled requests that still owe
-// their caller a message: `notify` is armed and the answer, or a late reply,
-// has never been handed over. Oldest first, so a backlog drains in the order
-// the answers arrived.
+// their caller a message: `notify` is armed, the retry's own clock has come
+// round, and the answer, or a late reply, has never been handed over. Oldest
+// first, so a backlog drains in the order the answers arrived.
 //
 // It is the recovery read behind the wake: the settlement and the wake are
 // separate transactions, and neither poll query revisits a settled row.
-func (s *Store) UndeliveredThreadRequestWakes(limit int) ([]ThreadRequest, error) {
+func (s *Store) UndeliveredThreadRequestWakes(now int64, limit int) ([]ThreadRequest, error) {
 	if limit < 1 {
 		limit = 32
 	}
 	rows, err := s.reader().Query(
 		`SELECT `+threadRequestColumns+` FROM thread_requests
 		  WHERE notify = 1
+		    AND wake_next_check <= ?
 		    AND ((settled_at IS NOT NULL AND delivered_at IS NULL)
 		      OR (late_reply IS NOT NULL AND late_delivered_at IS NULL))
-		  ORDER BY settled_at ASC, token ASC LIMIT ?`, limit)
+		  ORDER BY settled_at ASC, token ASC LIMIT ?`, now, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list undelivered thread request wakes: %w", err)
 	}
 	return collectThreadRequests(rows, "store: list undelivered thread request wakes")
+}
+
+// NextThreadRequestWork returns the earliest moment the unattended passes
+// have anything to do: a reminder to fire, a remote request to poll, or a
+// wake to retry. The bool is false when the ledger has nothing scheduled,
+// which on most computers it always has: the sweep sleeps on that answer
+// rather than asking three questions a second for the life of the process.
+// It is separate from the moment because a row waiting on the zero moment
+// is due now, not idle.
+//
+// One query, three indexed minima, so the answer describes one snapshot.
+func (s *Store) NextThreadRequestWork() (int64, bool, error) {
+	var reminder, poll, wake sql.NullInt64
+	if err := s.reader().QueryRow(
+		`SELECT
+		   (SELECT MIN(due_at) FROM thread_requests
+		     WHERE kind = 'remind' AND state = 'accepted'),
+		   (SELECT MIN(next_check) FROM thread_requests
+		     WHERE polling = 1 AND target_computer_id <> ''
+		       AND state IN ('unconfirmed','accepted','running','finished')),
+		   (SELECT MIN(wake_next_check) FROM thread_requests
+		     WHERE notify = 1
+		       AND ((settled_at IS NOT NULL AND delivered_at IS NULL)
+		         OR (late_reply IS NOT NULL AND late_delivered_at IS NULL)))`,
+	).Scan(&reminder, &poll, &wake); err != nil {
+		return 0, false, fmt.Errorf("store: read next thread request work: %w", err)
+	}
+	next, scheduled := int64(0), false
+	for _, candidate := range []sql.NullInt64{reminder, poll, wake} {
+		if !candidate.Valid {
+			continue
+		}
+		if !scheduled || candidate.Int64 < next {
+			next, scheduled = candidate.Int64, true
+		}
+	}
+	return next, scheduled, nil
 }
 
 // HasOpenThreadRequests reports whether a thread still owns an undelivered

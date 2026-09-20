@@ -12,15 +12,21 @@ import (
 )
 
 // The parking half of the agent thread tools: one registry of tool calls
-// waiting on a request to settle, and the per-token lock that makes a
-// settlement and a timeout mutually exclusive.
+// waiting on something to happen elsewhere, and the per-token lock that makes
+// a settlement and a timeout mutually exclusive.
 //
-// It is the `remoteWaits` shape (app_remote_wait.go) with two differences
-// the request ledger needs. A wait registers several KEYS at once, because
-// `thread_status` waits on a list of tokens or threads and returns on the
-// first of them; and each registration carries a channel rather than only a
-// cancel func, because the wait has to know WHICH key woke it in order to
-// report `woke_on`.
+// The registry holds both kinds of parked call this app has, because they
+// want the same thing of it: a tool call parked on another thread's request
+// and one parked on a remote command both have to be found by what they are
+// waiting for (the delivery decision asks whether anyone is parked, since a
+// reply that returns the answer IS the delivery) and ended by the interrupt
+// of the turn that made them.
+//
+// A registration carries several KEYS, because `thread_status` waits on a
+// list of tokens or threads and returns on the first of them, and a channel
+// rather than only a cancel func, because the wait has to know WHICH key
+// woke it in order to report `woke_on`. A remote command's wait uses one key
+// and reads neither, which costs it nothing.
 
 // threadRequestState is the in-process half of the request ledger.
 type threadRequestState struct {
@@ -47,28 +53,18 @@ type threadRequestState struct {
 	// is started, which is what makes a nudge from a test with no sweep a
 	// no-op rather than a leak.
 	nudge chan struct{}
-	// lastWakeRetry is when the undelivered-wake pass last ran. The sweep
-	// ticks every second and that pass is a recovery net, so it carries its
-	// own much slower clock rather than a second ticker.
-	lastWakeRetry time.Time
 	// polling is the single poll slot. A pass whose rows are still in
 	// flight has not rescheduled them, so a second pass would ask the same
 	// destination about the same tokens.
 	polling bool
-	// remote caches what only the destination knows about a request on
-	// another computer, refreshed by every poll of it. It is not state:
-	// the record is the source row, this is the live reading beside it,
-	// and after a restart it is empty until the next poll fills it in.
-	remote map[string]remoteRequestLive
-}
-
-// remoteRequestLive is one remote request's live properties: whether its
-// target is waiting on a person right now, and what that thread is called.
-// Neither has a column on the source row, because neither is this
-// computer's to record.
-type remoteRequestLive struct {
-	blocked bool
-	title   string
+	// deliveries is how many wakes the sweep is handing over right now,
+	// bounded by threadWakeDeliveryFanOut.
+	deliveries int
+	// blocked records which remote requests their own computer last
+	// reported as waiting on a person. It is not state: the record is the
+	// source row, this is the live reading beside it, and after a restart
+	// it is empty until the next poll fills it in.
+	blocked map[string]bool
 }
 
 // threadRequestWait is one parked tool call.
@@ -76,8 +72,12 @@ type threadRequestWait struct {
 	// threadID is the CALLER's thread, so an interrupt of that thread ends
 	// the call it was blocking.
 	threadID string
-	// keys are the tokens (and `thread:<id>` watches) this call is parked
-	// on. Any of them ends it.
+	// remote marks a call parked on a remote command rather than on a
+	// thread request. The two are ended by different operations, so the
+	// registry keeps them apart.
+	remote bool
+	// keys are the tokens (and `thread:<id>` watches, and one remote job)
+	// this call is parked on. Any of them ends it.
 	keys   map[string]struct{}
 	cancel context.CancelCauseFunc
 	// woke carries the key that ended the wait. Buffered so a broadcaster
@@ -86,22 +86,9 @@ type threadRequestWait struct {
 }
 
 // errThreadRequestWaitInterrupted marks a wait this app ended because the
-// caller's turn was interrupted, as opposed to one the clock ended. The
-// request itself keeps running; only the call stops waiting for it.
+// caller's turn was interrupted, as opposed to one the clock ended. The work
+// itself keeps running; only the call stops waiting for it.
 var errThreadRequestWaitInterrupted = errors.New("thread request wait interrupted")
-
-// beginThreadWakeRetry reports whether the undelivered-wake pass is due, and
-// records this pass when it is. The boot sweep is always due, because the
-// zero time is older than any interval.
-func (a *App) beginThreadWakeRetry(now time.Time) bool {
-	a.threadRequests.mu.Lock()
-	defer a.threadRequests.mu.Unlock()
-	if now.Sub(a.threadRequests.lastWakeRetry) < threadRequestWakeRetryInterval {
-		return false
-	}
-	a.threadRequests.lastWakeRetry = now
-	return true
-}
 
 func (a *App) threadRequestSettleLock(token string) func() {
 	a.threadRequests.settleOnce.Do(func() {
@@ -119,13 +106,37 @@ func (a *App) threadRequestSettleLock(token string) func() {
 // wait as active, or it queues a wake for an answer the model is about to
 // read in the reply.
 func (a *App) beginRequestWait(ctx context.Context, threadID string, keys []string) (context.Context, <-chan string, func()) {
+	return a.beginWait(ctx, threadRequestWait{threadID: threadID}, keys)
+}
+
+// beginRemoteWait parks one tool call on a remote command. The returned end
+// function releases the registration; callers invoke it after the reply is
+// written, not before, so the completion watcher cannot slip a duplicate in
+// between the terminal observation and the response.
+func (a *App) beginRemoteWait(ctx context.Context, threadID, computerID, requestID string) (context.Context, func()) {
+	waitCtx, _, end := a.beginWait(ctx, threadRequestWait{threadID: threadID, remote: true},
+		[]string{remoteJobKey(computerID, requestID)})
+	return waitCtx, end
+}
+
+// remoteJobKey names one remote command in the wait registry.
+func remoteJobKey(computerID, requestID string) string {
+	return "remote-job:" + computerID + ":" + requestID
+}
+
+// remoteWaitActive reports whether a tool call is parked on one remote
+// command. While it is, the completion watcher leaves that job alone: the
+// reply the wait produces is the delivery, and a completion message on top
+// of it would hand the agent the same result twice.
+func (a *App) remoteWaitActive(computerID, requestID string) bool {
+	return a.requestWaitActive(remoteJobKey(computerID, requestID))
+}
+
+func (a *App) beginWait(ctx context.Context, wait threadRequestWait, keys []string) (context.Context, <-chan string, func()) {
 	waitCtx, cancel := context.WithCancelCause(ctx)
-	wait := threadRequestWait{
-		threadID: threadID,
-		keys:     make(map[string]struct{}, len(keys)),
-		cancel:   cancel,
-		woke:     make(chan string, 1),
-	}
+	wait.keys = make(map[string]struct{}, len(keys))
+	wait.cancel = cancel
+	wait.woke = make(chan string, 1)
 	for _, key := range keys {
 		wait.keys[key] = struct{}{}
 	}
@@ -147,9 +158,9 @@ func (a *App) beginRequestWait(ctx context.Context, threadID string, keys []stri
 }
 
 // requestWaitActive reports whether a call is parked on this key. The
-// collector checks it under the key's settle lock before queuing a wake,
-// exactly as the remote watcher checks remoteWaitActive: the reply the wait
-// produces IS the delivery.
+// collector checks it under the key's settle lock before queuing a wake, and
+// the remote completion watcher checks it before queuing a completion: the
+// reply the wait produces IS the delivery.
 func (a *App) requestWaitActive(key string) bool {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
@@ -179,14 +190,28 @@ func (a *App) wakeRequestWaits(key string) {
 	}
 }
 
-// cancelThreadRequestWaits ends every call the given thread has parked. The
-// requests keep running; only the calls stop waiting. It is the sibling of
-// cancelRemoteWaits and is called from the same interrupt path.
+// cancelThreadRequestWaits ends every call the given thread has parked on a
+// thread request. The requests keep running; only the calls stop waiting.
 func (a *App) cancelThreadRequestWaits(threadID string) {
+	a.cancelWaits(threadID, false)
+}
+
+// cancelRemoteWaits ends every call the given thread has parked on a remote
+// command. The commands keep running; only the tool calls stop waiting for
+// them, and the parked call returns a backgrounded receipt at once.
+//
+// The two cancels are separate because the operations behind them are:
+// revoking a thread's remote access ends its remote waits and nothing else,
+// and cancelling its requests ends its request waits and nothing else.
+func (a *App) cancelRemoteWaits(threadID string) {
+	a.cancelWaits(threadID, true)
+}
+
+func (a *App) cancelWaits(threadID string, remote bool) {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
 	for _, wait := range a.threadRequests.waits {
-		if wait.threadID == threadID {
+		if wait.threadID == threadID && wait.remote == remote {
 			wait.cancel(errThreadRequestWaitInterrupted)
 		}
 	}
@@ -278,12 +303,14 @@ func (a *App) waitRequest(
 
 	timer := time.NewTimer(time.Duration(seconds) * time.Second)
 	defer timer.Stop()
-	// A local target's live state changes without any settlement — a turn
-	// starting, an approval appearing — and a `thread_status` watching a
-	// thread ends on exactly those. Polling them on a slow tick beside the
-	// event-driven wake keeps the watch honest without a second event bus.
-	ticker := time.NewTicker(threadRequestWatchInterval)
-	defer ticker.Stop()
+	// A target's live state changes without any settlement: a turn
+	// starting, an approval appearing. A settlement arrives on the wake
+	// channel, so this covers only what no settlement produces, and it
+	// backs off, because a person answering an approval is the fastest
+	// thing it is watching for.
+	watch := time.NewTimer(threadRequestWatchInterval)
+	defer watch.Stop()
+	period := threadRequestWatchInterval
 	for {
 		select {
 		case <-waitCtx.Done():
@@ -300,7 +327,11 @@ func (a *App) waitRequest(
 			}
 			return waitRequestOutcome{TimedOut: true}, nil
 		case <-wake:
-		case <-ticker.C:
+		case <-watch.C:
+			if period < threadRequestWatchCap {
+				period *= 2
+			}
+			watch.Reset(period)
 		}
 		if woke, done, err := check(); err != nil || done {
 			return waitRequestOutcome{WokeOn: woke}, err
@@ -308,10 +339,13 @@ func (a *App) waitRequest(
 	}
 }
 
-// threadRequestWatchInterval is how often a parked wait re-reads the live
-// state of the threads it is watching. Settlements arrive on the wake
-// channel; this covers only the state a settlement does not produce.
-const threadRequestWatchInterval = time.Second
+// threadRequestWatchInterval is how soon a parked wait first re-reads the
+// live state it is watching, and threadRequestWatchCap is the longest it
+// waits between those reads.
+const (
+	threadRequestWatchInterval = time.Second
+	threadRequestWatchCap      = 5 * time.Second
+)
 
 // threadRequestSettled reports whether a source row has reached a state that
 // ends a wait.
@@ -324,34 +358,41 @@ func threadRequestSettled(row store.ThreadRequest) bool {
 	}
 }
 
-// noteRemoteRequestLive records what a destination reported about one of
-// its receipts. forgetRemoteRequestLive drops it once the request has
-// settled AND the wakes that settlement owed have been rendered: the
-// target's title is the only name a wake and its origin chip have for a
-// thread on another computer, so dropping it any earlier renders both
-// unnamed. A late reply re-notes it from the poll that carries it.
-func (a *App) noteRemoteRequestLive(token string, blocked bool, title string) {
+// noteRemoteRequestBlocked records whether a destination last reported its
+// target as waiting on a person. It is the only live reading a remote
+// request has: everything else the destination says about it is written to
+// the row. forgetRemoteRequestBlocked drops it once the request settles,
+// after which nothing is blocked on anyone.
+//
+// A target that has just become blocked ends the waits parked on it, the way
+// a settlement does: the reading changed, and the wait's own clock is slower
+// than the round trip that carried it.
+func (a *App) noteRemoteRequestBlocked(token string, blocked bool) {
 	if token == "" {
 		return
 	}
 	a.threadRequests.mu.Lock()
-	defer a.threadRequests.mu.Unlock()
-	if a.threadRequests.remote == nil {
-		a.threadRequests.remote = make(map[string]remoteRequestLive)
+	changed := blocked && !a.threadRequests.blocked[token]
+	if a.threadRequests.blocked == nil {
+		a.threadRequests.blocked = make(map[string]bool)
 	}
-	a.threadRequests.remote[token] = remoteRequestLive{blocked: blocked, title: title}
+	a.threadRequests.blocked[token] = blocked
+	a.threadRequests.mu.Unlock()
+	if changed {
+		a.wakeRequestWaits(token)
+	}
 }
 
-func (a *App) forgetRemoteRequestLive(token string) {
+func (a *App) forgetRemoteRequestBlocked(token string) {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
-	delete(a.threadRequests.remote, token)
+	delete(a.threadRequests.blocked, token)
 }
 
-func (a *App) remoteRequestLiveState(token string) remoteRequestLive {
+func (a *App) remoteRequestBlocked(token string) bool {
 	a.threadRequests.mu.Lock()
 	defer a.threadRequests.mu.Unlock()
-	return a.threadRequests.remote[token]
+	return a.threadRequests.blocked[token]
 }
 
 // threadRequestBlocked reports whether a request's target is waiting on a
@@ -368,13 +409,13 @@ func (a *App) threadRequestBlocked(row store.ThreadRequest) bool {
 		return false
 	}
 	if row.TargetComputerID != "" {
-		return a.remoteRequestLiveState(row.Token).blocked
+		return a.remoteRequestBlocked(row.Token)
 	}
 	live, err := a.threadToolsAdapter().LiveState(context.Background(), row.TargetThreadID)
 	if err != nil {
 		return false
 	}
-	return live.PendingApprovals > 0 || live.PendingUserInputs > 0
+	return live.Blocked()
 }
 
 // threadRequestOutcome maps a source row plus what ended the wait onto the

@@ -315,10 +315,6 @@ func (a *App) probeUnacceptedRemoteWatch(ctx context.Context, w store.RemoteWatc
 	return true, a.refuseRemoteWatch(w.ComputerID, w.RequestID, w.ThreadID, a.remoteOperationError("status", w.ComputerID, w.RequestID, err))
 }
 
-// Serialize admission and optional lazy start against archive/transfer/stop,
-// using the same action→mutation lock order as ordinary sends. Never hold a
-// thread lock while waiting on the destination network. ctx bounds only the
-// lock wait; admitted work runs on the app lifetime.
 // remoteCompletionExcerpt prefers the saved log, which has both ends of the
 // output; the inline receipt tail is the fallback for an unreachable or older
 // destination, and an empty one is reported as unavailable.
@@ -333,18 +329,35 @@ func (a *App) remoteCompletionExcerpt(ctx context.Context, computerID, requestID
 	return remoteCompletionOutput{Tail: receipt.Output, Truncated: receipt.Truncated, Omitted: len(receipt.Output) > remoteCompletionOutputBytes}
 }
 
+// deliverRemoteCompletion queues the finished job's report for its thread.
+// The excerpt is fetched before this call because the thread lock must never
+// be held across the destination network; ctx bounds only the lock wait.
 func (a *App) deliverRemoteCompletion(ctx context.Context, w store.RemoteWatch, output remoteCompletionOutput) error {
-	unlock, err := a.threadLocks().LockCtx(ctx, w.ThreadID)
-	if err != nil {
-		return err
-	}
-	defer unlock()
+	return a.queueAgentNotice(ctx, agentNotice{
+		threadID: w.ThreadID,
+		sendID:   remoteCompletionSendID(w),
+		prepare:  func() (string, bool, error) { return a.prepareRemoteCompletion(w, output) },
+		persist: func(item store.FlushQueueItem) error {
+			return a.store.QueueRemoteCompletion(w.ComputerID, w.RequestID, item)
+		},
+		startFailed: func(err error) string {
+			// Admission already handed the message to the ordinary durable
+			// queue. Startup's normal flush trigger dispatches it.
+			return "Remote job finished; its completion is queued, but the agent could not start: " + remoteErrorText(err)
+		},
+	})
+}
+
+// prepareRemoteCompletion is this notice's own policy, run under the thread
+// lock: whether the completion is still owed, and what it says. Every read it
+// makes can have changed while the lock was being taken.
+func (a *App) prepareRemoteCompletion(w store.RemoteWatch, output remoteCompletionOutput) (string, bool, error) {
 	current, err := a.store.GetRemoteWatch(w.ComputerID, w.RequestID)
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	if current.Notification != "pending" {
-		return nil
+		return "", false, nil
 	}
 	// A direct status/cancel can finish while this watcher is in flight. The
 	// durable receipt wins; only reuse this excerpt when it describes that
@@ -356,17 +369,17 @@ func (a *App) deliverRemoteCompletion(ctx context.Context, w store.RemoteWatch, 
 	}
 	w = current
 	if w.Receipt.ID == "" || w.Receipt.State == "running" {
-		return nil
+		return "", false, nil
 	}
 	thread, err := a.store.GetThread(w.ThreadID)
 	if err != nil {
-		return err
+		return "", false, err
 	}
 	if thread.Archived {
-		return a.store.DismissRemoteWatch(w.ComputerID, w.RequestID)
+		return "", false, a.store.DismissRemoteWatch(w.ComputerID, w.RequestID)
 	}
 	if err = a.store.CheckThreadExecutionAccess(thread); err != nil {
-		return err
+		return "", false, err
 	}
 	if thread.Mode == threadmode.ModeWorkflow {
 		// A workflow owns its phase lifetime. Finishing a remote job cannot reopen
@@ -374,14 +387,14 @@ func (a *App) deliverRemoteCompletion(ctx context.Context, w store.RemoteWatch, 
 		_, live := a.sessionManager().get(thread.ID)
 		unit, found, e := a.store.GetWorkItemUnitByThread(thread.ID)
 		if e != nil {
-			return e
+			return "", false, e
 		}
 		itemID := unit.ItemID
 		running := found && unit.Status == store.WorkItemUnitRunning
 		if !found {
 			phase, exists, e := a.store.GetWorkItemPhaseByThread(thread.ID)
 			if e != nil {
-				return e
+				return "", false, e
 			}
 			itemID = phase.ItemID
 			running = exists && phase.Status == "running"
@@ -389,36 +402,15 @@ func (a *App) deliverRemoteCompletion(ctx context.Context, w store.RemoteWatch, 
 		if running {
 			item, e := a.store.GetWorkItem(itemID)
 			if e != nil {
-				return e
+				return "", false, e
 			}
 			running = item.State == "running"
 		}
 		if !running || !live {
-			return a.store.DismissRemoteWatch(w.ComputerID, w.RequestID)
+			return "", false, a.store.DismissRemoteWatch(w.ComputerID, w.RequestID)
 		}
 	}
-	if err = a.queueRemoteCompletion(w, output); err != nil {
-		return err
-	}
-	if _, live := a.sessionManager().get(w.ThreadID); !live {
-		// Admission already handed the message to the ordinary durable queue.
-		// Startup's normal flush trigger dispatches it. Errors retain that queue.
-		if err = a.startSession(a.lifeCtx(), w.ThreadID); err != nil {
-			a.emitWireErrorToThread(w.ThreadID, "Remote job finished; its completion is queued, but the agent could not start: "+remoteErrorText(err))
-		}
-	}
-	return nil
-}
-
-func (a *App) queueRemoteCompletion(w store.RemoteWatch, output remoteCompletionOutput) error {
-	message := remoteCompletionMessage(w, a.remoteComputerNames()[w.ComputerID], output)
-	_, err := a.registerQueueItem(w.ThreadID, message, SendMessageOptions{SendID: remoteCompletionSendID(w)}, injectedQueueOptions{
-		preserveDraft: true,
-		persist: func(item store.FlushQueueItem) error {
-			return a.store.QueueRemoteCompletion(w.ComputerID, w.RequestID, item)
-		},
-	})
-	return err
+	return remoteCompletionMessage(w, a.remoteComputerNames()[w.ComputerID], output), true, nil
 }
 
 func remoteCompletionSendID(w store.RemoteWatch) string {

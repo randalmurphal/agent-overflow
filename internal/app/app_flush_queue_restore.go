@@ -632,7 +632,8 @@ func noteThreadWakeRestoredToDraft(a *App, sendID string) {
 }
 
 // threadWakeTokenFromSendID recovers the request a queued wake belongs to.
-// The late prefix is tested first because the ordinary one is its prefix.
+// The two prefixes are disjoint, so either order reads the same send id; what
+// the token check rejects is a bare prefix, which names no request.
 func threadWakeTokenFromSendID(sendID string) (token string, late bool, ok bool) {
 	if rest, found := strings.CutPrefix(sendID, threadWakeLateSendID("")); found {
 		return rest, true, rest != ""

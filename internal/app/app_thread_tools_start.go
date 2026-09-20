@@ -534,7 +534,8 @@ func (t threadToolsApp) acceptRequest(
 		return "", false, fmt.Errorf("thread tools: request %s has no target thread", token)
 	}
 	if !origin.foreign {
-		if _, err := t.app.store.SetThreadRequestTarget(token, "", target); err != nil {
+		// No title: a thread on this computer is named from its own row.
+		if _, err := t.app.store.SetThreadRequestTarget(token, "", target, ""); err != nil {
 			return "", false, err
 		}
 		// Conditional: a request that already settled during dispatch keeps

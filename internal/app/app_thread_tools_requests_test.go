@@ -1218,14 +1218,30 @@ func TestThreadReminderFiresAfterARestart(t *testing.T) {
 	if !strings.Contains(string(row.Answer), "deploy finished") {
 		t.Fatalf("reminder answer = %q, want the note", row.Answer)
 	}
-	var wake store.FlushQueueItem
-	for _, queued := range durableQueueRows(t, after.app, f.caller.ID) {
-		if queued.SendID == threadWakeSendID(ack.Token) {
-			wake = queued
-		}
+	wake := awaitQueuedWake(t, after.app, f.caller.ID, threadWakeSendID(ack.Token))
+	if !strings.Contains(wake.Message, "deploy finished") {
+		t.Fatalf("reminder message = %q, want the note", wake.Message)
 	}
-	if wake.SendID == "" || !strings.Contains(wake.Message, "deploy finished") {
-		t.Fatalf("no reminder arrived: %+v", durableQueueRows(t, after.app, f.caller.ID))
+}
+
+// awaitQueuedWake polls for a request's wake in its caller's durable queue.
+// A wake is delivered off the sweep's goroutine because it takes the caller
+// thread's own lock and can start its session, so the sweep returning is not
+// the message having arrived.
+func awaitQueuedWake(t *testing.T, app *App, threadID, sendID string) store.FlushQueueItem {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		rows := durableQueueRows(t, app, threadID)
+		for _, queued := range rows {
+			if queued.SendID == sendID {
+				return queued
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no wake %s arrived: %+v", sendID, rows)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -369,6 +369,12 @@ kind, target, state and revision. That is how an agent recovers its
 tokens after a context compaction; the tokens themselves are never
 something it has to remember.
 
+A request record belongs to the computer whose thread made it, so the
+token and listing branches answer only a local call. A call forwarded
+from another computer names a thread there, not here, and is refused;
+the `thread_ids` branch is the one that forwards, because it reads
+threads rather than the caller's ledger.
+
 ### `thread_cancel` (Q19)
 
 By `token`: cancels that request. A message still queued and not yet
@@ -623,6 +629,20 @@ queued message is; the request then reads `delivered: draft`, distinct
 from `delivered: inline` and `delivered: queued`, and `thread_status`
 still returns the answer.
 
+A wake the settlement could not hand over (a caller thread whose lock
+never came free, a fenced thread, a crash between the two
+transactions) is retried on its own clock, doubling from half a minute
+towards a ten-minute ceiling for eight attempts. What stops a wake is
+the caller thread's own state, which no number of retries changes, so
+the retry ends rather than running for the life of the row: the request
+keeps its answer and records why the message never arrived, and
+`thread_status` returns both.
+
+The source thread's title in a wake's status line comes from the
+answering computer: a thread on another computer has no row here, so
+the name that computer reported when the request's target was recorded
+is stored with it and survives a restart.
+
 What settles a request, in order:
 
 1. An explicit `thread_reply` settles it `replied` with the reply
@@ -660,6 +680,14 @@ settlement observed by any successful call (the poll, a parked wait, a
 then follows the local delivery rule above. Restart on either side
 loses nothing: the source keeps polling, the destination keeps the
 settlement until the source has taken it.
+
+An open request is polled every five seconds, or every two while a wait
+is parked on it. A settled one is visited for one thing only, a late
+`thread_reply`, so its cadence doubles from five seconds towards a
+ten-minute ceiling and it leaves the poll for good once the late reply
+lands or the destination's hold on the answer runs out. Retirement is a
+column on the request, so a retired row stays out of the poller's due
+set across a restart.
 
 An answer waits for its caller for one day from settlement, and the
 destination reports the `expires_at` with it. A source that reconnects
