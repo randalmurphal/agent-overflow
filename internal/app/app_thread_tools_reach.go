@@ -154,7 +154,12 @@ func (a *App) threadOperationError(action, computerID, threadID string, err erro
 		return err
 	}
 	code, message, _ := threadErrorDetails(action, err)
+	// Verbs read "Thread cancel on X"; a tool name already names the
+	// thread, so it reads "thread_spawn on X".
 	prefix := "Thread " + action
+	if strings.HasPrefix(action, "thread_") {
+		prefix = action
+	}
 	if entityid.Valid(computerID) {
 		if name := a.remoteComputerNames()[computerID]; name != "" {
 			prefix += " on " + name + " (computer " + computerID + ")"

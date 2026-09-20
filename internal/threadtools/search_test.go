@@ -200,6 +200,32 @@ func TestSearchTurnsASilentComputerIntoAnErrorRow(t *testing.T) {
 	}
 }
 
+// TestSearchCarriesADestinationRefusalAsItsErrorRow: a peer answers about
+// itself only, so when its own index rejects the query it reports an
+// error row and no group. That must come back as the peer's failure, not
+// as an empty computer that reads "no threads there".
+func TestSearchCarriesADestinationRefusalAsItsErrorRow(t *testing.T) {
+	p := newPair(t)
+	p.local.hits = []Hit{hit(localThreadID, "Local work", LiveState{})}
+	p.remote.onSearch = func(SearchQuery) (SearchPage, error) {
+		return SearchPage{}, publicf(CodeInvalidRequest, "That search query is not valid.")
+	}
+
+	result := call(t, p.server, localCaller(), "thread_search", `{"query":"tt-mr"}`)
+	groups := rows(t, result["computers"])
+	if len(groups) != 1 || field(t, groups[0], "computer") != "Laptop" {
+		t.Fatalf("computers = %v, want the caller's group only", result["computers"])
+	}
+	errs := rows(t, result["errors"])
+	if len(errs) != 1 {
+		t.Fatalf("errors = %v", result["errors"])
+	}
+	row := errs[0].(map[string]any)
+	if row["computer_id"] != "studio" || row["error_code"] != CodeInvalidRequest || !strings.Contains(row["error"].(string), "not valid") {
+		t.Fatalf("error row = %v", row)
+	}
+}
+
 // TestSearchLocalOnlyFilterSkipsThePeersEntirely.
 func TestSearchLocalOnlyFilterSkipsThePeersEntirely(t *testing.T) {
 	p := newPair(t)

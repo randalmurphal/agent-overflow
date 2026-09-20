@@ -3,6 +3,7 @@ package threadtools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -195,12 +196,26 @@ func describeProjects(projects []ProjectOption) string {
 	parts := make([]string, 0, len(projects))
 	for _, project := range projects {
 		part := project.Name + " (" + project.ID + ")"
-		if len(project.Workspaces) > 0 {
-			paths := make([]string, 0, len(project.Workspaces))
-			for _, workspace := range project.Workspaces {
-				paths = append(paths, workspace.Path)
+		// Roots are few and are the paths a spawn wants; worktrees can
+		// run to dozens, so they are counted and left to thread_options.
+		roots := make([]string, 0, len(project.Workspaces))
+		worktrees := 0
+		for _, workspace := range project.Workspaces {
+			if workspace.Worktree {
+				worktrees++
+				continue
 			}
-			part += " with workspaces " + strings.Join(paths, ", ")
+			roots = append(roots, workspace.Path)
+		}
+		if len(roots) > 0 {
+			part += " at " + strings.Join(roots, ", ")
+		}
+		switch worktrees {
+		case 0:
+		case 1:
+			part += " with 1 worktree, listed by thread_options"
+		default:
+			part += fmt.Sprintf(" with %d worktrees, listed by thread_options", worktrees)
 		}
 		parts = append(parts, part)
 	}

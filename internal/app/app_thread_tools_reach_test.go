@@ -1421,6 +1421,14 @@ func TestThreadOperationErrorNamesTheComputerAndKeepsTheDestinationsCode(t *test
 	if !strings.Contains(message, "Thread status on computer "+computer) {
 		t.Fatalf("the refusal does not name the operation and computer: %q", message)
 	}
+
+	// A tool name already says "thread", so it is not prefixed with the
+	// word again.
+	tool := app.threadOperationError("thread_spawn", computer, "",
+		errorsx.Public(threadtools.CodeInvalidRequest, "Neither this computer nor origin has that branch.", nil))
+	if _, message, _ = errorsx.PublicDetails(tool); !strings.HasPrefix(message, "thread_spawn on computer "+computer+": Neither") {
+		t.Fatalf("a tool name refusal reads %q", message)
+	}
 }
 
 // TestThreadToolsLocalWorkStaysLocalWhileAComputerIsPaired: in the paired

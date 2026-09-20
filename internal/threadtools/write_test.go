@@ -76,9 +76,17 @@ func TestSpawnOnAnotherComputerNeedsAProjectAndTheRefusalListsThem(t *testing.T)
 	p.remote.addThread(Thread{ID: "caller-thread", Provider: "claude"})
 	p.remote.catalog = catalogOf("studio")
 
+	p.remote.catalog.Projects[0].Workspaces = append(p.remote.catalog.Projects[0].Workspaces,
+		WorkspaceOption{Path: "/src/studio-wt/a", Branch: "a", Worktree: true},
+		WorkspaceOption{Path: "/src/studio-wt/b", Branch: "b", Worktree: true})
 	message := callErr(t, p.server, localCaller(), "thread_spawn", `{"prompt":"go","computer_id":"studio"}`, CodeInvalidRequest)
-	if !strings.Contains(message, "needs project_id") || !strings.Contains(message, "studio repo (p1)") {
+	if !strings.Contains(message, "needs project_id") || !strings.Contains(message, "studio repo (p1) at /src/studio with 2 worktrees, listed by thread_options") {
 		t.Fatalf("the refusal does not list that computer's projects: %q", message)
+	}
+	// The roots are the paths a spawn wants; a project's worktrees can run
+	// to dozens and are counted, not dumped.
+	if strings.Contains(message, "/src/studio-wt") {
+		t.Fatalf("the refusal dumps worktree paths: %q", message)
 	}
 	if len(p.remote.spawns) != 0 {
 		t.Fatal("a refused spawn still reached the destination")

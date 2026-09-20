@@ -88,6 +88,10 @@ type searchAnswerShape struct {
 	Indexing  bool          `json:"indexing"`
 	More      bool          `json:"more"`
 	Computers []searchGroup `json:"computers"`
+	// Errors is the destination's own failure row: it answers about
+	// itself only, so a row here means its search did not run and its
+	// answer holds no threads.
+	Errors []errorRow `json:"errors"`
 }
 
 func (c *session) search(ctx context.Context, raw json.RawMessage) (any, error) {
@@ -270,6 +274,16 @@ func (c *session) searchOne(ctx context.Context, computer Computer, local bool, 
 	if err := peerResult(raw, &result); err != nil {
 		return searchAnswer{computer: computer, err: err}
 	}
+	if len(result.Errors) > 0 && len(result.Computers) == 0 {
+		// The destination refused its own search (a query its index
+		// rejects, say). An empty group would read as "no threads there".
+		row := result.Errors[0]
+		code := row.Code
+		if code == "" {
+			code = CodeUnreachable
+		}
+		return searchAnswer{computer: computer, err: publicf(code, "%s", row.Error)}
+	}
 	return searchAnswer{computer: computer, group: c.stampGroup(computer, result)}
 }
 
@@ -387,6 +401,13 @@ func (c *session) searchResult(groups []searchGroup, failures []errorRow, offset
 		note = "More rows exist. Pass cursor back unchanged to continue."
 	}
 	if !c.paired() {
+		// One target, this computer: its failure is the call's failure.
+		// Dropping it would answer "no threads" for a query that never ran,
+		// and a forwarded call reads this shape on the destination's
+		// behalf, so the refusal must be an error there too.
+		if len(failures) > 0 {
+			return nil, publicf(firstNonEmpty(failures[0].Code, CodeUnreachable), "%s", failures[0].Error)
+		}
 		solo := searchSolo{Rows: []searchRow{}, Cursor: encoded, Note: note}
 		if len(groups) == 1 {
 			solo.Rows, solo.Indexing, solo.More = groups[0].Rows, groups[0].Indexing, groups[0].More

@@ -155,7 +155,12 @@ each computer concurrently, bounded to 10 seconds each, and returns
 rows grouped per computer in that computer's own order (FTS5 ranks are
 not comparable across databases); `limit` applies per computer. A
 computer that is offline or too old contributes an `errors` row naming
-it and the reason; the other computers' rows still return.
+it and the reason, and so does one whose own index refused the query;
+the other computers' rows still return. A destination answers about
+itself only, so its refusal is a tool error there and crosses back as
+its `errors` row, never as an empty group that would read as "no
+threads there". Without a pairing there is one computer, and its
+refusal is the call's error.
 
 ### `thread_show` (Q4)
 
