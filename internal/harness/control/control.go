@@ -127,7 +127,8 @@ type Report struct {
 	// Kind: "registered", "user_input", "turn_started",
 	// "turn_interrupted", "step_started", "step_completed",
 	// "waiting_signal", "approval_pending", "approval_decided",
-	// "history_cut", "mcp_result", "scenario_done", "exiting".
+	// "history_cut", "mcp_result", "mcp_tools", "scenario_done",
+	// "exiting".
 	Kind string `json:"kind"`
 	// Turn is the 1-based user-turn index (0 for lifecycle reports).
 	Turn int `json:"turn,omitempty"`
@@ -156,11 +157,11 @@ type Report struct {
 	// unnamed gate (an indefinite `stall`) is released by any advance.
 	Gate string `json:"gate,omitempty"`
 	// Result is the text an mcpCall step's tool returned, or the error
-	// text of a call that could not be made. Set only on
-	// ReportMcpResult. It is the tool's own answer, never the endpoint,
-	// headers or token the mock called it through.
+	// text of a call that could not be made; on ReportMcpTools it is the
+	// listing JSON. Set only on those two. It is the server's own answer,
+	// never the endpoint, headers or token the mock called it through.
 	Result string `json:"result,omitempty"`
-	// IsError marks a ReportMcpResult whose call failed: a missing
+	// IsError marks a ReportMcpResult or ReportMcpTools whose call failed: a missing
 	// server, a transport error, a timeout, a JSON-RPC error, or a tool
 	// result with `isError: true`. Result then carries the failure text
 	// the provider wire also reports.
@@ -231,6 +232,14 @@ const (
 	// and no result frame on the wire: the interrupted turn's terminal
 	// sequence settles the row instead.
 	ReportMcpResult = "mcp_result"
+	// ReportMcpTools carries an mcpList step's answer: Detail is the
+	// server name, Result a JSON object with the server's `instructions`
+	// and its `tools` in the order it listed them, IsError whether the
+	// listing failed. It is the only surface that says which tools a
+	// live session can actually see, which is what a spec asserts a
+	// capability switch on: the flip removes them from a session that was
+	// never restarted, and nothing on the provider wire says so.
+	ReportMcpTools = "mcp_tools"
 	// ReportSessionConfig carries the permission/sandbox configuration the
 	// app actually launched this session with. Posted once per mock as soon
 	// as it is observable — for Claude that is argv at boot, for Codex the

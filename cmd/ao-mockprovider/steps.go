@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -59,6 +60,10 @@ func (e *engine) runStep(vars scenario.Vars, turn int, step scenario.Step) {
 		e.runRepeat(vars, turn, step.Repeat)
 	case step.McpCall != nil:
 		e.runMcpCall(vars, turn, step.McpCall)
+	case step.McpList != nil:
+		e.runMcpList(vars, turn, step.McpList)
+	case step.Capture != nil:
+		e.runCapture(vars, turn, step.Capture)
 	default:
 		// Parse-time Validate guarantees exactly one action; an empty
 		// step here means the schema grew without this switch.
@@ -88,8 +93,44 @@ func stepName(step scenario.Step) string {
 		return "repeat"
 	case step.McpCall != nil:
 		return "mcpCall"
+	case step.McpList != nil:
+		return "mcpList"
+	case step.Capture != nil:
+		return "capture"
 	}
 	return "unknown"
+}
+
+// runCapture binds one ${VAR} from a regex match over text the scenario
+// already knows how to spell. It is how a scenario uses a value the app
+// minted after the scenario was installed: the request token in an
+// incoming message's footer, or an id inside a tool result.
+//
+// The binding outlives the turn, because the two things worth capturing
+// are read in one turn and used in the next. A pattern that matches
+// nothing binds nothing and reports a fixture_error: a literal ${VAR}
+// travelling into a tool argument is a silent wrong call, and the whole
+// point of the step is that the value was not knowable in advance.
+func (e *engine) runCapture(vars scenario.Vars, turn int, step *scenario.CaptureStep) {
+	from := vars.Substitute(step.From)
+	pattern, err := regexp.Compile(step.Pattern)
+	if err != nil {
+		// Validate compiles every pattern at set time, so this is a
+		// scenario that reached the engine without it.
+		e.stepFailed(turn, fmt.Sprintf("capture %s: pattern %q does not compile: %v", step.Var, step.Pattern, err))
+		return
+	}
+	match := pattern.FindStringSubmatch(from)
+	if match == nil {
+		e.stepFailed(turn, fmt.Sprintf("capture %s: pattern %q matched nothing", step.Var, step.Pattern))
+		return
+	}
+	value := match[0]
+	if len(match) > 1 {
+		value = match[1]
+	}
+	vars[step.Var] = value
+	e.bindVar(step.Var, value)
 }
 
 // runRepeat re-runs a step body Count times, or until the turn is

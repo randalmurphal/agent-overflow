@@ -47,21 +47,6 @@ func threadPeerExportThread(name string) (string, bool) {
 	return threadID, true
 }
 
-// threadPeerCallKey marks a call context that arrived from a paired
-// computer. Only the export path reads it: everything else about a
-// forwarded call is decided by the arguments, but a file cannot be
-// written for a reader that has no access to this filesystem.
-type threadPeerCallKey struct{}
-
-func withThreadPeerCall(ctx context.Context) context.Context {
-	return context.WithValue(ctx, threadPeerCallKey{}, true)
-}
-
-func threadPeerCall(ctx context.Context) bool {
-	value, _ := ctx.Value(threadPeerCallKey{}).(bool)
-	return value
-}
-
 // threadExportTooLarge refuses a rendered export no transfer can carry. It
 // names the size and what to narrow, because the agent chose the window
 // and is the only one that can make it smaller.

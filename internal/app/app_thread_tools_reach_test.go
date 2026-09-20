@@ -950,6 +950,34 @@ func TestForgettingAComputerRefusesOnceThenAbandonsItsRequests(t *testing.T) {
 	}
 }
 
+// TestCancellingARemoteRequestNamesItsSource: a forwarded cancel is a
+// forwarded request like any other, and the destination refuses one that
+// cannot name the thread and computer it came from.
+func TestCancellingARemoteRequestNamesItsSource(t *testing.T) {
+	pair := newReachPair(t)
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	spawn := pair.spawnThere(t, "work to be stopped", map[string]any{"notify": true})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	report, err := pair.adapter().Cancel(ctx, pair.callerIdentity(), threadtools.CancelCall{Token: spawn.Token})
+	if err != nil {
+		t.Fatalf("cancel a request running on the other computer: %v", err)
+	}
+	if report.ComputerID != pair.computer || report.Effect == "" {
+		t.Fatalf("cancel report = %+v, want an effect on %s", report, pair.computer)
+	}
+	// The destination settled its own receipt, which is the only side that
+	// could have stopped the work.
+	receipt := pair.receipt(t, spawn.Token)
+	if receipt.State != store.ThreadReceiptCancelled {
+		t.Fatalf("the destination's receipt is %q, want cancelled", receipt.State)
+	}
+	if row := pair.request(t, spawn.Token); row.Notify {
+		t.Fatalf("a cancelled request kept its wake: %+v", row)
+	}
+}
+
 // TestRemoteSpawnWithoutAProjectIsRefusedWithTheDestinationsProjects
 // proves the read half of the reach works too: the refusal is built from
 // what the destination answered about itself.

@@ -458,7 +458,7 @@ func (t threadToolsApp) cancelRequest(ctx context.Context, caller threadtools.Ca
 		return report, nil
 	}
 	if row.TargetComputerID != "" {
-		return t.cancelRemoteRequest(ctx, row)
+		return t.cancelRemoteRequest(ctx, caller, row)
 	}
 	// A reminder is nothing but a row: there is no work to stop, and the
 	// caller cancelling it wants it gone rather than settled as cancelled.
@@ -503,7 +503,7 @@ const threadCancelTimeout = 20 * time.Second
 // can take back a queued message or interrupt a turn. The source row is
 // settled from the receipt the reply carries, through the same collector a
 // poll would have used.
-func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, row store.ThreadRequest) (threadtools.CancelReport, error) {
+func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, caller threadtools.Caller, row store.ThreadRequest) (threadtools.CancelReport, error) {
 	report := threadtools.CancelReport{Token: row.Token, ThreadID: row.TargetThreadID, ComputerID: row.TargetComputerID}
 	if row.Notify {
 		if _, err := t.app.store.SetThreadRequestNotify(row.Token, false); err != nil {
@@ -517,10 +517,17 @@ func (t threadToolsApp) cancelRemoteRequest(ctx context.Context, row store.Threa
 	call, cancel := context.WithTimeout(ctx, threadCancelTimeout)
 	defer cancel()
 	var reply ThreadPeerReply
+	// The whole caller travels, computer included: the destination names
+	// the thread and the computer a forwarded request came from, and a
+	// cancel is a forwarded request like any other.
+	source := caller
+	if source.ThreadID == "" {
+		source.ThreadID = row.CallerThreadID
+	}
 	err := t.app.backends.CallThreadPeer(call, row.TargetComputerID, "ThreadToolCall", &reply, ThreadPeerCall{
 		Tool:   "thread_cancel",
 		Token:  row.Token,
-		Source: threadtools.Caller{ThreadID: row.CallerThreadID},
+		Source: source,
 	})
 	if err != nil {
 		return threadtools.CancelReport{}, t.app.threadOperationError("cancel", row.TargetComputerID, row.TargetThreadID, err)

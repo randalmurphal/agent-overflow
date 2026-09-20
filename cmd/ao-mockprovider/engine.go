@@ -204,6 +204,15 @@ func (e *engine) setTurnVars(n int, extra scenario.Vars) {
 	}
 }
 
+// bindVar binds a ${VAR} for the rest of the process, across turns. A
+// capture step is the only caller: what it reads out of one turn's
+// message is what a later turn has to name.
+func (e *engine) bindVar(name, value string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.base[name] = value
+}
+
 // turnIDForNumber is the one place the ${TURN_ID} spelling lives, shared
 // by the vars snapshot, the interrupt's turn-id match, and the
 // thread/fork cut.

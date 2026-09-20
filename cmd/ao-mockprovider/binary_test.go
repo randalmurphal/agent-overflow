@@ -617,3 +617,51 @@ func TestClaudeProbeInvocation(t *testing.T) {
 	}
 	p.closeStdinAndExpectExit(0, testTimeout)
 }
+
+// TestClaudeUserEchoHangsOffTheTranscriptLeaf: the app verifies a user
+// message against the transcript's leaf, so the next turn's echo must
+// chain off the LAST main-chain row this process wrote, not off the
+// previous echo. A turn that wrote tool rows moves the leaf past them,
+// and a sidechain row (a subagent's own traffic) is not the main chain.
+func TestClaudeUserEchoHangsOffTheTranscriptLeaf(t *testing.T) {
+	sc := &scenario.Scenario{
+		Version:  scenario.CurrentVersion,
+		Name:     "claude-leaf",
+		Provider: scenario.ProviderClaude,
+		Turns: []scenario.Turn{{Steps: []scenario.Step{{Emit: &scenario.EmitStep{Lines: []string{
+			`{"type":"assistant","uuid":"a-main-${TURN}","message":{"id":"msg-${TURN}","role":"assistant","content":[{"type":"text","text":"turn ${TURN}"}]}}`,
+			`{"type":"assistant","uuid":"a-side-${TURN}","parent_tool_use_id":"toolu_sub","message":{"id":"msg-sub-${TURN}","role":"assistant","content":[{"type":"text","text":"a subagent line"}]}}`,
+			`{"type":"result","subtype":"success","is_error":false}`,
+		}}}}}},
+		AfterTurns: "repeatLast",
+	}
+	env := writeScenarioFile(t, sc, "")
+	args := append(append([]string(nil), claudeSessionArgs...), "--resume", "sess-leaf")
+	p := startMock(t, args, env, t.TempDir())
+
+	p.send(userLine)
+	p.expectLineContaining(`"subtype":"init"`, testTimeout)
+	first := p.expectLineContaining(`"isReplay":true`, testTimeout)
+	if strings.Contains(first, `"parentUuid"`) {
+		t.Fatalf("the first echo has a parent before anything was written: %s", first)
+	}
+	p.expectLineContaining(`"type":"result"`, testTimeout)
+
+	p.send(userLine)
+	p.expectLineContaining(`"subtype":"init"`, testTimeout)
+	second := p.expectLineContaining(`"isReplay":true`, testTimeout)
+	p.expectLineContaining(`"type":"result"`, testTimeout)
+	p.closeStdinAndExpectExit(0, testTimeout)
+
+	var echo struct {
+		ParentUUID string `json:"parentUuid"`
+	}
+	if err := json.Unmarshal([]byte(second), &echo); err != nil {
+		t.Fatalf("decode the second echo %q: %v", second, err)
+	}
+	// The main-chain assistant row of turn one, not its sidechain row and
+	// not the echo that opened it.
+	if echo.ParentUUID != "a-main-1" {
+		t.Fatalf("second echo parentUuid = %q, want the transcript leaf a-main-1", echo.ParentUUID)
+	}
+}

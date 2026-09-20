@@ -17,6 +17,18 @@ import (
 type lineWriter struct {
 	mu sync.Mutex
 	w  io.Writer
+	// observe, when set, receives every complete line this writer emits,
+	// under the write lock and in wire order. The Claude adapter follows
+	// the transcript leaf through it, so a frame a scenario emitted
+	// counts exactly as much as one the adapter minted.
+	observe func(line string)
+}
+
+// onLine installs the write observer. Called once, before any frame.
+func (lw *lineWriter) onLine(fn func(line string)) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	lw.observe = fn
 }
 
 func newLineWriter(w io.Writer) *lineWriter {
@@ -34,6 +46,7 @@ func (lw *lineWriter) writeLine(line string, chunkBytes, chunkIntervalMs int) {
 
 	if chunkBytes <= 0 || chunkBytes >= len(data) {
 		lw.write(data)
+		lw.observed(line)
 		return
 	}
 	for off := 0; off < len(data); off += chunkBytes {
@@ -43,6 +56,7 @@ func (lw *lineWriter) writeLine(line string, chunkBytes, chunkIntervalMs int) {
 			time.Sleep(time.Duration(chunkIntervalMs) * time.Millisecond)
 		}
 	}
+	lw.observed(line)
 }
 
 // writeLines writes every line, each newline-terminated, in ONE write
@@ -69,6 +83,17 @@ func (lw *lineWriter) writeLines(lines []string) {
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
 	lw.write(data)
+	for _, line := range lines {
+		lw.observed(line)
+	}
+}
+
+// observed hands one written line to the observer. Callers hold the
+// write lock, so the observer sees lines in wire order.
+func (lw *lineWriter) observed(line string) {
+	if lw.observe != nil {
+		lw.observe(line)
+	}
 }
 
 func (lw *lineWriter) write(data []byte) {

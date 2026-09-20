@@ -190,6 +190,55 @@ func (e *engine) finishMcpCall(vars scenario.Vars, turn int, call mcpCall, abort
 	})
 }
 
+// runMcpList lists one configured server's tools over a real MCP
+// session and reports what came back. Nothing reaches the provider wire:
+// a CLI reads a server's tool list at handshake, off the transcript, so
+// a frame here would fabricate a row no real session has.
+//
+// Like a call, a listing that fails is reported rather than fataled: a
+// server the app did not configure and a transport error both arrive as
+// an mcp_tools report with isError set, which is how a spec asserts that
+// a capability is gone from a live session.
+func (e *engine) runMcpList(vars scenario.Vars, turn int, step *scenario.McpListStep) {
+	server := vars.Substitute(step.Server)
+	report := control.Report{Kind: control.ReportMcpTools, Turn: turn, Detail: server}
+	target, ok := e.adapter.mcpTarget(server)
+	if !ok {
+		report.Result = fmt.Sprintf("MCP server %q is not configured for this session", server)
+		report.IsError = true
+		e.rep.report(report)
+		return
+	}
+
+	timeout := time.Duration(step.TimeoutMs) * time.Millisecond
+	if step.TimeoutMs <= 0 {
+		timeout = time.Duration(scenario.DefaultMcpCallTimeoutMs) * time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	abort := e.turnAbortSignal(turn)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-abort:
+			cancel()
+		case <-done:
+		}
+	}()
+
+	listing, err := mcpToolList(ctx, target)
+	if err != nil {
+		report.Result = fmt.Sprintf("MCP tools/list on %s failed: %s", server, target.redact(err))
+		report.IsError = true
+		log.Printf("mcpList %s failed: %s", server, report.Result)
+		e.rep.report(report)
+		return
+	}
+	report.Result = listing
+	e.rep.report(report)
+}
+
 // mcpToolResultError is a tool that ran and reported failure
 // (`isError: true`), as opposed to a call that could not be made. Its
 // text is the tool's own, which is what a spec asserting a refusal
@@ -202,25 +251,10 @@ func (e mcpToolResultError) Error() string { return e.text }
 // initialize, notifications/initialized, then tools/call. Returns the
 // result's joined text content.
 func mcpToolCall(ctx context.Context, target mcpTarget, tool string, args json.RawMessage) (string, error) {
-	client := &http.Client{}
-
-	_, session, err := mcpRequest(ctx, client, target, "", mcpRPC{
-		ID:     1,
-		Method: "initialize",
-		Params: map[string]any{
-			"protocolVersion": mcpProtocolVersion,
-			"capabilities":    map[string]any{},
-			"clientInfo":      map[string]any{"name": "ao-mockprovider", "version": mockVersionNumber},
-		},
-	})
+	client, session, _, err := mcpHandshake(ctx, target)
 	if err != nil {
-		return "", fmt.Errorf("initialize: %w", err)
+		return "", err
 	}
-
-	if _, _, err := mcpRequest(ctx, client, target, session, mcpRPC{Method: "notifications/initialized", Notification: true}); err != nil {
-		return "", fmt.Errorf("notifications/initialized: %w", err)
-	}
-
 	result, _, err := mcpRequest(ctx, client, target, session, mcpRPC{
 		ID:     2,
 		Method: "tools/call",
@@ -230,6 +264,67 @@ func mcpToolCall(ctx context.Context, target mcpTarget, tool string, args json.R
 		return "", err
 	}
 	return mcpResultText(result)
+}
+
+// mcpToolList runs the same session and asks for tools/list. It returns
+// the report body a spec reads: the server instructions the handshake
+// carried and the tool names in the server's own order.
+func mcpToolList(ctx context.Context, target mcpTarget) (string, error) {
+	client, session, instructions, err := mcpHandshake(ctx, target)
+	if err != nil {
+		return "", err
+	}
+	result, _, err := mcpRequest(ctx, client, target, session, mcpRPC{ID: 2, Method: "tools/list"})
+	if err != nil {
+		return "", err
+	}
+	var listing struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(result, &listing); err != nil {
+		return "", fmt.Errorf("tools/list: decode result: %w", err)
+	}
+	names := make([]string, 0, len(listing.Tools))
+	for _, tool := range listing.Tools {
+		names = append(names, tool.Name)
+	}
+	body, err := json.Marshal(map[string]any{"instructions": instructions, "tools": names})
+	if err != nil {
+		return "", fmt.Errorf("tools/list: encode report: %w", err)
+	}
+	return string(body), nil
+}
+
+// mcpHandshake opens one streamable-HTTP MCP session: initialize, then
+// the initialized notification. It returns the client, the session id
+// the server assigned, and the server instructions the handshake
+// carried, which is the guide a provider shows its model.
+func mcpHandshake(ctx context.Context, target mcpTarget) (*http.Client, string, string, error) {
+	client := &http.Client{}
+	result, session, err := mcpRequest(ctx, client, target, "", mcpRPC{
+		ID:     1,
+		Method: "initialize",
+		Params: map[string]any{
+			"protocolVersion": mcpProtocolVersion,
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "ao-mockprovider", "version": mockVersionNumber},
+		},
+	})
+	if err != nil {
+		return nil, "", "", fmt.Errorf("initialize: %w", err)
+	}
+	var handshake struct {
+		Instructions string `json:"instructions"`
+	}
+	if len(result) > 0 {
+		_ = json.Unmarshal(result, &handshake)
+	}
+	if _, _, err := mcpRequest(ctx, client, target, session, mcpRPC{Method: "notifications/initialized", Notification: true}); err != nil {
+		return nil, "", "", fmt.Errorf("notifications/initialized: %w", err)
+	}
+	return client, session, handshake.Instructions, nil
 }
 
 // mcpRPC is one outbound JSON-RPC message. A notification carries no id

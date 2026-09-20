@@ -924,3 +924,74 @@ func TestStartupDelayHoldsTheFirstFrameOnce(t *testing.T) {
 		t.Fatalf("the delay was paid again (%v); it must hold only the FIRST frame", second)
 	}
 }
+
+// TestCaptureBindsAVarForLaterTurns: a scenario is installed before the
+// app mints the ids it would want to name, so a capture reads one out of
+// text it can already spell and keeps it for the rest of the process.
+func TestCaptureBindsAVarForLaterTurns(t *testing.T) {
+	var buf bytes.Buffer
+	rec := newRecordingReporter()
+	sc := &scenario.Scenario{Version: scenario.CurrentVersion, Name: "unit", Provider: scenario.ProviderClaude}
+	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(&buf), rec.reporter, scenario.Vars{
+		"SESSION_ID": "s1",
+		"CWD":        "/ws",
+	})
+	e.exitFn = func(code int) { t.Fatalf("unexpected exit(%d)", code) }
+
+	vars := e.varsForTurn(1)
+	vars["USER_INPUT"] = "thread_reply with token abc-123, once."
+	e.runSteps(vars, 1, []scenario.Step{
+		{Capture: &scenario.CaptureStep{
+			Var: "TOKEN", From: "${USER_INPUT}", Pattern: `token (\S+),`,
+		}},
+		{Emit: &scenario.EmitStep{Lines: []string{`{"same":"${TOKEN}"}`}}},
+	}, true)
+
+	// The binding outlives its turn: the value is read in one turn and
+	// used in the next.
+	e.runSteps(e.varsForTurn(2), 2, []scenario.Step{
+		{Emit: &scenario.EmitStep{Lines: []string{`{"later":"${TOKEN}"}`}}},
+	}, true)
+
+	got := outputLines(&buf)
+	want := []string{`{"same":"abc-123"}`, `{"later":"abc-123"}`}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("capture output = %q, want %q", got, want)
+	}
+	for _, rep := range rec.snapshot() {
+		if rep.Kind == control.ReportFixtureError {
+			t.Fatalf("a matching capture reported a fixture error: %s", rep.Detail)
+		}
+	}
+}
+
+// TestCaptureThatMatchesNothingBindsNothingAndReportsIt: a literal
+// ${VAR} travelling into a tool argument is a silently wrong call, so a
+// pattern that misses is a reported fixture error.
+func TestCaptureThatMatchesNothingBindsNothingAndReportsIt(t *testing.T) {
+	var buf bytes.Buffer
+	rec := newRecordingReporter()
+	sc := &scenario.Scenario{Version: scenario.CurrentVersion, Name: "unit", Provider: scenario.ProviderClaude}
+	e := newEngine(sc, t.TempDir(), t.TempDir(), newLineWriter(&buf), rec.reporter, scenario.Vars{"SESSION_ID": "s1"})
+	e.exitFn = func(code int) { t.Fatalf("unexpected exit(%d)", code) }
+
+	vars := e.varsForTurn(1)
+	vars["USER_INPUT"] = "no token here"
+	e.runSteps(vars, 1, []scenario.Step{
+		{Capture: &scenario.CaptureStep{Var: "TOKEN", From: "${USER_INPUT}", Pattern: `token (\S+),`}},
+		{Emit: &scenario.EmitStep{Lines: []string{`{"token":"${TOKEN}"}`}}},
+	}, true)
+
+	if got := outputLines(&buf); len(got) != 1 || got[0] != `{"token":"${TOKEN}"}` {
+		t.Fatalf("output = %q, want the unsubstituted variable", got)
+	}
+	var failures []string
+	for _, rep := range rec.snapshot() {
+		if rep.Kind == control.ReportFixtureError {
+			failures = append(failures, rep.Detail)
+		}
+	}
+	if len(failures) != 1 || !strings.Contains(failures[0], "matched nothing") {
+		t.Fatalf("fixture_error reports = %q, want one miss", failures)
+	}
+}

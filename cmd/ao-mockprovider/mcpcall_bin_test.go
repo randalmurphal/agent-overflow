@@ -25,6 +25,9 @@ const (
 	mcpTestToken      = "mcp-path-token-must-not-leak"
 	mcpTestHeaderName = "X-AO-Mock-Test"
 	mcpTestHeaderVal  = "mcp-header-token-must-not-leak"
+	// mcpTestInstructions stands in for the guide a built-in server
+	// carries on its handshake, which an mcpList step reports.
+	mcpTestInstructions = "Call json_ok when asked."
 )
 
 // mcpTestServer is a minimal MCP streamable-HTTP endpoint. Tool names
@@ -40,6 +43,8 @@ type mcpTestServer struct {
 	// initialized records the handshake the client must complete before
 	// tools/call.
 	initialized bool
+	// listed records that tools/list was asked for.
+	listed bool
 }
 
 func startMcpTestServer(t *testing.T) *mcpTestServer {
@@ -53,6 +58,13 @@ func startMcpTestServer(t *testing.T) *mcpTestServer {
 }
 
 func (s *mcpTestServer) url() string { return s.Server.URL + "/mcp/" + mcpTestToken }
+
+// wasListed reports whether the client asked for tools/list.
+func (s *mcpTestServer) wasListed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listed
+}
 
 func (s *mcpTestServer) snapshot() (tool string, args string, header string, initialized bool) {
 	s.mu.Lock()
@@ -86,12 +98,17 @@ func (s *mcpTestServer) handle(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.initialized = false
 		s.mu.Unlock()
-		writeMcpJSON(w, req.ID, `{"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"test","version":"1.0.0"}}`)
+		writeMcpJSON(w, req.ID, `{"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"test","version":"1.0.0"},"instructions":"`+mcpTestInstructions+`"}`)
 	case "notifications/initialized":
 		s.mu.Lock()
 		s.initialized = true
 		s.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
+	case "tools/list":
+		s.mu.Lock()
+		s.listed = true
+		s.mu.Unlock()
+		writeMcpJSON(w, req.ID, `{"tools":[{"name":"json_ok"},{"name":"sse_ok"},{"name":"tool_refuses"}]}`)
 	case "tools/call":
 		s.mu.Lock()
 		s.callTool, s.callArgs = req.Params.Name, req.Params.Arguments
@@ -638,4 +655,81 @@ func classifyOneCodexEvent(t *testing.T, line string, kind provider.EventKind) p
 	}
 	t.Fatalf("no %s event from %s (got %+v)", kind, line, events)
 	return provider.ProviderEvent{}
+}
+
+// TestClaudeMcpListReportsTheSessionsToolsWithoutAWireFrame: a CLI reads
+// a server's tool list at handshake, off the transcript, so an mcpList
+// step writes nothing to the provider wire and answers on the control
+// channel instead.
+func TestClaudeMcpListReportsTheSessionsToolsWithoutAWireFrame(t *testing.T) {
+	server := startMcpTestServer(t)
+	sc := &scenario.Scenario{
+		Version:  scenario.CurrentVersion,
+		Name:     "claude-mcp-list",
+		Provider: scenario.ProviderClaude,
+		Turns: []scenario.Turn{{Steps: []scenario.Step{
+			{McpList: &scenario.McpListStep{Server: "ao-thread-tools", TimeoutMs: 5_000}},
+			// A server this session was never configured with is reported,
+			// not fataled: that is how a spec reads a capability that is
+			// gone from a live session.
+			{McpList: &scenario.McpListStep{Server: "ao-absent", TimeoutMs: 5_000}},
+			{Emit: &scenario.EmitStep{Lines: []string{
+				`{"type":"stream_event","event":"message_start","data":{"type":"message_start","message":{"id":"msg-list","role":"assistant"}}}`,
+				`{"type":"stream_event","event":"content_block_start","data":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}`,
+				`{"type":"stream_event","event":"content_block_delta","data":{"type":"content_block_delta","delta":{"type":"text_delta","text":"I listed them."}}}`,
+				`{"type":"stream_event","event":"content_block_stop","data":{"type":"content_block_stop","index":0}}`,
+				`{"type":"stream_event","event":"message_stop","data":{"type":"message_stop"}}`,
+				`{"type":"assistant","message":{"id":"msg-list","role":"assistant","content":[{"type":"text","text":"I listed them."}]}}`,
+				`{"type":"result","subtype":"success","is_error":false}`,
+			}}},
+		}}},
+	}
+	_, reports, env := mcpControl(t, sc)
+	args := append(append([]string(nil), claudeSessionArgs...),
+		"--mcp-config", claudeMcpConfig("ao-thread-tools", server.url()))
+	p := startMock(t, args, env, t.TempDir())
+
+	p.send(`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"what can you do?"}]}}`)
+	p.expectLineContaining(`"subtype":"init"`, testTimeout)
+	p.expectLineContaining(`"type":"result"`, testTimeout)
+
+	seen, listing := drainReports(t, reports, control.ReportMcpTools)
+	if listing.Detail != "ao-thread-tools" || listing.IsError {
+		t.Fatalf("mcp_tools report = %+v", listing)
+	}
+	var body struct {
+		Instructions string   `json:"instructions"`
+		Tools        []string `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(listing.Result), &body); err != nil {
+		t.Fatalf("decode mcp_tools result %q: %v", listing.Result, err)
+	}
+	if body.Instructions != mcpTestInstructions {
+		t.Fatalf("instructions = %q, want the handshake's guide", body.Instructions)
+	}
+	// The server's own order, unsorted.
+	if strings.Join(body.Tools, ",") != "json_ok,sse_ok,tool_refuses" {
+		t.Fatalf("tools = %v, want the server's order", body.Tools)
+	}
+	if _, _, _, initialized := server.snapshot(); !initialized {
+		t.Fatal("the listing skipped notifications/initialized")
+	}
+	if !server.wasListed() {
+		t.Fatal("the mock never asked the server for tools/list")
+	}
+
+	missing, absent := drainReports(t, reports, control.ReportMcpTools)
+	if !absent.IsError || !strings.Contains(absent.Result, "ao-absent") {
+		t.Fatalf("an unconfigured server reported %+v", absent)
+	}
+
+	p.closeStdinAndExpectExit(0, testTimeout)
+	// Nothing about the listing reached the provider wire.
+	for _, line := range p.all {
+		if strings.Contains(line, "tools/list") || strings.Contains(line, "json_ok") {
+			t.Fatalf("an mcpList step wrote a provider frame: %s", line)
+		}
+	}
+	assertNoMcpSecrets(t, p, append(seen, missing...), server.url())
+	validateClaudeFrames(t, p.all)
 }

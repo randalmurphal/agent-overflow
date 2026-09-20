@@ -446,14 +446,31 @@ list consumed per user message), and `afterTurns`
   `count <= 0`,
 - `mcpCall`: call one of the app's own MCP servers for real
   (`server`, `tool`, `args`, optional `toolUseId` / `timeoutMs`),
+- `mcpList`: list one of those servers' tools over the same real MCP
+  session (`server`, optional `timeoutMs`), writing nothing to the
+  provider wire,
+- `capture`: bind a `${VAR}` from a regex over text the scenario can
+  already spell (`var`, `from`, `pattern`),
 - `exit`: die with a code mid-turn.
 
 Lines substitute `${SESSION_ID}`, `${THREAD_ID}`, `${TURN}`,
-`${TURN_ID}`, `${REQUEST_ID}`, `${CWD}`, inside a `repeat` body
+`${TURN_ID}`, `${REQUEST_ID}`, `${CWD}`, `${USER_INPUT}` (the turn's own
+user text, on both providers), inside a `repeat` body
 `${ITER}` (1-based iteration), and after an `mcpCall` step
 `${MCP_RESULT}` / `${MCP_TOOL_USE_ID}` for the rest of that turn.
 `${MCP_RESULT}` is raw text: an author placing it inside a JSON string
 must quote it, as with any variable.
+
+A `capture` step binds anything else. The values a thread-tools spec
+needs are minted after the scenario is installed: the request token in
+the footer of the message a thread is handed, or the id of a thread a
+spawn just created. The step reads one out of `${USER_INPUT}` or
+`${MCP_RESULT}` with a regular expression (its first capture group, else
+the whole match) and binds it for the rest of the PROCESS, which is what
+lets the turn a wake starts name the token the previous turn was given.
+A pattern matching nothing binds nothing and reports `fixture_error`,
+because a literal `${VAR}` reaching a tool argument is a silently wrong
+call.
 
 #### `mcpCall`: exercising the built-in MCP servers
 
@@ -484,6 +501,16 @@ control channel as `mcp_result`, which is how a spec asserts a refusal
 interrupt aborts the in-flight HTTP call: the report still lands, the
 result frame does not, and the interrupted turn's terminal sequence
 settles the row.
+
+`mcpList` is the handshake half: `initialize` plus `tools/list` against
+the same endpoint, posted as an `mcp_tools` report carrying the server
+`instructions` and the tool names in the server's order. It writes no
+wire frame, because a real CLI lists a server's tools off the
+transcript. It is the only surface that says which tools a live session
+can see, so a spec proves a capability switch there: flipping the
+thread-tools switch empties the list in a session nothing restarted,
+while a call made anyway is refused by name. `HarnessApp.awaitMcpTools`
+in `e2e/src` is the spec-side await.
 
 An `mcpCall` does not pace an unbounded `repeat`: it answers as fast as
 the server does.
@@ -621,7 +648,8 @@ commands and posts progress reports (`registered`, `turn_started`,
 `user_input`, `step_started`, `step_completed`, `waiting_signal`,
 `advance_released`, `advance_buffered`, `approval_pending`,
 `approval_decided`, `turn_interrupted`, `history_cut`, `mcp_result`,
-`fixture_error`, `session_config`, `scenario_done`, `exiting`),
+`mcp_tools`, `fixture_error`, `session_config`, `scenario_done`,
+`exiting`),
 which the harness re-emits as `harness:mock` events
 (`{mockId, protocol, cwd, scenario, report}`). Tests await these
 instead of sleeping.
@@ -638,8 +666,11 @@ real buffering and marks a DISCARD when the per-turn buffer was full.
 failure text), `isError` whether the call failed. It is the only
 surface that says what a built-in tool actually answered, refusals
 included; `HarnessApp.awaitMcpResult` in `e2e/src` is the spec-side
-await. `fixture_error` reports a step that could not do its job (unreadable
-fixture file, rejected `writeFile`). Without it such a turn is a silent
+await. `mcp_tools` is an `mcpList` step's answer: `detail` is the server,
+`result` the `{instructions, tools}` JSON it listed.
+`fixture_error` reports a step that could not do its job (unreadable
+fixture file, rejected `writeFile`, a `capture` pattern that matched
+nothing). Without it such a turn is a silent
 provider with evidence only in the mock's stderr. `session_config`
 posts once per mock with the permission/sandbox configuration the app
 actually launched it with. `scenario_done` is per TURN: every turn that

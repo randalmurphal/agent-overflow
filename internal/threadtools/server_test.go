@@ -92,3 +92,57 @@ func TestAFailingAppIsReportedNotSwallowed(t *testing.T) {
 		t.Fatal("a failing app produced a result")
 	}
 }
+
+// TestAForwardedCallDoesNotFanOutAgain: a call another computer forwarded
+// here runs on this computer alone. Two computers paired with each other
+// would otherwise answer each other's fan-out until the bounds expired.
+func TestAForwardedCallDoesNotFanOutAgain(t *testing.T) {
+	app := newFakeApp("Laptop")
+	app.hits = []Hit{hit(localThreadID, "Work", LiveState{})}
+	app.computers = []Computer{{ID: "studio", Name: "Studio"}}
+	app.peers["studio"] = brokenPeer{computer: Computer{ID: "studio", Name: "Studio"}, err: publicf(CodeUnreachable, "Studio is offline.")}
+	server := New(app)
+
+	for _, name := range []string{"thread_search", "thread_options"} {
+		paired := call(t, server, localCaller(), name, `{}`)
+		if _, present := paired["computers"]; !present {
+			t.Fatalf("%s answered a local call in the solo shape", name)
+		}
+		forwarded, err := server.Call(WithForwarded(context.Background()), localCaller(), name, json.RawMessage(`{}`))
+		if err != nil {
+			t.Fatalf("forwarded %s: %v", name, err)
+		}
+		data, err := json.Marshal(forwarded)
+		if err != nil {
+			t.Fatalf("forwarded %s: marshal result: %v", name, err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("forwarded %s: decode result: %v", name, err)
+		}
+		if _, present := decoded["computers"]; present {
+			t.Fatalf("forwarded %s fanned out to another computer", name)
+		}
+		if _, present := decoded["errors"]; present {
+			t.Fatalf("forwarded %s reached a peer: %v", name, decoded["errors"])
+		}
+	}
+}
+
+// TestARowCarryingOnlyAComputerIdIsStillNamed: a request receipt records
+// the computer the work went to, not what this computer calls it, and the
+// name is what the model reads back.
+func TestARowCarryingOnlyAComputerIdIsStillNamed(t *testing.T) {
+	c := &session{caller: localCaller(), computers: []Computer{{ID: "studio", Name: "Studio"}}}
+	if id, name := c.stamp(Computer{ID: "studio"}); id != "studio" || name != "Studio" {
+		t.Fatalf("stamp(id only) = %q, %q", id, name)
+	}
+	if id, name := c.stamp(Computer{}); id != "laptop" || name != "Laptop" {
+		t.Fatalf("stamp(own) = %q, %q", id, name)
+	}
+	// A computer this one is no longer paired with keeps its id and has no
+	// name to give, which is better than borrowing another computer's.
+	if id, name := c.stamp(Computer{ID: "forgotten"}); id != "forgotten" || name != "" {
+		t.Fatalf("stamp(unpaired) = %q, %q", id, name)
+	}
+}

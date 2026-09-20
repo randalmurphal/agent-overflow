@@ -67,6 +67,24 @@ export interface McpResultFilter {
   timeoutMs?: number;
 }
 
+/** Narrows which mock's `mcp_tools` listing an await accepts. */
+export interface McpToolsFilter {
+  mockId?: string;
+  cwd?: string;
+  /** The server named by the `mcpList` step; `detail` carries it. */
+  server?: string;
+  timeoutMs?: number;
+}
+
+/** One `mcpList` step's answer: the guide and the tool names in order. */
+export interface McpToolListing {
+  instructions: string;
+  tools: string[];
+  /** True when the listing failed; `error` then carries the reason. */
+  isError: boolean;
+  error?: string;
+}
+
 interface PendingRpc {
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
@@ -379,6 +397,36 @@ export class HarnessApp {
       },
       timeoutMs,
     );
+  }
+
+  /**
+   * Wait for an `mcpList` step's answer: what the server's real
+   * `tools/list` returned to a provider session, plus the instructions
+   * the handshake carried. This is the only surface that says which
+   * tools a live session can see, so it is how a spec proves a switch
+   * removed them without restarting the session.
+   */
+  async awaitMcpTools(filter: McpToolsFilter = {}): Promise<McpToolListing> {
+    const { mockId, cwd, server, timeoutMs } = filter;
+    const event = await this.waitForEvent<HarnessMockEventData>(
+      'harness:mock',
+      (data) => {
+        if (data.report.kind !== 'mcp_tools') return false;
+        if (mockId !== undefined && data.mockId !== mockId) return false;
+        if (cwd !== undefined && data.cwd !== cwd) return false;
+        if (server !== undefined && data.report.detail !== server) return false;
+        return true;
+      },
+      timeoutMs,
+    );
+    const raw = event.report.result ?? '';
+    if (event.report.isError) return { instructions: '', tools: [], isError: true, error: raw };
+    const listing = JSON.parse(raw) as { instructions?: string; tools?: string[] };
+    return {
+      instructions: listing.instructions ?? '',
+      tools: listing.tools ?? [],
+      isError: false,
+    };
   }
 
   /** Drop remembered events — call after a reset so stale matches can't leak. */

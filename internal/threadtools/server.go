@@ -32,9 +32,17 @@ func (s *Server) Call(ctx context.Context, caller Caller, name string, args json
 	if caller.ThreadID == "" {
 		return nil, publicf(CodeInvalidRequest, "Thread tools could not tell which thread called them.")
 	}
-	computers, err := s.app.PairedComputers(ctx)
-	if err != nil {
-		return nil, err
+	// A call another computer forwarded runs on this computer alone. It
+	// reaches the tools with no paired computers of its own, so nothing it
+	// does fans out again: two computers paired with each other would
+	// otherwise answer each other's fan-out until the bounds ran out.
+	var computers []Computer
+	if !Forwarded(ctx) {
+		var err error
+		computers, err = s.app.PairedComputers(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// The calling thread travels on the context as well as in the session,
 	// because a forwarded call names the thread it came from and the App
@@ -71,6 +79,23 @@ func (s *Server) Call(ctx context.Context, caller Caller, name string, args json
 	default:
 		return nil, invalidf("There is no tool named %q. The thread tools are: %s.", name, joinNames(ToolNames))
 	}
+}
+
+// forwardedKey marks a call that arrived from another computer.
+type forwardedKey struct{}
+
+// WithForwarded marks ctx as carrying a call another computer forwarded to
+// this one. The destination runs it locally: it has no paired computers of
+// its own for the length of the call, so no fan-out, resolution or search
+// crosses back to the computer that asked.
+func WithForwarded(ctx context.Context) context.Context {
+	return context.WithValue(ctx, forwardedKey{}, true)
+}
+
+// Forwarded reports whether this call arrived from another computer.
+func Forwarded(ctx context.Context) bool {
+	value, _ := ctx.Value(forwardedKey{}).(bool)
+	return value
 }
 
 // callerKey carries the calling thread on a call's context.
@@ -136,6 +161,15 @@ func (c *session) stamp(computer Computer) (id, name string) {
 	}
 	if computer.ID == "" {
 		computer = c.self()
+	}
+	if computer.Name == "" {
+		// A row that carries an id alone still names the computer: a
+		// request receipt records where the work went, not what this
+		// computer calls that machine, and the name is what the model
+		// reads back.
+		if known, _, ok := c.computerByID(computer.ID); ok {
+			computer.Name = known.Name
+		}
 	}
 	return computer.ID, computer.Name
 }

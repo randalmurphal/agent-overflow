@@ -36,7 +36,11 @@ control channel aligned with verified provider behavior.
 - Scope completion and buffered advances to a turn. An advance must never cross
   into the next turn; interruption discards remaining steps and advances.
 - Claude emits `system/init` and replay user echo once per received user turn.
-  Scenarios own assistant message framing.
+  Scenarios own assistant message framing. Each echo's `parentUuid` is the
+  transcript leaf: the last main-chain `uuid` this process wrote, scenario
+  emits included, skipping sidechain rows (`parent_tool_use_id`). AO verifies
+  a user message against that leaf, so a turn that wrote tool rows must not
+  chain the next echo past them.
 - Codex reports a parseable app-server version. Queue mutation methods must return explicit errors: Agent Overflow owns
   mid-turn dispatch through `turn/steer`.
 - Persist Codex thread history mode under `AO_HARNESS_TRANSCRIPT_HOME` so a new
@@ -55,7 +59,14 @@ control channel aligned with verified provider behavior.
   the app configured for the session. The endpoint, its per-thread token and
   its headers stay inside the process: they reach no report, log line or wire
   frame. A call that fails for any reason is framed as an error tool result
-  and reported as `mcp_result`, never as a scenario failure.
+  and reported as `mcp_result`, never as a scenario failure. `mcpList`
+  runs the same session's `tools/list` and reports `mcp_tools`, writing
+  no wire frame: a CLI reads a tool list at handshake, off the
+  transcript.
+- A `capture` step binds a `${VAR}` from a regex over already-spellable
+  text, for the rest of the process, so a scenario can name a value the
+  app minted after the scenario was installed. A pattern that matches
+  nothing binds nothing and reports `fixture_error`.
 
 Provider wire shapes must come from current provider fixtures, upstream source,
 or an isolated spike. Do not infer them from application code. Preserve

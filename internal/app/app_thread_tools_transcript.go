@@ -394,7 +394,7 @@ func (t threadToolsApp) ExportTranscript(ctx context.Context, q threadtools.Expo
 	// gets a path in its own export directory once the copy lands.
 	name := thread.ID + ".txt"
 	exportID := ""
-	if threadPeerCall(ctx) {
+	if threadtools.Forwarded(ctx) {
 		exportID = threadPeerExportName(thread.ID)
 		name = exportID
 	}

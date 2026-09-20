@@ -155,6 +155,55 @@ type Step struct {
 	// configured for this session, then frames the call and its result
 	// on the provider wire.
 	McpCall *McpCallStep `json:"mcpCall,omitempty"`
+	// McpList lists one configured server's tools over the same real MCP
+	// session, without writing anything to the provider wire.
+	McpList *McpListStep `json:"mcpList,omitempty"`
+	// Capture binds a ${VAR} from a regular expression over text the
+	// scenario can already spell, so a later step can use a value the
+	// scenario file could not know.
+	Capture *CaptureStep `json:"capture,omitempty"`
+}
+
+// McpListStep runs `tools/list` against one of the app's built-in MCP
+// servers, the handshake half of what a provider CLI does at session
+// start. It writes NO provider wire frames, because a real CLI lists a
+// server's tools off the transcript; the answer reaches the control
+// channel as an `mcp_tools` report carrying the server instructions and
+// the tool names in the order the server returned them.
+//
+// It is what a spec asserts a tool set on: which tools a session can
+// see, what the guide says, and that flipping a switch removes them from
+// a session that was never restarted. A failed list is reported with
+// isError, never as a scenario failure.
+type McpListStep struct {
+	// Server names the MCP server as the app configured it.
+	Server string `json:"server"`
+	// TimeoutMs bounds the HTTP session; 0 means
+	// DefaultMcpCallTimeoutMs.
+	TimeoutMs int `json:"timeoutMs,omitempty"`
+}
+
+// CaptureStep binds one ${VAR} from a regular expression match.
+//
+// Scenario files are installed before the app mints the ids they would
+// want to name: a request token lives in the footer of the message the
+// receiving thread is handed, and a spawned thread's id exists only
+// once the spawn has run. A capture reads either out of text the
+// scenario can already spell (${USER_INPUT}, ${MCP_RESULT}) and binds
+// it for the rest of the PROCESS, so a later step and a later turn can
+// both use it.
+//
+// A pattern that does not match reports a fixture_error and binds
+// nothing, which is what keeps a silently unsubstituted ${VAR} from
+// travelling into a tool argument as a literal.
+type CaptureStep struct {
+	// Var is the name to bind, without the ${} wrapper.
+	Var string `json:"var"`
+	// From is the text to search, ${VAR}-substituted first.
+	From string `json:"from"`
+	// Pattern is a Go regular expression. The first capture group is
+	// bound when the pattern has one, else the whole match.
+	Pattern string `json:"pattern"`
 }
 
 // McpCallStep invokes one of the app's built-in MCP servers
@@ -328,7 +377,8 @@ type RepeatStep struct {
 // Two more carry what only the running mock knows about the turn's own user
 // message, which no scenario file could name:
 //
-//	${USER_INPUT}  — the turn's user text (Codex: the `turn/start` input vec)
+//	${USER_INPUT}  — the turn's user text, on both providers (Codex: the
+//	                 `turn/start` input vec; Claude: the user envelope's text)
 //	${CLIENT_ID}   — Codex only: the `clientUserMessageId` the caller stamped
 //	                 on `turn/start`, which its `userMessage` echo has to
 //	                 carry back as `clientId` or the app cannot consume the
@@ -344,6 +394,10 @@ type RepeatStep struct {
 //	                      failed call. RAW text: an author placing it inside a
 //	                      JSON string must quote it, as with any variable.
 //	${MCP_TOOL_USE_ID}  is the correlation id the emitted frames carried.
+//
+// A capture step binds whatever it matched, for the rest of the process
+// rather than the rest of the turn: a token read out of one turn's message
+// is what the NEXT turn has to call a tool with.
 type Vars map[string]string
 
 // Substitute replaces ${VAR} tokens for every key present in v.
@@ -534,11 +588,39 @@ func (st *Step) validate() error {
 			return fmt.Errorf("mcpCall: timeoutMs must be >= 0")
 		}
 	}
+	if st.McpList != nil {
+		set++
+		if strings.TrimSpace(st.McpList.Server) == "" {
+			return fmt.Errorf("mcpList: server must be non-empty")
+		}
+		if st.McpList.TimeoutMs < 0 {
+			return fmt.Errorf("mcpList: timeoutMs must be >= 0")
+		}
+	}
+	if st.Capture != nil {
+		set++
+		if strings.TrimSpace(st.Capture.Var) == "" {
+			return fmt.Errorf("capture: var must be non-empty")
+		}
+		if !captureVarPattern.MatchString(st.Capture.Var) {
+			return fmt.Errorf("capture: var %q must be a ${VAR} name: letters, digits and underscore", st.Capture.Var)
+		}
+		if st.Capture.From == "" {
+			return fmt.Errorf("capture: from must be non-empty")
+		}
+		if _, err := regexp.Compile(st.Capture.Pattern); err != nil {
+			return fmt.Errorf("capture: pattern does not compile: %w", err)
+		}
+	}
 	if set != 1 {
 		return fmt.Errorf("step must set exactly one action, got %d", set)
 	}
 	return nil
 }
+
+// captureVarPattern bounds a capture's variable name to what
+// Vars.Substitute can actually replace.
+var captureVarPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // isJSONObject reports whether raw decodes as a JSON object. Checked
 // before substitution, which only ever replaces ${VAR} tokens inside

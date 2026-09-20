@@ -40,6 +40,8 @@ export type {
   HarnessMockReport,
   HarnessMockEventData,
   McpResultFilter,
+  McpToolsFilter,
+  McpToolListing,
 } from './harness-app.ts';
 
 const BOOTSTRAP_PREFIX = '__AO_HARNESS__:';

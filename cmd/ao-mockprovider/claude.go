@@ -110,18 +110,57 @@ type claudeAdapter struct {
 	waiters map[string]chan bool // approval request_id → decision
 	seq     int
 
-	// lastEchoUUID chains parentUuid across echoes, matching the CLI's
-	// JSONL parent linkage. Stdin-goroutine-only; no lock needed.
-	lastEchoUUID string
+	// leafMu guards leafUUID, which the stdin goroutine reads when it
+	// echoes a user message and the write observer updates from step
+	// goroutines.
+	leafMu sync.Mutex
+	// leafUUID is the last uuid-carrying main-chain envelope this process
+	// wrote: the CLI's transcript leaf. The next user echo hangs off it,
+	// which is the linkage AO verifies a user message against, so a turn
+	// that wrote tool frames must not chain the echo past them.
+	leafUUID string
 }
 
 func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
-	return &claudeAdapter{
+	a := &claudeAdapter{
 		e:          e,
 		w:          w,
 		waiters:    make(map[string]chan bool),
 		mcpServers: claudeMCPServerSpecs(flagValue(args, "--mcp-config")),
 	}
+	w.onLine(a.noteEnvelope)
+	return a
+}
+
+// noteEnvelope follows the transcript leaf across every frame the
+// process writes, scenario emits included. A sidechain row (a subagent's
+// own tool traffic, marked by parent_tool_use_id) is not the main
+// chain's leaf and is skipped, exactly as the app's own leaf tracker
+// skips it.
+func (a *claudeAdapter) noteEnvelope(line string) {
+	if !strings.Contains(line, `"uuid"`) {
+		return
+	}
+	var env struct {
+		UUID            string `json:"uuid"`
+		ParentToolUseID string `json:"parent_tool_use_id"`
+	}
+	if json.Unmarshal([]byte(line), &env) != nil {
+		return
+	}
+	if strings.TrimSpace(env.UUID) == "" || strings.TrimSpace(env.ParentToolUseID) != "" {
+		return
+	}
+	a.leafMu.Lock()
+	defer a.leafMu.Unlock()
+	a.leafUUID = env.UUID
+}
+
+// transcriptLeaf reads the current leaf for an outgoing echo.
+func (a *claudeAdapter) transcriptLeaf() string {
+	a.leafMu.Lock()
+	defer a.leafMu.Unlock()
+	return a.leafUUID
 }
 
 // claudeMCPServerSpecs decodes the `--mcp-config` payload the app spawned
@@ -256,9 +295,16 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		commandUUID := claudeEnvelopeUUID(line)
 		a.writeCommandLifecycle(commandUUID, "queued")
 		n, vars := a.e.beginTurn()
+		input := claudeUserText(line)
+		// The turn's own text, for the steps that run against it. A
+		// scenario cannot name what the app is about to send (an agent's
+		// message carries a request token minted after the scenario was
+		// installed), so a capture step reads it out of here.
+		a.e.setTurnVars(n, scenario.Vars{"USER_INPUT": input})
+		vars["USER_INPUT"] = input
 		a.e.rep.report(control.Report{
 			Kind: control.ReportUserInput, Turn: n,
-			Input: claudeUserText(line), SessionRef: vars["SESSION_ID"],
+			Input: input, SessionRef: vars["SESSION_ID"],
 		})
 		a.writeInit(vars)
 		a.echoUserEnvelope(line)
@@ -407,16 +453,10 @@ func (a *claudeAdapter) echoUserEnvelope(line []byte) {
 		return
 	}
 	env["isReplay"] = json.RawMessage("true")
-	if a.lastEchoUUID != "" {
-		env["parentUuid"] = json.RawMessage(mustJSON(a.lastEchoUUID))
+	if leaf := a.transcriptLeaf(); leaf != "" {
+		env["parentUuid"] = json.RawMessage(mustJSON(leaf))
 	}
 	transcriptLine := mustJSON(env)
-	if u, ok := env["uuid"]; ok {
-		var s string
-		if json.Unmarshal(u, &s) == nil && s != "" {
-			a.lastEchoUUID = s
-		}
-	}
 	a.persistTranscript(transcriptLine)
 	// Durability precedes visibility, matching the invariant the real provider
 	// transcript gives crash recovery: once AO can observe the user echo, a cold

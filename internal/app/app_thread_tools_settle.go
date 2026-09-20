@@ -582,7 +582,13 @@ func (a *App) threadWakeBody(row store.ThreadRequest, late bool) (string, error)
 	if row.SettledAt > 0 {
 		wake.Age = time.Duration(time.Now().UnixMilli()-row.SettledAt) * time.Millisecond
 	}
-	if row.TargetThreadID != "" {
+	if row.TargetComputerID != "" {
+		// A thread on another computer has no row here: its title is what
+		// that computer reported when it was last polled, and the computer
+		// is named the way every other row names it.
+		wake.Title = a.remoteRequestLiveState(row.Token).title
+		wake.Computer, _ = threadToolsApp{app: a}.threadToolsBackendName(row.TargetComputerID)
+	} else if row.TargetThreadID != "" {
 		if thread, err := a.store.GetThread(row.TargetThreadID); err == nil {
 			wake.Title = thread.Title
 		}
