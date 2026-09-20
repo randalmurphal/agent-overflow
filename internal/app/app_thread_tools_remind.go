@@ -72,6 +72,16 @@ func (a *App) fireDueThreadReminders(now time.Time) {
 }
 
 func (a *App) fireThreadReminder(row store.ThreadRequest, now time.Time) {
+	if a.settleThreadReminder(row, now) {
+		a.deliverThreadWake(row.Token, false)
+	}
+}
+
+// settleThreadReminder settles one due reminder under its settle lock and
+// reports whether its wake is owed. The wake itself is delivered by the
+// caller with the lock released, because delivery takes the caller thread's
+// own locks.
+func (a *App) settleThreadReminder(row store.ThreadRequest, now time.Time) bool {
 	unlock := a.threadRequestSettleLock(row.Token)
 	defer unlock()
 
@@ -83,18 +93,16 @@ func (a *App) fireThreadReminder(row store.ThreadRequest, now time.Time) {
 	})
 	if err != nil {
 		logThreadRequestSweep("settle reminder "+row.Token, err)
-		return
+		return false
 	}
 	if !settled {
 		// Cancelled or already fired while this sweep was reading.
-		return
+		return false
 	}
-	a.wakeRequestWaits(row.Token)
-	if a.requestWaitActive(row.Token) {
-		// A thread_status parked on this token is the delivery.
-		return
-	}
-	a.deliverThreadWake(row.Token, false)
+	// The collector re-reads the row under the settle lock: thread_status
+	// can have disarmed the wake since the sweep listed this row, and the
+	// collector is the one place that decides whether a message is owed.
+	return a.finishThreadRequestCollection(row.Token, false)
 }
 
 // threadReminderBatch bounds one sweep's work. Reminders that miss a batch

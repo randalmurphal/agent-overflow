@@ -20,7 +20,7 @@ func spawnSchema(shape Shape) map[string]any {
 		},
 		"from_thread": map[string]any{
 			"type":        "string",
-			"description": "Fork this thread's history at its tail first, then send prompt there, for trying a second approach without disturbing the original. The fork is a normal visible thread. It runs on the source thread's computer, in its project and workspace; every other setting still defaults to yours. A source mid-turn is forked at its tail with that turn settled as interrupted.",
+			"description": "Fork this thread's history at its tail first, then send prompt there, for trying a second approach without disturbing the original. The fork is a normal visible thread. It runs on the source thread's computer, in its project and workspace, and keeps that thread's provider, which a fork cannot change; every other setting still defaults to yours. A source mid-turn is forked at its tail with that turn settled as interrupted.",
 		},
 		"project_id": map[string]any{
 			"type":        "string",
@@ -36,7 +36,7 @@ func spawnSchema(shape Shape) map[string]any {
 		},
 		"provider": map[string]any{
 			"type":        "string",
-			"description": spawnDefaultText("Provider for the new thread", defaults.Provider) + " A provider given without a model uses that provider's default model. A provider the target computer does not offer is refused with the list it does; thread_options lists them.",
+			"description": spawnDefaultText("Provider for the new thread", defaults.Provider) + " A provider given without a model uses that provider's default model. A provider the target computer does not offer is refused with the list it does; thread_options lists them. With from_thread it must be the source thread's provider, which a fork resumes.",
 		},
 		"model": map[string]any{
 			"type":        "string",

@@ -295,6 +295,11 @@ func (s *Store) StoreThreadRequestLateReply(token string, reply []byte, at int64
 // runs on the caller's transaction so the queue insert and the delivery mark
 // commit together: a repeated observation cannot inject the wake twice.
 //
+// Only a settled row can be delivered. An open row may already hold an
+// answer (a reminder stores its note when it is armed), and marking that
+// one delivered would disarm the wake the settlement still owes, so the
+// condition is checked here rather than left to every caller.
+//
 // `late` marks the second wake (a late reply) instead of the first.
 func MarkThreadRequestDeliveredTx(tx *sql.Tx, token, how string, at int64, late bool) (bool, error) {
 	action := fmt.Sprintf("store: mark thread request %s delivered", token)
@@ -304,13 +309,19 @@ func MarkThreadRequestDeliveredTx(tx *sql.Tx, token, how string, at int64, late 
 	if at == 0 {
 		at = nowMillis()
 	}
+	openStates, states, err := stateInClause(action, threadRequestOpenStates, threadRequestStates)
+	if err != nil {
+		return false, err
+	}
+	settled := " AND NOT (" + openStates + ")"
 	query := `UPDATE thread_requests SET delivered_at = ?, delivered_how = ?, updated_at = ?
-	           WHERE token = ? AND delivered_at IS NULL`
+	           WHERE token = ? AND delivered_at IS NULL` + settled
 	if late {
 		query = `UPDATE thread_requests SET late_delivered_at = ?, delivered_how = ?, updated_at = ?
-		          WHERE token = ? AND late_reply IS NOT NULL AND late_delivered_at IS NULL`
+		          WHERE token = ? AND late_reply IS NOT NULL AND late_delivered_at IS NULL` + settled
 	}
-	result, err := tx.Exec(query, at, how, nowMillis(), token)
+	args := append([]any{at, how, nowMillis(), token}, states...)
+	result, err := tx.Exec(query, args...)
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", action, err)
 	}
@@ -515,6 +526,29 @@ func (s *Store) DueThreadRequestPolls(now int64, limit int) ([]ThreadRequest, er
 	return collectThreadRequests(rows, "store: list due thread request polls")
 }
 
+// UndeliveredThreadRequestWakes returns the settled requests that still owe
+// their caller a message: `notify` is armed and the answer, or a late reply,
+// has never been handed over. Oldest first, so a backlog drains in the order
+// the answers arrived.
+//
+// It is the recovery read behind the wake: the settlement and the wake are
+// separate transactions, and neither poll query revisits a settled row.
+func (s *Store) UndeliveredThreadRequestWakes(limit int) ([]ThreadRequest, error) {
+	if limit < 1 {
+		limit = 32
+	}
+	rows, err := s.reader().Query(
+		`SELECT `+threadRequestColumns+` FROM thread_requests
+		  WHERE notify = 1
+		    AND ((settled_at IS NOT NULL AND delivered_at IS NULL)
+		      OR (late_reply IS NOT NULL AND late_delivered_at IS NULL))
+		  ORDER BY settled_at ASC, token ASC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list undelivered thread request wakes: %w", err)
+	}
+	return collectThreadRequests(rows, "store: list undelivered thread request wakes")
+}
+
 // HasOpenThreadRequests reports whether a thread still owns an undelivered
 // request. The copy refusal and the forget-computer refusal read it.
 func (s *Store) HasOpenThreadRequests(callerThreadID string) (bool, error) {
@@ -540,24 +574,54 @@ func (s *Store) DeleteThreadRequest(token string) (bool, error) {
 	return rowsChanged(result, action)
 }
 
-// DeleteThreadRequestsBefore removes both sides of every request older than
-// the retention floor. Past it a token stops answering, so a late reply gets
-// `thread_request_unknown` rather than resurrecting a month-old exchange.
+// DeleteThreadRequestsBefore removes both sides of every request that has
+// been settled longer than the retention floor. Past it a token stops
+// answering, so a late reply gets `thread_request_unknown` rather than
+// resurrecting a month-old exchange.
+//
+// Two rows survive the floor whatever their age. An OPEN row is still work:
+// deleting it would leave a receipt nobody can settle or cancel, so the row
+// waits for its own settlement first. And a row's age is measured from the
+// moment it finished, not from when it was made: a reminder armed for next
+// month is due in the future and older than the floor at the same time, and
+// an answer written yesterday on a request made last year has been readable
+// for a day.
 func (s *Store) DeleteThreadRequestsBefore(cutoff int64) (int64, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("store: begin thread request retention sweep: %w", err)
 	}
 	defer tx.Rollback()
+	sweeps := []struct {
+		table string
+		open  []string
+		// age is the terminal moment the floor is measured against,
+		// falling back through what the row has.
+		age string
+	}{
+		{"thread_requests", threadRequestOpenStates, "COALESCE(settled_at, due_at, created_at)"},
+		{"thread_request_receipts", threadReceiptOpenStates, "COALESCE(settled_at, created_at)"},
+	}
 	var total int64
-	for _, table := range []string{"thread_requests", "thread_request_receipts"} {
-		result, err := tx.Exec(`DELETE FROM `+table+` WHERE created_at < ?`, cutoff)
+	for _, sweep := range sweeps {
+		legal := threadRequestStates
+		if sweep.table == "thread_request_receipts" {
+			legal = threadReceiptStates
+		}
+		openClause, openArgs, err := stateInClause("store: sweep "+sweep.table, sweep.open, legal)
 		if err != nil {
-			return 0, fmt.Errorf("store: sweep %s before %d: %w", table, cutoff, err)
+			return 0, err
+		}
+		args := append([]any{}, openArgs...)
+		args = append(args, cutoff)
+		result, err := tx.Exec(`DELETE FROM `+sweep.table+` WHERE NOT `+openClause+
+			` AND `+sweep.age+` < ?`, args...)
+		if err != nil {
+			return 0, fmt.Errorf("store: sweep %s before %d: %w", sweep.table, cutoff, err)
 		}
 		affected, err := result.RowsAffected()
 		if err != nil {
-			return 0, fmt.Errorf("store: count swept %s rows: %w", table, err)
+			return 0, fmt.Errorf("store: count swept %s rows: %w", sweep.table, err)
 		}
 		total += affected
 	}

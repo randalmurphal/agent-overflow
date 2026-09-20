@@ -56,6 +56,11 @@ const (
 
 	// MaxStatusTokens bounds one thread_status wait.
 	MaxStatusTokens = 8
+	// MaxForwardedWaitSeconds bounds one forwarded wait, so a watch on
+	// another computer's thread sits inside that computer's call timeout.
+	// A longer wait is spent in successive calls rather than one that the
+	// transport would end.
+	MaxForwardedWaitSeconds = 55
 	// MaxUpdateThreads bounds one thread_update call.
 	MaxUpdateThreads = 50
 	// DefaultRequestListLimit is how many rows a request listing returns.

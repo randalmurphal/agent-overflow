@@ -101,13 +101,14 @@ func (a *App) applyThreadOrganizePatch(ctx context.Context, threadID string, pat
 		return threadapp.OrganizeResult{}, err
 	}
 	if result.ArchivedChanged && result.Thread.Archived {
-		// The session is stopped, so nothing can admit another remote
-		// command. Cancel outside the lock: reaching the other computer may
-		// take a while. The archive itself is already durable, so a failure
-		// to reach that computer is reported here rather than turned into a
-		// refusal of a change that landed; the destination stops the work
-		// itself after the owner grace.
-		if err := a.cancelThreadRemoteCommands(ctx, threadID); err != nil {
+		// The same cleanup the archive binding runs, through the same door:
+		// the requests this thread is waiting on end and its wakes are
+		// disarmed, then the commands it started elsewhere are cancelled.
+		// The archive itself is already durable, so a failure to reach the
+		// other computer is reported here rather than turned into a refusal
+		// of a change that landed; the destination stops the work itself
+		// after the owner grace.
+		if err := a.stopArchivedThreadWork(ctx, threadID); err != nil {
 			log.Printf("thread tools: archive thread %s: cancel remote commands: %v", threadID, err)
 		}
 	}

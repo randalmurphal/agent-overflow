@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -1057,6 +1058,76 @@ func TestThreadToolsAdapterListingFiltersInTheStore(t *testing.T) {
 		for _, row := range next.Rows {
 			if row.Thread.ID == seen.Thread.ID {
 				t.Fatalf("page 2 repeats %s", row.Thread.ID)
+			}
+		}
+	}
+}
+
+// TestThreadToolsExportWritesIncludedItemsWholeAndNeverReusesAPath pins the
+// two promises a to_file export makes: an included item is written whole
+// however large it is, and the path handed back names this render alone.
+func TestThreadToolsExportWritesIncludedItemsWholeAndNeverReusesAPath(t *testing.T) {
+	f := newThreadToolsFixture(t)
+	thread := f.thread(t, "export-whole-thread")
+	// One item larger than the transcript's per-item clip, which is where
+	// the inline window stops and the file must not.
+	body := strings.Repeat("x", threadtools.MaxItemBytes+4096)
+	f.turn(t, thread.ID, 0, 1_000,
+		textItem("w0", "user_text", "run the big one"),
+		payloadItem("w1", "Bash", body))
+	ctx := t.Context()
+
+	bounds, err := f.adapter.ResolveWindow(ctx, threadtools.WindowQuery{ThreadID: thread.ID, Kind: threadtools.WindowAll})
+	if err != nil {
+		t.Fatalf("ResolveWindow: %v", err)
+	}
+	query := threadtools.ExportQuery{ThreadID: thread.ID, Bounds: bounds, Include: []string{threadtools.IncludeAll}}
+	file, err := f.adapter.ExportTranscript(ctx, query)
+	if err != nil {
+		t.Fatalf("ExportTranscript: %v", err)
+	}
+	data, err := os.ReadFile(file.Path)
+	if err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	if !strings.Contains(string(data), body) {
+		t.Fatalf("the export clipped an included item: %d bytes written for a %d byte item",
+			len(data), len(body))
+	}
+	if int64(len(data)) != file.Size {
+		t.Errorf("size = %d, file is %d bytes", file.Size, len(data))
+	}
+	sum := sha256.Sum256(data)
+	if file.SHA256 != hex.EncodeToString(sum[:]) {
+		t.Errorf("sha256 = %s, want the digest of the bytes written", file.SHA256)
+	}
+
+	// A second export of a NARROWER window must not overwrite the first:
+	// the agent still holds that path and may read it at any time.
+	narrow := threadtools.ExportQuery{
+		ThreadID: thread.ID,
+		Bounds:   threadtools.WindowBounds{From: bounds.From, To: bounds.From},
+	}
+	second, err := f.adapter.ExportTranscript(ctx, narrow)
+	if err != nil {
+		t.Fatalf("second ExportTranscript: %v", err)
+	}
+	if second.Path == file.Path {
+		t.Fatalf("both exports landed on %s", file.Path)
+	}
+	again, err := os.ReadFile(file.Path)
+	if err != nil {
+		t.Fatalf("re-read the first export: %v", err)
+	}
+	if string(again) != string(data) {
+		t.Fatalf("the second export truncated the first: %d bytes left of %d", len(again), len(data))
+	}
+	if entries, err := os.ReadDir(filepath.Dir(file.Path)); err != nil {
+		t.Fatalf("read export directory: %v", err)
+	} else {
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".partial") {
+				t.Errorf("a finished export left %s behind", entry.Name())
 			}
 		}
 	}

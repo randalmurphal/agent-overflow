@@ -16,6 +16,20 @@ func seedThreadRequest(t *testing.T, s *Store, token, caller, kind string, creat
 	}
 }
 
+// seedSettledThreadRequest is a request that has already settled with an
+// answer. Only a settled request can be delivered, so every delivery test
+// starts from one.
+func seedSettledThreadRequest(t *testing.T, s *Store, token, caller, kind string, createdAt int64, answer string) {
+	t.Helper()
+	seedThreadRequest(t, s, token, caller, kind, createdAt)
+	settled, err := s.SettleThreadRequest(token, ThreadRequestOpenStates(), ThreadRequestSettlement{
+		State: ThreadRequestFinished, Answer: []byte(answer), AnswerKind: ThreadAnswerFinal, SettledAt: createdAt + 1,
+	})
+	if err != nil || !settled {
+		t.Fatalf("settle request %s: settled=%v err=%v", token, settled, err)
+	}
+}
+
 func mustGetThreadRequest(t *testing.T, s *Store, token string) ThreadRequest {
 	t.Helper()
 	row, found, err := s.GetThreadRequest(token)
@@ -530,17 +544,58 @@ func TestExpireThreadRequestAnswersOnlyDropsUncollected(t *testing.T) {
 
 // Past the retention floor a token stops answering on both sides, so a late
 // reply to it is unknown rather than a resurrected month-old exchange.
-func TestThreadRequestRetentionSweepClearsBothSides(t *testing.T) {
+//
+// The floor is measured from the moment a request finished, and it applies
+// to finished requests alone: an open row, a reminder still to fire and an
+// answer written yesterday all outlive the age of the row that carries them.
+func TestThreadRequestRetentionSweepClearsSettledRowsOnly(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
-	seedThreadRequest(t, s, "tok-old", "t-caller", ThreadRequestSend, 100)
-	seedThreadRequest(t, s, "tok-recent", "t-caller", ThreadRequestSend, 5000)
-	for token, created := range map[string]int64{"tok-old-receipt": 100, "tok-recent-receipt": 5000} {
+
+	settle := func(token string, at int64) {
+		t.Helper()
+		applied, err := s.SettleThreadRequest(token, ThreadRequestOpenStates(), ThreadRequestSettlement{
+			State: ThreadRequestFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: at,
+		})
+		if err != nil || !applied {
+			t.Fatalf("settle %s: applied=%v err=%v", token, applied, err)
+		}
+	}
+
+	// Old and settled long ago: the only row the floor takes.
+	seedThreadRequest(t, s, "tok-settled-old", "t-caller", ThreadRequestSend, 100)
+	settle("tok-settled-old", 200)
+	// Old, but answered after the floor: the answer is still readable.
+	seedThreadRequest(t, s, "tok-settled-recent", "t-caller", ThreadRequestSend, 100)
+	settle("tok-settled-recent", 5000)
+	// Old and still open: nothing else can settle or cancel it once it is
+	// gone, so it waits for its own settlement.
+	seedThreadRequest(t, s, "tok-open-old", "t-caller", ThreadRequestSend, 100)
+	// A reminder armed past the floor. No ceiling: next week is a valid
+	// reminder, and so is next month.
+	if err := s.InsertThreadRequest(ThreadRequest{
+		Token: "tok-remind-later", CallerThreadID: "t-caller", Kind: ThreadRequestRemind,
+		DueAt: 9000, State: ThreadRequestAccepted, CreatedAt: 100, UpdatedAt: 100,
+	}); err != nil {
+		t.Fatalf("insert reminder: %v", err)
+	}
+
+	for token, created := range map[string]int64{
+		"tok-receipt-settled-old": 100, "tok-receipt-settled-recent": 100, "tok-receipt-open-old": 100,
+	} {
 		if _, _, err := s.AcceptThreadRequestReceipt(ThreadRequestReceipt{
 			Token: token, OwnerDeviceID: "device-1", Kind: ThreadRequestSend,
 			TargetThreadID: "t-caller", CreatedAt: created, UpdatedAt: created,
 		}); err != nil {
 			t.Fatalf("accept %s: %v", token, err)
+		}
+	}
+	for token, at := range map[string]int64{"tok-receipt-settled-old": 200, "tok-receipt-settled-recent": 5000} {
+		applied, err := s.SettleThreadRequestReceipt(token, ThreadReceiptOpenStates(), ThreadRequestSettlement{
+			State: ThreadReceiptFinished, Answer: []byte("done"), AnswerKind: ThreadAnswerFinal, SettledAt: at,
+		})
+		if err != nil || !applied {
+			t.Fatalf("settle receipt %s: applied=%v err=%v", token, applied, err)
 		}
 	}
 
@@ -549,19 +604,23 @@ func TestThreadRequestRetentionSweepClearsBothSides(t *testing.T) {
 		t.Fatalf("retention sweep: %v", err)
 	}
 	if swept != 2 {
-		t.Fatalf("swept = %d, want one row from each table", swept)
+		t.Fatalf("swept = %d, want one settled row from each table", swept)
 	}
-	if _, found, err := s.GetThreadRequest("tok-old"); err != nil || found {
-		t.Errorf("old request survived: found=%v err=%v", found, err)
+	for _, token := range []string{"tok-settled-recent", "tok-open-old", "tok-remind-later"} {
+		if _, found, err := s.GetThreadRequest(token); err != nil || !found {
+			t.Errorf("%s was swept: found=%v err=%v", token, found, err)
+		}
 	}
-	if _, found, err := s.GetThreadRequestReceipt("tok-old-receipt"); err != nil || found {
-		t.Errorf("old receipt survived: found=%v err=%v", found, err)
+	if _, found, err := s.GetThreadRequest("tok-settled-old"); err != nil || found {
+		t.Errorf("a request settled before the floor survived: found=%v err=%v", found, err)
 	}
-	if _, found, err := s.GetThreadRequest("tok-recent"); err != nil || !found {
-		t.Errorf("recent request swept: found=%v err=%v", found, err)
+	for _, token := range []string{"tok-receipt-settled-recent", "tok-receipt-open-old"} {
+		if _, found, err := s.GetThreadRequestReceipt(token); err != nil || !found {
+			t.Errorf("receipt %s was swept: found=%v err=%v", token, found, err)
+		}
 	}
-	if _, found, err := s.GetThreadRequestReceipt("tok-recent-receipt"); err != nil || !found {
-		t.Errorf("recent receipt swept: found=%v err=%v", found, err)
+	if _, found, err := s.GetThreadRequestReceipt("tok-receipt-settled-old"); err != nil || found {
+		t.Errorf("a receipt settled before the floor survived: found=%v err=%v", found, err)
 	}
 }
 
@@ -593,7 +652,7 @@ func TestThreadRequestRowsFollowTheirThread(t *testing.T) {
 func TestMarkThreadRequestDeliveredTxSharesTheCallerTransaction(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
-	seedThreadRequest(t, s, "tok-tx", "t-caller", ThreadRequestSend, 100)
+	seedSettledThreadRequest(t, s, "tok-tx", "t-caller", ThreadRequestSend, 100, "the answer")
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -611,6 +670,50 @@ func TestMarkThreadRequestDeliveredTxSharesTheCallerTransaction(t *testing.T) {
 	}
 	if got := mustGetThreadRequest(t, s, "tok-tx"); got.DeliveredAt != 0 {
 		t.Errorf("a rolled-back delivery was recorded anyway: %+v", got)
+	}
+}
+
+// An armed reminder carries its note as the answer while it is still open,
+// and a request that is only running can carry a partial reply. Reading one
+// is not a delivery: the wake its settlement owes has not happened yet, so
+// the mark is refused until the row settles.
+func TestAnOpenThreadRequestCannotBeDelivered(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-caller")
+	if err := s.InsertThreadRequest(ThreadRequest{
+		Token: "tok-armed", CallerThreadID: "t-caller", Kind: ThreadRequestRemind,
+		DueAt: 5000, Answer: []byte("check the deploy"), AnswerKind: ThreadAnswerNote,
+		Notify: true, State: ThreadRequestAccepted, CreatedAt: 100, UpdatedAt: 100,
+	}); err != nil {
+		t.Fatalf("insert armed reminder: %v", err)
+	}
+
+	marked, err := s.MarkThreadRequestDelivered("tok-armed", ThreadWakeInline, 200, false)
+	if err != nil {
+		t.Fatalf("mark an open request delivered: %v", err)
+	}
+	if marked {
+		t.Error("an open request was marked delivered, which disarms the wake it still owes")
+	}
+	item := FlushQueueItem{ID: "queue:armed", ThreadID: "t-caller", SendID: "thread-wake:tok-armed", Message: "the note", EnqueuedAt: 300}
+	if err := s.QueueThreadWake("tok-armed", false, item); err == nil {
+		t.Error("a wake was queued for a request that has not settled")
+	}
+	if got := mustGetThreadRequest(t, s, "tok-armed"); got.DeliveredAt != 0 {
+		t.Errorf("delivery recorded on an open request: %+v", got)
+	}
+
+	// The same delivery applies once the clock settles it.
+	if settled, err := s.SettleThreadRequest("tok-armed", ThreadRequestOpenStates(), ThreadRequestSettlement{
+		State: ThreadRequestFinished, Answer: []byte("check the deploy"), AnswerKind: ThreadAnswerNote, SettledAt: 400,
+	}); err != nil || !settled {
+		t.Fatalf("settle the fired reminder: settled=%v err=%v", settled, err)
+	}
+	if err := s.QueueThreadWake("tok-armed", false, item); err != nil {
+		t.Fatalf("QueueThreadWake after settling: %v", err)
+	}
+	if got := mustGetThreadRequest(t, s, "tok-armed"); got.DeliveredAt != 300 || got.DeliveredHow != ThreadWakeQueued {
+		t.Errorf("delivery = %d/%s, want the queued wake", got.DeliveredAt, got.DeliveredHow)
 	}
 }
 
@@ -767,7 +870,7 @@ func TestSetThreadRequestTargetRecordsWhereItRuns(t *testing.T) {
 func TestQueueThreadWakeWritesTheRowAndTheMarkTogether(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
-	seedThreadRequest(t, s, "tok-wake", "t-caller", ThreadRequestSend, 100)
+	seedSettledThreadRequest(t, s, "tok-wake", "t-caller", ThreadRequestSend, 100, "the answer")
 
 	item := FlushQueueItem{ID: "queue:wake", ThreadID: "t-caller", SendID: "thread-wake:tok-wake", Message: "the answer", EnqueuedAt: 900}
 	if err := s.QueueThreadWake("tok-wake", false, item); err != nil {
@@ -803,11 +906,6 @@ func TestQueueThreadWakeWritesTheRowAndTheMarkTogether(t *testing.T) {
 	if err := s.QueueThreadWake("tok-wake", true, late); err == nil {
 		t.Fatal("a late wake was queued before there was a late reply")
 	}
-	if settled, err := s.SettleThreadRequest("tok-wake", ThreadRequestOpenStates(), ThreadRequestSettlement{
-		State: ThreadRequestFinished, Answer: []byte("the answer"), AnswerKind: ThreadAnswerFinal, SettledAt: 930,
-	}); err != nil || !settled {
-		t.Fatalf("SettleThreadRequest: settled=%v err=%v", settled, err)
-	}
 	if stored, err := s.StoreThreadRequestLateReply("tok-wake", []byte("on reflection"), 940); err != nil || !stored {
 		t.Fatalf("StoreThreadRequestLateReply: stored=%v err=%v", stored, err)
 	}
@@ -827,7 +925,7 @@ func TestQueueThreadWakeWritesTheRowAndTheMarkTogether(t *testing.T) {
 func TestMarkThreadRequestDeliveredAsDraftCorrectsAQueuedWake(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-caller")
-	seedThreadRequest(t, s, "tok-draft", "t-caller", ThreadRequestSend, 100)
+	seedSettledThreadRequest(t, s, "tok-draft", "t-caller", ThreadRequestSend, 100, "the answer")
 
 	// Nothing to correct before a wake was queued.
 	if corrected, err := s.MarkThreadRequestDeliveredAsDraft("tok-draft", false); err != nil || corrected {
@@ -850,7 +948,7 @@ func TestMarkThreadRequestDeliveredAsDraftCorrectsAQueuedWake(t *testing.T) {
 		t.Errorf("the correction moved the delivery time to %d", row.DeliveredAt)
 	}
 	// An inline delivery is not a queued wake and is never corrected.
-	seedThreadRequest(t, s, "tok-inline", "t-caller", ThreadRequestSend, 100)
+	seedSettledThreadRequest(t, s, "tok-inline", "t-caller", ThreadRequestSend, 100, "the answer")
 	if _, err := s.MarkThreadRequestDelivered("tok-inline", ThreadWakeInline, 800, false); err != nil {
 		t.Fatalf("MarkThreadRequestDelivered: %v", err)
 	}

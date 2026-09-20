@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 
+	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -220,24 +221,56 @@ func (t threadToolsApp) threadVisibleToTools(thread store.Thread) (visible, owne
 // unknown backend id is still worth reporting: the id is what a later
 // pairing will match.
 func (t threadToolsApp) threadToolsBackendName(backendID string) (name, id string) {
-	if backendID == "" {
-		return "", ""
+	row, paired := t.threadToolsPairing(backendID)
+	if !paired {
+		if backendID == "" {
+			return "", ""
+		}
+		return "", backendID
 	}
-	if t.app.backends != nil {
-		if attached, err := t.app.backends.List(); err == nil {
-			for _, row := range attached {
-				if row.BackendID != backendID && row.ID != backendID {
-					continue
-				}
-				label := row.Nickname
-				if label == "" {
-					label = row.Name
-				}
-				return label, row.ID
-			}
+	label := row.Nickname
+	if label == "" {
+		label = row.Name
+	}
+	return label, row.ID
+}
+
+// threadToolsPairing finds the pairing for a computer id, matched on either
+// identity a pairing carries: the id this computer filed it under, and the
+// backend id that computer calls itself by. Its second result is the
+// directional reach answer, so a caller can tell an unknown computer from
+// one with no name.
+func (t threadToolsApp) threadToolsPairing(backendID string) (attachedbackends.Attached, bool) {
+	if backendID == "" || t.app.backends == nil {
+		return attachedbackends.Attached{}, false
+	}
+	attached, err := t.app.backends.List()
+	if err != nil {
+		log.Printf("thread tools: list pairings for %s: %v", backendID, err)
+		return attachedbackends.Attached{}, false
+	}
+	for _, row := range attached {
+		if row.BackendID == backendID || row.ID == backendID {
+			return row, true
 		}
 	}
-	return "", backendID
+	return attachedbackends.Attached{}, false
+}
+
+// remoteDestination reports whether a destination id names another
+// computer.
+//
+// A resolved target stamps the owning computer onto every row in the paired
+// shape, this computer included, so a thread on this computer reaches the
+// adapter carrying this computer's own id. Forwarding that would ask the
+// pairing set for a peer it never holds, because a computer is not paired
+// with itself.
+func (t threadToolsApp) remoteDestination(computerID string) bool {
+	if computerID == "" {
+		return false
+	}
+	self, _ := t.app.backendIdentity()
+	return computerID != self
 }
 
 // Catalog answers thread_options from the catalogs the app already keeps.

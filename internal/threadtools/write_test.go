@@ -1,6 +1,7 @@
 package threadtools
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -513,5 +514,56 @@ func TestGroupOnAnotherComputerRunsThere(t *testing.T) {
 	}
 	if result["computer_id"] != "studio" || result["computer"] != "Studio" {
 		t.Fatalf("result = %v", result)
+	}
+}
+
+// TestLocalDestinationIsEmptyWhileComputersArePaired: in the paired shape
+// every resolved row carries the computer that owns it, this one included.
+// A send, ask or cancel against a thread on the caller's own computer must
+// still reach the App with no destination, because a computer is not paired
+// with itself and asking for a peer by its own id names nothing.
+func TestLocalDestinationIsEmptyWhileComputersArePaired(t *testing.T) {
+	p := newPair(t)
+	p.local.addThread(Thread{ID: "caller-thread", Title: "Caller", Provider: "claude"})
+	p.local.addThread(Thread{ID: localThreadID, Title: "Worker"})
+	p.local.ack = RequestAck{Token: "tok-1", ThreadID: localThreadID, State: StateRunning, Outcome: OutcomeBackgrounded}
+	p.local.cancelled = CancelReport{Token: "tok-1", ThreadID: localThreadID, State: RequestCancelled, Effect: "turn_interrupted"}
+
+	target, err := p.session().resolve(context.Background(), localThreadID, "")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !target.Local || target.ComputerID != "laptop" {
+		t.Fatalf("target = %+v, want the local thread stamped with this computer", target)
+	}
+	if destination := target.Destination(); destination != "" {
+		t.Fatalf("destination = %q, want none for a thread on this computer", destination)
+	}
+
+	call(t, p.server, localCaller(), "thread_send", `{"thread_id":"`+localThreadID+`","message":"go"}`)
+	if len(p.local.sends) != 1 || p.local.sends[0].ComputerID != "" {
+		t.Fatalf("send = %+v, want no destination", p.local.sends)
+	}
+	call(t, p.server, localCaller(), "thread_ask", `{"thread_id":"`+localThreadID+`","question":"status?"}`)
+	if len(p.local.asks) != 1 || p.local.asks[0].ComputerID != "" {
+		t.Fatalf("ask = %+v, want no destination", p.local.asks)
+	}
+	call(t, p.server, localCaller(), "thread_cancel", `{"thread_id":"`+localThreadID+`"}`)
+	if len(p.local.cancels) != 1 || p.local.cancels[0].ComputerID != "" {
+		t.Fatalf("cancel = %+v, want no destination", p.local.cancels)
+	}
+
+	// A fork of a local thread runs here too, however the row names this
+	// computer.
+	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"continue","from_thread":"`+localThreadID+`"}`)
+	if len(p.local.spawns) != 1 || p.local.spawns[0].ComputerID != "" {
+		t.Fatalf("spawn = %+v, want no destination", p.local.spawns)
+	}
+
+	// The destination of a thread on the paired computer is unchanged.
+	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Remote"})
+	call(t, p.server, localCaller(), "thread_send", `{"thread_id":"`+remoteThreadID+`","message":"go"}`)
+	if len(p.local.sends) != 2 || p.local.sends[1].ComputerID != "studio" {
+		t.Fatalf("remote send = %+v, want the paired computer", p.local.sends)
 	}
 }

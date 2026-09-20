@@ -841,8 +841,23 @@ type SendMessageOptions struct {
 // a cancellation, because "cancelled" there is indistinguishable from
 // "delivered".
 func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
+	_, err := a.interruptTurnAtIndex(ctx, threadID, anyOpenTurn)
+	return err
+}
+
+// anyOpenTurn is the turn fence of an interrupt that means whatever the
+// thread is running: a person's own stop, and a workflow takeover.
+const anyOpenTurn = -1
+
+// interruptTurnAtIndex is interruptTurnCtx fenced on the turn the caller
+// means to stop. A non-negative expectTurnIndex interrupts only while THAT
+// turn is the open one, which is what keeps an agent request's cancel from
+// taking a later turn away from whoever started it; anyOpenTurn interrupts
+// whatever is running. It reports whether the interrupt was sent, so a caller
+// that must say what it stopped does not have to guess.
+func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectTurnIndex int) (bool, error) {
 	if a.shuttingDown.Load() {
-		return ErrShuttingDown
+		return false, ErrShuttingDown
 	}
 	// A tool call parked on a remote command returns at once as backgrounded;
 	// the command itself keeps running and the tray still owns stopping it.
@@ -882,23 +897,23 @@ func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
 	// acquires this lock only after a replacement completed.
 	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
 	if err != nil {
-		return fmt.Errorf("interrupt turn %s: thread action lock: %w", threadID, err)
+		return false, fmt.Errorf("interrupt turn %s: thread action lock: %w", threadID, err)
 	}
 	defer unlock()
 	sess, ok := a.sessionManager().get(threadID)
 	if !ok {
-		return nil
+		return false, nil
 	}
 	if observedSession && sess.Token != observedSessionToken {
 		// The work visible when the interrupt entered is gone. A replacement
 		// session may already be processing a later send, so the stale intent
 		// must not be retargeted onto it.
-		return nil
+		return false, nil
 	}
 
 	providerSess := sess.ProviderSession()
 	if providerSess == nil {
-		return fmt.Errorf("session has no provider")
+		return false, fmt.Errorf("session has no provider")
 	}
 	// Sampled BEFORE the interrupt ack: awaiting it keeps the read loop
 	// processing wire events, so the cut turn can settle in the gap and
@@ -911,10 +926,15 @@ func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
 	// previous stamps are RESTORED — not wiped: an entry eager-persisted
 	// by an earlier interrupt still carries that interrupt's valid
 	// stamp.
-	interruptedTurn := -1
+	interruptedTurn := anyOpenTurn
 	var stampToken triage.FlushStampToken
 	if a.triage != nil {
 		interruptedTurn = a.triage.OpenTurnIndex(threadID)
+		if expectTurnIndex != anyOpenTurn && interruptedTurn != anyOpenTurn && interruptedTurn != expectTurnIndex {
+			// The thread has moved on to a turn this caller does not own.
+			// Stopping it would take work away from whoever started it.
+			return false, nil
+		}
 		stampToken = a.triage.MarkFlushSendsInterrupted(threadID, interruptedTurn)
 	}
 	var interruptErr error
@@ -928,7 +948,7 @@ func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
-		return interruptErr
+		return false, interruptErr
 	}
 	if !interruptSent {
 		// The intent entered before a same-session revert and therefore names
@@ -937,7 +957,7 @@ func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
 		if a.triage != nil {
 			a.triage.RestoreFlushSendsInterrupted(threadID, stampToken)
 		}
-		return nil
+		return false, nil
 	}
 	if a.triage != nil {
 		// The pre-ack sampled turn, not a fresh resolution: a queued echo
@@ -949,7 +969,7 @@ func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
 		}
 		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)
 	}
-	return nil
+	return true, nil
 }
 
 // eagerPersistFlushSendsOnInterrupt makes queued user messages

@@ -50,15 +50,24 @@ func (a *App) ArchiveThread(id string) error {
 	if err := a.archiveThreadLocked(id); err != nil {
 		return err
 	}
-	// An archived thread cannot receive an answer, so its parked calls end
-	// and its wakes are disarmed. A later wait or thread_status re-arms them,
-	// and delivering a re-armed one unarchives the thread.
-	if err := a.cancelThreadRequests(context.Background(), id); err != nil {
+	return a.stopArchivedThreadWork(context.Background(), id)
+}
+
+// stopArchivedThreadWork ends what a thread that has just been archived can
+// no longer receive. Both doors that archive (this binding and the agents'
+// thread_update patch) run it, in this order, so a thread archived from
+// either one is left in the same state.
+//
+// An archived thread cannot receive an answer, so its parked calls end and
+// its wakes are disarmed. A later wait or thread_status re-arms them, and
+// delivering a re-armed one unarchives the thread. The session is stopped by
+// then, so nothing can admit another remote command; both cancellations run
+// outside the locks because reaching the other computer may take a while.
+func (a *App) stopArchivedThreadWork(ctx context.Context, id string) error {
+	if err := a.cancelThreadRequests(ctx, id); err != nil {
 		log.Printf("thread tools: archive %s: cancel requests: %v", id, err)
 	}
-	// The session is stopped, so nothing can admit another remote command.
-	// Cancel outside the lock: reaching the other computer may take a while.
-	return a.cancelThreadRemoteCommands(context.Background(), id)
+	return a.cancelThreadRemoteCommands(ctx, id)
 }
 
 func (a *App) archiveThreadLocked(id string) error {

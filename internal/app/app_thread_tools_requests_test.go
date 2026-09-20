@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/threadapp"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/triage"
@@ -363,10 +364,13 @@ func TestThreadAskForksAReadOnlyScratchThreadAndDeletesIt(t *testing.T) {
 			t.Fatalf("the ask landed in the target's transcript: %+v", item)
 		}
 	}
-	// The scratch fork is gone, and its row with it.
-	if _, err := f.app.store.GetThread(scratchID); err == nil {
-		t.Fatalf("scratch thread %s outlived its answer", scratchID)
-	}
+	// The scratch fork is gone, and its row with it. The deletion runs with
+	// the token's settle lock released, so it is not ordered against the
+	// answer reaching the caller.
+	waitUntil(t, 10*time.Second, func() bool {
+		_, err := f.app.store.GetThread(scratchID)
+		return err != nil
+	})
 	if _, found, err := f.app.store.GetScratchThread(scratchID); err != nil || found {
 		t.Fatalf("scratch row survived: found=%v err=%v", found, err)
 	}
@@ -1127,6 +1131,110 @@ func TestThreadReminderFiresAfterARestart(t *testing.T) {
 	}
 }
 
+// Reading a request is a delivery only when there is an answer to deliver.
+// A reminder stores its note the moment it is armed, and listing the
+// thread's requests must not count that as the wake the reminder still owes.
+func TestListingRequestsDoesNotDisarmAPendingReminder(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "noted")
+	f.holdCallerTurn(t)
+
+	ack, err := f.adapter().Remind(t.Context(), f.callerIdentity(), threadtools.RemindCall{
+		DueAtUnixMs: time.Now().Add(time.Hour).UnixMilli(), Note: "check whether the deploy finished",
+	})
+	if err != nil {
+		t.Fatalf("Remind: %v", err)
+	}
+
+	// thread_status with no arguments: the listing every agent makes to
+	// find its own tokens.
+	listing, err := f.adapter().ListRequests(t.Context(), f.callerIdentity(), threadtools.ListCall{})
+	if err != nil {
+		t.Fatalf("ListRequests: %v", err)
+	}
+	for _, request := range listing.Requests {
+		if request.Token == ack.Token && request.Delivered != "" {
+			t.Fatalf("listing an armed reminder reported it delivered %q", request.Delivered)
+		}
+	}
+	if row := f.request(t, ack.Token); row.DeliveredAt != 0 {
+		t.Fatalf("listing an armed reminder marked it delivered at %d", row.DeliveredAt)
+	}
+
+	// The reminder still fires as a message when its time comes.
+	f.app.fireDueThreadReminders(time.Now().Add(2 * time.Hour))
+	f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	waitUntil(t, 10*time.Second, func() bool {
+		for _, queued := range durableQueueRows(t, f.app, f.caller.ID) {
+			if queued.SendID == threadWakeSendID(ack.Token) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// A reminder the caller disarmed is settled and nothing else. Every other
+// delivery goes through the collector, which is where the notify flag is
+// read, and firing one has to use the same door or an archived thread comes
+// back for a message nobody is owed.
+func TestADisarmedReminderIsNotDeliveredAndLeavesTheThreadArchived(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "noted")
+
+	ack, err := f.adapter().Remind(t.Context(), f.callerIdentity(), threadtools.RemindCall{
+		DueAtUnixMs: time.Now().Add(-time.Second).UnixMilli(), Note: "stand up",
+	})
+	if err != nil {
+		t.Fatalf("Remind: %v", err)
+	}
+	// Archiving the caller disarms every wake it is owed.
+	if err := f.app.ArchiveThread(f.caller.ID); err != nil {
+		t.Fatalf("ArchiveThread: %v", err)
+	}
+	if row := f.request(t, ack.Token); row.Notify {
+		t.Fatal("archiving the caller left the reminder armed")
+	}
+
+	f.app.fireDueThreadReminders(time.Now())
+	row := f.awaitRequestState(t, ack.Token, store.ThreadRequestFinished)
+	if row.DeliveredAt != 0 {
+		t.Errorf("a disarmed reminder was delivered as %q", row.DeliveredHow)
+	}
+	for _, queued := range durableQueueRows(t, f.app, f.caller.ID) {
+		if queued.SendID == threadWakeSendID(ack.Token) {
+			t.Fatal("a disarmed reminder queued a wake")
+		}
+	}
+	thread, err := f.app.store.GetThread(f.caller.ID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if !thread.Archived {
+		t.Fatal("a disarmed reminder brought the archived thread back")
+	}
+}
+
+// Archiving through the agents' organize patch is the same archive as the
+// sidebar's: the thread's parked calls end and its wakes are disarmed, or
+// the next answer brings it back out of the archive the user put it in.
+func TestArchivingThroughTheOrganizePatchStopsTheCallersRequests(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaudeHoldingTheTurn(t, "working")
+	spawn := f.runningRequest(t, "how big is the index?")
+	if row := f.request(t, spawn.Token); !row.Notify {
+		t.Fatal("the request under test is not owed a message")
+	}
+
+	archived := true
+	if _, err := f.app.applyThreadOrganizePatch(t.Context(), f.caller.ID, threadapp.OrganizePatch{Archived: &archived}); err != nil {
+		t.Fatalf("applyThreadOrganizePatch: %v", err)
+	}
+	if row := f.request(t, spawn.Token); row.Notify {
+		t.Error("a thread archived by thread_update is still owed a message")
+	}
+}
+
 // The sweep ticker is what fires a reminder with nobody watching. The nudge
 // is what keeps one due sooner than the next tick from waiting it out.
 func TestThreadReminderSweepFiresOnItsOwn(t *testing.T) {
@@ -1621,5 +1729,84 @@ func TestThreadAskForksAThreadThatIsMidTurn(t *testing.T) {
 	}
 	if turn.TurnID != "mid-turn-open" {
 		t.Fatalf("active turn = %q, want the one that was already running", turn.TurnID)
+	}
+}
+
+// TestThreadSpawnFromThreadTakesTheCallersSettings pins what a fork of
+// another thread runs with: the caller's settings, the call's overrides, and
+// the source's provider, which a fork resumes and cannot change.
+//
+// The permission level is the sharp half. A read-only caller forking a
+// full-access thread must not end up with a full-access thread, which is
+// what inheriting the source's settings silently produced.
+func TestThreadSpawnFromThreadTakesTheCallersSettings(t *testing.T) {
+	f := newRequestFixture(t)
+	f.mockClaude(t, "on it", "on it", "on it")
+	f.caller.RuntimeMode = string(provider.RuntimeReadOnly)
+	if err := f.app.store.UpdateThread(f.caller); err != nil {
+		t.Fatalf("make the caller read-only: %v", err)
+	}
+	source := f.forkableThread(t, "settings-source")
+	source.RuntimeMode = string(provider.RuntimeFullAccess)
+	source.Model = "claude-haiku-4-5"
+	if err := f.app.store.UpdateThread(source); err != nil {
+		t.Fatalf("make the source full-access: %v", err)
+	}
+
+	ack, err := f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		FromThread: source.ID, Prompt: "carry on", WaitSeconds: 0,
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	fork, err := f.app.store.GetThread(ack.ThreadID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if fork.RuntimeMode != string(provider.RuntimeReadOnly) {
+		t.Errorf("fork runtime mode = %q, want the caller's read-only", fork.RuntimeMode)
+	}
+	if fork.Model != f.caller.Model {
+		t.Errorf("fork model = %q, want the caller's %q", fork.Model, f.caller.Model)
+	}
+	if fork.Provider != source.Provider {
+		t.Errorf("fork provider = %q, want the source's %q", fork.Provider, source.Provider)
+	}
+
+	// An explicit override is honored, not dropped.
+	ack, err = f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		FromThread: source.ID, Prompt: "carry on", Model: "claude-haiku-4-5",
+		RuntimeMode: string(provider.RuntimeApprovalRequired), WaitSeconds: 0,
+	})
+	if err != nil {
+		t.Fatalf("Spawn with overrides: %v", err)
+	}
+	overridden, err := f.app.store.GetThread(ack.ThreadID)
+	if err != nil {
+		t.Fatalf("GetThread: %v", err)
+	}
+	if overridden.Model != "claude-haiku-4-5" || overridden.RuntimeMode != string(provider.RuntimeApprovalRequired) {
+		t.Errorf("overrides were dropped: model=%q runtime=%q", overridden.Model, overridden.RuntimeMode)
+	}
+
+	// A model this computer does not offer is refused here exactly as it is
+	// for a fresh spawn, rather than being ignored.
+	_, err = f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		FromThread: source.ID, Prompt: "carry on", Model: "claude-imaginary-9",
+	})
+	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
+		t.Fatalf("unknown model on a fork = %q", code)
+	}
+
+	// The provider axis cannot move in a fork, and saying so is the only
+	// honest answer: the fork resumes the source's session.
+	_, err = f.adapter().Spawn(t.Context(), f.callerIdentity(), threadtools.SpawnCall{
+		FromThread: source.ID, Prompt: "carry on", Provider: string(provider.Codex),
+	})
+	if code := publicCode(t, err); code != threadtools.CodeInvalidRequest {
+		t.Fatalf("a provider change on a fork = %q, want a refusal", code)
+	}
+	if !strings.Contains(err.Error(), "provider") {
+		t.Errorf("the refusal does not name the axis: %v", err)
 	}
 }

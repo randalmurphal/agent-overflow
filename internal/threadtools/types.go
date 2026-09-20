@@ -154,6 +154,21 @@ type Target struct {
 	Partial []Computer
 }
 
+// Destination is the computer a call against this target must run on:
+// empty for a thread on the caller's own computer, whatever the resolved
+// row stamps as its owner.
+//
+// ComputerID is a display field: in the paired shape every row carries the
+// computer that owns it, this one included. Passing it to the App as a
+// destination would ask the pairing set for a peer that is never in it,
+// because a computer is not paired with itself.
+func (t Target) Destination() string {
+	if t.Local {
+		return ""
+	}
+	return t.ComputerID
+}
+
 // Window kinds for thread_show.
 const (
 	WindowTail   = "tail"

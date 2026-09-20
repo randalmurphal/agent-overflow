@@ -8,7 +8,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/threadmode"
 	"agent-overflow/internal/threadtools"
+	"agent-overflow/internal/transport"
 )
 
 // Agent thread tools across two computers, over the real wire: a real
@@ -55,6 +58,16 @@ type reachPair struct {
 
 func newReachPair(t *testing.T) *reachPair {
 	t.Helper()
+	return newReachPairServedBy(t, func(t *testing.T, app *App) *pairedBackend {
+		return servePairedApp(t, app)
+	})
+}
+
+// newReachPairServedBy is newReachPair with the destination's listener
+// built by the caller, which is how a test gives that computer a fault:
+// a reply that never comes back, or a call that never returns.
+func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBackend) *reachPair {
+	t.Helper()
 
 	dest, _ := setupE2EApp(t)
 	dest.configDir = t.TempDir()
@@ -63,7 +76,7 @@ func newReachPair(t *testing.T) *reachPair {
 		t.Fatal("the destination has no session core, so nothing can pair with it")
 	}
 	dest.installThreadRequestObserver()
-	wire := servePairedApp(t, dest)
+	wire := serve(t, dest)
 	project, err := dest.ensureProjectForWorkspace(t.TempDir())
 	if err != nil {
 		t.Fatalf("register a project on the destination: %v", err)
@@ -447,7 +460,86 @@ func reachThread(t *testing.T, app *App, id, title string) store.Thread {
 	return thread
 }
 
+// peerFaults is a destination whose thread peer methods can be made to
+// behave like a computer whose answer was lost on the way back, or one
+// that is asleep. It embeds the App and is registered under the same
+// labels, so the source reaches it through the ordinary method ids.
+type peerFaults struct {
+	*App
+	// dropReplies is how many answered ThreadToolCall replies are thrown
+	// away before one is allowed back to the source. The destination has
+	// done the work in each case; only the reply is lost.
+	dropReplies atomic.Int32
+	// calls counts every ThreadToolCall this destination answered.
+	calls atomic.Int32
+	// stall holds every ThreadToolRequestStatus until it is closed, which
+	// is what a computer that accepts a connection and never answers
+	// costs the poller.
+	stall chan struct{}
+}
+
+func (p *peerFaults) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
+	reply, err := p.App.ThreadToolCall(ctx, call)
+	if err != nil {
+		return reply, err
+	}
+	if p.calls.Add(1) <= p.dropReplies.Load() {
+		return ThreadPeerReply{}, errors.New("the answer was lost on the way back")
+	}
+	return reply, nil
+}
+
+func (p *peerFaults) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) (ThreadPeerPollReply, error) {
+	if p.stall != nil {
+		select {
+		case <-p.stall:
+		case <-ctx.Done():
+			return ThreadPeerPollReply{}, ctx.Err()
+		}
+	}
+	return p.App.ThreadToolRequestStatus(ctx, poll)
+}
+
+// serveFaultyApp serves one destination through the fault wrapper.
+func serveFaultyApp(t *testing.T, app *App) (*pairedBackend, *peerFaults) {
+	t.Helper()
+	faults := &peerFaults{App: app}
+	wire := servePairedApp(t, app, func(cfg *transport.Config) {
+		dispatcher := transport.NewDispatcher()
+		if _, err := dispatcher.Register(faults, transport.RegisterOptions{
+			Package:   "main",
+			TypeName:  "App",
+			AllowList: transport.NewMethodAllowList(),
+		}); err != nil {
+			t.Fatalf("register the faulty destination: %v", err)
+		}
+		cfg.Dispatcher = dispatcher
+	})
+	return wire, faults
+}
+
+// attachDestination pairs one more computer with the source and returns the
+// id the source's pairings give it.
+func attachDestination(t *testing.T, pair *reachPair, wire *pairedBackend, dest *App) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	invite, _ := wire.mintLink(t, "full")
+	peer, err := pair.manager.Add(ctx, invite.URL)
+	if err != nil {
+		t.Fatalf("add the second destination: %v", err)
+	}
+	if err := dest.ConfirmDevicePairing(invite.LinkID); err != nil {
+		t.Fatalf("confirm the second pairing: %v", err)
+	}
+	if err := pair.manager.Await(ctx, peer.ID); err != nil {
+		t.Fatalf("await the second pairing: %v", err)
+	}
+	return peer.ID
+}
+
 // shutdownReachDestination stops the destination's listener, which is what
+// a computer that is asleep or offline looks like from the source.// shutdownReachDestination stops the destination's listener, which is what
 // a computer that is asleep or offline looks like from the source.
 func shutdownReachDestination(t *testing.T, pair *reachPair) {
 	t.Helper()
@@ -566,7 +658,7 @@ func TestThreadToolsRemoteRequestRetriesOneTokenWithoutRunningTwice(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	repeat, err := pair.source.callThreadPeerRequest(ctx, threadtools.Computer{ID: pair.computer}, ThreadPeerCall{
+	repeat, _, err := pair.source.callThreadPeerRequest(ctx, threadtools.Computer{ID: pair.computer}, ThreadPeerCall{
 		Tool: "thread_spawn", Args: args, Token: spawn.Token, Source: pair.callerIdentity(),
 		Inherit: threadtools.SpawnDefaults{
 			Provider: pair.caller.Provider, Model: pair.caller.Model,
@@ -633,6 +725,198 @@ func TestThreadToolsUnconfirmedRequestSettlesFromTheDestinationsAnswer(t *testin
 	row = pair.request(t, lost)
 	if row.State != store.ThreadRequestErrored || !strings.Contains(string(row.Answer), "no longer knows") {
 		t.Fatalf("an accepted row the destination lost settled %q %q", row.State, row.Answer)
+	}
+}
+
+// TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken pins what a
+// call whose answer never came back owes the model: the token, so the work
+// is checked rather than started again, and a row the poller reconciles.
+// The poller waits until nothing is in flight for that token before it
+// treats the destination's "unknown" as a refusal.
+func TestThreadToolsLostAdmissionAnswerIsUnconfirmedWithItsToken(t *testing.T) {
+	pair := newReachPair(t)
+	// The call is cancelled before it can be answered, which is what a
+	// lost reply looks like from the source: the destination may have
+	// accepted it, and this computer cannot tell.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ack, err := pair.adapter().Spawn(ctx, pair.callerIdentity(), threadtools.SpawnCall{
+		Prompt: "work whose answer never came back", ComputerID: pair.computer, ProjectID: pair.project,
+	})
+	if err != nil {
+		t.Fatalf("a lost reply reached the model as an error: %v", err)
+	}
+	if ack.Token == "" || ack.State != store.ThreadRequestUnconfirmed || ack.Outcome != threadtools.OutcomeUnconfirmed {
+		t.Fatalf("ack = %+v, want an unconfirmed request carrying its token", ack)
+	}
+	row := pair.request(t, ack.Token)
+	if row.State != store.ThreadRequestUnconfirmed {
+		t.Fatalf("the source row settled %q on a call whose answer was lost", row.State)
+	}
+
+	// A row still being admitted is fenced out of the poll, and the fence
+	// covers every attempt the admission can make.
+	if threadRequestAdmissionFence < threadPeerCallTimeout*threadPeerAdmissionAttempts {
+		t.Fatalf("the admission fence %s does not cover %d attempts of %s",
+			threadRequestAdmissionFence, threadPeerAdmissionAttempts, threadPeerCallTimeout)
+	}
+	inFlight := newThreadRequestToken()
+	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
+		Token: inFlight, CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSpawn,
+		TargetComputerID: pair.computer, State: store.ThreadRequestUnconfirmed,
+		NextCheck: time.Now().Add(threadRequestAdmissionFence).UnixMilli(),
+	}); err != nil {
+		t.Fatalf("insert the row being admitted: %v", err)
+	}
+	pair.source.pollRemoteThreadRequests(time.Now())
+	pair.source.threadRequestsWG.Wait()
+	if state := pair.request(t, inFlight).State; state != store.ThreadRequestUnconfirmed {
+		t.Fatalf("a poll refused a request that was still being admitted: %q", state)
+	}
+	if state := pair.request(t, ack.Token).State; state != store.ThreadRequestUnconfirmed {
+		t.Fatalf("a poll refused the request before its next check: %q", state)
+	}
+
+	// Once the source is done trying, the poll is the recovery path: the
+	// destination holds no receipt, so the request was never accepted.
+	pair.poll(t)
+	row = pair.request(t, ack.Token)
+	if row.State != store.ThreadRequestRefused || !strings.Contains(string(row.Answer), "never accepted") {
+		t.Fatalf("the poll settled the lost request as %q %q, want refused", row.State, row.Answer)
+	}
+}
+
+// TestThreadToolsAdmissionIsRetriedWithOneTokenAfterALostReply proves the
+// source retries the acceptance itself rather than handing the model an
+// error it would answer by starting the work again, and that the retries
+// carry the one token, so the destination runs the work once.
+func TestThreadToolsAdmissionIsRetriedWithOneTokenAfterALostReply(t *testing.T) {
+	var faults *peerFaults
+	pair := newReachPairServedBy(t, func(t *testing.T, app *App) *pairedBackend {
+		wire, injected := serveFaultyApp(t, app)
+		faults = injected
+		return wire
+	})
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+	// The destination accepts every call; the first two answers never
+	// reach the source.
+	faults.dropReplies.Store(int32(threadPeerAdmissionAttempts - 1))
+
+	ack := pair.spawnThere(t, "accepted once, answered on the third try", nil)
+	if got := faults.calls.Load(); got != int32(threadPeerAdmissionAttempts) {
+		t.Fatalf("the destination answered %d calls, want %d attempts of one token", got, threadPeerAdmissionAttempts)
+	}
+	if ack.State != store.ThreadRequestAccepted && ack.State != store.ThreadRequestRunning {
+		t.Fatalf("ack = %+v, want the acceptance the destination kept", ack)
+	}
+	receipt := pair.receipt(t, ack.Token)
+	if receipt.TargetThreadID == "" {
+		t.Fatalf("the destination accepted %s without a thread: %+v", ack.Token, receipt)
+	}
+	receipts, err := pair.dest.store.ListThreadRequestReceiptsForThread(receipt.TargetThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 1 {
+		t.Fatalf("the retries left %d receipts on the destination", len(receipts))
+	}
+	items, err := pair.dest.store.ListItems(receipt.TargetThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompts := 0
+	for _, item := range items {
+		if item.Kind == "user_text" {
+			prompts++
+		}
+	}
+	if prompts != 1 {
+		t.Fatalf("the retries queued the prompt %d times", prompts)
+	}
+}
+
+// TestThreadToolsStatusWatchesAThreadOnAnotherComputer proves a thread is
+// addressed by its id wherever it lives: thread_status with thread_ids
+// answers for a thread this computer never held, and its wait ends when
+// that thread is at rest there.
+func TestThreadToolsStatusWatchesAThreadOnAnotherComputer(t *testing.T) {
+	pair := newReachPair(t)
+	remote := reachThread(t, pair.dest, uuid.NewString(), "Watched from here")
+
+	result := pair.call(t, "thread_status", `{"thread_ids":["`+remote.ID+`"],"wait_seconds":10}`)
+	threads, _ := result["threads"].([]any)
+	if len(threads) != 1 {
+		t.Fatalf("thread_status reported %d threads, want the one it was asked about: %+v", len(threads), result)
+	}
+	row, _ := threads[0].(map[string]any)
+	if row["thread_id"] != remote.ID {
+		t.Fatalf("thread_status answered about %v, want %s", row["thread_id"], remote.ID)
+	}
+	if row["computer_id"] != pair.computer {
+		t.Fatalf("the row is stamped %v, want the destination %s", row["computer_id"], pair.computer)
+	}
+	if row["title"] != remote.Title {
+		t.Fatalf("the row is titled %v, want %q", row["title"], remote.Title)
+	}
+	if resting, _ := row["resting"].(bool); !resting {
+		t.Fatalf("a thread doing nothing on the destination is reported %+v", row)
+	}
+	// A thread already at rest ends the wait rather than running it out.
+	if woke, _ := result["woke_on"].(string); woke != remote.ID {
+		t.Fatalf("the wait ended on %q, want the thread that is resting", woke)
+	}
+	if timedOut, _ := result["timed_out"].(bool); timedOut {
+		t.Fatal("the wait timed out on a thread that is already resting")
+	}
+}
+
+// TestThreadToolsPollVisitsDestinationsConcurrently proves one asleep
+// computer costs the poll one of its slots and not the whole pass: the
+// healthy destination's row settles while the other call is still open.
+func TestThreadToolsPollVisitsDestinationsConcurrently(t *testing.T) {
+	pair := newReachPair(t)
+
+	asleep, _ := setupE2EApp(t)
+	asleep.configDir = t.TempDir()
+	asleep.initIdentity("thread-tools-asleep")
+	wire, faults := serveFaultyApp(t, asleep)
+	publishReachIdentity(t, asleep, uuid.NewString())
+	faults.stall = make(chan struct{})
+	stalled := attachDestination(t, pair, wire, asleep)
+
+	// The asleep computer is visited first: it has the earlier check.
+	now := time.Now()
+	slow := newThreadRequestToken()
+	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
+		Token: slow, CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSend,
+		TargetComputerID: stalled, State: store.ThreadRequestAccepted,
+		NextCheck: now.Add(-time.Minute).UnixMilli(),
+	}); err != nil {
+		t.Fatalf("insert the row on the asleep computer: %v", err)
+	}
+	quick := newThreadRequestToken()
+	if err := pair.source.store.InsertThreadRequest(store.ThreadRequest{
+		Token: quick, CallerThreadID: pair.caller.ID, Kind: store.ThreadRequestSend,
+		TargetComputerID: pair.computer, State: store.ThreadRequestAccepted,
+		NextCheck: now.Add(-time.Second).UnixMilli(),
+	}); err != nil {
+		t.Fatalf("insert the row on the healthy computer: %v", err)
+	}
+
+	pair.source.pollRemoteThreadRequests(now)
+	t.Cleanup(func() {
+		close(faults.stall)
+		pair.source.threadRequestsWG.Wait()
+	})
+	// The healthy destination holds no receipt for this token, so it
+	// settles as soon as it is asked. Waiting for it proves the pass did
+	// not queue behind the call that is still open.
+	waitUntilE2E(t, 10*time.Second, "the healthy destination's row settles", func() bool {
+		row, found, err := pair.source.store.GetThreadRequest(quick)
+		return err == nil && found && threadRequestSettled(row)
+	})
+	if row := pair.request(t, slow); threadRequestSettled(row) {
+		t.Fatalf("the stalled destination's row settled %q while its call was still open", row.State)
 	}
 }
 
@@ -1032,5 +1316,147 @@ func TestThreadOperationErrorNamesTheComputerAndKeepsTheDestinationsCode(t *test
 	}
 	if !strings.Contains(message, "Thread status on computer "+computer) {
 		t.Fatalf("the refusal does not name the operation and computer: %q", message)
+	}
+}
+
+// TestThreadToolsLocalWorkStaysLocalWhileAComputerIsPaired: in the paired
+// shape every resolved row carries the computer that owns it, this one
+// included. A send or a cancel against a thread on the caller's own computer
+// must still run here; forwarding it would ask the pairing set for a peer it
+// never holds, because a computer is not paired with itself.
+func TestThreadToolsLocalWorkStaysLocalWhileAComputerIsPaired(t *testing.T) {
+	pair := newReachPair(t)
+	installMockClaudeTurns(t, pair.source, [][]string{{mockClaudeInitLine}})
+	target, err := createTestThread(t, pair.source, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatalf("create the local target: %v", err)
+	}
+
+	sent := pair.call(t, "thread_send", `{"thread_id":"`+target.ID+`","message":"work on this here"}`)
+	token, _ := sent["token"].(string)
+	if token == "" {
+		t.Fatalf("send returned no token: %v", sent)
+	}
+	row := pair.request(t, token)
+	if row.TargetComputerID != "" {
+		t.Fatalf("a local send was recorded against computer %q", row.TargetComputerID)
+	}
+	if row.TargetThreadID != target.ID {
+		t.Fatalf("send target = %q, want the local thread", row.TargetThreadID)
+	}
+	items, err := pair.source.store.ListItems(target.ID)
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	var landed bool
+	for _, item := range items {
+		if strings.Contains(item.Summary, "work on this here") {
+			landed = true
+		}
+	}
+	if !landed {
+		t.Fatalf("the message never reached the local thread: %+v", items)
+	}
+
+	// A cancel by thread id takes the same route.
+	stopped := pair.call(t, "thread_cancel", `{"thread_id":"`+target.ID+`"}`)
+	if stopped["effect"] == nil {
+		t.Fatalf("cancel returned no effect: %v", stopped)
+	}
+}
+
+// TestThreadToolsFooterOffersTheWayBackOnlyWhenItExists: pairing is
+// directional. The source holds a credential for the destination; the
+// destination holds none for the source, so a request that lands there
+// cannot offer thread_show or thread_send back to the sender. A request one
+// of the destination's own threads makes always can.
+func TestThreadToolsFooterOffersTheWayBackOnlyWhenItExists(t *testing.T) {
+	pair := newReachPair(t)
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+
+	ack := pair.spawnThere(t, "work for the other computer", map[string]any{"wait_seconds": 0, "notify": true})
+	receipt := pair.receipt(t, ack.Token)
+	foreign := reachRequestMessage(t, pair.dest, receipt.TargetThreadID, ack.Token)
+	if !strings.Contains(foreign, "Agent request from thread") {
+		t.Fatalf("the forwarded message carries no footer: %q", foreign)
+	}
+	if strings.Contains(foreign, "thread_show with its id") || strings.Contains(foreign, "thread_send with its id") {
+		t.Fatalf("the footer offers a route back to a computer this one cannot reach: %q", foreign)
+	}
+
+	// The destination's own thread asking one of its own: the sender is on
+	// this computer, so the return navigation applies.
+	local, err := createTestThread(t, pair.dest, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatalf("create a local target on the destination: %v", err)
+	}
+	caller, err := createTestThread(t, pair.dest, string(provider.Claude), t.TempDir(), "claude-opus-4-7", threadmode.ModeChat)
+	if err != nil {
+		t.Fatalf("create a local caller on the destination: %v", err)
+	}
+	destID, _ := pair.dest.backendIdentity()
+	own, err := threadToolsApp{app: pair.dest}.Send(t.Context(),
+		threadtools.Caller{ThreadID: caller.ID, Title: caller.Title, ComputerID: destID, ComputerName: "destination"},
+		threadtools.SendCall{ThreadID: local.ID, Message: "work for you", Notify: true})
+	if err != nil {
+		t.Fatalf("local send on the destination: %v", err)
+	}
+	home := reachRequestMessage(t, pair.dest, local.ID, own.Token)
+	if !strings.Contains(home, "thread_show with its id") {
+		t.Fatalf("a sender on this computer is reachable and the footer must say so: %q", home)
+	}
+}
+
+// reachRequestMessage reads the user message one request dispatched.
+func reachRequestMessage(t *testing.T, app *App, threadID, token string) string {
+	t.Helper()
+	items, err := app.store.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("ListItems(%s): %v", threadID, err)
+	}
+	for _, item := range items {
+		if item.Kind == "user_text" && strings.Contains(item.Summary, token) {
+			return item.Summary
+		}
+	}
+	t.Fatalf("no message in %s carries request %s: %+v", threadID, token, items)
+	return ""
+}
+
+// TestThreadPeerRepliesLargerThanAMegabyteCrossTheWire: a peer answers with
+// whole content. A thread_item read is a megabyte before JSON escaping, an
+// answer or a late reply can be one on its own, and the poller repeats its
+// request every pass, so a client bound below the transport's own inbound
+// bound turns one large answer into a closed connection that closes again
+// on every retry.
+func TestThreadPeerRepliesLargerThanAMegabyteCrossTheWire(t *testing.T) {
+	pair := newReachPair(t)
+	remote := reachThread(t, pair.dest, "cccccccc-0000-4000-8000-000000000001", "Large answer")
+	// Quotes double under JSON escaping, so the reply crosses as more than
+	// twice the bytes the model asked for.
+	body := strings.Repeat(`"`, threadtools.MaxItemBytes)
+	if err := pair.dest.store.InsertTurn(store.Turn{
+		TurnID: remote.ID + "-turn", ThreadID: remote.ID, TurnIndex: 0, StartedAt: 1_000,
+	}); err != nil {
+		t.Fatalf("InsertTurn: %v", err)
+	}
+	if _, err := pair.dest.store.UpsertItem(store.Item{
+		ID: "large-output", ThreadID: remote.ID, TurnIndex: 0, ItemIndex: 0,
+		Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Bash",
+		Summary: "Bash", PayloadID: "large-payload", PayloadKind: "tool_result",
+		CreatedAt: 1_000, UpdatedAt: 1_000,
+	}, &store.Payload{ID: "large-payload", Kind: "tool_result", Data: []byte(body), CreatedAt: 1_000}); err != nil {
+		t.Fatalf("UpsertItem: %v", err)
+	}
+
+	result := pair.call(t, "thread_item",
+		`{"thread_id":"`+remote.ID+`","item_id":"large-output","offset":0,"max_bytes":`+
+			strconv.Itoa(threadtools.MaxItemBytes)+`}`)
+	text, _ := result["text"].(string)
+	if len(text) != len(body) {
+		t.Fatalf("the reply came back %d bytes for a %d byte read", len(text), len(body))
+	}
+	if text != body {
+		t.Fatal("the bytes the destination read did not survive the crossing")
 	}
 }

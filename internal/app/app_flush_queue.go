@@ -1242,26 +1242,29 @@ func (a *App) registerQueueItem(
 //
 // It refuses once the message reached the provider, because by then there is
 // nothing to withdraw: the caller is told so and cancels the turn instead.
-// `removed` false with a nil error is that refusal; an error is a failure to
-// carry out a removal that should have applied.
+// The two refusals are told apart, because they mean different things to a
+// caller that has to say what it stopped: queueRemovalAbsent is a send id
+// nothing on this queue carries, queueRemovalDispatched is an entry the
+// dispatch already claimed. An error is a failure to carry out a removal that
+// should have applied.
 //
 // Lock order is registerQueueItem's: send admission, then the thread mutation
 // lock, then the dispatch handoff mutex. Holding the handoff mutex is what
 // keeps the removal from racing tryFlushQueue's claim window — the claim is
 // taken under triage's own lock and checked there, and this mutex is what
 // stops a fresh handoff starting between the check and the delete.
-func (a *App) removeQueuedItem(ctx context.Context, threadID, sendID string) (removed bool, err error) {
+func (a *App) removeQueuedItem(ctx context.Context, threadID, sendID string) (queueRemoval, error) {
 	if strings.TrimSpace(threadID) == "" || strings.TrimSpace(sendID) == "" {
-		return false, fmt.Errorf("remove queued item: thread id and send id are required")
+		return queueRemovalAbsent, fmt.Errorf("remove queued item: thread id and send id are required")
 	}
 	unlockAdmission, err := a.lockSendAdmission(ctx, threadID, sendID)
 	if err != nil {
-		return false, err
+		return queueRemovalAbsent, err
 	}
 	defer unlockAdmission()
 	unlock, err := a.threadApplication().LockMutable(ctx, threadID)
 	if err != nil {
-		return false, err
+		return queueRemovalAbsent, err
 	}
 	defer unlock()
 	a.flushDispatch.handoffMu.Lock()
@@ -1269,28 +1272,44 @@ func (a *App) removeQueuedItem(ctx context.Context, threadID, sendID string) (re
 
 	row, found, err := a.store.FindFlushQueueItemBySendID(threadID, sendID)
 	if err != nil {
-		return false, fmt.Errorf("remove queued item: %w", err)
+		return queueRemovalAbsent, fmt.Errorf("remove queued item: %w", err)
 	}
 	if !found {
 		// Either the message was dispatched (its row is gone and the
-		// `user_text` row carries the id) or it never existed. Both answer
-		// the same way here: nothing on the queue to remove.
-		return false, nil
+		// `user_text` row carries the id) or it never existed. Nothing on
+		// this queue carries the id either way; the caller that needs to
+		// tell the two apart reads the message's own record.
+		return queueRemovalAbsent, nil
 	}
 	if a.triage != nil {
 		if _, taken := a.triage.RemoveQueuedFlushItem(threadID, row.ID); !taken {
 			// The in-memory entry is mid-handoff or already drained. The
 			// durable row stays: its settlement deletes it when the dispatch
 			// or the restore finishes.
-			return false, nil
+			return queueRemovalDispatched, nil
 		}
 	}
 	if err := a.store.DeleteFlushQueueItem(row.ID); err != nil {
-		return false, fmt.Errorf("remove queued item: %w", err)
+		return queueRemovalAbsent, fmt.Errorf("remove queued item: %w", err)
 	}
 	a.emitQueueStateChanged(threadID)
-	return true, nil
+	return queueRemovalRemoved, nil
 }
+
+// queueRemoval is what removeQueuedItem found under one send id.
+type queueRemoval int
+
+const (
+	// queueRemovalAbsent: no queued message carries that send id. It was
+	// dispatched and settled, or it never existed.
+	queueRemovalAbsent queueRemoval = iota
+	// queueRemovalRemoved: the message was taken back off the queue, durable
+	// row and in-memory entry together.
+	queueRemovalRemoved
+	// queueRemovalDispatched: the entry was already claimed for dispatch or
+	// drained. The turn it starts is what a caller must stop instead.
+	queueRemovalDispatched
+)
 
 // GetQueueState returns the current queue snapshot for the thread.
 // Used by the frontend on bootstrap and thread-switch to seed its

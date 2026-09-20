@@ -300,3 +300,138 @@ func TestDisabledErrorCarriesTheOwnersCode(t *testing.T) {
 		t.Fatalf("default refusal = %s", plainBody)
 	}
 }
+
+// afterResponseServer registers one thread whose handler defers work with
+// AfterResponse, and returns the capability URL.
+func afterResponseServer(t *testing.T, handler func(http.ResponseWriter, context.Context, Request)) string {
+	t.Helper()
+	server := New("test-tools", "", func(string) []map[string]any { return nil },
+		func(w http.ResponseWriter, ctx context.Context, req Request, _ string) { handler(w, ctx, req) })
+	t.Cleanup(func() { _ = server.Close() })
+	config, err := server.RegisterThread("thread", "access")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return config["test-tools"].(map[string]any)["url"].(string)
+}
+
+// readEvents reads server-sent lines off a response body without waiting for
+// the handler to return, so a test can assert on an answer whose call is
+// still running.
+func readEvents(t *testing.T, body io.Reader) <-chan string {
+	t.Helper()
+	lines := make(chan string, 16)
+	go func() {
+		defer close(lines)
+		reader := bufio.NewReader(body)
+		for {
+			text, err := reader.ReadString('\n')
+			if text != "" {
+				lines <- text
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return lines
+}
+
+// awaitData waits for the stream's final message event and returns its JSON.
+func awaitData(t *testing.T, lines <-chan string, what string) string {
+	t.Helper()
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case text, ok := <-lines:
+			if !ok {
+				t.Fatalf("%s: the stream ended without a response", what)
+			}
+			if data, found := strings.CutPrefix(text, "data: "); found {
+				return strings.TrimSpace(data)
+			}
+		case <-deadline:
+			t.Fatalf("%s: no response arrived", what)
+		}
+	}
+}
+
+// TestAfterResponseWorkWaitsForTheAnswerToReachTheClient pins the ordering a
+// deferred step depends on: the answer is on the wire before the work runs,
+// so work that ends the call (deleting the thread that asked) cannot take
+// the response down with it.
+func TestAfterResponseWorkWaitsForTheAnswerToReachTheClient(t *testing.T) {
+	release := make(chan struct{})
+	ran := make(chan bool, 1)
+	url := afterResponseServer(t, func(w http.ResponseWriter, ctx context.Context, req Request) {
+		AfterResponse(ctx, func(delivered bool) {
+			<-release
+			ran <- delivered
+		})
+		WriteResult(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": "answered"}}})
+	})
+	resp := postToolCall(t, url, "application/json, text/event-stream")
+	data := awaitData(t, readEvents(t, resp.Body), "deferred work holding the call")
+	if !strings.Contains(data, "answered") {
+		t.Fatalf("final event %q", data)
+	}
+	select {
+	case delivered := <-ran:
+		t.Fatalf("deferred work ran before the client read the answer (delivered=%v)", delivered)
+	default:
+	}
+	close(release)
+	select {
+	case delivered := <-ran:
+		if !delivered {
+			t.Fatal("a response the client read reported delivered=false")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("deferred work never ran")
+	}
+}
+
+// TestAfterResponseReportsAnUndeliveredAnswer covers the other half: a client
+// that is gone before the response is written leaves the work to decide, and
+// nothing may be recorded as read.
+func TestAfterResponseReportsAnUndeliveredAnswer(t *testing.T) {
+	ran := make(chan bool, 1)
+	url := afterResponseServer(t, func(w http.ResponseWriter, ctx context.Context, req Request) {
+		AfterResponse(ctx, func(delivered bool) { ran <- delivered })
+		// Answer only once the client is provably gone.
+		<-ctx.Done()
+		WriteResult(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": "answered"}}})
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"slow","arguments":{}}}`))
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(request)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	lines := readEvents(t, resp.Body)
+	select {
+	case text, ok := <-lines:
+		if !ok || !strings.HasPrefix(text, ": keepalive") {
+			t.Fatalf("stream did not open (%q, open=%v)", text, ok)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the stream never opened")
+	}
+	cancel()
+	_ = resp.Body.Close()
+	select {
+	case delivered := <-ran:
+		if delivered {
+			t.Fatal("an abandoned call reported its answer as delivered")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("deferred work never ran for an abandoned call")
+	}
+}

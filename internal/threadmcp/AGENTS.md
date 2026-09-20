@@ -17,6 +17,13 @@ The 8 MiB envelope bound includes JSON escaping of a remote tool's 1 MiB
 script; decoded tool arguments retain their own smaller limits.
 Neither tokens nor endpoint URLs belong in errors or logs.
 
+Work that may only happen once the client holds the answer registers with
+AfterResponse. The streamed path keeps the handler's body buffered until the
+call finishes, so running such work inline acts before the response exists on
+the wire. The hook is told whether the response was delivered; nothing may be
+recorded as read, and no thread the call needs may be torn down, when it was
+not.
+
 Decode tools/call envelopes with DecodeToolCall, which accepts MCP metadata
 and protocol extensions. DecodeArgs is only for tool arguments: its closed
 schema must not reject client-added envelope fields such as `_meta`. Exercise

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -32,6 +33,9 @@ const (
 	threadRequestExpiryInterval = 10 * time.Minute
 	// threadRequestPollBatch bounds one pass over the remote rows.
 	threadRequestPollBatch = 32
+	// threadRequestPollFanOut is how many destinations one pass visits at
+	// once, the bound the remote-jobs watcher uses for the same reason.
+	threadRequestPollFanOut = 4
 	// threadPollNormalDelay, threadPollWaitingDelay and threadPollErrorDelay
 	// are the poll cadence, the remote-watch table applied to requests: a
 	// token a call is parked on is visited faster because that call is
@@ -99,6 +103,7 @@ func (a *App) runThreadRequestSweeps(nudge <-chan struct{}) {
 		now := time.Now()
 		a.fireDueThreadReminders(now)
 		a.pollRemoteThreadRequests(now)
+		a.retryUndeliveredThreadWakes(now)
 		if now.Sub(lastExpiry) >= threadRequestExpiryInterval {
 			lastExpiry = now
 			a.expireThreadRequests(now)
@@ -182,12 +187,26 @@ func (a *App) runThreadRequestPoll(rows []store.ThreadRequest) {
 		}
 		byComputer[row.TargetComputerID] = append(byComputer[row.TargetComputerID], row)
 	}
+	// Four destinations at a time, the bound the remote-jobs watcher uses:
+	// one computer that is asleep holds its call open for the whole call
+	// timeout, and the healthy destinations beside it must not wait it out.
+	var wg sync.WaitGroup
+	limit := make(chan struct{}, threadRequestPollFanOut)
 	for _, computerID := range order {
-		if a.lifeCtx().Err() != nil {
+		select {
+		case limit <- struct{}{}:
+		case <-a.lifeCtx().Done():
+			wg.Wait()
 			return
 		}
-		a.pollThreadRequestsOn(computerID, byComputer[computerID])
+		wg.Add(1)
+		go func(computerID string) {
+			defer wg.Done()
+			defer func() { <-limit }()
+			a.pollThreadRequestsOn(computerID, byComputer[computerID])
+		}(computerID)
 	}
+	wg.Wait()
 }
 
 // pollThreadRequestsOn asks one destination about every token due for it and
@@ -364,14 +383,34 @@ func (a *App) settleUnknownRemoteRequest(row store.ThreadRequest) error {
 // collectRemoteThreadRequest copies one destination settlement onto the
 // source row and hands it to the caller, exactly as the local collector
 // does for a request that ran here.
+//
+// The settle lock covers the durable write and the delivery decision; the
+// wakes it decides are delivered after it is released, because a wake takes
+// the caller thread's own locks and can start its session.
 func (a *App) collectRemoteThreadRequest(row store.ThreadRequest, answer ThreadPeerRequest) (int64, error) {
+	wake, lateWake, err := a.collectRemoteThreadRequestLocked(row, answer)
+	if err != nil {
+		return 0, err
+	}
+	if wake {
+		a.deliverThreadWake(row.Token, false)
+	}
+	if lateWake {
+		a.deliverThreadWake(row.Token, true)
+	}
+	return answer.Revision, nil
+}
+
+// collectRemoteThreadRequestLocked is the locked half of the remote
+// collection. It reports which of the row's two wakes it decided are owed.
+func (a *App) collectRemoteThreadRequestLocked(row store.ThreadRequest, answer ThreadPeerRequest) (wake, lateWake bool, err error) {
 	unlock := a.threadRequestSettleLock(row.Token)
 	defer unlock()
 	// Re-read under the lock: a cancel on this computer can settle the row
 	// between the poll's read and this write.
 	current, found, err := a.store.GetThreadRequest(row.Token)
 	if err != nil || !found {
-		return 0, err
+		return false, false, err
 	}
 	if !threadRequestSettled(current) {
 		settled, err := a.store.SettleThreadRequest(row.Token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
@@ -382,45 +421,45 @@ func (a *App) collectRemoteThreadRequest(row store.ThreadRequest, answer ThreadP
 			ExpiresAt:  answer.ExpiresAt,
 		})
 		if err != nil {
-			return 0, err
+			return false, false, err
 		}
 		if settled {
 			a.forgetRemoteRequestLive(row.Token)
-			a.finishThreadRequestCollection(current, false)
+			wake = a.finishThreadRequestCollection(row.Token, false)
 		}
 	}
 	if answer.LateReply != "" && len(current.LateReply) == 0 {
 		stored, err := a.store.StoreThreadRequestLateReply(row.Token, []byte(answer.LateReply), answer.LateReplyAt)
 		if err != nil {
-			return 0, err
+			return wake, false, err
 		}
 		if stored {
-			late, found, err := a.store.GetThreadRequest(row.Token)
-			if err != nil {
-				return 0, err
-			}
-			if found {
-				a.finishThreadRequestCollection(late, true)
-			}
+			lateWake = a.finishThreadRequestCollection(row.Token, true)
 		}
 	}
-	return answer.Revision, nil
+	return wake, lateWake, nil
 }
 
 // settleRemoteThreadRequest settles a source row for a reason the
-// destination gave rather than an answer it produced, and delivers it.
+// destination gave rather than an answer it produced, and delivers it. The
+// wake is delivered after the settle lock is released.
 func (a *App) settleRemoteThreadRequest(row store.ThreadRequest, settlement store.ThreadRequestSettlement) error {
-	unlock := a.threadRequestSettleLock(row.Token)
-	defer unlock()
-	settled, err := a.store.SettleThreadRequest(row.Token, store.ThreadRequestOpenStates(), settlement)
+	wake, err := func() (bool, error) {
+		unlock := a.threadRequestSettleLock(row.Token)
+		defer unlock()
+		settled, err := a.store.SettleThreadRequest(row.Token, store.ThreadRequestOpenStates(), settlement)
+		if err != nil || !settled {
+			return false, err
+		}
+		a.forgetRemoteRequestLive(row.Token)
+		return a.finishThreadRequestCollection(row.Token, false), nil
+	}()
 	if err != nil {
 		return err
 	}
-	if !settled {
-		return nil
+	if wake {
+		a.deliverThreadWake(row.Token, false)
 	}
-	a.forgetRemoteRequestLive(row.Token)
-	a.finishThreadRequestCollection(row, false)
 	return nil
 }
 
@@ -505,18 +544,17 @@ func (a *App) sweepThreadRequestsAtBoot() {
 		logThreadRequestSweep("list open receipts at boot", err)
 	}
 	for _, receipt := range receipts {
-		func() {
-			unlock := a.threadRequestSettleLock(receipt.Token)
-			defer unlock()
-			if err := a.settleThreadReceipt(receipt.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
-				State:      store.ThreadReceiptInterrupted,
-				Answer:     []byte("This computer restarted before the request finished."),
-				AnswerKind: store.ThreadAnswerError,
-			}); err != nil {
-				logThreadRequestSweep("settle interrupted receipt "+receipt.Token, err)
-			}
-		}()
+		if err := a.settleThreadReceipt(receipt.Token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+			State:      store.ThreadReceiptInterrupted,
+			Answer:     []byte("This computer restarted before the request finished."),
+			AnswerKind: store.ThreadAnswerError,
+		}); err != nil {
+			logThreadRequestSweep("settle interrupted receipt "+receipt.Token, err)
+		}
 	}
+	// A wake the last run settled but never handed over is owed from the
+	// moment this one starts, not at the first retry tick.
+	a.retryUndeliveredThreadWakes(time.Now())
 	rows, err := a.store.ListScratchThreads()
 	if err != nil {
 		logThreadRequestSweep("list scratch threads at boot", err)

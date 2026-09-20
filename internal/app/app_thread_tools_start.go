@@ -119,7 +119,7 @@ func (t threadToolsApp) localOrigin(caller threadtools.Caller) (threadRequestOri
 // Spawn creates a visible thread, sends the prompt as its first message and
 // returns the receipt.
 func (t threadToolsApp) Spawn(ctx context.Context, caller threadtools.Caller, call threadtools.SpawnCall) (threadtools.RequestAck, error) {
-	if call.ComputerID != "" {
+	if t.remoteDestination(call.ComputerID) {
 		return t.startRemoteRequest(ctx, caller, store.ThreadRequest{
 			Kind:           store.ThreadRequestSpawn,
 			OriginThreadID: call.FromThread,
@@ -186,7 +186,7 @@ func (t threadToolsApp) acceptSpawn(ctx context.Context, origin threadRequestOri
 
 // Send continues an existing thread as if the user had typed the message.
 func (t threadToolsApp) Send(ctx context.Context, caller threadtools.Caller, call threadtools.SendCall) (threadtools.RequestAck, error) {
-	if call.ComputerID != "" {
+	if t.remoteDestination(call.ComputerID) {
 		return t.startRemoteRequest(ctx, caller, store.ThreadRequest{
 			Kind:           store.ThreadRequestSend,
 			TargetThreadID: call.ThreadID,
@@ -274,7 +274,7 @@ func (t threadToolsApp) sendTarget(threadID string) (store.Thread, error) {
 // the answer is about what that thread knows without the question ever
 // landing in its transcript.
 func (t threadToolsApp) Ask(ctx context.Context, caller threadtools.Caller, call threadtools.AskCall) (threadtools.RequestAck, error) {
-	if call.ComputerID != "" {
+	if t.remoteDestination(call.ComputerID) {
 		return t.startRemoteRequest(ctx, caller, store.ThreadRequest{
 			Kind:           store.ThreadRequestAsk,
 			OriginThreadID: call.ThreadID,
@@ -366,12 +366,17 @@ func (t threadToolsApp) startRemoteRequest(
 	row.CallerThreadID = caller.ThreadID
 	row.TargetComputerID = computerID
 	row.State = store.ThreadRequestUnconfirmed
-	// The first poll is the recovery path for a reply that never arrives.
-	row.NextCheck = time.Now().Add(threadPollNormalDelay).UnixMilli()
+	// The poll is the recovery path for a reply that never arrives, and it
+	// must not run while this call is still being attempted: a destination
+	// that has not been asked yet answers `unknown`, which for an
+	// unconfirmed row means refused. The fence covers the whole attempt
+	// sequence and is cut to the normal delay the moment the call returns,
+	// which is what makes "no retry is in flight" durable.
+	row.NextCheck = time.Now().Add(threadRequestAdmissionFence).UnixMilli()
 	if err := t.app.store.InsertThreadRequest(row); err != nil {
 		return threadtools.RequestAck{}, err
 	}
-	reply, err := t.app.callThreadPeerRequest(ctx, peer.Computer(), ThreadPeerCall{
+	reply, uncertain, err := t.app.callThreadPeerRequest(ctx, peer.Computer(), ThreadPeerCall{
 		Tool:        tool,
 		Args:        args,
 		Token:       row.Token,
@@ -379,8 +384,20 @@ func (t threadToolsApp) startRemoteRequest(
 		UserMessage: latest,
 		Inherit:     origin.inherit,
 	})
+	issue := ""
 	if err != nil {
-		return threadtools.RequestAck{}, t.settleUnconfirmedRequest(row.Token, err)
+		_, issue, _ = threadErrorDetails(tool, err)
+	}
+	t.app.rescheduleThreadRequest(row, threadPollNormalDelay, issue)
+	if err != nil {
+		if !uncertain {
+			return threadtools.RequestAck{}, t.settleUnconfirmedRequest(row.Token, err)
+		}
+		// Every attempt ended without an answer, so the destination may be
+		// running this request. The model is given the token and told to
+		// check it rather than an error it would answer by starting the
+		// same work again; the poller reconciles the row either way.
+		return t.ackRequest(ctx, caller, row.Token, waitSeconds)
 	}
 	if _, err := t.app.applyThreadPeerRequest(row.Token, computerID, reply); err != nil {
 		return threadtools.RequestAck{}, err
@@ -388,30 +405,56 @@ func (t threadToolsApp) startRemoteRequest(
 	return t.ackRequest(ctx, caller, row.Token, waitSeconds)
 }
 
+// threadPeerAdmissionAttempts is how many times one request-minting call is
+// sent before the source stops waiting to hear whether it was accepted.
+// Every attempt carries the same token, so a destination that already
+// accepted answers with the acceptance it holds instead of starting a
+// second piece of work.
+const threadPeerAdmissionAttempts = 3
+
+// threadRequestAdmissionFence keeps a freshly written source row out of the
+// poller for as long as the attempts can take, plus the normal poll delay.
+const threadRequestAdmissionFence = threadPeerCallTimeout*threadPeerAdmissionAttempts + threadPollNormalDelay
+
 // callThreadPeerRequest forwards one request-minting call and returns the
 // receipt the destination reports.
-func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Computer, call ThreadPeerCall) (ThreadPeerRequest, error) {
-	rpc, cancel := context.WithTimeout(ctx, threadPeerCallTimeout)
-	defer cancel()
-	var reply ThreadPeerReply
-	if err := a.backends.CallThreadPeer(rpc, computer.ID, "ThreadToolCall", &reply, call); err != nil {
-		return ThreadPeerRequest{}, a.threadOperationError(call.Tool, computer.ID, "", err)
+//
+// A failure that leaves the acceptance unknown is retried with the same
+// token, because what was lost is the reply and not the work. `uncertain`
+// is true when every attempt ended that way: the destination may be running
+// the request, so the row stays open for the poller rather than being
+// refused here.
+func (a *App) callThreadPeerRequest(ctx context.Context, computer threadtools.Computer, call ThreadPeerCall) (ThreadPeerRequest, bool, error) {
+	for attempt := 1; ; attempt++ {
+		rpc, cancel := context.WithTimeout(ctx, threadPeerCallTimeout)
+		var reply ThreadPeerReply
+		err := a.backends.CallThreadPeer(rpc, computer.ID, "ThreadToolCall", &reply, call)
+		cancel()
+		if err != nil {
+			code, _, uncertain := threadErrorDetails(call.Tool, err)
+			if uncertain && !threadRequestNeverSent(code) && attempt < threadPeerAdmissionAttempts {
+				continue
+			}
+			return ThreadPeerRequest{}, uncertain, a.threadOperationError(call.Tool, computer.ID, "", err)
+		}
+		if reply.Request == nil {
+			return ThreadPeerRequest{}, false, errorsx.Public(threadtools.CodeUnreachable,
+				fmt.Sprintf("%s accepted %s without reporting the request.", nameOfComputer(computer), call.Tool), nil)
+		}
+		return *reply.Request, false, nil
 	}
-	if reply.Request == nil {
-		return ThreadPeerRequest{}, errorsx.Public(threadtools.CodeUnreachable,
-			fmt.Sprintf("%s accepted %s without reporting the request.", nameOfComputer(computer), call.Tool), nil)
-	}
-	return *reply.Request, nil
 }
 
-// settleUnconfirmedRequest ends a remote request whose call failed, and
-// returns the original error.
+// settleUnconfirmedRequest ends a remote request whose call failed with an
+// answer the destination gave, and returns the original error.
 //
 // A refusal raised before the destination could see the call is `refused`:
 // nothing ran there, and the row would otherwise be polled forever against
-// a computer that already said why. Anything else is left `unconfirmed`,
-// because the call may have been accepted and the poller is the only thing
-// that can find out.
+// a computer that already said why. A refusal the destination itself wrote
+// is left `unconfirmed` for the poller, which reads that computer's own
+// record of the token rather than trusting one failed call. A call whose
+// answer never came back does not reach here at all: it is unconfirmed to
+// the model, with the token.
 func (t threadToolsApp) settleUnconfirmedRequest(token string, cause error) error {
 	code, message, _ := threadErrorDetails("request", cause)
 	if !threadRequestNeverSent(code) {
@@ -516,17 +559,40 @@ func (t threadToolsApp) acceptRequest(
 // left `unconfirmed` would tell the agent to keep checking a token that never
 // changes. A request a paired computer made has no row here at all; its
 // source settles it from the refusal this returns.
+//
+// A receipt accepted before the failure is settled too, through the settle
+// door, which drops the scratch thread an ask had already forked and tells a
+// paired computer's poller what happened. Without it a forwarded request
+// whose dispatch failed would leave a receipt open on this computer forever.
+// The source row is settled FIRST so a local request keeps the word for what
+// happened to it, `refused`, rather than the `errored` its own receipt
+// collects.
 func (t threadToolsApp) failRequest(token string, cause error) error {
 	message := cause.Error()
 	if _, public, ok := errorsx.PublicDetails(cause); ok {
 		message = public
 	}
-	if _, err := t.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
-		State:      store.ThreadRequestRefused,
+	row, found, err := t.app.store.GetThreadRequest(token)
+	if err != nil {
+		log.Printf("thread tools: read request %s to refuse it: %v", token, err)
+	}
+	if found && row.TargetComputerID == "" {
+		// A row naming another computer is a request THIS computer sent
+		// there; a failure accepting a forwarded call is not its settlement.
+		if _, err := t.app.store.SettleThreadRequest(token, store.ThreadRequestOpenStates(), store.ThreadRequestSettlement{
+			State:      store.ThreadRequestRefused,
+			Answer:     []byte(message),
+			AnswerKind: store.ThreadAnswerError,
+		}); err != nil {
+			log.Printf("thread tools: settle refused request %s: %v", token, err)
+		}
+	}
+	if err := t.app.settleThreadReceipt(token, store.ThreadReceiptOpenStates(), store.ThreadRequestSettlement{
+		State:      store.ThreadReceiptErrored,
 		Answer:     []byte(message),
 		AnswerKind: store.ThreadAnswerError,
 	}); err != nil {
-		log.Printf("thread tools: settle refused request %s: %v", token, err)
+		log.Printf("thread tools: settle refused receipt %s: %v", token, err)
 	}
 	return cause
 }
@@ -593,18 +659,68 @@ func (t threadToolsApp) dispatchRequest(
 // markRequestRunning binds the receipt to the turn that consumed its message.
 // Until it applies nothing can settle the request, which is exactly right:
 // the message is still on a queue.
+//
+// It runs under the token's settle lock, so the observer's gate and the row
+// transition are one step as far as a turn end is concerned: without that the
+// observer could read the receipt as `accepted`, decide there is nothing to
+// watch, and drop the gate the write is about to need. A turn that finished
+// before the binding landed is settled here, because by then no turn end is
+// coming.
 func (t threadToolsApp) markRequestRunning(token, targetThreadID string, item store.Item) {
-	// The observer's gate is set BEFORE the row, so a turn that ends between
-	// the two still reaches this token. The gate only says "look"; the store
-	// row says whether there is anything to settle.
-	t.app.noteReceiptRunning(targetThreadID, token)
-	if _, err := t.app.store.MarkThreadReceiptRunning(token, item.ID, threadRequestTurnKey(targetThreadID, item.TurnIndex)); err != nil {
-		log.Printf("thread tools: mark receipt %s running: %v", token, err)
-		return
+	var work threadSettlementWork
+	func() {
+		unlock := t.app.threadRequestSettleLock(token)
+		defer unlock()
+		// The observer's gate is set BEFORE the row, so a turn that ends
+		// between the two still reaches this token. The gate only says
+		// "look"; the store row says whether there is anything to settle.
+		t.app.noteReceiptRunning(targetThreadID, token)
+		bound, err := t.app.store.MarkThreadReceiptRunning(token, item.ID, threadRequestTurnKey(targetThreadID, item.TurnIndex))
+		if err != nil {
+			log.Printf("thread tools: mark receipt %s running: %v", token, err)
+			return
+		}
+		if _, err := t.app.store.AdvanceThreadRequestState(token, store.ThreadRequestAccepted, store.ThreadRequestRunning); err != nil {
+			log.Printf("thread tools: advance request %s to running: %v", token, err)
+		}
+		if !bound {
+			// The receipt was cancelled or settled while the message was on
+			// its way to the provider. Whoever settled it owns it.
+			return
+		}
+		work = t.settleIfTurnAlreadyEnded(token, targetThreadID, item.TurnIndex)
+	}()
+	// This runs inside the target thread's own send or queue dispatch, which
+	// holds that thread's locks. The deferred work takes thread locks of its
+	// own, so it never runs on this goroutine.
+	t.app.runThreadSettlementWorkDetached(work)
+}
+
+// settleIfTurnAlreadyEnded settles a receipt whose turn completed before the
+// receipt was observable as running. The observer's gate was unset when that
+// turn ended, so nothing else will ever look at it again.
+//
+// The caller holds the token's settle lock.
+func (t threadToolsApp) settleIfTurnAlreadyEnded(token, targetThreadID string, turnIndex int) threadSettlementWork {
+	turn, found, err := t.app.store.GetTurnByThreadIndex(targetThreadID, turnIndex)
+	if err != nil {
+		log.Printf("thread tools: read turn %d of %s for request %s: %v", turnIndex, targetThreadID, token, err)
+		return threadSettlementWork{}
 	}
-	if _, err := t.app.store.AdvanceThreadRequestState(token, store.ThreadRequestAccepted, store.ThreadRequestRunning); err != nil {
-		log.Printf("thread tools: advance request %s to running: %v", token, err)
+	if !found || turn.CompletedAt == nil {
+		return threadSettlementWork{}
 	}
+	settlement, err := t.app.turnSettlement(targetThreadID, turn)
+	if err != nil {
+		log.Printf("thread tools: read the answer of request %s: %v", token, err)
+		return threadSettlementWork{}
+	}
+	work, _, err := t.app.settleThreadReceiptLocked(token, []string{store.ThreadReceiptRunning}, settlement, dropScratchThread)
+	if err != nil {
+		log.Printf("thread tools: settle request %s on a finished turn: %v", token, err)
+		return threadSettlementWork{}
+	}
+	return work
 }
 
 // requestMessageBody is the message the target thread reads: the sender's
@@ -632,7 +748,7 @@ func (t threadToolsApp) requestMessageBody(
 		Computer:        t.senderComputerName(origin),
 		Token:           token,
 		AnswerRequested: wantsAnswer,
-		SenderReachable: true,
+		SenderReachable: t.senderReachable(origin),
 		UserMessage:     latest,
 	}
 	return strings.TrimRight(text, "\n") + "\n\n" + footer.String(), nil
@@ -650,6 +766,21 @@ func (t threadToolsApp) senderComputerName(origin threadRequestOrigin) string {
 		return name
 	}
 	return origin.caller.ComputerName
+}
+
+// senderReachable reports whether the responder can reach the sender's
+// computer, which is what the footer's return-navigation lines depend on.
+//
+// Pairing is directional: a request arrives over the SENDER's credential
+// for this computer, which says nothing about this computer holding one for
+// it. A sender on this computer is always reachable; a foreign one only
+// when this computer's own pairing set names it.
+func (t threadToolsApp) senderReachable(origin threadRequestOrigin) bool {
+	if !origin.foreign {
+		return true
+	}
+	_, paired := t.threadToolsPairing(origin.caller.ComputerID)
+	return paired
 }
 
 // forkScratchThread makes the hidden thread an ask is answered in and records
@@ -713,15 +844,20 @@ func (t threadToolsApp) createSpawnedThread(
 	}
 	// A fork runs in its source's project and workspace with its source's
 	// provider: that is what forking is, and the tools layer already refused
-	// a from_thread on another computer.
+	// a from_thread on another computer. Everything else on the new thread
+	// was resolved in spawnThreadOptions from the caller's settings and the
+	// call's overrides, so it reaches the fork here rather than being
+	// dropped for the source's.
 	source, err := t.localThread(call.FromThread)
 	if err != nil {
 		return store.Thread{}, err
 	}
 	return t.app.forkThreadTail(ctx, source.ID, forkOptions{
-		Mode:        call.Mode,
-		RuntimeMode: call.RuntimeMode,
-		Title:       call.Title,
+		Mode:        create.Mode,
+		RuntimeMode: create.RuntimeMode,
+		Title:       create.Title,
+		Model:       create.Model,
+		Effort:      create.ReasoningEffort,
 	})
 }
 
@@ -733,8 +869,7 @@ func (t threadToolsApp) createSpawnedThread(
 // not a discovery round trip.
 func (t threadToolsApp) spawnThreadOptions(origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
 	if call.FromThread != "" {
-		// A fork carries its source's settings; nothing here applies.
-		return CreateThreadOptions{}, nil
+		return t.forkSpawnOptions(origin, call)
 	}
 	// A spawn a paired computer forwarded has no caller thread here, so
 	// there is no project or checkout to inherit; the call names them and
@@ -777,6 +912,56 @@ func (t threadToolsApp) spawnThreadOptions(origin threadRequestOrigin, call thre
 		return CreateThreadOptions{}, err
 	}
 	if err := t.applySpawnWorkspace(&opts, caller, call); err != nil {
+		return CreateThreadOptions{}, err
+	}
+	return opts, nil
+}
+
+// forkSpawnOptions resolves what a `from_thread` spawn runs with.
+//
+// A fork keeps its source's project, workspace and provider session; every
+// other setting defaults to the CALLER's and is overridden by the call
+// (docs/specs/agent-thread-tools.md, thread_spawn). Provider is the one axis
+// a fork cannot move: a thread is locked to its provider once it holds items
+// because the sessions are not interchangeable, so an explicit provider is
+// refused here rather than accepted and ignored.
+//
+// Model and effort follow the caller only when the caller runs the source's
+// provider. Across providers the caller's model names nothing this fork could
+// start, so the source's stands, and an explicit one is validated against the
+// source's provider like any other spawn.
+func (t threadToolsApp) forkSpawnOptions(origin threadRequestOrigin, call threadtools.SpawnCall) (CreateThreadOptions, error) {
+	source, err := t.localThread(call.FromThread)
+	if err != nil {
+		return CreateThreadOptions{}, err
+	}
+	if call.Provider != "" && call.Provider != source.Provider {
+		return CreateThreadOptions{}, errorsx.Public(threadtools.CodeInvalidRequest, fmt.Sprintf(
+			"A fork of %s resumes that thread's %s session, so provider is the one setting from_thread cannot change. Drop provider, or spawn a fresh %s thread instead of forking.",
+			source.ID, source.Provider, call.Provider), nil)
+	}
+	opts := CreateThreadOptions{
+		Title:           call.Title,
+		Provider:        source.Provider,
+		Model:           source.Model,
+		ReasoningEffort: source.ReasoningEffort,
+		RuntimeMode:     origin.inherit.RuntimeMode,
+	}
+	if origin.inherit.Provider == source.Provider {
+		opts.Model, opts.ReasoningEffort = origin.inherit.Model, origin.inherit.Effort
+	}
+	// A caller that is itself hidden (a scratch thread answering an ask) has
+	// no mode a visible thread may take, so the source's stands.
+	if threadmode.IsPostCreationMode(origin.inherit.Mode) {
+		opts.Mode = origin.inherit.Mode
+	}
+	if call.Mode != "" {
+		opts.Mode = call.Mode
+	}
+	if call.RuntimeMode != "" {
+		opts.RuntimeMode = call.RuntimeMode
+	}
+	if err := t.applySpawnModel(&opts, call); err != nil {
 		return CreateThreadOptions{}, err
 	}
 	return opts, nil

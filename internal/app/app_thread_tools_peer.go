@@ -164,7 +164,7 @@ func (a *App) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadP
 		return ThreadPeerReply{}, err
 	}
 	switch call.Tool {
-	case "thread_search", "thread_show", "thread_item", "thread_options":
+	case "thread_search", "thread_show", "thread_item", "thread_options", "thread_status":
 	default:
 		return ThreadPeerReply{}, errorsx.Public(threadtools.CodeInvalidRequest,
 			fmt.Sprintf("%s is not a thread tools read call.", call.Tool), nil)
@@ -384,6 +384,16 @@ func (a *App) refuseForeignToken(token, owner string) error {
 	if found && receipt.OwnerDeviceID != owner {
 		return errorsx.Public(threadtools.CodeRequestNotYours,
 			"That token belongs to a request another device made.", nil)
+	}
+	// A token that already names a SOURCE row here belongs to a request one
+	// of this computer's own threads made. A forwarded call carries the
+	// source's token, so its token is never one of ours: accepting it would
+	// let a paired computer answer, or refuse, this computer's own request.
+	if _, exists, err := a.store.GetThreadRequest(token); err != nil {
+		return err
+	} else if exists {
+		return errorsx.Public(threadtools.CodeRequestNotYours,
+			"That token belongs to a request this computer made.", nil)
 	}
 	return nil
 }

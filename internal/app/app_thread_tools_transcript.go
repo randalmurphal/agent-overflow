@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/threadtools"
@@ -388,24 +390,40 @@ func (t threadToolsApp) ExportTranscript(ctx context.Context, q threadtools.Expo
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return threadtools.ExportFile{}, fmt.Errorf("thread tools: create export directory: %w", err)
 	}
-	// An export a paired computer asked for is named by an export id, is
-	// never overwritten by the next render, and is reported without this
-	// computer's path: the model that reads it is on the other computer and
-	// gets a path in its own export directory once the copy lands.
-	name := thread.ID + ".txt"
+	// Every export carries a nonce, and an export a paired computer asked
+	// for carries the peer prefix as well: the model holds the path it was
+	// given for as long as it likes, so a second render of another window
+	// must never land on the file the first one named. A remote export is
+	// reported without this computer's path, because the model that reads
+	// it is on the other computer and gets a path in its own export
+	// directory once the copy lands.
+	name := thread.ID + "." + entityid.New() + ".txt"
 	exportID := ""
 	if threadtools.Forwarded(ctx) {
 		exportID = threadPeerExportName(thread.ID)
 		name = exportID
 	}
 	path := filepath.Join(dir, name)
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	// Rendered beside the final name and renamed onto it, so nothing ever
+	// reads or fetches a half-written window.
+	temp := path + ".partial"
+	file, err := os.OpenFile(temp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return threadtools.ExportFile{}, fmt.Errorf("thread tools: open export file: %w", err)
+	}
+	// An export for another computer is bounded as it grows, not measured
+	// afterwards: a window no transfer could carry is refused before its
+	// bytes are on this disk.
+	limit := int64(0)
+	if exportID != "" {
+		limit = remoteArtifactMaxBytes
 	}
 	digest := sha256.New()
 	size := int64(0)
 	write := func(text string) error {
+		if limit > 0 && size+int64(len(text)) > limit {
+			return threadExportTooLarge(size + int64(len(text)))
+		}
 		n, err := file.WriteString(text)
 		size += int64(n)
 		digest.Write([]byte(text[:n]))
@@ -414,24 +432,73 @@ func (t threadToolsApp) ExportTranscript(ctx context.Context, q threadtools.Expo
 	exportErr := t.writeExport(ctx, q, write)
 	closeErr := file.Close()
 	if exportErr != nil {
-		os.Remove(path)
+		removeThreadExportTemp(temp)
 		return threadtools.ExportFile{}, exportErr
 	}
 	if closeErr != nil {
-		os.Remove(path)
+		removeThreadExportTemp(temp)
 		return threadtools.ExportFile{}, fmt.Errorf("thread tools: close export file: %w", closeErr)
 	}
+	if err := os.Rename(temp, path); err != nil {
+		removeThreadExportTemp(temp)
+		return threadtools.ExportFile{}, fmt.Errorf("thread tools: publish export file: %w", err)
+	}
 	if exportID != "" {
-		if size > remoteArtifactMaxBytes {
-			// Refused here rather than half transferred: the file exists and
-			// nobody will fetch it, so it goes now instead of waiting for
-			// the sweep.
-			os.Remove(path)
-			return threadtools.ExportFile{}, threadExportTooLarge(size)
-		}
 		return threadtools.ExportFile{ExportID: exportID, Size: size, SHA256: hex.EncodeToString(digest.Sum(nil))}, nil
 	}
 	return threadtools.ExportFile{Path: path, Size: size, SHA256: hex.EncodeToString(digest.Sum(nil))}, nil
+}
+
+// removeThreadExportTemp drops the half-written render. Nothing else will:
+// the sweep knows the answer and peer prefixes, not this one.
+func removeThreadExportTemp(temp string) {
+	if err := os.Remove(temp); err != nil && !os.IsNotExist(err) {
+		log.Printf("thread tools: remove unfinished export %s: %v", temp, err)
+	}
+}
+
+// threadExportChunkBytes is how much of a clipped item's remainder the
+// export reads at a time. A file is written whole, but never through a
+// whole item in memory.
+const threadExportChunkBytes = 256 << 10
+
+// writeExportBody writes one included item's body whole.
+//
+// The transcript clips a large item and points at thread_item; a file does
+// not (docs/specs/agent-thread-tools.md, thread_show: with to_file included
+// items are written whole), so whatever the page clipped is streamed out of
+// the store behind it, a chunk at a time.
+func (t threadToolsApp) writeExportBody(
+	ctx context.Context, threadID string, item threadtools.Item, write func(string) error,
+) error {
+	if !item.Clipped {
+		return write(strings.TrimRight(item.Text, "\n"))
+	}
+	if err := write(item.Text); err != nil {
+		return err
+	}
+	for offset := int64(len(item.Text)); offset < item.Size; {
+		payload, err := t.ItemPayload(ctx, threadtools.PayloadQuery{
+			ThreadID: threadID, ItemID: item.ID,
+			Offset: offset, MaxBytes: threadExportChunkBytes,
+		})
+		if err != nil {
+			return err
+		}
+		if len(payload.Bytes) == 0 {
+			return fmt.Errorf("thread tools: export item %s: body ended at %d of %d bytes",
+				item.ID, offset, item.Size)
+		}
+		offset += int64(len(payload.Bytes))
+		text := string(payload.Bytes)
+		if offset >= item.Size {
+			text = strings.TrimRight(text, "\n")
+		}
+		if err := write(text); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (t threadToolsApp) writeExport(ctx context.Context, q threadtools.ExportQuery, write func(string) error) error {
@@ -466,11 +533,23 @@ func (t threadToolsApp) writeExport(ctx context.Context, q threadtools.ExportQue
 			if item.Name != "" {
 				head += " " + item.Name
 			}
-			body := item.Text
-			if body == "" && item.Size > 0 {
-				body = "(" + strconv.FormatInt(item.Size, 10) + " bytes not shown)"
+			if item.Text == "" && item.Size > 0 {
+				// A row the include list left out states its size here
+				// exactly as it does in the transcript; only what was
+				// included is written whole.
+				if err := write(head + " (" + strconv.FormatInt(item.Size, 10) + " bytes not shown)\n"); err != nil {
+					return err
+				}
+				from = item.Position + 1
+				continue
 			}
-			if err := write(head + " " + strings.TrimRight(body, "\n") + "\n"); err != nil {
+			if err := write(head + " "); err != nil {
+				return err
+			}
+			if err := t.writeExportBody(ctx, q.ThreadID, item, write); err != nil {
+				return err
+			}
+			if err := write("\n"); err != nil {
 				return err
 			}
 			from = item.Position + 1

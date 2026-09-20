@@ -89,7 +89,8 @@ type App interface {
 	Reply(ctx context.Context, caller Caller, call ReplyCall) (ReplyAck, error)
 
 	// RequestStates reads, and optionally waits on, the caller's requests
-	// by token and any threads by id.
+	// by token, or threads of this computer by id. A watch on another
+	// computer's thread is forwarded to it as its own thread_status call.
 	RequestStates(ctx context.Context, caller Caller, call StatusCall) (StatusReport, error)
 
 	// ListRequests lists the caller's own requests, open first then

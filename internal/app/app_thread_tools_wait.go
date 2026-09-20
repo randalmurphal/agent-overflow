@@ -47,6 +47,10 @@ type threadRequestState struct {
 	// is started, which is what makes a nudge from a test with no sweep a
 	// no-op rather than a leak.
 	nudge chan struct{}
+	// lastWakeRetry is when the undelivered-wake pass last ran. The sweep
+	// ticks every second and that pass is a recovery net, so it carries its
+	// own much slower clock rather than a second ticker.
+	lastWakeRetry time.Time
 	// polling is the single poll slot. A pass whose rows are still in
 	// flight has not rescheduled them, so a second pass would ask the same
 	// destination about the same tokens.
@@ -85,6 +89,19 @@ type threadRequestWait struct {
 // caller's turn was interrupted, as opposed to one the clock ended. The
 // request itself keeps running; only the call stops waiting for it.
 var errThreadRequestWaitInterrupted = errors.New("thread request wait interrupted")
+
+// beginThreadWakeRetry reports whether the undelivered-wake pass is due, and
+// records this pass when it is. The boot sweep is always due, because the
+// zero time is older than any interval.
+func (a *App) beginThreadWakeRetry(now time.Time) bool {
+	a.threadRequests.mu.Lock()
+	defer a.threadRequests.mu.Unlock()
+	if now.Sub(a.threadRequests.lastWakeRetry) < threadRequestWakeRetryInterval {
+		return false
+	}
+	a.threadRequests.lastWakeRetry = now
+	return true
+}
 
 func (a *App) threadRequestSettleLock(token string) func() {
 	a.threadRequests.settleOnce.Do(func() {

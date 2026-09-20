@@ -238,9 +238,11 @@ worktree through the existing draft-worktree path instead of inheriting
 the workspace. `from_thread` forks that thread's history at its tail
 (the same fork `thread_ask` uses, visible instead of hidden) and sends
 `prompt` there, for "try approach B in a fork"; the fork runs on the
-source thread's computer in its project and workspace, and every other
-setting still defaults to the caller's. `mode` is `chat` or `plan`;
-`runtime_mode` is the permission level, a separate parameter. A provider or model the
+source thread's computer in its project and workspace and keeps that
+thread's provider, which the fork resumes and an explicit `provider` is
+refused for naming; every other setting still defaults to the caller's.
+`mode` is `chat` or `plan`; `runtime_mode` is the permission level, a
+separate parameter. A provider or model the
 target computer does not offer is refused with the list it does, locally
 as well as remotely; a provider override without a model uses that
 provider's default. No launch card: the call renders as the tool call

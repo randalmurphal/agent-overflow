@@ -269,15 +269,91 @@ var callKeepaliveInterval = 15 * time.Second
 // callKeepaliveInterval while it runs, and the JSON-RPC response the handler
 // wrote as the final message event. Any other client gets the handler's JSON
 // body unchanged.
+//
+// Work the handler deferred with AfterResponse runs here, after the last
+// byte of the response has been written and flushed. On the streamed path
+// the handler's body reaches the socket in finish and not before, so a
+// handler that ran its own after-response work inline would run it while
+// its answer was still in a buffer.
 func (s *Server[T]) serveCall(w http.ResponseWriter, r *http.Request, req Request, access T) {
+	ctx, hook := withAfterResponse(r.Context())
 	flusher, ok := w.(http.Flusher)
 	if !ok || !acceptsEventStream(r.Header.Get("Accept")) {
-		s.call(w, r.Context(), req, access)
+		tracked := &trackedWriter{ResponseWriter: w}
+		s.call(tracked, ctx, req, access)
+		if ok {
+			flusher.Flush()
+		}
+		hook.run(tracked.err == nil && r.Context().Err() == nil)
 		return
 	}
 	stream := newCallStream(w, flusher, r.Context())
-	s.call(stream, r.Context(), req, access)
-	stream.finish(req.ID)
+	s.call(stream, ctx, req, access)
+	err := stream.finish(req.ID)
+	hook.run(err == nil && r.Context().Err() == nil)
+}
+
+// trackedWriter remembers whether the response actually went out. net/http
+// buffers, so a write error is the only thing this side can observe about a
+// client that is no longer there.
+type trackedWriter struct {
+	http.ResponseWriter
+	err error
+}
+
+func (t *trackedWriter) Write(p []byte) (int, error) {
+	n, err := t.ResponseWriter.Write(p)
+	if err != nil && t.err == nil {
+		t.err = err
+	}
+	return n, err
+}
+
+// afterResponse collects the work one call deferred until its response has
+// been written.
+type afterResponse struct {
+	mu  sync.Mutex
+	fns []func(bool)
+}
+
+type afterResponseKey struct{}
+
+// withAfterResponse arms a call context to collect after-response work.
+func withAfterResponse(ctx context.Context) (context.Context, *afterResponse) {
+	hook := &afterResponse{}
+	return context.WithValue(ctx, afterResponseKey{}, hook), hook
+}
+
+// AfterResponse registers work to run once this call's response has left the
+// transport, in registration order.
+//
+// The hook is told whether the response was delivered: false means the final
+// write failed or the client was already gone, so nothing may be recorded as
+// read by a model that never received it. Outside a call, where there is no
+// response to wait for, the work runs immediately and reports delivered,
+// because deferring it would drop it.
+func AfterResponse(ctx context.Context, fn func(delivered bool)) {
+	if hook, ok := ctx.Value(afterResponseKey{}).(*afterResponse); ok {
+		hook.add(fn)
+		return
+	}
+	fn(true)
+}
+
+func (a *afterResponse) add(fn func(bool)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.fns = append(a.fns, fn)
+}
+
+func (a *afterResponse) run(delivered bool) {
+	a.mu.Lock()
+	fns := a.fns
+	a.fns = nil
+	a.mu.Unlock()
+	for _, fn := range fns {
+		fn(delivered)
+	}
 }
 
 // acceptsEventStream reports whether an Accept header lists
@@ -353,7 +429,10 @@ func (c *callStream) Write(p []byte) (int, error) { return c.body.Write(p) }
 // finish stops the keepalives and sends the buffered response as the final
 // event. A handler that wrote nothing would leave the client waiting for a
 // reply that never comes, so that becomes a JSON-RPC error instead.
-func (c *callStream) finish(id json.RawMessage) {
+//
+// It reports the first write failure, which is what tells the caller the
+// response never left this computer.
+func (c *callStream) finish(id json.RawMessage) error {
 	close(c.stop)
 	<-c.done
 	body := bytes.TrimSpace(c.body.Bytes())
@@ -362,14 +441,21 @@ func (c *callStream) finish(id json.RawMessage) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, _ = io.WriteString(c.w, "event: message\n")
-	for _, line := range bytes.Split(body, []byte("\n")) {
-		_, _ = io.WriteString(c.w, "data: ")
-		_, _ = c.w.Write(line)
-		_, _ = io.WriteString(c.w, "\n")
+	var failure error
+	send := func(_ int, err error) {
+		if err != nil && failure == nil {
+			failure = err
+		}
 	}
-	_, _ = io.WriteString(c.w, "\n")
+	send(io.WriteString(c.w, "event: message\n"))
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		send(io.WriteString(c.w, "data: "))
+		send(c.w.Write(line))
+		send(io.WriteString(c.w, "\n"))
+	}
+	send(io.WriteString(c.w, "\n"))
 	c.flusher.Flush()
+	return failure
 }
 
 // validMCPRequest applies the request checks every request clears before

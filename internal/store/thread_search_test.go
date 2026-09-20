@@ -305,9 +305,10 @@ func TestBuildSearchIndexResumesFromTheCursor(t *testing.T) {
 	}
 }
 
-// A hidden mode is excluded at query time by joining threads, so a scratch
-// thread is invisible unless the caller names it.
-func TestSearchThreadsHidesHiddenModesAndUnnamedScratch(t *testing.T) {
+// Visibility is applied at query time by joining threads: a scratch thread
+// is invisible unless the caller names it, and a workflow thread is work an
+// agent may find (docs/specs/agent-thread-tools.md, thread_search defaults).
+func TestSearchThreadsIncludesWorkflowThreadsAndHidesUnnamedScratch(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "t-plain")
 	for id, mode := range map[string]string{"t-wf": "workflow", "t-scratch": "scratch"} {
@@ -326,14 +327,18 @@ func TestSearchThreadsHidesHiddenModesAndUnnamedScratch(t *testing.T) {
 		}
 	}
 
-	hits := mustSearch(t, s, "numbat", ThreadSearchFilter{})
-	if got := hitIDs(hits); len(got) != 1 || !strings.Contains(got[0], "t-plain") {
-		t.Fatalf("default hits = %v, want only the plain thread", got)
+	hits := hitIDs(mustSearch(t, s, "numbat", ThreadSearchFilter{}))
+	joined := strings.Join(hits, ",")
+	if len(hits) != 2 || !strings.Contains(joined, "t-plain") || !strings.Contains(joined, "t-wf") {
+		t.Fatalf("default hits = %v, want the plain and the workflow thread", hits)
+	}
+	if strings.Contains(joined, "t-scratch") {
+		t.Fatalf("default hits = %v, want no scratch thread", hits)
 	}
 
 	named := mustSearch(t, s, "numbat", ThreadSearchFilter{ScratchThreadIDs: []string{"t-scratch"}})
-	if len(named) != 2 {
-		t.Fatalf("hits with the scratch thread named = %v, want two", hitIDs(named))
+	if len(named) != 3 {
+		t.Fatalf("hits with the scratch thread named = %v, want three", hitIDs(named))
 	}
 
 	// Promotion is a mode change with no reindex; the same rows answer.
@@ -345,8 +350,8 @@ func TestSearchThreadsHidesHiddenModesAndUnnamedScratch(t *testing.T) {
 	if _, err := s.PromoteScratchThread("t-scratch"); err != nil {
 		t.Fatalf("promote scratch thread: %v", err)
 	}
-	if got := mustSearch(t, s, "numbat", ThreadSearchFilter{}); len(got) != 2 {
-		t.Fatalf("hits after promotion = %v, want two", hitIDs(got))
+	if got := mustSearch(t, s, "numbat", ThreadSearchFilter{}); len(got) != 3 {
+		t.Fatalf("hits after promotion = %v, want three", hitIDs(got))
 	}
 }
 

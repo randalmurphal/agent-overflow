@@ -1,11 +1,14 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	"agent-overflow/internal/threadtools"
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
+	"github.com/google/uuid"
 )
 
 // threadMCPEndpoint registers a thread and returns the loopback URL its
@@ -440,4 +444,105 @@ func newCodexSessionForThreadTools(t *testing.T, ctx context.Context, thread sto
 	}
 	t.Cleanup(func() { _ = sess.Close() })
 	return sess, nil
+}
+
+// postThreadToolsStreamed posts one tools/call the way a provider CLI does,
+// accepting the event stream, and returns the JSON of the final message
+// event. The response body stays open so the caller controls when the
+// connection closes, which is what the server reads as delivery.
+func postThreadToolsStreamed(t *testing.T, endpoint, name string, args any) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+		"params": map[string]any{"name": name, "arguments": args},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
+	client := &http.Client{Timeout: 30 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	reader := bufio.NewReader(response.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if data, found := strings.CutPrefix(line, "data: "); found {
+			return strings.TrimSpace(data)
+		}
+		if err != nil {
+			t.Fatalf("%s: the stream ended without a response: %v", name, err)
+		}
+	}
+}
+
+// TestThreadReplyAnswersBeforeItsScratchThreadIsDeleted pins the order a
+// responder depends on: an ask is answered in a scratch thread, and that
+// thread is deleted only once the reply's own response has reached the
+// agent that wrote it. Holding the thread's action lock, which DeleteThread
+// takes, stops the deletion where the response must already be out.
+func TestThreadReplyAnswersBeforeItsScratchThreadIsDeleted(t *testing.T) {
+	app, _, _ := newMCPTestApp(t)
+	t.Cleanup(func() { _ = app.threadMCPServer().Close() })
+
+	source, _ := remoteMCPThread(t, app, string(provider.Claude))
+	scratch := store.Thread{
+		ID: uuid.NewString(), ProjectID: source.ProjectID, Provider: string(provider.Claude),
+		ProjectPath: source.ProjectPath, WorkspacePath: source.WorkspacePath, Mode: threadmode.ModeScratch,
+	}
+	if err := app.store.CreateThread(scratch); err != nil {
+		t.Fatalf("CreateThread(scratch): %v", err)
+	}
+	sessionToken := uuid.NewString()
+	app.sessionManager().put(scratch.ID, session{Token: sessionToken, Provider: string(provider.Claude)})
+	if err := app.store.InsertScratchThread(store.ScratchThread{
+		ThreadID: scratch.ID, SourceThreadID: source.ID, ReturnMode: threadmode.ModeChat, RequestToken: "reply-token",
+	}); err != nil {
+		t.Fatalf("InsertScratchThread: %v", err)
+	}
+	if _, _, err := app.store.AcceptThreadRequestReceipt(store.ThreadRequestReceipt{
+		Token: "reply-token", OwnerDeviceID: threadReceiptLocalOwner, Kind: store.ThreadRequestAsk,
+		SourceThreadID: source.ID, TargetThreadID: scratch.ID, State: store.ThreadReceiptRunning,
+	}); err != nil {
+		t.Fatalf("AcceptThreadRequestReceipt: %v", err)
+	}
+	endpoint := threadMCPEndpoint(t, app, scratch, sessionToken)
+
+	unlock := app.threadLocks().Lock(scratch.ID)
+	var once sync.Once
+	release := func() { once.Do(unlock) }
+	defer release()
+
+	data := postThreadToolsStreamed(t, endpoint, "thread_reply", map[string]any{
+		"token": "reply-token", "text": "the answer",
+	})
+	if !strings.Contains(data, "reply-token") || strings.Contains(data, `"isError":true`) {
+		t.Fatalf("thread_reply answered %s", data)
+	}
+	if _, err := app.store.GetThread(scratch.ID); err != nil {
+		t.Fatalf("the scratch thread went away while its deletion was blocked: %v", err)
+	}
+
+	release()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if _, err := app.store.GetThread(scratch.ID); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the scratch thread outlived the reply that ended it")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	row, found, err := app.store.GetThreadRequestReceipt("reply-token")
+	if err != nil || !found || row.State != store.ThreadReceiptReplied || string(row.Answer) != "the answer" {
+		t.Fatalf("receipt after the reply: %+v, found=%v, %v", row, found, err)
+	}
 }

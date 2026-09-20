@@ -1846,10 +1846,11 @@ test('a wait ends as blocked when the target stops to ask the user', async ({ ha
   });
   expect(blocked.isError, blocked.text).toBe(false);
   // The person owns the answer now, so the wait ends without settling the
-  // request and without arming a wake: the caller is told to leave it.
+  // request. Like every other end of a positive wait, it arms the wake: the
+  // answer arrives as a message unless a later wait takes delivery first.
   expect(blocked.value!.outcome).toBe('blocked');
   expect(blocked.value!.state).toBe('blocked');
-  expect(blocked.value!.notify).toBe(false);
+  expect(blocked.value!.notify).toBe(true);
   await asked;
 
   // Answering the prompt lets the turn finish, and the caller's own watch

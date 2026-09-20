@@ -21,8 +21,17 @@ type Client struct {
 	next uint64
 }
 
-func New(conn *websocket.Conn) *Client { conn.SetReadLimit(1 << 20); return &Client{conn: conn} }
-func (c *Client) Close()               { _ = c.conn.CloseNow() }
+// New wraps an open connection. The read bound is the transport's own
+// inbound bound, because this client reads what that transport sends: a
+// paired computer answers an agent thread call with whole answers, whole
+// transcript windows and whole item ranges, each of which is larger than a
+// megabyte by design, and a reply over the bound closes the connection
+// instead of returning an error the caller could act on.
+func New(conn *websocket.Conn) *Client {
+	conn.SetReadLimit(transport.DefaultReadLimit)
+	return &Client{conn: conn}
+}
+func (c *Client) Close() { _ = c.conn.CloseNow() }
 
 // Hello is read before any remote mutation, so identity and feature support
 // can be verified on the authenticated connection actually used for the call.

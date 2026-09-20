@@ -64,12 +64,12 @@ type ReplyCall struct {
 
 // StatusCall re-attaches to requests or watches threads.
 type StatusCall struct {
-	Tokens    []string `json:"tokens,omitempty"`
-	ThreadIDs []string `json:"thread_ids,omitempty"`
-	// ThreadComputers pairs with ThreadIDs by index and holds the
-	// computer each resolved to, empty for the caller's own.
-	ThreadComputers []string `json:"thread_computers,omitempty"`
-	WaitSeconds     int      `json:"wait_seconds"`
+	Tokens []string `json:"tokens,omitempty"`
+	// ThreadIDs are threads on THIS computer. A reference that resolved to
+	// another computer is watched by forwarding the call there, not by
+	// naming it here.
+	ThreadIDs   []string `json:"thread_ids,omitempty"`
+	WaitSeconds int      `json:"wait_seconds"`
 	// AfterRevision makes a wait skip what the caller has already seen.
 	AfterRevision int64 `json:"after_revision,omitempty"`
 }

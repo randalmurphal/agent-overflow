@@ -117,9 +117,15 @@ func threadLastActivityExpr(alias string) string {
 }
 
 // threadRowConditions renders the predicates that narrow a thread ROW, for
-// the ranked search and the listing alike. Visibility comes first: hidden
-// modes are out unless the caller named that scratch thread, which is the
-// rule that keeps another agent's side chat out of both answers.
+// the ranked search and the listing alike. Visibility comes first: scratch
+// threads are out unless the caller named one of its own, which is the rule
+// that keeps another agent's side chat out of both answers.
+//
+// The exclusion is scratch alone, not the sidebar's hidden set: an agent
+// searching for a thread may find a workflow-mode one, which is work it can
+// read and answer about (docs/specs/agent-thread-tools.md, thread_search
+// defaults). hiddenThreadModesClause keeps serving the UI listings, where
+// hidden means hidden from the person.
 //
 // It does not render the ThreadIDs restriction: the search applies that to
 // the index row it already has in hand, the listing to the thread id.
@@ -127,16 +133,15 @@ func (f ThreadSearchFilter) threadRowConditions(alias string) ([]string, []any) 
 	var conditions []string
 	var args []any
 
-	hiddenClause, hiddenArgs := hiddenThreadModesClause(alias + "mode")
+	visible := alias + "mode <> ?"
 	if len(f.ScratchThreadIDs) > 0 {
 		scratchClause, scratchArgs := inClause(alias+"id", f.ScratchThreadIDs)
-		conditions = append(conditions, "("+hiddenClause+" OR ("+alias+"mode = ? AND "+scratchClause+"))")
-		args = append(args, hiddenArgs...)
+		conditions = append(conditions, "("+visible+" OR "+scratchClause+")")
 		args = append(args, threadmode.ModeScratch)
 		args = append(args, scratchArgs...)
 	} else {
-		conditions = append(conditions, hiddenClause)
-		args = append(args, hiddenArgs...)
+		conditions = append(conditions, visible)
+		args = append(args, threadmode.ModeScratch)
 	}
 
 	if f.ProjectID != "" {
@@ -173,8 +178,8 @@ func (f ThreadSearchFilter) threadRowConditions(alias string) ([]string, []any) 
 // summaries and thread titles, ranked by bm25.
 //
 // `query` is FTS5 match syntax, so a malformed query comes back as an error
-// for the caller to report rather than as an empty result. Hidden-mode threads
-// are excluded by joining `owned_threads` at query time: a thread moved to
+// for the caller to report rather than as an empty result. Visibility is
+// applied by joining `owned_threads` at query time: a thread moved to
 // another computer stops matching without a reindex, and so does a scratch
 // thread the caller does not own.
 //

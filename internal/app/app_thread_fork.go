@@ -51,9 +51,11 @@ func (a *App) ForkThread(ctx context.Context, sourceThreadID string, atTurnIndex
 // cut a hidden read-only scratch fork for a `thread_ask`, and `/side-chat`
 // uses the same door.
 //
-// Only fields a fork may legally differ in are here. Everything else —
-// project, workspace, provider, model, the provider resume wiring — is the
+// Only fields a fork may legally differ in are here. Everything else, from
+// project and workspace to provider and the provider resume wiring, is the
 // source's by definition: a fork that changed them would not be a fork.
+// Provider is the hardest of those: a thread is locked to its provider once
+// it holds items, which a fork does before its first start.
 type forkOptions struct {
 	// Mode replaces the source's thread mode. Empty inherits.
 	Mode string
@@ -61,6 +63,14 @@ type forkOptions struct {
 	RuntimeMode string
 	// Title replaces the "<source> (fork)" default. Empty inherits.
 	Title string
+	// Model replaces the source's model, within the source's provider. The
+	// fork has no session yet, so its first start runs the row's model, the
+	// same way a model change on an idle thread does. Empty inherits.
+	Model string
+	// Effort replaces the source's reasoning effort. It travels with Model
+	// because the pair is one catalog choice and the threads table checks
+	// them together. Empty inherits.
+	Effort string
 }
 
 // forkThreadTail forks a thread at its tail with the given overrides. It is
@@ -213,6 +223,12 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	}
 	if opts.Title != "" {
 		fork.Title = opts.Title
+	}
+	if opts.Model != "" {
+		fork.Model = opts.Model
+	}
+	if opts.Effort != "" {
+		fork.ReasoningEffort = opts.Effort
 	}
 	// Observed now, not copied from the source: a fork shares the source's
 	// workspace, and that workspace has kept moving since the source thread

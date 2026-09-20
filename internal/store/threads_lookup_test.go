@@ -202,7 +202,8 @@ func TestThreadSearchFilterAppliesEveryRowFilter(t *testing.T) {
 	if _, _, err := s.ArchiveThread("archived-thread"); err != nil {
 		t.Fatalf("ArchiveThread: %v", err)
 	}
-	// A hidden workflow thread and a scratch thread: out unless named.
+	// A workflow thread, which these answers carry, and a scratch thread,
+	// which is out unless the caller names it.
 	seedLookupThread(t, s, "workflow-thread", func(th *Thread) {
 		th.Title = "launcher workflow"
 		th.Mode = threadmode.ModeWorkflow
@@ -241,14 +242,14 @@ func TestThreadSearchFilterAppliesEveryRowFilter(t *testing.T) {
 		filter ThreadSearchFilter
 		want   []string
 	}{
-		{"unfiltered", ThreadSearchFilter{}, []string{"codex-thread", "claude-thread", "spawned-thread", "archived-thread"}},
+		{"unfiltered", ThreadSearchFilter{}, []string{"codex-thread", "claude-thread", "spawned-thread", "archived-thread", "workflow-thread"}},
 		{"provider", ThreadSearchFilter{Provider: "codex"}, []string{"codex-thread"}},
-		{"not archived", ThreadSearchFilter{Archived: &no}, []string{"codex-thread", "claude-thread", "spawned-thread"}},
+		{"not archived", ThreadSearchFilter{Archived: &no}, []string{"codex-thread", "claude-thread", "spawned-thread", "workflow-thread"}},
 		{"archived", ThreadSearchFilter{Archived: &yes}, []string{"archived-thread"}},
 		{"since", ThreadSearchFilter{SinceUnixMs: 5_100}, []string{"codex-thread", "claude-thread"}},
 		{"spawned by", ThreadSearchFilter{SpawnedBy: "claude-thread"}, []string{"spawned-thread"}},
 		{"scratch the caller owns", ThreadSearchFilter{ScratchThreadIDs: []string{"scratch-thread"}},
-			[]string{"codex-thread", "claude-thread", "spawned-thread", "scratch-thread", "archived-thread"}},
+			[]string{"codex-thread", "claude-thread", "spawned-thread", "scratch-thread", "archived-thread", "workflow-thread"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			filter := tc.filter
@@ -286,11 +287,16 @@ func TestThreadSearchFilterAppliesEveryRowFilter(t *testing.T) {
 		})
 	}
 
-	// The listing and the search agree that a hidden workflow thread is
-	// nobody's row, whatever else is asked for.
+	// The listing and the search agree on the two visibility answers: a
+	// workflow thread is a row an agent may find, an unnamed scratch thread
+	// is nobody's row, whatever else is asked for.
 	listed, err := s.ListThreadsByActivity(ThreadSearchFilter{Limit: 20, ThreadIDs: []string{"workflow-thread"}})
-	if err != nil || len(listed) != 0 {
+	if err != nil || len(listed) != 1 {
 		t.Fatalf("workflow thread listed = %v, %v", threadIDsOf(listed), err)
+	}
+	listed, err = s.ListThreadsByActivity(ThreadSearchFilter{Limit: 20, ThreadIDs: []string{"scratch-thread"}})
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("unnamed scratch thread listed = %v, %v", threadIDsOf(listed), err)
 	}
 }
 

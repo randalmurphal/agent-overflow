@@ -126,9 +126,9 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 			return nil, invalidf("from_thread %s lives on %s, and a fork runs on its own computer. Drop computer_id, or spawn a fresh thread there instead of forking.", source.ThreadID, nameOf(Computer{ID: source.ComputerID, Name: source.Computer}))
 		}
 		call.FromThread, call.FromThreadComputer = source.ThreadID, source.ComputerID
-		if !source.Local {
-			call.ComputerID = source.ComputerID
-		}
+		// A fork runs where its source lives, and a source on this
+		// computer runs here however the row names this computer.
+		call.ComputerID = source.Destination()
 	}
 	if err := c.checkSpawnDestination(ctx, &call); err != nil {
 		return nil, err
@@ -216,7 +216,7 @@ func (c *session) send(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	ack, err := c.app.Send(ctx, c.caller, SendCall{
-		ThreadID: target.ThreadID, ComputerID: target.ComputerID,
+		ThreadID: target.ThreadID, ComputerID: target.Destination(),
 		Message: message, WaitSeconds: wait, Notify: args.Notify,
 	})
 	if err != nil {
@@ -246,7 +246,7 @@ func (c *session) ask(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	ack, err := c.app.Ask(ctx, c.caller, AskCall{
-		ThreadID: target.ThreadID, ComputerID: target.ComputerID,
+		ThreadID: target.ThreadID, ComputerID: target.Destination(),
 		Question: question, WaitSeconds: wait, Notify: args.Notify,
 	})
 	if err != nil {

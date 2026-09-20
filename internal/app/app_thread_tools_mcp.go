@@ -248,7 +248,11 @@ func (a *App) callThreadMCP(w http.ResponseWriter, ctx context.Context, req thre
 		return
 	}
 	threadmcp.WriteToolJSON(w, req.ID, result)
-	pending.run()
+	// Handed to the transport rather than run here: on the streamed path the
+	// body above is still in a buffer, and deleting a scratch thread or
+	// marking an answer read before its own response is on the wire would
+	// act on work the model has not received.
+	threadmcp.AfterResponse(ctx, pending.run)
 }
 
 // threadToolsCaller names the calling thread. Everything a result, a

@@ -198,9 +198,14 @@ func (c *session) clipAnswers(requests []RequestState, budget int, page cursor, 
 	return note, clipped
 }
 
+// statusThreads answers the thread_ids half of thread_status. A thread is
+// addressed by its id wherever it lives, so the ids are resolved first and
+// then grouped by the computer that holds them: this computer's run here,
+// and each other computer's are forwarded to it as one thread_status call
+// of its own.
 func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) (any, error) {
+	targets := make([]Target, 0, len(args.ThreadIDs))
 	ids := make([]string, 0, len(args.ThreadIDs))
-	computers := make([]string, 0, len(args.ThreadIDs))
 	for _, ref := range args.ThreadIDs {
 		target, err := c.resolve(ctx, ref, "")
 		if err != nil {
@@ -209,28 +214,187 @@ func (c *session) statusThreads(ctx context.Context, args statusArgs, wait int) 
 		if target.ThreadID == c.caller.ThreadID {
 			return nil, publicf(CodeSelfSend, "A thread cannot watch itself. Watch the threads you started, or use thread_remind to wake yourself later.")
 		}
+		targets = append(targets, target)
 		ids = append(ids, target.ThreadID)
-		computers = append(computers, target.ComputerID)
 	}
 	if duplicate, found := dedupe(ids); found {
 		return nil, invalidf("thread %s is listed twice. Each thread may appear once per call.", duplicate)
 	}
-	report, err := c.app.RequestStates(ctx, c.caller, StatusCall{ThreadIDs: ids, ThreadComputers: computers, WaitSeconds: wait, AfterRevision: args.AfterRevision})
+	states, woke, err := c.watchThreadGroups(ctx, threadWatchGroups(targets), wait, args.AfterRevision)
 	if err != nil {
 		return nil, err
 	}
-	result := statusResult{Threads: slices.Clone(report.Threads), WokeOn: report.WokeOn, TimedOut: report.TimedOut}
-	for index := range result.Threads {
-		id, name := c.stamp(Computer{ID: result.Threads[index].ComputerID, Name: result.Threads[index].Computer})
-		result.Threads[index].ComputerID, result.Threads[index].Computer = id, name
+	result := statusResult{WokeOn: woke, TimedOut: woke == ""}
+	byID := make(map[string]ThreadState, len(states))
+	for _, state := range states {
+		byID[state.ThreadID] = state
+	}
+	// The rows come back in the order the call listed them, whichever
+	// computer answered for each.
+	for _, id := range ids {
+		state, found := byID[id]
+		if !found {
+			continue
+		}
 		// Resting is derived here from the state, so a row cannot report
 		// a state and a restedness that disagree.
-		result.Threads[index].Resting = Resting(result.Threads[index].State)
+		state.Resting = Resting(state.State)
+		result.Threads = append(result.Threads, state)
 	}
-	if report.TimedOut {
+	if result.TimedOut {
 		result.Note = "None of those threads rested or became blocked within the wait. They are still as reported."
 	}
 	return result, nil
+}
+
+// threadWatchGroup is the threads of one call that live on one computer.
+type threadWatchGroup struct {
+	computer Computer
+	local    bool
+	ids      []string
+}
+
+// threadWatchGroups splits resolved targets by the computer that holds
+// them, keeping the order the call listed them in.
+func threadWatchGroups(targets []Target) []threadWatchGroup {
+	groups := make([]threadWatchGroup, 0, 2)
+	// "local" cannot collide with a computer id, which is a UUID.
+	slots := make(map[string]int, 2)
+	for _, target := range targets {
+		key := "local"
+		if !target.Local {
+			key = target.ComputerID
+		}
+		if slot, seen := slots[key]; seen {
+			groups[slot].ids = append(groups[slot].ids, target.ThreadID)
+			continue
+		}
+		slots[key] = len(groups)
+		groups = append(groups, threadWatchGroup{
+			computer: Computer{ID: target.ComputerID, Name: target.Computer},
+			local:    target.Local,
+			ids:      []string{target.ThreadID},
+		})
+	}
+	return groups
+}
+
+// threadWatchAnswer is one group's half of the call.
+type threadWatchAnswer struct {
+	threads []ThreadState
+	wokeOn  string
+	err     error
+}
+
+// watchThreadGroups runs every group's wait at once and ends the call on
+// the first group that reports something: the agent watching three threads
+// wants the one that rested, not the one it happened to list first. The
+// groups that were still waiting are cancelled and read once more without
+// a wait, so every thread the call named is still reported.
+func (c *session) watchThreadGroups(ctx context.Context, groups []threadWatchGroup, wait int, after int64) ([]ThreadState, string, error) {
+	if len(groups) == 1 {
+		answer := c.watchThreadGroup(ctx, groups[0], wait, after)
+		return answer.threads, answer.wokeOn, answer.err
+	}
+	racing, cancel := context.WithCancel(ctx)
+	defer cancel()
+	answers := make([]threadWatchAnswer, len(groups))
+	finished := make(chan int, len(groups))
+	for index, group := range groups {
+		go func(slot int, group threadWatchGroup) {
+			answers[slot] = c.watchThreadGroup(racing, group, wait, after)
+			finished <- slot
+		}(index, group)
+	}
+	var failure error
+	woke := ""
+	for range groups {
+		slot := <-finished
+		answer := answers[slot]
+		switch {
+		case answer.err != nil:
+			// A failure this call caused by cancelling the group is not a
+			// failure of the call: that group is read again below.
+			if failure == nil && racing.Err() == nil {
+				failure = answer.err
+				cancel()
+			}
+		case answer.wokeOn != "" && woke == "":
+			woke = answer.wokeOn
+			cancel()
+		}
+	}
+	if failure != nil {
+		return nil, "", failure
+	}
+	states := make([]ThreadState, 0, len(groups))
+	for index := range answers {
+		if answers[index].err != nil {
+			// Cancelled mid-wait. Its threads are read as they stand now,
+			// on the call's own context rather than the cancelled one.
+			answers[index] = c.watchThreadGroup(ctx, groups[index], 0, after)
+			if answers[index].err != nil {
+				return nil, "", answers[index].err
+			}
+		}
+		states = append(states, answers[index].threads...)
+	}
+	return states, woke, nil
+}
+
+// watchThreadGroup answers one group: this computer's threads through the
+// app, another computer's through one forwarded thread_status call.
+func (c *session) watchThreadGroup(ctx context.Context, group threadWatchGroup, wait int, after int64) threadWatchAnswer {
+	if group.local {
+		report, err := c.app.RequestStates(ctx, c.caller, StatusCall{ThreadIDs: group.ids, WaitSeconds: wait, AfterRevision: after})
+		if err != nil {
+			return threadWatchAnswer{err: err}
+		}
+		return threadWatchAnswer{threads: c.stampThreads(group.computer, report.Threads), wokeOn: report.WokeOn}
+	}
+	peer, err := c.app.Peer(ctx, group.computer.ID)
+	if err != nil {
+		return threadWatchAnswer{err: err}
+	}
+	remaining := wait
+	for {
+		slice := remaining
+		if slice > MaxForwardedWaitSeconds {
+			slice = MaxForwardedWaitSeconds
+		}
+		args, err := json.Marshal(map[string]any{
+			"thread_ids":     group.ids,
+			"wait_seconds":   slice,
+			"after_revision": after,
+		})
+		if err != nil {
+			return threadWatchAnswer{err: err}
+		}
+		raw, err := peer.Query(ctx, "thread_status", args)
+		if err != nil {
+			return threadWatchAnswer{err: err}
+		}
+		var result statusResult
+		if err := peerResult(raw, &result); err != nil {
+			return threadWatchAnswer{err: err}
+		}
+		remaining -= slice
+		if result.WokeOn != "" || remaining <= 0 {
+			return threadWatchAnswer{threads: c.stampThreads(group.computer, result.Threads), wokeOn: result.WokeOn}
+		}
+	}
+}
+
+// stampThreads writes this computer's view of the answering computer onto
+// every row. The destination answers in its own shape and does not know
+// what this computer calls it.
+func (c *session) stampThreads(computer Computer, threads []ThreadState) []ThreadState {
+	out := slices.Clone(threads)
+	for index := range out {
+		id, name := c.stamp(Computer{ID: computer.ID, Name: computer.Name})
+		out[index].ComputerID, out[index].Computer = id, name
+	}
+	return out
 }
 
 func (c *session) listRequests(ctx context.Context, rawCursor string) (any, error) {
@@ -302,7 +466,7 @@ func (c *session) cancel(ctx context.Context, raw json.RawMessage) (any, error) 
 		if target.ThreadID == c.caller.ThreadID {
 			return nil, publicf(CodeInvalidRequest, "A thread cannot interrupt itself through these tools.")
 		}
-		call.ThreadID, call.ComputerID = target.ThreadID, target.ComputerID
+		call.ThreadID, call.ComputerID = target.ThreadID, target.Destination()
 	}
 	report, err := c.app.Cancel(ctx, c.caller, call)
 	if err != nil {
