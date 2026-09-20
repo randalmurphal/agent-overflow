@@ -705,6 +705,54 @@ func TestThreadToolsDeletingTheCallerCancelsItsAskOnTheOtherComputer(t *testing.
 	}
 }
 
+// TestThreadToolsRemoteAskForkIsVisibleToTheThreadThatAsked pins the caller
+// travelling with a forwarded resolve. The scratch fork an ask makes on the
+// other computer is that caller's to read and nobody else's, and the caller
+// is a thread the destination has no row for: without its identity on the
+// lookup the destination could only answer "not found" to the one thread
+// allowed to see it.
+func TestThreadToolsRemoteAskForkIsVisibleToTheThreadThatAsked(t *testing.T) {
+	pair := newReachPair(t)
+	const done = "the spawn finished"
+	installMockClaudeReplies(t, pair.dest, done)
+	spawn := pair.spawnThere(t, "start work over there", nil)
+	target := pair.collect(t, spawn.Token, done)
+	installMockClaudeTurns(t, pair.dest, [][]string{{mockClaudeInitLine}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	ask, err := pair.adapter().Ask(ctx, pair.callerIdentity(), threadtools.AskCall{
+		ThreadID: target, ComputerID: pair.computer, Question: "what did you do?",
+	})
+	if err != nil {
+		t.Fatalf("remote ask: %v", err)
+	}
+	scratch := ""
+	waitUntilE2E(t, 30*time.Second, "the destination forks the ask", func() bool {
+		receipt, found, err := pair.dest.store.GetThreadRequestReceipt(ask.Token)
+		if err != nil || !found || receipt.TargetThreadID == "" {
+			return false
+		}
+		scratch = receipt.TargetThreadID
+		return true
+	})
+
+	shown := pair.call(t, "thread_show", `{"thread_id":"`+scratch+`","turns":1}`)
+	if shown["computer_id"] != pair.computer {
+		t.Fatalf("the asking thread's view of its fork = %v, want it found on %s", shown, pair.computer)
+	}
+
+	// Another thread on the source computer has no claim on the fork.
+	other := reachThread(t, pair.source, uuid.NewString(), "Bystander")
+	stranger := pair.callerIdentity()
+	stranger.ThreadID, stranger.Title = other.ID, other.Title
+	_, err = pair.source.threadToolsServer().Call(ctx, stranger, "thread_show",
+		json.RawMessage(`{"thread_id":"`+scratch+`","turns":1}`))
+	if code := publicCode(t, err); code != threadtools.CodeNotFound {
+		t.Fatalf("a bystander's view of the fork = %v, want %q", err, threadtools.CodeNotFound)
+	}
+}
+
 // collect waits for the destination to settle one request, runs the
 // poller, and asserts the answer landed on the source row with the
 // destination told it was stored. It returns the thread that ran.

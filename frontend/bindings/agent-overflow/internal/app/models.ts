@@ -5867,6 +5867,48 @@ export class ThreadPeerRequest {
 }
 
 /**
+ * ThreadPeerResolve is one forwarded thread reference.
+ */
+export class ThreadPeerResolve {
+    /**
+     * Ref is the id, or id prefix, to resolve.
+     */
+    "ref": string;
+
+    /**
+     * Source is the calling thread as its own computer names it. It
+     * decides what the lookup may see: a scratch fork an ask made here is
+     * visible to the thread that asked and to nothing else, and that thread
+     * is on the other computer.
+     */
+    "source": threadtools$0.Caller;
+
+    /** Creates a new ThreadPeerResolve instance. */
+    constructor($$source: Partial<ThreadPeerResolve> = {}) {
+        if (!("ref" in $$source)) {
+            this["ref"] = "";
+        }
+        if (!("source" in $$source)) {
+            this["source"] = (new threadtools$0.Caller());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new ThreadPeerResolve instance from a string or object.
+     */
+    static createFrom($$source: any = {}): ThreadPeerResolve {
+        const $$createField1_0 = $$createType94;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("source" in $$parsedSource) {
+            $$parsedSource["source"] = $$createField1_0($$parsedSource["source"]);
+        }
+        return new ThreadPeerResolve($$parsedSource as Partial<ThreadPeerResolve>);
+    }
+}
+
+/**
  * ThreadTransferIntent is a public challenge, not authority to resume a thread.
  * The source keeps the activation secret until its retirement is durable.
  */

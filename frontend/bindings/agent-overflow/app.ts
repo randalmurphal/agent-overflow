@@ -774,9 +774,12 @@ export function CreateThreadFromPR(project: string, $number: number, providerNam
 }
 
 /**
- * CreateThreadGroup adds an empty group to a project. The name is trimmed
- * and a blank one is refused — a nameless row is the one state the sidebar
- * cannot render.
+ * CreateThreadGroup adds an empty group to a project, or returns the one
+ * that name already names there: a group name identifies a group inside its
+ * project, and the agent tools resolve by name, so a second row of the same
+ * name would be a row nobody can tell from the first. The name is trimmed
+ * and a blank one is refused, because a nameless row is the one state the
+ * sidebar cannot render.
  */
 export function CreateThreadGroup(projectID: string, name: string): $CancellablePromise<store$0.ThreadGroup> {
     return $Call.ByID(1478438024, projectID, name).then(($result: any) => {
@@ -5118,8 +5121,8 @@ export function ThreadToolRequestStatus(poll: app$0.ThreadPeerPoll): $Cancellabl
  * threads. It is typed rather than a tool call so the caller can compare
  * an ambiguity across computers without decoding rendered text.
  */
-export function ThreadToolResolve(prefix: string): $CancellablePromise<threadtools$0.Resolution> {
-    return $Call.ByID(1018082581, prefix).then(($result: any) => {
+export function ThreadToolResolve(resolve: app$0.ThreadPeerResolve): $CancellablePromise<threadtools$0.Resolution> {
+    return $Call.ByID(1018082581, resolve).then(($result: any) => {
         return $$createType180($result);
     });
 }

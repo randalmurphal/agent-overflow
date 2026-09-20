@@ -97,7 +97,8 @@ func (p threadPeerClient) Resolve(ctx context.Context, ref string) (threadtools.
 	call, cancel := context.WithTimeout(ctx, threadPeerCallTimeout)
 	defer cancel()
 	var answer threadtools.Resolution
-	if err := p.app.backends.CallThreadPeer(call, p.computer.ID, "ThreadToolResolve", &answer, ref); err != nil {
+	if err := p.app.backends.CallThreadPeer(call, p.computer.ID, "ThreadToolResolve", &answer,
+		ThreadPeerResolve{Ref: ref, Source: p.source}); err != nil {
 		return threadtools.Resolution{}, p.app.threadOperationError("resolve", p.computer.ID, ref, err)
 	}
 	return answer, nil

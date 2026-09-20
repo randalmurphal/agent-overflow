@@ -136,6 +136,7 @@ export {
     ThreadPeerPollReply,
     ThreadPeerReply,
     ThreadPeerRequest,
+    ThreadPeerResolve,
     ThreadTransferIntent,
     TurnEditsDiff,
     UpdateAvailability,

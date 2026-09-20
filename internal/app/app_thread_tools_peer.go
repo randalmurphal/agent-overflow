@@ -124,20 +124,35 @@ type ThreadPeerPollReply struct {
 // and a batch larger than this is a defect rather than work.
 const threadPeerTokenLimit = 256
 
+// ThreadPeerResolve is one forwarded thread reference.
+type ThreadPeerResolve struct {
+	// Ref is the id, or id prefix, to resolve.
+	Ref string `json:"ref"`
+	// Source is the calling thread as its own computer names it. It
+	// decides what the lookup may see: a scratch fork an ask made here is
+	// visible to the thread that asked and to nothing else, and that thread
+	// is on the other computer.
+	Source threadtools.Caller `json:"source"`
+}
+
 // ThreadToolResolve answers one thread reference against this computer's
 // threads. It is typed rather than a tool call so the caller can compare
 // an ambiguity across computers without decoding rendered text.
 //
 //ao:scope threads:read
 //ao:route selected
-func (a *App) ThreadToolResolve(ctx context.Context, prefix string) (threadtools.Resolution, error) {
+func (a *App) ThreadToolResolve(ctx context.Context, resolve ThreadPeerResolve) (threadtools.Resolution, error) {
 	if _, err := a.remoteCommandOwner(ctx); err != nil {
 		return threadtools.Resolution{}, err
 	}
 	if err := a.requireScope(ctx, transport.ScopeThreadsRead, "resolve a thread"); err != nil {
 		return threadtools.Resolution{}, err
 	}
-	return a.threadToolsAdapter().ResolveThreadRef(ctx, prefix)
+	caller, err := a.threadPeerCaller(ThreadPeerCall{Source: resolve.Source})
+	if err != nil {
+		return threadtools.Resolution{}, err
+	}
+	return a.threadToolsAdapter().ResolveThreadRef(threadtools.WithCaller(ctx, caller), resolve.Ref)
 }
 
 // ThreadToolQuery runs one read tool here and returns its JSON result
