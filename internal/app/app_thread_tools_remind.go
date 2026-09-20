@@ -48,12 +48,14 @@ func (t threadToolsApp) Remind(_ context.Context, caller threadtools.Caller, cal
 	// keeps a reminder for ten seconds from now from waiting out the tick.
 	t.app.nudgeThreadRequestSweep()
 	return threadtools.RequestAck{
-		Token:    token,
-		Kind:     store.ThreadRequestRemind,
-		State:    store.ThreadRequestAccepted,
-		Outcome:  threadtools.OutcomeBackgrounded,
-		Notify:   true,
-		Revision: 0,
+		RequestState: threadtools.RequestState{
+			Token:    token,
+			Kind:     store.ThreadRequestRemind,
+			State:    store.ThreadRequestAccepted,
+			Notify:   true,
+			Revision: 0,
+		},
+		Outcome: threadtools.OutcomeBackgrounded,
 	}, nil
 }
 

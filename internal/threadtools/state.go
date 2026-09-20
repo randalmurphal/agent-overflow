@@ -22,7 +22,9 @@ package threadtools
 // what the reference falls back to once the live status is idle.
 //
 // internal/threadtools/testdata/thread_states.json is the shared table for
-// this function and for the frontend's own test of the reference.
+// this function (state_test.go) and for the reference's own test
+// (frontend/src/lib/utils/threadStatusPill.test.ts), which reads the same
+// file. A case added to one side runs on both.
 func State(thread Thread, live LiveState) string {
 	switch {
 	case live.PendingApprovals > 0:

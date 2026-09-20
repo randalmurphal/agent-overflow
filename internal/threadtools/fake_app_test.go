@@ -23,6 +23,8 @@ type fakeApp struct {
 	hits     []Hit
 	indexing bool
 	catalog  Catalog
+	// catalogErr fails this computer's own catalog read.
+	catalogErr error
 
 	computers []Computer
 	peers     map[string]Peer
@@ -232,11 +234,7 @@ func (f *fakeApp) Transcript(_ context.Context, q TranscriptQuery) (TranscriptSl
 			break
 		}
 	}
-	high := int64(0)
-	if len(items) > 0 {
-		high = items[len(items)-1].Position
-	}
-	return TranscriptSlice{Items: out, HighWater: high}, nil
+	return TranscriptSlice{Items: out}, nil
 }
 
 // includes mirrors the App contract: prose rows always carry their body,
@@ -309,22 +307,33 @@ func (f *fakeApp) ExportAnswer(_ context.Context, _ Caller, _ string) (ExportFil
 }
 
 func (f *fakeApp) Catalog(_ context.Context, _ CatalogQuery) (Catalog, error) {
+	if f.catalogErr != nil {
+		return Catalog{}, f.catalogErr
+	}
 	return f.catalog, nil
 }
 
 func (f *fakeApp) Spawn(_ context.Context, _ Caller, call SpawnCall) (RequestAck, error) {
 	f.spawns = append(f.spawns, call)
-	return f.ack, nil
+	return f.acked(call.Notify), nil
 }
 
 func (f *fakeApp) Send(_ context.Context, _ Caller, call SendCall) (RequestAck, error) {
 	f.sends = append(f.sends, call)
-	return f.ack, nil
+	return f.acked(call.Notify), nil
 }
 
 func (f *fakeApp) Ask(_ context.Context, _ Caller, call AskCall) (RequestAck, error) {
 	f.asks = append(f.asks, call)
-	return f.ack, nil
+	return f.acked(call.Notify), nil
+}
+
+// acked mirrors the App contract that the ack reports whether a wake is
+// armed, which is what decides the note a backgrounded call carries.
+func (f *fakeApp) acked(notify bool) RequestAck {
+	ack := f.ack
+	ack.Notify = ack.Notify || notify
+	return ack
 }
 
 func (f *fakeApp) Reply(_ context.Context, _ Caller, call ReplyCall) (ReplyAck, error) {

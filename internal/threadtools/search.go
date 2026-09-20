@@ -2,8 +2,12 @@ package threadtools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -107,13 +111,35 @@ func (c *session) search(ctx context.Context, raw json.RawMessage) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	targets, err := c.searchTargets(ctx, args, &query)
+	targets, partial, err := c.searchTargets(ctx, args, &query)
 	if err != nil {
 		return nil, err
 	}
+	// The filters settle which rows exist; the cursor is only a row offset
+	// into them. Continuing one search's page under another's filters would
+	// skip rows without saying so, so the cursor carries what it continues.
+	filters := searchFilters(query)
+	if args.Cursor != "" && page.Filters != filters {
+		return nil, invalidf("cursor already carries the filters of the search it continues. Pass cursor with limit alone, or drop it to start a new search.")
+	}
 
-	groups, failures := c.runSearch(ctx, targets, query, page.Offsets)
-	return c.searchResult(groups, failures, page.Offsets)
+	groups, failures, failure := c.runSearch(ctx, targets, query, page.Offsets)
+	return c.searchResult(groups, failures, failure, page.Offsets, filters, partial)
+}
+
+// searchFilters fingerprints everything that decides which rows a search
+// returns. limit is left out: it sizes a page, it does not change the rows
+// a cursor is an offset into.
+func searchFilters(query SearchQuery) string {
+	archived := ""
+	if query.Archived != nil {
+		archived = strconv.FormatBool(*query.Archived)
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		query.Query, query.ThreadID, query.Kind, query.ProjectID, query.Provider,
+		query.State, archived, strconv.FormatInt(query.SinceUnixMs, 10), query.SpawnedBy,
+	}, "\x00")))
+	return hex.EncodeToString(sum[:8])
 }
 
 // searchQuery validates the filters and applies the defaults the spec
@@ -128,6 +154,9 @@ func (c *session) searchQuery(args searchArgs) (SearchQuery, error) {
 		State:     trim(args.State),
 		Archived:  args.Archived,
 		Limit:     args.Limit,
+	}
+	if len(query.Query) > MaxQueryBytes {
+		return SearchQuery{}, invalidf("query must be at most %d bytes of search text. Search for a phrase, and narrow the rest with the filters.", MaxQueryBytes)
 	}
 	if query.Kind != "" && !slices.Contains([]string{"user", "assistant", "tool", "title"}, query.Kind) {
 		return SearchQuery{}, invalidf("kind must be one of user, assistant, tool or title.")
@@ -163,22 +192,24 @@ func (c *session) searchQuery(args searchArgs) (SearchQuery, error) {
 }
 
 // searchTargets decides which computers this call covers, and resolves a
-// thread_id filter to the one computer that holds it.
-func (c *session) searchTargets(ctx context.Context, args searchArgs, query *SearchQuery) ([]Computer, error) {
+// thread_id filter to the one computer that holds it. The second result is
+// the computers a fan-out for that filter could not ask, so the answer can
+// say it was not complete.
+func (c *session) searchTargets(ctx context.Context, args searchArgs, query *SearchQuery) ([]Computer, []Computer, error) {
 	if ref := trim(args.ThreadID); ref != "" {
 		target, err := c.resolve(ctx, ref, "")
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		query.ThreadID = target.ThreadID
 		computer, _, _ := c.computerByID(target.ComputerID)
-		return []Computer{computer}, nil
+		return []Computer{computer}, target.Partial, nil
 	}
 	named, err := c.namedComputers(args.Computers)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return named, nil
+	return named, nil, nil
 }
 
 // namedComputers turns the computers filter into a target list. An empty
@@ -211,7 +242,10 @@ type searchAnswer struct {
 	err      error
 }
 
-func (c *session) runSearch(ctx context.Context, targets []Computer, query SearchQuery, offsets map[string]int) ([]searchGroup, []errorRow) {
+// runSearch answers every target concurrently. The third result is the
+// first failure as its own error, which a single-computer call returns
+// rather than answering "no threads" for a search that never ran.
+func (c *session) runSearch(ctx context.Context, targets []Computer, query SearchQuery, offsets map[string]int) ([]searchGroup, []errorRow, error) {
 	bounded, cancel := context.WithTimeout(ctx, SearchTimeout)
 	defer cancel()
 
@@ -229,14 +263,18 @@ func (c *session) runSearch(ctx context.Context, targets []Computer, query Searc
 
 	groups := make([]searchGroup, 0, len(answers))
 	var failures []errorRow
+	var failure error
 	for _, answer := range answers {
 		if answer.err != nil {
 			failures = append(failures, newErrorRow(answer.computer, answer.err))
+			if failure == nil {
+				failure = answer.err
+			}
 			continue
 		}
 		groups = append(groups, answer.group)
 	}
-	return groups, failures
+	return groups, failures, failure
 }
 
 // offsetKey is how a cursor names one computer's page. The local computer
@@ -314,7 +352,9 @@ func peerSearchArgs(query SearchQuery, offset int) (json.RawMessage, error) {
 		args["since"] = unixMsToRFC3339(query.SinceUnixMs)
 	}
 	if offset > 0 {
-		encoded, err := encodeCursor(cursor{Kind: cursorSearch, Offsets: map[string]int{"": offset}})
+		// The destination rebuilds this same query from these arguments,
+		// so it fingerprints to the same filters and accepts the cursor.
+		encoded, err := encodeCursor(cursor{Kind: cursorSearch, Offsets: map[string]int{"": offset}, Filters: searchFilters(query)})
 		if err != nil {
 			return nil, err
 		}
@@ -375,7 +415,10 @@ func (c *session) row(computer Computer, hit Hit) searchRow {
 	}
 }
 
-func (c *session) searchResult(groups []searchGroup, failures []errorRow, offsets map[string]int) (any, error) {
+func (c *session) searchResult(groups []searchGroup, failures []errorRow, failure error, offsets map[string]int, filters string, partial []Computer) (any, error) {
+	// Every group's next offset is recorded, not only the ones with more
+	// rows: a computer that is done must resume past its rows on the next
+	// page rather than from the start, which would repeat them.
 	next := make(map[string]int, len(groups))
 	more := false
 	for _, group := range groups {
@@ -383,30 +426,31 @@ func (c *session) searchResult(groups []searchGroup, failures []errorRow, offset
 		if !c.paired() || key == c.caller.ComputerID {
 			key = ""
 		}
+		next[key] = offsets[key] + len(group.Rows)
 		if group.More {
-			next[key] = offsets[key] + len(group.Rows)
 			more = true
 		}
 	}
 	encoded := ""
+	note := ""
 	if more {
-		value, err := encodeCursor(cursor{Kind: cursorSearch, Offsets: next})
+		value, err := encodeCursor(cursor{Kind: cursorSearch, Offsets: next, Filters: filters})
 		if err != nil {
 			return nil, err
 		}
 		encoded = value
-	}
-	note := ""
-	if more {
 		note = "More rows exist. Pass cursor back unchanged to continue."
+	}
+	if incomplete := partialNote(partial); incomplete != "" {
+		note = appendNote(note, incomplete)
 	}
 	if !c.paired() {
 		// One target, this computer: its failure is the call's failure.
 		// Dropping it would answer "no threads" for a query that never ran,
 		// and a forwarded call reads this shape on the destination's
 		// behalf, so the refusal must be an error there too.
-		if len(failures) > 0 {
-			return nil, publicf(firstNonEmpty(failures[0].Code, CodeUnreachable), "%s", failures[0].Error)
+		if failure != nil {
+			return nil, failure
 		}
 		solo := searchSolo{Rows: []searchRow{}, Cursor: encoded, Note: note}
 		if len(groups) == 1 {

@@ -122,7 +122,7 @@ func (c *session) showLocal(ctx context.Context, target Target, args showArgs, p
 			return nil, err
 		}
 		result.File = &file
-		result.Note = appendNote(result.Note, "The whole window was written to that path on "+nameOf(Computer{ID: id, Name: name})+". Read it with your own file tools; included items are written whole.")
+		result.Note = appendNote(result.Note, "The whole window was written to that path on "+NameOfComputer(Computer{ID: id, Name: name})+". Read it with your own file tools; included items are written whole.")
 		return result, nil
 	}
 	if bounds.Empty {
@@ -287,7 +287,7 @@ func (c *session) showOnPeer(ctx context.Context, target Target, args showArgs) 
 			return nil, err
 		}
 		result.File = &local
-		result.Note = "The whole window was copied from " + nameOf(Computer{ID: result.ComputerID, Name: result.Computer}) +
+		result.Note = "The whole window was copied from " + NameOfComputer(Computer{ID: result.ComputerID, Name: result.Computer}) +
 			" to that path on this computer. Read it with your own file tools; included items are written whole."
 	}
 	if note := partialNote(target.Partial); note != "" {

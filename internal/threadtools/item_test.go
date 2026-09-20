@@ -3,6 +3,7 @@ package threadtools
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func itemApp(name, threadID, itemID, kind, body string) *fakeApp {
@@ -236,5 +237,116 @@ func TestItemOnAnotherComputerKeepsAZeroOffsetSelector(t *testing.T) {
 	}
 	if len(p.remote.reads) == 0 {
 		t.Fatal("the destination never read its own payload")
+	}
+}
+
+// TestItemQueryFindsMatchesPastAChunkBoundary. A chunk's scan limit sits a
+// needle plus a context window short of the chunk's end, so the last match
+// it accepts can end past that limit. Resuming at the limit would move the
+// scan backwards, and stopping there would drop every later match.
+func TestItemQueryFindsMatchesPastAChunkBoundary(t *testing.T) {
+	const needle = "NEEDLE"
+	// The first match ends past the first chunk's scan limit; the second
+	// lives in the chunk after it.
+	limit := int64(itemScanChunk) - int64(len(needle)) - ItemMatchContext
+	first := limit - 1
+	second := int64(itemScanChunk) + 8192
+	body := []byte(strings.Repeat(".", itemScanChunk+(1<<15)))
+	copy(body[first:], needle)
+	copy(body[second:], needle)
+
+	app := itemApp("Laptop", localThreadID, "i3", "tool_output", string(body))
+	result := call(t, New(app), localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","query":"`+needle+`"}`)
+
+	matches := rows(t, result["matches"])
+	if len(matches) != 2 {
+		t.Fatalf("matches = %v, want both sides of the chunk boundary", matches)
+	}
+	if got := field(t, matches[0], "offset"); got != float64(first) {
+		t.Errorf("first offset = %v, want %d", got, first)
+	}
+	if got := field(t, matches[1], "offset"); got != float64(second) {
+		t.Errorf("second offset = %v, want %d", got, second)
+	}
+	if result["more"] != nil || result["eof"] != true {
+		t.Errorf("a complete scan reported more=%v eof=%v", result["more"], result["eof"])
+	}
+}
+
+// TestItemLineRangeThatStopsShortIsNotEOF: eof is what tells the agent
+// there is nothing after the range, so it follows the bytes the walk
+// consumed rather than the chunk it happened to read them from.
+func TestItemLineRangeThatStopsShortIsNotEOF(t *testing.T) {
+	app := itemApp("Laptop", localThreadID, "i3", "tool_output", "one\ntwo\nthree\nfour\n")
+	server := New(app)
+
+	middle := call(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","lines":"2-3"}`)
+	if middle["text"] != "two\nthree\n" || middle["eof"] != false {
+		t.Fatalf("lines 2-3 of a four-line item = %v", middle)
+	}
+	last := call(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","lines":"4"}`)
+	if last["text"] != "four\n" || last["eof"] != true {
+		t.Fatalf("the last line = %v", last)
+	}
+}
+
+// TestItemLineRangeClipsOnACharacterBoundary: the byte budget must not cut
+// a multi-byte character in half.
+func TestItemLineRangeClipsOnACharacterBoundary(t *testing.T) {
+	app := itemApp("Laptop", localThreadID, "i3", "tool_output", strings.Repeat("ééé\n", 10))
+	result := call(t, New(app), localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","lines":"1-10","max_bytes":10}`)
+
+	text, _ := result["text"].(string)
+	if !utf8.ValidString(text) {
+		t.Fatalf("the clipped range is not valid UTF-8: %q", text)
+	}
+	if text != "ééé\né" {
+		t.Fatalf("text = %q, want the budget spent on whole characters", text)
+	}
+	if result["bytes"] != float64(len(text)) || result["eof"] != false {
+		t.Fatalf("clipped range = %v", result)
+	}
+	if note, _ := result["note"].(string); !strings.Contains(note, "stopped early") {
+		t.Errorf("note = %q", note)
+	}
+}
+
+// TestItemCursorBelongsToOneItemOfOneThread. A cursor is a byte offset
+// inside one payload; the same offset in another item is another place.
+func TestItemCursorBelongsToOneItemOfOneThread(t *testing.T) {
+	body := strings.Repeat("xx needle yy\n", 60)
+	app := itemApp("Laptop", localThreadID, "i3", "tool_output", body)
+	app.addItems(localThreadID, Item{ID: "i4", Position: 2, Kind: "tool_output", Role: "tool", TurnID: "t1", Size: int64(len(body))})
+	app.addPayload(localThreadID, "i4", "tool_output", []byte(body))
+	app.addThread(Thread{ID: twinThreadID, Title: "Other"})
+	app.addItems(twinThreadID, Item{ID: "i3", Position: 1, Kind: "tool_output", Role: "tool", TurnID: "t1", Size: int64(len(body))})
+	app.addPayload(twinThreadID, "i3", "tool_output", []byte(body))
+	server := New(app)
+
+	first := call(t, server, localCaller(), "thread_item", `{"thread_id":"`+localThreadID+`","item_id":"i3","query":"needle"}`)
+	if first["cursor"] == nil {
+		t.Fatalf("a capped page must offer a cursor: %v", first)
+	}
+
+	wrongItem := callErr(t, server, localCaller(), "thread_item",
+		mustJSON(t, map[string]any{"thread_id": localThreadID, "item_id": "i4", "cursor": first["cursor"]}), CodeInvalidRequest)
+	if !strings.Contains(wrongItem, "belongs to another item") {
+		t.Errorf("message = %q", wrongItem)
+	}
+	wrongThread := callErr(t, server, localCaller(), "thread_item",
+		mustJSON(t, map[string]any{"thread_id": twinThreadID, "item_id": "i3", "cursor": first["cursor"]}), CodeInvalidRequest)
+	if !strings.Contains(wrongThread, "belongs to another thread") {
+		t.Errorf("message = %q", wrongThread)
+	}
+}
+
+// TestItemQueryIsBounded, because a megabyte of literal text is not a
+// search term and would straddle the scan overlap.
+func TestItemQueryIsBounded(t *testing.T) {
+	app := itemApp("Laptop", localThreadID, "i3", "tool_output", "body")
+	message := callErr(t, New(app), localCaller(), "thread_item",
+		mustJSON(t, map[string]any{"thread_id": localThreadID, "item_id": "i3", "query": strings.Repeat("q", MaxQueryBytes+1)}), CodeInvalidRequest)
+	if !strings.Contains(message, "at most 4096 bytes") {
+		t.Errorf("message = %q", message)
 	}
 }

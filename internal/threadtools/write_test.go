@@ -10,7 +10,7 @@ import (
 func spawnApp() *fakeApp {
 	app := newFakeApp("Laptop")
 	app.addThread(Thread{ID: "caller-thread", Title: "Caller", Provider: "claude", Model: "opus-5"})
-	app.ack = RequestAck{Token: "tok-1", ThreadID: localThreadID, Title: "New work", State: StateRunning, Outcome: OutcomeBackgrounded, Revision: 1}
+	app.ack = RequestAck{RequestState: RequestState{Token: "tok-1", ThreadID: localThreadID, Title: "New work", State: StateRunning, Revision: 1}, Outcome: OutcomeBackgrounded}
 	return app
 }
 
@@ -92,7 +92,7 @@ func TestSpawnOnAnotherComputerNeedsAProjectAndTheRefusalListsThem(t *testing.T)
 		t.Fatal("a refused spawn still reached the destination")
 	}
 
-	p.local.ack = RequestAck{Token: "tok-9", ComputerID: "studio", Computer: "Studio", State: StateRunning, Outcome: OutcomeBackgrounded}
+	p.local.ack = RequestAck{RequestState: RequestState{Token: "tok-9", ComputerID: "studio", Computer: "Studio", State: StateRunning}, Outcome: OutcomeBackgrounded}
 	result := call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"go","computer_id":"studio","project_id":"p1"}`)
 	if p.local.spawns[0].ComputerID != "studio" {
 		t.Fatalf("the destination was lost: %+v", p.local.spawns[0])
@@ -108,7 +108,7 @@ func TestSpawnFromAThreadRunsWhereThatThreadLives(t *testing.T) {
 	p := newPair(t)
 	p.local.addThread(Thread{ID: "caller-thread", Provider: "claude"})
 	p.remote.addThread(Thread{ID: remoteThreadID, Title: "Origin"})
-	p.local.ack = RequestAck{Token: "tok-2", ComputerID: "studio", Computer: "Studio", State: StateRunning, Outcome: OutcomeBackgrounded}
+	p.local.ack = RequestAck{RequestState: RequestState{Token: "tok-2", ComputerID: "studio", Computer: "Studio", State: StateRunning}, Outcome: OutcomeBackgrounded}
 
 	call(t, p.server, localCaller(), "thread_spawn", `{"prompt":"continue","from_thread":"`+remoteThreadID+`"}`)
 	spawn := p.local.spawns[0]
@@ -167,25 +167,25 @@ func TestAckNotesMatchTheOutcome(t *testing.T) {
 	app.addThread(Thread{ID: localThreadID, Title: "Worker"})
 	server := New(app)
 
-	app.ack = RequestAck{Token: "t1", Outcome: OutcomeSettled, AnswerKind: AnswerReply, Answer: "done", State: RequestReplied}
+	app.ack = RequestAck{RequestState: RequestState{Token: "t1", AnswerKind: AnswerReply, Answer: "done", State: RequestReplied}, Outcome: OutcomeSettled}
 	settled := call(t, server, localCaller(), "thread_ask", `{"thread_id":"`+localThreadID+`","question":"q"}`)
 	if note := settled["note"].(string); !strings.Contains(note, "no message will arrive") {
 		t.Errorf("settled note = %q", note)
 	}
 
-	app.ack = RequestAck{Token: "t2", Outcome: OutcomeSettled, AnswerKind: AnswerFinal, Answer: "I started", State: RequestReplied}
+	app.ack = RequestAck{RequestState: RequestState{Token: "t2", AnswerKind: AnswerFinal, Answer: "I started", State: RequestReplied}, Outcome: OutcomeSettled}
 	final := call(t, server, localCaller(), "thread_ask", `{"thread_id":"`+localThreadID+`","question":"q"}`)
 	if note := final["note"].(string); !strings.Contains(note, "without calling thread_reply") {
 		t.Errorf("final note = %q", note)
 	}
 
-	app.ack = RequestAck{Token: "t3", Outcome: OutcomeBlocked, State: RequestRunning}
+	app.ack = RequestAck{RequestState: RequestState{Token: "t3", State: RequestRunning}, Outcome: OutcomeBlocked}
 	blocked := call(t, server, localCaller(), "thread_ask", `{"thread_id":"`+localThreadID+`","question":"q"}`)
 	if note := blocked["note"].(string); !strings.Contains(note, "waiting on the user") {
 		t.Errorf("blocked note = %q", note)
 	}
 
-	app.ack = RequestAck{Token: "t4", Outcome: OutcomeUnconfirmed, State: RequestUnconfirmed}
+	app.ack = RequestAck{RequestState: RequestState{Token: "t4", State: RequestUnconfirmed}, Outcome: OutcomeUnconfirmed}
 	unconfirmed := call(t, server, localCaller(), "thread_ask", `{"thread_id":"`+localThreadID+`","question":"q"}`)
 	if note := unconfirmed["note"].(string); !strings.Contains(note, "Do NOT start it again") {
 		t.Errorf("unconfirmed note = %q", note)
@@ -353,7 +353,7 @@ func TestCancelTakesExactlyOneSelector(t *testing.T) {
 // TestRemindTakesExactlyOneClockAndResolvesItAgainstNow.
 func TestRemindTakesExactlyOneClockAndResolvesItAgainstNow(t *testing.T) {
 	app := newFakeApp("Laptop")
-	app.ack = RequestAck{Token: "tok-r", Kind: "remind", State: RequestAccepted, Outcome: OutcomeBackgrounded}
+	app.ack = RequestAck{RequestState: RequestState{Token: "tok-r", Kind: "remind", State: RequestAccepted}, Outcome: OutcomeBackgrounded}
 	server := New(app)
 	fixed := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
 	server.now = func() time.Time { return fixed }
@@ -539,7 +539,7 @@ func TestLocalDestinationIsEmptyWhileComputersArePaired(t *testing.T) {
 	p := newPair(t)
 	p.local.addThread(Thread{ID: "caller-thread", Title: "Caller", Provider: "claude"})
 	p.local.addThread(Thread{ID: localThreadID, Title: "Worker"})
-	p.local.ack = RequestAck{Token: "tok-1", ThreadID: localThreadID, State: StateRunning, Outcome: OutcomeBackgrounded}
+	p.local.ack = RequestAck{RequestState: RequestState{Token: "tok-1", ThreadID: localThreadID, State: StateRunning}, Outcome: OutcomeBackgrounded}
 	p.local.cancelled = CancelReport{Token: "tok-1", ThreadID: localThreadID, State: RequestCancelled, Effect: "turn_interrupted"}
 
 	target, err := p.session().resolve(context.Background(), localThreadID, "")
@@ -579,4 +579,77 @@ func TestLocalDestinationIsEmptyWhileComputersArePaired(t *testing.T) {
 	if len(p.local.sends) != 2 || p.local.sends[1].ComputerID != "studio" {
 		t.Fatalf("remote send = %+v, want the paired computer", p.local.sends)
 	}
+}
+
+// TestStatusListingClipsItsAnswersToo. A listing carries thirty rows, so
+// an unclipped answer on one of them would spend the whole reply and the
+// other twenty-nine would never be read.
+func TestStatusListingClipsItsAnswersToo(t *testing.T) {
+	app := newFakeApp("Laptop")
+	rowsIn := make([]RequestState, 0, 4)
+	for _, token := range []string{"tok-1", "tok-2", "tok-3", "tok-4"} {
+		rowsIn = append(rowsIn, RequestState{Token: token, Kind: "ask", State: RequestReplied, Answer: strings.Repeat("a", 40_000)})
+	}
+	app.listing = RequestListing{Requests: rowsIn}
+
+	result := call(t, New(app), localCaller(), "thread_status", `{"max_bytes":8192}`)
+	listed := rows(t, result["requests"])
+	if len(listed) != 4 {
+		t.Fatalf("requests = %v", listed)
+	}
+	total := 0
+	for _, row := range listed {
+		answer := field(t, row, "answer").(string)
+		if len(answer) > 8192 {
+			t.Fatalf("one answer is %d bytes, over the whole budget", len(answer))
+		}
+		total += len(answer)
+	}
+	// Each row gets an equal share of the budget, with MinShowBytes as the
+	// floor a row is always allowed.
+	if want := 4 * max(8192/4, MinShowBytes); total > want {
+		t.Fatalf("the listing carried %d bytes of answers, over the %d the shares allow", total, want)
+	}
+	note, _ := result["note"].(string)
+	if !strings.Contains(note, "thread_status token tok-1") || !strings.Contains(note, "to_file") {
+		t.Errorf("note = %q", note)
+	}
+}
+
+// TestBackgroundedAckSaysWhetherAnythingWillWakeTheThread. The default
+// branch of the note is read by an agent deciding whether to end its turn,
+// so it may not promise a message that no notify will ever send.
+func TestBackgroundedAckSaysWhetherAnythingWillWakeTheThread(t *testing.T) {
+	server := New(spawnApp())
+
+	armed := call(t, server, localCaller(), "thread_spawn", `{"prompt":"go","notify":true}`)
+	if note := armed["note"].(string); note != "Still working. The answer will arrive in this thread as a message at your next turn boundary; you do not need to poll. To wait again instead of ending your turn, call thread_status with token tok-1." {
+		t.Errorf("notify note = %q", note)
+	}
+
+	unattended := call(t, server, localCaller(), "thread_spawn", `{"prompt":"go"}`)
+	if note := unattended["note"].(string); note != "Still working, and nothing will wake this thread when it finishes: no wait and no notify were asked for. Read the answer with thread_status token tok-1, or ask again with notify or wait_seconds to have it delivered." {
+		t.Errorf("unattended note = %q", note)
+	}
+}
+
+// TestSpawnRefusesAForkThatAlsoPicksACheckout: a fork runs in its source's
+// workspace, so a placement argument would be silently ignored.
+func TestSpawnRefusesAForkThatAlsoPicksACheckout(t *testing.T) {
+	app := spawnApp()
+	app.addThread(Thread{ID: localThreadID, Title: "Source"})
+	server := New(app)
+	for name, args := range map[string]string{
+		"workspace_path": `{"prompt":"go","from_thread":"` + localThreadID + `","workspace_path":"/src/x"}`,
+		"worktree":       `{"prompt":"go","from_thread":"` + localThreadID + `","worktree":"feature"}`,
+		"base":           `{"prompt":"go","from_thread":"` + localThreadID + `","worktree":"feature","base":"main"}`,
+		"base_local":     `{"prompt":"go","from_thread":"` + localThreadID + `","base_local":true}`,
+	} {
+		message := callErr(t, server, localCaller(), "thread_spawn", args, CodeInvalidRequest)
+		if !strings.Contains(message, "a fork runs in its source's workspace") {
+			t.Errorf("%s: message = %q", name, message)
+		}
+	}
+	// from_thread on its own is still a fork, not a refusal.
+	call(t, server, localCaller(), "thread_spawn", `{"prompt":"go","from_thread":"`+localThreadID+`"}`)
 }

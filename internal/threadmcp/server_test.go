@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/errorsx"
+	"agent-overflow/internal/mcpargs"
 )
 
 func TestToolCallEnvelopeAllowsMetadataButArgumentsStayStrict(t *testing.T) {
@@ -18,13 +19,15 @@ func TestToolCallEnvelopeAllowsMetadataButArgumentsStayStrict(t *testing.T) {
 	if err != nil || call.Name != "test" {
 		t.Fatalf("metadata-bearing call: %+v, %v", call, err)
 	}
+	// The envelope tolerates metadata; the arguments inside it do not.
+	// internal/mcpargs owns that half and tests its refusals.
 	var args struct {
 		Path string `json:"path"`
 	}
-	if err := DecodeArgs(call.Arguments, &args); err != nil || args.Path != "file" {
+	if err := mcpargs.Decode(call.Arguments, &args); err != nil || args.Path != "file" {
 		t.Fatalf("arguments: %+v, %v", args, err)
 	}
-	if err := DecodeArgs(json.RawMessage(`{"path":"file","_meta":{}}`), &args); err == nil {
+	if err := mcpargs.Decode(json.RawMessage(`{"path":"file","_meta":{}}`), &args); err == nil {
 		t.Fatal("metadata inside tool arguments bypassed the closed schema")
 	}
 	for _, invalid := range []string{`null`, `{}`, `[]`, `{"name":3}`, `{"name":"test"} {}`} {
@@ -75,24 +78,6 @@ func TestCapabilitiesRotateAndCloseCannotReopen(t *testing.T) {
 	}
 	if _, err := server.RegisterThread("thread", "third"); err == nil {
 		t.Fatal("closed server reopened")
-	}
-}
-
-func TestArgumentErrorsNameTheFieldWithoutEchoingValues(t *testing.T) {
-	for _, tc := range []struct{ raw, want string }{
-		{`{"count":"secret-value"}`, `"count" must be an integer`},
-		{`{"typo":"secret-value"}`, `Unknown argument "typo"`},
-		{`null`, `must be a JSON object`},
-		{`{"count":`, `Invalid argument JSON`},
-		{`{} {}`, `extra JSON`},
-	} {
-		var args struct {
-			Count int `json:"count"`
-		}
-		err := DecodeArgs(json.RawMessage(tc.raw), &args)
-		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "secret-value") {
-			t.Fatalf("%s: %v", tc.raw, err)
-		}
 	}
 }
 

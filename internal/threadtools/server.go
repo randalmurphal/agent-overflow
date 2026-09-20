@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"agent-overflow/internal/threadmcp"
+	"agent-overflow/internal/mcpargs"
 )
 
 // Server is the ao-thread-tools contract bound to one app. It holds no
@@ -26,18 +26,33 @@ func New(app App) *Server { return &Server{app: app, now: time.Now} }
 // the transport marshals. Every error it returns is public: the code and
 // prose reach the model, the cause stays in the host log.
 func (s *Server) Call(ctx context.Context, caller Caller, name string, args json.RawMessage) (any, error) {
+	return s.call(ctx, caller, name, args, false)
+}
+
+// CallForwarded runs one tool another computer forwarded to this one. It is
+// a second entry point rather than a flag on the context so a peer endpoint
+// cannot forget the fan-out guard: a forwarded call runs on this computer
+// alone, reaching the tools with no paired computers of its own, so nothing
+// it does fans out again. Two computers paired with each other would
+// otherwise answer each other's fan-out until the bounds ran out.
+func (s *Server) CallForwarded(ctx context.Context, caller Caller, name string, args json.RawMessage) (any, error) {
+	return s.call(ctx, caller, name, args, true)
+}
+
+func (s *Server) call(ctx context.Context, caller Caller, name string, args json.RawMessage, forwarded bool) (any, error) {
 	if s == nil || s.app == nil {
 		return nil, publicf(CodeInvalidRequest, "Thread tools are not available in this session.")
 	}
 	if caller.ThreadID == "" {
 		return nil, publicf(CodeInvalidRequest, "Thread tools could not tell which thread called them.")
 	}
-	// A call another computer forwarded runs on this computer alone. It
-	// reaches the tools with no paired computers of its own, so nothing it
-	// does fans out again: two computers paired with each other would
-	// otherwise answer each other's fan-out until the bounds ran out.
 	var computers []Computer
-	if !Forwarded(ctx) {
+	if forwarded {
+		// The App reads this back for the one decision that turns on where
+		// the call came from: an export is written under a name the asking
+		// computer can fetch.
+		ctx = withForwarded(ctx)
+	} else {
 		var err error
 		computers, err = s.app.PairedComputers(ctx)
 		if err != nil {
@@ -48,7 +63,7 @@ func (s *Server) Call(ctx context.Context, caller Caller, name string, args json
 	// because a forwarded call names the thread it came from and the App
 	// interface's Peer takes nothing but a context.
 	ctx = WithCaller(ctx, caller)
-	call := &session{app: s.app, caller: caller, computers: computers, now: s.clock()}
+	call := &session{app: s.app, caller: caller, computers: computers, now: s.now}
 	switch name {
 	case "thread_search":
 		return call.search(ctx, args)
@@ -84,15 +99,13 @@ func (s *Server) Call(ctx context.Context, caller Caller, name string, args json
 // forwardedKey marks a call that arrived from another computer.
 type forwardedKey struct{}
 
-// WithForwarded marks ctx as carrying a call another computer forwarded to
-// this one. The destination runs it locally: it has no paired computers of
-// its own for the length of the call, so no fan-out, resolution or search
-// crosses back to the computer that asked.
-func WithForwarded(ctx context.Context) context.Context {
+func withForwarded(ctx context.Context) context.Context {
 	return context.WithValue(ctx, forwardedKey{}, true)
 }
 
-// Forwarded reports whether this call arrived from another computer.
+// Forwarded reports whether the call an App method is serving arrived from
+// another computer. CallForwarded is the only thing that stamps it, so an
+// ordinary call cannot claim to be a peer's.
 func Forwarded(ctx context.Context) bool {
 	value, _ := ctx.Value(forwardedKey{}).(bool)
 	return value
@@ -122,13 +135,6 @@ type session struct {
 	caller    Caller
 	computers []Computer
 	now       func() time.Time
-}
-
-func (s *Server) clock() func() time.Time {
-	if s.now != nil {
-		return s.now
-	}
-	return time.Now
 }
 
 func (c *session) paired() bool { return len(c.computers) > 0 }
@@ -178,7 +184,7 @@ func (c *session) stamp(computer Computer) (id, name string) {
 // uses, so an unknown field is refused here exactly as it is for the other
 // built-in servers.
 func decode(args json.RawMessage, target any) error {
-	if err := threadmcp.DecodeArgs(args, target); err != nil {
+	if err := mcpargs.Decode(args, target); err != nil {
 		return publicf(CodeInvalidRequest, "%s", err.Error())
 	}
 	return nil

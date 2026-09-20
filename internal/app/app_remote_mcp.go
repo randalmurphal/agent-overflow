@@ -15,6 +15,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/mcpapp"
+	"agent-overflow/internal/mcpargs"
 	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/remotejobs"
@@ -181,7 +182,7 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 	// can inspect or retry the right job.
 	var computerID, requestID string
 	decode := func(args any) bool {
-		if err = threadmcp.DecodeArgs(call.Arguments, args); err == nil {
+		if err = mcpargs.Decode(call.Arguments, args); err == nil {
 			if options, ok := args.(interface{ validate() error }); ok {
 				err = options.validate()
 			}

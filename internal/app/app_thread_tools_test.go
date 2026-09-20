@@ -368,9 +368,6 @@ func TestThreadToolsAdapterPagesTheTranscript(t *testing.T) {
 	if page.Items[0].ID != "t0" || page.Items[1].ID != "t1" {
 		t.Fatalf("page order = %#v", page.Items)
 	}
-	if page.HighWater != bounds.HighWater {
-		t.Errorf("highWater = %d, want %d", page.HighWater, bounds.HighWater)
-	}
 	// Prose rows always carry their body.
 	if page.Items[0].Text != "first" || page.Items[0].Role != "user" {
 		t.Errorf("user row = %#v", page.Items[0])
@@ -890,9 +887,6 @@ func TestThreadToolsAdapterReadsALongThreadInABoundedNumberOfQueries(t *testing.
 	}
 	if longPage.Items[0].ID != "long-thread-0-0" || longPage.Items[49].ID != "long-thread-8-1" {
 		t.Fatalf("long page runs %s..%s", longPage.Items[0].ID, longPage.Items[49].ID)
-	}
-	if longPage.HighWater != encodePosition(599, 5) {
-		t.Errorf("highWater = %d, want the last row of the last turn", longPage.HighWater)
 	}
 	if len(shortPage.Items) != 2 {
 		t.Fatalf("short page = %d rows", len(shortPage.Items))

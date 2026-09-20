@@ -118,6 +118,26 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 	if call.RuntimeMode != "" && !provider.IsRuntimeMode(provider.RuntimeMode(call.RuntimeMode)) {
 		return nil, invalidf("runtime_mode must be one of %s.", joinNames(runtimeModeEnum()))
 	}
+	// A fork inherits its source's checkout, so a parameter that picks one
+	// is refused here rather than silently ignored by the spawn. This comes
+	// before the worktree rules below, which would otherwise answer
+	// from_thread with base by asking for a worktree that is also refused.
+	if trim(args.FromThread) != "" {
+		placement := ""
+		switch {
+		case call.WorkspacePath != "":
+			placement = "workspace_path"
+		case call.WorktreeBranch != "":
+			placement = "worktree"
+		case call.WorktreeBase != "":
+			placement = "base"
+		case call.WorktreeBaseLocal:
+			placement = "base_local"
+		}
+		if placement != "" {
+			return nil, invalidf("Pass either from_thread or %s, not both: a fork runs in its source's workspace. Spawn a fresh thread to work in a checkout of your own choosing.", placement)
+		}
+	}
 	if call.WorktreeBranch != "" && call.WorkspacePath != "" {
 		return nil, invalidf("Pass either workspace_path to run in an existing checkout or worktree to cut a fresh one on that branch, not both.")
 	}
@@ -136,7 +156,7 @@ func (c *session) spawn(ctx context.Context, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		if call.ComputerID != "" && source.ComputerID != "" && call.ComputerID != source.ComputerID {
-			return nil, invalidf("from_thread %s lives on %s, and a fork runs on its own computer. Drop computer_id, or spawn a fresh thread there instead of forking.", source.ThreadID, nameOf(Computer{ID: source.ComputerID, Name: source.Computer}))
+			return nil, invalidf("from_thread %s lives on %s, and a fork runs on its own computer. Drop computer_id, or spawn a fresh thread there instead of forking.", source.ThreadID, NameOfComputer(Computer{ID: source.ComputerID, Name: source.Computer}))
 		}
 		call.FromThread, call.FromThreadComputer = source.ThreadID, source.ComputerID
 		// A fork runs where its source lives, and a source on this
@@ -186,7 +206,7 @@ func (c *session) checkSpawnDestination(ctx context.Context, call *SpawnCall) er
 	if len(answer.Computers) > 0 {
 		row = answer.Computers[0]
 	}
-	return publicf(CodeInvalidRequest, "A thread on %s needs project_id: projects are registered per computer and cannot be inherited. %s offers: %s.", nameOf(computer), nameOf(computer), describeProjects(row.Projects))
+	return publicf(CodeInvalidRequest, "A thread on %s needs project_id: projects are registered per computer and cannot be inherited. %s offers: %s.", NameOfComputer(computer), NameOfComputer(computer), describeProjects(row.Projects))
 }
 
 func describeProjects(projects []ProjectOption) string {
@@ -350,7 +370,13 @@ func ackNote(result ackResult) string {
 	case OutcomeUnconfirmed:
 		return "The call failed before it was known whether the work started. Do NOT start it again: check thread_status with token " + result.Token + "."
 	default:
-		return "Still working. The answer will arrive in this thread as a message at your next turn boundary; you do not need to poll. To wait again instead of ending your turn, call thread_status with token " + result.Token + "."
+		// Only a request with notify armed wakes this thread. Without it
+		// the work runs unattended, and promising a message would leave
+		// the agent waiting for one that is never sent.
+		if result.Notify {
+			return "Still working. The answer will arrive in this thread as a message at your next turn boundary; you do not need to poll. To wait again instead of ending your turn, call thread_status with token " + result.Token + "."
+		}
+		return "Still working, and nothing will wake this thread when it finishes: no wait and no notify were asked for. Read the answer with thread_status token " + result.Token + ", or ask again with notify or wait_seconds to have it delivered."
 	}
 }
 

@@ -123,3 +123,18 @@ func TestRuntimeModeOptionsExplainEachMode(t *testing.T) {
 		}
 	}
 }
+
+// TestOptionsWithoutPairingReturnsItsOwnFailure. The one computer a solo
+// call describes is the computer the caller is running on, so answering
+// {"reachable": false} for it would describe the caller as unreachable
+// instead of saying the read failed.
+func TestOptionsWithoutPairingReturnsItsOwnFailure(t *testing.T) {
+	app := newFakeApp("Laptop")
+	app.addThread(Thread{ID: "caller-thread"})
+	app.catalogErr = publicf(CodeInvalidRequest, "The project list could not be read.")
+
+	message := callErr(t, New(app), localCaller(), "thread_options", `{}`, CodeInvalidRequest)
+	if !strings.Contains(message, "project list could not be read") {
+		t.Errorf("message = %q", message)
+	}
+}

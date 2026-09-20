@@ -73,8 +73,14 @@ func (c *session) options(ctx context.Context, raw json.RawMessage) (any, error)
 		targets = []Computer{computer}
 	}
 
-	rows, failures := c.runOptions(ctx, targets, args)
+	rows, failures, failure := c.runOptions(ctx, targets, args)
 	if !c.paired() {
+		// One target, this computer: its failure is the call's failure.
+		// Answering {"reachable": false} would describe an unreachable
+		// computer, and this one is the computer the caller is on.
+		if failure != nil {
+			return nil, failure
+		}
 		solo := optionsSolo{}
 		if len(rows) == 1 {
 			solo.computerOptions = rows[0]
@@ -91,7 +97,10 @@ func (c *session) options(ctx context.Context, raw json.RawMessage) (any, error)
 	return grouped, nil
 }
 
-func (c *session) runOptions(ctx context.Context, targets []Computer, args optionsArgs) ([]computerOptions, []errorRow) {
+// runOptions answers every target concurrently. The third result is the
+// first failure as its own error, which a single-computer call returns
+// rather than describing this computer as unreachable.
+func (c *session) runOptions(ctx context.Context, targets []Computer, args optionsArgs) ([]computerOptions, []errorRow, error) {
 	bounded, cancel := context.WithTimeout(ctx, SearchTimeout)
 	defer cancel()
 
@@ -115,14 +124,18 @@ func (c *session) runOptions(ctx context.Context, targets []Computer, args optio
 
 	rows := make([]computerOptions, 0, len(answers))
 	var failures []errorRow
+	var failure error
 	for _, a := range answers {
 		if a.err != nil {
 			failures = append(failures, newErrorRow(a.computer, a.err))
+			if failure == nil {
+				failure = a.err
+			}
 			continue
 		}
 		rows = append(rows, a.row)
 	}
-	return rows, failures
+	return rows, failures, failure
 }
 
 func (c *session) optionsOne(ctx context.Context, computer Computer, local bool, args optionsArgs) (computerOptions, error) {

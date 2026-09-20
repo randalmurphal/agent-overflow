@@ -192,7 +192,7 @@ func (t threadToolsApp) Transcript(ctx context.Context, q threadtools.Transcript
 	if _, err := t.localThread(q.ThreadID); err != nil {
 		return threadtools.TranscriptSlice{}, err
 	}
-	_, last, ok, err := t.app.store.ThreadTimelineBounds(q.ThreadID)
+	_, _, ok, err := t.app.store.ThreadTimelineBounds(q.ThreadID)
 	if err != nil {
 		return threadtools.TranscriptSlice{}, err
 	}
@@ -200,7 +200,6 @@ func (t threadToolsApp) Transcript(ctx context.Context, q threadtools.Transcript
 	if !ok {
 		return slice, nil
 	}
-	slice.HighWater = cursorPosition(last)
 	limit := q.Limit
 	if limit <= 0 {
 		return slice, nil

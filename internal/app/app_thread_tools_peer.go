@@ -26,11 +26,11 @@ import (
 // records that device, so a second device of the same computer cannot
 // redeem another device's token.
 //
-// Every one of them stamps threadtools.WithForwarded on the context. A
-// forwarded call runs on this computer alone: it sees no paired computers
-// of its own, so a fan-out, a resolution or a search never crosses back to
-// the computer that asked, and an export writes a file this computer can
-// serve in chunks rather than a path the reader cannot open.
+// A forwarded tool call runs through threadtools.CallForwarded rather than
+// Call. A forwarded call runs on this computer alone: it sees no paired
+// computers of its own, so a fan-out, a resolution or a search never crosses
+// back to the computer that asked, and an export writes a file this computer
+// can serve in chunks rather than a path the reader cannot open.
 
 // ThreadPeerCall is one tool call forwarded from a paired computer.
 type ThreadPeerCall struct {
@@ -138,7 +138,6 @@ func (a *App) threadToolOwner(ctx context.Context) (string, error) {
 //ao:scope threads:read
 //ao:route selected
 func (a *App) ThreadToolResolve(ctx context.Context, prefix string) (threadtools.Resolution, error) {
-	ctx = threadtools.WithForwarded(ctx)
 	if _, err := a.threadToolOwner(ctx); err != nil {
 		return threadtools.Resolution{}, err
 	}
@@ -156,7 +155,6 @@ func (a *App) ThreadToolResolve(ctx context.Context, prefix string) (threadtools
 //ao:scope threads:read
 //ao:route selected
 func (a *App) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
-	ctx = threadtools.WithForwarded(ctx)
 	if _, err := a.threadToolOwner(ctx); err != nil {
 		return ThreadPeerReply{}, err
 	}
@@ -179,7 +177,6 @@ func (a *App) ThreadToolQuery(ctx context.Context, call ThreadPeerCall) (ThreadP
 //ao:scope terminal:operate
 //ao:route selected
 func (a *App) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPeerReply, error) {
-	ctx = threadtools.WithForwarded(ctx)
 	owner, err := a.threadToolOwner(ctx)
 	if err != nil {
 		return ThreadPeerReply{}, err
@@ -204,7 +201,6 @@ func (a *App) ThreadToolCall(ctx context.Context, call ThreadPeerCall) (ThreadPe
 //ao:scope threads:read
 //ao:route selected
 func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) (ThreadPeerPollReply, error) {
-	ctx = threadtools.WithForwarded(ctx)
 	owner, err := a.threadToolOwner(ctx)
 	if err != nil {
 		return ThreadPeerPollReply{}, err
@@ -249,7 +245,6 @@ func (a *App) ThreadToolRequestStatus(ctx context.Context, poll ThreadPeerPoll) 
 //ao:scope threads:read
 //ao:route selected
 func (a *App) ThreadToolExportChunk(ctx context.Context, exportID string, offset int64) (RemoteArtifactChunk, error) {
-	ctx = threadtools.WithForwarded(ctx)
 	if _, err := a.threadToolOwner(ctx); err != nil {
 		return RemoteArtifactChunk{}, err
 	}
@@ -275,7 +270,7 @@ func (a *App) runThreadPeerTool(ctx context.Context, call ThreadPeerCall) (Threa
 	if len(args) == 0 {
 		args = json.RawMessage(`{}`)
 	}
-	result, err := a.threadToolsServer().Call(ctx, caller, call.Tool, args)
+	result, err := a.threadToolsServer().CallForwarded(ctx, caller, call.Tool, args)
 	if err != nil {
 		return ThreadPeerReply{}, a.publicThreadToolError(call.Tool, caller.ThreadID, err)
 	}

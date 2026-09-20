@@ -31,8 +31,8 @@ func humanBytes(size int64) string {
 	}
 }
 
-// exactlyOne counts the set selectors of a tool that takes one at a time.
-func exactlyOne(set ...bool) int {
+// countSet counts the set selectors of a tool that takes one at a time.
+func countSet(set ...bool) int {
 	count := 0
 	for _, isSet := range set {
 		if isSet {

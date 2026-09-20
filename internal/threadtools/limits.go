@@ -49,6 +49,12 @@ const (
 	// time. A multi-megabyte item is never held whole.
 	itemScanChunk = 256 << 10
 
+	// MaxQueryBytes bounds a search string: thread_search's index query
+	// and the literal thread_item scans inside one payload. Past it a
+	// query is not a search term, and for thread_item a needle longer than
+	// the scan overlap could straddle a chunk in ways the scan cannot see.
+	MaxQueryBytes = 4096
+
 	// Search row defaults, per computer.
 	DefaultSearchLimit = 20
 	DefaultListLimit   = 30

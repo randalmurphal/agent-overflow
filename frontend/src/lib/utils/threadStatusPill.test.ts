@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import threadStates from '../../../../internal/threadtools/testdata/thread_states.json';
+import type { ThreadLiveStatus } from '../stores/threadStatuses.svelte';
 import type { Thread } from '../types/models';
 import { hasUnread, resolveEffectiveThreadStatus, resolveThreadStatusPill } from './threadStatusPill';
 
@@ -287,4 +289,34 @@ describe('row ring (the attention states)', () => {
       expect(resolveThreadStatusPill(t(), status)?.ringClass).toBeUndefined();
     },
   );
+});
+
+// The Go half of this derivation (internal/threadtools/state.go#State) is
+// pinned by the same table, so the two cannot drift: the fixture states
+// each case's Go input, this function's `liveStatus` input, and the one
+// effective state both must return.
+describe('resolveEffectiveThreadStatus against the shared Go fixture', () => {
+  interface FixtureCase {
+    name: string;
+    thread: {
+      hasIncompleteTurn: boolean;
+      hasFailedTurn: boolean;
+      hasActionableProposedPlan: boolean;
+      worktreeSetupState: string;
+    };
+    liveStatus: ThreadLiveStatus;
+    want: ThreadLiveStatus;
+  }
+
+  const fixture = threadStates as unknown as { cases: FixtureCase[] };
+
+  it('covers every case the fixture states', () => {
+    expect(fixture.cases.length).toBeGreaterThan(0);
+  });
+
+  for (const testCase of fixture.cases) {
+    it(testCase.name, () => {
+      expect(resolveEffectiveThreadStatus(t(testCase.thread), testCase.liveStatus)).toBe(testCase.want);
+    });
+  }
 });
