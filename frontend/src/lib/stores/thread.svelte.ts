@@ -25,6 +25,7 @@
 // Add per-thread runtime state to one of those (or a new one composed here),
 // never to a store beside the pane.
 
+import { itemTranscriptScope } from '../utils/itemTranscriptScope';
 import { parseUserMessageMeta } from '../utils/userMessageMeta';
 import type { Item, Thread } from '../types/models';
 import type {
@@ -58,7 +59,6 @@ import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import { createLiveTodoState } from './liveTodoState.svelte';
 import { createThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
 import { createThreadActivityRuns } from './threadActivityRuns.svelte';
-import { mergeItemsById } from './threadItems';
 import { addToast } from './toast.svelte';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { errString } from '../utils/errors';
@@ -166,26 +166,22 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    */
   let switchGeneration = $state(0);
   const optimisticItemIds = new Set<string>();
-  // Non-reactive timestamp of the last LIVE timeline content advance — a
-  // smoother reveal, an overwrite patch, a text-like provider row, a
-  // visible-field update to an already mounted row (tool output preview,
-  // running→completed result chrome; see events.ts
-  // providerUpsertAdvancesLiveContent), or a wire append / reveal-gate
-  // release entering the loaded tail (`armLiveContentAppendSpring`
-  // in threadPaneScroll.svelte.ts — that path shares the arm's restore
-  // gates, so a switch-load settle never stamps).
-  // Read imperatively by the scroll controller (MessageTimeline's
-  // `liveContentActive` getter) as a LIVENESS signal — it keeps the
-  // spring's post-arrival sentinel alive and lets a composer resize ride
-  // an in-flight glide. It does NOT choose spring vs sync-pin; growth
-  // while pinned at the bottom always glides (see
-  // utils/liveContentActivity.ts and utils/scroll/resolver.ts).
-  // Deliberately NOT `$state`: it is stamped up to ~60×/sec during a
-  // drain and is never read in a reactive scope, so `$state` would churn
-  // every dependent derivation for no benefit.
+  // Non-reactive liveness for the main transcript. Agent scopes subscribe
+  // for their own lifetime; hidden child activity never extends this stamp.
+  // The controller reads it imperatively for its sentinel, viewport nudges,
+  // and initial-settle retirement. Snapshot correction has its own lifetime.
   let lastLiveContentAt = 0;
-  function stampLiveContent(): void {
-    lastLiveContentAt = nowForLiveContent();
+  const liveContentListeners = new Set<(scopeId: string, at: number) => void>();
+  function stampLiveContent(item?: Item): void {
+    const at = nowForLiveContent();
+    const scopeId = item ? itemTranscriptScope(item, getItemById) : '';
+    if (!scopeId) lastLiveContentAt = at;
+    for (const listener of liveContentListeners) listener(scopeId, at);
+  }
+
+  function subscribeLiveContent(listener: (scopeId: string, at: number) => void): () => void {
+    liveContentListeners.add(listener);
+    return () => { liveContentListeners.delete(listener); };
   }
 
   // The pane's user-facing error surface (one slot per kind, banner-stack
@@ -353,35 +349,20 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     windowVerified: () => !loading,
     scrollController: () => paneScroll.controller,
     items: getItems,
+    windowBounds: () => ({ oldest: timelineWindow.oldestLoadedCursor, newest: timelineWindow.newestLoadedCursor }),
     threadId: () => thread?.id ?? null,
     pageShape: timelinePageShape,
     // Fetched run members are top-level rows INSIDE the window's range,
     // so they go through the wholesale replacement chokepoint rather than
     // the streaming upsert path, whose floor/ceiling filters exist to
     // refuse exactly this shape of row.
-    mountRunMembers: (rows, dropIds) => {
-      const kept = dropIds.size === 0
-        ? getItems()
-        : getItems().filter((item) => !dropIds.has(item.id));
-      replaceTimelineItems(mergeItemsById(rows as Item[], kept), {
-        disposeDropped: true,
-      });
-    },
-    // The run moved under a members call, so nothing the pane holds for
-    // it can be trusted. Reload around the row the reader is looking at,
-    // or the tail when no geometry is mounted.
-    reloadWindow: () => {
-      const visible = paneScroll.controller?.visibleTimelineItemIds?.() ?? null;
-      const anchor = visible
-        ? (getItems().find((item) => visible.has(item.id))?.id ?? '')
-        : '';
-      void (anchor === ''
-        ? timelineWindow.loadRecentTail()
-        : timelineWindow.loadUntilItem(anchor));
-    },
+    mountRunMembers: (rows, dropIds) => timelineWindow.mountActivityRunMembers(rows, dropIds),
+    // Revalidate the retained window even when every visible anchor is
+    // already loaded. Navigation's loadUntilItem cannot perform recovery.
+    reloadWindow: () => switchLoad.refreshFromBackend(true),
     reportFetchFailure: (message, err, silent) => {
       // A background stub refresh is not a gesture: it leaves the record
-      // dirty and retries, so it records evidence without interrupting.
+      // dirty for the next trigger and records evidence without interrupting.
       if (silent) {
         reportFrontendDiagnostic(`threadActivityRuns: ${message}`, errString(err));
         return;
@@ -550,10 +531,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // collapsed-launch subtree sweep) still must not fold rows the open
     // pane is rendering.
     agentPaneHeldRows: agentPaneHeldRowIds,
-    getLoadedRange: () => ({
-      oldest: timelineWindow.oldestLoadedCursor,
-      newest: timelineWindow.newestLoadedCursor,
-    }),
+    loadedTimelineItems: items => activityRuns.loadedItems(items),
   });
 
   /**
@@ -748,11 +726,11 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // `switchLoad` above, so it is declared after it.
   const itemStream = createThreadItemStreamApply({
     getItems,
+    getItemById,
     itemIndexById,
     getThread: () => thread,
     writeItemAt,
     commitUpsertResult,
-    stampLiveContent,
     armLiveContentAppendSpring,
     optimisticItemIds,
     timelineWindow,
@@ -906,7 +884,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // events.ts (a new row arriving). The optimistic user-send echo and
     // rollback-restore call `upsertItems` directly and intentionally do
     // NOT route through here, so they stay sync-pinned.
-    markLiveContentAdvanced: stampLiveContent,
+    markLiveContentAdvanced: (item: Item) => stampLiveContent(item),
+    subscribeLiveContent,
     setDraftPlaceholderMode: draftState.setDraftPlaceholderMode,
     applyDraftPlaceholderDefaults: draftState.applyDraftPlaceholderDefaults,
     applyDraftPlaceholderWorkspace: draftState.applyDraftPlaceholderWorkspace,
@@ -922,6 +901,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get isLocked() {
       return getItems().length > 0;
     },
+    get historyRevision() { return itemWindow.historyRevision; },
     get timelineRevision() {
       return itemWindow.timelineRevision;
     },

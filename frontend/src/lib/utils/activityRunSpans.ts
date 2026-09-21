@@ -51,12 +51,15 @@ export interface ActivityRunSpan {
  * Pure, and allocation-proportional to the runs found rather than to the
  * input: a prose-only window allocates one empty array.
  */
-export function groupActivityRunSpans(items: readonly Item[]): ActivityRunSpan[] {
+export function groupActivityRunSpans(
+  items: readonly Item[],
+  knownMember: (item: Item) => boolean = () => false,
+): ActivityRunSpan[] {
   const spans: ActivityRunSpan[] = [];
   let open: ActivityRunSpan | null = null;
   for (const item of items) {
     if (!isWindowedTimelineRow(item)) continue;
-    if (isActivityRailRow(item)) {
+    if (isActivityRailRow(item) || (item.kind === 'notification' && knownMember(item))) {
       if (open === null) {
         open = { firstItemId: item.id, lastItemId: item.id, items: [item] };
         spans.push(open);

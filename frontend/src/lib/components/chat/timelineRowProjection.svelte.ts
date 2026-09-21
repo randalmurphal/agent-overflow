@@ -21,6 +21,7 @@ import type { Item } from '../../types/models';
 import { formatElapsedSeconds } from '../../utils/format';
 import {
   enforceUniqueTimelineNodeKeys,
+  timelineNodeItemId,
   groupItemsBySubagent,
   sliceRevealedNodes,
   type TimelineNode,
@@ -102,16 +103,22 @@ export function createTimelineRowProjection(
     // agent scope keeps outside its edges (see `itemsWithinLoadedWindow`)
     // render only on that scope's surface. The edges move with the
     // window, so a cursor change alone re-derives here.
+    options.getPane().activityRuns.windowRevision;
     const oldest = options.getPane().oldestLoadedCursor;
     const newest = options.getPane().newestLoadedCursor;
     return untrack(() => {
+      const pane = options.getPane();
       const items = itemsWithinLoadedWindow(options.getPane().items, oldest, newest);
       const visibleItems = pendingIds.size === 0 ? items : items.filter(
         (item) => !pendingIds.has(item.id) || !isPendingFlushRow(item),
       );
-      return groupConsecutiveReads(
-        groupItemsBySubagent(filterRedundantNotifications(visibleItems), subagentAggregates),
-      );
+      const loadedIds = new Set(pane.activityRuns.loadedItems(visibleItems).map(item => item.id));
+      // Relationship lookup sees retained agent context and children; only
+      // positional roots are constrained by the history window.
+      const graph = groupItemsBySubagent(filterRedundantNotifications(
+        pane.items, item => !!item.parentId || loadedIds.has(item.id),
+      ), subagentAggregates);
+      return groupConsecutiveReads(graph.filter(node => loadedIds.has(timelineNodeItemId(node))));
     });
   });
   // Reveal gate: while a turn streams, the pane's sequencer holds the next

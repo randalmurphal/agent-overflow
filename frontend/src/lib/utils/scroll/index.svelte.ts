@@ -1247,6 +1247,7 @@ export function createUseStickToBottomController(
     forceStick,
     requestBottom,
     beginReconnectRecovery,
+    beginContentReconciliation: observers.beginContentReconciliation,
     markAtBottom,
     markEscaped: () => intent.setEscapedFromLock(true),
     armWarmup: observers.beginWarmup,

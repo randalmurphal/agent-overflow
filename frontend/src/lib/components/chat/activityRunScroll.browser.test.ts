@@ -11,7 +11,7 @@
 // ResizeObserver timing, real fonts) through the shared harness, because both
 // behaviors are reached the way a user reaches them: a click on the boundary,
 // and `pane.requestScrollToItem` from search / review / the jump tray.
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 // Real production cascade: the clip's cap, the rail indent, and row heights
 // all come from app.css, and every number below is measured against them.
 import '../../../app.css';
@@ -24,12 +24,11 @@ import {
   userScrollTo,
   type QuietBottomOptions,
 } from '../../../test/helpers/timelineBrowserHarness';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { ACTIVITY_RUN_WINDOW_ROWS_DEFAULT as WINDOW_ROWS } from '../../utils/activityRunWindow';
 import type { Item } from '../../types/models';
 
 setupTimelineHarness();
-beforeEach(resetBindingMocks);
 
 
 // The mount settle only has to reach a quiet bottom; 2px absorbs

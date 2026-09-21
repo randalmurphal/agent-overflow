@@ -575,3 +575,18 @@ describe('<SubagentGroup> settled background agent counters', () => {
     expect(queryByTestId('subagent-group-tokens')).toBeNull();
   });
 });
+
+it('resolves updated launch context from a completion when the launch is not loaded', async () => {
+  const launch = agentLaunch({ isBackground: true });
+  const completion = makeItem({ id: 'done', kind: 'tool_completion', toolName: 'Agent', itemIndex: 10,
+    completionOf: launch.id, completionLaunch: launch, status: 'completed' });
+  const { pane, group } = await setup([completion]);
+  const { container } = render(SubagentGroupTestHarness, { props: { group, pane } });
+  expect(container.textContent).toContain('Find the bell icon');
+  pane.upsertItem({ ...completion, rev: 2, completionLaunch: { ...launch,
+    payloadMeta: JSON.stringify({ toolName: 'Agent', input: { description: 'Updated context description', subagent_type: 'Explore' } }),
+  } });
+  await tick();
+  expect(container.textContent).toContain('Updated context description');
+  expect(group.parent.payloadMeta).toContain('Find the bell icon');
+});

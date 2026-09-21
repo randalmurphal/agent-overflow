@@ -1,3 +1,4 @@
+import { retainedItemChars, snapshotItem } from '../utils/itemMemory';
 // Persisted shape of one thread's cached timeline window
 // (docs/architecture/thread-replica-sync.md §6) plus the validation that
 // decides whether a stored record may be painted.
@@ -42,7 +43,8 @@ export const REPLICA_ENVELOPE_VERSION = 1;
 // stubs that describe the activity-run members it does not hold. Schema 5
 // gave each stub its edge coordinates, which is how a jump tells a member
 // the pane does not hold from a row that is merely older than the run.
-export const REPLICA_SCHEMA_VERSION = 5;
+// Schema 6 carries completion launch context independently of loaded rows.
+export const REPLICA_SCHEMA_VERSION = 6;
 
 /**
  * Per-envelope caps, deliberately the same numbers `threadItemCache`
@@ -199,7 +201,7 @@ export function normalizeBody(input: ReplicaBody): ReplicaBody {
     epoch: input.epoch,
     rev: input.rev,
     savedAt: input.savedAt,
-    items: input.items.map((item) => ({ ...item })),
+    items: input.items.map(snapshotItem),
     oldestCursor: plainCursor(input.oldestCursor),
     newestCursor: plainCursor(input.newestCursor),
     hasMoreOlder: input.hasMoreOlder === true,
@@ -222,10 +224,7 @@ export function normalizeBody(input: ReplicaBody): ReplicaBody {
 export function estimateBodyChars(body: ReplicaBody): number {
   let chars = 0;
   for (const item of body.items) {
-    chars += item.summary?.length ?? 0;
-    chars += item.meta?.length ?? 0;
-    chars += item.payloadMeta?.length ?? 0;
-    chars += item.payloadPreviewSpans?.length ?? 0;
+    chars += retainedItemChars(item);
   }
   for (const run of body.runs) {
     chars += run.unshippedDigest.length;

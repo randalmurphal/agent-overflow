@@ -308,16 +308,16 @@ func (a *App) GetThreadItem(threadID, itemID string) (store.Item, error) {
 	if err := a.store.CheckForkReady(threadID); err != nil {
 		return store.Item{}, err
 	}
-	item, found, err := a.store.GetThreadItem(threadID, itemID)
+	items, err := a.store.ListWireItems(threadID, []string{itemID})
 	if err != nil {
 		return store.Item{}, fmt.Errorf("get thread item: %w", err)
 	}
-	if !found {
+	if len(items) == 0 {
 		return store.Item{}, nil
 	}
 	// One row, fetched to resolve a scroll target. Previews stay on:
 	// there is no window here for them to crowd out.
-	return itemwire.Project(item, true), nil
+	return itemwire.Project(items[0], true), nil
 }
 
 // ItemProjectionSource carries the complete STORED values of the three

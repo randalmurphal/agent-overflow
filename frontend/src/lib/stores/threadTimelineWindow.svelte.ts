@@ -1,3 +1,4 @@
+import { isWindowedTimelineRow } from './threadWindowDigest';
 import { tick } from 'svelte';
 import type { Item, Thread } from '../types/models';
 import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
@@ -127,6 +128,8 @@ export interface ThreadTimelineWindow {
   /** Streaming upsert dropped newer items below/above the window: re-arm the "load newer" affordance. */
   noteDroppedNewerItems(): void;
   applyConversationCut(boundaryWasLoaded: boolean): void;
+  /** Mount an authoritative member page, extending the held run at either edge. */
+  mountActivityRunMembers(rows: readonly Item[], dropIds: ReadonlySet<string>): void;
   /** Follow repositioned anchors, retaining the capped floor and ordinary tail-append policy. */
   refreshCursorsAfterUpserts(changedItems: readonly Item[], appended: boolean, previousItems: readonly Item[]): void;
   /**
@@ -515,7 +518,7 @@ export function createThreadTimelineWindow(
     start: number,
     end: number,
   ): { start: number; end: number } {
-    const spans = groupActivityRunSpans(topLevel);
+    const spans = groupActivityRunSpans(topLevel, item => options.activityRuns().isLoadedMember(item.id));
     if (spans.length === 0) return { start, end };
     const indexById = new Map<string, number>();
     for (let index = 0; index < topLevel.length; index += 1) {
@@ -771,6 +774,26 @@ export function createThreadTimelineWindow(
     hasMoreNewer = true;
   }
 
+  function mountActivityRunMembers(rows: readonly Item[], dropIds: ReadonlySet<string>): void {
+    const current = options.getItems();
+    const byId = new Map(current.map(item => [item.id, item]));
+    const kept = dropIds.size === 0 ? current : cutWindowByRootCursor(current, cursor => !dropIds.has(cursor.itemId ?? ''));
+    const incoming = rows.map(item => {
+      const live = byId.get(item.id);
+      return live && live.rev >= 0 && item.rev >= 0 && live.rev > item.rev ? live : item;
+    });
+    options.replaceTimelineItems(mergeItemsById(incoming, kept), { disposeDropped: true });
+    let oldest = oldestLoadedCursor;
+    let newest = newestLoadedCursor;
+    for (const item of rows) {
+      if (!isWindowedTimelineRow(item)) continue;
+      const cursor = cursorFromItem(item);
+      if (!oldest || compareCursors(cursor, oldest) < 0) oldest = cursor;
+      if (!newest || compareCursors(cursor, newest) > 0) newest = cursor;
+    }
+    setLoadedCursors(oldest, newest);
+  }
+
   function refreshCursorsAfterUpserts(changedItems: readonly Item[], appended: boolean, previousItems: readonly Item[]): void {
     const thread = options.getThread();
     if (!thread) return;
@@ -789,6 +812,7 @@ export function createThreadTimelineWindow(
       newestLoadedCursor = newestCursorFromItems(options.getItems());
       newestLoadedTurnIndex = newestLoadedCursor?.turnIndex ?? null;
     }
+    options.activityRuns().syncRunSpans(options.getItems());
   }
 
   function retryDeferredRecentWindowPrune(): void {
@@ -899,8 +923,9 @@ export function createThreadTimelineWindow(
       // Fold the page's stubs against the merged window, then account for
       // the cut over the same array — both while the rows the cut drops
       // are still in hand (a shed row copies fields off the `Item`).
-      options.activityRuns().syncRunSpans(merged, paged.runs);
-      if (cut) options.activityRuns().applyWindowCut(merged, next);
+      const mergedBounds = { oldest: nextFloor, newest: newestLoadedCursor ?? pagedNewestCursor(paged, merged) };
+      options.activityRuns().syncRunSpans(merged, paged.runs, mergedBounds);
+      if (cut) options.activityRuns().applyWindowCut(merged, next, mergedBounds);
       options.replaceTimelineItems(next, {
         disposeDropped: true,
         afterCommit: () => {
@@ -1142,8 +1167,9 @@ export function createThreadTimelineWindow(
       const nextHasMoreNewer = pagedHasMoreNewer(paged);
       // Mirror of loadOlder: stubs first, then the cut, both over the
       // merged array while the dropped rows still exist.
-      options.activityRuns().syncRunSpans(merged, paged.runs);
-      if (cut) options.activityRuns().applyWindowCut(merged, next);
+      const mergedBounds = { oldest: oldestLoadedCursor ?? pagedOldestCursor(paged, merged), newest: nextCeiling };
+      options.activityRuns().syncRunSpans(merged, paged.runs, mergedBounds);
+      if (cut) options.activityRuns().applyWindowCut(merged, next, mergedBounds);
       options.replaceTimelineItems(next, {
         disposeDropped: true,
         afterCommit: () => {
@@ -1245,6 +1271,7 @@ export function createThreadTimelineWindow(
     resetAfterLoadError,
     noteDroppedNewerItems,
     applyConversationCut,
+    mountActivityRunMembers,
     refreshCursorsAfterUpserts,
     pruneToRecentWindowIfNeeded,
     retryDeferredRecentWindowPrune,

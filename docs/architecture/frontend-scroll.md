@@ -941,19 +941,26 @@ documented at the function):
   The window is fixed, deliberately not refreshed by the deltas it
   classifies, so a streaming turn that starts inside it cannot be
   converted into indefinite sync-pins.
-  The **cold-load settle window** is the second announcer of the same
-  fact, with a different lifecycle: every warm-up arm (attach, restore
-  forceStick, the slice application's `armWarmup`) opens it, and while
-  it is open post-warm growth sync-pins too. The warm gate opens on
-  ~100ms of RO quiet, but the estimate→measure cascade and the window
-  sync land bursts seconds later (2026-08-22 boot restart: 8.5kpx of
-  measurement growth glided for ~2s, then an unrelated bottom-held
-  transaction snapped it). It ends for good at the first delivery that
-  observes live content or an armed structural append (from then on
-  glides own the pane), with an 8s cap as the failsafe for a pane that
-  never streams; `skipWarmup` (placeholder materialization) clears it.
-  Both signals feed the one `pinnedRemeasureActive` resolver input; the
-  trace records them separately (`coldLoadSettleActive`).
+  The **cold-load settle window** covers late initial measurement and
+  typesetting: warm-up arms open it, and post-warm growth sync-pins while
+  it remains open. The first delivery with live transcript content or an
+  armed structural append retires it; it also expires after 8s.
+  `skipWarmup` clears it.
+
+  History reconciliation has an explicit lifetime independent of those
+  windows. `installTimelineItems` advances `historyRevision`, shared by
+  the main and scoped agent timelines. Before rendering that revision,
+  `timelineReconciliation` acquires a controller correction lease. It
+  releases the lease after the virtualizer has freshly measured its
+  mounted rows and committed their geometry. Retained rows are measured
+  even when their size is unchanged; rows entering the window join the
+  measurement barrier. Replacement and unmount cancel obsolete requests.
+  Live activity cannot retire this lease. The normal escape and pause
+  rules still apply, so reconciliation cannot reclaim a reader's scroll
+  position or override reconnect recovery.
+
+  These correction sources feed `pinnedRemeasureActive`. The trace
+  distinguishes `coldLoadSettleActive` and `contentReconciliationActive`.
 - **pass**: anything else applies verbatim, mid-chase included. The
   compensation is an exact coordinate shift: layout moved the content
   under the viewport by `delta`, and the write moves the viewport by the
@@ -1024,10 +1031,14 @@ appends / reveal-gate releases entering the loaded tail (via
 `armLiveContentAppendSpring`, below). `MessageTimeline` and `ChannelView`
 turn it into a boolean with `isLiveContentActive(now, lastLiveContentAt,
 LIVE_CONTENT_ACTIVE_HOLD_MS)` and pass it as the controller's
-`liveContentActive` option.
+`liveContentActive` option. Stamps are scoped to the row's transcript;
+agent children and nested completion siblings do not mark the main
+transcript live. Each mounted agent scope subscribes for its own lifetime.
+Unchanged summary patches do not stamp activity.
 
 It answers a different question: **is more content expected imminently?**
-Two consumers, neither of them the physics choice:
+The live signal retires the initial cold-load settle window. It also serves
+two ongoing motion consumers:
 
 1. **The spring sentinel** (`spring.ts`). When a chase arrives and no
    target change has landed within `RETAIN_ANIMATION_DURATION_MS`, an

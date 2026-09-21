@@ -22,7 +22,6 @@ import {
   type ActivityRunMembersDirection,
 } from './bindings';
 import {
-  applyMembersStub,
   type ActivityRunRecord,
   type ActivityRunRecords,
 } from './activityRunStubs';
@@ -58,18 +57,17 @@ export interface ActivityRunMemberFetchOptions {
    * an `around` answer, whose span REPLACES the loaded one: the previous
    * members become unshipped and are described by the returned stub, so
    * they must leave the window in the same commit the new ones enter it.
-   * Returns the ids the window now holds for this run.
    */
   mountMembers(
     record: ActivityRunRecord,
     rows: readonly Item[],
     replaces: boolean,
-  ): string[];
+  ): void;
   /**
    * The pane's window reload around the reader's anchor, after a stale-run
-   * refusal. Reports its own failure through the pane's toast path.
+   * refusal. Rejects when the authoritative history could not be read.
    */
-  reloadWindow(): void;
+  reloadWindow(): Promise<void>;
   /**
    * Tell the reader a fetch failed. The boundary and the jump are reader
    * gestures, so a failure has to be visible; a background stub refresh
@@ -81,7 +79,7 @@ export interface ActivityRunMemberFetchOptions {
    * derives from the record may have moved without any row changing (a
    * `limit: 0` refresh), so the registry re-projects on it.
    */
-  onStubApplied(): void;
+  onStubApplied(stub: ActivityRunMembers['stub']): string[];
 }
 
 export interface FetchMembersRequest {
@@ -110,61 +108,80 @@ export interface ActivityRunMemberFetch {
 export function createActivityRunMemberFetch(
   options: ActivityRunMemberFetchOptions,
 ): ActivityRunMemberFetch {
-  // One claim per run. A second ask for a run already in flight is
-  // refused rather than queued: the answer in flight describes a span
-  // that is about to change, and two answers for one run can land out of
-  // order. A record still dirty when its refresh settles is picked up by
-  // the trailing cycle the scheduler's dirty bit guarantees.
-  const inFlight = new Set<string>();
+  const inFlight = new Map<string, object>();
+  const refreshAfterFlight = new Set<string>();
+  let generation = 0;
+  let disposed = false;
+  let recovery: Promise<void> | null = null;
+  let refreshAfterRecovery = false;
 
   const scheduler: RefreshScheduler = createRefreshScheduler({
     name: 'activityRunStubRefresh',
     delayMs: 200,
     maxWaitMs: 1_000,
     run: async () => {
-      const records = options.records();
-      const pending: Promise<void>[] = [];
-      for (const record of records.values()) {
-        if (!record.dirty || inFlight.has(record.runFirstItemId)) continue;
-        pending.push(refreshOne(record));
-      }
-      if (pending.length === 0) return;
-      await Promise.all(pending);
-      // A record marked dirty again while its refresh was in flight — or
-      // skipped above because it was — is answered by the next cycle.
-      for (const record of options.records().values()) {
-        if (record.dirty) {
-          scheduler.request();
-          return;
-        }
-      }
+      if (recovery) { refreshAfterRecovery = true; return; }
+      await Promise.all([...options.records().values()]
+        .filter(record => record.dirty)
+        .map(record => call(record, { direction: 'before', limit: 0 }, true)));
     },
   });
 
-  async function refreshOne(record: ActivityRunRecord): Promise<void> {
-    await call(record, { direction: 'before', limit: 0 }, true);
+  async function recover(err: unknown): Promise<void> {
+    if (recovery) return recovery;
+    // A stale refusal is a reconciliation signal. Only a failed recovery
+    // needs a toast; every other refusal in this cycle joins this refresh.
+    options.reportFailure('Activity changed; refreshing history', err, true);
+    const gen = generation;
+    const threadId = options.threadId();
+    let succeeded = false;
+    const pending = Promise.resolve()
+      .then(async () => {
+        if (disposed || generation !== gen || options.threadId() !== threadId) return;
+        await options.reloadWindow();
+        succeeded = true;
+      })
+      .catch((failure: unknown) => {
+        if (!disposed && generation === gen) {
+          options.reportFailure('Failed to refresh activity', failure, false);
+        }
+      })
+      .finally(() => {
+        if (recovery !== pending) return;
+        recovery = null;
+        const requested = refreshAfterRecovery;
+        refreshAfterRecovery = false;
+        if (succeeded && requested && !disposed && generation === gen) scheduler.request();
+      });
+    recovery = pending;
+    return pending;
   }
 
-  /**
-   * One `ListActivityRunMembers` round trip for `record`.
-   *
-   * The record is re-read from the map after the await: a thread switch or
-   * a window cut can have dropped it, and applying a stub to a record
-   * nobody holds would resurrect a run the pane no longer shows.
-   */
   async function call(
     record: ActivityRunRecord,
     request: FetchMembersRequest,
     silent: boolean,
   ): Promise<string[]> {
     const threadId = options.threadId();
-    if (!threadId) return [];
+    if (!threadId || disposed || recovery) return [];
     const runKey = record.runFirstItemId;
-    if (inFlight.has(runKey)) return [];
-    inFlight.add(runKey);
-    let answer: ActivityRunMembers;
+    if (inFlight.has(runKey)) {
+      if (silent) refreshAfterFlight.add(runKey);
+      return [];
+    }
+    const claim = {};
+    const gen = generation;
+    const stub = record.stub;
+    const invalidationVersion = record.invalidationVersion;
+    const cutVersion = record.cutVersion;
+    const current = (): boolean => !disposed && generation === gen
+      && options.threadId() === threadId
+      && options.records().get(runKey) === record
+      && record.stub === stub
+      && record.cutVersion === cutVersion;
+    inFlight.set(runKey, claim);
     try {
-      answer = await ListActivityRunMembers(threadId, {
+      const answer = await ListActivityRunMembers(threadId, {
         runFirstItemId: runKey,
         loadedFirstItemId: record.loadedFirstItemId,
         loadedLastItemId: record.loadedLastItemId,
@@ -173,52 +190,56 @@ export function createActivityRunMemberFetch(
         limit: request.limit,
         shape: options.shape(),
       });
-    } catch (err) {
-      // A stale run is not a transport fault and not retryable: the pane's
-      // picture of the run is wrong, so the window is reloaded around the
-      // reader. Every other failure leaves the record dirty, which is what
-      // makes the next trigger retry it.
-      if (isStaleActivityRunError(err)) {
-        options.reportFailure('Activity moved while it was loading', err, false);
-        options.reloadWindow();
-      } else {
-        options.reportFailure('Failed to load activity', err, silent);
+      if (!current() || recovery) return [];
+      const rows = (answer.items ?? []) as Item[];
+      if (rows.length > 0) options.mountMembers(record, rows, request.direction === 'around');
+      // Reconcile against the actual loaded span. A live append during the
+      // request must remain loaded and leave this older answer dirty.
+      const invalidated = record.invalidationVersion !== invalidationVersion;
+      const held = options.onStubApplied(answer.stub);
+      if (invalidated && options.records().get(runKey) === record) {
+        record.dirty = true;
+        scheduler.request();
       }
+      return held;
+    } catch (err) {
+      if (!current()) return [];
+      if (isStaleActivityRunError(err)) await recover(err);
+      else options.reportFailure('Failed to load activity', err, silent);
       return [];
     } finally {
-      inFlight.delete(runKey);
+      if (inFlight.get(runKey) === claim) {
+        inFlight.delete(runKey);
+        if (refreshAfterFlight.delete(runKey)) scheduler.request();
+      }
     }
-    if (options.threadId() !== threadId) return [];
-    const current = options.records().get(runKey);
-    if (!current) return [];
-    const rows = (answer.items ?? []) as Item[];
-    const mounted = rows.length > 0
-      ? options.mountMembers(current, rows, request.direction === 'around')
-      : [];
-    // Last: the stub describes the span the pane holds AFTER the rows
-    // mounted, so recording it before the mount would describe a window
-    // that does not exist yet.
-    applyMembersStub(options.records(), answer.stub);
-    options.onStubApplied();
-    return mounted;
   }
 
   return {
     fetch(runFirstItemId, request) {
       const record = options.records().get(runFirstItemId);
-      if (!record) return Promise.resolve([]);
-      return call(record, request, false);
+      return record ? call(record, request, false) : Promise.resolve([]);
     },
     scheduleRefresh() {
-      scheduler.request();
+      if (recovery) refreshAfterRecovery = true;
+      else scheduler.request();
     },
     reset() {
+      generation += 1;
+      recovery = null;
+      refreshAfterRecovery = false;
       scheduler.reset();
       inFlight.clear();
+      refreshAfterFlight.clear();
     },
     dispose() {
+      disposed = true;
+      generation += 1;
+      recovery = null;
+      refreshAfterRecovery = false;
       scheduler.dispose();
       inFlight.clear();
+      refreshAfterFlight.clear();
     },
   };
 }

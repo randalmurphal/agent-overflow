@@ -143,6 +143,12 @@ func identityRetainSet(withCommand bool) map[string]bool {
 // default) and none of the patch text paints on arrival. The server
 // never reads that setting itself; it rides the request.
 func Project(item store.Item, inlinePreviews bool) store.Item {
+	if item.CompletionLaunch != nil {
+		launch := *item.CompletionLaunch
+		launch.CompletionLaunch = nil
+		launch = Project(launch, inlinePreviews)
+		item.CompletionLaunch = &launch
+	}
 	item.Meta = ProjectMeta(item.Meta, item.PayloadMeta)
 	projected, elidedAny, keptAny := ProjectPayloadMeta(item.PayloadMeta, inlinePreviews)
 	item.PayloadMeta = projected
@@ -313,7 +319,11 @@ func ProjectPayloadMeta(payloadMeta string, inlinePreviews bool) (string, bool, 
 // percent generous on them is the safe direction.
 func EncodedBytes(item store.Item) int {
 	const fixedOverhead = 220 // the always-present keys, braces and separators
-	return fixedOverhead +
+	contextBytes := 0
+	if item.CompletionLaunch != nil {
+		contextBytes = len(`,"completionLaunch":`) + EncodedBytes(*item.CompletionLaunch)
+	}
+	return fixedOverhead + contextBytes +
 		len(item.ID) + len(item.ThreadID) + len(item.Kind) + len(item.Role) +
 		len(item.Status) + len(item.Summary) + len(item.PayloadID) +
 		len(item.PayloadKind) + len(item.PayloadMeta) + len(item.PayloadPreviewSpans) +

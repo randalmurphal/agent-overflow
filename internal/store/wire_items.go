@@ -11,7 +11,8 @@ import (
 // from the stored row: a subagent anchor takes its descendant aggregate
 // from its children (decorateSubagentAnchors) and a proposed plan takes
 // its state and comment count from the plan tables
-// (decorateProposedPlanItems). An emitter must push such a row as a page
+// (decorateProposedPlanItems). Completions also carry their launch context.
+// An emitter must push such a row as a page
 // would read it, or a client holding the undecorated copy at the stored
 // revision could prove a window fresh whose card is behind (§3.1).
 //
@@ -24,7 +25,7 @@ func ItemReadIsDecorated(item Item) bool {
 	case "tool_call":
 		return item.ToolName != "collab_agent"
 	case "tool_completion":
-		return item.CompletionOf != "" && item.ToolName != "wait_agent"
+		return item.CompletionOf != ""
 	}
 	return item.Role == "assistant" && item.PayloadKind == "proposed_plan"
 }
@@ -66,12 +67,9 @@ func (s *Store) ListWireItems(threadID string, ids []string) ([]Item, error) {
 	if len(ids) == 0 {
 		return []Item{}, nil
 	}
-	tx, err := s.reader().BeginTx(context.Background(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("store: begin wire item read for %s: %w", threadID, err)
-	}
-	defer tx.Rollback()
-	return s.listWireItemsTx(tx, threadID, ids)
+	return readSnapshot(s.reader(), "wire items", func(q sqlQueryer) ([]Item, error) {
+		return s.listWireItemsTx(q, threadID, ids)
+	})
 }
 
 func (s *Store) listWireItemsTx(q sqlQueryer, threadID string, ids []string) ([]Item, error) {

@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onDestroy, setContext } from 'svelte';
+  import { onDestroy, setContext, untrack } from 'svelte';
   import type {
     PaneScrollController,
     ThreadPane,
   } from '../../stores/thread.svelte';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
+  import { installTimelineReconciliation } from './timelineReconciliation.svelte';
   import { installTimelineReconnect } from './timelineReconnect';
   import { createContentGeometryNotifier } from '../../utils/scroll/contentGeometryNotifier';
   import { getSettings, typographySignature } from '../../stores/settings.svelte';
@@ -395,6 +396,14 @@
     getRestoredThreadId: () => restore.restoredThreadId,
   });
 
+  // A down-scroll can re-stick after its scroll event has already saved
+  // an anchor. Persist that intent even when no further movement follows.
+  $effect(() => {
+    const atBottom = stick.isAtBottom;
+    pane.scrollStateKey;
+    if (atBottom) untrack(() => restore.saveScrollSnapshot());
+  });
+
   const paging = createTimelinePaging({
     getPane: () => pane,
     stick,
@@ -520,6 +529,12 @@
         getRevealedNodes: () => revealedNodes,
       }),
     ],
+  });
+
+  installTimelineReconciliation({
+    revision: () => pane.historyRevision,
+    getList: () => listRef,
+    stick,
   });
 
   // Explicit adapter, not the raw controller: 'host-layout' observations

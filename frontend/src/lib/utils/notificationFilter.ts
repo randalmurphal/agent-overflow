@@ -46,7 +46,10 @@
 import type { Item } from '../types/models';
 import { extractClaudeTaskID, isClaudeWatchTaskNotification } from './claudeTaskMeta';
 
-export function filterRedundantNotifications(items: readonly Item[]): readonly Item[] {
+export function filterRedundantNotifications(
+  items: readonly Item[],
+  rendersLifecycle: (item: Item) => boolean = () => true,
+): readonly Item[] {
   // Hot path: no notifications → nothing to filter, return the original
   // array reference so downstream `$derived` chains see no change.
   if (!items.some((it) => it.kind === 'notification')) return items;
@@ -56,7 +59,7 @@ export function filterRedundantNotifications(items: readonly Item[]): readonly I
     const isCompletedLifecycle =
       it.kind === 'tool_completion' ||
       (it.kind === 'tool_call' && it.status === 'completed');
-    if (!isCompletedLifecycle) continue;
+    if (!isCompletedLifecycle || !rendersLifecycle(it)) continue;
     const id = extractClaudeTaskID(it);
     if (id) completedTaskIDs.add(id);
   }

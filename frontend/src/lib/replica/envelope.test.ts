@@ -173,3 +173,14 @@ describe('replica envelope', () => {
     expect(metaMatches(undefined, 'g1')).toBe(false);
   });
 });
+
+it('includes attached launch context in replica accounting and snapshots', () => {
+  const launch = new Proxy(item({ id: 'launch', summary: 'context' }), {});
+  const plain = body({ items: [item({ id: 'done' })] });
+  const attached = body({ items: [item({ id: 'done', completionLaunch: launch })] });
+  expect(estimateBodyChars(attached) - estimateBodyChars(plain)).toBe('context'.length);
+  const snapshot = normalizeBody(attached);
+  launch.summary = 'changed';
+  expect(snapshot.items[0].completionLaunch?.summary).toBe('context');
+  expect(structuredClone(snapshot).items[0].completionLaunch?.id).toBe('launch');
+});

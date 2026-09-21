@@ -15,10 +15,8 @@ import type {
 import { createSubagentFoldRegistry } from '../utils/subagentFold';
 import { GetThreadItem, ListSubagentDescendants } from './bindings';
 import {
-  compareItemToCursor,
   itemsForThread,
   mergeMissingItemsById,
-  type TimelineCursorLike,
 } from './threadItems';
 import { wantsInlinePreviews, type LoadUntilItemResult } from './threadPaneShared';
 import { addToast } from './toast.svelte';
@@ -61,8 +59,8 @@ export interface ThreadSubagentMemoryOptions {
    * blanked the open pane into a hydrate-again flicker).
    */
   agentPaneHeldRows(): ReadonlySet<string> | null;
-  /** The window's loaded edges; a row outside them is a held scope's island. */
-  getLoadedRange(): { oldest: TimelineCursorLike | null; newest: TimelineCursorLike | null };
+  /** Rows belonging to the loaded timeline, excluding retained agent scopes. */
+  loadedTimelineItems(items: readonly Item[]): readonly Item[];
 }
 
 /**
@@ -490,16 +488,14 @@ export function createThreadSubagentMemory(
   }
 
   function sweepUnheldScopes(): void {
-    const { oldest, newest } = options.getLoadedRange();
     const items = options.getItems();
-    if (!oldest || !newest || items.length === 0) return;
-    const outside = (item: Item): boolean =>
-      compareItemToCursor(item, oldest) < 0 || compareItemToCursor(item, newest) > 0;
-    if (!outside(items[0]) && !outside(items[items.length - 1])) return;
+    const loaded = options.loadedTimelineItems(items);
+    if (loaded === items || items.length === 0) return;
+    const loadedIds = new Set(loaded.map(item => item.id));
     const held = options.agentPaneHeldRows();
     const islandRoots = new Set<string>();
     for (const item of items) {
-      if ((item.parentId ?? '') !== '' || !outside(item)) continue;
+      if ((item.parentId ?? '') !== '' || loadedIds.has(item.id)) continue;
       if (held?.has(item.id) || options.isSubagentGroupExpanded(item.id)) continue;
       islandRoots.add(item.id);
     }

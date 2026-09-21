@@ -1,8 +1,7 @@
-// Shared fixtures for the activity-run registry tests. Extracted so the
-// identity/collapse suite and the summary-signal suite drive the registry
-// through ONE description of a projection pass — two copies would drift,
-// and the pass order (identity and window per run, then collapse once
-// the tail is known) is exactly what these tests are pinning.
+import { makeItem } from './chat';
+import { windowDigest } from '../../lib/stores/threadWindowDigest';
+import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
+// Shared fixtures for activity-run projection, membership, and recovery tests.
 
 import type { ActivityRunResolution } from '../../lib/utils/activityRunGrouping';
 import { createThreadActivityRuns } from '../../lib/stores/threadActivityRuns.svelte';
@@ -37,7 +36,7 @@ export function registry(
     threadId?: () => string | null;
     /** Records every mount a members answer asked for. */
     mountRunMembers?: ThreadActivityRunsOptions['mountRunMembers'];
-    reloadWindow?: () => void;
+    reloadWindow?: ThreadActivityRunsOptions['reloadWindow'];
     reportFetchFailure?: ThreadActivityRunsOptions['reportFetchFailure'];
   } = {},
 ): ActivityRunRegistry {
@@ -50,7 +49,8 @@ export function registry(
     threadId: overrides.threadId ?? (() => null),
     pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
     mountRunMembers: overrides.mountRunMembers ?? (() => {}),
-    reloadWindow: overrides.reloadWindow ?? (() => {}),
+    reloadWindow: overrides.reloadWindow ?? (async () => {}),
+    windowBounds: () => ({ oldest: null, newest: null }),
     reportFetchFailure: overrides.reportFetchFailure ?? (() => {}),
   });
 }
@@ -105,4 +105,45 @@ export function pass(
 /** A run of `n` single-item rows, with ids stable across passes. */
 export function rows(n: number): RunSpec {
   return Array.from({ length: n }, (_, i) => `i${i}`);
+}
+
+export function activityRunRow(id: string, index: number, overrides: Partial<Item> = {}): Item {
+  return makeItem({
+    id,
+    threadId: 't',
+    turnIndex: 0,
+    itemIndex: index,
+    kind: 'tool_call',
+    toolName: 'Bash',
+    rev: index + 1,
+    ...overrides,
+  });
+}
+
+export function activityRunProse(id: string, index: number): Item {
+  return activityRunRow(id, index, { kind: 'assistant_text', toolName: '' });
+}
+
+export function activityRunStub(overrides: Partial<ActivityRunStub> = {}): ActivityRunStub {
+  return {
+    firstItemId: 'a',
+    lastItemId: 'e',
+    firstTurnIndex: 0,
+    firstItemIndex: 1,
+    lastTurnIndex: 0,
+    lastItemIndex: 5,
+    memberCount: 5,
+    loadedFirstItemId: 'b',
+    loadedLastItemId: 'd',
+    unshippedBefore: 1,
+    unshippedAfter: 1,
+    unshippedDigest: windowDigest([{ id: 'a', rev: 1 }, { id: 'e', rev: 5 }]),
+    unshippedGroups: [],
+    unshippedPairedLaunchIds: [],
+    shippedSupersededLaunchIds: [],
+    unshippedFailed: false,
+    runningBefore: null,
+    runningAfter: null,
+    ...overrides,
+  } as ActivityRunStub;
 }

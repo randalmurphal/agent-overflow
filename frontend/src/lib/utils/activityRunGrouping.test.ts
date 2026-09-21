@@ -20,7 +20,8 @@ function identity(): ThreadActivityRuns {
     threadId: () => null,
     pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
     mountRunMembers: () => {},
-    reloadWindow: () => {},
+    windowBounds: () => ({ oldest: null, newest: null }),
+    reloadWindow: async () => {},
     reportFetchFailure: () => {},
   });
 }
@@ -407,7 +408,8 @@ describe('a window short of the thread tail', () => {
       threadId: () => null,
       pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
       mountRunMembers: () => {},
-      reloadWindow: () => {},
+      windowBounds: () => ({ oldest: null, newest: null }),
+    reloadWindow: async () => {},
       reportFetchFailure: () => {},
     });
     const out = project([prose('p0'), tool('t0', 'Bash')], {
@@ -603,7 +605,8 @@ describe('identity migration', () => {
       threadId: () => null,
       pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
       mountRunMembers: () => {},
-      reloadWindow: () => {},
+      windowBounds: () => ({ oldest: null, newest: null }),
+    reloadWindow: async () => {},
       reportFetchFailure: () => {},
     });
     const nodes = project([tool('t1', 'Bash'), prose('p1'), tool('t2', 'Bash')], { identity: id });
@@ -630,7 +633,8 @@ describe('identity migration', () => {
       threadId: () => null,
       pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
       mountRunMembers: () => {},
-      reloadWindow: () => {},
+      windowBounds: () => ({ oldest: null, newest: null }),
+    reloadWindow: async () => {},
       reportFetchFailure: () => {},
     });
     const first = project([tool('t1', 'Bash')], { identity: id, withheld: [prose('p1')] });

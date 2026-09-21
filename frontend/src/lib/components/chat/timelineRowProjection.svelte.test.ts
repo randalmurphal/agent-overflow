@@ -13,8 +13,9 @@
 // rebuild" would pass on a derivation that never re-runs at all, so every
 // no-rebuild case is paired with the structural change that must rebuild.
 
+import { ActivityRunStub } from '../../../../bindings/agent-overflow/internal/store/models';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { flushSync } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { buildPane, makeItem } from '../../../test/helpers/chat';
@@ -317,5 +318,58 @@ it('does not hide retained history after the live pending registry is cleared', 
   } finally {
     view.dispose();
     clearForThread(pane.threadId!);
+  }
+});
+
+it('forms a detached completion card before expanding or loading the old launch', async () => {
+  const launch = { ...agentLaunch('old-launch', 0), isBackground: true, status: 'completed' as const };
+  const done = makeItem({ id: 'done', itemIndex: 100, kind: 'tool_completion', toolName: 'Agent',
+    completionOf: launch.id, completionLaunch: launch, summary: 'Final report' });
+  const pane = await buildPane(undefined, [done]);
+  const projection = mountProjection(pane);
+  try {
+    expect(pane.getItemById(launch.id)).toBeUndefined();
+    expect(findGroup(projection.nodes)?.parent.id).toBe(launch.id);
+    expect(findGroup(projection.nodes)?.anchor?.id).toBe(done.id);
+    const before = projection.nodes;
+    pane.upsertItem({ ...done, rev: 2, completionLaunch: { ...launch, rev: 2, summary: 'Updated launch summary' } });
+    flushSync();
+    expect(projection.nodes).toBe(before);
+    setBindingMock('GetThreadItem', async () => launch);
+    setBindingMock('ListSubagentDescendants', async () => [
+      makeItem({ id: 'child', itemIndex: 80, parentId: launch.id, summary: 'Agent work' }),
+    ]);
+    await pane.loadAgentScope(launch.id);
+    flushSync();
+    expect(findGroup(projection.nodes)?.anchor?.id).toBe(done.id);
+    expect(findGroup(projection.nodes)?.children.some(child => child.kind === 'leaf' && child.item.id === 'child')).toBe(true);
+    expect(projection.nodes).toHaveLength(1);
+  } finally {
+    projection.dispose();
+  }
+});
+
+
+it('reclassifies a leading notification from the authoritative run window without an item change', async () => {
+  const pane = await buildPane(undefined, [
+    makeItem({ id: 'report', kind: 'notification', itemIndex: 50, summary: 'Agent report' }),
+    makeItem({ id: 'bash', kind: 'tool_call', toolName: 'Bash', itemIndex: 51 }),
+    makeItem({ id: 'prose', itemIndex: 52 }),
+  ]);
+  const projection = mountProjection(pane);
+  try {
+    pane.activityRuns.syncRunSpans(pane.items, [new ActivityRunStub({
+      firstItemId: 'earlier', firstTurnIndex: 0, firstItemIndex: 0,
+      lastItemId: 'bash', lastTurnIndex: 0, lastItemIndex: 51,
+      loadedFirstItemId: 'report', loadedLastItemId: 'bash', memberCount: 52,
+      unshippedBefore: 50, unshippedAfter: 0, unshippedDigest: '0000000000000000',
+    })]);
+    await tick();
+    expect(projection.nodes.map(node => node.kind)).toEqual(['activity_run', 'leaf']);
+    const run = projection.nodes[0];
+    expect(run.kind === 'activity_run' && run.children.some(node => node.kind === 'leaf' && node.item.id === 'report')).toBe(true);
+  } finally {
+    projection.dispose();
+    pane.clear();
   }
 });

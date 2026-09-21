@@ -174,7 +174,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     // covers it, and saving here would overwrite the incoming thread's
     // snapshot with wherever the transaction happens to be mid-flight.
     if (options.stick.restorePending) return;
-    if (options.stick.isAtBottom) {
+    if (options.stick.isAtBottom && !options.getPane().hasMoreNewer) {
       setThreadScrollSnapshot(threadId, { kind: 'bottom' });
       return;
     }

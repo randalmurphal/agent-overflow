@@ -73,6 +73,8 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
   // summary-only streaming deltas. Bump whenever the item window's array
   // changes shape or identity; `applyItemDelta` intentionally does not bump.
   let timelineRevision = $state(0);
+  // Snapshot geometry is correction even when live events share its flush.
+  let historyRevision = $state(0);
   // Revision of the item-side inputs to offscreen row-UI-state retention
   // (`utils/rowUiRetention.ts`): bumped by an items write only when it
   // changed which rows the prune retains unconditionally, or what it
@@ -438,6 +440,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     nextItems: Item[],
     commitOptions: TimelineCommitOptions = {},
   ): boolean {
+    historyRevision++;
     if (items === nextItems) {
       if (commitOptions.afterCommit) {
         options.streamingReveal().withReconciledItems([], () => finalizeItemsCommit(
@@ -581,6 +584,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
      * path reads it per row per batch and the reveal router per frame.
      */
     itemIndexById,
+    get historyRevision() { return historyRevision; },
     get timelineRevision() {
       return timelineRevision;
     },

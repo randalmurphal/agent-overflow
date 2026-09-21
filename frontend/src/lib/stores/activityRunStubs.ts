@@ -102,6 +102,10 @@ export interface ActivityRunRecord {
    */
   shed: ShedRow[];
   dirty: boolean;
+  /** Local invalidations cannot be acknowledged by a read already in flight. */
+  invalidationVersion: number;
+  /** A window cut supersedes an outstanding member-navigation request. */
+  cutVersion: number;
 }
 
 /** Records by `runFirstItemId`. */
@@ -137,6 +141,8 @@ export function foldPageStub(
     loadedLastItemId,
     shed: [],
     dirty: false,
+    invalidationVersion: 0,
+    cutVersion: 0,
   };
   record.stub = stub;
   record.loadedFirstItemId = loadedFirstItemId;
@@ -168,6 +174,8 @@ export function applyMembersStub(
     loadedLastItemId: stub.loadedLastItemId,
     shed: [],
     dirty: false,
+    invalidationVersion: 0,
+    cutVersion: 0,
   };
   record.stub = stub;
   record.loadedFirstItemId = stub.loadedFirstItemId;
@@ -193,6 +201,11 @@ export function noteSpanMoved(
   if (record.loadedFirstItemId === first && record.loadedLastItemId === last) return;
   record.loadedFirstItemId = first;
   record.loadedLastItemId = last;
+  invalidateActivityRun(record);
+}
+
+export function invalidateActivityRun(record: ActivityRunRecord): void {
+  record.invalidationVersion += 1;
   record.dirty = true;
 }
 

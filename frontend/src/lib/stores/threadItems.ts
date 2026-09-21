@@ -279,6 +279,8 @@ export function itemsRenderEqual(a: Item, b: Item): boolean {
     && a.payloadMeta === b.payloadMeta
     && a.parentId === b.parentId
     && a.completionOf === b.completionOf
+    && (a.completionLaunch === b.completionLaunch
+      || (!!a.completionLaunch && !!b.completionLaunch && itemsAreEqual(a.completionLaunch, b.completionLaunch)))
     && a.toolName === b.toolName
     && a.decision === b.decision
     && a.meta === b.meta

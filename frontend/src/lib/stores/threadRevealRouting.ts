@@ -60,7 +60,7 @@ export interface RevealRoutingOptions {
     updatedAt: number,
   ): void;
   /** Stamp the live-content latch (pane's stampLiveContent). */
-  stampLiveContent(): void;
+  stampLiveContent(item: Item): void;
   /** rowUiState.appendLivePayloadDeltaForItem — live reasoning-tail payload append. */
   appendLivePayloadDeltaForItem(
     itemId: string,
@@ -179,8 +179,8 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
         // INCLUDING the multi-second drain tail after the wire turn ends
         // (the smoother keeps revealing until caught up), which is what
         // makes the end-of-turn tail spring instead of jump.
-        options.stampLiveContent();
         const current = options.getItems()[idx];
+        options.stampLiveContent(current);
         const prevRevealed = previousRevealed;
         // Reasoning-tail rows (thinking + compaction_reasoning) keep the
         // summary tail-trimmed for memory; assistant_text keeps the full
@@ -386,13 +386,12 @@ export function createRevealRouting(options: RevealRoutingOptions): RevealRoutin
       next.rev = patch.rev;
       if (itemSmoothers.has(itemId)) {
         next.summary = options.getItems()[index].summary;
-      } else if (patch.summary !== undefined) {
-        options.stampLiveContent();
       }
       // A patch that moves only the revision (a re-persist of an
       // unchanged row) is absorbed onto the held row: no replacement,
       // no reactive write, rev carried.
       if (adoptRevIfEqual(current, next)) return;
+      if (next.summary !== current.summary) options.stampLiveContent(next);
       options.setItemAt(index, next);
       committed = next;
     });

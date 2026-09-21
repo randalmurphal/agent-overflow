@@ -892,6 +892,10 @@ export class HeldWindow {
  * Item represents a persisted timeline entry.
  */
 export class Item {
+    /**
+     * CompletionLaunch is read-time presentation context, never an additional timeline row.
+     */
+    "completionLaunch"?: Item | null;
     "id": string;
     "threadId": string;
     "turnIndex": number;
@@ -985,7 +989,11 @@ export class Item {
      * Creates a new Item instance from a string or object.
      */
     static createFrom($$source: any = {}): Item {
+        const $$createField0_0 = $$createType15;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("completionLaunch" in $$parsedSource) {
+            $$parsedSource["completionLaunch"] = $$createField0_0($$parsedSource["completionLaunch"]);
+        }
         return new Item($$parsedSource as Partial<Item>);
     }
 }
@@ -1070,9 +1078,9 @@ export class PagedItems {
      */
     static createFrom($$source: any = {}): PagedItems {
         const $$createField0_0 = $$createType1;
-        const $$createField1_0 = $$createType15;
-        const $$createField2_0 = $$createType16;
-        const $$createField3_0 = $$createType16;
+        const $$createField1_0 = $$createType16;
+        const $$createField2_0 = $$createType17;
+        const $$createField3_0 = $$createType17;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("items" in $$parsedSource) {
             $$parsedSource["items"] = $$createField0_0($$parsedSource["items"]);
@@ -1192,7 +1200,7 @@ export class ProjectWithCounts {
      * Creates a new ProjectWithCounts instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectWithCounts {
-        const $$createField0_0 = $$createType17;
+        const $$createField0_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("project" in $$parsedSource) {
             $$parsedSource["project"] = $$createField0_0($$parsedSource["project"]);
@@ -1693,7 +1701,7 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField37_0 = $$createType18;
+        const $$createField37_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("origin" in $$parsedSource) {
             $$parsedSource["origin"] = $$createField37_0($$parsedSource["origin"]);
@@ -2484,7 +2492,8 @@ const $$createType11 = $Create.Nullable($$createType10);
 const $$createType12 = DiscussionParticipant.createFrom;
 const $$createType13 = $Create.Array($$createType12);
 const $$createType14 = DiscussionSettings.createFrom;
-const $$createType15 = $Create.Array($$createType2);
-const $$createType16 = TimelineCursor.createFrom;
-const $$createType17 = Project.createFrom;
-const $$createType18 = ThreadOrigin.createFrom;
+const $$createType15 = $Create.Nullable($$createType0);
+const $$createType16 = $Create.Array($$createType2);
+const $$createType17 = TimelineCursor.createFrom;
+const $$createType18 = Project.createFrom;
+const $$createType19 = ThreadOrigin.createFrom;

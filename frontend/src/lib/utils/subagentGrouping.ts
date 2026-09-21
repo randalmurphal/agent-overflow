@@ -1204,6 +1204,20 @@ export function groupItemsBySubagent(
 ): TimelineNode[] {
   if (items.length === 0) return [];
 
+  // Resolve card identity without mounting a launch outside this page.
+  // Context participates in relationship lookup, never positional output.
+  let context: Map<string, Item> | undefined;
+  let loadedIds: Set<string> | undefined;
+  for (const item of items) {
+    const launch = item.completionLaunch;
+    if (item.kind === 'tool_completion' && launch && launch.id === item.completionOf
+      && launch.threadId === item.threadId && isPotentialSubagentLaunch(launch)) {
+      loadedIds ??= new Set(items.map(row => row.id));
+      if (!loadedIds.has(launch.id)) (context ??= new Map()).set(launch.id, launch);
+    }
+  }
+  if (context) items = [...items, ...context.values()];
+
   // Fast path: if no item declares a parentId, no item could be a subagent
   // launch, AND the input is already in canonical order, there is nothing
   // to group. Skip the sort, id-set build, and grouping walk entirely —
@@ -1785,6 +1799,7 @@ export function groupItemsBySubagent(
 
   const roots: TimelineNode[] = [];
   for (const item of sorted) {
+    if (context?.has(item.id)) continue;
     // Anything a launch claimed renders inside that launch's card.
     if (anchorByID.has(item.id)) continue;
     const pid = item.parentId ?? '';

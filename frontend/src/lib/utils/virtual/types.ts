@@ -110,6 +110,8 @@ export type ScrollToIndexAlign = 'start' | 'center' | 'end' | 'nearest';
 export interface TimelineVirtualizerHandle {
   scrollToIndex(index: number, opts?: { align?: ScrollToIndexAlign; offset?: number }): void;
   revalidate(): void;
+  /** Resolves after mounted rows have remeasured and their geometry has committed. */
+  measureMountedRows(signal: AbortSignal): Promise<void>;
   /**
    * Subscribe to this INSTANCE's content-geometry samples — the ONLY
    * way geometry leaves the virtualizer. The new subscriber

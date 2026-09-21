@@ -58,6 +58,7 @@ function fakeListRef(sizes: number[]): TimelineVirtualizerHandle {
   return {
     scrollToIndex: () => {},
     revalidate: () => {},
+    measureMountedRows: async () => {},
     subscribeContentGeometry: () => () => {},
     noteScrollTopWritten: () => {},
     getScrollOffset: () => 0,

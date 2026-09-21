@@ -7141,6 +7141,49 @@ describe('createUseStickToBottomController — external content-geometry source'
     resetSettingsForTest();
   });
 
+  it('holds overlapping history corrections through live activity and releases back to streaming', () => {
+    controller.skipWarmup();
+    liveContent = true;
+    deliver(800);
+    const first = controller.beginContentReconciliation();
+    const second = controller.beginContentReconciliation();
+    first();
+    first();
+    geom.scrollHeight = 1200;
+    deliver(1000);
+    expect(geom.scrollTop).toBe(600);
+    second();
+    geom.scrollHeight = 1400;
+    deliver(1200);
+    expect(geom.scrollTop).toBe(600); // growth is once again a glide
+  });
+
+  it('history correction obeys reader escape and cannot survive detach', () => {
+    controller.skipWarmup();
+    deliver(800);
+    const stale = controller.beginContentReconciliation();
+    controller.markEscaped();
+    geom.scrollTop = 100;
+    geom.scrollHeight = 1200;
+    deliver(1000);
+    expect(geom.scrollTop).toBe(100);
+    controller.detach();
+    controller.attach(scrollEl, contentEl);
+    controller.skipWarmup();
+    controller.markAtBottom();
+    liveContent = true;
+    deliver(1000);
+    const current = controller.beginContentReconciliation();
+    stale();
+    geom.scrollHeight = 1400;
+    deliver(1200);
+    expect(geom.scrollTop).toBe(800);
+    current();
+    geom.scrollHeight = 1600;
+    deliver(1400);
+    expect(geom.scrollTop).toBe(800);
+  });
+
   describe('source parity', () => {
     it('creates no contentEl ResizeObserver', () => {
       // The RO-backed default creates exactly one on attach; the external

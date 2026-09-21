@@ -26,6 +26,9 @@
 // Session-only: the archive is per pane and dies with it. The durable layer
 // is the `activityRunDefault` setting.
 
+import { compareItemToCursor } from './threadItems';
+import { activityRunLoadedItems, type RunWindowBounds } from './activityRunLoadedItems';
+export type { RunWindowBounds } from './activityRunLoadedItems';
 import { compositeKey } from '../utils/compositeKey';
 import type { Item } from '../types/models';
 import type { PageShape } from '../../../bindings/agent-overflow/internal/app/models';
@@ -47,6 +50,7 @@ import {
   foldPageStub,
   heldRunsFold,
   noteSpanMoved,
+  invalidateActivityRun,
   shedOlderMembers,
   stubFacts,
   type ActivityRunStubFacts,
@@ -125,6 +129,7 @@ export interface ThreadActivityRunsOptions {
    * so every statement it makes is relative to the ones it does.
    */
   items(): readonly Item[];
+  windowBounds(): RunWindowBounds;
   /** The pane's thread, or null while it holds none. */
   threadId(): string | null;
   /** The pane's page shape (`timelinePageShape()`), for member fetches. */
@@ -147,7 +152,7 @@ export interface ThreadActivityRunsOptions {
    * refuses a members call because the run moved under it: the pane's
    * picture of that run is wrong and no retry can repair it.
    */
-  reloadWindow(): void;
+  reloadWindow(): Promise<void>;
   /**
    * Report a failed members fetch. `silent` marks a background stub
    * refresh, which leaves the record dirty for the next trigger rather
@@ -158,6 +163,9 @@ export interface ThreadActivityRunsOptions {
 }
 
 export interface ThreadActivityRuns extends ActivityRunIdentity {
+  readonly windowRevision: number;
+  loadedItems(items: readonly Item[]): readonly Item[];
+
   /**
    * Bumps whenever a value this registry resolves onto a run node could differ. The projection
    * pass runs untracked (it walks every node and would otherwise re-run on
@@ -342,7 +350,7 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * omitted when the change carried no server description: a record whose
    * span moved without one goes dirty and refreshes.
    */
-  syncRunSpans(items: readonly Item[], stubs?: readonly ActivityRunStub[]): void;
+  syncRunSpans(items: readonly Item[], stubs?: readonly ActivityRunStub[], bounds?: RunWindowBounds): void;
   /**
    * Account for a window cut: shed the members it dropped from a run that
    * straddles it, and drop the record of a run that left entirely.
@@ -351,7 +359,7 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * replacement is committed — a shed row keeps narrow copies of fields
    * that only exist while the `Item` does.
    */
-  applyWindowCut(previousItems: readonly Item[], nextItems: readonly Item[]): void;
+  applyWindowCut(previousItems: readonly Item[], nextItems: readonly Item[], bounds?: RunWindowBounds): void;
   /**
    * What the runs the pane holds contribute to its held-window description
    * (§5): the physical rows it describes without holding, and their folded
@@ -715,6 +723,7 @@ export function createThreadActivityRuns(
   // derived from them reaches a component through the projected node, which
   // is rebuilt from `revision` like the rest of a run's resolved state.
   const records: ActivityRunRecords = new Map();
+  let windowRevision = $state(0);
   // Loaded member id -> record key, and record key -> the coordinates that
   // bound the run. Both are rebuilt by `syncRunSpans`, which is the one
   // writer: a half-updated index would route a pushed row into a run whose
@@ -729,18 +738,16 @@ export function createThreadActivityRuns(
     mountMembers: (record, rows, replaces) => {
       const dropIds = replaces ? loadedMemberIds(record) : EMPTY_ID_SET;
       options.mountRunMembers(rows, dropIds);
-      // The pane has committed the replacement, so the spans it holds have
-      // moved: re-derive them before the answer's stub is applied over the
-      // top, or the record would name the span from before the mount.
-      syncRunSpans(options.items());
-      const span = spanOfRecord(spansByMemberId(options.items()), record);
-      return span ? span.items.map((item) => item.id) : [];
+      for (const id of dropIds) runKeyByMemberId.delete(id);
     },
     reloadWindow: () => options.reloadWindow(),
     reportFailure: (message, err, silent) =>
       options.reportFetchFailure(message, err, silent),
-    onStubApplied: () => {
-      revision += 1;
+    onStubApplied: (stub) => {
+      syncRunSpans(options.items(), [stub]);
+      const record = records.get(stub.firstItemId);
+      const span = record ? spanOfRecord(spansByMemberId(options.items()), record) : null;
+      return span ? span.items.map(item => item.id) : [];
     },
   });
 
@@ -751,9 +758,16 @@ export function createThreadActivityRuns(
   }
 
   /** Every loaded member id mapped to the span holding it. */
-  function spansByMemberId(items: readonly Item[]): Map<string, ActivityRunSpan> {
+  function spansByMemberId(items: readonly Item[], bounds = options.windowBounds(), stubs: readonly ActivityRunStub[] = []): Map<string, ActivityRunSpan> {
     const byId = new Map<string, ActivityRunSpan>();
-    for (const span of groupActivityRunSpans(items)) {
+    const window = activityRunLoadedItems(items, bounds, records, stubs, runKeyByMemberId);
+    const descriptions = new Map([...records.values()].map(record => [record.runFirstItemId, record.stub]));
+    for (const stub of stubs) descriptions.set(stub.firstItemId, stub);
+    const describedRuns = [...descriptions.values()];
+    const knownMember = (item: Item): boolean => describedRuns.some(stub =>
+      compareItemToCursor(item, { turnIndex: stub.firstTurnIndex, itemIndex: stub.firstItemIndex, itemId: stub.firstItemId }) >= 0
+      && compareItemToCursor(item, { turnIndex: stub.lastTurnIndex, itemIndex: stub.lastItemIndex, itemId: stub.lastItemId }) <= 0);
+    for (const span of groupActivityRunSpans(window, knownMember)) {
       for (const item of span.items) byId.set(item.id, span);
     }
     return byId;
@@ -802,13 +816,14 @@ export function createThreadActivityRuns(
   function syncRunSpans(
     items: readonly Item[],
     stubs?: readonly ActivityRunStub[],
+    bounds = options.windowBounds(),
   ): void {
-    const windowed = items.filter(isWindowedTimelineRow);
+    const windowed = activityRunLoadedItems(items, bounds, records, stubs ?? [], runKeyByMemberId).filter(isWindowedTimelineRow);
     const positionById = new Map<string, number>();
     for (let index = 0; index < windowed.length; index += 1) {
       positionById.set(windowed[index].id, index);
     }
-    const spansById = spansByMemberId(windowed);
+    const spansById = spansByMemberId(windowed, bounds, stubs);
 
     // Claimed so two records cannot describe one span: a run whose first
     // member changed identity would otherwise be counted twice in the held
@@ -872,6 +887,7 @@ export function createThreadActivityRuns(
         break;
       }
     }
+    windowRevision += 1;
     revision += 1;
   }
 
@@ -899,9 +915,10 @@ export function createThreadActivityRuns(
   function applyWindowCut(
     previousItems: readonly Item[],
     nextItems: readonly Item[],
+    bounds = options.windowBounds(),
   ): void {
-    const previousSpans = spansByMemberId(previousItems);
-    const nextSpans = spansByMemberId(nextItems);
+    const previousSpans = spansByMemberId(previousItems, bounds);
+    const nextSpans = spansByMemberId(nextItems, bounds);
     for (const [key, record] of [...records]) {
       const before = spanOfRecord(previousSpans, record);
       const after = spanOfRecord(nextSpans, record);
@@ -916,6 +933,7 @@ export function createThreadActivityRuns(
       }
       if (before.firstItemId === after.firstItemId
         && before.lastItemId === after.lastItemId) continue;
+      record.cutVersion += 1;
       if (before.lastItemId !== after.lastItemId) {
         // The cut took members off the run's NEWER end, which only
         // happens for a run bigger than the whole retention target
@@ -927,7 +945,7 @@ export function createThreadActivityRuns(
         // describes no held window meanwhile.
         record.loadedFirstItemId = after.firstItemId;
         record.loadedLastItemId = after.lastItemId;
-        record.dirty = true;
+        invalidateActivityRun(record);
         memberFetch.scheduleRefresh();
         continue;
       }
@@ -1464,6 +1482,8 @@ export function createThreadActivityRuns(
   }
 
   return {
+    get windowRevision() { return windowRevision; },
+    loadedItems: (items) => activityRunLoadedItems(items, options.windowBounds(), records, [], runKeyByMemberId),
     get revision() {
       return revision;
     },
@@ -1630,6 +1650,7 @@ export function createThreadActivityRuns(
       const record = records.get(key);
       return record ? stubFacts(record) : null;
     },
+    isLoadedMember: (itemId) => runKeyByMemberId.has(itemId),
     syncRunSpans,
     applyWindowCut,
     heldRunFold: () => heldRunsFold(records),
@@ -1637,7 +1658,7 @@ export function createThreadActivityRuns(
     markRunDirty: (runKey) => {
       const record = records.get(runKey);
       if (!record) return;
-      record.dirty = true;
+      invalidateActivityRun(record);
       memberFetch.scheduleRefresh();
     },
     snapshotStubs: () => {
@@ -1683,6 +1704,7 @@ export function createThreadActivityRuns(
       // refresh in flight for a run of the old thread is dropped rather
       // than applied to a window that no longer holds it.
       records.clear();
+      windowRevision += 1;
       recordBounds.clear();
       runKeyByMemberId.clear();
       memberFetch.reset();

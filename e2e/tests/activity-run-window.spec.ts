@@ -37,6 +37,24 @@ async function expandRun(page: import('@playwright/test').Page) {
 }
 
 test('a run larger than its window ships its tail, counts the rest, and fetches a chunk on demand', async ({ harness, page }) => {
+  let forceRevalidation = false;
+  let retainedReads = 0;
+  await page.routeWebSocket(/\/ws(?:\?|$)/, socket => {
+    const server = socket.connectToServer();
+    socket.onMessage(message => {
+      const frame = JSON.parse(String(message));
+      if (forceRevalidation && frame.type === 'rpc' && frame.methodId === 3841902986) {
+        // Force a real page response over the cached expanded window.
+        frame.params[1] = { ...frame.params[1], haveEpoch: -1, haveRev: -1, haveWindow: null };
+        server.send(JSON.stringify(frame));
+      } else {
+        if (forceRevalidation && frame.type === 'rpc' && frame.methodId === 162135710) retainedReads += 1;
+        server.send(message);
+      }
+    });
+    server.onMessage(message => socket.send(message));
+  });
+
   await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [{
       name: 'run-window',
@@ -47,7 +65,7 @@ test('a run larger than its window ships its tail, counts the rest, and fetches 
           userText: 'Do a lot',
           items: [...heavyRun(), { kind: 'assistant_text', summary: 'All done' }],
         }],
-      }],
+      }, { title: 'Away', turns: [{ userText: 'Another thread', items: [{ kind: 'assistant_text', summary: 'Away response' }] }] }],
     }],
   });
   await harness.open(page);
@@ -72,12 +90,18 @@ test('a run larger than its window ships its tail, counts the rest, and fetches 
   await expect(rows.first()).toContainText(`run call ${RUN_MEMBERS - WINDOW_ROWS - CHUNK_ROWS}`);
   await expect(earlier).toContainText(`${RUN_MEMBERS - WINDOW_ROWS - CHUNK_ROWS} earlier`);
 
-  // A reload paints the thread from its replica first. The stub travels
-  // with the envelope, so the run reopens on the same window with the
-  // same count, not as a run of thirty.
+  await page.getByTestId('thread-row').getByText('Away', { exact: true }).click();
+  await expect(page.getByText('Away response', { exact: true })).toBeVisible();
+  forceRevalidation = true;
+  await page.getByTestId('thread-row').getByText('Long run', { exact: true }).click();
+  await expect.poll(() => retainedReads).toBeGreaterThan(0);
+  await expandRun(page);
+  await expect(page.getByTestId('activity-run-earlier')).toContainText(`${RUN_MEMBERS - WINDOW_ROWS - CHUNK_ROWS} earlier`);
+  await expect(page.getByTestId('command-output-row')).toHaveCount(WINDOW_ROWS + CHUNK_ROWS);
+
+  // A cold reopen must still account for the whole run through its stub.
+  forceRevalidation = false;
   await page.reload();
-  // The pane layout restores the open thread; the sidebar row is the same
-  // title as the chat header, so the click is addressed to the row.
   await page.getByTestId('thread-row').getByText('Long run', { exact: true }).click();
   await expect(page.getByText('All done', { exact: true })).toBeVisible();
   await expect(page.getByTestId('activity-run-header-counts')).toContainText(`${RUN_MEMBERS} Bash`);
@@ -164,4 +188,30 @@ test('the message rail jumps through a run whose members outnumber a page', asyn
     await rail.getByRole('button', { name: 'Jump to latest message', exact: true }).click();
     await expect(scroller.getByText('Rail question 40', { exact: true })).toBeInViewport();
   }
+});
+
+test('a run window starting with a notification stays wholly inside its collapsed run', async ({ harness, page }) => {
+  await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'notification-run-window', repo: {}, threads: [{
+      title: 'Notification at the page boundary',
+      turns: [{ userText: 'Work in the background', items: [
+        ...heavyRun(50),
+        { kind: 'notification', toolName: 'Agent', summary: 'Completed agent report at the page boundary' },
+        ...heavyRun(29),
+        { kind: 'assistant_text', summary: 'The parent continued.' },
+      ] }],
+    }] }],
+  });
+  await harness.open(page);
+  await page.getByText('Notification at the page boundary', { exact: true }).click();
+  const run = page.getByTestId('activity-run');
+  await expect(run).toHaveCount(1);
+  await expect(run).toHaveAttribute('data-collapsed', 'true');
+  await expect(page.getByText('Completed agent report at the page boundary', { exact: true })).toHaveCount(0);
+  await expandRun(page);
+  await expect(run.getByText('Completed agent report at the page boundary', { exact: true })).toHaveCount(1);
+  await expect(page.getByTestId('activity-run-earlier')).toContainText('50 earlier');
+  await page.getByTestId('activity-run-earlier').click();
+  await expect(page.getByTestId('activity-run-earlier')).toContainText('25 earlier');
+  await expect(page.getByText('Failed to refresh activity')).toHaveCount(0);
 });

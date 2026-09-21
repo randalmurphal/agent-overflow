@@ -1,4 +1,5 @@
 <script lang="ts" generics="T">
+  import { createMeasurementBarrier } from '../../utils/virtual/measurementBarrier';
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { createEngine, mergeCompensations } from '../../utils/virtual/engine';
   import {
@@ -305,6 +306,9 @@
       convergeIndexScroll();
       const spliceCorrected = correctHeadSpliceAnchor();
       maybeDeliverContentGeometry();
+      if (measurementBarrier.active && (engine.getItemCount() === 0 || windowFullyMeasured())) {
+        measurementBarrier.commit();
+      }
       // Strictly last: row offsets and the container height are flushed
       // and the controller has performed any compensation write, so this
       // is the settled layout the NEXT measurement must be judged against.
@@ -863,6 +867,7 @@
       }
       const index = rowIndexes.get(target);
       if (index !== undefined) {
+        if (measurementBarrier.measured(target)) contentGeometryTrigger++;
         if (
           intrinsicViewportLimitCss !== undefined &&
           entry.contentRect.width !== scrollerContentWidth
@@ -923,6 +928,25 @@
     return (resizeObserver ??= new ResizeObserver(handleResizeEntries));
   }
 
+  const measurementBarrier = createMeasurementBarrier<HTMLElement>();
+
+  /** Request fresh row measurements, including unchanged retained rows. */
+  export function measureMountedRows(signal: AbortSignal): Promise<void> {
+    if (signal.aborted || engine.getItemCount() === 0) return Promise.resolve();
+    const rows = [...rowElementByIndex.values()];
+    const measured = measurementBarrier.request(rows, signal);
+    const observer = ensureResizeObserver();
+    for (const row of rows) {
+      observer.unobserve(row);
+      deferredRowObservations.add(row);
+    }
+    // A request may follow a geometry commit inside an RO delivery. Observe
+    // in the next rendering update, just like newly mounted window rows.
+    deferNewRowObservationUntilNextFrame();
+    contentGeometryTrigger++;
+    return measured;
+  }
+
   // Registration is split from index bookkeeping so a head splice (which
   // re-indexes every mounted row) updates the WeakMap without an
   // unobserve/observe round trip per row — each observe() schedules a
@@ -930,6 +954,7 @@
   // O(window) delivery burst on every load-older prepend. Both are
   // stable references by design (see VirtualRow's Props doc).
   function registerRow(element: HTMLElement): () => void {
+    measurementBarrier.added(element);
     if (deferNewRowObservations) {
       deferredRowObservations.add(element);
     } else {
@@ -941,6 +966,7 @@
         rowElementByIndex.delete(index);
       }
       rowIndexes.delete(element);
+      if (measurementBarrier.removed(element)) contentGeometryTrigger++;
       deferredRowObservations.delete(element);
       resizeObserver?.unobserve(element);
     };
@@ -1074,6 +1100,7 @@
   });
 
   onDestroy(() => {
+    measurementBarrier.cancel();
     clearIndexScroll();
     clearTimeout(scrollEndTimer);
     scrollEndTimer = undefined;

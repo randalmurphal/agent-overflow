@@ -38,7 +38,8 @@ describe('collapse state', () => {
       threadId: () => null,
       pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
       mountRunMembers: () => {},
-      reloadWindow: () => {},
+      windowBounds: () => ({ oldest: null, newest: null }),
+    reloadWindow: async () => {},
       reportFetchFailure: () => {},
     });
     const [run] = pass(runs, [['a']]);
@@ -490,7 +491,8 @@ describe('mount window', () => {
       threadId: () => null,
       pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
       mountRunMembers: () => {},
-      reloadWindow: () => {},
+      windowBounds: () => ({ oldest: null, newest: null }),
+    reloadWindow: async () => {},
       reportFetchFailure: () => {},
     });
     pass(runs, [rows(100)]);
@@ -583,7 +585,8 @@ describe('mount window', () => {
       threadId: () => null,
       pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
       mountRunMembers: () => {},
-      reloadWindow: () => {},
+      windowBounds: () => ({ oldest: null, newest: null }),
+    reloadWindow: async () => {},
       reportFetchFailure: () => {},
     });
     const [run] = pass(runs, [rows(100)]);
@@ -1137,7 +1140,8 @@ describe('viewport hold ownership', () => {
       threadId: () => null,
       pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
       mountRunMembers: () => {},
-      reloadWindow: () => {},
+      windowBounds: () => ({ oldest: null, newest: null }),
+    reloadWindow: async () => {},
       reportFetchFailure: () => {},
     });
     return { runs, holds };

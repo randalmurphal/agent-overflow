@@ -29,6 +29,9 @@ import { RAIL_EXEMPT_PAYLOAD_KINDS } from './timelineRail';
 // key-builder as its oracle.
 export function itemTimelineStructureChanged(previous: Item | undefined, next: Item): boolean {
   if (previous === undefined) return true;
+  if (previous.completionLaunch !== next.completionLaunch
+    && (!previous.completionLaunch || !next.completionLaunch
+      || itemTimelineStructureChanged(previous.completionLaunch, next.completionLaunch))) return true;
   if (
     previous.id !== next.id
     || previous.threadId !== next.threadId

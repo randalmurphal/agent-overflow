@@ -472,3 +472,24 @@ func TestEncodedBytes_TracksTheRealEncoding(t *testing.T) {
 		t.Errorf("EncodedBytes = %d, real encoding = %d: the estimate has drifted", estimate, len(encoded))
 	}
 }
+
+func TestCompletionContextProjectionAndBudget(t *testing.T) {
+	launch := &store.Item{ID: "launch", Meta: mustJSON(t, map[string]any{"input": map[string]any{"prompt": bigString(9000)}}),
+		PayloadMeta: inlineDiffMeta(t, "patch"), PayloadPreviewSpans: "spans", CompletionLaunch: &store.Item{ID: "nested"}}
+	item := store.Item{ID: "done", Kind: "tool_completion", CompletionOf: launch.ID, CompletionLaunch: launch}
+	projected := Project(item, false)
+	if projected.CompletionLaunch == launch || projected.CompletionLaunch.CompletionLaunch != nil {
+		t.Fatal("context must be a separately projected single-level row")
+	}
+	if len(projected.CompletionLaunch.Meta) >= len(launch.Meta) || projected.CompletionLaunch.PayloadPreviewSpans != "" {
+		t.Fatal("context bypassed wire projection")
+	}
+	if launch.CompletionLaunch == nil || launch.PayloadPreviewSpans != "spans" {
+		t.Fatal("projection mutated the source context")
+	}
+	without := projected
+	without.CompletionLaunch = nil
+	if EncodedBytes(projected)-EncodedBytes(without) < EncodedBytes(*projected.CompletionLaunch) {
+		t.Fatal("page budget did not account for completion context")
+	}
+}

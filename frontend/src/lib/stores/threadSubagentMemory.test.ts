@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { cursorFromItem, type TimelineCursorLike } from './threadItems';
+import { itemsWithinLoadedWindow, cursorFromItem, type TimelineCursorLike } from './threadItems';
 import { createThreadSubagentMemory } from './threadSubagentMemory';
 import { createThreadPane } from './thread.svelte';
 import type { Item, Thread } from '../types/models';
@@ -82,7 +82,7 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
     getSwitchGeneration: () => switchGeneration,
     isSubagentGroupExpanded: (groupKey) => expandedGroups.has(groupKey),
     agentPaneHeldRows: () => paneHeldRows,
-    getLoadedRange: () => loadedRange,
+    loadedTimelineItems: items => itemsWithinLoadedWindow(items, loadedRange.oldest, loadedRange.newest),
   });
 
   return {

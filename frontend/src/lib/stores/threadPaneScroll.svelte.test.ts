@@ -1010,7 +1010,7 @@ describe('threadPaneScroll', () => {
         expect(pane.lastLiveContentAt).toBe(0);
 
         // The public seam events.ts calls on a changed provider upsert.
-        pane.markLiveContentAdvanced();
+        pane.markLiveContentAdvanced(makeItem({ threadId: pane.threadId! }));
         expect(pane.lastLiveContentAt).toBe(20);
       } finally {
         __setSmoothingClockForTest(undefined);

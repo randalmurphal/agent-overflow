@@ -249,3 +249,15 @@ describe('threadItemCache', () => {
   });
 
 });
+
+it('accounts for completion context and snapshots its mutable fields', () => {
+  const cache = createThreadItemCache();
+  const launch = makeItem('launch');
+  const completion = { ...makeItem('done'), completionLaunch: launch };
+  cache.set('t', makeSnapshot([completion]));
+  launch.summary = 'changed';
+  expect(cache.get('t')?.items[0].completionLaunch?.summary).toBe('launch');
+  launch.summary = 'x'.repeat(MAX_CACHED_SNAPSHOT_CHARS + 1);
+  cache.set('t', makeSnapshot([completion]));
+  expect(cache.get('t')).toBeNull();
+});

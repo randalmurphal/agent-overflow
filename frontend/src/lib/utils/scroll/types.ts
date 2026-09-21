@@ -283,6 +283,8 @@ export interface UseStickToBottomController {
   requestBottom(opts: RequestBottomOptions): void;
   /** Hold bottom-follow across replay; finish after recovered layout commits. */
   beginReconnectRecovery(): ReconnectScrollRecovery;
+  /** Classify snapshot measurement as correction until the returned lease is released. */
+  beginContentReconciliation(): () => void;
 
   /** Bind the controller to its scroll container and measured content element. */
   attach(scrollEl: HTMLElement, contentEl: HTMLElement): void;

@@ -4,8 +4,9 @@
 // else forwards to the source pane.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { FakeSmoothingClock } from '../../test/helpers/threadPane';
 import { createAgentScopeView } from './agentScopeView.svelte';
-import { createThreadPane, type ThreadPane } from './thread.svelte';
+import { __setSmoothingClockForTest, createThreadPane, type ThreadPane } from './thread.svelte';
 import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
 import {
@@ -494,4 +495,58 @@ describe('createAgentScopeView', () => {
     });
     view.dispose();
   });
+});
+
+
+it('routes live content only to its transcript and releases scoped listeners', async () => {
+  const clock = new FakeSmoothingClock();
+  __setSmoothingClockForTest(clock);
+  const { pane, agent } = await setup();
+  const outer = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
+  const inner = createAgentScopeView(pane, 'nested-launch', companionOptions(agent));
+  try {
+    clock.tickFrame(10);
+    const patch = (id: string, summary: string) => pane.applyItemPatch({
+      threadId: THREAD_ID, itemId: id, kind: 'assistant_text', patch: { summary, rev: 2 },
+    });
+    patch('child-a', 'child a');
+    expect([pane.lastLiveContentAt, outer.pane.lastLiveContentAt, inner.pane.lastLiveContentAt]).toEqual([0, 0, 0]);
+    patch('child-a', 'child a advances');
+    expect([pane.lastLiveContentAt, outer.pane.lastLiveContentAt, inner.pane.lastLiveContentAt]).toEqual([0, 10, 0]);
+    clock.tickFrame(10);
+    pane.markLiveContentAdvanced(pane.getItemById('nested-completion')!);
+    expect([pane.lastLiveContentAt, outer.pane.lastLiveContentAt, inner.pane.lastLiveContentAt]).toEqual([0, 20, 0]);
+    clock.tickFrame(10);
+    patch('grandchild', 'grandchild advances');
+    expect([pane.lastLiveContentAt, outer.pane.lastLiveContentAt, inner.pane.lastLiveContentAt]).toEqual([0, 20, 30]);
+    clock.tickFrame(10);
+    patch('main-text', 'main advances');
+    expect([pane.lastLiveContentAt, outer.pane.lastLiveContentAt, inner.pane.lastLiveContentAt]).toEqual([40, 20, 30]);
+    outer.dispose();
+    outer.dispose();
+    clock.tickFrame(10);
+    patch('child-a', 'child advances after disposal');
+    expect(outer.pane.lastLiveContentAt).toBe(20);
+    const reopened = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
+    expect(reopened.pane.lastLiveContentAt).toBe(0);
+    clock.tickFrame(10);
+    pane.upsertItem(makeItem({ id: 'child-stream', threadId: THREAD_ID, itemIndex: 7,
+      parentId: 'launch-1', status: 'streaming', summary: 'Live child' }));
+    pane.applyItemDelta({ threadId: THREAD_ID, itemId: 'child-stream', kind: 'assistant_text',
+      delta: ' streamed tail', updatedAt: 60 });
+    for (let i = 0; i < 20; i++) clock.tickFrame(16);
+    expect(reopened.pane.lastLiveContentAt).toBeGreaterThan(0);
+    expect(pane.lastLiveContentAt).toBe(40);
+    reopened.dispose();
+    await pane.switchThread(makeThread({ id: THREAD_ID }));
+    expect(inner.pane.lastLiveContentAt).toBe(0);
+    clock.tickFrame(10);
+    pane.markLiveContentAdvanced(pane.getItemById('grandchild')!);
+    expect(inner.pane.lastLiveContentAt).toBeGreaterThan(30);
+    expect(pane.lastLiveContentAt).toBe(0);
+  } finally {
+    outer.dispose();
+    inner.dispose();
+    __setSmoothingClockForTest(undefined);
+  }
 });

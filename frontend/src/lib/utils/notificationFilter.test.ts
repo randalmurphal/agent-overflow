@@ -259,3 +259,11 @@ describe('filterRedundantNotifications', () => {
     expect(ids(filterRedundantNotifications(items))).toEqual(['completion']);
   });
 });
+
+it('does not hide a notification behind a completion retained only as context', () => {
+  const completion = mkItem({ id: 'done', kind: 'tool_completion', meta: withTaskId('T1') });
+  const bell = mkItem({ id: 'bell', kind: 'notification', meta: withTaskId('T1') });
+  const items = [completion, bell];
+  expect(filterRedundantNotifications(items, item => item.id === 'bell')).toBe(items);
+  expect(filterRedundantNotifications(items, () => true)).toEqual([completion]);
+});

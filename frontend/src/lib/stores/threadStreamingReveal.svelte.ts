@@ -104,7 +104,7 @@ export interface ThreadStreamingRevealOptions {
     updatedAt: number,
   ): void;
   /** Stamp the live-content latch (pane's stampLiveContent). */
-  stampLiveContent(): void;
+  stampLiveContent(item: Item): void;
   /** Arm the structural-append spring and stamp the live-content latch
    *  (pane's armLiveContentAppendSpring — pane owns all its gates). */
   armStructuralSpring(): void;

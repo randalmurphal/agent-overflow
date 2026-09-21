@@ -999,6 +999,12 @@ func mergeSubagentAnchorMeta(itemMeta string, agg subagentAnchorAggregate) strin
 // to maxSubagentDescendants rows (newest win; see the const for why).
 // Proposed-plan decoration applies the same way it does on window loads.
 func (s *Store) ListSubagentDescendants(threadID, rootItemID string) ([]Item, error) {
+	return readSnapshot(s.reader(), "subagent descendants", func(q sqlQueryer) ([]Item, error) {
+		return s.listSubagentDescendants(q, threadID, rootItemID)
+	})
+}
+
+func (s *Store) listSubagentDescendants(q sqlQueryer, threadID, rootItemID string) ([]Item, error) {
 	rootItemID = strings.TrimSpace(rootItemID)
 	if rootItemID == "" {
 		return []Item{}, nil
@@ -1009,7 +1015,7 @@ func (s *Store) ListSubagentDescendants(threadID, rootItemID string) ([]Item, er
 	// the card that decorateSubagentAnchors just stamped with a count
 	// opens empty. ONE hop, because the stamp is always the fully
 	// resolved root — triage writes the walk's END, never the chain.
-	if anchor, found, err := s.GetThreadItem(threadID, rootItemID); err != nil {
+	if anchor, found, err := s.getThreadItem(q, threadID, rootItemID); err != nil {
 		return nil, fmt.Errorf("store: resolve subagent walk root for %s/%s: %w", threadID, rootItemID, err)
 	} else if found {
 		if root := transcriptRootFromMeta(anchor.Meta); root != "" {
@@ -1027,16 +1033,16 @@ func (s *Store) ListSubagentDescendants(threadID, rootItemID string) ([]Item, er
 		Limit:   maxSubagentDescendants,
 	})
 	items, err := queryHydratedTimelineItems(
-		s.reader(), threadID,
+		q, threadID,
 		descendantsCTEFromRoots(1)+"\n"+selectedSQL,
 		append(descendantsCTEArgs(threadID, []string{rootItemID}), selectedArgs...)...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list subagent descendants for %s/%s: %w", threadID, rootItemID, err)
 	}
-	decorated, err := s.decorateProposedPlanItems(s.reader(), threadID, items)
+	decorated, err := s.decorateProposedPlanItems(q, threadID, items)
 	if err != nil {
 		return nil, fmt.Errorf("store: decorate subagent descendants for %s/%s: %w", threadID, rootItemID, err)
 	}
-	return decorated, nil
+	return s.decorateCompletionLaunches(q, threadID, decorated)
 }

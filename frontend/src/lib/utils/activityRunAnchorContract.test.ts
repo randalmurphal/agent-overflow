@@ -143,7 +143,8 @@ function capturingIdentity(): {
     threadId: () => null,
     pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
     mountRunMembers: () => {},
-    reloadWindow: () => {},
+    windowBounds: () => ({ oldest: null, newest: null }),
+    reloadWindow: async () => {},
     reportFetchFailure: () => {},
   });
   let captured: readonly (readonly string[])[] = [];

@@ -16,7 +16,7 @@ func TestItemReadIsDecorated(t *testing.T) {
 		{"plain tool call", Item{Kind: "tool_call", ToolName: "Bash"}, true},
 		{"collab tool call", Item{Kind: "tool_call", ToolName: "collab_agent"}, false},
 		{"completion sibling", Item{Kind: "tool_completion", ToolName: "Agent", CompletionOf: "launch"}, true},
-		{"wait carrier completion", Item{Kind: "tool_completion", ToolName: "wait_agent", CompletionOf: "wait"}, false},
+		{"wait carrier completion", Item{Kind: "tool_completion", ToolName: "wait_agent", CompletionOf: "wait"}, true},
 		{"completion without launch", Item{Kind: "tool_completion", ToolName: "Agent"}, false},
 		{"proposed plan", Item{Kind: "assistant_text", Role: "assistant", PayloadKind: "proposed_plan"}, true},
 		{"user text", Item{Kind: "user_text", Role: "user"}, false},

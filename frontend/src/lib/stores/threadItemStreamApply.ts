@@ -1,3 +1,4 @@
+import { itemTranscriptScope } from '../utils/itemTranscriptScope';
 import { isItemStatusRegression } from './threadItems';
 import type { Item, Thread } from '../types/models';
 import type {
@@ -15,6 +16,7 @@ import { isSmoothLiveContentKind } from './threadPaneShared';
 export interface ThreadItemStreamApplyOptions {
   /** Current item window, sorted by (turnIndex, itemIndex). Re-read per call. */
   getItems(): Item[];
+  getItemById(id: string): Item | undefined;
   /**
    * The pane's id→index map for the loaded window. Handed over by
    * reference because `applyItemUpsertsToWindow` takes the map itself;
@@ -40,8 +42,6 @@ export interface ThreadItemStreamApplyOptions {
     next: ApplyItemUpsertsToWindowResult,
     afterCommit: (committed: ApplyItemUpsertsToWindowResult) => void,
   ): void;
-  /** Stamp the pane's non-reactive live-content latch. */
-  stampLiveContent(): void;
   /** Wire append to the loaded tail: arm the structural spring AND stamp. */
   armLiveContentAppendSpring(): void;
   /** The pane's optimistic-row ledger — discharged by a wire echo. */
@@ -246,7 +246,7 @@ export function createThreadItemStreamApply(
     // the composer's optimistic user-send arms at its own call site
     // (`pane.armStructuralSpring()` before its upsert) without the
     // stamp.
-    if (applied && applied.appendedItems.length > 0) {
+    if (applied && applied.appendedItems.some(item => !itemTranscriptScope(item, options.getItemById))) {
       options.armLiveContentAppendSpring();
     }
     return applied;

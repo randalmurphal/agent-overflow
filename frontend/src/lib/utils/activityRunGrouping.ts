@@ -102,6 +102,8 @@ export function activityRunSummaryFieldsChanged(previous: Item, next: Item): boo
  * so entries no longer present can be swept.
  */
 export interface ActivityRunIdentity {
+  /** Membership supplied by a history page, including leading notifications. */
+  isLoadedMember(itemId: string): boolean;
   beginPass(): void;
   /**
    * Resolve a run's identity and its registry-owned render state in one
@@ -196,11 +198,13 @@ function currentLeafItem(node: TimelineNode, getItem: (id: string) => Item | und
   return getItem(node.item.id) ?? node.item;
 }
 
-function isRunMember(node: TimelineNode, getItem: (id: string) => Item | undefined): boolean {
+function isRunMember(node: TimelineNode, getItem: (id: string) => Item | undefined, identity: ActivityRunIdentity): boolean {
   // A run can never contain another run: this pass runs once, last, over a
   // node list that has none.
   if (node.kind === 'activity_run') return false;
-  return timelineNodeHasRail(node, currentLeafItem(node, getItem));
+  const item = currentLeafItem(node, getItem);
+  return timelineNodeHasRail(node, item)
+    || (item?.kind === 'notification' && identity.isLoadedMember(item.id));
 }
 
 /**
@@ -550,7 +554,7 @@ export function groupActivityRuns(
 
   let hasAnyMember = false;
   for (const node of nodes) {
-    if (isRunMember(node, options.getItem)) {
+    if (isRunMember(node, options.getItem, options.identity)) {
       hasAnyMember = true;
       break;
     }
@@ -579,7 +583,7 @@ export function groupActivityRuns(
   };
   let i = 0;
   while (i < nodes.length) {
-    if (!isRunMember(nodes[i], options.getItem)) {
+    if (!isRunMember(nodes[i], options.getItem, options.identity)) {
       out.push(nodes[i]);
       i += 1;
       continue;
@@ -587,7 +591,7 @@ export function groupActivityRuns(
     let j = i + 1;
     while (
       j < nodes.length
-      && (isRunMember(nodes[j], options.getItem)
+      && (isRunMember(nodes[j], options.getItem, options.identity)
         || isAbsorbedNotification(nodes[j], options.getItem))
     ) j += 1;
     // Checked against the slice bounds BEFORE slicing, so a hit allocates
@@ -618,7 +622,7 @@ export function groupActivityRuns(
     // An absorbable bell behind the gate joins this very run when revealed,
     // same as withheld activity — it must not read as closing prose.
     tail.live = options.withheld.every((node) =>
-      isRunMember(node, options.getItem) || isAbsorbedNotification(node, options.getItem));
+      isRunMember(node, options.getItem, options.identity) || isAbsorbedNotification(node, options.getItem));
     // Tail-ness is the wider, reader-facing fact: this run is the newest
     // node ON SCREEN, whatever the wire holds behind the gate. It is what
     // collapse resolution keys on, and what the row's scroll controller

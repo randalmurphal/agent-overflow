@@ -216,6 +216,7 @@ export interface ContentObserverDeps {
 }
 
 export interface ContentObserver {
+  beginContentReconciliation(): () => void;
   /** Start observing the controller's current contentEl (no-op without RO
    * support, and no-op under an external geometry source). */
   attach(): void;
@@ -264,6 +265,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   let previousViewportHeight: number | undefined;
   let contentReflowSettleUntil = 0;
   let pinnedRemeasureSettleUntil = 0;
+  const contentReconciliations = new Set<symbol>();
   // 0 = inactive. Armed by beginWarmup (every cold edge arms the warm
   // gate), cleared by skipWarmup, detach, and the first delivery that
   // observes live content or an armed structural append.
@@ -605,12 +607,11 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       coldLoadSettleUntil = 0;
     }
     const coldLoadSettleActive = coldLoadSettleUntil > nowMs();
-    // One resolver input for both announcers of the same fact — "a
-    // measurement-correction wave is in flight while pinned": the
-    // displaced anchor-redirect's fixed window, and the cold-load settle
-    // window. The raw signals are traced separately below.
+    // Explicit snapshot measurement cannot be retired by live activity.
+    // The timed windows cover initial and displaced-anchor corrections.
     const pinnedRemeasureActive =
-      pinnedRemeasureSettleUntil > nowMs() || coldLoadSettleActive;
+      pinnedRemeasureSettleUntil > nowMs() || coldLoadSettleActive
+      || contentReconciliations.size > 0;
     // Common cases include a virtualizer remeasuring a same-height row,
     // padding-bottom changes, or a CSS variable resolves to the same value.
     // No virtual content change means there is nothing to chase, but a
@@ -734,6 +735,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
       widthReflowActive,
       pinnedRemeasureActive,
       coldLoadSettleActive,
+      contentReconciliationActive: contentReconciliations.size > 0,
       settleEvidence: settle === undefined ? null : lastSettleEvidence,
       liveContentActive: deps.liveContentActive(),
       structuralAppendSpringPending: deps.spring.structuralAppendPending(),
@@ -849,6 +851,7 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
     previousViewportHeight = undefined;
     contentReflowSettleUntil = 0;
     pinnedRemeasureSettleUntil = 0;
+    contentReconciliations.clear();
     coldLoadSettleUntil = 0;
     lastSettleEvidence = false;
     // Also drop the warm-up baseline: a stale hasFirstContentRO would let
@@ -859,6 +862,11 @@ export function createContentObserver(deps: ContentObserverDeps): ContentObserve
   }
 
   return {
+    beginContentReconciliation(): () => void {
+      const token = Symbol();
+      contentReconciliations.add(token);
+      return () => { contentReconciliations.delete(token); };
+    },
     attach,
     detach,
     deliverSample,

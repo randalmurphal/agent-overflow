@@ -178,7 +178,6 @@
   // every streaming tick of every group descendant rebuild the whole
   // projection — grouping, run wrapping and the virtualizer's data array
   // for ~800 rows, at up to 48Hz.
-  let parent = $derived(pane?.getItemById(group.parent.id) ?? group.parent);
   // A backgrounded launch row stays `running` forever by design (the tray
   // invariant: the launch is immutable and the outcome arrives on a separate
   // `complete:<id>` sibling). The grouping folds that sibling onto the node,
@@ -190,6 +189,9 @@
       ? (pane?.getItemById(group.completion.id) ?? group.completion)
       : null,
   );
+  let parent = $derived(pane?.getItemById(group.parent.id)
+    ?? completionItem?.completionLaunch
+    ?? group.parent);
   let statusItem = $derived(completionItem ?? parent);
   // The finished agent's answer line, read off the completion record this
   // card sits at (Codex FINAL_ANSWER, Claude output-file report).

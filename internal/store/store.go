@@ -570,17 +570,19 @@ type Project struct {
 
 // Item represents a persisted timeline entry.
 type Item struct {
-	ID          string `json:"id"`
-	ThreadID    string `json:"threadId"`
-	TurnIndex   int    `json:"turnIndex"`
-	ItemIndex   int    `json:"itemIndex"`
-	Kind        string `json:"kind"`
-	Role        string `json:"role"`
-	Status      string `json:"status"`
-	Summary     string `json:"summary"`
-	PayloadID   string `json:"payloadId,omitempty"`
-	PayloadKind string `json:"payloadKind,omitempty"`
-	PayloadMeta string `json:"payloadMeta,omitempty"`
+	// CompletionLaunch is read-time presentation context, never an additional timeline row.
+	CompletionLaunch *Item  `json:"completionLaunch,omitempty"`
+	ID               string `json:"id"`
+	ThreadID         string `json:"threadId"`
+	TurnIndex        int    `json:"turnIndex"`
+	ItemIndex        int    `json:"itemIndex"`
+	Kind             string `json:"kind"`
+	Role             string `json:"role"`
+	Status           string `json:"status"`
+	Summary          string `json:"summary"`
+	PayloadID        string `json:"payloadId,omitempty"`
+	PayloadKind      string `json:"payloadKind,omitempty"`
+	PayloadMeta      string `json:"payloadMeta,omitempty"`
 	// PayloadPreviewSpans is the linked payload's preview_spans column:
 	// a version-stamped highlight span blob (JSON, shape owned by the
 	// app layer) covering the inline-diff preview patches in

@@ -223,6 +223,8 @@ export interface PathRef {
 }
 
 export interface Item {
+  /** Launch context carried by a completion; never a positional timeline row. */
+  completionLaunch?: Item;
   id: string;
   threadId: string;
   turnIndex: number;

@@ -149,6 +149,7 @@ export interface TimelineSource {
   /** Per-row signal box; a field patch wakes this and not `items`. */
   readonly getItemById: (itemId: string) => Item | undefined;
   readonly timelineRevision: number;
+  readonly historyRevision: number;
   readonly rowUiRetentionRevision: number;
   readonly activityRuns: ThreadActivityRuns;
   /**
@@ -391,7 +392,7 @@ export interface ThreadPaneIngest {
   readonly getItemById: (itemId: string) => Item | undefined;
   readonly pendingApprovals: ApprovalRequest[];
   readonly pendingUserInputs: UserInputRequest[];
-  readonly markLiveContentAdvanced: () => void;
+  readonly markLiveContentAdvanced: (item: Item) => void;
   readonly applyProviderItemUpserts: (
     incoming: Item[],
   ) => ApplyItemUpsertsToWindowResult | null;

@@ -79,6 +79,12 @@ const maxActivityRunMemberLimit = 500
 // the caller claims to hold is a member. Nothing the caller sends is
 // trusted as a description of the run.
 func (s *Store) ListActivityRunMembers(threadID string, req ActivityRunMembersRequest) (ActivityRunMembers, error) {
+	return readSnapshot(s.reader(), "activity members read", func(q sqlQueryer) (ActivityRunMembers, error) {
+		return s.listActivityRunMembers(q, threadID, req)
+	})
+}
+
+func (s *Store) listActivityRunMembers(q sqlQueryer, threadID string, req ActivityRunMembersRequest) (ActivityRunMembers, error) {
 	if threadID == "" || req.RunFirstItemID == "" {
 		return ActivityRunMembers{}, fmt.Errorf(
 			"store: list activity run members needs a thread and a run: %w", ErrActivityRunStale)
@@ -88,7 +94,6 @@ func (s *Store) ListActivityRunMembers(threadID string, req ActivityRunMembersRe
 			"store: activity run member limit %d for %s is outside 0..%d",
 			req.Limit, threadID, maxActivityRunMemberLimit)
 	}
-	q := s.reader()
 	rows, err := s.activityRunMembers(q, threadID, req.RunFirstItemID)
 	if err != nil {
 		return ActivityRunMembers{}, err

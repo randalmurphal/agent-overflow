@@ -52,6 +52,7 @@ interface Harness {
     scrollStateKey: string | null;
     items: unknown[];
     loading: boolean;
+    hasMoreNewer: boolean;
     loadUntilItem(itemId: string): Promise<'loaded' | 'missing'>;
   };
   /** Withhold the virtualizer handle, as a pre-mount flush does. */
@@ -77,6 +78,7 @@ function makeHarness(nodes: TimelineNode[]): Harness {
     scrollStateKey: null as string | null,
     items: [] as unknown[],
     loading: false,
+    hasMoreNewer: false,
     loadUntilItem: async (itemId: string) =>
       nodes.some((node) => (node as { item?: { id?: string } }).item?.id === itemId) ? 'loaded' : 'missing',
   };
@@ -360,4 +362,18 @@ describe('timeline restore switch edges', () => {
     expect(h.stick.escapedFromLock).toBe(true);
     expect(h.geom.scrollTop).toBe(0);
   });
+  it('saves the end of an older loaded window as an anchor until newer history is loaded', () => {
+    const h = (harness = makeHarness([leaf('a'), leaf('b'), leaf('c')]));
+    mountThread(h, 'older-window');
+    h.restore.handleSwitchEdgePre('older-window', 0);
+    h.restore.maybeRestoreAfterFlush();
+    expect(h.stick.isAtBottom).toBe(true);
+    h.pane.hasMoreNewer = true;
+    h.restore.saveScrollSnapshot();
+    expect(getThreadScrollSnapshot('older-window')?.kind).toBe('anchor');
+    h.pane.hasMoreNewer = false;
+    h.restore.saveScrollSnapshot();
+    expect(getThreadScrollSnapshot('older-window')).toEqual({ kind: 'bottom' });
+  });
+
 });

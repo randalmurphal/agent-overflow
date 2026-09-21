@@ -1026,7 +1026,7 @@ describe('scroll integration — composer height + layout invariance', () => {
       expect(composerCallback).toBeDefined();
       if (!composerCallback) return;
 
-      pane.markLiveContentAdvanced();
+      pane.markLiveContentAdvanced(makeItem({ threadId: pane.threadId! }));
       const fakeEntry = {
         contentRect: { height: 200 } as DOMRectReadOnly,
       } as ResizeObserverEntry;

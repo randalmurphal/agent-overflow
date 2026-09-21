@@ -81,6 +81,8 @@ import { subagentExecutionItem } from '../utils/codexSubagentRuntime';
 //   (the scoped list has different top-level rows), and collapse state
 //   is a view concern, so sharing the source registry would let one
 //   surface's collapse mutate the other's geometry.
+// - `lastLiveContentAt`: only this scope's rows advance it. The subscription
+//   ends with the view; parent and nested-agent streams have their own clocks.
 // - scroll controller / scroll-to-item: own slots, same reason — the
 //   source pane's slots belong to the main MessageTimeline instance.
 // - paging (`loadOlder`/`loadNewer`/`loadUntilItem`, the `hasMore*` and
@@ -184,6 +186,7 @@ export interface AgentScopeViewOptions {
  * matching `overrides` entry is a compile error, and so is the reverse.
  */
 type AgentScopeOverride =
+  | 'lastLiveContentAt'
   | 'paneId'
   | 'scrollStateKey'
   | 'agentScopeRootId'
@@ -294,6 +297,14 @@ export function createAgentScopeView(
   scopeItemId: string,
   options: AgentScopeViewOptions,
 ): AgentScopeView {
+  let lastLiveContentAt = 0;
+  let scopeGeneration = sourcePane.switchGeneration;
+  const unsubscribeLiveContent = sourcePane.subscribeLiveContent((scopeId, at) => {
+    if (scopeId === scopeItemId) {
+      scopeGeneration = sourcePane.switchGeneration;
+      lastLiveContentAt = at;
+    }
+  });
   // ---- Scoped item window ---------------------------------------------
   // Recomputed per source timelineRevision (the projection reads items
   // untracked behind that revision, so identity churn outside a revision
@@ -386,14 +397,18 @@ export function createAgentScopeView(
     // stub, and the fetch surface is inert by construction: a null thread
     // makes every members call return before it is issued.
     items: () => scopedItems,
+    windowBounds: () => ({ oldest: null, newest: null }),
     threadId: () => null,
     pageShape: timelinePageShape,
     mountRunMembers: () => {},
-    reloadWindow: () => {},
+    reloadWindow: () => sourcePane.refreshFromBackend(true),
     reportFetchFailure: () => {},
   });
 
   const overrides = {
+    get lastLiveContentAt() {
+      return sourcePane.switchGeneration === scopeGeneration ? lastLiveContentAt : 0;
+    },
     get paneId() {
       return `${sourcePane.paneId}~${options.viewKey}`;
     },
@@ -495,13 +510,14 @@ export function createAgentScopeView(
     get draftPlaceholder() { return sourcePane.draftPlaceholder; },
     get hasDraftPlaceholder() { return sourcePane.hasDraftPlaceholder; },
     get canCompose() { return sourcePane.canCompose; },
-    get lastLiveContentAt() { return sourcePane.lastLiveContentAt; },
+    get subscribeLiveContent() { return sourcePane.subscribeLiveContent; },
     get markLiveContentAdvanced() { return sourcePane.markLiveContentAdvanced; },
     get setDraftPlaceholderMode() { return sourcePane.setDraftPlaceholderMode; },
     get applyDraftPlaceholderDefaults() { return sourcePane.applyDraftPlaceholderDefaults; },
     get applyDraftPlaceholderWorkspace() { return sourcePane.applyDraftPlaceholderWorkspace; },
     get dematerializeEmptyDraftThread() { return sourcePane.dematerializeEmptyDraftThread; },
     get isLocked() { return sourcePane.isLocked; },
+    get historyRevision() { return sourcePane.historyRevision; },
     get timelineRevision() { return sourcePane.timelineRevision; },
     get rowUiRetentionRevision() { return sourcePane.rowUiRetentionRevision; },
     get getItemById() { return sourcePane.getItemById; },
@@ -664,6 +680,7 @@ export function createAgentScopeView(
       return lifecycleCompletion;
     },
     dispose() {
+      unsubscribeLiveContent();
       activityRuns.clear();
     },
   };

@@ -3547,3 +3547,18 @@ describe('a detached launch’s card reads its counts off the completion sibling
     expect(card.latestChildSummary).toBe('go test ./...');
   });
 });
+
+it('renders a detached completion card from page context without inventing a launch row', () => {
+  const launch = mkItem({ id: 'context-agent', threadId: 't', kind: 'tool_call', toolName: 'Agent',
+    status: 'running', isBackground: true, turnIndex: 0, itemIndex: 0 });
+  const completion = mkItem({ id: 'context-completion', threadId: 't', kind: 'tool_completion',
+    toolName: 'Agent', completionOf: launch.id, completionLaunch: launch, turnIndex: 5, itemIndex: 10 });
+  const nodes = groupItemsBySubagent([completion]);
+  expect(nodes).toHaveLength(1);
+  expect(nodes[0]).toMatchObject({ kind: 'group', parent: { id: launch.id }, anchor: { id: completion.id } });
+  const withLaunch = groupItemsBySubagent([launch, completion]);
+  expect(withLaunch).toHaveLength(2);
+  expect(withLaunch[0]).toMatchObject({ kind: 'leaf', item: { id: launch.id } });
+  expect(withLaunch[1]).toMatchObject({ kind: 'group', anchor: { id: completion.id } });
+  expect(groupItemsBySubagent([completion])[0]).toMatchObject({ kind: 'group', anchor: { id: completion.id } });
+});

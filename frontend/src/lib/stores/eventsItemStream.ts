@@ -1,3 +1,4 @@
+import { itemTranscriptScope } from '../utils/itemTranscriptScope';
 import { optimisticInterruptCut, noteHiddenInterruptItem } from './threadInterruptState.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { threadBackend, HOME_BACKEND } from '../transport/entityIndex';
@@ -291,17 +292,13 @@ function applyItemUpserts(upserts: Item[]): void {
     const applied = pane.applyProviderItemUpserts(threadItems);
     if (applied) {
       changedThreadIds.add(threadId);
-      const hasLiveContentAdvance = applied.changedItems.some((item) =>
-        providerUpsertAdvancesLiveContent(previousItemsById.get(item.id), item),
-      );
-      // A provider upsert that advances live content marks the
-      // scroll-animation latch so the controller spring-chases. New
-      // text-like rows and visible-field updates to any mounted row
-      // stamp here; timestamp-only bumps deliberately do not — see
-      // providerUpsertAdvancesLiveContent. New non-text rows stamp via
-      // the pane's gated append arm inside applyProviderItemUpserts
-      // instead of this ungated path.
-      if (hasLiveContentAdvance) pane.markLiveContentAdvanced();
+      for (const item of applied.changedItems) {
+        const previous = previousItemsById.get(item.id);
+        if (providerUpsertAdvancesLiveContent(previous, item) ||
+          (!previous && itemTranscriptScope(item, pane.getItemById))) {
+          pane.markLiveContentAdvanced(item);
+        }
+      }
     }
   }
   // A thread with no mounted pane has no timeline for the row to be

@@ -1,3 +1,5 @@
+import { groupActivityRunSpans } from '../utils/activityRunSpans';
+import { refreshRetainedRunWindows } from './threadRetainedRunRefresh';
 import { awaitBackendReplay } from './transportRecovery';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
@@ -963,6 +965,7 @@ export function createThreadSwitchLoad(
     sentStamp: ThreadHistoryStamp | null,
     sentWindow: HeldWindow | null,
     deferredItems: readonly Item[],
+    pageAttested: boolean,
   ): void {
     const threadId = newThread.id;
     if (response.status === 'gone') {
@@ -1048,7 +1051,7 @@ export function createThreadSwitchLoad(
     //  - a held window: the server re-derived those exact `(id, rev)`
     //    pairs from the database in the same read transaction as the
     //    stamp it returned, so the rows on screen ARE that read.
-    if ((page || sentStamp?.attested || sentWindow)
+    if (pageAttested && (page || sentStamp?.attested || sentWindow)
       && !liveTouchedDuringSync?.size && !liveRemovedDuringSync?.size
       && options.streamingReveal.smootherCount() === 0) {
       // The pane's own copy: this answer attested the window it is
@@ -1115,7 +1118,7 @@ export function createThreadSwitchLoad(
     const paintedWindow = (): HeldWindow | null => {
       if (paintSource === 'none' || options.optimisticItemIds.size > 0) return null;
       return heldWindowOf(
-        options.getItems(),
+        options.activityRuns.loadedItems(options.getItems()),
         options.timelineWindow.hasMoreHistory,
         options.timelineWindow.hasMoreNewer,
         options.activityRuns.heldRunFold(),
@@ -1212,6 +1215,15 @@ export function createThreadSwitchLoad(
           throw new Error('Conversation synchronization returned no history for an unverified window');
         }
       }
+      let pageAttested = true;
+      if (response.page && !lineageChanged) {
+        const retainedPage = await refreshRetainedRunWindows(threadId, response.page,
+          groupActivityRunSpans(options.activityRuns.loadedItems(options.getItems()), item => options.activityRuns.isLoadedMember(item.id)), timelinePageShape(),
+          () => gen === options.getSwitchGeneration());
+        if (gen !== options.getSwitchGeneration()) return;
+        pageAttested = retainedPage === response.page;
+        response = { ...response, page: retainedPage };
+      }
       // Runs in parallel with the sync ask; never rejects (a failed
       // fetch resolves with empty deferredItems). The retry path passes
       // null — its pane self-heals through the next refresh or echo.
@@ -1230,6 +1242,7 @@ export function createThreadSwitchLoad(
         sentStamp,
         sentWindow,
         deferredItems,
+        pageAttested,
       );
       liveState?.apply(() => refreshScheduler.request({ immediate: true }));
       if (gen === options.getSwitchGeneration()) {
@@ -1607,6 +1620,8 @@ export function createThreadSwitchLoad(
             runs: mergeRunStubs(paged.runs, older.runs) };
           remaining -= older.items.filter(item => !item.parentId).length;
         }
+        paged = await refreshRetainedRunWindows(currentThread.id, paged,
+          groupActivityRunSpans(options.activityRuns.loadedItems(options.getItems()), item => options.activityRuns.isLoadedMember(item.id)), shape, refreshIsCurrent);
       } catch (err) {
         if (!refreshIsCurrent()) return;
         console.error('Failed to refresh thread items after gap:', err);

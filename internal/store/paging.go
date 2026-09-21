@@ -220,11 +220,16 @@ func pageEdgeCursor(edge Item, runs []ActivityRunStub, oldestSide bool) Timeline
 // to a run that continues past it. Those rows are counted by the run's
 // stub, never re-shipped.
 func (s *Store) ListItemsBeforeCursor(threadID string, before TimelineCursor, itemBudget, runWindowRows int) (PagedItems, error) {
+	return readSnapshot(s.reader(), "before cursor page", func(q sqlQueryer) (PagedItems, error) {
+		return s.listItemsBeforeCursor(q, threadID, before, itemBudget, runWindowRows)
+	})
+}
+
+func (s *Store) listItemsBeforeCursor(q sqlQueryer, threadID string, before TimelineCursor, itemBudget, runWindowRows int) (PagedItems, error) {
 	if itemBudget <= 0 || !cursorIsValid(before) {
 		return emptyPagedItems(), nil
 	}
 	runWindowRows = clampActivityRunWindowRows(runWindowRows)
-	q := s.reader()
 	unit, older, found, err := lastOlderUnit(q, threadID, before)
 	if err != nil {
 		return PagedItems{}, err
@@ -245,11 +250,16 @@ func (s *Store) ListItemsBeforeCursor(threadID string, before TimelineCursor, it
 // selected. It is the forward pager companion to ListItemsBeforeCursor
 // and expands its oldest unit whole for the same reason.
 func (s *Store) ListItemsAfterCursor(threadID string, after TimelineCursor, itemBudget, runWindowRows int) (PagedItems, error) {
+	return readSnapshot(s.reader(), "after cursor page", func(q sqlQueryer) (PagedItems, error) {
+		return s.listItemsAfterCursor(q, threadID, after, itemBudget, runWindowRows)
+	})
+}
+
+func (s *Store) listItemsAfterCursor(q sqlQueryer, threadID string, after TimelineCursor, itemBudget, runWindowRows int) (PagedItems, error) {
 	if itemBudget <= 0 || !cursorIsValid(after) {
 		return emptyPagedItems(), nil
 	}
 	runWindowRows = clampActivityRunWindowRows(runWindowRows)
-	q := s.reader()
 	unit, newer, found, err := firstNewerUnit(q, threadID, after)
 	if err != nil {
 		return PagedItems{}, err
@@ -315,7 +325,7 @@ func (s *Store) decoratePagedItems(q sqlQueryer, threadID string, items []Item) 
 	if err != nil {
 		return nil, fmt.Errorf("store: decorate paged subagent anchors for %s: %w", threadID, err)
 	}
-	return decorated, nil
+	return s.decorateCompletionLaunches(q, threadID, decorated)
 }
 
 func emptyPagedItems() PagedItems {
@@ -401,7 +411,9 @@ func hasNewerItems(q sqlQueryer, threadID string, cursor TimelineCursor) (bool, 
 // (bottom-snapshot restore, stale snapshot whose anchor has been
 // deleted), the function returns the tail window.
 func (s *Store) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount, runWindowRows int) (PagedItems, error) {
-	return s.listThreadSliceAround(s.reader(), threadID, anchorItemID, targetItemCount, runWindowRows)
+	return readSnapshot(s.reader(), "thread slice", func(q sqlQueryer) (PagedItems, error) {
+		return s.listThreadSliceAround(q, threadID, anchorItemID, targetItemCount, runWindowRows)
+	})
 }
 
 // listThreadSliceAround is ListThreadSliceAround against a caller-chosen

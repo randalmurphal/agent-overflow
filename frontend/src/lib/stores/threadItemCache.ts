@@ -1,3 +1,4 @@
+import { retainedItemChars, snapshotItem } from '../utils/itemMemory';
 import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
 import type { Item } from '../types/models';
 import type { SubagentFoldSnapshot } from '../utils/subagentFold';
@@ -160,12 +161,9 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
         byThread.delete(threadId);
         return;
       }
-      // Snapshot the array with one shallow per-item clone so a
-      // post-set caller mutation can't poison the cache. Item is a
-      // flat primitive shape (see frontend/src/lib/types/models.ts);
-      // strings/numbers are value types or reference-immutable.
+      // Copy the row and attached context; strings remain shared immutable values.
       const stored: ThreadItemSnapshot = {
-        items: snapshot.items.map((it) => ({ ...it })),
+        items: snapshot.items.map(snapshotItem),
         oldestLoadedCursor: snapshot.oldestLoadedCursor ? { ...snapshot.oldestLoadedCursor } : null,
         newestLoadedCursor: snapshot.newestLoadedCursor ? { ...snapshot.newestLoadedCursor } : null,
         oldestLoadedTurnIndex: snapshot.oldestLoadedTurnIndex,
@@ -233,16 +231,7 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
 function estimateSnapshotChars(snapshot: ThreadItemSnapshot): number {
   let chars = 0;
   for (const item of snapshot.items) {
-    chars += item.summary?.length ?? 0;
-    chars += item.meta?.length ?? 0;
-    chars += item.payloadMeta?.length ?? 0;
-    // Preview spans are a highlight blob that rides the item row on the
-    // wire and can dwarf the summary it decorates. Counted here so the
-    // in-memory snapshot and its durable counterpart (replica
-    // `estimateBodyChars`) are measured on ONE scale — the two tiers
-    // share their per-window caps, so an estimator that skipped this
-    // would let a window the replica refuses sit in the LRU.
-    chars += item.payloadPreviewSpans?.length ?? 0;
+    chars += retainedItemChars(item);
   }
   // Folded subagent children ride the snapshot as one id string per
   // evicted row; a subagent-heavy turn can make the fold outweigh the

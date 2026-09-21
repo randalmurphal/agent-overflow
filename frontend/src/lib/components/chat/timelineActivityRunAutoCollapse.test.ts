@@ -47,7 +47,8 @@ function harness(): Harness {
     threadId: () => null,
     pageShape: () => ({ inlinePreviews: true, runWindowRows: 5, maxBytes: 1024 }),
     mountRunMembers: () => {},
-    reloadWindow: () => {},
+    windowBounds: () => ({ oldest: null, newest: null }),
+    reloadWindow: async () => {},
     reportFetchFailure: () => {},
   });
   const items = new Map<string, Item>();
