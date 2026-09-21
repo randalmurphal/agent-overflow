@@ -1040,8 +1040,8 @@ func TestForkThreadClaudeMidTurnKeepsTriageWrittenSettledBackgroundWork(t *testi
 	if launch.ID == "" {
 		t.Fatal("settled background launch missing from the fork")
 	}
-	if launch.ID == "bg-done-launch" {
-		t.Error("fork leaked the source launch id")
+	if launch.ID != "bg-done-launch" || launch.ThreadID != forked.ID {
+		t.Error("fork lost the thread-scoped launch identity")
 	}
 	if launch.Status != "running" || !launch.IsBackground {
 		t.Errorf("forked launch = status %q bg=%v, want running background verbatim (the settle must not flip it)", launch.Status, launch.IsBackground)

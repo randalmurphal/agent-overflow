@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { pendingForks } from '../../stores/forkPreparation.svelte';
+  import ForkPendingRow from './ForkPendingRow.svelte';
   import { projectHasScope } from '../../transport/entityScopes';
   // Nested thread list for a single project. Builds the discussion tree
   // (depth ≤ 2) once per render so child status / activity bubbles into
@@ -90,7 +92,7 @@
   // reaching the DOM.
   let tree = $derived(
     buildSidebarThreadTree({
-      threads,
+      threads: threads.filter(thread => !thread.forkPreparing),
       groups,
       statusOf: (thread) => getEffectiveThreadStatus(thread),
       activityOf: (thread) => getThreadLiveActivityAt(thread),
@@ -314,6 +316,14 @@
   }
 
 </script>
+
+{#each threads.filter(thread => thread.forkPreparing) as thread (thread.id)}
+  <ForkPendingRow title={thread.title} />
+{/each}
+
+{#each pendingForks(projectId).filter(source => !threads.some(thread => thread.forkPreparing && thread.forkedFromThreadId === source.id)) as source (source.id)}
+  <ForkPendingRow title={`${source.title} (fork)`} />
+{/each}
 
 {#if threads.length === 0 && groups.length === 0}
   <button

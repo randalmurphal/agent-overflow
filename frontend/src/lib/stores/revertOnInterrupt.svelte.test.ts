@@ -342,14 +342,15 @@ describe('runInterruptOrRevert', () => {
     });
   });
 
-  it('ignores malformed attachment metadata during optimistic draft restore', async () => {
+  it('ignores malformed attachments and scopes inherited draft attachments to this thread', async () => {
     const pane = readyPane();
     pane.upsertItem({
       ...userItem('u:0', 0),
       meta: JSON.stringify({
         attachments: [
           null,
-          { id: 'cross-thread', threadId: 'other-thread', filename: 'x.png', mimeType: 'image/png', size: 1 },
+          { id: 'inherited', threadId: 'source-thread', filename: 'x.png', mimeType: 'image/png', size: 1 },
+          { id: '', threadId: 'thread-1', filename: 'x.png', mimeType: 'image/png', size: 1 },
           { id: 'bad-mime', threadId: 'thread-1', filename: 'x.txt', mimeType: 'text/plain', size: 1 },
           { id: 'att-1', threadId: 'thread-1', filename: 'shot.png', mimeType: 'image/png', size: 123 },
         ],
@@ -363,7 +364,8 @@ describe('runInterruptOrRevert', () => {
     runInterruptOrRevert(pane, draft);
     await flushInterruptFlow();
 
-    expect(draft.applied?.attachments.map((attachment) => attachment.id)).toEqual(['att-1']);
+    expect(draft.applied?.attachments.map((attachment) => [attachment.id, attachment.threadId]))
+      .toEqual([['inherited', 'thread-1'], ['att-1', 'thread-1']]);
   });
 
   it('restores the optimistic row removal when the backend declines the revert', async () => {

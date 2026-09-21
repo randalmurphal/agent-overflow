@@ -643,7 +643,8 @@ func TestThreadSpawnRemovesTheThreadWhenItsGroupPatchFails(t *testing.T) {
 	source.ProjectID = ""
 	source.Provider = string(provider.Claude)
 	source.SessionRef = "spawn-group-failure"
-	source.WorkspacePath = t.TempDir()
+	fixture := newMidTurnForkFixture(t, "spawn-group-failure", midTurnSourceJSONL)
+	source.WorkspacePath = fixture.workspace
 	if err := f.app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}

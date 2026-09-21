@@ -35,10 +35,8 @@ func ItemReadIsDecorated(item Item) bool {
 // child row, so a tool call that is not a resume carrier and has no
 // child decorates to itself: the write's read-back is the page read.
 // Every other admitted row still needs ListWireItems. The probe is the
-// one subagentLaunchFilterFor makes, on idx_items_parent, local rows
-// only: a launch the router wrote sits past the import cursor, and an
-// import refresh refuses such a thread (sessionimport.Diverged), so it
-// can never gain imported children.
+// one subagentLaunchFilterFor makes, including prepared descendants in the
+// immutable history arm.
 func (s *Store) ItemReadNeedsDecoration(item Item) (bool, error) {
 	if !ItemReadIsDecorated(item) {
 		return false, nil
@@ -49,7 +47,7 @@ func (s *Store) ItemReadNeedsDecoration(item Item) (bool, error) {
 	var hasChild int
 	if err := s.reader().QueryRow(
 		`SELECT EXISTS(
-		    SELECT 1 FROM items child
+		    SELECT 1 FROM timeline_items child
 		     WHERE child.thread_id = ? AND child.parent_id = ? AND child.parent_id <> ''
 		)`, item.ThreadID, item.ID,
 	).Scan(&hasChild); err != nil {
@@ -122,7 +120,7 @@ func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) (
 		var parentID, completionOf string
 		var rev int64
 		err := tx.QueryRow(
-			`SELECT parent_id, completion_of, rev FROM items WHERE thread_id = ? AND id = ?`,
+			`SELECT parent_id, completion_of, rev FROM timeline_items WHERE thread_id = ? AND id = ?`,
 			threadID, id,
 		).Scan(&parentID, &completionOf, &rev)
 		if errors.Is(err, sql.ErrNoRows) {

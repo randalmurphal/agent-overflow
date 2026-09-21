@@ -1614,3 +1614,17 @@ describe('<ThreadRow> compact layout', () => {
     expect(getByTestId('thread-row').getAttribute('draggable')).toBe('true');
   });
 });
+
+describe('<ThreadRow> fork preparation', () => {
+  it('renders a noninteractive status until the provider fork is ready', async () => {
+    const view = render(ThreadRow, { thread: makeThread({ forkPreparing: true }), pane: null });
+    expect(view.getByRole('status')).toHaveAttribute('aria-busy', 'true');
+    expect(view.queryByTestId('thread-row')).toBeNull();
+    expect(view.container.querySelector('button, a, [tabindex], [draggable="true"]')).toBeNull();
+    await fireEvent.contextMenu(view.getByRole('status'));
+    expect(view.queryByText('Fork Thread')).toBeNull();
+    await view.rerender({ thread: makeThread({ forkPreparing: false }), pane: null });
+    expect(view.queryByRole('status')).toBeNull();
+    expect(view.getByTestId('thread-row')).toBeInTheDocument();
+  });
+});

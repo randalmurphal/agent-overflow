@@ -38,6 +38,10 @@ func (t threadToolsApp) localThread(threadID string) (store.Thread, error) {
 	if err != nil {
 		return store.Thread{}, threadToolsNotFound(threadID)
 	}
+	if thread.ForkPreparing {
+		return store.Thread{}, errorsx.Public(threadtools.CodeInvalidRequest,
+			"This fork is still being prepared. Try again once it appears in thread_search.", store.ErrForkPreparing)
+	}
 	if err := t.app.store.CheckThreadTransferAccess(threadID); err != nil {
 		var moved *store.ThreadTransferError
 		if errors.As(err, &moved) {
@@ -272,6 +276,9 @@ const threadToolsPrefixScan = 4 * threadtools.MaxResolutionCandidates
 // The search and the listing do not come through here: their rules are
 // store filters, so a page never drops a row it read.
 func (t threadToolsApp) threadVisibleToTools(thread store.Thread, callerThreadID string) (bool, error) {
+	if thread.ForkPreparing {
+		return false, nil
+	}
 	if err := t.app.store.CheckThreadTransferAccess(thread.ID); err != nil {
 		var moved *store.ThreadTransferError
 		if errors.As(err, &moved) {

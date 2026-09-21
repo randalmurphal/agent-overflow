@@ -80,7 +80,7 @@ func (s *Store) GetAttachment(id string) (Attachment, bool, error) {
 // ListAttachments returns every attachment for a thread in creation order.
 func (s *Store) ListAttachments(threadID string) ([]Attachment, error) {
 	rows, err := s.reader().Query(
-		`SELECT `+attachmentColumns+` FROM attachments WHERE thread_id = ? ORDER BY created_at ASC, id ASC`,
+		`SELECT `+attachmentColumns+` FROM attachments WHERE id IN (SELECT attachment_id FROM attachment_owners WHERE thread_id = ?) ORDER BY created_at ASC, id ASC`,
 		threadID,
 	)
 	if err != nil {
@@ -94,6 +94,7 @@ func (s *Store) ListAttachments(threadID string) ([]Attachment, error) {
 		if err != nil {
 			return nil, fmt.Errorf("store: scan attachment row: %w", err)
 		}
+		a.ThreadID = threadID
 		attachments = append(attachments, a)
 	}
 	if err := rows.Err(); err != nil {

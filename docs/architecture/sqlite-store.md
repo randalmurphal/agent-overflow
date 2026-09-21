@@ -102,6 +102,30 @@ branches and threads. Payload accessors and joins always use both columns.
 `payloads.data`, payload chunks, and full highlight spans load on demand; list
 reads carry summaries, metadata, and capped preview spans.
 
+Forks retain thread-scoped item IDs. Completed content is prepared in the
+background into immutable chunks, capped at 64 rows and 4 MiB per transaction.
+Preparation preserves logical content, thread stamps and search rowids. User
+messages, tool execution records, anchors, plans, live rows and oversized
+payloads remain private. Preparation is optional for correctness; a fork can
+copy an unprepared prefix using payload snapshots.
+
+A fork attaches complete chunks and copies private rows and chunks intersecting
+a cut or override. New writes belong to the destination's private overlay.
+Revert adds deletion overrides and detaches empty chunks without materializing
+the retained prefix. Search mappings remain per thread and are inserted in
+bounded batches, preserving existing search results and tie ordering.
+
+Private payloads share immutable snapshots through `resolved_payloads` and the
+logical chunk/edit-snapshot views. Schema triggers preserve borrowed bytes
+before source mutation or deletion. Forks of forks reuse the same snapshot.
+Writes detach a fork's payload when existing bytes or edit snapshots must
+survive the change.
+
+Attachment ownership is separate from its canonical storage path. A fork
+retains ownership of attachments referenced by its kept timeline rows. Deleting
+an original thread keeps those paths available to surviving forks and their
+native provider history. The final owner releases the metadata and bytes.
+
 ## Schema-owned invariants
 
 Four trigger families ride `items`:
@@ -145,8 +169,10 @@ whole-row value from clobbering a concurrent lifecycle transition.
 `RestoreFrom` replaces the history dataset. It refuses restore while a remote
 command or transfer phase makes replacement unsafe, and it rejects snapshots
 that predate current incoming ownership. During the copy it drops and recreates
-history and background-settlement triggers so the snapshot's counters and
-derived flags land as recorded.
+history, background-settlement, payload-snapshot, attachment-ownership and
+chunk-admission triggers. It restores the complete reference graph before
+reinstating them in the same transaction, preserving recorded counters and
+derived flags.
 
 The following state is authoritative and must never be treated as disposable
 provider history:

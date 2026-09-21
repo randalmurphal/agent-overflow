@@ -1447,6 +1447,7 @@ export class Thread {
     "prRef"?: string;
     "sessionRef"?: string;
     "pendingForkRef"?: string;
+    "forkPreparing"?: boolean;
 
     /**
      * PendingForkResumeAt pins the transcript cut for a lazy Claude fork:
@@ -1454,8 +1455,8 @@ export class Thread {
      * fork's first session start passes it (repaired against the CLI's
      * resume filters) as --resume-session-at alongside --fork-session so
      * the cut lands where the timeline was cloned, not wherever the source
-     * has grown to by first send. Empty = unpinned (idle-source lazy fork,
-     * every non-fork thread). Cleared with PendingForkRef by both
+     * has grown to by first send. Empty on non-lazy forks and legacy
+     * unpinned forks. Cleared with PendingForkRef by both
      * session-ref writers.
      */
     "pendingForkResumeAt"?: string;
@@ -1692,10 +1693,10 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField36_0 = $$createType18;
+        const $$createField37_0 = $$createType18;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("origin" in $$parsedSource) {
-            $$parsedSource["origin"] = $$createField36_0($$parsedSource["origin"]);
+            $$parsedSource["origin"] = $$createField37_0($$parsedSource["origin"]);
         }
         return new Thread($$parsedSource as Partial<Thread>);
     }

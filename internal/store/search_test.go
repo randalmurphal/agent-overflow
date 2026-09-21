@@ -1,10 +1,34 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 )
+
+func TestSearchHidesPreparingForkUntilPublication(t *testing.T) {
+	s := newTestStore(t)
+	thread := makeThread("pending", "claude")
+	thread.Title = "quokka"
+	thread.ForkPreparing = true
+	if err := s.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	mustInsertItemForSearch(t, s, thread.ID, "item", 0, "quokka", 1)
+	if hits, err := s.SearchThreadMessages("quokka", 10); err != nil || len(hits) != 0 {
+		t.Errorf("global search exposed preparing fork: %+v err=%v", hits, err)
+	}
+	if _, err := s.SearchThreadItems(thread.ID, "quokka", 10); !errors.Is(err, ErrForkPreparing) {
+		t.Errorf("thread search accepted preparing fork: %v", err)
+	}
+	if _, err := s.FinishForkPreparation(thread.ID); err != nil {
+		t.Fatal(err)
+	}
+	if hits, err := s.SearchThreadMessages("quokka", 10); err != nil || len(hits) != 2 {
+		t.Fatalf("ready fork search: %+v err=%v", hits, err)
+	}
+}
 
 func mustCreateThreadForSearch(t *testing.T, s *Store, id, title string) {
 	t.Helper()

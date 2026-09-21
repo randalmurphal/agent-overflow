@@ -35,6 +35,9 @@ func (s *Store) PutEditFileSnapshot(threadID, payloadID, path, content string, c
 	if err := ensureLocalPayloadTx(tx, threadID, payloadID, label); err != nil {
 		return err
 	}
+	if err := materializePayloadSnapshotTx(tx, threadID, payloadID); err != nil {
+		return err
+	}
 	result, err := tx.Exec(
 		`INSERT INTO edit_file_snapshots (thread_id, payload_id, path, content, created_at)
 		 SELECT ?, ?, ?, ?, ?
@@ -65,7 +68,7 @@ func (s *Store) GetEditFileSnapshot(threadID, payloadID, path string) (string, b
 	var blob []byte
 	err := s.reader().QueryRow(
 		`SELECT content
-		   FROM edit_file_snapshots
+		   FROM timeline_edit_file_snapshots
 		  WHERE thread_id = ? AND payload_id = ? AND path = ?`,
 		threadID, payloadID, path,
 	).Scan(&blob)
@@ -90,7 +93,7 @@ func (s *Store) GetLatestTurnEditFileSnapshot(threadID string, turnIndex int, pa
 	var blob []byte
 	err := s.reader().QueryRow(
 		`SELECT s.content
-		   FROM edit_file_snapshots s
+		   FROM timeline_edit_file_snapshots s
 		   JOIN timeline_items i ON i.thread_id = s.thread_id AND i.payload_id = s.payload_id
 		  WHERE i.thread_id = ? AND i.turn_index = ? AND s.path = ?
 		  ORDER BY i.item_index DESC

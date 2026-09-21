@@ -308,6 +308,8 @@ func TestCascade_ForkPreservesOriginalState(t *testing.T) {
 
 	source := e2eThreadCascade("thread-cascade-fork-src", provider.Claude, t.TempDir())
 	source.SessionRef = "claude-sess-fork"
+	fixture := newMidTurnForkFixture(t, "claude-sess-fork", midTurnSourceJSONL)
+	source.WorkspacePath = fixture.workspace
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}
@@ -345,7 +347,7 @@ func TestCascade_ForkPreservesOriginalState(t *testing.T) {
 		t.Fatalf("source draft lost: ok=%v draft=%+v", ok, draft)
 	}
 
-	// Fork has its own item IDs but the same summaries.
+	// Item identities are thread-scoped; inherited IDs and summaries stay stable.
 	forkedItems, _ := app.store.ListItems(forked.ID)
 	if len(forkedItems) != 2 {
 		t.Fatalf("fork items = %d, want 2", len(forkedItems))
@@ -355,8 +357,8 @@ func TestCascade_ForkPreservesOriginalState(t *testing.T) {
 		srcIDs[it.ID] = true
 	}
 	for _, it := range forkedItems {
-		if srcIDs[it.ID] {
-			t.Fatalf("fork reuses source item ID %s", it.ID)
+		if !srcIDs[it.ID] {
+			t.Fatalf("fork lost inherited item ID %s", it.ID)
 		}
 		if it.ThreadID != forked.ID {
 			t.Fatalf("fork item threadID = %q, want %q", it.ThreadID, forked.ID)

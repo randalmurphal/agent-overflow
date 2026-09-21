@@ -11,6 +11,7 @@ export async function launchLifecycleBrowser(proxy: string) {
   const profile = await mkdtemp(join(tmpdir(), 'ao-browser-lifecycle-'));
   const child = spawnContained(chromium.executablePath(), [
     '--headless=new', '--no-sandbox', '--disable-dev-shm-usage',
+    '--password-store=basic', '--use-mock-keychain',
     '--remote-debugging-port=0', `--user-data-dir=${profile}`, `--proxy-server=${proxy}`, 'about:blank',
   ], { detached: true, stdio: ['ignore', 'ignore', 'pipe'], memoryLimitBytes: FALLBACK_MEMORY_LIMIT_BYTES });
   const lines = createInterface({ input: child.stderr! });

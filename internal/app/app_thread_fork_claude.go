@@ -18,23 +18,10 @@ import (
 
 // forkClaudeThread wires Claude's resume state for the new fork.
 //
-// Fork at tail (atTurnIndex == nil OR atTurnIndex >= lastTurn) on an
-// IDLE source: the plain "lazy fork" — stamp PendingForkRef =
-// source.SessionRef, and the next session start passes --fork-session
-// to the Claude CLI, which forks from the source JSONL's tail at
-// startup. With no session live, that tail is exactly the tail the
-// timeline was cloned at, so no pin is needed.
-//
-// Fork at tail, LIVE source (midTurnCut != nil): the PINNED lazy fork.
-// Same PendingForkRef mechanism, plus PinnedResumeAt = the leaf the
-// caller captured before the clone. The fork's first session start
-// repairs that pin against the CLI's resume filters and passes
-// `--resume-session-at <cursor> --fork-session`, which makes the CLI
-// cut its fork copy exactly at the pin even when the source has kept
-// streaming since (spike-verified 2.1.237: rows after the cursor are
-// dropped from the fork copy). Unpinned lazy on a live source is
-// forbidden — it snapshots whatever the transcript looks like at first
-// send, minutes or turns later (the 2026-08-22 skew incident).
+// Every tail fork pins the lazy --fork-session cut before cloning history.
+// The source may advance while the fork waits for its first send, including
+// when the source was idle at fork time. An unstarted fork retains its
+// inherited pin. The first send repairs that pin against CLI resume filters.
 //
 // Fork at point: slice the source JSONL ourselves (the official
 // recipe — see internal/provider/claude/sessionfork). The new
@@ -92,14 +79,7 @@ func (a *App) forkClaudeThread(source store.Thread, atTurnIndex *int, midTurnCut
 				source.ID,
 			)
 		}
-		// Lazy fork-at-tail — startSession will pass --fork-session.
-		// No inline slice happens here so there's nothing to remap;
-		// the fork's --fork-session start will mint new UUIDs that the
-		// AO row's stored provider_item_id never sees. A subsequent
-		// revert in the fork falls back to the ordinal walk (now
-		// synthetic-flag-safe) via the ErrMessageNotFound branch in
-		// `writeRevertedClaudeSession`.
-		return forkResumeState{PendingForkRef: source.SessionRef}, nil
+		return forkResumeState{}, fmt.Errorf("fork thread: Claude tail cut was not captured")
 	}
 
 	projectsDir, err := a.claudeProjectsDir()
@@ -133,7 +113,7 @@ func (a *App) forkClaudeThread(source store.Thread, atTurnIndex *int, midTurnCut
 	}, nil
 }
 
-// claudeMidTurnCut is the transcript cut for a live-source tail fork,
+// claudeMidTurnCut is the transcript cut for a Claude tail fork,
 // resolved BEFORE the SQLite clone so the pin and the cloned timeline
 // describe the same moment (see ForkThread). A zero SourcePath or Leaf
 // is the sanctioned degenerate case: the fork starts a FRESH provider
@@ -200,6 +180,12 @@ func (a *App) captureClaudeMidTurnCut(source store.Thread) (claudeMidTurnCut, er
 	}
 
 	cut := claudeMidTurnCut{SessionRef: sourceRef, WorkspacePath: source.WorkspacePath, SourcePath: srcPath, ProjectsDir: projectsDir}
+	// A fork of an unstarted fork inherits its saved cut, even if the
+	// original source has gained more messages since that cut was taken.
+	if source.PendingForkRef != "" && source.PendingForkResumeAt != "" {
+		cut.Leaf = source.PendingForkResumeAt
+		return cut, nil
+	}
 	if sess, ok := a.activeClaudeSession(source.ID); ok {
 		if leaf := sess.CanonicalLeafUUID(); leaf != "" {
 			cut.Leaf = leaf
@@ -350,15 +336,8 @@ func (a *App) lookupTurnAnchorClaudeUUID(threadID string, turnIndex int) string 
 // Returns nil when the thread has no Claude-stamped rows (Codex fork,
 // lazy fork-at-tail, fork of a pre-stamp thread).
 //
-// Atomicity note: per-row UPDATEs run outside a single SQL transaction.
-// In the fork pipeline that is safe because every caller wraps the
-// remap in a `closer.Stack` whose rollback deletes the fork thread
-// (and cascades to its items + anchors) on any error — a mid-remap
-// failure never leaves a partially-remapped fork visible to readers.
-// The un-send path does NOT use this method: it commits the same
-// rewrites atomically with its SessionRef move via
-// computeClaudeProviderIDRemap + UpdateSessionRefAndRemapProviderIDs
-// (round-6, R6-5).
+// Item and anchor rewrites commit in one transaction. Rollback also moves
+// SessionRef in that transaction via UpdateSessionRefAndRemapProviderIDs.
 func (a *App) remapClaudeProviderIDs(threadID string, uuidMap map[string]string) error {
 	return a.threadApplication().ApplyClaudeProviderIDRemap(threadID, uuidMap)
 }
@@ -366,7 +345,7 @@ func (a *App) remapClaudeProviderIDs(threadID string, uuidMap map[string]string)
 // computeClaudeProviderIDRemap reads the thread's user rows and
 // message anchors and returns the rewrites uuidMap implies, without
 // applying anything. Shared by remapClaudeProviderIDs (fork pipeline,
-// per-row writes under the saga rollback) and the un-send path (which
+// atomic writes under the saga rollback) and the un-send path (which
 // hands the result to UpdateSessionRefAndRemapProviderIDs so the rewrites
 // commit atomically with the SessionRef move — round-6, R6-5).
 func (a *App) computeClaudeProviderIDRemap(threadID string, uuidMap map[string]string) ([]store.ItemMetaUpdate, []store.MessageAnchorProviderIDsUpdate, error) {

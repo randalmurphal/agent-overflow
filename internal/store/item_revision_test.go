@@ -630,7 +630,7 @@ func TestItemRevisionUnderBulkLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := materializeSharedHistoryTx(tx, "t", "test materialize"); err != nil {
+	if _, err := localizeImportedItemTx(tx, "t", "imported", "test localize"); err != nil {
 		tx.Rollback()
 		t.Fatalf("materialize: %v", err)
 	}

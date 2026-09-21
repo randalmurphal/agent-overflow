@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { keepSideChat, openSideChat } from './sideChat';
 import {
+  closeCompanion,
   getCompanionPane,
   installCompanionPanes,
   isCompanionOpen,
@@ -175,5 +176,39 @@ describe('keepSideChat', () => {
   it('does nothing for a pane that holds no thread', async () => {
     await keepSideChat('ghost');
     expect(getBindingMock('PromoteScratchThread')?.mock.calls ?? []).toEqual([]);
+  });
+});
+
+describe('side chat preparation', () => {
+  it('opens a loading pane immediately and refuses duplicate requests', async () => {
+    let finish!: (thread: typeof FORK) => void;
+    setBindingMock('ForkSideChat', () => new Promise(resolve => { finish = resolve; }));
+    const pane = sourcePane();
+    const pending = openSideChat(pane);
+    expect(paneIds()).toEqual(['main', 'side-chat-main']);
+    expect(getPane('side-chat-main')?.threadId).toBeFalsy();
+    expect((await openSideChat(pane)).error).toContain('already');
+    finish(FORK);
+    expect(await pending).toEqual({ error: '' });
+    expect(getPane('side-chat-main')?.threadId).toBe(FORK.id);
+  });
+
+  it.each(['success', 'failure'])('keeps a reopened pane when the old request ends with %s', async (outcome) => {
+    let finish!: (thread: typeof FORK) => void;
+    let fail!: (error: Error) => void;
+    setBindingMock('ForkSideChat', () => new Promise((resolve, reject) => { finish = resolve; fail = reject; }));
+    const pane = sourcePane();
+    const old = openSideChat(pane);
+    closeCompanion('side-chat-main');
+    const newer = makeThread({ ...FORK, id: 'new-fork' });
+    setBindingMock('ForkSideChat', async () => newer);
+    expect(await openSideChat(pane)).toEqual({ error: '' });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    if (outcome === 'success') finish(FORK); else fail(new Error('old request failed'));
+    expect((await old).error).not.toBe('');
+    expect(getPane('side-chat-main')?.threadId).toBe(newer.id);
+    expect(paneIds()).toEqual(['main', 'side-chat-main']);
+    expect(getBindingMock('DeleteThread')?.mock.calls ?? []).toEqual(outcome === 'success' ? [[FORK.id]] : []);
+    consoleError.mockRestore();
   });
 });

@@ -631,6 +631,7 @@ export async function mountThreadInPane(
   targetPane?: string | ThreadPane | null,
   activation: PaneActivation = 'committed',
 ): Promise<ThreadPane> {
+  if (thread.forkPreparing) throw new Error('This fork is still being prepared.');
   notePaneLayoutMutation();
   const existing = revealThreadIfOpen(thread.id, activation);
   if (existing) return existing;
@@ -652,6 +653,7 @@ export async function openThreadFromNavigation(
 }
 
 export async function openThreadInNewPane(thread: Thread, insertIndex?: number): Promise<ThreadPane> {
+  if (thread.forkPreparing) throw new Error('This fork is still being prepared.');
   // Probed before minting the pane: a thread that is already open must not
   // leave an orphan empty pane behind.
   const existing = revealThreadIfOpen(thread.id, 'committed');

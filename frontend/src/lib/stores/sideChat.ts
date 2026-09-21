@@ -45,29 +45,30 @@ export async function openSideChat(pane: ThreadPane): Promise<SideChatResult> {
     return { error: 'This pane already has a side chat open.' };
   }
 
+  const companion = openCompanion(pane.paneId, SIDE_CHAT_COMPANION_KIND);
+  if (!companion) return { error: 'The pane moved on before the side chat opened.' };
+  const preparingPane = createPane(companion.paneId);
+  const stillOwnsPane = () => getPane(companion.paneId) === preparingPane;
   let fork: Thread;
   try {
     fork = (await ForkSideChat(threadId)) as Thread;
   } catch (err) {
+    if (stillOwnsPane()) closeCompanion(companion.paneId);
     console.error('Failed to start a side chat:', err);
     return { error: userFacingError(err, 'Failed to start a side chat.') };
   }
-  // The source pane can have changed thread while the fork was in flight.
-  // The fork belongs to the thread it was cut from, so there is nowhere left
-  // to put it.
-  const companion = pane.threadId === threadId
-    ? openCompanion(pane.paneId, SIDE_CHAT_COMPANION_KIND)
-    : null;
-  if (!companion) {
-    void deleteSideChatThread(fork.id);
+  // Closing and reopening can reuse the pane ID. Only this particular pane
+  // instance may receive the completed fork or be removed on failure.
+  if (!stillOwnsPane() || pane.threadId !== threadId) {
+    if (stillOwnsPane()) closeCompanion(companion.paneId);
+    await deleteSideChatThread(fork.id);
     return { error: 'The pane moved on before the side chat opened.' };
   }
   try {
-    await mountThreadInPane(fork, createPane(companion.paneId));
+    await mountThreadInPane(fork, preparingPane);
   } catch (err) {
     console.error('Failed to open the side chat pane:', err);
-    // closeCompanion deletes the fork: the pane it was cut for is gone.
-    closeCompanion(companion.paneId);
+    if (stillOwnsPane()) closeCompanion(companion.paneId);
     return { error: userFacingError(err, 'Failed to open the side chat.') };
   }
   return { error: '' };

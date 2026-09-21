@@ -251,6 +251,9 @@ AND previous.direction='outgoing' AND previous.phase IN ('committed','complete')
 // execution identity. A pending fork references history to copy, not a session
 // to resume, and must not inherit its parent's execution tombstone.
 func (s *Store) CheckThreadExecutionAccess(thread Thread) error {
+	if thread.ForkPreparing {
+		return ErrForkPreparing
+	}
 	if err := s.CheckThreadTransferAccess(thread.ID); err != nil {
 		return err
 	}

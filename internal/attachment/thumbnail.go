@@ -70,7 +70,11 @@ func (s *Store) Thumbnail(threadID, attachmentID string) ([]byte, string, error)
 	if !ok {
 		return nil, "", fmt.Errorf("attachment: id %q not found", attachmentID)
 	}
-	if record.ThreadID != threadID {
+	owned, err := s.meta.OwnsAttachment(threadID, attachmentID)
+	if err != nil {
+		return nil, "", err
+	}
+	if !owned {
 		return nil, "", fmt.Errorf("attachment %q belongs to thread %s, not %s", attachmentID, record.ThreadID, threadID)
 	}
 	// Refused on the ROW, before any decode is attempted. A `file` carries

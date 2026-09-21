@@ -260,9 +260,16 @@ function armSemanticDOM(state: HostState): void {
     for (const element of document.querySelectorAll('[data-item-id]')) {
       const id = element.getAttribute('data-item-id');
       if (!id) continue;
-      const previous = identities.get(id);
+      // Forks retain item IDs. A rendered identity includes the surface and
+      // thread, so sibling panes cannot report each other as remounts.
+      const key = JSON.stringify([
+        element.closest('[data-pane-id]')?.getAttribute('data-pane-id') ?? '',
+        element.closest('[data-thread-id]')?.getAttribute('data-thread-id') ?? '',
+        id,
+      ]);
+      const previous = identities.get(key);
       if (previous && previous !== element) increment(state, 'identityReplacements');
-      current.set(id, element);
+      current.set(key, element);
     }
     identities.clear();
     for (const [id, element] of current) identities.set(id, element);
@@ -278,7 +285,7 @@ function armSemanticDOM(state: HostState): void {
     }
     scan();
   });
-  observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-item-id'] });
+  observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-item-id', 'data-pane-id', 'data-thread-id'] });
   state.cleanup.push(() => observer.disconnect());
 }
 

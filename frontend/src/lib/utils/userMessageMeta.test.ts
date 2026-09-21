@@ -28,6 +28,11 @@ function entry(overrides: Record<string, unknown> = {}): Record<string, unknown>
 // The meta blob is untrusted wire content the timeline renders straight from,
 // so what it is allowed to say is the whole contract here.
 describe('parseUserMessageAttachments — attachment kind', () => {
+  it('requests inherited attachments through the viewing thread ownership', () => {
+    const [attachment] = parseUserMessageAttachments(meta([entry()]), 'fork');
+    expect(attachment).toMatchObject({ id: 'att-1', threadId: 'fork' });
+  });
+
   it('reads an absent kind as image, which is what every pre-kind row carried', () => {
     const [attachment] = parseUserMessageAttachments(meta([entry()]), 'thread-1');
     expect(attachment?.kind).toBe('image');

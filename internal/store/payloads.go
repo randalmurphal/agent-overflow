@@ -6,6 +6,9 @@ import (
 )
 
 func upsertPayloadTx(exec sqlExecutor, threadID string, payload Payload, label string) error {
+	if err := dropPayloadSnapshotRefTx(exec, threadID, payload.ID); err != nil {
+		return err
+	}
 	if _, err := exec.Exec(
 		`DELETE FROM payload_chunks WHERE thread_id = ? AND payload_id = ?`, threadID, payload.ID,
 	); err != nil {
@@ -148,7 +151,7 @@ func (s *Store) GetPayloadData(threadID, id string) ([]byte, error) {
 	}
 	rows, err := s.reader().Query(
 		`SELECT data
-		   FROM payload_chunks
+		   FROM timeline_payload_chunks
 		  WHERE thread_id = ? AND payload_id = ?
 		  ORDER BY chunk_index`,
 		threadID, id,
@@ -231,9 +234,9 @@ func (s *Store) GetPayloadChunk(threadID, id string, offset, maxBytes int) ([]by
 			            CASE WHEN ? > start_offset THEN ? - start_offset + 1 ELSE 1 END,
 			            ?
 			        )
-			   FROM payload_chunks
+			   FROM timeline_payload_chunks
 			  WHERE thread_id = ? AND payload_id = ?
-			    AND start_offset + length(data) > ?
+			    AND start_offset + data_length > ?
 			    AND start_offset < ?
 			  ORDER BY chunk_index`,
 			offset, offset, limit-offset, threadID, id, offset, limit,
@@ -264,17 +267,19 @@ func (s *Store) GetPayloadChunk(threadID, id string, offset, maxBytes int) ([]by
 	return result, total, nextOffset >= total, nil
 }
 
+const payloadLengthsSQL = `SELECT data_length,
+		        (SELECT MAX(start_offset + data_length)
+		           FROM timeline_payload_chunks
+		          WHERE thread_id = timeline_payloads.thread_id
+		            AND payload_id = timeline_payloads.id)
+		   FROM timeline_payloads
+		  WHERE thread_id = ? AND id = ?`
+
 func (s *Store) payloadLengths(threadID, id string) (int, int, error) {
 	var baseLen int
 	var appendedEnd sql.NullInt64
 	err := s.reader().QueryRow(
-		`SELECT length(data),
-		        (SELECT MAX(start_offset + length(data))
-		           FROM payload_chunks
-		          WHERE thread_id = timeline_payloads.thread_id
-		            AND payload_id = timeline_payloads.id)
-		   FROM timeline_payloads
-		  WHERE thread_id = ? AND id = ?`,
+		payloadLengthsSQL,
 		threadID, id,
 	).Scan(&baseLen, &appendedEnd)
 	if err != nil {
@@ -326,6 +331,9 @@ func (s *Store) AppendPayloadData(threadID, id string, delta []byte, meta string
 func appendPayloadDataTx(tx *sql.Tx, threadID, id string, delta []byte, meta string, createdAt int64) error {
 	label := fmt.Sprintf("store: append payload data %s", id)
 	if err := ensureLocalPayloadTx(tx, threadID, id, label); err != nil {
+		return err
+	}
+	if err := materializePayloadSnapshotTx(tx, threadID, id); err != nil {
 		return err
 	}
 	result, err := tx.Exec(
@@ -389,6 +397,9 @@ func (s *Store) ReplacePayloadData(threadID, id string, data []byte, meta string
 	// content; the persist tap recomputes them for the new data. The
 	// blobs are content-addressed per file, so a stale blob would be
 	// inert anyway — clearing just keeps the row honest.
+	if err := materializePayloadSnapshotTx(tx, threadID, id); err != nil {
+		return err
+	}
 	result, err := tx.Exec(
 		`UPDATE payloads SET data = ?, meta = ?, created_at = ?, preview_spans = '', spans = ''
 		  WHERE thread_id = ? AND id = ?`,

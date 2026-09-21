@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"agent-overflow/internal/closer"
@@ -81,12 +80,21 @@ func (a *App) forkThreadTail(ctx context.Context, sourceThreadID string, opts fo
 }
 
 func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnIndex *int, opts forkOptions) (store.Thread, error) {
+	timing := startForkTiming(sourceThreadID, "thread")
+	defer timing.finish()
 	// Hold the source thread's action lock for the duration of the fork so
 	// concurrent SendMessage / InterruptAndRevertIfClean / etc. can't write
 	// to items mid-clone (would produce a torn snapshot in the new fork).
 	// Mirrors the un-send path's thread action lock.
-	unlock := a.threadLocks().Lock(sourceThreadID)
+	unlock, err := a.threadLocks().LockCtx(ctx, sourceThreadID)
+	if err != nil {
+		return store.Thread{}, err
+	}
 	defer unlock()
+	timing.next("validate")
+	if err := ctx.Err(); err != nil {
+		return store.Thread{}, err
+	}
 	if err := a.threadApplication().CheckMutable(sourceThreadID); err != nil {
 		return store.Thread{}, err
 	}
@@ -188,29 +196,33 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	// reached the provider's transcript; that is exactly what a genuine
 	// interrupt leaves behind.
 	var midTurnCut *claudeMidTurnCut
+	timing.next("flush")
 	if live {
 		// Streaming text is durable only every 250ms/4KB, so the clone
 		// would otherwise carry a stale tail. Flush before reading.
 		if a.triage != nil {
 			if err := a.triage.FlushThread(sourceThreadID); err != nil {
-				log.Printf("fork thread: flush source stream buffers for %s: %v", sourceThreadID, err)
+				return store.Thread{}, fmt.Errorf("fork thread: flush source stream buffers: %w", err)
 			}
-		}
-		// Every anchor that means "tail" has been normalized to nil by
-		// now (the active-turn exact match, then the Claude
-		// at-last-turn hoist), so nil-after-normalization is exactly
-		// the set that takes the live-leaf path; a surviving anchor
-		// cuts strictly below anything still moving.
-		if atTurnIndex == nil && source.Provider == string(provider.Claude) {
-			cut, err := a.captureClaudeMidTurnCut(source)
-			if err != nil {
-				return store.Thread{}, err
-			}
-			midTurnCut = &cut
 		}
 	}
+	// Tail anchors were normalized above. Pin idle sources too: they may
+	// receive another turn before the fork's first send.
+	timing.next("checkpoint")
+	if atTurnIndex == nil && source.Provider == string(provider.Claude) {
+		cut, err := a.captureClaudeMidTurnCut(source)
+		if err != nil {
+			return store.Thread{}, err
+		}
+		if !live && cut.degenerate() {
+			return store.Thread{}, fmt.Errorf("fork thread: source thread %q has no resumable Claude session", source.ID)
+		}
+		midTurnCut = &cut
+	}
 
+	timing.next("origin")
 	fork := store.BuildForkedThread(source)
+	fork.ForkPreparing = true
 	// Overrides before the creation stamp and the row write, so the thread
 	// exists exactly once in its final shape: a scratch fork that was listed
 	// as an ordinary thread first and corrected after would show up in every
@@ -246,21 +258,29 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 
 	var cleanups closer.Stack
 
+	timing.next("create")
 	if err := a.store.CreateThread(fork); err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread: create fork thread: %w", err)
 	}
 	cleanups.Add(func() error { return a.cleanupForkThread(fork.ID) })
+	a.broadcastThreadRow(triage.ThreadActionListed, fork)
 
+	timing.next("clone")
 	if _, err := a.store.CloneThreadHistoryThroughTurn(source.ID, fork.ID, atTurnIndex); err != nil {
 		return store.Thread{}, errors.Join(
 			fmt.Errorf("fork thread: clone timeline: %w", err),
 			cleanups.Run(),
 		)
 	}
+	timing.next("settle")
 	if err := a.settleForkAsInterrupted(fork.ID); err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
+	if err := ctx.Err(); err != nil {
+		return store.Thread{}, errors.Join(err, cleanups.Run())
+	}
+	timing.next("provider")
 	resume, err := a.resolveForkResumeState(ctx, source, atTurnIndex, midTurnCut)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
@@ -268,6 +288,7 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	if resume.Cleanup != nil {
 		cleanups.Add(resume.Cleanup)
 	}
+	timing.next("publish")
 	fork.SessionRef = resume.SessionRef
 	fork.PendingForkRef = resume.PendingForkRef
 	fork.PendingForkResumeAt = resume.PinnedResumeAt
@@ -288,11 +309,16 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 		)
 	}
 
-	// The fork row carries cloned history, so it is sidebar-visible the
-	// moment it exists: broadcast it as `listed` so every other attached
-	// client shows it beside the source, as the forking client does.
-	a.broadcastThreadRow(triage.ThreadActionListed, fork)
-	return fork, nil
+	// Publish readiness only after history and provider identity agree.
+	if err := ctx.Err(); err != nil {
+		return store.Thread{}, errors.Join(err, cleanups.Run())
+	}
+	ready, err := a.store.FinishForkPreparation(fork.ID)
+	if err != nil {
+		return store.Thread{}, errors.Join(err, cleanups.Run())
+	}
+	a.broadcastThreadRow(triage.ThreadActionListed, ready)
+	return ready, nil
 }
 
 // ForkThreadFromMessage creates a fork whose conversation stops before the
@@ -302,8 +328,17 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 //ao:scope threads:operate
 //ao:route thread
 func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, userItemID string) (store.Thread, error) {
-	unlock := a.threadLocks().Lock(sourceThreadID)
+	timing := startForkTiming(sourceThreadID, "message")
+	defer timing.finish()
+	unlock, err := a.threadLocks().LockCtx(ctx, sourceThreadID)
+	if err != nil {
+		return store.Thread{}, err
+	}
 	defer unlock()
+	timing.next("validate")
+	if err := ctx.Err(); err != nil {
+		return store.Thread{}, err
+	}
 	if err := a.threadApplication().CheckMutable(sourceThreadID); err != nil {
 		return store.Thread{}, err
 	}
@@ -333,14 +368,16 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 	if !live {
 		_, live = a.activeClaudeSession(sourceThreadID)
 	}
+	timing.next("flush")
 	if live && a.triage != nil {
 		// Streaming text is durable only every 250ms/4KB — flush so the
 		// clone carries the freshest tail (mirrors ForkThread).
 		if err := a.triage.FlushThread(sourceThreadID); err != nil {
-			log.Printf("fork thread from message: flush source stream buffers for %s: %v", sourceThreadID, err)
+			return store.Thread{}, fmt.Errorf("fork thread from message: flush source stream buffers: %w", err)
 		}
 	}
 
+	timing.next("anchor")
 	item, found, err := a.store.GetThreadItem(sourceThreadID, userItemID)
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread from message: load user item: %w", err)
@@ -356,7 +393,9 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 	// path (InterruptAndRevertIfClean).
 	anchor := a.resolveMessageAnchor("fork thread from message", sourceThreadID, item)
 
+	timing.next("origin")
 	fork := store.BuildForkedThread(source)
+	fork.ForkPreparing = true
 	a.stampThreadCreation(ctx, &fork)
 	if _, err := usermessage.FromItem(item); err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread from message: build prompt draft: %w", err)
@@ -369,10 +408,13 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 
 	var cleanups closer.Stack
 
+	timing.next("create")
 	if err := a.store.CreateThread(fork); err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread from message: create fork thread: %w", err)
 	}
 	cleanups.Add(func() error { return a.cleanupForkThread(fork.ID) })
+	a.broadcastThreadRow(triage.ThreadActionListed, fork)
+	timing.next("attachments")
 	promptDraft, err := a.composerDraftFromUserItemWithClonedAttachments(fork.ID, item, promptDraftUpdatedAt)
 	if err != nil {
 		return store.Thread{}, errors.Join(
@@ -381,6 +423,7 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 		)
 	}
 
+	timing.next("clone")
 	// SQLite truncation granularity must match the provider's fork cut
 	// (mirrors rollbackConversationLocked): Codex thread/fork cuts at a turn
 	// boundary, so the clone drops the whole anchor turn; Claude's session
@@ -405,10 +448,15 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 			)
 		}
 	}
+	timing.next("settle")
 	if err := a.settleForkAsInterrupted(fork.ID); err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
 	}
 
+	if err := ctx.Err(); err != nil {
+		return store.Thread{}, errors.Join(err, cleanups.Run())
+	}
+	timing.next("provider")
 	resume, err := a.resolveMessageForkResumeState(ctx, source, anchor, item)
 	if err != nil {
 		return store.Thread{}, errors.Join(err, cleanups.Run())
@@ -416,6 +464,7 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 	if resume.Cleanup != nil {
 		cleanups.Add(resume.Cleanup)
 	}
+	timing.next("publish")
 	fork.SessionRef = resume.SessionRef
 	fork.PendingForkRef = resume.PendingForkRef
 	fork.PendingForkResumeAt = resume.PinnedResumeAt
@@ -439,13 +488,20 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 			cleanups.Run(),
 		)
 	}
-	a.broadcastThreadRow(triage.ThreadActionListed, fork)
-	return fork, nil
+	if err := ctx.Err(); err != nil {
+		return store.Thread{}, errors.Join(err, cleanups.Run())
+	}
+	ready, err := a.store.FinishForkPreparation(fork.ID)
+	if err != nil {
+		return store.Thread{}, errors.Join(err, cleanups.Run())
+	}
+	a.broadcastThreadRow(triage.ThreadActionListed, ready)
+	return ready, nil
 }
 
 // cleanupForkThread removes the fork row created by a failed fork. The
 // FK CASCADE on items.thread_id, thread_drafts.thread_id,
-// message_anchors.thread_id, and attachments.thread_id handles cloned
+// message_anchors.thread_id, and attachment_owners.thread_id handles cloned
 // rows; DeleteThreadDir clears any attachment bytes already written for the
 // fork. Returns nil on success OR when the row was already gone (ErrNoRows is
 // treated as idempotent). Any other error is returned so the caller can
@@ -466,6 +522,8 @@ func (a *App) cleanupForkThread(threadID string) error {
 			return errors.Join(errs...)
 		}
 		errs = append(errs, fmt.Errorf("fork thread cleanup: delete fork %s: %w", threadID, err))
+	} else {
+		a.broadcastThreadDeleted(threadID)
 	}
 	return errors.Join(errs...)
 }
@@ -485,12 +543,12 @@ func (a *App) ensureThreadCanFork(source store.Thread, atTurnIndex *int) error {
 //   - PendingForkRef: the SOURCE session id for a lazy Claude fork —
 //     the first session start passes `--fork-session --resume <ref>`.
 //   - PinnedResumeAt: the transcript cut for a PINNED lazy Claude fork
-//     (a tail fork of a live source): the leaf uuid captured when Fork
+//     (any tail fork): the leaf uuid captured when Fork
 //     was clicked. The first session start repairs it against the CLI's
 //     resume filters and passes `--resume-session-at`, so the CLI's own
 //     fork cuts exactly where the timeline was cloned instead of
 //     wherever the source has grown to by first send. Empty on an
-//     idle-source lazy fork, whose tail IS the cut.
+//     anchored fork, which already owns its sliced session file.
 //   - UUIDMap: the source-UUID → fork-UUID rewrite an inline Claude
 //     JSONL slice produced (nil for Codex and both lazy shapes). When
 //     non-nil the caller must run remapClaudeProviderIDs so cloned
@@ -509,23 +567,10 @@ type forkResumeState struct {
 // resolveForkResumeState wires the provider-specific resume reference for
 // the new fork. See forkResumeState for the field contract.
 //
-// midTurnCut is non-nil exactly for a Claude TAIL fork taken while the
-// source is live: it is the transcript cut captured BEFORE the clone, so
-// the pin stored here and the timeline already cloned describe the same
-// moment. Codex needs no equivalent — `forkCodexThreadAt(source, "")`
-// already sends `thread/fork` with no lastTurnId, which is exactly the
-// mid-turn call: codex copies persisted history and appends the same
-// turn-aborted marker a real interrupt writes, onto the FORK's copy only
-// (ForkSnapshot::Interrupted, rust-v0.147.0). The throwaway-resume
-// fallback works mid-turn for the same reason — the on-disk rollout ends
-// mid-turn and codex synthesizes the marker.
-//
-// A nil midTurnCut on a Claude tail fork means the source is idle, and
-// only then may the UNPINNED lazy `--fork-session` path run: with
-// nothing streaming, the source's tail at first send IS the tail the
-// timeline was cloned at. On a live source the cut must be pinned —
-// deferring it unpinned snapshots the transcript at a nondeterministic
-// later point (the 2026-08-22 44s-skew incident).
+// Every Claude tail fork supplies a cut captured before the clone, including
+// idle sources. This prevents later source turns from entering an unstarted
+// fork's context. Codex materializes its native fork through a temporary
+// app-server; an active tail uses its native interrupted-fork semantics.
 func (a *App) resolveForkResumeState(ctx context.Context, source store.Thread, atTurnIndex *int, midTurnCut *claudeMidTurnCut) (forkResumeState, error) {
 	switch source.Provider {
 	case string(provider.Codex):

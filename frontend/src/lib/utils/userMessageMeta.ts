@@ -209,8 +209,9 @@ function attachmentFromMeta(
   if (!id) return null;
 
   const metaThreadId = stringField(record.threadId);
-  if (expectedThreadId && metaThreadId && metaThreadId !== expectedThreadId) return null;
-  const threadId = metaThreadId || expectedThreadId;
+  // Forks retain attachment provenance in metadata. Access is authorized
+  // through the viewing thread's ownership, even after the original is gone.
+  const threadId = expectedThreadId || metaThreadId;
   if (!threadId) return null;
 
   // Absent means IMAGE: every row written before the kind existed carried

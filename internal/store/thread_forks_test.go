@@ -193,9 +193,8 @@ func TestCloneThreadItemsNoBackgroundRowsCopiesEverything(t *testing.T) {
 	if len(dst) != len(items) {
 		t.Fatalf("dst items = %d, want %d (filter broadened beyond bg-running?)", len(dst), len(items))
 	}
-	// CloneThreadItems reassigns ids to avoid FK collisions on the
-	// destination thread; match seeded rows by (kind, summary) pair
-	// instead. A broadened filter would drop at least one pair.
+	// Match seeded rows by content as well as their thread-scoped identity.
+	// A broadened filter would drop at least one pair.
 	want := make(map[string]bool)
 	for _, it := range items {
 		want[it.Kind+"|"+it.Summary] = true
@@ -210,8 +209,8 @@ func TestCloneThreadItemsNoBackgroundRowsCopiesEverything(t *testing.T) {
 	}
 	var clonedToolID, clonedSiblingCompletionOf string
 	for _, it := range dst {
-		if it.ID == "tool-done" || it.ID == "sibling" {
-			t.Errorf("clone leaked source item id %q", it.ID)
+		if it.ThreadID != "t-fork-nobg-dst" {
+			t.Errorf("clone retained source thread identity: %+v", it)
 		}
 		if it.Kind == "tool_call" && it.Summary == "Read: bar.ts" {
 			clonedToolID = it.ID
@@ -252,7 +251,7 @@ func seedForkSource(t *testing.T, s *Store, src, dst string, rows []Item) {
 }
 
 // clonedBySummary indexes a cloned thread's rows by summary — cloned ids
-// are freshly minted, so the summary is the only stable handle.
+// are scoped to each thread; summaries also identify the seeded content.
 func clonedBySummary(t *testing.T, s *Store, threadID string) map[string]Item {
 	t.Helper()
 	rows, err := s.ListItems(threadID)
@@ -413,7 +412,7 @@ func TestCloneThreadItemsDropsLaunchWhoseSiblingIsBeyondTheCut(t *testing.T) {
 // other direction: a background-running launch nested UNDER a normal
 // launch takes only its own subtree with it. The surviving parent and
 // siblings still clone, with parent_id / completion_of remapped onto the
-// freshly minted ids (the regression guard for the remap itself).
+// thread-scoped ids (the regression guard for retained relationships).
 func TestCloneThreadItemsSkipsNestedRunningLaunchUnderClonedParent(t *testing.T) {
 	s := newTestStore(t)
 	seedForkSource(t, s, "t-nested-src", "t-nested-dst", []Item{
@@ -444,8 +443,8 @@ func TestCloneThreadItemsSkipsNestedRunningLaunchUnderClonedParent(t *testing.T)
 	if !ok {
 		t.Fatal("the normal launch must still clone")
 	}
-	if launch.ID == "ok-launch" {
-		t.Error("clone leaked the source item id")
+	if launch.ID != "ok-launch" {
+		t.Error("clone changed the thread-scoped item identity")
 	}
 	for _, child := range []string{"Agent > thinking", "Agent > Read: b.go", "Agent > Read: b.go -> done"} {
 		if got := dst[child].ParentID; got != launch.ID {
@@ -623,8 +622,8 @@ func TestCloneThreadItemsPreservesInputPayloadID(t *testing.T) {
 	if cloned.InputPayloadID != "p-edit-input" {
 		t.Errorf("cloned input_payload_id = %q, want p-edit-input", cloned.InputPayloadID)
 	}
-	if cloned.ID == "edit-src" {
-		t.Error("clone should reassign item id, but the source id leaked through")
+	if cloned.ID != "edit-src" || cloned.ThreadID != "t-input-dst" {
+		t.Error("clone did not preserve item identity in the destination thread")
 	}
 	// Authz lookup from the destination thread succeeds (covers the
 	// frontend lazy-load path).

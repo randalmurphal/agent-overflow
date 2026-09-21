@@ -248,7 +248,7 @@ func descendantsCTE(table, rootSet string) string {
 func subagentLaunchFilterFor(alias string) string {
 	return alias + `kind = 'tool_call'
 		    AND EXISTS (
-		      SELECT 1 FROM items child
+		      SELECT 1 FROM timeline_items child
 		       WHERE child.thread_id = ` + alias + `thread_id
 		         AND child.parent_id = ` + alias + `id
 		         AND child.parent_id <> ''

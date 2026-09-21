@@ -91,6 +91,9 @@ type SyncThreadWindowResponse struct {
 //
 //ao:scope threads:read
 func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (SyncThreadWindowResponse, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return SyncThreadWindowResponse{}, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), syncThreadWindowTimeout)
 	defer cancel()
 

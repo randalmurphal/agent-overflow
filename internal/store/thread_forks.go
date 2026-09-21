@@ -2,10 +2,10 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
-
-	"github.com/google/uuid"
 
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/itemmeta"
@@ -60,8 +60,8 @@ func BuildForkedThread(source Thread) Thread {
 }
 
 // CloneThreadItems copies the visible timeline items from sourceThreadID into
-// targetThreadID, preserving turn ordering while assigning new item IDs. The
-// returned map is source item id -> cloned item id for every copied row.
+// targetThreadID, preserving thread-scoped item identities and turn ordering.
+// The returned map contains the retained source item IDs and their target IDs.
 //
 // When throughTurnIndex is non-nil, only items whose turn_index is <= *throughTurnIndex
 // are copied — used for fork-at-point so the forked thread starts truncated
@@ -180,13 +180,28 @@ func (s *Store) inCloneTx(body func(*sql.Tx) (map[string]string, error)) (map[st
 // pre-existing corruption in the SOURCE and copies verbatim — only ids
 // this pass deliberately dropped propagate.
 func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep func(Item) bool) (map[string]string, error) {
-	items, err := queryHydratedTimelineItems(
-		tx, sourceThreadID,
-		`SELECT id FROM timeline_items WHERE thread_id = ?`,
-		sourceThreadID,
-	)
+	// Cloning needs item columns only. Hydrating payload metadata and preview
+	// spans here reads heavy values that the insert does not use.
+	query, args := timelineArms(sourceThreadID, timelineSelection{
+		Columns: func(thread, rev string) string {
+			return itemHydrationColumns(thread, "''", "''", "''", rev)
+		},
+		OrderBy: "turn_index, item_index",
+	})
+	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list source items for fork %s: %w", sourceThreadID, err)
+	}
+	var items []Item
+	for rows.Next() {
+		item, err := scanItemRow(rows)
+		if err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		items = append(items, item)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: read fork source: %w", err)
 	}
 
 	// A background launch's terminal is its completion SIBLING — the
@@ -221,7 +236,6 @@ func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep 
 			continue
 		}
 		oldID := item.ID
-		item.ID = uuid.NewString()
 		item.ThreadID = targetThreadID
 		idMap[oldID] = item.ID
 		clonedItems = append(clonedItems, item)
@@ -248,42 +262,61 @@ func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep 
 		}
 	}
 
-	if err := cloneThreadPayloadsTx(tx, sourceThreadID, targetThreadID, clonedItems); err != nil {
+	shared, err := cloneSharedHistoryTx(tx, sourceThreadID, targetThreadID, idMap)
+	if err != nil {
+		return nil, err
+	}
+	privateItems := make([]Item, 0, len(clonedItems)-len(shared))
+	for _, item := range clonedItems {
+		if !shared[item.ID] {
+			privateItems = append(privateItems, item)
+		}
+	}
+	if err := cloneThreadPayloadsTx(tx, sourceThreadID, targetThreadID, privateItems); err != nil {
 		return nil, err
 	}
 
-	stmt, err := tx.Prepare(
-		`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
-		    payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
-		    created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: prepare clone insert: %w", err)
-	}
-	defer stmt.Close()
-
-	var maxUpdatedAt int64
-	cloned := 0
-	for _, item := range clonedItems {
-		if _, err := stmt.Exec(
-			item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex,
-			item.Kind, item.Role, item.Status, item.Summary,
-			nilIfEmpty(item.PayloadID), nilIfEmpty(item.InputPayloadID), item.ParentID,
-			boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
-			item.CreatedAt, item.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("store: clone item into thread %s: %w", targetThreadID, err)
+	// Bound statement size while amortizing driver calls and statement journals.
+	// Rows retain provider order; item triggers and search hooks still run.
+	cloned := len(clonedItems)
+	for start := 0; start < len(privateItems); start += 128 {
+		batch := privateItems[start:min(start+128, len(privateItems))]
+		args := make([]any, 0, len(batch)*18)
+		for _, item := range batch {
+			args = append(args,
+				item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex,
+				item.Kind, item.Role, item.Status, item.Summary,
+				nilIfEmpty(item.PayloadID), nilIfEmpty(item.InputPayloadID), item.ParentID,
+				boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
+				item.CreatedAt, item.UpdatedAt,
+			)
 		}
-		// This path writes items with its own prepared statement, so it owns
-		// the settle-time index hook insertItemTx would otherwise run.
-		if err := indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary); err != nil {
+		const values = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?),"
+		if _, err := tx.Exec(`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
+		    payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
+		    created_at, updated_at) VALUES `+strings.TrimSuffix(strings.Repeat(values, len(batch)), ","), args...); err != nil {
+			return nil, fmt.Errorf("store: clone items into thread %s: %w", targetThreadID, err)
+		}
+	}
+	// Index in logical timeline order even when storage alternates between
+	// private and shared rows. Search ranking ties retain that same order.
+	for start := 0; start < len(clonedItems); {
+		end := start + 1
+		for end < len(clonedItems) && end-start < 128 && shared[clonedItems[end].ID] == shared[clonedItems[start].ID] {
+			end++
+		}
+		source := ThreadSearchSourceItem
+		if shared[clonedItems[start].ID] {
+			source = ThreadSearchSourceImport
+		}
+		if err := indexSettledItemsTx(tx, clonedItems[start:end], source); err != nil {
 			return nil, err
 		}
-		if item.UpdatedAt > maxUpdatedAt {
-			maxUpdatedAt = item.UpdatedAt
-		}
-		cloned++
+		start = end
+	}
+	var maxUpdatedAt int64
+	for _, item := range clonedItems {
+		maxUpdatedAt = max(maxUpdatedAt, item.UpdatedAt)
 	}
 
 	// Touch the destination thread's updated_at once at the end (mirrors
@@ -294,7 +327,67 @@ func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep 
 		}
 	}
 
+	if err := cloneAttachmentOwnersTx(tx, sourceThreadID, targetThreadID); err != nil {
+		return nil, err
+	}
 	return idMap, nil
+}
+
+// A complete immutable chunk can be attached directly. A cut, private
+// override, or unsettled foreground row keeps that chunk on the ordinary
+// copy path, where the established filtering and interruption rules apply.
+// Prepared chunks are bounded, so an edit or cut copies only its boundary.
+func cloneSharedHistoryTx(tx *sql.Tx, source, target string, kept map[string]string) (map[string]bool, error) {
+	rows, err := tx.Query(`SELECT refs.chunk_id, i.id, i.status, i.is_background, o.item_id IS NOT NULL OR i.kind IN ('user_text','tool_call','tool_completion','workflow_proposal') OR EXISTS(SELECT 1 FROM payloads p WHERE p.thread_id=refs.thread_id AND p.id IN (i.payload_id,i.input_payload_id))
+ FROM thread_import_chunks refs JOIN import_history_items i ON i.chunk_id=refs.chunk_id
+ LEFT JOIN thread_import_item_overrides o ON o.thread_id=refs.thread_id AND o.item_id=i.id
+ WHERE refs.thread_id=? ORDER BY refs.chunk_order,i.turn_index,i.item_index`, source)
+	if err != nil {
+		return nil, fmt.Errorf("store: read shared fork chunks: %w", err)
+	}
+	type chunk struct {
+		id      string
+		items   []string
+		private bool
+	}
+	var chunks []chunk
+	for rows.Next() {
+		var chunkID, id, status string
+		var background, overridden bool
+		if err := rows.Scan(&chunkID, &id, &status, &background, &overridden); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		if len(chunks) == 0 || chunks[len(chunks)-1].id != chunkID {
+			chunks = append(chunks, chunk{id: chunkID})
+		}
+		c := &chunks[len(chunks)-1]
+		c.items = append(c.items, id)
+		_, retained := kept[id]
+		c.private = c.private || !retained || overridden || (!background && !settledItemStatus(status))
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: read shared fork chunks: %w", err)
+	}
+	shared := make(map[string]bool)
+	order := 0
+	for _, c := range chunks {
+		if c.private {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO thread_import_chunks(thread_id,chunk_order,chunk_id) VALUES(?,?,?)`, target, order, c.id); err != nil {
+			return nil, fmt.Errorf("store: attach shared fork chunk: %w", err)
+		}
+		order++
+		for _, id := range c.items {
+			shared[id] = true
+		}
+	}
+	if len(shared) != 0 {
+		if _, err := tx.Exec(`UPDATE threads SET history_rev=history_rev+? WHERE id=?`, len(shared), target); err != nil {
+			return nil, fmt.Errorf("store: stamp shared fork history: %w", err)
+		}
+	}
+	return shared, nil
 }
 
 // isLiveBackgroundRow is the clone's "owned by the source's provider
@@ -316,12 +409,9 @@ func isLiveBackgroundRow(item Item, settled map[string]struct{}) bool {
 	return !ok
 }
 
-// cloneThreadPayloadsTx gives a fork its own copy of every result and input
-// payload referenced by the items it will receive. Payload IDs are local to a
-// thread, so they stay unchanged while their owning thread key changes. The
-// chunk and edit-snapshot children copy with the same scope. Keeping all four
-// tables in cloneThreadItems' transaction prevents a partial payload graph or
-// an item that points back into mutable source history.
+// cloneThreadPayloadsTx clones metadata and shares immutable snapshots of
+// every referenced input/output payload graph. The snapshot is established
+// in the item clone transaction, before the source can change or disappear.
 func cloneThreadPayloadsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, items []Item) error {
 	payloadIDs := make(map[string]struct{})
 	for _, item := range items {
@@ -336,63 +426,11 @@ func cloneThreadPayloadsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, it
 		return nil
 	}
 
-	payloadStmt, err := tx.Prepare(
-		`INSERT INTO payloads (
-		    thread_id, id, kind, meta, data, created_at, preview_spans, spans
-		 )
-		 SELECT ?, id, kind, meta, data, created_at, preview_spans, spans
-		   FROM timeline_payloads
-		  WHERE thread_id = ? AND id = ?`,
-	)
-	if err != nil {
-		return fmt.Errorf("store: prepare fork payload clone: %w", err)
+	ids := make([]string, 0, len(payloadIDs))
+	for id := range payloadIDs {
+		ids = append(ids, id)
 	}
-	defer payloadStmt.Close()
-
-	chunkStmt, err := tx.Prepare(
-		`INSERT INTO payload_chunks (
-		    thread_id, payload_id, chunk_index, start_offset, data, created_at
-		 )
-		 SELECT ?, payload_id, chunk_index, start_offset, data, created_at
-		   FROM payload_chunks
-		  WHERE thread_id = ? AND payload_id = ?`,
-	)
-	if err != nil {
-		return fmt.Errorf("store: prepare fork payload chunk clone: %w", err)
-	}
-	defer chunkStmt.Close()
-
-	snapshotStmt, err := tx.Prepare(
-		`INSERT INTO edit_file_snapshots (
-		    thread_id, payload_id, path, content, created_at
-		 )
-		 SELECT ?, payload_id, path, content, created_at
-		   FROM edit_file_snapshots
-		  WHERE thread_id = ? AND payload_id = ?`,
-	)
-	if err != nil {
-		return fmt.Errorf("store: prepare fork edit snapshot clone: %w", err)
-	}
-	defer snapshotStmt.Close()
-
-	for payloadID := range payloadIDs {
-		result, err := payloadStmt.Exec(targetThreadID, sourceThreadID, payloadID)
-		if err != nil {
-			return fmt.Errorf("store: clone payload %s into thread %s: %w", payloadID, targetThreadID, err)
-		}
-		if err := requireRowsAffected(
-			result, fmt.Sprintf("store: clone payload %s into thread %s", payloadID, targetThreadID),
-		); err != nil {
-			return err
-		}
-		if _, err := chunkStmt.Exec(targetThreadID, sourceThreadID, payloadID); err != nil {
-			return fmt.Errorf("store: clone payload chunks %s into thread %s: %w", payloadID, targetThreadID, err)
-		}
-		if _, err := snapshotStmt.Exec(targetThreadID, sourceThreadID, payloadID); err != nil {
-			return fmt.Errorf("store: clone edit snapshots %s into thread %s: %w", payloadID, targetThreadID, err)
-		}
-	}
-	return nil
+	return clonePayloadSnapshotsTx(tx, sourceThreadID, targetThreadID, ids)
 }
 
 // CloneThreadTurns copies the source thread's turns rows (<=
@@ -565,7 +603,7 @@ func (s *Store) CloneThreadHistoryBeforeItem(sourceThreadID, targetThreadID, anc
 			    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id
 			 FROM turns
 			 WHERE thread_id = ?
-			   AND turn_index IN (SELECT DISTINCT turn_index FROM items WHERE thread_id = ?)`,
+			   AND turn_index IN (SELECT DISTINCT turn_index FROM timeline_items WHERE thread_id = ?)`,
 			targetThreadID, targetThreadID, sourceThreadID, targetThreadID,
 		); err != nil {
 			return nil, fmt.Errorf("store: clone turns before item into thread %s: %w", targetThreadID, err)
@@ -595,7 +633,7 @@ func (s *Store) CloneThreadHistoryBeforeItem(sourceThreadID, targetThreadID, anc
 		if excludedContent {
 			var lastKept sql.NullInt64
 			if err := tx.QueryRow(
-				`SELECT MAX(created_at) FROM items WHERE thread_id = ? AND turn_index = ?`,
+				`SELECT MAX(created_at) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`,
 				targetThreadID, turnIndex,
 			).Scan(&lastKept); err != nil {
 				return nil, fmt.Errorf("store: cloned turn survivors lookup for fork %s: %w", targetThreadID, err)

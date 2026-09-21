@@ -892,10 +892,11 @@ test('the destination serves a forwarded request with its own thread tools switc
     interface McpRow {
       name: string;
       disabled: boolean;
+      status: string;
     }
     const hasTools = async (threadID: string) =>
       (await remote.rpc<McpRow[]>('ListThreadMcpServers', threadID)).some(
-        (server) => server.name === 'ao-thread-tools' && !server.disabled,
+        (server) => server.name === 'ao-thread-tools' && !server.disabled && server.status !== 'disabled',
       );
     expect(await hasTools(there.threadIds[0])).toBe(false);
 

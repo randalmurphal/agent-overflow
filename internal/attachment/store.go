@@ -584,9 +584,14 @@ func (s *Store) resolveThreadAttachment(threadID, attachmentID string) (store.At
 	if !ok {
 		return store.Attachment{}, "", fmt.Errorf("attachment: id %q not found", attachmentID)
 	}
-	if record.ThreadID != threadID {
+	owned, err := s.meta.OwnsAttachment(threadID, attachmentID)
+	if err != nil {
+		return store.Attachment{}, "", err
+	}
+	if !owned {
 		return store.Attachment{}, "", fmt.Errorf("attachment %q belongs to thread %s, not %s", attachmentID, record.ThreadID, threadID)
 	}
+	record.ThreadID = threadID
 	return record, absolutePath, nil
 }
 
@@ -631,31 +636,65 @@ func (s *Store) List(threadID string) ([]store.Attachment, error) {
 	return s.meta.ListAttachments(threadID)
 }
 
-// DeleteThreadDir removes every on-disk attachment file for a thread by
-// deleting the thread's attachment directory under the store root. Safe to
-// call after the DB cascade has already dropped the metadata rows; a missing
-// directory is treated as success.
+// DeleteThreadDir releases this thread's assets and removes its unretained
+// files. Inherited assets retain their canonical provider-visible paths until
+// their final owner is deleted, including when the original thread goes first.
 func (s *Store) DeleteThreadDir(threadID string) error {
 	if strings.TrimSpace(threadID) == "" {
 		return errors.New("attachment: thread id is required")
 	}
-	sanitized := sanitizeThreadID(threadID)
-	threadDir := filepath.Join(s.root, sanitized)
-	absRoot, err := filepath.Abs(s.root)
+	owned, err := s.meta.ListAttachments(threadID)
 	if err != nil {
-		return fmt.Errorf("attachment: absolute root: %w", err)
+		return err
 	}
-	absDir, err := filepath.Abs(threadDir)
+	for _, a := range owned {
+		if err := s.Delete(threadID, a.ID); err != nil {
+			return err
+		}
+	}
+	retained, err := s.meta.RetainedAttachmentPaths(threadID)
 	if err != nil {
-		return fmt.Errorf("attachment: absolute dir: %w", err)
+		return err
 	}
-	if !strings.HasPrefix(absDir, absRoot+string(os.PathSeparator)) {
-		return fmt.Errorf("attachment: refusing to remove path outside %s", absRoot)
+	threadDir, err := s.resolveAbsolute(sanitizeThreadID(threadID))
+	if err != nil {
+		return err
 	}
-	if err := os.RemoveAll(threadDir); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("attachment: remove thread dir: %w", err)
+	keep := make(map[string]bool)
+	for _, path := range retained {
+		absolute, err := s.resolveAbsolute(path)
+		if err != nil {
+			return err
+		}
+		if !strings.HasPrefix(absolute, threadDir+string(os.PathSeparator)) {
+			continue
+		}
+		for absolute != threadDir {
+			keep[absolute] = true
+			absolute = filepath.Dir(absolute)
+		}
 	}
-	return nil
+	if len(keep) == 0 {
+		return os.RemoveAll(threadDir)
+	}
+	return filepath.WalkDir(threadDir, func(path string, entry os.DirEntry, err error) error {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if path == threadDir || keep[path] {
+			return nil
+		}
+		if entry.IsDir() {
+			if err := os.RemoveAll(path); err != nil {
+				return err
+			}
+			return filepath.SkipDir
+		}
+		return os.Remove(path)
+	})
 }
 
 // Delete removes the row and the backing file — for a `file`, its whole
@@ -672,8 +711,12 @@ func (s *Store) Delete(threadID, attachmentID string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.meta.DeleteAttachment(attachmentID); err != nil {
+	last, err := s.meta.ReleaseAttachment(threadID, attachmentID)
+	if err != nil {
 		return err
+	}
+	if !last {
+		return nil
 	}
 	// A file's parent directory is `<thread>/<id>` by construction. The
 	// base check is the tripwire: a row whose path did not come from this

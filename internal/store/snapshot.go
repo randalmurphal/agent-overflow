@@ -177,6 +177,13 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 		return Identity{}, fmt.Errorf("store: restore: drop background settle triggers: %w", err)
 	}
 
+	if _, err := tx.Exec(dropPayloadSnapshotTriggersSQL()); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: suspend payload snapshots: %w", err)
+	}
+
+	if _, err := tx.Exec(dropAttachmentOwnerTriggersSQL + dropSharedChunkAdmissionTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: suspend attachment and chunk admission triggers: %w", err)
+	}
 	for _, table := range tables {
 		if restoreSkipsTable(table) {
 			continue
@@ -217,6 +224,14 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	}
 	if _, err := tx.Exec(backgroundSettleTriggersSQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: recreate background settle triggers: %w", err)
+	}
+
+	if _, err := tx.Exec(payloadSnapshotGCTriggersSQL + payloadSnapshotTriggersSQL()); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: reinstall payload snapshots: %w", err)
+	}
+
+	if _, err := tx.Exec(attachmentOwnerTriggersSQL + sharedChunkAdmissionTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: reinstall attachment and chunk admission triggers: %w", err)
 	}
 
 	// The search index describes the history that was just replaced, and an

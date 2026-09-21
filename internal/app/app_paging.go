@@ -57,6 +57,9 @@ const (
 //
 //ao:scope threads:read
 func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int, shape PageShape) (store.PagedItems, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return store.PagedItems{}, err
+	}
 	shape = shape.normalize()
 	paged, err := a.store.ListThreadSliceAround(
 		threadID, anchorItemID, clampSliceItemBudget(targetItemCount), shape.RunWindowRows)
@@ -107,6 +110,9 @@ func clampPaginationItemBudget(itemBudget int) int {
 //
 //ao:scope threads:read
 func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor, itemBudget int, shape PageShape) (store.PagedItems, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return store.PagedItems{}, err
+	}
 	shape = shape.normalize()
 	paged, err := a.store.ListItemsBeforeCursor(
 		threadID, before, clampPaginationItemBudget(itemBudget), shape.RunWindowRows)
@@ -122,6 +128,9 @@ func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor
 //
 //ao:scope threads:read
 func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, itemBudget int, shape PageShape) (store.PagedItems, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return store.PagedItems{}, err
+	}
 	shape = shape.normalize()
 	paged, err := a.store.ListItemsAfterCursor(
 		threadID, after, clampPaginationItemBudget(itemBudget), shape.RunWindowRows)
@@ -142,6 +151,9 @@ func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, 
 //
 //ao:scope threads:read
 func (a *App) ListSubagentDescendants(threadID, rootItemID string, inlinePreviews bool) ([]store.Item, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return nil, err
+	}
 	items, err := a.store.ListSubagentDescendants(threadID, rootItemID)
 	if err != nil {
 		return nil, fmt.Errorf("list subagent descendants: %w", err)
@@ -155,6 +167,9 @@ func (a *App) ListSubagentDescendants(threadID, rootItemID string, inlinePreview
 //
 //ao:scope threads:read
 func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return nil, err
+	}
 	items, err := a.store.ListThreadProposedPlans(threadID)
 	if err != nil {
 		return nil, fmt.Errorf("list thread proposed plans: %w", err)
@@ -179,6 +194,9 @@ func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 //
 //ao:scope threads:read
 func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return nil, err
+	}
 	now := time.Now().UnixMilli()
 	cutoff := now - backgroundTaskRetentionMillis
 	items, err := a.store.ListLiveBackgroundTasks(threadID, cutoff)
@@ -213,6 +231,9 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 //
 //ao:scope threads:read
 func (a *App) GetThreadUserMessageTicks(threadID string) ([]store.UserMessageTick, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return nil, err
+	}
 	ticks, err := a.store.ListThreadUserMessageTicks(threadID)
 	if err != nil {
 		return nil, fmt.Errorf("get thread user message ticks: %w", err)
@@ -238,6 +259,9 @@ const (
 //
 //ao:scope threads:read
 func (a *App) GetThreadUserMessageHistory(threadID string, limit int) ([]store.UserMessageHistoryEntry, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return nil, err
+	}
 	if limit <= 0 {
 		limit = userMessageHistoryDefaultLimit
 	}
@@ -260,6 +284,9 @@ func (a *App) GetThreadUserMessageHistory(threadID string, limit int) ([]store.U
 //
 //ao:scope threads:read
 func (a *App) GetThreadTurnPreview(threadID, itemID string) (store.TurnPreview, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return store.TurnPreview{}, err
+	}
 	preview, found, err := a.store.ThreadTurnPreview(threadID, itemID)
 	if err != nil {
 		return store.TurnPreview{}, fmt.Errorf("get thread turn preview: %w", err)
@@ -278,6 +305,9 @@ func (a *App) GetThreadTurnPreview(threadID, itemID string) (store.TurnPreview, 
 //
 //ao:scope threads:read
 func (a *App) GetThreadItem(threadID, itemID string) (store.Item, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return store.Item{}, err
+	}
 	item, found, err := a.store.GetThreadItem(threadID, itemID)
 	if err != nil {
 		return store.Item{}, fmt.Errorf("get thread item: %w", err)
@@ -321,6 +351,9 @@ type ItemProjectionSource struct {
 //
 //ao:scope threads:read
 func (a *App) GetThreadItemProjectionSource(threadID, itemID string) (ItemProjectionSource, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return ItemProjectionSource{}, err
+	}
 	item, found, err := a.store.GetThreadItem(threadID, itemID)
 	if err != nil {
 		return ItemProjectionSource{}, fmt.Errorf("get thread item projection source: %w", err)
@@ -348,5 +381,8 @@ func (a *App) GetThreadItemProjectionSource(threadID, itemID string) (ItemProjec
 //
 //ao:scope threads:read
 func (a *App) ListRecentTurns(threadID string, limit int) ([]store.Turn, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return nil, err
+	}
 	return a.store.ListRecentTurns(threadID, limit)
 }

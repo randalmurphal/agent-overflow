@@ -16,6 +16,7 @@ export interface Thread {
   provider: ProviderID;
   sessionRef?: string;
   pendingForkRef?: string;
+  forkPreparing?: boolean;
   workspacePath: string;
   projectPath: string;
   /**

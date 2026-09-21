@@ -264,6 +264,9 @@ func (a *App) liveDiffWorkspace(action string, ws WorkspaceRef, scope string) (s
 // in whatever checkout the thread occupied, and only the row knows which — and
 // deliberately not a path-validation path: nothing here comes from a caller.
 func (a *App) threadDiffWorkspace(action, threadID string) (string, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return "", err
+	}
 	thread, err := a.store.GetThread(threadID)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", action, err)

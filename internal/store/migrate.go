@@ -1658,6 +1658,10 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 103, Name: "thread_search", SQL: threadSearchV103SQL},
 	{Version: 104, Name: "thread_request_polling", SQL: threadRequestPollingV104SQL},
 	{Version: 105, Name: "thread_group_names", SQL: threadGroupNamesV105SQL},
+	{Version: 106, Name: "fork_preparation", SQL: `ALTER TABLE threads ADD COLUMN fork_preparing INTEGER NOT NULL DEFAULT 0 CHECK(fork_preparing IN (0,1));`},
+	{Version: 107, Name: "payload_snapshots", SQL: payloadSnapshotsV107SQL},
+	{Version: 108, Name: "history_preparation", SQL: historyPreparationV108SQL},
+	{Version: 109, Name: "attachment_owners", SQL: attachmentOwnersV109SQL, Rebuild: true},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

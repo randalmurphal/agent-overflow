@@ -79,6 +79,9 @@ func (r ActivityRunMembersRequest) storeRequest(limit int) store.ActivityRunMemb
 //
 //ao:scope threads:read
 func (a *App) ListActivityRunMembers(threadID string, req ActivityRunMembersRequest) (store.ActivityRunMembers, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return store.ActivityRunMembers{}, err
+	}
 	shape := req.Shape.normalize()
 	members, err := a.store.ListActivityRunMembers(threadID, req.storeRequest(req.Limit))
 	if err != nil {

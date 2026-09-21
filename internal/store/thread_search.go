@@ -141,7 +141,7 @@ func (f ThreadSearchFilter) threadRowConditions(alias string) ([]string, []any) 
 	var conditions []string
 	var args []any
 
-	conditions = append(conditions, threadTransferReadableExpr(alias))
+	conditions = append(conditions, alias+"fork_preparing = 0", threadTransferReadableExpr(alias))
 
 	visible := alias + "mode <> ?"
 	if len(f.ScratchThreadIDs) > 0 {

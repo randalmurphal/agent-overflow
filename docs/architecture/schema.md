@@ -23,17 +23,20 @@ make every row disposable.
 
 | Tables | Ownership and key constraints |
 |---|---|
-| `threads`, `turns`, `message_anchors` | Conversation metadata, thread-scoped turns, and provider message correlation. `threads.history_rev` and `history_epoch` invalidate client replicas. Narrow lifecycle columns such as import provenance, live todo, group membership, and worktree setup state have dedicated writers and are omitted from broad updates. |
+| `threads`, `turns`, `message_anchors` | Conversation metadata, thread-scoped turns, and provider message correlation. `threads.history_rev` and `history_epoch` invalidate client replicas. `threads.fork_preparing` keeps incomplete forks listed but unavailable until provider wiring is durable. Narrow lifecycle columns such as fork preparation, import provenance, live todo, group membership, and worktree setup state have dedicated writers and are omitted from broad updates. |
 | `items` | Mutable timeline overlay keyed by `(thread_id, id)` and ordered by `(thread_id, turn_index, item_index)`. `summary` is the always-loaded raw preview. `parent_id` links nested work; `completion_of` links terminal siblings to launches. `rev` is the owning thread's `history_rev` when the row's read result last changed (imported rows project -1). Item triggers maintain history stamps, payload collection, import guards, and background liveness. |
 | `payloads`, `payload_chunks` | Heavy content keyed by `(thread_id, id)`. Metadata and capped preview spans may ride list reads; base data, chunks, and full spans load on demand. Span blobs are versioned render caches. |
-| `import_history_chunks`, `import_history_items`, `import_history_payloads` | Content-addressed immutable imported history. Chunk-local composite keys keep item and payload identity together. |
+| `payload_snapshots`, `payload_snapshot_refs`, `payload_snapshot_chunks`, `payload_snapshot_edits` | Forks share an exact payload graph through a flat snapshot reference. Snapshots borrow unchanged source payloads or retain immutable import chunks; before source mutation or deletion, triggers preserve the original bytes, append chunks, and edit snapshots in the same transaction. The last reference collects the snapshot. |
+| `import_history_chunks`, `import_history_items`, `import_history_payloads` | Immutable imported and prepared history. Imports use content-addressed chunks; bounded background preparation seals completed local content. Chunk-local composite keys keep item and payload identity together. |
 | `thread_import_chunks`, `thread_import_item_overrides`, `thread_import_state` | Ordered mapping of chunks into a thread, explicit mutable-overlay hides, and provider refresh provenance. Triggers reject gaps, overlaps, and implicit shadowing. |
 | `edit_file_snapshots` | Gzip-compressed new-side file snapshots for diff expansion. They cascade with their payload and remain cache content: readers verify them against the requested patch. |
 | `pending_background_task_terminals` | Claude terminal observations awaiting their chat-side completion sibling. Lifecycle gates consult these rows; tray display retains the launch until the sibling lands. |
 | `provider_thread_cost` | Provider-reported cumulative cost estimate for the current `session_ref`. It is replaced in place and ignored when the thread points at a different provider session. It is not a per-turn `usage_ledger` entry. |
 
 `timeline_items` and `timeline_payloads` are logical views over the mutable
-overlay and immutable import chunks. Ordered, limited, and recursive reads use
+overlay and immutable import chunks. `resolved_payloads`, `timeline_payload_chunks`,
+and `timeline_edit_file_snapshots` resolve fork snapshots without following
+reference chains. Ordered, limited, and recursive item reads use
 the physical arms from `timeline_arms.go`; see
 [sqlite-store.md](sqlite-store.md#logical-history).
 
@@ -60,7 +63,7 @@ conversation whose ownership moved to another computer.
 | `thread_groups` | Named per-project sidebar groups. Membership is `threads.group_id`; deleting a group ungroups its threads. A grouped thread cannot also carry its own pin. A name is unique per project, case-insensitively, so resolve-or-create by name has one answer. |
 | `thread_drafts`, `thread_tracked_files`, `new_thread_mcp_defaults` | Composer drafts, per-thread tracked-file state, and defaults applied to newly materialized threads. Each uses narrow accessors rather than the broad thread projection. |
 | `channels`, `channel_messages`, `discussion_definitions` | Multi-agent discussion channels, ordered messages, and reusable global or project templates. |
-| `attachments` | Attachment metadata; bytes live under `internal/attachment`. `kind` is the closed `image` or `file` vocabulary enforced by `InsertAttachment`. |
+| `attachments`, `attachment_owners` | Attachment metadata and thread ownership edges; bytes live under `internal/attachment`. The original `attachments.thread_id` names storage provenance and survives deletion of that thread while other owners remain. `kind` is the closed `image` or `file` vocabulary enforced by `InsertAttachment`. |
 | `proposed_plans`, `proposed_plan_comments` | Plan version and inline-review state projected into timeline item metadata. Their mutators bump the owning thread's history revision. |
 | `diff_review_comments` | Review comments keyed to diff scope and location. |
 | `chat_bar_favorites`, `chat_model_profiles` | Legacy favorite seeds and last-used provider/model settings. Profile constraints remain aligned with thread runtime and reasoning settings. |
@@ -128,6 +131,8 @@ following families carry additional correctness or performance meaning:
 | Index family | Contract |
 |---|---|
 | Timeline ordering and import indexes | `idx_items_thread_turn_item_unique` enforces one mutable row per timeline coordinate. Import indexes and triggers keep chunk order and identities unambiguous. |
+| History preparation indexes | `idx_items_history_preparation` pages eligible completed rows. Global imported item/payload ID indexes support chunk-admission collision probes, including chunks sharing a turn. |
+| Attachment ownership index | `idx_attachment_owners_attachment` supports last-owner collection and retained-file lookup. |
 | Sparse send identity indexes | Local items, imported items, and queued messages index nonempty `sendId` values so retry checks do not scan or hydrate history. |
 | Item relationship partial indexes | Parent, completion, live-background, running-foreground, and reader-authored-message indexes require their qualifying predicate to appear explicitly in query SQL. |
 | Workflow relationship indexes | Agent source references are unique; parent-run, phase-thread, unit-thread, automation, state, and usage indexes bound recovery and budget queries. Partial predicates such as `parent_item_id <> ''` and `source_ref <> ''` remain explicit. |
@@ -143,7 +148,8 @@ When index selection is part of behavior, tests assert both result parity and
 |---|---|
 | History revision | Three `items` triggers maintain `threads.history_rev`, `threads.history_epoch`, and the per-row `items.rev` stamp on every row whose read result the write changed: the row, its completion sibling, and the anchors decorated from its parent chain (`stampedRowIDsSQL`: a recursive CTE walks the chain by primary key; the carrier leg probes the partial expression index `idx_items_transcript_root`). `rev` is written only here; the update trigger's `WHEN OLD.rev IS NEW.rev` guard keeps the stamping write from re-bumping the thread. |
 | Payload collection | Item deletion removes payloads no longer referenced by either payload field in the same thread. Cascades collect payload chunks and edit snapshots. |
-| Imported-history integrity | Triggers reject implicit shadowing, coordinate overlap, chunk gaps, and ambiguous payload identity; the final chunk reference collects immutable storage. |
+| Imported-history integrity | Triggers reject implicit shadowing, coordinate overlap, chunk gaps, and ambiguous payload identity; the final thread or payload-snapshot reference collects immutable storage. |
+| Attachment ownership | Initial insertion creates the origin owner. Removing the final owner collects metadata; the attachment package releases file bytes. |
 | Background settlement | Four triggers maintain `meta.live_background_active` as launches and completion siblings arrive, change, or are removed. |
 | Authentication audit | A before-update trigger makes `auth_audit` append-only. |
 

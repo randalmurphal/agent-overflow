@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ForkPendingRow from './ForkPendingRow.svelte';
   import {
     getJumpHintsVisible,
     jumpLabelForThread,
@@ -419,6 +420,9 @@
   whole shell is the target and selection is off across it under compact.
   Controls inside the row that own their click stop propagation as before.
 -->
+{#if thread.forkPreparing}
+  <ForkPendingRow title={thread.title} />
+{:else}
 <!-- Keyboard activation lives on the focusable row inside. -->
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div
@@ -696,3 +700,5 @@
   onConfirm={() => { showDeleteConfirm = false; void deleteThreadAction(ctx()); }}
   onCancel={() => { showDeleteConfirm = false; }}
 />
+
+{/if}

@@ -23,6 +23,8 @@ func TestForkThreadClaudePersistsPendingForkStateAndClonesTimeline(t *testing.T)
 	source := testThread("thread-claude-fork-source")
 	source.Provider = string(provider.Claude)
 	source.SessionRef = "claude-session-123"
+	fixture := newMidTurnForkFixture(t, "claude-session-123", midTurnSourceJSONL)
+	source.WorkspacePath = fixture.workspace
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -101,6 +103,8 @@ func TestForkThreadRejectsThreadsWithoutMessages(t *testing.T) {
 	source := testThread("thread-empty-fork-source")
 	source.Provider = string(provider.Claude)
 	source.SessionRef = "claude-session-123"
+	fixture := newMidTurnForkFixture(t, "claude-session-123", midTurnSourceJSONL)
+	source.WorkspacePath = fixture.workspace
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
 	}
@@ -935,7 +939,7 @@ func TestForkThreadPropagatesResumeAndCleanupErrors(t *testing.T) {
 	}
 
 	// The primary error must identify the resume problem.
-	if !containsText(err.Error(), "missing a Claude session reference") {
+	if !containsText(err.Error(), "no resumable Claude session") {
 		t.Errorf("primary fork error not propagated: %v", err)
 	}
 }
@@ -1013,6 +1017,8 @@ func TestForkThread_ExcludesBackgroundRunningRows(t *testing.T) {
 	source := testThread("thread-fork-bg-exclusion-source")
 	source.Provider = string(provider.Claude)
 	source.SessionRef = "claude-session-bg"
+	fixture := newMidTurnForkFixture(t, "claude-session-bg", midTurnSourceJSONL)
+	source.WorkspacePath = fixture.workspace
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread: %v", err)
 	}

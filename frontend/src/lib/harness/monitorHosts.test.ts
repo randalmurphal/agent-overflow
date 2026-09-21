@@ -79,6 +79,27 @@ describe('browser monitor hosts', () => {
     expect(summary.semanticIdentityCount).toBe(1);
   });
 
+  it('scopes shared item identities to their pane and thread', async () => {
+    document.body.innerHTML = `
+      <div data-pane-id="source"><div data-thread-id="source"><div data-item-id="shared">source</div></div></div>
+      <div data-pane-id="fork"><div data-thread-id="fork"><div data-item-id="shared">fork</div></div></div>`;
+    const capture = context('semantic-dom-stability', ['dom', 'semantic-dom']);
+    const host = createBuiltinMonitor(spec('semantic-dom-stability', ['dom', 'semantic-dom']), capture.context)!;
+    document.body.append(document.createElement('span'));
+    await Promise.resolve();
+    host.heartbeat?.(10);
+    const first = capture.observations.at(-1) as { counts: { identityReplacements?: number }; semanticIdentityCount: number };
+    expect(first.counts.identityReplacements ?? 0).toBe(0);
+    expect(first.semanticIdentityCount).toBe(2);
+    document.querySelector('[data-pane-id="fork"] [data-item-id]')!.replaceWith(
+      Object.assign(document.createElement('div'), { innerHTML: '<div data-item-id="shared">replacement</div>' }),
+    );
+    await Promise.resolve();
+    const summary = host.stop?.(20) as { counts: { identityReplacements: number }; semanticIdentityCount: number };
+    expect(summary.counts.identityReplacements).toBe(1);
+    expect(summary.semanticIdentityCount).toBe(2);
+  });
+
   it('counts focus events once instead of once per heartbeat', () => {
     document.body.innerHTML = '<input data-testid="focus" />';
     const capture = context('focus-clipping-settledness', ['dom', 'focus']);

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { withForkProgress } from '../../stores/forkPreparation.svelte';
   import { threadHasScope } from '../../transport/entityScopes';
   import { onDestroy, onMount, untrack } from 'svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -419,7 +420,7 @@
     if (!thread || forkingMessageItemId) return;
     forkingMessageItemId = item.id;
     try {
-      const created = (await ForkThreadFromMessage(thread.id, item.id)) as Thread;
+      const created = await withForkProgress(thread, async () => (await ForkThreadFromMessage(thread.id, item.id)) as Thread);
       const forked = await autoPinNewThread(created);
       if (pane.thread?.id !== thread.id) return;
       prependThread(forked);

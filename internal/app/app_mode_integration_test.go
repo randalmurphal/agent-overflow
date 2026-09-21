@@ -222,6 +222,8 @@ func TestMode_ForkInheritsInteractionMode(t *testing.T) {
 	source := testThread("thread-fork-mode")
 	source.Provider = string(provider.Claude)
 	source.SessionRef = "claude-session-abc"
+	fixture := newMidTurnForkFixture(t, "claude-session-abc", midTurnSourceJSONL)
+	source.WorkspacePath = fixture.workspace
 	source.Mode = "plan"
 	if err := app.store.CreateThread(source); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)

@@ -114,7 +114,7 @@ type claudeAdapter struct {
 	// echoes a user message and the write observer updates from step
 	// goroutines.
 	leafMu sync.Mutex
-	// leafUUID is the last uuid-carrying main-chain envelope this process
+	// leafUUID is the last uuid-carrying main-chain message this process
 	// wrote: the CLI's transcript leaf. The next user echo hangs off it,
 	// which is the linkage AO verifies a user message against, so a turn
 	// that wrote tool frames must not chain the echo past them.
@@ -134,21 +134,22 @@ func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
 
 // noteEnvelope follows the transcript leaf across every frame the
 // process writes, scenario emits included. A sidechain row (a subagent's
-// own tool traffic, marked by parent_tool_use_id) is not the main
-// chain's leaf and is skipped, exactly as the app's own leaf tracker
-// skips it.
+// own tool traffic) and control/status envelopes do not advance the
+// conversation's resumable message leaf.
 func (a *claudeAdapter) noteEnvelope(line string) {
 	if !strings.Contains(line, `"uuid"`) {
 		return
 	}
 	var env struct {
+		Type            string `json:"type"`
 		UUID            string `json:"uuid"`
 		ParentToolUseID string `json:"parent_tool_use_id"`
+		IsSidechain     bool   `json:"isSidechain"`
 	}
 	if json.Unmarshal([]byte(line), &env) != nil {
 		return
 	}
-	if strings.TrimSpace(env.UUID) == "" || strings.TrimSpace(env.ParentToolUseID) != "" {
+	if (env.Type != "assistant" && env.Type != "user") || env.IsSidechain || strings.TrimSpace(env.UUID) == "" || strings.TrimSpace(env.ParentToolUseID) != "" {
 		return
 	}
 	a.leafMu.Lock()

@@ -400,13 +400,14 @@ type Thread struct {
 	PRRef          string `json:"prRef,omitempty"`
 	SessionRef     string `json:"sessionRef,omitempty"`
 	PendingForkRef string `json:"pendingForkRef,omitempty"`
+	ForkPreparing  bool   `json:"forkPreparing,omitempty"`
 	// PendingForkResumeAt pins the transcript cut for a lazy Claude fork:
 	// the source-session leaf uuid captured when the fork was taken. The
 	// fork's first session start passes it (repaired against the CLI's
 	// resume filters) as --resume-session-at alongside --fork-session so
 	// the cut lands where the timeline was cloned, not wherever the source
-	// has grown to by first send. Empty = unpinned (idle-source lazy fork,
-	// every non-fork thread). Cleared with PendingForkRef by both
+	// has grown to by first send. Empty on non-lazy forks and legacy
+	// unpinned forks. Cleared with PendingForkRef by both
 	// session-ref writers.
 	PendingForkResumeAt        string `json:"pendingForkResumeAt,omitempty"`
 	Mode                       string `json:"mode"`

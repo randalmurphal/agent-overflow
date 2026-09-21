@@ -2843,6 +2843,7 @@ func updateThreadWrittenColumns(t *testing.T) map[string]bool {
 // test file rather than the production binary: the SQL is the behavior, and a
 // second list the writer derived from would only be able to agree with itself.
 var threadColumnsNotWrittenByUpdateThread = map[string]string{
+	"fork_preparing":           "owned by fork publication; stale thread metadata cannot reopen preparation",
 	"id":                       "the WHERE key — UpdateThread matches on it and must never rewrite it",
 	"created_at":               "the row's birth stamp; immutable after CreateThread",
 	"updated_at":               "the sidebar's activity clock, advanced only by writes that mean the user did something (TouchThread, archive/unarchive)",

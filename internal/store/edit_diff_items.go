@@ -25,9 +25,9 @@ func (s *Store) ListEditDiffItems(threadID string) ([]EditDiffItem, error) {
 	rows, err := s.reader().Query(`
 		WITH edit_items AS (
 			SELECT items.id, items.payload_id, items.turn_index, items.item_index,
-			       items.created_at, payloads.kind, payloads.meta, payloads.data
+			       items.created_at, payloads.kind, payloads.meta, payloads.data_length
 			  FROM items AS items
-			  JOIN payloads AS payloads
+			  JOIN resolved_payloads AS payloads
 			    ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 			 WHERE items.thread_id = ?
 			UNION ALL
@@ -35,10 +35,10 @@ func (s *Store) ListEditDiffItems(threadID string) ([]EditDiffItem, error) {
 			       items.created_at,
 			       COALESCE(local_payloads.kind, imported_payloads.kind),
 			       COALESCE(local_payloads.meta, imported_payloads.meta),
-			       COALESCE(local_payloads.data, imported_payloads.data)
+			       COALESCE(local_payloads.data_length, length(imported_payloads.data))
 			  FROM thread_import_chunks AS refs
 			  JOIN import_history_items AS items ON items.chunk_id = refs.chunk_id
-			  LEFT JOIN payloads AS local_payloads
+			  LEFT JOIN resolved_payloads AS local_payloads
 			    ON local_payloads.thread_id = refs.thread_id AND local_payloads.id = items.payload_id
 			  LEFT JOIN import_history_payloads AS imported_payloads
 			    ON imported_payloads.chunk_id = items.chunk_id AND imported_payloads.id = items.payload_id
@@ -48,7 +48,7 @@ func (s *Store) ListEditDiffItems(threadID string) ([]EditDiffItem, error) {
 		)
 		SELECT id, payload_id, turn_index, item_index, created_at, kind, meta
 		  FROM edit_items
-		 WHERE kind IN ('tool_result', 'diff') AND length(data) > 0
+		 WHERE kind IN ('tool_result', 'diff') AND data_length > 0
 		 ORDER BY turn_index ASC, item_index ASC`,
 		threadID, threadID,
 	)
@@ -90,7 +90,7 @@ func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([]TurnE
 		WITH edit_items AS (
 			SELECT items.payload_id, items.item_index, payloads.kind, payloads.data
 			  FROM items AS items
-			  JOIN payloads AS payloads
+			  JOIN resolved_payloads AS payloads
 			    ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
 			 WHERE items.thread_id = ? AND items.turn_index = ?
 			UNION ALL
@@ -99,7 +99,7 @@ func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([]TurnE
 			       COALESCE(local_payloads.data, imported_payloads.data)
 			  FROM thread_import_chunks AS refs
 			  JOIN import_history_items AS items ON items.chunk_id = refs.chunk_id
-			  LEFT JOIN payloads AS local_payloads
+			  LEFT JOIN resolved_payloads AS local_payloads
 			    ON local_payloads.thread_id = refs.thread_id AND local_payloads.id = items.payload_id
 			  LEFT JOIN import_history_payloads AS imported_payloads
 			    ON imported_payloads.chunk_id = items.chunk_id AND imported_payloads.id = items.payload_id

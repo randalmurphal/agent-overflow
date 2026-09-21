@@ -37,8 +37,9 @@ control channel aligned with verified provider behavior.
   into the next turn; interruption discards remaining steps and advances.
 - Claude emits `system/init` and replay user echo once per received user turn.
   Scenarios own assistant message framing. Each echo's `parentUuid` is the
-  transcript leaf: the last main-chain `uuid` this process wrote, scenario
-  emits included, skipping sidechain rows (`parent_tool_use_id`). AO verifies
+  transcript leaf: the last main-chain user or assistant `uuid` this process
+  wrote, scenario emits included, skipping sidechain rows (`parent_tool_use_id`
+  or `isSidechain`) and status/result envelopes. AO verifies
   a user message against that leaf, so a turn that wrote tool rows must not
   chain the next echo past them.
 - Codex reports a parseable app-server version. Queue mutation methods must return explicit errors: Agent Overflow owns

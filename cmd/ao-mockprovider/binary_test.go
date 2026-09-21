@@ -631,7 +631,9 @@ func TestClaudeUserEchoHangsOffTheTranscriptLeaf(t *testing.T) {
 		Turns: []scenario.Turn{{Steps: []scenario.Step{{Emit: &scenario.EmitStep{Lines: []string{
 			`{"type":"assistant","uuid":"a-main-${TURN}","message":{"id":"msg-${TURN}","role":"assistant","content":[{"type":"text","text":"turn ${TURN}"}]}}`,
 			`{"type":"assistant","uuid":"a-side-${TURN}","parent_tool_use_id":"toolu_sub","message":{"id":"msg-sub-${TURN}","role":"assistant","content":[{"type":"text","text":"a subagent line"}]}}`,
-			`{"type":"result","subtype":"success","is_error":false}`,
+			`{"type":"assistant","uuid":"a-side-disk-${TURN}","isSidechain":true,"message":{"id":"msg-side-${TURN}","role":"assistant","content":[{"type":"text","text":"a sidechain line"}]}}`,
+			`{"type":"system","subtype":"task_notification","uuid":"notification-${TURN}","task_id":"task-sub","status":"completed","summary":"done"}`,
+			`{"type":"result","uuid":"result-${TURN}","subtype":"success","is_error":false}`,
 		}}}}}},
 		AfterTurns: "repeatLast",
 	}

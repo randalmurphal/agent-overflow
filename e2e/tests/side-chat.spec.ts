@@ -69,6 +69,7 @@ async function runSideChat(page: Page): Promise<void> {
   await sourcePane(page).getByLabel('Message Input').fill('/side-chat');
   await sourcePane(page).getByTestId('composer-send').click();
   await expect(sideChatPane(page)).toHaveCount(1);
+  await expect(sideChatPane(page).getByTestId('side-chat-preparing')).toHaveCount(0);
 }
 
 interface ScratchRow {
@@ -316,3 +317,52 @@ test('New Thread in a collapsed group replaces the side chat source and preserve
   }).toEqual([true]);
   await expect.poll(async () => (await threadRows(harness)).some(row => row.id === fork!.id)).toBe(false);
 });
+
+for (const action of ['sidebar', 'side-chat'] as const) {
+  test(`${action} shows preparation immediately and becomes usable only after the fork returns`, async ({ harness, page }) => {
+    let release: (() => void) | undefined;
+    await page.routeWebSocket(/\/ws(?:\?|$)/, socket => {
+      const server = socket.connectToServer();
+      socket.onMessage(message => {
+        const frame = JSON.parse(String(message));
+        const method = action === 'sidebar' ? 4063914461 : 2246569884;
+        if (frame.type === 'rpc' && frame.methodId === method) release = () => server.send(message);
+        else server.send(message);
+      });
+      server.onMessage(message => socket.send(message));
+    });
+    const source = await seedSource(harness);
+    await setScenario(harness, source.path, plainScenario({ name: 'fork-preparation', provider: 'claude', texts: ['Ready to fork.'] }));
+    await harness.open(page);
+    const row = page.getByTestId('thread-row').filter({ hasText: SOURCE_TITLE });
+    await row.click();
+    await runOneTurn(page, harness, 'prepare the source');
+    if (action === 'sidebar') {
+      await row.click({ button: 'right' });
+      await page.getByText('Fork Thread', { exact: true }).click();
+    } else {
+      await sourcePane(page).getByLabel('Message Input').fill('/side-chat');
+      await sourcePane(page).getByTestId('composer-send').click();
+    }
+    await expect.poll(() => !!release).toBe(true);
+    const pending = action === 'sidebar' ? page.getByTestId('fork-pending-row') : page.getByTestId('side-chat-preparing');
+    await expect(pending).toBeVisible();
+    await expect(pending).toHaveAttribute('aria-busy', 'true');
+    if (action === 'sidebar') {
+      await expect(pending.locator('button, a, [tabindex]')).toHaveCount(0);
+      await pending.click();
+      await expect(sourcePane(page).getByLabel('Message Input')).toBeEnabled();
+    } else {
+      await expect(sideChatPane(page).getByLabel('Message Input')).toHaveCount(0);
+    }
+    release!();
+    await expect(pending).toHaveCount(0);
+    const target = action === 'sidebar' ? sourcePane(page) : sideChatPane(page);
+    await expect(target.getByLabel('Message Input')).toBeEnabled();
+    await expect(target.getByTestId('assistant-message-body').last()).toContainText('Ready to fork.');
+    await target.getByLabel('Message Input').fill('continue in the fork');
+    await target.getByTestId('composer-send').click();
+    await harness.waitForEvent('provider:turn_completed');
+    await expect(target.getByTestId('assistant-message-body').last()).toContainText('Ready to fork.');
+  });
+}

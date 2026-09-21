@@ -1,4 +1,6 @@
 <script lang="ts">
+  import SteppedSpinner from '../primitives/SteppedSpinner.svelte';
+  import PaneCloseButton from './PaneCloseButton.svelte';
   import { untrack } from 'svelte';
   import ChatView from '../chat/ChatView.svelte';
   import CompanionPane from './CompanionPane.svelte';
@@ -483,11 +485,14 @@
                    registered in the pane registry under this companion pane
                    id. -->
               {@const sideChatPane = getPane(item.paneId)}
-              {#if sideChatPane}
+              {#if sideChatPane?.threadId}
                 <ChatView pane={sideChatPane} />
               {:else}
-                <div class="flex h-full items-center justify-center px-4 text-sm text-error" data-testid="side-chat-pane-missing">
-                  Side chat unavailable.
+                <div class="flex justify-end border-b border-border-subtle p-2">
+                  <PaneCloseButton paneId={item.paneId} />
+                </div>
+                <div role="status" aria-busy="true" class="flex flex-1 items-center justify-center gap-2 px-4 text-sm text-fg-muted" data-testid="side-chat-preparing">
+                  <SteppedSpinner /> Preparing side chat…
                 </div>
               {/if}
             {:else if item.kind === 'take-control'}

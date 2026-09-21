@@ -16,7 +16,7 @@ import (
 // ListAttachments(threadID) would silently leave their bytes behind.
 func (s *Store) ThreadTransferAttachments(ctx context.Context, threadID string) ([]Attachment, error) {
 	rows, err := s.reader().QueryContext(ctx, `SELECT `+attachmentColumns+` FROM attachments
-WHERE thread_id = ? OR (thread_id,id) IN (
+WHERE id IN (SELECT attachment_id FROM attachment_owners WHERE thread_id=?) OR (thread_id,id) IN (
  SELECT CASE WHEN ref.type = 'object' THEN COALESCE(NULLIF(json_extract(ref.value,'$.threadId'),''),?) ELSE ? END,
         CASE WHEN ref.type = 'object' THEN json_extract(ref.value,'$.id') WHEN ref.type = 'text' THEN ref.value END
  FROM timeline_items AS items, json_each(CASE WHEN json_valid(items.meta) THEN items.meta ELSE '{}' END,'$.attachments') AS ref

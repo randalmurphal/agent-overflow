@@ -126,7 +126,7 @@ func TestCompletionInsertSettlesItsLaunch(t *testing.T) {
 	}
 }
 
-// Import batches and materializeSharedHistoryTx insert rows in whatever
+// Import batches and fork cloning insert rows in whatever
 // order the source gives, so the launch can land after its completion.
 func TestLaunchInsertedAfterItsCompletionIsSettled(t *testing.T) {
 	s := settleTriggerStore(t)

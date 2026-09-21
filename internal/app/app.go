@@ -627,7 +627,8 @@ type App struct {
 	maintenance maintenanceTuning
 	// storeMaintenance owns the one-time auto_vacuum conversion
 	// scheduler's stop gate. See app_store_maintenance.go.
-	storeMaintenance backgroundLoop
+	storeMaintenance   backgroundLoop
+	historyPreparation backgroundLoop
 	// codexThread owns provider-thread reconcile and cumulative-cost reads.
 	codexThreadOnce sync.Once
 	codexThread     *codexthread.Service
@@ -714,6 +715,9 @@ func (a *App) backendIdentity() (backendID, replicaGeneration string) {
 //
 //ao:scope threads:read
 func (a *App) ListItems(threadID string, inlinePreviews bool) ([]store.Item, error) {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return nil, err
+	}
 	items, err := a.store.ListItems(threadID)
 	if err != nil {
 		return nil, err

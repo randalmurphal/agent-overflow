@@ -82,6 +82,9 @@ func (s *Store) SearchThreadMessages(query string, limit int) ([]ThreadMessageHi
 //
 // limit caps the number of hits; zero or negative means unbounded.
 func (s *Store) SearchThreadItems(threadID, query string, limit int) ([]ThreadMessageHit, error) {
+	if err := s.CheckForkReady(threadID); err != nil {
+		return nil, err
+	}
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
 		return nil, nil
@@ -114,7 +117,7 @@ func (s *Store) searchTitleHits(pattern string, limit int) ([]ThreadMessageHit, 
 	rows, err := s.reader().Query(`
 		SELECT id, title, provider, ownership_epoch
 		FROM owned_threads
-		WHERE LOWER(title) LIKE ? ESCAPE '\' AND `+hiddenClause+`
+		WHERE fork_preparing = 0 AND LOWER(title) LIKE ? ESCAPE '\' AND `+hiddenClause+`
 		ORDER BY updated_at DESC
 		`+limitSuffix(limit),
 		args...,
@@ -171,7 +174,7 @@ func (s *Store) searchGlobalItemHits(pattern string, limit int) ([]ThreadMessage
 			i.id, i.turn_index, i.kind, i.role, i.summary
 		FROM timeline_items i
 		JOIN owned_threads t ON t.id = i.thread_id
-		WHERE LOWER(i.summary) LIKE ? ESCAPE '\' AND `+hiddenClause+`
+		WHERE t.fork_preparing = 0 AND LOWER(i.summary) LIKE ? ESCAPE '\' AND `+hiddenClause+`
 		ORDER BY i.created_at DESC
 		`+limitSuffix(limit),
 		args...,

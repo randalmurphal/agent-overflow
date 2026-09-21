@@ -229,6 +229,7 @@ func (a *App) startUnattendedWork() error {
 	// outside the snapshot triple, so a rollback would leave them until
 	// the next boot clears them. See app_store_maintenance.go.
 	a.startStoreMaintenance()
+	a.startHistoryPreparation()
 
 	// Watch the provider binaries for an upgrade under a running app: a
 	// quiet tick is two stats, and a changed file re-reads the version,
@@ -734,6 +735,9 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	// every thread's turn ends for the receipts bound to them. Both need the
 	// store and the data directory, and neither may run before the flush
 	// queue has been restored.
+	if err := a.cleanupPreparingForks(); err != nil {
+		return err
+	}
 	a.sweepThreadRequestsAtBoot()
 	a.installThreadRequestObserver()
 	if err := a.initWorkflowEngine(dbDir); err != nil {

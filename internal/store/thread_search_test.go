@@ -81,7 +81,7 @@ func hitIDs(hits []ThreadSearchHit) []string {
 
 // The index answers for the logical timeline, not for one physical table: an
 // imported row is indexed on the import arm, an override moves it to the item
-// arm, and materializing the thread moves every row at once.
+// arm, and preparation moves completed content to the import arm.
 func TestSearchIndexTracksTheLogicalTimeline(t *testing.T) {
 	s := newTestStore(t)
 	newImportTargetThread(t, s, "t-index")
@@ -156,15 +156,14 @@ func TestSearchIndexTracksTheLogicalTimeline(t *testing.T) {
 		t.Error("localizing a row changed the number of matches")
 	}
 
-	// Truncation materializes the thread and then deletes rows; both arms
-	// have to end up describing exactly what survived.
+	// Truncation preserves shared survivors; both arms describe the kept rows.
 	if _, _, err := s.DeleteConversationFromTurn("t-index", 1); err != nil {
 		t.Fatalf("delete conversation from turn: %v", err)
 	}
 	after := searchIndexRows(t, s, "t-index")
 	delete(after, "")
 	wantAfter := map[string]string{
-		"imported-user":   "item:user",
+		"imported-user":   "import:user",
 		"imported-answer": "item:assistant",
 	}
 	if fmt.Sprint(after) != fmt.Sprint(wantAfter) {

@@ -173,6 +173,9 @@ func (a *App) SavePayloadToFile(threadID string, payloadID string) (string, erro
 }
 
 func (a *App) flushThreadPayloadBuffers(threadID string) error {
+	if err := a.store.CheckForkReady(threadID); err != nil {
+		return err
+	}
 	if a.triage == nil {
 		return nil
 	}

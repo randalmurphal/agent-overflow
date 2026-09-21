@@ -1,3 +1,4 @@
+import { withForkProgress } from '../../stores/forkPreparation.svelte';
 // Thread-row action handlers.
 //
 // Extracted from ThreadRow.svelte so the component markup + top-level
@@ -109,7 +110,7 @@ export async function archiveThreadAction(ctx: ThreadActionCtx): Promise<void> {
  */
 export async function forkThreadAction(ctx: ThreadActionCtx): Promise<void> {
   try {
-    const created = (await ForkThread(ctx.thread.id, null)) as Thread;
+    const created = await withForkProgress(ctx.thread, async () => (await ForkThread(ctx.thread.id, null)) as Thread);
     const forked = await autoPinNewThread(created);
     prependThread(forked);
     if (forked.projectId) expandProject(forked.projectId);

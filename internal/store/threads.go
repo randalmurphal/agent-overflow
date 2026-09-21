@@ -46,7 +46,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
     workspace_path, COALESCE(worktree_path, ''), COALESCE(branch, ''),
     COALESCE(pr_ref, ''),
     COALESCE(session_ref, ''), COALESCE(pending_fork_session_ref, ''),
-    pending_fork_resume_at,
+    pending_fork_resume_at, fork_preparing,
     mode, reasoning_effort, fast_mode, context_window,
     auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
     COALESCE(discussion_id, ''), COALESCE(parent_thread_id, ''),
@@ -218,7 +218,7 @@ func scanThread(scanner interface{ Scan(...any) error }) (Thread, error) {
 		&t.ID, &t.ProjectID, &t.ProjectPath, &t.Title, &t.Provider, &t.Model,
 		&t.WorkspacePath, &t.WorktreePath, &t.Branch, &t.PRRef,
 		&t.SessionRef, &t.PendingForkRef,
-		&t.PendingForkResumeAt,
+		&t.PendingForkResumeAt, &t.ForkPreparing,
 		&t.Mode, &t.ReasoningEffort, &fastMode, &t.ContextWindow,
 		&t.AutoCompactStandardPercent, &t.AutoCompactExtendedPercent, &t.RuntimeMode,
 		&t.DiscussionID, &t.ParentThreadID, &t.ForkedFromThreadID, &t.LastTokenUsage,
@@ -311,7 +311,7 @@ func prepareThreadForCreate(t Thread) (Thread, any, error) {
 
 const threadInsertColumns = `id, project_id, title, provider, model,
 		    workspace_path, worktree_path, branch, pr_ref, session_ref, pending_fork_session_ref,
-		    pending_fork_resume_at,
+		    pending_fork_resume_at, fork_preparing,
 		    mode, reasoning_effort, fast_mode, context_window,
 		    auto_compact_standard_percent, auto_compact_extended_percent, runtime_mode,
 		    discussion_id, parent_thread_id, forked_from_thread_id, last_token_usage,
@@ -320,7 +320,7 @@ const threadInsertColumns = `id, project_id, title, provider, model,
 		    group_id`
 
 const threadInsertSQL = `INSERT INTO threads (` + threadInsertColumns + `)
-		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		 WHERE ? = '' OR EXISTS (SELECT 1 FROM thread_groups WHERE id = ? AND project_id = ?)`
 
 func insertThread(tx *sql.Tx, t Thread, lastReadAtArg any) error {
@@ -335,7 +335,7 @@ func writeThread(tx *sql.Tx, t Thread, lastReadAtArg any, conflict string) error
 		t.WorkspacePath, nilIfEmpty(t.WorktreePath), nilIfEmpty(t.Branch),
 		t.PRRef,
 		nilIfEmpty(t.SessionRef), nilIfEmpty(t.PendingForkRef),
-		t.PendingForkResumeAt,
+		t.PendingForkResumeAt, boolToInt(t.ForkPreparing),
 		t.Mode, t.ReasoningEffort, boolToInt(t.FastMode), t.ContextWindow,
 		t.AutoCompactStandardPercent, t.AutoCompactExtendedPercent, t.RuntimeMode,
 		nilIfEmpty(t.DiscussionID), nilIfEmpty(t.ParentThreadID), nilIfEmpty(t.ForkedFromThreadID), t.LastTokenUsage,
@@ -865,6 +865,25 @@ func (s *Store) UpdateSessionRefAndRemapProviderIDs(
 		return false, fmt.Errorf("store: commit session ref with provider id remap for %s: %w", threadID, err)
 	}
 	return prev.String != ref, nil
+}
+
+// RemapProviderIDs commits a fork's correlation rewrites in one transaction.
+func (s *Store) RemapProviderIDs(threadID string, items []ItemMetaUpdate, anchors []MessageAnchorProviderIDsUpdate) error {
+	if len(items) == 0 && len(anchors) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin provider id remap: %w", err)
+	}
+	defer tx.Rollback()
+	if err := remapProviderIDsTx(tx, threadID, items, anchors); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit provider id remap: %w", err)
+	}
+	return nil
 }
 
 func remapProviderIDsTx(
@@ -1993,7 +2012,8 @@ func listThreadsWithItemsQuery() (string, []any) {
 	return `SELECT ` + threadColumns + ` FROM owned_threads AS threads
 		 WHERE archived = 0 AND ` + hiddenClause + `
 		   AND (
-		       threads.mode = 'terminal'
+		       threads.fork_preparing = 1
+		    OR threads.mode = 'terminal'
 		    OR EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id)
 		    OR EXISTS (SELECT 1 FROM thread_draft_recoveries WHERE thread_id = threads.id)
 		    OR EXISTS (

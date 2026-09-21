@@ -196,3 +196,55 @@ test('a transfer ticket admits one request and says nothing about the rest', asy
   bare.search = '';
   expect((await fetch(bare)).status).toBe(404);
 });
+
+test('a prepared fork retains inherited images and usable history after deleting its source', async ({ harness, page }) => {
+  const { plainScenario } = await import('./thread-tools-helpers.js');
+  await harness.rpc('HarnessSetScenario', { scenario: plainScenario({ name: 'fork-attachment', provider: 'claude', texts: ['Image received.', 'Fork continued.'], afterTurns: 'repeatLast' }) });
+  const threadId = await seedThread(harness, 'Image fork source');
+  await harness.open(page);
+  await page.getByText('Image fork source', { exact: true }).click();
+  await dropImage(page, FILENAME, PNG_BASE64);
+  await expect(page.getByTestId('attachment-thumb')).toBeVisible();
+  await page.getByLabel('Message Input').fill('Keep this image in the fork. [Image #1]');
+  const completed = harness.waitForEvent('provider:turn_completed');
+  await page.getByTestId('composer-send').click();
+  await completed;
+  const sourceItems = await harness.rpc<Array<{ summary: string; meta: string }>>('ListItems', threadId, true);
+  expect(sourceItems.find((item) => item.summary.includes('Keep this image'))?.meta).toContain(FILENAME);
+
+  // Verify the production preparation loop, using a read-only connection to
+  // this fixture's database. The fork must actually attach shared chunks.
+  const { DatabaseSync } = await import('node:sqlite');
+  const { join } = await import('node:path');
+  const db = new DatabaseSync(join(harness.bootstrap.dataDir, 'agent-overflow.db'), { readOnly: true });
+  try {
+    await expect.poll(() => Number(db.prepare('SELECT count(*) AS n FROM thread_import_chunks WHERE thread_id=?').get(threadId)?.n)).toBeGreaterThan(0);
+    const fork = await harness.rpc<{ id: string; title: string }>('ForkThread', threadId, null);
+    const shared = db.prepare('SELECT count(*) AS n FROM thread_import_chunks a JOIN thread_import_chunks b ON b.chunk_id=a.chunk_id WHERE a.thread_id=? AND b.thread_id=?').get(threadId, fork.id);
+    expect(Number(shared?.n)).toBeGreaterThan(0);
+    const forkItems = await harness.rpc<Array<{ summary: string; meta: string }>>('ListItems', fork.id, true);
+    expect(forkItems.find((item) => item.summary.includes('Keep this image'))?.meta).toContain(FILENAME);
+    await harness.rpc('DeleteThread', threadId);
+    await page.getByText(fork.title, { exact: true }).click();
+    await expect(page.getByText(/Keep this image in the fork\./)).toBeVisible();
+    await page.getByLabel(`Preview ${FILENAME}`).click();
+    const expanded = page.getByRole('dialog', { name: FILENAME }).getByRole('img', { name: FILENAME });
+    await expect.poll(() => expanded.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(PNG_WIDTH);
+    await page.keyboard.press('Escape');
+    const attachments = await harness.rpc<AttachmentRow[]>('ListAttachments', fork.id);
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0].threadId).toBe(fork.id);
+    const ticket = await harness.rpc<string>('MintAttachmentDownloadTicket', fork.id, attachments[0].id);
+    const response = await fetch(new URL(ticket, harness.url));
+    expect(response.status).toBe(200);
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(PNG_BYTES);
+    // Claude lazily forks its native session on this first send.
+    const continued = harness.waitForEvent('provider:turn_completed');
+    await page.getByLabel('Message Input').fill('Continue with the inherited image.');
+    await page.getByTestId('composer-send').click();
+    await continued;
+    await expect(page.getByText('Continue with the inherited image.', { exact: true })).toBeVisible();
+  } finally {
+    db.close();
+  }
+});

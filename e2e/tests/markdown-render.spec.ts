@@ -121,7 +121,8 @@ test('a multi-delta stream renders math, mermaid, tables, link policy, and footn
   await expect(pathAnchor).toHaveCount(1);
   await expect(pathAnchor).toHaveAttribute('href', /^agent-overflow:open\?nonce=/);
   await expect(timeline.locator('a[href^="/"], a[href^="//"]')).toHaveCount(0);
-  await expect(timeline.locator('a[href*="evil.example"]')).toHaveCount(0);
+  // Protocol-relative hosts resolve to explicit HTTPS, never the app origin.
+  await expect(timeline.getByRole('link', { name: 'network link' })).toHaveAttribute('href', 'https://evil.example/x');
   await expect(timeline.getByText('network link')).toBeVisible();
 
   // Footnotes: two reference chips in the prose; the definitions render

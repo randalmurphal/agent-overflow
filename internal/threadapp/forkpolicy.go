@@ -15,11 +15,11 @@ func (s *Service) EnsureCanFork(source store.Thread, atTurnIndex *int) error {
 	if err != nil {
 		return err
 	}
-	items, err := database.ListItems(source.ID)
+	hasItems, err := database.HasItems(source.ID)
 	if err != nil {
 		return fmt.Errorf("fork thread: list source items: %w", err)
 	}
-	if len(items) == 0 {
+	if !hasItems {
 		return fmt.Errorf("fork thread: thread %q has no messages and cannot be forked", source.ID)
 	}
 	if atTurnIndex == nil {
@@ -99,15 +99,12 @@ func (s *Service) ComputeClaudeProviderIDRemap(
 	if len(uuidMap) == 0 {
 		return nil, nil, nil
 	}
-	items, err := database.ListItems(threadID)
+	items, err := database.ListUserMessageMetadata(threadID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("remap claude provider ids: list items: %w", err)
 	}
 	var itemUpdates []store.ItemMetaUpdate
 	for _, item := range items {
-		if item.Kind != "user_text" || item.Role != "user" {
-			continue
-		}
 		newUUID := uuidMap[usermessage.ReadProviderItemID(item.Meta)]
 		newParent := uuidMap[usermessage.ReadProviderParentUUID(item.Meta)]
 		if newUUID == "" && newParent == "" {
@@ -115,10 +112,10 @@ func (s *Service) ComputeClaudeProviderIDRemap(
 		}
 		newMeta, err := usermessage.MergeProviderIDs(item.Meta, newUUID, newParent)
 		if err != nil {
-			return nil, nil, fmt.Errorf("remap claude provider ids: merge item %s/%s meta: %w", threadID, item.ID, err)
+			return nil, nil, fmt.Errorf("remap claude provider ids: merge item %s/%s meta: %w", threadID, item.ItemID, err)
 		}
 		if newMeta != item.Meta {
-			itemUpdates = append(itemUpdates, store.ItemMetaUpdate{ItemID: item.ID, Meta: newMeta})
+			itemUpdates = append(itemUpdates, store.ItemMetaUpdate{ItemID: item.ItemID, Meta: newMeta})
 		}
 	}
 	anchors, err := database.ListMessageAnchors(threadID)
@@ -152,17 +149,5 @@ func (s *Service) ApplyClaudeProviderIDRemap(threadID string, uuidMap map[string
 	if err != nil {
 		return err
 	}
-	for _, update := range itemUpdates {
-		if err := database.UpdateItemMeta(threadID, update.ItemID, update.Meta); err != nil {
-			return fmt.Errorf("remap claude provider ids: update item %s/%s meta: %w", threadID, update.ItemID, err)
-		}
-	}
-	for _, update := range anchorUpdates {
-		if err := database.UpdateMessageAnchorProviderIDs(
-			threadID, update.UserItemID, update.ProviderUserMessageID, update.ProviderParentUUID,
-		); err != nil {
-			return fmt.Errorf("remap claude provider ids: update anchor %s/%s: %w", threadID, update.UserItemID, err)
-		}
-	}
-	return nil
+	return database.RemapProviderIDs(threadID, itemUpdates, anchorUpdates)
 }
