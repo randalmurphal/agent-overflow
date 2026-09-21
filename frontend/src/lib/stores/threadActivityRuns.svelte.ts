@@ -30,6 +30,7 @@ import { compareItemToCursor } from './threadItems';
 import { activityRunLoadedItems, type RunWindowBounds } from './activityRunLoadedItems';
 export type { RunWindowBounds } from './activityRunLoadedItems';
 import { compositeKey } from '../utils/compositeKey';
+import type { TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
 import type { Item } from '../types/models';
 import type { PageShape } from '../../../bindings/agent-overflow/internal/app/models';
 import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
@@ -132,6 +133,7 @@ export interface ThreadActivityRunsOptions {
   windowBounds(): RunWindowBounds;
   /** The pane's thread, or null while it holds none. */
   threadId(): string | null;
+  selection?(): TimelineSelection;
   /** The pane's page shape (`timelinePageShape()`), for member fetches. */
   pageShape(): PageShape;
   /**
@@ -732,6 +734,7 @@ export function createThreadActivityRuns(
   const recordBounds = new Map<string, RunBounds>();
 
   const memberFetch: ActivityRunMemberFetch = createActivityRunMemberFetch({
+    selection: options.selection,
     threadId: () => options.threadId(),
     shape: () => options.pageShape(),
     records: () => records,
@@ -760,14 +763,14 @@ export function createThreadActivityRuns(
   /** Every loaded member id mapped to the span holding it. */
   function spansByMemberId(items: readonly Item[], bounds = options.windowBounds(), stubs: readonly ActivityRunStub[] = []): Map<string, ActivityRunSpan> {
     const byId = new Map<string, ActivityRunSpan>();
-    const window = activityRunLoadedItems(items, bounds, records, stubs, runKeyByMemberId);
+    const window = activityRunLoadedItems(items, bounds, records, stubs, runKeyByMemberId, item => isWindowedTimelineRow(item, options.selection?.()));
     const descriptions = new Map([...records.values()].map(record => [record.runFirstItemId, record.stub]));
     for (const stub of stubs) descriptions.set(stub.firstItemId, stub);
     const describedRuns = [...descriptions.values()];
     const knownMember = (item: Item): boolean => describedRuns.some(stub =>
       compareItemToCursor(item, { turnIndex: stub.firstTurnIndex, itemIndex: stub.firstItemIndex, itemId: stub.firstItemId }) >= 0
       && compareItemToCursor(item, { turnIndex: stub.lastTurnIndex, itemIndex: stub.lastItemIndex, itemId: stub.lastItemId }) <= 0);
-    for (const span of groupActivityRunSpans(window, knownMember)) {
+    for (const span of groupActivityRunSpans(window, knownMember, (item) => isWindowedTimelineRow(item, options.selection?.()))) {
       for (const item of span.items) byId.set(item.id, span);
     }
     return byId;
@@ -818,7 +821,7 @@ export function createThreadActivityRuns(
     stubs?: readonly ActivityRunStub[],
     bounds = options.windowBounds(),
   ): void {
-    const windowed = activityRunLoadedItems(items, bounds, records, stubs ?? [], runKeyByMemberId).filter(isWindowedTimelineRow);
+    const windowed = activityRunLoadedItems(items, bounds, records, stubs ?? [], runKeyByMemberId, item => isWindowedTimelineRow(item, options.selection?.())).filter((item) => isWindowedTimelineRow(item, options.selection?.()));
     const positionById = new Map<string, number>();
     for (let index = 0; index < windowed.length; index += 1) {
       positionById.set(windowed[index].id, index);
@@ -966,7 +969,7 @@ export function createThreadActivityRuns(
    * appends as it always did.
    */
   function runCoveringUnshipped(item: Item): string | null {
-    if (!isWindowedTimelineRow(item)) return null;
+    if (!isWindowedTimelineRow(item, options.selection?.())) return null;
     const cursor = coordinateOf(item);
     for (const [key, record] of records) {
       const bounds = recordBounds.get(key);

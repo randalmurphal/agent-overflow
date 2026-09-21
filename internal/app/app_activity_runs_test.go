@@ -88,7 +88,7 @@ func TestListThreadSliceAround_AnchorInsideALongRun(t *testing.T) {
 	thread, memberIDs := seedLongRunThread(t, app, members)
 	anchor := memberIDs[250]
 
-	page, err := app.ListThreadSliceAround(thread.ID, anchor, 200, PageShape{RunWindowRows: runWindow})
+	page, err := app.ListThreadSliceAround(thread.ID, anchor, 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: runWindow}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestListThreadSliceAround_AnchorInsideALongRun(t *testing.T) {
 	// anchor survives; what it loses folds into the stub rather than out
 	// of the page's range.
 	trimmed, err := app.ListThreadSliceAround(thread.ID, anchor, 200,
-		PageShape{RunWindowRows: runWindow, MaxBytes: 8 << 10})
+		TimelinePageOptions{PageShape: PageShape{RunWindowRows: runWindow, MaxBytes: 8 << 10}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround(trimmed): %v", err)
 	}

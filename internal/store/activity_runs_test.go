@@ -170,7 +170,7 @@ func vectorItemRole(kind string) string {
 // walker, oldest first.
 func allTimelineUnits(t *testing.T, s *Store, threadID string) []pageUnit {
 	t.Helper()
-	walk := newActivityScanWalk(s.reader(), threadID, timelineTailBound(), false)
+	walk := newActivityScanWalk(s.reader(), threadID, timelineTailBound(), false, timelineScope{})
 	var units []pageUnit
 	for {
 		unit, found, err := nextOlderUnit(walk)

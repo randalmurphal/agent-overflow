@@ -89,8 +89,9 @@ func (s PageShape) normalize() PageShape {
 // `shape` must already be normalized: this is the byte ceiling the caller
 // asked for, not the process-wide one.
 func projectPage(paged store.PagedItems, shape PageShape, anchor int) store.PagedItems {
+	paged.Scope = projectScopeContext(paged.Scope, shape)
 	paged.Items = itemwire.ProjectItems(slicesx.OrEmpty(paged.Items), shape.InlinePreviews)
-	from, to := admittedRange(paged.Items, anchor, shape.MaxBytes)
+	from, to := admittedRange(paged.Items, anchor, shape.MaxBytes-scopeContextBytes(paged.Scope))
 	return paged.TrimShipped(from, to)
 }
 
@@ -210,4 +211,29 @@ func costAt(items []store.Item, i int) int {
 		return -1
 	}
 	return itemwire.EncodedBytes(items[i])
+}
+
+func projectScopeContext(context *store.TimelineScopeContext, shape PageShape) *store.TimelineScopeContext {
+	if context == nil {
+		return nil
+	}
+	projected := *context
+	projected.Root = itemwire.Project(context.Root, shape.InlinePreviews)
+	projected.Lifecycle = itemwire.Project(context.Lifecycle, shape.InlinePreviews)
+	if context.Completion != nil {
+		completion := itemwire.Project(*context.Completion, shape.InlinePreviews)
+		projected.Completion = &completion
+	}
+	return &projected
+}
+
+func scopeContextBytes(scope *store.TimelineScopeContext) int {
+	if scope == nil {
+		return 0
+	}
+	cost := itemwire.EncodedBytes(scope.Root) + itemwire.EncodedBytes(scope.Lifecycle)
+	if scope.Completion != nil {
+		cost += itemwire.EncodedBytes(*scope.Completion)
+	}
+	return cost
 }

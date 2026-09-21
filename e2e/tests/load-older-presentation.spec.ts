@@ -8,6 +8,7 @@ import {
 import { gzipSync } from 'node:zlib';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { startCompositorTrace, summarizeCompositorWindow } from '../src/compositorTrace.js';
+import { waitForScrollSettle } from '../src/scroll.js';
 
 const THREAD_TITLE = 'Delayed history presentation';
 const SEEDED_TURNS = 260;
@@ -150,21 +151,6 @@ async function scrollToHistoryHead(page: Page): Promise<void> {
   throw new Error('timeline never reached its history head');
 }
 
-async function waitForScrollSettle(page: Page): Promise<void> {
-  await page.getByTestId('message-timeline-scroll').evaluate(async (scroller) => {
-    let previous = scroller.scrollTop;
-    let stableFrames = 0;
-    for (let frame = 0; frame < 120; frame += 1) {
-      await new Promise(requestAnimationFrame);
-      const current = scroller.scrollTop;
-      stableFrames = Math.abs(current - previous) <= 0.01 ? stableFrames + 1 : 0;
-      previous = current;
-      if (stableFrames >= 30) return;
-    }
-    throw new Error('timeline scroll gesture did not settle');
-  });
-}
-
 async function visibleAnchor(page: Page): Promise<{ id: string; bounds: ElementBounds }> {
   const candidate = await page.getByTestId('message-timeline-scroll').evaluate((scroller) => {
     const viewport = scroller.getBoundingClientRect();
@@ -237,7 +223,7 @@ async function runCollision(
     // settling after scrollTop first reaches zero. The collision starts only
     // after that reader gesture is genuinely over; otherwise its residual
     // motion is (correctly) indistinguishable from anchor drift.
-    await waitForScrollSettle(page);
+    await waitForScrollSettle(page.getByTestId('message-timeline-scroll'));
     const spinner = button.locator('.animate-spin');
     await expect(spinner).toBeVisible();
     const animationName = await spinner.evaluate((element) => getComputedStyle(element).animationName);

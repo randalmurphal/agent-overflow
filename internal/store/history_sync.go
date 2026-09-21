@@ -67,6 +67,7 @@ type ThreadWindowSync struct {
 	// for this backend rather than reason about the counters at all.
 	Generation string
 	Page       *PagedItems
+	Scope      *TimelineScopeContext
 }
 
 // historyRevTriggersSQL is the latest DDL for the three AFTER triggers on
@@ -461,7 +462,7 @@ func (s *Store) ThreadHistoryStamp(threadID string) (HistoryStamp, bool, error) 
 // page-less and the returned stamp attests the caller's own rows. That is
 // what keeps a reopen after a turn on the same thread free, where a stamp
 // the turn invalidated cannot.
-func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID string, itemBudget, runWindowRows int, have HistoryStamp, held *HeldWindow) (ThreadWindowSync, error) {
+func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID string, itemBudget, runWindowRows int, have HistoryStamp, held *HeldWindow, selection TimelineSelection) (ThreadWindowSync, error) {
 	tx, err := s.reader().BeginTx(ctx, nil)
 	if err != nil {
 		return ThreadWindowSync{}, fmt.Errorf("store: begin sync thread window for %s: %w", threadID, err)
@@ -482,6 +483,13 @@ func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID str
 		return ThreadWindowSync{Status: SyncGone, Generation: identity.ReplicaGeneration}, nil
 	}
 
+	scope, err := s.resolveTimelineScope(tx, threadID, selection)
+	if errors.Is(err, ErrTimelineScopeGone) {
+		return ThreadWindowSync{Status: SyncGone, Generation: identity.ReplicaGeneration}, nil
+	}
+	if err != nil {
+		return ThreadWindowSync{}, err
+	}
 	status := SyncRewritten
 	switch {
 	case have.Epoch == stamp.Epoch && have.Rev == stamp.Rev:
@@ -493,12 +501,13 @@ func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID str
 		Status:     status,
 		Stamp:      stamp,
 		Generation: identity.ReplicaGeneration,
+		Scope:      scope.context,
 	}
 	if status == SyncFresh {
 		return out, nil
 	}
 	if held != nil {
-		verified, err := verifyHeldWindowTx(tx, threadID, *held)
+		verified, err := verifyHeldWindowTx(tx, threadID, *held, scope)
 		if err != nil {
 			return ThreadWindowSync{}, err
 		}
@@ -512,7 +521,7 @@ func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID str
 		}
 	}
 
-	page, err := s.listThreadSliceAround(tx, threadID, anchorItemID, itemBudget, runWindowRows)
+	page, err := s.listThreadSliceAround(tx, threadID, anchorItemID, itemBudget, runWindowRows, scope)
 	if err != nil {
 		return ThreadWindowSync{}, err
 	}

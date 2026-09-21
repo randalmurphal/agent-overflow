@@ -26,6 +26,7 @@ const syncThreadWindowTimeout = 5 * time.Second
 // trust its stamp. -1 can never equal a real stamp, so the answer is
 // always a page — understating is the client's safe direction (§3.4).
 type SyncThreadWindowRequest struct {
+	Selection store.TimelineSelection `json:"selection"`
 	// AnchorItemID positions the window exactly as ListThreadSliceAround
 	// does: empty means the tail, otherwise the caller's saved scroll
 	// anchor (an anchor that no longer exists falls back to the tail).
@@ -72,11 +73,12 @@ type SyncThreadWindowRequest struct {
 type SyncThreadWindowResponse struct {
 	// Status is one of "fresh", "stale", "rewritten", "gone" — see
 	// store.SyncStatus for what each obliges the client to do.
-	Status     string            `json:"status"`
-	Epoch      int64             `json:"epoch"`
-	Rev        int64             `json:"rev"`
-	Generation string            `json:"generation"`
-	Page       *store.PagedItems `json:"page,omitempty"`
+	Status     string                      `json:"status"`
+	Epoch      int64                       `json:"epoch"`
+	Rev        int64                       `json:"rev"`
+	Generation string                      `json:"generation"`
+	Page       *store.PagedItems           `json:"page,omitempty"`
+	Scope      *store.TimelineScopeContext `json:"scope,omitempty"`
 }
 
 // SyncThreadWindow is the cold-open replacement for
@@ -102,7 +104,7 @@ func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (Sy
 		clampSliceItemBudget(req.ItemBudget), shape.RunWindowRows, store.HistoryStamp{
 			Rev:   req.HaveRev,
 			Epoch: req.HaveEpoch,
-		}, req.HaveWindow)
+		}, req.HaveWindow, req.Selection)
 	if err != nil {
 		return SyncThreadWindowResponse{}, normalizeThreadWindowSyncError(ctx, err)
 	}
@@ -112,6 +114,7 @@ func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (Sy
 		Epoch:      result.Stamp.Epoch,
 		Rev:        result.Stamp.Rev,
 		Generation: result.Generation,
+		Scope:      projectScopeContext(result.Scope, shape),
 	}
 	if result.Page != nil {
 		// Same window as ListThreadSliceAround, so the same shape, the
@@ -123,7 +126,10 @@ func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (Sy
 		if err != nil {
 			return SyncThreadWindowResponse{}, normalizeThreadWindowSyncError(ctx, err)
 		}
-		page := projectPage(*result.Page, shape, anchor)
+		page := *result.Page
+		page.Scope = result.Scope
+		page = projectPage(page, shape, anchor)
+		page.Scope = nil
 		out.Page = &page
 	}
 	return out, nil

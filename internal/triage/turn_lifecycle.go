@@ -1481,17 +1481,25 @@ func (r *Router) flipTurnItemsErrored(
 		return fmt.Errorf("error flip list turn items: %w", err)
 	}
 	for _, item := range items {
-		if item.Status != statusRunning && item.Status != statusStreaming {
-			continue
-		}
-		if item.IsBackground && item.Kind == itemKindToolCall {
-			continue
-		}
-		item.Status = statusErrored
-		item.Summary = summaryFn(item.Summary)
-		item.UpdatedAt = now
-		if err := r.persistItem(item, nil); err != nil {
-			return fmt.Errorf("error flip item %s: %w", item.ID, err)
+		for (item.Status == statusRunning || item.Status == statusStreaming) && !(item.IsBackground && item.Kind == itemKindToolCall) {
+			persisted, changed, err := r.store.ErrorActiveItemIfRevision(threadID, item.ID, item.Rev, summaryFn(item.Summary), now)
+			if err != nil {
+				return fmt.Errorf("error flip item %s: %w", item.ID, err)
+			}
+			if changed {
+				r.emitItemUpsert(persisted)
+				r.emitErrorNotice(persisted)
+				r.metrics.ItemsPersisted.Add(context.Background(), 1, metric.WithAttributes(attribute.String("kind", persisted.Kind)))
+				break
+			}
+			var found bool
+			item, found, err = r.store.GetThreadItem(threadID, item.ID)
+			if err != nil {
+				return fmt.Errorf("error flip reread item: %w", err)
+			}
+			if !found {
+				break
+			}
 		}
 	}
 	return nil

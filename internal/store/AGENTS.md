@@ -105,8 +105,9 @@ an atomic persistence decision; they must not become a business-logic layer.
 - State partial-index predicates explicitly in queries. SQLite must be able to
   prove terms such as `completion_of <> ''`, `parent_id <> ''`, and
   `source_ref <> ''` from the SQL text.
-- Window sizes and has-more probes count top-level rows (`parent_id = ''`).
-  Subagent descendants load through their dedicated accessors.
+- Window sizes, run members and has-more probes use the same timeline
+  selection: top-level rows for the main thread, direct children for an agent
+  scope. Keep selection separate from wire page shape.
 - Put connection-scoped PRAGMAs in the DSN. A post-open `Exec` does not cover
   replacement pooled connections. Keep boot verification for required PRAGMAs.
 - `TruncateCheckpoint` quiesces readers and reports contention through

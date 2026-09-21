@@ -213,7 +213,7 @@ func TestHeldWindowFoldsRunStubs(t *testing.T) {
 	s := newTestStore(t)
 	seedRunThread(t, s, "t", runSpec(30))
 
-	page, err := s.ListThreadSliceAround("t", "", 200, 10)
+	page, err := s.ListThreadSliceAround("t", "", 200, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("window: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestHeldWindowFoldsRunStubs(t *testing.T) {
 	if err := s.InsertItem(notification); err != nil {
 		t.Fatalf("insert plan_update notification: %v", err)
 	}
-	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, 10, stale, &held)
+	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, 10, stale, &held, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync a folded window: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestHeldWindowFoldsRunStubs(t *testing.T) {
 	}
 	stale = historyStampOf(t, s, "t")
 	stale.Rev--
-	got, err = s.SyncThreadWindow(context.Background(), "t", "", 200, 10, stale, &held)
+	got, err = s.SyncThreadWindow(context.Background(), "t", "", 200, 10, stale, &held, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync after editing an unshipped member: %v", err)
 	}

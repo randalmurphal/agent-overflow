@@ -15,11 +15,11 @@ func TestItemWindow_ProjectionPreferenceRidesEachRequest(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, heavyThreadShape())
 
-	on, err := app.ListThreadSliceAround(thread.ID, "", 200, PageShape{InlinePreviews: true, RunWindowRows: 30})
+	on, err := app.ListThreadSliceAround(thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{InlinePreviews: true, RunWindowRows: 30}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround(previews on): %v", err)
 	}
-	off, err := app.ListThreadSliceAround(thread.ID, "", 200, PageShape{RunWindowRows: 30})
+	off, err := app.ListThreadSliceAround(thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: 30}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround(previews off): %v", err)
 	}
@@ -54,7 +54,7 @@ func TestItemWindow_EveryPathProjectsTheSameWay(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, heavyThreadShape())
 
-	slice, err := app.ListThreadSliceAround(thread.ID, "", 200, PageShape{RunWindowRows: 30})
+	slice, err := app.ListThreadSliceAround(thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: 30}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestItemWindow_EveryPathProjectsTheSameWay(t *testing.T) {
 
 	// The pagers, the single-row read and the unwindowed list are the
 	// same surface and must not leak an unprojected row.
-	older, err := app.ListItemsBeforeCursor(thread.ID, slice.NewestCursor, 50, PageShape{RunWindowRows: 30})
+	older, err := app.ListItemsBeforeCursor(thread.ID, slice.NewestCursor, 50, TimelinePageOptions{PageShape: PageShape{RunWindowRows: 30}})
 	if err != nil {
 		t.Fatalf("ListItemsBeforeCursor: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestListThreadSliceAround_KeepsTheAnchorOnAnOverBudgetPage(t *testing.T) {
 			t.Fatalf("seed row %d: %v", i, err)
 		}
 	}
-	page, err := app.ListThreadSliceAround(thread.ID, "row-00", rows, PageShape{RunWindowRows: 200})
+	page, err := app.ListThreadSliceAround(thread.ID, "row-00", rows, TimelinePageOptions{PageShape: PageShape{RunWindowRows: 200}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestListThreadSliceAround_KeepsTheAnchorOnAnOverBudgetPage(t *testing.T) {
 		t.Error("rows were trimmed from the newer side without HasMoreNewer")
 	}
 	// The tail fallback still anchors at the newest end.
-	tail, err := app.ListThreadSliceAround(thread.ID, "", rows, PageShape{RunWindowRows: 200})
+	tail, err := app.ListThreadSliceAround(thread.ID, "", rows, TimelinePageOptions{PageShape: PageShape{RunWindowRows: 200}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround tail: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestGetThreadItemProjectionSource_ReturnsWhatTheProjectionRemoved(t *testin
 	// the fixture's elided rows are members of its long run, and the
 	// default window would leave them off the page instead of eliding
 	// anything on them.
-	page, err := app.ListThreadSliceAround(thread.ID, "", 200, PageShape{RunWindowRows: 200})
+	page, err := app.ListThreadSliceAround(thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: 200}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround: %v", err)
 	}
@@ -427,5 +427,58 @@ func TestGetThreadItemProjectionSource_ReturnsWhatTheProjectionRemoved(t *testin
 	}
 	if missing.ItemID != "" {
 		t.Errorf("missing item answered %#v, want the zero value", missing)
+	}
+}
+
+func TestScopedPageByteTrimPreservesContextAndEveryHistoryRow(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread, err := createTestThread(t, app, "claude", "/tmp/w-scoped-budget", "claude-sonnet-4-6", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := store.Item{ID: "scope", ThreadID: thread.ID, Kind: "tool_call", ToolName: "Agent", Role: "assistant", Status: "completed", Summary: strings.Repeat("identity", 80)}
+	if err := app.store.InsertItem(root); err != nil {
+		t.Fatal(err)
+	}
+	const count = 600
+	for i := 0; i < count; i++ {
+		item := store.Item{ID: fmt.Sprintf("child-%04d", i), ThreadID: thread.ID, TurnIndex: 0, ItemIndex: i + 1, ParentID: root.ID, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: strings.Repeat("x", 2048)}
+		if err := app.store.InsertItem(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	selection := store.TimelineSelection{ScopeRootID: root.ID}
+	shape := PageShape{MaxBytes: 12 << 10, RunWindowRows: 30}
+	page, err := app.ListThreadSliceAround(thread.ID, "", 200, TimelinePageOptions{PageShape: shape, Selection: selection})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for {
+		if page.Scope == nil || page.Scope.Root.ID != root.ID {
+			t.Fatal("byte trim lost scope identity")
+		}
+		cost := scopeContextBytes(page.Scope)
+		for _, item := range page.Items {
+			seen[item.ID] = true
+			cost += itemwire.EncodedBytes(item)
+		}
+		if cost > shape.MaxBytes {
+			t.Fatalf("scope and page cost %d exceeds %d", cost, shape.MaxBytes)
+		}
+		if !page.HasMoreOlder {
+			break
+		}
+		cursor := page.OldestCursor
+		page, err = app.ListItemsBeforeCursor(thread.ID, cursor, 200, TimelinePageOptions{PageShape: shape, Selection: selection})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Items) == 0 || page.OldestCursor.ItemIndex >= cursor.ItemIndex {
+			t.Fatal("byte-limited paging did not advance")
+		}
+	}
+	if len(seen) != count {
+		t.Fatalf("reached %d/%d history rows", len(seen), count)
 	}
 }

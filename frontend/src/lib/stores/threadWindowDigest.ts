@@ -28,7 +28,7 @@ import {
   type Fnv1a64,
 } from '../utils/fnv1a';
 import type { Item } from '../types/models';
-import type { HeldWindow } from '../../../bindings/agent-overflow/internal/store/models';
+import type { TimelineSelection, HeldWindow } from '../../../bindings/agent-overflow/internal/store/models';
 
 /**
  * The revision a locally minted or deliberately altered row carries, so
@@ -48,16 +48,10 @@ export const UNSTAMPED_ITEM_REV = -1;
  */
 export const MAX_HELD_WINDOW_ITEMS = 8000;
 
-/**
- * The rows a history window can contain, mirroring the store's
- * `windowedTimelineFilter` (internal/store/paging.go): top-level rows
- * only, and never a `plan_update` notification. Subagent children render
- * inside their anchor's card and load on demand, and plan_update
- * notifications are a side channel; neither is part of any page, so
- * neither may enter the digest.
- */
-export function isWindowedTimelineRow(item: Item): boolean {
-  if (item.parentId) return false;
+/** Eligible direct rows of the selected transcript; mirrors the store filter. */
+export function isWindowedTimelineRow(item: Item, selection: TimelineSelection = {}): boolean {
+  if ((item.parentId ?? '') !== (selection.scopeRootId ?? '')) return false;
+  if (selection.tools && !['tool_call', 'tool_completion', 'terminal_interaction'].includes(item.kind)) return false;
   return !(item.kind === 'notification' && item.toolName === 'plan_update');
 }
 
@@ -152,6 +146,7 @@ export function heldWindowOf(
   hasMoreOlder: boolean,
   hasMoreNewer: boolean,
   runs: HeldRunFold | null,
+  selection: TimelineSelection = {},
 ): HeldWindow | null {
   if (!runs) return null;
   let oldestItemId = '';
@@ -159,7 +154,7 @@ export function heldWindowOf(
   let loaded = 0;
   let folded = runs.digest;
   for (const item of items) {
-    if (!isWindowedTimelineRow(item)) continue;
+    if (!isWindowedTimelineRow(item, selection)) continue;
     if (item.rev < 0) return null;
     loaded += 1;
     if (loaded === 1) oldestItemId = item.id;

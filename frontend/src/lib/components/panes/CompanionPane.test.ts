@@ -1,9 +1,9 @@
-import { cleanup, render } from '@testing-library/svelte';
+import { cleanup, render, waitFor } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CompanionPane from './CompanionPane.svelte';
-import { installPaneMocks, installThreadSwitchMocks, makeItem, makeThread } from '../../../test/helpers/chat';
+import { installTimelineScopeCapability, installPaneMocks, installThreadSwitchMocks, makeItem, makeThread } from '../../../test/helpers/chat';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
@@ -14,6 +14,7 @@ import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-
 
 describe('CompanionPane across a source-pane thread switch', () => {
   beforeEach(() => {
+    installTimelineScopeCapability();
     resetBindingMocks();
     resetPanesForTest();
     resetPaneLayoutForTest();
@@ -47,6 +48,7 @@ describe('CompanionPane across a source-pane thread switch', () => {
     setPaneLayoutItemsForTest([
       { id: 'main', paneId: 'main', kind: 'thread', widthPx: 400 },
     ]);
+    setBindingMock('SyncThreadWindow', async () => { throw new Error('History temporarily unavailable'); });
     const agent = openAgentCompanion('main', 'thread-agent', 'launch-1', 'code-review');
     agent?.pushScope('launch-2', 'Angle B');
 
@@ -63,9 +65,7 @@ describe('CompanionPane across a source-pane thread switch', () => {
     expect(getByTestId('agent-pane-breadcrumb').textContent?.replace(/\s*›\s*/g, ' › ').trim())
       .toBe('main › code-review › Angle B');
     expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('Angle B');
-    // The scoped row is not in the loaded window — the body says so
-    // rather than self-closing (close requires having SEEN the row).
-    expect(getByTestId('agent-pane-not-loaded')).toBeTruthy();
+    await waitFor(() => expect(getByTestId('agent-pane-timeline').textContent).toContain('History temporarily unavailable'));
     expect(getByTestId('companion-pane-agent').getAttribute('aria-label')).toBe('Agent');
   });
 

@@ -51,8 +51,8 @@ export interface ThreadItemWindowOptions {
   streamingReveal(): ThreadStreamingReveal;
   rowUiState(): ThreadRowUiState;
   activityRuns(): ThreadActivityRuns;
-  subagentMemory(): ThreadSubagentMemory;
-  switchLoad(): ThreadSwitchLoad;
+  subagentMemory?(): Pick<ThreadSubagentMemory, 'resetHydrationExhausted' | 'retainFoldAnchors'>;
+  switchLoad(): Pick<ThreadSwitchLoad, 'noteItemMutation' | 'noteItemMutations' | 'noteItemWindowReplacement'>;
 }
 
 export function createThreadItemWindow(options: ThreadItemWindowOptions) {
@@ -263,7 +263,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     // `resetHydrationExhausted` for the full rationale.
     const errors: unknown[] = [];
     try {
-      options.subagentMemory().resetHydrationExhausted(exhaustedScope);
+      options.subagentMemory?.().resetHydrationExhausted(exhaustedScope);
     } catch (error) {
       errors.push(error);
     }
@@ -367,7 +367,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       // Eviction callers record their folds BEFORE replacing, with the
       // anchors still loaded, so those folds are retained.
       try {
-        options.subagentMemory().retainFoldAnchors();
+        options.subagentMemory?.().retainFoldAnchors();
       } catch (error) {
         errors.push(error);
       }

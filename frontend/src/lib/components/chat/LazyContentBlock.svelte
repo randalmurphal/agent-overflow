@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
   import { MAX_INLINE_BYTES, shouldLazyLoad, truncateForPreview } from '../../utils/inlineThreshold';
   import type {
     PaneSession,
@@ -17,19 +16,13 @@
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import { useLeasedPayloadExpansion } from './useLeasedPayloadExpansion.svelte';
 
-  interface Props {
+  type Props = {
     /** Pane for the per-payload expansion registry. When omitted, falls
      * back to local state — fine for unit tests, but in chat surfaces
      * the registry preserves expand state and loaded chunks across
      * the window's overscan eviction. */
     pane?: PaneSession & RowUiRegistry & ScrollHost;
     threadId?: string;
-    /**
-     * Payload id the full body lives under, or undefined if only `preview`
-     * is available. When undefined, the "Show all" button is suppressed
-     * unless `preview` itself is short enough to skip the threshold.
-     */
-    payloadId: string | undefined;
     /**
      * Bounded preview shown before expansion. Truncated visually when it
      * exceeds MAX_INLINE_BYTES; no trimming happens when the preview is
@@ -40,22 +33,22 @@
      * Optional label for the expand button. Default "Show all".
      */
     label?: string;
-  }
+  } & (
+    | { payloadId: string | undefined; fullText?: undefined }
+    | { payloadId?: undefined; fullText: string }
+  );
 
-  let { pane, threadId, payloadId, preview, label = 'Show all' }: Props = $props();
+  let { pane, threadId, payloadId, preview, fullText, label = 'Show all' }: Props = $props();
 
-  // Use the pane's payload-keyed registry when payloadId is defined and
-  // pane is available. When payloadId is undefined the expand button is
-  // suppressed entirely, so caching doesn't matter — local state is fine.
-  // pane + payloadId stable across a row's lifetime; read once via `untrack`.
-  const localFallback = untrack(() =>
-    (pane && payloadId)
-      ? null
-      : createPayloadExpansion(
-          () => payloadId,
-          () => threadId,
-          { payloadVersion: () => compactPayloadVersion(preview) },
-        ),
+  const inlineBodyId = $props.id();
+  let inlineExpanded = $state(false);
+  $effect(() => { if (fullText === undefined) inlineExpanded = false; });
+
+  // Keep a fallback ready when a row changes from a payload to inline content.
+  const localFallback = createPayloadExpansion(
+    () => payloadId,
+    () => threadId,
+    { payloadVersion: () => compactPayloadVersion(preview) },
   );
   const expansionRef = useLeasedPayloadExpansion({
     getPane: () => pane,
@@ -65,34 +58,38 @@
     getOptions: () => compactPayloadVersion(preview),
   });
   const expansion = $derived(expansionRef.current!);
+  const expanded = $derived(fullText !== undefined ? inlineExpanded : expansion.expanded);
   keepExpandedPayloadFresh(() => expansion, () => Boolean(payloadId));
 
   // Threshold check is on the preview text itself. A caller that already
   // knows the preview is short but still wants the button can pass any
   // preview > MAX_INLINE_BYTES to force the control to appear.
   const previewIsLarge = $derived(shouldLazyLoad(preview));
-  const canExpand = $derived(Boolean(payloadId) && (previewIsLarge || expansion.expanded));
+  const canExpand = $derived((fullText !== undefined || Boolean(payloadId))
+    && (previewIsLarge || expanded || (fullText !== undefined && fullText !== preview)));
   const displayPreview = $derived(truncateForPreview(preview, MAX_INLINE_BYTES));
 
   // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
   // the toggle's `aria-controls` and the body's `id` must be one string.
-  // Undefined without a payload — there is no toggle then, so nothing
-  // controls the body. The body is always-mounted (the preview is its
+  // Inline content uses an instance id. The body is always mounted (the preview is its
   // collapsed state), which an enclosing activity run's height cap accounts
   // for through the measured collapsed baseline (utils/activityRunClip.ts).
   const bodyDomId = $derived(
-    payloadId ? chatRowDomId(pane, 'lazy-content', payloadId) : undefined,
+    payloadId ? chatRowDomId(pane, 'lazy-content', payloadId) : inlineBodyId,
   );
 
   async function toggle() {
+    if (fullText !== undefined) { inlineExpanded = !inlineExpanded; return; }
     if (!payloadId) return;
     await expansion.toggle();
   }
 </script>
 
 <div id={bodyDomId}>
-  {#if expansion.expanded}
-    {#if expansion.loading}
+  {#if expanded}
+    {#if fullText !== undefined}
+      <div data-testid="lazy-content-full"><AnsiText source={fullText} class="whitespace-pre-wrap break-words text-xs text-text-secondary" /></div>
+    {:else if expansion.loading}
       <p class="text-xs text-text-secondary animate-pulse" role="status" aria-live="polite" data-testid="lazy-content-loading">
         Loading…
       </p>
@@ -124,11 +121,11 @@
   <button
     type="button"
     onclick={(event) => preservePaneScrollAnchor(pane, event, toggle)}
-    aria-expanded={expansion.expanded}
+    aria-expanded={expanded}
     aria-controls={bodyDomId}
     data-testid="lazy-content-toggle"
     class="mt-1 text-xs text-accent hover:underline cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
   >
-    {expansion.expanded ? 'Show less' : label}
+    {expanded ? 'Show less' : label}
   </button>
 {/if}

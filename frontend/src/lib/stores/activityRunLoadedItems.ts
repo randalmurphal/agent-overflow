@@ -16,6 +16,7 @@ export function activityRunLoadedItems(
   records: ActivityRunRecords,
   stubs: readonly ActivityRunStub[],
   previousMembers: ReadonlyMap<string, string>,
+  includes: (item: Item) => boolean = item => !item.parentId,
 ): readonly Item[] {
   const window = itemsWithinLoadedWindow(items, bounds.oldest, bounds.newest);
   if (records.size === 0 && stubs.length === 0) return window;
@@ -28,7 +29,7 @@ export function activityRunLoadedItems(
     last: byId.get(stub.loadedLastItemId),
   }));
   const keep = (item: Item): boolean => {
-    if (item.parentId) return true;
+    if (!includes(item)) return true;
     for (const { stub, first, last } of spans) {
       if (compareItemToCursor(item, { turnIndex: stub.firstTurnIndex, itemIndex: stub.firstItemIndex, itemId: stub.firstItemId }) < 0
         || compareItemToCursor(item, { turnIndex: stub.lastTurnIndex, itemIndex: stub.lastItemIndex, itemId: stub.lastItemId }) > 0) continue;

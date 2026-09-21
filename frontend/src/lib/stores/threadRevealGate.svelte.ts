@@ -22,6 +22,7 @@ import {
 } from './threadRevealSmoothers';
 
 export interface RevealGateOptions {
+  scopeRootId?: string;
   registry: RevealSmootherRegistry;
   /** Current item for an id, or undefined when not loaded. */
   getItemById(itemId: string): Item | undefined;
@@ -115,7 +116,7 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
     const items = options.getItems();
     for (let i = items.length - 1; i >= 0; i--) {
       const item = items[i];
-      if (item.parentId) continue;
+      if ((item.parentId ?? '') !== (options.scopeRootId ?? '')) continue;
       return item.turnIndex > prev.turnIndex
         || (item.turnIndex === prev.turnIndex && item.itemIndex > prev.itemIndex);
     }
@@ -225,7 +226,7 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
     let frontier: Item | null = null;
     for (const [id, entry] of itemSmoothers) {
       const item = options.getItemById(id);
-      if (!item || item.parentId) continue;
+      if (!item || (item.parentId ?? '') !== (options.scopeRootId ?? '')) continue;
       // An empty buffer is only a pause until this specific message ends.
       if (entry.smoother.isCaughtUp() && item.status !== 'streaming') continue;
       // Earliest position wins (<= 0 ⇒ item is at or before the frontier).
@@ -241,7 +242,7 @@ export function createRevealGate(options: RevealGateOptions): RevealGate {
       const f = frontier;
       for (const [id, entry] of itemSmoothers) {
         const item = options.getItemById(id);
-        if (!item || item.parentId) continue;
+        if (!item || (item.parentId ?? '') !== (options.scopeRootId ?? '')) continue;
         // Withheld successors pause; the frontier (and any earlier top-level
         // smoother, though none should outrank it) resumes. Nothing else
         // happens here — the frontier drains at its own cadence whether or

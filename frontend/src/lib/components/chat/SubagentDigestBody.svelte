@@ -1,12 +1,8 @@
 <script lang="ts">
-  // The expanded body of an agent: its digest (utils/subagentDigest.ts),
-  // capped and virtualized because one review can still run hundreds of
-  // tools after the allowlist. Shared by the inline card (SubagentGroup)
-  // and the background tray row (BackgroundTaskTrayDigest) so the two
-  // surfaces show an agent's activity the same way. The host supplies the
-  // node renderer, exactly as it does for the clip.
+  // The inline card's execution-bounded digest, capped and virtualized.
+  // The background tray owns a separate tools-only window.
   import type { Snippet } from 'svelte';
-  import type { TimelineNode } from '../../utils/subagentGrouping';
+  import { timelineNodeKey, type TimelineNode } from '../../utils/subagentGrouping';
   import { subagentDigestNodes } from '../../utils/subagentDigest';
   import SubagentBodyClip from './SubagentBodyClip.svelte';
 
@@ -60,6 +56,6 @@
       Intermediate output only. Open the agent pane for the full transcript.
     </p>
   {:else}
-    <SubagentBodyClip nodes={bodyNodes} {depth} {live} {maxHeight} {renderNode} />
+    <SubagentBodyClip getKey={timelineNodeKey} nodes={bodyNodes} {depth} {live} {maxHeight} {renderNode} />
   {/if}
 </div>

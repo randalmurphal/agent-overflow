@@ -359,33 +359,7 @@ func (r *Router) applyApprovalDecision(
 	}
 
 	if found {
-		item.Decision = decision
-		if item.ToolName == "" {
-			item.ToolName = request.ToolName
-		}
-		if item.Summary == "" {
-			item.Summary = approvalSummary(request)
-		}
-		// On an amended decision the stored summary must reflect the
-		// MODIFIED input — overwrite whatever the tool_call launch wrote
-		// so the row renders what will actually run.
-		if decision == "amended" && len(request.Input) > 0 {
-			if refreshed := approvalSummary(request); refreshed != "" {
-				item.Summary = refreshed
-			}
-		}
-		if approvalDeclinesExecution(decision) && item.Status != statusCompleted && item.Status != statusErrored {
-			item.Status = statusDeclined
-		}
-		if approvalLosesExecution(decision) && item.Status != statusCompleted && item.Status != statusDeclined {
-			item.Status = statusErrored
-		}
-		item.UpdatedAt = now
-		if err := r.persistItem(item, nil); err != nil {
-			return fmt.Errorf("approval item update: %w", err)
-		}
-		r.takeApprovalDecision(threadID, itemID)
-		return nil
+		return r.updateApprovalItem(item, request, decision, now)
 	}
 
 	if !isToolApproval(request, itemID) || !approvalDeclinesExecution(decision) {

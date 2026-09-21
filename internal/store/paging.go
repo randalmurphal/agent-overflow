@@ -85,15 +85,16 @@ type TimelineCursor struct {
 // for frontend and transport compatibility while callers migrate to the
 // explicit names.
 type PagedItems struct {
-	Items           []Item            `json:"items"`
-	Runs            []ActivityRunStub `json:"runs"`
-	OldestCursor    TimelineCursor    `json:"oldestCursor"`
-	NewestCursor    TimelineCursor    `json:"newestCursor"`
-	OldestTurnIndex int               `json:"oldestTurnIndex"`
-	NewestTurnIndex int               `json:"newestTurnIndex"`
-	HasMore         bool              `json:"hasMore"`
-	HasMoreOlder    bool              `json:"hasMoreOlder"`
-	HasMoreNewer    bool              `json:"hasMoreNewer"`
+	Scope           *TimelineScopeContext `json:"scope,omitempty"`
+	Items           []Item                `json:"items"`
+	Runs            []ActivityRunStub     `json:"runs"`
+	OldestCursor    TimelineCursor        `json:"oldestCursor"`
+	NewestCursor    TimelineCursor        `json:"newestCursor"`
+	OldestTurnIndex int                   `json:"oldestTurnIndex"`
+	NewestTurnIndex int                   `json:"newestTurnIndex"`
+	HasMore         bool                  `json:"hasMore"`
+	HasMoreOlder    bool                  `json:"hasMoreOlder"`
+	HasMoreNewer    bool                  `json:"hasMoreNewer"`
 }
 
 // TrimShipped rebuilds the page around a contiguous sub-range of its own
@@ -123,7 +124,9 @@ func (p PagedItems) TrimShipped(from, to int) PagedItems {
 		to = len(p.Items)
 	}
 	if from >= to {
-		return emptyPagedItems()
+		empty := emptyPagedItems()
+		empty.Scope = p.Scope
+		return empty
 	}
 	kept := p.Items[from:to]
 	keptIDs := make(map[string]struct{}, len(kept))
@@ -144,6 +147,7 @@ func (p PagedItems) TrimShipped(from, to int) PagedItems {
 	hasMoreOlder := p.HasMoreOlder || cursorBefore(p.OldestCursor, oldest)
 	hasMoreNewer := p.HasMoreNewer || cursorBefore(newest, p.NewestCursor)
 	return PagedItems{
+		Scope:           p.Scope,
 		Items:           kept,
 		Runs:            runs,
 		OldestCursor:    oldest,
@@ -219,18 +223,24 @@ func pageEdgeCursor(edge Item, runs []ActivityRunStub, oldestSide bool) Timeline
 // across `before` when the row immediately older than the cursor belongs
 // to a run that continues past it. Those rows are counted by the run's
 // stub, never re-shipped.
-func (s *Store) ListItemsBeforeCursor(threadID string, before TimelineCursor, itemBudget, runWindowRows int) (PagedItems, error) {
+func (s *Store) ListItemsBeforeCursor(threadID string, before TimelineCursor, itemBudget, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
 	return readSnapshot(s.reader(), "before cursor page", func(q sqlQueryer) (PagedItems, error) {
-		return s.listItemsBeforeCursor(q, threadID, before, itemBudget, runWindowRows)
+		scope, err := s.resolveTimelineScope(q, threadID, selection)
+		if err != nil {
+			return PagedItems{}, err
+		}
+		page, err := s.listItemsBeforeCursor(q, threadID, before, itemBudget, runWindowRows, scope)
+		page.Scope = scope.context
+		return page, err
 	})
 }
 
-func (s *Store) listItemsBeforeCursor(q sqlQueryer, threadID string, before TimelineCursor, itemBudget, runWindowRows int) (PagedItems, error) {
+func (s *Store) listItemsBeforeCursor(q sqlQueryer, threadID string, before TimelineCursor, itemBudget, runWindowRows int, scope timelineScope) (PagedItems, error) {
 	if itemBudget <= 0 || !cursorIsValid(before) {
 		return emptyPagedItems(), nil
 	}
 	runWindowRows = clampActivityRunWindowRows(runWindowRows)
-	unit, older, found, err := lastOlderUnit(q, threadID, before)
+	unit, older, found, err := lastOlderUnit(q, threadID, before, scope)
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -242,25 +252,31 @@ func (s *Store) listItemsBeforeCursor(q sqlQueryer, threadID string, before Time
 	if err != nil {
 		return PagedItems{}, err
 	}
-	return s.composePagedUnits(q, threadID, append(units, unit))
+	return s.composePagedUnits(q, threadID, append(units, unit), scope)
 }
 
 // ListItemsAfterCursor loads newer visible top-level items strictly after
 // `after`, in whole units, until `itemBudget` shipped rows have been
 // selected. It is the forward pager companion to ListItemsBeforeCursor
 // and expands its oldest unit whole for the same reason.
-func (s *Store) ListItemsAfterCursor(threadID string, after TimelineCursor, itemBudget, runWindowRows int) (PagedItems, error) {
+func (s *Store) ListItemsAfterCursor(threadID string, after TimelineCursor, itemBudget, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
 	return readSnapshot(s.reader(), "after cursor page", func(q sqlQueryer) (PagedItems, error) {
-		return s.listItemsAfterCursor(q, threadID, after, itemBudget, runWindowRows)
+		scope, err := s.resolveTimelineScope(q, threadID, selection)
+		if err != nil {
+			return PagedItems{}, err
+		}
+		page, err := s.listItemsAfterCursor(q, threadID, after, itemBudget, runWindowRows, scope)
+		page.Scope = scope.context
+		return page, err
 	})
 }
 
-func (s *Store) listItemsAfterCursor(q sqlQueryer, threadID string, after TimelineCursor, itemBudget, runWindowRows int) (PagedItems, error) {
+func (s *Store) listItemsAfterCursor(q sqlQueryer, threadID string, after TimelineCursor, itemBudget, runWindowRows int, scope timelineScope) (PagedItems, error) {
 	if itemBudget <= 0 || !cursorIsValid(after) {
 		return emptyPagedItems(), nil
 	}
 	runWindowRows = clampActivityRunWindowRows(runWindowRows)
-	unit, newer, found, err := firstNewerUnit(q, threadID, after)
+	unit, newer, found, err := firstNewerUnit(q, threadID, after, scope)
 	if err != nil {
 		return PagedItems{}, err
 	}
@@ -272,7 +288,7 @@ func (s *Store) listItemsAfterCursor(q sqlQueryer, threadID string, after Timeli
 	if err != nil {
 		return PagedItems{}, err
 	}
-	return s.composePagedUnits(q, threadID, append([]pageUnit{unit}, units...))
+	return s.composePagedUnits(q, threadID, append([]pageUnit{unit}, units...), scope)
 }
 
 // countRowsBefore / countRowsAtOrBefore split a unit's rows at a cursor.
@@ -362,36 +378,22 @@ func cursorIsValid(cursor TimelineCursor) bool {
 	return cursor.TurnIndex >= 0
 }
 
-func hasOlderItems(q sqlQueryer, threadID string, cursor TimelineCursor) (bool, error) {
-	var exists int
-	err := q.QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM timeline_items
-		   WHERE thread_id = ?
-		     AND `+visibleItemsFilter+`
-		     AND `+topLevelItemsFilter+`
-		     AND (turn_index < ? OR (turn_index = ? AND item_index < ?)))`,
-		threadID, cursor.TurnIndex, cursor.TurnIndex, cursor.ItemIndex,
-	).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("store: probe older items for %s: %w", threadID, err)
-	}
-	return exists != 0, nil
+func hasOlderItems(q sqlQueryer, threadID string, cursor TimelineCursor, scope timelineScope) (bool, error) {
+	return hasItemsBeyond(q, threadID, cursor, scope, "<")
 }
-
-func hasNewerItems(q sqlQueryer, threadID string, cursor TimelineCursor) (bool, error) {
-	var exists int
-	err := q.QueryRow(
-		`SELECT EXISTS(SELECT 1 FROM timeline_items
-		   WHERE thread_id = ?
-		     AND `+visibleItemsFilter+`
-		     AND `+topLevelItemsFilter+`
-		     AND (turn_index > ? OR (turn_index = ? AND item_index > ?)))`,
-		threadID, cursor.TurnIndex, cursor.TurnIndex, cursor.ItemIndex,
-	).Scan(&exists)
+func hasNewerItems(q sqlQueryer, threadID string, cursor TimelineCursor, scope timelineScope) (bool, error) {
+	return hasItemsBeyond(q, threadID, cursor, scope, ">")
+}
+func hasItemsBeyond(q sqlQueryer, threadID string, cursor TimelineCursor, scope timelineScope, comparison string) (bool, error) {
+	filter, args := scope.filter("")
+	args = append([]any{threadID}, args...)
+	args = append(args, cursor.TurnIndex, cursor.ItemIndex)
+	var exists bool
+	err := q.QueryRow(`SELECT EXISTS(SELECT 1 FROM timeline_items WHERE thread_id = ? AND `+filter+` AND (turn_index, item_index) `+comparison+` (?, ?))`, args...).Scan(&exists)
 	if err != nil {
-		return false, fmt.Errorf("store: probe newer items for %s: %w", threadID, err)
+		return false, fmt.Errorf("probe timeline edge: %w", err)
 	}
-	return exists != 0, nil
+	return exists, nil
 }
 
 // ListThreadSliceAround loads the bounded active-pane window around an
@@ -410,29 +412,39 @@ func hasNewerItems(q sqlQueryer, threadID string, cursor TimelineCursor) (bool, 
 // When `anchorItemID` is "" or the item doesn't belong to `threadID`
 // (bottom-snapshot restore, stale snapshot whose anchor has been
 // deleted), the function returns the tail window.
-func (s *Store) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount, runWindowRows int) (PagedItems, error) {
+func (s *Store) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
 	return readSnapshot(s.reader(), "thread slice", func(q sqlQueryer) (PagedItems, error) {
-		return s.listThreadSliceAround(q, threadID, anchorItemID, targetItemCount, runWindowRows)
+		scope, err := s.resolveTimelineScope(q, threadID, selection)
+		if err != nil {
+			return PagedItems{}, err
+		}
+		page, err := s.listThreadSliceAround(q, threadID, anchorItemID, targetItemCount, runWindowRows, scope)
+		page.Scope = scope.context
+		return page, err
 	})
 }
 
 // listThreadSliceAround is ListThreadSliceAround against a caller-chosen
 // queryer, so SyncThreadWindow can run the same window inside the
 // transaction its stamps are read in.
-func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID string, targetItemCount, runWindowRows int) (PagedItems, error) {
+func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID string, targetItemCount, runWindowRows int, scope timelineScope) (PagedItems, error) {
 	if targetItemCount <= 0 {
 		targetItemCount = 50
 	}
 	runWindowRows = clampActivityRunWindowRows(runWindowRows)
 	if anchorItemID == "" {
-		return s.listTailSlice(q, threadID, targetItemCount, runWindowRows)
+		return s.listTailSlice(q, threadID, targetItemCount, runWindowRows, scope)
 	}
 	anchor, found, err := s.getThreadItem(q, threadID, anchorItemID)
 	if err != nil {
 		return PagedItems{}, fmt.Errorf("store: list thread slice for %s anchor=%s: %w", threadID, anchorItemID, err)
 	}
 	if !found {
-		return s.listTailSlice(q, threadID, targetItemCount, runWindowRows)
+		return s.listTailSlice(q, threadID, targetItemCount, runWindowRows, scope)
+	}
+
+	if scope.selection.ScopeRootID != "" && anchor.ParentID != scope.selection.ScopeRootID {
+		return PagedItems{}, fmt.Errorf("anchor %q is outside the selected transcript", anchorItemID)
 	}
 
 	atOrBeforeBudget := targetItemCount / 2
@@ -444,14 +456,14 @@ func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID strin
 		afterBudget = 1
 	}
 	anchorCursor := cursorFromItem(anchor)
-	unit, older, newer, found, err := unitAtOrBefore(q, threadID, anchorCursor)
+	unit, older, newer, found, err := unitAtOrBefore(q, threadID, anchorCursor, scope)
 	if err != nil {
 		return PagedItems{}, err
 	}
 	if !found {
 		// Nothing visible at or before the anchor — a child anchor in the
 		// thread's first turn. The whole budget goes to the newer side.
-		return s.listSliceAfter(q, threadID, anchorCursor, targetItemCount, runWindowRows)
+		return s.listSliceAfter(q, threadID, anchorCursor, targetItemCount, runWindowRows, scope)
 	}
 	unit.shipWindow(runWindowRows, 0, len(unit.rows), &anchorCursor)
 	olderUnits, err := walkUnitsOlder(older, atOrBeforeBudget-unit.shippedRows(), runWindowRows)
@@ -463,29 +475,29 @@ func (s *Store) listThreadSliceAround(q sqlQueryer, threadID, anchorItemID strin
 		return PagedItems{}, err
 	}
 	units := append(olderUnits, unit)
-	return s.composePagedUnits(q, threadID, append(units, newerUnits...))
+	return s.composePagedUnits(q, threadID, append(units, newerUnits...), scope)
 }
 
 // listSliceAfter is the whole-budget forward window, used when an anchor
 // coordinate has no visible top-level row at or before it.
-func (s *Store) listSliceAfter(q sqlQueryer, threadID string, after TimelineCursor, targetItemCount, runWindowRows int) (PagedItems, error) {
-	w := newActivityScanWalk(q, threadID, after, true)
+func (s *Store) listSliceAfter(q sqlQueryer, threadID string, after TimelineCursor, targetItemCount, runWindowRows int, scope timelineScope) (PagedItems, error) {
+	w := newActivityScanWalk(q, threadID, after, true, scope)
 	units, err := walkUnitsNewer(w, targetItemCount, runWindowRows)
 	if err != nil {
 		return PagedItems{}, err
 	}
-	return s.composePagedUnits(q, threadID, units)
+	return s.composePagedUnits(q, threadID, units, scope)
 }
 
 // listTailSlice returns the newest units of the thread, shipping each
 // run's newest `runWindowRows` members, until `targetItemCount` rows have
 // been selected. Used when the snapshot is a bottom-restore or the anchor
 // item has been deleted.
-func (s *Store) listTailSlice(q sqlQueryer, threadID string, targetItemCount, runWindowRows int) (PagedItems, error) {
-	w := newActivityScanWalk(q, threadID, timelineTailBound(), false)
+func (s *Store) listTailSlice(q sqlQueryer, threadID string, targetItemCount, runWindowRows int, scope timelineScope) (PagedItems, error) {
+	w := newActivityScanWalk(q, threadID, timelineTailBound(), false, scope)
 	units, err := walkUnitsOlder(w, targetItemCount, runWindowRows)
 	if err != nil {
 		return PagedItems{}, err
 	}
-	return s.composePagedUnits(q, threadID, units)
+	return s.composePagedUnits(q, threadID, units, scope)
 }

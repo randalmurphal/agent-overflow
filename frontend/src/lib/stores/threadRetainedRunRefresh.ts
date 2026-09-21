@@ -1,7 +1,7 @@
 import type { Item } from '../types/models';
 import type { TimelinePageShape } from './threadPaneShared';
 import { ACTIVITY_RUN_WINDOW_ROWS_MAX } from '../utils/activityRunWindow';
-import type { ActivityRunStub, PagedItems, TimelineCursor } from '../../../bindings/agent-overflow/internal/store/models';
+import type { ActivityRunStub, PagedItems, TimelineCursor, TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
 import type { ActivityRunSpan } from '../utils/activityRunSpans';
 import { ListActivityRunMembers, ListItemsBeforeCursor } from './bindings';
 import { compareCursors, compareItemToCursor, mergeItemsById } from './threadItems';
@@ -27,6 +27,7 @@ export async function refreshRetainedRunWindows(
   previous: readonly ActivityRunSpan[],
   shape: TimelinePageShape,
   isCurrent: () => boolean,
+  selection: TimelineSelection = {},
 ): Promise<PagedItems> {
   const present = new Set(page.items.map(item => item.id));
   const retained = previous.filter(span =>
@@ -51,7 +52,7 @@ export async function refreshRetainedRunWindows(
     while (isCurrent()) {
       // One logical unit per response; advance by shipped rows, since a
       // logical run's cursor includes all of its unshipped members.
-      const chunk = await withBackendTarget(backend, () => ListItemsBeforeCursor(threadId, before, 1, readShape));
+      const chunk = await withBackendTarget(backend, () => ListItemsBeforeCursor(threadId, before, 1, readShape, selection));
       if (!isCurrent()) return page;
       const incoming = chunk.items as Item[];
       if (incoming.length === 0) break;
@@ -92,7 +93,7 @@ export async function refreshRetainedRunWindows(
       const members = rows.filter(item => compareItemToCursor(item, first) >= 0 && compareItemToCursor(item, last) <= 0);
       if (members.length === 0) continue;
       const answer = await withBackendTarget(backend, () => ListActivityRunMembers(threadId,
-        { runFirstItemId: run.firstItemId, loadedFirstItemId: members[0].id,
+        { selection, runFirstItemId: run.firstItemId, loadedFirstItemId: members[0].id,
           loadedLastItemId: members[members.length - 1].id, direction: 'before', limit: 0, shape }));
       if (!isCurrent()) return page;
       if (answer.stub.memberCount - answer.stub.unshippedBefore - answer.stub.unshippedAfter !== members.length) {

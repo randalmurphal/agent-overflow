@@ -18,7 +18,7 @@ func TestWindowCompletionKeepsLaunchContextOutsideMembership(t *testing.T) {
 	}
 	seedItem(t, s, "t", "prose", 0, 1, "")
 	seedCompletionSibling(t, s, "t", "complete:agent", "agent", 2, 10)
-	page, err := s.ListThreadSliceAround("t", "", 1, 10)
+	page, err := s.ListThreadSliceAround("t", "", 1, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -318,7 +318,12 @@ for (const provider of ['claude', 'codex'] as const) {
 }
 
 test('Codex startup failure after the cut recovers the edit with composer WIP', async ({ harness, page }) => {
-  const scenario = { ...waitingScenario('codex'), onStart: [{ exit: { code: 1 } }] };
+  const scenario = {
+    ...waitingScenario('codex'),
+    codex: { responses: {
+      initialize: '{"jsonrpc":"2.0","id":${REQUEST_ID},"error":{"code":-32000,"message":"Injected startup failure"}}',
+    } },
+  };
   await harness.rpc('HarnessSetScenario', { scenario });
   const threadId = await seed(harness, 'codex', true);
   await harness.open(page);
@@ -331,5 +336,7 @@ test('Codex startup failure after the cut recovers the edit with composer WIP', 
   await expect(page.getByTestId('user-message-editor')).toHaveCount(0);
   await expect(page.getByLabel('Message Input')).toHaveValue('Recover this replacement\n\nExisting draft');
   await expect.poll(async () => (await harness.rpc<{ content: string }>('GetDraft', threadId)).content).toBe('Recover this replacement\n\nExisting draft');
+  const rows = await harness.rpc<Array<{ kind: string }>>('ListItems', threadId, true);
+  expect(rows.filter(row => row.kind === 'user_text')).toEqual([]);
   await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled();
 });

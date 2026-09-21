@@ -1645,18 +1645,12 @@ not a background terminal yet, so neither primitive can reach it.
 
 An agent row has two doors, both at every width. Its header toggles the
 agent's digest under the row (`BackgroundTaskTrayDigest.svelte`): the
-same allowlist, clip and row components as the inline card, read
-through an agent scope view of the source pane
-(`stores/agentScopeView.svelte.ts`) under a tray view key, so expansion
-state never collides with the timeline's or the companion's copy of a
-row. A mounted digest holds its scope (`holdAgentScope`) so the pane's
-fold and prune keep those rows loaded, loads the scope once
-(`pane.loadAgentScope`) if its launch sits outside the loaded window and
-hydrates evicted children by count. A loaded scope outside the window is
-an island: it stays in pane memory for the scoped surfaces, the chat
-timeline renders only the loaded window (`itemsWithinLoadedWindow`), the
-window's edges do not move, and `sweepUnheldAgentScopes` drops the island
-when the last hold releases. The companion loads its scope the same way.
+tools-only selection, virtualized clip and tool row components. Its independent
+scope window (`stores/scopedTimeline.svelte.ts`) loads history and activity-run
+members on demand. The tray, companion and main timeline each own their row
+expansion and scroll state. Launch identity and current lifecycle load separately
+from the transcript range, so a launch outside the main window remains usable.
+The companion uses the same scoped reads for the full transcript.
 The explicit open button opens the agent pane. A command row has no
 button and its chevron is live only once output exists; the tray never
 scrolls the timeline to a row.

@@ -84,6 +84,7 @@ export function assertRevealCursorNotRewound(
 }
 
 export interface ThreadStreamingRevealOptions {
+  scopeRootId?: string;
   /** Current item for an id, or undefined when not loaded. */
   getItemById(itemId: string): Item | undefined;
   /** Index of an id in the current window, or undefined. */
@@ -217,6 +218,7 @@ export function createThreadStreamingReveal(
   const itemSmoothers = registry.smoothers;
   const assistantReveal = registry.assistantReveal;
   const gate = createRevealGate({
+    get scopeRootId() { return options.scopeRootId; },
     registry,
     getItemById: options.getItemById,
     getItems: options.getItems,

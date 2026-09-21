@@ -13,12 +13,12 @@ import type {
   SubagentFoldSnapshot,
 } from '../utils/subagentFold';
 import { createSubagentFoldRegistry } from '../utils/subagentFold';
-import { GetThreadItem, ListSubagentDescendants } from './bindings';
+import { ListSubagentDescendants } from './bindings';
 import {
   itemsForThread,
   mergeMissingItemsById,
 } from './threadItems';
-import { wantsInlinePreviews, type LoadUntilItemResult } from './threadPaneShared';
+import { wantsInlinePreviews } from './threadPaneShared';
 import { addToast } from './toast.svelte';
 
 export interface ThreadSubagentMemoryOptions {
@@ -48,19 +48,7 @@ export interface ThreadSubagentMemoryOptions {
   getSwitchGeneration(): number;
   /** rowUiState.isSubagentGroupExpanded — the retention check for every launch kind. */
   isSubagentGroupExpanded(groupKey: string): boolean;
-  /**
-   * Every row the OPEN agent companion is rendering (the scope trail's
-   * whole subtree), or null when no pane is open. Consulted at the
-   * eviction COMMIT chokepoint, because per-anchor expansion checks
-   * cannot cover every path to it: collapse-time eviction runs on a
-   * card that is by definition collapsed, and the collapsed-launch
-   * sweep collects whole subtrees — both would fold the very rows the
-   * pane has mounted (live incident 2026-08-22: collapsing the card
-   * blanked the open pane into a hydrate-again flicker).
-   */
-  agentPaneHeldRows(): ReadonlySet<string> | null;
-  /** Rows belonging to the loaded timeline, excluding retained agent scopes. */
-  loadedTimelineItems(items: readonly Item[]): readonly Item[];
+
 }
 
 /**
@@ -97,17 +85,6 @@ export interface ThreadSubagentMemory {
   evictCollapsedSubtree(anchorId: string): void;
   /** Hydrate the child transcript under a subagent launch anchor. */
   hydrateChildren(rootItemID: string): Promise<boolean>;
-  /**
-   * Bring a held scope's rows into pane memory without touching the
-   * loaded window: a launch outside the window is fetched with its
-   * ancestor chain and merged in place, then its children hydrate. The
-   * chat timeline never renders rows outside its edges
-   * (`itemsWithinLoadedWindow`), so the reader does not move; the scoped
-   * surface reads them like any other row.
-   */
-  loadScopeRoot(rootItemID: string): Promise<LoadUntilItemResult>;
-  /** Drop every island (rows outside the loaded window) whose root nobody holds. */
-  sweepUnheldScopes(): void;
   /** Live fold aggregate for a launch anchor, or undefined when nothing is folded. */
   aggregate(anchorId: string): SubagentFoldAggregate | undefined;
   /** Drop folds whose anchor has left the loaded window. */
@@ -315,13 +292,7 @@ export function createThreadSubagentMemory(
    * id.
    */
   function commitSubagentEvictions(candidates: readonly SubagentEviction[]): void {
-    // Rows the open agent pane is rendering never fold, whatever path
-    // nominated them — see the option's doc. They fold normally on the
-    // first eviction after the pane closes or re-scopes.
-    const held = candidates.length > 0 ? options.agentPaneHeldRows() : null;
-    const evictions = held
-      ? candidates.filter(({ item }) => !held.has(item.id))
-      : candidates;
+    const evictions = candidates;
     if (evictions.length === 0) return;
     const evictedIds = new Set<string>();
     const anchorIds = new Set<string>();
@@ -446,74 +417,6 @@ export function createThreadSubagentMemory(
     }
   }
 
-  /** Drop folds whose anchor has left the loaded window — see the call
-   *  site's comment in the pane's `replaceTimelineItems` for the
-   *  fold↔items chokepoint rationale. */
-  async function loadScopeRoot(rootItemID: string): Promise<LoadUntilItemResult> {
-    const currentThread = options.getThread();
-    if (!currentThread || !rootItemID) return 'missing';
-    const gen = options.getSwitchGeneration();
-    if (options.getItemIndex(rootItemID) === undefined) {
-      // The root and every unloaded ancestor, so the row lands with a
-      // parent chain the fold and the scoped surfaces can walk. Bounded
-      // like the eviction walk: corrupt parent links cannot spin here.
-      const chain: Item[] = [];
-      let nextId = rootItemID;
-      try {
-        for (let hops = 0; nextId !== '' && hops <= MAX_ANCESTOR_HOPS; hops += 1) {
-          if (options.getItemIndex(nextId) !== undefined) break;
-          const fetched = (await GetThreadItem(currentThread.id, nextId)) as Item | null;
-          if (gen !== options.getSwitchGeneration()) return 'superseded';
-          if (!fetched?.id || fetched.threadId !== currentThread.id) return 'missing';
-          if (chain.some((item) => item.id === fetched.id)) break;
-          chain.push(fetched);
-          nextId = fetched.parentId ?? '';
-        }
-      } catch (err) {
-        if (gen !== options.getSwitchGeneration()) return 'superseded';
-        console.error('loadScopeRoot GetThreadItem failed:', err);
-        addToast('error', 'Failed to load agent activity');
-        return 'failed';
-      }
-      const currentItems = options.getItems();
-      const next = mergeMissingItemsById(chain, currentItems);
-      if (next !== currentItems) {
-        for (const item of chain) swallowedChildIds.delete(item.id);
-        options.replaceTimelineItems(next);
-      }
-    }
-    await hydrateChildren(rootItemID);
-    if (gen !== options.getSwitchGeneration()) return 'superseded';
-    return options.getItemIndex(rootItemID) === undefined ? 'missing' : 'loaded';
-  }
-
-  function sweepUnheldScopes(): void {
-    const items = options.getItems();
-    const loaded = options.loadedTimelineItems(items);
-    if (loaded === items || items.length === 0) return;
-    const loadedIds = new Set(loaded.map(item => item.id));
-    const held = options.agentPaneHeldRows();
-    const islandRoots = new Set<string>();
-    for (const item of items) {
-      if ((item.parentId ?? '') !== '' || loadedIds.has(item.id)) continue;
-      if (held?.has(item.id) || options.isSubagentGroupExpanded(item.id)) continue;
-      islandRoots.add(item.id);
-    }
-    if (islandRoots.size === 0) return;
-    const byId = new Map<string, Item>();
-    for (const item of items) byId.set(item.id, item);
-    const onIsland = (item: Item): boolean => {
-      let walker: Item | undefined = item;
-      for (let hops = 0; walker && hops <= MAX_ANCESTOR_HOPS; hops += 1) {
-        if (islandRoots.has(walker.id)) return true;
-        walker = walker.parentId ? byId.get(walker.parentId) : undefined;
-      }
-      return false;
-    };
-    options.dropTimelineItems(onIsland, { exhaustedScope: islandRoots });
-    retainFoldAnchors();
-  }
-
   function retainFoldAnchors(): void {
     subagentFolds.retainAnchors(
       (anchorId) => options.getItemIndex(anchorId) !== undefined,
@@ -561,8 +464,6 @@ export function createThreadSubagentMemory(
     evictSettledChildren,
     evictCollapsedSubtree,
     hydrateChildren,
-    loadScopeRoot,
-    sweepUnheldScopes,
     aggregate: (anchorId) => subagentFolds.aggregate(anchorId),
     retainFoldAnchors,
     resetHydrationExhausted,

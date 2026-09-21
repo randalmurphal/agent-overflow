@@ -133,8 +133,8 @@
     if (!threadId) return;
     void (async () => {
       try {
-        const ticks = (await GetThreadUserMessageTicks(threadId)) as BaselineTick[];
-        if (pane.threadId !== threadId) return;
+        const ticks = (await GetThreadUserMessageTicks(threadId, { scopeRootId: pane.agentScopeRootId })) as BaselineTick[];
+        if (pane.threadId !== threadId || pane.switchGeneration !== generation) return;
         baseline = ticks ?? [];
       } catch (err) {
         // The rail degrades to loaded-window ticks; jumping and the
@@ -249,13 +249,14 @@
   const remotePreviewInFlight = new Set<string>();
 
   function fetchRemotePreview(threadId: string, id: string): void {
-    const requestKey = `${threadId}\0${id}`;
+    const generation = pane.switchGeneration;
+    const requestKey = `${threadId}\0${generation}\0${id}`;
     if (remotePreviewInFlight.has(requestKey)) return;
     remotePreviewInFlight.add(requestKey);
     void (async () => {
       try {
         const p = (await GetThreadTurnPreview(threadId, id)) as NavTickPreview;
-        if (pane.threadId !== threadId) return;
+        if (pane.threadId !== threadId || pane.switchGeneration !== generation) return;
         remotePreviews = { ...remotePreviews, [id]: p };
       } catch (err) {
         console.error('Failed to load nav rail preview:', err);

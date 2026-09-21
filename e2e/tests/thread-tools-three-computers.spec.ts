@@ -9,7 +9,7 @@
 import { test, expect } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
-import { awaitToolAnswer, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
+import { awaitToolAnswer, awaitTurnCompleted, setScenario, threadToolsScenario } from './thread-tools-helpers.js';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -175,6 +175,7 @@ test('computers narrows a search to the one computer it names', async () => {
   expect(rowsOf(every.value!, benchID)).toContain(onBench.threadIds[0]);
 
   // Naming one computer drops every other group, this computer's included.
+  await awaitTurnCompleted(home, caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'now only the studio', null);
   const narrowed = await awaitToolAnswer<SearchAnswer>(home, {
     tool: 'thread_search',
@@ -197,6 +198,7 @@ test('computers narrows a search to the one computer it names', async () => {
   expect(narrowedIDs).not.toContain(caller.threadIds[0]);
 
   // "local" is the same filter pointed at the caller's own computer.
+  await awaitTurnCompleted(home, caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'now only this computer', null);
   const local = await awaitToolAnswer<SearchAnswer>(home, {
     tool: 'thread_search',
@@ -211,6 +213,7 @@ test('computers narrows a search to the one computer it names', async () => {
   expect(
     local.value!.computers[0].rows.map((row) => row.thread_id),
   ).not.toContain(onStudio.threadIds[0]);
+  await awaitTurnCompleted(home, caller.threadIds[0]);
 });
 
 // Last: this test takes the bench computer down for good.

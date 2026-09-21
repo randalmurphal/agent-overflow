@@ -1,3 +1,4 @@
+import { applyTimelineMutation } from './timelineSurfaces';
 import { itemTranscriptScope } from '../utils/itemTranscriptScope';
 import { optimisticInterruptCut, noteHiddenInterruptItem } from './threadInterruptState.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
@@ -301,6 +302,7 @@ function applyItemUpserts(upserts: Item[]): void {
       }
     }
   }
+  for (const [threadId, items] of itemsByThread) applyTimelineMutation(threadId, { kind: 'upsert', items });
   // A thread with no mounted pane has no timeline for the row to be
   // visible in, and no window or reveal state to ask. Its Zone 2 entries
   // are unrendered by construction, so arrival is the only confirmation
@@ -365,6 +367,7 @@ export function evictStaleWindowCaches(threadId: string, paneOpen: boolean): voi
  * not be served from a warm snapshot that still holds the row.
  */
 function applyItemRemoval(threadId: string, itemId: string): void {
+  applyTimelineMutation(threadId, { kind: 'remove', itemId });
   let removed = false;
   for (const pane of ingestPanes()) {
     if (pane.threadId !== threadId) continue;
@@ -533,6 +536,7 @@ export function flushItemEventQueue(): void {
         updatedAt: delta.updatedAt,
       };
       applyItemDelta(coalesced);
+      applyTimelineMutation(coalesced.threadId, { kind: 'delta', event: coalesced });
     }
     pendingDeltas.clear();
     pendingDeltaItemKeys.clear();
@@ -578,6 +582,7 @@ export function flushItemEventQueue(): void {
           if (pane.threadId !== evt.threadId) continue;
           pane.applyItemMeta(evt);
         }
+        applyTimelineMutation(evt.threadId, { kind: 'meta', event: evt });
         continue;
       }
       if (evt.action === 'patch') {
@@ -588,6 +593,7 @@ export function flushItemEventQueue(): void {
           if (pane.threadId !== evt.threadId) continue;
           pane.applyItemPatch(evt);
         }
+        applyTimelineMutation(evt.threadId, { kind: 'patch', event: evt });
         continue;
       }
       if (evt.action === 'remove') {

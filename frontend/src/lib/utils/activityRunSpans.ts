@@ -54,11 +54,12 @@ export interface ActivityRunSpan {
 export function groupActivityRunSpans(
   items: readonly Item[],
   knownMember: (item: Item) => boolean = () => false,
+  includes: (item: Item) => boolean = isWindowedTimelineRow,
 ): ActivityRunSpan[] {
   const spans: ActivityRunSpan[] = [];
   let open: ActivityRunSpan | null = null;
   for (const item of items) {
-    if (!isWindowedTimelineRow(item)) continue;
+    if (!includes(item)) continue;
     if (isActivityRailRow(item) || (item.kind === 'notification' && knownMember(item))) {
       if (open === null) {
         open = { firstItemId: item.id, lastItemId: item.id, items: [item] };

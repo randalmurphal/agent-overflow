@@ -52,7 +52,7 @@ func TestListThreadUserMessageTicks(t *testing.T) {
 		}
 	}
 
-	got, err := s.ListThreadUserMessageTicks("t-a")
+	got, err := s.ListThreadUserMessageTicks("t-a", TimelineSelection{})
 	if err != nil {
 		t.Fatalf("ticks t-a: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestListThreadUserMessageTicks(t *testing.T) {
 		}
 	}
 
-	empty, err := s.ListThreadUserMessageTicks("t-empty")
+	empty, err := s.ListThreadUserMessageTicks("t-empty", TimelineSelection{})
 	if err != nil {
 		t.Fatalf("ticks t-empty: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestListThreadUserMessageTicks(t *testing.T) {
 		t.Fatalf("empty thread must answer an empty list, got %+v", empty)
 	}
 
-	ordered, err := s.ListThreadUserMessageTicks("t-order")
+	ordered, err := s.ListThreadUserMessageTicks("t-order", TimelineSelection{})
 	if err != nil {
 		t.Fatalf("ticks t-order: %v", err)
 	}
@@ -226,5 +226,50 @@ func TestThreadTurnPreview(t *testing.T) {
 	}
 	if _, found, err = s.ThreadTurnPreview("t-p", "missing"); err != nil || found {
 		t.Fatalf("unknown anchor must answer found=false, got found=%v err=%v", found, err)
+	}
+}
+
+func TestThreadTurnPreviewUsesChildTranscript(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("scope-preview", "claude")); err != nil {
+		t.Fatal(err)
+	}
+	seedAnchorItem(t, s, "scope-preview", "root", 0, 0)
+	rows := []Item{
+		{ID: "prompt", Kind: "user_text", ParentID: "root", Summary: "child ask"},
+		{ID: "reply", Kind: "assistant_text", ParentID: "root", Summary: "child answer"},
+		{ID: "main", Kind: "assistant_text", Summary: "wrong main answer"},
+		{ID: "nested", Kind: "assistant_text", ParentID: "nested-root", Summary: "wrong nested answer"},
+		{ID: "injection", Kind: "user_text", ParentID: "root", Summary: "internal context", Meta: `{"wire_only":true}`},
+		{ID: "final-reply", Kind: "assistant_text", ParentID: "root", Summary: "child final answer"},
+		{ID: "next", Kind: "user_text", ParentID: "root", Summary: "next ask"},
+		{ID: "next-reply", Kind: "assistant_text", ParentID: "root", Summary: "next answer"},
+	}
+	for i, row := range rows {
+		row.Role = "assistant"
+		if row.Kind == "user_text" {
+			row.Role = "user"
+		}
+		row.Status = "completed"
+		row.ThreadID = "scope-preview"
+		row.ItemIndex = i + 1
+		row.CreatedAt = 1
+		if err := s.InsertItem(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, found, err := s.ThreadTurnPreview("scope-preview", "prompt")
+	if err != nil || !found || got.UserText != "child ask" || got.AssistantText != "child final answer" {
+		t.Fatalf("preview: %+v found=%v err=%v", got, found, err)
+	}
+	ticks, err := s.ListThreadUserMessageTicks("scope-preview", TimelineSelection{ScopeRootID: "root"})
+	if err != nil || len(ticks) != 2 || ticks[0].ID != "prompt" || ticks[1].ID != "next" {
+		t.Fatalf("ticks: %+v %v", ticks, err)
+	}
+	if _, found, err := s.ThreadTurnPreview("scope-preview", "injection"); err != nil || found {
+		t.Fatalf("wire-only preview found=%v err=%v", found, err)
+	}
+	if _, found, err := s.ThreadTurnPreview("another-thread", "prompt"); err != nil || found {
+		t.Fatalf("cross-thread preview found=%v err=%v", found, err)
 	}
 }

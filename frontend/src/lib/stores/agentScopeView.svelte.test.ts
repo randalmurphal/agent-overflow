@@ -1,552 +1,427 @@
-// The scoped ThreadPane facade the agent pane mounts MessageTimeline on.
-// These tests pin the override table against a REAL ThreadPane: what the
-// scope window contains, which identities diverge, and that everything
-// else forwards to the source pane.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-
-import { FakeSmoothingClock } from '../../test/helpers/threadPane';
-import { createAgentScopeView } from './agentScopeView.svelte';
-import { __setSmoothingClockForTest, createThreadPane, type ThreadPane } from './thread.svelte';
-import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
-import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from './paneLayout.svelte';
-import {
-  closeCompanionsForSource,
-  resetCompanionPanesForTest,
-} from './companionPanes.svelte';
-import {
-  __resetAgentPaneStateForTest,
-  openAgentCompanion,
-  type AgentPaneState,
-} from './agentPane.svelte';
-import { installPaneMocks, makeItem, makeThread } from '../../test/helpers/chat';
-import { resetBindingMocks } from '../../test/mocks/bindings-app';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createAgentScopeView, type AgentScopeView } from './agentScopeView.svelte';
+import { createThreadPane } from './thread.svelte';
+import { installTimelineScopeCapability, installPaneMocks, makeItem, makeThread } from '../../test/helpers/chat';
+import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
+import { applyItemStreamEvent, flushItemEventQueue } from './eventsItemStream';
+import { applyTimelineMutation } from './timelineSurfaces';
+import { setThreadScrollSnapshot, clearThreadScrollSnapshotsForTest } from '../utils/threadScrollSnapshots';
+import { setBackendIdentityFromBootstrap, __resetBackendIdentityForTest } from '../transport/backendIdentity';
+import { cursorFromItem } from './threadItems';
 import type { Item } from '../types/models';
-import { groupItemsBySubagent, nodeContainsItem, timelineNodeItemId } from '../utils/subagentGrouping';
+import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
+import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 
-const THREAD_ID = 'thread-scope';
-
-/** The companion's mount options: descend in place through the breadcrumb. */
-function companionOptions(agent: AgentPaneState) {
-  return {
-    viewKey: 'agent',
-    openAgentPane: (launchItemId: string, label: string) => agent.pushScope(launchItemId, label),
-  };
+const threadId = 'scope-thread';
+const root = makeItem({ id: 'agent', threadId, kind: 'tool_call', toolName: 'Agent', status: 'running' });
+const row = (id: string, index: number, extra: Partial<Item> = {}) => makeItem({ id, threadId, parentId: root.id, itemIndex: index, ...extra });
+const empty = { turnIndex: -1, itemIndex: -1, itemId: '' };
+function page(items: Item[], older = false, newer = false): PagedItems {
+  return { items, runs: [], scope: { root, lifecycle: root }, hasMore: older,
+    hasMoreOlder: older, hasMoreNewer: newer, oldestTurnIndex: items[0]?.turnIndex ?? -1,
+    newestTurnIndex: items.at(-1)?.turnIndex ?? -1,
+    oldestCursor: items[0] ? { ...cursorFromItem(items[0]), itemId: items[0].id } : empty,
+    newestCursor: items.at(-1) ? { ...cursorFromItem(items.at(-1)!), itemId: items.at(-1)!.id } : empty };
 }
-
-function fixtureItems(): Item[] {
-  return [
-    makeItem({ id: 'launch-1', itemIndex: 0, threadId: THREAD_ID, kind: 'tool_call', toolName: 'Agent', status: 'running', summary: 'Agent: outer' }),
-    makeItem({ id: 'main-text', itemIndex: 1, threadId: THREAD_ID, summary: 'main thread prose' }),
-    makeItem({ id: 'child-a', itemIndex: 2, threadId: THREAD_ID, parentId: 'launch-1', summary: 'child a' }),
-    makeItem({ id: 'nested-launch', itemIndex: 3, threadId: THREAD_ID, parentId: 'launch-1', kind: 'tool_call', toolName: 'Agent', status: 'completed', summary: 'Agent: nested' }),
-    makeItem({ id: 'grandchild', itemIndex: 4, threadId: THREAD_ID, parentId: 'nested-launch', summary: 'grandchild work' }),
-    // The NESTED launch's completion sibling: no parentId, only completionOf.
-    makeItem({ id: 'nested-completion', itemIndex: 5, threadId: THREAD_ID, kind: 'tool_completion', status: 'completed', completionOf: 'nested-launch', summary: 'nested done' }),
-    // The SCOPE's own completion sibling: stays out (feeds the status line).
-    makeItem({ id: 'scope-completion', itemIndex: 6, threadId: THREAD_ID, kind: 'tool_completion', status: 'completed', completionOf: 'launch-1', summary: 'outer done' }),
-  ];
-}
-
-async function setup(items: Item[] = fixtureItems()): Promise<{ pane: ThreadPane; agent: AgentPaneState }> {
+const views: AgentScopeView[] = [];
+async function setup(items = [root, row('child', 1)]) {
   installPaneMocks(items);
   const pane = createThreadPane({ paneId: 'main' });
   registerPaneForTest('main', pane);
-  await pane.switchThread(makeThread({ id: THREAD_ID }));
-  setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 400 }]);
-  const agent = openAgentCompanion('main', THREAD_ID, 'launch-1', 'outer')!;
-  return { pane, agent };
+  await pane.switchThread(makeThread({ id: threadId }));
+  return pane;
 }
-
+async function open(pane: Awaited<ReturnType<typeof setup>>, toolsOnly = false, scopeId = root.id) {
+  const view = createAgentScopeView(pane, scopeId, { viewKey: toolsOnly ? 'tray' : 'agent', toolsOnly, openAgentPane: vi.fn() });
+  views.push(view); view.start();
+  await vi.waitFor(() => expect(view.pane.loading).toBe(false));
+  expect(view.error).toBeNull();
+  return view;
+}
+function push(item: Item) { applyItemStreamEvent({ action: 'upsert', threadId, item }); flushItemEventQueue(); }
 beforeEach(() => {
+  installTimelineScopeCapability();
   resetBindingMocks();
-  resetPanesForTest();
-  resetPaneLayoutForTest();
-  resetCompanionPanesForTest();
-  __resetAgentPaneStateForTest();
+  clearThreadScrollSnapshotsForTest();
 });
+afterEach(() => { for (const view of views.splice(0)) view.dispose(); resetPanesForTest(); });
 
-afterEach(() => {
-  __resetAgentPaneStateForTest();
-  resetCompanionPanesForTest();
-  resetPanesForTest();
-  resetPaneLayoutForTest();
-});
-
-describe('createAgentScopeView', () => {
-  it('scopes items to direct children, lifting them to top level', async () => {
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-
-    const ids = view.items.map((item) => item.id);
-    expect(ids).toContain('child-a');
-    expect(ids).toContain('nested-launch');
-    expect(ids).not.toContain('grandchild');
-    expect(ids).not.toContain('main-text');
-    expect(ids).not.toContain('launch-1');
-
-    // Direct children read as this surface's top level. Deeper rows belong
-    // to the child launch's own scope and arrive after navigation.
-    const childA = view.items.find((item) => item.id === 'child-a')!;
-    expect(childA.parentId).toBeUndefined();
-
-    view.dispose();
+describe('independent agent timeline', () => {
+  it('loads direct rows and completion siblings without borrowing host rows', async () => {
+    const items = [root, row('child', 1), row('nested', 2, { kind: 'tool_call', toolName: 'Agent' }),
+      row('grandchild', 3, { parentId: 'nested' }), row('nested-done', 4, { kind: 'tool_completion', completionOf: 'nested' }),
+      row('scope-done', 5, { parentId: undefined, kind: 'tool_completion', completionOf: root.id })];
+    const pane = await setup(items);
+    const view = await open(pane);
+    expect(view.items.map(item => item.id)).toEqual(['child', 'nested', 'nested-done']);
+    expect(view.items.every(item => !item.parentId)).toBe(true);
+    expect(view.pane.getItemById('child')?.parentId).toBe(root.id);
+    pane.removeItemById('child', threadId);
+    pane.removeItemById(root.id, threadId);
+    expect(view.items.map(item => item.id)).toContain('child');
+    expect(view.root?.id).toBe(root.id);
+    expect(view.gone).toBe(false);
   });
 
-  it('carries a nested launch’s completion sibling but never the scope’s own', async () => {
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-
-    const ids = view.items.map((item) => item.id);
-    expect(ids).toContain('nested-completion');
-    expect(ids).not.toContain('scope-completion');
-
-    view.dispose();
+  it('loads an agent whose launch is outside the main window and keeps empty scopes valid', async () => {
+    const pane = await setup([root]);
+    pane.removeItemById(root.id, threadId);
+    const view = await open(pane);
+    expect(view.root?.id).toBe(root.id);
+    expect(view.items).toEqual([]);
+    expect(view.gone).toBe(false);
   });
 
-  it('shows a late nested completion in continuous history without changing the completed parent card', async () => {
-    const { pane, agent } = await setup([
-      makeItem({ id: 'launch-1', threadId: THREAD_ID, itemIndex: 0, createdAt: 0, kind: 'tool_call', toolName: 'Agent', isBackground: true }),
-      makeItem({ id: 'nested-launch', threadId: THREAD_ID, itemIndex: 1, createdAt: 1, kind: 'tool_call', toolName: 'Agent', isBackground: true, parentId: 'launch-1' }),
-      makeItem({ id: 'outer-prose', threadId: THREAD_ID, itemIndex: 3, createdAt: 3, parentId: 'launch-1' }),
-      makeItem({ id: 'scope-completion', threadId: THREAD_ID, itemIndex: 10, createdAt: 10, kind: 'tool_completion', completionOf: 'launch-1' }),
-    ]);
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-    const before = groupItemsBySubagent(pane.items);
-    expect(before.map(timelineNodeItemId)).toEqual(['launch-1', 'scope-completion']);
-
-    pane.upsertItem(makeItem({
-      id: 'nested-completion', threadId: THREAD_ID, itemIndex: 11, createdAt: 11,
-      kind: 'tool_completion', completionOf: 'nested-launch', parentId: 'launch-1',
-    }));
-
-    expect(groupItemsBySubagent(pane.items)).toEqual(before);
-    const scoped = groupItemsBySubagent(view.items);
-    expect(scoped.map(timelineNodeItemId)).toEqual(['nested-launch', 'outer-prose', 'nested-completion']);
-    expect(scoped.filter((node) => nodeContainsItem(node, 'nested-completion'))).toHaveLength(1);
-    view.dispose();
+  it('keeps tools-only tray state independent of full transcript, scroll and leases', async () => {
+    const pane = await setup([root, row('prose', 1), row('think', 2, { kind: 'thinking' }),
+      row('tool', 3, { kind: 'tool_call', toolName: 'Bash' })]);
+    const full = await open(pane), tray = await open(pane, true);
+    expect(full.items).toHaveLength(3);
+    expect(tray.items.map(item => item.id)).toEqual(['tool']);
+    expect(full.pane.activityRuns).not.toBe(tray.pane.activityRuns);
+    expect(full.pane.activityRuns).not.toBe(pane.activityRuns);
+    full.pane.requestScrollToItem('think');
+    expect(tray.pane.scrollToItemRequest.itemId).toBe('');
+    expect(pane.scrollToItemRequest.itemId).toBe('');
+    full.pane.setUserMessageExpanded('prose', true);
+    expect(pane.isUserMessageExpanded('prose')).toBe(false);
+    full.pane.pruneRowUiState({ itemIds: new Set(), payloads: new Set(), groupKeys: new Set() });
+    expect(tray.items).toHaveLength(1);
   });
 
-  it('answers scoped identities and inert paging, forwards the rest', async () => {
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-    const facade = view.pane;
-
-    // Diverging identities.
-    expect(facade.paneId).toBe('main~agent');
-    expect(facade.scrollStateKey).toBe(`${THREAD_ID}~agent:launch-1`);
-    expect(facade.scrollStateKey).not.toBe(pane.scrollStateKey);
-    expect(facade.revealBoundary).toBeNull();
-    expect(facade.activityRuns).not.toBe(pane.activityRuns);
-
-    // A scope window has no edges to page.
-    expect(facade.hasMoreHistory).toBe(false);
-    expect(facade.hasMoreNewer).toBe(false);
-    expect(facade.oldestLoadedCursor).toBeNull();
-    expect(facade.newestLoadedCursor).toBeNull();
-    expect(facade.loading).toBe(false);
-    expect(facade.showLoadingSpinner).toBe(false);
-    await expect(facade.loadOlder()).resolves.toMatchObject({ status: 'noop' });
-    await expect(facade.loadUntilItem('nested-launch')).resolves.toBe('loaded');
-    await expect(facade.loadUntilItem('grandchild')).resolves.toBe('missing');
-    await expect(facade.loadUntilItem('main-text')).resolves.toBe('missing');
-
-    // Everything else is the source pane.
-    expect(facade.threadId).toBe(pane.threadId);
-    expect(facade.getItemById('main-text')?.id).toBe('main-text');
-    expect(facade.timelineRevision).toBe(pane.timelineRevision);
-
-    view.dispose();
+  it('pages older and newer history with the scope and preserves the other surface', async () => {
+    const pane = await setup([root]);
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', epoch: 1, rev: 1, generation: 'test', page: page([row('middle', 20)], true, true) }));
+    const view = await open(pane);
+    const older = setBindingMock('ListItemsBeforeCursor', async () => page([row('early', 10)], false, true));
+    const newer = setBindingMock('ListItemsAfterCursor', async () => page([row('late', 30)], true, false));
+    await view.pane.loadOlder(); await view.pane.loadNewer();
+    expect(view.items.map(item => item.id)).toEqual(['early', 'middle', 'late']);
+    expect(older.mock.calls[0][3]).toMatchObject({ selection: { scopeRootId: root.id } });
+    expect(newer.mock.calls[0][3]).toMatchObject({ selection: { scopeRootId: root.id } });
+    expect(pane.items.map(item => item.id)).toEqual([root.id]);
   });
 
-  it('keeps its scroll-to-item slot separate from the source pane’s', async () => {
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-    const before = pane.scrollToItemRequest;
-
-    view.pane.requestScrollToItem('grandchild');
-
-    expect(view.pane.scrollToItemRequest.itemId).toBe('grandchild');
-    expect(pane.scrollToItemRequest).toBe(before);
-
-    view.dispose();
+  it('receives ordered upserts, delta, metadata, patch, moves and removals', async () => {
+    const pane = await setup([root]); const view = await open(pane);
+    push(row('stream', 1, { kind: 'tool_call', status: 'streaming', summary: 'a' }));
+    applyItemStreamEvent({ action: 'delta', threadId, itemId: 'stream', kind: 'tool_call', delta: 'b', updatedAt: 2 });
+    applyItemStreamEvent({ action: 'meta', threadId, itemId: 'stream', kind: 'tool_call', meta: '{"test":1}', updatedAt: 2 });
+    applyItemStreamEvent({ action: 'patch', threadId, itemId: 'stream', kind: 'tool_call', patch: { status: 'completed', rev: 2 } });
+    flushItemEventQueue();
+    expect(view.pane.getItemById('stream')).toMatchObject({ summary: 'ab', meta: '{"test":1}', status: 'completed' });
+    push(row('stream', 1, { parentId: 'another', rev: 3 }));
+    expect(view.pane.getItemById('stream')).toBeUndefined();
+    push(row('second', 2));
+    applyItemStreamEvent({ action: 'remove', threadId, itemId: 'second' }); flushItemEventQueue();
+    expect(view.pane.getItemById('second')).toBeUndefined();
   });
 
-  it('routes openAgentPane to a breadcrumb hop instead of re-seeding the companion', async () => {
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-
-    view.pane.openAgentPane('nested-launch', 'nested');
-
-    expect(agent.scopeItemId).toBe('nested-launch');
-    expect(agent.breadcrumb.map((entry) => entry.itemId)).toEqual(['', 'launch-1', 'nested-launch']);
-
-    view.dispose();
+  it('does not admit live history below its loaded floor and leaves it pageable', async () => {
+    const pane = await setup([root]);
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page([row('current', 20)]) }));
+    const view = await open(pane);
+    push(row('backfill', 10));
+    expect(view.items.map(item => item.id)).toEqual(['current']);
+    expect(view.pane.hasMoreHistory).toBe(true);
   });
 
-  it('never lets the scoped instance’s prune reach the shared row-UI store', async () => {
-    // Regression for the 2026-08-22 dead-screenshots incident: the agent
-    // pane's MessageTimeline ran the row-UI prune with scope-only
-    // retention against the SHARED store, revoking the main timeline's
-    // attachment blobs (and the main prune disposed agent-pane rows).
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-    pane.setUserMessageExpanded('main-text', true);
-
-    view.pane.pruneRowUiState({ itemIds: new Set(), payloads: new Set<string>(), groupKeys: new Set() });
-
-    expect(pane.isUserMessageExpanded('main-text')).toBe(true);
-    view.dispose();
+  it('preserves live changes when a snapshot is in flight', async () => {
+    const pane = await setup([root, row('child', 1)]); const view = await open(pane);
+    let resolve!: (value: unknown) => void;
+    setBindingMock('SyncThreadWindow', () => new Promise(done => { resolve = done; }));
+    const refresh = view.pane.refreshFromBackend();
+    await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
+    push(row('child', 1, { summary: 'newer live text', rev: 99 }));
+    push(row('appended', 2));
+    resolve({ status: 'stale', page: page([row('child', 1, { summary: 'old snapshot' })]) });
+    await refresh;
+    expect(view.pane.getItemById('child')?.summary).toBe('newer live text');
+    expect(view.pane.getItemById('appended')).toBeDefined();
+    expect(view.pane.newestLoadedCursor?.itemId).toBe('appended');
   });
 
-  it('host prune spares the open scope rows, and stops sparing once the pane closes', async () => {
-    // The other half of the shared-store contract: the source pane's own
-    // prune widens its retention with the open scope's direct rows, so state
-    // under rows only the agent pane has mounted survives the chat
-    // timeline's bounded-memory pass — exactly while the pane is open.
-    const { pane } = await setup();
-    pane.setUserMessageExpanded('child-a', true);
-    expect(pane.toggleSubagentGroupExpanded('nested-launch')).toBe(true);
-    const emptyRetention = () => ({
-      itemIds: new Set<string>(),
-      payloads: new Set<string>(),
-      groupKeys: new Set<string>(),
-    });
-
-    pane.pruneRowUiState(emptyRetention());
-    expect(pane.isUserMessageExpanded('child-a')).toBe(true);
-    expect(pane.isUserMessageExpanded('grandchild')).toBe(false);
-    expect(pane.isSubagentGroupExpanded('nested-launch')).toBe(true);
-
-    closeCompanionsForSource('main');
-    pane.pruneRowUiState(emptyRetention());
-    expect(pane.isUserMessageExpanded('child-a')).toBe(false);
-    expect(pane.isSubagentGroupExpanded('nested-launch')).toBe(false);
+  it('does not resurrect a removed row from an in-flight snapshot', async () => {
+    const pane = await setup([root, row('child', 1)]); const view = await open(pane);
+    let resolve!: (value: unknown) => void;
+    setBindingMock('SyncThreadWindow', () => new Promise(done => { resolve = done; }));
+    const refresh = view.pane.refreshFromBackend(); await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
+    applyTimelineMutation(threadId, { kind: 'remove', itemId: 'child' });
+    resolve({ status: 'stale', page: page([row('child', 1)]) }); await refresh;
+    expect(view.items).toEqual([]);
   });
 
-  it('keys the scoped window as one turn that follows the launch lifecycle', async () => {
-    // The live regression: the main turn settling stamped "Response 1m 58s"
-    // on a still-running subagent, because the decorations keyed on
-    // `item.turnIndex` + the THREAD's active/settled turn. The facade
-    // answers its own facet: one key for every scoped row, active while
-    // the scoped launch runs, settled on the launch's own completion with
-    // the agent's own duration.
-    const { pane, agent } = await setup();
-    // Fixture: launch-1 is still running and has no completion yet.
-    pane.removeItemById('scope-completion', THREAD_ID);
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-    const turns = view.pane.timelineTurns;
-
-    const first = view.items[0];
-    const last = view.items[view.items.length - 1];
-    expect(turns.keyOf(first)).toBe(turns.keyOf(last));
-    // The source pane keys on the provider turn; the facade must not.
-    expect(pane.timelineTurns.keyOf(makeItem({ turnIndex: 7 }))).toBe(7);
-
-    expect(turns.activeKey).toBe(turns.keyOf(first));
-    expect(turns.settled).toBeNull();
-
-    // The completion sibling lands: the scope's turn settles on IT, not on
-    // anything the main thread did.
-    pane.upsertItem(
-      makeItem({
-        id: 'scope-completion',
-        itemIndex: 6,
-        threadId: THREAD_ID,
-        kind: 'tool_completion',
-        status: 'completed',
-        completionOf: 'launch-1',
-        createdAt: 5_000,
-        updatedAt: 9_000,
-        summary: 'outer done',
-      }),
-    );
-
-    expect(turns.activeKey).toBeNull();
-    expect(turns.settled).toEqual({
-      key: turns.keyOf(first),
-      startedAt: pane.getItemById('launch-1')!.createdAt,
-      completedAt: 9_000,
-    });
-
-    view.dispose();
+  it('updates lifecycle context on a fresh response without replacing transcript rows', async () => {
+    const pane = await setup([root, row('child', 1)]); const view = await open(pane);
+    const previous = view.items;
+    const carrier = { ...root, id: 'resume', status: 'completed', createdAt: 20 };
+    const completion = { ...root, id: 'done', completionOf: 'resume', kind: 'tool_completion', status: 'completed', updatedAt: 30 };
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'fresh', scope: { root, lifecycle: carrier, completion } }));
+    await view.pane.refreshFromBackend();
+    expect(view.items).toBe(previous);
+    expect(view.lifecycle?.id).toBe('resume');
+    expect(view.lifecycleCompletion?.id).toBe('done');
+    expect(view.pane.timelineTurns.settled).toMatchObject({ startedAt: 20, completedAt: 30 });
   });
 
-  // ---- §E6 resume lifecycle -------------------------------------------
-  // A resumed async agent's rows stay parented to the ORIGINAL launch, so
-  // the scope is that launch — but its STATUS settled when round one did.
-  // The view resolves a separate lifecycle row (the latest carrier) and
-  // the turn facet follows it, or the pane reads settled while round two
-  // runs.
-  function carrier(overrides: Partial<Item> = {}): Item {
-    return makeItem({
-      id: 'carrier-1',
-      itemIndex: 8,
-      threadId: THREAD_ID,
-      kind: 'tool_call',
-      toolName: 'SendMessage',
-      isBackground: true,
-      status: 'running',
-      createdAt: 20_000,
-      updatedAt: 20_000,
-      summary: 'Agent: outer',
-      meta: JSON.stringify({ task_id: 'task-1', transcript_root_id: 'launch-1' }),
-      ...overrides,
-    });
-  }
-
-  it('is the launch itself when the scope was never resumed', async () => {
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-
-    expect(view.lifecycle?.id).toBe('launch-1');
-    expect(view.lifecycleCompletion?.id).toBe('scope-completion');
-
-    view.dispose();
-  });
-
-  it('follows the running resume carrier while the scope root has settled', async () => {
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-    // Round one settled: without the lifecycle row the turn would be
-    // settled for the whole of round two.
+  it('keeps settled lifecycle context when an older running upsert arrives, but admits a newer execution', async () => {
+    const settled: Item = { ...root, status: 'completed', updatedAt: 30 };
+    const pane = await setup([settled]);
+    const view = await open(pane);
+    push({ ...root, status: 'running', updatedAt: 20 });
+    expect(pane.getItemById(root.id)?.status).toBe('completed');
+    expect(view.lifecycle?.status).toBe('completed');
     expect(view.pane.timelineTurns.activeKey).toBeNull();
-
-    pane.upsertItem(carrier());
-
-    expect(view.lifecycle?.id).toBe('carrier-1');
-    expect(view.lifecycleCompletion).toBeUndefined();
-    expect(view.pane.timelineTurns.activeKey).not.toBeNull();
-    expect(view.pane.timelineTurns.settled).toBeNull();
-    // The carrier is a lifecycle row, not a transcript row: it is
-    // top-level in the source timeline and must never enter the window.
-    expect(view.items.some((item) => item.id === 'carrier-1')).toBe(false);
-
-    view.dispose();
+    push({ ...root, status: 'running', updatedAt: 40 });
+    expect(view.lifecycle?.status).toBe('running');
+    expect(view.pane.timelineTurns.activeKey).toBe(0);
   });
 
-  it('settles on the carrier’s own completion, timing the round from the resume', async () => {
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-    pane.upsertItem(carrier());
-    pane.upsertItem(
-      makeItem({
-        id: 'complete:carrier-1',
-        itemIndex: 9,
-        threadId: THREAD_ID,
-        kind: 'tool_completion',
-        status: 'completed',
-        completionOf: 'carrier-1',
-        createdAt: 25_000,
-        updatedAt: 26_000,
-        summary: 'Agent: outer -> done',
-      }),
-    );
-
-    expect(view.lifecycleCompletion?.id).toBe('complete:carrier-1');
-    expect(view.pane.timelineTurns.activeKey).toBeNull();
-    // startedAt is the RESUME, not the original launch (user ruling): the
-    // reader is watching this round.
-    expect(view.pane.timelineTurns.settled).toEqual({
-      key: view.pane.timelineTurns.keyOf(view.items[0]),
-      startedAt: 20_000,
-      completedAt: 26_000,
-    });
-    // A carrier's completion sibling is no more a transcript row than the
-    // carrier is.
-    expect(view.items.some((item) => item.id === 'complete:carrier-1')).toBe(false);
-
-    view.dispose();
+  it('closes only on authoritative deletion and drops late replies after release', async () => {
+    const pane = await setup([root]); const view = await open(pane);
+    let resolve!: (value: unknown) => void;
+    setBindingMock('SyncThreadWindow', () => new Promise(done => { resolve = done; }));
+    const refresh = view.pane.refreshFromBackend(); await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
+    view.dispose(); resolve({ status: 'stale', page: page([row('late', 1)]) });
+    await refresh.catch(() => {});
+    expect(view.items).toEqual([]);
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'gone' }));
+    const reopened = await open(pane);
+    expect(reopened.gone).toBe(true);
   });
 
-  it('takes the LATEST carrier when an agent has been resumed twice', async () => {
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-    pane.upsertItem(carrier({ status: 'completed' }));
-    pane.upsertItem(
-      carrier({ id: 'carrier-2', itemIndex: 10, createdAt: 30_000, updatedAt: 30_000 }),
-    );
-
-    expect(view.lifecycle?.id).toBe('carrier-2');
-    expect(view.pane.timelineTurns.activeKey).not.toBeNull();
-
-    view.dispose();
+  it('exposes a failed load for retry rather than reporting an empty transcript', async () => {
+    const pane = await setup([root]);
+    setBindingMock('SyncThreadWindow', async () => { throw new Error('network unavailable'); });
+    const view = createAgentScopeView(pane, root.id, { viewKey: 'failure', openAgentPane: vi.fn() });
+    views.push(view); view.start();
+    await vi.waitFor(() => expect(view.error).toContain('network unavailable'));
+    expect(view.gone).toBe(false);
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page([row('recovered', 1)]) }));
+    await view.pane.retryHistoryLoad();
+    expect(view.error).toBeNull(); expect(view.items[0]?.id).toBe('recovered');
+  });
+  it('does not restore a deleted root from an in-flight response', async () => {
+    const pane = await setup(); const view = await open(pane);
+    let resolve!: (value: unknown) => void;
+    setBindingMock('SyncThreadWindow', () => new Promise(done => { resolve = done; }));
+    const refresh = view.pane.refreshFromBackend();
+    await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
+    applyTimelineMutation(threadId, { kind: 'remove', itemId: root.id });
+    resolve({ status: 'stale', page: page([row('stale', 2)]) });
+    await refresh;
+    expect(view.gone).toBe(true);
+    expect(view.pane.getItemById('stale')).toBeUndefined();
   });
 
-  it('ignores a carrier bound to a different agent', async () => {
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-    pane.upsertItem(
-      carrier({
-        id: 'carrier-other',
-        meta: JSON.stringify({ task_id: 'task-2', transcript_root_id: 'some-other-launch' }),
-      }),
-    );
-
-    expect(view.lifecycle?.id).toBe('launch-1');
-
-    view.dispose();
+  it('separates two panes showing the same transcript and releases only its own window', async () => {
+    const first = await setup();
+    const second = createThreadPane({ paneId: 'second' });
+    await second.switchThread(makeThread({ id: threadId }));
+    const a = await open(first), b = await open(second);
+    a.pane.setUserMessageExpanded('child', true);
+    expect(b.pane.isUserMessageExpanded('child')).toBe(false);
+    a.dispose(); a.dispose();
+    push(row('later', 2));
+    expect(a.items).toEqual([]);
+    expect(b.items.map(item => item.id)).toContain('later');
+    const reopened = await open(first);
+    expect(reopened.pane.isUserMessageExpanded('child')).toBe(false);
+    second.clear();
   });
 
-  // ---- Pinned divergences ---------------------------------------------
-  // Two behaviors from the 2026-08-22 incident class, pinned as CONTRACT
-  // rather than as a side effect of how the facade happens to be built.
-  // Both survived the Proxy -> plain-object rewrite because these run.
-
-  it('pins pruneRowUiState as a deliberate no-op owned by the scope view', async () => {
-    // The scoped MessageTimeline's prune computes retention from ITS OWN
-    // revealed rows — one subtree — while the row-UI store is SHARED with
-    // the source pane. Letting it through revoked the main timeline's
-    // expansion state and attachment blobs (dead screenshots, 2026-08-22).
-    // The no-op must be the VIEW's own member, never a forward: a forward
-    // would run the source pane's real prune with scope-only retention,
-    // which is the incident.
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-
-    expect(view.pane.pruneRowUiState).not.toBe(pane.pruneRowUiState);
-
-    pane.setUserMessageExpanded('main-text', true);
-    // `true` rather than `false`: the registry clears an override that
-    // matches the current collapseDiffPreviews default instead of storing it.
-    pane.setDiffCardExpanded('main-text', 'src/app.ts', true);
-    expect(pane.toggleSubagentGroupExpanded('nested-launch')).toBe(true);
-
-    view.pane.pruneRowUiState({ itemIds: new Set(), payloads: new Set<string>(), groupKeys: new Set() });
-
-    expect(pane.isUserMessageExpanded('main-text')).toBe(true);
-    expect(pane.diffCardExpandedOverride('main-text', 'src/app.ts')).toBe(true);
-    expect(pane.isSubagentGroupExpanded('nested-launch')).toBe(true);
-
-    view.dispose();
+  it('revalidates a newly loaded row if its delta arrived during the read', async () => {
+    const pane = await setup([root]); const view = await open(pane);
+    let resolve!: (value: unknown) => void;
+    setBindingMock('SyncThreadWindow', () => new Promise(done => { resolve = done; }));
+    const refresh = view.pane.refreshFromBackend();
+    await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
+    applyTimelineMutation(threadId, { kind: 'delta', event: { threadId, itemId: 'new-row', kind: 'tool_call', delta: 'latest', updatedAt: 3 } });
+    resolve({ status: 'stale', page: page([row('new-row', 1, { summary: 'older' })]) });
+    await refresh;
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page([row('new-row', 1, { summary: 'olderlatest' })]) }));
+    await vi.waitFor(() => expect(view.pane.getItemById('new-row')?.summary).toBe('olderlatest'));
   });
 
-  it('pins timelineTurns as scope-narrowed: one key for every scoped row', async () => {
-    // The scope IS one turn. A subagent's rows are written at the main
-    // thread's write head across however many provider turns it outlives,
-    // so keying the response decorations on `item.turnIndex` stamped
-    // "Response 1m 58s" on a still-running agent the moment the main turn
-    // settled (2026-08-22). The facet is the view's own and its `keyOf`
-    // ignores the item's turnIndex entirely.
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-    const turns = view.pane.timelineTurns;
-
-    expect(turns).not.toBe(pane.timelineTurns);
-    expect(turns.keyOf(makeItem({ turnIndex: 0 }))).toBe(
-      turns.keyOf(makeItem({ turnIndex: 7 })),
-    );
-    // The source pane keys on the provider turn; both rows above would be
-    // two different turns there.
-    expect(pane.timelineTurns.keyOf(makeItem({ turnIndex: 0 }))).not.toBe(
-      pane.timelineTurns.keyOf(makeItem({ turnIndex: 7 })),
-    );
-
-    view.dispose();
+  it('invalidates a root removed by a conversation cut during a read', async () => {
+    const pane = await setup(); const view = await open(pane);
+    applyTimelineMutation(threadId, { kind: 'revert', event: { threadId, userItemId: 'prompt', turnIndex: 0, keptAnchorTurnItemIds: [] } });
+    expect(view.items).toEqual([]);
+    expect(view.gone).toBe(true);
   });
 
-  it('recomputes the window when the source timeline changes', async () => {
-    const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-    expect(view.items.some((item) => item.id === 'child-a')).toBe(true);
-
-    pane.removeItemById('child-a', THREAD_ID);
-
-    expect(view.items.some((item) => item.id === 'child-a')).toBe(false);
-
-    view.dispose();
+  it('uses the canonical root returned for a resume carrier in later reads and live updates', async () => {
+    const carrier = { ...root, id: 'resume', itemIndex: 10, meta: JSON.stringify({ transcript_root_id: root.id }) };
+    const pane = await setup([root, carrier, row('child', 1)]);
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: { ...page([row('child', 1)]), scope: { root, lifecycle: carrier } } }));
+    const view = await open(pane, false, carrier.id);
+    expect(view.root?.id).toBe(root.id);
+    push(row('canonical-child', 11, { kind: 'tool_call', toolName: 'Read' }));
+    expect(view.pane.getItemById('canonical-child')?.parentId).toBe(root.id);
+    const sync = vi.fn(async () => ({ status: 'fresh', scope: { root, lifecycle: carrier } }));
+    setBindingMock('SyncThreadWindow', sync);
+    await view.pane.refreshFromBackend();
+    expect(sync.mock.calls[0]).toEqual([threadId, expect.objectContaining({ selection: { scopeRootId: root.id, tools: false } })]);
   });
 
-  it('a status patch written to the completion row in place re-settles the scope turn', async () => {
-    // `pane.items` is `$state.raw`: a field patch writes the row in place
-    // and the array signal stays silent, so the status must be read
-    // through the row's own box or the turn pill sits on a dead state.
-    const { pane, agent } = await setup();
-    pane.removeItemById('scope-completion', THREAD_ID);
-    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-    const turns = view.pane.timelineTurns;
-    pane.upsertItem(
-      makeItem({
-        id: 'scope-completion',
-        itemIndex: 6,
-        threadId: THREAD_ID,
-        kind: 'tool_completion',
-        status: 'running',
-        completionOf: 'launch-1',
-        createdAt: 5_000,
-        updatedAt: 6_000,
-        summary: '',
-      }),
-    );
-    expect(turns.activeKey).toBe(turns.keyOf(view.items[0]));
-    expect(turns.settled).toBeNull();
-
-    pane.applyItemPatch({
-      threadId: THREAD_ID,
-      itemId: 'scope-completion',
-      kind: 'tool_completion',
-      patch: { rev: 0, status: 'completed', updatedAt: 9_000 },
-    });
-
-    expect(turns.activeKey).toBeNull();
-    expect(turns.settled).toEqual({
-      key: turns.keyOf(view.items[0]),
-      startedAt: pane.getItemById('launch-1')!.createdAt,
-      completedAt: 9_000,
-    });
-    view.dispose();
+  it.each([undefined, ''])('reconciles live child updates before a resume carrier resolves, with completionOf=%s', async (completionOf) => {
+    const carrier = { ...root, id: 'resume', itemIndex: 10, meta: JSON.stringify({ transcript_root_id: root.id }) };
+    const pane = await setup([root, carrier]);
+    let resolve!: (value: unknown) => void;
+    const initial = setBindingMock('SyncThreadWindow', () => new Promise(done => { resolve = done; }));
+    const view = createAgentScopeView(pane, carrier.id, { viewKey: 'agent', openAgentPane: vi.fn() });
+    views.push(view); view.start();
+    await vi.waitFor(() => expect(initial).toHaveBeenCalledOnce());
+    push(row('child', 11, { summary: 'latest child content', completionOf }));
+    const recovery = setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: {
+      ...page([row('child', 11, { summary: 'latest child content' })]), scope: { root, lifecycle: carrier },
+    } }));
+    resolve({ status: 'stale', page: { ...page([row('child', 11, { summary: 'older content' })]), scope: { root, lifecycle: carrier } } });
+    await vi.waitFor(() => expect(view.items[0]?.summary).toBe('latest child content'));
+    expect(view.pane.loading).toBe(false);
+    expect(recovery).toHaveBeenCalledOnce();
+    expect(recovery.mock.calls[0][1]).toMatchObject({ selection: { scopeRootId: root.id } });
   });
-});
 
+  it('retains loaded rows on both sides of an escaped reading anchor during recovery', async () => {
+    const pane = await setup([root]);
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page([row('early', 1), row('middle', 5), row('late', 10)], false, true) }));
+    const view = await open(pane);
+    setThreadScrollSnapshot(`${pane.paneId}:${threadId}~agent:${root.id}`, { kind: 'anchor', itemId: 'middle', offsetTop: 20 });
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page([row('middle', 5)], true, true) }));
+    setBindingMock('ListItemsBeforeCursor', async () => page([row('early', 1)], false, true));
+    setBindingMock('ListItemsAfterCursor', async () => page([row('late', 10)], true, true));
+    await view.pane.refreshFromBackend();
+    expect(view.items.map(item => item.id)).toEqual(['early', 'middle', 'late']);
+    expect(view.pane.hasMoreNewer).toBe(true);
+  });
 
-it('routes live content only to its transcript and releases scoped listeners', async () => {
-  const clock = new FakeSmoothingClock();
-  __setSmoothingClockForTest(clock);
-  const { pane, agent } = await setup();
-  const outer = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-  const inner = createAgentScopeView(pane, 'nested-launch', companionOptions(agent));
-  try {
-    clock.tickFrame(10);
-    const patch = (id: string, summary: string) => pane.applyItemPatch({
-      threadId: THREAD_ID, itemId: id, kind: 'assistant_text', patch: { summary, rev: 2 },
-    });
-    patch('child-a', 'child a');
-    expect([pane.lastLiveContentAt, outer.pane.lastLiveContentAt, inner.pane.lastLiveContentAt]).toEqual([0, 0, 0]);
-    patch('child-a', 'child a advances');
-    expect([pane.lastLiveContentAt, outer.pane.lastLiveContentAt, inner.pane.lastLiveContentAt]).toEqual([0, 10, 0]);
-    clock.tickFrame(10);
-    pane.markLiveContentAdvanced(pane.getItemById('nested-completion')!);
-    expect([pane.lastLiveContentAt, outer.pane.lastLiveContentAt, inner.pane.lastLiveContentAt]).toEqual([0, 20, 0]);
-    clock.tickFrame(10);
-    patch('grandchild', 'grandchild advances');
-    expect([pane.lastLiveContentAt, outer.pane.lastLiveContentAt, inner.pane.lastLiveContentAt]).toEqual([0, 20, 30]);
-    clock.tickFrame(10);
-    patch('main-text', 'main advances');
-    expect([pane.lastLiveContentAt, outer.pane.lastLiveContentAt, inner.pane.lastLiveContentAt]).toEqual([40, 20, 30]);
+  it('does not overwrite user paging with an older recovery snapshot', async () => {
+    const pane = await setup([root]);
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page([row('middle', 5)], true) }));
+    const view = await open(pane);
+    let resolve!: (value: unknown) => void;
+    setBindingMock('SyncThreadWindow', () => new Promise(done => { resolve = done; }));
+    const refresh = view.pane.refreshFromBackend();
+    await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
+    setBindingMock('ListItemsBeforeCursor', async () => page([row('early', 1)], false, true));
+    await view.pane.loadOlder();
+    resolve({ status: 'stale', page: page([row('middle', 5)], true) });
+    await refresh;
+    expect(view.items.map(item => item.id)).toEqual(['early', 'middle']);
+    expect(view.pane.hasMoreHistory).toBe(false);
+  });
+
+  it('coalesces refresh requests without cancelling a slow remote snapshot', async () => {
+    const pane = await setup(); const view = await open(pane);
+    const resolves: Array<(value: unknown) => void> = [];
+    const sync = vi.fn(() => new Promise(done => resolves.push(done)));
+    setBindingMock('SyncThreadWindow', sync);
+    const first = view.pane.refreshFromBackend();
+    await vi.waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
+    const second = view.pane.refreshFromBackend();
+    const third = view.pane.refreshFromBackend();
+    expect(sync).toHaveBeenCalledTimes(1);
+    resolves[0]({ status: 'stale', page: page([row('first-read', 1)]) });
+    await vi.waitFor(() => expect(sync).toHaveBeenCalledTimes(2));
+    expect(view.items[0]?.id).toBe('first-read');
+    resolves[1]({ status: 'stale', page: page([row('next-read', 2)]) });
+    await Promise.all([first, second, third]);
+    expect(view.items[0]?.id).toBe('next-read');
+  });
+
+  it('keeps late nested completions in the scope without changing completed launch history', async () => {
+    const completed: Item = { ...root, status: 'completed', summary: 'original launch' };
+    const nested = row('nested', 1, { kind: 'tool_call', toolName: 'Agent', status: 'completed' });
+    const pane = await setup([completed, nested]); const view = await open(pane);
+    push(row('nested-done', 2, { kind: 'tool_completion', completionOf: nested.id, summary: 'nested result' }));
+    expect(view.items.map(item => item.id)).toEqual(['nested', 'nested-done']);
+    expect(pane.getItemById(root.id)).toMatchObject({ summary: 'original launch', status: 'completed' });
+  });
+
+  it('owns streaming reveal and releases it without touching another scope', async () => {
+    const nested = row('nested', 1, { kind: 'tool_call', toolName: 'Agent', status: 'running' });
+    const pane = await setup([root, nested]);
+    const outer = await open(pane), inner = await open(pane, false, nested.id);
+    push(row('stream', 2, { kind: 'assistant_text', status: 'streaming', summary: 'start' }));
+    applyTimelineMutation(threadId, { kind: 'delta', event: { threadId, itemId: 'stream', kind: 'assistant_text', delta: ' continued', updatedAt: 3 } });
+    expect(outer.pane.__itemSmootherCountForTest()).toBe(1);
+    expect(inner.pane.__itemSmootherCountForTest()).toBe(0);
+    outer.pane.__flushItemSmoothersForTest();
+    expect(outer.pane.getItemById('stream')?.summary).toBe('start continued');
     outer.dispose();
-    outer.dispose();
-    clock.tickFrame(10);
-    patch('child-a', 'child advances after disposal');
-    expect(outer.pane.lastLiveContentAt).toBe(20);
-    const reopened = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
-    expect(reopened.pane.lastLiveContentAt).toBe(0);
-    clock.tickFrame(10);
-    pane.upsertItem(makeItem({ id: 'child-stream', threadId: THREAD_ID, itemIndex: 7,
-      parentId: 'launch-1', status: 'streaming', summary: 'Live child' }));
-    pane.applyItemDelta({ threadId: THREAD_ID, itemId: 'child-stream', kind: 'assistant_text',
-      delta: ' streamed tail', updatedAt: 60 });
-    for (let i = 0; i < 20; i++) clock.tickFrame(16);
-    expect(reopened.pane.lastLiveContentAt).toBeGreaterThan(0);
-    expect(pane.lastLiveContentAt).toBe(40);
-    reopened.dispose();
-    await pane.switchThread(makeThread({ id: THREAD_ID }));
-    expect(inner.pane.lastLiveContentAt).toBe(0);
-    clock.tickFrame(10);
-    pane.markLiveContentAdvanced(pane.getItemById('grandchild')!);
-    expect(inner.pane.lastLiveContentAt).toBeGreaterThan(30);
-    expect(pane.lastLiveContentAt).toBe(0);
-  } finally {
-    outer.dispose();
-    inner.dispose();
-    __setSmoothingClockForTest(undefined);
-  }
+    expect(outer.pane.__itemSmootherCountForTest()).toBe(0);
+    push(row('grandchild', 3, { parentId: nested.id }));
+    expect(inner.items.map(item => item.id)).toEqual(['grandchild']);
+    expect(outer.items).toEqual([]);
+  });
+
+  it('revalidates against a new replica generation reported by a scoped read', async () => {
+    const pane = await setup();
+    setBackendIdentityFromBootstrap('scope-computer', 'g1', 'Scope computer');
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', generation: 'g1', page: page([row('old-generation', 1)]) }));
+    const view = await open(pane);
+    const generation = view.pane.switchGeneration;
+    const sync = vi.fn(async () => ({ status: 'stale', generation: 'g2', page: page([row('new-generation', 2)]) }));
+    setBindingMock('SyncThreadWindow', sync);
+    try {
+      await view.pane.refreshFromBackend();
+      await vi.waitFor(() => expect(view.items.map(item => item.id)).toEqual(['new-generation']));
+      expect(view.pane.switchGeneration).toBeGreaterThan(generation);
+      expect(sync.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(view.pane.loading).toBe(false);
+    } finally { view.dispose(); __resetBackendIdentityForTest(); }
+  });
+
+  it('keeps a newer paging request busy when a superseded request finishes', async () => {
+    const pane = await setup(); const view = await open(pane);
+    const resolves: Array<(value: PagedItems) => void> = [];
+    setBindingMock('ListThreadSliceAround', () => new Promise<PagedItems>(resolve => resolves.push(resolve)));
+    const first = view.pane.loadRecentTail();
+    const second = view.pane.loadRecentTail();
+    resolves[0](page([row('stale-tail', 3)]));
+    await first;
+    expect(view.pane.loadingNewer).toBe(true);
+    resolves[1](page([row('current-tail', 4)]));
+    await second;
+    expect(view.pane.loadingNewer).toBe(false);
+    expect(view.items.map(item => item.id)).toEqual(['current-tail']);
+  });
+
+  it('does not undo a jump when recovery started during the target lookup', async () => {
+    const pane = await setup(); const view = await open(pane);
+    let target!: (value: Item) => void;
+    setBindingMock('GetThreadItem', () => new Promise<Item>(resolve => { target = resolve; }));
+    const jump = view.pane.loadUntilItem('target');
+    let snapshot!: (value: unknown) => void;
+    setBindingMock('SyncThreadWindow', () => new Promise(resolve => { snapshot = resolve; }));
+    const refresh = view.pane.refreshFromBackend();
+    await vi.waitFor(() => expect(snapshot).toBeTypeOf('function'));
+    setBindingMock('ListThreadSliceAround', async () => page([row('target', 50)], true, true));
+    target(row('target', 50));
+    expect(await jump).toBe('loaded');
+    snapshot({ status: 'stale', page: page([row('child', 1)]) });
+    await refresh;
+    expect(view.items.map(item => item.id)).toEqual(['target']);
+    expect(view.pane.hasMoreNewer).toBe(true);
+  });
+
+  it('keeps a newer jump busy when the superseded jump finishes', async () => {
+    const pane = await setup(); const view = await open(pane);
+    setBindingMock('GetThreadItem', async (_threadId: string, itemId: string) => row(itemId, 50));
+    const resolves: Array<(value: PagedItems) => void> = [];
+    setBindingMock('ListThreadSliceAround', () => new Promise<PagedItems>(resolve => resolves.push(resolve)));
+    const first = view.pane.loadUntilItem('first-target');
+    await vi.waitFor(() => expect(resolves).toHaveLength(1));
+    const second = view.pane.loadUntilItem('second-target');
+    await vi.waitFor(() => expect(resolves).toHaveLength(2));
+    resolves[0](page([row('first-target', 50)]));
+    expect(await first).toBe('superseded');
+    expect(view.pane.loadingOlder).toBe(true);
+    resolves[1](page([row('second-target', 50)]));
+    expect(await second).toBe('loaded');
+    expect(view.pane.loadingOlder).toBe(false);
+    expect(view.items.map(item => item.id)).toEqual(['second-target']);
+  });
+
 });

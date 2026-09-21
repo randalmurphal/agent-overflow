@@ -134,6 +134,7 @@ following families carry additional correctness or performance meaning:
 | History preparation indexes | `idx_items_history_preparation` pages eligible completed rows. Global imported item/payload ID indexes support chunk-admission collision probes, including chunks sharing a turn. |
 | Attachment ownership index | `idx_attachment_owners_attachment` supports last-owner collection and retained-file lookup. |
 | Sparse send identity indexes | Local items, imported items, and queued messages index nonempty `sendId` values so retry checks do not scan or hydrate history. |
+| Scoped timeline indexes | Parent indexes include timeline coordinates for ordered child pages. `idx_items_scope_lifecycle` and its imported counterpart select the latest resume carrier without scanning a transcript. |
 | Item relationship partial indexes | Parent, completion, live-background, running-foreground, and reader-authored-message indexes require their qualifying predicate to appear explicitly in query SQL. |
 | Workflow relationship indexes | Agent source references are unique; parent-run, phase-thread, unit-thread, automation, state, and usage indexes bound recovery and budget queries. Partial predicates such as `parent_item_id <> ''` and `source_ref <> ''` remain explicit. |
 | Credential lookup indexes | Owner uniqueness, credential hashes, live sessions, passkey IDs, device proofs, channels, and refresh families make authorization and single-use consumption indexed atomic operations. |

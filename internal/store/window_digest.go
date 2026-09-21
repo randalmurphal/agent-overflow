@@ -166,15 +166,15 @@ func formatWindowDigest(digest uint64) string {
 //
 // Anything that fails returns false, which costs one page — the same
 // answer the caller would have got without sending a window at all.
-func verifyHeldWindowTx(q sqlQueryer, threadID string, held HeldWindow) (bool, error) {
+func verifyHeldWindowTx(q sqlQueryer, threadID string, held HeldWindow, scope timelineScope) (bool, error) {
 	if !heldWindowHasUsableShape(held) {
 		return false, nil
 	}
-	oldest, found, err := windowEdgeCursorTx(q, threadID, held.OldestItemID)
+	oldest, found, err := windowEdgeCursorTx(q, threadID, held.OldestItemID, scope)
 	if err != nil || !found {
 		return false, err
 	}
-	newest, found, err := windowEdgeCursorTx(q, threadID, held.NewestItemID)
+	newest, found, err := windowEdgeCursorTx(q, threadID, held.NewestItemID, scope)
 	if err != nil || !found {
 		return false, err
 	}
@@ -183,7 +183,7 @@ func verifyHeldWindowTx(q sqlQueryer, threadID string, held HeldWindow) (bool, e
 		return false, nil
 	}
 
-	rows, err := windowDigestRowsTx(q, threadID, oldest, newest, held.Count+1)
+	rows, err := windowDigestRowsTx(q, threadID, oldest, newest, held.Count+1, scope)
 	if err != nil {
 		return false, err
 	}
@@ -199,14 +199,14 @@ func verifyHeldWindowTx(q sqlQueryer, threadID string, held HeldWindow) (bool, e
 		return false, nil
 	}
 
-	hasOlder, err := hasOlderItems(q, threadID, oldest)
+	hasOlder, err := hasOlderItems(q, threadID, oldest, scope)
 	if err != nil {
 		return false, err
 	}
 	if hasOlder != held.HasMoreOlder {
 		return false, nil
 	}
-	hasNewer, err := hasNewerItems(q, threadID, newest)
+	hasNewer, err := hasNewerItems(q, threadID, newest, scope)
 	if err != nil {
 		return false, err
 	}
@@ -250,17 +250,18 @@ func heldWindowHasUsableShape(held HeldWindow) bool {
 // windowEdgeCursorTx resolves one edge id to its timeline coordinate,
 // admitting only the rows a window can contain. A single-row lookup is the
 // one shape the compound `timeline_items` view is right for.
-func windowEdgeCursorTx(q sqlQueryer, threadID, itemID string) (TimelineCursor, bool, error) {
+func windowEdgeCursorTx(q sqlQueryer, threadID, itemID string, scope timelineScope) (TimelineCursor, bool, error) {
 	if itemID == "" {
 		return TimelineCursor{}, false, nil
 	}
 	cursor := TimelineCursor{ItemID: itemID}
+	filter, args := scope.filter("")
+	args = append([]any{threadID, itemID}, args...)
 	err := q.QueryRow(
 		`SELECT turn_index, item_index FROM timeline_items
 		  WHERE thread_id = ? AND id = ?
-		    AND `+visibleItemsFilter+`
-		    AND `+topLevelItemsFilter,
-		threadID, itemID,
+		    AND `+filter,
+		args...,
 	).Scan(&cursor.TurnIndex, &cursor.ItemIndex)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TimelineCursor{}, false, nil
@@ -290,24 +291,26 @@ func windowDigestRowsTx(
 	threadID string,
 	oldest, newest TimelineCursor,
 	limit int,
+	scope timelineScope,
 ) ([]WindowDigestRow, error) {
 	if limit <= 0 || limit > MaxHeldWindowItems+1 {
 		return nil, fmt.Errorf(
 			"store: held window row limit %d for %s is outside 1..%d",
 			limit, threadID, MaxHeldWindowItems+1)
 	}
+	filter, filterArgs := scope.filter("items.")
 	selection, args := timelineArms(threadID, timelineSelection{
 		Columns: func(_, revExpr string) string {
 			return `items.id AS id, ` + revExpr + ` AS rev,
 			        items.turn_index AS turn_index, items.item_index AS item_index`
 		},
-		Where: windowedTimelineFilter + `
+		Where: filter + `
 		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index >= ?))
 		   AND (items.turn_index < ? OR (items.turn_index = ? AND items.item_index <= ?))`,
-		WhereArgs: []any{
+		WhereArgs: append(filterArgs,
 			oldest.TurnIndex, oldest.TurnIndex, oldest.ItemIndex,
 			newest.TurnIndex, newest.TurnIndex, newest.ItemIndex,
-		},
+		),
 		OrderBy: "turn_index ASC, item_index ASC",
 		Limit:   limit,
 	})

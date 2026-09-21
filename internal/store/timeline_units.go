@@ -237,13 +237,14 @@ func unitAtOrBefore(
 	q sqlQueryer,
 	threadID string,
 	at TimelineCursor,
+	scope timelineScope,
 ) (unit pageUnit, older *activityScanWalk, newer *activityScanWalk, found bool, err error) {
-	older = newActivityScanWalk(q, threadID, inclusiveOlderBound(at), false)
+	older = newActivityScanWalk(q, threadID, inclusiveOlderBound(at), false, scope)
 	unit, found, err = nextOlderUnit(older)
 	if err != nil || !found {
 		return pageUnit{}, nil, nil, false, err
 	}
-	newer = newActivityScanWalk(q, threadID, unit.newest().cursor(), true)
+	newer = newActivityScanWalk(q, threadID, unit.newest().cursor(), true, scope)
 	if unit.run {
 		if err := absorbNewerMembers(newer, &unit); err != nil {
 			return pageUnit{}, nil, nil, false, err
@@ -265,8 +266,9 @@ func firstNewerUnit(
 	q sqlQueryer,
 	threadID string,
 	after TimelineCursor,
+	scope timelineScope,
 ) (unit pageUnit, newer *activityScanWalk, found bool, err error) {
-	newer = newActivityScanWalk(q, threadID, after, true)
+	newer = newActivityScanWalk(q, threadID, after, true, scope)
 	first, ok, err := newer.peekAt(0)
 	if err != nil || !ok {
 		return pageUnit{}, nil, false, err
@@ -275,7 +277,7 @@ func firstNewerUnit(
 		newer.take(1)
 		return pageUnit{rows: []activityScanRow{first}}, newer, true, nil
 	}
-	older := newActivityScanWalk(q, threadID, inclusiveOlderBound(after), false)
+	older := newActivityScanWalk(q, threadID, inclusiveOlderBound(after), false, scope)
 	previous, hasPrevious, err := nextOlderUnit(older)
 	if err != nil {
 		return pageUnit{}, nil, false, err
@@ -301,14 +303,15 @@ func lastOlderUnit(
 	q sqlQueryer,
 	threadID string,
 	before TimelineCursor,
+	scope timelineScope,
 ) (unit pageUnit, older *activityScanWalk, found bool, err error) {
-	older = newActivityScanWalk(q, threadID, before, false)
+	older = newActivityScanWalk(q, threadID, before, false, scope)
 	unit, found, err = nextOlderUnit(older)
 	if err != nil || !found {
 		return pageUnit{}, nil, false, err
 	}
 	if unit.run {
-		newer := newActivityScanWalk(q, threadID, unit.newest().cursor(), true)
+		newer := newActivityScanWalk(q, threadID, unit.newest().cursor(), true, scope)
 		if err := absorbNewerMembers(newer, &unit); err != nil {
 			return pageUnit{}, nil, false, err
 		}

@@ -901,6 +901,11 @@ export function withBackendTarget<T>(backendId: BackendKey, issue: () => T): T {
   }
 }
 
+/** Inspect the next call's explicit target without consuming its routing pin. */
+export function getPinnedBackend(): BackendKey | null {
+  return pinnedTarget;
+}
+
 /** Take the pinned target, if one was armed. Drained at dispatch. */
 export function takePinnedBackend(): BackendKey | null {
   const target = pinnedTarget;

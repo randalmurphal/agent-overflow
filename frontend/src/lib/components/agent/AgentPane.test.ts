@@ -1,3 +1,4 @@
+import { applyTimelineMutation } from '../../stores/timelineSurfaces';
 import { applySubagentProgress } from '../../stores/subagentProgress.svelte';
 // The agent companion pane (docs/specs/agent-visibility.md Q4/Q5): the
 // REAL MessageTimeline over the scoped facade (agentScopeView.svelte.ts).
@@ -9,8 +10,9 @@ import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AgentPane from './AgentPane.svelte';
-import { installPaneMocks, makeItem, makeThread } from '../../../test/helpers/chat';
+import { installTimelineScopeCapability, installPaneMocks, makeItem, makeThread } from '../../../test/helpers/chat';
 import { makeSettings } from '../../../test/helpers/settings';
+import { idleWorkspaceActivity } from '../../../test/helpers/workspaceLock';
 import { createThreadPane, type ThreadPane } from '../../stores/thread.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetPaneLayoutForTest, setPaneLayoutItemsForTest } from '../../stores/paneLayout.svelte';
@@ -20,7 +22,7 @@ import {
   openAgentCompanion,
 } from '../../stores/agentPane.svelte';
 import { makePanelContext, type PanelContext } from '../../stores/panelContext.svelte';
-import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
+import { getBindingMock, resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import type { Item } from '../../types/models';
 
@@ -55,8 +57,15 @@ async function setup(items: Item[]): Promise<{ pane: ThreadPane; ctx: PanelConte
   return { pane, ctx };
 }
 
+async function renderAgent(options: { props: { ctx: PanelContext } }) {
+  const result = render(AgentPane, options);
+  await waitFor(() => expect(result.getByTestId('agent-pane-timeline')).toHaveAttribute('aria-busy', 'false'));
+  return result;
+}
+
 describe('<AgentPane>', () => {
   beforeEach(async () => {
+    installTimelineScopeCapability();
     resetBindingMocks();
     resetPanesForTest();
     resetPaneLayoutForTest();
@@ -64,12 +73,32 @@ describe('<AgentPane>', () => {
     __resetAgentPaneStateForTest();
     setBindingMock('GetSettings', async () => null);
     setBindingMock('ListSubagentDescendants', async () => []);
+    setBindingMock('GetThreadUserMessageTicks', async () => []);
+    setBindingMock('GetWorkspaceActivity', async () => idleWorkspaceActivity());
     await loadSettings();
   });
 
   afterEach(() => {
     cleanup();
     __resetAgentPaneStateForTest();
+    vi.restoreAllMocks();
+  });
+
+  it('shows a failed history load without claiming the agent has no output, and retries', async () => {
+    const items = [launchItem(), makeItem({ id: 'child', threadId: THREAD_ID, parentId: 'launch-1', summary: 'Recovered output' })];
+    const { ctx } = await setup(items);
+    const report = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const page = await getBindingMock('ListThreadSliceAround')!(THREAD_ID, '', 200, { selection: { scopeRootId: 'launch-1' } });
+    setBindingMock('SyncThreadWindow', async () => { throw new Error('History unavailable'); });
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+    const view = await renderAgent({ props: { ctx } });
+    await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('History unavailable'));
+    expect(report).toHaveBeenCalledWith(expect.stringContaining('timeline window:'), expect.objectContaining({ message: 'History unavailable' }));
+    expect(view.queryByTestId('agent-pane-empty')).toBeNull();
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page, generation: 'test-generation' }));
+    await fireEvent.click(view.getByText('Retry'));
+    await waitFor(() => expect(view.getByTestId('agent-pane-timeline')).toHaveTextContent('Recovered output'));
+    expect(view.queryByRole('alert')).toBeNull();
   });
 
   it('renders only the scoped subtree, thinking and intermediate text included', async () => {
@@ -86,7 +115,7 @@ describe('<AgentPane>', () => {
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
 
-    const { getByTestId, queryByText } = render(AgentPane, { props: { ctx } });
+    const { getByTestId, queryByText } = await renderAgent({ props: { ctx } });
 
     const timeline = getByTestId('agent-pane-timeline');
     expect(timeline.textContent).toContain('intermediate note');
@@ -107,7 +136,7 @@ describe('<AgentPane>', () => {
       makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'work' }),
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-    const { getByTestId, queryAllByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByTestId, queryAllByTestId } = await renderAgent({ props: { ctx } });
 
     expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('Explore');
     expect(queryAllByTestId('agent-pane-breadcrumb-entry')).toHaveLength(0);
@@ -125,7 +154,7 @@ describe('<AgentPane>', () => {
     state?.pushScope('nested-launch', 'nested');
     const patched = { ...ctx, closeAgentPane } as PanelContext;
 
-    const { getByTestId, getAllByTestId, getAllByText, queryAllByTestId } = render(AgentPane, {
+    const { getByTestId, getAllByTestId, getAllByText, queryAllByTestId } = await renderAgent({
       props: { ctx: patched },
     });
     expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('nested');
@@ -136,7 +165,7 @@ describe('<AgentPane>', () => {
     const entries = getAllByTestId('agent-pane-breadcrumb-entry');
     await fireEvent.click(entries[entries.length - 1]);
     expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('Explore');
-    expect(getAllByText('outer note').length).toBeGreaterThanOrEqual(1);
+    await waitFor(() => expect(getAllByText('outer note').length).toBeGreaterThanOrEqual(1));
     // Back at depth one the root entry is hidden — the pane's close
     // button is the way back to main (user ruling 2026-08-22).
     expect(queryAllByTestId('agent-pane-breadcrumb-entry')).toHaveLength(0);
@@ -156,34 +185,31 @@ describe('<AgentPane>', () => {
     const { pane, ctx } = await setup([
       makeItem({ id: 'tail-row', itemIndex: 9, threadId: THREAD_ID, summary: 'tail prose' }),
     ]);
-    const loadAgentScope = vi.fn(async (itemId: string) => {
-      expect(itemId).toBe('launch-1');
-      pane.upsertItem(launchItem());
-      return 'loaded' as const;
-    });
-    (pane as { loadAgentScope: ThreadPane['loadAgentScope'] }).loadAgentScope = loadAgentScope;
+    installPaneMocks([launchItem(), makeItem({ id: 'tail-row', itemIndex: 9, threadId: THREAD_ID, summary: 'tail prose' })]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'General Purpose');
 
-    const { getByTestId } = render(AgentPane, { props: { ctx } });
-    await waitFor(() => expect(loadAgentScope).toHaveBeenCalledTimes(1));
+    const { getByTestId } = await renderAgent({ props: { ctx } });
     // Once the row pages in, the header fills out and the not-loaded body goes away.
     await waitFor(() =>
       expect(getByTestId('agent-pane-description').textContent?.trim()).toBe('Explore the parser'),
     );
     // One attempt per scope: the effect re-runs (launch now present) without re-loading.
-    expect(loadAgentScope).toHaveBeenCalledTimes(1);
+    expect(pane.items.map(item => item.id)).toEqual(['tail-row']);
   });
 
-  it('self-closes when a row it has seen vanishes, not when the row was never loaded', async () => {
+  it('survives host eviction and self-closes on authoritative deletion', async () => {
     const closeAgentPane = vi.fn();
     const { pane, ctx } = await setup([launchItem(), makeItem({ id: 'other', itemIndex: 1, threadId: THREAD_ID })]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
     const patched = { ...ctx, closeAgentPane } as PanelContext;
-    render(AgentPane, { props: { ctx: patched } });
+    await renderAgent({ props: { ctx: patched } });
     expect(closeAgentPane).not.toHaveBeenCalled();
 
     // The revert cut the launch row out of a still-loaded timeline.
     pane.removeItemById('launch-1', THREAD_ID);
+    await tick();
+    expect(closeAgentPane).not.toHaveBeenCalled();
+    applyTimelineMutation(THREAD_ID, { kind: 'remove', itemId: 'launch-1' });
     await waitFor(() => expect(closeAgentPane).toHaveBeenCalled());
   });
 
@@ -198,7 +224,7 @@ describe('<AgentPane>', () => {
       makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'work' }),
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-    const { getByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByTestId } = await renderAgent({ props: { ctx } });
 
     // The stop control is the real SendButton in its stop variant.
     await fireEvent.click(getByTestId('composer-interrupt'));
@@ -216,7 +242,7 @@ describe('<AgentPane>', () => {
       makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'fork work' }),
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'code-review');
-    const { queryByTestId, getByTestId } = render(AgentPane, { props: { ctx } });
+    const { queryByTestId, getByTestId } = await renderAgent({ props: { ctx } });
 
     expect(getByTestId('agent-pane-composer-shell')).toBeTruthy();
     expect(queryByTestId('agent-pane-stop')).toBeNull();
@@ -231,7 +257,7 @@ describe('<AgentPane>', () => {
       makeItem({ id: 'child-1', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', summary: 'work' }),
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-    const { queryByTestId } = render(AgentPane, { props: { ctx } });
+    const { queryByTestId } = await renderAgent({ props: { ctx } });
 
     expect(queryByTestId('agent-pane-streaming-paused')).toBeNull();
   });
@@ -247,7 +273,7 @@ describe('<AgentPane>', () => {
       makeItem({ id: 'grandchild', itemIndex: 2, threadId: THREAD_ID, parentId: 'nested-launch', summary: 'grandchild work' }),
     ]);
     const state = openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-    const { getByTestId, queryByText, queryByTestId, getAllByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByTestId, queryByText, queryByTestId, getAllByTestId } = await renderAgent({ props: { ctx } });
 
     expect(queryByText(/Orphan subagent entry/)).toBeNull();
     const card = getByTestId('subagent-group');
@@ -280,7 +306,7 @@ describe('<AgentPane>', () => {
     const state = openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
     state?.pushScope('nested-launch', 'nested');
 
-    const { getByText, queryByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByText, queryByTestId } = await renderAgent({ props: { ctx } });
     expect(queryByTestId('agent-pane-empty')).toBeNull();
     expect(getByText('grandchild work')).toBeTruthy();
   });
@@ -330,7 +356,7 @@ describe('<AgentPane>', () => {
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
 
-    const { getByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByTestId } = await renderAgent({ props: { ctx } });
 
     // The ROOT names the model; the thread's Sonnet must not win.
     expect(getByTestId('agent-pane-model').textContent?.trim()).toBe('Opus 5');
@@ -344,12 +370,12 @@ describe('<AgentPane>', () => {
     // window: the carrier carries the original's `subagent_model`, so the
     // chip must not fall back to the thread model.
     const { pane, ctx } = await setup([resumeCarrier()]);
-    (pane as { loadAgentScope: ThreadPane['loadAgentScope'] }).loadAgentScope = async () => 'missing' as const;
+    installPaneMocks([launchItem(), resumeCarrier()]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
 
-    const { getByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByTestId } = await renderAgent({ props: { ctx } });
 
-    expect(getByTestId('agent-pane-not-loaded')).toBeTruthy();
+    expect(pane.getItemById('launch-1')).toBeUndefined();
     expect(getByTestId('agent-pane-model').textContent?.trim()).toBe('Opus 5');
   });
 
@@ -370,7 +396,7 @@ describe('<AgentPane>', () => {
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
 
-    const { getByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByTestId } = await renderAgent({ props: { ctx } });
 
     // One minute since the RESUME, not an hour since the launch.
     expect(getByTestId('agent-pane-working-elapsed').textContent?.trim()).toBe('1m 0s');
@@ -401,7 +427,7 @@ describe('<AgentPane>', () => {
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
 
-    const { getByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByTestId } = await renderAgent({ props: { ctx } });
 
     const timeline = getByTestId('agent-pane-timeline');
     expect(timeline.textContent).toContain('round one work');
@@ -412,7 +438,7 @@ describe('<AgentPane>', () => {
     expect(timeline.textContent).not.toContain('Agent: exploring');
   });
 
-  it('hydrates against the WHOLE transcript count, not the root card’s round-one slice', async () => {
+  it('loads the whole transcript independently of round-one descendant counts', async () => {
     // The store bounds the root's `subagentDescendantCount` to round one
     // (each round is its own card) and stamps the all-rounds total as
     // `subagentTranscriptDescendantCount`. Round one is fully loaded here,
@@ -437,9 +463,9 @@ describe('<AgentPane>', () => {
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
 
-    render(AgentPane, { props: { ctx } });
+    await renderAgent({ props: { ctx } });
 
-    await waitFor(() => expect(listDescendants).toHaveBeenCalledWith(THREAD_ID, 'launch-1', false));
+    expect(listDescendants).not.toHaveBeenCalled();
   });
 
   it('does not re-fetch a round-one-only agent whose rows are all loaded', async () => {
@@ -455,7 +481,7 @@ describe('<AgentPane>', () => {
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
 
-    render(AgentPane, { props: { ctx } });
+    await renderAgent({ props: { ctx } });
     await tick();
     await tick();
 
@@ -498,7 +524,7 @@ describe('<AgentPane>', () => {
       }),
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'reviewer');
-    const { getByText, queryByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByText, queryByTestId } = await renderAgent({ props: { ctx } });
 
     expect(queryByTestId('agent-pane-empty')).toBeNull();
     expect(getByText(/Final verdict: LGTM, with one caveat about the parser drift/)).toBeTruthy();
@@ -546,7 +572,7 @@ describe('<AgentPane>', () => {
       }),
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'audit_internal_tail');
-    const { getByTestId, queryByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByTestId, queryByTestId } = await renderAgent({ props: { ctx } });
 
     expect(getByTestId('agent-pane-breadcrumb-current').textContent).toContain('audit_internal_tail');
     expect(queryByTestId('agent-pane-description')).toBeNull();
@@ -562,13 +588,13 @@ describe('<AgentPane>', () => {
         input: { tool: 'spawn_agent', activityKind: 'started', taskName: '/root/audit_internal_tail', receiverThreadIds: ['child-1'] },
       }),
     });
-    const { pane, ctx } = await setup([launch]);
+    const { ctx } = await setup([launch]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'audit_internal_tail');
-    const { getByTestId, queryByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByTestId, queryByTestId } = await renderAgent({ props: { ctx } });
     expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('audit_internal_tail');
     expect(getByTestId('agent-pane-model').textContent).toContain('Model unavailable');
 
-    pane.upsertItem({
+    applyTimelineMutation(THREAD_ID, { kind: 'upsert', items: [{
       ...launch,
       payloadMeta: JSON.stringify({
         toolName: 'collab_agent',
@@ -577,7 +603,7 @@ describe('<AgentPane>', () => {
           newAgentNickname: 'Curie', newAgentRole: 'default', model: 'gpt-5.6-sol', reasoningEffort: 'high',
         },
       }),
-    });
+    }] });
     await tick();
     expect(getByTestId('agent-pane-breadcrumb-current').textContent?.trim()).toBe('Curie [audit_internal_tail]');
     expect(getByTestId('agent-pane-model').textContent).toContain('GPT 5.6 Sol');
@@ -601,7 +627,7 @@ describe('<AgentPane>', () => {
       }),
     ]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'reviewer');
-    const { getByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByTestId } = await renderAgent({ props: { ctx } });
 
     const shown = getByTestId('agent-pane-description').textContent ?? '';
     expect(shown).toContain('Audit Audit');
@@ -611,7 +637,7 @@ describe('<AgentPane>', () => {
   it('shares the chat header chrome: a stacking context above the timeline fade and the h-5 close button', async () => {
     const { ctx } = await setup([launchItem()]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-    const { getByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByTestId } = await renderAgent({ props: { ctx } });
     await tick();
 
     // MessageTimeline's top fade overdraws its clip by one pixel; without
@@ -629,7 +655,7 @@ describe('<AgentPane>', () => {
   it('marks the header separator when the companion pane itself holds focus', async () => {
     const { ctx } = await setup([launchItem()]);
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
-    const { getByTestId, queryByTestId } = render(AgentPane, { props: { ctx } });
+    const { getByTestId, queryByTestId } = await renderAgent({ props: { ctx } });
     await tick();
     // Opening leaves focus on the source thread: no mark on the companion.
     expect(queryByTestId('pane-header-line')).toBeNull();
@@ -642,4 +668,19 @@ describe('<AgentPane>', () => {
     await tick();
     expect(queryByTestId('pane-header-line')).toBeNull();
   });
+  it('preserves the mounted scope when the main thread row refreshes', async () => {
+    const { pane, ctx } = await setup([
+      launchItem(),
+      makeItem({ id: 'child-tool', itemIndex: 1, threadId: THREAD_ID, parentId: 'launch-1', kind: 'tool_call', toolName: 'Bash', status: 'completed', summary: 'ls' }),
+    ]);
+    openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
+    const rendered = await renderAgent({ props: { ctx } });
+    const run = rendered.getByTestId('activity-run');
+    run.setAttribute('data-preserved', 'yes');
+    pane.replaceThread({ ...pane.thread!, title: 'Refreshed metadata' });
+    await tick();
+    expect(rendered.getByTestId('activity-run')).toBe(run);
+    expect(run.getAttribute('data-preserved')).toBe('yes');
+  });
+
 });

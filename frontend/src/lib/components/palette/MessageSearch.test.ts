@@ -7,6 +7,7 @@ import { refreshThreads } from '../../stores/threads.svelte';
 import type { MessageSearchMode } from '../../stores/messageSearch.svelte';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { installAnimateShim } from '../../../test/integration/_helpers';
+import { makeItem } from '../../../test/helpers/chat';
 import type { Thread } from '../../types/models';
 
 beforeAll(installAnimateShim);
@@ -293,6 +294,7 @@ describe('<MessageSearch> — interactions', () => {
     ]);
     const onClose = vi.fn();
     const pane = makePane();
+    setBindingMock('GetThreadItem', async (threadId: string, id: string) => makeItem({ threadId, id }));
     const spy = vi.spyOn(pane, 'requestScrollToItem');
 
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });
@@ -310,6 +312,7 @@ describe('<MessageSearch> — interactions', () => {
     ]);
     const onClose = vi.fn();
     const pane = makePane();
+    setBindingMock('GetThreadItem', async (threadId: string, id: string) => makeItem({ threadId, id }));
     const spy = vi.spyOn(pane, 'requestScrollToItem');
 
     const { getByTestId, findByTestId } = renderSearch({ open: true, pane, onClose });

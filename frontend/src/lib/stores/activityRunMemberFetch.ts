@@ -1,3 +1,4 @@
+import { threadBackend } from '../transport/entityIndex';
 // On-demand activity-run members: the RPC, its debounce, and what each
 // failure means (docs/architecture/timeline-window-pages.md §3, §6).
 //
@@ -14,6 +15,7 @@
 // per row, and a busy stream still lands on the scheduler's absolute
 // deadline instead of starving.
 
+import type { TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
 import type { Item } from '../types/models';
 import type { PageShape } from '../../../bindings/agent-overflow/internal/app/models';
 import type { ActivityRunMembers } from '../../../bindings/agent-overflow/internal/store/models';
@@ -48,6 +50,7 @@ export function isStaleActivityRunError(err: unknown): boolean {
 export interface ActivityRunMemberFetchOptions {
   /** The pane's thread, or null when it holds none. Read per call. */
   threadId(): string | null;
+  selection?(): TimelineSelection;
   /** The pane's page shape (`timelinePageShape()`). Read per call. */
   shape(): PageShape;
   /** The live record map. Read per call; the registry replaces entries in it. */
@@ -105,10 +108,17 @@ export interface ActivityRunMemberFetch {
   dispose(): void;
 }
 
+function completionSignal() {
+  let finish!: () => void;
+  const done = new Promise<void>(resolve => { finish = resolve; });
+  return { done, finish };
+}
+
 export function createActivityRunMemberFetch(
   options: ActivityRunMemberFetchOptions,
 ): ActivityRunMemberFetch {
-  const inFlight = new Map<string, object>();
+  const inFlight = new Map<string, ReturnType<typeof completionSignal> & { silent: boolean }>();
+  const waiting = new Set<() => void>();
   const refreshAfterFlight = new Set<string>();
   let generation = 0;
   let disposed = false;
@@ -157,34 +167,58 @@ export function createActivityRunMemberFetch(
     return pending;
   }
 
+  async function afterMaintenance(pending: Promise<void>, runKey: string, request: FetchMembersRequest): Promise<string[]> {
+    const gen = generation;
+    const threadId = options.threadId();
+    const ownership = threadId ? threadBackend(threadId) : undefined;
+    const canceled = completionSignal();
+    waiting.add(canceled.finish);
+    try { await Promise.race([pending, canceled.done]); }
+    finally { waiting.delete(canceled.finish); }
+    if (disposed || gen !== generation || options.threadId() !== threadId
+      || (threadId && threadBackend(threadId) !== ownership)) return [];
+    const record = options.records().get(runKey);
+    return record ? call(record, request, false) : [];
+  }
+
   async function call(
     record: ActivityRunRecord,
     request: FetchMembersRequest,
     silent: boolean,
   ): Promise<string[]> {
     const threadId = options.threadId();
-    if (!threadId || disposed || recovery) return [];
+    if (!threadId || disposed) return [];
     const runKey = record.runFirstItemId;
-    if (inFlight.has(runKey)) {
+    if (recovery) return silent ? [] : afterMaintenance(recovery, runKey, request);
+    const active = inFlight.get(runKey);
+    if (active) {
       if (silent) refreshAfterFlight.add(runKey);
+      else if (active.silent) return afterMaintenance(active.done, runKey, request);
       return [];
     }
-    const claim = {};
+    const ownership = threadBackend(threadId);
+    const claim = { ...completionSignal(), silent };
     const gen = generation;
     const stub = record.stub;
     const invalidationVersion = record.invalidationVersion;
     const cutVersion = record.cutVersion;
+    const loadedFirstItemId = record.loadedFirstItemId;
+    const loadedLastItemId = record.loadedLastItemId;
+    const sameRequestedEdge = () =>
+      (request.direction === 'after' || record.loadedFirstItemId === loadedFirstItemId)
+      && (request.direction === 'before' || record.loadedLastItemId === loadedLastItemId);
     const current = (): boolean => !disposed && generation === gen
-      && options.threadId() === threadId
+      && options.threadId() === threadId && threadBackend(threadId) === ownership
       && options.records().get(runKey) === record
-      && record.stub === stub
+      && (record.stub === stub || (!silent && sameRequestedEdge()))
       && record.cutVersion === cutVersion;
     inFlight.set(runKey, claim);
     try {
       const answer = await ListActivityRunMembers(threadId, {
+        selection: options.selection?.(),
         runFirstItemId: runKey,
-        loadedFirstItemId: record.loadedFirstItemId,
-        loadedLastItemId: record.loadedLastItemId,
+        loadedFirstItemId,
+        loadedLastItemId,
         direction: request.direction,
         aroundItemId: request.aroundItemId ?? '',
         limit: request.limit,
@@ -208,6 +242,7 @@ export function createActivityRunMemberFetch(
       else options.reportFailure('Failed to load activity', err, silent);
       return [];
     } finally {
+      claim.finish();
       if (inFlight.get(runKey) === claim) {
         inFlight.delete(runKey);
         if (refreshAfterFlight.delete(runKey)) scheduler.request();
@@ -226,6 +261,8 @@ export function createActivityRunMemberFetch(
     },
     reset() {
       generation += 1;
+      for (const finish of waiting) finish();
+      waiting.clear();
       recovery = null;
       refreshAfterRecovery = false;
       scheduler.reset();
@@ -235,6 +272,8 @@ export function createActivityRunMemberFetch(
     dispose() {
       disposed = true;
       generation += 1;
+      for (const finish of waiting) finish();
+      waiting.clear();
       recovery = null;
       refreshAfterRecovery = false;
       scheduler.dispose();

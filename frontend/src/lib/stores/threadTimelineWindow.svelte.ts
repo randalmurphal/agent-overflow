@@ -1,7 +1,8 @@
+import { threadBackend } from '../transport/entityIndex';
 import { isWindowedTimelineRow } from './threadWindowDigest';
 import { tick } from 'svelte';
 import type { Item, Thread } from '../types/models';
-import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
+import type { TimelineSelection, PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 import type { ThreadItemSnapshot } from './threadItemCache';
 import {
   GetThreadItem,
@@ -63,22 +64,13 @@ export interface ThreadTimelineWindowOptions {
     },
   ): boolean;
   getThread(): Thread | null;
+  selection?(): TimelineSelection;
   /** Pane switch generation — captured at load start, compared after awaits. */
   getSwitchGeneration(): number;
   /** Registered pane scroll controller (or null). applyPrunedWindow queries its retention guard. */
   getScrollController(): PaneScrollController | null;
   /** Pane-owned subagent transcript hydration — loadUntilItem's subtree hydration. */
-  hydrateSubagentChildren(rootItemID: string): Promise<boolean>;
-  /**
-   * Every row a held agent scope is rendering (the open companion's
-   * trail subtree, each expanded tray digest), or null when none is
-   * held. The prune cuts consult it so a window cut can never fold rows
-   * out from under a mounted surface, the same blanking the eviction
-   * chokepoint's `agentPaneHeldRows` exists to prevent (live incident
-   * 2026-08-22). Kept rows outside the cut stay in memory as an island
-   * the chat timeline does not render (`itemsWithinLoadedWindow`).
-   */
-  getHeldRowIds?(): ReadonlySet<string> | null;
+  hydrateSubagentChildren?(rootItemID: string): Promise<boolean>;
   /**
    * The pane's activity-run registry. Read per call: it is constructed
    * after this factory, so the option is an arrow, not a reference.
@@ -125,8 +117,11 @@ export interface ThreadTimelineWindow {
   resetForFreshThread(): void;
   /** `runParallelLoad`'s load-items error branch: window nulls only, no loading-flag or prune-pending touch. */
   resetAfterLoadError(): void;
+  invalidatePendingReads(): void;
+  readonly requestVersion: number;
   /** Streaming upsert dropped newer items below/above the window: re-arm the "load newer" affordance. */
   noteDroppedNewerItems(): void;
+  noteDroppedOlderItems(): void;
   applyConversationCut(boundaryWasLoaded: boolean): void;
   /** Mount an authoritative member page, extending the held run at either edge. */
   mountActivityRunMembers(rows: readonly Item[], dropIds: ReadonlySet<string>): void;
@@ -321,8 +316,8 @@ export function createThreadTimelineWindow(
   let hasMoreHistory: boolean = $state(false);
   let hasMoreNewer: boolean = $state(false);
   let recentWindowPrunePending: boolean = $state(false);
-  let loadingOlder: boolean = $state(false);
-  let loadingNewer: boolean = $state(false);
+  let loadingOlder = $state<number | null>(null);
+  let loadingNewer = $state<number | null>(null);
 
   /**
    * Separate generation counter for `loadOlder` / `loadUntilItem` so a
@@ -331,6 +326,13 @@ export function createThreadTimelineWindow(
    * paging fetches (double-click, keyboard repeat).
    */
   let pagingGeneration = 0;
+  // Recovery must also detect paging that starts or finishes during a snapshot.
+  let observationVersion = 0;
+  async function trackRead<T>(read: () => Promise<T>): Promise<T> {
+    observationVersion++;
+    try { return await read(); }
+    finally { observationVersion++; }
+  }
 
   function setLoadedCursors(
     oldest: TimelineCursorLike | null,
@@ -380,10 +382,12 @@ export function createThreadTimelineWindow(
    * subtree (incident 2026-08-31, the sibling of the backend pagers'
    * `topLevelItemsFilter` rule — see internal/store/paging.go).
    */
+  const includes = (item: Item) => isWindowedTimelineRow(item, options.selection?.());
+
   function topLevelCount(items: readonly Item[]): number {
     let count = 0;
     for (const item of items) {
-      if ((item.parentId ?? '') === '') count += 1;
+      if (includes(item)) count += 1;
     }
     return count;
   }
@@ -395,8 +399,6 @@ export function createThreadTimelineWindow(
    * with their anchor — a cut can neither strand a child without the
    * anchor that renders it (the admission invariant) nor spend the
    * retained budget on child rows while evicting the conversation.
-   * Rows the open agent companion renders are additionally kept, with
-   * their ancestor chains, whatever side of the cut they fall on.
    */
   function cutWindowByRootCursor(
     sourceItems: readonly Item[],
@@ -428,19 +430,6 @@ export function createThreadTimelineWindow(
     const keepIds = new Set<string>();
     for (const item of sourceItems) {
       if (keepsRoot(rootCursorOf(item))) keepIds.add(item.id);
-    }
-    const held = options.getHeldRowIds?.() ?? null;
-    if (held !== null && held.size > 0) {
-      for (const item of sourceItems) {
-        if (!held.has(item.id) || keepIds.has(item.id)) continue;
-        keepIds.add(item.id);
-        let parentId = item.parentId ?? '';
-        for (let hops = 0; parentId !== '' && hops < MAX_PARENT_HOPS; hops += 1) {
-          if (keepIds.has(parentId)) break;
-          keepIds.add(parentId);
-          parentId = byId.get(parentId)?.parentId ?? '';
-        }
-      }
     }
     return sourceItems.filter((item) => keepIds.has(item.id));
   }
@@ -518,7 +507,7 @@ export function createThreadTimelineWindow(
     start: number,
     end: number,
   ): { start: number; end: number } {
-    const spans = groupActivityRunSpans(topLevel, item => options.activityRuns().isLoadedMember(item.id));
+    const spans = groupActivityRunSpans(topLevel, item => options.activityRuns().isLoadedMember(item.id), includes);
     if (spans.length === 0) return { start, end };
     const indexById = new Map<string, number>();
     for (let index = 0; index < topLevel.length; index += 1) {
@@ -550,7 +539,7 @@ export function createThreadTimelineWindow(
     policy: WindowCutPolicy,
   ): PrunedWindow {
     const topLevel = sourceItems.filter(
-      (item) => (item.parentId ?? '') === '',
+      includes,
     );
     const length = topLevel.length;
     const unchanged = (): PrunedWindow => ({
@@ -715,8 +704,8 @@ export function createThreadTimelineWindow(
     hasMoreHistory = cached.hasMoreHistory;
     hasMoreNewer = cached.hasMoreNewer;
     recentWindowPrunePending = false;
-    loadingOlder = false;
-    loadingNewer = false;
+    loadingOlder = null;
+    loadingNewer = null;
   }
 
   /**
@@ -735,8 +724,8 @@ export function createThreadTimelineWindow(
     hasMoreHistory = false;
     hasMoreNewer = false;
     recentWindowPrunePending = false;
-    loadingOlder = false;
-    loadingNewer = false;
+    loadingOlder = null;
+    loadingNewer = null;
   }
 
   /**
@@ -755,13 +744,11 @@ export function createThreadTimelineWindow(
 
   function applyConversationCut(boundaryWasLoaded: boolean): void {
     ++pagingGeneration;
+    observationVersion++;
     if (boundaryWasLoaded || !hasMoreNewer) {
       hasMoreNewer = false;
       const items = options.getItems();
-      // The cut removes rows at the tail, so the head edge stands: reading
-      // it off the first row would hand a held scope's island above the
-      // window (loadScopeRoot) to the next loadOlder as its floor and
-      // skip the history between.
+      // The cut changes the tail; preserve the previously loaded head edge.
       setLoadedCursors(
         items.length === 0 ? null : (oldestLoadedCursor ?? oldestCursorFromItems(items)),
         newestCursorFromItems(items),
@@ -775,6 +762,7 @@ export function createThreadTimelineWindow(
   }
 
   function mountActivityRunMembers(rows: readonly Item[], dropIds: ReadonlySet<string>): void {
+    observationVersion++;
     const current = options.getItems();
     const byId = new Map(current.map(item => [item.id, item]));
     const kept = dropIds.size === 0 ? current : cutWindowByRootCursor(current, cursor => !dropIds.has(cursor.itemId ?? ''));
@@ -786,7 +774,7 @@ export function createThreadTimelineWindow(
     let oldest = oldestLoadedCursor;
     let newest = newestLoadedCursor;
     for (const item of rows) {
-      if (!isWindowedTimelineRow(item)) continue;
+      if (!includes(item)) continue;
       const cursor = cursorFromItem(item);
       if (!oldest || compareCursors(cursor, oldest) < 0) oldest = cursor;
       if (!newest || compareCursors(cursor, newest) > 0) newest = cursor;
@@ -798,19 +786,25 @@ export function createThreadTimelineWindow(
     const thread = options.getThread();
     if (!thread) return;
     const { oldest, newest } = cursorsAfterItemUpserts(
-      oldestLoadedCursor, newestLoadedCursor, previousItems, changedItems, thread.id,
+      oldestLoadedCursor, newestLoadedCursor, previousItems, changedItems, thread.id, includes,
     );
     if (oldest !== oldestLoadedCursor || newest !== newestLoadedCursor) {
       setLoadedCursors(oldest, newest);
     }
     if (!appended) return;
-    if (!hasMoreHistory) {
-      oldestLoadedCursor = oldestCursorFromItems(options.getItems());
-      oldestLoadedTurnIndex = oldestLoadedCursor?.turnIndex ?? null;
-    }
-    if (!hasMoreNewer) {
-      newestLoadedCursor = newestCursorFromItems(options.getItems());
-      newestLoadedTurnIndex = newestLoadedCursor?.turnIndex ?? null;
+    // Stubs cover unshipped members beyond the physical rows. A live append
+    // can extend those bounds, but cannot shrink them to the shipped slice.
+    for (const item of changedItems) {
+      if (!includes(item)) continue;
+      const cursor = cursorFromItem(item);
+      if (!hasMoreHistory && (!oldestLoadedCursor || compareCursors(cursor, oldestLoadedCursor) < 0)) {
+        oldestLoadedCursor = cursor;
+        oldestLoadedTurnIndex = cursor.turnIndex;
+      }
+      if (!hasMoreNewer && (!newestLoadedCursor || compareCursors(cursor, newestLoadedCursor) > 0)) {
+        newestLoadedCursor = cursor;
+        newestLoadedTurnIndex = cursor.turnIndex;
+      }
     }
     options.activityRuns().syncRunSpans(options.getItems());
   }
@@ -861,22 +855,24 @@ export function createThreadTimelineWindow(
   async function loadOlder(): Promise<LoadOlderResult> {
     const currentThread = options.getThread();
     if (!currentThread) return loadOlderResult('noop');
-    if (!hasMoreHistory || loadingOlder) return loadOlderResult('noop');
+    if (!hasMoreHistory || loadingOlder !== null) return loadOlderResult('noop');
     const floor = cloneCursor(oldestLoadedCursor);
     if (!floor) return loadOlderResult('noop');
 
+    const ownership = threadBackend(currentThread.id);
     const gen = options.getSwitchGeneration();
     const pageGen = ++pagingGeneration;
-    loadingOlder = true;
+    loadingOlder = pageGen;
     try {
       const paged = await ListItemsBeforeCursor(
         currentThread.id,
         cursorForBinding(floor),
         LOAD_OLDER_ITEM_BUDGET,
         timelinePageShape(),
+        options.selection?.(),
       );
       if (
-        gen !== options.getSwitchGeneration() ||
+        gen !== options.getSwitchGeneration() || threadBackend(currentThread.id) !== ownership ||
         pageGen !== pagingGeneration
       )
         return loadOlderResult('stale');
@@ -898,7 +894,7 @@ export function createThreadTimelineWindow(
       const merged = mergeItemsById(prepend, options.getItems());
       const pageBounds = cursorsAfterItemUpserts(
         pagedOldestCursor(paged, prepend), pagedNewestCursor(paged, prepend),
-        prepend, options.getItems(), currentThread.id,
+        prepend, options.getItems(), currentThread.id, includes,
       );
       let nextFloor = pageBounds.oldest ?? cloneCursor(oldestLoadedCursor) ?? floor;
       if (oldestLoadedCursor && compareCursors(nextFloor, oldestLoadedCursor) > 0) {
@@ -939,7 +935,7 @@ export function createThreadTimelineWindow(
       return loadOlderResult('loaded', insertedBeforeWindow, insertedRows);
     } catch (err) {
       if (
-        gen !== options.getSwitchGeneration() ||
+        gen !== options.getSwitchGeneration() || threadBackend(currentThread.id) !== ownership ||
         pageGen !== pagingGeneration
       )
         return loadOlderResult('stale');
@@ -947,16 +943,7 @@ export function createThreadTimelineWindow(
       addToast('error', 'Failed to load older messages');
       return loadOlderResult('error');
     } finally {
-      // Always clear the button's busy flag. The generation guard on
-      // the happy path protects state mutation from late resolutions,
-      // but `loadingOlder` is a UI-only flag — leaving it stuck true
-      // after a pagingGeneration bump (e.g. a concurrent
-      // loadUntilItem) would greys out the Load Older button
-      // indefinitely. The worst outcome of clearing unconditionally
-      // is a brief flash of the non-busy state while another pager
-      // is still in-flight; the concurrent call will re-raise the
-      // flag on its next write.
-      loadingOlder = false;
+      if (loadingOlder === pageGen) loadingOlder = null;
     }
   }
 
@@ -980,10 +967,11 @@ export function createThreadTimelineWindow(
     if (!currentThread || !itemID) return 'missing';
     if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
 
+    const ownership = threadBackend(currentThread.id);
     const gen = options.getSwitchGeneration();
     const pageGen = ++pagingGeneration;
     const superseded = (): boolean =>
-      gen !== options.getSwitchGeneration() || pageGen !== pagingGeneration;
+      gen !== options.getSwitchGeneration() || threadBackend(currentThread.id) !== ownership || pageGen !== pagingGeneration;
     let fetched: Item;
     try {
       fetched = (await GetThreadItem(currentThread.id, itemID)) as Item;
@@ -1019,7 +1007,8 @@ export function createThreadTimelineWindow(
     // The top-level row the window has to hold for the target to be
     // scrollable: the target itself, or its launch root for a subagent child.
     let anchorItem = fetched;
-    if ((fetched.parentId ?? '') !== '') {
+    if (options.selection?.().scopeRootId && !includes(fetched)) return 'missing';
+    if (!options.selection?.().scopeRootId && (fetched.parentId ?? '') !== '') {
       let walker = fetched;
       const visited = new Set<string>([walker.id]);
       while (
@@ -1058,20 +1047,21 @@ export function createThreadTimelineWindow(
     if (await options.activityRuns().loadUnshippedMember(anchorItem)) {
       if (superseded()) return 'superseded';
       if (subagentRootID) {
-        await options.hydrateSubagentChildren(subagentRootID);
+        await options.hydrateSubagentChildren?.(subagentRootID);
         if (superseded()) return 'superseded';
       }
       if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
     }
     if (superseded()) return 'superseded';
 
-    loadingOlder = true;
+    loadingOlder = pageGen;
     try {
       const paged = await ListThreadSliceAround(
         currentThread.id,
         sliceAnchorID,
         SLICE_AROUND_ITEM_BUDGET,
         timelinePageShape(),
+        options.selection?.(),
       );
       if (superseded()) return 'superseded';
       const next = reconcileItemWindow(
@@ -1083,7 +1073,7 @@ export function createThreadTimelineWindow(
         afterCommit: () => applyWindowMetadataFromPaged(paged),
       });
       if (subagentRootID) {
-        await options.hydrateSubagentChildren(subagentRootID);
+        await options.hydrateSubagentChildren?.(subagentRootID);
         if (superseded()) return 'superseded';
       }
     } catch (err) {
@@ -1092,8 +1082,7 @@ export function createThreadTimelineWindow(
       addToast('error', 'Failed to load message');
       return 'failed';
     } finally {
-      // Match loadOlder's unconditional reset — see comment there.
-      loadingOlder = false;
+      if (loadingOlder === pageGen) loadingOlder = null;
     }
     if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
     // The backend confirmed the row exists, then shipped a window that
@@ -1110,22 +1099,24 @@ export function createThreadTimelineWindow(
   async function loadNewer(): Promise<LoadOlderResult> {
     const currentThread = options.getThread();
     if (!currentThread) return loadOlderResult('noop');
-    if (!hasMoreNewer || loadingNewer) return loadOlderResult('noop');
+    if (!hasMoreNewer || loadingNewer !== null) return loadOlderResult('noop');
     const ceiling = cloneCursor(newestLoadedCursor);
     if (!ceiling) return loadOlderResult('noop');
 
+    const ownership = threadBackend(currentThread.id);
     const gen = options.getSwitchGeneration();
     const pageGen = ++pagingGeneration;
-    loadingNewer = true;
+    loadingNewer = pageGen;
     try {
       const paged = await ListItemsAfterCursor(
         currentThread.id,
         cursorForBinding(ceiling),
         LOAD_OLDER_ITEM_BUDGET,
         timelinePageShape(),
+        options.selection?.(),
       );
       if (
-        gen !== options.getSwitchGeneration() ||
+        gen !== options.getSwitchGeneration() || threadBackend(currentThread.id) !== ownership ||
         pageGen !== pagingGeneration
       )
         return loadOlderResult('stale');
@@ -1147,7 +1138,7 @@ export function createThreadTimelineWindow(
       const merged = mergeItemsById(append, options.getItems());
       const pageBounds = cursorsAfterItemUpserts(
         pagedOldestCursor(paged, append), pagedNewestCursor(paged, append),
-        append, options.getItems(), currentThread.id,
+        append, options.getItems(), currentThread.id, includes,
       );
       let nextCeiling = pageBounds.newest ?? cloneCursor(newestLoadedCursor) ?? ceiling;
       if (newestLoadedCursor && compareCursors(nextCeiling, newestLoadedCursor) < 0) {
@@ -1183,7 +1174,7 @@ export function createThreadTimelineWindow(
       return loadOlderResult('loaded', insertedAfterWindow, insertedRows);
     } catch (err) {
       if (
-        gen !== options.getSwitchGeneration() ||
+        gen !== options.getSwitchGeneration() || threadBackend(currentThread.id) !== ownership ||
         pageGen !== pagingGeneration
       )
         return loadOlderResult('stale');
@@ -1191,25 +1182,27 @@ export function createThreadTimelineWindow(
       addToast('error', 'Failed to load newer messages');
       return loadOlderResult('error');
     } finally {
-      loadingNewer = false;
+      if (loadingNewer === pageGen) loadingNewer = null;
     }
   }
 
   async function loadRecentTail(): Promise<boolean> {
     const currentThread = options.getThread();
     if (!currentThread) return false;
+    const ownership = threadBackend(currentThread.id);
     const gen = options.getSwitchGeneration();
     const pageGen = ++pagingGeneration;
-    loadingNewer = true;
+    loadingNewer = pageGen;
     try {
       const paged = await ListThreadSliceAround(
         currentThread.id,
         '',
         SLICE_AROUND_ITEM_BUDGET,
         timelinePageShape(),
+        options.selection?.(),
       );
       if (
-        gen !== options.getSwitchGeneration() ||
+        gen !== options.getSwitchGeneration() || threadBackend(currentThread.id) !== ownership ||
         pageGen !== pagingGeneration
       )
         return false;
@@ -1224,7 +1217,7 @@ export function createThreadTimelineWindow(
       return true;
     } catch (err) {
       if (
-        gen !== options.getSwitchGeneration() ||
+        gen !== options.getSwitchGeneration() || threadBackend(currentThread.id) !== ownership ||
         pageGen !== pagingGeneration
       )
         return false;
@@ -1232,7 +1225,7 @@ export function createThreadTimelineWindow(
       addToast('error', 'Failed to load latest messages');
       return false;
     } finally {
-      loadingNewer = false;
+      if (loadingNewer === pageGen) loadingNewer = null;
     }
   }
 
@@ -1259,26 +1252,29 @@ export function createThreadTimelineWindow(
       return recentWindowPrunePending;
     },
     get loadingOlder() {
-      return loadingOlder;
+      return loadingOlder !== null;
     },
     get loadingNewer() {
-      return loadingNewer;
+      return loadingNewer !== null;
     },
     applyInitialSlice,
     applyWindowMetadataFromPaged,
     installFromSnapshot,
     resetForFreshThread,
     resetAfterLoadError,
+    invalidatePendingReads: () => { pagingGeneration++; observationVersion++; },
+    get requestVersion() { return observationVersion; },
     noteDroppedNewerItems,
+    noteDroppedOlderItems: () => { hasMoreHistory = true; },
     applyConversationCut,
     mountActivityRunMembers,
     refreshCursorsAfterUpserts,
     pruneToRecentWindowIfNeeded,
     retryDeferredRecentWindowPrune,
     settleRecentWindowPrune,
-    loadOlder,
-    loadUntilItem,
-    loadNewer,
-    loadRecentTail,
+    loadOlder: () => trackRead(loadOlder),
+    loadUntilItem: (itemId: string) => trackRead(() => loadUntilItem(itemId)),
+    loadNewer: () => trackRead(loadNewer),
+    loadRecentTail: () => trackRead(loadRecentTail),
   };
 }

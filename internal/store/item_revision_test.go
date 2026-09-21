@@ -610,7 +610,7 @@ func TestItemRevisionUnderBulkLoad(t *testing.T) {
 	rows, err := windowDigestRowsTx(s.reader(), "t",
 		TimelineCursor{TurnIndex: 0, ItemIndex: 0},
 		TimelineCursor{TurnIndex: 1, ItemIndex: 0},
-		10,
+		10, timelineScope{},
 	)
 	if err != nil {
 		t.Fatalf("read window rows: %v", err)

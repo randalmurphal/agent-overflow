@@ -37,7 +37,7 @@ func clampActivityRunWindowRows(rows int) int {
 // shipped span stops earlier. That is what makes "every physical row in
 // the range is shipped or counted by exactly one stub" true, and what the
 // has-more probes are asked about.
-func (s *Store) composePagedUnits(q sqlQueryer, threadID string, units []pageUnit) (PagedItems, error) {
+func (s *Store) composePagedUnits(q sqlQueryer, threadID string, units []pageUnit, scope timelineScope) (PagedItems, error) {
 	if len(units) == 0 {
 		return emptyPagedItems(), nil
 	}
@@ -58,15 +58,16 @@ func (s *Store) composePagedUnits(q sqlQueryer, threadID string, units []pageUni
 
 	oldest := units[0].oldest().cursor()
 	newest := units[len(units)-1].newest().cursor()
-	hasMoreOlder, err := hasOlderItems(q, threadID, oldest)
+	hasMoreOlder, err := hasOlderItems(q, threadID, oldest, scope)
 	if err != nil {
 		return PagedItems{}, err
 	}
-	hasMoreNewer, err := hasNewerItems(q, threadID, newest)
+	hasMoreNewer, err := hasNewerItems(q, threadID, newest, scope)
 	if err != nil {
 		return PagedItems{}, err
 	}
 	return PagedItems{
+		Scope:           scope.context,
 		Items:           items,
 		Runs:            runs,
 		OldestCursor:    oldest,

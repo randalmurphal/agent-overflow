@@ -154,7 +154,8 @@ func insertHistoryRowsTx(tx *sql.Tx, threadID string, rows []HistoryRow) error {
 	}
 	defer itemStmt.Close()
 
-	for _, row := range rows {
+	indexBatch := make([]Item, 0, 128)
+	for i, row := range rows {
 		if row.Payload != nil {
 			if _, err := payloadStmt.Exec(payloadInsertArgs(threadID, *row.Payload)...); err != nil {
 				return fmt.Errorf("store: insert thread history payload %s: %w", row.Payload.ID, err)
@@ -163,10 +164,12 @@ func insertHistoryRowsTx(tx *sql.Tx, threadID string, rows []HistoryRow) error {
 		if _, err := itemStmt.Exec(itemInsertArgs(row.Item)...); err != nil {
 			return fmt.Errorf("store: insert thread history item %s: %w", row.Item.ID, err)
 		}
-		if err := indexSettledItemTx(
-			tx, row.Item.ThreadID, row.Item.ID, row.Item.Kind, row.Item.Status, row.Item.Summary,
-		); err != nil {
-			return err
+		indexBatch = append(indexBatch, row.Item)
+		if len(indexBatch) == cap(indexBatch) || i == len(rows)-1 {
+			if err := indexSettledItemsTx(tx, indexBatch, ThreadSearchSourceItem); err != nil {
+				return err
+			}
+			indexBatch = indexBatch[:0]
 		}
 	}
 	return nil

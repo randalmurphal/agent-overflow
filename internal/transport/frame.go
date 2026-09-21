@@ -76,6 +76,9 @@ const CapabilityComputerRoutes = "computer-routes.v1"
 // CapabilityHeartbeat promises client-visible keepalives and replies to client pings.
 const CapabilityHeartbeat = "transport.heartbeat.v1"
 
+// CapabilityTimelineScopes supports selected transcript pages, members and sync.
+const CapabilityTimelineScopes = "timeline.scopes.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -87,6 +90,7 @@ var serverCapabilities = []string{
 	CapabilityComputerRoutes,
 	CapabilityHeartbeat,
 	CapabilityThreadTools,
+	CapabilityTimelineScopes,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose

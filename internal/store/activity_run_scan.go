@@ -265,6 +265,7 @@ func clampDisplayRows(count int64) int {
 type activityScanWalk struct {
 	q        sqlQueryer
 	threadID string
+	scope    timelineScope
 	// newer picks the direction: true walks (turn_index, item_index)
 	// ascending, false descending.
 	newer bool
@@ -280,8 +281,8 @@ type activityScanWalk struct {
 // newActivityScanWalk starts a walk strictly outside `from`. `from` may
 // name a row that no longer exists or was never visible: only its
 // coordinate is used.
-func newActivityScanWalk(q sqlQueryer, threadID string, from TimelineCursor, newer bool) *activityScanWalk {
-	return &activityScanWalk{q: q, threadID: threadID, newer: newer, from: from}
+func newActivityScanWalk(q sqlQueryer, threadID string, from TimelineCursor, newer bool, scope timelineScope) *activityScanWalk {
+	return &activityScanWalk{q: q, threadID: threadID, newer: newer, from: from, scope: scope}
 }
 
 // peekAt returns the k-th unconsumed row in walk order without consuming
@@ -316,9 +317,10 @@ func (w *activityScanWalk) fill() error {
 		comparison = `
 		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))`
 	}
+	filter, args := w.scope.filter("items.")
 	selectedSQL, selectedArgs := timelineIDSelection(w.threadID, timelineSelection{
-		Where:     windowedTimelineFilter + comparison,
-		WhereArgs: []any{w.from.TurnIndex, w.from.TurnIndex, w.from.ItemIndex},
+		Where:     filter + comparison,
+		WhereArgs: append(args, w.from.TurnIndex, w.from.TurnIndex, w.from.ItemIndex),
 		OrderBy:   order,
 		Limit:     activityScanChunkRows,
 	})

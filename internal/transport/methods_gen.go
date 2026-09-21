@@ -188,6 +188,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetThreadUserMessageHistory", ID: 3340938325, Scope: "threads:read", Route: "thread"},                    // main.App.GetThreadUserMessageHistory
 	{Name: "GetThreadUserMessageTicks", ID: 556088547, Scope: "threads:read", Route: "thread"},                       // main.App.GetThreadUserMessageTicks
 	{Name: "GetThreadWorktreeSetup", ID: 49371251, Scope: "terminal:operate", Route: "thread"},                       // main.App.GetThreadWorktreeSetup
+	{Name: "GetTimelineUserMessageTicks", ID: 3815301456, Scope: "threads:read", Route: "thread"},                    // main.App.GetTimelineUserMessageTicks
 	{Name: "GetTurnEditsDiff", ID: 2905371438, Scope: "threads:read", Route: "thread"},                               // main.App.GetTurnEditsDiff
 	{Name: "GetUIRenderTracePath", ID: 1009213933, Scope: "host", Route: "home"},                                     // main.App.GetUIRenderTracePath
 	{Name: "GetUIState", ID: 3380106838, Scope: "session", Route: "home"},                                            // main.App.GetUIState

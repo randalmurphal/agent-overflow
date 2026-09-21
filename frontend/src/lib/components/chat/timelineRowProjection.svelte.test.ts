@@ -14,11 +14,11 @@
 // no-rebuild case is paired with the structural change that must rebuild.
 
 import { ActivityRunStub } from '../../../../bindings/agent-overflow/internal/store/models';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, tick } from 'svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { buildPane, makeItem } from '../../../test/helpers/chat';
+import { installTimelineScopeCapability, buildPane, installPaneMocks, makeItem } from '../../../test/helpers/chat';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { TimelineNode } from '../../utils/subagentGrouping';
 import { createTimelineRowProjection } from './timelineRowProjection.svelte';
@@ -93,61 +93,30 @@ function agentLaunch(id: string, itemIndex: number) {
 
 describe('timeline row projection window edges', () => {
   beforeEach(async () => {
+    installTimelineScopeCapability();
     resetBindingMocks();
     setBindingMock('GetSettings', async () => null);
     await loadSettings();
   });
 
-  it('renders only rows whose root lies inside the loaded window', async () => {
-    // A held scope loaded above the window (loadAgentScope for a tray
-    // digest or the companion) is an island: in pane memory for the
-    // scoped surface, absent from the transcript so the reader and the
-    // paging edges stay put.
-    const pane = await buildPane(undefined, [
-      makeItem({ id: 'w5', turnIndex: 5, itemIndex: 0, summary: 'five' }),
-      makeItem({ id: 'w6', turnIndex: 6, itemIndex: 0, summary: 'six' }),
-    ]);
-    const launch = { ...agentLaunch('launch', 0), turnIndex: 0 };
-    setBindingMock('GetThreadItem', async () => launch);
-    setBindingMock('ListSubagentDescendants', async () => [
-      makeItem({ id: 'child', turnIndex: 6, itemIndex: 3, parentId: 'launch', summary: 'late child' }),
-    ]);
-    const projection = mountProjection(pane);
-    try {
-      await pane.loadAgentScope('launch');
-      flushSync();
-      expect(pane.items.map((item) => item.id)).toEqual(['launch', 'w5', 'w6', 'child']);
-      const ids = projection.nodes.map((node) => (node.kind === 'leaf' ? node.item.id : node.kind));
-      expect(ids).toEqual(['w5', 'w6']);
-    } finally {
-      projection.dispose();
-    }
-  });
-
   it('renders a scoped view whole, whatever the source window edges are', async () => {
-    // A companion or digest scope has no edges of its own: its children
-    // keep the coordinates they arrived with, which can lie past the
-    // source pane's newest loaded row.
     const pane = await buildPane(undefined, [
       makeItem({ id: 'w5', turnIndex: 5, itemIndex: 0, summary: 'five' }),
       { ...agentLaunch('launch', 1), turnIndex: 5 },
     ]);
-    // Hydration never moves the source window's edges, so the child
-    // lands past its newest row.
-    setBindingMock('ListSubagentDescendants', async () => [
-      makeItem({ id: 'late', turnIndex: 9, itemIndex: 0, parentId: 'launch', summary: 'late child' }),
-    ]);
-    await pane.ensureSubagentChildren('launch');
-    expect(pane.newestLoadedCursor?.turnIndex).toBe(5);
+    installPaneMocks([agentLaunch('launch', 1),
+      makeItem({ id: 'late', turnIndex: 9, itemIndex: 0, parentId: 'launch', summary: 'late child' })]);
     const view = createAgentScopeView(pane, 'launch', { viewKey: 'agent', openAgentPane: () => {} });
+    view.start();
+    await vi.waitFor(() => expect(view.pane.loading).toBe(false));
     const scoped = mountProjection(view.pane);
     const main = mountProjection(pane);
     try {
-      expect(view.pane.oldestLoadedCursor).toBeNull();
-      expect(view.pane.newestLoadedCursor).toBeNull();
+      expect(view.pane.oldestLoadedCursor?.turnIndex).toBe(9);
+      expect(view.pane.newestLoadedCursor?.turnIndex).toBe(9);
       expect(scoped.nodes.map((node) => (node.kind === 'leaf' ? node.item.id : node.kind))).toEqual(['late']);
-      // The transcript keeps the child too: it keys on the launch, which is inside.
-      expect(findGroup(main.nodes)?.children.some((child) => child.kind === 'leaf' && child.item.id === 'late')).toBe(true);
+      expect(pane.getItemById('late')).toBeUndefined();
+      expect(pane.newestLoadedCursor?.turnIndex).toBe(5);
     } finally {
       scoped.dispose();
       main.dispose();
@@ -339,7 +308,7 @@ it('forms a detached completion card before expanding or loading the old launch'
     setBindingMock('ListSubagentDescendants', async () => [
       makeItem({ id: 'child', itemIndex: 80, parentId: launch.id, summary: 'Agent work' }),
     ]);
-    await pane.loadAgentScope(launch.id);
+    await pane.ensureSubagentChildren(launch.id);
     flushSync();
     expect(findGroup(projection.nodes)?.anchor?.id).toBe(done.id);
     expect(findGroup(projection.nodes)?.children.some(child => child.kind === 'leaf' && child.item.id === 'child')).toBe(true);

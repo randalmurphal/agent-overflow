@@ -44,6 +44,13 @@ const (
 	backgroundTaskRetentionMillis = 2000
 )
 
+// TimelinePageOptions keeps transcript selection separate from wire projection.
+// Embedded shape fields preserve the existing four-argument paging wire format.
+type TimelinePageOptions struct {
+	PageShape
+	Selection store.TimelineSelection `json:"selection,omitempty"`
+}
+
 // ListThreadSliceAround loads the bounded active-pane window around an anchor.
 // The window covers roughly `targetItemCount` rows of history (defaulting to
 // sliceAroundDefaultItems when <= 0), half at-or-before and half after the
@@ -56,13 +63,13 @@ const (
 // tail — the bottom-snapshot restore case.
 //
 //ao:scope threads:read
-func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int, shape PageShape) (store.PagedItems, error) {
+func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int, options TimelinePageOptions) (store.PagedItems, error) {
 	if err := a.store.CheckForkReady(threadID); err != nil {
 		return store.PagedItems{}, err
 	}
-	shape = shape.normalize()
+	shape := options.PageShape.normalize()
 	paged, err := a.store.ListThreadSliceAround(
-		threadID, anchorItemID, clampSliceItemBudget(targetItemCount), shape.RunWindowRows)
+		threadID, anchorItemID, clampSliceItemBudget(targetItemCount), shape.RunWindowRows, options.Selection)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list thread slice around: %w", err)
 	}
@@ -109,13 +116,13 @@ func clampPaginationItemBudget(itemBudget int) int {
 // Same-turn rows outside the cursor range stay omitted until explicitly paged.
 //
 //ao:scope threads:read
-func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor, itemBudget int, shape PageShape) (store.PagedItems, error) {
+func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor, itemBudget int, options TimelinePageOptions) (store.PagedItems, error) {
 	if err := a.store.CheckForkReady(threadID); err != nil {
 		return store.PagedItems{}, err
 	}
-	shape = shape.normalize()
+	shape := options.PageShape.normalize()
 	paged, err := a.store.ListItemsBeforeCursor(
-		threadID, before, clampPaginationItemBudget(itemBudget), shape.RunWindowRows)
+		threadID, before, clampPaginationItemBudget(itemBudget), shape.RunWindowRows, options.Selection)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items before cursor: %w", err)
 	}
@@ -127,13 +134,13 @@ func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor
 // companion to ListItemsBeforeCursor.
 //
 //ao:scope threads:read
-func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, itemBudget int, shape PageShape) (store.PagedItems, error) {
+func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, itemBudget int, options TimelinePageOptions) (store.PagedItems, error) {
 	if err := a.store.CheckForkReady(threadID); err != nil {
 		return store.PagedItems{}, err
 	}
-	shape = shape.normalize()
+	shape := options.PageShape.normalize()
 	paged, err := a.store.ListItemsAfterCursor(
-		threadID, after, clampPaginationItemBudget(itemBudget), shape.RunWindowRows)
+		threadID, after, clampPaginationItemBudget(itemBudget), shape.RunWindowRows, options.Selection)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items after cursor: %w", err)
 	}
@@ -231,10 +238,17 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 //
 //ao:scope threads:read
 func (a *App) GetThreadUserMessageTicks(threadID string) ([]store.UserMessageTick, error) {
+	return a.GetTimelineUserMessageTicks(threadID, store.TimelineSelection{})
+}
+
+// GetTimelineUserMessageTicks lists navigation ticks in the selected transcript.
+//
+//ao:scope threads:read
+func (a *App) GetTimelineUserMessageTicks(threadID string, selection store.TimelineSelection) ([]store.UserMessageTick, error) {
 	if err := a.store.CheckForkReady(threadID); err != nil {
 		return nil, err
 	}
-	ticks, err := a.store.ListThreadUserMessageTicks(threadID)
+	ticks, err := a.store.ListThreadUserMessageTicks(threadID, selection)
 	if err != nil {
 		return nil, fmt.Errorf("get thread user message ticks: %w", err)
 	}

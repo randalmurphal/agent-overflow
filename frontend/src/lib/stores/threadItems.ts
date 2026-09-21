@@ -112,6 +112,7 @@ export function cursorsAfterItemUpserts(
   current: readonly Item[],
   incoming: readonly Item[],
   threadId: string | null,
+  includes: (item: Item) => boolean = (item) => !item.parentId,
 ): { oldest: TimelineCursorLike | null; newest: TimelineCursorLike | null } {
   const result = { oldest: oldest ?? null, newest: newest ?? null };
   if (!oldest || !newest) return result;
@@ -143,7 +144,7 @@ export function cursorsAfterItemUpserts(
     return updated && (updated.id !== cursor.itemId || compareItemToCursor(updated, cursor) !== 0);
   });
   if (!movesAnchor) return result;
-  const covered = current.filter((item) => !item.parentId
+  const covered = current.filter((item) => includes(item)
     && compareItemToCursor(item, oldest) >= 0 && compareItemToCursor(item, newest) <= 0);
   const projected = covered.map((item) => updateFor(item.id) ?? item);
   // A suffix insertion translates the entire loaded span. Check every row,
@@ -168,7 +169,7 @@ export function cursorsAfterItemUpserts(
     const distance = (next.itemIndex - cursor.itemIndex) * direction;
     if (next.turnIndex === cursor.turnIndex && distance <= updates.size) {
       const positions = new Set([...updates.values()]
-        .filter((item) => !item.parentId && item.turnIndex === cursor.turnIndex)
+        .filter((item) => includes(item) && item.turnIndex === cursor.turnIndex)
         .map((item) => item.itemIndex));
       let step = 1;
       while (step <= distance && positions.has(cursor.itemIndex + step * direction)) step++;

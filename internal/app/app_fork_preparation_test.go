@@ -128,13 +128,16 @@ func TestForkPreparationPublication(t *testing.T) {
 						t.Error("pending fork absent from catalog before clone")
 					}
 					for name, read := range map[string]func() error{
-						"page": func() error { _, err := a.ListThreadSliceAround(row.ID, "", 25, PageShape{}); return err },
+						"page": func() error {
+							_, err := a.ListThreadSliceAround(row.ID, "", 25, TimelinePageOptions{PageShape: PageShape{}})
+							return err
+						},
 						"older": func() error {
-							_, err := a.ListItemsBeforeCursor(row.ID, store.TimelineCursor{}, 25, PageShape{})
+							_, err := a.ListItemsBeforeCursor(row.ID, store.TimelineCursor{}, 25, TimelinePageOptions{PageShape: PageShape{}})
 							return err
 						},
 						"newer": func() error {
-							_, err := a.ListItemsAfterCursor(row.ID, store.TimelineCursor{}, 25, PageShape{})
+							_, err := a.ListItemsAfterCursor(row.ID, store.TimelineCursor{}, 25, TimelinePageOptions{PageShape: PageShape{}})
 							return err
 						},
 						"subagent":   func() error { _, err := a.ListSubagentDescendants(row.ID, "root", true); return err },

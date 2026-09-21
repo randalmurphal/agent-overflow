@@ -48,7 +48,7 @@ func TestSyncThreadWindowStatuses(t *testing.T) {
 	held := historyStampOf(t, s, "t")
 
 	// fresh — stamps match, no page.
-	got, err := s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, held, nil)
+	got, err := s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, held, nil, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync (fresh): %v", err)
 	}
@@ -69,7 +69,7 @@ func TestSyncThreadWindowStatuses(t *testing.T) {
 	if err := s.UpdateItemMeta("t", "t-i0", `{"x":1}`); err != nil {
 		t.Fatalf("update item meta: %v", err)
 	}
-	got, err = s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, held, nil)
+	got, err = s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, held, nil, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync (stale): %v", err)
 	}
@@ -79,7 +79,7 @@ func TestSyncThreadWindowStatuses(t *testing.T) {
 	if got.Page == nil {
 		t.Fatal("stale answer must carry the window")
 	}
-	window, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	window, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list thread slice around: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestSyncThreadWindowStatuses(t *testing.T) {
 	if _, _, err := s.DeleteConversationFromItem("t", "t-i3"); err != nil {
 		t.Fatalf("delete conversation from item: %v", err)
 	}
-	got, err = s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, held, nil)
+	got, err = s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, held, nil, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync (rewritten): %v", err)
 	}
@@ -117,7 +117,7 @@ func TestSyncThreadWindowStatuses(t *testing.T) {
 	}
 
 	// A caller holding no replica at all is never told "fresh".
-	got, err = s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, UnknownHistoryStamp(), nil)
+	got, err = s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, UnknownHistoryStamp(), nil, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync (no replica): %v", err)
 	}
@@ -129,7 +129,7 @@ func TestSyncThreadWindowStatuses(t *testing.T) {
 	}
 
 	// gone — no thread row.
-	got, err = s.SyncThreadWindow(ctx, "no-such-thread", "", 200, testRunWindowRows, held, nil)
+	got, err = s.SyncThreadWindow(ctx, "no-such-thread", "", 200, testRunWindowRows, held, nil, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync (gone): %v", err)
 	}
@@ -151,14 +151,14 @@ func TestSyncThreadWindowHonorsAnchor(t *testing.T) {
 	s := newTestStore(t)
 	seedSyncThread(t, s, "t", 12)
 
-	got, err := s.SyncThreadWindow(context.Background(), "t", "t-i2", 4, testRunWindowRows, UnknownHistoryStamp(), nil)
+	got, err := s.SyncThreadWindow(context.Background(), "t", "t-i2", 4, testRunWindowRows, UnknownHistoryStamp(), nil, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 	if got.Page == nil {
 		t.Fatal("expected a page")
 	}
-	want, err := s.ListThreadSliceAround("t", "t-i2", 4, testRunWindowRows)
+	want, err := s.ListThreadSliceAround("t", "t-i2", 4, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list thread slice around: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestSyncThreadWindowSameTxAttestation(t *testing.T) {
 	}
 
 	// Statement 2: the window, still on the snapshot the stamps came from.
-	page, err := s.listThreadSliceAround(tx, "t", "", 200, testRunWindowRows)
+	page, err := s.listThreadSliceAround(tx, "t", "", 200, testRunWindowRows, timelineScope{})
 	if err != nil {
 		t.Fatalf("window in tx: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestRestoreFromRemintsReplicaGeneration(t *testing.T) {
 	}
 
 	// And the store still answers sync calls with the new generation.
-	got, err := st.SyncThreadWindow(context.Background(), "t1", "", 200, testRunWindowRows, UnknownHistoryStamp(), nil)
+	got, err := st.SyncThreadWindow(context.Background(), "t1", "", 200, testRunWindowRows, UnknownHistoryStamp(), nil, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync after restore: %v", err)
 	}
@@ -459,7 +459,7 @@ func TestSyncThreadWindowZeroStampMatchesOnlyAnUntouchedThread(t *testing.T) {
 	mustCreateThread(t, s, "untouched")
 
 	zero := HistoryStamp{}
-	got, err := s.SyncThreadWindow(ctx, "with-history", "", 200, testRunWindowRows, zero, nil)
+	got, err := s.SyncThreadWindow(ctx, "with-history", "", 200, testRunWindowRows, zero, nil, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync (with history): %v", err)
 	}
@@ -472,7 +472,7 @@ func TestSyncThreadWindowZeroStampMatchesOnlyAnUntouchedThread(t *testing.T) {
 
 	// A thread with no item writes since v55 genuinely IS at (0, 0), and
 	// a page-less fresh is the truthful answer to its empty window.
-	got, err = s.SyncThreadWindow(ctx, "untouched", "", 200, testRunWindowRows, zero, nil)
+	got, err = s.SyncThreadWindow(ctx, "untouched", "", 200, testRunWindowRows, zero, nil, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync (untouched): %v", err)
 	}
@@ -544,7 +544,7 @@ func TestSyncThreadWindowAttestsUnderConcurrentWrites(t *testing.T) {
 	}()
 
 	for {
-		sync, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, UnknownHistoryStamp(), nil)
+		sync, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, UnknownHistoryStamp(), nil, TimelineSelection{})
 		if err != nil {
 			t.Fatalf("sync during writes: %v", err)
 		}
@@ -562,7 +562,7 @@ func TestSyncThreadWindowAttestsUnderConcurrentWrites(t *testing.T) {
 				t.Fatalf("writer: %v", err)
 			}
 			// One final read over the settled store.
-			final, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, UnknownHistoryStamp(), nil)
+			final, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, UnknownHistoryStamp(), nil, TimelineSelection{})
 			if err != nil {
 				t.Fatalf("final sync: %v", err)
 			}

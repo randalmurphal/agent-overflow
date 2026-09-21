@@ -1,3 +1,4 @@
+import { refreshTimelineSurfaces } from './timelineSurfaces';
 import type { EventOrigin } from '../transport/handle';
 import { backendKeyForOrigin } from '../transport/backends';
 import { pendingItemEventsSettled } from './itemEventSettlement';
@@ -126,6 +127,7 @@ function resyncThreadLiveActivity(origin?: EventOrigin): void {
 
 /** The blanket answer: forget the stamps, re-read the sidebar, refresh every pane. */
 function refreshEverything(): void {
+  refreshTimelineSurfaces();
   dropStampsAfterGap();
   refreshSidebarProjections();
   for (const pane of ingestPanes()) {
@@ -184,6 +186,7 @@ function applySettledTransportGap(gap: { channel: string; seq: number }, origin?
       resyncThreadLiveActivity(origin);
       return;
     case 'provider:item_event':
+      refreshTimelineSurfaces(backendKeyForOrigin(origin?.backendId ?? ''));
     case 'thread:updated': {
       // The gap carries no entity key, so we cannot say WHICH thread's
       // history moved without us: every stamp we hold may now be an

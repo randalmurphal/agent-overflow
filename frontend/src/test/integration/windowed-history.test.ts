@@ -267,6 +267,7 @@ describe('App integration — windowed thread history', () => {
           inlinePreviews: expect.any(Boolean),
           runWindowRows: expect.any(Number),
           maxBytes: expect.any(Number),
+          selection: {},
         }),
       ),
     );

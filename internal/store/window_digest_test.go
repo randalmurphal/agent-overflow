@@ -120,7 +120,7 @@ func TestWindowDigestIsOrderFreeAndComposable(t *testing.T) {
 // IS the read and then break exactly one thing about it.
 func heldWindowFromStore(t *testing.T, s *Store, threadID string) HeldWindow {
 	t.Helper()
-	page, err := s.ListThreadSliceAround(threadID, "", 200, testRunWindowRows)
+	page, err := s.ListThreadSliceAround(threadID, "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("read window: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestSyncThreadWindowVerifiesHeldWindow(t *testing.T) {
 		t.Fatal("fixture no longer makes the client stamp stale")
 	}
 
-	got, err := s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, stale, &held)
+	got, err := s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, stale, &held, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync with held window: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestSyncThreadWindowVerifiesHeldWindow(t *testing.T) {
 	}
 
 	// Without the window, the same request pays for a page.
-	got, err = s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, stale, nil)
+	got, err = s.SyncThreadWindow(ctx, "t", "", 200, testRunWindowRows, stale, nil, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync without held window: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestSyncThreadWindowRejectsWrongHeldWindows(t *testing.T) {
 			}
 			tc.mutate(t, s, &held)
 
-			got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held)
+			got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held, TimelineSelection{})
 			if err != nil {
 				t.Fatalf("sync: %v", err)
 			}
@@ -480,7 +480,7 @@ func TestHeldWindowVerifiesExactlyUpToThePageCap(t *testing.T) {
 	s := newTestStore(t)
 	seedWideSyncThread(t, s, "t", MaxHeldWindowItems+1)
 
-	page, err := s.ListThreadSliceAround("t", "", MaxHeldWindowItems+2, testRunWindowRows)
+	page, err := s.ListThreadSliceAround("t", "", MaxHeldWindowItems+2, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("read window: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestHeldWindowVerifiesExactlyUpToThePageCap(t *testing.T) {
 	stale.Rev--
 
 	atCap := heldWindowOverItems(page.Items[:MaxHeldWindowItems], false, true)
-	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &atCap)
+	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &atCap, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync at the cap: %v", err)
 	}
@@ -501,7 +501,7 @@ func TestHeldWindowVerifiesExactlyUpToThePageCap(t *testing.T) {
 	}
 
 	overCap := heldWindowOverItems(page.Items, false, false)
-	got, err = s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &overCap)
+	got, err = s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &overCap, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync over the cap: %v", err)
 	}
@@ -543,7 +543,7 @@ func TestHeldWindowIgnoresRowsAPageWouldNotReturn(t *testing.T) {
 		t.Fatalf("insert plan_update notification: %v", err)
 	}
 
-	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held)
+	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -569,7 +569,7 @@ func TestHeldWindowSeesThroughToChildWrites(t *testing.T) {
 		t.Fatalf("insert child: %v", err)
 	}
 
-	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held)
+	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -609,7 +609,7 @@ func TestHeldWindowRefusesImportedRows(t *testing.T) {
 	stale := historyStampOf(t, s, "t")
 	stale.Rev--
 
-	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held)
+	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -642,7 +642,7 @@ func TestHeldWindowVerifiesLocalTailOfImportedThread(t *testing.T) {
 		}
 	}
 
-	page, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	page, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("read window: %v", err)
 	}
@@ -663,7 +663,7 @@ func TestHeldWindowVerifiesLocalTailOfImportedThread(t *testing.T) {
 	stale := historyStampOf(t, s, "t")
 	stale.Rev--
 
-	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held)
+	got, err := s.SyncThreadWindow(context.Background(), "t", "", 200, testRunWindowRows, stale, &held, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}

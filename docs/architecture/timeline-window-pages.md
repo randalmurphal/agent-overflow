@@ -23,7 +23,7 @@ held-window sync is [thread-replica-sync.md](thread-replica-sync.md) §5.
 
 ## 1. Run membership, on the server
 
-The server groups visible top-level rows (`windowedTimelineFilter`) into
+The server groups visible rows selected by `TimelineSelection` into
 runs with the rule `frontend/src/lib/utils/timelineRail.ts` and
 `activityRunGrouping.ts` apply on the client. Both sides run the shared
 fixture `internal/store/testdata/activity_run_vectors.json` (byte-identical
@@ -41,6 +41,28 @@ narrow scan, never in SQL alone.
 Runs are identified by `firstItemId`. Runs grow only at their newer end
 (new rows land at the write head; head-healed prompts are prose), so the
 first member is stable for the life of the window.
+
+### Transcript selection
+
+Scoped reads require the owning backend's `timeline.scopes.v1` capability.
+Paging keeps its four positional arguments: `TimelinePageOptions` carries the
+existing flat shape fields plus `selection`. Main-thread navigation keeps
+`GetThreadUserMessageTicks`; scoped navigation uses `GetTimelineUserMessageTicks`.
+Older clients can read main history on newer hosts. New clients surface an
+update requirement before issuing scoped reads to an older host.
+
+Selection is independent of `PageShape`. An empty selection reads the main
+thread's top-level rows. A scoped selection reads direct children of its
+canonical transcript root; `Tools` restricts that scope to tool activity for
+an expanded background tray. Page composition, has-more probes, run-member
+reads and held-window verification all apply the same selection. Local and
+imported history use indexed physical arms.
+
+Scoped pages also carry root identity and the latest execution's lifecycle
+context, even when no transcript rows exist or a held window verifies fresh.
+The pane and each tray digest own separate windows, run state and row leases.
+Their history resources share ordered item events and backend recovery with
+the main thread. Main-thread pruning therefore cannot evict scoped content.
 
 ## 2. The page
 
@@ -282,11 +304,9 @@ Rules:
   (`keepWindowNearReader`, the hard ceiling, `cutWindowByRootCursor`)
   drops prose rows and whole runs outside its cut, and sheds the loaded
   members of a run that straddles it; it never drops a run whose stub it
-  would still need. Rows a held agent scope needs (`getHeldRowIds`)
-  survive the cut outside the edges, as does a scope `loadAgentScope`
-  brought in for a digest or the companion; the chat timeline renders
-  only rows whose root lies inside the edges (`itemsWithinLoadedWindow`),
-  and `sweepUnheldAgentScopes` drops the rest once no surface holds them.
+  would still need. Subagent panes and expanded tray digests own separate
+  scoped windows; pruning the main timeline does not affect their rows.
+  Each timeline renders only its own loaded window (`itemsWithinLoadedWindow`).
 - **Upserts.** A pushed row whose coordinates fall inside a held run but
   outside its loaded span is not inserted; it marks the stub dirty, and
   the pane refreshes it (`ListActivityRunMembers` with `Limit` 0,

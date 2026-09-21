@@ -15,9 +15,8 @@ import type { ThreadPane } from './thread.svelte';
  * the specific accessors it needs, not widen back to `pane`.
  *
  * The AGENT panel is the one body that legitimately reads timeline state
- * (`items`, `timelineRevision`, …): its scope lifecycle and hydration run
- * off the source timeline, so those reads are its subject matter rather
- * than an accidental coupling. That is exactly why they are enumerated
+ * (`items`, `timelineRevision`, …) for breadcrumb identity. The transcript
+ * and its lifecycle context are owned by the independent scoped window. That is exactly why they are enumerated
  * here one by one instead of handing the body `pane` — no OTHER panel
  * kind should touch them, and adding one to this list is a decision
  * someone has to make on purpose. (The agent body's TRANSCRIPT does not

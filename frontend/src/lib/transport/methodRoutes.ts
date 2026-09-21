@@ -159,6 +159,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	3340938325: 'thread', // GetThreadUserMessageHistory
 	556088547: 'thread', // GetThreadUserMessageTicks
 	49371251: 'thread', // GetThreadWorktreeSetup
+	3815301456: 'thread', // GetTimelineUserMessageTicks
 	2905371438: 'thread', // GetTurnEditsDiff
 	1009213933: 'home', // GetUIRenderTracePath
 	3380106838: 'home', // GetUIState

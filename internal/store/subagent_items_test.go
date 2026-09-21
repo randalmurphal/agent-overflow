@@ -114,7 +114,7 @@ func TestListSubagentDescendants_MultiLevelOrderedAndExcludedFromWindows(t *test
 
 	// Windows carry only top-level rows; the anchor's collapsed card
 	// aggregates stand in for the unloaded subtree.
-	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestListSubagentDescendants_FiltersPlanUpdateChildren(t *testing.T) {
 		t.Errorf("descendants: got %v, want [c-real]", collectIDs(descendants))
 	}
 
-	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestDecorateSubagentAnchors_PreviewPrefersActiveThenLatest(t *testing.T) {
 	seedToolChildItem(t, s, "t", "b-done", 1, 1, "anchor-b", "did the thing", "completed")
 	seedToolChildItem(t, s, "t", "b-run-empty", 1, 2, "anchor-b", "", "running")
 
-	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestDecorateSubagentAnchors_EmptySummariesOmitSummaryKey(t *testing.T) {
 	seedAnchorItem(t, s, "t", "anchor", 0, 0)
 	seedChildItem(t, s, "t", "c-blank", 0, 1, "anchor", "", "running")
 
-	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestListSubagentDescendants_CapsAtMaxNewestWin(t *testing.T) {
 
 	// The collapsed-card badge still reports the full total — the cap
 	// bounds one hydrate call, not the aggregate.
-	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
 	}
@@ -464,7 +464,7 @@ func TestDecorateSubagentAnchors_StaleStoredSummaryKeyDropped(t *testing.T) {
 	}
 	seedChildItem(t, s, "t", "c-blank", 0, 1, "anchor", "", "running")
 
-	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
 	}
@@ -508,7 +508,7 @@ func TestDecorateSubagentAnchors_LeavesChildlessRowsUntouched(t *testing.T) {
 	seedItem(t, s, "t", "text-row", 1, 0, "")
 	seedItem(t, s, "t", "text-child", 1, 1, "text-row")
 
-	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
 	}
@@ -622,7 +622,7 @@ func TestSubagentReadsResolveAResumeCarrierToItsTranscriptRoot(t *testing.T) {
 		t.Fatalf("seed carrier: %v", err)
 	}
 
-	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
 	}
@@ -753,7 +753,7 @@ func TestSubagentAnchorsAreDecoratedPerResumeRound(t *testing.T) {
 		t.Fatalf("seed plain tool call: %v", err)
 	}
 
-	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
 	}
@@ -859,7 +859,7 @@ func TestSubagentLaunchWithoutRoundsIsUnchanged(t *testing.T) {
 		t.Fatalf("seed plain tool call: %v", err)
 	}
 
-	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
 	}
@@ -978,7 +978,7 @@ func TestDecorateSubagentAnchors_CompletionSiblingCarriesTheLaunchAggregate(t *t
 	seedCompletionSibling(t, s, "t", "complete:bg-agent", "bg-agent", 3, 3000)
 
 	// Both rows in one window.
-	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	paged, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
 	}
@@ -1014,7 +1014,7 @@ func TestDecorateSubagentAnchors_CompletionSiblingCarriesTheLaunchAggregate(t *t
 	// left untouched, as its launch would be.
 	seedLaunchWithMeta(t, s, "t", "bg-bash", 4, `{}`)
 	seedCompletionSibling(t, s, "t", "complete:bg-bash", "bg-bash", 5, 5000)
-	paged, err = s.ListThreadSliceAround("t", "", 200, testRunWindowRows)
+	paged, err = s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list slice: %v", err)
 	}

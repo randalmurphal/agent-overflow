@@ -1,7 +1,5 @@
-<script lang="ts">
+<script lang="ts" generics="T">
   import { tick, untrack, type Snippet } from 'svelte';
-  import type { TimelineNode } from '../../utils/subagentGrouping';
-  import { timelineNodeKey } from '../../utils/subagentGrouping';
   import { createRowEstimate } from '../../utils/virtual/priors';
   import type { TimelineVirtualizerHandle } from '../../utils/virtual/types';
   import { createUseStickToBottomController } from '../../utils/scroll/index.svelte';
@@ -12,17 +10,19 @@
 
   let {
     nodes,
+    getKey,
     depth,
     live,
     maxHeight = 'min(50vh, 20rem)',
     renderNode,
   }: {
-    nodes: TimelineNode[];
+    nodes: T[];
+    getKey: (node: T) => string;
     depth: number;
     live: boolean;
     /** CSS max-height of the clip's viewport. */
     maxHeight?: string;
-    renderNode: Snippet<[TimelineNode, number]>;
+    renderNode: Snippet<[T, number]>;
   } = $props();
 
   const IS_HAPPY_DOM =
@@ -88,7 +88,7 @@
       scrollRef={scrollEl}
       intrinsicViewportMaxHeight={maxHeight}
       data={nodes}
-      getKey={(node) => timelineNodeKey(node)}
+      {getKey}
       {estimate}
       bufferSize={480}
       renderAll={IS_HAPPY_DOM}

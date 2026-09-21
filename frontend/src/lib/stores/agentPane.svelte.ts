@@ -18,7 +18,7 @@
 // a transient, never a thing a reload can land in.
 
 import { addPaneDestroyedObserver } from './panes.svelte';
-import { isCompanionOpen, openCompanion } from './companionPanes.svelte';
+import { openCompanion } from './companionPanes.svelte';
 import { requestPaneLayoutPersistence } from './paneLayout.svelte';
 import type { AgentPaneBreadcrumbEntry, AgentPaneScopeSnapshot } from '../types/settings';
 
@@ -30,6 +30,8 @@ function rootEntry(): AgentPaneBreadcrumbEntry {
 }
 
 export interface AgentPaneState {
+  readonly itemRequest: { itemId: string; nonce: number };
+  openAtItem(trail: readonly AgentPaneBreadcrumbEntry[], itemId: string): void;
   /** Thread this scope belongs to. Fixed for the state's lifetime. */
   readonly threadId: string;
   /**
@@ -59,10 +61,6 @@ export interface AgentPaneState {
 }
 
 const statesBySourcePane = new Map<string, AgentPaneState>();
-// Scopes a background tray digest is rendering rows under, per source pane
-// and thread, counted because two rows can expand to one transcript root
-// (a §E6 resume carrier and its original launch). See `holdAgentScope`.
-const trayHeldScopesBySourcePane = new Map<string, Map<string, Map<string, number>>>();
 let unsubscribePaneDestroyed: (() => void) | null = null;
 
 // Registered on first use rather than from an app-level install hook: the
@@ -74,7 +72,6 @@ function ensurePaneDestroyedObserver(): void {
   if (unsubscribePaneDestroyed) return;
   unsubscribePaneDestroyed = addPaneDestroyedObserver((destroyedPaneId) => {
     statesBySourcePane.delete(destroyedPaneId);
-    trayHeldScopesBySourcePane.delete(destroyedPaneId);
   });
 }
 
@@ -93,12 +90,14 @@ function noteScopeChanged(): void {
 
 function createAgentPaneState(threadId: string): AgentPaneState {
   let scopeItemId = $state('');
+  let itemRequest = $state({ itemId: '', nonce: 0 });
   let breadcrumb: AgentPaneBreadcrumbEntry[] = $state([rootEntry()]);
 
   // Declared as functions rather than object-literal methods so the
   // cross-calls below (pushScope → popTo, setScope → reset) never depend on
   // `this` — a destructured `const { pushScope } = state` stays correct.
   function reset(): void {
+    itemRequest = { itemId: '', nonce: itemRequest.nonce + 1 };
     if (scopeItemId === '' && breadcrumb.length === 1) return;
     scopeItemId = '';
     breadcrumb = [rootEntry()];
@@ -106,6 +105,7 @@ function createAgentPaneState(threadId: string): AgentPaneState {
   }
 
   function setScope(itemId: string, label: string): void {
+    itemRequest = { itemId: '', nonce: itemRequest.nonce + 1 };
     if (!itemId) {
       reset();
       return;
@@ -116,6 +116,7 @@ function createAgentPaneState(threadId: string): AgentPaneState {
   }
 
   function popTo(index: number): void {
+    itemRequest = { itemId: '', nonce: itemRequest.nonce + 1 };
     if (index < 0 || index >= breadcrumb.length) return;
     if (index === breadcrumb.length - 1) return;
     breadcrumb = breadcrumb.slice(0, index + 1);
@@ -124,6 +125,7 @@ function createAgentPaneState(threadId: string): AgentPaneState {
   }
 
   function pushScope(itemId: string, label: string): void {
+    itemRequest = { itemId: '', nonce: itemRequest.nonce + 1 };
     if (!itemId) return;
     if (itemId === scopeItemId) return;
     // Descending into a node already ON the trail is a pop, not a second
@@ -148,6 +150,14 @@ function createAgentPaneState(threadId: string): AgentPaneState {
     },
     get breadcrumb() {
       return breadcrumb;
+    },
+    get itemRequest() { return itemRequest; },
+    openAtItem(trail: readonly AgentPaneBreadcrumbEntry[], itemId: string) {
+      if (!trail.length || trail.some(entry => !entry.itemId)) throw new Error('Agent ancestry must contain nonempty scopes');
+      breadcrumb = [rootEntry(), ...trail];
+      scopeItemId = trail[trail.length - 1].itemId;
+      itemRequest = { itemId, nonce: itemRequest.nonce + 1 };
+      noteScopeChanged();
     },
     setScope,
     pushScope,
@@ -190,110 +200,6 @@ export function agentScopeForPane(
     scopeItemId: state.scopeItemId,
     breadcrumb: state.breadcrumb.map((entry) => ({ ...entry })),
   };
-}
-
-/**
- * True when the OPEN agent pane for `sourcePaneId` is scoped to
- * `itemId` — or holds it on the breadcrumb trail. The thread pane's
- * subagent memory consults this alongside card expansion: rows under a
- * scope the reader is looking at (or one hop up the trail from) must not
- * fold out of pane memory the way rows under a collapsed card do.
- * Requires the companion to actually be open, because scope state can
- * outlive a generic companion close.
- */
-export function agentPaneScopeTrailHolds(
-  sourcePaneId: string,
-  threadId: string,
-  itemId: string,
-): boolean {
-  if (!itemId) return false;
-  const state = statesBySourcePane.get(sourcePaneId);
-  if (!state || state.threadId !== threadId || !state.scopeItemId) return false;
-  if (!isCompanionOpen(sourcePaneId, 'agent')) return false;
-  return state.breadcrumb.some((entry) => entry.itemId === itemId);
-}
-
-/**
- * The OUTERMOST scoped node on the open agent pane's breadcrumb trail
- * (`''` when no pane is open for this pane+thread). Descending inside
- * the pane only ever enters the current scope's subtree, so the trail is
- * an ancestry chain and the first non-root entry's subtree covers every
- * scope on it. The thread pane's row-UI prune widens its retention with
- * that subtree — state under rows the agent pane (or a pop back up its
- * trail) is showing must not be disposed by the chat timeline's
- * bounded-memory pass.
- */
-export function agentPaneRetainedRootScope(
-  sourcePaneId: string,
-  threadId: string,
-): string {
-  const state = statesBySourcePane.get(sourcePaneId);
-  if (!state || state.threadId !== threadId || !state.scopeItemId) return '';
-  if (!isCompanionOpen(sourcePaneId, 'agent')) return '';
-  return state.breadcrumb.find((entry) => entry.itemId !== '')?.itemId ?? '';
-}
-
-/**
- * Hold `scopeId` on behalf of a background tray digest that is rendering
- * its rows. Held for exactly as long as the returned release is not
- * called; the digest calls it when the row collapses or leaves the tray.
- * A held scope counts like the companion's trail for the thread pane's
- * two eviction chokepoints (`agentScopeHeld`, `heldAgentScopeRoots`):
- * rows a surface is showing must not fold or prune out from under it.
- */
-export function holdAgentScope(
-  sourcePaneId: string,
-  threadId: string,
-  scopeId: string,
-): () => void {
-  if (!scopeId || !threadId) return () => {};
-  ensurePaneDestroyedObserver();
-  let byThread = trayHeldScopesBySourcePane.get(sourcePaneId);
-  if (!byThread) trayHeldScopesBySourcePane.set(sourcePaneId, (byThread = new Map()));
-  let counts = byThread.get(threadId);
-  if (!counts) byThread.set(threadId, (counts = new Map()));
-  counts.set(scopeId, (counts.get(scopeId) ?? 0) + 1);
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    const remaining = (counts.get(scopeId) ?? 0) - 1;
-    if (remaining > 0) {
-      counts.set(scopeId, remaining);
-      return;
-    }
-    counts.delete(scopeId);
-    if (counts.size === 0) byThread.delete(threadId);
-    if (byThread.size === 0) trayHeldScopesBySourcePane.delete(sourcePaneId);
-  };
-}
-
-function trayHeldScopes(sourcePaneId: string, threadId: string): string[] {
-  const counts = trayHeldScopesBySourcePane.get(sourcePaneId)?.get(threadId);
-  return counts ? [...counts.keys()] : [];
-}
-
-/**
- * True when some surface on `sourcePaneId` is rendering rows under
- * `itemId`: the open companion's trail, or an expanded tray digest. The
- * thread pane's subagent memory consults this alongside card expansion.
- */
-export function agentScopeHeld(sourcePaneId: string, threadId: string, itemId: string): boolean {
-  if (!itemId) return false;
-  if (agentPaneScopeTrailHolds(sourcePaneId, threadId, itemId)) return true;
-  return trayHeldScopesBySourcePane.get(sourcePaneId)?.get(threadId)?.has(itemId) === true;
-}
-
-/**
- * Every scope root whose subtree a surface on `sourcePaneId` is rendering:
- * the companion's outermost trail scope, plus each expanded tray digest.
- * The thread pane's prune and fold commit retain these subtrees.
- */
-export function heldAgentScopeRoots(sourcePaneId: string, threadId: string): string[] {
-  const roots = trayHeldScopes(sourcePaneId, threadId);
-  const companionRoot = agentPaneRetainedRootScope(sourcePaneId, threadId);
-  if (companionRoot && !roots.includes(companionRoot)) roots.push(companionRoot);
-  return roots;
 }
 
 /**
@@ -351,7 +257,6 @@ export function openAgentCompanion(
 }
 
 export function __resetAgentPaneStateForTest(): void {
-  trayHeldScopesBySourcePane.clear();
   seeding = false;
   statesBySourcePane.clear();
   unsubscribePaneDestroyed?.();

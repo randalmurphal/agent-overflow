@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { navigateToThreadItem } from '../../stores/threadItemNavigation';
   import Modal from '../primitives/Modal.svelte';
   import { SearchThreadMessages, SearchThreadItems, type ThreadMessageHit } from '../../stores/bindings';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -155,7 +156,7 @@
     // (an escaped, controller-routed write). Title-match hits have no
     // itemId; those stop after the thread switch without further navigation.
     if (hit.matchType === 'item' && hit.itemId) {
-      targetPane.requestScrollToItem(hit.itemId);
+      await navigateToThreadItem(targetPane, hit.itemId);
     }
   }
 

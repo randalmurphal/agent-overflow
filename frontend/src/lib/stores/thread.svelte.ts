@@ -47,14 +47,8 @@ import { leaseDuringSettle } from '../utils/scrollLeaseDuringTransition';
 import { createGitStatusView, type GitStatusView } from './gitStatusStore.svelte';
 import { workspaceRefForThread } from '../utils/workspaceKey';
 import type { WorkspaceRef } from '../types/git';
-import {
-  agentScopeHeld,
-  heldAgentScopeRoots,
-} from './agentPane.svelte';
-import { collectHeldAgentScopeRetainedIds } from './agentScopeView.svelte';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { SubagentFoldAggregate } from '../utils/subagentFold';
-import { itemPayloadRetentionKey } from '../utils/rowUiRetention';
 import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import { createLiveTodoState } from './liveTodoState.svelte';
 import { createThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
@@ -328,11 +322,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getScrollController: () => paneScroll.controller,
     hydrateSubagentChildren: (rootItemID) =>
       subagentMemory.hydrateChildren(rootItemID),
-    // Prune cuts keep held scope rows (companion, tray digests); see
-    // agentPaneHeldRowIds
-    // (hoisted function declaration; called lazily, so the late
-    // definition is safe, same as the subagentMemory arrow above).
-    getHeldRowIds: () => agentPaneHeldRowIds(),
     // Declared below; the arrow keeps the read lazy, like the
     // subagentMemory one above.
     activityRuns: () => activityRuns,
@@ -494,20 +483,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
   });
 
-  /**
-   * Every row an agent surface on this pane is rendering (the open
-   * companion's scope trail and each expanded background tray digest),
-   * or null when none is open. Shared by the two chokepoints that can
-   * remove rows from pane memory, the fold eviction commit and the
-   * timeline window's prune cuts, because a row disappearing out from
-   * under a mounted surface blanks the very transcript the reader opened,
-   * whichever path dropped it.
-   */
-  function agentPaneHeldRowIds(): ReadonlySet<string> | null {
-    const roots = thread !== null ? heldAgentScopeRoots(paneId, thread.id) : [];
-    return roots.length > 0 ? collectHeldAgentScopeRetainedIds(getItems(), roots) : null;
-  }
-
   // Subagent transcript-memory domain (the live-eviction fold registry,
   // settled-child eviction policy, and on-demand child hydration) lives
   // in threadSubagentMemory.ts.
@@ -518,48 +493,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     dropTimelineItems,
     getThread: () => thread,
     getSwitchGeneration: () => switchGeneration,
-    // An anchor the OPEN agent pane is scoped to (or holds on its trail),
-    // or an expanded tray digest shows, retains its children exactly like
-    // an expanded card: the surface is a live view of those rows, so
-    // folding them out from under it would blank the very transcript the
-    // reader opened.
-    isSubagentGroupExpanded: (groupKey: string) =>
-      rowUiState.isSubagentGroupExpanded(groupKey) ||
-      (thread !== null && agentScopeHeld(paneId, thread.id, groupKey)),
-    // The commit-chokepoint half of the same rule: eviction paths that
-    // never consult per-anchor expansion (collapse-time eviction, the
-    // collapsed-launch subtree sweep) still must not fold rows the open
-    // pane is rendering.
-    agentPaneHeldRows: agentPaneHeldRowIds,
-    loadedTimelineItems: items => activityRuns.loadedItems(items),
+    isSubagentGroupExpanded: rowUiState.isSubagentGroupExpanded,
   });
-
-  /**
-   * Row-UI retention union for the held agent scopes (the row-UI-state
-   * half of the retention rule above): each held scope's subtree (item
-   * ids, their payload keys, and their group keys) joins whatever the
-   * chat timeline's prune pass retained. No held scope, no cost: the
-   * original retention passes through untouched.
-   */
-  function widenRetentionForAgentPane(retention: RowUiStateRetention): RowUiStateRetention {
-    const roots = thread !== null ? heldAgentScopeRoots(paneId, thread.id) : [];
-    if (roots.length === 0) return retention;
-    const scopeIds = collectHeldAgentScopeRetainedIds(getItems(), roots);
-    if (scopeIds.size === 0) return retention;
-    const itemIds = new Set(retention.itemIds);
-    const groupKeys = new Set(retention.groupKeys);
-    const payloads = new Set(retention.payloads);
-    for (const id of scopeIds) {
-      groupKeys.add(id);
-      if (itemIds.has(id)) continue;
-      itemIds.add(id);
-      const item = getItemById(id);
-      if (!item) continue;
-      const payloadKey = itemPayloadRetentionKey(item);
-      if (payloadKey !== null) payloads.add(payloadKey);
-    }
-    return { itemIds, payloads, groupKeys };
-  }
 
   // Subagent eviction policy (evictableAnchorIdFor, collectSettledSubtree,
   // commitSubagentEvictions, evictSettledChildren, evictCollapsedSubtree)
@@ -1194,22 +1129,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
       return subagentMemory.hydrateChildren(rootItemID);
     },
 
-    /**
-     * Load a held agent scope's rows (the launch, its ancestors and its
-     * children) into pane memory without moving the loaded window or the
-     * reader. The tray digest and the companion call it when their scope
-     * row sits outside the window; see threadSubagentMemory.ts
-     * `loadScopeRoot`.
-     */
-    loadAgentScope(scopeItemID: string): Promise<LoadUntilItemResult> {
-      return subagentMemory.loadScopeRoot(scopeItemID);
-    },
-
-    /** Drop rows outside the loaded window once no surface holds their scope. */
-    sweepUnheldAgentScopes(): void {
-      subagentMemory.sweepUnheldScopes();
-    },
-
     /** Fetch the next batch of newer turns and append them to the window. See threadTimelineWindow.svelte.ts. */
     loadNewer(): Promise<LoadOlderResult> {
       return timelineWindow.loadNewer();
@@ -1441,18 +1360,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     hasUserExpansionWithin: rowUiState.hasUserExpansionWithin,
     activityRuns,
     attachmentCacheFor: rowUiState.attachmentCacheFor,
-    // Retention arrives from the CHAT MessageTimeline's prune pass and
-    // describes only that instance's revealed rows — but the row-UI
-    // store is shared with the agent companion's scoped timeline (whose
-    // own prune is deliberately a no-op, agentScopeView.svelte.ts). An
-    // open agent pane's rows must survive this pass or its attachment
-    // blobs, expansion handles, and thinking tails get disposed out
-    // from under a mounted surface, so retention is widened with the
-    // scope trail's whole subtree before anything is dropped.
     pruneRowUiState(retention: RowUiStateRetention): void {
-      const widened = widenRetentionForAgentPane(retention);
-      rowUiState.pruneRowUiState(widened);
-      streamingReveal.pruneSettledThinkingTails(widened.itemIds);
+      rowUiState.pruneRowUiState(retention);
+      streamingReveal.pruneSettledThinkingTails(retention.itemIds);
     },
     // Full revealed text for a reasoning-tail row. Live while the row
     // streams and retained across a content-consistent settle (see

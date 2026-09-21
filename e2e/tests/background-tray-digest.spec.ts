@@ -5,6 +5,7 @@
 // through the two paths that remove rows from pane memory: settled-child
 // eviction and the timeline window's prune.
 import { test, expect } from './fixtures.js';
+import { waitForScrollSettle } from '../src/scroll.js';
 import {
   advance, claudeScenario, emit, seedAgentThread, startMock, taskNotificationLine,
   taskUpdatedLine, backgroundTasksChangedLine, waitForGate,
@@ -72,8 +73,10 @@ test('a many-row agent digest virtualizes, follows its tail and scrolls independ
   expect(await list.evaluate((el) => el.scrollTop)).toBe(before.list);
   expect(await timeline.evaluate(atBottom)).toBe(true);
   // Scrolled up, older rows mount on demand.
-  await page.mouse.wheel(0, -100000);
-  await expect(child(0)).toBeVisible();
+  await expect(async () => {
+    await page.mouse.wheel(0, -100000);
+    await expect(child(0)).toBeVisible({ timeout: 500 });
+  }).toPass();
 
   // Collapse drops the body; re-expand reopens at the tail.
   await row.getByTestId('agent-row-toggle').click();
@@ -88,18 +91,24 @@ test('a many-row agent digest virtualizes, follows its tail and scrolls independ
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
 });
 
-// Retention. Two things remove rows from pane memory and both must spare
-// an open digest's scope (stores/agentPane.svelte.ts holdAgentScope):
-// settled-child eviction folds a background agent's row the moment its
-// result lands unless its anchor is expanded or held, and the window
-// prune cuts the loaded window near the reader. The prune's respect for
-// a held scope is pinned at unit level (threadSubagentFold.test.ts); this
-// spec drives the live app through the page-in path (the launch outside
-// the loaded window when the digest opens) and the eviction path.
+// The digest owns its window even when its launch is outside the main
+// window or settled children are evicted from the main pane.
 const FILLER = 500;
 
-test('an open digest pages its launch in and keeps its rows through settled-child eviction', async ({ harness, page }) => {
+test('an open digest loads an out-of-window launch and keeps its rows through settled-child eviction', async ({ harness, page }) => {
   const LATE = FIRST_BATCH;
+  let holdRunRefresh = false;
+  const heldRefreshes: (() => void)[] = [];
+  await page.routeWebSocket(/\/ws(?:\?|$)/, socket => {
+    const server = socket.connectToServer();
+    socket.onMessage(message => {
+      const frame = JSON.parse(String(message));
+      if (holdRunRefresh && frame.type === 'rpc' && frame.methodId === 1602023272 && frame.params[1]?.limit === 0) {
+        heldRefreshes.push(() => server.send(message));
+      } else server.send(message);
+    });
+    server.onMessage(message => socket.send(message));
+  });
   await harness.rpc('HarnessSetScenario', {
     scenario: twoTurnScenario(
       'tray-digest-retention',
@@ -128,27 +137,31 @@ test('an open digest pages its launch in and keeps its rows through settled-chil
   const atBottom = (el: Element) => el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
   await expect.poll(() => timeline.evaluate(atBottom)).toBe(true);
   await timeline.hover();
-  await page.mouse.wheel(0, -1e7);
-  await expect(timeline.getByTestId('load-older-messages')).toBeVisible();
+  await expect(async () => {
+    await page.mouse.wheel(0, -10000);
+    await expect(timeline.getByTestId('load-older-messages')).toBeVisible({ timeout: 500 });
+  }).toPass();
   await expect(timeline.getByText('Launching the reader.')).toHaveCount(0);
   await expect(timeline.locator(`[data-item-id="${AGENT}"]`)).toHaveCount(0);
-  await page.mouse.wheel(0, 1e7);
-  await expect.poll(() => timeline.evaluate(atBottom)).toBe(true);
+  await expect(async () => {
+    await page.mouse.wheel(0, 10000);
+    await waitForScrollSettle(timeline);
+    await expect.poll(() => timeline.evaluate(atBottom), { timeout: 500 }).toBe(true);
+  }).toPass();
 
-  // The digest pages the launch in and hydrates its children without
-  // moving the reader off the tail.
+  // The digest loads its own scope without moving the main reader.
   const { digest, child } = await openTrayDigest(page);
   await expect(child(FIRST_BATCH - 1)).toBeVisible();
   await expect(digest.getByTestId('subagent-group-loading')).toHaveCount(0);
   await expect.poll(() => timeline.evaluate(atBottom)).toBe(true);
 
   // Turn two. A late child lands running, then settles: the settled row
-  // stays in the digest instead of folding out under the held anchor.
+  // stays in the independent digest window.
+  holdRunRefresh = true;
   await harness.rpc('SendMessage', threadId, 'keep going', null);
   await expect(child(LATE)).toBeVisible();
   await expect(child(LATE).getByTestId('tool-call-card-status')).toHaveAttribute('data-state', 'running');
-  // The mounted element is the proof: without the hold the settled row
-  // folds out and hydrates back, which remounts it and drops the mark.
+  // The mounted element proves settling did not remount the row.
   await child(LATE).evaluate((el) => { el.setAttribute('data-e2e-mark', 'kept'); });
   await waitForGate(harness, 'settle-late');
   await advance(harness, mockId, 'settle-late');
@@ -156,7 +169,17 @@ test('an open digest pages its launch in and keeps its rows through settled-chil
   await expect(child(LATE).getByTestId('tool-call-card-status')).toHaveCount(0);
   await expect(child(LATE)).toHaveAttribute('data-e2e-mark', 'kept');
   await expect(digest.getByTestId('subagent-group-loading')).toHaveCount(0);
+  await expect.poll(() => heldRefreshes.length).toBeGreaterThan(0);
   await digest.getByTestId('subagent-group-scroll').hover();
-  await page.mouse.wheel(0, -100000);
-  await expect(child(0)).toBeVisible();
+  // The reader's boundary request must survive the in-flight count refresh.
+  await expect(async () => {
+    await page.mouse.wheel(0, -100000);
+    await expect(digest.getByRole('button', { name: 'Loading…', exact: true })).toBeVisible({ timeout: 500 });
+  }).toPass();
+  holdRunRefresh = false;
+  for (const release of heldRefreshes.splice(0)) release();
+  await expect(async () => {
+    await page.mouse.wheel(0, -100000);
+    await expect(child(0)).toBeVisible({ timeout: 500 });
+  }).toPass();
 });

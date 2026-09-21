@@ -30,6 +30,7 @@ const activityRunStaleMessage = "This activity run changed while it was loading.
 // ListActivityRunMembers: the store's request plus the shape the caller
 // wants its rows in.
 type ActivityRunMembersRequest struct {
+	Selection store.TimelineSelection `json:"selection"`
 	// RunFirstItemID identifies the run. The call is refused when the run
 	// containing it no longer starts there.
 	RunFirstItemID string `json:"runFirstItemId"`
@@ -56,6 +57,7 @@ type ActivityRunMembersRequest struct {
 // store the same question again with a smaller one.
 func (r ActivityRunMembersRequest) storeRequest(limit int) store.ActivityRunMembersRequest {
 	return store.ActivityRunMembersRequest{
+		Selection:         r.Selection,
 		RunFirstItemID:    r.RunFirstItemID,
 		LoadedFirstItemID: r.LoadedFirstItemID,
 		LoadedLastItemID:  r.LoadedLastItemID,

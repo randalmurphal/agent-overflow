@@ -1,4 +1,5 @@
 import type { WebSocketRoute } from '@playwright/test';
+import { waitForScrollSettle } from '../src/scroll.js';
 import { test, expect, type SeedResult } from './fixtures.js';
 import { RESULT_LINE, advance, claudeScenario, emit, startMock, textLines, waitForGate } from './agent-visibility-helpers.js';
 
@@ -48,6 +49,7 @@ for (const mode of ['large', 'small', 'reading', 'gesture', 'gap'] as const) {
       await scroll.hover();
       await page.mouse.wheel(0, -400);
       await expect.poll(distance).toBeGreaterThan(200);
+      await waitForScrollSettle(scroll);
     }
     const before = await scroll.evaluate((el) => el.scrollTop);
     online = false;
@@ -75,6 +77,7 @@ for (const mode of ['large', 'small', 'reading', 'gesture', 'gap'] as const) {
       await scroll.hover();
       await page.mouse.wheel(0, -200);
       await expect.poll(() => scroll.evaluate((el) => el.scrollTop)).toBeLessThan(before - 50);
+      await waitForScrollSettle(scroll);
       readingTop = await scroll.evaluate((el) => el.scrollTop);
     }
     releaseReplay!();

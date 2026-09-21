@@ -1030,6 +1030,7 @@ export class Item {
  * explicit names.
  */
 export class PagedItems {
+    "scope"?: TimelineScopeContext | null;
     "items": Item[];
     "runs": ActivityRunStub[];
     "oldestCursor": TimelineCursor;
@@ -1077,22 +1078,26 @@ export class PagedItems {
      * Creates a new PagedItems instance from a string or object.
      */
     static createFrom($$source: any = {}): PagedItems {
-        const $$createField0_0 = $$createType1;
-        const $$createField1_0 = $$createType16;
-        const $$createField2_0 = $$createType17;
-        const $$createField3_0 = $$createType17;
+        const $$createField0_0 = $$createType17;
+        const $$createField1_0 = $$createType1;
+        const $$createField2_0 = $$createType18;
+        const $$createField3_0 = $$createType19;
+        const $$createField4_0 = $$createType19;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("scope" in $$parsedSource) {
+            $$parsedSource["scope"] = $$createField0_0($$parsedSource["scope"]);
+        }
         if ("items" in $$parsedSource) {
-            $$parsedSource["items"] = $$createField0_0($$parsedSource["items"]);
+            $$parsedSource["items"] = $$createField1_0($$parsedSource["items"]);
         }
         if ("runs" in $$parsedSource) {
-            $$parsedSource["runs"] = $$createField1_0($$parsedSource["runs"]);
+            $$parsedSource["runs"] = $$createField2_0($$parsedSource["runs"]);
         }
         if ("oldestCursor" in $$parsedSource) {
-            $$parsedSource["oldestCursor"] = $$createField2_0($$parsedSource["oldestCursor"]);
+            $$parsedSource["oldestCursor"] = $$createField3_0($$parsedSource["oldestCursor"]);
         }
         if ("newestCursor" in $$parsedSource) {
-            $$parsedSource["newestCursor"] = $$createField3_0($$parsedSource["newestCursor"]);
+            $$parsedSource["newestCursor"] = $$createField4_0($$parsedSource["newestCursor"]);
         }
         return new PagedItems($$parsedSource as Partial<PagedItems>);
     }
@@ -1200,7 +1205,7 @@ export class ProjectWithCounts {
      * Creates a new ProjectWithCounts instance from a string or object.
      */
     static createFrom($$source: any = {}): ProjectWithCounts {
-        const $$createField0_0 = $$createType18;
+        const $$createField0_0 = $$createType20;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("project" in $$parsedSource) {
             $$parsedSource["project"] = $$createField0_0($$parsedSource["project"]);
@@ -1701,7 +1706,7 @@ export class Thread {
      * Creates a new Thread instance from a string or object.
      */
     static createFrom($$source: any = {}): Thread {
-        const $$createField37_0 = $$createType19;
+        const $$createField37_0 = $$createType21;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("origin" in $$parsedSource) {
             $$parsedSource["origin"] = $$createField37_0($$parsedSource["origin"]);
@@ -1975,6 +1980,73 @@ export class TimelineCursor {
 }
 
 /**
+ * TimelineScopeContext supplies agent identity independently of the loaded range.
+ * Lifecycle and Completion refer to the latest persisted execution; live provider
+ * state remains authoritative while that execution runs.
+ */
+export class TimelineScopeContext {
+    "root": Item;
+    "lifecycle": Item;
+    "completion"?: Item | null;
+
+    /** Creates a new TimelineScopeContext instance. */
+    constructor($$source: Partial<TimelineScopeContext> = {}) {
+        if (!("root" in $$source)) {
+            this["root"] = (new Item());
+        }
+        if (!("lifecycle" in $$source)) {
+            this["lifecycle"] = (new Item());
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TimelineScopeContext instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TimelineScopeContext {
+        const $$createField0_0 = $$createType0;
+        const $$createField1_0 = $$createType0;
+        const $$createField2_0 = $$createType15;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("root" in $$parsedSource) {
+            $$parsedSource["root"] = $$createField0_0($$parsedSource["root"]);
+        }
+        if ("lifecycle" in $$parsedSource) {
+            $$parsedSource["lifecycle"] = $$createField1_0($$parsedSource["lifecycle"]);
+        }
+        if ("completion" in $$parsedSource) {
+            $$parsedSource["completion"] = $$createField2_0($$parsedSource["completion"]);
+        }
+        return new TimelineScopeContext($$parsedSource as Partial<TimelineScopeContext>);
+    }
+}
+
+/**
+ * TimelineSelection identifies history independently of its wire projection.
+ * The zero value selects the main transcript. Tools selects only tool activity
+ * within an agent transcript, for the background tray.
+ */
+export class TimelineSelection {
+    "scopeRootId"?: string;
+    "tools"?: boolean;
+
+    /** Creates a new TimelineSelection instance. */
+    constructor($$source: Partial<TimelineSelection> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TimelineSelection instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TimelineSelection {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new TimelineSelection($$parsedSource as Partial<TimelineSelection>);
+    }
+}
+
+/**
  * Turn is one row in the turns table — a record of a single user → assistant
  * round-trip on a thread.
  * 
@@ -2044,7 +2116,7 @@ export class Turn {
 
 /**
  * TurnPreview is the nav rail's hover card for one turn: the reader's
- * ask and the turn's final top-level assistant reply.
+ * ask and the final assistant reply in the same timeline scope.
  */
 export class TurnPreview {
     "userText": string;
@@ -2493,7 +2565,9 @@ const $$createType12 = DiscussionParticipant.createFrom;
 const $$createType13 = $Create.Array($$createType12);
 const $$createType14 = DiscussionSettings.createFrom;
 const $$createType15 = $Create.Nullable($$createType0);
-const $$createType16 = $Create.Array($$createType2);
-const $$createType17 = TimelineCursor.createFrom;
-const $$createType18 = Project.createFrom;
-const $$createType19 = ThreadOrigin.createFrom;
+const $$createType16 = TimelineScopeContext.createFrom;
+const $$createType17 = $Create.Nullable($$createType16);
+const $$createType18 = $Create.Array($$createType2);
+const $$createType19 = TimelineCursor.createFrom;
+const $$createType20 = Project.createFrom;
+const $$createType21 = ThreadOrigin.createFrom;

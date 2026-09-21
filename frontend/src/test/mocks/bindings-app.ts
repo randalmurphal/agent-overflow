@@ -623,11 +623,12 @@ export const SyncThreadWindow = async (
 ): Promise<unknown> => {
   const explicit = mocks.get('SyncThreadWindow');
   if (explicit) return explicit(threadId, req);
-  const request = (req ?? {}) as { anchorItemId?: string; itemBudget?: number };
+  const request = (req ?? {}) as { anchorItemId?: string; itemBudget?: number; selection?: unknown };
   const page = await dispatch('ListThreadSliceAround')(
     threadId,
     request.anchorItemId ?? '',
     request.itemBudget ?? 0,
+    request,
   );
   return { status: 'stale', epoch: 1, rev: 1, generation: 'test-generation', page };
 };
@@ -672,6 +673,7 @@ export const ReadThreadRemoteLog = dispatch('ReadThreadRemoteLog');
 export const GetWorkspaceActivity = dispatch('GetWorkspaceActivity');
 export const GetThreadItem = dispatch('GetThreadItem');
 export const GetThreadUserMessageTicks = dispatch('GetThreadUserMessageTicks');
+export const GetTimelineUserMessageTicks = dispatch('GetTimelineUserMessageTicks');
 export const GetThreadUserMessageHistory = dispatch('GetThreadUserMessageHistory');
 export const GetThreadTurnPreview = dispatch('GetThreadTurnPreview');
 

@@ -301,3 +301,35 @@ func TestInsertThreadHistoryMatchesOneAtATimeWrites(t *testing.T) {
 		t.Errorf("history_rev = %d batched, %d one at a time", batchedRev, singleRev)
 	}
 }
+
+func TestInsertThreadHistoryIndexesEveryBatchAndSkipsStreamingRows(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "history-search")
+	var batch ThreadHistoryBatch
+	want := map[string]bool{}
+	for i := 0; i < 259; i++ {
+		item := Item{ID: fmt.Sprintf("row-%03d", i), ThreadID: "history-search", ItemIndex: i, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "batchneedle", CreatedAt: 1}
+		if i%7 == 0 {
+			item.Status = "streaming"
+		} else {
+			want[item.ID] = true
+		}
+		batch.Rows = append(batch.Rows, HistoryRow{Item: item})
+	}
+	if err := s.InsertThreadHistory("history-search", batch); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := s.SearchThreads("batchneedle", ThreadSearchFilter{ThreadIDs: []string{"history-search"}, Limit: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hit := range hits {
+		if !want[hit.ItemID] {
+			t.Fatalf("unexpected search hit %s", hit.ItemID)
+		}
+		delete(want, hit.ItemID)
+	}
+	if len(want) != 0 {
+		t.Fatalf("%d rows missing from search", len(want))
+	}
+}

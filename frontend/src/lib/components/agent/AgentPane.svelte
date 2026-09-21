@@ -1,31 +1,10 @@
 <script lang="ts">
-  // The `agent` companion pane (docs/specs/agent-visibility.md Q4/Q5): a
-  // READ-ONLY view of the source thread's transcript scoped to one
-  // subagent launch. Unlike the inline card's digest body, this surface
-  // shows everything the node produced — tool calls, thinking,
-  // intermediate text, nested child cards.
-  //
-  // The body is the REAL MessageTimeline over a scoped ThreadPane facade
-  // (stores/agentScopeView.svelte.ts): same virtualizer, same scroll
-  // physics, same activity runs as the chat surface, with the facade's
-  // override table naming every divergence (scoped items, own scroll
-  // identity, no reveal gate, no edge paging). This pane owns only what
-  // is NOT timeline: the breadcrumb, the composer shell (which carries
-  // the run status and counters), scope lifecycle, and hydration of
-  // evicted children.
-  //
-  // Scope changes swap in place (one pane per source pane, no stacking):
-  // descending into a child card grows the breadcrumb (the facade routes
-  // `openAgentPane` to pushScope), a breadcrumb click pops back, and
-  // popping to the root leaves the empty scope, which this body answers
-  // by closing the pane. The timeline is keyed on the scope id, so a
-  // swap remounts it exactly like a thread switch.
   import { untrack } from 'svelte';
   import X from '@lucide/svelte/icons/x';
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import { agentStateForPane } from '../../stores/agentPane.svelte';
   import { getPane } from '../../stores/panes.svelte';
-  import { agentScopeNeedsHydration, createAgentScopeView } from '../../stores/agentScopeView.svelte';
+  import { createAgentScopeView, type AgentScopeView } from '../../stores/agentScopeView.svelte';
   import MessageTimeline from '../chat/MessageTimeline.svelte';
   import Icon from '../primitives/Icon.svelte';
   import PaneHeaderIconButton from '../panes/PaneHeaderIconButton.svelte';
@@ -57,83 +36,37 @@
   const agent = ctx.threadId ? agentStateForPane(ctx.paneId, ctx.threadId) : null;
 
   let sourcePane = $derived(getPane(ctx.paneId));
+  let sourceThreadId = $derived(sourcePane?.threadId);
   // ctx.paneId is the SOURCE pane. Focus is held by this companion's own
   // layout pane, so the header's focus mark keys on that id.
   let companionPaneId = $derived(companionForSource(ctx.paneId, 'agent')?.paneId ?? null);
   let scopeItemId = $derived(agent?.scopeItemId ?? '');
-  let launch = $derived.by(() => {
-    void ctx.timelineRevision;
-    return scopeItemId ? ctx.getItemById(scopeItemId) : undefined;
+  let view = $state.raw<AgentScopeView | null>(null);
+  $effect(() => {
+    const source = sourcePane;
+    const scope = scopeItemId;
+    if (!source || !sourceThreadId || !agent || !scope) return;
+    const current = untrack(() => createAgentScopeView(source, scope, {
+      viewKey: 'agent',
+      openAgentPane: (id, label) => agent.pushScope(id, label),
+    }));
+    view = current;
+    untrack(() => current.start());
+    return () => { current.dispose(); if (view === current) view = null; };
   });
-
-  // One view per scope: created fresh when the scope (or source pane)
-  // changes, disposed with it. The facade reads the scope id it was
-  // built for, and the template keys the timeline on the same id.
-  let view = $derived.by(() =>
-    sourcePane && agent && scopeItemId
-      ? createAgentScopeView(sourcePane, scopeItemId, {
-        viewKey: 'agent',
-        openAgentPane: (launchItemId, label) => agent.pushScope(launchItemId, label),
-      })
-      : null,
-  );
+  let lastItemRequest = 0;
   $effect(() => {
     const current = view;
-    return () => current?.dispose();
+    const request = agent?.itemRequest;
+    if (!current || current.pane.loading || !request?.itemId || request.nonce === lastItemRequest) return;
+    lastItemRequest = request.nonce;
+    untrack(() => current.pane.requestScrollToItem(request.itemId));
   });
-
-  // ---- Self-close (spec Q5) ------------------------------------------
-  // Two exits: the breadcrumb popped to the root (empty scope — the pane
-  // has nothing to show), or the scoped row VANISHED from a loaded
-  // timeline (an edit-and-resend revert cut it). "Vanished" requires
-  // having seen it: a launch merely outside the loaded window renders the
-  // not-loaded state below instead of killing the pane.
-  let seenScopeId = $state('');
-  $effect(() => {
-    if (!agent) return;
-    if (scopeItemId === '') {
-      ctx.closeAgentPane();
-      return;
-    }
-    if (launch) {
-      seenScopeId = scopeItemId;
-      return;
-    }
-    if (untrack(() => seenScopeId) === scopeItemId && ctx.items.length > 0) {
-      ctx.closeAgentPane();
-    }
-  });
-
-  // ---- Restore load (persisted scope across an app restart) ----------
-  // Layout restore re-seeds the scope, but the restored window is the
-  // thread's TAIL — the scoped launch can sit above it, and nothing else
-  // pages it in (opening from a card always has the row loaded). Without
-  // this the pane restores as a husk: bare label, no description, a
-  // permanent "not in the loaded window" body. The same holds for a pane
-  // opened from the tray on a launch the window no longer holds. One
-  // attempt per scope: loadAgentScope brings the row and its subtree into
-  // pane memory under the trail's hold without moving the window or the
-  // reader. A miss (row deleted, transient fetch failure) leaves the
-  // honest not-loaded state rather than closing: restart is exactly when
-  // a transient failure is most likely.
-  let scopeLoadAttempted = $state('');
-  $effect(() => {
-    if (!scopeItemId || launch) return;
-    const source = sourcePane;
-    if (!source || source.loading) return;
-    if (untrack(() => scopeLoadAttempted) === scopeItemId) return;
-    scopeLoadAttempted = scopeItemId;
-    void source.loadAgentScope(scopeItemId);
-  });
-  // Rows the trail's hold kept outside the loaded window leave when the
-  // scope changes or the pane closes.
-  $effect(() => {
-    const source = sourcePane;
-    void scopeItemId;
-    return () => source?.sweepUnheldAgentScopes();
-  });
-
+  let launch = $derived(view?.root);
   let scopedItems = $derived(view?.items ?? []);
+  $effect(() => {
+    if (agent && (!scopeItemId || view?.gone)) ctx.closeAgentPane();
+  });
 
   // At depth one the trail is "main › X" and the root entry is noise —
   // closing the pane IS "go back to main" (user ruling 2026-08-22).
@@ -146,7 +79,7 @@
   let visibleBreadcrumb = $derived.by(() => {
     void ctx.timelineRevision;
     const trail = (agent?.breadcrumb ?? []).map((entry) => {
-      const row = entry.itemId ? ctx.getItemById(entry.itemId) : undefined;
+      const row = entry.itemId === scopeItemId ? launch : entry.itemId ? ctx.getItemById(entry.itemId) : undefined;
       if (!row || !isCodexSubagentLaunchItem(row)) return entry;
       return { ...entry, label: codexSubagentLaunchInfo(row).agentLabel };
     });
@@ -187,24 +120,6 @@
   let lifecycleItem = $derived(view ? view.lifecycle : launch);
   let lifecycleCompletionItem = $derived(view ? view.lifecycleCompletion : completionItem);
 
-  // Scoping to a node whose settled children were evicted from pane memory
-  // is exactly what hydrateChildren exists for. Gate on the COUNT, the
-  // same rule SubagentGroup uses on expand: eviction is partial — a
-  // nested launch anchor survives (anchors are fold keys) while its
-  // sibling rows page out, so "some rows loaded" proves nothing (e2e
-  // regression: the pane opened from a collapsed, settled card rendered
-  // only the nested card). The expected count is the larger of the
-  // backend decoration and what the live-eviction fold says was paged
-  // out. hydrateChildren dedupes in-flight and exhausted anchors itself,
-  // so re-running is a no-op. The pane scopes to the transcript root and
-  // shows every resumed round, so it expects the whole-transcript count,
-  // not the root card's round-one slice.
-  $effect(() => {
-    if (!scopeItemId || !launch) return;
-    const evicted = sourcePane?.subagentLiveAggregate(scopeItemId)?.evictedCount ?? 0;
-    if (!agentScopeNeedsHydration(launch, scopedItems.length, evicted)) return;
-    void ctx.ensureSubagentChildren(scopeItemId);
-  });
 </script>
 
 <!-- bg-surface-0: CompanionPane paints its bodies bg-surface-1 (elevated
@@ -271,18 +186,20 @@
       </PaneHeaderIconButton>
     </header>
 
-    <div class="flex min-h-0 flex-1 flex-col" data-testid="agent-pane-timeline">
-      {#if !launch}
-        <div class="flex flex-1 items-center justify-center px-4 text-center text-sm text-fg-subtle" data-testid="agent-pane-not-loaded">
-          This agent's launch row isn't in the loaded timeline window.
+    <div class="flex min-h-0 flex-1 flex-col" data-testid="agent-pane-timeline" aria-busy={!view || view.pane.loading}>
+      {#if view?.error}
+        <div class="px-4 py-3 text-sm text-text-secondary" role="alert">
+          <p>{view.error}</p>
+          <button class="mt-2 text-accent" onclick={() => view?.pane.retryHistoryLoad()}>Retry</button>
         </div>
-      {:else if view && scopedItems.length > 0}
+      {/if}
+      {#if view && (view.pane.loading || scopedItems.length > 0)}
         <div class="min-h-0 flex-1">
           {#key scopeItemId}
             <MessageTimeline pane={view.pane} />
           {/key}
         </div>
-      {:else}
+      {:else if view && !view.error}
         <div class="flex flex-1 items-center justify-center px-4 text-center text-sm text-fg-subtle" data-testid="agent-pane-empty">
           No output yet.
         </div>

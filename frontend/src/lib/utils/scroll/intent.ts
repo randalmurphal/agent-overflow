@@ -262,6 +262,19 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     return recentDownIntentUntil > nowMs();
   }
 
+  function extendRecentDownIntent(): void {
+    recentDownIntentUntil = nowMs() + RECENT_DOWN_INTENT_WINDOW_MS;
+    if (recentDownIntentClearTimer) clearTimeout(recentDownIntentClearTimer);
+    const expiresAt = recentDownIntentUntil;
+    const version = recentDownIntentVersion;
+    recentDownIntentClearTimer = setTimeout(() => {
+      if (
+        recentDownIntentVersion === version
+        && recentDownIntentUntil === expiresAt
+      ) clearRecentDownIntent();
+    }, RECENT_DOWN_INTENT_WINDOW_MS);
+  }
+
   function clearScrollbarDragSession(opts: { invalidateCapturedScrolls?: boolean } = {}): void {
     scrollbarDragSessionActive = false;
     if (opts.invalidateCapturedScrolls ?? true) scrollbarDragSessionVersion += 1;
@@ -315,17 +328,8 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
     if (!deps.escaped()) return;
     clearProgrammaticScrollState();
     deps.setRestoreConsentArmed(false);
-    recentDownIntentUntil = nowMs() + RECENT_DOWN_INTENT_WINDOW_MS;
     recentDownIntentVersion += 1;
-    if (recentDownIntentClearTimer) clearTimeout(recentDownIntentClearTimer);
-    const expiresAt = recentDownIntentUntil;
-    const version = recentDownIntentVersion;
-    recentDownIntentClearTimer = setTimeout(() => {
-      if (
-        recentDownIntentVersion === version
-        && recentDownIntentUntil === expiresAt
-      ) clearRecentDownIntent();
-    }, RECENT_DOWN_INTENT_WINDOW_MS);
+    extendRecentDownIntent();
     if (isUiRenderTraceEnabled()) trace('scroll.intent.down', () => {
       const el = deps.getScrollEl();
       return {
@@ -585,9 +589,10 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       isNearBottomState: deps.isNearBottom(),
     }));
     const resizeCorrelatedScroll = deps.sampleResizeCorrelation();
+    const nativeClamp = isNativeClampEvent(scrollTopAtEvent, distFromBottomAtEvent, deps.lastExplainedScrollTop());
     if (
       !resizeCorrelatedScroll
-      && !isNativeClampEvent(scrollTopAtEvent, distFromBottomAtEvent, deps.lastExplainedScrollTop())
+      && !nativeClamp
     ) deps.noteUserScroll(scrollTopAtEvent);
     const previousObserved = lastObservedScrollTopForRestick;
     const downIntentVersionAtEvent = recentDownIntentVersion;
@@ -600,6 +605,11 @@ export function createScrollIntent(deps: ScrollIntentDeps): ScrollIntent {
       ? false
       : scrollTopAtEvent < previousObserved;
     lastObservedScrollTopForRestick = scrollTopAtEvent;
+    // Native wheel and touch motion can outlast the input event. Continued
+    // user movement renews consent; layout and controller writes do not.
+    if (scrolledDown && hasRecentDownIntent() && !resizeCorrelatedScroll && !nativeClamp) {
+      extendRecentDownIntent();
+    }
     const shouldRunDeferredScrollIntentCheck =
       deps.escaped()
       || primaryButtonHeld

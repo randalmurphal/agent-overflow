@@ -138,6 +138,7 @@ export {
     ThreadPeerRequest,
     ThreadPeerResolve,
     ThreadTransferIntent,
+    TimelinePageOptions,
     TurnEditsDiff,
     UpdateAvailability,
     UserMessageRevertedEvent,

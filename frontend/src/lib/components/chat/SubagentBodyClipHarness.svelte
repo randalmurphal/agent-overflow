@@ -1,6 +1,6 @@
 <script lang="ts">
   import { makeItem } from '../../../test/helpers/chat';
-  import type { TimelineNode } from '../../utils/subagentGrouping';
+  import { timelineNodeKey, type TimelineNode } from '../../utils/subagentGrouping';
   import SubagentBodyClip from './SubagentBodyClip.svelte';
 
   let count = $state(180);
@@ -25,4 +25,4 @@
     {node.kind === 'leaf' ? node.item.summary : node.kind}
   </div>
 {/snippet}
-<SubagentBodyClip {nodes} depth={1} live={true} {renderNode} />
+<SubagentBodyClip getKey={timelineNodeKey} {nodes} depth={1} live={true} {renderNode} />

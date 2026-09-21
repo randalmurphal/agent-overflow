@@ -9,6 +9,7 @@ import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/
 import { compareCursors, cursorFromItem } from '../../lib/stores/threadItems';
 import { setBindingMock } from '../mocks/bindings-app';
 import { emitWailsEvent } from '../mocks/wailsio-runtime';
+import { __setTransportHelloForTest } from '../../lib/stores/transportStatus.svelte';
 
 /**
  * A no-op `PaneScrollController` satisfying every required member, for tests
@@ -99,7 +100,14 @@ export function emitItemEventDelta(delta: ItemDeltaEvent): void {
   });
 }
 
+export function installTimelineScopeCapability(): void {
+  __setTransportHelloForTest({ protocolVersion: 1, capabilities: ['timeline.scopes.v1'],
+    backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0,
+    bundleId: '', bundleVersion: '', minShellBuild: 0 });
+}
+
 export function installPaneMocks(items: Item[] = [], runs: ActivityRunStub[] = []): void {
+  setBindingMock('GetTimelineUserMessageTicks', async () => []);
   setBindingMock('SwitchThread', async (threadId: unknown) =>
     makeThread({ id: typeof threadId === 'string' ? threadId : 'thread-1' }));
   // ChatView may mark the active thread read as completed turns settle;
@@ -134,14 +142,24 @@ export function installPaneMocks(items: Item[] = [], runs: ActivityRunStub[] = [
     },
     last ? cursorFromItem(last) : null,
   );
-  setBindingMock('ListThreadSliceAround', async () => ({
-    items,
-    ...(oldestCursor ? { oldestCursor } : {}),
-    ...(newestCursor ? { newestCursor } : {}),
-    oldestTurnIndex: oldestCursor?.turnIndex ?? -1,
-    hasMore: false,
-    runs,
-  }));
+  setBindingMock('ListThreadSliceAround', async (_thread: string, _anchor: string, _budget: number, options: { selection?: { scopeRootId?: string; tools?: boolean } }) => {
+    const selection = options.selection;
+    const rootId = selection?.scopeRootId;
+    const root = items.find(item => item.id === rootId);
+    const selected = !rootId ? items : items.filter(item => item.parentId === rootId
+      && (!selection?.tools || ['tool_call', 'tool_completion', 'terminal_interaction'].includes(item.kind)));
+    const lifecycle = rootId ? [...items].reverse().find(item => item.meta?.includes(`"transcript_root_id":"${rootId}"`)) ?? root : undefined;
+    const scope = root && lifecycle ? { root, lifecycle, completion: [...items].reverse().find(item => item.completionOf === lifecycle.id) } : undefined;
+    return {
+      items: selected, scope,
+      oldestCursor: rootId ? selected[0] ? cursorFromItem(selected[0]) : { turnIndex: -1, itemIndex: -1, itemId: '' } : oldestCursor,
+      newestCursor: rootId ? selected.at(-1) ? cursorFromItem(selected.at(-1)!) : { turnIndex: -1, itemIndex: -1, itemId: '' } : newestCursor,
+      oldestTurnIndex: selected[0]?.turnIndex ?? -1,
+      newestTurnIndex: selected.at(-1)?.turnIndex ?? -1,
+      hasMore: false, hasMoreOlder: false, hasMoreNewer: false,
+      runs: rootId ? [] : runs,
+    };
+  });
   setBindingMock('ListPendingInteractiveRequests', async () => ({
     approvals: [],
     userInputs: [],

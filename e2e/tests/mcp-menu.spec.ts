@@ -44,14 +44,16 @@ for (const compact of [false, true]) {
       const mock = await awaitGate(harness, 'toggle-0', path);
       await harness.open(page);
       await page.getByText('MCP states', { exact: true }).click();
-      // Compact may put MCP in the toolbar overflow, so use its registered picker.
-      const trigger = page.getByTestId('composer-mcp-trigger');
-      if (await trigger.isVisible()) await trigger.click();
-      else {
-        await page.getByTestId('composer-pickers-rollup').click();
-        await page.getByRole('menuitem', { name: /^MCP servers/ }).click();
-      }
       const menu = page.getByRole('menu', { name: 'MCP servers' });
+      async function openMenu() {
+        // Resolve the visible control at click time as the toolbar changes size.
+        await page.locator('[data-testid="composer-mcp-trigger"]:visible, [data-testid="composer-pickers-rollup"]:visible').first().click();
+        const picker = page.getByRole('menuitem', { name: /^MCP servers/ });
+        await expect(menu.or(picker)).toBeVisible();
+        if (await picker.isVisible()) await picker.click();
+        await expect(menu).toBeVisible();
+      }
+      await openMenu();
       const row = (name: string) => menu.getByRole('menuitem').filter({ has: page.getByText(name, { exact: true }) });
       await expect(row('srv')).toContainText('Off');
       await expect(row('srv').locator('[data-mcp-enabled]')).toHaveAttribute('data-mcp-enabled', 'false');
@@ -76,11 +78,7 @@ for (const compact of [false, true]) {
         await nextGate;
         // Reopening also proves the persisted preference survives a fresh listing.
         await page.keyboard.press('Escape');
-        if (await trigger.isVisible()) await trigger.click();
-        else {
-          await page.getByTestId('composer-pickers-rollup').click();
-          await page.getByRole('menuitem', { name: /^MCP servers/ }).click();
-        }
+        await openMenu();
         await expect(row('srv')).toContainText(enabled ? 'Connected' : 'Off');
         await expect(row('srv').locator('[data-mcp-enabled]')).toHaveAttribute('data-mcp-enabled', String(enabled));
         await expect(row('srv').getByRole('button', { name: 'Reconnect srv' })).toHaveCount(enabled ? 1 : 0);

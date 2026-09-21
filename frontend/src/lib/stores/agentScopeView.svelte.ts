@@ -1,149 +1,20 @@
-import { liveCodexAgent } from './subagentProgress.svelte';
-import { subagentExecutionItem } from '../utils/codexSubagentRuntime';
-// Scoped ThreadPane facade for the agent companion pane and the
-// background tray's row digest.
-//
-// The agent pane is a NORMAL thread pane — the real MessageTimeline with
-// its virtualizer, scroll physics, activity runs, paging plumbing — whose
-// visible window is one subagent launch's subtree. Rather than teach the
-// timeline a "scope mode", this module answers the ThreadPane surface
-// with a PLAIN OBJECT over the source pane that overrides exactly the
-// members where a scoped view legitimately differs, and forwards
-// everything else (item resolution, payload loads, approvals, expansion
-// registries, live-aggregate reads) so nothing here can drift from the
-// chat surface.
-//
-// Plain object, not a Proxy, and that is a type-checking decision. A
-// Proxy forwards whatever it is asked for, so neither half of the
-// forward set is checkable: a member added to `ThreadPane` silently
-// forwards (nobody is told the scoped view now answers something it has
-// never thought about), and a member REMOVED from `ThreadPane` leaves a
-// dead override entry that compiles forever. Here the forward set is a
-// literal of getters checked with `satisfies Pick<ThreadPane, …>`, which
-// fails in both directions: a missing member is a missing property and a
-// stale one is an excess property. `AgentScopeOverride` names the
-// divergences and `AgentScopeForwarded` is everything else, so adding a
-// pane member forces a deliberate choice between the two lists.
-//
-// Every forward is a GETTER, never a copied value. The source pane's
-// fields are `$state`; delegating at READ time is what preserves their
-// reactivity, exactly as the Proxy's property-access delegation did.
-// Nothing here may spread `forwarded` — a spread evaluates every getter
-// once and freezes the result.
-//
-// The view's TYPE stays the whole `ThreadPane` rather than a union of
-// the narrow roles in `threadPaneRoles.ts`, and that is forced rather
-// than lazy: this object is mounted as `MessageTimeline`'s `pane` prop,
-// and the timeline hands the same object down to `TimelineLeaf` →
-// `UserMessage` → `UserMessageEditor` → `ComposerInputSurface`, one of
-// the two places that guide names as deliberately staying on
-// `ThreadPane` (the surface runs `/` commands and reaches
-// `makeCommandContext` plus the whole command-action surface). Narrowing
-// here would mean widening a role until it re-described the pane. The
-// exhaustiveness check below is what the roles would have bought.
-//
-// The override table IS the design — each entry names why the scoped
-// view diverges:
-//
-// - `paneId` / `scrollStateKey`: distinct identity. chatDomIds scopes
-//   disclosure ids by paneId (the same item can be mounted in both
-//   surfaces at once), and timelineRestore keys scroll snapshots and
-//   restore bookkeeping by scrollStateKey (per SCOPE, so an agent pane's
-//   position never clobbers the main timeline's saved position).
-// - `agentScopeRootId`: the launch this view is scoped to. Empty on the
-//   thread timeline; rows read it to know which surface they are on. It
-//   is always a TRANSCRIPT ROOT: a §E6 resume carrier's rows are parented
-//   to the original launch, so every opener resolves through
-//   `utils/subagentLaunch.ts#agentScopeRootId` before scoping here.
-// - `items`: the scope's loaded subtree. Direct children get their
-//   `parentId` LIFTED (cleared) so the grouping treats them as this
-//   surface's top level. A direct child launch remains a card, but its own
-//   transcript stays outside this scope. Opening that row changes scope
-//   through the breadcrumb instead of recursively embedding panes. Read
-//   groups still group and activity runs still wrap. Completion siblings of
-//   direct child launches ride along by `completionOf` (they carry no
-//   parentId of their own), so nested cards fold status correctly.
-// - `revealBoundary`: null. The reveal gate sequences TOP-LEVEL rows of
-//   the main transcript; child rows were never reveal-sequenced, and a
-//   boundary id from the main thread must not withhold scoped rows.
-// - `timelineTurns`: the scope IS one turn. A subagent's rows all carry
-//   the LAUNCH's turn (invariants.md §10) across however many provider
-//   turns the agent outlives, so keying the response decorations on
-//   `item.turnIndex` plus the thread's active/settled turn put a
-//   "Response 1m 58s" pill on a still-running agent the moment the
-//   launching turn settled (live regression 2026-08-22). Here every
-//   scoped row shares one key, whatever turn it carries; the
-//   turn is active while the scope's LIFECYCLE row runs and settles on
-//   that row's own completion, with the agent's own duration. The
-//   lifecycle row is the launch, or the latest resume carrier bound to
-//   it — the root settled when round one did.
-// - `activityRuns`: an own registry. Run membership differs per surface
-//   (the scoped list has different top-level rows), and collapse state
-//   is a view concern, so sharing the source registry would let one
-//   surface's collapse mutate the other's geometry.
-// - `lastLiveContentAt`: only this scope's rows advance it. The subscription
-//   ends with the view; parent and nested-agent streams have their own clocks.
-// - scroll controller / scroll-to-item: own slots, same reason — the
-//   source pane's slots belong to the main MessageTimeline instance.
-// - paging (`loadOlder`/`loadNewer`/`loadUntilItem`, the `hasMore*` and
-//   `loading*` flags): a scope is not a turn window. Everything the
-//   scope can show is either loaded or fetched wholesale through
-//   `ensureSubagentChildren` (the pane body drives that; see
-//   AgentPane.svelte), so the timeline's edge-paging must never fire.
-//   `hasDeferredRecentWindowPrune` / `retryDeferredRecentWindowPrune`
-//   ride with them: the deferred prune describes the SOURCE window, and
-//   a scoped instance retrying it would run the host's bookkeeping.
-// - `loading` / `showLoadingSpinner`: false. Both describe the source
-//   window's switch/page load; the scope's rows are already local or
-//   arriving through hydration, which the pane body renders its own
-//   states for.
-// - `openAgentPane`: the mounting surface's choice (`AgentScopeViewOptions`).
-//   Inside the companion, opening a child card grows the breadcrumb
-//   (`pushScope`) instead of re-seeding the companion from the outside; a
-//   tray digest opens the companion on the child.
-// - `pruneRowUiState`: no-op. Row-UI state (expansion handles, attachment
-//   blob caches, thinking tails) is SHARED with the source pane by
-//   design, and each MessageTimeline instance's prune pass computes
-//   retention from ITS OWN revealed rows — a scoped instance's retention
-//   describes one subtree, so letting it reach the shared store would
-//   revoke the attachment blobs and expansion state of every main-
-//   timeline row (live incident 2026-08-22: pasted screenshots went
-//   dead the moment the agent pane's prune ran). The host pane's own
-//   prune stays the one bounded-memory owner, and it spares the open
-//   scope's rows in return (thread.svelte.ts widens its retention via
-//   `collectAgentScopeRetainedIds`).
-//
-// One instance per (mount × scope): AgentPane keys the timeline on the
-// scope id, so a scope swap builds a fresh view and a fresh
-// MessageTimeline: scroll restore, warmup, and run identity all start
-// clean, exactly like a thread switch. A tray row's digest builds its own
-// view for the row's scope and disposes it when the row collapses.
-
+// A typed agent facade over an independently owned timeline window.
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import { errString } from '../utils/errors';
 import type { ThreadPane } from './thread.svelte';
 import type { Item } from '../types/models';
-import { createThreadActivityRuns } from './threadActivityRuns.svelte';
-import {
-  activityRunDefaultCollapsed,
-  activityRunWindowRows,
-} from './activityRunPrefs.svelte';
-import { timelinePageShape } from './threadPaneShared';
-import type {
-  LoadOlderResult,
-  LoadUntilItemResult,
-  PaneScrollController,
-  ScrollToItemRequest,
-} from './threadPaneShared';
+import { createScopedTimeline } from './scopedTimeline.svelte';
+import { liveCodexAgent } from './subagentProgress.svelte';
+import { subagentExecutionItem } from '../utils/codexSubagentRuntime';
 import type { TimelineTurnFacet } from './threadTurnProjection';
-import { claudeResumeTranscriptRootId } from '../utils/subagentLaunch';
-import { decoratedSubagentAggregates } from '../utils/subagentGrouping';
 
-/** The one turn key every scoped row shares (see `timelineTurns` above). */
+/** The turn facet groups the scope under its own execution lifecycle. */
 const AGENT_SCOPE_TURN_KEY = 0;
 
 export interface AgentScopeView {
   /** The ThreadPane facade MessageTimeline mounts. */
   readonly pane: ThreadPane;
-  /** The scope's loaded subtree (what `pane.items` answers). */
+  /** The scope's loaded direct rows (what `pane.items` answers). */
   readonly items: Item[];
   /**
    * The row whose STATUS is the scope's: the launch, or the latest §E6
@@ -155,6 +26,10 @@ export interface AgentScopeView {
   readonly lifecycle: Item | undefined;
   /** The `completionOf` sibling of `lifecycle`, once one has landed. */
   readonly lifecycleCompletion: Item | undefined;
+  readonly root: Item | undefined;
+  readonly gone: boolean;
+  readonly error: string | null;
+  start(): void;
   /** Release the view's own registries. Call on unmount. */
   dispose(): void;
 }
@@ -172,6 +47,7 @@ export interface AgentScopeViewOptions {
    * surfaces showing the same row keep separate expansion state.
    */
   viewKey: string;
+  toolsOnly?: boolean;
   /**
    * Where opening a nested launch from inside this view routes. The
    * companion grows its breadcrumb (`pushScope`); the tray digest opens
@@ -180,189 +56,24 @@ export interface AgentScopeViewOptions {
   openAgentPane(launchItemId: string, label: string): void;
 }
 
-/**
- * The members the scoped view answers ITSELF. One entry per paragraph of
- * the override table in the module header; adding to this list without a
- * matching `overrides` entry is a compile error, and so is the reverse.
- */
-type AgentScopeOverride =
-  | 'lastLiveContentAt'
-  | 'paneId'
-  | 'scrollStateKey'
-  | 'agentScopeRootId'
-  | 'items'
-  | 'revealBoundary'
-  | 'timelineTurns'
-  | 'activityRuns'
-  | 'scrollController'
-  | 'attachScrollController'
-  | 'detachScrollController'
-  | 'scrollToItemRequest'
-  | 'requestScrollToItem'
-  | 'loadOlder'
-  | 'loadNewer'
-  | 'loadUntilItem'
-  | 'hasMoreHistory'
-  | 'hasMoreNewer'
-  | 'loadingOlder'
-  | 'loadingNewer'
-  | 'oldestLoadedCursor'
-  | 'newestLoadedCursor'
-  | 'hasDeferredRecentWindowPrune'
-  | 'retryDeferredRecentWindowPrune'
-  | 'pruneRowUiState'
-  | 'loading'
-  | 'showLoadingSpinner'
-  | 'openAgentPane';
-
-/**
- * Everything else on the pane. Forwarded verbatim, and exhaustively:
- * `ThreadPane` gaining a member puts it here, where the `forwarded`
- * literal below has to grow an entry or fail to compile.
- */
-type AgentScopeForwarded = Exclude<keyof ThreadPane, AgentScopeOverride>;
-
-/** Settled no-op paging result: a scope window has no edges to page. */
-const NO_PAGE: Promise<LoadOlderResult> = Promise.resolve({
-  insertedBeforeWindow: false,
-  insertedRows: false,
-  status: 'noop',
-});
-
-/**
- * Every loaded row the scope at `scopeItemId` renders or needs as a direct
- * navigation edge: the scope row itself, its direct children, and the
- * completion siblings of those rows. A child's descendants belong to the
- * child's own pane scope and are deliberately not retained here.
- *
- * Two consumers, one truth: the facade's item window filters through
- * this set, and the source pane's row-UI prune widens its retention
- * with it so the chat timeline's bounded-memory pass cannot dispose
- * state under rows the agent pane has mounted.
- */
-export function collectAgentScopeRetainedIds(
-  items: readonly Item[],
-  scopeItemId: string,
-): Set<string> {
-  return collectHeldAgentScopeRetainedIds(items, scopeItemId ? [scopeItemId] : []);
-}
-
-/** `collectAgentScopeRetainedIds` over every held scope root at once. */
-export function collectHeldAgentScopeRetainedIds(
-  items: readonly Item[],
-  scopeItemIds: readonly string[],
-): Set<string> {
-  const retained = new Set<string>();
-  const roots = scopeItemIds.filter((id) => id !== '');
-  if (roots.length === 0) return retained;
-  const rootSet = new Set(roots);
-  for (const item of items) {
-    if (item.parentId && rootSet.has(item.parentId)) retained.add(item.id);
-  }
-  for (const root of roots) retained.add(root);
-  for (const item of items) {
-    if (item.completionOf && retained.has(item.completionOf)) {
-      retained.add(item.id);
-    }
-  }
-  return retained;
-}
-
-/**
- * Whether a surface scoped to `launch` still needs `ensureSubagentChildren`.
- * Gate on the COUNT, the same rule SubagentGroup uses on expand: eviction
- * is partial, a nested launch anchor survives (anchors are fold keys)
- * while its sibling rows page out, so "some rows loaded" proves nothing.
- * The expected count is the larger of the backend decoration and what
- * the live-eviction fold says was paged out; a scoped surface shows every
- * resumed round, so it expects the whole-transcript count. A Codex spawn
- * carries no decoration, so it always asks; hydrateChildren dedupes
- * in-flight and exhausted anchors itself.
- */
-export function agentScopeNeedsHydration(
-  launch: Item,
-  loadedCount: number,
-  evictedCount: number,
-): boolean {
-  if (launch.toolName === 'collab_agent') return true;
-  const expected = Math.max(
-    decoratedSubagentAggregates(launch).transcriptCount,
-    loadedCount + evictedCount,
-  );
-  return loadedCount === 0 || loadedCount < expected;
-}
-
 export function createAgentScopeView(
   sourcePane: ThreadPane,
   scopeItemId: string,
   options: AgentScopeViewOptions,
 ): AgentScopeView {
-  let lastLiveContentAt = 0;
-  let scopeGeneration = sourcePane.switchGeneration;
-  const unsubscribeLiveContent = sourcePane.subscribeLiveContent((scopeId, at) => {
-    if (scopeId === scopeItemId) {
-      scopeGeneration = sourcePane.switchGeneration;
-      lastLiveContentAt = at;
-    }
+  if (!sourcePane.thread) throw new Error('An agent pane requires a thread');
+  const scrollKey = `${sourcePane.paneId}:${sourcePane.threadId}~${options.viewKey}:${scopeItemId}`;
+  const owner = createScopedTimeline(sourcePane.thread, { scopeRootId: scopeItemId, tools: options.toolsOnly }, scrollKey);
+  const { itemWindow, window, rows, reveal, runs, scroll } = owner;
+  // Only presentation lifts direct children to roots; stored rows retain their identity.
+  let scopedItems = $derived.by(() => {
+    void itemWindow.timelineRevision;
+    return itemWindow.getItems().map(item => ({ ...item, parentId: undefined }));
   });
-  // ---- Scoped item window ---------------------------------------------
-  // Recomputed per source timelineRevision (the projection reads items
-  // untracked behind that revision, so identity churn outside a revision
-  // bump would be invisible anyway — matching the source pane's own
-  // contract). Direct children are cloned with parentId lifted. A nested
-  // launch's descendants do not enter this window.
-  //
-  // One ordered pass over the source items, so the window keeps the
-  // timeline's document order exactly. The membership set comes from
-  // `collectAgentScopeRetainedIds` (direct rows + completion siblings); the
-  // SCOPE's own row and its completion sibling stay out — they feed the
-  // pane's breadcrumb and status line, not the transcript.
-  // The same pass collects the scope's §E6 resume CARRIERS — the rows
-  // Claude rebinds the agent's task onto to resume it. They are top-level
-  // rows of the source timeline (nothing is ever parented to one), so
-  // they are deliberately not in the window; they are the scope's
-  // lifecycle rows, read below.
-  let scopeWindow = $derived.by<{ items: Item[]; carriers: Item[] }>(() => {
-    void sourcePane.timelineRevision;
-    if (!scopeItemId) return { items: [], carriers: [] };
-    const retained = collectAgentScopeRetainedIds(sourcePane.items, scopeItemId);
-    const items: Item[] = [];
-    const carriers: Item[] = [];
-    for (const item of sourcePane.items) {
-      if (claudeResumeTranscriptRootId(item) === scopeItemId) carriers.push(item);
-      if (item.id === scopeItemId || !retained.has(item.id)) continue;
-      if (item.completionOf === scopeItemId) continue;
-      items.push(item.parentId === scopeItemId ? { ...item, parentId: undefined } : item);
-    }
-    return { items, carriers };
-  });
-  let scopedItems = $derived(scopeWindow.items);
-
-  // ---- Scope lifecycle as the timeline's turn ---------------------------
-  // Read lifecycle fields from the source's reactive item boxes. Claude's
-  // latest resume carrier owns its round; Codex reads its separate live
-  // projection without changing any historical item.
-  let lifecycle = $derived.by<Item | undefined>(() => {
-    const root = scopeItemId ? sourcePane.getItemById(scopeItemId) : undefined;
-    const codex = root && liveCodexAgent(root.threadId, root.id);
-    if (codex) return codex;
-    let latest = root;
-    // `>=` with the carriers in timeline order: the latest carrier wins,
-    // and a carrier always outranks the root at an equal timestamp
-    // because it is written after it.
-    for (const carrier of scopeWindow.carriers) {
-      const live = sourcePane.getItemById(carrier.id) ?? carrier;
-      if (!latest || live.createdAt >= latest.createdAt) latest = live;
-    }
-    return latest;
-  });
-  let lifecycleCompletion = $derived.by<Item | undefined>(() => {
-    const lifecycleId = lifecycle?.id;
-    if (!lifecycleId) return undefined;
-    let completion: Item | undefined;
-    for (const item of sourcePane.items) { if (item.completionOf === lifecycleId) completion = item; }
-    return completion ? (sourcePane.getItemById(completion.id) ?? completion) : undefined;
-  });
+  let root = $derived((owner.scope?.root as Item | undefined) ?? sourcePane.getItemById(scopeItemId));
+  let lifecycle = $derived((root && liveCodexAgent(root.threadId, root.id))
+    ?? owner.scope?.lifecycle as Item | undefined ?? root);
+  let lifecycleCompletion = $derived(owner.scope?.completion as Item | undefined);
   const timelineTurns: TimelineTurnFacet = {
     keyOf: () => AGENT_SCOPE_TURN_KEY,
     get activeKey() {
@@ -382,124 +93,77 @@ export function createAgentScopeView(
     },
   };
 
-  // ---- Own view registries ---------------------------------------------
-  let scrollController: PaneScrollController | null = $state.raw(null);
-  let scrollToItemRequest = $state.raw<ScrollToItemRequest>({ itemId: '', nonce: 0 });
-  const activityRuns = createThreadActivityRuns({
-    defaultCollapsed: () => activityRunDefaultCollapsed(),
-    windowRows: () => activityRunWindowRows(),
-    // Scoped rows are local to the host pane; the view's `loading` is always false.
-    windowVerified: () => true,
-    scrollController: () => scrollController,
-    // Run records describe what a HISTORY PAGE left out, and a page never
-    // ships subagent children — this view's rows are the host pane's
-    // hydrated subtree, always held whole. So nothing here ever folds a
-    // stub, and the fetch surface is inert by construction: a null thread
-    // makes every members call return before it is issued.
-    items: () => scopedItems,
-    windowBounds: () => ({ oldest: null, newest: null }),
-    threadId: () => null,
-    pageShape: timelinePageShape,
-    mountRunMembers: () => {},
-    reloadWindow: () => sourcePane.refreshFromBackend(true),
-    reportFetchFailure: () => {},
-  });
-
   const overrides = {
-    get lastLiveContentAt() {
-      return sourcePane.switchGeneration === scopeGeneration ? lastLiveContentAt : 0;
+    get lastLiveContentAt() { return owner.lastLiveContentAt; },
+    get paneId() { return `${sourcePane.paneId}~${options.viewKey}`; },
+    get scrollStateKey() { return scrollKey; },
+    get agentScopeRootId() { return owner.scope?.root.id ?? scopeItemId; },
+    get items() { return scopedItems; },
+    get revealBoundary() { return reveal.revealBoundary; },
+    get timelineTurns() { return timelineTurns; },
+    get activityRuns() { return runs; },
+    get scrollController() { return scroll.controller; },
+    attachScrollController: scroll.attach,
+    detachScrollController: scroll.detach,
+    get scrollToItemRequest() { return scroll.scrollToItemRequest; },
+    requestScrollToItem: scroll.requestScrollToItem,
+    loadOlder: window.loadOlder,
+    loadNewer: window.loadNewer,
+    loadUntilItem: window.loadUntilItem,
+    loadRecentTail: window.loadRecentTail,
+    get hasMoreHistory() { return window.hasMoreHistory; },
+    get hasMoreNewer() { return window.hasMoreNewer; },
+    get loadingOlder() { return window.loadingOlder; },
+    get loadingNewer() { return window.loadingNewer; },
+    get oldestLoadedCursor() { return window.oldestLoadedCursor; },
+    get newestLoadedCursor() { return window.newestLoadedCursor; },
+    get oldestLoadedTurnIndex() { return window.oldestLoadedTurnIndex; },
+    get newestLoadedTurnIndex() { return window.newestLoadedTurnIndex; },
+    get hasDeferredRecentWindowPrune() { return window.hasDeferredRecentWindowPrune; },
+    retryDeferredRecentWindowPrune: window.retryDeferredRecentWindowPrune,
+    pruneRowUiState: (retention: Parameters<typeof rows.pruneRowUiState>[0]) => {
+      rows.pruneRowUiState(retention);
+      reveal.pruneSettledThinkingTails(retention.itemIds);
     },
-    get paneId() {
-      return `${sourcePane.paneId}~${options.viewKey}`;
-    },
-    get scrollStateKey() {
-      return `${sourcePane.threadId ?? ''}~${options.viewKey}:${scopeItemId}`;
-    },
-    get agentScopeRootId() {
-      return scopeItemId;
-    },
-    get items() {
-      return scopedItems;
-    },
-    get revealBoundary() {
-      return null;
-    },
-    get timelineTurns() {
-      return timelineTurns;
-    },
-    get activityRuns() {
-      return activityRuns;
-    },
-    get scrollController() {
-      return scrollController;
-    },
-    attachScrollController(controller: PaneScrollController): void {
-      scrollController = controller;
-    },
-    detachScrollController(controller: PaneScrollController): void {
-      if (scrollController === controller) scrollController = null;
-    },
-    get scrollToItemRequest() {
-      return scrollToItemRequest;
-    },
-    requestScrollToItem(itemID: string): void {
-      if (!itemID) return;
-      scrollToItemRequest = { itemId: itemID, nonce: scrollToItemRequest.nonce + 1 };
-    },
-    // A scope never edge-pages; its rows arrive wholesale via
-    // ensureSubagentChildren (driven by the pane body).
-    loadOlder: () => NO_PAGE,
-    loadNewer: () => NO_PAGE,
-    loadUntilItem: (itemID: string): Promise<LoadUntilItemResult> =>
-      Promise.resolve(scopedItems.some((item) => item.id === itemID) ? 'loaded' : 'missing'),
-    get hasMoreHistory() {
-      return false;
-    },
-    get hasMoreNewer() {
-      return false;
-    },
-    get loadingOlder() {
-      return false;
-    },
-    get loadingNewer() {
-      return false;
-    },
-    // No edges either: the scope's rows carry whatever coordinates they
-    // arrived with, and a transcript filter keyed on the source pane's
-    // window would hide children that landed past its newest row.
-    get oldestLoadedCursor() {
-      return null;
-    },
-    get newestLoadedCursor() {
-      return null;
-    },
-    get hasDeferredRecentWindowPrune() {
-      return false;
-    },
-    retryDeferredRecentWindowPrune(): void {},
-    // See the module header: a scoped instance's retention describes one
-    // subtree, so its prune pass must never reach the SHARED row-UI
-    // store. The host pane's own prune is the one bounded-memory owner.
-    pruneRowUiState(): void {},
-    // The scope's rows are already local (or arriving via hydration);
-    // the thread-level loading states describe the SOURCE window.
-    get loading() {
-      return false;
-    },
-    get showLoadingSpinner() {
-      return false;
-    },
-    openAgentPane(launchItemId: string, label: string): void {
-      options.openAgentPane(launchItemId, label);
-    },
-  } satisfies Pick<ThreadPane, AgentScopeOverride>;
+    get loading() { return owner.loading; },
+    get showLoadingSpinner() { return owner.loading && scopedItems.length === 0; },
+    get historyRevision() { return itemWindow.historyRevision; },
+    get timelineRevision() { return itemWindow.timelineRevision; },
+    get rowUiRetentionRevision() { return itemWindow.rowUiRetentionRevision; },
+    get switchGeneration() { return owner.generation; },
+    getItemById: (id: string) => itemWindow.getItemById(id) ?? (id === scopeItemId || id === root?.id ? root : undefined),
+    refreshFromBackend: owner.refresh,
+    retryHistoryLoad: () => owner.refresh().catch(error => reportFrontendDiagnostic('Scoped history retry failed', errString(error))),
+    armStructuralSpring: scroll.armStructuralSpring,
+    liveThinkingTailForItem: reveal.liveThinkingTailFor,
+    isItemSmoothing: reveal.isSmoothing,
+    get assistantRevealRegistrationGeneration() { return reveal.assistantRevealRegistrationGeneration; },
+    registerAssistantRevealSink: reveal.registerAssistantRevealSink,
+    assistantMarkdownParserSource: reveal.assistantParserSource,
+    assistantMarkdownSourceAppend: reveal.assistantSourceAppend,
+    __flushItemSmoothersForTest: reveal.__flushForTest,
+    __itemSmootherCountForTest: reveal.__smootherCountForTest,
+    get smoothingItemCount() { return reveal.smootherCount(); },
+    snapSmoothersToReceived: reveal.snapAllToReceived,
+    openAgentPane: options.openAgentPane,
+    expansionStateFor: rows.expansionStateFor,
+    retainExpansionStateFor: rows.retainExpansionStateFor,
+    expansionStateForPayload: rows.expansionStateForPayload,
+    retainExpansionStateForPayload: rows.retainExpansionStateForPayload,
+    isSubagentGroupExpanded: rows.isSubagentGroupExpanded,
+    toggleSubagentGroupExpanded: rows.toggleSubagentGroupExpanded,
+    isUserMessageExpanded: rows.isUserMessageExpanded,
+    setUserMessageExpanded: rows.setUserMessageExpanded,
+    diffCardExpandedOverride: rows.diffCardExpandedOverride,
+    setDiffCardExpanded: rows.setDiffCardExpanded,
+    expansionSignature: rows.expansionSignature,
+    hasUserExpansionWithin: rows.hasUserExpansionWithin,
+    attachmentCacheFor: rows.attachmentCacheFor,
+  } satisfies Partial<ThreadPane>;
 
   // ---- Forwarded surface ------------------------------------------------
-  // Read the module header before touching this: every entry is a getter
-  // that reaches the source pane at READ time (reactivity), and the
-  // `satisfies` is the exhaustiveness check in both directions. Order
-  // follows `thread.svelte.ts`'s own return object, so the two read as a
-  // pair.
+  // Getters preserve source reactivity; satisfies checks that every pane
+  // property is either forwarded or overridden.
   const forwarded = {
     get thread() { return sourcePane.thread; },
     get threadId() { return sourcePane.threadId; },
@@ -517,10 +181,6 @@ export function createAgentScopeView(
     get applyDraftPlaceholderWorkspace() { return sourcePane.applyDraftPlaceholderWorkspace; },
     get dematerializeEmptyDraftThread() { return sourcePane.dematerializeEmptyDraftThread; },
     get isLocked() { return sourcePane.isLocked; },
-    get historyRevision() { return sourcePane.historyRevision; },
-    get timelineRevision() { return sourcePane.timelineRevision; },
-    get rowUiRetentionRevision() { return sourcePane.rowUiRetentionRevision; },
-    get getItemById() { return sourcePane.getItemById; },
     get pendingApprovals() { return sourcePane.pendingApprovals; },
     get pendingUserInputs() { return sourcePane.pendingUserInputs; },
     get contextWindow() { return sourcePane.contextWindow; },
@@ -534,8 +194,6 @@ export function createAgentScopeView(
     get gitStatus() { return sourcePane.gitStatus; },
     get canAdoptOpenedTerminal() { return sourcePane.canAdoptOpenedTerminal; },
     get latestSettledTurn() { return sourcePane.latestSettledTurn; },
-    get oldestLoadedTurnIndex() { return sourcePane.oldestLoadedTurnIndex; },
-    get newestLoadedTurnIndex() { return sourcePane.newestLoadedTurnIndex; },
     get debugMemoryStats() { return sourcePane.debugMemoryStats; },
     get channelMessages() { return sourcePane.channelMessages; },
     get channelStatus() { return sourcePane.channelStatus; },
@@ -549,11 +207,8 @@ export function createAgentScopeView(
     get showPlanSidebar() { return sourcePane.showPlanSidebar; },
     get showReviewPane() { return sourcePane.showReviewPane; },
     get showAgentPane() { return sourcePane.showAgentPane; },
-    get switchGeneration() { return sourcePane.switchGeneration; },
     get switchThread() { return sourcePane.switchThread; },
-    get refreshFromBackend() { return sourcePane.refreshFromBackend; },
     get refreshOwnership() { return sourcePane.refreshOwnership; },
-    get retryHistoryLoad() { return sourcePane.retryHistoryLoad; },
     get snapshotForClose() { return sourcePane.snapshotForClose; },
     get clear() { return sourcePane.clear; },
     get startDraftPlaceholder() { return sourcePane.startDraftPlaceholder; },
@@ -561,9 +216,6 @@ export function createAgentScopeView(
     get adoptMaterializedDraftThread() { return sourcePane.adoptMaterializedDraftThread; },
     get ensureMaterializedThread() { return sourcePane.ensureMaterializedThread; },
     get ensureSubagentChildren() { return sourcePane.ensureSubagentChildren; },
-    get loadAgentScope() { return sourcePane.loadAgentScope; },
-    get sweepUnheldAgentScopes() { return sourcePane.sweepUnheldAgentScopes; },
-    get loadRecentTail() { return sourcePane.loadRecentTail; },
     get addApproval() { return sourcePane.addApproval; },
     get removeApproval() { return sourcePane.removeApproval; },
     get addUserInput() { return sourcePane.addUserInput; },
@@ -574,38 +226,11 @@ export function createAgentScopeView(
     get removeItemById() { return sourcePane.removeItemById; },
     get removeItemsFromTurn() { return sourcePane.removeItemsFromTurn; },
     get removeRevertedItems() { return sourcePane.removeRevertedItems; },
-    get __flushItemSmoothersForTest() { return sourcePane.__flushItemSmoothersForTest; },
-    get __itemSmootherCountForTest() { return sourcePane.__itemSmootherCountForTest; },
     get __syncLedgerArmedForTest() { return sourcePane.__syncLedgerArmedForTest; },
     get applyItemDelta() { return sourcePane.applyItemDelta; },
     get applyItemMeta() { return sourcePane.applyItemMeta; },
     get applyItemPatch() { return sourcePane.applyItemPatch; },
-    get expansionStateFor() { return sourcePane.expansionStateFor; },
-    get retainExpansionStateFor() { return sourcePane.retainExpansionStateFor; },
-    get expansionStateForPayload() { return sourcePane.expansionStateForPayload; },
-    get retainExpansionStateForPayload() { return sourcePane.retainExpansionStateForPayload; },
-    get isSubagentGroupExpanded() { return sourcePane.isSubagentGroupExpanded; },
-    get toggleSubagentGroupExpanded() { return sourcePane.toggleSubagentGroupExpanded; },
     get subagentLiveAggregate() { return sourcePane.subagentLiveAggregate; },
-    get isUserMessageExpanded() { return sourcePane.isUserMessageExpanded; },
-    get setUserMessageExpanded() { return sourcePane.setUserMessageExpanded; },
-    get diffCardExpandedOverride() { return sourcePane.diffCardExpandedOverride; },
-    get setDiffCardExpanded() { return sourcePane.setDiffCardExpanded; },
-    get expansionSignature() { return sourcePane.expansionSignature; },
-    get hasUserExpansionWithin() { return sourcePane.hasUserExpansionWithin; },
-    get attachmentCacheFor() { return sourcePane.attachmentCacheFor; },
-    get liveThinkingTailForItem() { return sourcePane.liveThinkingTailForItem; },
-    get isItemSmoothing() { return sourcePane.isItemSmoothing; },
-    get assistantRevealRegistrationGeneration() {
-      return sourcePane.assistantRevealRegistrationGeneration;
-    },
-    get registerAssistantRevealSink() { return sourcePane.registerAssistantRevealSink; },
-    get assistantMarkdownParserSource() { return sourcePane.assistantMarkdownParserSource; },
-    get assistantMarkdownSourceAppend() { return sourcePane.assistantMarkdownSourceAppend; },
-    // Forwarded, not overridden: the source pane owns the smoothers, and
-    // the scope view is a projection of the same drain, not a second one.
-    get smoothingItemCount() { return sourcePane.smoothingItemCount; },
-    get snapSmoothersToReceived() { return sourcePane.snapSmoothersToReceived; },
     get setPaneError() { return sourcePane.setPaneError; },
     get clearPaneError() { return sourcePane.clearPaneError; },
     get setGeneralError() { return sourcePane.setGeneralError; },
@@ -614,11 +239,10 @@ export function createAgentScopeView(
     get clearGeneralError() { return sourcePane.clearGeneralError; },
     get clearSessionError() { return sourcePane.clearSessionError; },
     get setSendInFlight() { return sourcePane.setSendInFlight; },
-    get armStructuralSpring() { return sourcePane.armStructuralSpring; },
     get confirmOptimisticSend() { return sourcePane.confirmOptimisticSend; },
     // Forwarded, not overridden: a flushed user row is a TOP-LEVEL row of
     // the main transcript, so the source pane's window and reveal boundary
-    // are the ones that decide whether it is rendered. This scope's null
+    // are the ones that decide whether it is rendered. This scope's
     // boundary describes scoped child rows only.
     get syncRenderedFlushRows() { return sourcePane.syncRenderedFlushRows; },
     get trackOptimisticItem() { return sourcePane.trackOptimisticItem; },
@@ -658,7 +282,7 @@ export function createAgentScopeView(
     get applyChannelMessages() { return sourcePane.applyChannelMessages; },
     get applyChannelState() { return sourcePane.applyChannelState; },
     get clearChannel() { return sourcePane.clearChannel; },
-  } satisfies Pick<ThreadPane, AgentScopeForwarded>;
+  } satisfies Pick<ThreadPane, Exclude<keyof ThreadPane, keyof typeof overrides>>;
 
   // Own properties, getters intact. NOT a spread of the two literals — a
   // spread would evaluate every getter once and hand the timeline a frozen
@@ -670,18 +294,17 @@ export function createAgentScopeView(
 
   return {
     pane,
-    get items() {
-      return scopedItems;
-    },
+    get items() { return scopedItems; },
     get lifecycle() {
       return lifecycle;
     },
     get lifecycleCompletion() {
       return lifecycleCompletion;
     },
-    dispose() {
-      unsubscribeLiveContent();
-      activityRuns.clear();
-    },
+    get root() { return root; },
+    get gone() { return owner.gone; },
+    get error() { return owner.error; },
+    start: owner.start,
+    dispose: owner.dispose,
   };
 }

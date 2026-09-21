@@ -59,7 +59,7 @@
 
   // detail/preview are unbounded provider text; LazyContentBlock caps
   // display length. The stored payload is the diff (Exact patch toggle),
-  // so detailText doesn't get a payloadId — it's truncate-only.
+  // so its detail expands from the complete metadata text.
   const detailText = $derived(meta.detail || meta.preview || '');
 
   // pane is stable across a row's lifetime; read once via `untrack`.
@@ -172,7 +172,7 @@
     <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1">
       {#if detailText}
         <div>
-          <LazyContentBlock {pane} payloadId={undefined} preview={detailText} />
+          <LazyContentBlock {pane} payloadId={undefined} preview={detailText} fullText={detailText} />
         </div>
       {/if}
       {#if hasInlineDiff}

@@ -194,4 +194,26 @@ describe('<LazyContentBlock>', () => {
     expect(errorNode.textContent).toContain('preview boom');
     expect(errorNode.getAttribute('role')).toBe('alert');
   });
+  it('expands complete inline detail without reading an unrelated payload and resets when the source changes', async () => {
+    const fetch = setBindingMock('GetPayloadPreview', async () => { throw new Error('Wrong content source'); });
+    const detail = 'a'.repeat(MAX_INLINE_BYTES + 100) + 'END OF DETAIL';
+    const view = render(LazyContentBlock, { props: { payloadId: undefined, preview: detail, fullText: detail } });
+    const toggle = view.getByTestId('lazy-content-toggle');
+    expect(toggle.getAttribute('aria-controls')).toBeTruthy();
+    await fireEvent.click(toggle);
+    expect(view.getByTestId('lazy-content-full').textContent).toBe(detail);
+    expect(fetch).not.toHaveBeenCalled();
+    await view.rerender({ payloadId: undefined, preview: 'short', fullText: undefined });
+    expect(view.queryByTestId('lazy-content-full')).toBeNull();
+    expect(view.getByTestId('lazy-content-preview').textContent).toBe('short');
+    await view.rerender({ payloadId: undefined, preview: detail, fullText: detail });
+    expect(view.getByTestId('lazy-content-toggle')).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('offers the complete inline source when the supplied preview is already short', async () => {
+    const view = render(LazyContentBlock, { props: { preview: 'Brief preview', fullText: 'Complete detail that differs from the preview' } });
+    await fireEvent.click(view.getByTestId('lazy-content-toggle'));
+    expect(view.getByTestId('lazy-content-full').textContent).toBe('Complete detail that differs from the preview');
+  });
+
 });

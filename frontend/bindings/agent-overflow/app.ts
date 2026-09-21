@@ -2053,6 +2053,15 @@ export function GetThreadWorktreeSetup(threadID: string): $CancellablePromise<ap
 }
 
 /**
+ * GetTimelineUserMessageTicks lists navigation ticks in the selected transcript.
+ */
+export function GetTimelineUserMessageTicks(threadID: string, selection: store$0.TimelineSelection): $CancellablePromise<store$0.UserMessageTick[]> {
+    return $Call.ByID(3815301456, threadID, selection).then(($result: any) => {
+        return $$createType90($result);
+    });
+}
+
+/**
  * GetTurnEditsDiff returns one turn's edit diffs concatenated in item
  * order — the sequential story of what the turn changed. Nothing is
  * merged: a file edited twice appears as two patch sections, each with
@@ -2689,8 +2698,8 @@ export function ListItems(threadID: string, inlinePreviews: boolean): $Cancellab
  * frontend's current item-coordinate window ceiling. It is the forward pager
  * companion to ListItemsBeforeCursor.
  */
-export function ListItemsAfterCursor(threadID: string, after: store$0.TimelineCursor, itemBudget: number, shape: app$0.PageShape): $CancellablePromise<store$0.PagedItems> {
-    return $Call.ByID(2915892537, threadID, after, itemBudget, shape).then(($result: any) => {
+export function ListItemsAfterCursor(threadID: string, after: store$0.TimelineCursor, itemBudget: number, options: app$0.TimelinePageOptions): $CancellablePromise<store$0.PagedItems> {
+    return $Call.ByID(2915892537, threadID, after, itemBudget, options).then(($result: any) => {
         return $$createType129($result);
     });
 }
@@ -2702,8 +2711,8 @@ export function ListItemsAfterCursor(threadID: string, after: store$0.TimelineCu
  * reach past the budget across a run whose members the stub accounts for.
  * Same-turn rows outside the cursor range stay omitted until explicitly paged.
  */
-export function ListItemsBeforeCursor(threadID: string, before: store$0.TimelineCursor, itemBudget: number, shape: app$0.PageShape): $CancellablePromise<store$0.PagedItems> {
-    return $Call.ByID(162135710, threadID, before, itemBudget, shape).then(($result: any) => {
+export function ListItemsBeforeCursor(threadID: string, before: store$0.TimelineCursor, itemBudget: number, options: app$0.TimelinePageOptions): $CancellablePromise<store$0.PagedItems> {
+    return $Call.ByID(162135710, threadID, before, itemBudget, options).then(($result: any) => {
         return $$createType129($result);
     });
 }
@@ -3016,8 +3025,8 @@ export function ListThreadRemoteCommands(threadID: string): $CancellablePromise<
  * When `anchorItemID` is "" or no longer exists, the window is the thread's
  * tail — the bottom-snapshot restore case.
  */
-export function ListThreadSliceAround(threadID: string, anchorItemID: string, targetItemCount: number, shape: app$0.PageShape): $CancellablePromise<store$0.PagedItems> {
-    return $Call.ByID(4176102096, threadID, anchorItemID, targetItemCount, shape).then(($result: any) => {
+export function ListThreadSliceAround(threadID: string, anchorItemID: string, targetItemCount: number, options: app$0.TimelinePageOptions): $CancellablePromise<store$0.PagedItems> {
+    return $Call.ByID(4176102096, threadID, anchorItemID, targetItemCount, options).then(($result: any) => {
         return $$createType129($result);
     });
 }

@@ -11,6 +11,7 @@ export interface ApplyItemUpsertsToWindowOptions {
   itemIndexById: ReadonlyMap<string, number>;
   optimisticItemIds?: ReadonlySet<string>;
   currentThreadId: string | null;
+  scopeRootId?: string;
   oldestLoadedCursor?: TimelineCursorLike | null;
   newestLoadedCursor?: TimelineCursorLike | null;
   oldestLoadedTurnIndex?: number | null;
@@ -46,6 +47,7 @@ export interface ApplyItemUpsertsToWindowResult {
   indexesNeedRebuild: boolean;
   structureChanged: boolean;
   droppedNewerItems: boolean;
+  droppedOlderItems?: boolean;
   /**
    * Any applied row changed what the offscreen row-UI prune retains
    * (`utils/rowUiRetention.ts`). Computed here because the merge is the
@@ -102,6 +104,7 @@ export function applyItemUpsertsToWindow({
   itemIndexById,
   optimisticItemIds,
   currentThreadId,
+  scopeRootId,
   oldestLoadedCursor,
   newestLoadedCursor,
   oldestLoadedTurnIndex,
@@ -132,6 +135,7 @@ export function applyItemUpsertsToWindow({
   let needsSort = false;
   let structureChanged = false;
   let droppedNewerItems = false;
+  let droppedOlderItems = false;
   let retentionChanged = false;
   let summaryFieldsChangedIds: string[] | null = null;
   let rejectedParentedItems: Item[] | null = null;
@@ -145,6 +149,7 @@ export function applyItemUpsertsToWindow({
   // event ordering, so that inserted row is not refused by the old bound.
   const moved = cursorsAfterItemUpserts(
     oldestLoadedCursor, newestLoadedCursor, current, incoming, currentThreadId,
+    (item) => (item.parentId ?? '') === (scopeRootId ?? ''),
   );
   const floorCursor = moved.oldest
     ?? (oldestLoadedTurnIndex === null || oldestLoadedTurnIndex === undefined
@@ -162,6 +167,7 @@ export function applyItemUpsertsToWindow({
 
   for (const item of incoming) {
     if (currentThreadId !== null && item.threadId !== currentThreadId) continue;
+    if (scopeRootId !== undefined && (item.parentId ?? '') !== scopeRootId) continue;
 
     const identity = optimisticIndexByIdentity.size > 0 ? userMessageIdentity(item) : null;
     const existingIndex = batchIndexById.get(item.id) ?? itemIndexById.get(item.id)
@@ -211,8 +217,9 @@ export function applyItemUpsertsToWindow({
     if (
       floorCursor
       && compareItemToCursor(item, floorCursor) < 0
-      && (item.turnIndex < floorCursor.turnIndex || hasMoreHistory === true)
+      && (scopeRootId !== undefined || item.turnIndex < floorCursor.turnIndex || hasMoreHistory === true)
     ) {
+      droppedOlderItems = hasMoreHistory !== true;
       continue;
     }
 
@@ -231,7 +238,7 @@ export function applyItemUpsertsToWindow({
     // lookup, and before the parent admission, which only concerns
     // children. Rows at or past the newest edge are outside every run's
     // range and append exactly as before.
-    if ((item.parentId ?? '') === '' && runCoveringUnshipped) {
+    if ((item.parentId ?? '') === (scopeRootId ?? '') && runCoveringUnshipped) {
       const runKey = runCoveringUnshipped(item);
       if (runKey !== null) {
         (dirtiedRunKeys ??= new Set()).add(runKey);
@@ -246,7 +253,8 @@ export function applyItemUpsertsToWindow({
     // children's, so a same-batch anchor is always decided first.
     const parentId = item.parentId ?? '';
     if (
-      parentId
+      parentId !== (scopeRootId ?? '')
+      && parentId
       && itemIndexById.get(parentId) === undefined
       && !batchIndexById.has(parentId)
     ) {
@@ -274,6 +282,7 @@ export function applyItemUpsertsToWindow({
   if (
     !changed
     && !droppedNewerItems
+    && !droppedOlderItems
     && rejectedParentedItems === null
     && dirtiedRunKeys === null
   ) {
@@ -288,6 +297,7 @@ export function applyItemUpsertsToWindow({
       indexesNeedRebuild: false,
       structureChanged: false,
       droppedNewerItems,
+      droppedOlderItems,
       rowUiRetentionChanged: false,
       summaryFieldsChangedIds: NO_CHANGED_IDS,
       rejectedParentedItems: rejectedParentedItems ?? NO_REJECTED_ITEMS,
@@ -307,6 +317,7 @@ export function applyItemUpsertsToWindow({
     indexesNeedRebuild: needsSort || replacedItems.length > 0,
     structureChanged,
     droppedNewerItems,
+    droppedOlderItems,
     rowUiRetentionChanged: retentionChanged,
     summaryFieldsChangedIds: summaryFieldsChangedIds ?? NO_CHANGED_IDS,
     rejectedParentedItems: rejectedParentedItems ?? NO_REJECTED_ITEMS,

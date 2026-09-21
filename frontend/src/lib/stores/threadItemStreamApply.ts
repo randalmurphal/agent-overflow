@@ -47,7 +47,8 @@ export interface ThreadItemStreamApplyOptions {
   /** The pane's optimistic-row ledger — discharged by a wire echo. */
   optimisticItemIds: Set<string>;
   timelineWindow: ThreadTimelineWindow;
-  subagentMemory: ThreadSubagentMemory;
+  subagentMemory?: ThreadSubagentMemory;
+  scopeRootId?: string;
   streamingReveal: ThreadStreamingReveal;
   activityRuns: ThreadActivityRuns;
 }
@@ -130,7 +131,7 @@ export function createThreadItemStreamApply(
     // keeps loaded — which eviction deliberately never folds — must not
     // push the prune into evicting the conversation (incident 2026-08-31).
     try {
-      subagentMemory.evictSettledChildren(next.changedItems);
+      subagentMemory?.evictSettledChildren(next.changedItems);
     } catch (error) {
       (errors ??= []).push(error);
     }
@@ -158,8 +159,8 @@ export function createThreadItemStreamApply(
     // emitted — so the count survives the swallow; an enriched echo's
     // new content (e.g. a completion re-persisted with an inline diff
     // upgrade) surfaces when expansion rehydrates the transcript.
-    if (incoming.some((it) => subagentMemory.isEvicted(it.id))) {
-      incoming = incoming.filter((it) => !subagentMemory.isEvicted(it.id));
+    if (incoming.some((it) => subagentMemory?.isEvicted(it.id))) {
+      incoming = incoming.filter((it) => !subagentMemory?.isEvicted(it.id));
       if (incoming.length === 0) return null;
     }
 
@@ -172,6 +173,7 @@ export function createThreadItemStreamApply(
         itemIndexById,
         optimisticItemIds,
         currentThreadId: thread?.id ?? null,
+        scopeRootId: options.scopeRootId,
         oldestLoadedCursor: timelineWindow.oldestLoadedCursor,
         newestLoadedCursor: timelineWindow.newestLoadedCursor,
         oldestLoadedTurnIndex: timelineWindow.oldestLoadedTurnIndex,
@@ -195,10 +197,11 @@ export function createThreadItemStreamApply(
     // top-level-only; snapshots hold rows this pane already admitted),
     // and the window-sync page install enforces the same contract via
     // `reconcileSnapshotPage.orphanedLiveChildren`.
-    subagentMemory.recordAdmission(
+    subagentMemory?.recordAdmission(
       next.appendedItems,
       next.rejectedParentedItems,
     );
+    if (next.droppedOlderItems) timelineWindow.noteDroppedOlderItems();
     if (next.droppedNewerItems) {
       timelineWindow.noteDroppedNewerItems();
     }
@@ -246,7 +249,7 @@ export function createThreadItemStreamApply(
     // the composer's optimistic user-send arms at its own call site
     // (`pane.armStructuralSpring()` before its upsert) without the
     // stamp.
-    if (applied && applied.appendedItems.some(item => !itemTranscriptScope(item, options.getItemById))) {
+    if (applied && applied.appendedItems.some(item => itemTranscriptScope(item, options.getItemById) === (options.scopeRootId ?? ''))) {
       options.armLiveContentAppendSpring();
     }
     return applied;
@@ -258,13 +261,14 @@ export function createThreadItemStreamApply(
     if (thread && evt.threadId !== thread.id) return;
     const index = itemIndexById.get(evt.itemId);
     if (index === undefined) {
+      if (options.scopeRootId !== undefined) return;
       // Expected miss: the row was refused window admission because its
       // anchor isn't loadable here, so its deltas have nothing to write
       // into. SQLite has the streamed text; hydration renders it if the
       // anchor comes back. Consulted only AFTER the index miss — a
       // loaded row always applies whatever the ledger says, which is
       // what makes a stale swallow entry harmless.
-      if (subagentMemory.isSwallowedChild(evt.itemId)) return;
+      if (subagentMemory?.isSwallowedChild(evt.itemId)) return;
       // The wire contract from triage is: the upsert that creates a
       // streaming row ALWAYS precedes any delta for that row
       // (handleTextDelta in internal/triage/stream_items.go inserts
@@ -354,7 +358,7 @@ export function createThreadItemStreamApply(
     // triage's doSettleStreamingText/Thinking emit field patches.
     // Without this hook, settled text rows under collapsed cards
     // would stay in pane memory for the rest of the turn.
-    subagentMemory.evictSettledChildren([next]);
+    subagentMemory?.evictSettledChildren([next]);
   }
 
   return {

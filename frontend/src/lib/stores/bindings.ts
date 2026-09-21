@@ -1,3 +1,12 @@
+import {
+  ListThreadSliceAround as ListThreadSliceAroundRaw,
+  ListItemsBeforeCursor as ListItemsBeforeCursorRaw,
+  ListItemsAfterCursor as ListItemsAfterCursorRaw,
+} from '../../../bindings/agent-overflow/app.js';
+import type { TimelineSelection, TimelineScopeContext, TimelineCursor } from '../../../bindings/agent-overflow/internal/store/models';
+import { GetThreadUserMessageTicks as GetThreadUserMessageTicksRaw } from '../../../bindings/agent-overflow/app.js';
+import { GetTimelineUserMessageTicks as GetTimelineUserMessageTicksRaw } from '../../../bindings/agent-overflow/app.js';
+import { requireTimelineSelectionSupport } from './timelineSelectionSupport';
 // Re-export Wails v3 generated bindings used by components.
 //
 // Every entry here is produced by `wails3 generate bindings -ts`. When
@@ -450,9 +459,6 @@ export {
   // Windowed history + thread-wide aggregates. See /app_paging.go.
   // Active panes load a bounded slice and page by item-coordinate
   // cursor; there is no turn-based pager.
-  ListThreadSliceAround,
-  ListItemsBeforeCursor,
-  ListItemsAfterCursor,
   ListSubagentDescendants,
   // Recovery route out of the wire projection: returns the complete
   // stored `meta` / `payloadMeta` / `payloadPreviewSpans` for one item,
@@ -498,7 +504,6 @@ export {
   ReadThreadRemoteLog,
   GetWorkspaceActivity,
   GetThreadItem,
-  GetThreadUserMessageTicks,
   GetThreadUserMessageHistory,
   GetThreadTurnPreview,
 
@@ -951,6 +956,7 @@ import type {
 export type SyncThreadWindowStatus = 'fresh' | 'stale' | 'rewritten' | 'gone';
 
 export interface SyncThreadWindowInput {
+  selection?: TimelineSelection;
   /** Saved scroll anchor; empty resolves to the thread's tail. */
   anchorItemId: string;
   itemBudget: number;
@@ -984,6 +990,7 @@ export interface SyncThreadWindowInput {
 }
 
 export interface SyncThreadWindowResult {
+  scope?: TimelineScopeContext | null;
   status: SyncThreadWindowStatus | string;
   epoch: number;
   rev: number;
@@ -996,6 +1003,7 @@ export function SyncThreadWindow(
   threadId: string,
   req: SyncThreadWindowInput,
 ): Promise<SyncThreadWindowResult> {
+  requireTimelineSelectionSupport(threadId, req.selection);
   return SyncThreadWindowRaw(
     threadId,
     new SyncThreadWindowRequestClass(req),
@@ -1019,6 +1027,7 @@ import type { ActivityRunMembers } from '../../../bindings/agent-overflow/intern
 export type ActivityRunMembersDirection = 'before' | 'after' | 'around';
 
 export interface ActivityRunMembersInput {
+  selection?: TimelineSelection;
   /** The run's first physical member; the call is refused if it moved. */
   runFirstItemId: string;
   /** The span the caller already holds. Both empty when it holds none. */
@@ -1043,8 +1052,30 @@ export function ListActivityRunMembers(
   threadId: string,
   req: ActivityRunMembersInput,
 ): Promise<ActivityRunMembers> {
+  requireTimelineSelectionSupport(threadId, req.selection);
   return ListActivityRunMembersRaw(
     threadId,
     new ActivityRunMembersRequestClass(req),
   ) as unknown as Promise<ActivityRunMembers>;
+}
+
+
+export function ListThreadSliceAround(threadId: string, anchor: string, budget: number, shape: PageShape, selection: TimelineSelection = {}) {
+  requireTimelineSelectionSupport(threadId, selection);
+  return ListThreadSliceAroundRaw(threadId, anchor, budget, { ...shape, selection });
+}
+export function ListItemsBeforeCursor(threadId: string, cursor: TimelineCursor, budget: number, shape: PageShape, selection: TimelineSelection = {}) {
+  requireTimelineSelectionSupport(threadId, selection);
+  return ListItemsBeforeCursorRaw(threadId, cursor, budget, { ...shape, selection });
+}
+export function ListItemsAfterCursor(threadId: string, cursor: TimelineCursor, budget: number, shape: PageShape, selection: TimelineSelection = {}) {
+  requireTimelineSelectionSupport(threadId, selection);
+  return ListItemsAfterCursorRaw(threadId, cursor, budget, { ...shape, selection });
+}
+
+export function GetThreadUserMessageTicks(threadId: string, selection: TimelineSelection = {}) {
+  requireTimelineSelectionSupport(threadId, selection);
+  return selection.scopeRootId || selection.tools
+    ? GetTimelineUserMessageTicksRaw(threadId, selection)
+    : GetThreadUserMessageTicksRaw(threadId);
 }

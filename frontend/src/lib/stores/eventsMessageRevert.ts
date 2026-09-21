@@ -1,3 +1,4 @@
+import { applyTimelineMutation } from './timelineSurfaces';
 import { fenceRevertedItemEvents } from './eventsItemStream';
 // User-message-revert event domain: truncating pane items on
 // user_message:reverted (the Stop/Esc un-send flow and the
@@ -153,6 +154,7 @@ export function applyUserMessageReverted(payload: UserMessageRevertedEvent | nul
   // and so no orphaned Zone 2 chip (whose provider confirm died with
   // the reverted session) lingers under new output.
   projectThreadReverted(payload.threadId);
+  applyTimelineMutation(payload.threadId, { kind: 'revert', event: payload });
   for (const handler of revertSubscribers) handler(payload);
   if (payload.replacement) projectSendStarted(payload.threadId);
   // Every cached copy of this thread's window predates the cut, and the

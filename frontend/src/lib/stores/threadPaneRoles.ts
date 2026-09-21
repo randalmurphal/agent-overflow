@@ -185,8 +185,6 @@ export interface TimelineWindow {
   readonly loadRecentTail: () => Promise<boolean>;
   readonly loadUntilItem: (itemID: string) => Promise<LoadUntilItemResult>;
   readonly ensureSubagentChildren: (rootItemID: string) => Promise<boolean>;
-  readonly loadAgentScope: (scopeItemID: string) => Promise<LoadUntilItemResult>;
-  readonly sweepUnheldAgentScopes: () => void;
   /** Set when a wire settle deferred its window prune to visual quiet. */
   readonly hasDeferredRecentWindowPrune: boolean;
   readonly retryDeferredRecentWindowPrune: () => void;

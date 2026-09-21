@@ -327,8 +327,11 @@ func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool
 // the index's WHERE clause, so neither term may be dropped or reordered
 // into a form that no longer states both.
 func readerAuthoredUserTextFilterFor(alias string) string {
-	return topLevelItemsFilterFor(alias) +
-		` AND ` + alias + `kind = 'user_text'
+	return topLevelItemsFilterFor(alias) + " AND " + userMessageTickFilterFor(alias)
+}
+
+func userMessageTickFilterFor(alias string) string {
+	return alias + `kind = 'user_text'
 	  AND COALESCE(CASE WHEN json_valid(` + alias + `meta) THEN json_extract(` + alias + `meta, '$.wire_only') END, 0) != 1`
 }
 
@@ -353,31 +356,44 @@ type UserMessageTick struct {
 // idx_items_user_text (v73) through the physical timeline arms rather
 // than sorting the thread's whole row set behind the view: 17,816 pages
 // / 17 ms became 736 / 1-3 ms on a 67k-item thread.
-func (s *Store) ListThreadUserMessageTicks(threadID string) ([]UserMessageTick, error) {
-	sql, args := timelineArms(threadID, timelineSelection{
-		Columns: func(string, string) string {
-			return `items.id AS id, items.turn_index AS turn_index, items.item_index AS item_index`
-		},
-		Where:   readerAuthoredUserTextFilterFor("items."),
-		OrderBy: "turn_index ASC, item_index ASC",
-	})
-	rows, err := s.reader().Query(sql, args...)
-	if err != nil {
-		return nil, fmt.Errorf("store: list user message ticks on thread %s: %w", threadID, err)
-	}
-	defer rows.Close()
-	ticks := []UserMessageTick{}
-	for rows.Next() {
-		var t UserMessageTick
-		if err := rows.Scan(&t.ID, &t.TurnIndex, &t.ItemIndex); err != nil {
-			return nil, fmt.Errorf("store: scan user message tick on thread %s: %w", threadID, err)
+func (s *Store) ListThreadUserMessageTicks(threadID string, selection TimelineSelection) ([]UserMessageTick, error) {
+	return readSnapshot(s.reader(), "user message ticks", func(q sqlQueryer) ([]UserMessageTick, error) {
+		scope, err := s.resolveTimelineScope(q, threadID, selection)
+		if err != nil {
+			return nil, err
 		}
-		ticks = append(ticks, t)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list user message ticks on thread %s: %w", threadID, err)
-	}
-	return ticks, nil
+		filter := readerAuthoredUserTextFilterFor("items.")
+		var filterArgs []any
+		if scope.selection.ScopeRootID != "" {
+			filter, filterArgs = scope.filter("items.")
+			filter += " AND " + userMessageTickFilterFor("items.")
+		}
+
+		sql, args := timelineArms(threadID, timelineSelection{
+			Columns: func(string, string) string {
+				return `items.id AS id, items.turn_index AS turn_index, items.item_index AS item_index`
+			},
+			Where: filter, WhereArgs: filterArgs,
+			OrderBy: "turn_index ASC, item_index ASC",
+		})
+		rows, err := q.Query(sql, args...)
+		if err != nil {
+			return nil, fmt.Errorf("store: list user message ticks on thread %s: %w", threadID, err)
+		}
+		defer rows.Close()
+		ticks := []UserMessageTick{}
+		for rows.Next() {
+			var t UserMessageTick
+			if err := rows.Scan(&t.ID, &t.TurnIndex, &t.ItemIndex); err != nil {
+				return nil, fmt.Errorf("store: scan user message tick on thread %s: %w", threadID, err)
+			}
+			ticks = append(ticks, t)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("store: list user message ticks on thread %s: %w", threadID, err)
+		}
+		return ticks, nil
+	})
 }
 
 // UserMessageHistoryEntry is one composer history-recall entry: a
@@ -462,104 +478,6 @@ func (s *Store) LatestHumanUserText(threadID string) (string, bool, error) {
 		return "", false, fmt.Errorf("store: latest human user text on thread %s: %w", threadID, err)
 	}
 	return summary, true, nil
-}
-
-// TurnPreview is the nav rail's hover card for one turn: the reader's
-// ask and the turn's final top-level assistant reply.
-type TurnPreview struct {
-	UserText      string `json:"userText"`
-	AssistantText string `json:"assistantText"`
-}
-
-// turnPreviewMaxRunes bounds each preview half at the wire. The card
-// renders ~400 characters after whitespace collapse; shipping a giant
-// message's full body for a hover would be pure waste.
-const turnPreviewMaxRunes = 1000
-
-// turnPreviewScanLimit bounds the walk below one turn. A turn with more
-// top-level text rows than this is pathological; the preview then
-// reflects the first rows, which is still an honest hover hint.
-const turnPreviewScanLimit = 400
-
-// ThreadTurnPreview resolves the hover-card content for the turn a
-// reader-authored user message opens. The assistant half is the LAST
-// top-level assistant_text before the next reader-authored user message
-// — how the turn ended — matching the frontend's `turnPreview` walk over
-// loaded items, so a loaded and an unloaded tick hover read the same.
-// found=false when the item is not a reader-authored user message on
-// this thread.
-func (s *Store) ThreadTurnPreview(threadID, itemID string) (TurnPreview, bool, error) {
-	var userText string
-	var turnIndex, itemIndex int
-	err := s.reader().QueryRow(
-		`SELECT summary, turn_index, item_index FROM timeline_items
-		  WHERE thread_id = ? AND id = ?
-		    AND `+readerAuthoredUserTextFilter,
-		threadID, itemID,
-	).Scan(&userText, &turnIndex, &itemIndex)
-	if errors.Is(err, sql.ErrNoRows) {
-		return TurnPreview{}, false, nil
-	}
-	if err != nil {
-		return TurnPreview{}, false, fmt.Errorf("store: turn preview anchor %s on thread %s: %w", itemID, threadID, err)
-	}
-	// The ordering keys ride the projection because the compound needs
-	// them (timeline_arms.go); the scan drops them.
-	walkSQL, walkArgs := timelineArms(threadID, timelineSelection{
-		Columns: func(string, string) string {
-			return `items.kind AS kind, items.summary AS summary,
-			        COALESCE(CASE WHEN json_valid(items.meta)
-			                      THEN json_extract(items.meta, '$.wire_only') END, 0) AS wire_only,
-			        items.turn_index AS turn_index, items.item_index AS item_index`
-		},
-		Where: topLevelItemsFilterFor("items.") + `
-		   AND items.kind IN ('user_text', 'assistant_text')
-		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))`,
-		WhereArgs: []any{turnIndex, turnIndex, itemIndex},
-		OrderBy:   "turn_index ASC, item_index ASC",
-		Limit:     turnPreviewScanLimit,
-	})
-	rows, err := s.reader().Query(walkSQL, walkArgs...)
-	if err != nil {
-		return TurnPreview{}, false, fmt.Errorf("store: turn preview walk after %s on thread %s: %w", itemID, threadID, err)
-	}
-	defer rows.Close()
-	assistantText := ""
-	for rows.Next() {
-		var kind, summary string
-		var wireOnly, rowTurnIndex, rowItemIndex int
-		if err := rows.Scan(&kind, &summary, &wireOnly, &rowTurnIndex, &rowItemIndex); err != nil {
-			return TurnPreview{}, false, fmt.Errorf("store: scan turn preview row on thread %s: %w", threadID, err)
-		}
-		if kind == "user_text" {
-			// A wire-only injection mid-turn is context, not the next
-			// ask — same rule as the tick predicate above.
-			if wireOnly == 1 {
-				continue
-			}
-			break
-		}
-		if summary != "" {
-			assistantText = summary
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return TurnPreview{}, false, fmt.Errorf("store: turn preview walk after %s on thread %s: %w", itemID, threadID, err)
-	}
-	return TurnPreview{
-		UserText:      capRunes(userText, turnPreviewMaxRunes),
-		AssistantText: capRunes(assistantText, turnPreviewMaxRunes),
-	}, true, nil
-}
-
-// capRunes truncates on a rune boundary with an ellipsis marker. Wire
-// bound only — display truncation is the frontend's.
-func capRunes(s string, maxRunes int) string {
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
-	}
-	return string(runes[:maxRunes]) + "…"
 }
 
 func (s *Store) GetThreadItem(threadID, id string) (Item, bool, error) {

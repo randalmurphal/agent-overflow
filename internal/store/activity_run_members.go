@@ -24,6 +24,7 @@ var ErrActivityRunStale = errors.New("store: activity run no longer matches the 
 // ActivityRunMembersRequest asks for members of one run adjacent to the
 // span the caller holds.
 type ActivityRunMembersRequest struct {
+	Selection TimelineSelection
 	// RunFirstItemID identifies the run. The store refuses the call when
 	// the run containing it no longer starts there.
 	RunFirstItemID string
@@ -94,7 +95,11 @@ func (s *Store) listActivityRunMembers(q sqlQueryer, threadID string, req Activi
 			"store: activity run member limit %d for %s is outside 0..%d",
 			req.Limit, threadID, maxActivityRunMemberLimit)
 	}
-	rows, err := s.activityRunMembers(q, threadID, req.RunFirstItemID)
+	scope, err := s.resolveTimelineScope(q, threadID, req.Selection)
+	if err != nil {
+		return ActivityRunMembers{}, err
+	}
+	rows, err := s.activityRunMembers(q, threadID, req.RunFirstItemID, scope)
 	if err != nil {
 		return ActivityRunMembers{}, err
 	}
@@ -120,7 +125,7 @@ func (s *Store) listActivityRunMembers(q sqlQueryer, threadID string, req Activi
 // and refuses anything else: a run is identified by its first member, so
 // a run that now starts earlier is a different run to every client rule
 // that reads the id.
-func (s *Store) activityRunMembers(q sqlQueryer, threadID, firstItemID string) ([]activityScanRow, error) {
+func (s *Store) activityRunMembers(q sqlQueryer, threadID, firstItemID string, scope timelineScope) ([]activityScanRow, error) {
 	first, found, err := s.getThreadItem(q, threadID, firstItemID)
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve activity run %s/%s: %w", threadID, firstItemID, err)
@@ -129,7 +134,7 @@ func (s *Store) activityRunMembers(q sqlQueryer, threadID, firstItemID string) (
 		return nil, fmt.Errorf("store: activity run %s/%s is gone: %w",
 			threadID, firstItemID, ErrActivityRunStale)
 	}
-	unit, _, _, found, err := unitAtOrBefore(q, threadID, cursorFromItem(first))
+	unit, _, _, found, err := unitAtOrBefore(q, threadID, cursorFromItem(first), scope)
 	if err != nil {
 		return nil, err
 	}

@@ -1062,6 +1062,49 @@ describe('createUseStickToBottomController', () => {
   });
 
   describe('scroll handler', () => {
+    it('keeps downward gesture consent through continuous native motion', async () => {
+      getRO().fire(contentEl, 800);
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      fireWheel(scrollEl, 300, scrollEl);
+      for (const top of [160, 220, 280, 340, 400]) {
+        await waitRealMs(80);
+        mockNow += 80;
+        geom.scrollTop = top;
+        fireScroll(scrollEl);
+        await nextTimer();
+      }
+      expect(controller.escapedFromLock).toBe(false);
+      expect(controller.isSticky).toBe(true);
+    });
+
+    it('does not extend downward gesture consent through layout motion', async () => {
+      const ro = getRO();
+      ro.fire(contentEl, 800);
+      fireWheel(scrollEl, -50, scrollEl);
+      geom.scrollTop = 100;
+      fireScroll(scrollEl);
+      await nextTimer();
+      fireWheel(scrollEl, 300, scrollEl);
+      for (const top of [160, 220, 280, 340]) {
+        await waitRealMs(80);
+        mockNow += 80;
+        geom.scrollTop = top;
+        geom.scrollHeight += 10;
+        geom.contentHeight += 10;
+        ro.fire(contentEl, geom.contentHeight);
+        fireScroll(scrollEl);
+        await nextTimer();
+      }
+      geom.scrollTop = geom.scrollHeight - geom.clientHeight;
+      fireScroll(scrollEl);
+      await nextTimer();
+      expect(controller.escapedFromLock).toBe(true);
+      expect(controller.isSticky).toBe(false);
+    });
+
     it('selection during scroll flips escapedFromLock', async () => {
       const ro = getRO();
       ro.fire(contentEl, 800); // initial setup
