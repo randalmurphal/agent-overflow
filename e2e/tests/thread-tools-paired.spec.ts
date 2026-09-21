@@ -1127,6 +1127,9 @@ test('the origin chip names the other computer on both ends of a spawn', async (
   page.setDefaultTimeout(20_000);
   const caller = await seed(home, 'remote-chip-caller', ['Chip caller']);
   const there = await seed(remote, 'remote-chip-work', []);
+  const defaults = await remote.rpc('UpdateNewThreadDefaults', {
+    projectId: there.projectId, provider: 'claude', model: 'claude-opus-4-7', runtimeMode: 'full-access',
+  });
   // The chip renders the name the VIEWER's pairing profile gives the other
   // computer, so the remote needs its own name for this one.
   await remote.rpc('RenameBackend', homeID, 'Laptop computer');
@@ -1157,6 +1160,7 @@ test('the origin chip names the other computer on both ends of a spawn', async (
                   title: 'Chip work',
                   computer_id: remoteID,
                   project_id: there.projectId,
+                  runtime_mode: 'read-only',
                   notify: true,
                 },
                 timeoutMs: 120_000,
@@ -1182,6 +1186,7 @@ test('the origin chip names the other computer on both ends of a spawn', async (
     timeoutMs: 120_000,
   });
   expect(spawn.isError, spawn.text).toBe(false);
+  expect(await remote.rpc('GetThreadDefaults', { projectId: there.projectId })).toEqual(defaults);
   // Wait for the wake, which is the caller-side row that carries a chip.
   await home.waitForEvent<HarnessMockEventData>(
     'harness:mock',

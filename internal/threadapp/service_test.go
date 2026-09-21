@@ -16,9 +16,7 @@ import (
 	"agent-overflow/internal/usermessage"
 )
 
-type testModels struct {
-	remembered []store.Thread
-}
+type testModels struct{}
 
 func (m *testModels) Seed(_ context.Context, providerName, model string) store.ChatModelProfile {
 	return chatmodel.FallbackProfile(providerName, model, string(provider.Claude))
@@ -41,7 +39,6 @@ func (m *testModels) ContextWindowOptions(providerName, model string) []provider
 func (m *testModels) DraftDefaults(providerName, model, effort string, fastMode bool) (string, bool) {
 	return m.CoerceReasoningEffort(providerName, model, effort), fastMode && m.SupportsFastMode(providerName, model)
 }
-func (m *testModels) Remember(thread store.Thread) { m.remembered = append(m.remembered, thread) }
 
 type testWorkspace struct {
 	currentBranch string
@@ -131,7 +128,7 @@ func newServiceFixture(t *testing.T) (*Service, *store.Store, *testModels) {
 }
 
 func TestCreatePreservesProjectAndWorkspaceDistinction(t *testing.T) {
-	service, database, models := newServiceFixture(t)
+	service, database, _ := newServiceFixture(t)
 	setup := &setupRecorder{store: database}
 	recent := &recentRecorder{}
 	service.deps.Workspace = &testWorkspace{
@@ -160,9 +157,6 @@ func TestCreatePreservesProjectAndWorkspaceDistinction(t *testing.T) {
 	}
 	if len(recent.paths) != 1 || recent.paths[0] != thread.WorkspacePath {
 		t.Fatalf("recent paths = %v", recent.paths)
-	}
-	if len(models.remembered) != 1 || models.remembered[0].ID != thread.ID {
-		t.Fatalf("remembered = %+v", models.remembered)
 	}
 }
 

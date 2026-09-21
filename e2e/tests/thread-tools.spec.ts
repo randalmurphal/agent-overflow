@@ -6,7 +6,7 @@
 // a running session; read tools (search, show, item, options), including a
 // 38k-item thread windowed, paged and exported and a multi-megabyte tool
 // output read in ranges; spawn with
-// its origin chip, footer and wake; send, reply, late reply and status;
+// its origin chip, footer and wake, without changing user defaults; send, reply, late reply and status;
 // ask on a hidden read-only fork that is deleted once it answers; cancel
 // by token and by thread; reminders; organizing threads and groups; and
 // the refusals (self-send, unrelated cancel, switch off).
@@ -351,7 +351,7 @@ test('thread_options renders the catalogs with per-model efforts, and a model th
     runtime_modes?: Array<{ runtime_mode: string; meaning?: string }>;
   }
   const answer = await awaitToolAnswer<OptionsAnswer>(harness, { tool: 'thread_options' });
-  expect(answer.isError).toBe(false);
+  expect(answer.isError, answer.text).toBe(false);
   const computer = answer.value!;
   expect(computer.computers).toBeUndefined();
   expect(computer.defaults).toEqual(
@@ -540,6 +540,63 @@ test('thread_spawn opens a visible thread, delivers the prompt with its footer a
     'from Launcher audit',
   );
 });
+
+for (const provider of ['claude', 'codex'] as const) {
+  test(`${provider} agent spawn overrides do not change the next user draft`, async ({ harness, page }) => {
+    const model = provider === 'claude' ? 'claude-opus-4-7' : 'gpt-5.6-sol';
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [
+        { name: 'defaults-target', repo: {}, threads: [] },
+        { name: 'defaults-caller', repo: {}, threads: [{ title: 'Defaults caller', provider: 'claude' }] },
+      ],
+    });
+    const target = seed.projects[0];
+    const caller = seed.projects[1];
+    const saved = await harness.rpc<Record<string, unknown>>('UpdateNewThreadDefaults', {
+      projectId: target.projectId, provider, model, reasoningEffort: 'high',
+      fastMode: false, runtimeMode: 'full-access',
+      autoCompactStandardPercent: 71, autoCompactExtendedPercent: 81,
+    });
+    const savedContext = await harness.rpc('GetContextSettings', provider, model);
+    await setScenario(harness, caller.path, threadToolsScenario({
+      name: 'defaults-spawn', provider: 'claude', turns: [{ steps: [{ call: {
+        tool: 'thread_spawn', args: {
+          project_id: target.projectId, provider, model, effort: 'low',
+          runtime_mode: 'read-only', title: 'Agent override', prompt: 'Read the code.',
+        },
+      } }], text: 'Spawned.' }],
+    }));
+    await setScenario(harness, target.path, plainScenario({
+      name: 'defaults-child', provider, texts: ['Done.'],
+    }));
+    await harness.rpc('StartSession', caller.threadIds[0]);
+    await harness.rpc('SendMessage', caller.threadIds[0], 'start a reader', null);
+    const answer = await awaitToolAnswer<{ thread_id: string }>(harness, { tool: 'thread_spawn' });
+    expect(answer.isError, answer.text).toBe(false);
+    const child = (await threadRows(harness)).find(row => row.id === answer.value!.thread_id)!;
+    expect(child.runtimeMode).toBe('read-only');
+    expect(await harness.rpc('GetThreadDefaults', { projectId: target.projectId })).toEqual(saved);
+
+    await harness.open(page);
+    await page.getByTestId('thread-row-title').filter({ hasText: 'Agent override' }).click();
+    await expect(page.getByTestId('composer-access-toggle')).toHaveAttribute('data-mode', 'read-only');
+    expect(await harness.rpc('GetThreadDefaults', { projectId: target.projectId })).toEqual(saved);
+    await page.getByTestId('composer-effort-trigger').click();
+    await page.getByRole('menuitem', { name: 'Medium', exact: true }).click();
+    await expect.poll(() => harness.rpc('GetThreadDefaults', { projectId: target.projectId }))
+      .toEqual({ ...saved, reasoningEffort: 'medium' });
+    await expect(page.getByTestId('composer-access-toggle')).toHaveAttribute('data-mode', 'read-only');
+    await page.getByTestId('project-item-new-thread').first().click();
+    await expect(page.getByTestId('composer-access-toggle')).toHaveAttribute('data-mode', 'full-access');
+    await page.getByLabel('Message Input').fill('My next thread');
+    await expect.poll(async () => {
+      const rows = await threadRows(harness);
+      return rows.filter(row => row.id !== child.id && row.id !== caller.threadIds[0])
+        .map(row => row.runtimeMode);
+    }).toEqual(['full-access']);
+    expect(await harness.rpc('GetContextSettings', provider, model)).toEqual(savedContext);
+  });
+}
 
 test('thread_send queues into a busy thread, thread_reply settles it, and a late reply still arrives', async ({
   harness,
@@ -925,7 +982,13 @@ test('thread_show windows, pages and exports a thread of 38k items', async ({ ha
   // `all` walks to the end through the cursor, a page at a time, and every
   // page is a snapshot: the counts add up to the thread exactly once. One
   // page per turn, because a thread that is still working refuses a send.
-  await awaitTurnCompleted(harness, caller);
+  const awaitPageTurn = async () => {
+    await awaitTurnCompleted(harness, caller);
+    await expect.poll(async () => (await harness.rpc<{ activeTurn?: unknown }>(
+      'GetThreadLiveState', caller,
+    )).activeTurn).toBeFalsy();
+  };
+  await awaitPageTurn();
   const pages: ShowAnswer[] = [];
   let done = false;
   while (!done) {
@@ -943,7 +1006,7 @@ test('thread_show windows, pages and exports a thread of 38k items', async ({ ha
     // A budget this size pages a thread of this size in a handful of
     // calls; a loop that runs away is a cursor that stopped advancing.
     expect(pages.length).toBeLessThan(12);
-    await awaitTurnCompleted(harness, caller);
+    await awaitPageTurn();
   }
 
   expect(pages.length).toBeGreaterThan(1);

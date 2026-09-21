@@ -13,6 +13,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/sessionruntime"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
 
@@ -418,9 +419,9 @@ func (a *App) observeClaudeCommandResult(threadID, sessionToken string, evt prov
 			// or rolled back — its answer decides nothing.
 			return
 		}
-		// A uuid with no entry at all is a user-typed composer command (the
-		// composer's sends carry uuids too, and a modern CLI stamps them the
-		// same way) — fall through to the user-typed handling below.
+		// Unmatched output may be a composer command, a peer command, or a
+		// delayed provider observation. Its send-time attribution decides
+		// whether it can update user defaults.
 	} else {
 		// No uuid: the CLI predates command_lifecycle and cannot correlate.
 		// If a pending apply exists for the axis this text unambiguously
@@ -443,14 +444,14 @@ func (a *App) observeClaudeCommandResult(threadID, sessionToken string, evt prov
 			}
 		}
 	}
-	// User-typed command (or an already-settled duplicate, which the sync
-	// below makes idempotent). `/fast` output is deliberately not synced to
+	// Observed command output (including an already-settled duplicate).
+	// `/fast` output is deliberately not synced to
 	// the thread row — enabling it can implicitly switch the model too
 	// ("model set to …"), and the passive fast_mode_state key on every
 	// result already keeps live state truthful; auto-editing the row on top
 	// of that is guesswork.
 	if tier, ok := parseEffortSetText(text); ok {
-		a.syncThreadEffortFromWire(threadID, sessionToken, tier)
+		a.syncThreadEffortFromWire(threadID, sessionToken, tier, meta.UserCommand == "effort")
 	}
 }
 
@@ -764,12 +765,13 @@ func (a *App) revertClaudeLiveApplyAxis(pending claudeLiveConfigApply) bool {
 // syncThreadEffortFromWire follows a user-typed `/effort <tier>` that the
 // live session has already adopted: launchOpts first (so the row update's
 // reconcile sees a session already matching and does not restart anything),
-// then the thread row and the remembered per-model profile. The launchOpts
+// then the thread row. Only a confirmed composer command updates the user's
+// remembered effort; provider observations do not change defaults. The launchOpts
 // write doubles as the liveness gate — if the session this output came from
 // is gone or replaced, nothing persistent may change (a torn-down session's
 // read loop drains its tail after teardown, and a stale echo must not
 // rewrite the row the user's next session spawns from).
-func (a *App) syncThreadEffortFromWire(threadID, sessionToken string, tier provider.ReasoningEffort) {
+func (a *App) syncThreadEffortFromWire(threadID, sessionToken string, tier provider.ReasoningEffort, userInitiated bool) {
 	if a.store == nil {
 		return
 	}
@@ -781,9 +783,7 @@ func (a *App) syncThreadEffortFromWire(threadID, sessionToken string, tier provi
 		log.Printf("thread %s: effort sync: load thread: %v", threadID, err)
 		return
 	}
-	if thread.ReasoningEffort == string(tier) {
-		return
-	}
+	changed := thread.ReasoningEffort != string(tier)
 	thread.ReasoningEffort = string(tier)
 	sanitized := a.sanitizeThreadModelSettings(thread)
 	if sanitized.ReasoningEffort != string(tier) {
@@ -793,12 +793,22 @@ func (a *App) syncThreadEffortFromWire(threadID, sessionToken string, tier provi
 		log.Printf("thread %s: effort sync: tier %s not representable for model %s", threadID, tier, thread.Model)
 		return
 	}
-	if err := a.store.UpdateThread(sanitized); err != nil {
-		log.Printf("thread %s: effort sync: persist: %v", threadID, err)
-		return
+	if changed {
+		if err := a.store.UpdateThread(sanitized); err != nil {
+			a.emitErrorToThread(threadID, fmt.Sprintf("effort sync: persist: %v", err))
+			return
+		}
 	}
-	a.rememberChatModelProfile(sanitized)
-	a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &sanitized})
+	if userInitiated {
+		if err := a.rememberChatModelProfileFields(sanitized, func(profile *store.ChatModelProfile) {
+			profile.ReasoningEffort = sanitized.ReasoningEffort
+		}); err != nil {
+			a.emitErrorToThread(threadID, err.Error())
+		}
+	}
+	if changed {
+		a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &sanitized})
+	}
 }
 
 // firstLine truncates a command answer to its first line for error surfaces.

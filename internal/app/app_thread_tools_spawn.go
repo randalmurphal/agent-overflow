@@ -53,7 +53,7 @@ func (t threadToolsApp) createSpawnedThreadUngrouped(
 	ctx context.Context, call threadtools.SpawnCall, create CreateThreadOptions,
 ) (store.Thread, error) {
 	if call.FromThread == "" {
-		return t.app.CreateThread(ctx, create)
+		return t.app.createThread(ctx, create, false)
 	}
 	// A fork runs in its source's project and workspace with its source's
 	// provider: that is what forking is, and the tools layer already refused

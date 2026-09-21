@@ -171,6 +171,11 @@ func TestCreateThreadFromPRCreatesThreadWithFirstItem(t *testing.T) {
 	app := newTestAppWithStore(t)
 	app.settings = settings.NewService(t.TempDir())
 
+	savedProfile := app.fallbackChatModelProfile("claude", "claude-sonnet-4-6")
+	savedProfile.AutoCompactStandardPercent, savedProfile.AutoCompactExtendedPercent = 71, 81
+	if err := app.store.UpsertChatModelProfile(savedProfile); err != nil {
+		t.Fatal(err)
+	}
 	thread, err := app.CreateThreadFromPR(t.Context(), "owner/repo", 42, string(provider.Claude), "claude-sonnet-4-6", "github")
 	if err != nil {
 		t.Fatalf("CreateThreadFromPR() error = %v", err)
@@ -183,6 +188,10 @@ func TestCreateThreadFromPRCreatesThreadWithFirstItem(t *testing.T) {
 	}
 	if thread.Model != "claude-sonnet-4-6" {
 		t.Fatalf("Model = %q", thread.Model)
+	}
+	profile, err := app.store.LatestChatModelProfile()
+	if err != nil || profile.Provider != thread.Provider || profile.Model != thread.Model || profile.AutoCompactStandardPercent != 71 || profile.AutoCompactExtendedPercent != 81 {
+		t.Fatalf("PR creation did not remember the user's selection: %+v, %v", profile, err)
 	}
 	if thread.Mode != "chat" {
 		t.Fatalf("Mode = %q, want chat", thread.Mode)

@@ -358,6 +358,10 @@ func (p *Parser) commandResultEvents(threadID string, msg assistantMessage, now 
 	if p.activeCommandUUID != "" {
 		resultMeta := provider.CommandResultMeta{CommandUUID: p.activeCommandUUID}
 		if p.peerTurns != nil {
+			command, known := p.peerTurns.directSlashCommand(p.activeCommandUUID)
+			if known && !command.Internal {
+				resultMeta.UserCommand = command.Name
+			}
 			// Inside this command's own started -> completed window, so the
 			// uuid is what says which command this text answers. Both calls
 			// are no-ops for a uuid the session has nothing registered for.

@@ -28,7 +28,6 @@ type ModelPolicy interface {
 	// wire-only model's windows validate and default correctly.
 	ContextWindowOptions(providerName, model string) []provider.ContextWindowOption
 	DraftDefaults(providerName, model, effort string, fastMode bool) (string, bool)
-	Remember(thread store.Thread)
 }
 
 // WorktreeCut describes one fresh worktree. Branch is the new branch, or

@@ -209,14 +209,14 @@ func (h *harnessHost) CreateThread(options harnessrpc.ThreadOptions) (store.Thre
 	// The harness RPC is its own screenless caller, so the created thread
 	// carries no device attribution — the same answer a script driving the
 	// app locally should get.
-	return h.app.CreateThread(context.Background(), CreateThreadOptions{
+	return h.app.createThread(context.Background(), CreateThreadOptions{
 		ProjectID:   options.ProjectID,
 		Title:       options.Title,
 		Provider:    options.Provider,
 		Model:       options.Model,
 		Mode:        options.Mode,
 		RuntimeMode: options.RuntimeMode,
-	})
+	}, false)
 }
 
 func (h *harnessHost) ArchiveThread(threadID string) error {

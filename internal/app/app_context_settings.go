@@ -81,6 +81,8 @@ func (a *App) UpdateContextSettingsProfile(update ContextSettingsUpdate) (Contex
 		return ContextSettingsProfile{}, err
 	}
 
+	a.chatModelProfileMu.Lock()
+	defer a.chatModelProfileMu.Unlock()
 	profile, err := a.store.GetChatModelProfile(providerName, model)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -91,6 +93,7 @@ func (a *App) UpdateContextSettingsProfile(update ContextSettingsUpdate) (Contex
 	profile.ContextWindow = update.ContextWindow
 	profile.AutoCompactStandardPercent = update.AutoCompactStandardPercent
 	profile.AutoCompactExtendedPercent = update.AutoCompactExtendedPercent
+	profile.UpdatedAt = 0
 	if err := a.store.UpsertChatModelProfile(profile); err != nil {
 		return ContextSettingsProfile{}, err
 	}
@@ -141,7 +144,11 @@ func (a *App) UpdateThreadContextSettings(threadID string, update ContextSetting
 	if err != nil {
 		return store.Thread{}, err
 	}
-	a.rememberChatModelProfile(refreshed)
+	profileErr := a.rememberChatModelProfileFields(refreshed, func(profile *store.ChatModelProfile) {
+		profile.ContextWindow = refreshed.ContextWindow
+		profile.AutoCompactStandardPercent = refreshed.AutoCompactStandardPercent
+		profile.AutoCompactExtendedPercent = refreshed.AutoCompactExtendedPercent
+	})
 	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed, changed)
-	return refreshed, nil
+	return refreshed, profileErr
 }

@@ -551,6 +551,12 @@ func TestConcurrentRenamePeerSessionEndsOnTheSameNameTheWireDoes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewSession: %v", err)
 		}
+		closeSession := sync.OnceFunc(func() {
+			if err := s.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		t.Cleanup(closeSession)
 		if err := os.WriteFile(wireLog, nil, 0o644); err != nil {
 			t.Fatalf("reset wire log: %v", err)
 		}
@@ -597,7 +603,7 @@ func TestConcurrentRenamePeerSessionEndsOnTheSameNameTheWireDoes(t *testing.T) {
 			t.Fatalf("attempt %d: cache says %q, the CLI ended on %q — every later reconcile would skip the correction",
 				attempt, got, wireName)
 		}
-		s.Close()
+		closeSession()
 	}
 }
 
@@ -608,7 +614,8 @@ func lastRenameOnWire(t *testing.T, path string, want int) string {
 	t.Helper()
 	var lines []string
 	// The mock drains stdin on its own schedule; wait for every write.
-	for range 200 {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read wire log: %v", err)

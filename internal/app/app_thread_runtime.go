@@ -65,10 +65,6 @@ func (p threadModelPolicy) DraftDefaults(providerName, model, effort string, fas
 	return p.app.draftModelDefaults(providerName, model, effort, fastMode)
 }
 
-func (p threadModelPolicy) Remember(thread store.Thread) {
-	p.app.rememberChatModelProfile(thread)
-}
-
 type threadWorkspacePort struct{ app *App }
 
 func (p threadWorkspacePort) CurrentBranch(workspacePath string) string {

@@ -1337,12 +1337,12 @@ export class CreateThreadOptions {
     "contextWindow"?: number;
 
     /**
-     * nil = latest model profile compact setting
+     * nil = no per-thread compact override
      */
     "autoCompactStandardPercent"?: number | null;
 
     /**
-     * nil = latest model profile compact setting
+     * nil = no per-thread compact override
      */
     "autoCompactExtendedPercent"?: number | null;
 

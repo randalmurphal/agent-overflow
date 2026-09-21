@@ -598,6 +598,9 @@ type CommandResultMeta struct {
 	// live-config reconciler matches it against the uuids it stamped on
 	// /effort and /fast applies to confirm them.
 	CommandUUID string `json:"commandUuid,omitempty"`
+	// UserCommand names a matching, non-internal command admitted from the
+	// composer. Uncorrelated provider output cannot establish a user preference.
+	UserCommand string `json:"userCommand,omitempty"`
 	// Suppressed marks output that must NOT become a timeline row: a command
 	// Agent Overflow issued for its own bookkeeping, or one whose only output
 	// is a confirmation of state AO already renders in its own UI. The

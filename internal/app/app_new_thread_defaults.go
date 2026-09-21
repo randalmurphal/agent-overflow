@@ -52,12 +52,16 @@ func (a *App) UpdateNewThreadDefaults(ctx context.Context, update NewThreadDefau
 		return ThreadDefaults{}, fmt.Errorf("update new thread defaults: resolve project %s: %w", projectID, err)
 	}
 
+	a.chatModelProfileMu.Lock()
 	profile, err := a.newThreadDefaultsProfile(ctx, update)
 	if err != nil {
+		a.chatModelProfileMu.Unlock()
 		return ThreadDefaults{}, err
 	}
 	profile.UpdatedAt = time.Now().UnixMilli()
-	if err := a.store.UpsertChatModelProfile(profile); err != nil {
+	err = a.store.UpsertChatModelProfile(profile)
+	a.chatModelProfileMu.Unlock()
+	if err != nil {
 		return ThreadDefaults{}, err
 	}
 	defaults, err := a.GetThreadDefaults(CreateThreadOptions{

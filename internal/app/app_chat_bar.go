@@ -17,29 +17,65 @@ import (
 	"agent-overflow/internal/usermessage"
 )
 
-// rememberChatModelProfile persists the thread's chat-model setup as
-// the "last used" profile so the chat bar can rehydrate without
-// rebuilding from scratch. No-ops on discussion threads (the
-// deliberation runtime picks its own provider/model per participant)
-// or workflow-saga threads and when the thread carries no usable provider/model pair.
-func (a *App) rememberChatModelProfile(thread store.Thread) {
+// rememberCreatedThreadProfile remembers the user's explicit creation options.
+// Omitted options are inherited or per-thread defaults, not new preferences.
+func (a *App) rememberCreatedThreadProfile(thread store.Thread, opts CreateThreadOptions) error {
+	return a.rememberChatModelProfileFields(thread, func(profile *store.ChatModelProfile) {
+		if strings.TrimSpace(opts.ReasoningEffort) != "" {
+			profile.ReasoningEffort = thread.ReasoningEffort
+		}
+		if opts.FastMode != nil {
+			profile.FastMode = thread.FastMode
+		}
+		if opts.ContextWindow != 0 {
+			profile.ContextWindow = thread.ContextWindow
+		}
+		if opts.AutoCompactStandardPercent != nil {
+			profile.AutoCompactStandardPercent = thread.AutoCompactStandardPercent
+		}
+		if opts.AutoCompactExtendedPercent != nil {
+			profile.AutoCompactExtendedPercent = thread.AutoCompactExtendedPercent
+		}
+		if strings.TrimSpace(opts.RuntimeMode) != "" {
+			profile.RuntimeMode = thread.RuntimeMode
+		}
+	})
+}
+
+// rememberChatModelProfileFields records only a user control's selected fields.
+// A nil update remembers the provider/model selection without adopting that
+// thread's other settings, which may have come from an agent or provider.
+func (a *App) rememberChatModelProfileFields(thread store.Thread, update func(*store.ChatModelProfile)) error {
 	if a.store == nil || threadmode.IsSagaOwned(thread.Mode) {
-		return
+		return nil
 	}
 	if strings.TrimSpace(thread.Provider) == "" || strings.TrimSpace(thread.Model) == "" {
-		return
+		return nil
 	}
-	profile := chatmodel.ProfileFromThread(thread)
+	a.chatModelProfileMu.Lock()
+	defer a.chatModelProfileMu.Unlock()
+	profile, err := a.store.GetChatModelProfile(thread.Provider, thread.Model)
+	if errors.Is(err, sql.ErrNoRows) {
+		profile = a.fallbackChatModelProfile(thread.Provider, thread.Model)
+	} else if err != nil {
+		return fmt.Errorf("remember chat defaults: load profile: %w", err)
+	}
+	profile = a.sanitizeChatModelProfile(profile)
+	if update != nil {
+		update(&profile)
+	}
 	if latest, err := a.store.LatestChatModelProfile(); err == nil {
 		if chatmodel.SameProfile(latest, profile) {
-			return
+			return nil
 		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		log.Printf("chat profile: load latest before remember: %v", err)
+		return fmt.Errorf("remember chat defaults: load latest: %w", err)
 	}
+	profile.UpdatedAt = 0
 	if err := a.store.UpsertChatModelProfile(profile); err != nil {
-		log.Printf("chat profile: remember %s/%s for thread %s: %v", thread.Provider, thread.Model, thread.ID, err)
+		return fmt.Errorf("remember chat defaults for %s/%s: %w", thread.Provider, thread.Model, err)
 	}
+	return nil
 }
 
 // seedChatModelProfile picks the best stored chat-model profile for the

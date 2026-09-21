@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -173,8 +174,9 @@ func TestObserveClaudeCommandResultSyncsUserTypedEffort(t *testing.T) {
 	optimistic := provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: provider.EffortXHigh}
 	started := seedClaudeLiveConfigThread(t, app, id, token, optimistic)
 
-	app.observeClaudeCommandResult(id, token,
-		commandResultEvent(t, "", "Set effort level to low (this session only): minimal reasoning"))
+	evt := commandResultEvent(t, "user-effort", "Set effort level to low (this session only): minimal reasoning")
+	evt.Meta = json.RawMessage(`{"commandUuid":"user-effort","userCommand":"effort"}`)
+	app.observeClaudeCommandResult(id, token, evt)
 
 	thread, err := app.store.GetThread(id)
 	if err != nil {
@@ -770,4 +772,52 @@ func TestUnknownFastArgumentDeclinesInsteadOfStranding(t *testing.T) {
 		t.Fatal("launchOpts fast mode kept true after the CLI rejected the command")
 	}
 	waitRestart(t, started, id)
+}
+
+func TestWireEffortPreservesUnselectedDefaults(t *testing.T) {
+	for _, userCommand := range []string{"", "review", "effort"} {
+		for _, alreadyApplied := range []bool{false, true} {
+			t.Run(fmt.Sprintf("command=%s/applied=%v", userCommand, alreadyApplied), func(t *testing.T) {
+				app := newTestAppWithStore(t)
+				id, token := "thread-effort-ownership", "tok-ownership"
+				effort := provider.EffortXHigh
+				if alreadyApplied {
+					effort = provider.EffortLow
+				}
+				seedClaudeLiveConfigThread(t, app, id, token, provider.SessionOptions{Model: "claude-opus-5", ReasoningEffort: effort})
+				thread, err := app.store.GetThread(id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				thread.ReasoningEffort, thread.RuntimeMode, thread.FastMode = string(effort), "read-only", true
+				if err := app.store.UpdateThread(thread); err != nil {
+					t.Fatal(err)
+				}
+				profile := app.fallbackChatModelProfile("claude", thread.Model)
+				profile.ReasoningEffort, profile.RuntimeMode, profile.FastMode, profile.UpdatedAt = "high", "full-access", false, 100
+				if err := app.store.UpsertChatModelProfile(profile); err != nil {
+					t.Fatal(err)
+				}
+				evt := commandResultEvent(t, "cmd-effort", "Set effort level to low (this session only)")
+				evt.Meta, err = json.Marshal(provider.CommandResultMeta{CommandUUID: "cmd-effort", UserCommand: userCommand})
+				if err != nil {
+					t.Fatal(err)
+				}
+				app.observeClaudeCommandResult(id, token, evt)
+				updated, err := app.store.GetThread(id)
+				if err != nil || updated.ReasoningEffort != "low" {
+					t.Fatalf("thread effort = %q, err=%v", updated.ReasoningEffort, err)
+				}
+				if userCommand == "effort" {
+					profile.ReasoningEffort = "low"
+					got, err := app.store.GetChatModelProfile(profile.Provider, profile.Model)
+					if err != nil {
+						t.Fatal(err)
+					}
+					profile.UpdatedAt = got.UpdatedAt
+				}
+				assertSavedProfile(t, app, profile)
+			})
+		}
+	}
 }

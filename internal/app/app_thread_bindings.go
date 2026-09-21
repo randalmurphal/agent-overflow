@@ -34,8 +34,8 @@ type CreateThreadOptions struct {
 	ReasoningEffort            string `json:"reasoningEffort,omitempty"`            // empty = latest model profile effort
 	FastMode                   *bool  `json:"fastMode,omitempty"`                   // nil = latest model profile fast-mode
 	ContextWindow              int    `json:"contextWindow,omitempty"`              // 0 = latest model profile context
-	AutoCompactStandardPercent *int   `json:"autoCompactStandardPercent,omitempty"` // nil = latest model profile compact setting
-	AutoCompactExtendedPercent *int   `json:"autoCompactExtendedPercent,omitempty"` // nil = latest model profile compact setting
+	AutoCompactStandardPercent *int   `json:"autoCompactStandardPercent,omitempty"` // nil = no per-thread compact override
+	AutoCompactExtendedPercent *int   `json:"autoCompactExtendedPercent,omitempty"` // nil = no per-thread compact override
 	RuntimeMode                string `json:"runtimeMode,omitempty"`                // empty = latest model profile runtime mode
 	WorktreeBranch             string `json:"worktreeBranch,omitempty"`             // empty = no worktree
 	WorktreeBase               string `json:"worktreeBase,omitempty"`               // empty = the project's current branch; only with WorktreeBranch
@@ -112,6 +112,12 @@ type ThreadTitleGenerationEvent struct {
 //ao:scope threads:operate
 //ao:route selected
 func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store.Thread, error) {
+	return a.createThread(ctx, opts, true)
+}
+
+// createThread is shared with agent requests and harness seeds. Only the
+// user-facing binding above remembers the selection as composer defaults.
+func (a *App) createThread(ctx context.Context, opts CreateThreadOptions, rememberDefaults bool) (store.Thread, error) {
 	endWork, admitErr := a.workAdmission.begin(ctx)
 	if admitErr != nil {
 		return store.Thread{}, admitErr
@@ -149,8 +155,12 @@ func (a *App) CreateThread(ctx context.Context, opts CreateThreadOptions) (store
 	if err != nil {
 		return store.Thread{}, err
 	}
+	var profileErr error
+	if rememberDefaults {
+		profileErr = a.rememberCreatedThreadProfile(thread, opts)
+	}
 	a.broadcastThreadRow(triage.ThreadActionListed, thread)
-	return thread, nil
+	return thread, profileErr
 }
 
 // StartTerminal mints a persistent terminal-mode thread and returns it.
@@ -470,12 +480,14 @@ func (a *App) UpdateThreadReasoningEffort(id, effort string) (store.Thread, erro
 	if err != nil {
 		return store.Thread{}, err
 	}
-	a.rememberChatModelProfile(refreshed)
+	profileErr := a.rememberChatModelProfileFields(refreshed, func(profile *store.ChatModelProfile) {
+		profile.ReasoningEffort = refreshed.ReasoningEffort
+	})
 	// The row broadcast is the row returned, read after the session
 	// reconcile: the initiator's optimistic apply and its own echo then
 	// carry identical bytes.
 	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed, changed)
-	return refreshed, nil
+	return refreshed, profileErr
 }
 
 // UpdateThreadFastMode persists the fast-mode boolean and reconciles a
@@ -498,9 +510,11 @@ func (a *App) UpdateThreadFastMode(id string, on bool) (store.Thread, error) {
 	if err != nil {
 		return store.Thread{}, err
 	}
-	a.rememberChatModelProfile(refreshed)
+	profileErr := a.rememberChatModelProfileFields(refreshed, func(profile *store.ChatModelProfile) {
+		profile.FastMode = refreshed.FastMode
+	})
 	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, refreshed, changed)
-	return refreshed, nil
+	return refreshed, profileErr
 }
 
 // UpdateThreadBranch persists a branch observed in workspacePath onto every
@@ -613,8 +627,9 @@ func (a *App) UpdateThreadRuntimeMode(ctx context.Context, id, mode string) (sto
 	if err != nil {
 		return store.Thread{}, err
 	}
-	a.rememberChatModelProfile(thread)
-	return thread, nil
+	return thread, a.rememberChatModelProfileFields(thread, func(profile *store.ChatModelProfile) {
+		profile.RuntimeMode = thread.RuntimeMode
+	})
 }
 
 // UpdateThreadWorkspace persists a new workspace path. Used by the
@@ -708,8 +723,9 @@ func (a *App) CreateThreadFromPR(
 	if err != nil {
 		return store.Thread{}, err
 	}
+	profileErr := a.rememberChatModelProfileFields(thread, nil)
 	a.broadcastThreadRow(triage.ThreadActionListed, thread)
-	return thread, nil
+	return thread, profileErr
 }
 
 // RegenerateThreadTitle starts a re-title of an existing thread from its
@@ -742,15 +758,14 @@ func (a *App) RegenerateThreadTitle(threadID string) error {
 func (a *App) finishThreadModelUpdate(update threadapp.ModelUpdate) (store.Thread, error) {
 	reassertModel := !update.SelectionChanged() && a.hasModelFallback(update.Thread.ID)
 	if !update.SelectionChanged() && !reassertModel {
-		a.rememberChatModelProfile(update.Thread)
-		return update.Thread, nil
+		return update.Thread, a.rememberChatModelProfileFields(update.Thread, nil)
 	}
 	a.reconcileSessionConfig(update.Thread.ID, reassertModel)
 	updated, err := a.threadApplication().Get(update.Thread.ID)
 	if err != nil {
 		return store.Thread{}, err
 	}
-	a.rememberChatModelProfile(updated)
+	profileErr := a.rememberChatModelProfileFields(updated, nil)
 	a.broadcastThreadRowIfChanged(triage.ThreadActionFull, updated, update.SelectionChanged())
-	return updated, nil
+	return updated, profileErr
 }

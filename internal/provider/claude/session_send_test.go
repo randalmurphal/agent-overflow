@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -912,5 +913,69 @@ func TestSession_StopTask_ConcurrentSameTaskIDDistinctRequestIDs(t *testing.T) {
 	s.controlRequestMu.Unlock()
 	if seq < 2 {
 		t.Errorf("controlRequestSeq = %d after two concurrent StopTasks, want >= 2 (each call must allocate)", seq)
+	}
+}
+
+func TestCommandResultAttributionFollowsActualSend(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts provider.SendOptions
+		want string
+	}{
+		{name: "composer", want: "effort"},
+		{name: "internal", opts: provider.SendOptions{InternalCommand: true}},
+		{name: "agent", opts: provider.SendOptions{GuardClaudeSlashCommand: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "mock-claude")
+			script := `#!/bin/bash
+while IFS= read -r line; do
+  case "$line" in
+    *'"type":"user"'*)
+      id=$(printf '%s\n' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+      printf '{"type":"command_lifecycle","command_uuid":"%s","state":"started"}\n' "$id"
+      printf '{"type":"assistant","message":{"id":"result-%s","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Set effort level to low (this session only)"}]}}\n' "$id"
+      printf '{"type":"command_lifecycle","command_uuid":"%s","state":"completed"}\n' "$id"
+      ;;
+  esac
+done
+`
+			if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			events := make(chan provider.ProviderEvent, 128)
+			s, err := NewSession(t.Context(), testThread, Config{Binary: path}, func(evt provider.ProviderEvent) { events <- evt })
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := s.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			// Exceed the tracking bound sequentially: completed commands must
+			// release attribution so later user choices remain identifiable.
+			for i := range maxTrackedDirectSlashCommands + 2 {
+				opts := tc.opts
+				opts.UserMessageUUID = fmt.Sprintf("00000000-0000-4000-8000-%012d", i)
+				if err := s.Send(t.Context(), "/effort low", opts); err != nil {
+					t.Fatal(err)
+				}
+				for {
+					evt := waitEvent(t, events)
+					if evt.Kind != provider.EventCommandResult {
+						continue
+					}
+					var meta provider.CommandResultMeta
+					if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+						t.Fatal(err)
+					}
+					if meta.CommandUUID != opts.UserMessageUUID || meta.UserCommand != tc.want {
+						t.Fatalf("send %d attribution = %+v, want uuid=%s command=%q", i, meta, opts.UserMessageUUID, tc.want)
+					}
+					break
+				}
+			}
+		})
 	}
 }

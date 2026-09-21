@@ -140,7 +140,6 @@ func (s *Service) CreateFromPR(opts PullRequestOptions, port PullRequestPort) (s
 	if err := database.CreateThread(thread); err != nil {
 		return store.Thread{}, fmt.Errorf("create thread from %s: %w", prthread.ForgeNounLong(forgeID), err)
 	}
-	models.Remember(thread)
 	if s.deps.RecentWorkspaces != nil && workspace != "" {
 		s.deps.RecentWorkspaces.AddRecentWorkspace(opts.SettingsBucket, opts.SettingsClass, workspace)
 	}

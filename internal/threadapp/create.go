@@ -271,7 +271,6 @@ func (s *Service) Create(opts CreateOptions) (store.Thread, error) {
 	if err := database.CreateThread(thread); err != nil {
 		return store.Thread{}, err
 	}
-	models.Remember(thread)
 	if s.deps.RecentWorkspaces != nil {
 		s.deps.RecentWorkspaces.AddRecentWorkspace(opts.SettingsBucket, opts.SettingsClass, workspace)
 	}

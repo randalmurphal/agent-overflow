@@ -139,3 +139,52 @@ func TestCommandResultCarriesActiveCommandUUID(t *testing.T) {
 		t.Fatalf("post-discarded meta = %+v, want uncorrelated", meta)
 	}
 }
+
+func TestCommandResultUserCommandRequiresAdmittedComposerCommand(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		opts    provider.SendOptions
+		tracked bool
+		want    string
+	}{
+		{name: "composer", tracked: true, want: "effort"},
+		{name: "internal", tracked: true, opts: provider.SendOptions{InternalCommand: true}},
+		{name: "agent", tracked: true, opts: provider.SendOptions{GuardClaudeSlashCommand: true}},
+		{name: "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Session{}
+			if tc.tracked {
+				s.directCommands.note("cmd-1", "/effort low", tc.opts)
+			}
+			parser := NewParser()
+			parser.peerTurns = s
+			if _, err := parser.ParseLine(testThread, []byte(`{"type":"command_lifecycle","command_uuid":"cmd-1","state":"started"}`)); err != nil {
+				t.Fatal(err)
+			}
+			events, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"m1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Set effort level to low (this session only)"}]}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			completed, err := parser.ParseLine(testThread, []byte(`{"type":"command_lifecycle","command_uuid":"cmd-1","state":"completed"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, evt := range completed {
+				if evt.Kind == provider.EventCommandResult {
+					events = append(events, evt)
+				}
+			}
+			if len(events) != 1 || events[0].Kind != provider.EventCommandResult {
+				t.Fatalf("events = %+v", events)
+			}
+			var meta provider.CommandResultMeta
+			if err := json.Unmarshal(events[0].Meta, &meta); err != nil {
+				t.Fatal(err)
+			}
+			if meta.UserCommand != tc.want {
+				t.Fatalf("UserCommand = %q, want %q", meta.UserCommand, tc.want)
+			}
+		})
+	}
+}

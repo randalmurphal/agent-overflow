@@ -355,6 +355,8 @@ type App struct {
 	// sessions, git subprocesses, and destructive cleanup stay behind shell adapters.
 	threadAppOnce sync.Once
 	threadApp     *threadapp.Service
+	// Serializes user profile read/modify/write operations across threads.
+	chatModelProfileMu sync.Mutex
 	// Client send identities serialize across RPC shapes before action locks.
 	// Entries disappear when their last holder/waiter releases them.
 	sendAdmissionsOnce sync.Once
