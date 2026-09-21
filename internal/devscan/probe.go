@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-overflow/internal/logging"
 	"agent-overflow/internal/loopback"
 )
 
@@ -144,7 +145,7 @@ func (p *prober) request(ctx context.Context, scheme string, port int) bool {
 	if err != nil {
 		return false
 	}
-	resp, err := p.client.Do(req)
+	resp, err := p.client.Do(logging.TraceHTTPRequest(req, "devscan"))
 	if err != nil {
 		return false
 	}

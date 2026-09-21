@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/computerroute"
+	"agent-overflow/internal/logging"
 )
 
 // Match native route selection: allow DNS and a cold VPN path to establish.
@@ -322,7 +323,7 @@ func healthProbe(ctx context.Context, client *http.Client, endpoint string) (int
 	if err != nil {
 		return 0, nil, nil, err
 	}
-	response, err := client.Do(req)
+	response, err := client.Do(logging.TraceHTTPRequest(req, "device-health"))
 	if err != nil {
 		return 0, nil, nil, err
 	}

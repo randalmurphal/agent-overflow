@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"log"
 	"time"
 )
@@ -98,27 +99,9 @@ func (a *App) reaperNow() time.Time {
 	return time.Now()
 }
 
-// reapIdleSessions walks a.sessions, picks candidates whose
-// lastActivity is older than the threshold and whose activeTurns
-// counter is zero, then for each candidate confirms (a) triage holds
-// no user-blocking live state (pending approvals, pending user-input
-// requests, queued flush items, or pending sends), (b) no pending
-// harness wakeup is still due to fire (ScheduleWakeup timers are
-// in-process CLI state a close would silently kill), and (c) no
-// running background tool calls exist in the store, before closing the
-// session. The triage check ensures sessions that the user perceives
-// as active or blocked-on-user are never reaped. The two-phase split
-// keeps a.mu untouched during the triage query, the SQLite probe,
-// and the close call, all of which can take meaningful time.
-// idleCloseSession re-checks the per-session guards under the lock so
-// a user send between the sweep snapshot and the close cannot lose a
-// turn.
-//
-// Errors are logged, not surfaced. The reaper is opportunistic — a
-// failed close just means the subprocess sticks around until the next
-// sweep or an explicit StopSession. A failed bg-items query is treated
-// as "skip this thread for now" so a transient SQLite error can't
-// cause us to kill a session with active background work.
+// reapIdleSessions selects stale sessions. idleCloseSession owns the complete
+// eligibility check under the thread locks. Query or teardown failures remain
+// observable in the log; a query failure must never authorize eviction.
 func (a *App) reapIdleSessions(now time.Time) {
 	cutoffNano := now.Add(-idleReapThreshold).UnixNano()
 
@@ -126,53 +109,57 @@ func (a *App) reapIdleSessions(now time.Time) {
 		if a.shuttingDown.Load() {
 			return
 		}
-		if a.triage.HasPendingWork(threadID) {
-			continue
-		}
-		// A pending ScheduleWakeup timer lives inside the CLI process
-		// with no task lifecycle — the session looks fully idle until
-		// the harness fires the stored prompt as a fresh turn. Closing
-		// the process would silently kill the timer, so a future fire
-		// time (plus firing-latency grace) blocks the reap.
-		if wakeAt, ok := a.triage.PendingWakeupAt(threadID); ok && now.Before(wakeAt.Add(wakeupReapGrace)) {
-			continue
-		}
-		running, err := a.store.ListRunningBackgroundToolCalls(threadID)
-		if err != nil {
-			log.Printf("app: idle reaper: list running background tool calls for %s: %v", threadID, err)
-			continue
-		}
-		if len(running) > 0 {
-			continue
-		}
 		if err := a.idleCloseSession(threadID, cutoffNano); err != nil {
 			log.Printf("app: idle reaper: idle close %s: %v", threadID, err)
 		}
 	}
 }
 
-// idleCloseSession removes the session entry under the lock, then runs
-// the shared teardown via teardownAndCloseSession. Skipped if:
-//   - The entry is gone (the user beat us to StopSession, or
-//     unregisterSession fired from readLoop's defer).
-//   - activeTurns has gone above zero (a Codex EventTurnStart landed
-//     between sweep and close). Claude never increments activeTurns
-//     because its provider never emits EventTurnStart — see the comment
-//     in recordSessionActivity for why that's safe.
-//   - lastActivityUnixNano has advanced past the sweep cutoff. This
-//     covers the gap between sendToProvider's pre-stdin-write bump and
-//     the eventual EventTurnStart from the wire: a user send in that
-//     window leaves activeTurns at 0 but moves lastActivity forward,
-//     and the activity floor must protect the in-flight send.
-//
-// cutoffNano comes from reapIdleSessions so the floor matches the
-// sweep that selected this candidate, not a fresh "now" that could
-// have advanced under load.
+// idleCloseSession serializes with execution and queue admission before
+// checking live work. The runtime rechecks activity at removal so provider
+// events arriving during the store query still prevent eviction.
+// cutoffNano belongs to the sweep that selected this session.
 func (a *App) idleCloseSession(threadID string, cutoffNano int64) error {
+	unlock, err := a.threadLocks().LockCtx(a.lifeCtx(), threadID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if _, present := a.sessionManager().get(threadID); !present {
+		return nil
+	}
+	unlockMutation, err := a.threadApplication().LockMutable(a.lifeCtx(), threadID)
+	if err != nil {
+		return err
+	}
+	defer unlockMutation()
+	if a.shuttingDown.Load() {
+		return nil
+	}
+	if a.triage != nil && (a.triage.HasInFlightTurnOrRound(threadID) || a.triage.HasPendingWork(threadID)) {
+		return nil
+	}
+	// Includes messages already handed off to a dispatch worker that is
+	// waiting for this action lock, after they left triage's queue.
+	if a.pendingFlushWorkCount(threadID) > 0 {
+		return nil
+	}
+	now := time.Unix(0, cutoffNano).Add(idleReapThreshold)
+	if wakeAt, ok := a.triage.PendingWakeupAt(threadID); ok && now.Before(wakeAt.Add(wakeupReapGrace)) {
+		return nil
+	}
+	running, err := a.store.ListRunningBackgroundToolCalls(threadID)
+	if err != nil {
+		return fmt.Errorf("list running background tool calls: %w", err)
+	}
+	if len(running) > 0 {
+		return nil
+	}
 	sess, ok := a.sessionManager().takeIdle(threadID, cutoffNano)
 	if !ok {
 		return nil
 	}
 
+	log.Printf("provider: idle close thread=%q provider=%q", threadID, sess.Provider)
 	return a.teardownAndCloseSession(threadID, sess)
 }

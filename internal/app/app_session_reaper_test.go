@@ -1,7 +1,9 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -9,6 +11,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
 )
@@ -309,13 +312,8 @@ func TestReapIdleSessionsSkipsRunningBackgroundItems(t *testing.T) {
 	}
 }
 
-// TestReapIdleSessionsSkipsOnBackgroundItemsQueryError protects the
-// "fail-safe" behavior: if the SQLite probe fails (transient lock,
-// closed DB on shutdown), the reaper must not interpret the failure
-// as "no background work, safe to kill." Skipping the candidate
-// preserves the session until the next sweep when the probe can
-// succeed.
-func TestReapIdleSessionsSkipsOnBackgroundItemsQueryError(t *testing.T) {
+// A failed store check must preserve the session rather than authorize eviction.
+func TestReapIdleSessionsSkipsOnStoreError(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := testThread("thread-store-err")
 	if err := app.store.CreateThread(thread); err != nil {
@@ -330,8 +328,7 @@ func TestReapIdleSessionsSkipsOnBackgroundItemsQueryError(t *testing.T) {
 		Liveness: newSessionLiveness(past),
 	})
 
-	// Close the store under the reaper to force ListRunningBackgroundToolCalls
-	// to fail. The reaper logs and continues; the session must survive.
+	// Close the store to force an eligibility check to fail.
 	if err := app.store.Close(); err != nil {
 		t.Fatalf("store.Close: %v", err)
 	}
@@ -794,5 +791,219 @@ func TestReapIdleSessionsSkipsPendingWakeup(t *testing.T) {
 	_, present = app.sessionManager().get(thread.ID)
 	if present {
 		t.Fatal("session with an elapsed wakeup must be reapable")
+	}
+}
+
+// Claude does not emit EventTurnStart into the runtime counter. An open
+// triage round must protect a quiet foreground tool without any heartbeat.
+func TestIdleCloseProtectsQuietOpenRound(t *testing.T) {
+	for _, direct := range []bool{false, true} {
+		t.Run(fmt.Sprintf("direct=%t", direct), func(t *testing.T) {
+			app := newTestAppWithStore(t)
+			app.ensureTriageRouter()
+			thread := testThread("quiet-foreground")
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now()
+			live := newSessionLiveness(now.Add(-idleReapThreshold - time.Minute))
+			app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "test", Liveness: live})
+			if _, err := app.store.UpsertItem(store.Item{ID: "user:0", ThreadID: thread.ID, TurnIndex: 0, Kind: "user_text", Role: "user", Status: "completed", Summary: "run the tool"}, nil); err != nil {
+				t.Fatal(err)
+			}
+			app.triage.RegisterPendingSendWithExpectation(thread.ID, "user:0", 0, triage.PendingSendExpectation{ProviderItemID: "quiet-user"})
+			frames, err := claude.ParseLine(thread.ID, []byte(`{"type":"system","subtype":"init","session_id":"quiet-session"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, frame := range frames {
+				if err := app.triage.Handle(frame); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventUserText, ThreadID: thread.ID, ItemID: "quiet-user", Content: "run the tool", Meta: json.RawMessage(`{"provider_item_id":"quiet-user"}`), Timestamp: now}); err != nil {
+				t.Fatal(err)
+			}
+			if app.triage.HasPendingWork(thread.ID) || !app.triage.HasInFlightTurnOrRound(thread.ID) {
+				t.Fatal("fixture must have an acknowledged active turn with no pending work")
+			}
+			frames, err = claude.ParseLine(thread.ID, []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"foreground-tool","name":"Bash","input":{"command":"sleep 3600"}}]}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, frame := range frames {
+				if err := app.triage.Handle(frame); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			reap := func() {
+				if direct {
+					if err := app.idleCloseSession(thread.ID, now.Add(-idleReapThreshold).UnixNano()); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					app.reapIdleSessions(now)
+				}
+			}
+			for range 2 {
+				reap()
+			}
+			if _, ok := app.sessionManager().get(thread.ID); !ok {
+				t.Fatal("active foreground turn was reaped")
+			}
+			if live.ActiveTurns.Load() != 0 {
+				t.Fatal("test must exercise Claude's zero runtime counter")
+			}
+			if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: thread.ID, TurnID: "quiet-turn", Timestamp: now, TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}}); err != nil {
+				t.Fatal(err)
+			}
+			reap()
+			if _, ok := app.sessionManager().get(thread.ID); ok {
+				t.Fatal("settled idle session was retained")
+			}
+		})
+	}
+}
+
+func TestClaudeHeartbeatRefreshesOnlySessionLiveness(t *testing.T) {
+	app := newTestAppWithStore(t)
+	app.ensureTriageRouter()
+	thread := testThread("heartbeat-thread")
+	if err := app.store.CreateThread(thread); err != nil {
+		t.Fatal(err)
+	}
+	live := newSessionLiveness(time.Unix(1, 0))
+	app.sessionManager().put(thread.ID, session{Provider: string(provider.Claude), Token: "current", Liveness: live})
+	var emitted []string
+	app.testEmitHook = func(name string, _ any) { emitted = append(emitted, name) }
+	frames, err := claude.ParseLine(thread.ID, []byte(`{"type":"tool_progress","tool_use_id":"skill-heartbeat-0","parent_tool_use_id":"skill","elapsed_time_seconds":30,"heartbeat":true}`))
+	if err != nil || len(frames) != 1 {
+		t.Fatalf("heartbeat parse: %+v %v", frames, err)
+	}
+	for range 2 {
+		app.sessionEventHandler(thread.ID, "current", "claude")(frames[0])
+	}
+	if live.LastActivityUnixNano.Load() <= time.Unix(1, 0).UnixNano() {
+		t.Fatal("heartbeat did not update liveness")
+	}
+	if live.ActiveTurns.Load() != 0 || app.triage.HasInFlightTurnOrRound(thread.ID) {
+		t.Fatal("heartbeat created an active turn")
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil || len(items) != 0 || len(emitted) != 0 {
+		t.Fatalf("heartbeat changed UI/history: items=%d events=%v err=%v", len(items), emitted, err)
+	}
+	live.LastActivityUnixNano.Store(1)
+	app.sessionEventHandler(thread.ID, "stale", "claude")(frames[0])
+	if live.LastActivityUnixNano.Load() != 1 {
+		t.Fatal("stale heartbeat updated replacement session")
+	}
+}
+
+// Select the candidate before new work arrives, then prove eviction checks the
+// current state after it obtains the action lock. No provider is executed.
+func TestIdleReaperRechecksWorkAfterWaitingForAction(t *testing.T) {
+	for _, work := range []string{"queue", "dispatch", "wakeup", "background"} {
+		t.Run(work, func(t *testing.T) {
+			app := newTestAppWithTriage(t)
+			thread := testThread("late-work")
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatal(err)
+			}
+			app.sessionManager().put(thread.ID, staleSession())
+			now := time.Now()
+			unlock := app.threadLocks().Lock(thread.ID)
+			done := make(chan struct{})
+			go func() { defer close(done); app.reapIdleSessions(now) }()
+			defer func() {
+				if unlock != nil {
+					unlock()
+				}
+				<-done
+			}()
+			waitForThreadLockRefs(t, app.threadLocks(), thread.ID, 2)
+			switch work {
+			case "queue":
+				if _, err := app.RegisterQueueItem(context.Background(), thread.ID, "keep this message", SendMessageOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			case "dispatch":
+				// The handoff has removed the message from triage. Its worker
+				// is waiting for action, as the real dispatcher does.
+				app.flushDispatch.mu.Lock()
+				app.flushDispatch.inflightItems = map[string]int{thread.ID: 1}
+				app.flushDispatch.mu.Unlock()
+			case "wakeup":
+				meta, err := json.Marshal(provider.SessionWakeupMeta{ScheduledForUnixMs: now.Add(time.Minute).UnixMilli()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventSessionWakeup, ThreadID: thread.ID, Meta: meta, Timestamp: now}); err != nil {
+					t.Fatal(err)
+				}
+			case "background":
+				if _, err := app.store.AppendItem(store.Item{ID: "bg-1", ThreadID: thread.ID, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			unlock()
+			unlock = nil
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Fatal("reaper did not finish")
+			}
+			if _, present := app.sessionManager().get(thread.ID); !present {
+				t.Fatal("new work lost its provider session")
+			}
+			if work == "queue" && app.triage.QueuedFlushItemCount(thread.ID) != 1 {
+				t.Fatal("queued message was discarded")
+			}
+		})
+	}
+}
+
+func TestIdleCloseLockWaitStopsAtShutdown(t *testing.T) {
+	for _, gate := range []string{"action", "queue-admission"} {
+		t.Run(gate, func(t *testing.T) {
+			app := newTestAppWithStore(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			app.appCtx = ctx
+			thread := testThread("busy-thread")
+			if err := app.store.CreateThread(thread); err != nil {
+				t.Fatal(err)
+			}
+			app.sessionManager().put(thread.ID, staleSession())
+			var unlock func()
+			wantRefs := 2
+			if gate == "action" {
+				unlock = app.threadLocks().Lock(thread.ID)
+			} else {
+				var err error
+				unlock, err = app.threadApplication().LockMutable(ctx, thread.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantRefs = 1
+			}
+			defer unlock()
+			done := make(chan error, 1)
+			go func() { done <- app.idleCloseSession(thread.ID, time.Now().Add(-idleReapThreshold).UnixNano()) }()
+			waitForThreadLockRefs(t, app.threadLocks(), thread.ID, wantRefs)
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("lock wait returned %v, want cancellation", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("shutdown could not stop the reaper's lock wait")
+			}
+			if _, present := app.sessionManager().get(thread.ID); !present {
+				t.Fatal("reaper closed a session while queue admission held its lock")
+			}
+		})
 	}
 }

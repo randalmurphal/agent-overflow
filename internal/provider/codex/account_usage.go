@@ -176,11 +176,7 @@ const DefaultAccountUsageTimeout = 20 * time.Second
 // provider state is mutated.
 type AccountUsageFetcher struct {
 	Binary string
-	// WorkDir is the subprocess's working directory. Required and absolute
-	// for the same reason ProbeConfig.WorkDir is: Codex discovers
-	// project-scoped configuration by walking up from its cwd, so an
-	// inherited cwd would let one project's config decide whose account
-	// answers.
+	// WorkDir is the required absolute parent of the isolated account directory.
 	WorkDir string
 	Env     map[string]string
 	Timeout time.Duration // 0 → DefaultAccountUsageTimeout
@@ -190,12 +186,9 @@ const accountUsageInitializeID = 1
 const accountUsageReadID = 2
 
 // Fetch reads the account usage report from a throwaway app-server.
-func (f *AccountUsageFetcher) Fetch(ctx context.Context) (AccountUsage, error) {
+func (f *AccountUsageFetcher) Fetch(ctx context.Context) (_ AccountUsage, retErr error) {
 	if strings.TrimSpace(f.Binary) == "" {
 		return AccountUsage{}, fmt.Errorf("codex account usage: binary path required")
-	}
-	if err := provider.ValidateProbeWorkDir("codex", f.WorkDir); err != nil {
-		return AccountUsage{}, err
 	}
 	timeout := f.Timeout
 	if timeout <= 0 {
@@ -204,7 +197,7 @@ func (f *AccountUsageFetcher) Fetch(ctx context.Context) (AccountUsage, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	spawnCfg, cleanup, err := prepareAccountProcess(provider.SpawnConfig{
 		Binary:   f.Binary,
 		Args:     codexAppServerArgs(),
 		Dir:      f.WorkDir,
@@ -212,9 +205,14 @@ func (f *AccountUsageFetcher) Fetch(ctx context.Context) (AccountUsage, error) {
 		UnsetEnv: []string{"CODEX_HOME"},
 	})
 	if err != nil {
+		return AccountUsage{}, err
+	}
+	defer func() { retErr = errors.Join(retErr, cleanup()) }()
+	proc, err := provider.Spawn(ctx, spawnCfg)
+	if err != nil {
 		return AccountUsage{}, fmt.Errorf("codex account usage: spawn: %w", err)
 	}
-	defer func() { _ = proc.Close() }()
+	defer func() { retErr = errors.Join(retErr, proc.Close()) }()
 
 	// Deliberately not codexInitializeParams: this process makes exactly one
 	// non-experimental call, so opting a throwaway into the experimental API

@@ -92,7 +92,13 @@ func startOneshotClient(ctx context.Context, spec oneshotSpec) (*oneshotClient, 
 		return nil, fmt.Errorf("codex: spawn for %s: %w", label, err)
 	}
 	client := &oneshotClient{proc: proc, label: label}
+	if err := client.initialize(ctx, spec); err != nil {
+		return nil, errors.Join(err, proc.Close())
+	}
+	return client, nil
+}
 
+func (c *oneshotClient) initialize(ctx context.Context, spec oneshotSpec) error {
 	capabilities := map[string]any{
 		"optOutNotificationMethods": oneShotOptOutNotificationMethods(spec.KeepNotifications...),
 	}
@@ -107,15 +113,13 @@ func startOneshotClient(ctx context.Context, spec oneshotSpec) (*oneshotClient, 
 		},
 		"capabilities": capabilities,
 	}
-	if _, err := client.request(ctx, "initialize", initParams); err != nil {
-		client.close()
-		return nil, fmt.Errorf("codex: initialize for %s: %w", label, err)
+	if _, err := c.request(ctx, "initialize", initParams); err != nil {
+		return fmt.Errorf("codex: initialize for %s: %w", c.label, err)
 	}
-	if err := client.notify("initialized", nil); err != nil {
-		client.close()
-		return nil, fmt.Errorf("codex: send initialized for %s: %w", label, err)
+	if err := c.notify("initialized", nil); err != nil {
+		return fmt.Errorf("codex: send initialized for %s: %w", c.label, err)
 	}
-	return client, nil
+	return nil
 }
 
 func (c *oneshotClient) close() {

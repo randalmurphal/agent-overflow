@@ -139,11 +139,12 @@ function installIdleMemoryTrim(): () => void {
     RequestWebviewMemoryTrim(lastInputAt >= lastTrimAcceptedAt).then(
       (outcome) => {
         if (outcome === 'requested') lastTrimAcceptedAt = requestedAt;
+        if (outcome === 'unsupported') stop();
       },
       (err: unknown) => {
         if (isMethodUnavailableError(err)) {
           // Not the desktop webview after all (or an old backend). Final.
-          disarmed = true;
+          stop();
           return;
         }
         // Transient (reconnect window, timeout): stay armed, the next
@@ -154,12 +155,14 @@ function installIdleMemoryTrim(): () => void {
   const timer = setInterval(check, IDLE_TRIM_CHECK_MS);
 
   let stopped = false;
-  return () => {
+  const stop = () => {
     if (stopped) return;
     stopped = true;
+    disarmed = true;
     clearInterval(timer);
     for (const name of INPUT_EVENTS) {
       window.removeEventListener(name, onInput, { capture: true });
     }
   };
+  return stop;
 }

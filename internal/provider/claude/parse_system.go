@@ -80,10 +80,8 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		return parseStatusEvent(threadID, raw, now)
 
 	case "tool_progress":
-		// Streaming tool progress is intentionally dropped. The chat rewrite
-		// renders successive tool_call summary upserts rather than a parallel
-		// progress-event channel.
-		return nil, nil
+		// Older system envelopes carry the same liveness-only signal.
+		return toolProgressActivity(threadID, now), nil
 
 	case "compact_boundary":
 		meta := extractCompactBoundaryMeta(raw)

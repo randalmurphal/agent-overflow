@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/cdprelay"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 )
@@ -24,6 +25,7 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 	}
 	newApp := func(t *testing.T) (*App, *recorder) {
 		app := newTestAppWithStore(t)
+		SetBrowserCDPRelay(app, &cdprelay.Endpoint{})
 		seen := &recorder{}
 		app.testEmitHook = func(name string, data any) {
 			seen.mu.Lock()
@@ -227,4 +229,33 @@ func TestRequestWebviewMemoryTrim(t *testing.T) {
 			t.Fatalf("quiet-wire outcome = %q, want %q", outcome, "requested")
 		}
 	})
+}
+
+func TestWebviewTrimWithoutLauncherDoesNotConsumeActivity(t *testing.T) {
+	app := newTestAppWithStore(t)
+	var trims int
+	app.testEmitHook = func(name string, _ any) {
+		if name == string(eventchan.WebviewTrim) {
+			trims++
+		}
+	}
+	for range 2 {
+		outcome, err := app.RequestWebviewMemoryTrim(true)
+		if err != nil || outcome != "unsupported" {
+			t.Fatalf("outcome=%q err=%v", outcome, err)
+		}
+	}
+	if trims != 0 || app.webviewTrimLastUnixNano.Load() != 0 {
+		t.Fatal("unsupported trim emitted or consumed its activity window")
+	}
+	SetBrowserCDPRelay(app, &cdprelay.Endpoint{})
+	outcome, err := app.RequestWebviewMemoryTrim(false)
+	if err != nil || outcome != "requested" || trims != 1 {
+		t.Fatalf("supported outcome=%q emits=%d err=%v", outcome, trims, err)
+	}
+	SetBrowserCDPRelay(app, nil)
+	outcome, err = app.RequestWebviewMemoryTrim(true)
+	if err != nil || outcome != "unsupported" || trims != 1 {
+		t.Fatalf("disabled outcome=%q emits=%d err=%v", outcome, trims, err)
+	}
 }

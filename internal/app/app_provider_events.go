@@ -240,10 +240,8 @@ func (a *App) clearAutoReconnectAttempted(threadID string) {
 // internal/provider/codex/protocol.go); Claude's session never emits
 // it (triage synthesizes turn-start from system.init downstream of
 // this chokepoint). For Claude sessions activeTurns therefore stays
-// at zero and the reaper's mid-turn skip relies entirely on the
-// lastActivity floor + the running-bg-tool-calls store probe. That's
-// safe because Claude's deltas stream through here at high cadence
-// during a turn — lastActivity is constantly being refreshed.
+// at zero. The reaper also checks triage's open turn/round before eviction,
+// so quiet foreground tools remain protected without streaming or heartbeats.
 //
 // Any NEW consumer of activeTurns must not read it as "a turn is
 // open" — for Claude it never is. Pair it with triage's

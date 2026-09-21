@@ -2380,7 +2380,9 @@ Verified 2.1.237 across 12 Skill launches in AO provider-events logs
   Fixture:
   [`forked_skill_20260822.ndjson`](fixtures/claude/forked_skill_20260822.ndjson),
   containing the Skill tool_use, four attributed sidechain rows, a
-  `tool_progress` heartbeat, and the forked completion. Lifted from an
+  `tool_progress` heartbeat, and the forked completion. Top-level
+  `tool_progress` updates session liveness only; it creates no history row
+  or turn transition. Tool completion remains authoritative. Lifted from an
   AO provider-events log (thread `e84f5c04`, 2.1.237, captured
   2026-08-22T03:58Z, log file `provider-events-2026-08-21.ndjson.2`,
   whose date stamp is the rotation day rather than the capture day).

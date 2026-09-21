@@ -307,7 +307,9 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 		// host's session-start path (MarkThreadActive), so a stale init
 		// from a torn-down subprocess cannot re-admit its trailing
 		// frames.
-		log.Printf("triage: dropping %s event for stopped thread %s", evt.Kind, evt.ThreadID)
+		if evt.Kind != provider.EventSessionStatus || evt.Content != "disconnected" {
+			log.Printf("triage: dropping %s event for stopped thread %s", evt.Kind, evt.ThreadID)
+		}
 		return nil
 	}
 	// A §E6 resume carrier is a LIFECYCLE row, not a transcript root:

@@ -31,7 +31,7 @@ func (r *Router) handleSessionStatus(evt provider.ProviderEvent) error {
 	switch content {
 	case "":
 		return nil
-	case "disconnected", "session_state_changed":
+	case "disconnected", "session_state_changed", "tool_progress":
 		return nil
 	case "error":
 		return r.handleSessionDied(evt)
@@ -72,7 +72,7 @@ func (r *Router) handleSessionDied(evt provider.ProviderEvent) error {
 		log.Printf("triage: persist session_died notification: %v", err)
 	}
 
-	if r.hasInFlightTurnOrRound(evt.ThreadID) {
+	if r.HasInFlightTurnOrRound(evt.ThreadID) {
 		if err := r.synthesizeTruncatedTurnComplete(evt.ThreadID, now); err != nil {
 			log.Printf("triage: synthesize turn-complete on session_died: %v", err)
 		}

@@ -12,21 +12,34 @@ import (
 // CheckTransferAccount reads native account availability without refreshing a
 // token, fetching usage, opening a thread or running a model. A configured
 // custom endpoint may explicitly need no OpenAI account.
-func CheckTransferAccount(ctx context.Context, cfg ProbeConfig) error {
-	if err := provider.ValidateProbeWorkDir("codex transfer account", cfg.WorkDir); err != nil {
-		return err
-	}
+func CheckTransferAccount(ctx context.Context, cfg ProbeConfig) (retErr error) {
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = defaultProbeTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	client, err := startOneshotClient(ctx, oneshotSpec{Binary: cfg.Binary, WorkDir: cfg.WorkDir, Env: cfg.Env, ClientName: "agent_overflow_probe", Label: "transfer account"})
+	binary := strings.TrimSpace(cfg.Binary)
+	if binary == "" {
+		binary = "codex"
+	}
+	spawnCfg, cleanup, err := prepareAccountProcess(provider.SpawnConfig{
+		Binary: binary, Args: codexAppServerArgs(), Dir: cfg.WorkDir,
+		Env: cfg.Env, UnsetEnv: []string{"CODEX_HOME"},
+	})
 	if err != nil {
 		return err
 	}
-	defer client.close()
+	defer func() { retErr = errors.Join(retErr, cleanup()) }()
+	proc, err := provider.Spawn(ctx, spawnCfg)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, proc.Close()) }()
+	client := &oneshotClient{proc: proc, label: "transfer account"}
+	if err := client.initialize(ctx, oneshotSpec{ClientName: "agent_overflow_probe"}); err != nil {
+		return err
+	}
 	result, err := client.request(ctx, "account/read", map[string]any{"refreshToken": false})
 	if err != nil {
 		return err

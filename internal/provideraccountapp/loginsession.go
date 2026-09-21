@@ -471,7 +471,8 @@ func (m *Manager) openCodexLoginFlow(
 ) (loginFlow, string, error) {
 	if run.codex == nil {
 		session, err := codex.StartLogin(ctx, codex.LoginConfig{
-			Binary: run.attempt.binary,
+			Binary:  run.attempt.binary,
+			WorkDir: providerProbeWorkDir(),
 			Env: m.providerLoginEnv(run.provider, map[string]string{
 				"CODEX_HOME": run.attempt.home.Path,
 			}),

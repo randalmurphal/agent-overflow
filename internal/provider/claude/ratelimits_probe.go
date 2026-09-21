@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-overflow/internal/logging"
 	"agent-overflow/internal/provider"
 )
 
@@ -251,7 +252,7 @@ func executeUsageProbe(ctx context.Context, httpClient *http.Client, bearer stri
 	req.Header.Set("anthropic-version", anthropicVersion)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := httpClient.Do(req)
+	resp, err := httpClient.Do(logging.TraceHTTPRequest(req, "claude-usage"))
 	if err != nil {
 		return nil, nil, fmt.Errorf("claude: usage request: %w", err)
 	}

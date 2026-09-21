@@ -33,6 +33,7 @@ import (
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/harnessrpc"
+	"agent-overflow/internal/logging"
 )
 
 const (
@@ -186,7 +187,7 @@ func runSoak(flags cliFlags) {
 	// Same stdout-hygiene contract as runHeadless: the launcher parses
 	// stdout for the bootstrap sentinel and nothing else.
 	os.Stdout = os.Stderr
-	log.SetOutput(os.Stderr)
+	log.SetOutput(logging.WithHTTPDiagnostics(os.Stderr))
 
 	bootCtx, bootCancel := context.WithCancel(context.Background())
 	defer bootCancel()

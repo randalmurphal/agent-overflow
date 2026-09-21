@@ -177,10 +177,11 @@ func (m *Manager) CodexProbeConfig(binary string, pins map[string]string) codex.
 	return m.codexProbeConfig(binary, pins)
 }
 
-// ProbeWorkDir is the stable project-free directory used by account probes.
+// ProbeWorkDir is Claude's user scope and the parent for isolated Codex account directories.
 func ProbeWorkDir() string { return providerProbeWorkDir() }
 
-// providerProbeWorkDir is the directory every account probe runs in.
+// providerProbeWorkDir selects Claude's working directory and the parent
+// directory for isolated Codex account processes.
 //
 // Account probes ask a global question — "which login does this CLI hold?"
 // — and three of their consumers depend on the answer describing the
@@ -194,10 +195,10 @@ func ProbeWorkDir() string { return providerProbeWorkDir() }
 //
 // Before this was pinned, the probe inherited the app process's cwd —
 // Finder's default in one install, a Bedrock repo in another, with the
-// result cached process-wide either way. The user home directory is the
-// deliberate replacement: it always exists, it is identical across launches,
-// and it holds no project scope a probe could pick up (`~/.claude/` is the
-// USER settings scope, which both CLIs read from any cwd).
+// result cached process-wide either way. The user home directory supplies Claude
+// user scope and a stable parent for Codex account working directories. Codex
+// creates an empty child directory and disables ancestor config discovery so
+// a temporary CODEX_HOME cannot turn ~/.codex into a second project layer.
 //
 // Making the probe reflect the active thread's workspace instead would be a
 // product change, not a bug fix — the account identity would then flip as

@@ -2,6 +2,7 @@ package deviceclient
 
 import (
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/logging"
 	"bytes"
 	"context"
 	"crypto/ecdsa"
@@ -667,7 +668,7 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte) 
 	// No Origin header, deliberately. This is a client that is not a
 	// browser, and the credential routes admit a request that names no
 	// origin — one that named a fabricated one would be refused, correctly.
-	return req, nil
+	return logging.TraceHTTPRequest(req, "device-rpc"), nil
 }
 
 // decodeBody reads one bounded JSON document.

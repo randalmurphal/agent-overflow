@@ -39,7 +39,7 @@ const (
 // LoginConfig configures one sign-in app-server process.
 type LoginConfig struct {
 	Binary  string
-	WorkDir string
+	WorkDir string // required absolute parent for the isolated account working directory
 	// Env is the environment this invocation runs with, the same map an
 	// account probe takes, and it must carry CODEX_HOME pointed at the
 	// isolated login home. Required for the same reason Claude's config dir
@@ -90,7 +90,9 @@ type LoginSession struct {
 	nextID  int64
 	failed  error
 
-	closeOnce sync.Once
+	closeOnce      sync.Once
+	closeErr       error
+	cleanupWorkDir func() error
 }
 
 // maxSettledLogins bounds the early-completion buffer. Upstream serves one
@@ -134,7 +136,7 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 	if strings.TrimSpace(cfg.Env["CODEX_HOME"]) == "" {
 		return nil, errors.New("codex: sign-in requires an isolated CODEX_HOME")
 	}
-	proc, err := provider.Spawn(ctx, provider.SpawnConfig{
+	spawnCfg, cleanup, err := prepareAccountProcess(provider.SpawnConfig{
 		Binary:   binary,
 		Args:     codexAppServerArgs(),
 		Dir:      cfg.WorkDir,
@@ -143,13 +145,18 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 		Provider: "codex",
 	})
 	if err != nil {
-		return nil, fmt.Errorf("codex: sign-in spawn: %w", err)
+		return nil, err
+	}
+	proc, err := provider.Spawn(ctx, spawnCfg)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("codex: sign-in spawn: %w", err), cleanup())
 	}
 	session := &LoginSession{
-		proc:    proc,
-		pending: make(map[int64]chan rpcOutcome),
-		waiters: make(map[string]chan loginOutcome),
-		settled: make(map[string]loginOutcome),
+		proc:           proc,
+		cleanupWorkDir: cleanup,
+		pending:        make(map[int64]chan rpcOutcome),
+		waiters:        make(map[string]chan loginOutcome),
+		settled:        make(map[string]loginOutcome),
 	}
 	go session.readLoop()
 
@@ -162,12 +169,10 @@ func StartLogin(ctx context.Context, cfg LoginConfig) (*LoginSession, error) {
 		// cases this notification cannot describe.
 		oneShotOptOutNotificationMethods("account/login/completed"),
 	)); err != nil {
-		_ = session.Close()
-		return nil, err
+		return nil, errors.Join(err, session.Close())
 	}
 	if err := session.notify("initialized", nil); err != nil {
-		_ = session.Close()
-		return nil, err
+		return nil, errors.Join(err, session.Close())
 	}
 	return session, nil
 }
@@ -295,9 +300,13 @@ func (s *LoginSession) Cancel(ctx context.Context, loginID string) error {
 // stops: the device-code poll and the browser flow's listener both live in
 // this child, and the login home goes with it.
 func (s *LoginSession) Close() error {
-	var err error
-	s.closeOnce.Do(func() { err = s.proc.Close() })
-	return err
+	s.closeOnce.Do(func() {
+		s.closeErr = s.proc.Close()
+		if s.cleanupWorkDir != nil {
+			s.closeErr = errors.Join(s.closeErr, s.cleanupWorkDir())
+		}
+	})
+	return s.closeErr
 }
 
 func (s *LoginSession) call(

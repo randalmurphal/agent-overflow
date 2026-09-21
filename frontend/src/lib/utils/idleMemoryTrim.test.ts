@@ -112,16 +112,26 @@ describe('idleMemoryTrim', () => {
     expect(trimCalls()).toBe(2);
   });
 
-  it('disarms permanently when the method is unavailable', async () => {
-    setBindingMock('RequestWebviewMemoryTrim', () =>
-      Promise.reject(Object.assign(new Error('no such method'), { code: 'method_not_found' })),
-    );
-    stop = startIdleMemoryTrim();
-    await vi.advanceTimersByTimeAsync(IDLE_TRIM_THRESHOLD_MS + IDLE_TRIM_CHECK_MS);
-    expect(trimCalls()).toBe(1);
-    await vi.advanceTimersByTimeAsync(4 * IDLE_TRIM_REATTEMPT_MS);
-    expect(trimCalls()).toBe(1);
-  });
+  it.each(['unsupported', 'method_not_found'])(
+    '%s releases the timer and listeners permanently',
+    async (outcome) => {
+      setBindingMock('RequestWebviewMemoryTrim', () => outcome === 'unsupported'
+        ? Promise.resolve(outcome)
+        : Promise.reject(Object.assign(new Error('no such method'), { code: outcome })),
+      );
+      const remove = vi.spyOn(window, 'removeEventListener');
+      stop = startIdleMemoryTrim();
+      await vi.advanceTimersByTimeAsync(IDLE_TRIM_THRESHOLD_MS + IDLE_TRIM_CHECK_MS);
+      expect(trimCalls()).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(remove).toHaveBeenCalledWith('keydown', expect.any(Function), { capture: true });
+      window.dispatchEvent(new Event('keydown'));
+      await vi.advanceTimersByTimeAsync(4 * IDLE_TRIM_REATTEMPT_MS);
+      expect(trimCalls()).toBe(1);
+      stop();
+      remove.mockRestore();
+    },
+  );
 
   it('stop removes the timer', async () => {
     stop = startIdleMemoryTrim();

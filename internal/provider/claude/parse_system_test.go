@@ -1313,27 +1313,27 @@ func TestParseSystemSkippedSubtypes(t *testing.T) {
 	}
 }
 
-func TestParseToolProgressDropped(t *testing.T) {
+func TestParseToolProgressIsActivity(t *testing.T) {
 	line := []byte(`{"type":"system","subtype":"tool_progress","item_id":"item-1","content":{"progress":{"current":5,"total":10,"message":"Reading..."}}}`)
 
 	events, err := ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 0 {
-		t.Fatalf("expected tool_progress to be dropped, got %d event(s)", len(events))
+	if len(events) != 1 || events[0].Kind != provider.EventSessionStatus || events[0].Content != "tool_progress" {
+		t.Fatalf("expected only progress activity, got %+v", events)
 	}
 }
 
-func TestParseToolProgressNoContentDropped(t *testing.T) {
+func TestParseToolProgressNoContentIsActivity(t *testing.T) {
 	line := []byte(`{"type":"system","subtype":"tool_progress"}`)
 
 	events, err := ParseLine(testThread, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 0 {
-		t.Fatalf("expected tool_progress to be dropped, got %d event(s)", len(events))
+	if len(events) != 1 || events[0].Kind != provider.EventSessionStatus || events[0].Content != "tool_progress" {
+		t.Fatalf("expected only progress activity, got %+v", events)
 	}
 }
 

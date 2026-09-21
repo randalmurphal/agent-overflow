@@ -1,10 +1,12 @@
 package triage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"testing"
@@ -4425,5 +4427,31 @@ func TestPersistItemFieldsAndPatch_EmitsPatchOnSuccess(t *testing.T) {
 	}
 	if item.Summary != "hello world" {
 		t.Errorf("stored summary must be unchanged, got %q", item.Summary)
+	}
+}
+
+func TestStoppedDisconnectIsQuietButUnexpectedEventsRemainVisible(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	router.CleanupThread("t1")
+	var logs bytes.Buffer
+	prior := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(prior)
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: "t1", Content: "disconnected"}); err != nil {
+		t.Fatal(err)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("expected teardown logged as unexpected: %s", logs.String())
+	}
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventSessionStatus, ThreadID: "t1", Content: "error"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "dropping session_status") {
+		t.Fatal("unexpected late error hidden")
+	}
+	items, err := st.ListItems("t1")
+	if err != nil || len(items) != 0 {
+		t.Fatalf("late status changed history: %v %v", items, err)
 	}
 }

@@ -386,7 +386,7 @@ func (p *Process) Close() error {
 
 	select {
 	case <-p.done:
-		return closeResult(p.err)
+		return p.closeResult(p.err)
 	case <-time.After(shutdownGrace):
 	}
 
@@ -395,12 +395,12 @@ func (p *Process) Close() error {
 
 	select {
 	case <-p.done:
-		return closeResult(p.err)
+		return p.closeResult(p.err)
 	case <-time.After(killGrace):
 	}
 
 	// SIGKILL the process group.
-	return closeResult(p.Kill())
+	return p.closeResult(p.Kill())
 }
 
 // Kill immediately kills the process group.
@@ -416,12 +416,12 @@ func (p *Process) Kill() error {
 // provider CLI still leaves a trail in the dev log, but the caller
 // doesn't see it as a teardown failure. Any non-exit error (e.g. a
 // future genuine close-operation failure) propagates unchanged.
-func closeResult(err error) error {
+func (p *Process) closeResult(err error) error {
 	if err == nil {
 		return nil
 	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-		log.Printf("provider: subprocess exited %v during intentional close", exitErr)
+		log.Printf("provider: intentional close provider=%q thread=%q pid=%d exit=%v", p.provider, p.threadID, p.PID(), exitErr)
 		return nil
 	}
 	return err

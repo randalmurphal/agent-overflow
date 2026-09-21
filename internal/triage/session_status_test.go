@@ -303,7 +303,7 @@ func TestCleanupThreadWithoutOpenTurnIsNoop(t *testing.T) {
 // ran anyway, leaving the FE with a stuck activeTurnByThread entry
 // and no path to a wire turn_completed.
 //
-// The fix gates synthesize on hasInFlightTurnOrRound (openTurns OR
+// The fix gates synthesize on HasInFlightTurnOrRound (openTurns OR
 // currentRoundByThread). This test models the wire sequence:
 //
 //	EventTurnStart    (round 1 begins; openTurns + currentRoundByThread set)
@@ -348,7 +348,7 @@ func TestCleanupThreadSynthesizesAfterRound2PlusReRound(t *testing.T) {
 	if _, ok := router.openTurnIndex("t1"); ok {
 		t.Fatal("precondition: openTurns must be empty after round-1 complete")
 	}
-	if !router.hasInFlightTurnOrRound("t1") {
+	if !router.HasInFlightTurnOrRound("t1") {
 		t.Fatal("precondition: round 2 must be live in currentRoundByThread")
 	}
 	emissions.reset()
@@ -371,7 +371,7 @@ func TestCleanupThreadSynthesizesAfterRound2PlusReRound(t *testing.T) {
 // TestSessionStatusErrorSynthesizesAfterRound2PlusReRound is the
 // session-died (rather than CleanupThread) variant of the same gate
 // regression. handleSessionDied shared the openTurnIndex-only guard
-// with CleanupThread; the same hasInFlightTurnOrRound fix covers it.
+// with CleanupThread; the same HasInFlightTurnOrRound fix covers it.
 func TestSessionStatusErrorSynthesizesAfterRound2PlusReRound(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")

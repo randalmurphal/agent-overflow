@@ -926,7 +926,7 @@ func (r *Router) OpenTurnIndex(threadID string) int {
 	return -1
 }
 
-// hasInFlightTurnOrRound reports whether the router still has any
+// HasInFlightTurnOrRound reports whether the router still has any
 // turn or wire-round state for threadID worth synthesizing a
 // truncated turn-complete against. Used by CleanupThread and
 // handleSessionDied so the round-2+ re-round case (handleInit's
@@ -936,7 +936,7 @@ func (r *Router) OpenTurnIndex(threadID string) int {
 // when the session dies mid-round-2. Without the currentRoundByThread
 // arm of this check, the openTurns map alone misses the round-2+
 // case because clearOpenTurn cleared it at the end of round 1.
-func (r *Router) hasInFlightTurnOrRound(threadID string) bool {
+func (r *Router) HasInFlightTurnOrRound(threadID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	st := r.threadStateIfPresent(threadID)
@@ -952,7 +952,7 @@ func (r *Router) hasInFlightTurnOrRound(threadID string) bool {
 // sessions never emit EventTurnStart, so the App-side activeTurns
 // counter stays at zero for them and cannot answer "is a turn open" —
 // the router's wire-driven round state is the provider-agnostic truth.
-// Same predicate as hasInFlightTurnOrRound, across all threads; the
+// Same predicate as HasInFlightTurnOrRound, across all threads; the
 // walk is bounded by the number of threads with live correlation state.
 func (r *Router) AnyInFlightTurnOrRound() bool {
 	if r == nil {
@@ -1694,7 +1694,7 @@ func (r *Router) CleanupThreadIfEpoch(threadID string, epoch uint64) bool {
 // Returns false only on an epoch-abort.
 func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	cleanupAt := time.Now().UnixMilli()
-	if r.hasInFlightTurnOrRound(threadID) {
+	if r.HasInFlightTurnOrRound(threadID) {
 		if err := r.synthesizeTruncatedTurnComplete(threadID, cleanupAt); err != nil {
 			log.Printf("triage: synthesize turn-complete on cleanup for thread %s: %v", threadID, err)
 		}

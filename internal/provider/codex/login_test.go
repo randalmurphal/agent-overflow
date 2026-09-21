@@ -73,8 +73,9 @@ func newCodexLoginFake(t *testing.T) *codexLoginFake {
 func (f *codexLoginFake) start(t *testing.T) *LoginSession {
 	t.Helper()
 	session, err := StartLogin(t.Context(), LoginConfig{
-		Binary: f.binary,
-		Env:    map[string]string{"CODEX_HOME": f.home},
+		Binary:  f.binary,
+		WorkDir: t.TempDir(),
+		Env:     map[string]string{"CODEX_HOME": f.home},
 	})
 	if err != nil {
 		t.Fatalf("StartLogin: %v", err)

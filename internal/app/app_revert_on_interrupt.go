@@ -332,9 +332,8 @@ func (a *App) evaluateInterruptRevertPredicate(threadID string) (bool, store.Ite
 // claimed→in-flight between the reads is then double-counted, never
 // zero-counted. Do not reorder these reads.
 //
-// Reached only from evaluateInterruptRevertPredicate (InterruptAndRevertIfClean
-// holds the per-thread action lock, not a.flushDispatch.handoffMu), so there is no
-// re-entrancy on this mutex.
+// Callers hold the per-thread action lock, not handoffMu. This predicate
+// protects both interrupt/revert and idle eviction from losing queued work.
 func (a *App) pendingFlushWorkCount(threadID string) int {
 	a.flushDispatch.handoffMu.Lock()
 	defer a.flushDispatch.handoffMu.Unlock()

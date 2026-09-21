@@ -496,6 +496,9 @@ func (p *Parser) ParseLine(threadID string, line []byte) ([]provider.ProviderEve
 		// ParseLine directly), it is a no-op — no triage or event
 		// consumer has a view on this envelope.
 		return nil, nil
+	case "tool_progress":
+		// A heartbeat proves process activity, not a new tool or turn.
+		return toolProgressActivity(threadID, now), nil
 	case "rate_limit_event":
 		return parseRateLimitEvent(threadID, raw, now)
 	case "command_lifecycle":
@@ -990,4 +993,10 @@ func (p *Parser) clearSnapshotRecoveryState() {
 // readable; the behavior matches exactly — return the first v != "".
 func firstNonEmpty(values ...string) string {
 	return stringsx.FirstNonEmpty(values...)
+}
+
+// toolProgressActivity is deliberately session-only. Synthetic heartbeat tool
+// IDs are not tool starts, and elapsed time does not open or complete a turn.
+func toolProgressActivity(threadID string, now time.Time) []provider.ProviderEvent {
+	return []provider.ProviderEvent{{Kind: provider.EventSessionStatus, ThreadID: threadID, Content: "tool_progress", Timestamp: now}}
 }

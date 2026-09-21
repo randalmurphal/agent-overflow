@@ -14,10 +14,7 @@ import (
 // ProbeIdentity is the account/read-only counterpart used for external-login
 // detection. It starts a fresh app-server so auth.json is loaded from disk,
 // but never calls the rate-limit service or starts a model turn.
-func ProbeIdentity(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, error) {
-	if err := provider.ValidateProbeWorkDir("codex", cfg.WorkDir); err != nil {
-		return provider.AccountInfo{}, err
-	}
+func ProbeIdentity(ctx context.Context, cfg ProbeConfig) (_ provider.AccountInfo, retErr error) {
 	binary := cfg.Binary
 	if binary == "" {
 		binary = "codex"
@@ -29,7 +26,7 @@ func ProbeIdentity(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, 
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	proc, err := provider.Spawn(probeCtx, provider.SpawnConfig{
+	spawnCfg, cleanup, err := prepareAccountProcess(provider.SpawnConfig{
 		Binary:   binary,
 		Args:     buildProbeArgs(),
 		Dir:      cfg.WorkDir,
@@ -37,9 +34,14 @@ func ProbeIdentity(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, 
 		UnsetEnv: []string{"CODEX_HOME"},
 	})
 	if err != nil {
+		return provider.AccountInfo{}, err
+	}
+	defer func() { retErr = errors.Join(retErr, cleanup()) }()
+	proc, err := provider.Spawn(probeCtx, spawnCfg)
+	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("codex: identity probe spawn: %w", err)
 	}
-	defer func() { _ = proc.Close() }()
+	defer func() { retErr = errors.Join(retErr, proc.Close()) }()
 
 	if err := writeJSONRPC(proc, map[string]any{
 		"jsonrpc": "2.0",

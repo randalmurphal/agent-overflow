@@ -27,8 +27,8 @@
 //
 // Platform reach: the directive only does something where a launcher-owned
 // webview subscribes to it — the Windows/WSL split today. The native
-// desktop builds (in-process webview) and --connect clients emit into
-// silence; wiring an in-process trim for those is a follow-up.
+// desktop builds (in-process webview) decline the request. --connect clients
+// do not request trims.
 package app
 
 import (
@@ -55,14 +55,18 @@ type webviewTrimDirective struct {
 // user input has been idle past its threshold; inputSinceLastTrim is the
 // caller's half of the activity gate — whether any user input landed after
 // the last trim this caller saw accepted. Returns what happened —
-// "requested", "skipped-active-turn", "skipped-recent", or
-// "skipped-no-activity" — so the caller can log without a second RPC.
+// "requested", "skipped-active-turn", "skipped-recent",
+// "skipped-no-activity", or "unsupported". Unsupported clients disarm
+// their idle detector.
 // //ao:scope host: it reaches into the process that owns this window, so it
 // has no remote form.
 //
 //ao:scope host
 //ao:route home
 func (a *App) RequestWebviewMemoryTrim(inputSinceLastTrim bool) (string, error) {
+	if a.browser.cdpRelay == nil {
+		return "unsupported", nil
+	}
 	if a.hasActiveProviderTurn() {
 		return "skipped-active-turn", nil
 	}

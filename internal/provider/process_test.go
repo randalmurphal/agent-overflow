@@ -4,11 +4,13 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -745,11 +747,16 @@ func TestCloseEscalatesToSignal(t *testing.T) {
 // read-loop's unexpected-exit banner path, which gates on
 // `!closing.Load()` so it doesn't fire for intentional teardown.
 func TestCloseSwallowsExitCodeOnIntentionalShutdown(t *testing.T) {
+	var logs bytes.Buffer
+	prior := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(prior)
+
 	ctx := context.Background()
 	// `false` exits with code 1 immediately. By the time Close runs
 	// the Wait goroutine has already captured the *exec.ExitError into
 	// p.err and closed p.done.
-	p, err := Spawn(ctx, SpawnConfig{Binary: "false"})
+	p, err := Spawn(ctx, SpawnConfig{Binary: "false", Provider: "claude", ThreadID: "closing-thread"})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -760,6 +767,12 @@ func TestCloseSwallowsExitCodeOnIntentionalShutdown(t *testing.T) {
 
 	if err := p.Close(); err != nil {
 		t.Fatalf("Close returned %v, want nil (subprocess exit is the close goal, not a failure)", err)
+	}
+
+	for _, want := range []string{`provider="claude"`, `thread="closing-thread"`, fmt.Sprintf("pid=%d", p.PID()), "intentional close"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("missing %q in close diagnostic: %s", want, logs.String())
+		}
 	}
 
 	// The exit error must remain available for callers that want it

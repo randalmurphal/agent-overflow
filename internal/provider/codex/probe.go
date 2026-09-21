@@ -33,7 +33,7 @@ import (
 // ProbeConfig customizes a short-lived account probe invocation.
 type ProbeConfig struct {
 	Binary string // default: "codex"
-	// WorkDir is the probe subprocess's working directory. REQUIRED, and
+	// WorkDir is the parent of the temporary account working directory. REQUIRED, and
 	// must be absolute — see provider.ValidateProbeWorkDir for why an
 	// inherited cwd is not an acceptable default here.
 	WorkDir string
@@ -86,10 +86,7 @@ const (
 // plan info" outcome — observed when the user is signed in but the
 // rate-limits backend hasn't seen activity yet, or when the planType
 // field is absent on the wire.
-func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, error) {
-	if err := provider.ValidateProbeWorkDir("codex", cfg.WorkDir); err != nil {
-		return provider.AccountInfo{}, err
-	}
+func ProbeAccount(ctx context.Context, cfg ProbeConfig) (_ provider.AccountInfo, retErr error) {
 	binary := cfg.Binary
 	if binary == "" {
 		binary = "codex"
@@ -103,7 +100,7 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	proc, err := provider.Spawn(probeCtx, provider.SpawnConfig{
+	spawnCfg, cleanup, err := prepareAccountProcess(provider.SpawnConfig{
 		Binary:   binary,
 		Args:     buildProbeArgs(),
 		Dir:      cfg.WorkDir,
@@ -115,9 +112,14 @@ func ProbeAccount(ctx context.Context, cfg ProbeConfig) (provider.AccountInfo, e
 		GracefulCancel: true,
 	})
 	if err != nil {
+		return provider.AccountInfo{}, err
+	}
+	defer func() { retErr = errors.Join(retErr, cleanup()) }()
+	proc, err := provider.Spawn(probeCtx, spawnCfg)
+	if err != nil {
 		return provider.AccountInfo{}, fmt.Errorf("codex: probe spawn: %w", err)
 	}
-	defer func() { _ = proc.Close() }()
+	defer func() { retErr = errors.Join(retErr, proc.Close()) }()
 
 	// 1) initialize request
 	if err := writeJSONRPC(proc, map[string]any{

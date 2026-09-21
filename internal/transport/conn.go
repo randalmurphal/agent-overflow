@@ -413,15 +413,17 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	}
 
 	started := time.Now()
+	log.Printf("transport: ws %s connected (loopback=%t device=%q page=%q)",
+		profile.remoteAddr, profile.isLoopback, profile.client.DeviceID, profile.client.ConnectionID)
 	readErr := h.readLoop(connCtx)
 	// One line per connection lifetime, graceful closes included — the
 	// close signature (status vs raw error) is what distinguishes a
 	// client navigation from a relay teardown or a network drop after
 	// the fact, and suppressing graceful closes made the 2026-07-28
 	// relay-flap diagnosis needlessly indirect.
-	log.Printf("transport: ws %s closed after %s (loopback=%t): %s",
+	log.Printf("transport: ws %s closed after %s (loopback=%t device=%q page=%q): %s",
 		profile.remoteAddr, time.Since(started).Round(time.Millisecond),
-		profile.isLoopback, h.closeReason(readErr))
+		profile.isLoopback, profile.client.DeviceID, profile.client.ConnectionID, h.closeReason(readErr))
 
 	// Wait for in-flight RPC handlers to finish writing their
 	// responses before we let the parent close the WS underneath them.

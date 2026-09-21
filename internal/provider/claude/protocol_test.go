@@ -1086,14 +1086,14 @@ func TestParseLine_MissingType(t *testing.T) {
 	}
 }
 
-func TestParseLine_SystemToolProgressDropped(t *testing.T) {
+func TestParseLine_SystemToolProgressIsActivity(t *testing.T) {
 	line := []byte(`{"type":"system","subtype":"tool_progress","item_id":"item-1","progress":{"percent":50}}`)
 	events, err := ParseLine(testThreadProto, line)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(events) != 0 {
-		t.Fatalf("expected tool_progress to be dropped, got %d event(s)", len(events))
+	if len(events) != 1 || events[0].Kind != provider.EventSessionStatus || events[0].Content != "tool_progress" {
+		t.Fatalf("expected only progress activity, got %+v", events)
 	}
 }
 
