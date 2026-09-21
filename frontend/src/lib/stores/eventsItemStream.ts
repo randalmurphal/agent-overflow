@@ -17,7 +17,7 @@ import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 import type { ItemDeltaEvent, ItemStreamEvent } from '../types/events';
 import type { Item } from '../types/models';
 import { iterPanes } from './panes.svelte';
-import { confirmFlushedByUserItemId } from './sendQueue.svelte';
+import { confirmFlushedByUserItemId, markQueuedItemConsumed } from './sendQueue.svelte';
 import { itemsRenderEqual } from './threadItems';
 import { threadItemCache } from './threadItemCache';
 import { removeReplicaWindow } from '../replica';
@@ -263,6 +263,7 @@ function applyItemUpserts(upserts: Item[]): void {
   // only for threads NOBODY has mounted.
   const flushRowIdsByThread = new Map<string, string[]>();
   for (const item of upserts) {
+    markQueuedItemConsumed(item);
     const list = itemsByThread.get(item.threadId);
     if (list) {
       list.push(item);

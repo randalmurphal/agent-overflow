@@ -60,6 +60,16 @@ func (r *Router) LiveStateSnapshotForThread(threadID string) LiveStateSnapshot {
 	}
 
 	r.mu.Lock()
+	// Echo handling removes a pending send before persisting its row, under
+	// anchorLock. Wait so recovery sees the pending send or its persisted row.
+	// Do not create identities for idle reads; with no identity, r.mu already
+	// prevents a newly arriving echo from consuming anything until we finish.
+	if id := r.identityIfPresent(threadID); id != nil {
+		r.mu.Unlock()
+		id.anchorLock.Lock()
+		defer id.anchorLock.Unlock()
+		r.mu.Lock()
+	}
 	defer r.mu.Unlock()
 
 	if id := r.identityIfPresent(threadID); id != nil {

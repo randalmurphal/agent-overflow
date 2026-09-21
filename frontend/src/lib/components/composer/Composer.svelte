@@ -638,11 +638,9 @@
       resetTextareaHeight();
       surface?.recreateInput();
       try {
-        await draftReady;
-        // This snapshot is consumed. New text may be queued independently
-        // while this operation waits for its acknowledgement.
-        release();
-        await registerQueueItem(midTurnThreadId, message, sendOptions);
+        // Show the pending submission during draft preparation and RPC
+        // admission too. Release typing admission once preparation succeeds.
+        await registerQueueItem(midTurnThreadId, message, sendOptions, draftReady.then(release));
       } catch (err) {
         pane.setGeneralError(`Failed to queue message: ${String(err)}`);
         // Putting the message back is a second, independent operation: if

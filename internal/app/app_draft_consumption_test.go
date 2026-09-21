@@ -147,7 +147,8 @@ func TestQueueDispatchPreservesDraftWrittenAfterAdmission(t *testing.T) {
 	}
 	sess := installSteerTestSession(t, app, thread, "ok")
 	app.sessionManager().put(thread.ID, session{Provider: string(provider.Codex), Token: "test", Codex: sess})
-	app.dispatchFlush(thread.ID, app.triage.QueuedFlushItems(thread.ID))
+	app.triage.SetFlushDispatcher(app.dispatchFlush)
+	app.triage.FlushQueuedItems(thread.ID)
 	state, err := app.GetThreadLiveState(thread.ID)
 	if err != nil || len(state.FlushedItems) != 1 {
 		t.Fatalf("queue did not dispatch: %+v %v", state, err)

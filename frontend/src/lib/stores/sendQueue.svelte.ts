@@ -1,14 +1,16 @@
-import type { SourceDiffReview, SourceProposedPlan } from '../types/models';
+import type { Item, SourceDiffReview, SourceProposedPlan } from '../types/models';
 import type { QueuedItem as WireQueuedItem } from '../../../bindings/agent-overflow/internal/app/models';
 import type { OutgoingSendOptions } from '../utils/sendOptions';
 import { RegisterQueueItem } from './bindings';
+import { isPendingFlushRow, parseUserMessageMeta } from '../utils/userMessageMeta';
 import { createKeyedSignalRegistry, type KeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
 /**
  * Pending send queue.
  *
- * `queueByThread` holds messages registered with the backend but not
- * yet written to the provider by the dispatch worker.
+ * `queueByThread` holds provisional local submissions and messages
+ * registered with the backend but not yet written by the dispatch worker.
+ * Provisional entries reconcile by sendId and never control dispatch.
  *
  * `flushedByThread` holds messages written to the provider whose
  * timeline row is not RENDERED anywhere yet. Both states render in the
@@ -39,13 +41,15 @@ import { createKeyedSignalRegistry, type KeyedSignalRegistry } from './keyedSign
  * safe one, because it can never leave a message in neither place.
  *
  * The store does not own dispatch decisions. RegisterQueueItem goes
- * through the backend RPC; backend events are the source of truth.
+ * through the backend RPC; replies and events confirm backend acceptance.
  */
 
 /** Wire-side queue item shape — what the frontend stores in Zone 1
  * after `provider:queue_state_changed` arrives, and what
  * RegisterQueueItem returns. */
 export interface QueueItem {
+  /** Local presentation until acceptance; never sent as queue state. */
+  submitting?: boolean;
   sendId?: string;
   id: string;
   threadId: string;
@@ -177,6 +181,16 @@ function removeQueuedItemsById(threadId: string, queueItemIds: Set<string>): boo
   return filterZoneItems(queueByThread, threadId, EMPTY_QUEUE, (item) => !queueItemIds.has(item.id));
 }
 
+function removeDispatchedQueueItems(
+  threadId: string,
+  items: readonly Pick<FlushedItem, 'queueItemId' | 'sendId'>[],
+): boolean {
+  const queueItemIds = new Set(items.map((item) => item.queueItemId));
+  const sendIDs = new Set(items.map(item => item.sendId).filter(Boolean));
+  return filterZoneItems(queueByThread, threadId, EMPTY_QUEUE,
+    item => !queueItemIds.has(item.id) && !sendIDs.has(item.sendId));
+}
+
 // ---- Backend RPC mutations ------------------------------------------
 
 /** Register a queued user message via the backend RPC. Backend
@@ -195,12 +209,49 @@ export async function registerQueueItem(
   threadId: string,
   message: string,
   options: OutgoingSendOptions,
+  ready?: Promise<void>,
 ): Promise<QueueItem> {
   if (!threadId) {
     throw new Error('sendQueue.registerQueueItem: threadId is required');
   }
-  const wire = await RegisterQueueItem(threadId, message, options);
-  return queueItemFromWire(wire);
+  const id = `submitting:${options.sendId}`;
+  const pending: QueueItem = {
+    id, threadId, message, enqueuedAt: Date.now(), submitting: true,
+    sendId: options.sendId,
+    attachmentIds: options.attachmentIds ?? [],
+    sourceProposedPlan: options.sourceProposedPlan,
+    revisionSourceProposedPlan: options.revisionSourceProposedPlan,
+    revisionSourceCommentIds: options.revisionSourceCommentIds,
+    revisionSourceDiffReview: options.revisionSourceDiffReview,
+    revisionSourceDiffCommentIds: options.revisionSourceDiffCommentIds,
+  };
+  if (!queueByThread.get(threadId).some(item => item.sendId === options.sendId)
+    && !flushedByThread.get(threadId).some(item => item.sendId === options.sendId)) {
+    appendZoneItems(queueByThread, threadId, [pending]);
+    bumpQueueRevision(threadId);
+  }
+  try {
+    if (ready) await ready;
+    const wire = await RegisterQueueItem(threadId, message, options);
+    const item = queueItemFromWire(wire);
+    // Events can acknowledge and even render the message before the RPC
+    // replies. Only replace our still-present provisional entry.
+    if (queueByThread.get(threadId).some(entry => entry.id === id)) {
+      if (item.id.startsWith('user:')) {
+        markItemsFlushed(threadId, [{ queueItemId: id, userItemId: item.id, message: item.message, sendId: options.sendId }]);
+      } else {
+        const current = queueByThread.get(threadId);
+        queueByThread.set(threadId, current.some(entry => entry.id === item.id)
+          ? current.filter(entry => entry.id !== id)
+          : current.map(entry => entry.id === id ? item : entry));
+        bumpQueueRevision(threadId);
+      }
+    }
+    return item;
+  } catch (err) {
+    if (removeQueuedItemsById(threadId, new Set([id]))) bumpQueueRevision(threadId);
+    throw err;
+  }
 }
 
 // Note: the queue is READ from the backend in two places, and neither is
@@ -243,7 +294,9 @@ export function replaceQueueForThread(
       EMPTY_FLUSHED,
       (entry) => !queuedIds.has(entry.queueItemId),
     );
-  const replacedQueuedItems = replaceZoneItems(queueByThread, threadId, items, EMPTY_QUEUE);
+  const acceptedSendIDs = new Set(items.map(item => item.sendId).filter(Boolean));
+  const submitting = queueByThread.get(threadId).filter(item => item.submitting && !acceptedSendIDs.has(item.sendId));
+  const replacedQueuedItems = replaceZoneItems(queueByThread, threadId, [...items, ...submitting], EMPTY_QUEUE);
   if (reclaimedFlushedItems || replacedQueuedItems) bumpQueueRevision(threadId);
 }
 
@@ -262,8 +315,9 @@ export function replaceFlushedForThread(
   items: readonly FlushedItem[],
 ): void {
   if (!threadId) return;
-  if (!replaceZoneItems(flushedByThread, threadId, items, EMPTY_FLUSHED)) return;
-  bumpQueueRevision(threadId);
+  const removedQueuedItems = removeDispatchedQueueItems(threadId, items);
+  const replacedFlushedItems = replaceZoneItems(flushedByThread, threadId, items, EMPTY_FLUSHED);
+  if (removedQueuedItems || replacedFlushedItems) bumpQueueRevision(threadId);
 }
 
 /** Move a batch of items to Zone 2. Called by the
@@ -289,8 +343,7 @@ export function markItemsFlushed(
 ): void {
   if (!threadId || items.length === 0) return;
   const now = Date.now();
-  const queueItemIds = new Set(items.map((item) => item.queueItemId));
-  const removedQueuedItems = removeQueuedItemsById(threadId, queueItemIds);
+  const removedQueuedItems = removeDispatchedQueueItems(threadId, items);
   const knownUserItemIds = new Set(
     flushedByThread.get(threadId).map((entry) => entry.userItemId),
   );
@@ -310,6 +363,19 @@ export function markItemsFlushed(
   if (removedQueuedItems || appendedFlushedItems) {
     bumpQueueRevision(threadId);
   }
+}
+
+/** A canonical echo also acknowledges a submission whose queue event was lost. */
+export function markQueuedItemConsumed(item: Item): void {
+  if (item.kind !== 'user_text' || isPendingFlushRow(item)) return;
+  const queued = queueByThread.get(item.threadId);
+  if (queued.length === 0) return;
+  const meta = parseUserMessageMeta(item.meta);
+  const ids = new Set([meta.sendId, ...(Array.isArray(meta.joinedSendIds) ? meta.joinedSendIds : [])]);
+  const matches = queued.filter(entry => entry.sendId && ids.has(entry.sendId));
+  markItemsFlushed(item.threadId, matches.map(entry => ({
+    queueItemId: entry.id, userItemId: item.id, message: item.summary, sendId: entry.sendId,
+  })));
 }
 
 /** Hand a flushed message over from Zone 2 to the timeline.

@@ -96,9 +96,8 @@ func (r *Router) handleUserText(evt provider.ProviderEvent) error {
 		// claim + store write, so a claim this echo observes is a claim
 		// whose bump/persist already committed — and a failed write was
 		// already unclaimed. The confirmed hook (message-anchor record)
-		// runs inside the lock too; it is already synchronous on this
-		// read loop, and the only new waiters are the rare interrupt
-		// paths, which need the ordering more than the latency.
+		// runs inside the lock too. Interrupt operations and recovery
+		// snapshots wait for the complete confirmation transaction.
 		handled, err := func() (bool, error) {
 			anchor := r.flushAnchor(evt.ThreadID)
 			anchor.Lock()

@@ -216,6 +216,7 @@ describe('<Composer>', () => {
       threadId: string,
       message: string,
       opts: {
+        sendId?: string;
         attachmentIds?: string[];
         sourceProposedPlan?: unknown;
         revisionSourceProposedPlan?: unknown;
@@ -225,6 +226,7 @@ describe('<Composer>', () => {
       defaultQueueSeq += 1;
       const wire = {
         id: `q-${defaultQueueSeq}`,
+        sendId: opts.sendId,
         threadId,
         message,
         attachmentIds: opts.attachmentIds ? [...opts.attachmentIds] : [],
@@ -237,9 +239,10 @@ describe('<Composer>', () => {
       };
       const current = getQueueForThread(threadId);
       replaceQueueForThread(threadId, [
-        ...current,
+        ...current.filter(item => !item.submitting),
         {
           id: wire.id,
+          sendId: wire.sendId,
           threadId: wire.threadId,
           message: wire.message,
           attachmentIds: wire.attachmentIds,

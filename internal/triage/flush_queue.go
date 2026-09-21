@@ -492,15 +492,20 @@ func (r *Router) tryFlushQueue(threadID string) bool {
 	r.identity(threadID).claimedFlushItems = append(r.identity(threadID).claimedFlushItems, batch...)
 	r.mu.Unlock()
 
-	defer func() {
-		r.mu.Lock()
-		if id := r.identityIfPresent(threadID); id != nil {
-			id.claimedFlushItems = releaseClaimedFlushItems(id.claimedFlushItems, batch)
-		}
-		r.mu.Unlock()
-	}()
+	defer r.ReleaseFlushClaim(threadID, batch)
 	dispatcher(threadID, batch)
 	return true
+}
+
+// ReleaseFlushClaim finishes a handoff after the dispatcher records the
+// batch. An asynchronous dispatcher calls it before its worker can settle;
+// tryFlushQueue also calls it on return for synchronous dispatchers.
+func (r *Router) ReleaseFlushClaim(threadID string, items []QueuedFlushItem) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if id := r.identityIfPresent(threadID); id != nil {
+		id.claimedFlushItems = releaseClaimedFlushItems(id.claimedFlushItems, items)
+	}
 }
 
 // releaseClaimedFlushItems drops this handoff's own entries and nothing

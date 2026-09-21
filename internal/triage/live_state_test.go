@@ -1,7 +1,11 @@
 package triage
 
 import (
+	"encoding/json"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -134,5 +138,55 @@ func TestLiveActivitySnapshot_NamesOnlyThreadsWithLiveActivity(t *testing.T) {
 		if entry.ThreadID == "running" {
 			t.Fatalf("running still listed after its round closed: %+v", entry)
 		}
+	}
+}
+
+func TestLiveStateSnapshotWaitsForConsumedSendPersistence(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 1)
+	row := store.Item{ID: "user:1:flush:1", ThreadID: "t1", TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed", Summary: "pending", CreatedAt: 1, UpdatedAt: 1}
+	router.RegisterPendingFlushSendWithExpectation("t1", "q", row, 0, PendingSendExpectation{ByClientID: true})
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	router.deferredPersistGate = func() { close(entered); <-release }
+	echoDone := make(chan error, 1)
+	go func() {
+		echoDone <- router.Handle(provider.ProviderEvent{Kind: provider.EventUserText, ThreadID: "t1", Content: row.Summary,
+			Meta: json.RawMessage(`{"provider_item_id":"native-echo","client_id":"user:1:flush:1"}`), Timestamp: time.Now()})
+	}()
+	defer func() {
+		unblock()
+		if err := <-echoDone; err != nil {
+			t.Errorf("echo: %v", err)
+		}
+	}()
+	<-entered
+	done := make(chan LiveStateSnapshot, 1)
+	go func() { done <- router.LiveStateSnapshotForThread("t1") }()
+	select {
+	case snapshot := <-done:
+		t.Fatalf("snapshot returned between consumption and persistence: %+v", snapshot)
+	case <-time.After(50 * time.Millisecond):
+	}
+	unblock()
+	snapshot := <-done
+	if len(snapshot.FlushedItems) != 0 {
+		t.Fatalf("confirmed send still pending: %+v", snapshot.FlushedItems)
+	}
+	stored, found, err := st.GetThreadItem("t1", row.ID)
+	if err != nil || !found || !strings.Contains(stored.Meta, "native-echo") {
+		t.Fatalf("snapshot preceded confirmed history: found=%v row=%+v err=%v", found, stored, err)
+	}
+}
+
+func TestLiveStateSnapshotDoesNotAllocateIdleThreadIdentity(t *testing.T) {
+	router, _, _ := newTestRouter(t)
+	for range 2 {
+		router.LiveStateSnapshotForThread("idle")
+	}
+	if router.identityIfPresent("idle") != nil {
+		t.Fatal("live-state read allocated a permanent identity")
 	}
 }

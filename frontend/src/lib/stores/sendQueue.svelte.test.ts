@@ -1,6 +1,11 @@
+import { setBindingMock, resetBindingMocks } from '../../test/mocks/bindings-app';
+import { buildSendOptions } from '../utils/sendOptions';
+import { makeItem as makeChatItem } from '../../test/helpers/chat';
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   clearForThread,
+  registerQueueItem,
+  markQueuedItemConsumed,
   confirmFlushedByUserItemId,
   getFlushedForThread,
   getQueueRevisionForThread,
@@ -334,4 +339,91 @@ describe('sendQueue store', () => {
     });
   });
 
+});
+
+describe('pending submission visibility', () => {
+  beforeEach(() => { resetSendQueueForTest(); resetBindingMocks(); });
+
+  it('a live snapshot acknowledges a provisional send before its RPC replies', async () => {
+    const options = buildSendOptions({ attachmentIds: [] });
+    let reply!: (item: unknown) => void;
+    setBindingMock('RegisterQueueItem', () => new Promise(resolve => { reply = resolve; }));
+    const pending = registerQueueItem('t1', 'pending', options);
+    replaceQueueForThread('t1', []);
+    replaceFlushedForThread('t1', [{ queueItemId: 'q1', userItemId: 'u1',
+      message: 'pending', sendId: options.sendId, flushedAt: 1 }]);
+    expect(getQueueForThread('t1')).toHaveLength(0);
+    expect(getFlushedForThread('t1')).toHaveLength(1);
+    reply({ id: 'q1', threadId: 't1', message: 'pending', sendId: options.sendId, enqueuedAt: 1 });
+    await pending;
+    expect(getQueueForThread('t1')).toHaveLength(0);
+  });
+
+  it('repeated registration with the same send identity shows one provisional entry', async () => {
+    const options = buildSendOptions({ attachmentIds: [] });
+    let ready!: () => void;
+    const held = new Promise<void>(resolve => { ready = resolve; });
+    setBindingMock('RegisterQueueItem', async () => ({ id: 'q1', threadId: 't1', message: 'pending', sendId: options.sendId, enqueuedAt: 1 }));
+    const sends = [registerQueueItem('t1', 'pending', options, held), registerQueueItem('t1', 'pending', options, held)];
+    expect(getQueueForThread('t1')).toHaveLength(1);
+    ready();
+    await Promise.all(sends);
+    expect(getQueueForThread('t1').map(item => item.id)).toEqual(['q1']);
+  });
+
+  it('shows the message during draft preparation and admission, then reconciles by sendId', async () => {
+    let prepare!: () => void;
+    const ready = new Promise<void>(resolve => { prepare = resolve; });
+    let reply!: (value: unknown) => void;
+    const rpc = setBindingMock('RegisterQueueItem', () => new Promise(resolve => { reply = resolve; }));
+    const options = buildSendOptions({ attachmentIds: [] });
+    const pending = registerQueueItem('t1', 'visible throughout', options, ready);
+    expect(getQueueForThread('t1').map(item => item.message)).toEqual(['visible throughout']);
+    expect(rpc).not.toHaveBeenCalled();
+    replaceQueueForThread('t1', []);
+    expect(getQueueForThread('t1')).toHaveLength(1);
+    prepare();
+    await Promise.resolve();
+    const accepted = { id: 'queue:accepted', threadId: 't1', sendId: options.sendId, message: 'visible throughout', enqueuedAt: 1, attachmentIds: [] };
+    replaceQueueForThread('t1', [accepted]);
+    expect(getQueueForThread('t1').map(item => item.id)).toEqual([accepted.id]);
+    markItemsFlushed('t1', [{ queueItemId: accepted.id, userItemId: 'user:flush:1', sendId: options.sendId, message: accepted.message }]);
+    confirmFlushedByUserItemId('t1', 'user:flush:1');
+    reply(accepted);
+    await pending;
+    expect(hasQueueItems('t1')).toBe(false);
+  });
+
+  it.each(['preparation', 'admission'])('removes only its provisional message when %s fails', async (phase) => {
+    setBindingMock('RegisterQueueItem', async () => { throw new Error('rejected'); });
+    const options = buildSendOptions({ attachmentIds: [] });
+    const pending = registerQueueItem('t1', 'failed', options, phase === 'preparation' ? Promise.reject(new Error('rejected')) : undefined);
+    replaceQueueForThread('t1', [makeItem({ threadId: 't1', message: 'other message' })]);
+    await expect(pending).rejects.toThrow('rejected');
+    expect(getQueueForThread('t1').map(item => item.message)).toEqual(['other message']);
+  });
+
+  it('uses an admission reply when its queue push has not arrived', async () => {
+    const options = buildSendOptions({ attachmentIds: [] });
+    setBindingMock('RegisterQueueItem', async () => ({ id: 'queue:accepted', threadId: 't1', message: 'accepted', sendId: options.sendId, enqueuedAt: 1 }));
+    await registerQueueItem('t1', 'accepted', options);
+    expect(getQueueForThread('t1').map(item => [item.id, item.submitting])).toEqual([['queue:accepted', undefined]]);
+    markQueuedItemConsumed(makeChatItem({ id: 'user:flush:1', threadId: 't1', kind: 'user_text', summary: 'accepted', meta: JSON.stringify({ sendId: options.sendId }) }));
+    expect(getQueueForThread('t1')).toEqual([]);
+    expect(getFlushedForThread('t1')).toHaveLength(1);
+  });
+
+  it('a joined Claude echo acknowledges every member before delayed admission replies', async () => {
+    const replies: Array<(value: unknown) => void> = [];
+    setBindingMock('RegisterQueueItem', () => new Promise(resolve => replies.push(resolve)));
+    const options = [buildSendOptions({ attachmentIds: [] }), buildSendOptions({ attachmentIds: [] })];
+    const sends = options.map((opts, index) => registerQueueItem('t1', `message ${index}`, opts));
+    markQueuedItemConsumed(makeChatItem({ id: 'user:flush:joined', threadId: 't1', kind: 'user_text', summary: 'joined message', meta: JSON.stringify({ sendId: options[0].sendId, joinedSendIds: options.map(item => item.sendId) }) }));
+    expect(getQueueForThread('t1')).toEqual([]);
+    expect(getFlushedForThread('t1')).toHaveLength(1);
+    confirmFlushedByUserItemId('t1', 'user:flush:joined');
+    replies.forEach((reply, index) => reply({ id: `queue:${index}`, threadId: 't1', sendId: options[index].sendId, message: `message ${index}`, enqueuedAt: 1 }));
+    await Promise.all(sends);
+    expect(hasQueueItems('t1')).toBe(false);
+  });
 });

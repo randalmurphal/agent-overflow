@@ -17,6 +17,7 @@ import type { ComposerDraftStore } from './composerDraft.svelte';
 import { buildPane, makeThread } from '../../test/helpers/chat';
 import {
   getQueueForThread,
+  getFlushedForThread,
   resetForTest as resetSendQueueForTest,
 } from './sendQueue.svelte';
 import { applyQueueStateChanged } from './eventsQueue';
@@ -346,14 +347,42 @@ describe('transport gap — the send-queue channels', () => {
     expect(getBindingMock('GetQueueState')).not.toHaveBeenCalled();
   });
 
-  // Delivery badges are transient state no RPC returns. Refetching a pane's
-  // window would not repair them, so the honest answer is to do nothing.
-  it('the delivery channels recover nothing, and cost nothing', async () => {
+  it('recovers a missed dispatch event while the provider has not consumed the message', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-a' }), [], 'main');
+    setBindingMock('GetThreadLiveState', async () => ({ threadId: 'thread-a', queueItems: [], flushedItems: [
+      { queueItemId: 'q1', userItemId: 'user:flush:1', message: 'awaiting consumption' },
+    ] }));
+    applyTransportGap({ channel: 'provider:queue_flushed', seq: 3 });
+    await vi.waitFor(() => expect(getFlushedForThread('thread-a').map(item => item.message)).toEqual(['awaiting consumption']));
+    expect(pane.items).toHaveLength(0);
+  });
+
+  it('retries recovery when a queue event overtakes the lost-dispatch snapshot', async () => {
+    await buildPane(makeThread({ id: 'thread-a' }), [], 'main');
+    applyQueueStateChanged({ threadId: 'thread-a', items: [
+      { threadId: 'thread-a', id: 'q1', message: 'awaiting consumption', enqueuedAt: 1 },
+    ] });
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const read = setBindingMock('GetThreadLiveState', async () => {
+      await held;
+      return { threadId: 'thread-a', queueItems: [], flushedItems: [
+        { queueItemId: 'q1', userItemId: 'user:flush:1', message: 'awaiting consumption' },
+      ] };
+    });
+    applyTransportGap({ channel: 'provider:queue_flushed', seq: 3 });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    applyQueueStateChanged({ threadId: 'thread-a', items: [] });
+    release();
+    await vi.waitFor(() => expect(getFlushedForThread('thread-a')).toHaveLength(1));
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('optional command lifecycle badges need no history refresh', async () => {
     setBindingMock('GetQueueState', async () => []);
     const pane = await buildPane(makeThread({ id: 'thread-a' }), [], 'main');
     const refresh = vi.spyOn(pane, 'refreshFromBackend');
 
-    applyTransportGap({ channel: 'provider:queue_flushed', seq: 3 });
     applyTransportGap({ channel: 'provider:command_lifecycle', seq: 4 });
     await settle();
 

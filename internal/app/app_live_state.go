@@ -8,7 +8,6 @@ import (
 
 	"agent-overflow/internal/slicesx"
 
-	"agent-overflow/internal/flushqueue"
 	"agent-overflow/internal/itemwire"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
@@ -110,7 +109,11 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 		return state, nil
 	}
 
+	// Keep dispatch ownership stable across both halves of this snapshot.
+	a.flushDispatch.mu.Lock()
+	queued := a.queueSnapshotForThreadLocked(threadID)
 	live := a.triage.LiveStateSnapshotForThread(threadID)
+	a.flushDispatch.mu.Unlock()
 	state.CodexAgents = itemwire.ProjectItems(a.triage.CodexAgentRuntimeSnapshot(threadID), true)
 	state.EffectiveModel = live.EffectiveModel
 	state.EffectiveModelRevision = live.EffectiveModelRevision
@@ -131,10 +134,17 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	// shows. These are un-echoed user sends with no diff previews to
 	// weigh, so previews stay on and only the meta budget applies.
 	state.DeferredItems = append(state.DeferredItems, itemwire.ProjectItems(live.DeferredItems, true)...)
-	for _, item := range live.QueueItems {
-		state.QueueItems = append(state.QueueItems, flushqueue.ItemFromTriage(threadID, item))
+	state.QueueItems = append(state.QueueItems, queued...)
+	queuedIDs := make(map[string]bool, len(queued))
+	for _, item := range queued {
+		queuedIDs[item.ID] = true
 	}
 	for _, item := range live.FlushedItems {
+		// Pending registration precedes provider I/O. Until dispatch publishes
+		// the handoff, the queue owns the preview (including a joined batch).
+		if queuedIDs[item.QueueItemID] {
+			continue
+		}
 		meta, err := usermessage.FromItem(store.Item{Meta: item.UserMeta})
 		if err != nil {
 			return state, fmt.Errorf("get thread live state: pending message metadata: %w", err)

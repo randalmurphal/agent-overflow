@@ -1231,7 +1231,7 @@ export function createThreadSwitchLoad(
         sentWindow,
         deferredItems,
       );
-      liveState?.apply();
+      liveState?.apply(() => refreshScheduler.request({ immediate: true }));
       if (gen === options.getSwitchGeneration()) {
         failedHistoryLoad = null;
         options.clearPaneError('history-load');
@@ -1379,7 +1379,7 @@ export function createThreadSwitchLoad(
       try {
         const liveState = await liveStateFetch;
         await loadItemsPromise;
-        liveState.apply();
+        liveState.apply(() => refreshScheduler.request({ immediate: true }));
         if (gen === options.getSwitchGeneration() && liveState.error && !failedHistoryLoad
           && !isPassiveConnectionFailure(liveState.error)) {
           options.setPaneError(`Could not synchronize live conversation state: ${errString(liveState.error)}`, 'general');
@@ -1620,6 +1620,9 @@ export function createThreadSwitchLoad(
       // and an apply() that falls back to the interactive-only leg.
       const liveState = await liveStatePromise;
       if (!refreshIsCurrent()) return;
+      if (liveState.error && !isPassiveConnectionFailure(liveState.error)) {
+        options.setPaneError(`Could not synchronize live conversation state: ${errString(liveState.error)}`, 'general');
+      }
       if (requireItems && liveState.error) return liveState.error;
       const snapshot = itemsForThread(
         (paged.items ?? []) as Item[],
@@ -1658,7 +1661,7 @@ export function createThreadSwitchLoad(
       // Live-state apply immediately after the install, synchronously:
       // no frame can paint the page-only intermediate state.
       liveStateApplied = true;
-      liveState.apply();
+      liveState.apply(() => refreshScheduler.request({ immediate: true }));
       failedHistoryLoad = null;
       options.clearPaneError('history-load');
       try {

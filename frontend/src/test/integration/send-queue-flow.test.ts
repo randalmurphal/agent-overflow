@@ -93,13 +93,14 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
     const registerMock = setBindingMock('RegisterQueueItem', async (
       threadId: string,
       message: string,
-      opts: { attachmentIds?: string[] } = {},
+      opts: { attachmentIds?: string[]; sendId?: string } = {},
     ) => {
       // Mirror the production round-trip: seed the local pending queue
       // directly without a real event. Tests asserting the event-driven
       // path use T2 below.
       const wire = {
         id: 'q-1',
+        sendId: opts.sendId,
         threadId,
         message,
         attachmentIds: opts.attachmentIds ?? [],
@@ -111,6 +112,7 @@ describe('App integration — send-queue flow (Phases G1–G10)', () => {
       replaceQueueForThread(threadId, [
         {
           id: wire.id,
+          sendId: wire.sendId,
           threadId: wire.threadId,
           message: wire.message,
           attachmentIds: wire.attachmentIds,

@@ -476,6 +476,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // here because both dependencies above must already exist.
   const liveStateHydration = createThreadLiveStateHydration({
     getThread: () => thread,
+    getItems,
+    isOptimisticItem: (id) => optimisticItemIds.has(id),
     getSwitchGeneration: () => switchGeneration,
     pendingInteractiveState,
     liveTodoState,

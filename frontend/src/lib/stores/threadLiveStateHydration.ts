@@ -1,3 +1,4 @@
+import { isPendingFlushRow } from '../utils/userMessageMeta';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { threadBackend } from '../transport/entityIndex';
 import { codexAgentRevision, hydrateCodexAgents } from './subagentProgress.svelte';
@@ -8,7 +9,7 @@ import type {
   ProviderSessionAccountEvent,
 } from '../types/events';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/internal/app/models';
-import { GetThreadLiveState, ListPendingInteractiveRequests } from './bindings';
+import { GetThreadItem, GetThreadLiveState, ListPendingInteractiveRequests } from './bindings';
 import type { LiveStateHydrationGuard } from './threadPaneShared';
 import {
   finishThreadLiveStateHydration,
@@ -22,6 +23,9 @@ import {
 } from './threadStatuses.svelte';
 import {
   getQueueRevisionForThread,
+  getFlushedForThread,
+  getQueueForThread,
+  markQueuedItemConsumed,
   queueItemFromWire,
   replaceFlushedForThread,
   replaceQueueForThread,
@@ -34,6 +38,8 @@ import { compactingRevision, hydrateCompactingState } from './compactingState.sv
 
 export interface ThreadLiveStateHydrationOptions {
   getThread(): Thread | null;
+  getItems(): readonly Item[];
+  isOptimisticItem(itemId: string): boolean;
   confirmOptimisticSend(threadId: string, sendId: string | undefined, canonicalItemId?: string): void;
   /** The pane's send-queue render handover (thread.svelte.ts). */
   syncRenderedFlushRows(): void;
@@ -77,9 +83,10 @@ export interface LiveStateFetchResult {
    * Apply the fetched snapshot to the pane and the global registries,
    * gen/token-guarded, entirely synchronously. Consumes the hydration
    * token (idempotent: second call no-ops). If never called, the caller
-   * owns finishing the token.
+   * owns finishing the token. onStaleQueue requests a fresh snapshot when
+   * queue events overtook this read without restating pending dispatches.
    */
-  apply(): void;
+  apply(onStaleQueue: () => void): void;
 }
 
 export interface ThreadLiveStateHydration {
@@ -168,12 +175,21 @@ export function createThreadLiveStateHydration(
       // including quiet reservations loaded by this pane's history read.
       // Only confirmed rows may hand over to the timeline; pendingFlush
       // keeps reservations in the preview across navigation and refresh.
-      options.syncRenderedFlushRows();
       for (const item of queueItems) options.confirmOptimisticSend(threadID, item.sendId);
       for (const item of flushedItems) {
         options.confirmOptimisticSend(threadID, item.sendId, item.userItemId);
       }
     }
+
+    // Recovery may learn consumption from history before the admission
+    // reply or echo reaches this client. Provisional timeline rows cannot
+    // acknowledge their own submission.
+    if (getQueueForThread(threadID).length > 0) {
+      for (const item of options.getItems()) {
+        if (!options.isOptimisticItem(item.id)) markQueuedItemConsumed(item);
+      }
+    }
+    options.syncRenderedFlushRows();
 
     applyInteractive(snapshot.interactive as PendingInteractiveRequests);
 
@@ -228,6 +244,7 @@ export function createThreadLiveStateHydration(
       gen === options.getSwitchGeneration() &&
       options.getThread()?.id === threadID;
 
+    const previousFlushed = getFlushedForThread(threadID);
     let snapshot: ThreadLiveState | null = null;
     let snapshotError: unknown;
     let fallbackInteractive: PendingInteractiveRequests | null = null;
@@ -245,7 +262,25 @@ export function createThreadLiveStateHydration(
     if (threadHasScope('threads:operate', threadID)) {
       try {
         snapshot = (await withBackendTarget(backend, () => GetThreadLiveState(threadID))) as ThreadLiveState;
+        if (snapshot && previousFlushed.length > 0) {
+          // The backend stops tracking a send on consumption; this screen
+          // keeps its preview until rendering. Resolve only missing markers
+          // against history so recovery distinguishes a consumed row outside
+          // the window from a message restored or removed while disconnected.
+          const queuedIDs = new Set((snapshot.queueItems ?? []).map(item => item.id));
+          const flushedIDs = new Set((snapshot.flushedItems ?? []).map(item => item.userItemId));
+          const missing = previousFlushed.filter(item => !queuedIDs.has(item.queueItemId) && !flushedIDs.has(item.userItemId));
+          const retained = await Promise.all(missing.map(async item => {
+            const row = await withBackendTarget(backend, () => GetThreadItem(threadID, item.userItemId));
+            return row?.id === item.userItemId && row.kind === 'user_text' && !isPendingFlushRow(row as Item) ? item : null;
+          }));
+          snapshot = { ...snapshot, flushedItems: [
+            ...(snapshot.flushedItems ?? []),
+            ...retained.filter((item): item is FlushedItem => item !== null),
+          ] } as ThreadLiveState;
+        }
       } catch (err) {
+        snapshot = null;
         snapshotError = err;
         if (currentTarget()) {
           console.error('Failed to hydrate thread live state:', err);
@@ -271,7 +306,7 @@ export function createThreadLiveStateHydration(
     return {
       error: snapshotError,
       deferredItems: snapshot ? deferredItemsForThread(snapshot, threadID) : [],
-      apply(): void {
+      apply(onStaleQueue): void {
         if (tokenConsumed) return;
         try {
           if (!currentTarget()) return;
@@ -279,7 +314,11 @@ export function createThreadLiveStateHydration(
             return;
           }
           if (snapshot) {
+            const queueStale = getQueueRevisionForThread(threadID) !== guard.queueRevisionAtRequest;
             applyThreadLiveStateSnapshot(snapshot, threadID, guard, applyInteractive);
+            // Queue events do not restate pending dispatches. A superseded
+            // snapshot still owes recovery of a potentially missed flush.
+            if (queueStale) onStaleQueue();
           } else if (fallbackInteractive) {
             applyInteractive(fallbackInteractive);
           }

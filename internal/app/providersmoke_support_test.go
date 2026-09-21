@@ -3,7 +3,9 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +23,29 @@ import (
 	"agent-overflow/internal/workflow/def"
 	"agent-overflow/internal/workflow/engine"
 )
+
+// The initialize response can omit identity metadata after a fresh login.
+// Ask the CLI for its explicit authentication state without reading secrets.
+func providerSmokeClaudeAuthStatus(ctx context.Context, binary string) (bool, error) {
+	output, runErr := exec.CommandContext(ctx, binary, "auth", "status").Output()
+	var status struct {
+		LoggedIn *bool `json:"loggedIn"`
+	}
+	if err := json.Unmarshal(output, &status); err != nil {
+		if runErr != nil {
+			return false, fmt.Errorf("claude auth status: %w", runErr)
+		}
+		return false, fmt.Errorf("decode claude auth status: %w", err)
+	}
+	if status.LoggedIn == nil {
+		return false, fmt.Errorf("claude auth status omitted loggedIn")
+	}
+	var exitErr *exec.ExitError
+	if runErr != nil && (*status.LoggedIn || !errors.As(runErr, &exitErr) || exitErr.ExitCode() != 1) {
+		return false, fmt.Errorf("claude auth status: %w", runErr)
+	}
+	return *status.LoggedIn, nil
+}
 
 // providerSmokeWorkflowID is the id of the definition the gate writes and runs.
 // The item's branch is derived from it, so the branch assertion reads it too.

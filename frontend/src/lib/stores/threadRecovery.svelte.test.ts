@@ -7,8 +7,9 @@ import { getActiveTurn, isThreadWorking, projectTurnStarted } from './threadStat
 import { stageBackend, resetStagedBackends } from '../../test/helpers/backends';
 import { setCarriedSessionScopes } from '../transport/scopes';
 import { noteThread } from '../transport/entityIndex';
+import { buildSendOptions } from '../utils/sendOptions';
 import { itemEventQueued, itemEventsSettled } from './itemEventSettlement';
-import { getFlushedForThread, markItemsFlushed } from './sendQueue.svelte';
+import { getFlushedForThread, getQueueForThread, markItemsFlushed, registerQueueItem } from './sendQueue.svelte';
 
 let pane: ReturnType<typeof createThreadPane> | undefined;
 beforeEach(() => { resetStagedBackends(); installThreadPaneTestEnv(); setBindingMock('AutoResumeThread', async () => undefined); });
@@ -21,6 +22,86 @@ it('reconnect clears a delivered message from an authoritative empty live snapsh
   await pane.refreshFromBackend(true);
   expect.soft(getFlushedForThread(pane.threadId)).toEqual([]);
   expect(isThreadWorking(pane.threadId)).toBe(false);
+});
+
+it('keeps a consumed message pending while its row is outside the loaded window', async () => {
+  pane = await buildPane(makeThread({ id: 'recovery-outside-window' }));
+  const threadId = pane.threadId!;
+  markItemsFlushed(threadId, [{ queueItemId: 'q', userItemId: 'user:flush:1', message: 'consumed outside window' }]);
+  const row = makeItem({ id: 'user:flush:1', threadId, kind: 'user_text', role: 'user', summary: 'consumed outside window', meta: '{"provider_item_id":"echo"}' });
+  setBindingMock('GetThreadItem', async () => row);
+  setBindingMock('GetThreadLiveState', async () => ({ threadId, activeTurn: null, queueItems: [], flushedItems: [] }));
+  await pane.refreshFromBackend(true);
+  expect(getFlushedForThread(threadId).map(item => item.userItemId)).toEqual([row.id]);
+  pane.upsertItems([row]);
+  expect(getFlushedForThread(threadId)).toEqual([]);
+});
+
+it('does not retain an abandoned quiet reservation just because its cache row remains', async () => {
+  pane = await buildPane(makeThread({ id: 'recovery-quiet' }));
+  const threadId = pane.threadId!;
+  markItemsFlushed(threadId, [{ queueItemId: 'q', userItemId: 'u', message: 'unconsumed' }]);
+  setBindingMock('GetThreadItem', async () => makeItem({ id: 'u', threadId, kind: 'user_text', meta: '{"pendingFlush":true}' }));
+  setBindingMock('GetThreadLiveState', async () => ({ threadId, queueItems: [], flushedItems: [] }));
+  await pane.refreshFromBackend(true);
+  expect(getFlushedForThread(threadId)).toEqual([]);
+});
+
+it.each([false, true])('preserves the preview and reports a failed confirmation read (required=%s)', async (required) => {
+  pane = await buildPane(makeThread({ id: 'recovery-read-failure' }));
+  const threadId = pane.threadId!;
+  markItemsFlushed(threadId, [{ queueItemId: 'q', userItemId: 'u', message: 'pending' }]);
+  setBindingMock('GetThreadItem', async () => { throw new Error('confirmation read failed'); });
+  setBindingMock('GetThreadLiveState', async () => ({ threadId, queueItems: [], flushedItems: [] }));
+  if (required) await expect(pane.refreshFromBackend(true)).rejects.toThrow('confirmation read failed');
+  else await pane.refreshFromBackend();
+  expect(getFlushedForThread(threadId)).toHaveLength(1);
+  expect(pane.generalError).toContain('confirmation read failed');
+});
+
+it('history recovery confirms a provisional send when both its queue event and echo were lost', async () => {
+  pane = await buildPane(makeThread({ id: 'recovery-pending-rpc' }));
+  const threadId = pane.threadId!;
+  const options = buildSendOptions({ attachmentIds: [] });
+  let reply!: (item: unknown) => void;
+  setBindingMock('RegisterQueueItem', () => new Promise(resolve => { reply = resolve; }));
+  const sending = registerQueueItem(threadId, 'consumed', options);
+  const row = makeItem({ id: 'u', threadId, kind: 'user_text', role: 'user', summary: 'consumed',
+    meta: JSON.stringify({ sendId: options.sendId, provider_item_id: 'echo' }) });
+  setBindingMock('ListThreadSliceAround', async () => ({ items: [row], hasMore: false }));
+  await pane.refreshFromBackend(true);
+  expect(pane.items.map(item => item.id)).toContain('u');
+  expect(getQueueForThread(threadId)).toHaveLength(0);
+  expect(getFlushedForThread(threadId)).toHaveLength(0);
+  reply({ id: 'q', threadId, message: 'consumed', sendId: options.sendId, enqueuedAt: 1 });
+  await sending;
+  expect(getQueueForThread(threadId)).toHaveLength(0);
+});
+
+it('a provisional timeline row cannot acknowledge its own queued submission during recovery', async () => {
+  pane = await buildPane(makeThread({ id: 'recovery-provisional-row' }));
+  const threadId = pane.threadId!;
+  const options = buildSendOptions({ attachmentIds: [] });
+  let reply!: (item: unknown) => void;
+  setBindingMock('RegisterQueueItem', () => new Promise(resolve => { reply = resolve; }));
+  const sending = registerQueueItem(threadId, 'pending', options);
+  let release!: () => void;
+  const read = setBindingMock('GetThreadLiveState', () => new Promise(resolve => {
+    release = () => resolve({ threadId, queueItems: [], flushedItems: [] });
+  }));
+  const refreshing = pane.refreshFromBackend(true);
+  await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+  const row = makeItem({ id: 'optimistic:pending', threadId, kind: 'user_text', role: 'user',
+    summary: 'pending', meta: JSON.stringify({ sendId: options.sendId }) });
+  pane.trackOptimisticItem(row.id);
+  pane.upsertItems([row]);
+  release();
+  await refreshing;
+  expect(pane.isOptimisticItem(row.id)).toBe(true);
+  expect(getQueueForThread(threadId)).toHaveLength(1);
+  expect(getFlushedForThread(threadId)).toHaveLength(0);
+  reply({ id: 'q', threadId, message: 'pending', sendId: options.sendId, enqueuedAt: 1 });
+  await sending;
 });
 
 it('waits for old replay and queued item mutations before reading current state', async () => {

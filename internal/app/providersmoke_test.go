@@ -42,6 +42,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -51,7 +52,6 @@ import (
 
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
-	"agent-overflow/internal/providerstatus"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
@@ -87,13 +87,8 @@ type providerSmokeCase struct {
 	// moves the investigation.
 	installHint string
 	loginHint   string
-	// probeAccount is the provider's own token-free account probe, used as the
-	// authentication preflight.
+	// Codex's token-free account probe. Claude uses `auth status` directly.
 	probeAccount func(*App) (provider.AccountInfo, error)
-	// unauthenticated decides whether a successful probe nonetheless means "not
-	// logged in". Nil when the provider has no reliable pre-turn signal, in
-	// which case an auth failure is classified from the run's own error text.
-	unauthenticated func(provider.AccountInfo) bool
 }
 
 func TestProviderSmokeClaude(t *testing.T) {
@@ -109,16 +104,9 @@ func providerSmokeClaudeCase() providerSmokeCase {
 		providerName: string(provider.Claude),
 		// Sonnet 4.6 is the cheapest non-Haiku model in the Claude catalog and is
 		// accepted by Claude Code 2.1.219.
-		model:        "claude-sonnet-4-6",
-		installHint:  "install Claude Code (https://docs.claude.com/en/docs/claude-code/setup) and put `claude` on PATH",
-		loginHint:    "run `claude login`",
-		probeAccount: (*App).ProbeClaudeAccount,
-		// Production's own logged-out predicate, called directly rather than
-		// mirrored: a private copy here would silently drift from the shipped
-		// rule and fail the gate on hosts the product considers authenticated
-		// (Bedrock/Vertex accounts surface only apiProvider, firstParty
-		// profile logins only email).
-		unauthenticated: providerstatus.ClaudeUnauthenticated,
+		model:       "claude-sonnet-4-6",
+		installHint: "install Claude Code (https://docs.claude.com/en/docs/claude-code/setup) and put `claude` on PATH",
+		loginHint:   "run `claude auth login`",
 	}
 }
 
@@ -132,11 +120,6 @@ func TestProviderSmokeCodex(t *testing.T) {
 		installHint:  "install the Codex CLI (https://github.com/openai/codex#installation) and put `codex` on PATH",
 		loginHint:    "run `codex login`",
 		probeAccount: (*App).ProbeCodexAccount,
-		// Deliberately nil: a zero-value Codex AccountInfo is documented as
-		// ambiguous (signed in, but the rate-limit backend has seen no activity),
-		// so treating it as logged-out would fail authenticated hosts. Codex auth
-		// failures are classified from the run's error text instead.
-		unauthenticated: nil,
 	})
 }
 
@@ -234,6 +217,23 @@ func defaultProviderBinaryPath(t *testing.T, providerName string) string {
 // names the actual problem.
 func preflightProviderAuth(t *testing.T, app *App, smoke providerSmokeCase, binaryPath string) {
 	t.Helper()
+	if smoke.providerName == string(provider.Claude) {
+		// Test binaries use a file-backed Keychain seam, so their account
+		// probe cannot watch native macOS credential rotation reliably. The
+		// CLI's read-only status command checks login without starting a
+		// session or requiring optional account identity metadata.
+		ctx, cancel := context.WithTimeout(t.Context(), providerSmokeProbeTimeout)
+		defer cancel()
+		loggedIn, err := providerSmokeClaudeAuthStatus(ctx, binaryPath)
+		if err != nil {
+			t.Fatalf("provider smoke (claude): cannot verify login: %v", err)
+		}
+		if !loggedIn {
+			t.Fatalf("provider smoke (claude): %s is not logged in; %s", binaryPath, smoke.loginHint)
+		}
+		t.Log("provider smoke (claude): native auth status confirms login")
+		return
+	}
 	type probeResult struct {
 		info provider.AccountInfo
 		err  error
@@ -249,12 +249,6 @@ func preflightProviderAuth(t *testing.T, app *App, smoke providerSmokeCase, bina
 			t.Fatalf(
 				"provider smoke (%s): %s is installed but its account probe failed: %v\nthis usually means the CLI is not authenticated — %s",
 				smoke.providerName, binaryPath, result.err, smoke.loginHint,
-			)
-		}
-		if smoke.unauthenticated != nil && smoke.unauthenticated(result.info) {
-			t.Fatalf(
-				"provider smoke (%s): %s is installed but not logged in (its account probe reported no account identity at all)\nfix: %s",
-				smoke.providerName, binaryPath, smoke.loginHint,
 			)
 		}
 		t.Logf("provider smoke (%s): account probe ok (subscription=%q apiProvider=%q)",

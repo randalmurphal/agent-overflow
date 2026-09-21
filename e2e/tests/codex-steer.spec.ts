@@ -108,3 +108,75 @@ test('messages sent during a codex turn steer into it and land in order', async 
   const settled = await harness.rpc<Item[]>('ListItems', threadId, true);
   expect(settled.filter((i) => i.status !== 'completed')).toEqual([]);
 });
+
+// Hold only the isolated mock. A steer can be written while the provider
+// cannot answer, exposing the real queue -> worker -> live-snapshot seam.
+test('repeated Codex sends remain pending through reload until provider consumption', async ({ harness, page }) => {
+  let holdAdmission = false;
+  let releaseSubmission: (() => void) | undefined;
+  await page.routeWebSocket(/\/ws(?:\?|$)/, socket => {
+    const server = socket.connectToServer();
+    socket.onMessage(message => {
+      const frame = JSON.parse(String(message));
+      if (holdAdmission && frame.type === 'rpc' && frame.methodId === 1034543696) {
+        holdAdmission = false;
+        releaseSubmission = () => server.send(message);
+      } else server.send(message);
+    });
+    server.onMessage(message => socket.send(message));
+  });
+  await harness.rpc('HarnessSetScenario', { name: 'codex-steer-while-running' });
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [{ name: 'codex-pending', repo: {}, threads: [{ title: 'Pending Codex', provider: 'codex', turns: [{ userText: 'set the stage', items: [{ kind: 'assistant_text', summary: 'Ready.' }] }] }] }],
+  });
+  const threadId = seed.projects[0].threadIds[0];
+  await harness.open(page);
+  await page.getByText('Pending Codex', { exact: true }).click();
+  const registered = harness.waitForEvent<HarnessMockEvent>('harness:mock', ev => ev.report.kind === 'registered');
+  await harness.rpc('StartSession', threadId);
+  const mockId = (await registered).mockId;
+  const held = harness.waitForEvent<HarnessMockEvent>('harness:mock', ev => ev.mockId === mockId && ev.report.kind === 'waiting_signal' && ev.report.detail === 'hold-first-turn');
+  await page.getByLabel('Message Input').fill('first prompt');
+  await page.getByLabel('Message Input').press('Enter');
+  await held;
+  const mocks = await harness.rpc<Array<{ mockId: string; registration: { pid: number } }>>('HarnessListMocks');
+  const pid = mocks.find(mock => mock.mockId === mockId)?.registration.pid;
+  expect(pid).toBeGreaterThan(0);
+  process.kill(pid!, 'SIGSTOP');
+  const messages = ['pending Codex message one', 'pending Codex message two'];
+  try {
+    holdAdmission = true;
+    for (const message of messages) {
+      const accepted = harness.waitForEvent<any>('provider:queue_state_changed', ev => ev.threadId === threadId && ev.items.some((item: any) => item.message === message));
+      await page.getByLabel('Message Input').fill(message);
+      await page.getByLabel('Message Input').press('Enter');
+      if (message === messages[0]) {
+        await expect.poll(() => !!releaseSubmission).toBe(true);
+        // The RPC has not reached the host yet. The cleared composer must
+        // already have handed the text to a provisional pending preview.
+        await expect(page.getByLabel('Message Input')).toHaveValue('');
+        await expect(page.getByTestId('send-queue-preview-row').filter({ hasText: message })).toBeVisible();
+        releaseSubmission!();
+      }
+      await accepted;
+      await expect(page.getByTestId('send-queue-preview-row').filter({ hasText: message })).toBeVisible();
+      await expect(page.getByTestId('user-message-bubble').filter({ hasText: message })).toHaveCount(0);
+    }
+    await page.reload();
+    for (const message of messages) {
+      await expect(page.getByTestId('send-queue-preview-row').filter({ hasText: message })).toBeVisible();
+      await expect(page.getByTestId('user-message-bubble').filter({ hasText: message })).toHaveCount(0);
+    }
+  } finally {
+    process.kill(pid!, 'SIGCONT');
+  }
+  for (const message of messages) {
+    await expect(page.getByTestId('user-message-bubble').filter({ hasText: message })).toBeVisible();
+    await expect(page.getByTestId('send-queue-preview-row').filter({ hasText: message })).toHaveCount(0);
+  }
+  const finished = harness.waitForEvent('provider:turn_completed', (ev: any) => ev.threadId === threadId);
+  await harness.rpc('HarnessMockCommand', mockId, { type: 'advance', name: 'hold-first-turn' });
+  await finished;
+  await page.reload();
+  for (const message of messages) await expect(page.getByText(message, { exact: true })).toHaveCount(1);
+});

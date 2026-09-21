@@ -317,14 +317,11 @@ function applySettledTransportGap(gap: { channel: string; seq: number }, origin?
       }
       return;
     }
+    case 'provider:queue_flushed':
     case 'provider:queue_restored': {
-      // Not queue-only, so not the targeted read above. A restore deletes
-      // timeline rows and puts their content back in the composer draft, and
-      // a missed frame leaves both wrong: rows on screen that SQLite no
-      // longer has, and a draft short the text the backend handed back. Both
-      // are what a full pane refresh re-reads, so this falls through to the
-      // blanket recovery below rather than pretending the queue was the only
-      // casualty.
+      // Dispatch can still be waiting for consumption, or its echo can
+      // already be in history. Restore also changes history and the draft.
+      // Recover through the existing guarded history + live-state install.
       dropStampsAfterGap();
       for (const pane of ingestPanes()) {
         if (!pane.threadId) continue;
@@ -332,29 +329,10 @@ function applySettledTransportGap(gap: { channel: string; seq: number }, origin?
       }
       return;
     }
-    case 'provider:queue_flushed':
-    case 'provider:command_lifecycle': {
-      // These two cannot be recovered, and nothing pretends otherwise.
-      // They carry the DELIVERY story of a message already on its way —
-      // which queued item became which timeline row, and whether the
-      // provider acknowledged writing it — and no RPC returns that. It is
-      // not persisted anywhere: it is the transient badge state Zone 2
-      // renders while a message is in flight.
-      //
-      // The cost of a lost frame is bounded: a queued message that never
-      // got its Zone 2 entry is one this client renders in the timeline
-      // instead (the row is in history either way), and a flushed item
-      // keeps its previous badge. Neither leaves a message invisible,
-      // because Zone 2 is only ever EMPTIED by a pane reporting the row
-      // rendered — see sendQueue.svelte.ts. Zone 1 is repaired by the
-      // `queue_state_changed` branch above, whose snapshot covers items
-      // mid-dispatch. command_lifecycle is already optional in exactly
-      // this way — it is Claude-only and depends on the CLI version, so a
-      // session that never emits it leaves Zone 2 as it was. Falling
-      // through to the default would refetch every pane's window to
-      // repair a badge, and still not repair it.
+    case 'provider:command_lifecycle':
+      // Optional provider badges have no snapshot. Pending messages do:
+      // queue_flushed is recovered through GetThreadLiveState above.
       return;
-    }
     case 'draft:updated': {
       // Edge-triggered like the other row channels: one frame per persisted
       // draft write, and no later frame restates the write a gap swallowed.

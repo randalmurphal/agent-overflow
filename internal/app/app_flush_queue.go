@@ -130,6 +130,10 @@ func (a *App) enqueueFlushDispatch(threadID string, items []triage.QueuedFlushIt
 		generation: generation,
 	})
 	a.flushDispatch.inflightItems[threadID] += len(batch)
+	// The worker may finish before this callback returns. Retire triage's
+	// overlapping claim before starting it, so a later snapshot cannot
+	// resurrect a message whose dispatch has already settled.
+	a.triage.ReleaseFlushClaim(threadID, items)
 	if a.flushDispatch.running[threadID] {
 		a.flushDispatch.mu.Unlock()
 		return
@@ -310,8 +314,8 @@ type flushQueuePayload = flushqueue.Payload
 //     pending send is registered at the response turn so
 //     resolveTurnIndexOnStart opens a fresh turn for the response.
 //     On echo, attachProviderItemIDToUserRow stamps provider_item_id.
-//     provider:queue_flushed emits BEFORE PersistItem so the Zone 2
-//     entry exists when the upsert clears it.
+//     Publish queue_flushed after quiet persistence and before the
+//     provider write. The pending registry then covers live-state reads.
 //     - Claude without active turn / Codex: DEFERRED persist. The
 //     row is deferred via RegisterPendingFlushSend and persisted at
 //     echo time via persistDeferredUserText at MAX+1 item_index.
@@ -363,6 +367,10 @@ func (a *App) noteFlushDispatchItemSettled(threadID, itemID string) {
 	}
 	a.flushDispatch.mu.Lock()
 	defer a.flushDispatch.mu.Unlock()
+	a.noteFlushDispatchItemSettledLocked(threadID, itemID)
+}
+
+func (a *App) noteFlushDispatchItemSettledLocked(threadID, itemID string) {
 	remaining := a.flushDispatch.dispatching[threadID]
 	for i, item := range remaining {
 		if item.ID != itemID {
@@ -389,13 +397,11 @@ func (a *App) noteFlushDispatchGroupSettled(threadID string, group []triage.Queu
 	}
 }
 
-// pendingFlushDispatchItems lists every queued message the App layer is
+// pendingFlushDispatchItemsLocked lists every queued message the App layer is
 // holding for a thread: the remainder of the batch being dispatched, then
 // the batches still waiting for the worker. Current generation only — a
 // rollback's discarded batches are not queued for anyone.
-func (a *App) pendingFlushDispatchItems(threadID string) []triage.QueuedFlushItem {
-	a.flushDispatch.mu.Lock()
-	defer a.flushDispatch.mu.Unlock()
+func (a *App) pendingFlushDispatchItemsLocked(threadID string) []triage.QueuedFlushItem {
 	generation := a.flushDispatch.generation[threadID]
 	var out []triage.QueuedFlushItem
 	out = append(out, a.flushDispatch.dispatching[threadID]...)
@@ -416,7 +422,16 @@ func (a *App) pendingFlushDispatchItems(threadID string) []triage.QueuedFlushIte
 // waiting on. The overlap between the App's batch and triage's claim (the
 // instant the dispatcher is invoked, when both hold it) dedupes by id.
 func (a *App) queueSnapshotForThread(threadID string) []QueuedItem {
-	pending := a.pendingFlushDispatchItems(threadID)
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	return a.queueSnapshotForThreadLocked(threadID)
+}
+
+// Lock order is dispatch bookkeeping before triage. The triage dispatcher
+// always runs outside the router lock. Holding both stops a snapshot from
+// missing a message moving from triage into the worker.
+func (a *App) queueSnapshotForThreadLocked(threadID string) []QueuedItem {
+	pending := a.pendingFlushDispatchItemsLocked(threadID)
 	var queued []triage.QueuedFlushItem
 	if a.triage != nil {
 		queued = a.triage.QueuedFlushItems(threadID)
@@ -492,11 +507,7 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 		if !flushedEmitted {
 			// Zone 2 takes the message over here, so this layer stops
 			// publishing it as queued in the same step.
-			a.noteFlushDispatchGroupSettled(threadID, group)
-			a.emit(eventchan.ProviderQueueFlushed, QueueFlushedEvent{
-				ThreadID: threadID,
-				Items:    flushedItems,
-			})
+			a.publishFlushDispatch(threadID, group, flushedItems)
 		}
 		// A successful provider write is one of the two settlement endpoints for
 		// an injected message; session-death recovery into the composer is the
@@ -506,6 +517,18 @@ func (a *App) dispatchFlushWithGeneration(threadID string, items []triage.Queued
 		settleFlushGroup(group)
 	}
 	a.emitQueueStateChanged(threadID)
+}
+
+// Publish the handoff in the same critical section as queue snapshots.
+// Otherwise an older queue snapshot can arrive after queue_flushed and be
+// mistaken for a failed dispatch that returned the message to the queue.
+func (a *App) publishFlushDispatch(threadID string, group []triage.QueuedFlushItem, items []QueueFlushedItem) {
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	for _, item := range group {
+		a.noteFlushDispatchItemSettledLocked(threadID, item.ID)
+	}
+	a.emit(eventchan.ProviderQueueFlushed, QueueFlushedEvent{ThreadID: threadID, Items: items})
 }
 
 func settleFlushGroup(group []triage.QueuedFlushItem) {
@@ -731,15 +754,11 @@ func (a *App) dispatchFlushGroup(threadID string, group []triage.QueuedFlushItem
 		// no provider:item_event — so the item reserves its timeline
 		// position in SQLite but stays as a queued marker in the UI
 		// until the provider echo confirms it entered context.
-		a.noteFlushDispatchGroupSettled(threadID, group)
-		a.emit(eventchan.ProviderQueueFlushed, QueueFlushedEvent{
-			ThreadID: threadID,
-			Items:    flushedItems,
-		})
 		if persistErr := a.triage.PersistAndRegisterPendingQuietFlushSendWithExpectation(
 			threadID, leadQueueItemID, userItem, responseTurnIndex, leadEnqueuedAt, sendExpect); persistErr != nil {
-			return nil, true, requeue, fmt.Errorf("eager persist flush: %w", persistErr)
+			return nil, false, requeue, fmt.Errorf("eager persist flush: %w", persistErr)
 		}
+		a.publishFlushDispatch(threadID, group, flushedItems)
 		// One row, one cleanup obligation: the first member owns it.
 		requeue[0].StaleUserItemID = userItem.ID
 
@@ -1342,7 +1361,9 @@ func (a *App) GetQueueState(threadID string) ([]QueuedItem, error) {
 // state, and a snapshot raised while another message is mid-dispatch
 // cannot tell them to drop it.
 func (a *App) emitQueueStateChanged(threadID string) {
-	items := a.queueSnapshotForThread(threadID)
+	a.flushDispatch.mu.Lock()
+	defer a.flushDispatch.mu.Unlock()
+	items := a.queueSnapshotForThreadLocked(threadID)
 	if items == nil {
 		items = []QueuedItem{}
 	}
