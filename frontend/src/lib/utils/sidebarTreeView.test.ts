@@ -1,6 +1,6 @@
 // sidebarTreeView: everything between a built tree and the rendered rows —
 // the flatten, the preview cut and its reveal step, the status rollup, the
-// render-content identity cutoffs, and the active-thread expand sync. The
+// render-content identity cutoffs, and the discussion expansion cleanup. The
 // builder's own tests are in `sidebarTree.test.ts`.
 
 import { describe, expect, it } from 'vitest';
@@ -18,7 +18,7 @@ import {
   rollupDisplayStatus,
   sameSidebarVisibleNodes,
   sameThreadStatusPill,
-  syncExpandedTreeForActiveThread,
+  pruneSidebarDiscussionExpansion,
   toggleSidebarTreeThreadExpansion,
 } from './sidebarTreeView';
 import { THREAD_PREVIEW_LIMIT } from './sidebarThreadLimits';
@@ -352,135 +352,43 @@ describe('rollupDisplayStatus', () => {
   });
 });
 
-describe('syncExpandedTreeForActiveThread', () => {
-  it('drops this tree\'s ids that no longer correspond to expandable nodes', () => {
-    // 'leaf' is a thread of this tree with no children left, so it goes.
-    // 'gone' names nothing here, which means another project owns it — see
-    // the two-tree case below.
-    const leaf = mkThread('leaf');
-    const tree = buildSidebarThreadTree({ threads: [leaf], liveStatusOf: liveStatusMap({}) });
-    const next = syncExpandedTreeForActiveThread({
-      nodes: tree,
-      expandedThreadIds: new Set(['leaf', 'gone']),
-      activeThreadId: null,
-    });
-    expect([...next.expandedThreadIds]).toEqual(['gone']);
+describe('pruneSidebarDiscussionExpansion', () => {
+  const diagnostics = installDiagnosticsCapture();
+  it('removes this tree leaves and preserves other projects', () => {
+    const nodes = buildSidebarThreadTree({ threads: [mkThread('leaf')] });
+    const expandedThreadIds = new Set(['leaf', 'other-project']);
+    expect([...pruneSidebarDiscussionExpansion({ nodes, expandedThreadIds })]).toEqual(['other-project']);
+    expect([...expandedThreadIds]).toEqual(['leaf', 'other-project']);
   });
 
-  it('expands the chain of ancestors leading to the active thread', () => {
-    const root = mkThread('root');
-    const mid = mkThread('mid', { parentThreadId: 'root' });
-    const leaf = mkThread('leaf', { parentThreadId: 'mid' });
-    const tree = buildSidebarThreadTree({
-      threads: [root, mid, leaf],
-      liveStatusOf: liveStatusMap({}),
-      maxDepth: 3,
-    });
-    const next = syncExpandedTreeForActiveThread({
-      nodes: tree,
-      expandedThreadIds: new Set(),
-      activeThreadId: 'leaf',
-    });
-    expect([...next.expandedThreadIds].sort()).toEqual(['mid', 'root']);
-  });
-
-  it('keeps another project\'s expanded ids: two trees do not prune each other', () => {
-    // The expanded set is one set across every project while this runs per
-    // project. Pruning against one tree's expandable ids used to drop the
-    // other project's, and two passes converged on empty.
-    const treeA = buildSidebarThreadTree({
-      threads: [mkThread('a-root'), mkThread('a-child', { parentThreadId: 'a-root' })],
-      liveStatusOf: liveStatusMap({}),
-    });
-    const treeB = buildSidebarThreadTree({
-      threads: [mkThread('b-root'), mkThread('b-child', { parentThreadId: 'b-root' })],
-      liveStatusOf: liveStatusMap({}),
-    });
-    let expanded: ReadonlySet<string> = new Set(['a-root', 'b-root']);
-
-    for (let pass = 0; pass < 2; pass += 1) {
-      for (const nodes of [treeA, treeB]) {
-        expanded = syncExpandedTreeForActiveThread({
-          nodes,
-          expandedThreadIds: expanded,
-          activeThreadId: null,
-        }).expandedThreadIds;
+  it('preserves expanded ancestors across repeated updates from multiple projects', () => {
+    const trees = ['a', 'b'].map(id => buildSidebarThreadTree({
+      threads: [mkThread(id), mkThread(`${id}-child`, { parentThreadId: id })],
+    }));
+    const expandedThreadIds = new Set(['a', 'b']);
+    for (let pass = 0; pass < 2; pass++) {
+      for (const nodes of trees) {
+        expect(pruneSidebarDiscussionExpansion({ nodes, expandedThreadIds })).toBe(expandedThreadIds);
       }
     }
-
-    expect([...expanded].sort()).toEqual(['a-root', 'b-root']);
-  });
-});
-
-// ── Corrupt parentThreadId links ─────────────────────────────────────────
-//
-// The ancestor walk reads `parentThreadId`, which is backend data this module
-// does not own. Written as "keep going until you run out", a cycle in those
-// links is not a wrong render but a synchronous loop that never returns.
-//
-// The guard is defence in depth: `buildSidebarThreadTree` excludes cycle
-// members from its roots and bounds nesting by `maxDepth`, so no cycle reaches
-// the walk through it today. That is a property of the BUILDER, and this
-// function is exported and callable with any node array — the test below
-// therefore corrupts the links after the tree is built, which is also exactly
-// what a backend that reparented a thread under its own child would hand it.
-//
-// Asserted against the real capture pipeline, so the claim is that the report
-// reaches `ui-trace/frontend-errors.jsonl`.
-
-describe('sidebarTree ancestor expansion survives a parentThreadId cycle', () => {
-  const diagnostics = installDiagnosticsCapture();
-
-  it('stops at the first repeated ancestor and reports', async () => {
-    const root = mkThread('root');
-    const mid = mkThread('mid', { parentThreadId: 'root' });
-    const nodes = buildSidebarThreadTree({
-      threads: [root, mid],
-      liveStatusOf: () => 'idle',
-    });
-    // Corrupt the link AFTER the tree is built: the walk reads
-    // `node.thread.parentThreadId`. Built this way rather than hand-rolling
-    // nodes so the walk still sees a real tree — the cycle is in the links,
-    // not in the render shape.
-    root.parentThreadId = 'mid';
-
-    const next = syncExpandedTreeForActiveThread({
-      nodes,
-      expandedThreadIds: new Set<string>(),
-      activeThreadId: 'mid',
-    });
-
-    // The reachable ancestor still expands; the walk just refuses the second
-    // lap. Unguarded this call never returns.
-    expect([...next.expandedThreadIds]).toEqual(['root']);
-
-    const records = await diagnostics.all();
-    expect(records).toHaveLength(1);
-    expect(records[0].message).toContain('sidebarTree');
-    // Constant message; the thread ids ride in the detail, or every corrupt
-    // tree would mint its own dedupe signature.
-    expect(records[0].message).not.toContain('mid');
-    expect(records[0].detail).toContain('mid');
-    // Console fallback: a remote session cannot persist the record at all.
-    expect(diagnostics.warnings().join('\n')).toContain('mid');
   });
 
-  it('says nothing for a well-formed ancestor chain', async () => {
-    const root = mkThread('root');
-    const mid = mkThread('mid', { parentThreadId: 'root' });
-    const leaf = mkThread('leaf', { parentThreadId: 'mid' });
+  it('prunes leaves inside groups without adding collapsed ancestors', () => {
     const nodes = buildSidebarThreadTree({
-      threads: [root, mid, leaf],
-      liveStatusOf: () => 'idle',
+      threads: [mkThread('parent', { groupId: 'g1' }), mkThread('child', { parentThreadId: 'parent' })],
+      groups: [mkGroup('g1')],
     });
+    expect([...pruneSidebarDiscussionExpansion({ nodes, expandedThreadIds: new Set(['child']) })]).toEqual([]);
+  });
 
-    const next = syncExpandedTreeForActiveThread({
-      nodes,
-      expandedThreadIds: new Set<string>(),
-      activeThreadId: 'leaf',
-    });
-
-    expect([...next.expandedThreadIds].sort()).toEqual(['mid', 'root']);
+  it('uses the built tree rather than following cyclic parent links', async () => {
+    const root = mkThread('root');
+    const nodes = buildSidebarThreadTree({ threads: [root, mkThread('child', { parentThreadId: 'root' })] });
+    root.parentThreadId = 'child';
+    const expandedThreadIds = new Set(['root']);
+    expect(pruneSidebarDiscussionExpansion({ nodes, expandedThreadIds })).toBe(expandedThreadIds);
+    const flat = flattenSidebarThreadTree({ nodes, expandedThreadIds: new Set(), activeThreadId: 'child' });
+    expect(nodeIds(flat)).toEqual(['root', 'child']);
     expect(await diagnostics.messages()).toEqual([]);
   });
 });
@@ -642,75 +550,6 @@ describe('previewSidebarThreads with groups', () => {
     const result = previewSidebarThreads({ nodes: tree, openThreadIds: new Set(['m']) });
     expect(nodeIds(result.visibleNodes)).toContain('g1');
     expect(nodeIds(result.hiddenNodes)).not.toContain('g1');
-  });
-});
-
-describe('syncExpandedTreeForActiveThread with groups', () => {
-  it('un-collapses the group holding the active thread', () => {
-    const tree = buildSidebarThreadTree({
-      threads: [mkThread('m', { groupId: 'g1' })],
-      groups: [mkGroup('g1')],
-      liveStatusOf: liveStatusMap({}),
-    });
-    const next = syncExpandedTreeForActiveThread({
-      nodes: tree,
-      expandedThreadIds: new Set(),
-      collapsedGroupIds: new Set(['g1', 'other-project-group']),
-      activeThreadId: 'm',
-    });
-    expect([...next.collapsedGroupIds]).toEqual(['other-project-group']);
-  });
-
-  it('un-collapses the group of an active discussion CHILD of a member', () => {
-    const tree = buildSidebarThreadTree({
-      threads: [
-        mkThread('parent', { groupId: 'g1' }),
-        mkThread('child', { parentThreadId: 'parent', groupId: 'g1' }),
-      ],
-      groups: [mkGroup('g1')],
-      liveStatusOf: liveStatusMap({}),
-    });
-    const next = syncExpandedTreeForActiveThread({
-      nodes: tree,
-      expandedThreadIds: new Set(),
-      collapsedGroupIds: new Set(['g1']),
-      activeThreadId: 'child',
-    });
-    expect([...next.collapsedGroupIds]).toEqual([]);
-    expect([...next.expandedThreadIds]).toEqual(['parent']);
-  });
-
-  it('never prunes collapsed ids it cannot see — the set spans projects', () => {
-    const tree = buildSidebarThreadTree({
-      threads: [mkThread('loose')],
-      groups: [],
-      liveStatusOf: liveStatusMap({}),
-    });
-    const next = syncExpandedTreeForActiveThread({
-      nodes: tree,
-      expandedThreadIds: new Set(),
-      collapsedGroupIds: new Set(['group-in-another-project']),
-      activeThreadId: 'loose',
-    });
-    expect([...next.collapsedGroupIds]).toEqual(['group-in-another-project']);
-  });
-
-  it('hands back the collapsed set itself when nothing has to un-collapse', () => {
-    // This runs per expanded project on every streaming beat; copying the set
-    // to return it unchanged is an allocation per project per beat.
-    const tree = buildSidebarThreadTree({
-      threads: [mkThread('m', { groupId: 'g1' })],
-      groups: [mkGroup('g1')],
-      liveStatusOf: liveStatusMap({}),
-    });
-    const collapsedGroupIds = new Set(['other-project-group']);
-    const next = syncExpandedTreeForActiveThread({
-      nodes: tree,
-      expandedThreadIds: new Set(),
-      collapsedGroupIds,
-      activeThreadId: 'm',
-    });
-    expect(next.collapsedGroupIds).toBe(collapsedGroupIds);
   });
 });
 

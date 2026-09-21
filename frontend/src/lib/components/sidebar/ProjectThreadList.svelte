@@ -23,7 +23,6 @@
     getThreadListVisibleLimit,
     isGroupExpanded,
     isThreadListExpanded,
-    setCollapsedGroups,
     setThreadListVisibleLimit,
     setExpandedDiscussions,
     toggleDiscussion,
@@ -53,7 +52,7 @@
     rollupDisplayStatus,
     sameSidebarVisibleNodes,
     sameThreadStatusPill,
-    syncExpandedTreeForActiveThread,
+    pruneSidebarDiscussionExpansion,
   } from '../../utils/sidebarTreeView';
   import { THREAD_PREVIEW_LIMIT, THREAD_REVEAL_INCREMENT } from '../../utils/sidebarThreadLimits';
   import {
@@ -134,21 +133,11 @@
     return next;
   });
 
-  // Auto-expand the chain of ancestors leading to the active thread so
-  // a freshly-switched discussion participant shows up without a manual
-  // chevron click. Drops expanded ids that no longer point at expandable
-  // nodes (a child thread was deleted, parent is now a leaf).
   $effect(() => {
-    const next = syncExpandedTreeForActiveThread({
+    setExpandedDiscussions(pruneSidebarDiscussionExpansion({
       nodes: tree,
       expandedThreadIds: getExpandedDiscussions(),
-      collapsedGroupIds: getCollapsedGroups(),
-      activeThreadId: pane?.threadId ?? null,
-    });
-    setExpandedDiscussions(next.expandedThreadIds);
-    // Both setters no-op on an equal set, so this effect settles after one
-    // pass even though it reads the two stores it writes.
-    setCollapsedGroups(next.collapsedGroupIds);
+    }));
   });
 
   // Identity cutoff: return the PREVIOUS array when nothing the rows
@@ -163,6 +152,7 @@
       nodes: preview.visibleNodes,
       expandedThreadIds: getExpandedDiscussions(),
       collapsedGroupIds: getCollapsedGroups(),
+      activeThreadId: pane?.threadId ?? null,
     });
     if (sameSidebarVisibleNodes(prevVisibleNodes, next)) return prevVisibleNodes;
     prevVisibleNodes = next;

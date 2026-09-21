@@ -143,7 +143,7 @@ describe('openDraftThreadForProject', () => {
 
   afterEach(() => setCompactLayoutForTest(false));
 
-  it('opens a grouped placeholder, expands its group, and clears membership on a project switch', async () => {
+  it('opens a grouped placeholder without expanding its group and clears membership on a project switch', async () => {
     const project = makeProject();
     addProjectLocal(project);
     upsertThreadGroup({ id: 'g1', projectId: project.id, name: 'Group', createdAt: 0, updatedAt: 0 });
@@ -153,7 +153,7 @@ describe('openDraftThreadForProject', () => {
     const pane = createThreadPane();
     await openDraftThreadForProject({ projectId: project.id, groupId: 'g1', targetPane: pane });
     expect(pane.thread?.groupId).toBe('g1');
-    expect(isGroupExpanded('g1')).toBe(true);
+    expect(isGroupExpanded('g1')).toBe(false);
     expect(create).not.toHaveBeenCalled();
     await flipPaneDraftPlaceholder(pane, makeProject({ id: 'other-project' }));
     expect(pane.thread?.groupId).toBeUndefined();

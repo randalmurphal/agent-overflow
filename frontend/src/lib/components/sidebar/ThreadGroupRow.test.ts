@@ -120,7 +120,7 @@ describe('<ThreadGroupRow>', () => {
     await flush();
     expect(pane.thread?.groupId).toBe(group.id);
     expect(pane.thread?.isDraft).toBe(true);
-    expect(isGroupExpanded(group.id)).toBe(true);
+    expect(isGroupExpanded(group.id)).toBe(false);
     expect(create).not.toHaveBeenCalled();
     await fireEvent.doubleClick(button);
     expect(queryByRole('textbox', { name: 'Rename Group' })).toBeNull();

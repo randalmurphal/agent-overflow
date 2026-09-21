@@ -318,11 +318,7 @@ export function toggleDiscussion(id: string): void {
   writeStringSet(EXPANDED_DISCUSSIONS_KEY, next);
 }
 
-/**
- * Replace the entire expanded-discussions set. Used by the auto-expand
- * effect that keeps an active thread's ancestors visible — we compute
- * the next set from the tree and swap it in atomically.
- */
+/** Persist discussion expansion after pruning this project's leaf rows. */
 export function setExpandedDiscussions(next: ReadonlySet<string>): void {
   if (setsEqual(next, expandedDiscussions)) return;
   const copy = new Set(next);
@@ -351,18 +347,6 @@ export function toggleGroup(id: string): void {
   else next.add(id);
   collapsedGroups = next;
   writeStringSet(COLLAPSED_GROUPS_KEY, next);
-}
-
-/**
- * Replace the whole collapsed-group set. Used by the auto-expand effect
- * that un-collapses the group containing the active thread, the same way
- * setExpandedDiscussions is used for discussion ancestors.
- */
-export function setCollapsedGroups(next: ReadonlySet<string>): void {
-  if (setsEqual(next, collapsedGroups)) return;
-  const copy = new Set(next);
-  collapsedGroups = copy;
-  writeStringSet(COLLAPSED_GROUPS_KEY, copy);
 }
 
 /**

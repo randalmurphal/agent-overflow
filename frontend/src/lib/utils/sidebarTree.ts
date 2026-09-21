@@ -1,6 +1,6 @@
 // Sidebar thread tree: the BUILD half — node shapes, the sort comparator,
 // status bubbling, and buildSidebarThreadTree itself. The VIEW half (flatten,
-// the preview cut, the identity cutoffs and the active-thread expand sync)
+// the preview cut, the identity cutoffs and discussion expansion cleanup)
 // lives in `sidebarTreeView.ts` and imports from here; nothing imports back.
 //
 // Pure logic, no Svelte / DOM imports — table-drivable from unit tests.

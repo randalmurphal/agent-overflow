@@ -8,7 +8,7 @@ import {
   openEmptyPane,
   threadHostPane,
 } from './panes.svelte';
-import { expandProject, isGroupExpanded, toggleGroup } from './sidebar.svelte';
+import { expandProject } from './sidebar.svelte';
 import { prependThread } from './threads.svelte';
 import { addToast } from './toast.svelte';
 import { errString } from '../utils/errors';
@@ -201,7 +201,6 @@ export async function openDraftThreadForProject(
   }
   // A group fixes the computer and project; repository preferences cannot redirect it.
   const project = groupId ? source : preferredProjectTarget(source);
-  if (groupId && !isGroupExpanded(groupId)) toggleGroup(groupId);
   const pane: ThreadPane = openInNewPane
     ? openEmptyPane()
     : threadHostPane(targetPane ?? getFocusedPaneOrNull() ?? ensureMainPane());

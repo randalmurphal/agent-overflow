@@ -5,6 +5,8 @@
 // Group… from a thread row opens inline rename, the rename persists, the
 // group pins, and deleting the group returns its members to the list.
 // Spec: docs/specs/sidebar-thread-groups.md.
+// Collapse keeps only the focused member visible across pane switches,
+// backend updates and reload.
 import { test, expect, type SeedResult } from './fixtures.js';
 
 interface ThreadRow {
@@ -145,6 +147,61 @@ test('New Group… from a thread row renames inline, pins, and deletes back to t
   }).toEqual([null, null]);
 });
 
+test('a collapsed group keeps only its focused member through focus changes and reload', async ({ harness, page }) => {
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', seedProject('group-collapse', ['Alpha', 'Beta', 'Outside']));
+  const { projectId, threadIds } = seed.projects[0];
+  const group = await harness.rpc<ThreadGroup>('CreateThreadGroup', projectId, 'Focused work');
+  await harness.rpc('SetThreadGroup', threadIds.slice(0, 2), group.id);
+  await harness.open(page);
+  const groupRow = page.getByTestId('thread-group-row');
+  const alpha = page.locator(`[data-sidebar-thread-id="${threadIds[0]}"]`);
+  const beta = page.locator(`[data-sidebar-thread-id="${threadIds[1]}"]`);
+  const members = page.locator('[data-group-member] [data-sidebar-thread-id]');
+  await alpha.click();
+  await beta.click({ modifiers: ['ControlOrMeta'] });
+  const panes = page.locator('section[data-pane-kind="thread"]');
+  await expect(panes).toHaveCount(2);
+  const alphaPane = panes.filter({ has: page.getByTestId('user-message-summary').filter({ hasText: 'Alpha' }) });
+  const betaPane = panes.filter({ has: page.getByTestId('user-message-summary').filter({ hasText: 'Beta' }) });
+
+  await groupRow.getByTestId('thread-group-row-expand').click();
+  await expect(groupRow).toHaveAttribute('data-expanded', 'false');
+  await expect(groupRow.getByTestId('thread-group-row-count')).toHaveText('2');
+  await expect(members).toHaveCount(1);
+  await expect(beta).toBeVisible();
+  await expect(alpha).toHaveCount(0);
+
+  await alphaPane.getByLabel('Message Input').click();
+  await expect(alpha).toBeVisible();
+  await expect(beta).toHaveCount(0);
+  await expect(groupRow).toHaveAttribute('data-expanded', 'false');
+  await betaPane.getByLabel('Message Input').click();
+  await expect(beta).toBeVisible();
+  await expect(alpha).toHaveCount(0);
+
+  await harness.rpc('RenameThreadGroup', group.id, 'Renamed work');
+  await expect(groupRow.getByTestId('thread-group-row-name')).toHaveText('Renamed work');
+  await expect(groupRow).toHaveAttribute('data-expanded', 'false');
+  await expect(members).toHaveCount(1);
+  await page.reload();
+  await expect(groupRow).toHaveAttribute('data-expanded', 'false');
+  await expect(beta).toBeVisible();
+  await expect(alpha).toHaveCount(0);
+
+  for (let repeat = 0; repeat < 2; repeat++) {
+    await groupRow.getByTestId('thread-group-row-expand').click();
+    await expect(members).toHaveCount(2);
+    await groupRow.getByTestId('thread-group-row-expand').click();
+    await expect(groupRow).toHaveAttribute('data-expanded', 'false');
+    await expect(members).toHaveCount(1);
+    await expect(beta).toBeVisible();
+  }
+
+  await page.locator(`[data-sidebar-thread-id="${threadIds[2]}"]`).click();
+  await expect(members).toHaveCount(0);
+  await expect(groupRow).toHaveAttribute('data-expanded', 'false');
+});
+
 
 for (const entry of ['button', 'menu'] as const) {
   test(`new thread from group ${entry} keeps membership through draft cleanup and first send`, async ({ harness, page }) => {
@@ -161,7 +218,7 @@ for (const entry of ['button', 'menu'] as const) {
       await groupRow.click({ button: 'right' });
       await page.getByRole('menuitem', { name: 'New Thread', exact: true }).click();
     }
-    await expect(groupRow).toHaveAttribute('data-expanded', 'true');
+    await expect(groupRow).toHaveAttribute('data-expanded', 'false');
     const input = page.getByLabel('Message Input');
     await expect(input).toBeVisible();
     expect(await harness.rpc<ThreadRow[]>('HarnessListThreadRows')).toHaveLength(0);
@@ -171,6 +228,7 @@ for (const entry of ['button', 'menu'] as const) {
       return rows.map((row) => ({ groupId: row.groupId, isDraft: row.isDraft }));
     }).toEqual([{ groupId: group.id, isDraft: true }]);
     await expect(page.getByTestId('thread-row')).toHaveCount(1);
+    await expect(groupRow).toHaveAttribute('data-expanded', 'false');
     await input.fill('');
     await expect.poll(() => harness.rpc<ThreadRow[]>('HarnessListThreadRows')).toHaveLength(0);
     await input.fill('Start the grouped thread');

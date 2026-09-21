@@ -8,7 +8,9 @@
 // closing the side chat, closing the source pane it hangs from, and
 // switching that pane to another thread delete the scratch thread; and a
 // reload restores the source pane alone, because no side-chat pane is ever
-// persisted. Spec: docs/specs/agent-thread-tools.md.
+// persisted. Creating a grouped draft from a focused side chat targets its
+// source pane and preserves the group's collapse state.
+// Spec: docs/specs/agent-thread-tools.md.
 import { test, expect, type SeedResult } from './fixtures.js';
 import type { Page } from '@playwright/test';
 import type { HarnessApp } from '../src/harness.js';
@@ -32,7 +34,7 @@ function sideChatPane(page: Page) {
 async function seedSource(
   harness: HarnessApp,
   otherTitles: string[] = [],
-): Promise<{ threadId: string; path: string; otherIds: string[] }> {
+): Promise<{ threadId: string; projectId: string; path: string; otherIds: string[] }> {
   const seed = await harness.rpc<SeedResult>('HarnessSeed', {
     projects: [
       {
@@ -52,7 +54,7 @@ async function seedSource(
     ],
   });
   const [threadId, ...otherIds] = seed.projects[0].threadIds;
-  return { threadId, path: seed.projects[0].path, otherIds };
+  return { threadId, projectId: seed.projects[0].projectId, path: seed.projects[0].path, otherIds };
 }
 
 /** Run one turn in the source pane so the thread has a session to fork. */
@@ -284,4 +286,33 @@ test('a reload brings the source pane back without its side chat', async ({ harn
   // Nor is the thread it held anywhere a person can reach it: the boot
   // sweep on the next restart is what finally deletes it.
   await expect(page.getByTestId('thread-row').filter({ hasText: 'Side chat' })).toHaveCount(0);
+});
+
+test('New Thread in a collapsed group replaces the side chat source and preserves collapse', async ({ harness, page }) => {
+  const source = await seedSource(harness);
+  const group = await harness.rpc<{ id: string }>('CreateThreadGroup', source.projectId, 'Grouped drafts');
+  await setScenario(harness, source.path, plainScenario({ name: 'group-from-side-chat', provider: 'claude', texts: ['On it.'] }));
+  await harness.open(page);
+  await page.getByTestId('thread-row').filter({ hasText: SOURCE_TITLE }).click();
+  await runOneTurn(page, harness, 'prepare the source');
+  await runSideChat(page);
+  const fork = await scratchFork(harness, source.threadId);
+  expect(fork).toBeDefined();
+
+  const groupRow = page.getByTestId('thread-group-row');
+  await groupRow.getByTestId('thread-group-row-expand').click();
+  await sideChatPane(page).getByLabel('Message Input').click();
+  await groupRow.hover();
+  await groupRow.getByRole('button', { name: 'New Thread in Group' }).click();
+  await expect(sideChatPane(page)).toHaveCount(0);
+  await expect(sourcePane(page)).toHaveCount(1);
+  await expect(groupRow).toHaveAttribute('data-expanded', 'false');
+  await sourcePane(page).getByLabel('Message Input').fill('A new grouped task');
+  await expect(page.locator('[data-group-member] [data-sidebar-thread-id]')).toHaveCount(1);
+  await expect(groupRow).toHaveAttribute('data-expanded', 'false');
+  await expect.poll(async () => {
+    const rows = await harness.rpc<Array<{ id: string; groupId?: string; isDraft?: boolean }>>('HarnessListThreadRows');
+    return rows.filter(row => row.groupId === group.id).map(row => row.isDraft);
+  }).toEqual([true]);
+  await expect.poll(async () => (await threadRows(harness)).some(row => row.id === fork!.id)).toBe(false);
 });

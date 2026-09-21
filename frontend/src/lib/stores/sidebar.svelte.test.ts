@@ -14,7 +14,6 @@ import {
   isThreadListExpanded,
   resetSidebarForTest,
   revealMoreThreadList,
-  setCollapsedGroups,
   setThreadListVisibleLimit,
   setProjectSortMode,
   toggleGroup,
@@ -89,18 +88,13 @@ describe('sidebar store', () => {
       expect(JSON.parse(appStorageGet(COLLAPSED_GROUPS_KEY) as string)).toEqual([]);
     });
 
-    it('setCollapsedGroups swaps the whole set and no-ops on an equal one', () => {
-      setCollapsedGroups(new Set(['g1', 'g2']));
+    it('toggling one group preserves the collapse state of other groups', () => {
+      toggleGroup('g1');
+      toggleGroup('g2');
       expect([...getCollapsedGroups()].sort()).toEqual(['g1', 'g2']);
-      const before = getCollapsedGroups();
-
-      setCollapsedGroups(new Set(['g2', 'g1']));
-      // Equal content, so the state reference is untouched — the sidebar's
-      // auto-expand effect writes this on every pass and must settle.
-      expect(getCollapsedGroups()).toBe(before);
-
-      setCollapsedGroups(new Set(['g1']));
+      toggleGroup('g2');
       expect([...getCollapsedGroups()]).toEqual(['g1']);
+      expect(JSON.parse(appStorageGet(COLLAPSED_GROUPS_KEY) as string)).toEqual(['g1']);
     });
 
     it('resetSidebarForTest clears the collapsed groups', () => {

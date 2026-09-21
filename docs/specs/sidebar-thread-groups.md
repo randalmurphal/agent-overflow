@@ -28,8 +28,13 @@ running member moves the group up the list, it does not light the row.
 - **Collapsed group.** Shows a member count. Its members' status still
   bubbles for the SORT (the same bubbling a discussion parent uses) but
   nothing of it renders on the row (ruling 2026-09-02). A group
-  auto-expands when a member becomes the focused thread, the way a
-  discussion auto-expands for its participant. Groups start expanded.
+  remains collapsed when a member becomes focused. Only the focused
+  thread appears directly beneath it, even if that thread is a nested
+  discussion child. Other open panes do not add rows to this preview.
+  Collapsed discussions follow the same rule. Focus changes replace or
+  remove the preview without changing saved expansion state. Expanding
+  restores the full tree without duplicating the focused row. Groups
+  start expanded.
 - **Preview cut.** Front- and back-burner pins share the project's preview
   limit with unpinned rows. All pins remain visible when they exceed the
   limit, leaving no preview slots for unpinned rows. Drafts and threads
@@ -196,32 +201,14 @@ Names are trimmed and non-empty; a blank rename is rejected.
   `threadRowActions.ts`, and reconcile the store from each RPC response.
 - `stores/sidebar.svelte.ts`: `sidebar:collapsedGroups` set (groups
   default expanded, so the persisted set holds the collapsed ids).
-- `utils/sidebarTree.ts` + `utils/sidebarTreeView.ts` (AS BUILT: split in
-  two, against the design's "one file" call. The group work pushed the
-  module past 800 lines, and the seam turned out to be clean — the VIEW
-  half needs `statusPriority` and `isDraftNode` and nothing else, both of
-  which are now exported with a one-line doc. `sidebarTree.ts` keeps the
-  node types, the sort vocabulary, `resolveDisplay`, `compareTreeNodes`
-  and `buildSidebarThreadTree`; `sidebarTreeView.ts` takes
-  `flattenSidebarThreadTree`, `previewSidebarThreads`,
-  `nextSidebarThreadRevealLimit`, `rollupDisplayStatus`,
-  `sameSidebarVisibleNodes`, `sameThreadStatusPill`,
-  `toggleSidebarTreeThreadExpansion` and
-  `syncExpandedTreeForActiveThread`. The view imports the builder, never
-  the reverse; no re-export shim; the test file split the same way):
-  `SidebarTreeNode` becomes a discriminated union,
-  `{kind: 'thread', thread, …}` and `{kind: 'group', group, …}`, sharing
-  the status, activity, sort, depth, and children fields. The
-  builder takes `groups` beside `threads`; a top-level thread whose
-  `groupId` names a group in the input becomes that group's child. A
-  group node has no own status (`ownLiveStatus: 'idle'`, `ownStatus:
-  null`), bubbles display status from members by the existing
-  `resolveDisplay`, and takes `latestActivityAt` as the max of members
-  (its own `updatedAt` when empty). `sidebarPinGroup` reads pin fields
-  from either shape. `previewSidebarThreads`, `flattenSidebarThreadTree`,
-  `rollupDisplayStatus`, `syncExpandedTreeForActiveThread`, and
-  `sameSidebarVisibleNodes` handle both kinds; the active-thread expand
-  sync removes the containing group from the collapsed set.
+- `utils/sidebarTree.ts` owns the tree, sorting and status rollup.
+  `utils/sidebarTreeView.ts` projects visible rows, applies the preview
+  limit and prunes expansion IDs for discussion rows that became leaves.
+  Collapsed containers project only their focused descendant at one level
+  below the container, with that thread's own status and no nested expansion
+  controls. The preview retains the owning group for drag-and-drop actions.
+  Groups and discussions containing open threads remain above the preview
+  cut. Rendering does not write group collapse state.
 - Search: `ProjectsSection` buckets threads and groups in ONE derivation,
   because the two filters are coupled — a thread survives when it matches
   or when its group's NAME matched, so a name match pulls the whole
@@ -288,7 +275,8 @@ Names are trimmed and non-empty; a blank rename is rejected.
 - `sidebarTree` / `sidebarTreeView` tests: group sorts by bubbled status and activity; a
   pinned group sits in its block; a group takes one preview slot and its
   members none; collapsed and expanded flatten shapes; search by group
-  name pulls all members; active member un-collapses its group;
+  name pulls all members; focused descendants remain visible under
+  collapsed groups and discussions;
   `sameSidebarVisibleNodes` distinguishes a group from a thread node at
   the same index.
 - Component tests: group row renders count when collapsed and members
@@ -300,6 +288,6 @@ Names are trimmed and non-empty; a blank rename is rejected.
   methods.
 - Live: create a group from the project menu, rename inline, drag
   threads in and out, pin the group to both burners, collapse with a
-  running member and see the dot, search by group name, delete the group
-  and see members return to the list, second connected client follows
-  every change.
+  focused member and see only that member beneath the group, search by group
+  name, delete the group and see members return to the list, second connected
+  client follows every change.
