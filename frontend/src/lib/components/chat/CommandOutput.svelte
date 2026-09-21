@@ -65,7 +65,7 @@
     item: Item;
     meta?: CommandOutputMeta | null;
     payloadId?: string;
-    /** Item used for command extraction and user-facing command text. */
+    /** Item used for command extraction and the header description. */
     displayItem?: Item;
     /** Item used for status/badge derivation. Useful for launch+completion pairs. */
     statusItem?: Item;
@@ -77,11 +77,9 @@
     showTimestamp?: boolean;
     /** Optional actions rendered outside the disclosure button. */
     hostActions?: Snippet;
-    /** Tray rows: the command text already shows in the header, so the
-     * chevron is live only once output (or an output-read state) exists.
+    /** Tray rows: the chevron is live only once output (or an output-read state) exists.
      * A running background command has no live output on either
-     * provider, so its chevron reads gray instead of opening the command
-     * text again. */
+     * provider, so its chevron reads gray. */
     bodyRequiresPayload?: boolean;
   } = $props();
   let effectiveDisplayItem = $derived(displayItem ?? item);
@@ -128,6 +126,14 @@
   // distinct command.
   let commandText = $derived(commandTextForItem(effectiveDisplayItem, meta));
   let displayCommand = $derived(stripShellWrapper(commandText));
+  let commandDescription = $derived.by(() => {
+    const input = parseJsonObject(effectiveDisplayItem.meta)?.input;
+    const description = input && typeof input === 'object' && 'description' in input
+      ? input.description
+      : undefined;
+    return typeof description === 'string' ? description.trim() : '';
+  });
+  let headerText = $derived(commandDescription || displayCommand);
   let hasBody = $derived(
     (!bodyRequiresPayload && !!displayCommand)
       || hasPayload
@@ -317,7 +323,7 @@
       title={displayCommand || undefined}
       data-testid="command-output-command"
     >
-      {displayCommand}
+      {headerText}
     </span>
   {/snippet}
 
@@ -363,7 +369,7 @@
     expanded={expansion.expanded}
     expandable={hasBody}
     controls={hasBody ? outputDomId : undefined}
-    ariaLabel={`Toggle Command Output: ${displayCommand}`}
+    ariaLabel={`Toggle Command Output: ${headerText}`}
     testId="command-output-toggle"
     class="rounded-[var(--radius-control)] px-1 py-1 text-[0.75rem] {hasBody ? 'hover:bg-surface-2/20' : ''}"
     onToggle={(event) => preservePaneScrollAnchor(pane, event, () => expansion.toggle())}

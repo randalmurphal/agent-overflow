@@ -293,7 +293,10 @@ describe('<BackgroundTaskTrayRow> doors (agent-visibility)', () => {
   it('gives a plain command row no open button and a live chevron only once output exists', async () => {
     const onOpenPane = vi.fn();
     const onToggleExpanded = vi.fn();
-    const anchor = makeItem({ id: 'L1', kind: 'tool_call', toolName: 'Bash', status: 'running', summary: 'sleep 30' });
+    const anchor = makeItem({
+      id: 'L1', kind: 'tool_call', toolName: 'Bash', status: 'running', summary: 'sleep 30',
+      meta: JSON.stringify({ input: { command: 'sleep 30', description: 'Wait thirty seconds' } }),
+    });
     const view = render(BackgroundTaskTrayRow, {
       props: {
         task: taskFor(anchor),
@@ -309,6 +312,8 @@ describe('<BackgroundTaskTrayRow> doors (agent-visibility)', () => {
       },
     });
     expect(view.queryByTestId('background-task-tray-row-open')).toBeNull();
+    expect(view.getByTestId('command-output-command')).toHaveTextContent('Wait thirty seconds');
+    expect(view.getByTestId('command-output-command')).toHaveAttribute('title', 'sleep 30');
     const header = view.getByTestId('command-output-toggle');
     expect(header).toHaveAttribute('aria-disabled', 'true');
     await fireEvent.click(header);
@@ -327,6 +332,7 @@ describe('<BackgroundTaskTrayRow> doors (agent-visibility)', () => {
       payloadMeta: JSON.stringify({ command: 'sleep 30', lineCount: 1, preview: 'done' }),
     });
     await view.rerender({ task: taskFor(anchor, { completion, status: 'completed' }), stopTarget: null });
+    expect(view.getByTestId('command-output-command')).toHaveTextContent('Wait thirty seconds');
     expect(view.getByTestId('command-output-toggle')).not.toHaveAttribute('aria-disabled', 'true');
     expect(view.queryByTestId('background-task-tray-row-digest')).toBeNull();
   });

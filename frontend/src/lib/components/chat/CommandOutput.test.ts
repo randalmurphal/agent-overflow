@@ -62,6 +62,58 @@ describe('<CommandOutput>', () => {
     cleanup();
   });
 
+  it('prefers the description while retaining the command on hover and the lazy expanded output', async () => {
+    const command = 'printf "hello\\n"\ngit status --short';
+    const preview = setBindingMock('GetPayloadPreview', async () => ({
+      data: 'hello\n M file.ts', nextOffset: 16, totalSize: 16, isComplete: true,
+    }));
+    const item = makeItem({
+      kind: 'tool_call', toolName: 'Bash', status: 'completed',
+      meta: JSON.stringify({ input: { command, description: '  Print a greeting and check changes  ' } }),
+    });
+    const { getByTestId, getByRole, findByText, queryByTestId } = render(CommandOutput, {
+      props: { item, payloadId: 'described-output' },
+    });
+    expect(getByTestId('command-output-command')).toHaveTextContent('Print a greeting and check changes');
+    expect(getByTestId('command-output-command')).toHaveAttribute('title', command);
+    expect(queryByTestId('command-output-full-command')).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
+    await fireEvent.click(getByRole('button', { name: 'Toggle Command Output: Print a greeting and check changes' }));
+    expect(getByTestId('command-output-full-command').textContent).toBe(command);
+    expect(await findByText(/M file.ts/)).toBeInTheDocument();
+    await fireEvent.click(getByTestId('command-output-toggle'));
+    expect(queryByTestId('command-output-full-command')).toBeNull();
+    expect(getByTestId('command-output-command')).toHaveTextContent('Print a greeting and check changes');
+  });
+
+  it.each([undefined, null, '', ' \n\t ', 42, {}, ['Run tests']])(
+    'falls back to the command for an unusable description: %j', (description) => {
+      const { getByTestId } = render(CommandOutput, { props: {
+        item: makeItem({ toolName: 'Bash', meta: JSON.stringify({ input: { command: 'pnpm test', description } }) }),
+      } });
+      expect(getByTestId('command-output-command')).toHaveTextContent('pnpm test');
+      expect(getByTestId('command-output-command')).toHaveAttribute('title', 'pnpm test');
+    },
+  );
+
+  it('updates and clears a description from the display item independently of output and status', async () => {
+    const item = makeItem({ kind: 'tool_completion', status: 'completed' });
+    const displayItem = makeItem({
+      toolName: 'Bash', status: 'running', parentId: 'agent-launch',
+      meta: JSON.stringify({ input: { command: 'pnpm test', description: 'Run tests' } }),
+    });
+    const { getByTestId, rerender } = render(CommandOutput, { props: { item, displayItem } });
+    expect(getByTestId('command-output-command')).toHaveTextContent('Run tests');
+    await rerender({ item, displayItem: {
+      ...displayItem, meta: JSON.stringify({ input: { command: 'pnpm test', description: 'Check regressions' } }),
+    } });
+    expect(getByTestId('command-output-command')).toHaveTextContent('Check regressions');
+    await rerender({ item, displayItem: {
+      ...displayItem, meta: JSON.stringify({ input: { command: 'pnpm test' } }),
+    } });
+    expect(getByTestId('command-output-command')).toHaveTextContent('pnpm test');
+  });
+
   it('renders raw ANSI payloads in the expanded output', async () => {
     setBindingMock('GetPayloadPreview', async () => ({
       data: '\x1b[31mred\x1b[0m then plain',
@@ -98,7 +150,10 @@ describe('<CommandOutput>', () => {
     const command = 'git status --short\nprintf "%s\\n" "a long argument that must remain readable"';
     const preview = setBindingMock('GetPayloadPreview', async () => { throw new Error('no payload'); });
     const { getByTestId } = render(CommandOutput, { props: {
-      item: makeItem({ kind: 'tool_call', status: 'running' }),
+      item: makeItem({
+        kind: 'tool_call', status: 'running',
+        meta: JSON.stringify({ input: { command, description: 'Check changes and print an argument' } }),
+      }),
       meta: commandMeta({ command }),
     } });
     await fireEvent.click(getByTestId('command-output-toggle'));

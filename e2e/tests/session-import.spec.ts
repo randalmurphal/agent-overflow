@@ -230,8 +230,10 @@ test('importing a selection creates the threads and renders their history', asyn
   // The Bash call imported as an ordinary tool row — launch and result folded
   // into one card the way a live turn writes it, with the output in a payload
   // the row loads on demand.
-  await expect(page.getByTestId('command-output-command')).toHaveText('go test ./internal/retry');
+  await expect(page.getByTestId('command-output-command')).toHaveText('Run the retry tests');
+  await expect(page.getByTestId('command-output-command')).toHaveAttribute('title', 'go test ./internal/retry');
   await page.getByTestId('command-output-toggle').click();
+  await expect(page.getByTestId('command-output-full-command')).toHaveText('go test ./internal/retry');
   await expect(page.getByText('ok  internal/retry 0.02s')).toBeVisible();
 
   await threadRow(page, fx.codex.title).click();

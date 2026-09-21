@@ -1,7 +1,7 @@
 // Phone gestures and geometry over the production SPA: a meter stays open,
 // the header's facts line and the rail's tokens fit without horizontal
 // overflow and open their pickers, a picked file lands in the draft, and an
-// expanded Bash row exposes the full command before its output.
+// Bash row shows its description and expands to the full command and output.
 import { test, expect } from './fixtures.js';
 import {
   claudeScenario, claudeUsageResult, emit, seedAgentThread, startMock, toolResultLine, toolUseLine,
@@ -9,9 +9,10 @@ import {
 
 test('phone meters, attachments, workspace and command details remain usable', async ({ harness, page }) => {
   const command = 'printf "%s\\n" "a deliberately long command argument that exceeds a phone header"\ngit status --short';
+  const description = 'Print a long argument and check the working tree';
   const threadId = await seedAgentThread(harness, 'a-project-with-a-long-name-for-the-phone-footer', 'Phone polish');
   await harness.rpc('HarnessSetScenario', { scenario: claudeScenario('phone-polish', [emit([
-    toolUseLine('msg-command', 'tool-command', 'Bash', { command }),
+    toolUseLine('msg-command', 'tool-command', 'Bash', { command, description }),
     toolResultLine('tool-command', 'the complete command output'),
     claudeUsageResult(123456, 45678),
   ])]) });
@@ -83,6 +84,8 @@ test('phone meters, attachments, workspace and command details remain usable', a
   await expect(page.getByLabel('Remove picked-note.txt')).toBeVisible();
 
   const toggle = page.getByTestId('command-output-toggle').first();
+  await expect(page.getByTestId('command-output-command').first()).toHaveText(description);
+  await expect(page.getByTestId('command-output-command').first()).toHaveAttribute('title', command);
   await toggle.tap();
   const full = page.getByTestId('command-output-full-command').first();
   await expect(full).toHaveText(command);

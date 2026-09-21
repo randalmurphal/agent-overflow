@@ -2,6 +2,8 @@
 // thinking, prose, and final text all have to appear as they arrive. Every
 // other pane spec opens the pane after the transcript settled; this one
 // watches it live.
+// Bash descriptions render in the agent pane and inline body, with command
+// fallback and full command/output expansion.
 //
 // Written against a real defect (2026-08-23): an INLINE agent's text and
 // thinking never left the CLI at all, because the synchronous Task path
@@ -65,7 +67,7 @@ function liveScenario() {
       }),
       taskStartedLine('task-live', 'tu-live', 'map surfaces'),
       sidechainPromptLine('prompt-uuid-1', PROMPT, 'tu-live'),
-      toolUseLine('msg-b1', 'tu-live-b1', 'Bash', { command: 'ls internal' }, 'tu-live'),
+      toolUseLine('msg-b1', 'tu-live-b1', 'Bash', { command: 'ls internal', description: 'List internal packages' }, 'tu-live'),
       toolResultLine('tu-live-b1', 'provider\nstore', { parentToolUseId: 'tu-live' }),
     ]),
     { waitSignal: { name: 'open' } },
@@ -108,7 +110,13 @@ test('an open pane shows prose, thinking, and the final text as the agent stream
   // The agent's instructions: a plain user-side message, first in the pane.
   await expect(paneTimeline.getByText(PROMPT)).toBeVisible();
   await expect(paneTimeline.getByTestId('user-message-bubble')).toHaveCount(1);
-  await expect(paneTimeline.getByText('ls internal', { exact: true })).toBeVisible();
+  const commandRow = paneTimeline.getByTestId('command-output-row').filter({ hasText: 'List internal packages' });
+  await expect(commandRow.getByTestId('command-output-command')).toHaveText('List internal packages');
+  await expect(commandRow.getByTestId('command-output-command')).toHaveAttribute('title', 'ls internal');
+  await commandRow.getByTestId('command-output-toggle').click();
+  await expect(commandRow.getByTestId('command-output-full-command')).toHaveText('ls internal');
+  await expect(commandRow.locator('pre')).toHaveText('provider\nstore');
+  await commandRow.getByTestId('command-output-toggle').click();
 
   await advance(harness, mockId, 'open');
   await expect(paneTimeline.getByText(MID)).toBeVisible();
@@ -127,4 +135,5 @@ test('an open pane shows prose, thinking, and the final text as the agent stream
   // user_text child, which is the body digest's initial-prompt slot.
   await card.getByTestId('subagent-group-toggle').first().click();
   await expect(card.getByTestId('subagent-group-body').first().getByText(PROMPT)).toBeVisible();
+  await expect(card.getByTestId('command-output-command').filter({ hasText: 'List internal packages' })).toBeVisible();
 });
