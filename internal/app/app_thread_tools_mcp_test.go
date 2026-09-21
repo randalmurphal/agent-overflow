@@ -353,8 +353,11 @@ func TestThreadToolsSwitchReachesLiveSessions(t *testing.T) {
 			// The listing agrees: the row is present and disabled, which is
 			// what the MCP menu draws.
 			row := findServer(app.withThreadMCPRow(thread, nil, true), threadMCPName)
-			if row.Name == "" || !row.Disabled {
+			if row.Name == "" || row.Disabled || row.Status != "disabled" || row.ToggleDisabledReason == "" {
 				t.Fatalf("row with the switch off = %#v", row)
+			}
+			if err := app.SetThreadMcpServerEnabled(thread.ID, threadMCPName, true); err == nil {
+				t.Fatal("enabled thread tools while settings blocked them")
 			}
 		})
 	}

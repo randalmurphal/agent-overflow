@@ -78,7 +78,12 @@ func (a *App) withBrowserMCPRow(thread store.Thread, rows []ThreadMCPServer, liv
 		return rows
 	}
 	globalEnabled := a.currentSettings().BrowserEnabled
-	threadEnabled := globalEnabled && a.browser.mcp.ThreadEnabled(thread.ID)
+	threadEnabled := a.browser.mcp.ThreadEnabled(thread.ID)
+	available := globalEnabled && threadEnabled
+	toggleDisabledReason := ""
+	if !globalEnabled {
+		toggleDisabledReason = "Browser tools are disabled in Settings."
+	}
 	source := mcpRowSourceConfig
 	if live {
 		source = mcpRowSourceSession
@@ -87,24 +92,26 @@ func (a *App) withBrowserMCPRow(thread store.Thread, rows []ThreadMCPServer, liv
 		if rows[i].Name != appbrowser.ServerName {
 			continue
 		}
-		if !threadEnabled {
-			rows[i].Disabled = true
+		if !available {
 			rows[i].Status = string(mcpstatus.StatusDisabled)
 			rows[i].Tools = nil
 		}
 		rows[i].Source = source
+		rows[i].ToggleDisabledReason = toggleDisabledReason
+		rows[i].Disabled = !threadEnabled
 		return rows
 	}
 	status := mcpstatus.StatusNotStarted
-	if !threadEnabled {
+	if !available {
 		status = mcpstatus.StatusDisabled
 	}
 	return append(rows, ThreadMCPServer{
-		Provider: thread.Provider,
-		Name:     appbrowser.ServerName,
-		Status:   string(status),
-		Disabled: !threadEnabled,
-		Source:   source,
+		Provider:             thread.Provider,
+		Name:                 appbrowser.ServerName,
+		Status:               string(status),
+		Disabled:             !threadEnabled,
+		Source:               source,
+		ToggleDisabledReason: toggleDisabledReason,
 	})
 }
 

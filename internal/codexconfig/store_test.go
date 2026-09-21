@@ -1,6 +1,7 @@
 package codexconfig
 
 import (
+	"github.com/BurntSushi/toml"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -149,94 +150,6 @@ func TestConcurrentWriteDetected(t *testing.T) {
 	}
 }
 
-func TestRender_stdioWithEnvUsesDottedKeys(t *testing.T) {
-	out, err := renderSection(Server{
-		Name:      "x",
-		Transport: TransportStdio,
-		Command:   "/bin/x",
-		Env:       map[string]string{"A": "1", "B-key": "2"},
-		Enabled:   true,
-	})
-	if err != nil {
-		t.Fatalf("renderSection: %v", err)
-	}
-	str := string(out)
-	if !strings.Contains(str, `env.A = "1"`) {
-		t.Errorf("expected dotted env.A; got=%s", str)
-	}
-	if !strings.Contains(str, `env."B-key"`) && !strings.Contains(str, `env.B-key`) {
-		// Either bare or quoted is fine since '-' is a bare-key
-		// character; assert at least one form is present.
-		t.Errorf("expected env.B-key entry; got=%s", str)
-	}
-}
-
-func TestRender_orderDeterministic(t *testing.T) {
-	srv := Server{
-		Name:      "x",
-		Transport: TransportStdio,
-		Command:   "/bin/x",
-		Env:       map[string]string{"Z": "1", "A": "2", "M": "3"},
-		Enabled:   true,
-	}
-	first, err := renderSection(srv)
-	if err != nil {
-		t.Fatalf("render 1: %v", err)
-	}
-	for i := 0; i < 5; i++ {
-		next, err := renderSection(srv)
-		if err != nil {
-			t.Fatalf("render %d: %v", i, err)
-		}
-		if string(first) != string(next) {
-			t.Fatalf("non-deterministic render:\nfirst=%s\nnext=%s", first, next)
-		}
-	}
-	// Sanity: alphabetical
-	str := string(first)
-	idxA := strings.Index(str, "env.A")
-	idxM := strings.Index(str, "env.M")
-	idxZ := strings.Index(str, "env.Z")
-	if !(idxA > 0 && idxA < idxM && idxM < idxZ) {
-		t.Errorf("env keys not alphabetical; A=%d M=%d Z=%d", idxA, idxM, idxZ)
-	}
-}
-
-func TestFindSectionByName_dottedSubsectionsBelong(t *testing.T) {
-	body := `[features]
-foo = true
-
-[mcp_servers.alpha]
-command = "/bin/alpha"
-
-[mcp_servers.alpha.http_headers]
-X = "1"
-
-[mcp_servers.beta]
-command = "/bin/beta"
-`
-	start, end := findSectionByName([]byte(body), "alpha")
-	chunk := body[start:end]
-	if !strings.Contains(chunk, "[mcp_servers.alpha]") {
-		t.Errorf("missing alpha header in chunk:\n%s", chunk)
-	}
-	if !strings.Contains(chunk, "[mcp_servers.alpha.http_headers]") {
-		t.Errorf("dotted subsection not absorbed:\n%s", chunk)
-	}
-	if strings.Contains(chunk, "[mcp_servers.beta]") {
-		t.Errorf("beta leaked into alpha chunk:\n%s", chunk)
-	}
-}
-
-func TestFindSectionByName_missing(t *testing.T) {
-	start, end := findSectionByName([]byte(`[features]
-foo = true
-`), "alpha")
-	if start != -1 || end != -1 {
-		t.Errorf("expected (-1,-1); got (%d,%d)", start, end)
-	}
-}
-
 func TestListServers_includesDisabled(t *testing.T) {
 	store := newStoreWithFile(t, `[mcp_servers.foo]
 command = "/bin/foo"
@@ -248,24 +161,6 @@ enabled = false
 	}
 	if len(got) != 1 || got[0].Enabled {
 		t.Fatalf("expected disabled foo; got=%+v", got)
-	}
-}
-
-func TestTomlQuote_escapesBackslashesAndQuotes(t *testing.T) {
-	got := tomlQuote(`a"b\c`)
-	want := `"a\"b\\c"`
-	if got != want {
-		t.Errorf("tomlQuote got=%q want=%q", got, want)
-	}
-}
-
-func TestTomlQuote_preservesDollarBrace(t *testing.T) {
-	// We use basic strings so ${VAR} substitutions reach Codex
-	// unchanged. Regression: literal strings (single quotes) would
-	// also be fine — but $ must NOT be escaped.
-	got := tomlQuote(`Bearer ${TOK}`)
-	if !strings.Contains(got, `${TOK}`) {
-		t.Errorf("dollar-brace pattern altered: %q", got)
 	}
 }
 
@@ -293,5 +188,100 @@ command = "/c"
 	sort.Strings(names)
 	if !reflect.DeepEqual(names, want) {
 		t.Errorf("post-sort order = %v, want %v", names, want)
+	}
+}
+
+func TestSetEnabledPreservesProviderFields(t *testing.T) {
+	const body = `model = "test"
+[mcp_servers.foo]
+command = "fake-server"
+enabled = false
+startup_timeout_sec = 42
+required = true
+enabled_tools = ["read"]
+disabled_tools = ["write"]
+future_field = { nested = "keep" }
+[mcp_servers.foo.env]
+TOKEN = "fixture-only"
+[mcp_servers.bar]
+url = "https://example.test/mcp"
+`
+	store := newStoreWithFile(t, body)
+	var before map[string]any
+	if _, err := toml.Decode(body, &before); err != nil {
+		t.Fatal(err)
+	}
+	for _, enabled := range []bool{true, false, false, true} {
+		if err := store.SetEnabled("foo", enabled); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(store.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var after map[string]any
+		if _, err := toml.Decode(string(raw), &after); err != nil {
+			t.Fatal(err)
+		}
+		decodeMcpServers(before)["foo"]["enabled"] = enabled
+		if !reflect.DeepEqual(before, after) {
+			t.Fatalf("toggle changed unrelated config:\n%s", raw)
+		}
+	}
+}
+
+func TestSetEnabledPreservesSeparatedSubtables(t *testing.T) {
+	const body = `[mcp_servers.foo]
+command = "fixture"
+[unrelated]
+value = true
+[mcp_servers.foo.env]
+VALUE = "keep"
+`
+	store := newStoreWithFile(t, body)
+	if err := store.SetEnabled("foo", false); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(body, "[mcp_servers.foo]\n", "[mcp_servers.foo]\n\nenabled = false\n", 1)
+	if string(raw) != want {
+		t.Fatalf("changed unrelated configuration: %s", raw)
+	}
+}
+
+func TestSetEnabledChangesOnlyTheActualPreference(t *testing.T) {
+	const body = `[mcp_servers.foo]
+command = '''fixture
+ enabled = false
+fixture'''
+# Keep this comment.
+"enabled" = false # Keep this one too.
+[mcp_servers.foo.env]
+enabled = "false"
+`
+	store := newStoreWithFile(t, body)
+	if err := store.SetEnabled("foo", true); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(body, `"enabled" = false`, `"enabled" = true`, 1)
+	if string(raw) != want {
+		t.Fatalf("changed more than the preference:\n%s", raw)
+	}
+	if err := store.SetEnabled("foo", true); err != nil {
+		t.Fatal(err)
+	}
+	again, err := os.ReadFile(store.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != want {
+		t.Fatal("repeated enable changed the configuration")
 	}
 }

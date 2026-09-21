@@ -4,12 +4,14 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import McpServersTrigger from './McpServersTrigger.svelte';
 import { ThreadMCPServer } from '../../../stores/bindings';
 import { resetPanesForTest } from '../../../stores/panes.svelte';
+import { getToasts } from '../../../stores/toast.svelte';
 import { refreshMcpServers } from '../../../stores/mcpServers.svelte';
 import {
   getBindingMock,
   resetBindingMocks,
   setBindingMock,
 } from '../../../../test/mocks/bindings-app';
+import { emitWailsEvent } from '../../../../test/mocks/wailsio-runtime';
 import { buildPane, makeThread } from '../../../../test/helpers/chat';
 
 function row(over: Partial<ThreadMCPServer> = {}): ThreadMCPServer {
@@ -265,4 +267,73 @@ describe('<McpServersTrigger>', () => {
     const error = await findByTestId('mcp-menu-error');
     expect(error.textContent ?? '').toMatch(/mcp listing unavailable/);
   });
+});
+
+it.each(['claude', 'codex'] as const)('shows %s off, blocked and failed independently of the switch', async (provider) => {
+  const toggle = setBindingMock('SetThreadMcpServerEnabled', async () => {});
+  setBindingMock('ListThreadMcpServers', async () => [
+    row({ provider, name: 'off-server', source: 'session', disabled: true, status: 'disabled' }),
+    row({ provider, name: 'blocked-server', source: 'session', status: 'disabled', toggleDisabledReason: 'Disabled by provider settings.' }),
+    row({ provider, name: 'external-server', source: 'session', status: 'connected', toggleDisabledReason: 'Managed elsewhere.' }),
+    row({ provider, name: 'failed-server', source: 'session', status: 'failed' }),
+  ]);
+  const pane = await buildPane(makeThread({ provider }));
+  const view = render(McpServersTrigger, { props: { pane } });
+  await fireEvent.click(view.getByTestId('composer-mcp-trigger'));
+  const off = await view.findByRole('menuitem', { name: 'off-server Off' });
+  await waitFor(() => expect(off).not.toHaveAttribute('aria-disabled', 'true'));
+  expect(off.querySelector('[data-mcp-enabled]')).toHaveAttribute('data-mcp-enabled', 'false');
+  expect(view.queryByRole('button', { name: 'Reconnect off-server' })).toBeNull();
+  const blocked = view.getByRole('menuitem', { name: 'blocked-server Blocked' });
+  expect(blocked).toHaveAttribute('aria-disabled', 'true');
+  expect(blocked).toHaveAttribute('title', 'Disabled by provider settings.');
+  expect(blocked.querySelector('[data-mcp-enabled]')).toHaveAttribute('data-mcp-enabled', 'true');
+  expect(view.queryByRole('button', { name: 'Reconnect blocked-server' })).toBeNull();
+  await fireEvent.click(blocked);
+  await fireEvent.keyDown(blocked, { key: 'Enter' });
+  await fireEvent.click(view.getByText('external-server'));
+  expect(toggle).not.toHaveBeenCalled();
+  const failed = view.getByText('failed-server').closest('[data-menuitem]')!;
+  expect(failed.querySelector('[data-mcp-enabled]')).toHaveAttribute('data-mcp-enabled', 'true');
+  expect(view.getByRole('button', { name: 'Reconnect failed-server' })).toBeVisible();
+  await fireEvent.click(off);
+  await waitFor(() => expect(toggle).toHaveBeenCalledWith('thread-1', 'off-server', true));
+});
+
+it('updates the switch and removes stale actions across repeated toggles', async () => {
+  let enabled = false;
+  setBindingMock('ListThreadMcpServers', async () => [row({
+    provider: 'codex', name: 'srv', source: 'session', disabled: !enabled,
+    status: enabled ? 'connected' : 'disabled', tools: enabled ? ['read'] : [],
+  })]);
+  const toggle = setBindingMock('SetThreadMcpServerEnabled', async (_thread, _name, next) => {
+    enabled = next as boolean;
+    emitWailsEvent('mcp:status', { provider: 'codex', name: 'srv', status: 'unknown' });
+  });
+  const pane = await buildPane(makeThread({ provider: 'codex' }));
+  const view = render(McpServersTrigger, { props: { pane } });
+  await fireEvent.click(view.getByTestId('composer-mcp-trigger'));
+  for (const next of [true, false, true, false]) {
+    const item = await view.findByRole('menuitem', { name: next ? 'srv Off' : /srv Connected/ });
+    await waitFor(() => expect(item).not.toHaveAttribute('aria-disabled', 'true'));
+    await fireEvent.click(item);
+    await waitFor(() => expect(toggle).toHaveBeenLastCalledWith('thread-1', 'srv', next));
+    await waitFor(() => expect(view.getByText('srv').closest('[data-menuitem]')!.querySelector('[data-mcp-enabled]'))
+      .toHaveAttribute('data-mcp-enabled', String(next)));
+    if (!next) expect(view.queryByRole('button', { name: 'Reconnect srv' })).toBeNull();
+  }
+});
+
+it('keeps the saved off state and reports a rejected toggle', async () => {
+  setBindingMock('ListThreadMcpServers', async () => [row({ provider: 'codex', name: 'srv', source: 'session', disabled: true, status: 'disabled' })]);
+  setBindingMock('SetThreadMcpServerEnabled', async () => { throw new Error('config write failed'); });
+  const pane = await buildPane(makeThread({ provider: 'codex' }));
+  const view = render(McpServersTrigger, { props: { pane } });
+  await fireEvent.click(view.getByTestId('composer-mcp-trigger'));
+  const off = await view.findByRole('menuitem', { name: 'srv Off' });
+  await waitFor(() => expect(off).not.toHaveAttribute('aria-disabled', 'true'));
+  await fireEvent.click(off);
+  await waitFor(() => expect(getToasts().some((toast) => toast.message.includes('config write failed'))).toBe(true));
+  expect(off.querySelector('[data-mcp-enabled]')).toHaveAttribute('data-mcp-enabled', 'false');
+  expect(view.queryByRole('button', { name: 'Reconnect srv' })).toBeNull();
 });

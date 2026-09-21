@@ -425,7 +425,7 @@ func (a *Service) HandleCodexMCPOAuthCompleted(threadID, serverName string, succ
 	}
 	for _, live := range sessions {
 		live.Session.ForgetMCPStartupState(serverName)
-		a.requestCodexMCPReload(live.ThreadID)
+		a.requestCodexMCPReload(live.ThreadID, serverName)
 	}
 }
 

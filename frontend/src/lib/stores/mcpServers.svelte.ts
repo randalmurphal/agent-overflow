@@ -273,7 +273,7 @@ function patchStatus(status: MCPServerStatus, backend: BackendKey): void {
     const rows = store.snapshot(key);
     if (!rows) continue;
     const idx = rows.findIndex(
-      (r) => r.provider === status.provider && r.name === status.name && !r.disabled,
+      (r) => r.provider === status.provider && r.name === status.name,
     );
     if (idx < 0) continue;
     // A session row is the thread's own lifecycle truth (the backend
@@ -282,7 +282,13 @@ function patchStatus(status: MCPServerStatus, backend: BackendKey): void {
     // can be fired from any pane; folding it onto a session row would
     // overwrite that merge client-side with the weaker observation.
     // Provider-sourced pushes (notification / live-session) still land.
-    if (rows[idx].source === 'session' && status.source === 'ephemeral-fetch') continue;
+    if ((rows[idx].source === 'session' || rows[idx].disabled) && status.source === 'ephemeral-fetch') continue;
+    // Disabled transitions can change both preference and editability. Only
+    // the authoritative listing can resolve those independently of status.
+    if (status.status === 'disabled' || rows[idx].status === 'disabled') {
+      store.invalidate(key);
+      continue;
+    }
     const next = rows.slice();
     next[idx] = new ThreadMCPServer({
       ...next[idx],

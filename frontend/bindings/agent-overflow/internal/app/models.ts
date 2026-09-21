@@ -5558,7 +5558,12 @@ export class ThreadMCPServer {
      * rows and on config rows the cache has never seen.
      */
     "authStatus"?: string;
+
+    /**
+     * Disabled is the saved preference, independent of runtime Status.
+     */
     "disabled": boolean;
+    "toggleDisabledReason"?: string;
 
     /**
      * Source is "session" when the row is live provider truth for this

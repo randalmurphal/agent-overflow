@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"slices"
@@ -304,7 +305,12 @@ func (a *App) withThreadMCPRow(thread store.Thread, rows []ThreadMCPServer, live
 	if err != nil || !ok || scope.IsPhase() {
 		return slices.DeleteFunc(rows, func(row ThreadMCPServer) bool { return row.Name == threadMCPName })
 	}
-	enabled := a.threadMCPServer().ThreadEnabled(thread.ID) && a.threadToolsEnabledFor(thread.ID)
+	enabled := a.threadMCPServer().ThreadEnabled(thread.ID)
+	available := enabled && a.threadToolsEnabledFor(thread.ID)
+	toggleDisabledReason := ""
+	if !a.threadToolsEnabledFor(thread.ID) {
+		toggleDisabledReason = "Thread tools are disabled in Settings."
+	}
 	source := mcpRowSourceConfig
 	if live {
 		source = mcpRowSourceSession
@@ -314,24 +320,28 @@ func (a *App) withThreadMCPRow(thread store.Thread, rows []ThreadMCPServer, live
 			continue
 		}
 		rows[i].Source = source
-		if !enabled {
-			rows[i].Disabled = true
+		rows[i].ToggleDisabledReason = toggleDisabledReason
+		rows[i].Disabled = !enabled
+		if !available {
 			rows[i].Status = string(mcpstatus.StatusDisabled)
 			rows[i].Tools = nil
 		}
 		return rows
 	}
 	status := mcpstatus.StatusNotStarted
-	if !enabled {
+	if !available {
 		status = mcpstatus.StatusDisabled
 	}
-	return append(rows, ThreadMCPServer{Provider: thread.Provider, Name: threadMCPName, Status: string(status), Disabled: !enabled, Source: source})
+	return append(rows, ThreadMCPServer{Provider: thread.Provider, Name: threadMCPName, Status: string(status), Disabled: !enabled, Source: source, ToggleDisabledReason: toggleDisabledReason})
 }
 
 // setThreadToolsThreadMCPEnabled is the per-conversation toggle in the MCP
 // menu. It is ANDed with the settings switch: a conversation the user
 // turned off stays off when the switch is on.
 func (a *App) setThreadToolsThreadMCPEnabled(thread store.Thread, enabled bool) error {
+	if !a.threadToolsEnabledFor(thread.ID) {
+		return errors.New("thread tools are disabled in Settings")
+	}
 	server := a.threadMCPServer()
 	previous := server.ThreadEnabled(thread.ID)
 	server.SetThreadEnabled(thread.ID, enabled)

@@ -178,3 +178,39 @@ func TestRefreshLiveBrowserMCPUsesCodexReload(t *testing.T) {
 		t.Fatalf("reload method = %q", method)
 	}
 }
+
+func TestBrowserMCPRowSeparatesPreferenceFromSettings(t *testing.T) {
+	app, _, _ := newMCPTestApp(t)
+	app.browser.mcp = appbrowser.NewMCPServer(nil, true)
+	t.Cleanup(func() {
+		if err := app.browser.mcp.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	thread := store.Thread{ID: "browser-state", Provider: string(provider.Codex)}
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{"browserEnabled": false}); err != nil {
+		t.Fatal(err)
+	}
+	for _, rows := range [][]ThreadMCPServer{nil, {{Name: appbrowser.ServerName, Status: "connected", Tools: []string{"read"}}}} {
+		row := findServer(app.withBrowserMCPRow(thread, rows, true), appbrowser.ServerName)
+		if row.Disabled || row.Status != "disabled" || row.ToggleDisabledReason == "" || len(row.Tools) != 0 {
+			t.Fatalf("blocked row = %#v", row)
+		}
+	}
+	if err := app.setBrowserThreadMCPEnabled(thread, true); err == nil {
+		t.Fatal("enabled browser while settings blocked it")
+	}
+	app.browser.mcp.SetThreadEnabled(thread.ID, false)
+	if _, err := app.UpdateSettings(context.Background(), map[string]any{"browserEnabled": true}); err != nil {
+		t.Fatal(err)
+	}
+	row := findServer(app.withBrowserMCPRow(thread, nil, false), appbrowser.ServerName)
+	if !row.Disabled || row.ToggleDisabledReason != "" {
+		t.Fatalf("saved off preference was not preserved: %#v", row)
+	}
+	app.browser.mcp.SetThreadEnabled(thread.ID, true)
+	row = findServer(app.withBrowserMCPRow(thread, []ThreadMCPServer{{Name: appbrowser.ServerName, Status: "connected", Disabled: true, ToggleDisabledReason: "external"}}, true), appbrowser.ServerName)
+	if row.Disabled || row.ToggleDisabledReason != "" {
+		t.Fatalf("managed owner did not restore control: %#v", row)
+	}
+}

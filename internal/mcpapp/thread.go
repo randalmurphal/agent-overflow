@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/claudeconfig"
+	"agent-overflow/internal/codexconfig"
 	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude"
@@ -50,7 +51,10 @@ type ThreadMCPServer struct {
 	// cache's copy (the ephemeral fetch records it). Empty on Claude
 	// rows and on config rows the cache has never seen.
 	AuthStatus string `json:"authStatus,omitempty"`
-	Disabled   bool   `json:"disabled"`
+	// Disabled is the saved preference, independent of runtime Status.
+	Disabled bool `json:"disabled"`
+	// ToggleDisabledReason is empty when this surface can change the preference.
+	ToggleDisabledReason string `json:"toggleDisabledReason,omitempty"`
 	// Source is "session" when the row is live provider truth for this
 	// thread, "config" when it is the config+cache fallback.
 	Source string `json:"source"`
@@ -276,6 +280,21 @@ func (a *Service) setCodexMCPEnabled(reloadThreadID, name string, enabled bool) 
 	if err != nil {
 		return err
 	}
+	if reloadThreadID != "" {
+		if sess, ok := a.session(reloadThreadID); ok && sess.Codex != nil {
+			ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveApplyTimeout)
+			defer cancel()
+			rows, err := a.codexSessionMCPRows(ctx, sess.Codex)
+			if err != nil {
+				return err
+			}
+			for _, row := range rows {
+				if row.Name == name && row.ToggleDisabledReason != "" {
+					return errors.New(row.ToggleDisabledReason)
+				}
+			}
+		}
+	}
 	if err := st.SetEnabled(name, enabled); err != nil {
 		return fmt.Errorf("set codex mcp enabled: %w", err)
 	}
@@ -288,7 +307,7 @@ func (a *Service) setCodexMCPEnabled(reloadThreadID, name string, enabled bool) 
 		return nil
 	}
 	sess.Codex.ForgetMCPStartupState(name)
-	a.requestCodexMCPReload(reloadThreadID)
+	a.requestCodexMCPReload(reloadThreadID, name)
 	return nil
 }
 
@@ -297,6 +316,7 @@ func (a *Service) setCodexMCPEnabled(reloadThreadID, name string, enabled bool) 
 // reload runner is live for the thread.
 type codexMCPReloadState struct {
 	rerun bool
+	names map[string]struct{}
 }
 
 // requestCodexMCPReload schedules an async `config/mcpServer/reload` on
@@ -312,17 +332,18 @@ type codexMCPReloadState struct {
 // since-closed thread still matters (Bug B5 / invariant 29). The one
 // silent path is app shutdown — a timeout is a real failure the user
 // sees.
-func (a *Service) requestCodexMCPReload(threadID string) {
+func (a *Service) requestCodexMCPReload(threadID, name string) {
 	a.codexReloadsMu.Lock()
 	if st, ok := a.codexReloads[threadID]; ok {
 		st.rerun = true
+		st.names[name] = struct{}{}
 		a.codexReloadsMu.Unlock()
 		return
 	}
 	if a.codexReloads == nil {
 		a.codexReloads = map[string]*codexMCPReloadState{}
 	}
-	st := &codexMCPReloadState{}
+	st := &codexMCPReloadState{names: map[string]struct{}{name: {}}}
 	a.codexReloads[threadID] = st
 	a.codexReloadsMu.Unlock()
 
@@ -331,6 +352,10 @@ func (a *Service) requestCodexMCPReload(threadID string) {
 			err := a.runCodexMCPReload(threadID)
 
 			a.codexReloadsMu.Lock()
+			names := make([]string, 0, len(st.names))
+			for name := range st.names {
+				names = append(names, name)
+			}
 			rerun := st.rerun
 			st.rerun = false
 			if !rerun {
@@ -338,6 +363,9 @@ func (a *Service) requestCodexMCPReload(threadID string) {
 			}
 			a.codexReloadsMu.Unlock()
 
+			for _, name := range names {
+				a.mcpStatus().Invalidate(mcpstatus.Key{Provider: mcpstatus.ProviderCodex, Name: name})
+			}
 			if err != nil && a.lifeCtx().Err() == nil {
 				a.emitWireErrorToThread(threadID, fmt.Sprintf("mcp: live reload failed: %s", sanitizeMCPError(err.Error())))
 			}
@@ -365,7 +393,8 @@ func (a *Service) runCodexMCPReload(threadID string) error {
 // codexSessionMCPRows merges the live session's thread-scoped
 // `mcpServerStatus/list` (every server the thread actually loaded,
 // including plugin/project layers) with the config file's disabled
-// entries, which the session never loads and therefore never reports.
+// entries omitted by older providers. Saved preferences remain separate
+// from the runtime state and from whether AO can edit the server.
 //
 // Codex 0.150's runtimeStatus is the current thread manager's lifecycle
 // state and wins over retained startup notifications. Older servers and
@@ -379,6 +408,18 @@ func (a *Service) codexSessionMCPRows(ctx context.Context, sess *codex.Session) 
 	list, err := sess.ListMCPServerStatuses(ctx)
 	if err != nil {
 		return nil, err
+	}
+	st, err := a.codexConfig()
+	if err != nil {
+		return nil, err
+	}
+	servers, err := st.ListServers()
+	if err != nil {
+		return nil, fmt.Errorf("list codex mcp servers: %w", err)
+	}
+	configured := make(map[string]codexconfig.Server, len(servers))
+	for _, srv := range servers {
+		configured[srv.Name] = srv
 	}
 	startupStates := sess.MCPStartupStates()
 	rows := make([]ThreadMCPServer, 0, len(list.Data))
@@ -402,16 +443,16 @@ func (a *Service) codexSessionMCPRows(ctx context.Context, sess *codex.Session) 
 				row.Tools = nil
 			}
 		}
+		applyCodexMCPPreference(&row, configured)
+		// Without a current runtime, an off preference is stronger evidence
+		// than the status probe's missing connection or retained startup error.
+		if row.Disabled && entry.RuntimeStatus == nil {
+			row.Status = string(mcpstatus.StatusDisabled)
+			row.Tools = nil
+			row.Error = ""
+		}
 		rows = append(rows, row)
 		seen[entry.Name] = struct{}{}
-	}
-	st, err := a.codexConfig()
-	if err != nil {
-		return nil, err
-	}
-	servers, err := st.ListServers()
-	if err != nil {
-		return nil, fmt.Errorf("list codex mcp servers: %w", err)
 	}
 	for _, srv := range servers {
 		if _, ok := seen[srv.Name]; ok || srv.Enabled {
@@ -427,6 +468,26 @@ func (a *Service) codexSessionMCPRows(ctx context.Context, sess *codex.Session) 
 	}
 	sortThreadMCPServers(rows)
 	return rows, nil
+}
+
+func applyCodexMCPPreference(row *ThreadMCPServer, configured map[string]codexconfig.Server) {
+	if row.Status == string(mcpstatus.StatusDisabled) {
+		row.Tools = nil
+		row.Error = ""
+	}
+	srv, ok := configured[row.Name]
+	if !ok {
+		row.Disabled = row.Status == string(mcpstatus.StatusDisabled)
+		row.ToggleDisabledReason = "This server is managed outside the Codex user configuration."
+		return
+	}
+	row.Disabled = !srv.Enabled
+	// Codex omits runtimeStatus when its loaded configuration differs from
+	// the latest effective configuration. Explicit disabled with a saved on
+	// preference therefore reflects an overriding provider configuration.
+	if srv.Enabled && row.Status == string(mcpstatus.StatusDisabled) {
+		row.ToggleDisabledReason = "This server is disabled by the provider configuration."
+	}
 }
 
 // CodexSessionMCPRows exposes the live-session projection to the app shell's

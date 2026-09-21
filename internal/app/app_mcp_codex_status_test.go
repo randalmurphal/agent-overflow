@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/codexconfig"
+	"agent-overflow/internal/mcpapp"
+	"agent-overflow/internal/mcpstatus"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 )
@@ -506,4 +509,197 @@ func waitForCaptureLineCount(t *testing.T, captureDir string, want int, deadline
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("capture never reached %d lines (have %d)", want, countCaptureLines(t, captureDir))
+}
+
+func TestCodexMCPMenuPreferencesAndGuards(t *testing.T) {
+	app, _, configPath := newMCPTestApp(t)
+	const config = `[mcp_servers.off]
+command = "fake"
+enabled = false
+[mcp_servers.blocked]
+command = "fake"
+[mcp_servers.legacy_off]
+command = "fake"
+enabled = false
+`
+	writeCodexConfig(t, configPath, config)
+	workspace := t.TempDir()
+	thread, err := createTestThread(t, app, string(provider.Codex), workspace, "gpt-5", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := t.TempDir()
+	binary := writeCodexMcpStatusResponderBinary(t, capture, `{"data":[{"name":"off","runtimeStatus":"disabled"},{"name":"blocked","runtimeStatus":"disabled"},{"name":"external","runtimeStatus":"connected"},{"name":"legacy_off","authStatus":"unsupported"}]}`, nil)
+	newCodexMcpStatusSession(t, app, thread.ID, binary, workspace, "mcp-menu")
+	rows, err := app.ListThreadMcpServers(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	off := findServer(rows, "off")
+	if !off.Disabled || off.Status != "disabled" || off.ToggleDisabledReason != "" {
+		t.Fatalf("off = %#v", off)
+	}
+	legacy := findServer(rows, "legacy_off")
+	if !legacy.Disabled || legacy.Status != "disabled" || legacy.ToggleDisabledReason != "" {
+		t.Fatalf("legacy off = %#v", legacy)
+	}
+	blocked := findServer(rows, "blocked")
+	if blocked.Disabled || blocked.Status != "disabled" || blocked.ToggleDisabledReason == "" {
+		t.Fatalf("blocked = %#v", blocked)
+	}
+	external := findServer(rows, "external")
+	if external.Disabled || external.Status != "connected" || external.ToggleDisabledReason == "" {
+		t.Fatalf("external = %#v", external)
+	}
+	for _, name := range []string{"blocked", "external"} {
+		for _, enabled := range []bool{true, false} {
+			if err := app.SetThreadMcpServerEnabled(thread.ID, name, enabled); err == nil {
+				t.Fatalf("toggle %s accepted", name)
+			}
+		}
+	}
+	for _, name := range []string{"off", "blocked"} {
+		if err := app.ReconnectMcpServer(thread.ID, name); err == nil {
+			t.Fatalf("reconnect %s accepted", name)
+		}
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != config {
+		t.Fatal("refused operation changed config")
+	}
+	if countCaptureLines(t, capture) != 0 {
+		t.Fatal("refused operation reloaded the provider")
+	}
+}
+
+func TestCodexMCPMenuToggleRoundTrip(t *testing.T) {
+	app, _, configPath := newMCPTestApp(t)
+	writeCodexConfig(t, configPath, "[mcp_servers.srv]\ncommand = \"fake\"\nenabled = false\n")
+	workspace := t.TempDir()
+	thread, err := createTestThread(t, app, string(provider.Codex), workspace, "gpt-5", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const off = `{"data":[{"name":"srv","runtimeStatus":"disabled","tools":{}}]}`
+	const on = `{"data":[{"name":"srv","runtimeStatus":"connected","tools":{"read":{}}}]}`
+	capture := t.TempDir()
+	binary := writeCodexMcpStatusResponderBinary(t, capture, off, nil)
+	raw, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.Replace(string(raw), "set -u", "set -u\nruntimeResult='"+off+"'", 1)
+	script = strings.Replace(script, "\"$id\" '"+off+"'", `"$id" "$runtimeResult"`, 1)
+	script = strings.Replace(script, `*'"method":"config/mcpServer/reload"'*)`, `*'"method":"config/mcpServer/reload"'*)
+        if /usr/bin/grep -q 'enabled = true' `+shellQuote(configPath)+`; then
+            runtimeResult='`+on+`'
+        else
+            runtimeResult='`+off+`'
+        fi`, 1)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	newCodexMcpStatusSession(t, app, thread.ID, binary, workspace, "mcp-round-trip")
+	events := make(chan struct{}, 16)
+	app.testEmitHook = func(name string, data any) {
+		if name == "mcp:status" {
+			status, ok := data.(mcpstatus.ServerStatus)
+			if ok && status.Name == "srv" && status.Status == mcpstatus.StatusUnknown {
+				events <- struct{}{}
+			}
+		}
+	}
+
+	for i, enabled := range []bool{true, false, true, false} {
+		rows, err := app.ListThreadMcpServers(thread.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := findServer(rows, "srv")
+		if before.Disabled != enabled {
+			t.Fatalf("before toggle %d: %#v", i, before)
+		}
+		if err := app.SetThreadMcpServerEnabled(thread.ID, "srv", enabled); err != nil {
+			t.Fatal(err)
+		}
+		waitForCaptureLineCount(t, capture, i+1, 3*time.Second)
+		// The first invalidation publishes the saved preference; the second
+		// publishes completion even when the provider emits no startup event.
+		for n := 0; n < 2; n++ {
+			select {
+			case <-events:
+			case <-time.After(3 * time.Second):
+				t.Fatal("missing toggle/reload invalidation")
+			}
+		}
+
+		rows, err = app.ListThreadMcpServers(thread.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row := findServer(rows, "srv")
+		status, tools := "disabled", 0
+		if enabled {
+			status, tools = "connected", 1
+		}
+		if row.Disabled == enabled || row.Status != status || row.ToggleDisabledReason != "" || len(row.Tools) != tools {
+			t.Fatalf("after toggle %d: %#v", i, row)
+		}
+	}
+}
+
+func TestCodexMCPMenuReloadFailureReportsAndRetainsPreference(t *testing.T) {
+	app, _, configPath := newMCPTestApp(t)
+	writeCodexConfig(t, configPath, "[mcp_servers.srv]\ncommand = \"fake\"\nenabled = false\n")
+	workspace := t.TempDir()
+	thread, err := createTestThread(t, app, string(provider.Codex), workspace, "gpt-5", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures := make(chan string, 1)
+	deps := app.mcpDeps()
+	deps.CodexConfig = codexconfig.New(configPath)
+	deps.EmitWireError = func(id, message string) {
+		if id == thread.ID {
+			failures <- message
+		}
+	}
+	app.mcpApp = mcpapp.New(deps)
+	binary := writeCodexMcpStatusResponderBinary(t, "", `{"data":[{"name":"srv","runtimeStatus":"disabled"}]}`, nil)
+	raw, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(raw)
+	start := strings.Index(script, `*'"method":"config/mcpServer/reload"'*)`)
+	if start < 0 {
+		t.Fatal("missing reload response")
+	}
+	script = script[:start] + strings.Replace(script[start:], `"result":{}`, `"error":{"code":-32603,"message":"reload refused"}`, 1)
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	newCodexMcpStatusSession(t, app, thread.ID, binary, workspace, "mcp-failed-reload")
+	if err := app.SetThreadMcpServerEnabled(thread.ID, "srv", true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case message := <-failures:
+		if !strings.Contains(message, "reload refused") {
+			t.Fatalf("error = %q", message)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("reload failure did not reach the thread error owner")
+	}
+	rows, err := app.ListThreadMcpServers(thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := findServer(rows, "srv")
+	if row.Disabled || row.Status == "connected" {
+		t.Fatalf("failed reload row = %#v", row)
+	}
 }

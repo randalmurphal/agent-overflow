@@ -68,7 +68,7 @@ test('built-in browser MCP reaches both provider launch boundaries and composer 
   browserRow = page.getByRole('menu', { name: 'MCP servers' })
     .getByRole('menuitem')
     .filter({ hasText: browserServer });
-  await expect(browserRow).toContainText('Disabled');
+  await expect(browserRow).toContainText('Off');
   await browserRow.click();
   await expect.poll(async () => {
     const current = await harness.rpc<Array<{ name: string; disabled: boolean }>>(

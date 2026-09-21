@@ -73,10 +73,11 @@
     return release;
   });
 
-  type StatusKey = 'connected' | 'not-started' | 'starting' | 'needs-auth' | 'failed' | 'disabled' | 'unknown';
+  type StatusKey = 'connected' | 'not-started' | 'starting' | 'needs-auth' | 'failed' | 'disabled' | 'blocked' | 'unknown';
 
   function statusKey(row: ThreadMCPServer): StatusKey {
     const s = row.status;
+    if (s === 'disabled' && !row.disabled) return 'blocked';
     if (s === 'connected' || s === 'not-started' || s === 'starting' || s === 'needs-auth' || s === 'failed' || s === 'disabled') {
       return s;
     }
@@ -90,6 +91,7 @@
     'needs-auth': 'bg-warning',
     failed: 'bg-error',
     disabled: 'bg-fg-subtle/40',
+    blocked: 'bg-fg-subtle/40',
     unknown: 'bg-fg-subtle/40',
   };
 
@@ -99,7 +101,8 @@
     starting: 'Starting…',
     'needs-auth': 'Needs sign-in',
     failed: 'Failed',
-    disabled: 'Disabled',
+    disabled: 'Off',
+    blocked: 'Blocked',
     unknown: 'Not checked',
   };
 
@@ -115,7 +118,7 @@
   }
 
   async function toggleServer(row: ThreadMCPServer, enable: boolean): Promise<void> {
-    if (!target) return;
+    if (!target || row.toggleDisabledReason) return;
     try {
       await setMcpServerEnabled(target, row.name, enable);
     } catch (err) {
@@ -204,15 +207,18 @@
         {@const inSet = !row.disabled}
         {@const canReconnect = row.source === 'session' && rowsFromOwnSession}
         {@const act = mcpRowAction(row, canReconnect)}
+        {@const hasAction = inSet && row.status !== 'disabled'}
         <MenuItem
           label={row.name}
           description={describe(row, key)}
+          disabled={!!row.toggleDisabledReason || loading}
+          title={row.toggleDisabledReason || undefined}
           onSelect={() => void toggleServer(row, !inSet)}
-          actionText={inSet ? act.label : undefined}
+          actionText={hasAction ? act.label : undefined}
           actionLabel={act.title}
           actionTitle={act.title}
           actionDisabled={loading}
-          onAction={inSet
+          onAction={hasAction
             ? () => {
                 if (act.kind === 'sign-in') void signIn(row);
                 else if (act.kind === 'reconnect') void reconnect(row);
@@ -225,6 +231,9 @@
               class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-all duration-200
                 {inSet ? 'border-accent/40 bg-accent/85' : 'border-border bg-surface-2/80'}"
               aria-hidden="true"
+              data-mcp-enabled={inSet}
+              data-mcp-toggle-disabled={!!row.toggleDisabledReason || loading}
+              class:opacity-50={!!row.toggleDisabledReason}
             >
               <span
                 class="block h-3 w-3 rounded-full bg-text-primary shadow-sheet transition-transform duration-200

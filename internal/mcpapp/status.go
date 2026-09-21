@@ -82,6 +82,15 @@ func (a *Service) ReconnectMcpServer(threadID, name string) error {
 	if !ok {
 		return ErrMCPSessionUnavailable
 	}
+	rows, err := a.ListThreadMcpServers(threadID)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.Name == name && (row.Disabled || row.Status == string(mcpstatus.StatusDisabled)) {
+			return fmt.Errorf("reconnect mcp server: %s is disabled", name)
+		}
+	}
 	ctx, cancel := context.WithTimeout(a.lifeCtx(), mcpLiveApplyTimeout)
 	defer cancel()
 	switch thread.Provider {
@@ -125,7 +134,7 @@ func (a *Service) ApplyManagedServerEnabled(threadID, name string, enabled bool)
 		return sess.Claude.ToggleMCPServer(ctx, name, enabled)
 	case sess.Codex != nil:
 		sess.Codex.ForgetMCPStartupState(name)
-		a.requestCodexMCPReload(threadID)
+		a.requestCodexMCPReload(threadID, name)
 	}
 	return nil
 }

@@ -402,6 +402,8 @@ func (a *App) withRemoteMCPRow(thread store.Thread, rows []ThreadMCPServer, live
 			continue
 		}
 		rows[i].Source = source
+		rows[i].ToggleDisabledReason = ""
+		rows[i].Disabled = !enabled
 		if !enabled {
 			rows[i].Disabled = true
 			rows[i].Status = string(mcpstatus.StatusDisabled)

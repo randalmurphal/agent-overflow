@@ -237,6 +237,11 @@ func writeClaudeMcpToggleCaptureBinary(t *testing.T, captureDir string) string {
 set -u
 while IFS= read -r line; do
     case "$line" in
+        *'"subtype":"mcp_status"'*)
+            reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
+            printf '{"type":"control_response","response":{"subtype":"success","request_id":"%s","response":{"mcpServers":[]}}}\n' "$reqid"
+            ;;
+
         *'"type":"control_request"'*'"subtype":"mcp_toggle"'* | *'"subtype":"mcp_toggle"'*'"type":"control_request"'*)
             printf '%s\n' "$line" >> ` + shellQuote(filepath.Join(captureDir, "capture.jsonl")) + `
             reqid=$(printf '%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
@@ -308,6 +313,10 @@ while IFS= read -r line; do
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"config/mcpServer/reload"'; then
         printf '%s\n' "$line" >> ` + shellQuote(filepath.Join(captureDir, "capture.jsonl")) + `
 ` + gateWait + `        printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+        continue
+    fi
+    if /bin/echo "$line" | /usr/bin/grep -q '"method":"mcpServerStatus/list"'; then
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"data":[]}}\n' "$id"
         continue
     fi
     if /bin/echo "$line" | /usr/bin/grep -q '"method":"initialize"'; then

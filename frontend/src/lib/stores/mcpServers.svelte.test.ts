@@ -619,3 +619,27 @@ it('keeps identically named MCP servers and their connection lifecycles on their
   await flush();
   expect(listed).toEqual(['', 'laptop', 'laptop', 'laptop']);
 });
+
+it('re-lists disabled transitions to refresh preference and toggle capability together', async () => {
+  let current = row({ provider: 'codex', name: 'srv', source: 'session', status: 'disabled', disabled: false,
+    toggleDisabledReason: 'Disabled by provider settings.' });
+  const list = setBindingMock('ListThreadMcpServers', async () => [current]);
+  const t = target('codex', 't1', '/repo');
+  const handle = attach(t);
+  await flush();
+  current = row({ provider: 'codex', name: 'srv', source: 'session', status: 'connected', disabled: false });
+  emitWailsEvent('mcp:status', { provider: 'codex', name: 'srv', status: 'connected', source: 'notification' });
+  await flush();
+  expect(list).toHaveBeenCalledTimes(2);
+  expect(handle.current?.[0].toggleDisabledReason).toBeFalsy();
+  current = row({ provider: 'codex', name: 'srv', source: 'session', status: 'disabled', disabled: true });
+  emitWailsEvent('mcp:status', { provider: 'codex', name: 'srv', status: 'disabled', source: 'notification' });
+  await flush();
+  expect(list).toHaveBeenCalledTimes(3);
+  expect(handle.current?.[0].disabled).toBe(true);
+  current = row({ provider: 'codex', name: 'srv', source: 'session', status: 'connected', disabled: false });
+  emitWailsEvent('mcp:status', { provider: 'codex', name: 'srv', status: 'connected', source: 'notification' });
+  await flush();
+  expect(list).toHaveBeenCalledTimes(4);
+  expect(handle.current?.[0].disabled).toBe(false);
+});

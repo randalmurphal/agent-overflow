@@ -302,7 +302,7 @@ func (a *Service) applyWorkspaceMCPAuthToLiveSessions(key workspaceMCPAuthKey) {
 		}
 		for _, live := range sessions {
 			live.Session.ForgetMCPStartupState(key.server)
-			a.requestCodexMCPReload(live.ThreadID)
+			a.requestCodexMCPReload(live.ThreadID, key.server)
 		}
 	case string(provider.Claude):
 		var sessions []ClaudeLiveSession

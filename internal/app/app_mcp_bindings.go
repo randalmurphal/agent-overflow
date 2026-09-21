@@ -74,7 +74,9 @@ type ThreadMCPServer struct {
 	// cache's copy (the ephemeral fetch records it). Empty on Claude
 	// rows and on config rows the cache has never seen.
 	AuthStatus string `json:"authStatus,omitempty"`
-	Disabled   bool   `json:"disabled"`
+	// Disabled is the saved preference, independent of runtime Status.
+	Disabled             bool   `json:"disabled"`
+	ToggleDisabledReason string `json:"toggleDisabledReason,omitempty"`
 	// Source is "session" when the row is live provider truth for this
 	// thread, "config" when it is the config+cache fallback.
 	Source string `json:"source"`
@@ -170,7 +172,7 @@ func threadMCPServers(rows []mcpapp.ThreadMCPServer) []ThreadMCPServer {
 			Provider: row.Provider, Name: row.Name, Status: row.Status,
 			Error: row.Error, Tools: row.Tools, Scope: row.Scope,
 			AuthStatus: row.AuthStatus, Disabled: row.Disabled,
-			Source: row.Source, Stale: row.Stale,
+			Source: row.Source, Stale: row.Stale, ToggleDisabledReason: row.ToggleDisabledReason,
 		}
 	}
 	return out

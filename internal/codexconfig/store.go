@@ -1,14 +1,13 @@
 package codexconfig
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
-	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -43,10 +42,7 @@ var (
 	ErrInvalidName     = errors.New("codexconfig: server name must match [A-Za-z0-9_-]+")
 )
 
-// bareKey matches the TOML bare-key pattern (the only names AO will
-// emit unquoted in a `[mcp_servers.<name>]` header). Names with other
-// characters need quoting, which AO refuses on create/update so the
-// header round-trip stays simple.
+// bareKey limits the server names accepted by the preference writer.
 var bareKey = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // Store reads and writes ~/.codex/config.toml. Tests inject a temp
@@ -94,31 +90,62 @@ func (s *Store) ListServers() ([]Server, error) {
 	return out, nil
 }
 
+var enabledAssignment = regexp.MustCompile(`(?m)^[ \t]*(?:enabled|"enabled"|'enabled')[ \t]*=[ \t]*(true|false)`)
+
 // SetEnabled flips the `enabled` key for the given server. Codex's
 // `enabled` is global (not per-thread), and so is this method.
-// Missing servers return ErrNotFound. enabled=true with no existing
-// key is a no-op (default is true).
+// Missing servers return ErrNotFound. Preserve provider fields that AO
+// does not project into Server.
 func (s *Store) SetEnabled(name string, enabled bool) error {
 	if !bareKey.MatchString(name) {
 		return ErrInvalidName
 	}
 	return s.modify(func(data []byte) ([]byte, error) {
-		start, end := findSectionByName(data, name)
-		if start < 0 {
+		var tree map[string]any
+		if _, err := toml.Decode(string(data), &tree); err != nil {
+			return nil, err
+		}
+		raw := decodeMcpServers(tree)[name]
+		if raw == nil {
 			return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
 		}
-		// Re-render the existing section with the flipped enabled
-		// flag. Reuse the parsed view so all other fields survive.
-		current, err := loadServerByName(data, name)
-		if err != nil {
-			return nil, err
+		previous, present := raw["enabled"]
+		if previous == enabled || (!present && enabled) {
+			return data, nil
 		}
-		current.Enabled = enabled
-		body, err := renderSection(current)
-		if err != nil {
-			return nil, err
+		raw["enabled"] = enabled
+		// Verify the entire parsed document after each candidate edit. A
+		// matching line can belong to a nested table or a multiline string.
+		// Only the edit that changes this preference alone may be committed.
+		accept := func(start, end int, replacement []byte) ([]byte, bool) {
+			next := make([]byte, 0, len(data)+len(replacement))
+			next = append(next, data[:start]...)
+			next = append(next, replacement...)
+			next = append(next, data[end:]...)
+			var checked map[string]any
+			if _, err := toml.Decode(string(next), &checked); err != nil {
+				return nil, false
+			}
+			return next, reflect.DeepEqual(tree, checked)
 		}
-		return spliceReplace(data, start, end, body), nil
+		value := []byte(fmt.Sprint(enabled))
+		if present {
+			for _, match := range enabledAssignment.FindAllSubmatchIndex(data, -1) {
+				if next, ok := accept(match[2], match[3], value); ok {
+					return next, nil
+				}
+			}
+		} else {
+			header := regexp.MustCompile(`(?m)^[ \t]*\[[ \t]*mcp_servers\.` + regexp.QuoteMeta(name) + `[ \t]*\][^\n]*(?:\n|$)`)
+			for _, match := range header.FindAllIndex(data, -1) {
+				assignment := []byte("\nenabled = " + string(value) + "\n")
+				if next, ok := accept(match[1], match[1], assignment); ok {
+					return next, nil
+				}
+			}
+		}
+		return nil, fmt.Errorf("set mcp enabled: cannot locate the enabled field for %q without changing other configuration", name)
+
 	})
 }
 
@@ -183,19 +210,6 @@ func readFileWithStat(path string) ([]byte, os.FileInfo, error) {
 		}
 	}
 	return nil, nil, fmt.Errorf("read %s: file changed during read across %d attempts", path, maxAttempts)
-}
-
-func loadServerByName(data []byte, name string) (Server, error) {
-	var tree map[string]any
-	if _, err := toml.Decode(string(data), &tree); err != nil {
-		return Server{}, fmt.Errorf("parse: %w", err)
-	}
-	mcps := decodeMcpServers(tree)
-	raw, ok := mcps[name]
-	if !ok {
-		return Server{}, fmt.Errorf("%w: %s", ErrNotFound, name)
-	}
-	return serverFromRaw(name, raw)
 }
 
 func decodeMcpServers(tree map[string]any) map[string]map[string]any {
@@ -341,114 +355,4 @@ func writeIfUnchanged(path string, data []byte, before os.FileInfo) (bool, error
 		return false, fmt.Errorf("rename: %w", err)
 	}
 	return true, nil
-}
-
-// renderSection produces the TOML bytes for one [mcp_servers.<name>]
-// table. The output always ends in a single newline so consecutive
-// sections separate cleanly when stitched. Bare-key names are
-// validated up front so the header is `[mcp_servers.<name>]` without
-// quoting. Field order is fixed for determinism.
-func renderSection(srv Server) ([]byte, error) {
-	if !bareKey.MatchString(srv.Name) {
-		return nil, ErrInvalidName
-	}
-	var b bytes.Buffer
-	fmt.Fprintf(&b, "[mcp_servers.%s]\n", srv.Name)
-	switch srv.Transport {
-	case TransportStdio:
-		writeKV(&b, "command", srv.Command)
-		if len(srv.Args) > 0 {
-			writeArr(&b, "args", srv.Args)
-		}
-		if len(srv.Env) > 0 {
-			writeTableInline(&b, "env", srv.Env)
-		}
-	case TransportStreamable:
-		writeKV(&b, "url", srv.URL)
-		if len(srv.HTTPHeaders) > 0 {
-			writeTableInline(&b, "http_headers", srv.HTTPHeaders)
-		}
-		if srv.BearerTokenEnv != "" {
-			writeKV(&b, "bearer_token_env_var", srv.BearerTokenEnv)
-		}
-	default:
-		return nil, fmt.Errorf("unsupported transport %q", srv.Transport)
-	}
-	if !srv.Enabled {
-		fmt.Fprintln(&b, "enabled = false")
-	}
-	return b.Bytes(), nil
-}
-
-func writeKV(b *bytes.Buffer, key, value string) {
-	fmt.Fprintf(b, "%s = %s\n", key, tomlQuote(value))
-}
-
-func writeArr(b *bytes.Buffer, key string, values []string) {
-	b.WriteString(key)
-	b.WriteString(" = [")
-	for i, v := range values {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(tomlQuote(v))
-	}
-	b.WriteString("]\n")
-}
-
-// writeTableInline emits one `key.subkey = "value"` line per entry so
-// the parent table header stays the [mcp_servers.<name>] one (Codex
-// expects fields directly under that header, not under a nested
-// `[mcp_servers.<name>.env]` table — both decode the same shape but
-// the dotted-key form keeps the section a single logical block).
-func writeTableInline(b *bytes.Buffer, key string, values map[string]string) {
-	keys := make([]string, 0, len(values))
-	for k := range values {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		left := key + "." + tomlKey(k)
-		fmt.Fprintf(b, "%s = %s\n", left, tomlQuote(values[k]))
-	}
-}
-
-// tomlKey returns key quoted as a basic-string TOML key if it
-// contains characters outside [A-Za-z0-9_-]; otherwise the bare form.
-func tomlKey(key string) string {
-	if bareKey.MatchString(key) {
-		return key
-	}
-	return tomlQuote(key)
-}
-
-// tomlQuote emits a TOML basic string with backslash escapes for the
-// characters TOML requires. We use basic strings everywhere so values
-// containing ${VAR} expand naturally — TOML literal strings (single
-// quotes) would not.
-func tomlQuote(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		default:
-			if r < 0x20 {
-				fmt.Fprintf(&b, `\u%04X`, r)
-				continue
-			}
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
 }
