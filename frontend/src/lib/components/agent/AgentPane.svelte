@@ -25,14 +25,13 @@
   import type { PanelContext } from '../../stores/panelContext.svelte';
   import { agentStateForPane } from '../../stores/agentPane.svelte';
   import { getPane } from '../../stores/panes.svelte';
-  import { createAgentScopeView } from '../../stores/agentScopeView.svelte';
+  import { agentScopeNeedsHydration, createAgentScopeView } from '../../stores/agentScopeView.svelte';
   import MessageTimeline from '../chat/MessageTimeline.svelte';
   import Icon from '../primitives/Icon.svelte';
   import PaneHeaderIconButton from '../panes/PaneHeaderIconButton.svelte';
   import PaneHeaderLine from '../panes/PaneHeaderLine.svelte';
   import { companionForSource } from '../../stores/companionPanes.svelte';
   import AgentPaneComposerShell from './AgentPaneComposerShell.svelte';
-  import { decoratedSubagentAggregates } from '../../utils/subagentGrouping';
   import {
     codexSubagentLaunchInfo,
     codexSubagentTaskDescription,
@@ -72,7 +71,10 @@
   // built for, and the template keys the timeline on the same id.
   let view = $derived.by(() =>
     sourcePane && agent && scopeItemId
-      ? createAgentScopeView(sourcePane, agent, scopeItemId)
+      ? createAgentScopeView(sourcePane, scopeItemId, {
+        viewKey: 'agent',
+        openAgentPane: (launchItemId, label) => agent.pushScope(launchItemId, label),
+      })
       : null,
   );
   $effect(() => {
@@ -107,11 +109,13 @@
   // thread's TAIL — the scoped launch can sit above it, and nothing else
   // pages it in (opening from a card always has the row loaded). Without
   // this the pane restores as a husk: bare label, no description, a
-  // permanent "not in the loaded window" body. One attempt per scope:
-  // loadUntilItem fetches the row, pages the window to include it, and
-  // hydrates the subagent subtree. A miss (row deleted, transient fetch
-  // failure) leaves the honest not-loaded state rather than closing —
-  // restart is exactly when a transient failure is most likely.
+  // permanent "not in the loaded window" body. The same holds for a pane
+  // opened from the tray on a launch the window no longer holds. One
+  // attempt per scope: loadAgentScope brings the row and its subtree into
+  // pane memory under the trail's hold without moving the window or the
+  // reader. A miss (row deleted, transient fetch failure) leaves the
+  // honest not-loaded state rather than closing: restart is exactly when
+  // a transient failure is most likely.
   let scopeLoadAttempted = $state('');
   $effect(() => {
     if (!scopeItemId || launch) return;
@@ -119,7 +123,14 @@
     if (!source || source.loading) return;
     if (untrack(() => scopeLoadAttempted) === scopeItemId) return;
     scopeLoadAttempted = scopeItemId;
-    void source.loadUntilItem(scopeItemId);
+    void source.loadAgentScope(scopeItemId);
+  });
+  // Rows the trail's hold kept outside the loaded window leave when the
+  // scope changes or the pane closes.
+  $effect(() => {
+    const source = sourcePane;
+    void scopeItemId;
+    return () => source?.sweepUnheldAgentScopes();
   });
 
   let scopedItems = $derived(view?.items ?? []);
@@ -191,11 +202,7 @@
   $effect(() => {
     if (!scopeItemId || !launch) return;
     const evicted = sourcePane?.subagentLiveAggregate(scopeItemId)?.evictedCount ?? 0;
-    const expected = Math.max(
-      decoratedSubagentAggregates(launch).transcriptCount,
-      scopedItems.length + evicted,
-    );
-    if (launch.toolName !== 'collab_agent' && scopedItems.length > 0 && scopedItems.length >= expected) return;
+    if (!agentScopeNeedsHydration(launch, scopedItems.length, evicted)) return;
     void ctx.ensureSubagentChildren(scopeItemId);
   });
 </script>

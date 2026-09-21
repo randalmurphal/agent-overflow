@@ -148,30 +148,30 @@ describe('<AgentPane>', () => {
     expect(closeAgentPane).toHaveBeenCalled();
   });
 
-  it('pages the window to a restored scope whose launch sits above the tail', async () => {
+  it('loads a restored scope whose launch sits above the tail', async () => {
     // Restore-shaped (bug 2026-08-22): layout restore re-seeds the scope,
     // but the restored window is the thread's TAIL — the launch row sits
     // above it, so the pane came back as a husk (bare label, dead body).
-    // The pane must page the window to its scope row itself.
+    // The pane must load its scope row itself, without moving the window.
     const { pane, ctx } = await setup([
       makeItem({ id: 'tail-row', itemIndex: 9, threadId: THREAD_ID, summary: 'tail prose' }),
     ]);
-    const loadUntilItem = vi.fn(async (itemId: string) => {
+    const loadAgentScope = vi.fn(async (itemId: string) => {
       expect(itemId).toBe('launch-1');
       pane.upsertItem(launchItem());
       return 'loaded' as const;
     });
-    (pane as { loadUntilItem: ThreadPane['loadUntilItem'] }).loadUntilItem = loadUntilItem;
+    (pane as { loadAgentScope: ThreadPane['loadAgentScope'] }).loadAgentScope = loadAgentScope;
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'General Purpose');
 
     const { getByTestId } = render(AgentPane, { props: { ctx } });
-    await waitFor(() => expect(loadUntilItem).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(loadAgentScope).toHaveBeenCalledTimes(1));
     // Once the row pages in, the header fills out and the not-loaded body goes away.
     await waitFor(() =>
       expect(getByTestId('agent-pane-description').textContent?.trim()).toBe('Explore the parser'),
     );
-    // One attempt per scope: the effect re-runs (launch now present) without re-paging.
-    expect(loadUntilItem).toHaveBeenCalledTimes(1);
+    // One attempt per scope: the effect re-runs (launch now present) without re-loading.
+    expect(loadAgentScope).toHaveBeenCalledTimes(1);
   });
 
   it('self-closes when a row it has seen vanishes, not when the row was never loaded', async () => {
@@ -344,7 +344,7 @@ describe('<AgentPane>', () => {
     // window: the carrier carries the original's `subagent_model`, so the
     // chip must not fall back to the thread model.
     const { pane, ctx } = await setup([resumeCarrier()]);
-    (pane as { loadUntilItem: ThreadPane['loadUntilItem'] }).loadUntilItem = async () => 'missing' as const;
+    (pane as { loadAgentScope: ThreadPane['loadAgentScope'] }).loadAgentScope = async () => 'missing' as const;
     openAgentCompanion('main', THREAD_ID, 'launch-1', 'Explore');
 
     const { getByTestId } = render(AgentPane, { props: { ctx } });

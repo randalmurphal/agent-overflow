@@ -1,4 +1,5 @@
 import { applyItemUpsertsToWindow } from './threadItemUpserts';
+import { cursorFromItem, itemsWithinLoadedWindow } from './threadItems';
 import { describe, expect, it } from 'vitest';
 import { makeItem } from '../../test/helpers/chat';
 import type { Item } from '../types/models';
@@ -954,5 +955,32 @@ describe('applyItemUpsertsToWindow activity-run routing', () => {
       },
     });
     expect(claimed).toEqual([]);
+  });
+});
+
+describe('itemsWithinLoadedWindow', () => {
+  const row = (id: string, turnIndex: number, itemIndex = 0, parentId?: string): Item =>
+    makeItem({ id, turnIndex, itemIndex, parentId });
+
+  it('returns the same array when every top-level row sits inside the edges', () => {
+    // The trailing child sits past the newest edge (hydrated under the
+    // last launch); its root is inside, so no filtering pass runs.
+    const items = [row('a', 3), row('b', 4), row('b-child', 9, 1, 'b')];
+    expect(itemsWithinLoadedWindow(items, cursorFromItem(items[0]), cursorFromItem(items[1]))).toBe(items);
+    expect(itemsWithinLoadedWindow(items, null, null)).toBe(items);
+  });
+
+  it('hides rows whose root lies outside the edges, wherever the rows themselves sit', () => {
+    const island = row('launch', 0);
+    const items = [
+      island,
+      row('nested', 0, 1, 'launch'),
+      row('a', 3),
+      row('late-child', 3, 5, 'nested'),
+      row('b', 4),
+      row('b-child', 9, 0, 'b'),
+    ];
+    const visible = itemsWithinLoadedWindow(items, cursorFromItem(items[2]), cursorFromItem(items[4]));
+    expect(visible.map((item) => item.id)).toEqual(['a', 'b', 'b-child']);
   });
 });

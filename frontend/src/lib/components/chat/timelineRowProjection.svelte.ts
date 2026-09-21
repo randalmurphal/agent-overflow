@@ -36,6 +36,7 @@ import { codexSubagentReceiverLabels } from '../../utils/subagentLaunch';
 import { PROVIDER_DEFINITIONS } from '../../providers/catalog';
 import { filterRedundantNotifications } from '../../utils/notificationFilter';
 import { isPendingFlushRow } from '../../utils/userMessageMeta';
+import { itemsWithinLoadedWindow } from '../../stores/threadItems';
 import { getFlushedForThread } from '../../stores/sendQueue.svelte';
 
 const EMPTY_RECEIVER_LABELS = new Map<string, string>();
@@ -43,7 +44,8 @@ const EMPTY_RECEIVER_LABELS = new Map<string, string>();
 const NO_WITHHELD_NODES: readonly TimelineNode[] = [];
 
 export interface TimelineRowProjectionOptions {
-  getPane(): PaneSession & TimelineSource & RowUiRegistry & RevealRead & Pick<TimelineWindow, 'hasMoreNewer'>;
+  getPane(): PaneSession & TimelineSource & RowUiRegistry & RevealRead
+    & Pick<TimelineWindow, 'hasMoreNewer' | 'oldestLoadedCursor' | 'newestLoadedCursor'>;
 }
 
 export interface TimelineRowProjection {
@@ -96,8 +98,14 @@ export function createTimelineRowProjection(
     // After session loss the registry is empty; retained history continues
     // to follow the provider's normal recovery path.
     const pendingIds = new Set<string>(JSON.parse(pendingFlushIDs));
+    // The transcript is the loaded window and nothing else: rows a held
+    // agent scope keeps outside its edges (see `itemsWithinLoadedWindow`)
+    // render only on that scope's surface. The edges move with the
+    // window, so a cursor change alone re-derives here.
+    const oldest = options.getPane().oldestLoadedCursor;
+    const newest = options.getPane().newestLoadedCursor;
     return untrack(() => {
-      const items = options.getPane().items;
+      const items = itemsWithinLoadedWindow(options.getPane().items, oldest, newest);
       const visibleItems = pendingIds.size === 0 ? items : items.filter(
         (item) => !pendingIds.has(item.id) || !isPendingFlushRow(item),
       );

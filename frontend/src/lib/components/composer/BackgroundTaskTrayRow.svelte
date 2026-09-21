@@ -20,8 +20,12 @@
   import { CODEX_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
   import type { Item } from '../../types/models';
   import type { ProviderID } from '../../providers/catalog';
+  import type { ThreadPane } from '../../stores/thread.svelte';
+  import type { HostDisclosure } from '../chat/hostDisclosure';
+  import { chatRowDomId } from '../../utils/chatDomIds';
   import Icon from '../primitives/Icon.svelte';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
+  import BackgroundTaskTrayDigest from './BackgroundTaskTrayDigest.svelte';
 
   interface Props {
     task: TrayTask;
@@ -39,27 +43,29 @@
     isStopping: boolean;
     provider: ProviderID | null;
     onStop: (rowID: string, stopTarget: string) => void;
-    /** Row click target (spec Q8): scroll the source timeline to this
-     * node and, for agent launches, open the agent companion scoped to
-     * it. Absent on surfaces with no pane. */
-    onOpen?: (task: TrayTask) => void;
-    /** The explicit open button's target: open the agent companion and
-     * nothing else. Deliberately without the row click's timeline jump —
-     * the jump is explicit navigation, so it releases bottom-follow, and
-     * a reader opening the pane while pinned to a streaming tail must not
-     * lose the pin to a scroll they never asked for. */
+    /** The open button's target: open the agent companion scoped to this
+     * agent, and nothing else. The tray never moves the timeline: a
+     * reader pinned to a streaming tail keeps the pin. */
     onOpenPane?: (task: TrayTask) => void;
+    /** Source pane the digest reads from. Absent on surfaces with no pane;
+     * the row is then header-only. */
+    pane?: ThreadPane;
+    /** Whether the row's digest is open. The host owns the set. */
+    expanded?: boolean;
+    onToggleExpanded?: (task: TrayTask) => void;
   }
 
-  let { task, stopTarget, isStopping, provider, onStop, onOpen, onOpenPane }: Props = $props();
-
-  function onRowClick(event: MouseEvent): void {
-    if (!onOpen) return;
-    // Clicks that belong to an inner control (stop, a disclosure toggle,
-    // the open button itself) keep their own meaning.
-    if ((event.target as HTMLElement | null)?.closest('button, a')) return;
-    onOpen(task);
-  }
+  let {
+    task,
+    stopTarget,
+    isStopping,
+    provider,
+    onStop,
+    onOpenPane,
+    pane,
+    expanded = false,
+    onToggleExpanded,
+  }: Props = $props();
 
   let displayItem = $derived<Item>(task.launch ?? task.completion ?? task.anchor);
   let statusItem = $derived<Item>(subagentExecutionItem(task.launch ?? task.anchor, task.completion));
@@ -81,13 +87,25 @@
   );
   let durationLabel = $derived(task.elapsedMs === null ? '' : formatElapsed(task.elapsedMs));
 
-  // The explicit open button exists only for agent launches — the same
-  // gate `onOpenPane` applies before opening the companion. A plain
-  // command row (backgrounded Bash, a Codex PTY) has no agent pane to
-  // open, so the button there was a no-op with a lying tooltip; the row
-  // click still scrolls the timeline to it.
+  // Agent rows have two doors, both at every width: the header click
+  // opens the digest under the row, the explicit button opens the agent
+  // pane. A plain command row (backgrounded Bash, a Codex PTY) has
+  // neither an agent pane nor a transcript, so it gets no button and its
+  // chevron follows its own output.
   let agentInfo = $derived(trayTaskAgentInfo(task));
   let opensAgentPane = $derived(onOpenPane !== undefined && agentInfo !== null);
+  let digestDomId = $derived(chatRowDomId(pane, 'tray-digest', task.rowId));
+  let disclosure = $derived.by<HostDisclosure | undefined>(() => {
+    if (agentInfo === null) return undefined;
+    const expandable = pane !== undefined && onToggleExpanded !== undefined;
+    return {
+      expandable,
+      expanded: expandable && expanded,
+      controls: digestDomId,
+      onToggle: () => onToggleExpanded?.(task),
+    };
+  });
+  let showDigest = $derived(disclosure?.expanded === true && pane !== undefined);
 
   // The agent's live counters (user ruling 2026-08-23: a running
   // background agent's tool count, tokens and activity line show HERE —
@@ -121,16 +139,13 @@
   );
 </script>
 
-<!-- The div click is a pointer convenience. The keyboard path is the
-     explicit open button in the row's actions. -->
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div
-  class="rounded-[var(--radius-control)] border border-border-subtle bg-transparent px-1 py-1 {onOpen ? 'cursor-pointer hover:border-border' : ''}"
+  class="rounded-[var(--radius-control)] border border-border-subtle bg-transparent px-1 py-1"
   style={task.depth > 0 ? `margin-left: ${Math.min(task.depth, 6) * 0.75}rem` : undefined}
   data-testid="background-task-tray-row"
   data-row-id={task.rowId}
   data-depth={task.depth}
-  onclick={onRowClick}
+  data-expanded={showDigest ? 'true' : undefined}
 >
   {#snippet metrics()}
     {#if toolCountLabel}
@@ -160,7 +175,7 @@
     {#if onOpenPane && opensAgentPane}
       <button
         type="button"
-        class="hidden @min-[36rem]/agent-header:inline-flex shrink-0 rounded p-0.5 text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        class="inline-flex shrink-0 rounded p-0.5 text-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
         onclick={() => onOpenPane(task)}
         title="Open in agent pane"
         aria-label="Open in Agent Pane"
@@ -194,6 +209,7 @@
         payloadId={presentation.payloadId}
         {durationLabel}
         showTimestamp={false}
+        bodyRequiresPayload
         hostActions={hasStopAction ? stopAction : undefined}
       />
     {:else if presentation.kind === 'agent'}
@@ -201,6 +217,7 @@
         agentLayout
         headerMetrics={toolCountLabel || tokensLabel ? metrics : undefined}
         headerDetails={activityLine ? activity : undefined}
+        {disclosure}
         onActivate={opensAgentPane ? () => onOpenPane?.(task) : undefined}
         item={presentation.item}
         displayItem={presentation.displayItem}
@@ -214,6 +231,7 @@
         agentLayout
         headerMetrics={toolCountLabel || tokensLabel ? metrics : undefined}
         headerDetails={activityLine ? activity : undefined}
+        {disclosure}
         onActivate={opensAgentPane ? () => onOpenPane?.(task) : undefined}
         item={presentation.item}
         statusItem={presentation.statusItem}
@@ -232,4 +250,7 @@
       />
     {/if}
   </div>
+  {#if showDigest && pane}
+    <BackgroundTaskTrayDigest {pane} {task} id={digestDomId} />
+  {/if}
 </div>

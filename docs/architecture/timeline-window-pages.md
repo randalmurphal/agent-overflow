@@ -282,7 +282,11 @@ Rules:
   (`keepWindowNearReader`, the hard ceiling, `cutWindowByRootCursor`)
   drops prose rows and whole runs outside its cut, and sheds the loaded
   members of a run that straddles it; it never drops a run whose stub it
-  would still need.
+  would still need. Rows a held agent scope needs (`getHeldRowIds`)
+  survive the cut outside the edges, as does a scope `loadAgentScope`
+  brought in for a digest or the companion; the chat timeline renders
+  only rows whose root lies inside the edges (`itemsWithinLoadedWindow`),
+  and `sweepUnheldAgentScopes` drops the rest once no surface holds them.
 - **Upserts.** A pushed row whose coordinates fall inside a held run but
   outside its loaded span is not inserted; it marks the stub dirty, and
   the pane refreshes it (`ListActivityRunMembers` with `Limit` 0,

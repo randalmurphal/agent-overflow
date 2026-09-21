@@ -1,5 +1,6 @@
 // Agent tray headers at phone widths: metrics and activity fit below the
-// name, and tapping the name opens the live agent pane.
+// name, tapping the name expands the digest and the open button, present
+// at every width, opens the live agent pane.
 import { test, expect } from './fixtures.js';
 import {
   RESULT_LINE, advance, asyncAgentAckLine, backgroundTasksChangedLine,
@@ -9,7 +10,7 @@ import {
 
 const activity = 'Searching for Reuters March coverage and checking the original sources';
 
-test('agent metrics fit the phone and the name opens its pane', async ({ harness, page }) => {
+test('agent metrics fit the phone, the name expands the digest and the open button opens its pane', async ({ harness, page }) => {
   await harness.rpc('HarnessSetScenario', {
     scenario: claudeScenario('compact-agent-summary', [
       emit([
@@ -50,17 +51,20 @@ test('agent metrics fit the phone and the name opens its pane', async ({ harness
       const box = (id: string) => element.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect();
       const outer = element.getBoundingClientRect();
       const name = box('agent-row-toggle-body-slot');
+      const open = box('background-task-tray-row-open');
       const stop = box('background-task-tray-row-stop');
       const tools = box('background-task-tray-row-tools');
       const tokens = box('background-task-tray-row-tokens');
       const activity = box('background-task-tray-row-activity');
-      return [name, stop, tools, tokens, activity].every(rect => rect.width > 0 && rect.left >= outer.left && rect.right <= outer.right + 1)
-        && name.right <= stop.left && tools.top >= name.bottom
+      return [name, open, stop, tools, tokens, activity].every(rect => rect.width > 0 && rect.left >= outer.left && rect.right <= outer.right + 1)
+        && name.right <= open.left && open.right <= stop.left && tools.top >= name.bottom
         && activity.top >= tokens.bottom && Math.abs(activity.left - name.left) < 1;
     })).toBe(true);
   }
-  await expect(row.getByTestId('background-task-tray-row-open')).toBeHidden();
   await row.getByTestId('agent-row-toggle').click();
+  await expect(row.getByTestId('background-task-tray-row-digest')).toBeVisible();
+  await expect(page.getByTestId('companion-pane-agent-body')).toHaveCount(0);
+  await row.getByTestId('background-task-tray-row-open').click();
   const pane = page.getByTestId('companion-pane-agent-body');
   await expect(pane.getByTestId('agent-pane-breadcrumb-current')).toContainText('Research Original Financial Sources');
   await expect(pane.getByTestId('agent-pane-working')).toBeVisible();

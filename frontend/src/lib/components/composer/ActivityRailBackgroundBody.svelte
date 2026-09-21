@@ -28,9 +28,9 @@
     trayRowStopTarget,
     trayTaskAgentInfo,
     trayTaskLabel,
+    trayTaskScopeId,
     type TrayTask,
   } from '../../utils/backgroundTray';
-  import { agentScopeRootId } from '../../utils/subagentLaunch';
   import { openAgentCompanion } from '../../stores/agentPane.svelte';
   import type { ThreadPane } from '../../stores/thread.svelte';
   import { errString } from '../../utils/errors';
@@ -42,35 +42,38 @@
     provider: ProviderID | null;
     threadId: string | null;
     runningCount: number;
-    /** Source pane, for the row click path (spec Q8): scroll the
-     * timeline to the node and open the agent companion on launches. */
+    /** Source pane: the agent rows' digests read from it and the open
+     * button opens its agent companion. Absent on surfaces with no pane. */
     pane?: ThreadPane;
   }
 
   let { tasks, provider, threadId, runningCount, pane }: Props = $props();
 
-  // The button opens the companion and nothing else; the row click also
-  // jumps the timeline to the node (spec Q8). Split on purpose: the jump
-  // is explicit navigation and releases bottom-follow, and the open
-  // button was silently unpinning a reader stuck to a streaming tail.
+  // The open button opens the companion and nothing else. The tray never
+  // moves the timeline: the launch row there is immutable and a reader
+  // pinned to a streaming tail keeps the pin.
   function onOpenPane(task: TrayTask): void {
     if (!pane || !threadId) return;
     const info = trayTaskAgentInfo(task);
     if (!info) return;
-    // The pane scopes to the TRANSCRIPT ROOT, which is the tray row's own
-    // launch except on a §E6 resume carrier — Claude parents every
-    // resumed round to the ORIGINAL launch, so the carrier's own id
-    // scopes to nothing. The row keeps its label.
-    const launch = task.launch ?? task.completion;
-    const scopeId = launch ? agentScopeRootId(launch) : task.rowId;
-    openAgentCompanion(pane.paneId, threadId, scopeId, info.name || trayTaskLabel(task));
+    openAgentCompanion(pane.paneId, threadId, trayTaskScopeId(task), info.name || trayTaskLabel(task));
   }
 
-  function onOpenRow(task: TrayTask): void {
-    if (!pane || !threadId) return;
-    pane.requestScrollToItem(task.rowId);
-    onOpenPane(task);
+  // Rows whose digest is open. Dropped when the row leaves the list, so
+  // a later task with a reused id starts collapsed.
+  let expandedRows = $state<Set<string>>(new Set());
+  function onToggleExpanded(task: TrayTask): void {
+    const next = new Set(expandedRows);
+    if (!next.delete(task.rowId)) next.add(task.rowId);
+    expandedRows = next;
   }
+  $effect(() => {
+    const stale = [...expandedRows].filter((rowId) => !tasks.some((task) => task.rowId === rowId));
+    if (stale.length === 0) return;
+    const next = new Set(expandedRows);
+    for (const rowId of stale) next.delete(rowId);
+    expandedRows = next;
+  });
   let backgroundStop = $derived<ProviderBackgroundStop>(
     provider ? getProviderDefinition(provider).backgroundStop : 'none',
   );
@@ -227,7 +230,9 @@
       </button>
     {/if}
   </div>
-  <ul class="flex max-h-56 flex-col gap-1 overflow-y-auto">
+  <!-- An open digest scrolls inside its own clip; the list grows so the
+       clip and the row's header fit before the list itself scrolls. -->
+  <ul class="flex flex-col gap-1 overflow-y-auto {expandedRows.size > 0 ? 'max-h-[min(70vh,32rem)]' : 'max-h-56'}">
     {#each tasks as task (task.rowId)}
       {@const remote = trayRemoteJob(task)}
       <li>
@@ -246,8 +251,10 @@
             stopTarget={trayRowStopTarget(task, backgroundStop)}
             isStopping={stoppingRows.has(task.rowId)}
             onStop={onStopRow}
-            onOpen={pane ? onOpenRow : undefined}
             onOpenPane={pane ? onOpenPane : undefined}
+            {pane}
+            expanded={expandedRows.has(task.rowId)}
+            onToggleExpanded={pane ? onToggleExpanded : undefined}
           />
         {/if}
       </li>

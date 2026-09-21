@@ -31,6 +31,7 @@
   // like a complete one.
 
   import type { Snippet } from 'svelte';
+  import type { HostDisclosure } from './hostDisclosure';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import type { Item } from '../../types/models';
   import { paneWorkspacePath } from '../../stores/thread.svelte';
@@ -77,6 +78,7 @@
     agentLayout = false,
     headerMetrics,
     headerDetails,
+    disclosure,
     onActivate,
   }: {
     pane?: PaneDoors & PaneSession & RowUiRegistry & ScrollHost & TimelineSource;
@@ -90,8 +92,12 @@
     agentLayout?: boolean;
     headerMetrics?: Snippet;
     headerDetails?: Snippet;
+    /** A host-owned body under this header (the tray's digest). Without one the row is header-only. */
+    disclosure?: HostDisclosure;
+    /** Header click when the row has nothing to expand. */
     onActivate?: () => void;
   } = $props();
+  let expandable = $derived(disclosure?.expandable === true);
 
   // The launch this row stands for. A completion sibling names it through
   // `completionOf`; every other shape IS the launch.
@@ -205,11 +211,13 @@
     {agentLayout}
     metrics={headerMetrics}
     details={headerDetails}
-    {onActivate}
-    expanded={false}
-    expandable={false}
+    onActivate={expandable ? undefined : onActivate}
+    expanded={disclosure?.expanded === true}
+    {expandable}
+    controls={expandable ? disclosure?.controls : undefined}
+    onToggle={disclosure ? () => disclosure.onToggle() : undefined}
     testId="agent-row-toggle"
-    class="rounded-[var(--radius-control)] px-1 py-1"
+    class="rounded-[var(--radius-control)] px-1 py-1 {expandable ? 'hover:bg-surface-2/20' : ''}"
   >
     {#snippet icon()}<ToolKindIcon kind="robot" ariaLabel="agent" />{/snippet}
     {#snippet label()}<span data-testid="agent-row-label">agent</span>{/snippet}

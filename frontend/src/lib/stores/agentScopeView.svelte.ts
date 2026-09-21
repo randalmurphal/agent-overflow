@@ -1,6 +1,7 @@
 import { liveCodexAgent } from './subagentProgress.svelte';
 import { subagentExecutionItem } from '../utils/codexSubagentRuntime';
-// Scoped ThreadPane facade for the agent companion pane.
+// Scoped ThreadPane facade for the agent companion pane and the
+// background tray's row digest.
 //
 // The agent pane is a NORMAL thread pane — the real MessageTimeline with
 // its virtualizer, scroll physics, activity runs, paging plumbing — whose
@@ -94,9 +95,10 @@ import { subagentExecutionItem } from '../utils/codexSubagentRuntime';
 //   window's switch/page load; the scope's rows are already local or
 //   arriving through hydration, which the pane body renders its own
 //   states for.
-// - `openAgentPane`: descend-in-place. Inside the pane, opening a child
-//   card grows the breadcrumb (`pushScope`) instead of re-seeding the
-//   companion from the outside.
+// - `openAgentPane`: the mounting surface's choice (`AgentScopeViewOptions`).
+//   Inside the companion, opening a child card grows the breadcrumb
+//   (`pushScope`) instead of re-seeding the companion from the outside; a
+//   tray digest opens the companion on the child.
 // - `pruneRowUiState`: no-op. Row-UI state (expansion handles, attachment
 //   blob caches, thinking tails) is SHARED with the source pane by
 //   design, and each MessageTimeline instance's prune pass computes
@@ -109,13 +111,13 @@ import { subagentExecutionItem } from '../utils/codexSubagentRuntime';
 //   scope's rows in return (thread.svelte.ts widens its retention via
 //   `collectAgentScopeRetainedIds`).
 //
-// One instance per (pane body mount × scope): AgentPane keys the
-// timeline on the scope id, so a scope swap builds a fresh view and a
-// fresh MessageTimeline — scroll restore, warmup, and run identity all
-// start clean, exactly like a thread switch.
+// One instance per (mount × scope): AgentPane keys the timeline on the
+// scope id, so a scope swap builds a fresh view and a fresh
+// MessageTimeline: scroll restore, warmup, and run identity all start
+// clean, exactly like a thread switch. A tray row's digest builds its own
+// view for the row's scope and disposes it when the row collapses.
 
 import type { ThreadPane } from './thread.svelte';
-import type { AgentPaneState } from './agentPane.svelte';
 import type { Item } from '../types/models';
 import { createThreadActivityRuns } from './threadActivityRuns.svelte';
 import {
@@ -131,6 +133,7 @@ import type {
 } from './threadPaneShared';
 import type { TimelineTurnFacet } from './threadTurnProjection';
 import { claudeResumeTranscriptRootId } from '../utils/subagentLaunch';
+import { decoratedSubagentAggregates } from '../utils/subagentGrouping';
 
 /** The one turn key every scoped row shares (see `timelineTurns` above). */
 const AGENT_SCOPE_TURN_KEY = 0;
@@ -152,6 +155,27 @@ export interface AgentScopeView {
   readonly lifecycleCompletion: Item | undefined;
   /** Release the view's own registries. Call on unmount. */
   dispose(): void;
+}
+
+/**
+ * What differs between the surfaces that mount a scoped view: the agent
+ * companion (`viewKey` `agent`) and a background tray row's digest
+ * (`tray:<scope>`, one per expanded row).
+ */
+export interface AgentScopeViewOptions {
+  /**
+   * Distinguishes this view's pane identity from the source pane's and
+   * from every other scoped view of the same source. chatDomIds scopes
+   * disclosure ids by it and the row-UI expansion leases key on it, so two
+   * surfaces showing the same row keep separate expansion state.
+   */
+  viewKey: string;
+  /**
+   * Where opening a nested launch from inside this view routes. The
+   * companion grows its breadcrumb (`pushScope`); the tray digest opens
+   * the companion on that launch through the source pane's door.
+   */
+  openAgentPane(launchItemId: string, label: string): void;
 }
 
 /**
@@ -179,6 +203,8 @@ type AgentScopeOverride =
   | 'hasMoreNewer'
   | 'loadingOlder'
   | 'loadingNewer'
+  | 'oldestLoadedCursor'
+  | 'newestLoadedCursor'
   | 'hasDeferredRecentWindowPrune'
   | 'retryDeferredRecentWindowPrune'
   | 'pruneRowUiState'
@@ -215,12 +241,22 @@ export function collectAgentScopeRetainedIds(
   items: readonly Item[],
   scopeItemId: string,
 ): Set<string> {
+  return collectHeldAgentScopeRetainedIds(items, scopeItemId ? [scopeItemId] : []);
+}
+
+/** `collectAgentScopeRetainedIds` over every held scope root at once. */
+export function collectHeldAgentScopeRetainedIds(
+  items: readonly Item[],
+  scopeItemIds: readonly string[],
+): Set<string> {
   const retained = new Set<string>();
-  if (!scopeItemId) return retained;
+  const roots = scopeItemIds.filter((id) => id !== '');
+  if (roots.length === 0) return retained;
+  const rootSet = new Set(roots);
   for (const item of items) {
-    if (item.parentId === scopeItemId) retained.add(item.id);
+    if (item.parentId && rootSet.has(item.parentId)) retained.add(item.id);
   }
-  retained.add(scopeItemId);
+  for (const root of roots) retained.add(root);
   for (const item of items) {
     if (item.completionOf && retained.has(item.completionOf)) {
       retained.add(item.id);
@@ -229,10 +265,34 @@ export function collectAgentScopeRetainedIds(
   return retained;
 }
 
+/**
+ * Whether a surface scoped to `launch` still needs `ensureSubagentChildren`.
+ * Gate on the COUNT, the same rule SubagentGroup uses on expand: eviction
+ * is partial, a nested launch anchor survives (anchors are fold keys)
+ * while its sibling rows page out, so "some rows loaded" proves nothing.
+ * The expected count is the larger of the backend decoration and what
+ * the live-eviction fold says was paged out; a scoped surface shows every
+ * resumed round, so it expects the whole-transcript count. A Codex spawn
+ * carries no decoration, so it always asks; hydrateChildren dedupes
+ * in-flight and exhausted anchors itself.
+ */
+export function agentScopeNeedsHydration(
+  launch: Item,
+  loadedCount: number,
+  evictedCount: number,
+): boolean {
+  if (launch.toolName === 'collab_agent') return true;
+  const expected = Math.max(
+    decoratedSubagentAggregates(launch).transcriptCount,
+    loadedCount + evictedCount,
+  );
+  return loadedCount === 0 || loadedCount < expected;
+}
+
 export function createAgentScopeView(
   sourcePane: ThreadPane,
-  agent: AgentPaneState,
   scopeItemId: string,
+  options: AgentScopeViewOptions,
 ): AgentScopeView {
   // ---- Scoped item window ---------------------------------------------
   // Recomputed per source timelineRevision (the projection reads items
@@ -335,10 +395,10 @@ export function createAgentScopeView(
 
   const overrides = {
     get paneId() {
-      return `${sourcePane.paneId}~agent`;
+      return `${sourcePane.paneId}~${options.viewKey}`;
     },
     get scrollStateKey() {
-      return `${sourcePane.threadId ?? ''}~agent:${scopeItemId}`;
+      return `${sourcePane.threadId ?? ''}~${options.viewKey}:${scopeItemId}`;
     },
     get agentScopeRootId() {
       return scopeItemId;
@@ -389,6 +449,15 @@ export function createAgentScopeView(
     get loadingNewer() {
       return false;
     },
+    // No edges either: the scope's rows carry whatever coordinates they
+    // arrived with, and a transcript filter keyed on the source pane's
+    // window would hide children that landed past its newest row.
+    get oldestLoadedCursor() {
+      return null;
+    },
+    get newestLoadedCursor() {
+      return null;
+    },
     get hasDeferredRecentWindowPrune() {
       return false;
     },
@@ -406,7 +475,7 @@ export function createAgentScopeView(
       return false;
     },
     openAgentPane(launchItemId: string, label: string): void {
-      agent.pushScope(launchItemId, label);
+      options.openAgentPane(launchItemId, label);
     },
   } satisfies Pick<ThreadPane, AgentScopeOverride>;
 
@@ -449,8 +518,6 @@ export function createAgentScopeView(
     get gitStatus() { return sourcePane.gitStatus; },
     get canAdoptOpenedTerminal() { return sourcePane.canAdoptOpenedTerminal; },
     get latestSettledTurn() { return sourcePane.latestSettledTurn; },
-    get oldestLoadedCursor() { return sourcePane.oldestLoadedCursor; },
-    get newestLoadedCursor() { return sourcePane.newestLoadedCursor; },
     get oldestLoadedTurnIndex() { return sourcePane.oldestLoadedTurnIndex; },
     get newestLoadedTurnIndex() { return sourcePane.newestLoadedTurnIndex; },
     get debugMemoryStats() { return sourcePane.debugMemoryStats; },
@@ -478,6 +545,8 @@ export function createAgentScopeView(
     get adoptMaterializedDraftThread() { return sourcePane.adoptMaterializedDraftThread; },
     get ensureMaterializedThread() { return sourcePane.ensureMaterializedThread; },
     get ensureSubagentChildren() { return sourcePane.ensureSubagentChildren; },
+    get loadAgentScope() { return sourcePane.loadAgentScope; },
+    get sweepUnheldAgentScopes() { return sourcePane.sweepUnheldAgentScopes; },
     get loadRecentTail() { return sourcePane.loadRecentTail; },
     get addApproval() { return sourcePane.addApproval; },
     get removeApproval() { return sourcePane.removeApproval; },

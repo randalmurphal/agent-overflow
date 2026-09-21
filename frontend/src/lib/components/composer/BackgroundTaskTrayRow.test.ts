@@ -4,6 +4,7 @@ import BackgroundTaskTrayRow from './BackgroundTaskTrayRow.svelte';
 import { makeItem } from '../../../test/helpers/chat';
 import type { TrayTask } from '../../utils/backgroundTray';
 import type { Item } from '../../types/models';
+import type { ThreadPane } from '../../stores/thread.svelte';
 import type { ProviderID } from '../../providers/catalog';
 import { applySubagentProgress, resetForTest } from '../../stores/subagentProgress.svelte';
 
@@ -208,82 +209,126 @@ describe('<BackgroundTaskTrayRow>', () => {
   });
 });
 
-describe('<BackgroundTaskTrayRow> open affordance (agent-visibility)', () => {
-  it('fires onOpen from the row body, onOpenPane from the open button, neither from Stop', async () => {
-    // The split is the fix for a pinned reader losing bottom-follow: the row
-    // click jumps the timeline (explicit navigation, releases the pin), the
-    // open button only opens the companion and must not carry the jump.
-    const onOpen = vi.fn();
-    const onOpenPane = vi.fn();
-    const onStop = vi.fn();
-    const anchor = makeItem({
+describe('<BackgroundTaskTrayRow> doors (agent-visibility)', () => {
+  const agentAnchor = () =>
+    makeItem({
       id: 'L1',
       kind: 'tool_call',
       toolName: 'Agent',
       status: 'running',
       payloadMeta: JSON.stringify({ input: { subagent_type: 'Explorer', description: 'dig' } }),
     });
+  // The digest needs a real pane; a stub with a pane id is enough for the
+  // header's disclosure state and the collapsed row never mounts it.
+  const paneStub = { paneId: 'main' } as unknown as ThreadPane;
+
+  it('opens the pane from the open button, toggles the digest from the header, neither from Stop', async () => {
+    const onOpenPane = vi.fn();
+    const onToggleExpanded = vi.fn();
+    const onStop = vi.fn();
     const { getByTestId } = render(BackgroundTaskTrayRow, {
       props: {
-        task: taskFor(anchor, { depth: 2 }),
+        task: taskFor(agentAnchor(), { depth: 2 }),
         stopTarget: 'task-1',
         isStopping: false,
         provider: 'claude' as ProviderID,
         onStop,
-        onOpen,
         onOpenPane,
+        pane: paneStub,
+        expanded: false,
+        onToggleExpanded,
       },
     });
     const row = getByTestId('background-task-tray-row');
     expect(row.getAttribute('data-depth')).toBe('2');
     expect(row.getAttribute('style')).toContain('margin-left');
+    expect(row.className).not.toContain('cursor-pointer');
 
-    await fireEvent.click(row);
-    expect(onOpen).toHaveBeenCalledTimes(1);
+    const header = getByTestId('agent-row-toggle');
+    expect(header).toHaveAttribute('aria-expanded', 'false');
+    await fireEvent.click(header);
+    expect(onToggleExpanded).toHaveBeenCalledTimes(1);
     expect(onOpenPane).not.toHaveBeenCalled();
     await fireEvent.click(getByTestId('background-task-tray-row-open'));
     expect(onOpenPane).toHaveBeenCalledTimes(1);
-    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onToggleExpanded).toHaveBeenCalledTimes(1);
     await fireEvent.click(getByTestId('background-task-tray-row-stop'));
     expect(onStop).toHaveBeenCalledTimes(1);
-    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onToggleExpanded).toHaveBeenCalledTimes(1);
     expect(onOpenPane).toHaveBeenCalledTimes(1);
   });
 
-  it('hides the open button on a plain command row (no agent pane to open), keeping the row-click scroll', async () => {
-    const onOpen = vi.fn();
-    const anchor = makeItem({ id: 'L1', kind: 'tool_call', toolName: 'Bash', status: 'running' });
-    const { getByTestId, queryByTestId } = render(BackgroundTaskTrayRow, {
+  it('keeps the open button at every width', () => {
+    const { getByTestId } = render(BackgroundTaskTrayRow, {
+      props: {
+        task: taskFor(agentAnchor()),
+        stopTarget: null,
+        isStopping: false,
+        provider: 'claude' as ProviderID,
+        onStop: vi.fn(),
+        onOpenPane: vi.fn(),
+      },
+    });
+    expect(getByTestId('background-task-tray-row-open').className).not.toContain('hidden');
+  });
+
+  it('falls back to opening the pane from the header when no pane can host a digest', async () => {
+    const onOpenPane = vi.fn();
+    const { getByTestId } = render(BackgroundTaskTrayRow, {
+      props: {
+        task: taskFor(agentAnchor()),
+        stopTarget: null,
+        isStopping: false,
+        provider: 'claude' as ProviderID,
+        onStop: vi.fn(),
+        onOpenPane,
+      },
+    });
+    const header = getByTestId('agent-row-toggle');
+    expect(header).not.toHaveAttribute('aria-expanded', 'true');
+    await fireEvent.click(header);
+    expect(onOpenPane).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives a plain command row no open button and a live chevron only once output exists', async () => {
+    const onOpenPane = vi.fn();
+    const onToggleExpanded = vi.fn();
+    const anchor = makeItem({ id: 'L1', kind: 'tool_call', toolName: 'Bash', status: 'running', summary: 'sleep 30' });
+    const view = render(BackgroundTaskTrayRow, {
       props: {
         task: taskFor(anchor),
         stopTarget: 'task-1',
         isStopping: false,
         provider: 'claude' as ProviderID,
         onStop: vi.fn(),
-        onOpen,
         // Supplied, so the button's absence below is the Bash gate and not
         // just a missing handler.
-        onOpenPane: vi.fn(),
+        onOpenPane,
+        pane: paneStub,
+        onToggleExpanded,
       },
     });
-    expect(queryByTestId('background-task-tray-row-open')).toBeNull();
-    await fireEvent.click(getByTestId('background-task-tray-row'));
-    expect(onOpen).toHaveBeenCalledTimes(1);
-  });
+    expect(view.queryByTestId('background-task-tray-row-open')).toBeNull();
+    const header = view.getByTestId('command-output-toggle');
+    expect(header).toHaveAttribute('aria-disabled', 'true');
+    await fireEvent.click(header);
+    expect(onOpenPane).not.toHaveBeenCalled();
+    expect(onToggleExpanded).not.toHaveBeenCalled();
+    expect(view.queryByTestId('command-output-full-command')).toBeNull();
 
-  it('renders no open button and no pointer cursor without onOpen', () => {
-    const anchor = makeItem({ id: 'L1', kind: 'tool_call', toolName: 'Bash', status: 'running' });
-    const { getByTestId, queryByTestId } = render(BackgroundTaskTrayRow, {
-      props: {
-        task: taskFor(anchor),
-        stopTarget: null,
-        isStopping: false,
-        provider: 'claude' as ProviderID,
-        onStop: vi.fn(),
-      },
+    const completion = makeItem({
+      id: 'C1',
+      kind: 'tool_completion',
+      toolName: 'Bash',
+      status: 'completed',
+      completionOf: 'L1',
+      payloadId: 'payload-1',
+      payloadKind: 'command_output',
+      payloadMeta: JSON.stringify({ command: 'sleep 30', lineCount: 1, preview: 'done' }),
     });
-    expect(queryByTestId('background-task-tray-row-open')).toBeNull();
-    expect(getByTestId('background-task-tray-row').className).not.toContain('cursor-pointer');
+    await view.rerender({ task: taskFor(anchor, { completion, status: 'completed' }), stopTarget: null });
+    expect(view.getByTestId('command-output-toggle')).not.toHaveAttribute('aria-disabled', 'true');
+    expect(view.queryByTestId('background-task-tray-row-digest')).toBeNull();
   });
 
   it('shows a running agent\u2019s live tool count, tokens and activity line', () => {

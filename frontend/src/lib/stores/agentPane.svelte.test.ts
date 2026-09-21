@@ -3,6 +3,9 @@ import {
   __resetAgentPaneStateForTest,
   agentPaneScopeTrailHolds,
   agentScopeForPane,
+  agentScopeHeld,
+  heldAgentScopeRoots,
+  holdAgentScope,
   agentStateForPane,
   disposeAgentStateForPane,
   openAgentCompanion,
@@ -201,5 +204,53 @@ describe('agent pane scope', () => {
     expect(companion).not.toBeNull();
     closeCompanion(companion!.paneId);
     expect(agentPaneScopeTrailHolds('main', 'thread-1', 'launch-1')).toBe(false);
+  });
+
+  it('holds a tray digest scope, counted, until every holder releases it', () => {
+    expect(heldAgentScopeRoots('main', 'thread-1')).toEqual([]);
+    const releaseA = holdAgentScope('main', 'thread-1', 'launch-1');
+    const releaseB = holdAgentScope('main', 'thread-1', 'launch-1');
+    const releaseC = holdAgentScope('main', 'thread-1', 'launch-2');
+    expect(agentScopeHeld('main', 'thread-1', 'launch-1')).toBe(true);
+    expect(agentScopeHeld('main', 'thread-1', 'launch-2')).toBe(true);
+    expect(agentScopeHeld('main', 'thread-2', 'launch-1')).toBe(false);
+    expect(agentScopeHeld('right', 'thread-1', 'launch-1')).toBe(false);
+    expect(heldAgentScopeRoots('main', 'thread-1').sort()).toEqual(['launch-1', 'launch-2']);
+
+    releaseA();
+    releaseA(); // a double release must not steal the second holder's count
+    expect(agentScopeHeld('main', 'thread-1', 'launch-1')).toBe(true);
+    releaseB();
+    expect(agentScopeHeld('main', 'thread-1', 'launch-1')).toBe(false);
+    expect(heldAgentScopeRoots('main', 'thread-1')).toEqual(['launch-2']);
+    releaseC();
+    expect(heldAgentScopeRoots('main', 'thread-1')).toEqual([]);
+    expect(holdAgentScope('main', '', 'launch-1')).toBeTypeOf('function');
+    expect(heldAgentScopeRoots('main', '')).toEqual([]);
+  });
+
+  it('unions the companion root with the tray-held scopes, once each', () => {
+    const state = openAgentCompanion('main', 'thread-1', 'launch-1', 'code-review');
+    state?.pushScope('launch-3', 'Angle B');
+    const release = holdAgentScope('main', 'thread-1', 'launch-1');
+    const releaseOther = holdAgentScope('main', 'thread-1', 'launch-7');
+    expect(heldAgentScopeRoots('main', 'thread-1').sort()).toEqual(['launch-1', 'launch-7']);
+    expect(agentScopeHeld('main', 'thread-1', 'launch-3')).toBe(true);
+    expect(agentScopeHeld('main', 'thread-1', 'launch-7')).toBe(true);
+    release();
+    // The companion still holds launch-1 through its trail.
+    expect(heldAgentScopeRoots('main', 'thread-1').sort()).toEqual(['launch-1', 'launch-7']);
+    closeCompanion(companionForSource('main', 'agent')!.paneId);
+    expect(heldAgentScopeRoots('main', 'thread-1')).toEqual(['launch-7']);
+    releaseOther();
+  });
+
+  it('drops tray holds when the source pane is destroyed', () => {
+    createPane('main');
+    holdAgentScope('main', 'thread-1', 'launch-1');
+    expect(agentScopeHeld('main', 'thread-1', 'launch-1')).toBe(true);
+    destroyPane('main');
+    expect(agentScopeHeld('main', 'thread-1', 'launch-1')).toBe(false);
+    expect(heldAgentScopeRoots('main', 'thread-1')).toEqual([]);
   });
 });

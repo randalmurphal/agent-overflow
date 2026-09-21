@@ -24,6 +24,14 @@ import { groupItemsBySubagent, nodeContainsItem, timelineNodeItemId } from '../u
 
 const THREAD_ID = 'thread-scope';
 
+/** The companion's mount options: descend in place through the breadcrumb. */
+function companionOptions(agent: AgentPaneState) {
+  return {
+    viewKey: 'agent',
+    openAgentPane: (launchItemId: string, label: string) => agent.pushScope(launchItemId, label),
+  };
+}
+
 function fixtureItems(): Item[] {
   return [
     makeItem({ id: 'launch-1', itemIndex: 0, threadId: THREAD_ID, kind: 'tool_call', toolName: 'Agent', status: 'running', summary: 'Agent: outer' }),
@@ -66,7 +74,7 @@ afterEach(() => {
 describe('createAgentScopeView', () => {
   it('scopes items to direct children, lifting them to top level', async () => {
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
 
     const ids = view.items.map((item) => item.id);
     expect(ids).toContain('child-a');
@@ -85,7 +93,7 @@ describe('createAgentScopeView', () => {
 
   it('carries a nested launch’s completion sibling but never the scope’s own', async () => {
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
 
     const ids = view.items.map((item) => item.id);
     expect(ids).toContain('nested-completion');
@@ -101,7 +109,7 @@ describe('createAgentScopeView', () => {
       makeItem({ id: 'outer-prose', threadId: THREAD_ID, itemIndex: 3, createdAt: 3, parentId: 'launch-1' }),
       makeItem({ id: 'scope-completion', threadId: THREAD_ID, itemIndex: 10, createdAt: 10, kind: 'tool_completion', completionOf: 'launch-1' }),
     ]);
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
     const before = groupItemsBySubagent(pane.items);
     expect(before.map(timelineNodeItemId)).toEqual(['launch-1', 'scope-completion']);
 
@@ -119,7 +127,7 @@ describe('createAgentScopeView', () => {
 
   it('answers scoped identities and inert paging, forwards the rest', async () => {
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
     const facade = view.pane;
 
     // Diverging identities.
@@ -132,6 +140,8 @@ describe('createAgentScopeView', () => {
     // A scope window has no edges to page.
     expect(facade.hasMoreHistory).toBe(false);
     expect(facade.hasMoreNewer).toBe(false);
+    expect(facade.oldestLoadedCursor).toBeNull();
+    expect(facade.newestLoadedCursor).toBeNull();
     expect(facade.loading).toBe(false);
     expect(facade.showLoadingSpinner).toBe(false);
     await expect(facade.loadOlder()).resolves.toMatchObject({ status: 'noop' });
@@ -149,7 +159,7 @@ describe('createAgentScopeView', () => {
 
   it('keeps its scroll-to-item slot separate from the source pane’s', async () => {
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
     const before = pane.scrollToItemRequest;
 
     view.pane.requestScrollToItem('grandchild');
@@ -162,7 +172,7 @@ describe('createAgentScopeView', () => {
 
   it('routes openAgentPane to a breadcrumb hop instead of re-seeding the companion', async () => {
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
 
     view.pane.openAgentPane('nested-launch', 'nested');
 
@@ -178,7 +188,7 @@ describe('createAgentScopeView', () => {
     // retention against the SHARED store, revoking the main timeline's
     // attachment blobs (and the main prune disposed agent-pane rows).
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
     pane.setUserMessageExpanded('main-text', true);
 
     view.pane.pruneRowUiState({ itemIds: new Set(), payloads: new Set<string>(), groupKeys: new Set() });
@@ -222,7 +232,7 @@ describe('createAgentScopeView', () => {
     const { pane, agent } = await setup();
     // Fixture: launch-1 is still running and has no completion yet.
     pane.removeItemById('scope-completion', THREAD_ID);
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
     const turns = view.pane.timelineTurns;
 
     const first = view.items[0];
@@ -285,7 +295,7 @@ describe('createAgentScopeView', () => {
 
   it('is the launch itself when the scope was never resumed', async () => {
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
 
     expect(view.lifecycle?.id).toBe('launch-1');
     expect(view.lifecycleCompletion?.id).toBe('scope-completion');
@@ -295,7 +305,7 @@ describe('createAgentScopeView', () => {
 
   it('follows the running resume carrier while the scope root has settled', async () => {
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
     // Round one settled: without the lifecycle row the turn would be
     // settled for the whole of round two.
     expect(view.pane.timelineTurns.activeKey).toBeNull();
@@ -315,7 +325,7 @@ describe('createAgentScopeView', () => {
 
   it('settles on the carrier’s own completion, timing the round from the resume', async () => {
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
     pane.upsertItem(carrier());
     pane.upsertItem(
       makeItem({
@@ -349,7 +359,7 @@ describe('createAgentScopeView', () => {
 
   it('takes the LATEST carrier when an agent has been resumed twice', async () => {
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
     pane.upsertItem(carrier({ status: 'completed' }));
     pane.upsertItem(
       carrier({ id: 'carrier-2', itemIndex: 10, createdAt: 30_000, updatedAt: 30_000 }),
@@ -363,7 +373,7 @@ describe('createAgentScopeView', () => {
 
   it('ignores a carrier bound to a different agent', async () => {
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
     pane.upsertItem(
       carrier({
         id: 'carrier-other',
@@ -390,7 +400,7 @@ describe('createAgentScopeView', () => {
     // would run the source pane's real prune with scope-only retention,
     // which is the incident.
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
 
     expect(view.pane.pruneRowUiState).not.toBe(pane.pruneRowUiState);
 
@@ -417,7 +427,7 @@ describe('createAgentScopeView', () => {
     // settled (2026-08-22). The facet is the view's own and its `keyOf`
     // ignores the item's turnIndex entirely.
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
     const turns = view.pane.timelineTurns;
 
     expect(turns).not.toBe(pane.timelineTurns);
@@ -435,7 +445,7 @@ describe('createAgentScopeView', () => {
 
   it('recomputes the window when the source timeline changes', async () => {
     const { pane, agent } = await setup();
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
     expect(view.items.some((item) => item.id === 'child-a')).toBe(true);
 
     pane.removeItemById('child-a', THREAD_ID);
@@ -451,7 +461,7 @@ describe('createAgentScopeView', () => {
     // through the row's own box or the turn pill sits on a dead state.
     const { pane, agent } = await setup();
     pane.removeItemById('scope-completion', THREAD_ID);
-    const view = createAgentScopeView(pane, agent, 'launch-1');
+    const view = createAgentScopeView(pane, 'launch-1', companionOptions(agent));
     const turns = view.pane.timelineTurns;
     pane.upsertItem(
       makeItem({

@@ -62,8 +62,10 @@ subagent model and the user explicitly authorizes the corresponding change.
 - Agent cards and tray rows show name, state indicator, elapsed, tool count,
   tokens and activity. Narrow rows put metrics on a separate line; names and
   activity truncate. Activity aligns with the name without a tree connector.
-  The tray name opens the agent pane; wide rows also have an explicit open
-  button. Transcript launch rows retain their tool gutter and open button.
+  A tray agent row's header expands its digest in place, the same digest
+  as the card, and its open button opens the agent pane at every width.
+  The tray never scrolls the timeline. Transcript launch rows retain their
+  tool gutter and open button.
 - The initial prompt is a plain user-side message row nested under the
   launch (ruling 2026-08-23), not a bespoke shape: `user_text` with
   `meta.wire_only`, so it renders as a user bubble with no edit / fork /
@@ -115,11 +117,12 @@ subagent model and the user explicitly authorizes the corresponding change.
   when the source thread changes, closes itself when the scoped row is
   gone on restore (Q5).
 - Background section lists every node that is backgrounded or descends
-  from one, indented by depth; a row click opens the pane and scrolls the
-  timeline to the card. The row's explicit open button opens the pane
-  only — the timeline jump is explicit navigation and releases
-  bottom-follow, which a reader pinned to a streaming tail did not ask
-  for (2026-08-31). Forks appear without a kill button (Q8).
+  from one, indented by depth; an agent row's header toggles its digest
+  and its explicit open button opens the pane. Neither moves the
+  timeline: a jump would release bottom-follow, which a reader pinned to
+  a streaming tail did not ask for (2026-08-31), so a launch outside the
+  loaded window is loaded into pane memory for the digest or pane
+  without paging the window. Forks appear without a kill button (Q8).
 - Background action: icon button on a running inline agent or Bash row
   (Claude only: `background_tasks` control_request by `tool_use_id`);
   no keyboard shortcut (Q9). Claude stops forwarding the node through the
@@ -185,8 +188,8 @@ subagent model and the user explicitly authorizes the corresponding change.
   summarizes the completed execution; the answer is a normal message
   in its body. Later answer deliveries remain separate timeline events. While
   the agent runs there is no card: the pane and the tray are its live
-  surfaces, and the tray row shows tokens plus only the latest direct tool
-  call as its activity line. The bell is hidden on the strength of the completion
+  surfaces, and the collapsed tray row shows tokens plus only the latest
+  direct tool call as its activity line. The bell is hidden on the strength of the completion
   rendering (`utils/notificationFilter.ts`), which is why the card sits
   at the sibling rather than folding it onto a card at the launch (the
   fold-and-drop version left the transcript with no trace of the agent

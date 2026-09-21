@@ -10,6 +10,7 @@
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import Icon from '../primitives/Icon.svelte';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
+  import type { HostDisclosure } from './hostDisclosure';
   import type { Item } from '../../types/models';
   import type {
     PaneSession,
@@ -62,6 +63,7 @@
     agentLayout = false,
     headerMetrics,
     headerDetails,
+    disclosure,
     onActivate,
   }: {
     pane?: PaneDoors & PaneSession & RowUiRegistry & ScrollHost & TimelineSource;
@@ -75,6 +77,9 @@
     agentLayout?: boolean;
     headerMetrics?: Snippet;
     headerDetails?: Snippet;
+    /** A host-owned body under this header (the tray's digest). It replaces the row's own stored-output disclosure. */
+    disclosure?: HostDisclosure;
+    /** Header click when the row has nothing to expand. */
     onActivate?: () => void;
   } = $props();
   let effectiveStatusItem = $derived(statusItem ?? item);
@@ -224,7 +229,9 @@
   // component and the body in another, so a second literal there is a
   // cross-file drift waiting to happen (utils/chatDomIds.ts).
   let outputDomId = $derived(chatRowDomId(pane, 'collab-tool-row-output', item.id));
-  let hasExpandableOutput = $derived(hasOutputShell && Boolean(item.payloadId));
+  let hasExpandableOutput = $derived(
+    disclosure === undefined && hasOutputShell && Boolean(item.payloadId),
+  );
   const expansionRef = useLeasedItemExpansion({
     getPane: () => pane,
     getItem: () => item,
@@ -232,6 +239,8 @@
     enabled: () => hasExpandableOutput,
   });
   const expansion = $derived(expansionRef.current);
+  let headerExpandable = $derived(disclosure ? disclosure.expandable : hasExpandableOutput);
+  let headerExpanded = $derived(disclosure ? disclosure.expanded : (expansion?.expanded ?? false));
 
   keepExpandedPayloadFresh(
     () => expansion ?? localFallback,
@@ -310,13 +319,15 @@
     {agentLayout}
     metrics={headerMetrics}
     details={headerDetails}
-    {onActivate}
-    expanded={expansion?.expanded ?? false}
-    expandable={hasExpandableOutput}
-    controls={hasExpandableOutput ? outputDomId : undefined}
+    onActivate={headerExpandable ? undefined : onActivate}
+    expanded={headerExpanded}
+    expandable={headerExpandable}
+    controls={disclosure ? (disclosure.expandable ? disclosure.controls : undefined) : (hasExpandableOutput ? outputDomId : undefined)}
     testId="collab-tool-row-toggle"
-    class="rounded-[var(--radius-control)] py-1 {hasExpandableOutput ? 'hover:bg-surface-2/20' : ''}"
-    onToggle={(event) => preservePaneScrollAnchor(pane, event, toggle)}
+    class="rounded-[var(--radius-control)] py-1 {headerExpandable ? 'hover:bg-surface-2/20' : ''}"
+    onToggle={disclosure
+      ? () => disclosure.onToggle()
+      : (event) => preservePaneScrollAnchor(pane, event, toggle)}
   >
     {#snippet icon()}{@render rowIcon()}{/snippet}
     {#snippet label()}{@render rowLabel()}{/snippet}

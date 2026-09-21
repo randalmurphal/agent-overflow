@@ -213,6 +213,9 @@ test('a depth-2 background agent nests under its parent card and indents in the 
       // Held so the page is provably subscribed before the live tick.
       { waitSignal: { name: 'tick' } },
       emit([
+        // The inner agent's own tool call: a row of ITS transcript, which
+        // the tray digest shows and the main timeline never does.
+        toolUseLine('msg-inner-grep', 'tu-inner-grep', 'Grep', { pattern: 'drift' }, 'tu-inner'),
         taskProgressLine(
           'task-inner',
           'tu-inner',
@@ -273,9 +276,17 @@ test('a depth-2 background agent nests under its parent card and indents in the 
   ]);
   expect(innerBox!.x).toBeGreaterThan(outerBox!.x);
 
-  // The live surface for a running background agent is its PANE: the
-  // tray's open button scopes the companion to the inner agent, whose
-  // composer shell shows the working chip with its elapsed timer.
+  // The live surfaces for a running background agent are its tray row
+  // and its PANE. The tray's open button scopes the companion to the
+  // inner agent, whose composer shell shows the working chip with its
+  // elapsed timer. The tray never moves the timeline.
+  // The pane mounts a second timeline scroller; this one is the thread's.
+  const mainTimeline = page.locator(
+    '[data-testid="message-timeline-scroll"]:not([data-testid="agent-pane-timeline"] [data-testid="message-timeline-scroll"])',
+  );
+  const atBottom = (element: Element) =>
+    element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
+  await expect.poll(() => mainTimeline.evaluate(atBottom)).toBe(true);
   await trayRows.nth(1).getByTestId('background-task-tray-row-open').click();
   const pane = page.getByTestId('companion-pane-agent-body');
   await expect(pane.getByTestId('agent-pane-breadcrumb-current')).toContainText('Inner Scanner');
@@ -296,6 +307,29 @@ test('a depth-2 background agent nests under its parent card and indents in the 
   await expect(trayRows.nth(1).getByTestId('background-task-tray-row-activity')).toContainText(
     'Scanning the parser for drift',
   );
+  // The row's header expands the inner agent's digest in place: its own
+  // tool call, as a normal tool row, while the main timeline still shows
+  // none of the inner agent's rows and keeps following its tail (the old
+  // row click scrolled to the launch and released bottom-follow).
+  await trayRows.nth(1).getByTestId('agent-row-toggle').click();
+  const innerDigest = trayRows.nth(1).getByTestId('background-task-tray-row-digest');
+  await expect(innerDigest).toHaveAttribute('data-scope-id', 'tu-inner');
+  await expect(innerDigest.locator('[data-item-id="tu-inner-grep"]')).toBeVisible();
+  await expect(innerDigest.locator('[data-item-id="tu-inner-grep"]').getByTestId('tool-call-card-label')).toHaveText('grep');
+  await expect(mainTimeline.locator('[data-item-id="tu-inner-grep"]')).toHaveCount(0);
+  await expect(mainTimeline.locator('[data-item-id="tu-inner"]')).toHaveCount(0);
+  await expect.poll(() => mainTimeline.evaluate(atBottom)).toBe(true);
+  // The outer agent's digest holds the inner launch row and nothing of
+  // the inner agent's transcript; the header collapses it again.
+  await trayRows.nth(0).getByTestId('agent-row-toggle').click();
+  const outerDigest = trayRows.nth(0).getByTestId('background-task-tray-row-digest');
+  await expect(outerDigest.locator('[data-item-id="tu-inner"]')).toBeVisible();
+  await expect(outerDigest.locator('[data-item-id="tu-inner-grep"]')).toHaveCount(0);
+  // The inner launch row inside the digest is an agent row too; the
+  // tray row's own header is the first one.
+  await trayRows.nth(0).getByTestId('agent-row-toggle').first().click();
+  await expect(outerDigest).toHaveCount(0);
+  await expect(innerDigest).toBeVisible();
 
   // Both settle: the tray is driven by the level set, so an empty
   // `background_tasks_changed` empties it — and the OUTER card appears at

@@ -264,6 +264,16 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   await expect(trayRow.getByTestId('background-task-tray-row-activity')).toContainText('pnpm test');
   await expect(trayRow.getByTestId('background-task-tray-row-activity')).not.toContainText('rg TODO');
   await expect(spawnRow).not.toContainText('pnpm test');
+  // The row's header expands the child's digest in place: both calls, as
+  // normal command rows, off the same child rows the pane reads.
+  await trayRow.getByTestId('collab-tool-row-toggle').click();
+  const digest = trayRow.getByTestId('background-task-tray-row-digest');
+  await expect(digest).toHaveAttribute('data-scope-id', SPAWN_CALL);
+  await expect(digest.locator('[data-item-id="child-tool-read"]')).toBeVisible();
+  await expect(digest.locator('[data-item-id="child-tool-test"]')).toBeVisible();
+  await expect(digest).toContainText('rg TODO');
+  await expect(digest).toContainText('pnpm test');
+  await expect(spawnRow).not.toContainText('pnpm test');
 
   // --- The same pane ------------------------------------------------
   await spawnRow.hover();

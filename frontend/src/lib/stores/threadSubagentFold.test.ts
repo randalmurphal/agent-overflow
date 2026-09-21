@@ -6,6 +6,8 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createThreadPane } from './thread.svelte';
+import { __resetAgentPaneStateForTest, holdAgentScope } from './agentPane.svelte';
+import { createAgentScopeView } from './agentScopeView.svelte';
 import { type Item } from '../types/models';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { makeItem, makeThread, stubScrollController } from '../../test/helpers/chat';
@@ -22,7 +24,10 @@ const CEILING = ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS;
 import { MAX_CACHED_SNAPSHOT_CHARS } from './threadItemCache';
 
 describe('subagent fold', () => {
-  beforeEach(installThreadPaneTestEnv);
+  beforeEach(() => {
+    installThreadPaneTestEnv();
+    __resetAgentPaneStateForTest();
+  });
 
   describe('subagent live eviction (fold)', () => {
     // Live turns stream subagent child rows into pane memory; once a
@@ -407,6 +412,128 @@ describe('subagent fold', () => {
       // Folds are only meaningful while their anchor row is loaded —
       // the next load of that region decorates anchors from SQLite.
       expect(pane.subagentLiveAggregate('anchor')).toBeUndefined();
+    });
+
+    it('a held tray digest scope survives the settle prune and drops once released', async () => {
+      // A held scope (an expanded tray digest, or the open companion's
+      // trail) is a live view of its launch and children. The prune cut
+      // sits at the window's head, exactly where an old background launch
+      // lives, so the window's getHeldRowIds hook must spare the scope
+      // and its parent chain. Releasing the hold returns the rows to the
+      // next cut. Children are not top-level rows, so the cap counts the
+      // launch plus the filler.
+      const threadId = 'fold-held';
+      const pane = createThreadPane();
+      const children = Array.from({ length: 3 }, (_, index) =>
+        childItem(threadId, { id: `child-${index}`, turnIndex: 0, itemIndex: index + 1 }),
+      );
+      const initial = [
+        launchItem(threadId, { turnIndex: 0, status: 'completed' }),
+        ...children,
+        ...Array.from({ length: MAX - 1 }, (_, index) =>
+          makeItem({ id: `t${index + 1}`, threadId, turnIndex: index + 1, itemIndex: 0 }),
+        ),
+      ];
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: initial,
+        oldestTurnIndex: 0,
+        newestTurnIndex: MAX - 1,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+      // Hold before the load so the children never fold out under a
+      // collapsed anchor, the same order the digest opens in.
+      const release = holdAgentScope(pane.paneId, threadId, 'anchor');
+      await pane.switchThread(makeThread({ id: threadId }));
+      expect(pane.items).toHaveLength(MAX + 3);
+      expect(pane.subagentLiveAggregate('anchor')?.evictedCount ?? 0).toBe(0);
+
+      const settle = (turnIndex: number) => {
+        pane.setActiveTurn({ turnId: `turn-${turnIndex}`, turnIndex, startedAt: 1 });
+        pane.upsertItem(makeItem({ id: `t${turnIndex}`, threadId, turnIndex, itemIndex: 0 }));
+        pane.settleTurn({
+          turnId: `turn-${turnIndex}`,
+          turnIndex,
+          startedAt: 1,
+          completedAt: 2,
+          stopReason: 'end_turn',
+          assistantMessageId: null,
+          tokenUsage: null,
+          aborted: false,
+          errorMessage: '',
+        });
+      };
+      settle(MAX);
+
+      // The cut ran (the head is gone, the window is back at the target)
+      // and the held scope came through it whole.
+      const ids = new Set(pane.items.map((it) => it.id));
+      expect(ids.has('t1')).toBe(false);
+      expect(pane.hasMoreHistory).toBe(true);
+      expect(ids.has('anchor')).toBe(true);
+      for (const child of children) expect(ids.has(child.id)).toBe(true);
+      expect(pane.items).toHaveLength(TARGET + 1 + children.length);
+      expect(pane.subagentLiveAggregate('anchor')?.evictedCount ?? 0).toBe(0);
+
+      // Released: the next cut takes the scope with the head.
+      release();
+      for (let turnIndex = MAX + 1; turnIndex <= MAX + (MAX - TARGET); turnIndex += 1) {
+        settle(turnIndex);
+      }
+      const after = new Set(pane.items.map((it) => it.id));
+      expect(after.has('anchor')).toBe(false);
+      for (const child of children) expect(after.has(child.id)).toBe(false);
+      expect(pane.items).toHaveLength(TARGET);
+    });
+
+    it('loadAgentScope brings a launch above the window into memory without moving the window', async () => {
+      // The tray digest and the companion open on a launch the tail
+      // window no longer holds. The rows come in as an island under the
+      // hold: the loaded edges, the Load-older floor and the scope view's
+      // rows are all exact, and a revert cut at the tail keeps the floor.
+      const threadId = 'fold-island';
+      const pane = createThreadPane();
+      const window = Array.from({ length: 3 }, (_, index) =>
+        makeItem({ id: `t${index + 5}`, threadId, turnIndex: index + 5, itemIndex: 0 }),
+      );
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: window,
+        oldestTurnIndex: 5,
+        newestTurnIndex: 7,
+        hasMore: true,
+        hasMoreOlder: true,
+        hasMoreNewer: false,
+      }));
+      const launch = launchItem(threadId, { turnIndex: 0, status: 'completed' });
+      const child = childItem(threadId, { turnIndex: 6, itemIndex: 4 });
+      setBindingMock('GetThreadItem', async (_thread: unknown, id: unknown) => (id === 'anchor' ? launch : null));
+      setBindingMock('ListSubagentDescendants', async () => [child]);
+      await pane.switchThread(makeThread({ id: threadId }));
+      const release = holdAgentScope(pane.paneId, threadId, 'anchor');
+      expect(pane.oldestLoadedCursor?.turnIndex).toBe(5);
+
+      await expect(pane.loadAgentScope('anchor')).resolves.toBe('loaded');
+
+      expect(pane.items.map((it) => it.id)).toEqual(['anchor', 't5', 't6', 'child-1', 't7']);
+      expect(pane.oldestLoadedCursor?.turnIndex).toBe(5);
+      expect(pane.hasMoreHistory).toBe(true);
+      const view = createAgentScopeView(pane, 'anchor', { viewKey: 'tray:anchor', openAgentPane: () => {} });
+      expect(view.items.map((it) => it.id)).toEqual(['child-1']);
+      view.dispose();
+
+      // A revert cut at the tail leaves the floor where the page put it,
+      // not on the island: the next loadOlder must fill the gap, not skip it.
+      pane.removeRevertedItems(7, []);
+      expect(pane.items.map((it) => it.id)).toEqual(['anchor', 't5', 't6', 'child-1']);
+      expect(pane.oldestLoadedCursor?.turnIndex).toBe(5);
+
+      // Released: the sweep drops the island, and the window stays.
+      release();
+      pane.sweepUnheldAgentScopes();
+      expect(pane.items.map((it) => it.id)).toEqual(['t5', 't6']);
+      expect(pane.subagentLiveAggregate('anchor')).toBeUndefined();
+      expect(pane.oldestLoadedCursor?.turnIndex).toBe(5);
     });
 
     it('clears folds on re-entry when the outgoing snapshot was too large to cache', async () => {

@@ -5,6 +5,7 @@ import { makeItem } from '../../../test/helpers/chat';
 import { raf } from '../../../test/helpers/browserFrames';
 import { applySubagentProgress, resetForTest } from '../../stores/subagentProgress.svelte';
 import type { TrayTask } from '../../utils/backgroundTray';
+import type { ThreadPane } from '../../stores/thread.svelte';
 import BackgroundTaskTrayRow from './BackgroundTaskTrayRow.svelte';
 import SubagentGroupTestHarness from '../chat/SubagentGroupTestHarness.svelte';
 
@@ -46,9 +47,10 @@ for (const provider of ['claude', 'codex'] as const) {
       const target = host();
       target.classList.toggle('layout-compact', compact);
       const onOpenPane = vi.fn();
-      const onOpen = vi.fn();
+      const onToggleExpanded = vi.fn();
       const onStop = vi.fn();
-      const view = render(BackgroundTaskTrayRow, { target, props: { task, provider, stopTarget: 'stop-agent', isStopping: false, onOpen, onOpenPane, onStop } });
+      const pane = { paneId: 'layout' } as unknown as ThreadPane;
+      const view = render(BackgroundTaskTrayRow, { target, props: { task, provider, stopTarget: 'stop-agent', isStopping: false, onOpenPane, onStop, pane, onToggleExpanded } });
       try {
         const prefix = provider === 'claude' ? 'agent-row' : 'collab-tool-row';
         const row = view.getByTestId('background-task-tray-row');
@@ -57,6 +59,7 @@ for (const provider of ['claude', 'codex'] as const) {
         const tokens = view.getByTestId('background-task-tray-row-tokens');
         const preview = view.getByTestId('background-task-tray-row-activity');
         const stop = view.getByTestId('background-task-tray-row-stop');
+        const open = view.getByTestId('background-task-tray-row-open');
         for (const width of [800, 560, 412, 320]) {
           target.style.width = `${width}px`;
           for (const depth of [0, 2, 6]) {
@@ -64,14 +67,14 @@ for (const provider of ['claude', 'codex'] as const) {
             for (const isStopping of [false, true]) {
               await view.rerender({ isStopping });
               await raf();
-              for (const element of [name, tools, tokens, preview, stop]) expectInside(element, row);
-              expect(name.getBoundingClientRect().right).toBeLessThanOrEqual(stop.getBoundingClientRect().left);
+              for (const element of [name, tools, tokens, preview, stop, open]) expectInside(element, row);
+              expect(name.getBoundingClientRect().right).toBeLessThanOrEqual(open.getBoundingClientRect().left);
+              expect(open.getBoundingClientRect().right).toBeLessThanOrEqual(stop.getBoundingClientRect().left);
               expect(Math.abs(preview.getBoundingClientRect().left - name.getBoundingClientRect().left)).toBeLessThan(1);
               expect(preview.textContent?.trim()).toBe(activity);
               if (row.clientWidth < 576) {
                 expect(tools.getBoundingClientRect().top).toBeGreaterThanOrEqual(name.getBoundingClientRect().bottom);
                 expect(Math.abs(tools.getBoundingClientRect().left - name.getBoundingClientRect().left)).toBeLessThan(1);
-                expect(getComputedStyle(view.getByTestId('background-task-tray-row-open')).display).toBe('none');
               }
               expect(tools.getBoundingClientRect().right).toBeLessThan(tokens.getBoundingClientRect().left);
               expect(preview.getBoundingClientRect().top).toBeGreaterThanOrEqual(tokens.getBoundingClientRect().bottom);
@@ -80,8 +83,10 @@ for (const provider of ['claude', 'codex'] as const) {
         }
         await view.rerender({ task, isStopping: false });
         await fireEvent.click(view.getByTestId(`${prefix}-toggle`));
+        expect(onToggleExpanded).toHaveBeenCalledExactlyOnceWith(task);
+        expect(onOpenPane).not.toHaveBeenCalled();
+        await fireEvent.click(open);
         expect(onOpenPane).toHaveBeenCalledExactlyOnceWith(task);
-        expect(onOpen).not.toHaveBeenCalled();
         await fireEvent.click(stop);
         expect(onStop).toHaveBeenCalledExactlyOnceWith(task.rowId, 'stop-agent');
         expect(onOpenPane).toHaveBeenCalledTimes(1);

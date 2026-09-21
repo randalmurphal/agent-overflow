@@ -45,6 +45,66 @@ export function cursorFromItem(item: Item): TimelineCursorLike {
   };
 }
 
+/** Parent-walk bound; real subagent trees are two or three deep. */
+const MAX_ROOT_WALK_HOPS = 16;
+
+/**
+ * The rows the chat timeline renders: every row whose top-level root sits
+ * inside the loaded window `[oldest, newest]`. A held agent scope can
+ * keep rows in pane memory outside that range (a launch paged in for a
+ * tray digest or the companion, or a scope the prune spared at the
+ * window's head); they belong to the scoped surface, not the transcript,
+ * which must stay one contiguous span so its paging edges mean what
+ * they say. Children key on their root, because a background agent's
+ * rows carry the coordinates of whenever they arrived. Returns `items`
+ * itself when nothing lies outside, which is every window without a
+ * held island.
+ */
+export function itemsWithinLoadedWindow(
+  items: readonly Item[],
+  oldest: TimelineCursorLike | null,
+  newest: TimelineCursorLike | null,
+): readonly Item[] {
+  if (items.length === 0 || !oldest || !newest) return items;
+  // Only a top-level row can be an island root, and the rows are sorted,
+  // so the outermost top-level rows decide whether any island exists. A
+  // child past the newest edge (hydrated under the last launch) is not
+  // one.
+  let first = 0;
+  while (first < items.length && (items[first].parentId ?? '') !== '') first += 1;
+  let last = items.length - 1;
+  while (last >= 0 && (items[last].parentId ?? '') !== '') last -= 1;
+  if (
+    first >= items.length
+    || (compareItemToCursor(items[first], oldest) >= 0 && compareItemToCursor(items[last], newest) <= 0)
+  ) {
+    return items;
+  }
+  const byId = new Map<string, Item>();
+  for (const item of items) byId.set(item.id, item);
+  const insideById = new Map<string, boolean>();
+  const inside = (item: Item): boolean => {
+    const chain: string[] = [];
+    let walker = item;
+    let result: boolean | undefined;
+    for (let hops = 0; hops <= MAX_ROOT_WALK_HOPS; hops += 1) {
+      const memo = insideById.get(walker.id);
+      if (memo !== undefined) {
+        result = memo;
+        break;
+      }
+      chain.push(walker.id);
+      const parent = walker.parentId ? byId.get(walker.parentId) : undefined;
+      if (!parent) break;
+      walker = parent;
+    }
+    result ??= compareItemToCursor(walker, oldest) >= 0 && compareItemToCursor(walker, newest) <= 0;
+    for (const id of chain) insideById.set(id, result);
+    return result;
+  };
+  return items.filter(inside);
+}
+
 /** Reconcile page cuts before admission; moved outliers must not skip unloaded history. */
 export function cursorsAfterItemUpserts(
   oldest: TimelineCursorLike | null | undefined,

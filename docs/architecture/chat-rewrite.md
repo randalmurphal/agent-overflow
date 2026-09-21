@@ -686,9 +686,9 @@ that subagent context and interrupt it separately. Per-subagent
 Stop is NOT in v1.
 
 **Tray rows**: show `running && is_background` with a live progress
-indicator and elapsed time, but NO stop button. Clicking a tray row
-scrolls/expands the corresponding inline item. The global Stop
-button is the only stop affordance.
+indicator and elapsed time. The tray never moves the timeline; an agent
+row expands in place instead (see [Background tray](#background-tray),
+which also owns the stop controls).
 
 **Per-item stop (post-v1 extension, primitives verified)**: Claude
 exposes a client-sent `stop_task` control_request with unified
@@ -1642,6 +1642,24 @@ two affordances over different primitives, resolved by one helper
 
 A not-yet-yielded Codex command is tray-visible but not stoppable: it is
 not a background terminal yet, so neither primitive can reach it.
+
+An agent row has two doors, both at every width. Its header toggles the
+agent's digest under the row (`BackgroundTaskTrayDigest.svelte`): the
+same allowlist, clip and row components as the inline card, read
+through an agent scope view of the source pane
+(`stores/agentScopeView.svelte.ts`) under a tray view key, so expansion
+state never collides with the timeline's or the companion's copy of a
+row. A mounted digest holds its scope (`holdAgentScope`) so the pane's
+fold and prune keep those rows loaded, loads the scope once
+(`pane.loadAgentScope`) if its launch sits outside the loaded window and
+hydrates evicted children by count. A loaded scope outside the window is
+an island: it stays in pane memory for the scoped surfaces, the chat
+timeline renders only the loaded window (`itemsWithinLoadedWindow`), the
+window's edges do not move, and `sweepUnheldAgentScopes` drops the island
+when the last hold releases. The companion loads its scope the same way.
+The explicit open button opens the agent pane. A command row has no
+button and its chevron is live only once output exists; the tray never
+scrolls the timeline to a row.
 
 ### Working indicator
 

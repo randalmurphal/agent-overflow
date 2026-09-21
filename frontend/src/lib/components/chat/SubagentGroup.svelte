@@ -11,24 +11,6 @@
   export function nodeKey(node: _TNode): string {
     return timelineNodeKey(node);
   }
-
-  /**
-   * Main-thread agent digests never embed another agent card. Wait groups
-   * can contain completed agent cards, so filtering only direct children is
-   * insufficient. Keep the wait carrier and remove its nested agent rows.
-   */
-  export function withoutNestedAgentCards(node: _TNode): _TNode | null {
-    if (node.kind === 'group') return null;
-    if (node.kind !== 'wait_group') return node;
-    const children = node.children
-      .map(withoutNestedAgentCards)
-      .filter((child): child is _TNode => child !== null);
-    return {
-      ...node,
-      children,
-      descendantCount: children.length,
-    };
-  }
 </script>
 
 <script lang="ts">
@@ -106,7 +88,7 @@
   import Icon from '../primitives/Icon.svelte';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import SendToBack from '@lucide/svelte/icons/send-to-back';
-  import SubagentBodyClip from './SubagentBodyClip.svelte';
+  import SubagentDigestBody from './SubagentDigestBody.svelte';
   import { displayModelLabel } from '../../utils/modelLabels';
 
   let {
@@ -424,64 +406,19 @@
   });
 
   // ---- Expanded-body digest (spec Q2; user ruling 2026-08-23) --------
-  // The body is what the agent was asked, what it did, and what it
-  // produced — an ALLOWLIST, not a denylist: the initial prompt (the
-  // first user_text — Codex echoes the spawn prompt as one), its tool
-  // calls, a provider refusal's reason (the only place "why a tool did
-  // not run" lives), errors, and its FINAL text.
-  // Everything else — thinking, intermediate prose, later prompts,
-  // progress chatter, compaction, retries — lives in the agent pane.
-  // Nested launches also stay in the pane. There they render as direct
-  // child rows that navigate the same pane with breadcrumbs. The digest is
-  // capped and virtualized because one review can still run hundreds of
-  // tools after this filter.
-  let bodyNodes = $derived.by<TimelineNode[]>(() => {
-    // "Final text" exists only where a final answer can: while the agent
-    // runs (the latest text is its live report) or after a clean
-    // completion. A killed/errored agent's last text is mid-flight
-    // prose, not an answer — its body stays tool calls + nested cards
-    // (user report 2026-08-22: a stopped agent's prose rendered in the
-    // main chat history).
-    // Forked Skill commands publish their synthetic answer as a top-level
-    // sourced result. Keep the mirrored assistant row in the agent pane, but
-    // omit it from this inline digest so the main timeline never duplicates
-    // the answer above and below the activity boundary.
-    const keepFinalText = parentMeta?.directCommandResult !== true
-      && (isRunning || completionStatus !== 'failure');
-    let lastTextId = '';
-    let firstPromptId = '';
-    for (const node of group.children) {
-      if (node.kind !== 'leaf') continue;
-      if (keepFinalText && node.item.kind === 'assistant_text') lastTextId = node.item.id;
-      if (!firstPromptId && node.item.kind === 'user_text') firstPromptId = node.item.id;
-    }
-    return group.children.flatMap((node) => {
-      if (node.kind !== 'leaf') {
-        const sanitized = withoutNestedAgentCards(node);
-        return sanitized ? [sanitized] : [];
-      }
-      const item = node.item;
-      switch (item.kind) {
-        case 'tool_call':
-        case 'tool_completion':
-        case 'error':
-        case 'api_error':
-          return [node];
-        case 'user_text':
-          return item.id === firstPromptId ? [node] : [];
-        case 'assistant_text':
-          return item.id === lastTextId ? [node] : [];
-        case 'notification': {
-          const kind = parseJsonObject(item.meta)?.kind ?? item.toolName;
-          return kind === 'permission_denied' || kind === 'transcript_mirror_degraded'
-            ? [node]
-            : [];
-        }
-        default:
-          return [];
-      }
-    });
-  });
+  // The allowlist lives in utils/subagentDigest.ts and the body in
+  // SubagentDigestBody, shared with the background tray row. What this
+  // card decides is whether the agent's latest text is an answer: while
+  // it runs (the latest text is its live report) or after a clean
+  // completion. A killed/errored agent's last text is mid-flight prose
+  // (user report 2026-08-22: a stopped agent's prose rendered in the main
+  // chat history), and a forked Skill publishes its synthetic answer as a
+  // top-level sourced result. The mirrored assistant row stays in the
+  // agent pane so the main timeline never duplicates the answer above and
+  // below the activity boundary.
+  let keepFinalText = $derived(
+    parentMeta?.directCommandResult !== true && (isRunning || completionStatus !== 'failure'),
+  );
 </script>
 
 {#if showMarkerOnly}
@@ -634,34 +571,16 @@
     {/if}
 
     {#if expanded}
-      <div
+      <SubagentDigestBody
         id={groupDomId}
-        class="ml-5 border-l border-border-subtle bg-surface-0/35 px-3 py-2"
-        role="region"
-        aria-label="Subagent Timeline"
-        data-testid="subagent-group-body"
-      >
-        {#if group.children.length === 0}
-          {#if descendantCount > 0}
-            <p class="text-xs text-text-secondary italic" data-testid="subagent-group-loading">
-              Loading {entryCountLabel}…
-            </p>
-          {:else}
-            <p class="text-xs text-text-secondary italic">No child entries captured.</p>
-          {/if}
-        {:else if bodyNodes.length === 0}
-          <p class="text-xs text-text-secondary italic" data-testid="subagent-group-digest-empty">
-            Intermediate output only. Open the agent pane for the full transcript.
-          </p>
-        {:else}
-          <SubagentBodyClip
-            nodes={bodyNodes}
-            depth={depth + 1}
-            live={isRunning}
-            {renderNode}
-          />
-        {/if}
-      </div>
+        children={group.children}
+        {descendantCount}
+        {entryCountLabel}
+        {keepFinalText}
+        live={isRunning}
+        depth={depth + 1}
+        {renderNode}
+      />
     {/if}
   </div>
 {/if}

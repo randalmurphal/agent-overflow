@@ -69,11 +69,13 @@ export interface ThreadTimelineWindowOptions {
   /** Pane-owned subagent transcript hydration — loadUntilItem's subtree hydration. */
   hydrateSubagentChildren(rootItemID: string): Promise<boolean>;
   /**
-   * Every row the OPEN agent companion is rendering (the scope trail's
-   * whole subtree), or null when no pane is open. The prune cuts consult
-   * it so a window cut can never fold rows out from under a mounted
-   * companion — the same blanking the eviction chokepoint's
-   * `agentPaneHeldRows` exists to prevent (live incident 2026-08-22).
+   * Every row a held agent scope is rendering (the open companion's
+   * trail subtree, each expanded tray digest), or null when none is
+   * held. The prune cuts consult it so a window cut can never fold rows
+   * out from under a mounted surface, the same blanking the eviction
+   * chokepoint's `agentPaneHeldRows` exists to prevent (live incident
+   * 2026-08-22). Kept rows outside the cut stay in memory as an island
+   * the chat timeline does not render (`itemsWithinLoadedWindow`).
    */
   getHeldRowIds?(): ReadonlySet<string> | null;
   /**
@@ -753,7 +755,14 @@ export function createThreadTimelineWindow(
     if (boundaryWasLoaded || !hasMoreNewer) {
       hasMoreNewer = false;
       const items = options.getItems();
-      setLoadedCursors(oldestCursorFromItems(items), newestCursorFromItems(items));
+      // The cut removes rows at the tail, so the head edge stands: reading
+      // it off the first row would hand a held scope's island above the
+      // window (loadScopeRoot) to the next loadOlder as its floor and
+      // skip the history between.
+      setLoadedCursors(
+        items.length === 0 ? null : (oldestLoadedCursor ?? oldestCursorFromItems(items)),
+        newestCursorFromItems(items),
+      );
       recentWindowPrunePending = false;
     }
   }

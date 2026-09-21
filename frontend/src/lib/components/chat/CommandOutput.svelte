@@ -59,6 +59,7 @@
     durationLabel = '',
     showTimestamp = true,
     hostActions,
+    bodyRequiresPayload = false,
   }: {
     pane?: PaneSession & RowUiRegistry & ScrollHost;
     item: Item;
@@ -76,6 +77,12 @@
     showTimestamp?: boolean;
     /** Optional actions rendered outside the disclosure button. */
     hostActions?: Snippet;
+    /** Tray rows: the command text already shows in the header, so the
+     * chevron is live only once output (or an output-read state) exists.
+     * A running background command has no live output on either
+     * provider, so its chevron reads gray instead of opening the command
+     * text again. */
+    bodyRequiresPayload?: boolean;
   } = $props();
   let effectiveDisplayItem = $derived(displayItem ?? item);
   let effectiveStatusItem = $derived(statusItem ?? item);
@@ -122,7 +129,10 @@
   let commandText = $derived(commandTextForItem(effectiveDisplayItem, meta));
   let displayCommand = $derived(stripShellWrapper(commandText));
   let hasBody = $derived(
-    !!displayCommand || hasPayload || deferredOutputState === 'loading' || deferredOutputState === 'error',
+    (!bodyRequiresPayload && !!displayCommand)
+      || hasPayload
+      || deferredOutputState === 'loading'
+      || deferredOutputState === 'error',
   );
   let isBackgroundedLaunch = $derived(
     effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,

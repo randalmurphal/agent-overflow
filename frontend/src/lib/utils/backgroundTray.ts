@@ -9,6 +9,7 @@ import { parseJsonObject } from './parseJsonObject';
 import { extractClaudeTaskID } from './claudeTaskMeta';
 import { extractCodexProcessID } from './codexProcessMeta';
 import {
+  agentScopeRootId,
   claudeResumeTranscriptRootId,
   isCodexSubagentLaunchItem,
   NO_LOADED_SUBAGENT_CHILDREN,
@@ -86,6 +87,17 @@ export function trayTaskAgentInfo(task: TrayTask): SubagentLaunchInfo | null {
   const launch = task.launch ?? task.completion;
   if (!launch) return null;
   return subagentLaunchInfo(launch, NO_LOADED_SUBAGENT_CHILDREN);
+}
+
+/**
+ * The transcript root a tray row's agent surfaces scope to: its digest
+ * and the agent pane. That is the row's own launch except on a §E6
+ * resume carrier, where Claude parents every resumed round to the
+ * ORIGINAL launch, so the carrier's own id scopes to nothing.
+ */
+export function trayTaskScopeId(task: TrayTask): string {
+  const launch = task.launch ?? task.completion;
+  return launch ? agentScopeRootId(launch) : task.rowId;
 }
 
 // The backend exposes four terminal statuses for a completion row:

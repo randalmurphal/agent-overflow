@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { cursorFromItem, type TimelineCursorLike } from './threadItems';
 import { createThreadSubagentMemory } from './threadSubagentMemory';
 import { createThreadPane } from './thread.svelte';
 import type { Item, Thread } from '../types/models';
@@ -54,6 +55,10 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
   let thread: Thread | null = makeThread({ id: THREAD_ID });
   const expandedGroups = new Set<string>();
   let paneHeldRows: ReadonlySet<string> | null = null;
+  let loadedRange: { oldest: TimelineCursorLike | null; newest: TimelineCursorLike | null } = {
+    oldest: null,
+    newest: null,
+  };
 
   function install(next: Item[]): void {
     items = next;
@@ -77,6 +82,7 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
     getSwitchGeneration: () => switchGeneration,
     isSubagentGroupExpanded: (groupKey) => expandedGroups.has(groupKey),
     agentPaneHeldRows: () => paneHeldRows,
+    getLoadedRange: () => loadedRange,
   });
 
   return {
@@ -88,6 +94,9 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
     expandedGroups,
     setPaneHeldRows(rows: ReadonlySet<string> | null) {
       paneHeldRows = rows;
+    },
+    setLoadedRange(oldest: Item, newest: Item) {
+      loadedRange = { oldest: cursorFromItem(oldest), newest: cursorFromItem(newest) };
     },
     setThread(next: Thread | null) {
       thread = next;
@@ -536,5 +545,91 @@ describe('threadSubagentMemory anchors every launch kind', () => {
 
     expect(harness.items.map((it) => it.id)).toEqual(['skill-1', 'child-1']);
     expect(harness.memory.aggregate('skill-1')).toBeUndefined();
+  });
+});
+
+// A held scope can live outside the loaded window: loadScopeRoot brings
+// its rows in without touching the window's edges, and sweepUnheldScopes
+// drops such islands once nothing holds them.
+describe('threadSubagentMemory scope islands', () => {
+  beforeEach(() => {
+    resetBindingMocks();
+  });
+
+  const mainRow = (id: string, turnIndex: number) =>
+    makeItem({ id, threadId: THREAD_ID, turnIndex, itemIndex: 0, summary: id });
+
+  function windowHarness() {
+    const harness = makeMemoryHarness([mainRow('w5', 5), mainRow('w6', 6), mainRow('w7', 7)]);
+    harness.setLoadedRange(mainRow('w5', 5), mainRow('w7', 7));
+    return harness;
+  }
+
+  it('loads a launch outside the window with its ancestors and children, leaving the window alone', async () => {
+    const harness = windowHarness();
+    const outer = anchorItem({ id: 'outer', turnIndex: 0, itemIndex: 0 });
+    const inner = anchorItem({ id: 'inner', turnIndex: 0, itemIndex: 1, parentId: 'outer' });
+    const rows: Record<string, Item> = { outer, inner };
+    const getItem = vi.fn(async (_thread: unknown, id: unknown) => rows[String(id)] ?? null);
+    setBindingMock('GetThreadItem', getItem);
+    setBindingMock('ListSubagentDescendants', async (_thread: unknown, root: unknown) =>
+      root === 'inner' ? [childItem({ id: 'inner-child', turnIndex: 6, itemIndex: 3, parentId: 'inner' })] : []);
+
+    await expect(harness.memory.loadScopeRoot('inner')).resolves.toBe('loaded');
+
+    expect(getItem.mock.calls.map((call) => call[1])).toEqual(['inner', 'outer']);
+    expect(harness.items.map((item) => item.id)).toEqual(['outer', 'inner', 'w5', 'w6', 'inner-child', 'w7']);
+    // Loaded rows are not fetched again: a second call only re-checks the children.
+    await expect(harness.memory.loadScopeRoot('inner')).resolves.toBe('loaded');
+    expect(getItem).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a missing row without inserting anything, and a failed fetch after reporting it', async () => {
+    const harness = windowHarness();
+    setBindingMock('GetThreadItem', async () => null);
+    await expect(harness.memory.loadScopeRoot('gone')).resolves.toBe('missing');
+    expect(harness.items.map((item) => item.id)).toEqual(['w5', 'w6', 'w7']);
+
+    setBindingMock('GetThreadItem', async () => { throw new Error('offline'); });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(harness.memory.loadScopeRoot('gone')).resolves.toBe('failed');
+    expect(errors).toHaveBeenCalled();
+    errors.mockRestore();
+  });
+
+  it('hands a superseded load to the new window instead of inserting into it', async () => {
+    const harness = windowHarness();
+    setBindingMock('GetThreadItem', async () => {
+      harness.setThread(makeThread({ id: 'other' }));
+      return anchorItem({ id: 'late', turnIndex: 0 });
+    });
+    await expect(harness.memory.loadScopeRoot('late')).resolves.toBe('superseded');
+    expect(harness.items.some((item) => item.id === 'late')).toBe(false);
+  });
+
+  it('sweeps an island and its subtree once nothing holds it, keeping held and expanded ones', () => {
+    const harness = windowHarness();
+    harness.install([
+      anchorItem({ id: 'held', turnIndex: 0, itemIndex: 0 }),
+      anchorItem({ id: 'open', turnIndex: 0, itemIndex: 1 }),
+      anchorItem({ id: 'loose', turnIndex: 1, itemIndex: 0 }),
+      childItem({ id: 'loose-child', turnIndex: 6, itemIndex: 2, parentId: 'loose' }),
+      ...harness.items,
+      childItem({ id: 'held-child', turnIndex: 8, itemIndex: 0, parentId: 'held' }),
+    ]);
+    harness.setPaneHeldRows(new Set(['held', 'held-child']));
+    harness.expandedGroups.add('open');
+
+    harness.memory.sweepUnheldScopes();
+
+    expect(harness.items.map((item) => item.id)).toEqual(['held', 'open', 'w5', 'w6', 'w7', 'held-child']);
+    harness.setPaneHeldRows(null);
+    harness.expandedGroups.clear();
+    harness.memory.sweepUnheldScopes();
+    expect(harness.items.map((item) => item.id)).toEqual(['w5', 'w6', 'w7']);
+    // Nothing outside: the sweep is a no-op, not a rebuild.
+    const settled = harness.items;
+    harness.memory.sweepUnheldScopes();
+    expect(harness.items).toBe(settled);
   });
 });

@@ -59,6 +59,10 @@ export interface AgentPaneState {
 }
 
 const statesBySourcePane = new Map<string, AgentPaneState>();
+// Scopes a background tray digest is rendering rows under, per source pane
+// and thread, counted because two rows can expand to one transcript root
+// (a §E6 resume carrier and its original launch). See `holdAgentScope`.
+const trayHeldScopesBySourcePane = new Map<string, Map<string, Map<string, number>>>();
 let unsubscribePaneDestroyed: (() => void) | null = null;
 
 // Registered on first use rather than from an app-level install hook: the
@@ -70,6 +74,7 @@ function ensurePaneDestroyedObserver(): void {
   if (unsubscribePaneDestroyed) return;
   unsubscribePaneDestroyed = addPaneDestroyedObserver((destroyedPaneId) => {
     statesBySourcePane.delete(destroyedPaneId);
+    trayHeldScopesBySourcePane.delete(destroyedPaneId);
   });
 }
 
@@ -229,6 +234,69 @@ export function agentPaneRetainedRootScope(
 }
 
 /**
+ * Hold `scopeId` on behalf of a background tray digest that is rendering
+ * its rows. Held for exactly as long as the returned release is not
+ * called; the digest calls it when the row collapses or leaves the tray.
+ * A held scope counts like the companion's trail for the thread pane's
+ * two eviction chokepoints (`agentScopeHeld`, `heldAgentScopeRoots`):
+ * rows a surface is showing must not fold or prune out from under it.
+ */
+export function holdAgentScope(
+  sourcePaneId: string,
+  threadId: string,
+  scopeId: string,
+): () => void {
+  if (!scopeId || !threadId) return () => {};
+  ensurePaneDestroyedObserver();
+  let byThread = trayHeldScopesBySourcePane.get(sourcePaneId);
+  if (!byThread) trayHeldScopesBySourcePane.set(sourcePaneId, (byThread = new Map()));
+  let counts = byThread.get(threadId);
+  if (!counts) byThread.set(threadId, (counts = new Map()));
+  counts.set(scopeId, (counts.get(scopeId) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (counts.get(scopeId) ?? 0) - 1;
+    if (remaining > 0) {
+      counts.set(scopeId, remaining);
+      return;
+    }
+    counts.delete(scopeId);
+    if (counts.size === 0) byThread.delete(threadId);
+    if (byThread.size === 0) trayHeldScopesBySourcePane.delete(sourcePaneId);
+  };
+}
+
+function trayHeldScopes(sourcePaneId: string, threadId: string): string[] {
+  const counts = trayHeldScopesBySourcePane.get(sourcePaneId)?.get(threadId);
+  return counts ? [...counts.keys()] : [];
+}
+
+/**
+ * True when some surface on `sourcePaneId` is rendering rows under
+ * `itemId`: the open companion's trail, or an expanded tray digest. The
+ * thread pane's subagent memory consults this alongside card expansion.
+ */
+export function agentScopeHeld(sourcePaneId: string, threadId: string, itemId: string): boolean {
+  if (!itemId) return false;
+  if (agentPaneScopeTrailHolds(sourcePaneId, threadId, itemId)) return true;
+  return trayHeldScopesBySourcePane.get(sourcePaneId)?.get(threadId)?.has(itemId) === true;
+}
+
+/**
+ * Every scope root whose subtree a surface on `sourcePaneId` is rendering:
+ * the companion's outermost trail scope, plus each expanded tray digest.
+ * The thread pane's prune and fold commit retain these subtrees.
+ */
+export function heldAgentScopeRoots(sourcePaneId: string, threadId: string): string[] {
+  const roots = trayHeldScopes(sourcePaneId, threadId);
+  const companionRoot = agentPaneRetainedRootScope(sourcePaneId, threadId);
+  if (companionRoot && !roots.includes(companionRoot)) roots.push(companionRoot);
+  return roots;
+}
+
+/**
  * Restore a persisted scope onto a source pane. Used by layout restore
  * only; the snapshot has already been validated (non-empty scope, trail
  * ending at it) by the persistence parser.
@@ -283,6 +351,7 @@ export function openAgentCompanion(
 }
 
 export function __resetAgentPaneStateForTest(): void {
+  trayHeldScopesBySourcePane.clear();
   seeding = false;
   statesBySourcePane.clear();
   unsubscribePaneDestroyed?.();

@@ -35,13 +35,9 @@
     NAV_RAIL_ROW_MAX_WIDTH_PX,
     NAV_RAIL_ROW_RIGHT_PADDING_PX,
   } from './messageNavRail';
-  import ReadGroupRow from './ReadGroupRow.svelte';
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
   import ScrollToBottomButton from './ScrollToBottomButton.svelte';
-  import SubagentGroup from './SubagentGroup.svelte';
-  import ActivityRun from './ActivityRun.svelte';
-  import TimelineLeaf from './TimelineLeaf.svelte';
-  import WaitGroup from './WaitGroup.svelte';
+  import TimelineNodeView from './TimelineNodeView.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
   import type { UserMessageActions } from './userMessageActions';
   import { resolveVisibleTimelineNodeIndex } from './timelineScroll';
@@ -963,41 +959,6 @@
            ChatView bottom overlay, outside the virtualized history. -->
       <div class={`${ROW_SHELL_CLASSES} pt-8`} style={rowShellStyle}></div>
     {:else}
-      {#snippet renderNode(node: TimelineNode, depth: number)}
-        {#if node.kind === 'leaf'}
-          <TimelineLeaf
-            {pane}
-            item={node.item}
-            orphan={node.orphan === true}
-            {onImageExpand}
-            {userMessageActions}
-            codexSubagentReceiverLabels={rows.codexReceiverLabels}
-          />
-        {:else if node.kind === 'group'}
-          <SubagentGroup {pane} group={node} {depth} {renderNode} />
-        {:else if node.kind === 'wait_group'}
-          <WaitGroup
-            {pane}
-            group={node}
-            {onImageExpand}
-            {userMessageActions}
-            codexSubagentReceiverLabels={rows.codexReceiverLabels}
-            {renderNode}
-          />
-        {:else if node.kind === 'read_group'}
-          <ReadGroupRow {pane} group={node} />
-        {:else if node.kind === 'activity_run'}
-          <ActivityRun
-            {pane}
-            run={node}
-            {depth}
-            live={node.live}
-            atTail={node.atTail}
-            {renderNode}
-          />
-        {/if}
-      {/snippet}
-
       <!-- The outer wrapper is the warm-up gate's hide target. contentEl is
            the virtualizer's stable mounted-row plane and the controller's
            registered geometry target (geometry itself is
@@ -1137,7 +1098,14 @@
                     </div>
                   {/if}
                 <div data-testid="message-timeline-node">
-                  {@render renderNode(node, 1)}
+                  <TimelineNodeView
+                    {pane}
+                    {node}
+                    depth={1}
+                    {onImageExpand}
+                    {userMessageActions}
+                    codexSubagentReceiverLabels={rows.codexReceiverLabels}
+                  />
                 </div>
               </div>
             </div>

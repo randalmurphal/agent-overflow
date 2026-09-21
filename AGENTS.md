@@ -111,7 +111,18 @@ change whether the code or the test is wrong: fix it before finishing, never
 record it as pre-existing.
 
 `make help` lists supported commands; [Development](docs/architecture/development.md)
-routes manual and release checks. Report what ran and any relevant gaps.
+routes manual and release checks.
+
+The author of a change is also its reviewer and its tester. Nobody else
+runs anything before a change ships, so full confidence is the author's
+job: for every behavior the change introduces or touches, find the check
+that would fail if it were wrong, and if none exists, write it at the
+level that can prove it (unit, browser, harness). A claim without a
+failing-when-wrong check is not verified. Prove a guard by removing it and
+watching its test fail when the test is new. Do not end with a list of
+uncovered behavior for someone else to validate: close each gap, and only
+report a gap when the tooling cannot reach it, naming what would be needed.
+Report what ran, level by level, and any limit that remains.
 
 Tests use temporary homes and mock providers. They must never invoke a real
 provider or touch the developer's provider homes. Session-capable fixtures

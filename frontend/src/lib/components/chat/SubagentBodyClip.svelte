@@ -14,11 +14,14 @@
     nodes,
     depth,
     live,
+    maxHeight = 'min(50vh, 20rem)',
     renderNode,
   }: {
     nodes: TimelineNode[];
     depth: number;
     live: boolean;
+    /** CSS max-height of the clip's viewport. */
+    maxHeight?: string;
     renderNode: Snippet<[TimelineNode, number]>;
   } = $props();
 
@@ -83,7 +86,7 @@
       bind:this={listRef}
       bind:renderPlane={contentEl}
       scrollRef={scrollEl}
-      intrinsicViewportMaxHeight="min(50vh, 20rem)"
+      intrinsicViewportMaxHeight={maxHeight}
       data={nodes}
       getKey={(node) => timelineNodeKey(node)}
       {estimate}

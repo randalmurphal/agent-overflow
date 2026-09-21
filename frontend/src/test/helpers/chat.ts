@@ -6,6 +6,7 @@ import type { PaneScrollController } from '../../lib/stores/threadPaneShared';
 import type { ItemDeltaEvent } from '../../lib/types/events';
 import type { Item, Thread } from '../../lib/types/models';
 import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
+import { compareCursors, cursorFromItem } from '../../lib/stores/threadItems';
 import { setBindingMock } from '../mocks/bindings-app';
 import { emitWailsEvent } from '../mocks/wailsio-runtime';
 
@@ -115,9 +116,29 @@ export function installPaneMocks(items: Item[] = [], runs: ActivityRunStub[] = [
   // `runs` are the page's activity run stubs: a run whose members the
   // page did not all ship is described by one, and the pane's registry
   // folds it against the rows it holds.
+  // The page's cursors bound whole units (internal/store/paging.go):
+  // a run whose members the page did not all ship still lies inside them.
+  const first = items[0] ?? null;
+  const last = items[items.length - 1] ?? null;
+  const oldestCursor = runs.reduce(
+    (cursor, stub) => {
+      const edge = { turnIndex: stub.firstTurnIndex, itemIndex: stub.firstItemIndex, itemId: stub.firstItemId };
+      return cursor === null || compareCursors(edge, cursor) < 0 ? edge : cursor;
+    },
+    first ? cursorFromItem(first) : null,
+  );
+  const newestCursor = runs.reduce(
+    (cursor, stub) => {
+      const edge = { turnIndex: stub.lastTurnIndex, itemIndex: stub.lastItemIndex, itemId: stub.lastItemId };
+      return cursor === null || compareCursors(edge, cursor) > 0 ? edge : cursor;
+    },
+    last ? cursorFromItem(last) : null,
+  );
   setBindingMock('ListThreadSliceAround', async () => ({
     items,
-    oldestTurnIndex: items.length > 0 ? items[0].turnIndex : -1,
+    ...(oldestCursor ? { oldestCursor } : {}),
+    ...(newestCursor ? { newestCursor } : {}),
+    oldestTurnIndex: oldestCursor?.turnIndex ?? -1,
     hasMore: false,
     runs,
   }));

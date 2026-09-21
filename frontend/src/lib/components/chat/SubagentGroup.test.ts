@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeAll } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import SubagentGroupTestHarness from './SubagentGroupTestHarness.svelte';
-import { withoutNestedAgentCards } from './SubagentGroup.svelte';
+import { withoutNestedAgentCards } from '../../utils/subagentDigest';
 import type { Item } from '../../types/models';
 import type { SubagentGroupNode, TimelineLeaf, TimelineNode } from '../../utils/subagentGrouping';
 
