@@ -419,20 +419,17 @@ export function renewPairedSession(
   return renewSession(fetcher, backend);
 }
 
-/**
- * Renew the stored session if its access credential is inside
- * RENEW_MARGIN_MS of expiry, for a client whose socket outlives one access
- * window. A renewal extends the session row the backend keys every open
- * socket on, so the socket stays authorized without a re-dial. Answers
- * whether a fresh credential is now stored; false when nothing was due.
- */
-export function renewPairedSessionIfDue(
+export type RenewalOutcome = 'unchanged' | 'renewed' | 'retryable-failure' | 'ended';
+
+/** Check the current pairing without conflating a healthy window with failure. */
+export async function renewPairedSessionIfDue(
   fetcher: typeof fetch = networkFetch,
   backend: BackendKey = HOME_BACKEND,
-): Promise<boolean> {
+): Promise<RenewalOutcome> {
   const held = readStoredSession(backend);
-  if (!held || !renewalDue(held)) return Promise.resolve(false);
-  return renewSession(fetcher, backend);
+  if (!held || !renewalDue(held)) return 'unchanged';
+  if (await renewSession(fetcher, backend)) return 'renewed';
+  return hasPairedSession(backend) ? 'retryable-failure' : 'ended';
 }
 
 /** The stored session's id, for "this device" affordances. Null when unpaired. */

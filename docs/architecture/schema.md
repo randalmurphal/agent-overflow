@@ -92,7 +92,7 @@ provider-history reconstruction. A whole-store snapshot includes them.
 |---|---|
 | `users` | Accounts. A partial unique index allows at most one owner. Disabled state is durable authority. |
 | `devices` | Client instances and proof-of-possession identity. Key thumbprints, passkey credential references, and nonempty local channels are uniquely indexed. Device and session liveness are evaluated together. |
-| `sessions` | Device-to-user grants with JSON scopes, binding class, expiry, revocation, and activation. The database row and verified signed claims must both be valid. |
+| `sessions` | Device-to-user grants with JSON scopes, binding class, revocation, and activation. Paired sessions have timed access and signed claims. Local sessions have NULL expiry and a process-bound credential; `idx_sessions_local` permits one unrevoked local session per device. |
 | `signing_keys` | HMAC claim-signing secrets. Older keys remain while credentials minted under them may be valid. |
 | `recovery_codes` | Hashed single-use recovery credentials. A conditional `UPDATE ... RETURNING` makes consumption atomic. |
 | `auth_audit` | Bounded append-only authentication audit. Attribution deliberately has no foreign keys so it can outlive deleted credentials. An update trigger rejects mutation. |

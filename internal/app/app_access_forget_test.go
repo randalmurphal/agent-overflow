@@ -222,6 +222,16 @@ func TestPresentableSession_SurfacesASessionThatOutlivedItsDeviceRevocation(t *t
 	}{
 		{"live on a live device", live, true, false},
 		{
+			"process-bound local session",
+			store.Session{BindingClass: "loopback-only", ActivatedAt: now - 10},
+			true, false,
+		},
+		{
+			"process-bound session standing on a revoked device",
+			store.Session{BindingClass: "loopback-only", ActivatedAt: now - 10, DeviceRevokedAt: now - 1},
+			true, true,
+		},
+		{
 			"revoked with its device, the ordinary case",
 			store.Session{ActivatedAt: now - 10, ExpiresAt: now + 10, RevokedAt: now - 1, DeviceRevokedAt: now - 1},
 			false, false,

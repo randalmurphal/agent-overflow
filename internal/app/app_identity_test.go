@@ -16,7 +16,9 @@ import (
 func identityApp(t *testing.T) *App {
 	t.Helper()
 	app := newTestAppWithStore(t)
-	app.initIdentity("backend-under-test")
+	if err := app.initIdentity("backend-under-test"); err != nil {
+		t.Fatal(err)
+	}
 	if app.identityState() == nil {
 		t.Fatal("initIdentity did not boot the session core")
 	}
@@ -314,7 +316,9 @@ func TestAnAppWithNoIdentityCoreRefusesACredentialItCannotJudge(t *testing.T) {
 // database verify here.
 func TestInitIdentityRefusesAnEmptyBackendID(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.initIdentity("")
+	if err := app.initIdentity(""); err == nil {
+		t.Fatal("missing backend identity did not fail startup")
+	}
 	if app.identityState() != nil {
 		t.Fatal("the session core booted with no backend id")
 	}
@@ -427,5 +431,38 @@ func TestTheLocalPageChannelPublishesEveryGrantableScope(t *testing.T) {
 	}
 	if slices.Contains(granted, "host") {
 		t.Fatal("a session row claimed `host`, which is a method property and never a grant")
+	}
+}
+
+func TestLocalBootCredentialCannotMintTicketsAfterRestart(t *testing.T) {
+	backend := newPairedBackend(t)
+	first := PageSessionCredential(backend.app)
+	requestTicket := func(credential string) int {
+		t.Helper()
+		request, err := http.NewRequest(http.MethodPost, "http://"+backend.srv.Addr()+transport.AuthTicketPath, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set(transport.SessionCredentialHeader, credential)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := response.Body.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode
+	}
+	if got := requestTicket(first); got != http.StatusOK {
+		t.Fatalf("current boot ticket status=%d", got)
+	}
+	if err := backend.app.initIdentity("backend-under-test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := requestTicket(first); got != http.StatusNotFound {
+		t.Fatalf("old boot minted ticket: %d", got)
+	}
+	if got := requestTicket(PageSessionCredential(backend.app)); got != http.StatusOK {
+		t.Fatalf("new boot ticket status=%d", got)
 	}
 }

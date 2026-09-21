@@ -68,6 +68,12 @@ func TestEveryDeclaredValueIsWritable(t *testing.T) {
 			t.Fatalf("device class %q is declared but refused: %v", class, err)
 		}
 		for _, binding := range BindingClasses {
+			if binding == BindingLoopbackOnly {
+				if _, _, err := sessions.EnsureLocalChannelSession(owner.ID); err != nil {
+					t.Fatal(err)
+				}
+				continue
+			}
 			if _, _, err := sessions.Mint(MintRequest{
 				UserID: owner.ID, DeviceID: device.ID,
 				BindingClass: binding, Scopes: Scopes, TTL: time.Minute,

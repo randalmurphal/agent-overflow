@@ -482,7 +482,7 @@ func (s *Sessions) FinishPasskeySignIn(req PasskeySignInRequest) (PasskeySignIn,
 		return PasskeySignIn{}, reason
 	}
 	now := s.now().UnixMilli()
-	policy := PolicyFor(DeviceClass(device.Class), BindingDeviceBound)
+	policy := RenewablePolicyFor(DeviceClass(device.Class))
 	session, _, err := s.Mint(MintRequest{
 		UserID:       verified.userID,
 		DeviceID:     device.ID,

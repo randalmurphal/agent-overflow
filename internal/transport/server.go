@@ -204,73 +204,7 @@ type Config struct {
 	BackendName       string
 	BackendNameGetter func() string
 
-	// SessionForRequest resolves the durable session a request presents,
-	// if any, and says whether the request may proceed at all.
-	//
-	// The seam between this package and internal/identity, in the
-	// direction that keeps transport store-free: the boot passes a
-	// closure over the session core, and this package never learns what a
-	// session row is. A false `ok` refuses the upgrade with the same
-	// http.NotFound shape a bad launch credential gets, which is what
-	// makes a reconnection on a revoked credential fail rather than
-	// silently downgrade to an unattributed connection.
-	//
-	// Optional. Nil means every request proceeds naming no session, which
-	// is the launch-credential behavior this server has always had — and
-	// handleWS then admits such a connection only from a loopback peer,
-	// because a server that cannot resolve a session cannot admit a
-	// session-naming one either.
-	SessionForRequest func(r *http.Request) (sessionID string, ok bool)
-
-	// SessionLive reports whether a session id still admits work. The
-	// same seam as SessionForRequest, taking an ID rather than a request
-	// because its two callers do not have one: the upgrade that spent a
-	// WebSocket ticket (the ticket names the session; nothing about the
-	// request does), and the per-connection re-validation that runs long
-	// after the request is gone.
-	//
-	// Optional. Nil means an established connection is never re-checked
-	// and a ticket's subject is taken as live, which is the behavior
-	// before any client presents a session.
-	SessionLive func(sessionID string) bool
-
-	// SessionAdmitsPeer reports whether a session id may be presented from
-	// one peer address: the BINDING CLASS half of admission
-	// (docs/specs/remote-access.md §2), which SessionForRequest already
-	// applies to every request that carries a credential.
-	//
-	// Shaped like SessionLive, and for the same reason: its caller holds
-	// an id and no credential. A `/ws` upgrade naming its session through
-	// a spent ticket never reaches SessionForRequest at all, so without
-	// this hook the ticket route was the one presentation path where a
-	// loopback-only session admitted an off-host peer. A ticket is minted
-	// by a request that DID present the credential, but it is spent by
-	// whoever holds the URL, and the mint says nothing about where.
-	//
-	// Binding classes are internal/identity's vocabulary and this package
-	// cannot import it, so the comparison stays app-side and this is the
-	// question asked of it.
-	//
-	// Optional. Nil admits every peer, which is the behavior before any
-	// client presents a session.
-	SessionAdmitsPeer func(sessionID, remoteAddr string) bool
-
-	// SessionScopes resolves the capability grants a session holds RIGHT
-	// NOW, or refuses it outright.
-	//
-	// The third hook over the same seam, and the one the per-RPC gate
-	// reads (authorize.go). It answers a scope set and an empty refusal
-	// when the session still admits work, and a non-empty refusal — one
-	// spelling from internal/identity's closed set, which this package
-	// carries without interpreting — when it does not. That second answer
-	// is why the gate needs no separate liveness call: a revoked session
-	// stops authorizing on the very next RPC rather than at the next
-	// watchdog tick.
-	//
-	// Optional. Nil means a connection's scopes are never consulted, which
-	// is the pre-enforcement behavior: the origin gate alone decides, as it
-	// does for every launch-credential client.
-	SessionScopes func(sessionID string) (scopes []string, refusal string)
+	Sessions SessionAuthority
 
 	// StepUpProof spends the step-up token one RPC presented and reports
 	// whether it was valid FOR THAT SESSION.
@@ -412,7 +346,7 @@ type Config struct {
 	//
 	// Loopback connections are deliberately exempt. The cap exists so a
 	// credential that travels a network is re-presented periodically; the
-	// local page's session is re-minted at boot and has no network to
+	// local page's credential is replaced at boot and has no network to
 	// travel, so capping it would buy nothing and cost the webview a
 	// visible reconnect.
 	MaxRemoteConnLifetime time.Duration
@@ -975,7 +909,7 @@ func (s *Server) buildHTTPServer() *http.Server {
 	// The ticket route needs no AuthEndpoints — it mints from the session
 	// the caller already holds — so it is registered whenever a session
 	// can be resolved at all.
-	if s.cfg.SessionForRequest != nil {
+	if s.cfg.Sessions != nil {
 		mux.HandleFunc(AuthTicketPath, withShellCORS(http.MethodPost,
 			rateLimited(s.authLimit, s.loopbackHostGuard(s.handleAuthTicket))))
 	}
@@ -1344,35 +1278,13 @@ func (s *Server) PageMarker() string { return s.cfg.PageMarker }
 func (s *Server) SessionConns() *SessionConns { return s.sessionConns }
 
 // sessionStillLive asks the session core whether a session id admits work
-// right now. A nil hook answers yes, which is the pre-session behavior:
-// nothing has told this server that sessions exist, so nothing may refuse
-// on their behalf.
+// right now. Missing authority refuses named sessions.
 func (s *Server) sessionStillLive(sessionID string) bool {
-	if sessionID == "" {
-		return false
-	}
-	if check := s.cfg.SessionLive; check != nil {
-		return check(sessionID)
-	}
-	return true
+	return s.checkSession(sessionID).Refusal == ""
 }
 
-// sessionAdmitsPeer answers the binding-class question for a session id,
-// admitting everything when no hook is installed.
-//
-// The ticket arm of the upgrade is its one caller, and it is the arm that
-// bypasses SessionForRequest, where every other presentation path gets
-// this comparison for free. A ticket names a session; it does not say
-// where that session may be presented from, and a loopback-only session
-// is precisely the one the backend mints for its own page.
 func (s *Server) sessionAdmitsPeer(sessionID, remoteAddr string) bool {
-	if sessionID == "" {
-		return false
-	}
-	if admits := s.cfg.SessionAdmitsPeer; admits != nil {
-		return admits(sessionID, remoteAddr)
-	}
-	return true
+	return sessionID != "" && s.cfg.Sessions != nil && s.cfg.Sessions.AdmitsPeer(sessionID, remoteAddr)
 }
 
 // HasRemoteClient reports whether at least one non-loopback WebSocket
@@ -1752,11 +1664,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 // treats "no credential presented" as ok-with-empty-id, so the id check
 // is what distinguishes an anonymous request from an authenticated one.
 func (s *Server) sessionAdmitsRequest(r *http.Request) bool {
-	resolve := s.cfg.SessionForRequest
-	if resolve == nil {
-		return false
-	}
-	id, ok := resolve(r)
+	id, ok := s.resolveSession(r)
 	return ok && id != ""
 }
 
@@ -2010,8 +1918,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		// — a cookie is the browser's default behavior, not a deliberate
 		// per-connection proof.
 		ticketProven = true
-	} else if resolve := s.cfg.SessionForRequest; resolve != nil {
-		id, ok := resolve(r)
+	} else {
+		id, ok := s.resolveSession(r)
 		if !ok {
 			http.NotFound(w, r)
 			return
@@ -2097,8 +2005,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		keepaliveInterval: s.cfg.KeepaliveInterval,
 		pongTimeout:       s.cfg.KeepalivePongTimeout,
 		sessionConns:      s.sessionConns,
-		sessionLive:       s.cfg.SessionLive,
-		sessionScopes:     s.cfg.SessionScopes,
+		sessions:          s.cfg.Sessions,
 		stepUpProof:       s.cfg.StepUpProof,
 		sessionRecheck:    s.cfg.SessionRecheckInterval,
 		maxLifetime:       s.cfg.MaxRemoteConnLifetime,

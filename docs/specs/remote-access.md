@@ -360,22 +360,24 @@ type only the MAC check constructs), `transport.AuthFailure`, and
 The session credential never rides a WS URL. Client POSTs for a ticket
 that is **single-use** (consumed on first upgrade), short-lived, and
 **key-bound** (redemption requires a DPoP proof). The established
-connection re-validates session liveness on an interval and caps its own
-lifetime, forcing periodic re-ticket. Per-RPC scope checks still apply
-after upgrade.
+connection re-validates session liveness at the current access deadline and
+periodically, and caps its own lifetime. Renewal extends the deadline without
+reconnecting. A liveness refusal sends `session-ended` and closes the socket;
+an RPC proof refusal does not close a session that still admits work.
+Per-RPC scope checks still apply after upgrade.
 
 LANDED 2026-08-31 (wave 5b): one `ticketBook`
 (`internal/transport/ticket.go`) behind both the page ticket and the
 session-named `/auth/ticket` (30s TTL, spent on the upgrade whether or
-not it succeeds, subject re-checked against `SessionLive` so a ticket
+not it succeeds, subject re-checked against `SessionAuthority.Check` so a ticket
 cannot resurrect a session revoked in flight, and compared against its
-session's binding class through `Config.SessionAdmitsPeer`, since the
+session's binding class through `SessionAuthority.AdmitsPeer`, since the
 mint says only that a credentialled request asked for a ticket, never
 where it will be redeemed). Key-binding rides
 `/auth/ticket`'s use of the same `SessionForRequest` hook, which runs
 `CheckDeviceProof`; the DPoP proof itself is phase 5. The interval
 re-check (60s default) and the 12h non-loopback lifetime cap live in
-`conn.go`'s `watchSession`, with the loopback exemption argued at
+`conn_session.go`'s `watchSession`, with the loopback exemption defined in
 `resolveWatchWindows`. Liveness is also asked once more immediately
 AFTER the socket joins the live-session registry: the upgrade's read
 happens before the attach, so a revocation landing between them
@@ -545,9 +547,13 @@ credential rides the existing bootstrap EXCHANGE (an HttpOnly
 `ao_session_<port>` cookie planted by `/bootstrap.json`) rather than
 the fd/stdout line, because the session core boots after the transport
 binds. The page keeps `?t=` — dropping it is the phase-3 migration.
-The channel device row (`devices.channel = "local"`, one row per boot
-via partial unique index) backs a session re-minted per boot with no
-refresh secret. The WSL launcher fetches the cookie over its
+The channel device row (`devices.channel = "local"`) and its session persist
+across boots. The local credential is an opaque random secret held only by
+the running identity service. It has no access deadline or refresh secret;
+restarting the backend invalidates it without a shutdown write. Session and
+device revocation still apply to every presentation and RPC. Local rows use
+NULL expiry; signed paired credentials cannot authenticate a local row.
+The WSL launcher fetches the cookie over its
 authenticated bootstrap exchange and forwards it as a header on every
 dial, re-fetching after a refused dial. Wave 5c moved that fetch/cache
 into `internal/relaysession` (transport-free so the Windows launcher
@@ -701,7 +707,7 @@ rediscover:
 
 ENFORCEMENT LANDED 2026-08-31 (wave 6b): per-RPC scope gate for
 session-carrying connections (`transport.AuthorizeSessionMethod`,
-grants re-read per call through `Config.SessionScopes`, nothing cached
+grants re-read per call through `SessionAuthority.Check`, nothing cached
 at upgrade time); typed `scope_required` (missing scope as a wire
 FIELD) and `step_up_required` refusal codes following the
 `grant_required` precedent; step-up as one `stepUpProven` function
@@ -785,7 +791,7 @@ LANDED 2026-08-31 (wave 6d2). The local-channel session's
 (`bindingAdmitsPeer` inside the one `SessionForRequest` hook, so the
 manifest fallback, `/auth/ticket` and `/ws`'s header and cookie arms
 inherit it; `/ws`'s TICKET arm asks the same question directly through
-`Config.SessionAdmitsPeer`, because a spent ticket names its subject
+`SessionAuthority.AdmitsPeer`, because a spent ticket names its subject
 and never reaches that hook, and one carrier that skipped the class
 would be a full admission; a binding-refused presentation resolves NO
 session and falls to the sessionless rules), and `/bootstrap.json` plants the session cookie
@@ -3735,7 +3741,7 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    in-memory per-RPC fast path invalidated synchronously on revoke,
    Crockford-alphabet recovery codes consumed by one CAS statement,
    idempotent `Bootstrap`), the transport live-session registry with
-   three-step synchronous teardown behind `Config.SessionForRequest`
+   three-step synchronous teardown behind `SessionAuthority.Resolve`
    (nil until phase 3 migrates clients), per-peer token buckets on the
    three credential surfaces refusing 429 + `Retry-After`, and
    `auth_failed` + reason on the wire with
@@ -3753,7 +3759,7 @@ leases) is a net *reduction* in wire and CPU cost, not an addition.
    remote lifetime cap, /auth/pair + /auth/token + /auth/ticket on one
    shared tight budget, the implicit loopback page-channel session
    riding the bootstrap exchange as an HttpOnly cookie, WSL launcher
-   credential forwarding, and `SessionForRequest`/`SessionLive` wired
+   credential forwarding, and `SessionAuthority` wired
    from app boot. Device-access RPC surface, ui_state device binding,
    the shared `relaysession` credential source (now also on the
    `--connect` hop), and the redeeming client: LANDED 2026-08-31 (wave

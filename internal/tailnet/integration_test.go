@@ -154,17 +154,7 @@ func startTestTransport(t *testing.T) *transport.Server {
 		Dispatcher: dispatcher,
 		EventBus:   transport.NewEventBus(8),
 		Token:      integrationLaunchToken,
-		SessionForRequest: func(r *http.Request) (string, bool) {
-			switch transport.SessionCredential(r) {
-			case "":
-				return "", true
-			case integrationSessionCredential:
-				return integrationSessionID, true
-			default:
-				return "", false
-			}
-		},
-		SessionLive: func(id string) bool { return id == integrationSessionID },
+		Sessions:   integrationAuthority{},
 	})
 	if err != nil {
 		t.Fatalf("build the transport server: %v", err)
@@ -267,3 +257,23 @@ func dialOverTailnet(t *testing.T, ctx context.Context, client *http.Client, url
 	}
 	return resp.StatusCode
 }
+
+type integrationAuthority struct{}
+
+func (integrationAuthority) Resolve(r *http.Request) (string, bool) {
+	switch transport.SessionCredential(r) {
+	case "":
+		return "", true
+	case integrationSessionCredential:
+		return integrationSessionID, true
+	default:
+		return "", false
+	}
+}
+func (integrationAuthority) Check(id string) transport.SessionStatus {
+	if id != integrationSessionID {
+		return transport.SessionStatus{Refusal: "unknown_session"}
+	}
+	return transport.SessionStatus{}
+}
+func (integrationAuthority) AdmitsPeer(string, string) bool { return true }

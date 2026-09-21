@@ -401,7 +401,7 @@ func TestServer_BootstrapRejectsBadToken(t *testing.T) {
 // plants the local page channel's session cookie.
 func TestServer_BootstrapAdmitsALiveSessionWithoutAPageCredential(t *testing.T) {
 	f := newServerFixtureWith(t, func(cfg *Config) {
-		cfg.SessionForRequest = func(r *http.Request) (string, bool) {
+		sessionAuthorityForTest(cfg).resolve = func(r *http.Request) (string, bool) {
 			switch r.Header.Get(SessionCredentialHeader) {
 			case "cred-live":
 				return "ses-1", true

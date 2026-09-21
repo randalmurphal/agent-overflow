@@ -10,16 +10,17 @@ import (
 // FrameType discriminates the wire frames. Encoded as the "type" field
 // in every frame so the decoder can route without sniffing other fields.
 const (
-	frameTypeRPC       = "rpc"
-	frameTypeEvent     = "event"
-	frameTypeReplay    = "replay"
-	frameTypeSubscribe = "subscribe"
-	frameTypeWatch     = "watch"
-	frameTypeLease     = "lease"
-	frameTypePresence  = "presence"
-	frameTypeBatch     = "batch"
-	frameTypePing      = "ping"
-	frameTypeHello     = "hello"
+	frameTypeRPC          = "rpc"
+	frameTypeEvent        = "event"
+	frameTypeReplay       = "replay"
+	frameTypeSubscribe    = "subscribe"
+	frameTypeWatch        = "watch"
+	frameTypeLease        = "lease"
+	frameTypePresence     = "presence"
+	frameTypeBatch        = "batch"
+	frameTypePing         = "ping"
+	frameTypeHello        = "hello"
+	frameTypeSessionEnded = "session-ended"
 )
 
 // ProtocolVersion is the wire dialect this build speaks, stated in the
@@ -410,6 +411,8 @@ type ClientFrame struct {
 //   - "batch": coalesced pushed events in the batchFrame envelope below.
 //   - "replay": completion marker sent after a replay request. Replay and
 //     live pushes can interleave, so strict-order consumers buffer until it.
+//   - "session-ended": the connection's session no longer admits work.
+//     Error carries the authentication reason; the socket closes next.
 //   - "ping": server keepalive heartbeat (conn.go keepalive loop). Carries
 //     no other fields. Clients treat its arrival as a liveness signal for
 //     stale-connection detection and otherwise ignore it; consumers that
@@ -425,7 +428,7 @@ type ServerFrame struct {
 	Gap     bool            `json:"gap,omitempty"`
 }
 
-// FrameError is the server's error envelope on an rpc response. Code is
+// FrameError is the server's RPC or session-ended error envelope. Code is
 // a stable machine-readable token; Message is human-readable. We keep
 // both so the frontend can switch on Code without parsing prose.
 type FrameError struct {

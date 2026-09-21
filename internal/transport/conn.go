@@ -127,7 +127,7 @@ type connProfile struct {
 	// Zero when the client declared nothing, which is normal.
 	client ClientIdentity
 	// sessionID is the durable session this connection presented, resolved
-	// before the upgrade by Config.SessionForRequest. Empty means the
+	// before the upgrade by SessionAuthority.Resolve. Empty means the
 	// connection names no session — every connection today, and still the
 	// ordinary case for the local webview afterwards — and such a
 	// connection is not tracked by the live-session registry.
@@ -145,12 +145,7 @@ type connSettings struct {
 	// handler runs outside one (unit tests). A connection naming a session
 	// registers itself here so a revocation can reach it.
 	sessionConns *SessionConns
-	// sessionLive re-checks the named session, or nil when nothing can
-	// answer. See Config.SessionLive.
-	sessionLive func(sessionID string) bool
-	// sessionScopes reads the named session's grants per RPC, or nil when
-	// nothing can answer. See Config.SessionScopes.
-	sessionScopes func(sessionID string) ([]string, string)
+	sessions     SessionAuthority
 	// stepUpProof spends a step-up token an RPC presented, or nil when
 	// nothing can answer — in which case host presence is the only proof,
 	// which is the behavior before passkeys. See Config.StepUpProof.
@@ -199,17 +194,10 @@ type connHandler struct {
 	keepaliveInterval time.Duration
 	pongTimeout       time.Duration
 
-	// sessionLive / sessionRecheck / maxLifetime configure watchSession.
-	// Unresolved: watchSession applies the defaults, because it is the
-	// only reader and a resolved zero would lose "disabled".
-	sessionLive    func(sessionID string) bool
+	sessions       SessionAuthority
+	cancel         context.CancelFunc
 	sessionRecheck time.Duration
 	maxLifetime    time.Duration
-
-	// sessionScopes is the per-RPC grant read for a connection that named
-	// a session (authorize.go). Nil disables the scope gate, which is the
-	// pre-enforcement behavior every launch-credential client still has.
-	sessionScopes func(sessionID string) ([]string, string)
 
 	// stepUpProof spends a step-up token presented on one RPC. Nil leaves
 	// host presence as the only step-up proof.
@@ -294,10 +282,9 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		rpcSem:            make(chan struct{}, settings.maxConcurrentRPCs),
 		keepaliveInterval: settings.keepaliveInterval,
 		pongTimeout:       settings.pongTimeout,
-		sessionLive:       settings.sessionLive,
+		sessions:          settings.sessions,
 		sessionRecheck:    settings.sessionRecheck,
 		maxLifetime:       settings.maxLifetime,
-		sessionScopes:     settings.sessionScopes,
 		stepUpProof:       settings.stepUpProof,
 		eventScopes:       eventScopes,
 		leaseWake:         make(chan struct{}, 1),
@@ -307,6 +294,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 
 	connCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	h.cancel = cancel
 
 	// Per-connection scratch space. Handlers (e.g. GitStatusSubscribe)
 	// register cleanup callbacks here so a dropped WS releases their
@@ -350,7 +338,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 	//
 	// Ordered after the attach for the same reason: re-checking before it
 	// would leave the identical window one instruction narrower.
-	if profile.sessionID != "" && h.sessionLive != nil && !h.sessionLive(profile.sessionID) {
+	if profile.sessionID != "" && h.checkSession().Refusal != "" {
 		log.Printf("transport: ws %s session %s ended during the upgrade; closing",
 			profile.remoteAddr, profile.sessionID)
 		h.closeWithCause(closeCauseSessionEnded, cancel)()
@@ -517,55 +505,6 @@ func (h *connHandler) closeWithCause(cause int32, cancel context.CancelFunc) fun
 	}
 }
 
-// watchSession re-validates the connection's session on an interval and
-// caps the connection's own lifetime (docs/specs/remote-access.md §4).
-//
-// Runs only for a connection that names a session. The interval exists
-// because revocation reaches live sockets synchronously but the two other
-// ways a session stops — it expires, or something outside this process
-// revokes it — reach nothing at all; without this, such a connection
-// streams until the client disconnects. The cap exists so a credential
-// that travels a network is re-presented periodically rather than once.
-func (h *connHandler) watchSession(ctx context.Context, cancel context.CancelFunc) {
-	recheck, lifetime := resolveWatchWindows(
-		h.sessionRecheck, h.maxLifetime, h.profile.isLoopback, h.sessionLive != nil)
-	if recheck <= 0 && lifetime <= 0 {
-		return
-	}
-
-	var ticks <-chan time.Time
-	if recheck > 0 {
-		ticker := time.NewTicker(recheck)
-		defer ticker.Stop()
-		ticks = ticker.C
-	}
-	var expiry <-chan time.Time
-	if lifetime > 0 {
-		timer := time.NewTimer(lifetime)
-		defer timer.Stop()
-		expiry = timer.C
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-expiry:
-			log.Printf("transport: ws %s reached its connection lifetime (%s); closing to force a re-ticket",
-				h.profile.remoteAddr, lifetime)
-			h.closeWithCause(closeCauseLifetime, cancel)()
-			return
-		case <-ticks:
-			if h.sessionLive(h.profile.sessionID) {
-				continue
-			}
-			log.Printf("transport: ws %s session %s is no longer live; closing",
-				h.profile.remoteAddr, h.profile.sessionID)
-			h.closeWithCause(closeCauseSessionEnded, cancel)()
-			return
-		}
-	}
-}
-
 // resolveWatchWindows turns the two configured knobs into the two windows
 // watchSession actually runs, applying every default and every exemption
 // in one place.
@@ -578,10 +517,9 @@ func (h *connHandler) watchSession(ctx context.Context, cancel context.CancelFun
 //     answer "still live" is a timer nobody needs.
 //   - loopback connections are exempt from the LIFETIME cap. It exists so
 //     a credential that travels a network is re-presented periodically;
-//     the local page's session is re-minted at boot and travels none, so
+//     the local page's credential is replaced at boot and travels none, so
 //     capping it would cost the webview a visible reconnect and buy
-//     nothing. The re-check still applies — a local session can expire or
-//     be revoked like any other.
+//     nothing. The re-check still applies to local session revocation.
 func resolveWatchWindows(recheck, lifetime time.Duration, isLoopback, canCheck bool) (time.Duration, time.Duration) {
 	if recheck == 0 {
 		recheck = defaultSessionRecheck
@@ -866,6 +804,9 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 	proof := h.callerProof(frame)
 	if fe := h.authorizeSession(method.Name, proof); fe != nil {
 		h.writeError(ctx, frame.ID, fe)
+		if fe.Code == "auth_failed" {
+			h.endSession(ctx, fe.Reason, h.cancel)
+		}
 		return
 	}
 	ctx = WithCallerProof(ctx, proof)
@@ -873,6 +814,13 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 	result, fe := h.dispatcher.InvokeForOrigin(ctx, method, frame.Params, h.profile.isLoopback)
 	if fe != nil {
 		h.writeError(ctx, frame.ID, fe)
+		// A method can refuse its own proof while the connection remains
+		// authorized. Only current session admission can end this socket.
+		if fe.Code == "auth_failed" && h.profile.sessionID != "" {
+			if status := h.checkSession(); status.Refusal != "" {
+				h.endSession(ctx, status.Refusal, h.cancel)
+			}
+		}
 		return
 	}
 
@@ -883,31 +831,16 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 	})
 }
 
-// authorizeSession runs the per-RPC scope gate for a connection that
-// named a durable session. A nil return authorizes the call.
-//
-// Three ways to answer nothing, and they are all the same statement: this
-// connection carries no session (every launch-credential client, which
-// keeps exactly the reachability the origin gate gives it), or nothing in
-// this process can resolve a session's grants. Both leave the origin gate
-// as the only judge, which is what it was before enforcement.
-//
-// The grants are read HERE, per call, rather than captured at upgrade:
-// revoking a session must stop the next RPC on a socket that is already
-// open, and the refusal the hook returns is how it does (§4
-// "Revocation").
+// authorizeSession reads current admission and grants before each RPC.
 func (h *connHandler) authorizeSession(methodName string, proof CallerProof) *FrameError {
-	if h.profile.sessionID == "" || h.sessionScopes == nil {
+	if h.profile.sessionID == "" {
 		return nil
 	}
-	granted, refusal := h.sessionScopes(h.profile.sessionID)
-	if refusal != "" {
-		// The session stopped admitting work between the upgrade and this
-		// call. That is the credential channel's refusal, not the scope
-		// gate's, so it keeps the credential channel's shape.
-		return AuthFailure(refusal)
+	status := h.checkSession()
+	if status.Refusal != "" {
+		return AuthFailure(status.Refusal)
 	}
-	return AuthorizeSessionMethod(granted, methodName, proof)
+	return AuthorizeSessionMethod(status.Scopes, methodName, proof)
 }
 
 // callerProof resolves what THIS call proved about its caller.
@@ -1305,24 +1238,17 @@ var (
 	errCredentialRefused = errors.New("transport: request carries no valid credential")
 )
 
-// connEventScopes resolves the grant half of a connection's event filter,
-// once, at upgrade.
-//
-// Inactive — every channel admitted — for a connection that named no
-// session, or on a server with no SessionScopes hook. Those are the
-// launch-credential clients, and their visibility stays exactly what the
-// origin gate alone decided.
-//
-// A session whose grants cannot be read right now gets an ACTIVE filter
-// holding nothing, and the refusal is returned beside it so the handler
-// closes the connection rather than serving a socket that can never
-// deliver an event. The filter is still fail-closed for the instant
-// between arming and that close.
+// connEventScopes captures the event grants at admission. A refused session
+// gets an empty active filter until the connection closes.
 func connEventScopes(settings connSettings, profile connProfile) (eventScopeFilter, string) {
-	if profile.sessionID == "" || settings.sessionScopes == nil {
+	if profile.sessionID == "" {
 		return eventScopeFilter{}, ""
 	}
-	granted, refusal := settings.sessionScopes(profile.sessionID)
+	status := SessionStatus{Refusal: "unknown_session"}
+	if settings.sessions != nil {
+		status = settings.sessions.Check(profile.sessionID)
+	}
+	granted, refusal := status.Scopes, status.Refusal
 	if refusal != "" {
 		granted = nil
 	}

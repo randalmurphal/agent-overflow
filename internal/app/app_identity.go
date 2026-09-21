@@ -1,9 +1,9 @@
 package app
 
 import (
+	"fmt"
 	"log"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -37,49 +37,27 @@ type identityState struct {
 	// boot; the store's single-owner index is what makes it stable.
 	owner store.User
 
-	// mu guards the cached local credential. Held only across a re-issue,
-	// which happens at most once per localReissueMargin.
-	mu sync.Mutex
-	// local is the credential handed to the page, cached so a bootstrap
-	// refetch does not write to the database. Re-issued when it comes
-	// within localReissueMargin of its expiry.
+	// local is published once during identity initialization.
 	local transport.TokenGrant
 }
-
-// localReissueMargin is how far ahead of expiry the local page
-// credential is re-issued. Wide enough that a page which fetched the
-// manifest and then sat on it still holds something live, narrow enough
-// that a re-issue is rare — the credential's own window is measured in
-// hours.
-const localReissueMargin = time.Hour
 
 // initIdentity boots the session core and mints the local page channel's
 // session. Called from Start after the store is open, because every row it
 // touches lives there.
-//
-// A failure here is NOT fatal to the boot. The launch credential still
-// authorizes every request, so an App whose identity core failed serves
-// the local page exactly as it did before this existed; what it loses is
-// attribution and the ability to revoke. Refusing to boot instead would
-// turn a credential-table problem into "the app does not start", which is
-// the harder failure to recover from and the one a person cannot act on.
-func (a *App) initIdentity(backendID string) {
+func (a *App) initIdentity(backendID string) error {
 	if backendID == "" {
 		// Nothing to bind a MAC to. Every credential minted under an empty
 		// backend id would verify against a restored database from any
 		// other machine, which is the one property the backend binding
 		// exists to prevent.
-		log.Printf("identity: no backend id yet; session core not started")
-		return
+		return fmt.Errorf("identity: backend id is required")
 	}
 	sessions, result, err := identity.Bootstrap(a.store, backendID, "Owner")
 	if err != nil {
-		log.Printf("identity: session core unavailable: %v", err)
-		return
+		return fmt.Errorf("identity: initialize session core: %w", err)
 	}
 	if err := sessions.RecoverOwnAdmissions(); err != nil {
-		log.Printf("identity: own-device recovery failed: %v", err)
-		return
+		return fmt.Errorf("identity: recover own devices: %w", err)
 	}
 	state := &identityState{sessions: sessions, owner: result.Owner}
 	if len(result.RecoveryCodes) > 0 {
@@ -88,12 +66,6 @@ func (a *App) initIdentity(backendID string) {
 		// was minted; logging the codes would put offline credentials in
 		// a file that outlives the process.
 		log.Printf("identity: minted %d recovery codes for the owner account", len(result.RecoveryCodes))
-	}
-	a.identity.Store(state)
-	// The other half of AttachSessionConns's ordering handshake: when the
-	// transport was constructed first, its registry is already parked here.
-	if conns := a.liveConns.Load(); conns != nil {
-		sessions.AttachConns(*conns)
 	}
 	// What this backend answers to, which the session core cannot know: a
 	// closure rather than a value, because the canonical domain is a live
@@ -108,10 +80,15 @@ func (a *App) initIdentity(backendID string) {
 	// trusted for arriving over loopback.
 	session, tokens, err := sessions.EnsureLocalChannelSession(result.Owner.ID)
 	if err != nil {
-		log.Printf("identity: local page channel unavailable: %v", err)
-		return
+		return fmt.Errorf("identity: initialize local page channel: %w", err)
 	}
-	state.storeLocal(localGrant(tokens))
+	state.local = localGrant(tokens)
+	a.identity.Store(state)
+	// The other half of AttachSessionConns's ordering handshake: when the
+	// transport was constructed first, its registry is already parked here.
+	if conns := a.liveConns.Load(); conns != nil {
+		sessions.AttachConns(*conns)
+	}
 	log.Printf("identity: local page channel session %s ready", session.ID)
 
 	// One prune per boot, with a margin so a device list can still show
@@ -119,6 +96,7 @@ func (a *App) initIdentity(backendID string) {
 	// presentation; a periodic sweep would be machinery for a table whose
 	// growth is bounded by how often a person pairs a device.
 	sessions.PruneCredentials(24 * time.Hour)
+	return nil
 }
 
 // AttachSessionConns hands the session core the live-connection registry,
@@ -152,15 +130,8 @@ func (a *App) identityState() *identityState {
 	return state
 }
 
-// storeLocal caches the local page channel's credential.
-func (s *identityState) storeLocal(grant transport.TokenGrant) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.local = grant
-}
-
 // SessionForRequest resolves the durable session a request presents.
-// Satisfies transport.Config.SessionForRequest.
+// Satisfies transport.SessionAuthority.Resolve.
 //
 // Four outcomes, and the second one is the one to keep:
 //
@@ -261,9 +232,7 @@ func bindingAdmitsPeer(session store.Session, remoteAddr string) bool {
 	return loopback.PeerAddress(remoteAddr)
 }
 
-// SessionLive reports whether a session id still admits work. Satisfies
-// transport.Config.SessionLive: the ticket redemption and the
-// per-connection re-check both hold an id and no request.
+// SessionLive reports whether a session id still admits work.
 func SessionLive(a *App, sessionID string) bool {
 	state := a.identityState()
 	if state == nil {
@@ -274,7 +243,7 @@ func SessionLive(a *App, sessionID string) bool {
 }
 
 // SessionAdmitsPeer reports whether a session id may be presented from
-// this peer address. Satisfies transport.Config.SessionAdmitsPeer.
+// this peer address. Satisfies transport.SessionAuthority.AdmitsPeer.
 //
 // The same comparison SessionForRequest makes, asked by the one path that
 // does not go through it: a `/ws` upgrade whose session came off a spent
@@ -300,8 +269,7 @@ func SessionAdmitsPeer(a *App, sessionID, remoteAddr string) bool {
 }
 
 // SessionScopes reports the grants a session holds right now, or the
-// closed-vocabulary reason it holds none. Satisfies
-// transport.Config.SessionScopes, which the per-RPC scope gate reads.
+// closed-vocabulary reason it holds none.
 //
 // It goes through Live, the same per-RPC path every other liveness answer
 // uses, so a revoked or expired session refuses on the next call rather
@@ -330,33 +298,11 @@ func SessionScopes(a *App, sessionID string) ([]string, string) {
 // PageSessionCredential returns the local page channel's credential for
 // the bootstrap exchange to plant as a cookie. Satisfies
 // transport.Config.PageSessionCredential.
-//
-// Re-issues within localReissueMargin of expiry rather than on a timer:
-// the manifest is refetched on every reconnect, so the one moment a fresh
-// credential is needed is also the one moment somebody asks for it.
 func PageSessionCredential(a *App) string {
 	state := a.identityState()
 	if state == nil {
 		return ""
 	}
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.local.Credential == "" {
-		return ""
-	}
-	deadline := time.UnixMilli(state.local.ExpiresAtMs).Add(-localReissueMargin)
-	if time.Now().Before(deadline) {
-		return state.local.Credential
-	}
-	_, tokens, err := state.sessions.EnsureLocalChannelSession(state.owner.ID)
-	if err != nil {
-		// Hand back what we have. It is closer to its expiry than we would
-		// like, but it still verifies, and answering "" would sign the
-		// local page out over a transient database error.
-		log.Printf("identity: re-issue local page credential: %v", err)
-		return state.local.Credential
-	}
-	state.local = localGrant(tokens)
 	return state.local.Credential
 }
 

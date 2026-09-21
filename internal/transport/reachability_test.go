@@ -16,7 +16,7 @@ import "testing"
 // the deletion performs rather than incidental consequences of it.
 
 // grantsFor is the scope set a session holding exactly these names has,
-// in the shape Config.SessionScopes answers.
+// in the shape SessionAuthority.Check answers.
 func grantsFor(scopes ...Scope) []string {
 	granted := make([]string, 0, len(scopes))
 	for _, scope := range scopes {

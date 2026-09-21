@@ -1,3 +1,4 @@
+import { presentAuthReason } from './authReason';
 import { createNetworkSocket } from './networkSocket';
 import { networkFetch } from './networkFetch';
 import { DamagedTrustError } from '../native/networkTrust';
@@ -380,10 +381,7 @@ function matchesRetryAllowlist(
 export class TransportError extends Error {
   code: string;
   // reason is set only on code 'auth_failed' and names which credential
-  // check refused the call (internal/identity's closed set). Kept off the
-  // message because the message is generic prose for non-loopback callers,
-  // so it is the only thing a hint can be derived from — see
-  // ./authReason.ts, which is the one place it is translated.
+  // check refused the call. authReason.ts translates it for the message.
   reason?: string;
   // scope is set only on code 'scope_required' and names the capability
   // this session was not granted (./scopes.ts's set). Same shape and same
@@ -394,7 +392,7 @@ export class TransportError extends Error {
   transfer?: { operationId: string; backendId: string };
   constructor(code: string, message: string, reason?: string, scope?: string,
     transfer?: { operationId: string; backendId: string }) {
-    super(message);
+    super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
     this.name = 'TransportError';
     this.code = code;
     this.reason = reason;
@@ -1594,9 +1592,14 @@ export class WSClient {
   // the sink records it so a persistent failure has a trace.
   private async renewSessionIfDue(): Promise<void> {
     if (this.sessionRenewalTimer === null) return;
-    const renewed = await renewPairedSessionIfDue(networkFetch, this.backend);
-    if (!renewed && this.sessionRenewalTimer !== null && hasPairedSession(this.backend)) {
+    const ws = this.ws;
+    const outcome = await renewPairedSessionIfDue(networkFetch, this.backend);
+    if (this.ws !== ws || this.sessionRenewalTimer === null) return;
+    if (outcome === 'retryable-failure') {
       this.diagnosticsSink?.('transport: paired session renewal did not land');
+    } else if (outcome === 'ended') {
+      this.enterPairingRequired();
+      this.forceReconnect('paired session ended');
     }
   }
 
@@ -2805,6 +2808,16 @@ export class WSClient {
     }
   }
 
+  // A liveness refusal is evidence that this socket cannot serve work, even
+  // when its heartbeat is fresh. Recovery belongs to this backend's client.
+  private recoverSession(reason?: string): void {
+    this.bootstrap = null;
+    this.bootstrapPromise = null;
+    const message = presentAuthReason(reason).title;
+    this.diagnosticsSink?.('transport: session refused; reconnecting', reason);
+    this.forceReconnect(message);
+  }
+
   // handleFrame routes a parsed server frame. RPC responses are matched
   // by id; event pushes fan out to subscribers; batch frames iterate
   // their event array through the same per-event path.
@@ -2836,6 +2849,14 @@ export class WSClient {
         this.serverAnswersHeartbeatProbes = true;
       }
       this.applyHello(frame);
+      return;
+    }
+    if (frame.type === 'session-ended') {
+      if (frame.error?.code !== 'auth_failed') {
+        this.noteUnknownInput('invalid-session-ended');
+        return;
+      }
+      this.recoverSession(frame.error.reason);
       return;
     }
     if (frame.type === 'rpc') {

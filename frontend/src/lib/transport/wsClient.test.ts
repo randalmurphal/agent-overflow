@@ -201,6 +201,38 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it('recovers an open responsive socket after its session ends', async () => {
+    vi.useFakeTimers();
+    const fetchBootstrap = vi.fn(bootstrap);
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap: fetchBootstrap });
+    const p = client.callByID(7, []);
+    const caught = p.catch((err: unknown) => err);
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    ws.pushFrame({ type: 'replay' });
+    ws.pushFrame({ type: 'ping' });
+    const id = ws.sent.find((frame) => frame.type === 'rpc')!.id as string;
+    ws.pushFrame({ type: 'rpc', id, error: { code: 'auth_failed', reason: 'expired_session', message: 'not authorized' } });
+    expect(client.getStatus().status).toBe('connected');
+    expect(await caught).toMatchObject({ message: 'This session has expired.' });
+    ws.pushFrame({ type: 'session-ended', error: { code: 'auth_failed', reason: 'expired_session', message: 'not authorized' } });
+    expect(client.getStatus().status).not.toBe('connected');
+    expect(await caught).toBeInstanceOf(Error);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushMicrotasks();
+    expect(fetchBootstrap).toHaveBeenCalledTimes(2);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    const next = MockWebSocket.instances[1]!;
+    next.acceptOpen();
+    await flushMicrotasks();
+    next.pushFrame({ type: 'replay' });
+    expect(next.sent.filter((frame) => frame.type === 'rpc')).toHaveLength(0);
+    expect(client.getStatus().status).toBe('connected');
+    client.close();
+  });
+
   it('rejects with TransportError on a server-side FrameError', async () => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
 
@@ -4197,7 +4229,7 @@ describe('WSClient', () => {
   // session before the window closes; a renewal extends the session row
   // the socket is keyed on, so nothing is re-dialled. Stops with the
   // client, so a closed page presents nothing again.
-  it('renews the paired session before its access window closes while the socket is open', async () => {
+  it.each(['renewed', 'retryable', 'ended'] as const)('handles %s renewal while the socket is open', async (outcome) => {
     localStorage.clear();
     vi.useFakeTimers();
     try {
@@ -4222,12 +4254,18 @@ describe('WSClient', () => {
       const calls: string[] = [];
       const authFetch = vi.fn(async (path: string) => {
         calls.push(path);
-        if (path === '/auth/token') return grant('cred-2', 'refresh-2', 900_000)();
+        if (path === '/auth/token') {
+          if (outcome === 'retryable') return new Response(JSON.stringify({ reason: 'temporarily_unavailable' }), { status: 503 });
+          if (outcome === 'ended') return new Response(JSON.stringify({ reason: 'revoked_session' }), { status: 401 });
+          return grant('cred-2', 'refresh-2', 900_000)();
+        }
         return new Response(JSON.stringify({ ticket: 'tik-1' }), { status: 200 });
       });
       vi.stubGlobal('fetch', authFetch);
 
       const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+      const diagnostics = vi.fn();
+      client.setDiagnosticsSink(diagnostics);
       void client.callByID(123, ['arg']).catch(() => {});
       await vi.waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
       MockWebSocket.instances[0]!.acceptOpen();
@@ -4239,14 +4277,24 @@ describe('WSClient', () => {
 
       await vi.advanceTimersByTimeAsync(SESSION_RENEWAL_CHECK_INTERVAL_MS);
       await vi.waitFor(() => expect(calls).toEqual(['/auth/ticket', '/auth/token']));
-      expect((await pairedSessionHeaders())['X-AO-Session']).toBe('cred-2');
-      // The fresh credential lasts fifteen minutes: nothing renews again.
+      expect(client.getStatus().status).toBe(outcome === 'ended' ? 'pairing-required' : 'connected');
+      expect(hasPairedSession()).toBe(outcome !== 'ended');
+      if (outcome === 'renewed') {
+        expect((await pairedSessionHeaders())['X-AO-Session']).toBe('cred-2');
+        expect(diagnostics).not.toHaveBeenCalled();
+      } else if (outcome === 'retryable') {
+        expect((await pairedSessionHeaders())['X-AO-Session']).toBe('cred-1');
+        expect(diagnostics).toHaveBeenCalledWith('transport: paired session renewal did not land');
+      } else {
+        expect(MockWebSocket.instances[0]!.readyState).toBe(3);
+      }
       await vi.advanceTimersByTimeAsync(SESSION_RENEWAL_CHECK_INTERVAL_MS);
-      expect(calls).toHaveLength(2);
+      const expectedCalls = outcome === 'retryable' ? 3 : 2;
+      expect(calls).toHaveLength(expectedCalls);
 
       client.close();
       await vi.advanceTimersByTimeAsync(900_000);
-      expect(calls).toHaveLength(2);
+      expect(calls).toHaveLength(expectedCalls);
       expect(MockWebSocket.instances).toHaveLength(1);
     } finally {
       clearPairedSession();

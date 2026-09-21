@@ -32,7 +32,7 @@ func TestTheConnectionPrincipalReachesABoundMethod(t *testing.T) {
 // session and must stay attributable, or the scope they fall back to would
 // have nothing to key on.
 func TestAConnectionNamingNoSessionStillCarriesItsScreen(t *testing.T) {
-	f := newSessionFixtureWith(t, func(cfg *Config) { cfg.SessionForRequest = nil })
+	f := newSessionFixtureWith(t, func(cfg *Config) { sessionAuthorityForTest(cfg).resolve = nil })
 	conn, _, err := websocket.Dial(context.Background(),
 		"ws://"+f.addr+"/ws?token=integration-token&did=screen-abcdef01", nil)
 	if err != nil {
@@ -200,7 +200,7 @@ func TestCloseCauseNamesEveryServerSideTeardown(t *testing.T) {
 // Closing hands the client its ordinary reconnect, which re-reads.
 func TestAnUnreadableGrantSetAtUpgradeClosesTheSocket(t *testing.T) {
 	f := newSessionFixtureWith(t, func(cfg *Config) {
-		cfg.SessionScopes = func(string) ([]string, string) { return nil, "temporarily_unavailable" }
+		sessionAuthorityForTest(cfg).scopes = func(string) ([]string, string) { return nil, "temporarily_unavailable" }
 	})
 	conn, _, err := websocket.Dial(context.Background(),
 		"ws://"+f.addr+"/ws?token=integration-token&did=screen-abcdef01&conn=live-abcdef01", nil)

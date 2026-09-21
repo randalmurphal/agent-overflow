@@ -147,9 +147,9 @@ func TestInactiveEventScopeFilterAdmitsEverything(t *testing.T) {
 // withhold one — which is the whole point of the wave.
 func TestScopedConnectionReceivesOnlyGrantedChannels(t *testing.T) {
 	f := newServerFixtureWith(t, func(cfg *Config) {
-		cfg.SessionForRequest = func(*http.Request) (string, bool) { return "session-under-test", true }
-		cfg.SessionLive = func(string) bool { return true }
-		cfg.SessionScopes = func(string) ([]string, string) {
+		sessionAuthorityForTest(cfg).resolve = func(*http.Request) (string, bool) { return "session-under-test", true }
+		sessionAuthorityForTest(cfg).live = func(string) bool { return true }
+		sessionAuthorityForTest(cfg).scopes = func(string) ([]string, string) {
 			return []string{string(ScopeThreadsRead)}, ""
 		}
 	})

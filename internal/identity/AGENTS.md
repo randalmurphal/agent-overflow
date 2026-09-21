@@ -61,9 +61,10 @@ the session service. Confirmed sessions and refresh credentials survive.
 `ReasonPendingConfirmation` does not consume the refresh secret or create an
 audit refusal, so polling can continue until the owner decides.
 
-The page session is a loopback-only, non-renewable credential minted for the
-current backend launch. It does not replace the launch credential or permit an
-off-host request.
+The page session is a loopback-only, process-bound credential minted for the
+current backend launch. Its secret is never persisted and has no clock deadline.
+The durable local session remains revocable. Paired credentials cannot name the
+local channel, and local credentials cannot admit an off-host request.
 
 ## Refresh, proof, and recovery
 

@@ -107,7 +107,7 @@ func TestConfirmationReplacesTheConfirmationWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	wantLive := c.now().Add(PolicyFor(DevicePhone, BindingDeviceBound).Access).UnixMilli()
+	wantLive := c.now().Add(RenewablePolicyFor(DevicePhone).Access).UnixMilli()
 	if live.ExpiresAt != wantLive {
 		t.Fatalf("confirmed window ends at %d, want the device class's access window %d",
 			live.ExpiresAt, wantLive)

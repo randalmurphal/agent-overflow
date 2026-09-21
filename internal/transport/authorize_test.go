@@ -218,9 +218,10 @@ func TestSessionFloorAdmitsAConnectionWithNoGrants(t *testing.T) {
 	asked := false
 	h := &connHandler{
 		profile: connProfile{sessionID: "s1", isLoopback: false},
-		sessionScopes: func(string) ([]string, string) {
+		sessions: &testSessionAuthority{scopes: func(string) ([]string, string) {
 			asked = true
 			return nil, ""
+		},
 		},
 	}
 	if fe := h.authorizeSession(floorMethod, CallerProof{}); fe != nil {
@@ -243,9 +244,10 @@ func TestConnectionNamingNoSessionSkipsTheScopeGate(t *testing.T) {
 	asked := false
 	h := &connHandler{
 		profile: connProfile{isLoopback: false},
-		sessionScopes: func(string) ([]string, string) {
+		sessions: &testSessionAuthority{scopes: func(string) ([]string, string) {
 			asked = true
 			return nil, ""
+		},
 		},
 	}
 	if fe := h.authorizeSession(hostMethod, CallerProof{}); fe != nil {
@@ -258,18 +260,18 @@ func TestConnectionNamingNoSessionSkipsTheScopeGate(t *testing.T) {
 
 // Same for a process that cannot resolve grants at all: the origin gate
 // stays the only judge, which is what it was before enforcement.
-func TestConnectionWithNoGrantHookSkipsTheScopeGate(t *testing.T) {
+func TestNamedConnectionWithoutAuthorityRefusesWork(t *testing.T) {
 	h := &connHandler{profile: connProfile{sessionID: "s1", isLoopback: false}}
-	if fe := h.authorizeSession(executeMethod, CallerProof{}); fe != nil {
-		t.Fatalf("connection with no grant hook refused: %#v", fe)
+	if fe := h.authorizeSession(executeMethod, CallerProof{}); fe == nil || fe.Code != "auth_failed" {
+		t.Fatalf("connection without authority admitted work: %#v", fe)
 	}
 }
 
 func TestSessionScopedConnectionIsGatedPerCall(t *testing.T) {
 	granted := []string{string(ScopeThreadsRead)}
 	h := &connHandler{
-		profile:       connProfile{sessionID: "s1", isLoopback: false},
-		sessionScopes: func(string) ([]string, string) { return granted, "" },
+		profile:  connProfile{sessionID: "s1", isLoopback: false},
+		sessions: &testSessionAuthority{scopes: func(string) ([]string, string) { return granted, "" }},
 	}
 	if fe := h.authorizeSession(observeMethod, CallerProof{}); fe != nil {
 		t.Fatalf("granted method refused: %#v", fe)
@@ -290,8 +292,8 @@ func TestSessionScopedConnectionIsGatedPerCall(t *testing.T) {
 // client to acquire a scope would send it to the wrong remedy.
 func TestRevokedSessionRefusesWithTheCredentialShape(t *testing.T) {
 	h := &connHandler{
-		profile:       connProfile{sessionID: "s1", isLoopback: true},
-		sessionScopes: func(string) ([]string, string) { return nil, "revoked_session" },
+		profile:  connProfile{sessionID: "s1", isLoopback: true},
+		sessions: &testSessionAuthority{scopes: func(string) ([]string, string) { return nil, "revoked_session" }},
 	}
 	fe := h.authorizeSession(observeMethod, CallerProof{})
 	if fe == nil {
@@ -332,12 +334,13 @@ func scopeGateFixture(t *testing.T, granted *[]string) (string, string) {
 		Dispatcher: d,
 		EventBus:   NewEventBus(16),
 		Token:      "scope-gate-token",
-		SessionForRequest: func(*http.Request) (string, bool) {
+		Sessions: &testSessionAuthority{resolve: func(*http.Request) (string, bool) {
 			return "session-under-test", true
 		},
-		SessionLive: func(string) bool { return true },
-		SessionScopes: func(string) ([]string, string) {
-			return *granted, ""
+			live: func(string) bool { return true },
+			scopes: func(string) ([]string, string) {
+				return *granted, ""
+			},
 		},
 	})
 	if err != nil {
@@ -434,6 +437,8 @@ func TestAuthzErrorsAreRecognizedThroughWrapping(t *testing.T) {
 // argument-dependent rechecks run there, and a proof that stopped at the
 // gate would leave every one of them refusing a caller the gate admitted.
 func TestAStepUpTokenReachesTheMethodBodyFromARemotePeer(t *testing.T) {
+	methodClassification["ReportStepUp"] = MethodMeta{Name: "ReportStepUp", Scope: ScopeSession}
+	t.Cleanup(func() { delete(methodClassification, "ReportStepUp") })
 	spent := 0
 	f := newAdmissionFixtureWith(t, func(cfg *Config) {
 		cfg.StepUpProof = func(sessionID, token string) bool {

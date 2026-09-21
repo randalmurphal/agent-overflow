@@ -4105,8 +4105,9 @@ export function RequestServiceUpdate(tag: string): $CancellablePromise<void> {
  * user input has been idle past its threshold; inputSinceLastTrim is the
  * caller's half of the activity gate — whether any user input landed after
  * the last trim this caller saw accepted. Returns what happened —
- * "requested", "skipped-active-turn", "skipped-recent", or
- * "skipped-no-activity" — so the caller can log without a second RPC.
+ * "requested", "skipped-active-turn", "skipped-recent",
+ * "skipped-no-activity", or "unsupported". Unsupported clients disarm
+ * their idle detector.
  * //ao:scope host: it reaches into the process that owns this window, so it
  * has no remote form.
  */
@@ -4314,8 +4315,7 @@ export function RevokeAccessDevice(deviceID: string): $CancellablePromise<app$0.
  * 
  * Refused for the local page channel on the same grounds as
  * RevokeAccessDevice, resolved through the session's device row: the
- * channel's session is re-minted at boot, so revoking it mid-run would
- * close the host's own window until a restart.
+ * local channel provides the host's access and has no pairing recovery flow.
  */
 export function RevokeAccessSession(sessionID: string): $CancellablePromise<void> {
     return $Call.ByID(2284519219, sessionID);

@@ -473,12 +473,12 @@ func (s *Server) handleAuthTicket(w http.ResponseWriter, r *http.Request) {
 	if !s.acceptAuthPost(w, r) {
 		return
 	}
-	resolve := s.cfg.SessionForRequest
-	if resolve == nil {
+	authority := s.cfg.Sessions
+	if authority == nil {
 		http.NotFound(w, r)
 		return
 	}
-	sessionID, ok := resolve(r)
+	sessionID, ok := authority.Resolve(r)
 	if !ok || sessionID == "" {
 		http.NotFound(w, r)
 		return

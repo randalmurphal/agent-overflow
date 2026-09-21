@@ -117,7 +117,10 @@ reading cannot stall delivery.
 ## Session teardown and client identity
 
 Recheck durable session liveness on every RPC. Session-bearing connections also
-recheck periodically and observe their lifetime cap. After attaching a new
+recheck at the current access deadline and periodically, and observe their
+lifetime cap. Recheck a deadline before closing because renewal may extend it.
+A liveness refusal sends `session-ended` and closes the connection; refused
+operation proofs and scopes do not end a live session. After attaching a new
 connection to `SessionConns`, check liveness again to close the race with a
 concurrent revocation.
 

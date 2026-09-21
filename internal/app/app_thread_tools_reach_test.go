@@ -72,7 +72,9 @@ func newReachPairServedBy(t *testing.T, serve func(*testing.T, *App) *pairedBack
 
 	dest, _ := setupE2EApp(t)
 	dest.configDir = t.TempDir()
-	dest.initIdentity("thread-tools-destination")
+	if err := dest.initIdentity("thread-tools-destination"); err != nil {
+		t.Fatal(err)
+	}
 	if dest.identityState() == nil {
 		t.Fatal("the destination has no session core, so nothing can pair with it")
 	}
@@ -1065,7 +1067,9 @@ func TestThreadToolsPollVisitsDestinationsConcurrently(t *testing.T) {
 
 	asleep, _ := setupE2EApp(t)
 	asleep.configDir = t.TempDir()
-	asleep.initIdentity("thread-tools-asleep")
+	if err := asleep.initIdentity("thread-tools-asleep"); err != nil {
+		t.Fatal(err)
+	}
 	wire, faults := serveFaultyApp(t, asleep)
 	publishReachIdentity(t, asleep, uuid.NewString())
 	faults.stall = make(chan struct{})

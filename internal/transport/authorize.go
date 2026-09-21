@@ -23,7 +23,7 @@ import (
 // method's scope against, and it is loopback by the admission rule.
 //
 // Nothing here caches. The scopes are re-read per call through
-// Config.SessionScopes, because a revocation lands after the upgrade that
+// SessionAuthority.Check, because a revocation lands after the upgrade that
 // admitted the connection and a grant read once at upgrade time would
 // outlive it (§4 "Revocation": no RPC authorizes from state cached at
 // upgrade time).

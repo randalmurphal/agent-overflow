@@ -40,7 +40,7 @@ type ConnState struct {
 //
 // A struct rather than loose parameters, because the two string answers
 // are not interchangeable: SessionID is what this backend
-// ADMITTED (Config.SessionForRequest verified a presented credential),
+// ADMITTED (SessionAuthority.Resolve verified a presented credential),
 // while Client is what the peer DECLARED on its upgrade URL. A handler
 // scoping durable state wants the first wherever it exists; a handler
 // suppressing a client's echo of its own write wants the second. Named

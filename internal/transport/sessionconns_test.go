@@ -222,7 +222,7 @@ func newSessionFixtureWith(t *testing.T, mutate func(*Config)) *sessionFixture {
 		Dispatcher: d,
 		EventBus:   bus,
 		Token:      "integration-token",
-		SessionForRequest: func(*http.Request) (string, bool) {
+		Sessions: &testSessionAuthority{resolve: func(*http.Request) (string, bool) {
 			fixture.mu.Lock()
 			defer fixture.mu.Unlock()
 			if fixture.refuse {
@@ -230,10 +230,11 @@ func newSessionFixtureWith(t *testing.T, mutate func(*Config)) *sessionFixture {
 			}
 			return fixture.session, true
 		},
-		SessionLive: func(sessionID string) bool {
-			fixture.mu.Lock()
-			defer fixture.mu.Unlock()
-			return !fixture.dead[sessionID]
+			live: func(sessionID string) bool {
+				fixture.mu.Lock()
+				defer fixture.mu.Unlock()
+				return !fixture.dead[sessionID]
+			},
 		},
 		PageSessionCredential: func() string {
 			fixture.mu.Lock()
@@ -419,8 +420,8 @@ func readUntilClosed(conn *websocket.Conn) error {
 func TestUpgradeClosesASessionRevokedDuringTheUpgrade(t *testing.T) {
 	var f *sessionFixture
 	f = newSessionFixtureWith(t, func(cfg *Config) {
-		admit := cfg.SessionForRequest
-		cfg.SessionForRequest = func(r *http.Request) (string, bool) {
+		admit := sessionAuthorityForTest(cfg).resolve
+		sessionAuthorityForTest(cfg).resolve = func(r *http.Request) (string, bool) {
 			sessionID, ok := admit(r)
 			if !ok {
 				return "", false

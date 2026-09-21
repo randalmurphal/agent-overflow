@@ -543,7 +543,9 @@ func TestThreadAskScratchForkIsAlwaysReadOnly(t *testing.T) {
 func TestThreadToolsWritesNeedAutonomyForAnAutonomousThread(t *testing.T) {
 	f := newRequestFixture(t)
 	f.mockClaude(t, "on it")
-	f.app.initIdentity("backend-under-test")
+	if err := f.app.initIdentity("backend-under-test"); err != nil {
+		t.Fatal(err)
+	}
 	limited := pairSessionWithScopes(t, f.app, "thumb-thread-tools", []identity.Scope{
 		identity.ScopeThreadsRead, identity.ScopeThreadsOperate, identity.ScopeTerminalOperate,
 	})

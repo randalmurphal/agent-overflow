@@ -217,7 +217,9 @@ func TestComputerPairingRestartRetiresLostComparisonButKeepsExistingDevice(t *te
 	s.windowID = ""
 	s.mu.Unlock()
 	t.Cleanup(func() { old.Close(window.WindowID) })
-	b.app.initIdentity("backend-under-test")
+	if err := b.app.initIdentity("backend-under-test"); err != nil {
+		t.Fatal(err)
+	}
 	if err := b.app.ConfirmDevicePairing(invite.LinkID); err == nil {
 		t.Fatal("lost bootstrap comparison remained confirmable")
 	}
@@ -231,7 +233,9 @@ func TestComputerPairingRestartRetiresLostComparisonButKeepsExistingDevice(t *te
 
 func TestComputerPairingReplacementRequiresDurableCancellation(t *testing.T) {
 	a, path := newTestAppWithStorePath(t)
-	a.initIdentity("backend-under-test")
+	if err := a.initIdentity("backend-under-test"); err != nil {
+		t.Fatal(err)
+	}
 	stored, err := a.store.Identity()
 	if err != nil {
 		t.Fatal(err)

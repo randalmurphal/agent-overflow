@@ -241,7 +241,7 @@ func TestRefreshRefusesAnUnknownSecret(t *testing.T) {
 func TestRefreshRefusesALapsedSecret(t *testing.T) {
 	sessions, _, c, owner, _ := newFixture(t)
 	_, tokens := pairedDevice(t, sessions, owner, "thumb-phone")
-	c.advance(PolicyFor(DevicePhone, BindingDeviceBound).Refresh + time.Minute)
+	c.advance(RenewablePolicyFor(DevicePhone).Refresh + time.Minute)
 
 	if _, reason := sessions.Refresh(RefreshRequest{
 		Secret: tokens.RefreshSecret, Proof: bearerProof("thumb-phone"),
@@ -310,8 +310,8 @@ func TestRefreshRefusesAnUnconfirmedSession(t *testing.T) {
 // specifically (§4 "Sessions"), and the distinction is the one property a
 // browser profile has that no other class does.
 func TestBrowserClassGetsAShortWindow(t *testing.T) {
-	browser := PolicyFor(DeviceBrowser, BindingDeviceBound)
-	native := PolicyFor(DeviceDesktop, BindingDeviceBound)
+	browser := RenewablePolicyFor(DeviceBrowser)
+	native := RenewablePolicyFor(DeviceDesktop)
 	if browser.Access >= native.Access {
 		t.Fatalf("browser access window %s is not shorter than %s", browser.Access, native.Access)
 	}
@@ -322,16 +322,9 @@ func TestBrowserClassGetsAShortWindow(t *testing.T) {
 		t.Fatal("the browser class is not renewable; rotation is the control on a live family, and " +
 			"a passkey is what re-authenticates one that ended — never an extra gate on renewal")
 	}
-	local := PolicyFor(DeviceDesktop, BindingLoopbackOnly)
-	if local.Renewable() {
-		t.Fatal("the local page channel issued a refresh secret; it is re-minted at boot instead")
-	}
-	if PolicyFor(DeviceBrowser, BindingLoopbackOnly) != local {
-		t.Fatal("binding class must decide before device class for the local channel")
-	}
 }
 
-func TestLocalChannelSessionIsOneRowAcrossBoots(t *testing.T) {
+func TestLocalChannelSessionInitializationReusesOneRow(t *testing.T) {
 	sessions, st, c, owner, _ := newFixture(t)
 	first, firstTokens, err := sessions.EnsureLocalChannelSession(owner.ID)
 	if err != nil {
@@ -353,16 +346,16 @@ func TestLocalChannelSessionIsOneRowAcrossBoots(t *testing.T) {
 		t.Fatalf("second EnsureLocalChannelSession: %v", err)
 	}
 	if second.ID != first.ID {
-		t.Fatalf("the local channel session id moved across boots: %q -> %q", first.ID, second.ID)
+		t.Fatalf("repeated initialization moved the local channel session id: %q -> %q", first.ID, second.ID)
 	}
 	if second.DeviceID != first.DeviceID {
 		t.Fatalf("the local channel device moved: %q -> %q", first.DeviceID, second.DeviceID)
 	}
-	if secondTokens.Credential == firstTokens.Credential {
-		t.Fatal("the second boot re-served the first boot's credential")
+	if secondTokens.Credential != firstTokens.Credential {
+		t.Fatal("repeated initialization changed this boot's credential")
 	}
 	if _, reason := sessions.Verify(secondTokens.Credential); reason.Refused() {
-		t.Fatalf("the re-issued local credential does not verify: %s", reason)
+		t.Fatalf("the local credential does not verify: %s", reason)
 	}
 	devices, err := st.ListDevicesForUser(owner.ID)
 	if err != nil {
@@ -379,22 +372,22 @@ func TestLocalChannelSessionIsOneRowAcrossBoots(t *testing.T) {
 	}
 }
 
-func TestLocalChannelSessionReMintsAfterExpiry(t *testing.T) {
+func TestLocalChannelSessionSurvivesElapsedTime(t *testing.T) {
 	sessions, _, c, owner, _ := newFixture(t)
 	first, _, err := sessions.EnsureLocalChannelSession(owner.ID)
 	if err != nil {
 		t.Fatalf("EnsureLocalChannelSession: %v", err)
 	}
-	c.advance(localChannelTTL + time.Hour)
+	c.advance(365 * 24 * time.Hour)
 	second, tokens, err := sessions.EnsureLocalChannelSession(owner.ID)
 	if err != nil {
 		t.Fatalf("second EnsureLocalChannelSession: %v", err)
 	}
-	if second.ID == first.ID {
-		t.Fatal("a lapsed local channel session was reused rather than re-minted")
+	if second.ID != first.ID {
+		t.Fatal("elapsed time replaced the local channel")
 	}
 	if _, reason := sessions.Verify(tokens.Credential); reason.Refused() {
-		t.Fatalf("the re-minted local credential does not verify: %s", reason)
+		t.Fatalf("the local credential does not verify: %s", reason)
 	}
 }
 

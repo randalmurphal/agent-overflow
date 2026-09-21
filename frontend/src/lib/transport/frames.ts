@@ -93,7 +93,13 @@ export interface ServerHelloFrame {
   minShellBuild?: number;
 }
 
+export interface ServerSessionEndedFrame {
+  type: 'session-ended';
+  error: NonNullable<ServerRPCFrame['error']>;
+}
+
 export type ServerFrame =
+  | ServerSessionEndedFrame
   | ServerRPCFrame
   | ServerEventFrame
   | ServerBatchFrame

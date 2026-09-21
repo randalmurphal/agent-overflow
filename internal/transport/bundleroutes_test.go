@@ -38,7 +38,7 @@ func newBundleFixture(t *testing.T, withBundle bool) *bundleFixture {
 	}
 	spa := bundle.New(tree, "9.9.9")
 	fixture := newServerFixtureWith(t, func(cfg *Config) {
-		cfg.SessionForRequest = func(r *http.Request) (string, bool) {
+		sessionAuthorityForTest(cfg).resolve = func(r *http.Request) (string, bool) {
 			return r.Header.Get(bundleSessionHeader), true
 		}
 		if withBundle {

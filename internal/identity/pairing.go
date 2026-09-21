@@ -209,7 +209,7 @@ func (s *Sessions) mintPairingLink(req PairingRequest) (PairingLink, error) {
 	if !req.DeviceClass.Valid() {
 		return PairingLink{}, fmt.Errorf("identity: %q is not a declared device class", string(req.DeviceClass))
 	}
-	if !req.BindingClass.Valid() {
+	if !req.BindingClass.Valid() || req.BindingClass == BindingLoopbackOnly {
 		return PairingLink{}, fmt.Errorf("identity: %q is not a declared binding class", string(req.BindingClass))
 	}
 	scopes, err := ValidateScopes(req.Scopes)
@@ -570,7 +570,7 @@ func (s *Sessions) confirmPairing(linkID string) (store.PairingLink, error) {
 	if err != nil {
 		return store.PairingLink{}, fmt.Errorf("identity: confirm pairing: read device: %w", err)
 	}
-	policy := PolicyFor(DeviceClass(device.Class), BindingClass(link.BindingClass))
+	policy := RenewablePolicyFor(DeviceClass(device.Class))
 	moved, err := s.store.ActivateSession(link.SessionID, now, now+policy.Access.Milliseconds())
 	if err != nil {
 		return store.PairingLink{}, err

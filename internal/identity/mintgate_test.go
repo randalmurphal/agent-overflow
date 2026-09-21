@@ -22,7 +22,8 @@ import (
 // each carries the device gate at the point of the write:
 //
 //   - store.CreateSession — the device predicate is inside the INSERT;
-//   - store.ActivateSession, store.ExtendSession — inside the UPDATE;
+//   - store.EnsureLocalSession - inside its serialized initialization transaction;
+//   - store.ActivateSession - inside the UPDATE;
 //   - store.RotateRefreshSecret — session/device predicates inside the durable transaction;
 //   - signClaims — reached only through Mint (which must then survive
 //     CreateSession) or accessTokensFor (which takes the device ROW and refuses
@@ -39,9 +40,9 @@ import (
 func TestEveryCredentialProducingCallGoesThroughAChokepoint(t *testing.T) {
 	chokepoints := map[string][]string{
 		"CreateSession":       {"Sessions.Mint"},
+		"EnsureLocalSession":  {"Sessions.EnsureLocalChannelSession"},
 		"ActivateSession":     {"Sessions.confirmPairing"},
 		"RotateRefreshSecret": {"Sessions.Refresh"},
-		"ExtendSession":       {"Sessions.EnsureLocalChannelSession"},
 		"signClaims":          {"Sessions.Mint", "Sessions.accessTokensFor"},
 	}
 	found := map[string][]string{}

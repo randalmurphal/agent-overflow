@@ -167,7 +167,10 @@ func (s *Sessions) Refresh(req RefreshRequest) (TokenSet, Reason) {
 	if err != nil {
 		return s.refreshUnavailable("read device", err)
 	}
-	policy := PolicyFor(DeviceClass(device.Class), BindingClass(session.BindingClass))
+	if session.BindingClass == string(BindingLoopbackOnly) {
+		return TokenSet{}, ReasonMalformedProof
+	}
+	policy := RenewablePolicyFor(DeviceClass(device.Class))
 	generation := s.generationNow()
 	rotated, err := s.store.RotateRefreshSecret(context.Background(), store.RefreshRotation{
 		SessionID: session.ID, DeviceID: session.DeviceID, OldHash: digest[:], NextHash: nextDigest[:],
@@ -359,11 +362,14 @@ func (s *Sessions) verifyDeviceProof(thumbprint string, presented DeviceProof) R
 //     credential worthless is that every consult re-asks (Sessions.Live).
 //     Refusing here is what stops one being HANDED OUT in the first place.
 func (s *Sessions) issueFor(session store.Session, device store.Device, now int64) (TokenSet, error) {
+	if session.BindingClass == string(BindingLoopbackOnly) {
+		return TokenSet{}, fmt.Errorf("identity: local sessions cannot issue renewable credentials")
+	}
 	tokens, err := s.accessTokensFor(session, device, now)
 	if err != nil {
 		return TokenSet{}, err
 	}
-	policy := PolicyFor(DeviceClass(device.Class), BindingClass(session.BindingClass))
+	policy := RenewablePolicyFor(DeviceClass(device.Class))
 	if !policy.Renewable() {
 		return tokens, nil
 	}
@@ -382,6 +388,9 @@ func (s *Sessions) issueFor(session store.Session, device store.Device, now int6
 
 // accessTokensFor signs the access half for already persisted session state.
 func (s *Sessions) accessTokensFor(session store.Session, device store.Device, now int64) (TokenSet, error) {
+	if session.ProcessBound() {
+		return TokenSet{}, fmt.Errorf("identity: process-bound sessions cannot issue timed claims")
+	}
 	if device.RevokedAt != 0 {
 		return TokenSet{}, fmt.Errorf("identity: issue for session %s: %w",
 			session.ID, store.ErrDeviceRevoked)

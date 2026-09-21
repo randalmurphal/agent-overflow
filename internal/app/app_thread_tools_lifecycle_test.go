@@ -252,6 +252,7 @@ func TestAnInterruptIsFencedOnTheTurnItNames(t *testing.T) {
 // nothing else revisits a settled row.
 func TestBootRedeliversASettledRequestsLostWake(t *testing.T) {
 	f := newRequestFixture(t)
+	f.mockClaude(t, "received recovered answer")
 	f.holdCallerTurn(t)
 	token := newThreadRequestToken()
 	if err := f.app.store.InsertThreadRequest(store.ThreadRequest{

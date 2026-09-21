@@ -67,9 +67,11 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	// The session core, and the local page channel's own session. After
 	// the store because every row it touches lives there, and before the
 	// subsystems because the transport's hooks read it the moment a page
-	// connects. Never fatal — see initIdentity.
+	// connects. Identity failure prevents publishing a ready backend.
 	backendID, _ := a.backendIdentity()
-	a.initIdentity(backendID)
+	if err := a.initIdentity(backendID); err != nil {
+		return err
+	}
 
 	// Publish this executable as the `agent-overflow` command before any
 	// session can be started, so the very first session already has it on

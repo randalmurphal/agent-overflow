@@ -107,11 +107,7 @@ func servePairedApp(t *testing.T, app *App, configure ...func(*transport.Config)
 		BackendIdentity: func() (string, string) {
 			return BackendIdentity(app)
 		},
-		SessionForRequest: func(r *http.Request) (string, bool) {
-			return SessionForRequest(app, r)
-		},
-		SessionLive:     func(sessionID string) bool { return SessionLive(app, sessionID) },
-		SessionScopes:   func(sessionID string) ([]string, string) { return SessionScopes(app, sessionID) },
+		Sessions:        SessionAuthority(app),
 		AuthEndpoints:   AuthEndpoints(app),
 		ThreadTransfers: ThreadTransferEndpoints(app),
 	}

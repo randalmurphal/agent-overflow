@@ -96,7 +96,7 @@ func newAdmissionFixtureWith(t *testing.T, mutate func(*Config)) *admissionFixtu
 		// The production shape: a request presenting no session
 		// credential proceeds naming none, and one presenting the known
 		// credential names its session.
-		SessionForRequest: func(r *http.Request) (string, bool) {
+		Sessions: &testSessionAuthority{resolve: func(r *http.Request) (string, bool) {
 			switch SessionCredential(r) {
 			case "":
 				return "", true
@@ -106,7 +106,8 @@ func newAdmissionFixtureWith(t *testing.T, mutate func(*Config)) *admissionFixtu
 				return "", false
 			}
 		},
-		SessionLive: func(id string) bool { return id == admissionSessionID },
+			live: func(id string) bool { return id == admissionSessionID },
+		},
 	}
 	if mutate != nil {
 		mutate(&cfg)
@@ -361,12 +362,12 @@ const admissionLocalSessionID = "sess-admission-local"
 // for a peer that is not on this machine.
 func TestUpgradeRefusesALoopbackOnlySessionsTicketOffHost(t *testing.T) {
 	f := newAdmissionFixtureWith(t, func(cfg *Config) {
-		cfg.SessionLive = func(id string) bool {
+		sessionAuthorityForTest(cfg).live = func(id string) bool {
 			return id == admissionSessionID || id == admissionLocalSessionID
 		}
 		// The app-side rule, in the shape internal/app satisfies it:
 		// loopback-only is the one class with a listener restriction.
-		cfg.SessionAdmitsPeer = func(id, remoteAddr string) bool {
+		sessionAuthorityForTest(cfg).admits = func(id, remoteAddr string) bool {
 			if id != admissionLocalSessionID {
 				return true
 			}
@@ -463,7 +464,7 @@ func TestBootstrapPlantsTheLocalChannelForLoopbackPeersOnly(t *testing.T) {
 // connection either, so off-host peers are refused rather than admitted
 // unattributable.
 func TestUpgradeRefusesEveryNonLoopbackPeerWithNoSessionResolver(t *testing.T) {
-	f := newAdmissionFixtureWith(t, func(cfg *Config) { cfg.SessionForRequest = nil })
+	f := newAdmissionFixtureWith(t, func(cfg *Config) { sessionAuthorityForTest(cfg).resolve = nil })
 
 	if got := f.dial(t, f.remote, "token=admission-token", sessionHeader()); got != http.StatusNotFound {
 		t.Fatalf("upgrade status = %d, want %d", got, http.StatusNotFound)

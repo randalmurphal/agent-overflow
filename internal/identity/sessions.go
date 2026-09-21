@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,25 +30,17 @@ type LiveConns interface {
 	CloseSession(sessionID string) int
 }
 
-// Sessions is the session core: it mints credentials, verifies a
-// presentation against both halves of a session, answers the per-RPC
-// liveness question, and revokes.
-//
-// Both halves, always. A presentation is admitted only when the signed
-// claims verify AND the database row is live. Neither alone is enough: a
-// valid signature over a revoked session admits nothing, and a live row
-// nobody can produce a signature for admits nobody.
-//
-// This coexists with internal/transport's launch Credential and replaces
-// none of it. The launch credential is one per-process token for the local
-// page; this is the durable, per-device, revocable one. Phase 3 migrates
-// the wire onto this core; until then nothing routes through it, which is
-// why nothing here reaches into the transport package.
+// Sessions owns admission, credential issuance, renewal, and revocation.
+// Paired clients present signed timed claims; the local channel presents the
+// current service's boot secret. Both require live session and device rows.
 type Sessions struct {
-	ownMu     sync.Mutex
-	store     *store.Store
-	backendID string
-	now       func() time.Time
+	localMu         sync.Mutex
+	localCredential string
+	localSessionID  string
+	ownMu           sync.Mutex
+	store           *store.Store
+	backendID       string
+	now             func() time.Time
 
 	mu sync.RWMutex
 	// live is the per-RPC fast path: the in-memory session table the spec
@@ -196,6 +189,9 @@ func (s *Sessions) Mint(req MintRequest) (store.Session, string, error) {
 	if !req.BindingClass.Valid() {
 		return store.Session{}, "", fmt.Errorf("identity: %q is not a declared binding class", string(req.BindingClass))
 	}
+	if req.BindingClass == BindingLoopbackOnly {
+		return store.Session{}, "", fmt.Errorf("identity: local credentials require EnsureLocalChannelSession")
+	}
 	if req.TTL <= 0 {
 		return store.Session{}, "", fmt.Errorf("identity: session ttl %s is not positive", req.TTL)
 	}
@@ -262,6 +258,9 @@ func (s *Sessions) Mint(req MintRequest) (store.Session, string, error) {
 // upgrade, a ticket redemption. The per-RPC path is Live, which re-reads
 // liveness without re-verifying a MAC.
 func (s *Sessions) Verify(credential string) (store.Session, Reason) {
+	if strings.HasPrefix(credential, localCredentialPrefix) {
+		return s.verifyLocal(credential)
+	}
 	if credential == "" {
 		return store.Session{}, ReasonMissingProof
 	}
@@ -285,7 +284,11 @@ func (s *Sessions) Verify(credential string) (store.Session, Reason) {
 	if reason := verified.withinWindow(s.now().UnixMilli()); reason.Refused() {
 		return store.Session{}, reason
 	}
-	return s.Live(verified.claims.SessionID)
+	session, refusal := s.Live(verified.claims.SessionID)
+	if !refusal.Refused() && session.BindingClass == string(BindingLoopbackOnly) {
+		return store.Session{}, ReasonInvalidSignature
+	}
+	return session, refusal
 }
 
 // Live answers the per-RPC question: does this session id still admit a
@@ -352,7 +355,7 @@ func (s *Sessions) Live(sessionID string) (store.Session, Reason) {
 	if reason.Refused() {
 		return store.Session{}, reason
 	}
-	if session.ExpiresAt <= now {
+	if session.Expired(now) {
 		return store.Session{}, ReasonExpiredSession
 	}
 
@@ -381,7 +384,7 @@ func (s *Sessions) confirmedSession(sessionID string, now int64) (store.Session,
 	}
 	if err != nil {
 		log.Printf("identity: read session %s: %v", sessionID, err)
-		return store.Session{}, ReasonUnknownSession
+		return store.Session{}, ReasonTemporarilyUnavailable
 	}
 	if session.RevokedAt != 0 {
 		return store.Session{}, ReasonRevokedSession
@@ -398,7 +401,7 @@ func (s *Sessions) confirmedSession(sessionID string, now int64) (store.Session,
 	// "expired" says. Only a session still inside its window has a
 	// confirmation worth waiting for.
 	if session.AwaitingConfirmation() {
-		if session.ExpiresAt <= now {
+		if session.Expired(now) {
 			return store.Session{}, ReasonExpiredSession
 		}
 		return store.Session{}, ReasonPendingConfirmation

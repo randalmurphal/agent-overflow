@@ -449,8 +449,7 @@ func (a *App) ForgetAccessDevice(deviceID string) error {
 //
 // Refused for the local page channel on the same grounds as
 // RevokeAccessDevice, resolved through the session's device row: the
-// channel's session is re-minted at boot, so revoking it mid-run would
-// close the host's own window until a restart.
+// local channel provides the host's access and has no pairing recovery flow.
 //
 //ao:scope access:admin
 //ao:route home
@@ -537,7 +536,7 @@ func presentableSession(session store.Session, now int64) bool {
 	if session.Live(now) {
 		return true
 	}
-	if session.AwaitingConfirmation() && session.ExpiresAt > now {
+	if session.AwaitingConfirmation() && !session.Expired(now) {
 		return true
 	}
 	return survivedRevocation(session, now)
@@ -552,7 +551,7 @@ func presentableSession(session store.Session, now int64) bool {
 // so it is untidy rather than reachable, and calling it an anomaly would
 // train the owner to ignore the one that is.
 func survivedRevocation(session store.Session, now int64) bool {
-	return session.DeviceRevokedAt > 0 && session.RevokedAt == 0 && session.ExpiresAt > now
+	return session.DeviceRevokedAt > 0 && session.RevokedAt == 0 && !session.Expired(now)
 }
 
 // pendingPairings lists the links the owner can still act on.
