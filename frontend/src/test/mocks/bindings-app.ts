@@ -770,3 +770,7 @@ export const RegisterOwnDevice = dispatch('RegisterOwnDevice');
 export const RemoveOwnDevice = dispatch('RemoveOwnDevice');
 
 export const ReportNativeNetworkState = dispatch('ReportNativeNetworkState');
+
+export const ListAsyncQuestions = dispatch('ListAsyncQuestions');
+export const SubmitAsyncAnswers = dispatch('SubmitAsyncAnswers');
+export const SetAsyncQuestionDismissed = dispatch('SetAsyncQuestionDismissed');

@@ -698,6 +698,9 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 		return 0, HistoryStamp{}, fmt.Errorf("store: begin delete conversation from turn tx: %w", err)
 	}
 	defer tx.Rollback()
+	if err := cutAsyncQuestionsTx(tx, threadID, "turn_index >= ?", []any{fromTurnIndex}); err != nil {
+		return 0, HistoryStamp{}, err
+	}
 	sharedDeleted, err := deleteSharedHistoryWhereTx(tx, threadID, "turn_index >= ?", []any{fromTurnIndex})
 	if err != nil {
 		return 0, HistoryStamp{}, err
@@ -832,6 +835,9 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, H
 		).Scan(&deletedTurnContent); err != nil {
 			return nil, HistoryStamp{}, fmt.Errorf("store: probe deleted turn content for thread %s: %w", threadID, err)
 		}
+	}
+	if err := cutAsyncQuestionsTx(tx, threadID, itemPredicate, itemArgs[1:]); err != nil {
+		return nil, HistoryStamp{}, err
 	}
 	if _, err := deleteSharedHistoryWhereTx(tx, threadID, itemPredicate, itemArgs[1:]); err != nil {
 		return nil, HistoryStamp{}, err

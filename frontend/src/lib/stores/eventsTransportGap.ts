@@ -1,3 +1,4 @@
+import { refreshAsyncQuestions } from './asyncQuestions.svelte';
 import { refreshTimelineSurfaces } from './timelineSurfaces';
 import type { EventOrigin } from '../transport/handle';
 import { backendKeyForOrigin } from '../transport/backends';
@@ -151,6 +152,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }, origin?
 
 function applySettledTransportGap(gap: { channel: string; seq: number }, origin?: EventOrigin): void {
   if (!gap || typeof gap.channel !== 'string') return;
+  if (gap.channel === 'user_message:reverted') refreshAsyncQuestions(undefined, backendKeyForOrigin(origin?.backendId ?? ''));
   // The workflow channels, caught by PREFIX so a channel added later cannot
   // reach the unknown-channel default (which refreshes panes and leaves every
   // workflow surface exactly as stale as it was) — but routed to the
@@ -163,6 +165,9 @@ function applySettledTransportGap(gap: { channel: string; seq: number }, origin?
     return;
   }
   switch (gap.channel) {
+    case 'provider:async_questions_changed':
+      refreshAsyncQuestions(undefined, backendKeyForOrigin(origin?.backendId ?? ''));
+      return;
     case 'backend:attach':
     case 'backend:set-changed':
       // A missing membership event cannot be repaired by reading thread

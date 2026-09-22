@@ -318,6 +318,92 @@ export class ActivityRunStub {
     }
 }
 
+export class AsyncQuestion {
+    "itemId": string;
+    "index": number;
+    "title": string;
+    "options": string[];
+    "state": string;
+    "answer": string;
+    "sendId": string;
+    "userItemId": string;
+    "createdAt": number;
+
+    /** Creates a new AsyncQuestion instance. */
+    constructor($$source: Partial<AsyncQuestion> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("index" in $$source)) {
+            this["index"] = 0;
+        }
+        if (!("title" in $$source)) {
+            this["title"] = "";
+        }
+        if (!("options" in $$source)) {
+            this["options"] = [];
+        }
+        if (!("state" in $$source)) {
+            this["state"] = "";
+        }
+        if (!("answer" in $$source)) {
+            this["answer"] = "";
+        }
+        if (!("sendId" in $$source)) {
+            this["sendId"] = "";
+        }
+        if (!("userItemId" in $$source)) {
+            this["userItemId"] = "";
+        }
+        if (!("createdAt" in $$source)) {
+            this["createdAt"] = 0;
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AsyncQuestion instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AsyncQuestion {
+        const $$createField3_0 = $$createType5;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("options" in $$parsedSource) {
+            $$parsedSource["options"] = $$createField3_0($$parsedSource["options"]);
+        }
+        return new AsyncQuestion($$parsedSource as Partial<AsyncQuestion>);
+    }
+}
+
+export class AsyncQuestionAnswer {
+    "itemId": string;
+    "index": number;
+    "answer": string;
+
+    /** Creates a new AsyncQuestionAnswer instance. */
+    constructor($$source: Partial<AsyncQuestionAnswer> = {}) {
+        if (!("itemId" in $$source)) {
+            this["itemId"] = "";
+        }
+        if (!("index" in $$source)) {
+            this["index"] = 0;
+        }
+        if (!("answer" in $$source)) {
+            this["answer"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new AsyncQuestionAnswer instance from a string or object.
+     */
+    static createFrom($$source: any = {}): AsyncQuestionAnswer {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new AsyncQuestionAnswer($$parsedSource as Partial<AsyncQuestionAnswer>);
+    }
+}
+
 /**
  * Attachment is the persisted metadata for a file attached to a thread.
  */

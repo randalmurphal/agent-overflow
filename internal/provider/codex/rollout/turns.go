@@ -397,6 +397,9 @@ func (c *converter) closeUnresolvedTools(at time.Time) {
 			continue
 		}
 		unresolved++
+		if isAsyncQuestionTool(tool.rawToolName) {
+			c.exposeAsyncQuestionTool(tool)
+		}
 		c.emit(provider.ProviderEvent{
 			Kind:      provider.EventToolComplete,
 			TurnID:    tool.turnID,

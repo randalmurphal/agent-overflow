@@ -19,11 +19,20 @@ func (s *Store) exportTransferAnnotations(ctx context.Context, threadID string, 
 	if err := exportTransferRows(ctx, s.reader(), output, "plan_comment", `SELECT `+proposedPlanCommentColumns+` FROM proposed_plan_comments WHERE thread_id = ? ORDER BY id`, threadID, scanProposedPlanComment); err != nil {
 		return err
 	}
+	if err := exportTransferRows(ctx, s.reader(), output, "async_question", `SELECT `+asyncQuestionColumns+` FROM async_questions WHERE thread_id=? ORDER BY created_at,rowid`, threadID, func(row interface{ Scan(...any) error }) (AsyncQuestion, error) { return scanAsyncQuestion(row) }); err != nil {
+		return err
+	}
 	return exportTransferRows(ctx, s.reader(), output, "diff_comment", `SELECT `+transferDiffCommentColumns+` FROM diff_review_comments WHERE thread_id = ? ORDER BY id`, threadID, scanDiffReviewComment)
 }
 
 func importTransferAnnotation(tx *sql.Tx, targetID, sourceID string, record transferHistoryRecord) error {
 	switch record.Kind {
+	case "async_question":
+		var q AsyncQuestion
+		if err := json.Unmarshal(record.Data, &q); err != nil {
+			return err
+		}
+		return insertAsyncQuestionStateTx(tx, targetID, q)
 	case "plan":
 		var p ProposedPlanState
 		if err := json.Unmarshal(record.Data, &p); err != nil {

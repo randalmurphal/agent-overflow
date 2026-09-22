@@ -160,6 +160,7 @@ const (
 	ProviderTurnCompleted          Channel = "provider:turn_completed"
 	ProviderTurnStarted            Channel = "provider:turn_started"
 	ProviderUsage                  Channel = "provider:usage"
+	ProviderAsyncQuestionsChanged  Channel = "provider:async_questions_changed"
 	ProviderUserInput              Channel = "provider:user_input"
 )
 

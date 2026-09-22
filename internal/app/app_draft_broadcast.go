@@ -120,3 +120,14 @@ func (a *App) writeRecoveredThreadDraft(who transport.ClientIdentity, recovery s
 	a.broadcastDraft(who, DraftUpdatedEvent{ThreadID: recovery.ThreadID, UpdatedAt: merged.UpdatedAt})
 	return true, nil
 }
+
+func (a *App) writeRestoredQueueDraft(expected, merged store.ThreadDraft, queueIDs []string) error {
+	changed, err := a.store.RestoreFlushQueueToDraft(expected, merged, queueIDs)
+	if err != nil {
+		return err
+	}
+	if changed {
+		a.broadcastDraft(transport.ClientIdentity{}, DraftUpdatedEvent{ThreadID: merged.ThreadID, UpdatedAt: merged.UpdatedAt})
+	}
+	return nil
+}

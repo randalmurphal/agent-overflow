@@ -49,6 +49,9 @@ func (c *converter) convertEventMsg(env envelope) {
 		if c.paginated {
 			return
 		}
+		if c.isAsyncQuestionMirror(env.Payload) {
+			return
+		}
 		var p agentMessagePayload
 		if json.Unmarshal(env.Payload, &p) != nil {
 			c.corrupt++

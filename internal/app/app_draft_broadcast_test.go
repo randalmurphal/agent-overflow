@@ -177,8 +177,9 @@ func TestOnlyTheDraftHelpersWriteDrafts(t *testing.T) {
 		remove = "DeleteThreadDraft"
 	)
 	allowed := map[string]string{
-		upsert: "writeThreadDraft",
-		remove: "removeThreadDraft",
+		upsert:                     "writeThreadDraft",
+		remove:                     "removeThreadDraft",
+		"RestoreFlushQueueToDraft": "writeRestoredQueueDraft",
 	}
 	for name, file := range parsePackageFiles(t, appPackageDir) {
 		for _, decl := range file.Decls {
@@ -232,8 +233,9 @@ func TestDraftBroadcastHasOneEmitSite(t *testing.T) {
 	}
 	slices.Sort(emitters)
 	emitters = slices.Compact(emitters)
-	if !slices.Equal(emitters, []string{"removeThreadDraft", "writeRecoveredThreadDraft", "writeThreadDraft"}) {
-		t.Fatalf("broadcastDraft callers = %v, want exactly [removeThreadDraft writeRecoveredThreadDraft writeThreadDraft]", emitters)
+	want := []string{"removeThreadDraft", "writeRecoveredThreadDraft", "writeRestoredQueueDraft", "writeThreadDraft"}
+	if !slices.Equal(emitters, want) {
+		t.Fatalf("broadcastDraft callers = %v, want exactly %v", emitters, want)
 	}
 }
 

@@ -4,6 +4,8 @@
   import APIErrorRow from './APIErrorRow.svelte';
   import APIRetryRow from './APIRetryRow.svelte';
   import AssistantMessage from './AssistantMessage.svelte';
+  import RenderBoundary from '../shared/RenderBoundary.svelte';
+  import AsyncQuestionCard from './AsyncQuestionCard.svelte';
   import CompactionDivider from './CompactionDivider.svelte';
   import CompactionReasoning from './CompactionReasoning.svelte';
   import CommandResultRow from './CommandResultRow.svelte';
@@ -128,6 +130,8 @@
     <CompactionDivider {pane} item={displayItem} />
   {:else if isGeneratedImage}
     <GeneratedImageMessage {pane} item={displayItem} {onImageExpand} />
+  {:else if displayItem.kind === 'assistant_text' && Array.isArray(parseJsonObject(displayItem.meta)?.questions)}
+    <RenderBoundary label="Agent questions" testId="async-question-card-error"><AsyncQuestionCard item={displayItem} workspacePath={pane.thread?.worktreePath || pane.thread?.workspacePath || ''} /></RenderBoundary>
   {:else}
     <AssistantMessage {pane} item={displayItem} />
   {/if}

@@ -199,6 +199,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1602023272: 'thread', // ListActivityRunMembers
 	2526318276: 'selected', // ListAgentComputers
 	2451527188: 'all', // ListArchivedThreads
+	3128666716: 'thread', // ListAsyncQuestions
 	1730798413: 'thread', // ListAttachments
 	2556802234: 'selected', // ListAvailableEditors
 	130055792: 'home', // ListBackends
@@ -339,6 +340,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	1407159655: 'thread', // SendPlanRevisionComments
 	1204782690: 'selected', // SetAgentComputerEnabled
 	3167202905: 'home', // SetAppearance
+	4291273674: 'thread', // SetAsyncQuestionDismissed
 	2813580982: 'home', // SetChatBarFavorite
 	2755315818: 'home', // SetDeviceName
 	3655340267: 'selected', // SetEditorSettings
@@ -369,6 +371,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	4232843083: 'thread', // StopCodexSubagent
 	3838500111: 'thread', // StopSession
 	2155771620: 'thread', // StopThreadBackgroundWork
+	1219107798: 'thread', // SubmitAsyncAnswers
 	2692607191: 'selected', // SubmitPRReview
 	3556446736: 'home', // SubmitProviderLoginCode
 	3272491649: 'selected', // SubscribePRUpdates

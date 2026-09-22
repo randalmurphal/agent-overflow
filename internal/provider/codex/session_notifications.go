@@ -284,6 +284,16 @@ func (s *Session) classifyAndEmitNotification(
 	if !handled {
 		s.warnUnclaimedNotification(method)
 	}
+	if method == "serverRequest/resolved" {
+		// The notification carries no request kind or answers. The registry
+		// routes it to the right prompt and ignores echoes of our own response.
+		for _, event := range events {
+			if released, pending := s.approvals.Cancel(event.ItemID); pending {
+				s.resolveDrainedApproval(released, "lost", false)
+			}
+		}
+		return
+	}
 	if method == "thread/queue/changed" {
 		// Once AO participates in the provider queue, its OWN adds, edits,
 		// deletes and every automatic dispatch raise this notification too, so

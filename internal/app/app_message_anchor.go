@@ -4,6 +4,7 @@ import (
 	"log"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
 )
@@ -17,6 +18,7 @@ import (
 // ForkThreadFromMessage both synthesize from the item row when no
 // anchor exists).
 func (a *App) recordMessageAnchor(userItem store.Item) {
+	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": userItem.ThreadID})
 	anchor := store.MessageAnchor{
 		ThreadID:   userItem.ThreadID,
 		UserItemID: userItem.ID,

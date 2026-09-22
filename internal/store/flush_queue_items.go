@@ -72,6 +72,58 @@ func (s *Store) DeleteFlushQueueItem(id string) error {
 	return nil
 }
 
+// DeleteDispatchedFlushQueueItem retires a successful provider write. Async
+// answers retain recovery until a stable user-message echo confirms consumption.
+func (s *Store) DeleteDispatchedFlushQueueItem(id string) error {
+	_, err := s.db.Exec(`DELETE FROM flush_queue_items WHERE id=? AND NOT EXISTS (
+ SELECT 1 FROM async_questions q WHERE q.thread_id=flush_queue_items.thread_id
+ AND q.send_id<>'' AND q.send_id=flush_queue_items.send_id AND q.state='submitted')`, id)
+	return err
+}
+
+// RestoreFlushQueueToDraft commits a merged composer and retires its queue
+// records together. A failure cannot leave text that a later restore duplicates.
+func (s *Store) RestoreFlushQueueToDraft(expected, merged ThreadDraft, ids []string) (bool, error) {
+	if merged.ThreadID == "" || expected.ThreadID != merged.ThreadID {
+		return false, fmt.Errorf("queue restoration requires matching draft threads")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	current, _, err := getThreadDraft(tx, merged.ThreadID)
+	if err != nil {
+		return false, err
+	}
+	if current != expected {
+		return false, fmt.Errorf("composer changed during queue restoration; queue retained")
+	}
+	changed, err := upsertThreadDraft(tx, merged)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		var owner string
+		err := tx.QueryRow(`SELECT thread_id FROM flush_queue_items WHERE id=?`, id).Scan(&owner)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+		if owner != "" && owner != merged.ThreadID {
+			return false, fmt.Errorf("queue item belongs to another thread")
+		}
+		if _, err := tx.Exec(`UPDATE async_questions SET state='restored',user_item_id=''
+ WHERE state='submitted' AND send_id<>'' AND (thread_id,send_id) IN
+ (SELECT thread_id,send_id FROM flush_queue_items WHERE id=?)`, id); err != nil {
+			return false, err
+		}
+		if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE id=?`, id); err != nil {
+			return false, err
+		}
+	}
+	return changed, tx.Commit()
+}
+
 // DeleteFlushQueueItemsForThread drops every queued message of one thread.
 // Its callers are the wholesale DROPS — a session teardown whose triage
 // cleanup discards the in-memory queue, and the Codex rollback purge — where
@@ -81,10 +133,20 @@ func (s *Store) DeleteFlushQueueItemsForThread(threadID string) error {
 	if strings.TrimSpace(threadID) == "" {
 		return nil
 	}
-	if _, err := s.db.Exec(`DELETE FROM flush_queue_items WHERE thread_id = ?`, threadID); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE async_questions SET state='unanswered',answer='',send_id='',user_item_id=''
+      WHERE thread_id=? AND state='submitted' AND send_id<>'' AND send_id IN
+      (SELECT send_id FROM flush_queue_items WHERE thread_id=? AND send_id<>'')`, threadID, threadID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM flush_queue_items WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("store: delete flush queue items for thread %s: %w", threadID, err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 // ListFlushQueueItems returns one thread's queued messages in queue order.

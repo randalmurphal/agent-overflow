@@ -918,6 +918,7 @@ var channelPolicies = []ChannelPolicy{
 			"consumption. Pinned by TestEventVisibleToOrigin. Keyed by " +
 			"provider/account/limit — never latest-only.",
 	},
+	{Channel: eventchan.ProviderAsyncQuestionsChanged, Audience: AudienceAny, Retention: RetentionDefault, Scope: ScopeThreadsRead, Why: "Invalidates durable async question state for the owning thread."},
 	{
 		Channel:   eventchan.ProviderUserInput,
 		Audience:  AudienceAny,

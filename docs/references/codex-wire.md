@@ -312,6 +312,35 @@ not checked in per the rule below):
 - `inputTokens` includes `cachedInputTokens` on the live wire
   (in=12039, cached=9600, out=5, total=12044).
 
+### Asynchronous questions
+
+Codex 0.153.1 `request_user_input_async` emits an `agentMessage` with
+`delivery: "async"` and `questions: [{title, options?: string[]}]`. Both
+`item/started` and `item/completed` contain the full question list, with the
+call ID as the item ID. AO creates the structured question card on the start
+and deduplicates completion. The tool immediately returns `{"accepted":true}`;
+answers are new user messages through AO's durable send queue, using
+`turn/steer` while active and a new turn after completion. They are not replies
+to a JSON-RPC server request. Plain async prose has no `questions` field and
+keeps its existing interim presentation.
+
+Pending questions persist independently of turn and provider lifetime.
+Imported history renders question cards without assuming they remain pending;
+the user can explicitly reopen them. The picker combines pending questions,
+retains drafts by question identity, and submits a fixed answered subset. An
+answer remains recoverable until a stable user-message echo confirms delivery.
+Legacy rollout `agent_message` mirrors carry the questions but omit the call ID;
+AO reconstructs their one card from the accepted raw call and skips that mirror.
+
+The blocking `item/tool/requestUserInput` request remains a separate protocol.
+AO imposes no question timeout, including when `isBlocking:false`. It waits
+for user input or explicit provider/session cancellation. A frontend reload or
+connection loss does not cancel the provider's request.
+
+Sources at rust-v0.153.1: [`request_user_input_async.rs`](https://github.com/openai/codex/blob/rust-v0.153.1/codex-rs/core/src/tools/handlers/request_user_input_async.rs),
+[`legacy_events.rs`](https://github.com/openai/codex/blob/rust-v0.153.1/codex-rs/protocol/src/legacy_events.rs),
+and [rollout persistence policy](https://github.com/openai/codex/blob/rust-v0.153.1/codex-rs/rollout/src/policy.rs).
+
 ### Server requests (approvals, tool-user-input, elicitation)
 
 Approvals arrive as **server requests** (with a JSON-RPC `id`), not as

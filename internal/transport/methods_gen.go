@@ -228,6 +228,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "ListActivityRunMembers", ID: 1602023272, Scope: "threads:read", Route: "thread"},                         // main.App.ListActivityRunMembers
 	{Name: "ListAgentComputers", ID: 2526318276, Scope: "terminal:operate", Route: "selected"},                       // main.App.ListAgentComputers
 	{Name: "ListArchivedThreads", ID: 2451527188, Scope: "threads:read", Route: "all"},                               // main.App.ListArchivedThreads
+	{Name: "ListAsyncQuestions", ID: 3128666716, Scope: "threads:read", Route: "thread"},                             // main.App.ListAsyncQuestions
 	{Name: "ListAttachments", ID: 1730798413, Scope: "threads:read", Route: "thread"},                                // main.App.ListAttachments
 	{Name: "ListAvailableEditors", ID: 2556802234, Scope: "settings:read", Route: "selected"},                        // main.App.ListAvailableEditors
 	{Name: "ListBackends", ID: 130055792, Scope: "host", Route: "home"},                                              // main.App.ListBackends
@@ -368,6 +369,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "SendPlanRevisionComments", ID: 1407159655, Scope: "threads:operate", Route: "thread"},                    // main.App.SendPlanRevisionComments
 	{Name: "SetAgentComputerEnabled", ID: 1204782690, Scope: "terminal:operate", Route: "selected"},                  // main.App.SetAgentComputerEnabled
 	{Name: "SetAppearance", ID: 3167202905, Scope: "host", Route: "home"},                                            // main.App.SetAppearance
+	{Name: "SetAsyncQuestionDismissed", ID: 4291273674, Scope: "threads:operate", Route: "thread"},                   // main.App.SetAsyncQuestionDismissed
 	{Name: "SetChatBarFavorite", ID: 2813580982, Scope: "settings:write", Route: "home"},                             // main.App.SetChatBarFavorite
 	{Name: "SetDeviceName", ID: 2755315818, Scope: "access:admin", Route: "home"},                                    // main.App.SetDeviceName
 	{Name: "SetEditorSettings", ID: 3655340267, Scope: "settings:write", Route: "selected"},                          // main.App.SetEditorSettings
@@ -398,6 +400,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "StopCodexSubagent", ID: 4232843083, Scope: "threads:operate", Route: "thread"},                           // main.App.StopCodexSubagent
 	{Name: "StopSession", ID: 3838500111, Scope: "threads:operate", Route: "thread"},                                 // main.App.StopSession
 	{Name: "StopThreadBackgroundWork", ID: 2155771620, Scope: "threads:operate", Route: "thread"},                    // main.App.StopThreadBackgroundWork
+	{Name: "SubmitAsyncAnswers", ID: 1219107798, Scope: "threads:operate", Route: "thread"},                          // main.App.SubmitAsyncAnswers
 	{Name: "SubmitPRReview", ID: 2692607191, Scope: "git:operate", Route: "selected"},                                // main.App.SubmitPRReview
 	{Name: "SubmitProviderLoginCode", ID: 3556446736, Scope: "access:admin", Route: "home"},                          // main.App.SubmitProviderLoginCode
 	{Name: "SubscribePRUpdates", ID: 3272491649, Scope: "git:operate", Route: "selected"},                            // main.App.SubscribePRUpdates

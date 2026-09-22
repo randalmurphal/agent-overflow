@@ -69,6 +69,17 @@ func classifyItemNotification(threadID, method string, params json.RawMessage, n
 		itemID := readNestedString(params, "item", "id")
 		itemType := classifyCodexItemType(params)
 		switch itemType {
+		case "agentMessage", "assistantMessage":
+			var envelope struct {
+				Item map[string]json.RawMessage `json:"item"`
+			}
+			if err := json.Unmarshal(params, &envelope); err != nil {
+				return []provider.ProviderEvent{{Kind: provider.EventError, ThreadID: threadID, Content: "decode assistant message: " + err.Error()}}, true
+			}
+			if questions, exists := envelope.Item["questions"]; exists && string(questions) != "null" {
+				return []provider.ProviderEvent{{Kind: provider.EventContentBlockStart, ThreadID: threadID, TurnID: readTopLevelString(params, "turnId"), ItemID: itemID, Meta: agentMessageBlockMeta(envelope.Item), Timestamp: now}}, true
+			}
+			return nil, true
 		case "enteredReviewMode":
 			review := readNestedString(params, "item", "review")
 			return []provider.ProviderEvent{{
@@ -849,10 +860,14 @@ var defaultAgentMessageBlockMeta = json.RawMessage(`{"blockType":"text"}`)
 // agentMessage, adding `delivery` only when the wire stated one.
 func agentMessageBlockMeta(item map[string]json.RawMessage) json.RawMessage {
 	delivery := strings.TrimSpace(readRawString(item, "delivery"))
-	if delivery == "" {
+	if delivery == "" && len(item["questions"]) == 0 {
 		return defaultAgentMessageBlockMeta
 	}
-	meta, err := json.Marshal(map[string]string{"blockType": "text", "delivery": delivery})
+	fields := map[string]any{"blockType": "text", "delivery": delivery}
+	if questions, ok := item["questions"]; ok {
+		fields["questions"] = questions
+	}
+	meta, err := json.Marshal(fields)
 	if err != nil {
 		return defaultAgentMessageBlockMeta
 	}

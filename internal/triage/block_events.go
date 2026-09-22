@@ -7,6 +7,9 @@ import (
 )
 
 func (r *Router) handleContentBlockStart(evt provider.ProviderEvent) error {
+	if handled, err := r.handleAsyncQuestions(evt); handled || err != nil {
+		return err
+	}
 	// Parent-content resume re-round (Claude 2.1.154+): a parent
 	// content block starting while the logical turn is already settled
 	// and no round is open means the model emitted a soft round-close
@@ -31,6 +34,9 @@ func (r *Router) handleContentBlockStart(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) handleContentBlockStop(evt provider.ProviderEvent) error {
+	if handled, err := r.handleAsyncQuestions(evt); handled || err != nil {
+		return err
+	}
 	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
 		return err

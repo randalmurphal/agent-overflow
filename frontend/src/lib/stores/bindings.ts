@@ -1079,3 +1079,6 @@ export function GetThreadUserMessageTicks(threadId: string, selection: TimelineS
     ? GetTimelineUserMessageTicksRaw(threadId, selection)
     : GetThreadUserMessageTicksRaw(threadId);
 }
+
+export { ListAsyncQuestions, SubmitAsyncAnswers, SetAsyncQuestionDismissed } from '../../../bindings/agent-overflow/app.js';
+export { AsyncQuestion, AsyncQuestionAnswer } from '../../../bindings/agent-overflow/internal/store/models';

@@ -327,6 +327,9 @@ func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep 
 		}
 	}
 
+	if err := cloneAsyncQuestionsTx(tx, sourceThreadID, targetThreadID, idMap); err != nil {
+		return nil, err
+	}
 	if err := cloneAttachmentOwnersTx(tx, sourceThreadID, targetThreadID); err != nil {
 		return nil, err
 	}

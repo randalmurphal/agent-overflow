@@ -132,6 +132,9 @@ func (c *converter) startToolCall(env envelope) {
 		c.agentParents[ownership.agentPath] = ref
 	}
 
+	if isAsyncQuestionTool(tool.rawToolName) {
+		return
+	}
 	c.emit(provider.ProviderEvent{
 		Kind:      provider.EventToolStart,
 		TurnID:    turnID,
@@ -308,6 +311,9 @@ func (c *converter) completeToolCall(env envelope) {
 	}
 	status := strings.TrimSpace(p.Status)
 	isError := p.Success != nil && !*p.Success
+	if c.completeAsyncQuestionTool(tool, output, isError) {
+		return
+	}
 	c.finishTool(tool, output, status, isError)
 }
 
@@ -318,6 +324,9 @@ func (c *converter) finishTool(tool *openTool, output, itemStatus string, isErro
 }
 
 func (c *converter) finishToolAt(tool *openTool, output, itemStatus string, isError bool, at time.Time) {
+	if isAsyncQuestionTool(tool.rawToolName) {
+		c.exposeAsyncQuestionTool(tool)
+	}
 	meta := map[string]any{"toolName": tool.toolName}
 	if len(tool.input) > 0 {
 		meta["input"] = json.RawMessage(tool.input)

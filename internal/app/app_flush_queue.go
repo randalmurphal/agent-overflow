@@ -1032,24 +1032,13 @@ type injectedQueueOptions struct {
 	originThread *usermessage.OriginThread
 }
 
-// flushQueueSettlement is the dispatch-or-restore hook every queued message
-// carries: it deletes the message's durable row, then runs whatever
-// bookkeeping an injector added.
-//
-// The row's whole life is "registered, not yet anywhere else", so the two
-// moments that end it are exactly the two a FlushSettlement already models —
-// a successful provider write, and a session-death restore into the composer
-// draft. Composing here rather than deleting at those two call sites is what
-// makes the delete exactly-once when they race, and what keeps a future third
-// endpoint from having to remember this table.
-//
-// A delete that fails is logged and not surfaced: the message has already
-// been dispatched or restored, so the boot sweep may
-// restore it into the composer once, which is recoverable in a way that
-// failing a delivered send is not.
+// flushQueueSettlement runs injector bookkeeping once after dispatch or draft
+// restoration. Async answers retain their durable queue row until the provider
+// echoes consumption; restoration retires it atomically with the draft write.
+// A failed dispatch cleanup keeps its recovery record and is logged.
 func (a *App) flushQueueSettlement(threadID, id string, onDurable func()) *triage.FlushSettlement {
 	return triage.NewFlushSettlement(func() {
-		if err := a.store.DeleteFlushQueueItem(id); err != nil {
+		if err := a.store.DeleteDispatchedFlushQueueItem(id); err != nil {
 			log.Printf("flush queue: delete durable row %s/%s: %v", threadID, id, err)
 		}
 		if onDurable != nil {
@@ -1067,6 +1056,7 @@ func (a *App) dropDurableFlushQueue(threadID string) {
 	if err := a.store.DeleteFlushQueueItemsForThread(threadID); err != nil {
 		log.Printf("flush queue: drop durable rows for thread %s: %v", threadID, err)
 	}
+	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 }
 
 // registerQueueItem is RegisterQueueItem plus the injected-message axes.

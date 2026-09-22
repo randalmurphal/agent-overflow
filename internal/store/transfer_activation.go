@@ -119,7 +119,7 @@ func replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, target Thread,
 	// Preserve the parent row: deleting/recreating it would silently null
 	// other local threads' fork links and cascade unrelated host records.
 	// Attachments also remain: a local fork may still reference an old upload.
-	for _, table := range []string{"thread_import_chunks", "thread_import_item_overrides", "items", "payloads", "turns", "message_anchors", "proposed_plans", "diff_review_comments", "thread_drafts", "pending_background_task_terminals", "flush_queue_items"} {
+	for _, table := range []string{"thread_import_chunks", "thread_import_item_overrides", "items", "payloads", "turns", "message_anchors", "async_questions", "proposed_plans", "diff_review_comments", "thread_drafts", "pending_background_task_terminals", "flush_queue_items"} {
 		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE thread_id = ?`, target.ID); err != nil {
 			return err
 		}

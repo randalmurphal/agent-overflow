@@ -484,11 +484,8 @@ func parseUserInputQuestions(params json.RawMessage) []provider.UserInputQuestio
 // from a client that predates the field keeps its blocking meaning. AO mirrors
 // that: an absent or malformed key reads as blocking.
 //
-// `false` means the turn continues while the question is outstanding — the
-// model is not parked on the answer. It replaces the deprecated
-// `autoResolutionMs`, which AO never read. No UX change hangs off it yet;
-// it is decoded and logged so a non-blocking request is visible in the log
-// rather than silently rendered as a turn-blocking prompt.
+// false permits client-side auto-resolution. The provider still awaits a
+// response; AO does not impose an answer deadline on either variant.
 func parseUserInputIsBlocking(params json.RawMessage) bool {
 	var payload struct {
 		IsBlocking *bool `json:"isBlocking"`

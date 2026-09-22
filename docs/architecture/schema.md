@@ -109,6 +109,7 @@ atomic revocation.
 
 | Tables | Ownership and key constraints |
 |---|---|
+| `async_questions` | Durable question and answer state keyed by thread, prompt item, and question index. Prompt text and options survive history-cache pruning. Submission claims questions and queues their user message atomically; user-item insert/meta-update triggers mark echoed answers delivered and retire their recovery queue rows. Restoration commits the draft, question state, and queue removal atomically. Pending questions have no expiry. Explicit history cuts remove prompts or reopen removed answers; forks and transfers carry their surviving state. |
 | `flush_queue_items` | Messages accepted by the UI while a turn blocks dispatch. The row may be the only durable copy. Successful provider dispatch or restoration into the composer removes it. Boot restores remaining rows to drafts and does not redispatch them. `send_id` supports idempotency but is empty for internal injection. |
 | `thread_transfers` | Move/copy journal, ownership epoch, sealed-manifest identity, retries, cancellation, and cleanup status. It intentionally has no thread foreign key so history deletion cannot erase ownership. Pending incoming rows reserve their project. |
 | `thread_transfer_sessions` | Native provider-session closure reserved by a transfer. The latest non-canceled reservation fences execution and import independently of cached AO history. |

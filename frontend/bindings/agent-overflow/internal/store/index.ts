@@ -6,6 +6,8 @@ export {
     ActivityRunGroupKey,
     ActivityRunMembers,
     ActivityRunStub,
+    AsyncQuestion,
+    AsyncQuestionAnswer,
     Attachment,
     ChannelMessage,
     ChatBarFavorite,

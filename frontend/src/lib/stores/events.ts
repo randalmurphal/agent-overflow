@@ -1,3 +1,4 @@
+import { refreshAsyncQuestions } from './asyncQuestions.svelte';
 import { invalidateClaudeProbeCommands } from './providerCommands.svelte';
 import { installComputerHydration } from './computerHydration';
 // Composition root for backend event wiring. `setupEventListeners()` is the
@@ -240,6 +241,7 @@ export function setupEventListeners(): () => void {
   // `notification:send`. It subscribes to nothing on a loopback page or in
   // the native shell, where a presenter already exists.
   const cancelBrowserNotifications = startBrowserNotificationPresenter();
+  const cancelAsyncQuestions = wailsEventOn<{ threadId: string }>('provider:async_questions_changed', (evt, origin) => { if (evt?.threadId) refreshAsyncQuestions(evt.threadId, backendKeyForOrigin(origin.backendId)); });
   const cancelUserInput = wailsEventOn<UserInputEvent>('provider:user_input', applyUserInputEvent);
 
   const cancelUsage = wailsEventOn<UsageEvent>('provider:usage', (evt, origin) => applyUsageEvent(evt, backendKeyForOrigin(origin.backendId)));
@@ -498,7 +500,7 @@ export function setupEventListeners(): () => void {
 
   const cancelUserMessageReverted = wailsEventOn<UserMessageRevertedEvent | null>(
     'user_message:reverted',
-    applyUserMessageReverted,
+    (evt) => { applyUserMessageReverted(evt); if (evt?.threadId) refreshAsyncQuestions(evt.threadId); },
   );
 
   // The row's own backend is learned HERE and not inside the applier: the
@@ -722,6 +724,7 @@ export function setupEventListeners(): () => void {
     cancelBrowserNotifications();
     cancelNotificationSoundUnlock();
     cancelUserInput();
+    cancelAsyncQuestions();
     cancelUsage();
     cancelModelFallback();
     cancelProviderStatus();

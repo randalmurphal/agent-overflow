@@ -9,6 +9,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
+	"agent-overflow/internal/userquestion"
 )
 
 // blocks.go — the streaming-block family: the assistant_text and thinking
@@ -170,6 +171,26 @@ func (b *builder) streamBlock(evt importir.Event, kind string) error {
 // which is what makes two consecutive agent messages two rows, as they are
 // live.
 func (b *builder) contentBlockStop(evt importir.Event) error {
+	if meta, structured, err := userquestion.Decode(evt.Meta); err != nil {
+		return err
+	} else if structured {
+		if evt.ItemID == "" {
+			return fmt.Errorf("async question has no provider item identity")
+		}
+		now, err := timestamp(evt)
+		if err != nil {
+			return err
+		}
+		meta.BlockType = ""
+		meta.ProviderItemID = evt.ItemID
+		raw, err := json.Marshal(meta)
+		if err != nil {
+			return err
+		}
+		_, err = b.appendRow(evt, store.Item{ID: userquestion.ItemID(evt.ItemID), TurnIndex: b.turns.currentFor(evt), Kind: kindAssistantText, Role: "assistant", Status: statusCompleted, Summary: userquestion.Summary(meta.Questions), ParentID: strings.TrimSpace(evt.ParentToolUseID), Meta: string(raw), CreatedAt: now, UpdatedAt: now}, nil, nil)
+		return err
+	}
+
 	kind, typed := settledBlockKind(evt.Meta)
 	if !typed {
 		// Claude's wire omits the type and triage resolves it from the

@@ -25,6 +25,8 @@
   import { activityRailChipClasses, activityRailRowClasses } from './activityRailClasses';
   import ComposerWorkspaceStrip from './ComposerWorkspaceStrip.svelte';
   import ComposerPendingApprovalPanel from './ComposerPendingApprovalPanel.svelte';
+  import RenderBoundary from '../shared/RenderBoundary.svelte';
+  import AsyncQuestionPicker from './AsyncQuestionPicker.svelte';
   import ComposerPendingUserInputPanel from './ComposerPendingUserInputPanel.svelte';
   import { deriveComposerInputState } from './composerInputState';
   import {
@@ -996,6 +998,11 @@
     ondragleave={(event) => surface?.handleDragLeave(event)}
     ondrop={(event) => surface?.handleDrop(event)}
   >
+    {#if pane.threadId && pane.thread?.provider === 'codex'}
+      <RenderBoundary label="Agent questions" testId="async-question-error">
+      {#key pane.threadId}<AsyncQuestionPicker threadId={pane.threadId} workspacePath={paneWorkspacePath(pane)} />{/key}
+      </RenderBoundary>
+    {/if}
     {#if railVisible}
       <ActivityRail
         {pane}

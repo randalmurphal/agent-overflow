@@ -176,6 +176,7 @@ export function seedSidebarProject(threads: Thread[]): Project {
 // $effect. Tests that switch into a thread need these mocked even if they
 // don't assert on git UI.
 export function installThreadViewDefaults(): void {
+  setBindingMock('ListAsyncQuestions', async () => []);
   setBindingMock('SwitchThread', async (threadId: unknown) => {
     const id = typeof threadId === 'string' ? threadId : 'thread-1';
     const listedThread = getThreads().find((thread) => thread.id === id);

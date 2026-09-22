@@ -145,8 +145,9 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeathIf(
 		}
 	}
 	if len(parts) > 0 {
-		if _, err := a.mergeAndUpsertThreadDraft(threadID, parts); err != nil {
+		if err := a.restoreQueuedDraft(threadID, parts, queueItemIDs); err != nil {
 			log.Printf("flush queue: restore draft after session death for %s: %v", threadID, err)
+			a.emitWireErrorToThread(threadID, "Could not restore queued messages: "+err.Error())
 			// The quiet rows behind these items are already deleted, so
 			// the requeued entries carry deferred semantics — the retained
 			// copies supply message and payload; nothing references a
@@ -159,6 +160,7 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeathIf(
 	for _, settlement := range settlements {
 		settlement.Settle()
 	}
+	a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 
 	a.emitQueueStateChanged(threadID)
 	a.emit(eventchan.ProviderQueueRestored, QueueRestoredEvent{
@@ -578,20 +580,20 @@ func (a *App) restoreDurableFlushQueueAtBoot() {
 			}
 			parts = append(parts, part)
 		}
-		if len(parts) > 0 {
-			if _, err := a.mergeAndUpsertThreadDraft(threadID, parts); err != nil {
-				// Leave the rows alone: the next boot tries again, which is
-				// the whole point of the message being durable.
-				log.Printf("flush queue: restore queued messages into the draft for thread %s at boot: %v", threadID, err)
-				continue
-			}
+		ids := make([]string, 0, len(rows))
+		for _, row := range rows {
+			ids = append(ids, row.ID)
+		}
+		if err := a.restoreQueuedDraft(threadID, parts, ids); err != nil {
+			// Leave the rows alone: the next boot tries again, which is
+			// the whole point of the message being durable.
+			log.Printf("flush queue: restore queued messages into the draft for thread %s at boot: %v", threadID, err)
+			continue
 		}
 		for _, row := range rows {
-			if err := a.store.DeleteFlushQueueItem(row.ID); err != nil {
-				log.Printf("flush queue: delete restored row %s/%s at boot: %v", threadID, row.ID, err)
-			}
 			noteThreadWakeRestoredToDraft(a, row.SendID)
 		}
+		a.emit(eventchan.ProviderAsyncQuestionsChanged, map[string]string{"threadId": threadID})
 		log.Printf("app: restored %d queued message(s) into the composer for thread %s", len(rows), threadID)
 	}
 }

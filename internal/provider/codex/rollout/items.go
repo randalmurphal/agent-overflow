@@ -32,8 +32,9 @@ import (
 //
 // ## What is NOT emitted here, and why
 //
-// UserMessage, HookPrompt, AgentMessage and Reasoning are recognised and
-// SKIPPED. Their content is already in the file as `response_item` lines,
+// UserMessage, HookPrompt, ordinary AgentMessage and Reasoning are recognised
+// and SKIPPED. Structured async questions are emitted from their typed item;
+// the other content is already in the file as `response_item` lines,
 // which `should_persist_response_item` persists unconditionally in BOTH
 // modes, and the mirror is the better source in every case:
 //
@@ -111,6 +112,10 @@ func (c *converter) applyItemCompleted(env envelope) {
 		}
 		name = mapped
 	}
+	if name == "agentmessage" && c.applyAsyncQuestionItem(p.Item) {
+		return
+	}
+
 	switch name {
 	// --- content the `response_item` mirror already owns (see the file
 	// comment). Recognised and dropped, never counted as unknown.
