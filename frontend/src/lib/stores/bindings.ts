@@ -48,6 +48,7 @@ export {
   BindThreadTransferDestination,
   CreateThreadTransferOffer,
   GetThreadTransfers,
+  GetThreadTransferStatus,
   GetThreadTransferIntent,
   RetryThreadTransfer,
   CancelThreadTransfer,

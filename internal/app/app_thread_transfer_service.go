@@ -54,7 +54,7 @@ func (a *App) startThreadTransfers() error {
 		return nil
 	}
 	root := filepath.Join(a.configDir, "conversation-transfers")
-	source, err := threadtransfer.NewSource(a.store, root, a.snapshotThreadTransfer)
+	source, err := threadtransfer.NewSource(a.store, root, a.snapshotThreadTransfer, a.finalizeTransferredDraft)
 	if err != nil {
 		return err
 	}

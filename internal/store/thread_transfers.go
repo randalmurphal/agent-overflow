@@ -152,11 +152,20 @@ func (s *Store) GetThreadTransfer(id string) (ThreadTransfer, error) {
 	return scanThreadTransfer(s.reader().QueryRow(`SELECT `+transferColumns+` FROM thread_transfers WHERE id = ?`, id))
 }
 
+// GetThreadTransferStatus reads one operation without loading its private archive
+// or draft metadata. It remains available after it leaves the recent list.
+func (s *Store) GetThreadTransferStatus(id string) (ThreadTransfer, error) {
+	row, err := scanThreadTransfer(s.reader().QueryRow(`SELECT `+transferStatusColumns+` FROM thread_transfers WHERE id = ?`, id))
+	row.PeerState = nil
+	return row, err
+}
+
+const transferStatusColumns = `id,thread_id,target_thread_id,peer_backend_id,kind,direction,phase,manifest_hash,archive_size,'',x'',CASE WHEN peer_state IS NULL THEN NULL ELSE x'7b7d' END,cancel_requested,ownership_epoch,error,created_at,updated_at,''`
+
 // ListRecentThreadTransfers contains no private state and bounds both row count
 // and query payload. Pending operations sort first so failures remain visible.
 func (s *Store) ListRecentThreadTransfers() ([]ThreadTransfer, error) {
-	rows, err := s.reader().Query(`SELECT id,thread_id,target_thread_id,peer_backend_id,kind,direction,phase,manifest_hash,archive_size,'',x'',CASE WHEN peer_state IS NULL THEN NULL ELSE x'7b7d' END,cancel_requested,ownership_epoch,error,created_at,updated_at,''
-FROM thread_transfers ORDER BY phase NOT IN ('complete','canceled') DESC,updated_at DESC,id LIMIT 100`)
+	rows, err := s.reader().Query(`SELECT ` + transferStatusColumns + ` FROM thread_transfers ORDER BY phase NOT IN ('complete','canceled') DESC,updated_at DESC,id LIMIT 100`)
 	if err != nil {
 		return nil, err
 	}

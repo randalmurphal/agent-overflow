@@ -305,6 +305,16 @@ func (a *App) ListWorkspaceMcpServers(providerName, workspacePath string) ([]Thr
 //ao:stepup
 func (a *App) SetThreadMcpServerEnabled(threadID, name string, enabled bool) error {
 	if isAppManagedMCPServer(name) {
+		unlock, err := a.threadLocks().LockCtx(a.lifeCtx(), threadID)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		unlockMutable, err := a.threadApplication().LockMutable(a.lifeCtx(), threadID)
+		if err != nil {
+			return err
+		}
+		defer unlockMutable()
 		thread, err := a.store.GetThread(threadID)
 		if err != nil {
 			return err

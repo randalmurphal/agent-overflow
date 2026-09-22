@@ -22,6 +22,7 @@ export function draftProjectMoveFlow(): void {
         projectId: seed.projects[0].projectId, title: 'Portable draft', provider: 'claude', model: 'claude-sonnet-4-6', mode: 'plan', reasoningEffort: 'high', runtimeMode: 'read-only',
       });
       if (worktree) source = await harness.rpc<ThreadRow>('PrepareThreadWorktree', source.id, '', 'draft-feature', false);
+      await harness.rpc('SetThreadMcpServerEnabled', source.id, 'ao-thread-tools', false);
       await harness.rpc('SaveDraft', source.id, 'Move this prompt', [], [{ id: 'capture', label: 'shell', preview: 'captured', content: 'captured terminal output', createdAt: 1 }], null);
       await harness.open(page);
       await page.getByTestId('thread-row-title').filter({ hasText: /^Portable draft$/ }).click();
@@ -55,6 +56,7 @@ export function draftProjectMoveFlow(): void {
       expect(target).toBeDefined();
       expect(target).toMatchObject({ provider: source.provider, model: source.model, mode: source.mode, reasoningEffort: source.reasoningEffort, runtimeMode: source.runtimeMode, workspacePath: seed.projects[1].path });
       expect(target.worktreePath || '').toBe('');
+      expect(await harness.rpc<Array<{ name: string; disabled: boolean }>>('ListThreadMcpServers', target.id)).toContainEqual(expect.objectContaining({ name: 'ao-thread-tools', disabled: true }));
       const draft = await harness.rpc<DraftRow>('GetDraft', target.id);
       expect(draft.attachmentIds).toHaveLength(2);
       expect(draft.terminalChips).toEqual([expect.objectContaining({ content: 'captured terminal output' })]);
@@ -81,4 +83,41 @@ export function draftProjectMoveFlow(): void {
       await expect(page.locator('[role="alert"].text-error')).toHaveCount(0);
     });
   }
+
+  test('an empty worktree draft carries its conversation settings before the first prompt', async ({ harness, page }) => {
+    const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+      projects: [
+        { name: 'Empty draft source', repo: { commits: [{ files: { 'README.md': 'source' } }] } },
+        { name: 'Empty draft destination', repo: { commits: [{ files: { 'README.md': 'target' } }] } },
+      ],
+    });
+    const source = await harness.rpc<ThreadRow>('CreateThread', {
+      projectId: seed.projects[0].projectId, title: 'Empty portable draft', provider: 'claude', model: 'claude-sonnet-4-6', mode: 'chat',
+    });
+    await harness.rpc('PrepareThreadWorktree', source.id, '', 'empty-draft', false);
+    await harness.rpc('SetThreadMcpServerEnabled', source.id, 'ao-thread-tools', false);
+    await harness.rpc('SaveDraft', source.id, 'Temporary prompt', [], [], null);
+    await harness.open(page);
+    await page.getByTestId('thread-row-title').filter({ hasText: /^Empty portable draft$/ }).click();
+    const input = page.getByRole('textbox', { name: 'Message Input', exact: true });
+    await expect(input).toHaveValue('Temporary prompt');
+    await input.fill('');
+    await expect.poll(() => harness.rpc<DraftRow>('GetDraft', source.id)).toMatchObject({ content: '' });
+    await page.getByTestId('chat-header-project').click();
+    await page.getByRole('menuitem', { name: /Empty draft destination/ }).click();
+    await expect(page.getByTestId('chat-header-project')).toHaveText('Empty draft destination');
+    await input.fill('The first prompt keeps the selected tools');
+    await expect.poll(async () => {
+      const rows = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
+      const target = rows.find((row) => row.projectId === seed.projects[1].projectId);
+      if (!target) return null;
+      return harness.rpc<DraftRow>('GetDraft', target.id);
+    }).toMatchObject({ content: 'The first prompt keeps the selected tools' });
+    const rows = await harness.rpc<ThreadRow[]>('HarnessListThreadRows');
+    const target = rows.find((row) => row.projectId === seed.projects[1].projectId)!;
+    expect(await harness.rpc<Array<{ name: string; disabled: boolean }>>('ListThreadMcpServers', target.id))
+      .toContainEqual(expect.objectContaining({ name: 'ao-thread-tools', disabled: true }));
+    expect(await harness.rpc<DraftRow>('GetDraft', source.id)).toMatchObject({ content: '', attachmentIds: [] });
+  });
+
 }

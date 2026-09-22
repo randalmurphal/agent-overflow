@@ -34,6 +34,10 @@ type SourceData struct {
 // This runs on the host after both ends are authorized, not in a frontend RPC.
 type SourceSnapshotter func(context.Context, store.ThreadTransfer, string) (transferwire.Upload, error)
 
+// SourceFinalizer releases application-owned source resources after completion.
+// It must be idempotent; an error leaves cleanup scheduled across restarts.
+type SourceFinalizer func(context.Context, store.ThreadTransfer) error
+
 // ErrPending means the peer accepted asynchronous preparation. Keep showing
 // transfer progress and retry through the app-owned job's ordinary backoff.
 var ErrPending = errors.New("transfer: waiting for destination preparation")
@@ -59,13 +63,14 @@ type Source struct {
 	slots    chan struct{}
 	peer     func(transferclient.Offer) (sourcePeer, error)
 	snapshot SourceSnapshotter
+	finalize SourceFinalizer
 }
 
-func NewSource(st *store.Store, root string, snapshot SourceSnapshotter) (*Source, error) {
-	if st == nil || !filepath.IsAbs(root) {
-		return nil, errors.New("transfer: missing source store or operations directory")
+func NewSource(st *store.Store, root string, snapshot SourceSnapshotter, finalize SourceFinalizer) (*Source, error) {
+	if st == nil || !filepath.IsAbs(root) || finalize == nil {
+		return nil, errors.New("transfer: missing source store, operations directory, or finalizer")
 	}
-	return &Source{store: st, root: root, locks: keyedlock.New(), slots: make(chan struct{}, 4), snapshot: snapshot,
+	return &Source{store: st, root: root, locks: keyedlock.New(), slots: make(chan struct{}, 4), snapshot: snapshot, finalize: finalize,
 		peer: func(offer transferclient.Offer) (sourcePeer, error) { return transferclient.New(offer) }}, nil
 }
 
@@ -93,6 +98,11 @@ func (s *Source) Run(ctx context.Context, id string) (result store.ThreadTransfe
 	}
 	defer func() {
 		if runErr == nil && (result.Phase == "complete" || result.Phase == "canceled") {
+			if result.Phase == "complete" {
+				if runErr = s.finalize(ctx, result); runErr != nil {
+					return
+				}
+			}
 			runErr = cleanupTransfer(ctx, s.store, s.root, result)
 		}
 	}()

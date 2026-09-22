@@ -173,7 +173,7 @@ func sourceFixture(t *testing.T, kind string, large bool, hostSnapshot ...bool) 
 	if _, err := st.BindThreadTransferPeer(row.ID, offer); err != nil {
 		t.Fatal(err)
 	}
-	source, err := NewSource(st, root, nil)
+	source, err := NewSource(st, root, nil, func(context.Context, store.ThreadTransfer) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func resumeSource(t *testing.T, previous *Source, peer *sourceTestPeer) *Source 
 		t.Fatal(err)
 	}
 	previous.store, peer.store = opened, opened
-	resumed, err := NewSource(previous.store, previous.root, previous.snapshot)
+	resumed, err := NewSource(previous.store, previous.root, previous.snapshot, previous.finalize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,5 +343,33 @@ func TestSourceRefusesAnUnexpectedPeerSnapshotOrEarlyActivation(t *testing.T) {
 				t.Fatalf("unexpected peer changed source ownership: %+v %v", pending, err)
 			}
 		})
+	}
+}
+
+func TestSourceFinalizationFailureRemainsRecoverableAfterRestart(t *testing.T) {
+	source, row, peer := sourceFixture(t, "copy", false)
+	attempts := 0
+	source.finalize = func(context.Context, store.ThreadTransfer) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("source files unavailable")
+		}
+		return nil
+	}
+	completed, err := source.Run(t.Context(), row.ID)
+	if err == nil || completed.Phase != "complete" {
+		t.Fatalf("completion: %+v %v", completed, err)
+	}
+	jobs, err := source.store.NextThreadTransferJobs(10)
+	if err != nil || len(jobs) != 1 || jobs[0].ID != row.ID {
+		t.Fatalf("cleanup lost: %+v %v", jobs, err)
+	}
+	source = resumeSource(t, source, peer)
+	if _, err := source.Run(t.Context(), row.ID); err != nil {
+		t.Fatal(err)
+	}
+	jobs, err = source.store.NextThreadTransferJobs(10)
+	if err != nil || len(jobs) != 0 || attempts != 2 || peer.activations != 1 {
+		t.Fatalf("recovery: %+v %v, finalizations %d activations %d", jobs, err, attempts, peer.activations)
 	}
 }

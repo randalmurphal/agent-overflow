@@ -562,7 +562,7 @@ func TestSourceAndDestinationHandoffThroughRealHTTP(t *testing.T) {
 	if _, err := sourceStore.BindThreadTransferArchive(row.ID, f.upload); err != nil {
 		t.Fatal(err)
 	}
-	source, err := NewSource(sourceStore, root, nil)
+	source, err := NewSource(sourceStore, root, nil, func(context.Context, store.ThreadTransfer) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}

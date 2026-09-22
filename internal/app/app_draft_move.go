@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtransfer"
 )
 
 // MoveDraftToThread moves a saved composer into an empty destination on this
@@ -18,6 +19,11 @@ import (
 //
 //ao:scope threads:operate
 func (a *App) MoveDraftToThread(ctx context.Context, threadID, destinationThreadID string, snapshot DraftSnapshot) (result Draft, err error) {
+	release, err := a.workAdmission.begin(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer release()
 	if threadID == destinationThreadID || threadID == "" || destinationThreadID == "" {
 		return result, errors.New("Choose a different draft destination.")
 	}
@@ -103,6 +109,7 @@ func (a *App) MoveDraftToThread(ctx context.Context, threadID, destinationThread
 		return result, err
 	}
 	committed = true
+	a.applyDraftMCPPreferences(destinationThreadID, a.draftMCPPreferences(threadID))
 	for _, id := range originalAttachments {
 		if cleanupErr := a.attachments.Delete(threadID, id); cleanupErr != nil {
 			log.Printf("draft move: clean up source attachment %s: %v", id, cleanupErr)
@@ -111,15 +118,28 @@ func (a *App) MoveDraftToThread(ctx context.Context, threadID, destinationThread
 	return a.GetDraft(destinationThreadID)
 }
 
+// Finalization runs before the durable cleanup acknowledgment so failed file
+// cleanup remains scheduled after disconnects and host restarts.
+func (a *App) finalizeTransferredDraft(ctx context.Context, row store.ThreadTransfer) error {
+	var source threadtransfer.SourceData
+	if err := json.Unmarshal(row.PrivateState, &source); err != nil {
+		return err
+	}
+	if source.DraftToConsume == nil {
+		return nil
+	}
+	return a.cleanupMovedDraftAttachments(ctx, *source.DraftToConsume)
+}
+
 // A completed remote move may race with new work in the emptied source.
 // Release only attachments that still belong to an unsent, unreferencing draft.
-func (a *App) cleanupMovedDraftAttachments(moved store.ThreadDraft) error {
-	unlock, err := a.threadLocks().LockCtx(a.lifeCtx(), moved.ThreadID)
+func (a *App) cleanupMovedDraftAttachments(ctx context.Context, moved store.ThreadDraft) error {
+	unlock, err := a.threadLocks().LockCtx(ctx, moved.ThreadID)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	unlockMutations, err := a.threadApplication().LockMutable(a.lifeCtx(), moved.ThreadID)
+	unlockMutations, err := a.threadApplication().LockMutable(ctx, moved.ThreadID)
 	if err != nil {
 		return err
 	}

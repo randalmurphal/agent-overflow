@@ -7,13 +7,21 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
+	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/testutil"
 	"github.com/google/uuid"
 )
 
 func TestDraftProjectTransferCompletesWithoutFrontendOrProvider(t *testing.T) {
+	for _, providerName := range []string{"claude", "codex"} {
+		t.Run(providerName, func(t *testing.T) { testDraftProjectTransfer(t, providerName) })
+	}
+}
+
+func testDraftProjectTransfer(t *testing.T, providerName string) {
 	source := transferTestBackend(t)
 	destination := transferTestBackend(t, func(context.Context, string) error { return errors.New("a draft must not require a provider account") })
 	project, err := source.store.CreateProject(store.Project{ID: uuid.NewString(), Name: "Source", Path: testutil.InitGitRepo(t)})
@@ -26,10 +34,24 @@ func TestDraftProjectTransferCompletesWithoutFrontendOrProvider(t *testing.T) {
 	}
 	worktree := filepath.Join(t.TempDir(), "draft-worktree")
 	testutil.RunGit(t, project.Path, "worktree", "add", "-b", "draft-work", worktree)
-	thread := store.Thread{ID: uuid.NewString(), ProjectID: project.ID, Title: "Draft", Mode: "plan", Provider: "claude", Model: "claude-sonnet-4-6", ReasoningEffort: "high", RuntimeMode: "read-only", WorkspacePath: worktree, WorktreePath: worktree}
+	model := "claude-sonnet-4-6"
+	if providerName == "codex" {
+		model = "gpt-5.4"
+	}
+	thread := store.Thread{ID: uuid.NewString(), ProjectID: project.ID, Title: "Draft", Mode: "plan", Provider: providerName, Model: model, ReasoningEffort: "high", RuntimeMode: "read-only", WorkspacePath: worktree, WorktreePath: worktree}
 	if err := source.store.CreateThread(thread); err != nil {
 		t.Fatal(err)
 	}
+	for _, app := range []*App{source, destination} {
+		app.browser.mcp = appbrowser.NewMCPServer(nil, true)
+		t.Cleanup(func() {
+			if err := app.browser.mcp.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	preferences := draftMCPPreferences{}
+	source.applyDraftMCPPreferences(thread.ID, preferences)
 	file := uploadTestAttachment(t, source, thread.ID, "draft.txt", "text/plain", []byte("portable file"))
 	chips := []TerminalChip{{ID: "capture", Label: "shell", Content: "portable terminal output", Preview: "output", CreatedAt: 1}}
 	plan := &SourceProposedPlan{ThreadID: "original-plan", ItemID: "plan-item", Title: "Original plan"}
@@ -44,6 +66,15 @@ func TestDraftProjectTransferCompletesWithoutFrontendOrProvider(t *testing.T) {
 	intent, err := source.BeginDraftProjectTransfer(ctx, thread.ID, operation, destinationID, snapshot)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if err := source.SetThreadMcpServerEnabled(thread.ID, threadMCPName, true); err == nil {
+		t.Fatal("accepted changed tool settings while transferring")
+	}
+	if _, err := source.GetThreadTransferStatus("wrong-thread", operation); err == nil {
+		t.Error("exposed another thread transfer status")
+	}
+	if status, err := source.GetThreadTransferStatus(thread.ID, operation); err != nil || status.ID != operation || len(status.PrivateState) != 0 {
+		t.Fatalf("status: %+v %v", status, err)
 	}
 	before, err := source.GetDraft(thread.ID)
 	if err != nil || !reflect.DeepEqual(before.SourceProposedPlan, plan) {
@@ -68,6 +99,9 @@ func TestDraftProjectTransferCompletesWithoutFrontendOrProvider(t *testing.T) {
 	cancel()
 	awaitTransferPhase(t, source, operation, "complete")
 	awaitTransferPhase(t, destination, operation, "complete")
+	if got := destination.draftMCPPreferences(intent.TargetThreadID); got != preferences {
+		t.Fatalf("transferred tool preferences: %+v", got)
+	}
 	got, err := destination.GetDraft(intent.TargetThreadID)
 	if err != nil || got.Content != snapshot.Content || !reflect.DeepEqual(got.TerminalChips, chips) || len(got.AttachmentIDs) != 1 || got.SourceProposedPlan != nil {
 		t.Fatalf("destination: %+v %v", got, err)
@@ -80,12 +114,19 @@ func TestDraftProjectTransferCompletesWithoutFrontendOrProvider(t *testing.T) {
 	if err != nil || string(data) != "portable file" {
 		t.Fatalf("file: %q %v", data, err)
 	}
-	completed, err := source.store.GetThreadTransfer(operation)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := source.announceTransferredDraft(completed); err != nil {
-		t.Fatal(err)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		jobs, err := source.store.NextThreadTransferJobs(10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(jobs) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("source cleanup did not finish: %+v", jobs)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	leftover, err := source.ListAttachments(thread.ID)
 	if err != nil || len(leftover) != 0 {

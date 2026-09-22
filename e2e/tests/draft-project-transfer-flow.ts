@@ -20,6 +20,7 @@ export function draftProjectTransferFlow(): void {
       const from = await source.rpc<Seed>('HarnessSeed', { projects: [{ name: 'Draft home project', repo: { commits: [{ files: { 'README.md': 'Source repository' } }] } }] });
       const to = await target.rpc<Seed>('HarnessSeed', { projects: [{ name: 'Draft remote project', repo: { commits: [{ files: { 'README.md': 'Destination repository' } }] } }] });
       const original = await source.rpc<Thread>('CreateThread', { projectId: from.projects[0].projectId, title: 'Moving draft', provider: 'claude', model: 'claude-sonnet-4-6', mode: 'plan', runtimeMode: 'read-only' });
+      await source.rpc('SetThreadMcpServerEnabled', original.id, 'ao-thread-tools', false);
       const ids: string[] = [];
       for (const [name, mime, bytes] of [['image.png', 'image/png', PNG_BYTES], ['notes.txt', 'text/plain', Buffer.from('draft file')]] as const) {
         const ticket = await source.rpc<string>('MintAttachmentUploadTicket', original.id, name, mime, bytes.length);
@@ -52,6 +53,7 @@ export function draftProjectTransferFlow(): void {
       const rows = await target.rpc<Thread[]>('HarnessListThreadRows');
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ projectId: to.projects[0].projectId, workspacePath: to.projects[0].path, mode: original.mode, model: original.model, runtimeMode: original.runtimeMode });
+      expect(await target.rpc<Array<{ name: string; disabled: boolean }>>('ListThreadMcpServers', rows[0].id)).toContainEqual(expect.objectContaining({ name: 'ao-thread-tools', disabled: true }));
       const moved = await target.rpc<Draft>('GetDraft', rows[0].id);
       expect(moved.attachmentIds).toHaveLength(2);
       expect(moved.terminalChips).toEqual([expect.objectContaining({ content: 'captured output' })]);

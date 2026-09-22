@@ -57,6 +57,15 @@ beforeEach(async () => {
 afterEach(async () => { dispose(); await draft.setThread(null); pane.clear(); resetWorktreeIntents(); });
 
 describe('draft project moves', () => {
+  it('moves a saved empty draft through the backend so its conversation settings travel', async () => {
+    draft.setContent('');
+    const placeholder = vi.fn();
+    const move = setBindingMock('MoveDraftToThread', async () => empty(destination.id));
+    expect(await moveDraftProject(pane, project, placeholder)).toBe(true);
+    expect(move).toHaveBeenCalledWith(source.id, destination.id, expect.objectContaining({ content: '' }));
+    expect(placeholder).not.toHaveBeenCalled();
+  });
+
   it('retains the empty source with staged worktree settings and starts a normal destination', async () => {
     setThreadEnvMode(source, 'new-worktree');
     const remove = setBindingMock('DeleteEmptyDraftThread', async () => true);

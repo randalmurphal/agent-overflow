@@ -40,9 +40,10 @@ type ThreadTransferIntent struct {
 }
 
 type transferSourceDetails struct {
-	Provider         string `json:"provider"`
-	RuntimeMode      string `json:"runtimeMode"`
-	IncludeWorkspace bool   `json:"includeWorkspace"`
+	DraftMCP         *draftMCPPreferences `json:"draftMcp,omitempty"`
+	Provider         string               `json:"provider"`
+	RuntimeMode      string               `json:"runtimeMode"`
+	IncludeWorkspace bool                 `json:"includeWorkspace"`
 }
 
 type transferDestinationDetails struct {
@@ -152,6 +153,10 @@ func (a *App) beginThreadTransfer(ctx context.Context, threadID, operationID, de
 		}
 	}
 	details := transferSourceDetails{Provider: thread.Provider, RuntimeMode: thread.RuntimeMode, IncludeWorkspace: includeWorkspace}
+	if draft != nil {
+		preferences := a.draftMCPPreferences(threadID)
+		details.DraftMCP = &preferences
+	}
 	encoded, err := json.Marshal(details)
 	if err != nil {
 		return ThreadTransferIntent{}, err
@@ -342,53 +347,6 @@ func (a *App) BindThreadTransferDestination(ctx context.Context, threadID string
 		a.emit(eventchan.ThreadTransfer, row)
 	}
 	return row, err
-}
-
-// GetThreadTransfers returns a bounded recent status list on this computer.
-//
-//ao:scope threads:read
-//ao:route selected
-func (a *App) GetThreadTransfers() ([]store.ThreadTransfer, error) {
-	return a.store.ListRecentThreadTransfers()
-}
-
-// GetThreadTransferDestinationProject recovers an accepted destination choice
-// after a lost offer response. It returns no transfer grant or private paths.
-// An empty answer means this computer has not accepted the offer yet.
-//
-//ao:scope threads:operate
-//ao:route selected
-func (a *App) GetThreadTransferDestinationProject(operationID string) (string, error) {
-	row, err := a.store.GetThreadTransfer(operationID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	var data threadtransfer.DestinationData
-	var details transferDestinationDetails
-	if row.Direction != "incoming" || json.Unmarshal(row.PrivateState, &data) != nil || json.Unmarshal(data.Details, &details) != nil {
-		return "", errors.New("This computer is not the destination of that transfer.")
-	}
-	return details.ProjectID, nil
-}
-
-// GetThreadTransferIntent recovers the public half of an interrupted two-host
-// setup. It never exposes the source's activation secret.
-//
-//ao:scope threads:operate
-func (a *App) GetThreadTransferIntent(threadID, operationID string) (ThreadTransferIntent, error) {
-	row, err := a.store.GetThreadTransfer(operationID)
-	if err != nil {
-		return ThreadTransferIntent{}, err
-	}
-	var data threadtransfer.SourceData
-	var details transferSourceDetails
-	if row.Direction != "outgoing" || row.ThreadID != threadID || json.Unmarshal(row.PrivateState, &data) != nil || json.Unmarshal(data.Details, &details) != nil {
-		return ThreadTransferIntent{}, errors.New("This computer is not the source of that transfer.")
-	}
-	return a.transferIntent(row, details), nil
 }
 
 // RetryThreadTransfer wakes a durable operation without minting another copy.

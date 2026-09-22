@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -45,10 +46,11 @@ func (s *Store) MoveThreadDraft(expected, destination ThreadDraft) error {
 	if expected.ThreadID == "" || destination.ThreadID == "" || expected.ThreadID == destination.ThreadID {
 		return errors.New("draft move requires two different threads")
 	}
-	tx, err := s.db.Begin()
+	tx, release, err := s.beginDurableTx(context.Background())
 	if err != nil {
 		return err
 	}
+	defer release()
 	defer tx.Rollback()
 	for _, id := range []string{expected.ThreadID, destination.ThreadID} {
 		if err := checkThreadTransferAccess(tx, id); err != nil {

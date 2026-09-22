@@ -99,13 +99,16 @@ var serverCapabilities = []string{
 // so the frozen prefix's bytes are byte-identical either way.
 var serverCapabilitiesWithBrowser = append(slices.Clone(serverCapabilities), CapabilityBrowser)
 
-var serverCapabilitiesWithTransfers = append(slices.Clone(serverCapabilities), CapabilityConversationTransfer, CapabilityDraftProjectTransfer)
-var serverCapabilitiesWithBrowserAndTransfers = append(slices.Clone(serverCapabilitiesWithBrowser), CapabilityConversationTransfer, CapabilityDraftProjectTransfer)
+var serverCapabilitiesWithTransfers = append(slices.Clone(serverCapabilities), CapabilityConversationTransfer, CapabilityDraftProjectTransfer, CapabilityDraftProjectTransferV2)
+var serverCapabilitiesWithBrowserAndTransfers = append(slices.Clone(serverCapabilitiesWithBrowser), CapabilityConversationTransfer, CapabilityDraftProjectTransfer, CapabilityDraftProjectTransferV2)
 
 // CapabilityConversationTransfer names the complete v1 offer/upload/ownership
 // wire contract. Only listeners with an app handoff adapter advertise it.
 const CapabilityConversationTransfer = "conversation.transfer.v1"
 const CapabilityDraftProjectTransfer = "draft.project-transfer.v1"
+
+// CapabilityDraftProjectTransferV2 adds exact operation status and per-thread MCP choices.
+const CapabilityDraftProjectTransferV2 = "draft.project-transfer.v2"
 
 const CapabilityRemoteCommands = "commands.remote.v1"
 

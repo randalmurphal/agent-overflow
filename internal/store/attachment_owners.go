@@ -14,29 +14,35 @@ func (s *Store) OwnsAttachment(threadID, id string) (bool, error) {
 	return owned, nil
 }
 
-// ReleaseAttachment removes one ownership edge. It reports whether the
-// last owner released the asset, so the file owner can remove its bytes.
-func (s *Store) ReleaseAttachment(threadID, id string) (bool, error) {
+// ReleaseAttachment removes an ownership edge and, for the last owner, its
+// backing file. Failed file removal rolls back metadata so cleanup can retry.
+// removeBytes must not call back into the store while the writer is held.
+func (s *Store) ReleaseAttachment(threadID, id string, removeBytes func() error) error {
+	if removeBytes == nil {
+		return fmt.Errorf("store: attachment removal requires file cleanup")
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return false, err
+		return err
 	}
 	defer tx.Rollback()
 	result, err := tx.Exec(`DELETE FROM attachment_owners WHERE thread_id=? AND attachment_id=?`, threadID, id)
 	if err != nil {
-		return false, fmt.Errorf("store: release attachment: %w", err)
+		return fmt.Errorf("store: release attachment: %w", err)
 	}
 	if err := requireRowsAffected(result, "store: release attachment"); err != nil {
-		return false, err
+		return err
 	}
 	var retained bool
 	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM attachments WHERE id=?)`, id).Scan(&retained); err != nil {
-		return false, err
+		return err
 	}
-	if err := tx.Commit(); err != nil {
-		return false, err
+	if !retained {
+		if err := removeBytes(); err != nil {
+			return err
+		}
 	}
-	return !retained, nil
+	return tx.Commit()
 }
 
 func cloneAttachmentOwnersTx(tx *sql.Tx, source, target string) error {

@@ -218,6 +218,11 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 	}
 	assertCapabilities(t, serverCapabilities, want)
 	assertCapabilities(t, serverCapabilitiesWithBrowser, append(append([]string{}, want...), "browser"))
+	for _, browser := range []bool{false, true} {
+		base := advertisedCapabilities(func() bool { return browser }, false, false, false)
+		withTransfers := advertisedCapabilities(func() bool { return browser }, true, false, false)
+		assertCapabilities(t, withTransfers, append(slices.Clone(base), "conversation.transfer.v1", "draft.project-transfer.v1", "draft.project-transfer.v2"))
+	}
 }
 
 func TestFilePreviewCapabilityRequiresExecutionHostSupport(t *testing.T) {

@@ -155,6 +155,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2573491630: 'thread', // GetThreadRuntimeMode
 	183380121: 'selected', // GetThreadTransferDestinationProject
 	704384690: 'thread', // GetThreadTransferIntent
+	316516814: 'thread', // GetThreadTransferStatus
 	670257333: 'selected', // GetThreadTransfers
 	1512475224: 'thread', // GetThreadTurnPreview
 	3340938325: 'thread', // GetThreadUserMessageHistory

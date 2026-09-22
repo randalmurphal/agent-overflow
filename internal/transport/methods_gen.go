@@ -184,6 +184,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "GetThreadRuntimeMode", ID: 2573491630, Scope: "threads:read", Route: "thread"},                           // main.App.GetThreadRuntimeMode
 	{Name: "GetThreadTransferDestinationProject", ID: 183380121, Scope: "threads:operate", Route: "selected"},        // main.App.GetThreadTransferDestinationProject
 	{Name: "GetThreadTransferIntent", ID: 704384690, Scope: "threads:operate", Route: "thread"},                      // main.App.GetThreadTransferIntent
+	{Name: "GetThreadTransferStatus", ID: 316516814, Scope: "threads:read", Route: "thread"},                         // main.App.GetThreadTransferStatus
 	{Name: "GetThreadTransfers", ID: 670257333, Scope: "threads:read", Route: "selected"},                            // main.App.GetThreadTransfers
 	{Name: "GetThreadTurnPreview", ID: 1512475224, Scope: "threads:read", Route: "thread"},                           // main.App.GetThreadTurnPreview
 	{Name: "GetThreadUserMessageHistory", ID: 3340938325, Scope: "threads:read", Route: "thread"},                    // main.App.GetThreadUserMessageHistory

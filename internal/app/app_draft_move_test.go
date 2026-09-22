@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"reflect"
 	"testing"
@@ -176,12 +177,29 @@ func TestMovedDraftAttachmentCleanupPreservesNewWorkAndRepeats(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := a.cleanupMovedDraftAttachments(moved); err != nil {
+		if err := a.cleanupMovedDraftAttachments(t.Context(), moved); err != nil {
 			t.Fatal(err)
 		}
 		files, err := a.ListAttachments("thr-a")
 		if err != nil || len(files) != 1 || files[0].ID != reused.ID {
 			t.Fatalf("cleanup lost new work or retained old files: %+v %v", files, err)
 		}
+	}
+}
+
+func TestDraftMoveCannotCrossUpdateHandoff(t *testing.T) {
+	a := draftMoveApp(t)
+	if err := a.SaveDraft(t.Context(), "thr-a", "retained", nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if reason, err := a.workAdmission.quiesce(func() (string, error) { return "", nil }); err != nil || reason != "" {
+		t.Fatalf("handoff: %q %v", reason, err)
+	}
+	a.workAdmission.stopWaiting()
+	if _, err := a.MoveDraftToThread(t.Context(), "thr-a", "thr-b", DraftSnapshot{Content: "retained"}); !errors.Is(err, ErrShuttingDown) {
+		t.Fatalf("move crossed handoff: %v", err)
+	}
+	if got, err := a.GetDraft("thr-a"); err != nil || got.Content != "retained" {
+		t.Fatalf("source changed: %+v %v", got, err)
 	}
 }

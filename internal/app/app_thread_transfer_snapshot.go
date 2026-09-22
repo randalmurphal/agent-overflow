@@ -26,6 +26,7 @@ const transferManifestVersion = 1
 const transferManifestLimit = 16 << 20
 
 type transferManifest struct {
+	DraftMCP    *draftMCPPreferences      `json:"draftMcp,omitempty"`
 	Version     int                       `json:"version"`
 	Intent      ThreadTransferIntent      `json:"intent"`
 	Thread      store.Thread              `json:"thread"`
@@ -101,6 +102,9 @@ func (a *App) snapshotThreadTransfer(ctx context.Context, row store.ThreadTransf
 		return completed, err
 	}
 	manifest := transferManifest{Version: transferManifestVersion, Intent: a.transferIntent(row, details), Thread: thread, SessionRef: thread.ResolvedSessionRef(), NativePaths: make(map[string]string)}
+	if private.DraftToConsume != nil {
+		manifest.DraftMCP = details.DraftMCP
+	}
 	native, refs, err := a.collectTransferNative(ctx, thread, manifest.NativePaths)
 	if err != nil {
 		return completed, err

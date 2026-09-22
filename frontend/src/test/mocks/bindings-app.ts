@@ -92,6 +92,7 @@ export const BeginThreadTransfer = dispatch('BeginThreadTransfer');
 export const CreateThreadTransferOffer = dispatch('CreateThreadTransferOffer');
 export const BindThreadTransferDestination = dispatch('BindThreadTransferDestination');
 export const GetThreadTransfers = dispatch('GetThreadTransfers');
+export const GetThreadTransferStatus = dispatch('GetThreadTransferStatus');
 export const GetThreadTransferIntent = dispatch('GetThreadTransferIntent');
 export const GetThreadTransferDestinationProject = dispatch('GetThreadTransferDestinationProject');
 export const RetryThreadTransfer = dispatch('RetryThreadTransfer');

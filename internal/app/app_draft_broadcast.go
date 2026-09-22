@@ -24,7 +24,6 @@ func (a *App) announceTransferredDraft(row store.ThreadTransfer) error {
 	if source.DraftToConsume != nil {
 		a.broadcastDraft(transport.ClientIdentity{}, DraftUpdatedEvent{ThreadID: row.ThreadID, UpdatedAt: row.UpdatedAt})
 		a.broadcastThreadRowByID(row.ThreadID)
-		return a.cleanupMovedDraftAttachments(*source.DraftToConsume)
 	}
 	return nil
 }

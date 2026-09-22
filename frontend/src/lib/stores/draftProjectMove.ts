@@ -59,11 +59,6 @@ export async function moveDraftProject(
     if (!source || source.id !== id || draft?.contextKey !== context) return false;
     await draft?.prepareForSend();
     if (!ownsPane()) return false;
-    if (draft && !draft.hasDraft && !draft.sourceProposedPlan) {
-      const moved = await movePlaceholder();
-      if (!hasStagedWorktreeIntent(source) && await DeleteEmptyDraftThread(id)) removeThread(id);
-      return moved;
-    }
     const sourceBackend = requireEntityBackend(resolveThreadBackend(id));
     const destinationBackend = requireEntityBackend(projectBackend(project.id));
     const local = draft?.snapshot();

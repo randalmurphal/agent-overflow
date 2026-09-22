@@ -1998,6 +1998,15 @@ export function GetThreadTransferIntent(threadID: string, operationID: string): 
 }
 
 /**
+ * GetThreadTransferStatus follows an exact operation, independent of recent-list limits.
+ */
+export function GetThreadTransferStatus(threadID: string, operationID: string): $CancellablePromise<store$0.ThreadTransfer> {
+    return $Call.ByID(316516814, threadID, operationID).then(($result: any) => {
+        return $$createType10($result);
+    });
+}
+
+/**
  * GetThreadTransfers returns a bounded recent status list on this computer.
  */
 export function GetThreadTransfers(): $CancellablePromise<store$0.ThreadTransfer[]> {

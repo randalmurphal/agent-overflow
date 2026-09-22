@@ -48,6 +48,7 @@ func (installer appTransferInstaller) Discard(ctx context.Context, row store.Thr
 }
 
 type transferInstallPlan struct {
+	DraftMCP  *draftMCPPreferences         `json:"draftMcp,omitempty"`
 	Version   int                          `json:"version"`
 	Thread    store.Thread                 `json:"thread"`
 	Native    []store.TransferSession      `json:"native"`
@@ -123,7 +124,7 @@ func (installer appTransferInstaller) Prepare(ctx context.Context, row store.Thr
 	if row.Kind == "copy" {
 		target.Archived = false
 	}
-	plan := transferInstallPlan{Version: transferManifestVersion, Thread: target, Native: manifest.Native}
+	plan := transferInstallPlan{Version: transferManifestVersion, Thread: target, Native: manifest.Native, DraftMCP: manifest.DraftMCP}
 	if manifest.Workspace != nil {
 		if err := os.MkdirAll(filepath.Dir(target.WorkspacePath), 0o700); err != nil {
 			return nil, err
@@ -241,6 +242,9 @@ func (installer appTransferInstaller) Install(ctx context.Context, row store.Thr
 	defer history.Close()
 	_, err = a.store.CommitIncomingThreadTransfer(ctx, row.ID, row.ManifestHash, secret, plan.Thread, history)
 	if err == nil {
+		if plan.DraftMCP != nil {
+			a.applyDraftMCPPreferences(row.ThreadID, *plan.DraftMCP)
+		}
 		a.broadcastThreadRowByID(row.ThreadID)
 	}
 	return err

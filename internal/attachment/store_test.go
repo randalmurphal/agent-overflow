@@ -1028,3 +1028,90 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 		t.Fatalf("mode %s = %o, want %o", path, got, want)
 	}
 }
+
+func TestDeleteFailurePreservesOwnershipForRetry(t *testing.T) {
+	attachments, metadata := newTestStores(t)
+	seedThread(t, metadata, "draft")
+	record, err := uploadBytes(attachments, "draft", "image.gif", "image/gif", gifData(t), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, path, err := attachments.PathForThread("draft", record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	// A nonempty directory makes removal fail on every platform, including root.
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "blocker"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := attachments.Delete("draft", record.ID); err == nil {
+		t.Fatal("expected file removal failure")
+	}
+	if owned, err := metadata.OwnsAttachment("draft", record.ID); err != nil || !owned {
+		t.Fatalf("lost cleanup ownership: %v %v", owned, err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := attachments.Delete("draft", record.ID); err != nil {
+		t.Fatal(err)
+	}
+	if owned, err := metadata.OwnsAttachment("draft", record.ID); err != nil || owned {
+		t.Fatalf("cleanup did not finish: %v %v", owned, err)
+	}
+}
+
+func TestCopySyncFailureKeepsSourceAndRemovesDestination(t *testing.T) {
+	for _, kind := range []string{"image", "file"} {
+		t.Run(kind, func(t *testing.T) {
+			s, meta := newTestStores(t)
+			seedThread(t, meta, "source")
+			seedThread(t, meta, "target")
+			name, mime, data := "picture.gif", "image/gif", gifData(t)
+			if kind == "file" {
+				name, mime, data = "notes.txt", "text/plain", []byte("file bytes")
+			}
+			record, err := uploadBytes(s, "source", name, mime, data, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			failure := errors.New("disk sync failed")
+			s.syncCopy = func(root, path string) error {
+				if err := syncCopiedAttachment(root, path); err != nil {
+					t.Fatal(err)
+				}
+				return failure
+			}
+			if _, err := s.CopyToThread("source", "target", record.ID, 2); !errors.Is(err, failure) {
+				t.Fatalf("sync failure lost: %v", err)
+			}
+			if rows, err := s.List("target"); err != nil || len(rows) != 0 {
+				t.Fatalf("failed copy published: %+v %v", rows, err)
+			}
+			if err := filepath.WalkDir(filepath.Join(s.root, "target"), func(path string, entry os.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if !entry.IsDir() {
+					t.Errorf("failed copy left file: %s", path)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			_, path, err := s.PathForThread("source", record.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, data) {
+				t.Fatalf("source lost: %q %v", got, err)
+			}
+		})
+	}
+}

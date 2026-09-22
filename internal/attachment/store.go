@@ -115,6 +115,7 @@ type Store struct {
 	maxSize     int64
 	maxFileSize int64
 	meta        *store.Store
+	syncCopy    func(root, path string) error
 }
 
 // NewStore initializes the exclusively owned root before uploads begin and
@@ -155,7 +156,7 @@ func NewStore(cfg Config, meta *store.Store) (*Store, error) {
 			return nil, fmt.Errorf("attachment: remove abandoned upload: %w", err)
 		}
 	}
-	return &Store{root: cfg.RootDir, maxSize: cfg.MaxSize, maxFileSize: cfg.MaxFileSize, meta: meta}, nil
+	return &Store{root: cfg.RootDir, maxSize: cfg.MaxSize, maxFileSize: cfg.MaxFileSize, meta: meta, syncCopy: syncCopiedAttachment}, nil
 }
 
 // Root is the directory every attachment lives under. Exposed because the
@@ -411,97 +412,6 @@ func (s *Store) resolveWritePath(relativePath string) (string, error) {
 	return absolutePath, nil
 }
 
-// CopyToThread clones an existing attachment of either kind onto another
-// thread by copying the file on disk, under a fresh id and the same
-// tmp-then-rename + INSERT invariant every other write keeps.
-//
-// It exists because the cross-thread draft clone used to stream the bytes
-// back through Upload: that re-validated a payload the store had already
-// accepted and, once files existed, would have re-derived a kind rather
-// than preserving the one already decided. The source thread is a parameter
-// so the clone keeps the ownership boundary ReadThreadBytes / PathForThread
-// enforce; a stale cross-thread id must not be able to pull another
-// thread's file in.
-func (s *Store) CopyToThread(sourceThreadID, targetThreadID, attachmentID string, createdAt int64) (store.Attachment, error) {
-	if strings.TrimSpace(targetThreadID) == "" {
-		return store.Attachment{}, errors.New("attachment: thread id is required")
-	}
-	source, sourcePath, err := s.resolveThreadAttachment(sourceThreadID, attachmentID)
-	if err != nil {
-		return store.Attachment{}, err
-	}
-
-	id := uuid.NewString()
-	// The on-disk NAME is reused verbatim from the source row: it is
-	// already sanitized (a file) or already the canonical extension (an
-	// image), so re-deriving it here would be a second answer to a question
-	// the original write settled.
-	sourceName := filepath.Base(filepath.FromSlash(source.RelativePath))
-	relativePath := filepath.Join(sanitizeThreadID(targetThreadID), id+filepath.Ext(sourceName))
-	if source.Kind == store.AttachmentKindFile {
-		relativePath = filepath.Join(sanitizeThreadID(targetThreadID), id, sourceName)
-	}
-	absolutePath, err := s.resolveWritePath(relativePath)
-	if err != nil {
-		return store.Attachment{}, err
-	}
-	tmpPath := absolutePath + ".tmp"
-
-	committed := false
-	defer func() {
-		if !committed {
-			s.rollbackStagedWrite(source.Kind, tmpPath, absolutePath)
-		}
-	}()
-
-	if err := os.MkdirAll(filepath.Dir(absolutePath), privateDirPerm); err != nil {
-		return store.Attachment{}, fmt.Errorf("attachment: mkdir: %w", err)
-	}
-	size, err := copyFileTo(sourcePath, tmpPath)
-	if err != nil {
-		return store.Attachment{}, err
-	}
-
-	record := store.Attachment{
-		ID:           id,
-		ThreadID:     targetThreadID,
-		Filename:     source.Filename,
-		MimeType:     source.MimeType,
-		Size:         size,
-		RelativePath: filepath.ToSlash(relativePath),
-		CreatedAt:    createdAt,
-		Kind:         source.Kind,
-	}
-	if err := s.commitStagedWrite(record, tmpPath, absolutePath); err != nil {
-		return store.Attachment{}, err
-	}
-	committed = true
-	return record, nil
-}
-
-// copyFileTo streams one attachment's bytes into a staged destination,
-// returning what was actually written. Streamed rather than read whole so a
-// 50 MiB file clone costs a buffer instead of two copies of the payload.
-func copyFileTo(sourcePath, tmpPath string) (int64, error) {
-	src, err := os.Open(sourcePath)
-	if err != nil {
-		return 0, fmt.Errorf("attachment: open source: %w", err)
-	}
-	defer src.Close()
-	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, sensitiveFilePerm)
-	if err != nil {
-		return 0, fmt.Errorf("attachment: create tmp file: %w", err)
-	}
-	size, err := io.Copy(dst, src)
-	if closeErr := dst.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return 0, fmt.Errorf("attachment: copy bytes: %w", err)
-	}
-	return size, nil
-}
-
 // Content is one attachment opened for streaming: its metadata row, an
 // open handle on the bytes, and the modification time a conditional
 // request is answered from.
@@ -711,29 +621,24 @@ func (s *Store) Delete(threadID, attachmentID string) error {
 	if err != nil {
 		return err
 	}
-	last, err := s.meta.ReleaseAttachment(threadID, attachmentID)
-	if err != nil {
-		return err
-	}
-	if !last {
-		return nil
-	}
-	// A file's parent directory is `<thread>/<id>` by construction. The
-	// base check is the tripwire: a row whose path did not come from this
-	// package's own layout falls back to removing just the file rather
-	// than taking a directory it does not own (the thread's, at worst).
-	if record.Kind == store.AttachmentKindFile {
-		if dir := filepath.Dir(absolutePath); filepath.Base(dir) == record.ID {
-			if err := os.RemoveAll(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("attachment: remove file dir: %w", err)
+	return s.meta.ReleaseAttachment(threadID, attachmentID, func() error {
+		// A file's parent directory is `<thread>/<id>` by construction. The
+		// base check is the tripwire: a row whose path did not come from this
+		// package's own layout falls back to removing just the file rather
+		// than taking a directory it does not own (the thread's, at worst).
+		if record.Kind == store.AttachmentKindFile {
+			if dir := filepath.Dir(absolutePath); filepath.Base(dir) == record.ID {
+				if err := os.RemoveAll(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("attachment: remove file dir: %w", err)
+				}
+				return nil
 			}
-			return nil
 		}
-	}
-	if err := os.Remove(absolutePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("attachment: remove file: %w", err)
-	}
-	return nil
+		if err := os.Remove(absolutePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("attachment: remove file: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Store) resolveAbsolute(relativePath string) (string, error) {

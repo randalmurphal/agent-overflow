@@ -92,3 +92,57 @@ func TestMoveThreadDraftRollsBackWhenDestinationAlreadyHasContent(t *testing.T) 
 		}
 	}
 }
+
+func TestMoveThreadDraftCommitsDurablyBeforeSourceFilesCanBeRemoved(t *testing.T) {
+	s := newTestStore(t)
+	a := createDraftCleanupThread(t, s, "source", "chat")
+	b := createDraftCleanupThread(t, s, "destination", "chat")
+	draft := ThreadDraft{ThreadID: a.ID, Content: "survive power loss", Attachments: "[]", TerminalChips: "[]"}
+	if _, err := s.UpsertThreadDraft(draft); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`CREATE TRIGGER require_durable_draft_move BEFORE DELETE ON thread_drafts BEGIN
+		SELECT CASE WHEN (SELECT synchronous FROM pragma_synchronous) <> 3
+		THEN RAISE(ABORT, 'draft move is not durable') END; END`); err != nil {
+		t.Fatal(err)
+	}
+	target := draft
+	target.ThreadID = b.ID
+	if err := s.MoveThreadDraft(draft, target); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTransferStatusDoesNotDependOnRecentListOrExposePrivateState(t *testing.T) {
+	s := newTestStore(t)
+	first, err := s.CreateThreadTransfer(transferRequest("old", "copy", "outgoing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 101 {
+		request := transferRequest("placeholder", "copy", "incoming")
+		request.ThreadID = request.ID
+		if _, err := s.CreateThreadTransfer(request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.Exec(`UPDATE thread_transfers SET updated_at = 1 WHERE id = ?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	recent, err := s.ListRecentThreadTransfers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range recent {
+		if row.ID == first.ID {
+			t.Fatal("fixture did not push old operation out")
+		}
+	}
+	got, err := s.GetThreadTransferStatus(first.ID)
+	if err != nil || got.ID != first.ID || got.ThreadID != first.ThreadID || !got.NeedsDestination {
+		t.Fatalf("status: %+v %v", got, err)
+	}
+	if len(got.PrivateState) != 0 || len(got.PeerState) != 0 || got.ActivationHash != "" {
+		t.Fatalf("private status data: %+v", got)
+	}
+}
