@@ -26,7 +26,8 @@
 // Session-only: the archive is per pane and dies with it. The durable layer
 // is the `activityRunDefault` setting.
 
-import { compareItemToCursor } from './threadItems';
+import { timelineNodeHasRail } from '../utils/timelineRail';
+import { compareItemToCursor, compareItemsByTimelinePosition } from './threadItems';
 import { activityRunLoadedItems, type RunWindowBounds } from './activityRunLoadedItems';
 export type { RunWindowBounds } from './activityRunLoadedItems';
 import { compositeKey } from '../utils/compositeKey';
@@ -444,6 +445,8 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
   readonly wholesaleGeneration: number;
   /** Record a wholesale item-array replacement. See `wholesaleGeneration`. */
   noteWholesaleReplace(): void;
+  /** Record newly admitted live activity before a batched render can miss it. */
+  noteLiveAppend(items: readonly Item[], previousTail: Item | undefined): void;
   /** Drop everything — thread switch. */
   clear(): void;
 }
@@ -686,6 +689,7 @@ export function createThreadActivityRuns(
   options: ThreadActivityRunsOptions,
 ): ThreadActivityRuns {
   const entries = new Map<string, RunEntry>();
+  const pendingLiveMembers = new Set<string>();
   // Reverse index so migration is one lookup per member instead of a scan
   // over every entry. Rebuilt incrementally as entries take new members.
   const runIdByMember = new Map<string, string>();
@@ -1271,6 +1275,11 @@ export function createThreadActivityRuns(
     const runId = claimRunId(rowMemberIds, threadId);
     claimed.add(runId);
     const entry = ensureEntry(runId, threadId);
+    for (const row of rowMemberIds) {
+      for (const id of row) {
+        if (pendingLiveMembers.delete(id) && entry.collapsed === null) entry.openedLive = true;
+      }
+    }
     indexMembers(
       entry,
       runId,
@@ -1381,6 +1390,25 @@ export function createThreadActivityRuns(
 
   function noteWholesaleReplace(): void {
     wholesaleGeneration += 1;
+    if (pendingLiveMembers.size > 0) {
+      const retained = new Set(options.items().map(item => item.id));
+      for (const id of pendingLiveMembers) {
+        if (!retained.has(id)) pendingLiveMembers.delete(id);
+      }
+    }
+  }
+
+  function noteLiveAppend(items: readonly Item[], previousTail: Item | undefined): void {
+    if (!options.windowVerified()) return;
+    let changed = false;
+    for (const item of items) {
+      if (item.threadId !== options.threadId()
+        || (previousTail && compareItemsByTimelinePosition(item, previousTail) <= 0)
+        || !timelineNodeHasRail({ kind: 'leaf', item }, item)) continue;
+      pendingLiveMembers.add(item.id);
+      changed = true;
+    }
+    if (changed) revision += 1;
   }
 
   function threadDefaultCollapsed(): boolean {
@@ -1500,6 +1528,7 @@ export function createThreadActivityRuns(
       return wholesaleGeneration;
     },
     noteWholesaleReplace,
+    noteLiveAppend,
     setCollapsed,
     expandForReveal: (runId) => {
       writeCollapsed(runId, false);
@@ -1698,6 +1727,7 @@ export function createThreadActivityRuns(
       // Returning to a thread in this pane finds its runs as it left them.
       for (const entry of entries.values()) archiveEntry(entry);
       entries.clear();
+      pendingLiveMembers.clear();
       runIdByMember.clear();
       runIdsBySummaryMember.clear();
       memberContentRevisions.clear();

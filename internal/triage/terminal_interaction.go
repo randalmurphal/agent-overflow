@@ -3,31 +3,13 @@ package triage
 import (
 	"encoding/json"
 	"fmt"
-	"log"
-	"strings"
 
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
-// terminal_interaction.go — Codex-only background terminal interaction row
-// persistence.
-//
-// Codex emits `TerminalInteractionNotification` whenever the model calls
-// `write_stdin` against a backgrounded unified-exec PTY. The signal has
-// two variants on the wire:
-//
-//   - `stdin == ""`: the model polled the PTY without sending input.
-//     Codex's own TUI keeps this as a status streak. Agent Overflow adds a
-//     visible carrier row, so repeated typed notifications for the same
-//     process reuse one carrier until output lands or another timeline
-//     boundary makes the wait stale.
-//   - `stdin != ""`: keystrokes were forwarded. We persist an
-//     "Interacted with background terminal" marker, but never persist
-//     stdin bytes because interactive input can contain secrets.
-//
-// Terminal interactions persist only when they can be correlated to a tracked
-// unified-exec PTY. Command item/completed owns final output/status.
+// Empty terminal polls update process state only. Non-empty stdin records a
+// completed interaction without retaining potentially sensitive input bytes.
 
 // terminalInteractionMeta is the Meta shape populated by
 // buildTerminalInteractionMeta in the Codex parser. Only the fields we
@@ -37,177 +19,63 @@ type terminalInteractionMeta struct {
 	Stdin     string `json:"stdin"`
 }
 
-func decodeTerminalInteractionMeta(raw json.RawMessage) terminalInteractionMeta {
+func decodeTerminalInteractionMeta(raw json.RawMessage) (terminalInteractionMeta, error) {
 	var decoded terminalInteractionMeta
 	if len(raw) == 0 {
-		return decoded
+		return decoded, nil
 	}
-	_ = json.Unmarshal(raw, &decoded)
-	return decoded
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return decoded, fmt.Errorf("decode terminal interaction: %w", err)
+	}
+	return decoded, nil
 }
 
-// handleTerminalInteraction routes Codex's `TerminalInteractionNotification`
-// events. Polling variants persist marker rows while the command is still
-// running. The interactive variant records only `has_stdin` and never stores
-// stdin text.
-//
-// Correlation rules:
-//
-//   - Requires an ACTIVE open turn on the router. A live Codex session
-//     only emits terminal interaction while a turn is in flight (the
-//     model is producing the write_stdin call inside the turn), so
-//     "no open turn" means the event arrived out-of-order or after
-//     turn_complete — neither is a valid home for a "waited" row. We
-//     log and drop rather than fabricate one. We intentionally do NOT
-//     fall back to store.LastTurnIndex: attaching a live
-//     terminal_interaction to a CLOSED turn would make the completion
-//     divider appear below a row that happened AFTER it.
-//   - Empty polls require a tracked Codex unified-exec PTY after applying
-//     the poll's own background signal. Untracked polls are stale or missing
-//     context, so persisting them would create detached "waited" rows that
-//     Codex TUI never fabricates from process completion alone.
-//   - Stable ids use `waited:<processID>:<turn_index>:<seq>` for wait
-//     carriers and `interacted:<processID>:<turn_index>:<seq>` for forwarded
-//     stdin. Empty polls for the same process can reuse their prior id so
-//     repeated typed wait signals update the same visible row until output
-//     arrives or a later timeline boundary settles it as stale.
 func (r *Router) handleTerminalInteraction(evt provider.ProviderEvent) error {
-	meta := decodeTerminalInteractionMeta(evt.Meta)
-	isPoll := evt.Content == "" && meta.Stdin == ""
-
-	turnIndex, ok := r.openTurnIndex(evt.ThreadID)
-	if !ok {
-		log.Printf("triage: terminal_interaction on %s with no open turn; dropping", evt.ThreadID)
-		return nil
+	meta, err := decodeTerminalInteractionMeta(evt.Meta)
+	if err != nil {
+		return err
 	}
-
-	now := eventTimestampMillis(evt)
-	itemID := ""
-	if isPoll {
-		if strings.TrimSpace(meta.ProcessID) != "" {
-			r.settleCodexTerminalWaitsExcept(evt.ThreadID, meta.ProcessID)
-		}
-	} else {
-		if err := r.settleCodexTerminalWaitForProcess(evt.ThreadID, meta.ProcessID); err != nil {
-			return fmt.Errorf("terminal_interaction settle active wait %s: %w", meta.ProcessID, err)
-		}
-	}
+	// The notification arrives after the poll returns, potentially after its
+	// turn was interrupted. Preserve process state without creating history.
 	r.markCodexUnifiedExecProcessBackgrounded(evt.ThreadID, meta.ProcessID)
-	if !r.hasCodexBackgroundTerminalForProcess(evt.ThreadID, meta.ProcessID) {
-		log.Printf("triage: terminal_interaction on %s for untracked process %q; dropping", evt.ThreadID, meta.ProcessID)
+	if evt.Content == "" && meta.Stdin == "" {
 		return nil
 	}
-	if isPoll {
-		itemID = r.codexTerminalWaitItemIDForProcess(evt.ThreadID, meta.ProcessID, turnIndex)
+	turnIndex, ok := r.openTurnIndex(evt.ThreadID)
+	if !ok || !r.hasCodexBackgroundTerminalForProcess(evt.ThreadID, meta.ProcessID) {
+		return nil
 	}
-	// A valid terminal interaction is a timeline boundary even though Codex does
-	// not emit a normal tool-start event for it. Close the current assistant
-	// text/thinking block first so any post-wait assistant text starts a new row
-	// instead of appending onto the pre-wait sentence.
-	r.settleStreamingBeforeTimelineBoundary(evt, "terminal interaction", settleAllScopesIfUnscoped)
-
-	if itemID == "" {
-		seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
-		itemID = terminalInteractionID(meta.ProcessID, turnIndex, seq, isPoll)
-	}
+	now := eventTimestampMillis(evt)
+	seq := r.nextTerminalInteractionSequence(evt.ThreadID, turnIndex, meta.ProcessID)
 	metaMap := map[string]any{
 		"process_id": meta.ProcessID,
 		"kind":       "terminal_interaction",
+		"has_stdin":  true,
 	}
 	if command := r.codexTerminalCommandForProcess(evt.ThreadID, meta.ProcessID); command != "" {
 		metaMap["command"] = command
 	}
-	if !isPoll {
-		metaMap["has_stdin"] = true
-	}
 	metaBlob, err := json.Marshal(metaMap)
 	if err != nil {
-		// Unreachable — we're marshaling a literal map — but fall back
-		// to a bare default rather than drop the row.
-		metaBlob = json.RawMessage(`{}`)
+		return fmt.Errorf("terminal interaction metadata: %w", err)
 	}
-
-	summary := "Waited for background terminal"
-	if !isPoll {
-		summary = "Interacted with background terminal"
+	summary := "Interacted with background terminal"
+	if command := r.codexTerminalSummaryForProcess(evt.ThreadID, meta.ProcessID); command != "" {
+		summary += ": " + command
 	}
-	commandSummary := r.codexTerminalSummaryForProcess(evt.ThreadID, meta.ProcessID)
-	if commandSummary != "" {
-		summary += ": " + commandSummary
-	}
-
-	item := store.Item{
-		ID:        itemID,
+	return r.persistItem(store.Item{
+		ID:        fmt.Sprintf("interacted:%s:%d:%d", meta.ProcessID, turnIndex, seq),
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
 		Kind:      string(provider.ItemTerminalInteraction),
 		Role:      "assistant",
-		Status:    terminalInteractionStatus(isPoll),
+		Status:    statusCompleted,
 		Summary:   summary,
 		ParentID:  eventParentID(evt),
 		Meta:      string(metaBlob),
 		CreatedAt: now,
 		UpdatedAt: now,
-	}
-	if existing, found, err := r.store.GetThreadItem(evt.ThreadID, item.ID); err == nil && found {
-		item.CreatedAt = existing.CreatedAt
-		item.ItemIndex = existing.ItemIndex
-		item.PayloadID = existing.PayloadID
-		item.Meta = validJSONObjectString(mergeRawJSONObject(json.RawMessage(existing.Meta), metaBlob))
-		existingSettledPoll := isPoll && existing.Status != statusRunning && existing.Status != statusStreaming
-		if existingSettledPoll {
-			item.Status = existing.Status
-		}
-		if isPoll && commandSummary == "" && strings.TrimSpace(existing.Summary) != "" {
-			item.Summary = existing.Summary
-		}
-		if existingSettledPoll {
-			if err := r.persistItem(item, nil); err != nil {
-				return err
-			}
-			return nil
-		}
-	} else if err != nil {
-		return fmt.Errorf("terminal_interaction existing lookup %s: %w", item.ID, err)
-	}
-	if isPoll {
-		r.rememberCodexTerminalWaitCarrier(evt.ThreadID, meta.ProcessID, item.ID, turnIndex, now)
-		if !r.trackCodexPendingTerminalWait(evt.ThreadID, meta.ProcessID, item.ID, turnIndex, now) {
-			item.Status = statusCompleted
-		}
-	}
-	if err := r.persistItem(item, nil); err != nil {
-		return err
-	}
-	return nil
-}
-
-func terminalInteractionStatus(isPoll bool) string {
-	if isPoll {
-		return statusRunning
-	}
-	return statusCompleted
-}
-
-// terminalInteractionID builds the id for a persisted terminal interaction
-// row after the caller has chosen a sequence. Shape:
-// `<kind>:<processID>:<turn_index>:<seq>`. Empty poll reuse is owned by
-// codexTerminalWaitItemIDForProcess; forwarded stdin interactions always take
-// a fresh sequence.
-//
-// processID CAN be empty on the wire (older Codex revisions omitted it
-// from some builds). In that case we substitute the literal "-" so the
-// id stays well-formed; multiple waits in the same turn with empty
-// processIDs still differentiate by seq.
-func terminalInteractionID(processID string, turnIndex, seq int, poll bool) string {
-	if processID == "" {
-		processID = "-"
-	}
-	prefix := "interacted"
-	if poll {
-		prefix = "waited"
-	}
-	return fmt.Sprintf("%s:%s:%d:%d", prefix, processID, turnIndex, seq)
+	}, nil)
 }
 
 // nextTerminalInteractionSequence returns a monotonically-increasing counter

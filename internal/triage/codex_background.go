@@ -29,8 +29,8 @@ import (
 // the running-task tray immediately, but it only becomes a background
 // task when a typed trigger proves the model explicitly waited on it.
 // Command completion transcript history comes from typed item/completed only
-// while a Codex wire round is active, matching Codex TUI timing; terminal
-// interactions own only waited/interacted marker rows. A spawn_agent start
+// while a Codex wire round is active, matching Codex TUI timing;
+// non-empty terminal input owns interaction marker rows. A spawn_agent start
 // becomes transcript history only when Codex emits the terminal spawn
 // completion.
 //
@@ -45,7 +45,7 @@ import (
 // persisted completion sibling rows. Codex unifiedExec intentionally
 // diverges: typed command item/completed owns the command row itself while a
 // Codex wire round is active, while TerminalInteraction persists only the
-// separate wait/interact marker rows.
+// separate input interaction marker rows.
 //
 // This file holds what the two halves SHARE: the per-thread correlation state,
 // its constructor and accessor, the tray-changed emit, and the two
@@ -53,7 +53,7 @@ import (
 // that dispatch into either half. The halves themselves are:
 //
 //   - codex_background_exec.go — unifiedExec trackers, the backgrounding
-//     stamp, terminal-wait carriers, command output and command history.
+//     stamp, command output and command history.
 //   - codex_background_subagents.go — spawn_agent launches, wait_agent
 //     resolution, the child terminal-status ledger and the synthesized
 //     completion row. Two narrower concerns sit beside it:
@@ -85,23 +85,9 @@ type codexBackgroundState struct {
 	// still running.
 	unifiedExec map[string]*unifiedExecTracker
 	// unifiedExecByProcess maps process_id → launchID so
-	// TerminalInteraction events can correlate wait/interact marker rows without
+	// TerminalInteraction events can correlate input marker rows without
 	// scanning every tracker in the hot path.
 	unifiedExecByProcess map[string]string
-	// pendingWaitByProcess maps process_id → latest empty-stdin
-	// terminal_interaction row waiting on a still-running backgrounded
-	// unifiedExec. If the command completes before the next model yield,
-	// the wait carrier is flushed before the typed command completion row.
-	// Later assistant text/plan content, turn completion, a
-	// different-process wait, or non-empty stdin settles the wait as a
-	// neutral completed carrier and detaches it so old wait rows do not
-	// receive ghost completions. Reasoning deltas do not flush a wait streak.
-	pendingWaitByProcess map[string]pendingTerminalWait
-	// waitCarrierByProcess maps process_id → latest empty-stdin wait
-	// carrier in the current turn. It outlives pendingWaitByProcess so
-	// repeated canonical TerminalInteraction signals can update one visible
-	// carrier even after the PTY wait has already completed.
-	waitCarrierByProcess map[string]pendingTerminalWait
 	// spawnAgent maps launchID → tracker for collabAgentToolCall
 	// spawn_agent items that may outlive their parent turn.
 	spawnAgent map[string]*spawnAgentTracker
@@ -116,8 +102,6 @@ func newCodexBackgroundState() *codexBackgroundState {
 	return &codexBackgroundState{
 		unifiedExec:          make(map[string]*unifiedExecTracker),
 		unifiedExecByProcess: make(map[string]string),
-		pendingWaitByProcess: make(map[string]pendingTerminalWait),
-		waitCarrierByProcess: make(map[string]pendingTerminalWait),
 		spawnAgent:           make(map[string]*spawnAgentTracker),
 		agents:               make(map[string]store.Item),
 		pendingAnswer:        make(map[string]pendingCodexCompletion),
@@ -334,23 +318,9 @@ func (r *Router) observeCodexToolComplete(evt provider.ProviderEvent) error {
 	return nil
 }
 
-// observeCodexModelContent is called before assistant-visible content that
-// ends a terminal wait streak in the Codex TUI. It settles active wait carriers
-// only; unified exec command history is owned by typed item/completed.
-func (r *Router) observeCodexModelContent(threadID string) {
-	r.settleCodexTerminalWaits(threadID)
-}
-
-func (r *Router) observeCodexModelReasoning(threadID string) {
-	// Reasoning does not flush terminal wait streaks in Codex TUI and is not a
-	// backgrounding signal for unified exec.
-}
-
-// observeCodexTurnComplete closes active wait carriers and clears pending
-// spawn-agent starts. Unified exec command rows still come from typed
-// item/completed, so turn completion never fabricates a command history row.
+// observeCodexTurnComplete clears pending agent starts and releases held
+// completions. Command completion remains owned by typed item/completed.
 func (r *Router) observeCodexTurnComplete(threadID string) {
-	r.settleCodexTerminalWaits(threadID)
 	r.mu.Lock()
 	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil {

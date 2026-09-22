@@ -238,7 +238,7 @@ func TestToolStartSplitsAssistantTextAroundVisibleToolRow(t *testing.T) {
 	}
 }
 
-func TestCodexCompletionOnlyControlToolSplitsAssistantText(t *testing.T) {
+func TestCodexCompletionOnlyToolBetweenCompletedMessages(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	if err := st.UpdateProvider("t1", "codex"); err != nil {
@@ -254,6 +254,13 @@ func TestCodexCompletionOnlyControlToolSplitsAssistantText(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("first text delta: %v", err)
 	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1", Meta: []byte(`{"blockType":"text"}`), Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router.settleWG.Wait()
 
 	meta, _ := json.Marshal(map[string]any{
 		"toolName": "close_agent",

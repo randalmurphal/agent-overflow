@@ -372,7 +372,6 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 		if !codexThread || !shouldPersistCodexCompletionWithoutLaunch(meta.ToolName) {
 			return nil
 		}
-		r.settleStreamingBeforeTimelineBoundary(evt, "completion-only tool", settleAllScopesIfUnscoped)
 		return r.persistToolCallCompletedWithoutLaunch(evt, meta)
 	}
 	if launch.Kind != itemKindToolCall {

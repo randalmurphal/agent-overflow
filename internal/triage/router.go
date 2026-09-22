@@ -486,19 +486,12 @@ const (
 	// own scope — breadth only changes the unscoped case). An unscoped error is
 	// a turn-wide row that DELIBERATELY splits scoped subagent text around it
 	// (TestUnscopedErrorSplitsScopedAssistantTextAroundVisibleErrorRow). The
-	// error and the two Codex boundaries (terminal-interaction, completion-only)
-	// use this. The Codex two only PRESERVE prior behavior — not a proven-safe
-	// choice: Codex re-emits child-thread events onto the parent with
-	// parent_tool_use_id set (provider/codex/session_notifications.go), so a parent-scope
-	// boundary overlapping a live child text stream would hit the same
-	// fragmentation this fixes for Claude. Unobserved so far — spike before
-	// assuming safe; if seen, switch those two to settleBoundaryScopeOnly.
+	// error uses this breadth because it applies to the entire turn.
 	settleAllScopesIfUnscoped
 )
 
 // settleStreamingBeforeTimelineBoundary settles in-flight streaming
-// text/thinking so a new timeline row (tool start, error, terminal
-// interaction) lands AFTER the text it follows instead of interleaving into it.
+// text/thinking at a provider boundary, such as a Claude tool start or error.
 // A scoped boundary settles just its own scope; an unscoped boundary settles
 // per breadth (see settleBreadth). settleStreamingScope resolves the scope's
 // turn — turnIndexForScope falls through to the current turn for scope "".
@@ -534,11 +527,16 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	if err != nil {
 		return err
 	}
-	r.settleStreamingBeforeTimelineBoundary(evt, "tool start", settleBoundaryScopeOnly)
-	// Codex TUI does not flush a unified-exec wait streak just because an
-	// unrelated top-level tool starts. Wait streaks flush on assistant
-	// content, turn boundaries, terminal interactions, or matching command
-	// completion.
+	if r.hasActiveStreamingItem(evt.ThreadID) {
+		codexThread, err := r.isCodexThread(evt.ThreadID)
+		if err != nil {
+			return err
+		}
+		// Codex item completion, not concurrent runtime activity, ends its streams.
+		if !codexThread {
+			r.settleStreamingBeforeTimelineBoundary(evt, "tool start", settleBoundaryScopeOnly)
+		}
+	}
 	if r.observeCodexToolStart(evt) {
 		return r.emitInline(evt)
 	}

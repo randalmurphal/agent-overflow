@@ -1991,8 +1991,8 @@ Important ordering observed:
 - Empty-stdin terminal wait start arrives as raw
   `function_call name=write_stdin` before the typed
   `item/commandExecution/terminalInteraction`. Agent Overflow treats this
-  raw item as event-log detail only; UI projection follows the typed
-  terminal-interaction notification.
+  raw item as event-log detail only; the typed terminal-interaction
+  notification updates process tracking without creating a poll history row.
 - The `write_stdin` raw `function_call_output` distinguishes timeout
   from completion via the tool-output text:
   `Process running with session ID ...` vs

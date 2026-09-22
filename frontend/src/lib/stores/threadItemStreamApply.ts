@@ -219,7 +219,11 @@ export function createThreadItemStreamApply(
   function applyProviderItemUpserts(
     incoming: Item[],
   ): ApplyItemUpsertsToWindowResult | null {
+    const previousTail = options.getItems().at(-1);
     const applied = upsertItemsBatch(incoming, options.optimisticItemIds);
+    if (applied && !timelineWindow.hasMoreNewer) {
+      activityRuns.noteLiveAppend(applied.appendedItems, previousTail);
+    }
     // Discharging an optimistic marker belongs HERE, not in
     // `upsertItemsBatch`: the marker means "this row exists only in
     // this pane's hope", and only the wire can disprove that. Doing it

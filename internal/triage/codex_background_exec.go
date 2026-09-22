@@ -2,9 +2,6 @@ package triage
 
 import (
 	"encoding/json"
-	"fmt"
-	"log"
-	"sort"
 	"strings"
 	"time"
 
@@ -14,7 +11,7 @@ import (
 
 // codex_background_exec.go — the unified-exec half of the Codex background
 // projection: the per-process trackers behind the running-task tray, the
-// wire-typed backgrounding stamp, the terminal-wait carrier rows, and the
+// wire-typed backgrounding stamp and the
 // command history a typed `item/completed` persists.
 //
 // The authorization rule it implements is invariant 25's first signal: a
@@ -32,8 +29,7 @@ import (
 // tasks, these rows are not timeline history while they are live:
 // they first appear only in the running-task tray. Typed item/completed removes
 // the tracker; it persists the normal command row only while a Codex wire round
-// is still active. Empty write_stdin polls create separate terminal_interaction
-// marker rows while the tracker is still live.
+// is still active. Empty write_stdin polls update background process state only.
 type unifiedExecTracker struct {
 	backgrounded bool
 	launchID     string
@@ -54,12 +50,6 @@ type cappedCommandOutput struct {
 	ring  bool
 	start int
 	size  int
-}
-
-type pendingTerminalWait struct {
-	itemID    string
-	turnIndex int
-	createdAt int64
 }
 
 const (
@@ -288,201 +278,6 @@ func codexFirstUnboundUnifiedExecTrackerLocked(state *codexBackgroundState) *uni
 	return nil
 }
 
-func (r *Router) settleCodexTerminalWaits(threadID string) {
-	r.settleCodexTerminalWaitsExcept(threadID, "")
-}
-
-func (r *Router) settleCodexTerminalWaitsExcept(threadID, keepProcessID string) {
-	keepProcessID = strings.TrimSpace(keepProcessID)
-	type pendingProcessWait struct {
-		processID string
-		wait      pendingTerminalWait
-	}
-	var waits []pendingProcessWait
-	var seenItemIDs map[string]struct{}
-	r.mu.Lock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state == nil || (len(state.pendingWaitByProcess) == 0 && len(state.waitCarrierByProcess) == 0) {
-		r.mu.Unlock()
-		return
-	}
-	waits = make([]pendingProcessWait, 0, len(state.pendingWaitByProcess)+len(state.waitCarrierByProcess))
-	for processID, wait := range state.pendingWaitByProcess {
-		if keepProcessID != "" && processID == keepProcessID {
-			continue
-		}
-		itemID := strings.TrimSpace(wait.itemID)
-		if itemID == "" {
-			continue
-		}
-		if seenItemIDs == nil {
-			seenItemIDs = make(map[string]struct{})
-		}
-		seenItemIDs[itemID] = struct{}{}
-		waits = append(waits, pendingProcessWait{
-			processID: processID,
-			wait:      wait,
-		})
-	}
-	for processID, wait := range state.waitCarrierByProcess {
-		if keepProcessID != "" && processID == keepProcessID {
-			continue
-		}
-		itemID := strings.TrimSpace(wait.itemID)
-		if itemID == "" {
-			continue
-		}
-		if _, seen := seenItemIDs[itemID]; seen {
-			continue
-		}
-		if seenItemIDs == nil {
-			seenItemIDs = make(map[string]struct{})
-		}
-		seenItemIDs[itemID] = struct{}{}
-		waits = append(waits, pendingProcessWait{
-			processID: processID,
-			wait:      wait,
-		})
-	}
-	r.mu.Unlock()
-	for _, wait := range waits {
-		if err := r.settleCodexTerminalWaitCarrier(threadID, wait.wait.itemID); err != nil {
-			log.Printf("triage: settle terminal wait %s: %v", wait.wait.itemID, err)
-			continue
-		}
-		r.clearCodexPendingTerminalWaitState(threadID, wait.processID, wait.wait.itemID)
-		r.clearCodexTerminalWaitCarrierIfMatches(threadID, wait.processID, wait.wait.itemID)
-	}
-}
-
-func (r *Router) settleCodexTerminalWaitForProcess(threadID, processID string) error {
-	processID = strings.TrimSpace(processID)
-	if processID == "" {
-		return nil
-	}
-	var wait pendingTerminalWait
-	r.mu.Lock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state != nil {
-		if pending := state.pendingWaitByProcess[processID]; strings.TrimSpace(pending.itemID) != "" {
-			wait = pending
-		} else if carrier := state.waitCarrierByProcess[processID]; strings.TrimSpace(carrier.itemID) != "" {
-			wait = carrier
-		}
-	}
-	r.mu.Unlock()
-	if strings.TrimSpace(wait.itemID) == "" {
-		return nil
-	}
-	if err := r.settleCodexTerminalWaitCarrier(threadID, wait.itemID); err != nil {
-		return err
-	}
-	r.clearCodexPendingTerminalWaitState(threadID, processID, wait.itemID)
-	r.clearCodexTerminalWaitCarrierIfMatches(threadID, processID, wait.itemID)
-	return nil
-}
-
-func (r *Router) trackCodexPendingTerminalWait(threadID, processID, itemID string, turnIndex int, createdAt int64) bool {
-	processID = strings.TrimSpace(processID)
-	if processID == "" {
-		return false
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state == nil {
-		return false
-	}
-	tracker := codexUnifiedExecTrackerByProcessLocked(state, processID)
-	if tracker != nil {
-		state.pendingWaitByProcess[processID] = pendingTerminalWait{
-			itemID:    itemID,
-			turnIndex: turnIndex,
-			createdAt: createdAt,
-		}
-		return true
-	} else {
-		candidate := codexFirstUnboundUnifiedExecTrackerLocked(state)
-		if candidate != nil {
-			rebindCodexUnifiedExecProcessLocked(state, candidate, processID)
-			state.pendingWaitByProcess[processID] = pendingTerminalWait{
-				itemID:    itemID,
-				turnIndex: turnIndex,
-				createdAt: createdAt,
-			}
-			return true
-		}
-	}
-	return false
-}
-
-func (r *Router) rememberCodexTerminalWaitCarrier(threadID, processID, itemID string, turnIndex int, createdAt int64) {
-	processID = strings.TrimSpace(processID)
-	itemID = strings.TrimSpace(itemID)
-	if processID == "" || itemID == "" {
-		return
-	}
-	r.mu.Lock()
-	state := r.codexBackgroundForThread(threadID)
-	state.waitCarrierByProcess[processID] = pendingTerminalWait{
-		itemID:    itemID,
-		turnIndex: turnIndex,
-		createdAt: createdAt,
-	}
-	r.mu.Unlock()
-}
-
-func (r *Router) clearCodexTerminalWaitCarrierIfMatches(threadID, processID, itemID string) {
-	processID = strings.TrimSpace(processID)
-	itemID = strings.TrimSpace(itemID)
-	if processID == "" || itemID == "" {
-		return
-	}
-	r.mu.Lock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state != nil {
-		if wait := state.waitCarrierByProcess[processID]; strings.TrimSpace(wait.itemID) == itemID {
-			delete(state.waitCarrierByProcess, processID)
-		}
-	}
-	r.mu.Unlock()
-}
-
-func (r *Router) clearCodexPendingTerminalWaitState(threadID, processID, itemID string) {
-	processID = strings.TrimSpace(processID)
-	itemID = strings.TrimSpace(itemID)
-	r.mu.Lock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state != nil {
-		if processID != "" {
-			if wait := state.pendingWaitByProcess[processID]; strings.TrimSpace(wait.itemID) == itemID {
-				delete(state.pendingWaitByProcess, processID)
-			}
-		}
-	}
-	r.mu.Unlock()
-}
-
-func (r *Router) codexTerminalWaitItemIDForProcess(threadID, processID string, turnIndex int) string {
-	processID = strings.TrimSpace(processID)
-	if processID == "" {
-		return ""
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state == nil {
-		return ""
-	}
-	if wait := state.pendingWaitByProcess[processID]; wait.itemID != "" && wait.turnIndex == turnIndex {
-		return wait.itemID
-	}
-	if wait := state.waitCarrierByProcess[processID]; wait.itemID != "" && wait.turnIndex == turnIndex {
-		return wait.itemID
-	}
-	return ""
-}
-
 func (r *Router) hasCodexBackgroundTerminalForProcess(threadID, processID string) bool {
 	processID = strings.TrimSpace(processID)
 	if processID == "" {
@@ -496,26 +291,6 @@ func (r *Router) hasCodexBackgroundTerminalForProcess(threadID, processID string
 	}
 	tracker := codexUnifiedExecTrackerByProcessLocked(state, processID)
 	return tracker != nil && tracker.backgrounded
-}
-
-func (r *Router) settleCodexTerminalWaitCarrier(threadID, itemID string) error {
-	itemID = strings.TrimSpace(itemID)
-	if itemID == "" {
-		return nil
-	}
-	item, found, err := r.store.GetThreadItem(threadID, itemID)
-	if err != nil {
-		return fmt.Errorf("terminal wait carrier lookup %s: %w", itemID, err)
-	}
-	if !found || item.Kind != string(provider.ItemTerminalInteraction) {
-		return nil
-	}
-	if item.Status != statusRunning && item.Status != statusStreaming {
-		return nil
-	}
-	item.Status = statusCompleted
-	item.UpdatedAt = time.Now().UnixMilli()
-	return r.persistItem(item, nil)
 }
 
 func (r *Router) codexTerminalSummaryForProcess(threadID, processID string) string {
@@ -563,8 +338,6 @@ func rebindCodexUnifiedExecProcessLocked(state *codexBackgroundState, tracker *u
 	}
 	if tracker.processID != "" {
 		delete(state.unifiedExecByProcess, tracker.processID)
-		delete(state.pendingWaitByProcess, tracker.processID)
-		delete(state.waitCarrierByProcess, tracker.processID)
 	}
 	tracker.processID = processID
 	state.unifiedExecByProcess[processID] = tracker.launchID
@@ -619,8 +392,6 @@ func removeCodexUnifiedExecTrackerLocked(state *codexBackgroundState, tracker *u
 	}
 	if tracker.processID != "" {
 		delete(state.unifiedExecByProcess, tracker.processID)
-		delete(state.pendingWaitByProcess, tracker.processID)
-		delete(state.waitCarrierByProcess, tracker.processID)
 	}
 	delete(state.unifiedExec, tracker.launchID)
 }
@@ -665,7 +436,7 @@ func (r *Router) observeCodexCommandOutput(evt provider.ProviderEvent) bool {
 // observeCodexUnifiedExecComplete owns item/completed for tracked unified exec
 // startups. This mirrors Codex TUI: late completions still clear background
 // process state, but chat history only changes while the task indicator is
-// running. TerminalInteraction owns only the separate waited/interacted marker
+// running. TerminalInteraction owns only explicit stdin interaction markers.
 // rows.
 func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bool, error) {
 	itemID := strings.TrimSpace(eventItemID(evt))
@@ -679,9 +450,7 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 	exitCode := codexExitCodeFromMeta(evt.Meta)
 
 	var tracker unifiedExecTracker
-	var pendingWait pendingTerminalWait
 	handled := false
-	hasPendingWait := false
 	r.mu.Lock()
 	state := r.codexBackgroundIfPresent(evt.ThreadID)
 	now := eventTimestampMillis(evt)
@@ -700,24 +469,11 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 			live.output.Replace(evt.Content)
 		}
 		tracker = *live
-		if live.processID != "" {
-			if wait, ok := state.pendingWaitByProcess[live.processID]; ok {
-				pendingWait = wait
-				hasPendingWait = true
-			}
-		}
 		removeCodexUnifiedExecTrackerLocked(state, live)
 	}
 	r.mu.Unlock()
 	if !handled {
 		return false, nil
-	}
-	if hasPendingWait {
-		if err := r.settleCodexTerminalWaitCarrier(evt.ThreadID, pendingWait.itemID); err != nil {
-			return true, err
-		}
-		r.clearCodexPendingTerminalWaitState(evt.ThreadID, tracker.processID, pendingWait.itemID)
-		r.clearCodexTerminalWaitCarrierIfMatches(evt.ThreadID, tracker.processID, pendingWait.itemID)
 	}
 	r.emitBackgroundTasksChangedNudge(evt.ThreadID)
 	turnIndex, ok := r.activeRoundTurnIndex(evt.ThreadID)
@@ -759,113 +515,4 @@ func (r *Router) persistCodexUnifiedExecCommand(evt provider.ProviderEvent, trac
 	outputEvt.Content = output
 	outputEvt.Replace = true
 	return r.attachPayloadToItem(item, outputEvt, "command_output", item.Summary, true)
-}
-
-// ListLiveCodexBackgroundTasks returns transient Codex unified exec tray
-// rows. Pending foreground commands are included with IsBackground=false;
-// yielded PTYs are included with IsBackground=true. Completed commands leave
-// the live tray when typed item/completed removes the transient tracker.
-func (r *Router) ListLiveCodexBackgroundTasks(threadID string, _ int64, _ int64) []store.Item {
-	r.mu.Lock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state == nil {
-		r.mu.Unlock()
-		return nil
-	}
-	trackers := make([]unifiedExecTracker, 0, len(state.unifiedExec))
-	for _, tracker := range state.unifiedExec {
-		if tracker == nil {
-			continue
-		}
-		trackers = append(trackers, *tracker)
-	}
-	r.mu.Unlock()
-
-	sort.SliceStable(trackers, func(i, j int) bool {
-		if trackers[i].createdAt != trackers[j].createdAt {
-			return trackers[i].createdAt < trackers[j].createdAt
-		}
-		return trackers[i].launchID < trackers[j].launchID
-	})
-
-	items := make([]store.Item, 0, len(trackers))
-	for _, tracker := range trackers {
-		if strings.TrimSpace(tracker.parentID) != "" {
-			continue
-		}
-		launch := store.Item{
-			ID:           tracker.launchID,
-			ThreadID:     threadID,
-			TurnIndex:    0,
-			ItemIndex:    0,
-			Kind:         itemKindToolCall,
-			Role:         "assistant",
-			Status:       statusRunning,
-			Summary:      tracker.summary,
-			ParentID:     tracker.parentID,
-			IsBackground: tracker.backgrounded,
-			ToolName:     "command_execution",
-			Meta:         codexLiveUnifiedExecMeta(tracker.command, tracker.processID),
-			CreatedAt:    tracker.createdAt,
-			UpdatedAt:    tracker.updatedAt,
-		}
-		items = append(items, launch)
-	}
-	return items
-}
-
-func (r *Router) CountLiveCodexBackgroundTasks(threadID string) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	state := r.codexBackgroundIfPresent(threadID)
-	if state == nil {
-		return 0
-	}
-	count := 0
-	for _, item := range state.agents {
-		if codexRuntimeActive(item) {
-			count++
-		}
-	}
-	for _, tracker := range state.unifiedExec {
-		if tracker != nil && strings.TrimSpace(tracker.parentID) == "" {
-			count++
-		}
-	}
-	return count
-}
-
-// ThreadIDsWithLiveCodexBackgroundTasks snapshots the threads that currently
-// own active Codex agents or top-level unified-exec tasks. Project-wide
-// availability can take one router lock instead of probing every historical
-// thread independently.
-func (r *Router) ThreadIDsWithLiveCodexBackgroundTasks() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var ids []string
-	for threadID, st := range r.threads {
-		state := st.codexBackground
-		if state == nil {
-			continue
-		}
-		agentActive := false
-		for _, item := range state.agents {
-			if codexRuntimeActive(item) {
-				agentActive = true
-				break
-			}
-		}
-		if agentActive {
-			ids = append(ids, threadID)
-			continue
-		}
-		for _, tracker := range state.unifiedExec {
-			if tracker != nil && strings.TrimSpace(tracker.parentID) == "" {
-				ids = append(ids, threadID)
-				break
-			}
-		}
-	}
-	sort.Strings(ids)
-	return ids
 }

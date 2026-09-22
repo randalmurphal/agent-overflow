@@ -86,8 +86,9 @@ work. Triage may stamp `is_background=true` only from wire-typed
 signals:
 
 - A typed `TerminalInteraction` notification for an empty `write_stdin` poll
-  targets a `unifiedExecStartup` process, proving the model explicitly waited
-  on the live background PTY.
+  identifies a live `unifiedExecStartup` process after polling returns.
+  It does not establish when polling started or whether the model received
+  the result.
 - MultiAgentV1 `collabAgentToolCall` `spawn_agent` whose `agentsStates`
   reports a non-terminal child, or MultiAgentV2's canonical
   `subAgentActivity kind:"started"` after successful child creation. The V2
@@ -128,8 +129,11 @@ they are not written into transcript history at start time. Typed
 with the original item id only while a Codex wire round is active, matching
 Codex TUI timing. Raw `exec_command` output may enrich live process metadata,
 but it does not create, delay, or reorder command history. Empty `write_stdin`
-polls persist separate terminal-interaction marker rows only while the command
-tracker is still live.
+polls update process tracking without creating history rows or ending text
+streams. Non-empty stdin produces a completed interaction marker without
+storing the input bytes. Existing historical wait rows remain readable.
+Codex messages end on their explicit item completion or turn termination;
+concurrent command starts and completions do not end those messages.
 
 The retired `BackgroundClassifier` heuristic must not come back.
 Background authorization comes from the wire fields above; model

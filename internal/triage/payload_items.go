@@ -216,7 +216,6 @@ func (r *Router) flushCommandOutputPersistence(flush pendingStreamFlush) error {
 }
 
 func (r *Router) handleProposedPlan(evt provider.ProviderEvent) error {
-	r.observeCodexModelContent(evt.ThreadID)
 
 	now := eventTimestampMillis(evt)
 	metaJSON := BuildPayloadMeta("proposed_plan", evt)

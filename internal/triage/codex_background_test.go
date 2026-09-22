@@ -715,7 +715,7 @@ func TestCodexTerminalInteractionAfterCompletionDoesNotCreateDetachedWait(t *tes
 	}
 }
 
-func TestCodexTerminalInteractionWhileRunningAttachesCompletionBeforeNextText(t *testing.T) {
+func TestCodexTerminalPollPreservesCommandCompletionBeforeNextText(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -757,15 +757,8 @@ func TestCodexTerminalInteractionWhileRunningAttachesCompletionBeforeNextText(t 
 		t.Fatalf("tool complete: %v", err)
 	}
 
-	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
-	if len(waits) != 1 {
-		t.Fatalf("wait rows = %d, want 1", len(waits))
-	}
-	if waits[0].PayloadID != "" {
-		t.Fatalf("wait row should stay a marker; got payload %q", waits[0].PayloadID)
-	}
-	if waits[0].Status != statusCompleted {
-		t.Fatalf("wait carrier status = %q, want completed", waits[0].Status)
+	if waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction)); len(waits) != 0 {
+		t.Fatalf("empty poll created history: %+v", waits)
 	}
 	completion, found, err := st.GetThreadItem("t1", "cmd-bg")
 	if err != nil || !found {
@@ -791,7 +784,7 @@ func TestCodexTerminalInteractionWhileRunningAttachesCompletionBeforeNextText(t 
 	}
 }
 
-func TestCodexTerminalInteractionDoesNotAttachAfterModelMovesOn(t *testing.T) {
+func TestCodexTerminalPollAfterModelContentCreatesNoHistory(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -839,19 +832,12 @@ func TestCodexTerminalInteractionDoesNotAttachAfterModelMovesOn(t *testing.T) {
 		t.Fatalf("tool complete: %v", err)
 	}
 
-	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
-	if len(waits) != 1 {
-		t.Fatalf("wait rows = %d, want 1", len(waits))
-	}
-	if waits[0].PayloadID != "" {
-		t.Fatalf("stale wait row was mutated with payload %q", waits[0].PayloadID)
-	}
-	if waits[0].Status != statusCompleted {
-		t.Fatalf("stale wait status = %q, want completed", waits[0].Status)
+	if waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction)); len(waits) != 0 {
+		t.Fatalf("empty poll created history: %+v", waits)
 	}
 }
 
-func TestCodexTerminalInteractionTurnCompleteSettlesPendingWait(t *testing.T) {
+func TestCodexTerminalPollTurnCompleteHasNoHistory(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -877,12 +863,8 @@ func TestCodexTerminalInteractionTurnCompleteSettlesPendingWait(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("terminal interaction: %v", err)
 	}
-	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
-	if len(waits) != 1 {
-		t.Fatalf("wait rows = %d, want 1", len(waits))
-	}
-	if waits[0].Status != statusRunning {
-		t.Fatalf("wait status before turn complete = %q, want running", waits[0].Status)
+	if waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction)); len(waits) != 0 {
+		t.Fatalf("empty poll created history: %+v", waits)
 	}
 
 	if err := router.Handle(provider.ProviderEvent{
@@ -892,19 +874,15 @@ func TestCodexTerminalInteractionTurnCompleteSettlesPendingWait(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("turn complete: %v", err)
 	}
-	wait, found, err := st.GetThreadItem("t1", waits[0].ID)
-	if err != nil || !found {
-		t.Fatalf("wait row missing: found=%v err=%v", found, err)
-	}
-	if wait.Status != statusCompleted {
-		t.Fatalf("wait status after turn complete = %q, want completed", wait.Status)
+	if waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction)); len(waits) != 0 {
+		t.Fatalf("turn completion created poll history: %+v", waits)
 	}
 	if siblings := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(siblings) != 0 {
-		t.Fatalf("turn-complete wait settlement should not create completion rows: %+v", siblings)
+		t.Fatalf("turn completion should not fabricate command completion rows: %+v", siblings)
 	}
 }
 
-func TestCodexTerminalInteractionKeepsWaitOpenAcrossLaterToolStart(t *testing.T) {
+func TestCodexTerminalPollPreservesLaterCommandOutput(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -961,15 +939,8 @@ func TestCodexTerminalInteractionKeepsWaitOpenAcrossLaterToolStart(t *testing.T)
 		t.Fatalf("tool complete: %v", err)
 	}
 
-	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
-	if len(waits) != 1 {
-		t.Fatalf("wait rows = %d, want 1", len(waits))
-	}
-	if waits[0].PayloadID != "" {
-		t.Fatalf("wait row should stay a marker; got payload %q", waits[0].PayloadID)
-	}
-	if waits[0].Status != statusCompleted {
-		t.Fatalf("wait status = %q, want completed", waits[0].Status)
+	if waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction)); len(waits) != 0 {
+		t.Fatalf("empty poll created history: %+v", waits)
 	}
 	completion, found, err := st.GetThreadItem("t1", "cmd-bg")
 	if err != nil || !found {
@@ -995,7 +966,7 @@ func TestCodexTerminalInteractionKeepsWaitOpenAcrossLaterToolStart(t *testing.T)
 	}
 }
 
-func TestCodexTerminalInteractionAttachesWhenProcessIDArrivesOnCompletion(t *testing.T) {
+func TestCodexTerminalPollPreservesCompletionWithLateProcessID(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createCodexBackgroundTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -1037,12 +1008,8 @@ func TestCodexTerminalInteractionAttachesWhenProcessIDArrivesOnCompletion(t *tes
 		t.Fatalf("tool complete: %v", err)
 	}
 
-	waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction))
-	if len(waits) != 1 {
-		t.Fatalf("wait rows = %d, want 1", len(waits))
-	}
-	if waits[0].PayloadID != "" {
-		t.Fatalf("wait row should stay a marker; got payload %q", waits[0].PayloadID)
+	if waits := findItemsByKind(t, st, "t1", string(provider.ItemTerminalInteraction)); len(waits) != 0 {
+		t.Fatalf("empty poll created history: %+v", waits)
 	}
 	completion, found, err := st.GetThreadItem("t1", "cmd-bg")
 	if err != nil || !found {
