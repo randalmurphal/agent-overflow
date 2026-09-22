@@ -69,7 +69,9 @@ function runs(nodes: readonly TimelineNode[]): ActivityRunNode[] {
 }
 
 function page(items: Item[]) {
-  return { items, oldestTurnIndex: 1, newestTurnIndex: 1, hasMore: false, hasMoreOlder: false, hasMoreNewer: false };
+  return { items, oldestTurnIndex: 1, newestTurnIndex: 1, hasMore: false, hasMoreOlder: false, hasMoreNewer: false,
+    oldestCursor: { turnIndex: 1, itemIndex: items[0].itemIndex, itemId: items[0].id },
+    newestCursor: { turnIndex: 1, itemIndex: items.at(-1)!.itemIndex, itemId: items.at(-1)!.id } };
 }
 
 /**

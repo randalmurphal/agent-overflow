@@ -154,6 +154,36 @@ describe('cold-open window sync', () => {
     });
   });
 
+  it('keeps cached rows visible until a byte-limited replacement covers their window, without attesting mixed reads', async () => {
+    const thread = makeThread({ id: THREAD_ID });
+    const away = makeThread({ id: 'away' });
+    const original = Array.from({ length: 60 }, (_, i) => row(`i${i}`, { rev: 1 }));
+    const fresh = original.map(item => ({ ...item, summary: `${item.summary} refreshed`, rev: 2 }));
+    const pane = createThreadPane();
+    installSync((_request, id) => ({ page: page(id === THREAD_ID ? original : []) }));
+    await pane.switchThread(thread);
+    await pane.switchThread(away);
+
+    const older = deferred<PagedItems>();
+    const read = setBindingMock('ListItemsBeforeCursor', () => older.promise);
+    installSync(() => ({ rev: 2, page: { ...page(fresh.slice(-5)), hasMore: true, hasMoreOlder: true } }));
+    const switching = pane.switchThread(thread);
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    expect(pane.items.map(item => item.summary)).toEqual(original.map(item => item.summary));
+    older.resolve(page(fresh.slice(0, -5)));
+    await switching;
+    expect(pane.items.map(item => item.summary)).toEqual(fresh.map(item => item.summary));
+
+    installSync(() => ({ page: page([]) }));
+    await pane.switchThread(away);
+    const requests = installSync(() => ({ status: 'fresh', rev: 3 }));
+    await pane.switchThread(thread);
+    expect(requests[0]).toMatchObject({ haveEpoch: UNKNOWN_REV, haveRev: UNKNOWN_REV,
+      haveWindow: { count: 60, oldestItemId: 'i0', newestItemId: 'i59' } });
+    expect(pane.items.map(item => item.summary)).toEqual(fresh.map(item => item.summary));
+    pane.clear();
+  });
+
   it('paints the replica window before the sync answers', async () => {
     await putReplicaWindow(THREAD_ID, replicaBody([row('i0'), row('i1')], 3, 11));
     const painted: string[][] = [];

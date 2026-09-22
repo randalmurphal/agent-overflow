@@ -791,9 +791,11 @@ port; temporary token attachment does not create a durable pairing.
    as the live window** (via `reconcileItemWindow` so unchanged rows
    keep `===` references and don't re-render). Replica rows are
    paint-only, and none survive into the live window past the reconcile.
-   This is what makes write-back safe: the persisted rows always
-   descend from the attested page. Concurrent item mutations or active
-   reveal cursors prevent the merged window from being attested (§3.4).
+   A byte-limited page first expands through fresh bounded reads to cover
+   the retained window, as described in [timeline restoration](frontend-scroll.md).
+   When those reads change the page, the combined window is not attested
+   by the initial sync stamp. Concurrent item mutations or active reveal
+   cursors also prevent attestation (§3.4).
    Merging replica scrollback from an older attestation under a newer
    stamp is the one composition that could pin a stale row under a
    false `fresh`, and this rule makes it unrepresentable. `fresh`
@@ -841,7 +843,7 @@ the freshly returned window, so there is nothing stale to page into.
 | Scenario | Outcome |
 |---|---|
 | Replica stale, additive-only changes (`stale`) | Instant paint, one window fetch, in-range reconcile; missing tail rows appear on reconcile |
-| Replica references deleted/moved rows (`rewritten`) | Paint may briefly show removed content on slow links (hidden by the warm gate on fast ones); hard-replaced on response; scrollback outside window dropped |
+| Replica references deleted/moved rows (`rewritten`) | Paint may briefly show removed content on slow links (hidden by the warm gate on fast ones); replaced after the retained extent is refreshed; deleted rows dropped |
 | Client stamp lost (gap, missed events) | Understated rev ⇒ `stale` ⇒ one redundant fetch. Never a false `fresh` |
 | Backend DB replaced (`RestoreFrom`, future restore paths) | Generation mismatch on manifest ⇒ replica cleared wholesale |
 | Thread deleted while cached | The deleting client drops the entry on the spot; any other client drops it on the `gone` answer (§4: there is no deletion event) |

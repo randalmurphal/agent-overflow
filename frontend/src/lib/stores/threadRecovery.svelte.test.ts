@@ -155,7 +155,9 @@ it('gap recovery replaces a pre-existing streaming row with its completed snapsh
   projectTurnStarted(threadId, 'old-turn', 75, 100);
   const finalRow = { ...oldRow, status: 'completed' as const, summary: 'finished reasoning', updatedAt: 200 };
   const finalAnswer = makeItem({ id: 'answer', threadId, turnIndex: 75, itemIndex: 63, kind: 'assistant_text', status: 'completed', summary: 'final answer' });
-  setBindingMock('ListThreadSliceAround', async () => ({ items: [finalRow, finalAnswer], oldestTurnIndex: 75, newestTurnIndex: 75, hasMore: false, hasMoreOlder: false, hasMoreNewer: false }));
+  setBindingMock('ListThreadSliceAround', async () => ({ items: [finalRow, finalAnswer], oldestTurnIndex: 75, newestTurnIndex: 75, hasMore: false, hasMoreOlder: false, hasMoreNewer: false,
+    oldestCursor: { turnIndex: 75, itemIndex: 22, itemId: finalRow.id },
+    newestCursor: { turnIndex: 75, itemIndex: 63, itemId: finalAnswer.id } }));
   setBindingMock('GetThreadLiveState', async () => ({ threadId, activeTurn: null, queueItems: [], flushedItems: [] }));
   await pane.refreshFromBackend(true);
   expect(getFlushedForThread(threadId)).toEqual([]);

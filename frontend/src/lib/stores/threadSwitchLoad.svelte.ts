@@ -1,5 +1,4 @@
-import { groupActivityRunSpans } from '../utils/activityRunSpans';
-import { refreshRetainedRunWindows } from './threadRetainedRunRefresh';
+import { captureRetainedTimelineWindow, refreshRetainedTimelineWindow } from './threadRetainedTimelineRefresh';
 import { awaitBackendReplay } from './transportRecovery';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
@@ -1174,6 +1173,8 @@ export function createThreadSwitchLoad(
       const believed = getBackendIdentity(backend);
       let sentStamp = haveStamp;
       let sentWindow = paintedWindow();
+      const retained = captureRetainedTimelineWindow(options.getItems(), options.timelineWindow, options.activityRuns,
+        !sliceAnchorId && !options.timelineWindow.hasMoreNewer);
       let response = await ask(sentStamp, sentWindow);
       if (gen !== options.getSwitchGeneration()) return;
       // The response carries the backend's LIVE generation — the one
@@ -1217,9 +1218,8 @@ export function createThreadSwitchLoad(
       }
       let pageAttested = true;
       if (response.page && !lineageChanged) {
-        const retainedPage = await refreshRetainedRunWindows(threadId, response.page,
-          groupActivityRunSpans(options.activityRuns.loadedItems(options.getItems()), item => options.activityRuns.isLoadedMember(item.id)), timelinePageShape(),
-          () => gen === options.getSwitchGeneration());
+        const retainedPage = await refreshRetainedTimelineWindow({ threadId, page: response.page, retained,
+          shape: timelinePageShape(), isCurrent: () => gen === options.getSwitchGeneration() });
         if (gen !== options.getSwitchGeneration()) return;
         pageAttested = retainedPage === response.page;
         response = { ...response, page: retainedPage };
@@ -1598,6 +1598,8 @@ export function createThreadSwitchLoad(
         // `retainedBudget` is the TOTAL it walks; each RPC asks at most
         // `SLICE_AROUND_ITEM_BUDGET` rows, the same row ceiling every other
         // page uses under the shape's byte ceiling.
+        const retained = captureRetainedTimelineWindow(options.getItems(), options.timelineWindow, options.activityRuns,
+          !anchorItemId && !options.timelineWindow.hasMoreNewer);
         const retainedBudget = Math.max(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS, options.getItems().filter(item => !item.parentId).length);
         const ceiling = options.timelineWindow.newestLoadedCursor;
         const shape = timelinePageShape();
@@ -1620,8 +1622,7 @@ export function createThreadSwitchLoad(
             runs: mergeRunStubs(paged.runs, older.runs) };
           remaining -= older.items.filter(item => !item.parentId).length;
         }
-        paged = await refreshRetainedRunWindows(currentThread.id, paged,
-          groupActivityRunSpans(options.activityRuns.loadedItems(options.getItems()), item => options.activityRuns.isLoadedMember(item.id)), shape, refreshIsCurrent);
+        paged = await refreshRetainedTimelineWindow({ threadId: currentThread.id, page: paged, retained, shape, isCurrent: refreshIsCurrent });
       } catch (err) {
         if (!refreshIsCurrent()) return;
         console.error('Failed to refresh thread items after gap:', err);

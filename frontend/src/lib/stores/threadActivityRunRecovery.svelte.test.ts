@@ -14,6 +14,8 @@ it('recovers a stale run through an authoritative pane refresh even when its anc
     const page = vi.fn(async () => ({
       items: [activityRunRow('b', 2, { summary: refreshed ? 'fresh' : 'cached' }), activityRunRow('c', 3), activityRunRow('d', 4), activityRunProse('end', 6)],
       oldestTurnIndex: 0, newestTurnIndex: 0, hasMoreOlder: false, hasMoreNewer: false, runs: [activityRunStub()],
+      oldestCursor: { turnIndex: 0, itemIndex: 1, itemId: 'a' },
+      newestCursor: { turnIndex: 0, itemIndex: 6, itemId: 'end' },
     }));
     setBindingMock('ListThreadSliceAround', page);
     await pane.switchThread(makeThread({ id: 't' }));

@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ThreadFromPRDialog from './ThreadFromPRDialog.svelte';
@@ -173,7 +173,7 @@ describe('<ThreadFromPRDialog>', () => {
     expect(binding.mock.calls[0][3]).toBe('');
     // forge id propagates as the 5th positional arg.
     expect(binding.mock.calls[0][4]).toBe('github');
-    expect(closed).toBe(1);
+    await vi.waitFor(() => expect(closed).toBe(1));
   });
 
   it('passes an explicit model when the optional model field is filled', async () => {
@@ -248,7 +248,7 @@ describe('<ThreadFromPRDialog>', () => {
     expect(binding.mock.calls[0][0]).toBe('group/sub/repo');
     expect(binding.mock.calls[0][1]).toBe(9);
     expect(binding.mock.calls[0][4]).toBe('gitlab');
-    expect(closed).toBe(1);
+    await vi.waitFor(() => expect(closed).toBe(1));
   });
 
   it('surfaces the error message inline when CreateThreadFromPR rejects', async () => {
@@ -417,7 +417,7 @@ describe('<ThreadFromPRDialog>', () => {
     await flush();
     await fireEvent.click(getByTestId('thread-from-pr-submit'));
     await flush(10);
-    expect(closed).toBe(1);
+    await vi.waitFor(() => expect(closed).toBe(1));
     expect(pane.thread?.id).toBe('happy');
   });
 });

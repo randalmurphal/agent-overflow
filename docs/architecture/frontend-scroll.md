@@ -683,17 +683,16 @@ rather than a missing case:
   `paintSource` is the discriminator, and it rides the cold-load trace
   alongside the sync verdict.
 
-One deliberate behavior change rides the sync-based cold open: a warm
-re-entry to a thread the user had deep-paged (say 800 rows in the L1
-snapshot) collapses back to the slice budget (~200 around the anchor)
-whenever the sync answer is not `fresh`. The page replaces the painted
-window, and rows outside it are re-fetched lazily on scroll like any
-cold open. Keeping them would merge rows from an older attestation
-under a newer stamp, the one composition the replica's understate rule
-forbids (`docs/architecture/thread-replica-sync.md` §6.1 step 4), and it
-matches what the transport-gap `refreshFromBackend` path already does.
-A `fresh` answer, the common case for an unchanged thread, keeps the
-full painted window.
+A warm sync that returns a page refreshes the retained timeline extent
+before replacing visible rows. `threadRetainedTimelineRefresh` assembles
+bounded pages off-screen, then refreshes explicitly loaded activity-run
+members. This prevents a byte-limited first page from shrinking the
+transcript below the viewport while older pages arrive. Reader windows
+retain their coordinates; tail catch-up stops at the prior floor or its
+retained row budget. Only freshly read rows enter the replacement.
+A multi-read window is not attested by the initial sync stamp; subsequent
+sync verifies its held-window digest. A `fresh` answer keeps the painted
+window without additional reads.
 
 The chat adapter maps it to `armWarmupWithReset`, not the bare controller
 call: the incoming rows' markdown has not typeset yet, so the
