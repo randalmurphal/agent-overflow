@@ -48,6 +48,7 @@ export interface TimelineRestoreOptions {
   getScrollEl(): HTMLDivElement | undefined;
   getRevealedNodes(): TimelineNode[];
   getGroupedNodes(): TimelineNode[];
+  windowVerified(): boolean;
   findTimelineNodeIndex(itemId: string): number;
   /**
    * Wired to module 2's `maybePersistSizePriorsInterim` — the RATE-BOUND
@@ -313,6 +314,7 @@ export function createTimelineRestore(options: TimelineRestoreOptions): Timeline
     const loading = pane.loading;
     if (!threadId) return;
     if (restoredThreadId === threadId) return;
+    if (!options.windowVerified()) return;
     // Restore as soon as we have items to anchor against — that's the
     // cache-hit fast path. For the cache-miss case where the thread
     // turned out to be genuinely empty, fall through when loading

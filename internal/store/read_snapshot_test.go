@@ -1,6 +1,62 @@
 package store
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+)
+
+func TestReadSnapshotContextInterruptsStatement(t *testing.T) {
+	s := newTestStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
+	_, err := readSnapshotContext(ctx, s.reader(), "cancelled history", func(q sqlQueryer) (int, error) {
+		var sum int
+		err := q.QueryRow(`WITH RECURSIVE n(x) AS (
+			VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<1000000
+		) SELECT SUM(x) FROM n`).Scan(&sum)
+		return sum, err
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("statement survived its deadline: %v", err)
+	}
+	var probe int
+	if err := s.reader().QueryRowContext(t.Context(), "SELECT 1").Scan(&probe); err != nil || probe != 1 {
+		t.Fatalf("read pool unavailable after cancelled read: probe=%d err=%v", probe, err)
+	}
+}
+
+func TestTimelineReadsHonorCallerCancellation(t *testing.T) {
+	s := newTestStore(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	reads := []struct {
+		name string
+		read func() error
+	}{
+		{"slice", func() error { _, err := s.ListThreadSliceAround(ctx, "t", "", 20, 5, TimelineSelection{}); return err }},
+		{"before", func() error {
+			_, err := s.ListItemsBeforeCursor(ctx, "t", TimelineCursor{TurnIndex: 0}, 20, 5, TimelineSelection{})
+			return err
+		}},
+		{"after", func() error {
+			_, err := s.ListItemsAfterCursor(ctx, "t", TimelineCursor{TurnIndex: 0}, 20, 5, TimelineSelection{})
+			return err
+		}},
+		{"members", func() error {
+			_, err := s.ListActivityRunMembers(ctx, "t", ActivityRunMembersRequest{RunFirstItemID: "r", Direction: ActivityRunMembersBefore, Limit: 5})
+			return err
+		}},
+	}
+	for _, tc := range reads {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.read(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("timeline read ignored caller cancellation: %v", err)
+			}
+		})
+	}
+}
 
 func TestReadSnapshotSurvivesConcurrentHistoryWrite(t *testing.T) {
 	s := newTestStore(t)

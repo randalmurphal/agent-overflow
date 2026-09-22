@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -53,8 +54,43 @@ type ActivityRunMembersRequest struct {
 // ActivityRunMembers is one answer: the rows to mount, and the stub that
 // describes the run for the span the caller holds after mounting them.
 type ActivityRunMembers struct {
-	Items []Item          `json:"items"`
-	Stub  ActivityRunStub `json:"stub"`
+	Items       []Item          `json:"items"`
+	Stub        ActivityRunStub `json:"stub"`
+	heldFirstID string
+	heldLastID  string
+	direction   string
+}
+
+// TrimFresh folds byte-rejected new members into the already computed stub.
+// The existing held span remains mounted for extensions; an around request
+// replaces it. This gives the app its smaller exact answer without scanning
+// the whole run a second time after it measures projected item bytes.
+func (members ActivityRunMembers) TrimFresh(from, to int) (ActivityRunMembers, error) {
+	if from < 0 || from >= to || to > len(members.Items) {
+		return ActivityRunMembers{}, fmt.Errorf("store: invalid activity member trim %d..%d of %d", from, to, len(members.Items))
+	}
+	first := members.Items[from].ID
+	last := members.Items[to-1].ID
+	switch members.direction {
+	case ActivityRunMembersBefore:
+		if members.heldLastID != "" {
+			last = members.heldLastID
+		}
+	case ActivityRunMembersAfter:
+		if members.heldFirstID != "" {
+			first = members.heldFirstID
+		}
+	case ActivityRunMembersAround:
+	default:
+		return ActivityRunMembers{}, fmt.Errorf("store: invalid activity member trim direction %q", members.direction)
+	}
+	trimmed, ok := members.Stub.trimShipped(map[string]struct{}{first: {}, last: {}})
+	if !ok || trimmed.LoadedFirstItemID != first || trimmed.LoadedLastItemID != last {
+		return ActivityRunMembers{}, fmt.Errorf("store: activity member trim lost span %s..%s", first, last)
+	}
+	members.Items = members.Items[from:to]
+	members.Stub = trimmed
+	return members, nil
 }
 
 // Directions for ActivityRunMembersRequest.
@@ -79,8 +115,8 @@ const maxActivityRunMemberLimit = 500
 // and refuses the request unless the run still starts there and every id
 // the caller claims to hold is a member. Nothing the caller sends is
 // trusted as a description of the run.
-func (s *Store) ListActivityRunMembers(threadID string, req ActivityRunMembersRequest) (ActivityRunMembers, error) {
-	return readSnapshot(s.reader(), "activity members read", func(q sqlQueryer) (ActivityRunMembers, error) {
+func (s *Store) ListActivityRunMembers(ctx context.Context, threadID string, req ActivityRunMembersRequest) (ActivityRunMembers, error) {
+	return readSnapshotContext(ctx, s.reader(), "activity members read", func(q sqlQueryer) (ActivityRunMembers, error) {
 		return s.listActivityRunMembers(q, threadID, req)
 	})
 }
@@ -111,13 +147,20 @@ func (s *Store) listActivityRunMembers(q sqlQueryer, threadID string, req Activi
 	// the members past the old span's edge, a replacement returns the new
 	// span, a stub refresh (Limit 0) returns none. The stub describes the
 	// whole new span either way.
-	items, err := s.hydratePageItems(q, threadID, activityRunMemberIDs(newlyMounted(rows, from, to, req)))
+	fresh, err := newlyMounted(rows, from, to, req)
+	if err != nil {
+		return ActivityRunMembers{}, err
+	}
+	items, err := s.hydratePageItems(q, threadID, activityRunMemberIDs(fresh))
 	if err != nil {
 		return ActivityRunMembers{}, err
 	}
 	return ActivityRunMembers{
-		Items: items,
-		Stub:  buildActivityRunStub(rows, from, to),
+		Items:       items,
+		Stub:        buildActivityRunStub(rows, from, to),
+		heldFirstID: req.LoadedFirstItemID,
+		heldLastID:  req.LoadedLastItemID,
+		direction:   req.Direction,
 	}, nil
 }
 
@@ -150,15 +193,21 @@ func (s *Store) activityRunMembers(q sqlQueryer, threadID, firstItemID string, s
 // that are not members, or an inverted pair, mean the caller's picture and
 // the store's have diverged and every count derived from either is wrong.
 func activityRunSpan(threadID string, rows []activityScanRow, req ActivityRunMembersRequest) (int, int, error) {
-	index := make(map[string]int, len(rows))
+	first, last, center := -1, -1, -1
 	for i, row := range rows {
-		index[row.ID] = i
+		if req.LoadedFirstItemID != "" && row.ID == req.LoadedFirstItemID {
+			first = i
+		}
+		if req.LoadedLastItemID != "" && row.ID == req.LoadedLastItemID {
+			last = i
+		}
+		if req.AroundItemID != "" && row.ID == req.AroundItemID {
+			center = i
+		}
 	}
 	loadedFrom, loadedTo := -1, -1
 	if req.LoadedFirstItemID != "" || req.LoadedLastItemID != "" {
-		first, firstOK := index[req.LoadedFirstItemID]
-		last, lastOK := index[req.LoadedLastItemID]
-		if !firstOK || !lastOK || first > last {
+		if first < 0 || last < 0 || first > last {
 			return 0, 0, fmt.Errorf(
 				"store: loaded span %s..%s is not a span of activity run %s/%s: %w",
 				req.LoadedFirstItemID, req.LoadedLastItemID, threadID, req.RunFirstItemID,
@@ -169,8 +218,7 @@ func activityRunSpan(threadID string, rows []activityScanRow, req ActivityRunMem
 
 	switch req.Direction {
 	case ActivityRunMembersAround:
-		center, ok := index[req.AroundItemID]
-		if !ok {
+		if center < 0 {
 			return 0, 0, fmt.Errorf(
 				"store: %s is not a member of activity run %s/%s: %w",
 				req.AroundItemID, threadID, req.RunFirstItemID, ErrActivityRunStale)
@@ -225,33 +273,28 @@ func activityRunSpan(threadID string, rows []activityScanRow, req ActivityRunMem
 // newlyMounted is the part of the resolved span [from, to) the caller does
 // not already hold. "before" and "after" extend a held span, so the rows
 // inside it are excluded; "around" replaces the span and ships all of it.
-func newlyMounted(rows []activityScanRow, from, to int, req ActivityRunMembersRequest) []activityScanRow {
+func newlyMounted(rows []activityScanRow, from, to int, req ActivityRunMembersRequest) ([]activityScanRow, error) {
 	if req.Limit == 0 {
-		return nil
+		return nil, nil
 	}
 	if req.Direction == ActivityRunMembersAround || req.LoadedFirstItemID == "" {
-		return rows[from:to]
+		return rows[from:to], nil
 	}
-	held := map[string]struct{}{}
-	inSpan := false
-	for _, row := range rows[from:to] {
-		if row.ID == req.LoadedFirstItemID {
-			inSpan = true
-		}
-		if inSpan {
-			held[row.ID] = struct{}{}
-		}
-		if row.ID == req.LoadedLastItemID {
-			break
+	if req.Direction == ActivityRunMembersBefore {
+		for i := from; i < to; i++ {
+			if rows[i].ID == req.LoadedFirstItemID {
+				return rows[from:i], nil
+			}
 		}
 	}
-	fresh := make([]activityScanRow, 0, to-from-len(held))
-	for _, row := range rows[from:to] {
-		if _, ok := held[row.ID]; !ok {
-			fresh = append(fresh, row)
+	if req.Direction == ActivityRunMembersAfter {
+		for i := from; i < to; i++ {
+			if rows[i].ID == req.LoadedLastItemID {
+				return rows[i+1 : to], nil
+			}
 		}
 	}
-	return fresh
+	return nil, fmt.Errorf("store: loaded activity span has no extension boundary: %w", ErrActivityRunStale)
 }
 
 // clampActivityRunSpan is the stub-only answer's span: whatever the caller

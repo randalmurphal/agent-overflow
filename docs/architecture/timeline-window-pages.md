@@ -60,7 +60,15 @@ imported history use indexed physical arms.
 
 Scoped pages also carry root identity and the latest execution's lifecycle
 context, even when no transcript rows exist or a held window verifies fresh.
-The pane and each tray digest own separate windows, run state and row leases.
+Inline cards select `DigestItemID`, a launch or immutable completion, with the
+`timeline.digests.v1` capability. The server applies the execution bounds before
+paging and includes only the initial prompt, tools, errors, relevant notices
+and the latest answer. Scope context carries those bounds for live-event
+admission. Claude resume prompts divide rounds; completion timestamps or Codex
+child coordinates bound detached executions.
+
+The pane, each inline card and each tray digest own separate windows, run state
+and row leases. Collapsing a card releases its window.
 Their history resources share ordered item events and backend recovery with
 the main thread. Main-thread pruning therefore cannot evict scoped content.
 
@@ -140,8 +148,7 @@ page) composes the same way:
    rev, payload kind, json_extract(meta,'$.mcp')`, and the file-row
    expressions of §4. No `summary`, no full `meta`, no payload body. The
    chunks stream, but a run's scan rows stay in memory for the length of
-   one composition (the pairing rule needs the whole membership), about
-   100 bytes per member. A run longer than `maxActivityRunScanRows`
+   one composition (the pairing rule needs the whole membership). A run longer than `maxActivityRunScanRows`
    (100,000) is an error, not a truncated stub.
    A cursor pager whose first row continues a run that started at or
    before the cursor expands that run whole: the page range crosses the
@@ -200,7 +207,7 @@ on every page; the row budget stays the SQL ceiling.
 // ListActivityRunMembers returns up to `limit` members of one run adjacent
 // to the caller's loaded span, plus the stub for the span the caller holds
 // after this call. limit 0 refreshes the stub only.
-func (a *App) ListActivityRunMembers(threadID string, req ActivityRunMembersRequest) (ActivityRunMembers, error)
+func (a *App) ListActivityRunMembers(ctx context.Context, threadID string, req ActivityRunMembersRequest) (ActivityRunMembers, error)
 
 type ActivityRunMembersRequest struct {
     RunFirstItemID    string
@@ -226,10 +233,11 @@ loaded span rather than extending it (the previous span's rows become
 unshipped and are described by the returned stub). `Shape` lives on the
 app-level request only; the store ships full rows and the app projects and
 trims them. A response may therefore carry fewer than `Limit` members: the
-app trims by `Shape.MaxBytes` from the end adjacent to the caller's span
-and re-asks the store at the limit that fits, rather than dropping rows
-from an answer whose stub would then describe a span the caller does not
-hold. One member always ships, so a boundary can always advance. The server validates that the run still starts at
+app trims by `Shape.MaxBytes` from the end adjacent to the caller's span;
+the store folds the dropped rows into the stub already computed, so the
+answer describes exactly what the caller will hold without another full
+run scan. One member always ships, so a boundary can always advance. The
+server validates that the run still starts at
 `RunFirstItemID` and that the loaded span ids are members; otherwise it
 returns an error the pane reports and follows with a window reload.
 

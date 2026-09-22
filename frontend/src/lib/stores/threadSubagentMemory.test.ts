@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createThreadSubagentMemory } from './threadSubagentMemory';
 import { createThreadPane } from './thread.svelte';
-import type { Item, Thread } from '../types/models';
+import type { Item } from '../types/models';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import { installPaneMocks, makeItem, makeThread } from '../../test/helpers/chat';
 
@@ -50,8 +50,6 @@ function childItem(overrides: Partial<Item> = {}): Item {
 function makeMemoryHarness(initial: readonly Item[] = []) {
   let items: Item[] = [...initial];
   let index = new Map<string, number>();
-  let switchGeneration = 0;
-  let thread: Thread | null = makeThread({ id: THREAD_ID });
   const expandedGroups = new Set<string>();
 
 
@@ -63,6 +61,7 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
 
   const memory = createThreadSubagentMemory({
     getItems: () => items,
+    getThreadId: () => THREAD_ID,
     getItemIndex: (itemId) => index.get(itemId),
     replaceTimelineItems: (next) => {
       install(next);
@@ -73,9 +72,6 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
       if (dropped.length > 0) install(items.filter((it) => !shouldDrop(it)));
       return dropped;
     },
-    getThread: () => thread,
-    getSwitchGeneration: () => switchGeneration,
-    isSubagentGroupExpanded: (groupKey) => expandedGroups.has(groupKey),
   });
 
   return {
@@ -85,10 +81,6 @@ function makeMemoryHarness(initial: readonly Item[] = []) {
     },
     install,
     expandedGroups,
-    setThread(next: Thread | null) {
-      thread = next;
-      switchGeneration += 1;
-    },
   };
 }
 
@@ -129,9 +121,16 @@ describe('threadSubagentMemory swallow ledger', () => {
       childItem({ status: 'completed', summary: 'ran the build' }),
     ]);
 
-    await expect(harness.memory.hydrateChildren('anchor')).resolves.toBe(true);
+    harness.memory.mountNavigationItems([childItem({ status: 'completed', summary: 'ran the build' })]);
     expect(harness.items.some((it) => it.id === 'child-1')).toBe(true);
     expect(harness.memory.isSwallowedChild('child-1')).toBe(false);
+  });
+
+  it('rejects navigation rows from a different thread without changing folds or items', () => {
+    const harness = makeMemoryHarness([anchorItem()]);
+    const foreign = childItem({ threadId: 'other' });
+    expect(() => harness.memory.mountNavigationItems([foreign])).toThrow('current thread');
+    expect(harness.items.map(it => it.id)).toEqual(['anchor']);
   });
 
   it('clears the swallow set on a fresh-thread reset', () => {
@@ -370,7 +369,7 @@ describe('threadSubagentMemory anchors every launch kind', () => {
     });
   });
 
-  it('keeps a child loaded while its card is expanded, whichever kind the card is', () => {
+  it('folds a settled child even while its independent card is expanded', () => {
     const anchor = forkedSkill();
     const child = childItem({ parentId: 'skill-1', status: 'completed' });
     const harness = makeMemoryHarness([anchor, child]);
@@ -378,8 +377,8 @@ describe('threadSubagentMemory anchors every launch kind', () => {
 
     harness.memory.evictSettledChildren([child]);
 
-    expect(harness.items.map((it) => it.id)).toEqual(['skill-1', 'child-1']);
-    expect(harness.memory.aggregate('skill-1')).toBeUndefined();
+    expect(harness.items.map((it) => it.id)).toEqual(['skill-1']);
+    expect(harness.memory.aggregate('skill-1')?.evictedCount).toBe(1);
   });
 
   it('folds settled rows when their inline card collapses', () => {
@@ -488,21 +487,12 @@ describe('threadSubagentMemory anchors every launch kind', () => {
     ['a forked skill', forkedSkill()],
     ['a Codex spawn', codexSpawn()],
     ['a SendMessage resume carrier', resumeCarrier()],
-  ])('hydrates the child transcript of %s', async (_label, anchor) => {
-    // The store query (ListSubagentDescendants) walks parent_id and knows no
-    // tool names, so hydration is provider-neutral by construction — this
-    // pins that the FRONTEND does not gate it on kind either.
+  ])('mounts only the navigation target under %s', (_label, anchor) => {
     const harness = makeMemoryHarness([anchor]);
-    const requested: string[] = [];
-    setBindingMock('ListSubagentDescendants', async (_threadId, rootItemID) => {
-      requested.push(rootItemID as string);
-      return [childItem({ parentId: anchor.id, status: 'completed', summary: 'done' })];
-    });
-
-    await expect(harness.memory.hydrateChildren(anchor.id)).resolves.toBe(true);
-
-    expect(requested).toEqual([anchor.id]);
-    expect(harness.items.map((it) => it.id)).toEqual([anchor.id, 'child-1']);
+    const target = childItem({ parentId: anchor.id, status: 'completed' });
+    harness.memory.mountNavigationItems([target]);
+    harness.memory.mountNavigationItems([target]);
+    expect(harness.items.map(it => it.id)).toEqual([anchor.id, 'child-1']);
   });
 
   it('reclaims a folded child on hydration so it is never counted twice', async () => {
@@ -513,7 +503,7 @@ describe('threadSubagentMemory anchors every launch kind', () => {
     expect(harness.memory.aggregate('skill-1')?.evictedCount).toBe(1);
 
     setBindingMock('ListSubagentDescendants', async () => [child]);
-    await expect(harness.memory.hydrateChildren('skill-1')).resolves.toBe(true);
+    harness.memory.mountNavigationItems([child]);
 
     expect(harness.items.map((it) => it.id)).toEqual(['skill-1', 'child-1']);
     expect(harness.memory.aggregate('skill-1')).toBeUndefined();

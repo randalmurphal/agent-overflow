@@ -7,6 +7,8 @@
   import { nestedScroll } from '../../utils/scroll/wheelAttribution';
   import TimelineVirtualizer from '../virtual/TimelineVirtualizer.svelte';
   import OverlayScrollbar from '../shared/OverlayScrollbar.svelte';
+  import type { PaneScrollController } from '../../stores/threadPaneShared';
+  import { createClipWindowController } from './clipWindowController';
 
   let {
     nodes,
@@ -15,6 +17,7 @@
     live,
     maxHeight = 'min(50vh, 20rem)',
     renderNode,
+    windowOwner,
   }: {
     nodes: T[];
     getKey: (node: T) => string;
@@ -23,6 +26,11 @@
     /** CSS max-height of the clip's viewport. */
     maxHeight?: string;
     renderNode: Snippet<[T, number]>;
+    windowOwner?: {
+      attach(controller: PaneScrollController): void;
+      detach(controller: PaneScrollController): void;
+      itemIds(node: T): Iterable<string>;
+    };
   } = $props();
 
   const IS_HAPPY_DOM =
@@ -40,6 +48,15 @@
   let contentEl = $state<HTMLDivElement | undefined>();
   let listRef = $state<TimelineVirtualizerHandle | undefined>();
   let fadedTop = $state(false);
+
+  $effect(() => {
+    const owner = windowOwner;
+    const list = listRef;
+    if (!owner || !list) return;
+    const controller = createClipWindowController({ stick, list, nodes: () => nodes, itemIds: owner.itemIds });
+    untrack(() => owner.attach(controller));
+    return () => owner.detach(controller);
+  });
 
   $effect(() => {
     const scroll = scrollEl;

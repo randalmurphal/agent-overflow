@@ -71,10 +71,20 @@ it('captures coordinates by value and counts only direct selected rows', () => {
   const window = { oldestLoadedCursor: cursor(0), newestLoadedCursor: cursor(99) };
   const selected = [row(0, { parentId: 'agent', kind: 'tool_call' }), row(1, { parentId: 'agent' }), row(2)];
   const captured = captureRetainedTimelineWindow(selected, window,
-    { loadedItems: items => [...items], isLoadedMember: () => false }, true, { scopeRootId: 'agent', tools: true });
+    { loadedItems: items => [...items], isLoadedMember: () => false, readerPinnedSpan: () => false }, true, { scopeRootId: 'agent', tools: true });
   window.oldestLoadedCursor.itemIndex = 50;
   expect(captured.oldest).toEqual(cursor(0));
   expect(captured.count).toBe(1);
+});
+
+it('carries a reader pin into the retained run decision', () => {
+  const captured = captureRetainedTimelineWindow(rows(0, 3).map(item => ({ ...item, kind: 'tool_call' as const })),
+    { oldestLoadedCursor: cursor(0), newestLoadedCursor: cursor(2) }, {
+      loadedItems: items => [...items],
+      isLoadedMember: () => true,
+      readerPinnedSpan: (first, last) => first === 'r0' && last === 'r2',
+    }, true);
+  expect(captured.runs).toMatchObject([{ firstItemId: 'r0', lastItemId: 'r2', readerPinned: true }]);
 });
 
 it('discards cancelled reads without issuing another request', async () => {

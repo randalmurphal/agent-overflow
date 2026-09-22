@@ -305,14 +305,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     onRevealSettled: syncRenderedFlushRows,
     appendLivePayloadDeltaForItem: rowUiState.appendLivePayloadDeltaForItem,
   });
-  // Windowed-history / paging machinery (loaded-window cursors and flags,
-  // the prune paths, and the four load methods) lives in
-  // threadTimelineWindow.svelte.ts. `subagentMemory` (owns child
-  // hydration) is a `const` declared later — wrapping its call in an arrow
-  // keeps the property read lazy (deferred until the arrow is actually
-  // invoked, well after the whole closure finishes constructing), so it
-  // never hits the TDZ; a direct `subagentMemory.hydrateChildren`
-  // reference here would throw immediately instead.
   const timelineWindow = createThreadTimelineWindow({
     getItems,
     replaceTimelineItems,
@@ -320,8 +312,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getThread: () => thread,
     getSwitchGeneration: () => switchGeneration,
     getScrollController: () => paneScroll.controller,
-    hydrateSubagentChildren: (rootItemID) =>
-      subagentMemory.hydrateChildren(rootItemID),
+    mountNavigationItems: (items) => subagentMemory.mountNavigationItems(items),
     // Declared below; the arrow keeps the read lazy, like the
     // subagentMemory one above.
     activityRuns: () => activityRuns,
@@ -376,11 +367,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     providerSessionAccount = account?.connected ? account : null;
     providerSessionAccountRevision += 1;
   }
-  // The spinner-flash gate (`pastSpinnerThreshold` + its timer), the
-  // in-flight live-arrival ledger, the window attestation and the
-  // replica write-back timer live in threadSwitchLoad.svelte.ts as
-  // `switchLoad`, which is their sole writer. The only read from out
-  // here is `showLoadingSpinner`'s.
+  // The spinner gate, in-flight live-arrival ledger, window attestation,
+  // and replica write-back timer live in threadSwitchLoad.svelte.ts.
 
   // One-shot "focus the terminal once it exists" intent. Set by
   // runTerminalToggle on a drawer open (cold start) and by pane.focusLeft/Right
@@ -488,12 +476,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // in threadSubagentMemory.ts.
   const subagentMemory = createThreadSubagentMemory({
     getItems,
+    getThreadId: () => thread?.id ?? null,
     getItemIndex: (itemId) => itemIndexById.get(itemId),
     replaceTimelineItems,
     dropTimelineItems,
-    getThread: () => thread,
-    getSwitchGeneration: () => switchGeneration,
-    isSubagentGroupExpanded: rowUiState.isSubagentGroupExpanded,
   });
 
   // Subagent eviction policy (evictableAnchorIdFor, collectSettledSubtree,
@@ -517,33 +503,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
   // applyThreadLiveStateSnapshot, startLiveStateFetch) lives in
   // threadLiveStateHydration.ts as `liveStateHydration`.
 
-  // Child-transcript hydration for a subagent launch anchor
-  // (hydrateSubagentChildren) lives in threadSubagentMemory.ts as
-  // `subagentMemory.hydrateChildren`.
-
-  // Shared removal core for every path that takes rows OUT of the
-  // timeline on purpose (removeItemsFromTurn / removeRevertedItems /
-  // removeItemById). The drop itself and the disposal that follows it
-  // belong to `dropTimelineItems` → `disposeDroppedItemState`; what is
-  // left here is evicting the warm-re-entry cache so a thread-switch restore cannot
-  // resurrect rows the user just destroyed.
-  //
-  // Routing through the chokepoint is also a behavior fix. Hand-rolling
-  // the disposal skipped `subagentMemory.resetHydrationExhausted`, and a
-  // removal can drop hydrated subagent children while their launch
-  // anchor SURVIVES: `removeRevertedItems` keeps the anchor turn's
-  // backend-enumerated survivors and drops everything else on that turn,
-  // and `removeItemById` drops exactly one row. A surviving anchor still
-  // marked exhausted never re-fetches, so the card wedges on its loading
-  // placeholder until the thread is switched away and back.
-  //
-  // Returns the removed items in their previous order; [] when nothing
-  // matched (idempotent).
+  // Remove through the window chokepoint and invalidate the warm cache.
   function removeMatchedItems(shouldRemove: (item: Item) => boolean): Item[] {
-    // No `exhaustedScope`: mapping a dropped grandchild back to its launch
-    // root would need an ancestor walk over rows we just dropped, and a
-    // truncation is exactly the bulk case `resetHydrationExhausted`
-    // documents as clearing wholesale.
     const removed = dropTimelineItems(shouldRemove);
     if (removed.length === 0) return removed;
     if (thread) switchLoad.dropCachedWindow(thread.id);
@@ -882,6 +843,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     get loading() {
       return loading;
     },
+    get historyWindowPending() {
+      return switchLoad.historyWindowPending;
+    },
     /**
      * Spinner-flash gate. The MessageTimeline reads this instead of
      * `loading` so a sub-100ms switch (cache hit, fast LAN, fast SQL)
@@ -890,12 +854,10 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
      * `SPINNER_THRESHOLD_MS`.
      */
     get showLoadingSpinner() {
-      // Items present is the second half of the gate: a cache hit paints
-      // synchronously even while the recent-turns / live-state fetches
-      // still run (loading=true), and we must not flash a spinner over
-      // visible content. Single source of truth here so call sites
-      // stay simple.
-      return loading && switchLoad.pastSpinnerThreshold && getItems().length === 0;
+      // A verified window can paint while other switch legs finish. An
+      // unverified cached window stays hidden and gets the delayed spinner.
+      return loading && switchLoad.pastSpinnerThreshold
+        && (getItems().length === 0 || switchLoad.historyWindowPending);
     },
     /**
      * True between the moment the user clicks Send and the moment
@@ -1117,16 +1079,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     /** Ensure `itemID` is present in the loaded window. See threadTimelineWindow.svelte.ts. */
     loadUntilItem(itemID: string): Promise<LoadUntilItemResult> {
       return timelineWindow.loadUntilItem(itemID);
-    },
-
-    /**
-     * Hydrate the child transcript under a subagent launch anchor —
-     * called by SubagentGroup when an expanded card's loaded children
-     * trail its decorated descendant count. Deduped per anchor id;
-     * see threadSubagentMemory.ts `hydrateChildren`.
-     */
-    ensureSubagentChildren(rootItemID: string): Promise<boolean> {
-      return subagentMemory.hydrateChildren(rootItemID);
     },
 
     /** Fetch the next batch of newer turns and append them to the window. See threadTimelineWindow.svelte.ts. */

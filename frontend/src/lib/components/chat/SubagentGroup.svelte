@@ -47,14 +47,7 @@
     deriveClaudeSubagentModelLabel,
     readClaudeSubagentInput,
   } from '../../utils/claudeSubagentLabel';
-  import type {
-    PaneSession,
-    RowUiRegistry,
-    TimelineWindow,
-    PaneDoors,
-    TimelineSource,
-    ScrollHost,
-  } from '../../stores/threadPaneRoles';
+  import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     decoratedSubagentAggregates,
     pickLatestChildSummary,
@@ -88,6 +81,7 @@
   import Icon from '../primitives/Icon.svelte';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import SendToBack from '@lucide/svelte/icons/send-to-back';
+  import AgentDigestTimeline from './AgentDigestTimeline.svelte';
   import SubagentDigestBody from './SubagentDigestBody.svelte';
   import { displayModelLabel } from '../../utils/modelLabels';
 
@@ -100,7 +94,7 @@
     /** Pane for the per-groupKey subagent expansion registry. When omitted,
      * falls back to local state — expand state then resets on windowing remount.
      * Real chat surfaces always pass `pane`. */
-    pane?: PaneDoors & PaneSession & RowUiRegistry & ScrollHost & TimelineSource & TimelineWindow;
+    pane?: ThreadPane;
     group: SubagentGroupNode;
     /**
      * Nesting depth of THIS group in the timeline tree:
@@ -152,21 +146,6 @@
       localExpanded = !localExpanded;
     }
   }
-
-  // History windows deliver launch anchors without their child rows —
-  // the collapsed card renders from backend-decorated aggregates, and
-  // the transcript hydrates on demand when the card expands. The pane
-  // dedupes in-flight and completed loads per anchor id, so this effect
-  // re-running on unrelated state is harmless.
-  $effect(() => {
-    if (navigationOnly || !expanded || !pane) return;
-    if (group.loadedDescendantCount >= descendantCount) return;
-    // Hydration is per TRANSCRIPT ROOT: a §E6 resume carrier's round is
-    // stored under the original launch, so asking for the carrier's own
-    // id would fetch nothing (`agentScopeRootId`). The rows come back
-    // parented to the root and this pass re-slices them per round.
-    void pane.ensureSubagentChildren(agentScopeRootId(group.parent));
-  });
 
   // ---- Header content derivations ---------------------------------
 
@@ -572,7 +551,11 @@
       </div>
     {/if}
 
-    {#if expanded}
+    {#if expanded && pane}
+      <AgentDigestTimeline {pane} scopeId={agentScopeRootId(parent)} id={groupDomId}
+        viewKey={`card:${group.groupKey}`} digestItemId={completionItem?.id ?? parent.id}
+        {keepFinalText} live={isRunning} />
+    {:else if expanded}
       <SubagentDigestBody
         id={groupDomId}
         children={group.children}

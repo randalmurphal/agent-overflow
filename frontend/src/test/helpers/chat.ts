@@ -101,7 +101,7 @@ export function emitItemEventDelta(delta: ItemDeltaEvent): void {
 }
 
 export function installTimelineScopeCapability(): void {
-  __setTransportHelloForTest({ protocolVersion: 1, capabilities: ['timeline.scopes.v1'],
+  __setTransportHelloForTest({ protocolVersion: 1, capabilities: ['timeline.scopes.v1', 'timeline.digests.v1'],
     backendId: '', backendName: '', serverTimeMs: 0, clockSkewMs: 0,
     bundleId: '', bundleVersion: '', minShellBuild: 0 });
 }
@@ -142,7 +142,7 @@ export function installPaneMocks(items: Item[] = [], runs: ActivityRunStub[] = [
     },
     last ? cursorFromItem(last) : null,
   );
-  setBindingMock('ListThreadSliceAround', async (_thread: string, _anchor: string, _budget: number, options: { selection?: { scopeRootId?: string; tools?: boolean } }) => {
+  setBindingMock('ListThreadSliceAround', async (_thread: string, _anchor: string, _budget: number, options: { selection?: { scopeRootId?: string; tools?: boolean; digestItemId?: string } }) => {
     const selection = options.selection;
     const rootId = selection?.scopeRootId;
     const root = items.find(item => item.id === rootId);
@@ -150,6 +150,12 @@ export function installPaneMocks(items: Item[] = [], runs: ActivityRunStub[] = [
       && (!selection?.tools || ['tool_call', 'tool_completion', 'terminal_interaction'].includes(item.kind)));
     const lifecycle = rootId ? [...items].reverse().find(item => item.meta?.includes(`"transcript_root_id":"${rootId}"`)) ?? root : undefined;
     const scope = root && lifecycle ? { root, lifecycle, completion: [...items].reverse().find(item => item.completionOf === lifecycle.id) } : undefined;
+    if (scope && selection?.digestItemId) {
+      Object.assign(scope, { digest: {
+        promptId: selected.find(it => it.kind === 'user_text')?.id ?? '',
+        answerId: [...selected].reverse().find(it => it.kind === 'assistant_text')?.id ?? '',
+      } });
+    }
     return {
       items: selected, scope,
       oldestCursor: rootId ? selected[0] ? cursorFromItem(selected[0]) : { turnIndex: -1, itemIndex: -1, itemId: '' } : oldestCursor,

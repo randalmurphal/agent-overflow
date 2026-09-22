@@ -620,7 +620,7 @@ func TestImportClaudeNestsSubagentRowsUnderTheirTask(t *testing.T) {
 	// The nested rows must stay OUT of the windowed timeline read — that
 	// exclusion is what keeps one subagent-heavy turn from eating the
 	// window budget, and it only works because ParentID is set.
-	window, err := st.ListThreadSliceAround(threadID, "", 1000, 200, store.TimelineSelection{})
+	window, err := st.ListThreadSliceAround(context.Background(), threadID, "", 1000, 200, store.TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list thread slice: %v", err)
 	}

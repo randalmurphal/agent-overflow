@@ -57,6 +57,7 @@ interface Harness {
   };
   /** Withhold the virtualizer handle, as a pre-mount flush does. */
   setListRefPresent(present: boolean): void;
+  setWindowVerified(verified: boolean): void;
   /** One engine-sourced sample, as the virtualizer's subscription replays it. */
   deliverGeometry(height?: number): void;
   destroy(): void;
@@ -83,6 +84,7 @@ function makeHarness(nodes: TimelineNode[]): Harness {
       nodes.some((node) => (node as { item?: { id?: string } }).item?.id === itemId) ? 'loaded' : 'missing',
   };
   let listRefPresent = true;
+  let windowVerified = true;
 
   // Only the geometry queries the restore session actually reaches for:
   // the snapshot capture's anchor (findItemIndex + getItemOffset) and
@@ -104,6 +106,7 @@ function makeHarness(nodes: TimelineNode[]): Harness {
     getScrollEl: () => scrollEl,
     getRevealedNodes: () => nodes,
     getGroupedNodes: () => nodes,
+    windowVerified: () => windowVerified,
     findTimelineNodeIndex: (itemId) =>
       nodes.findIndex((node) => (node as { item?: { id?: string } }).item?.id === itemId),
     persistSizePriors: () => {},
@@ -122,6 +125,9 @@ function makeHarness(nodes: TimelineNode[]): Harness {
     pane,
     setListRefPresent(present: boolean) {
       listRefPresent = present;
+    },
+    setWindowVerified(verified: boolean) {
+      windowVerified = verified;
     },
     deliverGeometry(height = geom.contentHeight) {
       stick.deliverContentGeometry({
@@ -196,6 +202,21 @@ describe('timeline restore switch edges', () => {
     expect(h.restore.restoredThreadId).toBe('thread-first-mount');
     expect(h.geom.scrollTop).toBe(400);
     expect(h.stick.isAtBottom).toBe(true);
+  });
+
+  it('restores a cached thread only after its window is verified', () => {
+    const h = (harness = makeHarness([leaf('a'), leaf('b'), leaf('c')]));
+    mountThread(h, 'thread-pending');
+    h.setWindowVerified(false);
+    h.restore.handleSwitchEdgePre('thread-pending', 0);
+    h.restore.maybeRestoreAfterFlush();
+    expect(h.restore.restoredThreadId).toBeNull();
+    expect(h.geom.scrollTop).toBe(0);
+
+    h.setWindowVerified(true);
+    h.restore.maybeRestoreAfterFlush();
+    expect(h.restore.restoredThreadId).toBe('thread-pending');
+    expect(h.geom.scrollTop).toBe(400);
   });
 
   it('reaches the true bottom on the first geometry sample alone', () => {

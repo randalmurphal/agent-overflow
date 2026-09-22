@@ -15,6 +15,10 @@ warning so later records remain readable. A file over 1 GiB is refused before
 reading. Missing timestamps inherit from source timestamps; never call
 `time.Now` for imported history.
 
+Those scan limits apply to the root session file. Subagent sidechains admit
+large individual records; terminal reconciliation projects their rows in two
+passes without retaining the source JSONL.
+
 The import DAG drops progress and sidechain rows, keeps the first duplicate
 UUID, joins compact boundaries through `logicalParentUuid`, and rejects cyclic
 branches. Use the shared sessionfork parent rules rather than copying them.

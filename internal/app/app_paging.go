@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -63,12 +64,12 @@ type TimelinePageOptions struct {
 // tail — the bottom-snapshot restore case.
 //
 //ao:scope threads:read
-func (a *App) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount int, options TimelinePageOptions) (store.PagedItems, error) {
+func (a *App) ListThreadSliceAround(ctx context.Context, threadID, anchorItemID string, targetItemCount int, options TimelinePageOptions) (store.PagedItems, error) {
 	if err := a.store.CheckForkReady(threadID); err != nil {
 		return store.PagedItems{}, err
 	}
 	shape := options.PageShape.normalize()
-	paged, err := a.store.ListThreadSliceAround(
+	paged, err := a.store.ListThreadSliceAround(ctx,
 		threadID, anchorItemID, clampSliceItemBudget(targetItemCount), shape.RunWindowRows, options.Selection)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list thread slice around: %w", err)
@@ -116,12 +117,12 @@ func clampPaginationItemBudget(itemBudget int) int {
 // Same-turn rows outside the cursor range stay omitted until explicitly paged.
 //
 //ao:scope threads:read
-func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor, itemBudget int, options TimelinePageOptions) (store.PagedItems, error) {
+func (a *App) ListItemsBeforeCursor(ctx context.Context, threadID string, before store.TimelineCursor, itemBudget int, options TimelinePageOptions) (store.PagedItems, error) {
 	if err := a.store.CheckForkReady(threadID); err != nil {
 		return store.PagedItems{}, err
 	}
 	shape := options.PageShape.normalize()
-	paged, err := a.store.ListItemsBeforeCursor(
+	paged, err := a.store.ListItemsBeforeCursor(ctx,
 		threadID, before, clampPaginationItemBudget(itemBudget), shape.RunWindowRows, options.Selection)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items before cursor: %w", err)
@@ -134,12 +135,12 @@ func (a *App) ListItemsBeforeCursor(threadID string, before store.TimelineCursor
 // companion to ListItemsBeforeCursor.
 //
 //ao:scope threads:read
-func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, itemBudget int, options TimelinePageOptions) (store.PagedItems, error) {
+func (a *App) ListItemsAfterCursor(ctx context.Context, threadID string, after store.TimelineCursor, itemBudget int, options TimelinePageOptions) (store.PagedItems, error) {
 	if err := a.store.CheckForkReady(threadID); err != nil {
 		return store.PagedItems{}, err
 	}
 	shape := options.PageShape.normalize()
-	paged, err := a.store.ListItemsAfterCursor(
+	paged, err := a.store.ListItemsAfterCursor(ctx,
 		threadID, after, clampPaginationItemBudget(itemBudget), shape.RunWindowRows, options.Selection)
 	if err != nil {
 		return store.PagedItems{}, fmt.Errorf("list items after cursor: %w", err)
@@ -147,14 +148,8 @@ func (a *App) ListItemsAfterCursor(threadID string, after store.TimelineCursor, 
 	return projectPage(paged, shape, 0), nil
 }
 
-// ListSubagentDescendants loads the full child transcript under a
-// subagent launch row, on demand when its SubagentGroup card expands.
-// History windows deliberately exclude rows with a parent_id (see
-// internal/store/paging.go topLevelItemsFilter); this is the expansion
-// path that hydrates them. The result is every visible transitive
-// descendant in timeline order, capped store-side at the same scale as
-// maxWindowItems (newest rows win) so an unintended LAN-attached caller
-// can't stream an unbounded subtree per call.
+// ListSubagentDescendants retains the bounded transitive read for older clients.
+// Current agent surfaces use selected timeline pages and run-member reads.
 //
 //ao:scope threads:read
 func (a *App) ListSubagentDescendants(threadID, rootItemID string, inlinePreviews bool) ([]store.Item, error) {

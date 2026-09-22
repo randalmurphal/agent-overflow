@@ -43,6 +43,20 @@ func TestNormalizeThreadWindowSyncErrorClassifiesOnlyExpiredContexts(t *testing.
 	}
 }
 
+func TestSyncThreadWindowUsesCallerContext(t *testing.T) {
+	app := newTestAppWithStore(t)
+	thread := seedSyncBindingThread(t, app)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := app.SyncThreadWindow(ctx, thread.ID, SyncThreadWindowRequest{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("sync ignored caller cancellation: %v", err)
+	}
+	if errors.Is(err, transport.ErrTemporarilyUnavailable) {
+		t.Fatalf("caller cancellation was labeled as a backend timeout: %v", err)
+	}
+}
+
 func appHistoryStamp(t *testing.T, a *App, threadID string) store.HistoryStamp {
 	t.Helper()
 	stamp, found, err := a.store.ThreadHistoryStamp(threadID)
@@ -84,7 +98,7 @@ func TestSyncThreadWindowBindingAnswersOverASequence(t *testing.T) {
 	held := appHistoryStamp(t, app, thread.ID)
 
 	current := SyncThreadWindowRequest{HaveRev: held.Rev, HaveEpoch: held.Epoch}
-	got, err := app.SyncThreadWindow(thread.ID, current)
+	got, err := app.SyncThreadWindow(context.Background(), thread.ID, current)
 	if err != nil {
 		t.Fatalf("sync (fresh): %v", err)
 	}
@@ -105,7 +119,7 @@ func TestSyncThreadWindowBindingAnswersOverASequence(t *testing.T) {
 	if err := app.store.UpdateItemMeta(thread.ID, "asst:1", `{"x":1}`); err != nil {
 		t.Fatalf("update item meta: %v", err)
 	}
-	got, err = app.SyncThreadWindow(thread.ID, current)
+	got, err = app.SyncThreadWindow(context.Background(), thread.ID, current)
 	if err != nil {
 		t.Fatalf("sync (stale): %v", err)
 	}
@@ -131,7 +145,7 @@ func TestSyncThreadWindowBindingAnswersOverASequence(t *testing.T) {
 	if _, _, err := app.store.DeleteConversationFromItem(thread.ID, "user:1"); err != nil {
 		t.Fatalf("delete conversation from item: %v", err)
 	}
-	got, err = app.SyncThreadWindow(thread.ID, current)
+	got, err = app.SyncThreadWindow(context.Background(), thread.ID, current)
 	if err != nil {
 		t.Fatalf("sync (rewritten): %v", err)
 	}
@@ -145,7 +159,7 @@ func TestSyncThreadWindowBindingAnswersOverASequence(t *testing.T) {
 		t.Fatalf("generation changed without a restore: %q -> %q", generation, got.Generation)
 	}
 
-	got, err = app.SyncThreadWindow("no-such-thread", current)
+	got, err = app.SyncThreadWindow(context.Background(), "no-such-thread", current)
 	if err != nil {
 		t.Fatalf("sync (gone): %v", err)
 	}
@@ -165,12 +179,12 @@ func TestSyncThreadWindowBindingNormalizesItemBudget(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := seedSyncBindingThread(t, app)
 
-	want, err := app.ListThreadSliceAround(thread.ID, "", 0, TimelinePageOptions{PageShape: PageShape{InlinePreviews: true}})
+	want, err := app.ListThreadSliceAround(context.Background(), thread.ID, "", 0, TimelinePageOptions{PageShape: PageShape{InlinePreviews: true}})
 	if err != nil {
 		t.Fatalf("list thread slice around: %v", err)
 	}
 	for _, budget := range []int{0, -1, maxWindowItems + 1} {
-		got, err := app.SyncThreadWindow(thread.ID, SyncThreadWindowRequest{
+		got, err := app.SyncThreadWindow(context.Background(), thread.ID, SyncThreadWindowRequest{
 			ItemBudget: budget,
 			HaveRev:    store.UnknownStamp,
 			HaveEpoch:  store.UnknownStamp,

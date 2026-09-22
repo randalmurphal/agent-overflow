@@ -102,6 +102,9 @@ test('an open pane shows prose, thinking, and the final text as the agent stream
   const timeline = page.getByTestId('message-timeline-scroll');
   const card = timeline.getByTestId('subagent-group').first();
   await expect(card).toBeVisible();
+  await card.getByTestId('subagent-group-toggle').first().click();
+  const inline = card.getByTestId('subagent-group-body').first();
+  await expect(inline.getByText(PROMPT)).toBeVisible();
   await card.hover();
   await card.getByTestId('subagent-group-open-pane').first().click();
   const pane = page.getByTestId('companion-pane-agent-body');
@@ -120,6 +123,7 @@ test('an open pane shows prose, thinking, and the final text as the agent stream
 
   await advance(harness, mockId, 'open');
   await expect(paneTimeline.getByText(MID)).toBeVisible();
+  await expect(inline.getByText(MID)).toBeVisible();
   await expect(paneTimeline.getByTestId('thinking-toggle')).toHaveCount(1);
   await expect(paneTimeline.getByText('ls internal/provider', { exact: true })).toBeVisible();
 
@@ -133,7 +137,8 @@ test('an open pane shows prose, thinking, and the final text as the agent stream
 
   // The card's own body shows the instructions too — it is the first
   // user_text child, which is the body digest's initial-prompt slot.
-  await card.getByTestId('subagent-group-toggle').first().click();
+  await expect(inline.getByText(FINAL)).toBeVisible();
+  await expect(inline.getByText(MID)).toHaveCount(0);
   await expect(card.getByTestId('subagent-group-body').first().getByText(PROMPT)).toBeVisible();
   await expect(card.getByTestId('command-output-command').filter({ hasText: 'List internal packages' })).toBeVisible();
 });

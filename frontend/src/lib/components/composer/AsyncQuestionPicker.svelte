@@ -38,6 +38,7 @@
   let answeredCount = $derived(unanswered.filter(q => draft?.answers[questionKey(q)]?.trim()).length);
   let permitted = $derived(threadHasScope('threads:operate', threadId));
   let disabled = $derived(!permitted || !draft || (active ? draft.isPending(active) : false));
+  let sendDisabled = $derived(!permitted || !draft || draft.sending || (!answeredCount && !draft.retrying));
   function change(value: string) {
     if (!active || !draft) return;
     try { draft.answer(questionKey(active), value); error = ''; } catch (cause) { error = errString(cause); }
@@ -81,12 +82,12 @@
           <Button size="sm" disabled={activeIndex <= 0} onclick={() => navigate(activeIndex - 1)}>Previous</Button>
           <Button size="sm" disabled={activeIndex >= unanswered.length - 1} onclick={() => navigate(activeIndex + 1)}>Next</Button>
           <Button size="sm" {disabled} onclick={dismiss}>Dismiss question</Button>
-          <Button size="sm" disabled={!permitted || !draft || draft.sending || (!answeredCount && !draft.retrying)} onclick={submit}>
+          <Button size="sm" disabled={sendDisabled} onclick={submit}>
             {draft?.retrying ? 'Retry sending answers' : `Send answered (${answeredCount})`}
           </Button>
         </div>
       {:else if draft?.retrying}
-        <Button size="sm" disabled={!permitted || draft.sending} onclick={submit}>Retry sending answers</Button>
+        <Button size="sm" disabled={sendDisabled} onclick={submit}>Retry sending answers</Button>
       {/if}
       {#if rows.some(q => q.state === 'submitted')}<p class="mt-2 text-xs text-fg-muted">Answers submitted; waiting for delivery.</p>{/if}
       {#if rows.some(q => q.state === 'restored')}<p class="mt-2 text-xs text-fg-muted">Unsent answers were restored to the message composer.</p>{/if}

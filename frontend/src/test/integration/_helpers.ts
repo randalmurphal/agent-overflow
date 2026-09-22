@@ -109,6 +109,7 @@ export function installAppDefaults(): void {
   setBindingMock('ListThreadGroups', async () => []);
   setBindingMock('GetKeybindings', async () => ({ bindings: [] }));
   setBindingMock('GetProviderStatuses', async () => []);
+  setBindingMock('GetProviderLoginState', async () => null);
   setBindingMock('GetModelsForProvider', async () => modelCatalog([], 'shipped'));
   setBindingMock('GetRateLimitsSnapshots', async () => []);
   setBindingMock('ListProviderAccounts', async () => []);
@@ -118,6 +119,13 @@ export function installAppDefaults(): void {
   // Usage surfaces (composer UsageChip, sidebar UsageFooter) fetch
   // ledger aggregates on mount. Default to no usage recorded.
   setBindingMock('GetUsageStats', async () => []);
+  setBindingMock('WorkflowListUnresolvedItems', async () => []);
+  setBindingMock('GetThemeFiles', async () => ({
+    dir: '/tmp/themes',
+    themes: [],
+    appearance: { mode: 'system', uiTheme: 'default', codeTheme: 'github' },
+  }));
+  setBindingMock('GetSoundFiles', async () => ({ dir: '/tmp/sounds', sounds: [], warnings: [] }));
   // App boot reads the legacy per-client ui_state bucket once to migrate
   // it. Default to an empty bucket; tests that assert on persisted view
   // state install their own.

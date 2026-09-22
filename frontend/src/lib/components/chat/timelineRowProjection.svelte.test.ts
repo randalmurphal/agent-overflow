@@ -304,14 +304,9 @@ it('forms a detached completion card before expanding or loading the old launch'
     pane.upsertItem({ ...done, rev: 2, completionLaunch: { ...launch, rev: 2, summary: 'Updated launch summary' } });
     flushSync();
     expect(projection.nodes).toBe(before);
-    setBindingMock('GetThreadItem', async () => launch);
-    setBindingMock('ListSubagentDescendants', async () => [
-      makeItem({ id: 'child', itemIndex: 80, parentId: launch.id, summary: 'Agent work' }),
-    ]);
-    await pane.ensureSubagentChildren(launch.id);
+    pane.toggleSubagentGroupExpanded(done.id);
     flushSync();
     expect(findGroup(projection.nodes)?.anchor?.id).toBe(done.id);
-    expect(findGroup(projection.nodes)?.children.some(child => child.kind === 'leaf' && child.item.id === 'child')).toBe(true);
     expect(projection.nodes).toHaveLength(1);
   } finally {
     projection.dispose();

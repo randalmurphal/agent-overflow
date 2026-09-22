@@ -9,7 +9,14 @@ import (
 
 // readSnapshot keeps selection, hydration, and decoration on one WAL snapshot.
 func readSnapshot[T any](db *sql.DB, label string, read func(sqlQueryer) (T, error)) (value T, err error) {
-	tx, err := db.BeginTx(context.Background(), nil)
+	return readSnapshotContext(context.Background(), db, label, read)
+}
+
+func readSnapshotContext[T any](ctx context.Context, db *sql.DB, label string, read func(sqlQueryer) (T, error)) (value T, err error) {
+	if ctx == nil {
+		return value, fmt.Errorf("store: %s requires a context", label)
+	}
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return value, fmt.Errorf("store: begin %s: %w", label, err)
 	}
@@ -18,5 +25,5 @@ func readSnapshot[T any](db *sql.DB, label string, read func(sqlQueryer) (T, err
 			err = errors.Join(err, fmt.Errorf("store: close %s: %w", label, closeErr))
 		}
 	}()
-	return read(tx)
+	return read(contextReadTx{Tx: tx, ctx: ctx})
 }

@@ -12,42 +12,31 @@
 // Session lifecycle, per pane:
 //   coldLoadSwitchStart  — opens the pane's session, emitting any
 //                          session still open for it as abandoned.
-//   coldLoadItemsApplied — records when/how-many for the fetch leg, and
-//                          whether that application re-armed the warm
+//   coldLoadItemsApplied — records when/how-many at window verification, and
+//                          whether that release re-armed the warm
 //                          gate. When it did not AND the gate is already
 //                          open, no further rising edge is coming — the
 //                          measurement is complete, so it closes here.
-//   coldLoadWarmEdge     — detects the warm false→true rising edge
-//                          itself. A fetch session's gate opens once
-//                          against the EMPTY pane while the slice is in
-//                          flight (see PaneScrollController.armWarmup);
-//                          that edge measures the empty pane, not the
-//                          content, so it is COUNTED and the session is
-//                          held for the post-items edge the re-arm
-//                          produces. On a thread-id mismatch the session
-//                          is emitted as abandoned.
+//   coldLoadWarmEdge     — detects the warm false→true rising edge.
+//                          An edge before verification measured no
+//                          rendered window; the session waits for the
+//                          post-release edge. On a thread-id mismatch
+//                          it is emitted as abandoned.
 //
 // Every close path emits. A session is never silently discarded, so
 // "the switch happened but no record came out" is a real signal rather
 // than a routine outcome; module-scoped state stays O(mounted panes).
 //
-// One field arrives out of band. `coldLoadSyncStatus` is the only report
-// that can land AFTER the session closed (a warm gate that settles over a
-// replica or L1 paint before the sync answer returns), and holding the
-// session for it would make `timeline.coldload` wait on a leg that may
-// never answer. The verdict is emitted as its own `timeline.coldload.sync`
-// record instead, keyed by the same pane and thread, so a closed record's
-// `syncStatus: null` is still readable rather than silently missing.
+// `coldLoadSyncStatus` can still land after an abandoned or empty session
+// closes. It then emits a separate `timeline.coldload.sync` record.
 import { isUiRenderTraceEnabled, recordUiTrace } from './uiRenderTrace';
 
 export type ColdLoadSource = 'cache-restore' | 'fetch';
 
 /**
- * Which cache, if any, put rows on screen before the window sync
- * answered: the in-memory LRU ('l1'), the IndexedDB replica ('replica'),
- * or nothing ('none' — the pane waited on the wire). Distinct from
- * `ColdLoadSource`, which records only whether the LRU hit at switch
- * time; the replica paint is decided later, inside the load leg.
+ * Which tier supplied the staged verification window: in-memory LRU
+ * ('l1'), IndexedDB ('replica'), or none. The trace field retains its
+ * `paintSource` name for existing consumers.
  */
 export type ColdLoadPaintSource = 'l1' | 'replica' | 'none';
 
@@ -148,8 +137,8 @@ export function coldLoadSwitchStart(
     warmupRearmed: false,
     warmBeforeItems: 0,
     priors: null,
-    // An LRU hit paints synchronously inside switchThread, so it is
-    // already true here; anything else is decided by the load leg.
+    // An LRU hit stages synchronously inside switchThread; the load leg
+    // decides whether an IndexedDB envelope supplies the window instead.
     paintSource: source === 'cache-restore' ? 'l1' : 'none',
     syncStatus: null,
   });
@@ -166,7 +155,7 @@ export function coldLoadPriors(paneId: string, stats: ColdLoadPriorsStats): void
   session.priors = stats;
 }
 
-/** Record which cache painted this open, once the load leg knows. Only
+/** Record which cache staged this open, once the load leg knows. Only
  * an upgrade from 'none' to 'replica' ever needs reporting; the setter
  * accepts every value so the call site stays unconditional. */
 export function coldLoadPaintSource(paneId: string, paintSource: ColdLoadPaintSource): void {
@@ -204,8 +193,8 @@ export function coldLoadSyncStatus(paneId: string, status: string): void {
   });
 }
 
-/** Mark the fetch leg's initial-slice application: how many rows the
- * pane holds afterwards, and whether that application re-armed the warm
+/** Mark the verified window's release: how many rows the pane holds,
+ * and whether that release re-armed the warm
  * gate (`armInitialSliceWarmup` in threadPaneScroll.svelte.ts). No-op if no
  * session is open for the pane (trace was disabled at switchStart, or
  * the session was already closed). */
@@ -235,9 +224,8 @@ export function coldLoadItemsApplied(
  * warm, still warming) is a no-op read. A mismatched threadId means the
  * pane switched again before warming — that session is emitted as
  * abandoned. A matching edge closes the session, EXCEPT the pre-items
- * edge of a fetch session: that one measured the empty pane the slice
- * had not filled yet, so it is counted and the session waits for the
- * edge the re-arm produces. */
+ * edge before verification: it measured no rendered window, so it is
+ * counted and the session waits for the post-release edge. */
 export function coldLoadWarmEdge(
   paneId: string,
   threadId: string,
@@ -256,7 +244,7 @@ export function coldLoadWarmEdge(
     emitSession(paneId, session, { warmReason: reason, abandoned: 'thread-changed' });
     return;
   }
-  if (session.source === 'fetch' && session.itemsAppliedAt === null) {
+  if (session.itemsAppliedAt === null) {
     session.warmBeforeItems += 1;
     return;
   }

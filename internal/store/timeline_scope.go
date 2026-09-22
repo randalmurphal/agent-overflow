@@ -7,37 +7,41 @@ import (
 
 // TimelineSelection identifies history independently of its wire projection.
 // The zero value selects the main transcript. Tools selects only tool activity
-// within an agent transcript, for the background tray.
+// within an agent transcript, for the background tray. DigestItemID selects
+// the launch or completion whose execution an inline card summarizes.
 type TimelineSelection struct {
-	ScopeRootID string `json:"scopeRootId,omitempty"`
-	Tools       bool   `json:"tools,omitempty"`
+	ScopeRootID  string `json:"scopeRootId,omitempty"`
+	Tools        bool   `json:"tools,omitempty"`
+	DigestItemID string `json:"digestItemId,omitempty"`
 }
 
 var ErrTimelineScopeGone = errors.New("timeline scope no longer exists")
 
 // TimelineScopeContext supplies agent identity independently of the loaded range.
-// Lifecycle and Completion refer to the latest persisted execution; live provider
-// state remains authoritative while that execution runs.
+// Lifecycle and Completion refer to the selected digest execution, or the latest
+// persisted execution for a continuous scope. Live provider state owns execution.
 type TimelineScopeContext struct {
-	Root       Item  `json:"root"`
-	Lifecycle  Item  `json:"lifecycle"`
-	Completion *Item `json:"completion,omitempty"`
+	Root       Item                   `json:"root"`
+	Lifecycle  Item                   `json:"lifecycle"`
+	Completion *Item                  `json:"completion,omitempty"`
+	Digest     *TimelineDigestContext `json:"digest,omitempty"`
 }
 
 type timelineScope struct {
 	selection TimelineSelection
 	context   *TimelineScopeContext
+	digest    *TimelineDigestContext
 }
 
 func (s *Store) resolveTimelineScope(q sqlQueryer, threadID string, selection TimelineSelection) (timelineScope, error) {
 	scope := timelineScope{selection: selection}
 	if selection.ScopeRootID == "" {
-		if selection.Tools {
-			return scope, fmt.Errorf("tool activity requires an agent scope")
+		if selection.Tools || selection.DigestItemID != "" {
+			return scope, fmt.Errorf("timeline selection requires an agent scope")
 		}
 		return scope, nil
 	}
-	if len(selection.ScopeRootID) > maxHeldWindowIDBytes {
+	if len(selection.ScopeRootID) > maxHeldWindowIDBytes || len(selection.DigestItemID) > maxHeldWindowIDBytes {
 		return scope, fmt.Errorf("timeline scope id is too long")
 	}
 	root, found, err := s.getThreadItem(q, threadID, selection.ScopeRootID)
@@ -63,6 +67,14 @@ func (s *Store) resolveTimelineScope(q sqlQueryer, threadID string, selection Ti
 	}
 	scope.selection.ScopeRootID = root.ID
 	context := &TimelineScopeContext{Root: root, Lifecycle: root}
+	scope.context = context
+	if selection.DigestItemID != "" {
+		if selection.Tools {
+			return scope, fmt.Errorf("digest and tools selections cannot be combined")
+		}
+		err := s.resolveTimelineDigest(q, threadID, &scope)
+		return scope, err
+	}
 	carriers, args := timelineIDSelection(threadID, timelineSelection{
 		Where: `items.kind = 'tool_call' AND ` + jsonFieldExpr("items.meta", "$.transcript_root_id") + ` = ?`, WhereArgs: []any{root.ID},
 		OrderBy: "turn_index DESC, item_index DESC", Limit: 1,
@@ -85,7 +97,6 @@ func (s *Store) resolveTimelineScope(q sqlQueryer, threadID string, selection Ti
 	if len(rows) > 0 {
 		context.Completion = &rows[0]
 	}
-	scope.context = context
 	return scope, nil
 }
 
@@ -98,5 +109,13 @@ func (scope timelineScope) filter(alias string) (string, []any) {
 	if scope.selection.Tools {
 		filter += " AND " + alias + "kind IN ('tool_call','tool_completion','terminal_interaction')"
 	}
-	return filter, []any{scope.selection.ScopeRootID}
+	args := []any{scope.selection.ScopeRootID}
+	if scope.digest != nil {
+		bounds, values := scope.digest.filter(alias)
+		filter += " AND " + bounds
+		args = append(args, values...)
+		filter += " AND (" + digestActivityFilter(alias) + " OR " + alias + "id IN (?,?))"
+		args = append(args, scope.digest.PromptID, scope.digest.AnswerID)
+	}
+	return filter, args
 }

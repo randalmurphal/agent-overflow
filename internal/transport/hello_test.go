@@ -215,6 +215,7 @@ func TestServer_AdvertisedCapabilitiesAreFrozen(t *testing.T) {
 		"transport.heartbeat.v1",
 		"thread-tools.v1",
 		"timeline.scopes.v1",
+		"timeline.digests.v1",
 	}
 	assertCapabilities(t, serverCapabilities, want)
 	assertCapabilities(t, serverCapabilitiesWithBrowser, append(append([]string{}, want...), "browser"))

@@ -60,6 +60,54 @@ it('walks shipped cursors across a run larger than one response and restates the
   expect(restate).toHaveBeenCalledOnce();
 });
 
+it('keeps a new live tail member when refreshing an overlapping retained run', async () => {
+  const all = rows(0, 40);
+  const fresh = page(all.slice(-30), [run(0, 39, 10, 39)]);
+  const read = setBindingMock('ListItemsBeforeCursor', async (_thread, before: { itemIndex: number }) => {
+    expect(before.itemIndex).toBe(40);
+    return page(all, [run(0, 39, 0, 39)]);
+  });
+  setBindingMock('ListActivityRunMembers', async (_thread, request) => {
+    expect(request).toMatchObject({ loadedFirstItemId: 'r0', loadedLastItemId: 'r39' });
+    return { items: [], stub: run(0, 39, 0, 39) };
+  });
+  const result = await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(all.slice(0, 39)), shape, () => true);
+  expect(result.items.map(item => item.id)).toEqual(all.map(item => item.id));
+  expect(result.runs).toEqual([run(0, 39, 0, 39)]);
+  expect(read).toHaveBeenCalledOnce();
+});
+
+it('keeps the fresh tail without rereading a disjoint old span while following', async () => {
+  const fresh = page(rows(70, 30), [run(0, 99, 70, 99)]);
+  const read = setBindingMock('ListItemsBeforeCursor', async () => { throw new Error('old span reread'); });
+  const result = await refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(rows(0, 39)), shape, () => true, {}, true);
+  expect(result).toBe(fresh);
+  expect(read).not.toHaveBeenCalled();
+});
+
+it('retains a reader-pinned old span when the fresh tail is disjoint', async () => {
+  const fresh = page(rows(70, 30), [run(0, 99, 70, 99)]);
+  const previous = groupActivityRunSpans(rows(0, 30)).map(span => ({ ...span, readerPinned: true }));
+  setBindingMock('ListItemsBeforeCursor', async () => page(rows(0, 30), [run(0, 99, 0, 29)]));
+  setBindingMock('ListActivityRunMembers', async () => ({ items: [], stub: run(0, 99, 0, 29) }));
+  const result = await refreshRetainedRunWindows('t', fresh, previous, shape, () => true, {}, true);
+  expect(result.items.map(item => item.id)).toEqual(rows(0, 30).map(item => item.id));
+  expect(result.runs).toEqual([run(0, 99, 0, 29)]);
+});
+
+it('does not advance a reader-pinned window onto a nearby new member', async () => {
+  const fresh = page(rows(1, 30), [run(0, 30, 1, 30)]);
+  const previous = groupActivityRunSpans(rows(0, 30)).map(span => ({ ...span, readerPinned: true }));
+  setBindingMock('ListItemsBeforeCursor', async (_thread, before: { itemIndex: number }) => {
+    expect(before.itemIndex).toBe(30);
+    return page(rows(0, 30), [run(0, 30, 0, 29)]);
+  });
+  setBindingMock('ListActivityRunMembers', async () => ({ items: [], stub: run(0, 30, 0, 29) }));
+  const result = await refreshRetainedRunWindows('t', fresh, previous, shape, () => true, {}, true);
+  expect(result.items.map(item => item.id)).toEqual(rows(0, 30).map(item => item.id));
+  expect(result.runs).toEqual([run(0, 30, 0, 29)]);
+});
+
 it('re-reads a run split by prose and removes a deleted member', async () => {
   const previous = rows(0, 70);
   const middle = row(35, { kind: 'assistant_text', toolName: '', summary: 'new divider' });

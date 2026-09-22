@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -16,6 +17,49 @@ func memberIDs(members ActivityRunMembers) []string {
 	return collectIDs(members.Items)
 }
 
+func TestActivityRunMembersTrimFreshMatchesSmallerRead(t *testing.T) {
+	s := newTestStore(t)
+	ids := seedRunThread(t, s, "t", "ptrcrcttrrp")
+	cases := []ActivityRunMembersRequest{
+		{RunFirstItemID: ids[1], Direction: ActivityRunMembersBefore},
+		{RunFirstItemID: ids[1], Direction: ActivityRunMembersAfter},
+		{RunFirstItemID: ids[1], LoadedFirstItemID: ids[7], LoadedLastItemID: ids[9], Direction: ActivityRunMembersBefore},
+		{RunFirstItemID: ids[1], LoadedFirstItemID: ids[2], LoadedLastItemID: ids[3], Direction: ActivityRunMembersAfter},
+		{RunFirstItemID: ids[1], LoadedFirstItemID: ids[7], LoadedLastItemID: ids[9], Direction: ActivityRunMembersAround, AroundItemID: ids[4]},
+	}
+	for _, req := range cases {
+		largeReq := req
+		largeReq.Limit = 5
+		large, err := s.ListActivityRunMembers(context.Background(), "t", largeReq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		smallReq := req
+		smallReq.Limit = 2
+		small, err := s.ListActivityRunMembers(context.Background(), "t", smallReq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		from := -1
+		for i, item := range large.Items {
+			if len(small.Items) > 0 && item.ID == small.Items[0].ID {
+				from = i
+				break
+			}
+		}
+		if from < 0 {
+			t.Fatalf("%s: small answer %v outside large answer %v", req.Direction, memberIDs(small), memberIDs(large))
+		}
+		trimmed, err := large.TrimFresh(from, from+len(small.Items))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(trimmed.Items, small.Items) || !reflect.DeepEqual(trimmed.Stub, small.Stub) {
+			t.Fatalf("%s: trimmed answer differs from smaller read\ntrimmed: %+v\nsmall: %+v", req.Direction, trimmed.Stub, small.Stub)
+		}
+	}
+}
+
 // TestListActivityRunMembersWalksEachDirection covers the three
 // directions plus the stub-only refresh over one run.
 func TestListActivityRunMembersWalksEachDirection(t *testing.T) {
@@ -25,7 +69,7 @@ func TestListActivityRunMembersWalksEachDirection(t *testing.T) {
 
 	// No span held: "before" takes the run's newest members, the same end
 	// a page ships.
-	newest, err := s.ListActivityRunMembers("t", ActivityRunMembersRequest{
+	newest, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 		RunFirstItemID: run,
 		Direction:      ActivityRunMembersBefore,
 		Limit:          5,
@@ -43,7 +87,7 @@ func TestListActivityRunMembersWalksEachDirection(t *testing.T) {
 
 	// "before" an existing span extends it older: only the new rows ship,
 	// and the stub describes the union.
-	older, err := s.ListActivityRunMembers("t", ActivityRunMembersRequest{
+	older, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 		RunFirstItemID:    run,
 		LoadedFirstItemID: newest.Stub.LoadedFirstItemID,
 		LoadedLastItemID:  newest.Stub.LoadedLastItemID,
@@ -62,7 +106,7 @@ func TestListActivityRunMembersWalksEachDirection(t *testing.T) {
 	}
 
 	// "after" extends the other way.
-	newer, err := s.ListActivityRunMembers("t", ActivityRunMembersRequest{
+	newer, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 		RunFirstItemID:    run,
 		LoadedFirstItemID: ids[5],
 		LoadedLastItemID:  ids[6],
@@ -78,7 +122,7 @@ func TestListActivityRunMembersWalksEachDirection(t *testing.T) {
 
 	// "around" REPLACES the span: the rows the caller held become
 	// unshipped and are described by the stub.
-	around, err := s.ListActivityRunMembers("t", ActivityRunMembersRequest{
+	around, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 		RunFirstItemID:    run,
 		LoadedFirstItemID: ids[19],
 		LoadedLastItemID:  ids[20],
@@ -98,7 +142,7 @@ func TestListActivityRunMembersWalksEachDirection(t *testing.T) {
 	}
 
 	// Limit 0 mounts nothing and re-describes the span the caller holds.
-	refreshed, err := s.ListActivityRunMembers("t", ActivityRunMembersRequest{
+	refreshed, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 		RunFirstItemID:    run,
 		LoadedFirstItemID: ids[4],
 		LoadedLastItemID:  ids[7],
@@ -178,14 +222,14 @@ func TestListActivityRunMembersRefusesAStaleRun(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := s.ListActivityRunMembers("t", tc.req); !errors.Is(err, ErrActivityRunStale) {
+			if _, err := s.ListActivityRunMembers(context.Background(), "t", tc.req); !errors.Is(err, ErrActivityRunStale) {
 				t.Fatalf("err = %v, want ErrActivityRunStale", err)
 			}
 		})
 	}
 
 	t.Run("unknown direction", func(t *testing.T) {
-		_, err := s.ListActivityRunMembers("t", ActivityRunMembersRequest{
+		_, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 			RunFirstItemID: run, Direction: "sideways", Limit: 2,
 		})
 		if err == nil || !strings.Contains(err.Error(), "sideways") {
@@ -195,7 +239,7 @@ func TestListActivityRunMembersRefusesAStaleRun(t *testing.T) {
 
 	t.Run("limit outside the cap", func(t *testing.T) {
 		for _, limit := range []int{-1, maxActivityRunMemberLimit + 1} {
-			_, err := s.ListActivityRunMembers("t", ActivityRunMembersRequest{
+			_, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{
 				RunFirstItemID: run, Direction: ActivityRunMembersBefore, Limit: limit,
 			})
 			if err == nil {
@@ -213,7 +257,7 @@ func TestHeldWindowFoldsRunStubs(t *testing.T) {
 	s := newTestStore(t)
 	seedRunThread(t, s, "t", runSpec(30))
 
-	page, err := s.ListThreadSliceAround("t", "", 200, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 200, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("window: %v", err)
 	}

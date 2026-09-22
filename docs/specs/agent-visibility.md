@@ -85,9 +85,10 @@ subagent model and the user explicitly authorizes the corresponding change.
   answer as its payload; a terminal whose envelope does not arrive in
   that turn is written answerless at turn end, and an answer sampled in a
   later turn stays a delivery activity. A Claude background completion
-  carries the `output_file` sidechain transcript, and its preview is the
-  agent's final assistant text as the notification `summary` reports it
-  (the transcript is the fallback). The answer itself is a NORMAL
+  carries a preview of the agent's final assistant text as the notification
+  `summary` reports it (the sidechain transcript is the fallback). The
+  transcript is reconciled into paged child rows, not copied into the
+  completion payload. The answer itself is a NORMAL
   message, not a special block (ruling 2026-08-23): a Codex child's
   transcript streams to the parent parented to the launch, so the answer
   already renders in the card body and the pane as its own assistant
@@ -121,8 +122,8 @@ subagent model and the user explicitly authorizes the corresponding change.
   and its explicit open button opens the pane. Neither moves the
   timeline: a jump would release bottom-follow, which a reader pinned to
   a streaming tail did not ask for (2026-08-31), so a launch outside the
-  loaded window is loaded into pane memory for the digest or pane
-  without paging the window. Forks appear without a kill button (Q8).
+  loaded window resolves through the digest or agent pane's independent
+  paged scope without changing the main window. Forks appear without a kill button (Q8).
 - Background action: icon button on a running inline agent or Bash row
   (Claude only: `background_tasks` control_request by `tool_use_id`);
   no keyboard shortcut (Q9). Claude stops forwarding the node through the

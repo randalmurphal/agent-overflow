@@ -24,14 +24,30 @@ function bounds(run: ActivityRunStub): { first: TimelineCursor; last: TimelineCu
 export async function refreshRetainedRunWindows(
   threadId: string,
   page: PagedItems,
-  previous: readonly ActivityRunSpan[],
+  previous: readonly (ActivityRunSpan & { readerPinned?: boolean })[],
   shape: TimelinePageShape,
   isCurrent: () => boolean,
   selection: TimelineSelection = {},
+  followingTail = false,
 ): Promise<PagedItems> {
-  const present = new Set(page.items.map(item => item.id));
-  const retained = previous.filter(span =>
-    span.items.length > shape.runWindowRows && span.items.some(item => !present.has(item.id)));
+  const pageItems = page.items;
+  const present = new Set(pageItems.map(item => item.id));
+  const retained = previous.filter(span => {
+    if ((!span.readerPinned && span.items.length <= shape.runWindowRows)
+      || !span.items.some(item => !present.has(item.id))) return false;
+    if (!followingTail || span.readerPinned || span.items.some(item => present.has(item.id))) return true;
+    const oldLast = cursor(span.items[span.items.length - 1]);
+    // One run can have only one contiguous shipped span. If the thread's
+    // tail has advanced beyond this entire old span, keep the fresh tail
+    // window; restoring the old span would hide the newest activity behind
+    // a "later" boundary and reread history the reader did not ask for.
+    return !page.runs.some(run => {
+      const range = bounds(run);
+      return compareCursors(oldLast, range.first) >= 0
+        && compareCursors(oldLast, range.last) <= 0
+        && pageItems.some(item => item.id === run.loadedFirstItemId && compareItemToCursor(item, oldLast) > 0);
+    });
+  });
   if (retained.length === 0) return page;
   const backend = requireEntityBackend(threadBackend(threadId));
   const readShape = { ...shape, runWindowRows: ACTIVITY_RUN_WINDOW_ROWS_MAX };
@@ -40,7 +56,24 @@ export async function refreshRetainedRunWindows(
   while (pending.length > 0) {
     const span = pending.pop()!;
     let floor = cursor(span.items[0]);
-    const ceiling = cursor(span.items[span.items.length - 1]);
+    let ceiling = cursor(span.items[span.items.length - 1]);
+    // A live run can gain a member while this pane is away. When the new
+    // page's shipped span overlaps the old one, keep its new edge in the
+    // contiguous window we restate. Otherwise the old span's stub counts
+    // the arrival as "later" even though the reader was following the run.
+    if (!span.readerPinned) {
+      for (const run of page.runs) {
+        const range = bounds(run);
+        if (compareCursors(ceiling, range.first) < 0 || compareCursors(ceiling, range.last) > 0) continue;
+        const freshFirst = pageItems.find(item => item.id === run.loadedFirstItemId);
+        const freshLast = pageItems.find(item => item.id === run.loadedLastItemId);
+        if (freshFirst && freshLast && compareItemToCursor(freshFirst, ceiling) <= 0
+          && compareItemToCursor(freshLast, ceiling) > 0) {
+          ceiling = cursor(freshLast);
+        }
+        break;
+      }
+    }
     let before = { ...ceiling, itemIndex: ceiling.itemIndex + 1, itemId: '' };
     const incomingRows: Item[] = [];
     const runs = new Map<string, ActivityRunStub>();

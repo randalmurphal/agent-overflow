@@ -201,32 +201,14 @@ describe('subagent fold', () => {
       });
     });
 
-    it('retains settled children while the card is expanded and evicts them on collapse', async () => {
+    it('folds settled children independently of inline expansion', async () => {
       const pane = await paneWithAnchor('fold-collapse');
-
-      expect(pane.toggleSubagentGroupExpanded('anchor')).toBe(true);
-      pane.upsertItem(childItem('fold-collapse', { summary: 'ran tests' }));
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
-      expect(pane.subagentLiveAggregate('anchor')).toBeUndefined();
-
-      expect(pane.toggleSubagentGroupExpanded('anchor')).toBe(false);
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);
-      expect(pane.subagentLiveAggregate('anchor')).toEqual({
-        evictedCount: 1,
-        terminalPreview: 'ran tests',
-        terminalTurnIndex: 1,
-        terminalItemIndex: 1,
-      });
-
-      // Re-expansion hydrates from SQLite and reclaims the fold — the
-      // id is folded XOR loaded, never both.
-      setBindingMock('ListSubagentDescendants', async () => [
-        childItem('fold-collapse', { summary: 'ran tests' }),
-      ]);
-      expect(pane.toggleSubagentGroupExpanded('anchor')).toBe(true);
-      await expect(pane.ensureSubagentChildren('anchor')).resolves.toBe(true);
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
-      expect(pane.subagentLiveAggregate('anchor')).toBeUndefined();
+      for (const expanded of [true, false, true]) {
+        expect(pane.toggleSubagentGroupExpanded('anchor')).toBe(expanded);
+        pane.upsertItem(childItem('fold-collapse', { id: `child-${expanded}-${pane.items.length}`, summary: 'ran tests' }));
+        expect(pane.items.some(it => it.parentId === 'anchor')).toBe(false);
+        expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBeGreaterThan(0);
+      }
     });
 
     it('sweeps the settled subtree through a nested launch when the outer card collapses', async () => {
@@ -254,8 +236,8 @@ describe('subagent fold', () => {
           summary: 'deep work',
         }),
       );
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
-      expect(pane.items.some((it) => it.id === 'grandchild')).toBe(true);
+      expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);
+      expect(pane.items.some((it) => it.id === 'grandchild')).toBe(false);
 
       // Collapsing the OUTER card makes the whole transcript unrenderable,
       // the nested card included — its own expansion no longer reaches a
@@ -332,7 +314,7 @@ describe('subagent fold', () => {
       // settled child is retained rather than immediately re-folded,
       // making its presence a clean signal that nothing swallowed it.
       pane.toggleSubagentGroupExpanded('anchor');
-      pane.upsertItems([...removed, childItem('fold-revert')]);
+      pane.upsertItems([...removed, childItem('fold-revert', { status: 'streaming' })]);
       expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
     });
 
@@ -533,102 +515,6 @@ describe('subagent fold', () => {
         }),
       );
       expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
-    });
-
-    // Removal paths drop rows the reader asked to destroy, and those rows
-    // can be hydrated subagent children whose launch ANCHOR survives the
-    // same drop — a revert keeps the anchor turn's backend-enumerated
-    // survivors, and a single-row removal keeps everything else by
-    // construction. A surviving anchor still marked exhausted never
-    // re-fetches, so its card wedges on the loading placeholder. These
-    // paths hand-rolled their disposal and skipped the re-arm entirely;
-    // they go through `dropTimelineItems` now. Transition coverage: the
-    // marker has to be SET first, or the assertion passes vacuously.
-    async function paneWithExhaustedAnchor(threadId: string) {
-      const pane = await paneWithAnchor(threadId);
-      let listCalls = 0;
-      setBindingMock('ListSubagentDescendants', async () => {
-        listCalls += 1;
-        return [childItem(threadId)];
-      });
-
-      // First fetch merges the child in; the second finds nothing new and
-      // marks the anchor exhausted; the third proves the marker bites.
-      expect(await pane.ensureSubagentChildren('anchor')).toBe(true);
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
-      expect(await pane.ensureSubagentChildren('anchor')).toBe(false);
-      expect(await pane.ensureSubagentChildren('anchor')).toBe(false);
-      expect(listCalls).toBe(2);
-
-      return { pane, calls: () => listCalls };
-    }
-
-    it('re-arms a surviving anchor when removeItemById drops its hydrated child', async () => {
-      const { pane, calls } = await paneWithExhaustedAnchor('remove-one-exhaust');
-
-      const removed = pane.removeItemById('child-1', 'remove-one-exhaust');
-      expect(removed?.id).toBe('child-1');
-      expect(pane.items.some((it) => it.id === 'anchor')).toBe(true);
-
-      // The anchor is hydratable again: the fetch goes out and the child
-      // comes back, instead of being suppressed by a marker describing a
-      // window that no longer exists.
-      expect(await pane.ensureSubagentChildren('anchor')).toBe(true);
-      expect(calls()).toBe(3);
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
-    });
-
-    it('re-arms a surviving anchor when a revert drops its hydrated child', async () => {
-      const { pane, calls } = await paneWithExhaustedAnchor('remove-revert-exhaust');
-
-      // The anchor turn's survivor list names the anchor only — the
-      // hydrated child was never in the backend enumeration, so the
-      // kept-set formulation removes it while the anchor stays.
-      const removed = pane.removeRevertedItems(1, ['anchor']);
-      expect(removed.map((it) => it.id)).toEqual(['child-1']);
-      expect(pane.items.map((it) => it.id)).toEqual(['pre', 'anchor']);
-
-      expect(await pane.ensureSubagentChildren('anchor')).toBe(true);
-      expect(calls()).toBe(3);
-    });
-
-    it('keeps unrelated exhausted-hydration markers across evictions', async () => {
-      const pane = createThreadPane();
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [
-          launchItem('fold-exhaust', { id: 'anchor-a', turnIndex: 0 }),
-          launchItem('fold-exhaust', { id: 'anchor-b', turnIndex: 1 }),
-        ],
-        oldestTurnIndex: 0,
-        newestTurnIndex: 1,
-        hasMore: false,
-        hasMoreOlder: false,
-        hasMoreNewer: false,
-      }));
-      let listCalls = 0;
-      setBindingMock('ListSubagentDescendants', async () => {
-        listCalls += 1;
-        return [];
-      });
-      await pane.switchThread(makeThread({ id: 'fold-exhaust' }));
-
-      // Anchor A fetches nothing → marked exhausted; repeats skip the wire.
-      await pane.ensureSubagentChildren('anchor-a');
-      await pane.ensureSubagentChildren('anchor-a');
-      expect(listCalls).toBe(1);
-
-      // Evicting a child of anchor B clears only B's marker. A wholesale
-      // clear here would re-arm A into a refetch per eviction.
-      pane.upsertItem(
-        childItem('fold-exhaust', { parentId: 'anchor-b', turnIndex: 1 }),
-      );
-      expect(pane.subagentLiveAggregate('anchor-b')?.evictedCount).toBe(1);
-      await pane.ensureSubagentChildren('anchor-a');
-      expect(listCalls).toBe(1);
-
-      // B's own transcript changed, so its fetch goes through.
-      await pane.ensureSubagentChildren('anchor-b');
-      expect(listCalls).toBe(2);
     });
 
     it('defers the recent-window prune while a turn is active and runs it on settle', async () => {

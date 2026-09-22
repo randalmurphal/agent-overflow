@@ -720,7 +720,7 @@ describe('threadTimelineWindow', () => {
       expect(paged).toBe(0);
     });
 
-    it('loadUntilItem resolves a subagent child by anchoring on its launch root and hydrating the subtree', async () => {
+    it('loadUntilItem resolves a subagent child by loading only its ancestry and the root window', async () => {
       // History windows exclude child rows, so a scroll-to-item target
       // inside a subagent transcript must (1) walk the parent chain to
       // the top-level launch root, (2) slice the window around the
@@ -798,238 +798,20 @@ describe('threadTimelineWindow', () => {
           };
         },
       );
-      setBindingMock(
-        'ListSubagentDescendants',
-        async (_threadId: string, rootItemId: string) =>
-          rootItemId === 'root-launch'
-            ? [
-                makeItem({
-                  id: 'mid-launch',
-                  threadId: 't',
-                  turnIndex: 4,
-                  itemIndex: 1,
-                  parentId: 'root-launch',
-                  kind: 'tool_call',
-                  toolName: 'Task',
-                }),
-                makeItem({
-                  id: 'deep-child',
-                  threadId: 't',
-                  turnIndex: 4,
-                  itemIndex: 3,
-                  parentId: 'mid-launch',
-                }),
-              ]
-            : [],
-      );
+      const bulk = setBindingMock('ListSubagentDescendants', async () => { throw new Error('Bulk fetch forbidden'); });
       await pane.switchThread(makeThread({ id: 't' }));
 
       const ok = await pane.loadUntilItem('deep-child');
 
       expect(ok).toBe('loaded');
       expect(sliceAnchors.at(-1)).toBe('root-launch');
+      expect(bulk).not.toHaveBeenCalled();
       expect(pane.items.map((it) => it.id)).toEqual([
         'root-launch',
         'mid-launch',
         'deep-child',
         'after',
       ]);
-    });
-
-    it('ensureSubagentChildren merges descendants additively and dedupes repeat calls', async () => {
-      const pane = createThreadPane();
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [
-          makeItem({
-            id: 'anchor',
-            threadId: 't',
-            turnIndex: 1,
-            itemIndex: 0,
-            kind: 'tool_call',
-            toolName: 'Task',
-          }),
-          makeItem({ id: 'tail', threadId: 't', turnIndex: 2 }),
-        ],
-        oldestTurnIndex: 1,
-        newestTurnIndex: 2,
-        hasMore: false,
-      }));
-      let listCalls = 0;
-      setBindingMock('ListSubagentDescendants', async () => {
-        listCalls += 1;
-        return [
-          makeItem({
-            id: 'child-1',
-            threadId: 't',
-            turnIndex: 1,
-            itemIndex: 1,
-            parentId: 'anchor',
-          }),
-          makeItem({
-            id: 'child-2',
-            threadId: 't',
-            turnIndex: 1,
-            itemIndex: 2,
-            parentId: 'anchor',
-          }),
-        ];
-      });
-      await pane.switchThread(makeThread({ id: 't' }));
-
-      const first = await pane.ensureSubagentChildren('anchor');
-      expect(first).toBe(true);
-      expect(pane.items.map((it) => it.id)).toEqual([
-        'anchor',
-        'child-1',
-        'child-2',
-        'tail',
-      ]);
-
-      // A repeat call re-fetches once (children might have grown), adds
-      // nothing, and marks the anchor exhausted.
-      const second = await pane.ensureSubagentChildren('anchor');
-      expect(second).toBe(false);
-      expect(listCalls).toBe(2);
-
-      // Exhausted anchors skip the backend entirely so a stale
-      // decorated count can't loop the expansion effect.
-      const third = await pane.ensureSubagentChildren('anchor');
-      expect(third).toBe(false);
-      expect(listCalls).toBe(2);
-    });
-
-    it('ensureSubagentChildren dedupes concurrent calls for the same anchor', async () => {
-      const pane = createThreadPane();
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [
-          makeItem({
-            id: 'anchor',
-            threadId: 't',
-            turnIndex: 1,
-            kind: 'tool_call',
-            toolName: 'Task',
-          }),
-        ],
-        oldestTurnIndex: 1,
-        hasMore: false,
-      }));
-      let resolveList: (items: Item[]) => void = () => {};
-      const listMock = setBindingMock(
-        'ListSubagentDescendants',
-        () =>
-          new Promise((resolve) => {
-            resolveList = resolve as (items: Item[]) => void;
-          }),
-      );
-      await pane.switchThread(makeThread({ id: 't' }));
-
-      const firstPromise = pane.ensureSubagentChildren('anchor');
-      const duplicate = await pane.ensureSubagentChildren('anchor');
-      expect(duplicate).toBe(false);
-
-      resolveList([
-        makeItem({
-          id: 'child-1',
-          threadId: 't',
-          turnIndex: 1,
-          itemIndex: 1,
-          parentId: 'anchor',
-        }),
-      ]);
-      expect(await firstPromise).toBe(true);
-      expect(listMock.mock.calls).toHaveLength(1);
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
-    });
-
-    it('ensureSubagentChildren discards a fetch that resolves after a thread switch', async () => {
-      const pane = createThreadPane();
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [
-          makeItem({
-            id: 'anchor',
-            threadId: 'thread-a',
-            turnIndex: 1,
-            kind: 'tool_call',
-            toolName: 'Task',
-          }),
-        ],
-        oldestTurnIndex: 1,
-        hasMore: false,
-      }));
-      let resolveList: (items: Item[]) => void = () => {};
-      setBindingMock(
-        'ListSubagentDescendants',
-        () =>
-          new Promise((resolve) => {
-            resolveList = resolve as (items: Item[]) => void;
-          }),
-      );
-      await pane.switchThread(makeThread({ id: 'thread-a' }));
-      const pending = pane.ensureSubagentChildren('anchor');
-
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [makeItem({ id: 'b-item', threadId: 'thread-b', turnIndex: 0 })],
-        oldestTurnIndex: 0,
-        hasMore: false,
-      }));
-      await pane.switchThread(makeThread({ id: 'thread-b' }));
-
-      resolveList([
-        makeItem({
-          id: 'stale-child',
-          threadId: 'thread-a',
-          turnIndex: 1,
-          itemIndex: 1,
-          parentId: 'anchor',
-        }),
-      ]);
-      expect(await pending).toBe(false);
-      expect(pane.items.some((it) => it.id === 'stale-child')).toBe(false);
-    });
-
-    it('ensureSubagentChildren recovers after a failed fetch', async () => {
-      // A transient backend failure must not wedge the anchor: the
-      // in-flight marker clears in finally and the anchor is NOT marked
-      // exhausted, so the next call (the user re-expanding the card)
-      // re-fetches instead of being suppressed.
-      const pane = createThreadPane();
-      setBindingMock('ListThreadSliceAround', async () => ({
-        items: [
-          makeItem({
-            id: 'anchor',
-            threadId: 't',
-            turnIndex: 1,
-            kind: 'tool_call',
-            toolName: 'Task',
-          }),
-        ],
-        oldestTurnIndex: 1,
-        hasMore: false,
-      }));
-      let listCalls = 0;
-      setBindingMock('ListSubagentDescendants', async () => {
-        listCalls += 1;
-        if (listCalls === 1) throw new Error('mock backend down');
-        return [
-          makeItem({
-            id: 'child-1',
-            threadId: 't',
-            turnIndex: 1,
-            itemIndex: 1,
-            parentId: 'anchor',
-          }),
-        ];
-      });
-      await pane.switchThread(makeThread({ id: 't' }));
-
-      const failed = await pane.ensureSubagentChildren('anchor');
-      expect(failed).toBe(false);
-      expect(pane.items.map((it) => it.id)).toEqual(['anchor']);
-
-      const retried = await pane.ensureSubagentChildren('anchor');
-      expect(retried).toBe(true);
-      expect(listCalls).toBe(2);
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
     });
 
     it('loadOlder takes hasMoreHistory from the page, empty or not', async () => {

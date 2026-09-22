@@ -6,31 +6,27 @@ the remote era, is still deferred. Read this as the design record behind
 
 ## 1. Problem
 
-A cold thread open today costs one `ListThreadSliceAround` round trip
-before any timeline content exists to paint. Wave 1 made the wait
-artifact-free (warm-gate re-arm, size-prior carry-forward), but the wait
-itself remains, and it scales with the link: ~5–40 ms on loopback,
-hundreds of ms on the remote paths the remote-access spec plans for
-(`docs/specs/remote-access.md` §9, §14). The in-memory
-`threadItemCache` (LRU of 5 threads) already proves the fix, since a
-cache hit paints synchronously, but it dies with the page and covers
-almost nothing after a restart.
+A cold thread open needs a server read before its timeline can show current
+history. The in-memory `threadItemCache` (LRU of 5 threads) and the
+IndexedDB replica can supply that window locally, but the pane verifies
+it before display. An unchanged window needs only a small sync answer;
+stale rows are replaced before they can appear.
 
-Wave 2 makes the cached paint durable and makes its freshness *checkable
-for ~100 bytes*:
+The replica makes that local window durable and its freshness checkable:
 
 - a per-thread **`rev`/`epoch`** stamp pair on the backend that any item
   mutation provably advances (the invalidation contract, §3),
 - one RPC, **`SyncThreadWindow`**, that either answers "nothing
   changed" with no items attached, or returns the viewport window (§5),
-- an **IndexedDB replica** of recently viewed thread windows that paints
-  before the RPC returns and reconciles after (§6).
+- an **IndexedDB replica** of recently viewed thread windows, staged before
+  the RPC and reconciled before display (§6).
 
 Non-goals for this wave: offline pagination (loadOlder/loadNewer stay
 server-only), replicating payload bodies (principle 4: heavy payloads
 stay lazy-loaded), replicating turn rows or live state (their RPCs keep
 firing on every open), CRDTs, event sourcing, or any change to the
-reveal queue. The replica is a paint accelerator and transfer saver; the
+reveal queue. The replica saves transfer and avoids rebuilding an unchanged
+window after verification; the
 backend store remains the only queryable truth
 (`CLAUDE.md` core principles 2–4).
 
@@ -755,12 +751,13 @@ port; temporary token attachment does not create a durable pairing.
   only for remote browser devices, which is why the envelope reserves
   the field rather than shipping crypto now.
 
-### 6.1 Cold-open flow (render-from-replica-then-reconcile)
+### 6.1 Cold-open flow (install, verify, then render)
 
 `installCacheOrFreshState` gains an L2:
 
-1. **L1** `threadItemCache` hit → paint synchronously (unchanged),
-   but the item-load leg is no longer skipped (see below).
+1. **L1** `threadItemCache` hit → install synchronously as verification
+   evidence, but hold the timeline offscreen until the item-load leg
+   verifies it. The item-load leg is never skipped.
 2. **L1 miss** → the IndexedDB read runs BEFORE the RPC is issued, not
    concurrently with it. That ordering is load-bearing, not a lost
    optimization: the request's `haveEpoch`/`haveRev` come FROM the
@@ -772,22 +769,21 @@ port; temporary token attachment does not create a durable pairing.
    disabled replica. (A replica read superseded by a newer thread
    switch is still discarded via the pane's `gen` token.)
 
-   The request carries `haveWindow` too, whenever either tier painted
-   (`heldWindowOf` over the painted rows and the window's has-more
+   The request carries `haveWindow` too, whenever either tier supplied
+   usable rows (`heldWindowOf` over those rows and the window's has-more
    flags). It is independent evidence, not a fallback: the stamp asks
    whether the thread changed, the window asks whether these rows are
    still the read, and a thread that had a turn while open can only
    answer the second. A pane holding an un-echoed optimistic row
    describes nothing, for the same reason it persists nothing (§3.4).
-3. Replica paint goes through the existing `replaceTimelineItems`
-   chokepoint and **arms the wave 1 warm gate exactly like an initial
-   slice** (`armInitialSliceWarmup`). On loopback the sync response
-   usually lands inside the ~100 ms quiet window, so reconciliation
-   happens *before first reveal*, with zero artifacts. On slow links the
-   replica reveals first and the reconcile patches visible content;
-   that is the explicit remote tradeoff and it is strictly better than
-   the blank pane it replaces.
-4. Sync response applied: **the page replaces the painted replica rows
+3. Replica installation goes through the existing `applyInitialSlice`
+   path. The cached rows stay in the pane store for the sync request but
+   are not rendered while it is pending. After ~100 ms the empty surface
+   shows a loading indicator. Immediately before revealing the verified
+   window, `armInitialSliceWarmup` closes the measurement gate over the
+   rows that will actually mount. A verified cache hit still transfers no
+   item page.
+4. Sync response applied: **the page replaces the staged replica rows
    as the live window** (via `reconcileItemWindow` so unchanged rows
    keep `===` references and don't re-render). Replica rows are
    paint-only, and none survive into the live window past the reconcile.
@@ -809,13 +805,9 @@ port; temporary token attachment does not create a durable pairing.
    repeated with no evidence at all, so the pane converges on a page
    instead of sitting on rows nothing confirmed.
 
-   The warm gate is NOT re-armed for this page: it lands over a window
-   the reader may already be looking at, and re-closing the gate there
-   blanks content that is on screen. The one exception is a lineage
-   change (§3.3): those painted rows belong to a history the backend no
-   longer has, so the page does not reconcile them, it replaces all of
-   them. That is a first content mount in everything but name, and it
-   re-arms like one.
+   A retry keeps its existing window visible and re-arms the warm gate
+   only when it mounts the first rows or replaces a different backend
+   lineage (§3.3).
 5. **Write-back**: `snapshotOutgoingPane` (the sole L1 writer) also
    persists the envelope, taking rows from the live window and the
    stamp from the attestation the PANE carries for those rows (§3.4:
@@ -842,12 +834,12 @@ the freshly returned window, so there is nothing stale to page into.
 
 | Scenario | Outcome |
 |---|---|
-| Replica stale, additive-only changes (`stale`) | Instant paint, one window fetch, in-range reconcile; missing tail rows appear on reconcile |
-| Replica references deleted/moved rows (`rewritten`) | Paint may briefly show removed content on slow links (hidden by the warm gate on fast ones); replaced after the retained extent is refreshed; deleted rows dropped |
+| Replica stale, additive-only changes (`stale`) | One window fetch reconciles the staged rows before they become visible |
+| Replica references deleted/moved rows (`rewritten`) | The retained extent is refreshed and deleted rows are dropped before the timeline becomes visible |
 | Client stamp lost (gap, missed events) | Understated rev ⇒ `stale` ⇒ one redundant fetch. Never a false `fresh` |
 | Backend DB replaced (`RestoreFrom`, future restore paths) | Generation mismatch on manifest ⇒ replica cleared wholesale |
 | Thread deleted while cached | The deleting client drops the entry on the spot; any other client drops it on the `gone` answer (§4: there is no deletion event) |
-| Initial history read exceeds its bounded deadline | Backend returns `temporarily_unavailable`; an existing paint remains visible, while an empty pane shows an in-place Retry action that re-runs only the history window sync |
+| Initial history read exceeds its bounded deadline | Backend returns `temporarily_unavailable`; staged cached rows become visible with an explicit verification error, while an empty pane shows an in-place Retry action that re-runs only the history window sync |
 | IndexedDB unavailable/quota/corrupt | Logged loudly, replica disabled for the session, behavior = today's cold open |
 | Commit rejected without saying whether it landed (watchdog fires on a transaction that then commits) | The page marks its accounting mirror in doubt and re-reads the stored record before the next use of it; the stored record is authoritative and was already consistent, so nothing is stranded |
 | Two pages on ONE origin (a `--connect` window, a second browser tab) | Envelopes are per thread, so the last writer of a thread wins it; the accounting record is merged inside each commit's transaction, so neither page unaccounts the other's envelopes and the caps hold over the union |

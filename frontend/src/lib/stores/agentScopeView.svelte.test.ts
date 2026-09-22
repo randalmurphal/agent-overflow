@@ -9,7 +9,7 @@ import { setThreadScrollSnapshot, clearThreadScrollSnapshotsForTest } from '../u
 import { setBackendIdentityFromBootstrap, __resetBackendIdentityForTest } from '../transport/backendIdentity';
 import { cursorFromItem } from './threadItems';
 import type { Item } from '../types/models';
-import type { PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
+import { ActivityRunStub, type PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
 
 const threadId = 'scope-thread';
@@ -139,6 +139,61 @@ describe('independent agent timeline', () => {
     expect(view.pane.getItemById('child')?.summary).toBe('newer live text');
     expect(view.pane.getItemById('appended')).toBeDefined();
     expect(view.pane.newestLoadedCursor?.itemId).toBe('appended');
+  });
+
+  it('keeps a live child while an opening carrier resolves to its transcript root', async () => {
+    const carrier = { ...root, id: 'resume', meta: `{"transcript_root_id":"${root.id}"}` };
+    const pane = await setup([root, carrier]);
+    let resolve!: (value: unknown) => void;
+    setBindingMock('SyncThreadWindow', () => new Promise(done => { resolve = done; }));
+    const view = createAgentScopeView(pane, carrier.id, { viewKey: 'resume', openAgentPane: vi.fn() });
+    views.push(view); view.start();
+    await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
+    push(row('live-child', 1));
+    resolve({ status: 'stale', page: { ...page([]), scope: { root, lifecycle: carrier } } });
+    await vi.waitFor(() => expect(view.pane.loading).toBe(false));
+    expect(view.items.map(item => item.id)).toEqual(['live-child']);
+  });
+
+  it('rechecks only the run touched during a scoped snapshot', async () => {
+    const pane = await setup([root]);
+    const first = row('first-tool', 1, { kind: 'tool_call', toolName: 'Bash' });
+    const separator = row('prose', 2, { kind: 'assistant_text' });
+    const second = row('second-tool', 3, { kind: 'tool_call', toolName: 'Bash' });
+    const runStub = (item: Item) => new ActivityRunStub({
+      firstItemId: item.id, lastItemId: item.id,
+      firstTurnIndex: item.turnIndex, firstItemIndex: item.itemIndex,
+      lastTurnIndex: item.turnIndex, lastItemIndex: item.itemIndex,
+      memberCount: 1, loadedFirstItemId: item.id, loadedLastItemId: item.id,
+      unshippedBefore: 0, unshippedAfter: 0, unshippedDigest: '0000000000000000',
+    });
+    const stubs = [runStub(first), runStub(second)];
+    const snapshot = { ...page([first, separator, second]), runs: stubs };
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: snapshot }));
+    const view = await open(pane);
+    const fetch = setBindingMock('ListActivityRunMembers', async (_threadId: string, request: { runFirstItemId: string }) => ({
+      items: [], stub: stubs.find(stub => stub.firstItemId === request.runFirstItemId),
+    }));
+    let finish: ((value: unknown) => void) | undefined;
+    setBindingMock('SyncThreadWindow', () => new Promise(resolve => { finish = resolve; }));
+    const unrelatedRead = view.pane.refreshFromBackend();
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    push(row('other-agent-tool', 4, { parentId: 'other-agent', kind: 'tool_call', toolName: 'Bash' }));
+    push({ ...separator, summary: 'updated prose', rev: 8 });
+    finish!({ status: 'stale', page: snapshot });
+    await unrelatedRead;
+    expect(view.pane.getItemById(separator.id)?.summary).toBe('updated prose');
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(fetch).not.toHaveBeenCalled();
+
+    finish = undefined;
+    const touchedRead = view.pane.refreshFromBackend();
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+    push({ ...first, summary: 'updated while reading', rev: 9 });
+    finish!({ status: 'stale', page: snapshot });
+    await touchedRead;
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(fetch.mock.calls[0][1]).toMatchObject({ runFirstItemId: first.id, limit: 0 });
   });
 
   it('does not resurrect a removed row from an in-flight snapshot', async () => {
@@ -279,7 +334,7 @@ describe('independent agent timeline', () => {
     resolve({ status: 'stale', page: { ...page([row('child', 11, { summary: 'older content' })]), scope: { root, lifecycle: carrier } } });
     await vi.waitFor(() => expect(view.items[0]?.summary).toBe('latest child content'));
     expect(view.pane.loading).toBe(false);
-    expect(recovery).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(recovery).toHaveBeenCalledOnce());
     expect(recovery.mock.calls[0][1]).toMatchObject({ selection: { scopeRootId: root.id } });
   });
 
@@ -424,4 +479,69 @@ describe('independent agent timeline', () => {
     expect(view.items.map(item => item.id)).toEqual(['second-target']);
   });
 
+});
+
+describe('execution digest timeline', () => {
+  it('keeps completion bounds through live context patches and rejects later children', async () => {
+    const pane = await setup([root]);
+    const answer = row('answer', 1);
+    const done = makeItem({ id: 'done', threadId, kind: 'tool_completion', completionOf: root.id, itemIndex: 4, status: 'completed' });
+    const digest = { after: { turnIndex: 0, itemIndex: 0 }, before: { turnIndex: 0, itemIndex: 4 }, promptId: '', answerId: answer.id };
+    const sync = setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', generation: 'test', page: {
+      ...page([answer]), scope: { root, lifecycle: root, completion: done, digest },
+    } }));
+    const view = createAgentScopeView(pane, root.id, { viewKey: 'card:done', digestItemId: done.id, openAgentPane: vi.fn() });
+    views.push(view); view.start();
+    await vi.waitFor(() => expect(view.pane.loading).toBe(false));
+    expect(sync.mock.calls[0][1]).toMatchObject({ selection: { scopeRootId: root.id, digestItemId: done.id } });
+    applyTimelineMutation(threadId, { kind: 'patch', event: { threadId, itemId: root.id, kind: 'tool_call', patch: { updatedAt: 10, rev: 10 } } });
+    push(row('inside', 2, { kind: 'tool_call', toolName: 'Bash' }));
+    push(row('outside', 8, { kind: 'tool_call', toolName: 'Bash' }));
+    expect(view.items.map(it => it.id)).toEqual(['answer', 'inside']);
+    expect(view.lifecycleCompletion?.id).toBe(done.id);
+    view.dispose();
+    push(row('after-dispose', 1, { kind: 'tool_call', toolName: 'Bash' }));
+    expect(view.items).toEqual([]);
+  });
+
+  it('refreshes a new final report but does not reread history for each text delta', async () => {
+    const pane = await setup([root]);
+    let answer = row('answer', 3, { status: 'streaming' });
+    const sync = setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', generation: 'test', page: {
+      ...page([answer]), scope: { root, lifecycle: root, digest: { promptId: '', answerId: answer.id } },
+    } }));
+    const view = createAgentScopeView(pane, root.id, { viewKey: 'card:root', digestItemId: root.id, openAgentPane: vi.fn() });
+    views.push(view); view.start();
+    await vi.waitFor(() => expect(view.pane.loading).toBe(false));
+    for (let i = 0; i < 10; i++) applyTimelineMutation(threadId, { kind: 'delta', event: { threadId, itemId: answer.id, kind: 'assistant_text', delta: ' more', updatedAt: i + 2 } });
+    expect(sync).toHaveBeenCalledOnce();
+    answer = row('next-answer', 5, { status: 'streaming' });
+    push(answer);
+    await vi.waitFor(() => expect(view.items.map(it => it.id)).toEqual(['next-answer']));
+    expect(sync).toHaveBeenCalledTimes(2);
+    expect(pane.getItemById('next-answer')?.parentId).toBe(root.id);
+  });
+
+  it.each(['upsert', 'delta', 'move'] as const)('reconciles a newly selected answer overlapping a live %s', async (change) => {
+    const pane = await setup([root]);
+    const previous = row('previous-answer', 1);
+    const latest = row('latest-answer', 3);
+    const digestPage = (answer: Item): PagedItems => ({ ...page([answer]),
+      scope: { root, lifecycle: root, digest: { promptId: '', answerId: answer.id } } });
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', generation: 'test', page: digestPage(previous) }));
+    const view = createAgentScopeView(pane, root.id, { viewKey: 'card:root', digestItemId: root.id, openAgentPane: vi.fn() });
+    views.push(view); view.start();
+    await vi.waitFor(() => expect(view.pane.loading).toBe(false));
+    let complete: ((value: unknown) => void) | undefined;
+    setBindingMock('SyncThreadWindow', () => new Promise(resolve => { complete = resolve; }));
+    const refresh = view.pane.refreshFromBackend();
+    await vi.waitFor(() => expect(complete).toBeDefined());
+    push(latest);
+    if (change === 'delta') applyTimelineMutation(threadId, { kind: 'delta', event: { threadId, itemId: latest.id, kind: 'assistant_text', delta: ' newest', updatedAt: latest.updatedAt + 1 } });
+    if (change === 'move') push({ ...latest, parentId: 'other-scope' });
+    complete!({ status: 'stale', generation: 'test', page: digestPage(latest) });
+    await refresh;
+    expect(view.items.map(it => it.id)).toEqual(change === 'move' ? [] : [latest.id]);
+    if (change === 'delta') expect(view.items[0].summary).toBe(latest.summary + ' newest');
+  });
 });

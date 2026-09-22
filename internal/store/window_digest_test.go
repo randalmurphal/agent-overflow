@@ -120,7 +120,7 @@ func TestWindowDigestIsOrderFreeAndComposable(t *testing.T) {
 // IS the read and then break exactly one thing about it.
 func heldWindowFromStore(t *testing.T, s *Store, threadID string) HeldWindow {
 	t.Helper()
-	page, err := s.ListThreadSliceAround(threadID, "", 200, testRunWindowRows, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), threadID, "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("read window: %v", err)
 	}
@@ -480,7 +480,7 @@ func TestHeldWindowVerifiesExactlyUpToThePageCap(t *testing.T) {
 	s := newTestStore(t)
 	seedWideSyncThread(t, s, "t", MaxHeldWindowItems+1)
 
-	page, err := s.ListThreadSliceAround("t", "", MaxHeldWindowItems+2, testRunWindowRows, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", "", MaxHeldWindowItems+2, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("read window: %v", err)
 	}
@@ -642,7 +642,7 @@ func TestHeldWindowVerifiesLocalTailOfImportedThread(t *testing.T) {
 		}
 	}
 
-	page, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("read window: %v", err)
 	}

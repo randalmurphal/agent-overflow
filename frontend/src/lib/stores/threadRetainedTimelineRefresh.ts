@@ -15,7 +15,7 @@ import { threadBackend } from '../transport/entityIndex';
 export function captureRetainedTimelineWindow(
   items: readonly Item[],
   window: Pick<ThreadTimelineWindow, 'oldestLoadedCursor' | 'newestLoadedCursor'>,
-  runs: Pick<ThreadActivityRuns, 'loadedItems' | 'isLoadedMember'>,
+  runs: Pick<ThreadActivityRuns, 'loadedItems' | 'isLoadedMember' | 'readerPinnedSpan'>,
   followingTail: boolean,
   selection: TimelineSelection = {},
 ) {
@@ -25,7 +25,10 @@ export function captureRetainedTimelineWindow(
     oldest: window.oldestLoadedCursor ? { ...window.oldestLoadedCursor } : null,
     newest: window.newestLoadedCursor ? { ...window.newestLoadedCursor } : null,
     count: loaded.filter(includes).length,
-    runs: groupActivityRunSpans(loaded, item => runs.isLoadedMember(item.id), includes),
+    runs: groupActivityRunSpans(loaded, item => runs.isLoadedMember(item.id), includes).map(span => ({
+      ...span,
+      readerPinned: runs.readerPinnedSpan(span.firstItemId, span.lastItemId),
+    })),
     followingTail,
   };
 }
@@ -91,5 +94,5 @@ export async function refreshRetainedTimelineWindow(options: {
   if (chunks.length > 1) page = { ...page, items: mergeItemsById(chunks.flat(), []), runs: [...runs.values()] };
   const retainedRuns = retained.runs.filter(span => !retained.followingTail || span.items.some(item =>
     compareCursors(item, page.oldestCursor) >= 0 && compareCursors(item, page.newestCursor) <= 0));
-  return refreshRetainedRunWindows(threadId, page, retainedRuns, shape, current, selection);
+  return refreshRetainedRunWindows(threadId, page, retainedRuns, shape, current, selection, retained.followingTail);
 }

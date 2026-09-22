@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest';
+import type { PagedItems } from '../../../../bindings/agent-overflow/internal/store/models';
 import { tick } from 'svelte';
 import '../../../app.css';
 import { makeItem } from '../../../test/helpers/chat';
@@ -29,9 +30,12 @@ it.each(['claude', 'codex'] as const)('recovers the final answer in a narrow %s 
   expect(pane.revealBoundary).not.toBeNull();
   const answer = makeItem({ id: 'final-answer', threadId, kind: 'assistant_text', status: 'completed',
     turnIndex: 75, itemIndex: 63, summary: 'The final answer is visible after recovery.', updatedAt: 200 });
-  setBindingMock('ListThreadSliceAround', async () => ({
+  setBindingMock('ListThreadSliceAround', async (): Promise<PagedItems> => ({
     items: [...items, { ...old, status: 'completed', summary: 'Finished reasoning', updatedAt: 200 }, answer],
-    hasMoreOlder: false, hasMoreNewer: false,
+    runs: [], hasMore: false, hasMoreOlder: false, hasMoreNewer: false,
+    oldestTurnIndex: items[0].turnIndex, newestTurnIndex: answer.turnIndex,
+    oldestCursor: { turnIndex: items[0].turnIndex, itemIndex: items[0].itemIndex, itemId: items[0].id },
+    newestCursor: { turnIndex: answer.turnIndex, itemIndex: answer.itemIndex, itemId: answer.id },
   }));
   setBindingMock('GetThreadLiveState', async () => ({ threadId, activeTurn: null,
     queueItems: [], flushedItems: [], interactive: { approvals: [], userInputs: [] } }));

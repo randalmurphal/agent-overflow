@@ -15,7 +15,7 @@ import (
 	"agent-overflow/internal/store"
 )
 
-const claudeTaskOutputFileMaxBytes = 8 * 1024 * 1024
+const claudeCommandOutputFileMaxBytes = 8 * 1024 * 1024
 
 type backgroundTaskNotificationMeta struct {
 	TaskID          string `json:"task_id"`
@@ -346,18 +346,6 @@ func (r *Router) maybeBackfillSubagentTranscript(threadID string, launch store.I
 	if payload == nil {
 		return fmt.Errorf("subagent transcript payload is missing after a successful output_file read")
 	}
-	var payloadMeta struct {
-		OriginalBytes int64 `json:"originalBytes"`
-		Truncated     bool  `json:"truncated"`
-	}
-	if err := json.Unmarshal([]byte(payload.Meta), &payloadMeta); err != nil {
-		return fmt.Errorf("decode subagent transcript payload metadata: %w", err)
-	}
-	if payloadMeta.Truncated {
-		return fmt.Errorf(
-			"subagent transcript is %s, above the %s ceiling",
-			formatByteCount(payloadMeta.OriginalBytes), formatByteCount(claudeTaskOutputFileMaxBytes))
-	}
 	if transcript == nil {
 		return fmt.Errorf("subagent transcript projection is missing after a successful output_file read")
 	}
@@ -574,8 +562,7 @@ func notificationOutputState(raw string) (string, string) {
 // and, for an agent, the projection of its sidechain transcript. The
 // transcript is scoped to the launch's transcript ROOT (a resume
 // carrier's rows live under the original launch), which is the scope
-// the backfill replays against. It is nil when the file was truncated
-// at the payload ceiling, which the backfill reports.
+// the backfill replays against. A command returns no transcript.
 func (r *Router) readBackgroundOutputFile(threadID string, launch store.Item, outputFile, report string, exitCode *int, now int64) (*store.Payload, *claudeimport.ConvertResult, error) {
 	scope := ""
 	if isSubagentTranscriptLaunch(launch) {
@@ -588,9 +575,11 @@ func (r *Router) readBackgroundOutputFile(threadID string, launch store.Item, ou
 	return buildBackgroundOutputFilePayload("tool-call-result:"+launch.ID, launch, scope, outputFile, report, exitCode, now)
 }
 
-// buildBackgroundOutputFilePayload reads one `output_file` into a
-// payload. A command's file is its captured output. An agent's file is
-// its sidechain transcript JSONL, projected under transcriptScope.
+// buildBackgroundOutputFilePayload reads a command's captured output into
+// a bounded payload. An agent's output_file is a sidechain transcript, not
+// display content: project its rows and keep only the small answer preview
+// on the completion payload. The transcript itself remains in provider
+// history and its projected rows are paged from the item store.
 //
 // The payload's `preview` is the agent's final report, the same 240-char
 // collapsed line a Codex completion carries for its FINAL_ANSWER
@@ -601,14 +590,11 @@ func (r *Router) readBackgroundOutputFile(threadID string, launch store.Item, ou
 // file is the fallback when the envelope carried no report. The raw file
 // head is never the preview: it is a JSON envelope, not prose.
 func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, transcriptScope, outputFile, report string, exitCode *int, now int64) (*store.Payload, *claudeimport.ConvertResult, error) {
-	data, meta, err := readClaudeTaskOutputFile(outputFile, claudeTaskOutputFileMaxBytes)
-	if err != nil {
-		return nil, nil, err
-	}
-	meta["outputFile"] = outputFile
-	meta["outputFileState"] = "loaded"
-
 	if isCommandOutputLaunch(launch) {
+		data, _, err := readClaudeTaskOutputFile(outputFile, claudeCommandOutputFileMaxBytes)
+		if err != nil {
+			return nil, nil, err
+		}
 		code := 0
 		if exitCode != nil {
 			code = *exitCode
@@ -628,17 +614,18 @@ func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, trans
 		}, nil, nil
 	}
 
-	var transcript *claudeimport.ConvertResult
-	if truncated, _ := meta["truncated"].(bool); !truncated {
-		converted, err := claudeimport.ConvertSubagentTranscriptData(data, transcriptScope)
-		if err != nil {
-			return nil, nil, fmt.Errorf("read subagent transcript: %w", err)
-		}
-		transcript = &converted
-		if report == "" {
-			report = converted.FinalAssistantText()
-		}
+	resolvedPath, _, err := resolveClaudeTaskOutputPath(outputFile)
+	if err != nil {
+		return nil, nil, err
 	}
+	converted, err := claudeimport.ConvertSubagentTranscript(resolvedPath, transcriptScope)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read subagent transcript: %w", err)
+	}
+	if report == "" {
+		report = converted.FinalAssistantText()
+	}
+	meta := map[string]any{"outputFile": outputFile, "outputFileState": "loaded"}
 	if preview := truncatePreview(report, 240); preview != "" {
 		meta["preview"] = preview
 	}
@@ -650,9 +637,9 @@ func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, trans
 		ID:        payloadID,
 		Kind:      payloadKindToolCallResult,
 		Meta:      string(metaJSON),
-		Data:      data,
+		Data:      []byte{},
 		CreatedAt: now,
-	}, transcript, nil
+	}, &converted, nil
 }
 
 func isCommandOutputLaunch(launch store.Item) bool {

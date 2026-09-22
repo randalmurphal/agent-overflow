@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -21,14 +22,8 @@ func visibleItemsFilterFor(alias string) string {
 var visibleItemsFilter = visibleItemsFilterFor("")
 
 // topLevelItemsFilterFor restricts a timeline read to top-level rows.
-// Subagent children (rows with a non-empty parent_id) are deliberately
-// not part of any history window, budget, or pagination probe: they
-// render inside their anchor's SubagentGroup card, load on demand via
-// ListSubagentDescendants when the card expands, and are summarised on
-// the collapsed card by decorateSubagentAnchors. Counting them against
-// windows used to make one subagent-heavy turn eat the entire item
-// budget and flash "Load older messages" for rows that would never
-// render as timeline rows.
+// Agent children use independent scoped pages and do not consume the main
+// window's budget. decorateSubagentAnchors supplies collapsed-card summaries.
 //
 // The aliased form exists for the same reason visibleItemsFilterFor's
 // does: a read written as physical timeline arms (timeline_arms.go) has
@@ -223,8 +218,8 @@ func pageEdgeCursor(edge Item, runs []ActivityRunStub, oldestSide bool) Timeline
 // across `before` when the row immediately older than the cursor belongs
 // to a run that continues past it. Those rows are counted by the run's
 // stub, never re-shipped.
-func (s *Store) ListItemsBeforeCursor(threadID string, before TimelineCursor, itemBudget, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
-	return readSnapshot(s.reader(), "before cursor page", func(q sqlQueryer) (PagedItems, error) {
+func (s *Store) ListItemsBeforeCursor(ctx context.Context, threadID string, before TimelineCursor, itemBudget, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
+	return readSnapshotContext(ctx, s.reader(), "before cursor page", func(q sqlQueryer) (PagedItems, error) {
 		scope, err := s.resolveTimelineScope(q, threadID, selection)
 		if err != nil {
 			return PagedItems{}, err
@@ -259,8 +254,8 @@ func (s *Store) listItemsBeforeCursor(q sqlQueryer, threadID string, before Time
 // `after`, in whole units, until `itemBudget` shipped rows have been
 // selected. It is the forward pager companion to ListItemsBeforeCursor
 // and expands its oldest unit whole for the same reason.
-func (s *Store) ListItemsAfterCursor(threadID string, after TimelineCursor, itemBudget, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
-	return readSnapshot(s.reader(), "after cursor page", func(q sqlQueryer) (PagedItems, error) {
+func (s *Store) ListItemsAfterCursor(ctx context.Context, threadID string, after TimelineCursor, itemBudget, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
+	return readSnapshotContext(ctx, s.reader(), "after cursor page", func(q sqlQueryer) (PagedItems, error) {
 		scope, err := s.resolveTimelineScope(q, threadID, selection)
 		if err != nil {
 			return PagedItems{}, err
@@ -406,14 +401,13 @@ func hasItemsBeyond(q sqlQueryer, threadID string, cursor TimelineCursor, scope 
 // The ANCHOR's run ships its window centered on the anchor, so a jump
 // lands on a mounted row; every other run ships its newest members. The
 // anchor may be a subagent child: its coordinates still position the
-// window even though child rows themselves load through
-// ListSubagentDescendants.
+// window even though child rows themselves load through scoped pages.
 //
 // When `anchorItemID` is "" or the item doesn't belong to `threadID`
 // (bottom-snapshot restore, stale snapshot whose anchor has been
 // deleted), the function returns the tail window.
-func (s *Store) ListThreadSliceAround(threadID, anchorItemID string, targetItemCount, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
-	return readSnapshot(s.reader(), "thread slice", func(q sqlQueryer) (PagedItems, error) {
+func (s *Store) ListThreadSliceAround(ctx context.Context, threadID, anchorItemID string, targetItemCount, runWindowRows int, selection TimelineSelection) (PagedItems, error) {
+	return readSnapshotContext(ctx, s.reader(), "thread slice", func(q sqlQueryer) (PagedItems, error) {
 		scope, err := s.resolveTimelineScope(q, threadID, selection)
 		if err != nil {
 			return PagedItems{}, err

@@ -1,5 +1,6 @@
 import { describe, expect, it, onTestFinished } from 'vitest';
 import '../../../app.css';
+import type { PaneScrollController } from '../../stores/threadPaneShared';
 import { fireEvent, render } from '@testing-library/svelte';
 import { raf, waitFor } from '../../../test/helpers/browserFrames';
 import { captureResizeObserverLoopErrors } from '../../../test/helpers/resizeObserverLoopErrors';
@@ -53,7 +54,8 @@ describe('subagent body clip', () => {
   it('hands wheel control to the reader and resumes follow only after returning to bottom', async () => {
     const resizeObserverErrors = captureResizeObserverLoopErrors();
     onTestFinished(resizeObserverErrors.stop);
-    const { getByTestId } = render(SubagentBodyClipHarness);
+    const holder: { controller: PaneScrollController | null } = { controller: null };
+    const { getByTestId, unmount } = render(SubagentBodyClipHarness, { props: { onController: value => { holder.controller = value; } } });
     const clip = getByTestId('subagent-group-scroll');
     await waitFor(
       () =>
@@ -76,6 +78,10 @@ describe('subagent body clip', () => {
     await raf();
     await raf();
     const readingRow = firstVisibleRow(clip);
+    const retainedIds = holder.controller?.visibleTimelineItemIds?.();
+    expect(retainedIds?.size).toBeGreaterThan(0);
+    const firstId = [...retainedIds!][0];
+    expect(holder.controller?.canPreserveTimelineWindow?.(id => id !== firstId)).toBe(false);
 
     await fireEvent.click(getByTestId('append-row'));
     for (let i = 0; i < 8; i += 1) await raf();
@@ -91,6 +97,10 @@ describe('subagent body clip', () => {
       'bottom follow after reader returns',
       360,
     );
+    expect(holder.controller?.visibleTimelineItemIds?.()).toBeNull();
+    expect(holder.controller?.canPreserveTimelineWindow?.(() => false)).toBe(true);
+    unmount();
+    expect(holder.controller).toBeNull();
     expect(resizeObserverErrors.messages).toEqual([]);
   });
 });

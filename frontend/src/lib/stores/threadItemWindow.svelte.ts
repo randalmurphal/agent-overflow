@@ -37,7 +37,6 @@ const NO_ERRORS: readonly unknown[] = Object.freeze([]);
 
 export interface TimelineCommitOptions {
   disposeDropped?: boolean;
-  exhaustedScope?: ReadonlySet<string>;
   afterCommit?: () => void;
 }
 
@@ -51,7 +50,7 @@ export interface ThreadItemWindowOptions {
   streamingReveal(): ThreadStreamingReveal;
   rowUiState(): ThreadRowUiState;
   activityRuns(): ThreadActivityRuns;
-  subagentMemory?(): Pick<ThreadSubagentMemory, 'resetHydrationExhausted' | 'retainFoldAnchors'>;
+  subagentMemory?(): Pick<ThreadSubagentMemory, 'retainFoldAnchors'>;
   switchLoad(): Pick<ThreadSwitchLoad, 'noteItemMutation' | 'noteItemMutations' | 'noteItemWindowReplacement'>;
 }
 
@@ -255,18 +254,9 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
 
   function disposeDroppedItemState(
     droppedItems: readonly Item[],
-    exhaustedScope?: ReadonlySet<string>,
   ): void {
     if (droppedItems.length === 0) return;
-    // Dropped rows can include hydrated subagent children — re-arm their
-    // anchors for hydration. See threadSubagentMemory.ts
-    // `resetHydrationExhausted` for the full rationale.
     const errors: unknown[] = [];
-    try {
-      options.subagentMemory?.().resetHydrationExhausted(exhaustedScope);
-    } catch (error) {
-      errors.push(error);
-    }
     try {
       options.streamingReveal().disposeSmoothersForItems(droppedItems);
     } catch (error) {
@@ -331,7 +321,6 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
    * state a surviving row still reads).
    */
   interface TimelineItemsCommitOptions {
-    exhaustedScope?: ReadonlySet<string>;
     recordLiveReplacement?: boolean;
     afterCommit?: () => void;
   }
@@ -372,7 +361,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
         errors.push(error);
       }
       try {
-        disposeDroppedItemState(droppedItems, commitOptions.exhaustedScope);
+        disposeDroppedItemState(droppedItems);
       } catch (error) {
         errors.push(error);
       }
@@ -424,7 +413,6 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
         ? droppedItemsBetween(items, nextItems)
         : NO_ITEMS,
       {
-        exhaustedScope: commitOptions.exhaustedScope,
         recordLiveReplacement: true,
         afterCommit: commitOptions.afterCommit,
       },
@@ -457,7 +445,6 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
         ? droppedItemsBetween(items, nextItems)
         : NO_ITEMS,
       {
-        exhaustedScope: commitOptions.exhaustedScope,
         afterCommit: commitOptions.afterCommit,
       },
     );
@@ -476,7 +463,6 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
    */
   function dropTimelineItems(
     shouldDrop: (item: Item) => boolean,
-    dropOptions: { exhaustedScope?: ReadonlySet<string> } = {},
   ): Item[] {
     const kept: Item[] = [];
     const dropped: Item[] = [];
@@ -486,7 +472,6 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     }
     if (dropped.length === 0) return dropped;
     commitTimelineItems(kept, dropped, {
-      exhaustedScope: dropOptions.exhaustedScope,
       recordLiveReplacement: true,
     });
     return dropped;

@@ -435,6 +435,7 @@
     getScrollEl: () => scrollEl,
     getRevealedNodes: () => revealedNodes,
     getGroupedNodes: () => rows.groupedNodes,
+    windowVerified: () => !pane.historyWindowPending,
     findTimelineNodeIndex,
     // The rate-bounded variant: this reaches the snapshot path, which
     // fires per scroll frame. The settle edge captures exactly; the final
@@ -959,6 +960,9 @@
       <div class="flex items-center justify-center h-full text-fg-subtle text-sm" role="status" aria-live="polite">
         <span class="animate-pulse">Loading thread...</span>
       </div>
+    {:else if pane.historyWindowPending}
+      <!-- Keep a cached or replica window available for verification without
+           painting a state the backend has not confirmed. -->
     {:else if pane.items.length === 0 && !getActiveTurn(pane.threadId) && !pane.loading}
       <div class="flex min-h-full items-center justify-center px-6 py-8" data-testid="empty-thread-greeting">
         <h2 class="min-w-0 max-w-2xl text-center text-2xl font-normal leading-snug tracking-tight text-text-secondary text-balance [overflow-wrap:anywhere] compact:text-xl">

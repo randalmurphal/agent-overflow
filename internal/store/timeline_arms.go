@@ -115,13 +115,16 @@ func timelineArms(threadID string, sel timelineSelection) (string, []any) {
 	if sel.Source != "" {
 		source = sel.Source + "\n		  CROSS JOIN "
 	}
+	importedSource := source + "thread_import_chunks refs\n\t\t  JOIN import_history_items items ON items.chunk_id = refs.chunk_id"
+	if sel.Source != "" {
+		importedSource = source + "import_history_items items\n\t\t  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = items.chunk_id"
+	}
 	sql := `SELECT ` + sel.Columns("items.thread_id", "items.rev") + `
 		  FROM ` + source + `items
 		 WHERE items.thread_id = ?` + where + `
 		UNION ALL
 		SELECT ` + sel.Columns("refs.thread_id", importedItemRevExpr) + `
-		  FROM ` + source + `thread_import_chunks refs
-		  JOIN import_history_items items ON items.chunk_id = refs.chunk_id
+		  FROM ` + importedSource + `
 		 WHERE refs.thread_id = ?` + where + `
 		   AND ` + importedNotOverridden
 	if sel.OrderBy != "" {

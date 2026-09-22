@@ -38,11 +38,9 @@ import (
 // transcript the live stream never delivered, and reports how many
 // events it replayed.
 //
-// Failure is loud. A file that cannot be resolved, or is larger than the
-// payload ceiling, is reported to the caller, which stamps it onto the
-// notification's output-file state — a silently incomplete agent
-// transcript reads exactly like a complete one, and no second signal
-// would ever correct it.
+// Failure is loud. A file that cannot be read or projected is reported to
+// the caller, which stamps it onto the notification's output-file state:
+// a silently incomplete agent transcript reads exactly like a complete one.
 func (r *Router) backfillSubagentTranscript(threadID string, launch store.Item, converted claudeimport.ConvertResult) (int, error) {
 	// The terminal can land on a §E6 resume CARRIER, whose own subtree is
 	// empty: the agent's rows — round one's and every resumed round's —

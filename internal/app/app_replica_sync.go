@@ -92,11 +92,11 @@ type SyncThreadWindowResponse struct {
 // window only.
 //
 //ao:scope threads:read
-func (a *App) SyncThreadWindow(threadID string, req SyncThreadWindowRequest) (SyncThreadWindowResponse, error) {
+func (a *App) SyncThreadWindow(callerCtx context.Context, threadID string, req SyncThreadWindowRequest) (SyncThreadWindowResponse, error) {
 	if err := a.store.CheckForkReady(threadID); err != nil {
 		return SyncThreadWindowResponse{}, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), syncThreadWindowTimeout)
+	ctx, cancel := context.WithTimeout(callerCtx, syncThreadWindowTimeout)
 	defer cancel()
 
 	shape := req.shape()

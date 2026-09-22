@@ -39,6 +39,7 @@ function makeHarness(threadId: string) {
     getScrollEl: () => undefined,
     getRevealedNodes: () => [],
     getGroupedNodes: () => [],
+    windowVerified: () => true,
     findTimelineNodeIndex: () => -1,
     persistSizePriors,
     persistSizePriorsExact,

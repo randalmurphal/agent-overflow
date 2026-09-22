@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -129,7 +130,7 @@ func TestTrimShippedTracksSplitPairsInFoldOrder(t *testing.T) {
 	spec[2], spec[30] = 'c', 'c'
 	ids := seedRunThread(t, s, "t", string(spec))
 
-	page, err := s.ListThreadSliceAround("t", ids[15], 60, 30, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[15], 60, 30, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("anchored slice: %v", err)
 	}
@@ -190,7 +191,7 @@ func TestTailPageShipsTheNewestMembersOfAWholeRun(t *testing.T) {
 	s := newTestStore(t)
 	ids := seedRunThread(t, s, "t", "p"+strings.Repeat("t", 50))
 
-	page, err := s.ListThreadSliceAround("t", "", 10, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 10, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("tail slice: %v", err)
 	}
@@ -227,7 +228,7 @@ func TestAnchoredPageCentersTheAnchorRun(t *testing.T) {
 	s := newTestStore(t)
 	ids := seedRunThread(t, s, "t", runSpec(50))
 
-	page, err := s.ListThreadSliceAround("t", ids[26], 10, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[26], 10, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("anchored slice: %v", err)
 	}
@@ -267,7 +268,7 @@ func TestCursorPagesResolveACursorOnAnUnshippedRow(t *testing.T) {
 	s := newTestStore(t)
 	ids := seedRunThread(t, s, "t", runSpec(50))
 
-	page, err := s.ListThreadSliceAround("t", ids[26], 10, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[26], 10, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("anchored slice: %v", err)
 	}
@@ -287,7 +288,7 @@ func TestCursorPagesResolveACursorOnAnUnshippedRow(t *testing.T) {
 		}
 	}
 
-	older, err := s.ListItemsBeforeCursor("t", page.OldestCursor, 10, 10, TimelineSelection{})
+	older, err := s.ListItemsBeforeCursor(context.Background(), "t", page.OldestCursor, 10, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("page before an unshipped cursor: %v", err)
 	}
@@ -298,7 +299,7 @@ func TestCursorPagesResolveACursorOnAnUnshippedRow(t *testing.T) {
 		t.Errorf("older page carries %d runs, want none", len(older.Runs))
 	}
 
-	newer, err := s.ListItemsAfterCursor("t", page.NewestCursor, 10, 10, TimelineSelection{})
+	newer, err := s.ListItemsAfterCursor(context.Background(), "t", page.NewestCursor, 10, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("page after an unshipped cursor: %v", err)
 	}
@@ -314,7 +315,7 @@ func TestCursorPagesAdmitWholeUnits(t *testing.T) {
 	ids := seedRunThread(t, s, "t", runSpec(40))
 	tail := TimelineCursor{TurnIndex: 0, ItemIndex: 41, ItemID: ids[41]}
 
-	older, err := s.ListItemsBeforeCursor("t", tail, 5, 10, TimelineSelection{})
+	older, err := s.ListItemsBeforeCursor(context.Background(), "t", tail, 5, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("older page: %v", err)
 	}
@@ -328,7 +329,7 @@ func TestCursorPagesAdmitWholeUnits(t *testing.T) {
 	assertPageAccounts(t, s, "t", older, ids[1:41])
 
 	head := TimelineCursor{TurnIndex: 0, ItemIndex: 0, ItemID: ids[0]}
-	newer, err := s.ListItemsAfterCursor("t", head, 5, 10, TimelineSelection{})
+	newer, err := s.ListItemsAfterCursor(context.Background(), "t", head, 5, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("newer page: %v", err)
 	}
@@ -348,7 +349,7 @@ func TestForwardPageKeepsAGrownRunWhole(t *testing.T) {
 	ids := seedRunThread(t, s, "t", "p"+strings.Repeat("t", 20))
 	cursor := TimelineCursor{TurnIndex: 0, ItemIndex: 10, ItemID: ids[10]}
 
-	page, err := s.ListItemsAfterCursor("t", cursor, 50, 10, TimelineSelection{})
+	page, err := s.ListItemsAfterCursor(context.Background(), "t", cursor, 50, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("forward page: %v", err)
 	}
@@ -373,7 +374,7 @@ func TestTrimShippedFoldsDroppedRowsIntoTheStub(t *testing.T) {
 	// The anchor unit spends the at-or-before budget on its own 20
 	// centered members, so the page is t5..t24 plus the prose row after
 	// the run, over a range of the whole run plus that row.
-	page, err := s.ListThreadSliceAround("t", ids[15], 40, 20, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[15], 40, 20, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("anchored slice: %v", err)
 	}
@@ -438,7 +439,7 @@ func TestTrimShippedDropsARunThatLosesItsWholeSpan(t *testing.T) {
 	s := newTestStore(t)
 	ids := seedRunThread(t, s, "t", "ttppp")
 
-	page, err := s.ListThreadSliceAround("t", "", 10, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 10, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("tail slice: %v", err)
 	}
@@ -516,7 +517,7 @@ func TestImportedRowsClassifyThroughTheirOwnArm(t *testing.T) {
 	}
 
 	const runWindow = 10
-	page, err := s.ListThreadSliceAround("imp", "", 200, runWindow, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "imp", "", 200, runWindow, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("window: %v", err)
 	}
@@ -544,7 +545,7 @@ func TestImportedRowsClassifyThroughTheirOwnArm(t *testing.T) {
 	if err := s.UpdatePayloadMeta("imp", "pay-edit", `{"inlineDiff":{"totalFiles":7}}`); err != nil {
 		t.Fatalf("overlay the imported payload: %v", err)
 	}
-	page, err = s.ListThreadSliceAround("imp", "", 200, runWindow, TimelineSelection{})
+	page, err = s.ListThreadSliceAround(context.Background(), "imp", "", 200, runWindow, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("window after the overlay: %v", err)
 	}
@@ -583,7 +584,7 @@ func TestTrimShippedKeepsTheNewestRunningRowPerSide(t *testing.T) {
 	}
 	ids := seedRunThread(t, s, "t", string(spec))
 
-	page, err := s.ListThreadSliceAround("t", ids[15], 60, 30, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", ids[15], 60, 30, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("anchored slice: %v", err)
 	}
@@ -637,7 +638,7 @@ func TestAnchoredPageCentersOnTheRowAChildAnchorRendersInside(t *testing.T) {
 		t.Fatalf("insert child: %v", err)
 	}
 
-	page, err := s.ListThreadSliceAround("t", child.ID, 10, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", child.ID, 10, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("slice around child: %v", err)
 	}

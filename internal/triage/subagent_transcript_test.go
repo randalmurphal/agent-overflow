@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -657,43 +658,50 @@ func TestSubagentTranscriptBackfillRunsForANestedLaunch(t *testing.T) {
 	}
 }
 
-// A transcript that cannot be projected is reported, not silently
-// skipped: a half-complete agent transcript reads exactly like a
-// complete one and no second signal would ever correct it.
-func TestSubagentTranscriptBackfillReportsAnUnprojectableTranscript(t *testing.T) {
-	t.Run("over the ceiling", func(t *testing.T) {
+// Large sidechains still reconcile into child rows. The completion carries
+// only its preview, while a file with no convertible rows remains empty.
+func TestSubagentTranscriptBackfillLargeAndNonconvertibleFiles(t *testing.T) {
+	t.Run("larger than the command-output ceiling", func(t *testing.T) {
 		router, st, _ := newTestRouter(t)
 		createTestThread(t, st, "t1")
 		seedOpenTurn(t, router, st, "t1", 0)
 
 		startAgentLaunch(t, router, "t1", "agent-huge", "", "task-huge")
-		// The payload read truncates at the ceiling and still succeeds;
-		// a projection cannot, so an oversized transcript is refused.
-		oversized := filepath.Join(t.TempDir(), "agent-huge.jsonl")
-		if err := os.WriteFile(oversized, []byte("{}\n"), 0o600); err != nil {
-			t.Fatalf("create oversized transcript: %v", err)
-		}
-		if err := os.Truncate(oversized, claudeTaskOutputFileMaxBytes+1); err != nil {
-			t.Fatalf("grow oversized transcript: %v", err)
-		}
+		oversized := writeSubagentTranscript(t, "agent-huge.jsonl",
+			sidechainPromptRow("s1", "review", 1),
+			map[string]any{"type": "progress", "uuid": "p1", "padding": strings.Repeat("x", claudeCommandOutputFileMaxBytes+1024)},
+			sidechainTextRow("s2", "s1", "msg_final", "Complete after the large transcript.", 2),
+		)
 
 		stashAgentTerminal(t, router, "t1", "agent-huge", "task-huge")
-		notifyAgent(t, router, "t1", "agent-huge", "task-huge", oversized, nil)
+		notifyAgentWithSummary(t, router, "t1", "agent-huge", "task-huge", oversized, nil,
+			`Agent "review the file" finished`)
 		router.WaitForPendingSettles()
 
-		if children := childrenOfLaunch(t, st, "t1", "agent-huge", 0); len(children) != 0 {
-			t.Fatalf("a refused transcript must write no rows, got %v", childIDs(children))
+		children := childrenOfLaunch(t, st, "t1", "agent-huge", 0)
+		if len(children) == 0 || children[len(children)-1].Summary != "Complete after the large transcript." {
+			t.Fatalf("the final row after 8 MiB was not backfilled: %v", childIDs(children))
 		}
 		sibling, ok, err := st.GetThreadItem("t1", ToolCompletionID("agent-huge"))
 		if err != nil || !ok {
 			t.Fatalf("lookup sibling: ok=%v err=%v", ok, err)
 		}
 		meta := decodeItemMetaMap(t, sibling.Meta)
-		if meta["notification_output_state"] != "error" {
-			t.Fatalf("sibling output state = %v, want error", meta["notification_output_state"])
+		if meta["notification_output_state"] != "loaded" {
+			t.Fatalf("sibling output state = %v, want loaded", meta["notification_output_state"])
 		}
-		if readError, _ := meta["notification_output_error"].(string); readError == "" {
-			t.Fatalf("an unprojectable transcript must name its reason, meta=%s", sibling.Meta)
+		if readError, _ := meta["notification_output_error"].(string); readError != "" {
+			t.Fatalf("a projected transcript reported an error: %s", readError)
+		}
+		data, err := st.GetPayloadData("t1", sibling.PayloadID)
+		if err != nil {
+			t.Fatalf("read completion payload: %v", err)
+		}
+		if len(data) != 0 {
+			t.Fatalf("completion duplicated %d bytes of transcript data", len(data))
+		}
+		if preview, _ := outputFilePreview(t, st, "t1", "agent-huge"); preview != "Complete after the large transcript." {
+			t.Fatalf("preview = %q, want final transcript text", preview)
 		}
 	})
 

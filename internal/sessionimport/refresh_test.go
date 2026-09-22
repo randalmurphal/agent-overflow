@@ -791,7 +791,7 @@ func importedItemCount(t *testing.T, st *store.Store, threadID string) int {
 	t.Helper()
 	// The whole fixture thread's window: these imports are dozens of
 	// rows, so one tail slice is all of it.
-	window, err := st.ListThreadSliceAround(threadID, "", 1000, 200, store.TimelineSelection{})
+	window, err := st.ListThreadSliceAround(context.Background(), threadID, "", 1000, 200, store.TimelineSelection{})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround: %v", err)
 	}

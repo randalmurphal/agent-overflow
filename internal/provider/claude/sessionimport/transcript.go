@@ -96,13 +96,20 @@ type transcriptLine struct {
 // transcript is not being resumed from an offset the way a Codex rollout
 // is, and a half-written tail simply fails to decode.
 type transcriptScanner struct {
-	r      *bufio.Reader
-	offset int64
-	buf    []byte
-	done   bool
+	r            *bufio.Reader
+	offset       int64
+	buf          []byte
+	maxLineBytes int
+	done         bool
 }
 
 func newTranscriptScanner(r io.Reader) *transcriptScanner {
+	return &transcriptScanner{r: bufio.NewReaderSize(r, transcriptScanBuffer), maxLineBytes: maxTranscriptLineBytes}
+}
+
+// Terminal sidechains must retain even a very large tool-result record;
+// the root-session import's per-line recovery ceiling does not apply.
+func newSubagentTranscriptScanner(r io.Reader) *transcriptScanner {
 	return &transcriptScanner{r: bufio.NewReaderSize(r, transcriptScanBuffer)}
 }
 
@@ -117,7 +124,7 @@ func (s *transcriptScanner) next() (transcriptLine, error) {
 	for {
 		chunk, err := s.r.ReadSlice('\n')
 		s.offset += int64(len(chunk))
-		if !oversized && len(s.buf)+len(chunk) > maxTranscriptLineBytes {
+		if !oversized && s.maxLineBytes > 0 && len(s.buf)+len(chunk) > s.maxLineBytes {
 			// Past the cap: stop accumulating but keep draining to the
 			// newline so every following line stays readable. Releasing the
 			// buffer here is the point — holding a 100 MB line to report it

@@ -18,6 +18,7 @@ import { threadHasScope } from '../transport/entityScopes';
 import { requireEntityBackend } from '../transport/backends';
 import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 import { getThreadScrollSnapshot } from '../utils/threadScrollSnapshots';
+import { includesDigestItem, withinDigestExecution } from './timelineDigest';
 import { isWindowedTimelineRow } from './threadWindowDigest';
 import { compareItemsByTimelinePosition, isItemStatusRegression } from './threadItems';
 import { createRefreshScheduler } from '../utils/refreshScheduler';
@@ -40,15 +41,18 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
   let disposed = false;
   let attachment = $state.raw<ReturnType<typeof attachTimelineWindow> | null>(null);
   const reads = new Map<AbortSignal, Set<string>>();
+  const unheldItems = new Map<AbortSignal, Map<string, Item>>();
   const unheldMutations = new Map<AbortSignal, Set<string>>();
   const optimisticItemIds = new Set<string>();
-  const includes = (item: Item) => isWindowedTimelineRow(item, selection);
+  const includes = (item: Item) => isWindowedTimelineRow(item, selection)
+    && (!selection.digestItemId || includesDigestItem(item, scope?.digest));
   const noteItemMutation = (id: string) => { for (const touched of reads.values()) touched.add(id); };
   const mutations = {
     noteItemMutation,
     noteItemMutations(items: readonly Item[]) { for (const item of items) noteItemMutation(item.id); },
     noteItemWindowReplacement(before: readonly Item[], after: readonly Item[]) {
-      for (const item of [...before, ...after]) noteItemMutation(item.id);
+      for (const item of before) noteItemMutation(item.id);
+      for (const item of after) noteItemMutation(item.id);
     },
   };
   const itemWindow = createThreadItemWindow({
@@ -97,7 +101,10 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
   });
   function remove(ids: ReadonlySet<string>) {
     if (ids.size) window.invalidatePendingReads();
-    for (const id of ids) noteItemMutation(id);
+    for (const id of ids) {
+      noteItemMutation(id);
+      for (const items of unheldItems.values()) items.delete(id);
+    }
     const next = getItems().filter(item => !ids.has(item.id));
     if (next.length !== getItems().length) replaceTimelineItems(next, { disposeDropped: true });
   }
@@ -117,9 +124,22 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
             lifecycle: item.id === scope.lifecycle.id ? item : scope.lifecycle,
             completion: item.id === scope.completion?.id ? item : scope.completion };
         }
+        if (selection.digestItemId && isWindowedTimelineRow(item, selection)
+          && (item.kind === 'user_text' || item.kind === 'assistant_text') && !getItemById(item.id)
+          && (!scope || withinDigestExecution(item, scope.digest))) contextRefresh.request();
         if (includes(item)) accepted.push(item);
         else {
-          if (reads.size) noteItemMutation(item.id);
+          if (reads.size) {
+            noteItemMutation(item.id);
+            // A moved row still needs its id in the read ledger so an older
+            // snapshot cannot restore it. Only direct scope rows can later
+            // enter this window when its digest context changes.
+            if (!scope || isWindowedTimelineRow(item, selection)) {
+              for (const items of unheldItems.values()) items.set(item.id, item);
+            } else {
+              for (const items of unheldItems.values()) items.delete(item.id);
+            }
+          }
           if (getItemById(item.id)) moved.add(item.id);
         }
         // Before context resolves, a live row may belong to its canonical root.
@@ -150,18 +170,24 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
       return;
     }
     const event = mutation.event;
+    const update = (item: Item): Item => {
+      if (item.id !== event.itemId) return item;
+      if (mutation.kind === 'meta') return { ...item, meta: mutation.event.meta };
+      if (mutation.kind === 'delta') return { ...item, summary: item.summary + mutation.event.delta, updatedAt: mutation.event.updatedAt };
+      if (mutation.event.patch.status && isItemStatusRegression(item, { status: mutation.event.patch.status, updatedAt: mutation.event.patch.updatedAt })) return item;
+      return { ...item, ...mutation.event.patch };
+    };
     if (scope && [scope.root.id, scope.lifecycle.id, scope.completion?.id].includes(event.itemId)) {
-      const update = (item: Item): Item => {
-        if (item.id !== event.itemId) return item;
-        if (mutation.kind === 'meta') return { ...item, meta: mutation.event.meta };
-        if (mutation.kind === 'delta') return { ...item, summary: item.summary + mutation.event.delta, updatedAt: mutation.event.updatedAt };
-        if (mutation.event.patch.status && isItemStatusRegression(item, { status: mutation.event.patch.status, updatedAt: mutation.event.patch.updatedAt })) return item;
-        return { ...item, ...mutation.event.patch };
-      };
-      scope = { root: update(scope.root as Item), lifecycle: update(scope.lifecycle as Item),
+      scope = { ...scope, root: update(scope.root as Item), lifecycle: update(scope.lifecycle as Item),
         completion: scope.completion ? update(scope.completion as Item) : undefined };
     }
-    if (!getItemById(event.itemId)) for (const ids of unheldMutations.values()) ids.add(event.itemId);
+    if (!getItemById(event.itemId)) {
+      for (const ids of unheldMutations.values()) ids.add(event.itemId);
+      for (const items of unheldItems.values()) {
+        const item = items.get(event.itemId);
+        if (item) items.set(event.itemId, update(item));
+      }
+    }
     if (mutation.kind === 'delta') stream.applyItemDelta(mutation.event);
     else if (mutation.kind === 'meta') stream.applyItemMeta(mutation.event);
     else stream.applyItemPatch(mutation.event);
@@ -183,19 +209,44 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     if (!page) return;
     const current = new Map(getItems().map(item => [item.id, item]));
     const next = new Map((page.items as Item[]).map(item => [item.id, item]));
+    const newLiveRows: Item[] = [];
+    const dirtyRuns = new Set<string>();
+    const markTouchedRun = (candidate: Item | undefined) => {
+      if (!candidate || !isWindowedTimelineRow(candidate, selection)) return;
+      for (const run of page.runs ?? []) {
+        const afterStart = candidate.turnIndex > run.firstTurnIndex
+          || (candidate.turnIndex === run.firstTurnIndex && candidate.itemIndex >= run.firstItemIndex);
+        const beforeEnd = candidate.turnIndex < run.lastTurnIndex
+          || (candidate.turnIndex === run.lastTurnIndex && candidate.itemIndex <= run.lastItemIndex);
+        if (afterStart && beforeEnd) dirtyRuns.add(run.firstItemId);
+      }
+    };
     for (const id of observation.touched) {
-      const item = current.get(id);
-      if (item) next.set(id, item);
+      // A concurrent write can change a run stub after the snapshot. Only
+      // recheck runs containing that row; writes to other agents or prose
+      // must not turn one read into a members request for every run here.
+      markTouchedRun(next.get(id));
+      markTouchedRun(observation.unheldItems.get(id) ?? current.get(id));
+      const item = current.get(id) ?? observation.unheldItems.get(id);
+      if (item && !current.has(id) && !next.has(id) && includes(item)) {
+        // The live row arrived after the snapshot but before its canonical
+        // scope or digest was known. Admit it through the window's normal
+        // floor, ceiling and run rules once the snapshot is installed.
+        newLiveRows.push(item);
+        continue;
+      }
+      if (item && includes(item)) next.set(id, item);
       else next.delete(id);
     }
     installTimelineItems([...next.values()].sort(compareItemsByTimelinePosition), {
       disposeDropped: true, afterCommit: () => {
         window.applyWindowMetadataFromPaged({ ...page, scope: undefined });
-        const changed = [...observation.touched].flatMap(id => current.get(id) ?? []);
+        const changed = [...observation.touched].flatMap(id => next.get(id) ?? []);
         window.refreshCursorsAfterUpserts(changed, true, page.items as Item[]);
       },
     });
-    if (observation.touched.size) for (const run of page.runs) runs.markRunDirty(run.firstItemId);
+    for (const runId of dirtyRuns) runs.markRunDirty(runId);
+    if (newLiveRows.length) stream.applyProviderItemUpserts(newLiveRows);
   }
   async function read(signal: AbortSignal): Promise<WindowObservation | null> {
     const gen = ++requestGeneration;
@@ -205,6 +256,8 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     loading = true;
     const touched = new Set<string>();
     reads.set(signal, touched);
+    const unheldRows = new Map<string, Item>();
+    unheldItems.set(signal, unheldRows);
     const unheld = new Set<string>();
     unheldMutations.set(signal, unheld);
     const ownership = threadBackend(thread.id);
@@ -224,7 +277,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
       saved?.kind === 'anchor' ? saved.itemId : '', current);
     if (!current()) return superseded();
     if (response.page?.items.some(item => unheld.has(item.id))) missedStreamUpdate = true;
-    return { kind: 'snapshot', page: response.page, scope: response.scope, gone: response.status === 'gone', touched, contextVersion: contextAtRead };
+    return { kind: 'snapshot', page: response.page, scope: response.scope, gone: response.status === 'gone', touched, unheldItems: unheldRows, contextVersion: contextAtRead };
   }
   async function refresh() { await attachment?.refresh(); }
   let releaseSurface: (() => void) | undefined;
@@ -238,6 +291,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
       endRead: (signal, completed) => {
         reads.delete(signal);
         unheldMutations.delete(signal);
+        unheldItems.delete(signal);
         if (reads.size === 0) {
           if (completed) loading = false;
           if (missedStreamUpdate && !disposed && !gone) contextRefresh.request();

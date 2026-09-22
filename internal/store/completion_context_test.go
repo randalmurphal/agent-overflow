@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"reflect"
 	"testing"
 )
@@ -18,7 +19,7 @@ func TestWindowCompletionKeepsLaunchContextOutsideMembership(t *testing.T) {
 	}
 	seedItem(t, s, "t", "prose", 0, 1, "")
 	seedCompletionSibling(t, s, "t", "complete:agent", "agent", 2, 10)
-	page, err := s.ListThreadSliceAround("t", "", 1, 10, TimelineSelection{})
+	page, err := s.ListThreadSliceAround(context.Background(), "t", "", 1, 10, TimelineSelection{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +33,7 @@ func TestWindowCompletionKeepsLaunchContextOutsideMembership(t *testing.T) {
 	if len(page.Runs) != 1 || page.Runs[0].MemberCount != 1 {
 		t.Fatalf("context changed run membership: %+v", page.Runs)
 	}
-	members, err := s.ListActivityRunMembers("t", ActivityRunMembersRequest{RunFirstItemID: "complete:agent", Direction: ActivityRunMembersBefore, Limit: 1})
+	members, err := s.ListActivityRunMembers(context.Background(), "t", ActivityRunMembersRequest{RunFirstItemID: "complete:agent", Direction: ActivityRunMembersBefore, Limit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,24 +1,15 @@
 package store
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 )
 
-// Subagent child rows (items whose parent_id points at a launch row)
-// are not part of any history window — see paging.go's
-// topLevelItemsFilter. Two read-time surfaces replace them:
-//
-//   - decorateSubagentAnchors stamps every windowed anchor with the
-//     aggregates its collapsed SubagentGroup card renders (descendant
-//     count + latest-child summary), so the card looks identical
-//     whether or not children are loaded. A card is one §E6 ROUND, so
-//     the aggregates are per round, not per transcript.
-//   - ListSubagentDescendants loads the full child transcript on
-//     demand when the user expands the card.
+// Main-thread pages exclude subagent children. Read-time anchor decoration
+// supplies each execution's counts and preview; scoped pages load direct
+// children or an execution digest on demand.
 
 // Decoration keys merged into the anchor's item meta. The frontend
 // grouping (frontend/src/lib/utils/subagentGrouping.ts) reads these as
@@ -97,10 +88,8 @@ type subagentRound struct {
 type subagentRoundBounds struct {
 	anchorID string
 	rootID   string
-	loTurn   any
-	loItem   any
-	hiTurn   any
-	hiItem   any
+	lo       *TimelineCursor
+	hi       *TimelineCursor
 	round    bool
 }
 
@@ -111,30 +100,11 @@ type subagentRoundBounds struct {
 // UNION (not UNION ALL) dedups (root, id) pairs during recursion, so a
 // pathological parent_id cycle terminates instead of looping forever.
 //
-// It is FOUR arms, not two, and that is the whole point: a recursive
-// step that names the `timeline_items` view makes SQLite MATERIALIZE the
-// view — the entire thread — once per query, twice counting the final
-// resolution join (129 ms and 33,160 pages on a 40-anchor window over a
-// 35k-item thread, against 13 ms against `items` alone). Writing each
-// hop as its own physical arm keeps every hop an index probe: 106 ms /
-// 17,354 pages, which is the `items`-only floor for that same window.
-// A compound recursive SELECT needs SQLite >= 3.34; modernc.org/sqlite
-// is far past it.
-//
-// Plan notes (verified with EXPLAIN QUERY PLAN, SQLite 3.46):
-//   - The local hops probe the partial idx_items_parent (thread_id,
-//     parent_id) WHERE parent_id is non-empty, the imported hops
-//     idx_import_history_items_parent (chunk_id, parent_id) WHERE
-//     parent_id is non-empty. The explicit non-empty `parent_id` terms below are
-//     load-bearing for that: SQLite cannot prove the index predicate
-//     from a bound parameter or the `rel.id` join term alone, and
-//     without the proof the hops degrade to a whole-thread PK-prefix
-//     scan per recursion level.
-//   - CROSS JOIN in the recursive hops is a planner directive, not
-//     style: with a plain JOIN the planner puts the row source on the
-//     outer side and rescans the whole thread once per queued row.
-//     CROSS JOIN pins rel(outer) → source(inner), one index probe per
-//     row.
+// Each physical hop starts from the parent identity. Imported hops probe
+// parent_id across chunks, then verify the candidate chunk belongs to this
+// thread. Starting from the thread's chunk list would multiply every queued
+// descendant by every attached chunk. CROSS JOIN preserves the lookup order;
+// explicit nonempty parent predicates admit the partial parent indexes.
 //
 // The visible-items filter matches the window loaders: plan_update
 // notifications never render, so they must not count against the
@@ -155,8 +125,8 @@ func descendantsCTEFromRoots(rootCount int) string {
 		   AND ` + visible + `
 		UNION
 		SELECT items.parent_id, items.id
-		  FROM thread_import_chunks refs
-		  JOIN import_history_items items ON items.chunk_id = refs.chunk_id
+		  FROM import_history_items items
+		  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = items.chunk_id
 		 WHERE refs.thread_id = ?
 		   AND items.parent_id IN (` + roots + `)
 		   AND items.parent_id <> ''
@@ -172,9 +142,8 @@ func descendantsCTEFromRoots(rootCount int) string {
 		UNION
 		SELECT rel.root, items.id
 		  FROM rel
-		  CROSS JOIN thread_import_chunks refs
-		  JOIN import_history_items items
-		    ON items.chunk_id = refs.chunk_id AND items.parent_id = rel.id
+		  CROSS JOIN import_history_items items ON items.parent_id = rel.id
+		  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = items.chunk_id
 		 WHERE refs.thread_id = ?
 		   AND items.parent_id <> ''
 		   AND ` + visible + `
@@ -560,16 +529,16 @@ func subagentRoundBoundsFor(
 		rs := byRoot[root]
 		rootBound := subagentRoundBounds{anchorID: root, rootID: root, round: true}
 		if len(rs) > 0 {
-			rootBound.hiTurn, rootBound.hiItem = rs[0].turnIndex, rs[0].itemIndex
+			rootBound.hi = &TimelineCursor{TurnIndex: rs[0].turnIndex, ItemIndex: rs[0].itemIndex}
 		}
 		add(rootBound)
 		for i, r := range rs {
 			b := subagentRoundBounds{
 				anchorID: r.anchorID, rootID: root, round: true,
-				loTurn: r.turnIndex, loItem: r.itemIndex,
+				lo: &TimelineCursor{TurnIndex: r.turnIndex, ItemIndex: r.itemIndex},
 			}
 			if i+1 < len(rs) {
-				b.hiTurn, b.hiItem = rs[i+1].turnIndex, rs[i+1].itemIndex
+				b.hi = &TimelineCursor{TurnIndex: rs[i+1].turnIndex, ItemIndex: rs[i+1].itemIndex}
 			}
 			add(b)
 		}
@@ -737,63 +706,6 @@ func mergeReadTimeMeta(itemMeta string, decoration map[string]any) (string, erro
 	return string(data), nil
 }
 
-// subagentAggregatesByRoot returns, for each root id that has visible
-// descendants, the total transitive descendant count and the summary of
-// the preview descendant (subagentRankedPreviewSQL is the pick rule).
-// This is the whole-transcript form, and it is what runs on every window
-// that opened no §E6 round — which is every window on every thread that
-// never resumed an idle agent.
-func (s *Store) subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs []string) (map[string]subagentAnchorAggregate, error) {
-	// The walk yields ids; the rows behind them are resolved through the
-	// two physical arms rather than the timeline_items view, which SQLite
-	// would materialize whole (timeline_arms.go). The resolution carries
-	// only the columns the ranking reads.
-	resolvedSQL, resolvedArgs := timelineArms(threadID, timelineSelection{
-		Columns: func(string, string) string {
-			return `rel.root AS root, items.id AS id, items.kind AS kind,
-			        items.status AS status, items.summary AS summary,
-			        items.turn_index AS turn_index, items.item_index AS item_index`
-		},
-		Source: "rel",
-		Where:  "items.id = rel.id",
-	})
-	args := append(descendantsCTEArgs(threadID, rootIDs), resolvedArgs...)
-
-	rows, err := q.Query(descendantsCTEFromRoots(len(rootIDs))+`
-		SELECT root, total, summary FROM (
-			SELECT i.root AS root,
-			       COUNT(*) OVER (PARTITION BY i.root) AS total,
-			       `+fmt.Sprintf(subagentRankedPreviewSQL, "i.root")+`
-			  FROM (`+resolvedSQL+`) i
-		) WHERE rn = 1`,
-		args...,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: query subagent aggregates for %s: %w", threadID, err)
-	}
-	defer rows.Close()
-
-	out := make(map[string]subagentAnchorAggregate)
-	for rows.Next() {
-		var root, summary string
-		var total int
-		if err := rows.Scan(&root, &total, &summary); err != nil {
-			return nil, fmt.Errorf("store: scan subagent aggregate row: %w", err)
-		}
-		if strings.TrimSpace(summary) == "" {
-			summary = ""
-		}
-		out[root] = subagentAnchorAggregate{
-			descendantCount:    total,
-			latestChildSummary: summary,
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate subagent aggregates for %s: %w", threadID, err)
-	}
-	return out, nil
-}
-
 // SubagentCompletedChildIndex restores the execution boundary from immutable
 // completion records after the session's live projection has been discarded.
 func (s *Store) SubagentCompletedChildIndex(threadID, launchID string) (int, error) {
@@ -816,8 +728,9 @@ func (s *Store) SubagentCompletedChildIndex(threadID, launchID string) (int, err
 // Child coordinates belong to the original spawn's AO turn.
 func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, itemMeta string, turnIndex, startIndex, endIndex int) (string, error) {
 	aggregates, err := s.subagentAggregatesByRound(s.reader(), threadID, []string{launchID}, []subagentRoundBounds{{
-		anchorID: launchID, rootID: launchID, loTurn: turnIndex, loItem: startIndex + 1,
-		hiTurn: turnIndex, hiItem: endIndex + 1,
+		anchorID: launchID, rootID: launchID,
+		lo: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: startIndex + 1},
+		hi: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: endIndex + 1},
 	}})
 	if err != nil {
 		return "", err
@@ -827,134 +740,6 @@ func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, itemMeta strin
 		metaKeySubagentDescendantCount:    aggregate.descendantCount,
 		metaKeySubagentLatestChildSummary: aggregate.latestChildSummary,
 	})
-}
-
-// subagentRankedPreviewSQL is the pick rule both aggregate queries share:
-// among a partition's rows, one with a tool-ish kind and a non-empty
-// summary beats one without, an active row beats a terminal one, and the
-// highest (turn_index, item_index) wins. The trailing id only breaks
-// coordinate ties (corrupt data) so the pick stays deterministic. It
-// mirrors the frontend's pickLatestChildSummary.
-const subagentRankedPreviewSQL = `CASE WHEN i.kind IN ('tool_call','tool_completion','terminal_interaction','error','api_error')
-			            THEN i.summary ELSE '' END AS summary,
-			       ROW_NUMBER() OVER (
-			           PARTITION BY %[1]s
-			           ORDER BY (i.kind IN ('tool_call','tool_completion','terminal_interaction','error','api_error')
-			                     AND TRIM(i.summary) <> '') DESC,
-			                    (i.status IN ('running','streaming')) DESC,
-			                    i.turn_index DESC, i.item_index DESC,
-			                    i.id
-			       ) AS rn`
-
-// subagentAggregatesByRound is subagentAggregatesByRoot sliced per §E6
-// round: the same descendant walk and the same pick rule, but partitioned
-// by ANCHOR and with each anchor's rows narrowed to its own half-open
-// range. One statement for the whole window.
-//
-// The bounds arrive as a VALUES CTE joined to the walk's resolved rows.
-// The join is a LEFT one so an anchor with an empty range still reports
-// (as zero, which the caller reads as "not an anchor" unless the round
-// count says otherwise) instead of vanishing.
-//
-// The whole-transcript total is summed HERE rather than taken from a
-// second window function: the fallback range a prompt-less carrier gets
-// overlaps its siblings, so a PARTITION BY root would count those rows
-// twice. The real rounds are disjoint and exhaustive, so their sum is
-// exact.
-func (s *Store) subagentAggregatesByRound(
-	q sqlQueryer, threadID string, rootIDs []string, bounds []subagentRoundBounds,
-) (map[string]subagentAnchorAggregate, error) {
-	if len(bounds) == 0 {
-		return nil, nil
-	}
-	resolvedSQL, resolvedArgs := timelineArms(threadID, timelineSelection{
-		Columns: func(string, string) string {
-			return `rel.root AS root, items.id AS id, items.kind AS kind,
-			        items.status AS status, items.summary AS summary,
-			        items.turn_index AS turn_index, items.item_index AS item_index`
-		},
-		Source: "rel",
-		Where:  "items.id = rel.id",
-	})
-
-	tuples := make([]string, 0, len(bounds))
-	args := descendantsCTEArgs(threadID, rootIDs)
-	for _, b := range bounds {
-		tuples = append(tuples, "(?,?,?,?,?,?)")
-		args = append(args, b.anchorID, b.rootID, b.loTurn, b.loItem, b.hiTurn, b.hiItem)
-	}
-	args = append(args, resolvedArgs...)
-
-	rows, err := q.Query(descendantsCTEFromRoots(len(rootIDs))+`,
-		bound(anchor, root, lo_turn, lo_item, hi_turn, hi_item) AS (
-			VALUES `+strings.Join(tuples, ",")+`
-		)
-		SELECT anchor, total, summary FROM (
-			SELECT b.anchor AS anchor,
-			       COUNT(i.id) OVER (PARTITION BY b.anchor) AS total,
-			       `+fmt.Sprintf(subagentRankedPreviewSQL, "b.anchor")+`
-			  FROM bound b
-			  LEFT JOIN (`+resolvedSQL+`) i
-			    ON i.root = b.root
-			   AND (b.lo_turn IS NULL
-			        OR i.turn_index > b.lo_turn
-			        OR (i.turn_index = b.lo_turn AND i.item_index >= b.lo_item))
-			   AND (b.hi_turn IS NULL
-			        OR i.turn_index < b.hi_turn
-			        OR (i.turn_index = b.hi_turn AND i.item_index < b.hi_item))
-		) WHERE rn = 1`,
-		args...,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: query subagent round aggregates for %s: %w", threadID, err)
-	}
-	defer rows.Close()
-
-	out := make(map[string]subagentAnchorAggregate, len(bounds))
-	for rows.Next() {
-		var anchor string
-		var summary sql.NullString
-		var total int
-		if err := rows.Scan(&anchor, &total, &summary); err != nil {
-			return nil, fmt.Errorf("store: scan subagent round aggregate row: %w", err)
-		}
-		latest := summary.String
-		if strings.TrimSpace(latest) == "" {
-			latest = "" // same blank rule as subagentAggregatesByRoot
-		}
-		out[anchor] = subagentAnchorAggregate{
-			descendantCount:    total,
-			latestChildSummary: latest,
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate subagent round aggregates for %s: %w", threadID, err)
-	}
-
-	// Roll the rounds up onto their root. Only a root that actually has
-	// rounds gets the key: without one, "the whole transcript" and "this
-	// card's count" are the same number and the frontend needs no second.
-	transcript := make(map[string]int, len(rootIDs))
-	hasRounds := make(map[string]bool, len(rootIDs))
-	for _, b := range bounds {
-		if !b.round {
-			continue
-		}
-		transcript[b.rootID] += out[b.anchorID].descendantCount
-		if b.anchorID != b.rootID {
-			hasRounds[b.rootID] = true
-		}
-	}
-	for root, total := range transcript {
-		if !hasRounds[root] {
-			continue
-		}
-		agg := out[root]
-		agg.transcriptDescendantCount = total
-		agg.hasTranscriptCount = true
-		out[root] = agg
-	}
-	return out, nil
 }
 
 func mergeSubagentAnchorMeta(itemMeta string, agg subagentAnchorAggregate) string {

@@ -13,11 +13,11 @@
 // renders the store's values, over transitions rather than single states.
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { fireEvent, render } from '@testing-library/svelte';
+import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { loadSettingsFixture as loadSettings } from '../../../test/helpers/settingsFixture';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { buildPane, makeItem } from '../../../test/helpers/chat';
+import { buildPane, makeItem, installTimelineScopeCapability } from '../../../test/helpers/chat';
 import { pairViewOnly, resetToLocalPage } from '../../../test/helpers/scopes';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { Item } from '../../types/models';
@@ -394,6 +394,7 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
     // of that same text, so it is the collapsed one-liner and nothing
     // more: rendering it in the body too showed the answer twice,
     // unformatted and cut mid-word (user ruling 2026-08-23).
+    installTimelineScopeCapability();
     const { pane, group } = await setup([
       agentLaunch({
         toolName: 'collab_agent',
@@ -434,9 +435,7 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
     await fireEvent.click(getByTestId('subagent-group-toggle'));
     expect(queryByTestId('subagent-group-final-answer')).toBeNull();
     expect(queryByTestId('subagent-group-digest-empty')).toBeNull();
-    expect(
-      getAllByText(/Final verdict: LGTM, with one caveat about the parser drift/),
-    ).toHaveLength(1);
+    await waitFor(() => expect(getAllByText(/Final verdict: LGTM, with one caveat about the parser drift/)).toHaveLength(1));
   });
 
   // Real V2 wire shape (codex 0.149.0): `{task_name, fork_turns,
@@ -444,6 +443,7 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
   // the label already IS the model-chosen task name. The description
   // slot must stay empty rather than repeat it.
   it('says a V2 Codex task name once, in the label, not twice', async () => {
+    installTimelineScopeCapability();
     const { pane, group } = await setup([
       agentLaunch({
         toolName: 'collab_agent',
@@ -478,6 +478,7 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
   // `description` branch returns unclamped text.
   it('describes a V1 Codex card with its plaintext prompt, clamped', async () => {
     const prompt = 'Audit '.repeat(30);
+    installTimelineScopeCapability();
     const { pane, group } = await setup([
       agentLaunch({
         toolName: 'collab_agent',

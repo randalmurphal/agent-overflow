@@ -129,15 +129,15 @@ func TestForkPreparationPublication(t *testing.T) {
 					}
 					for name, read := range map[string]func() error{
 						"page": func() error {
-							_, err := a.ListThreadSliceAround(row.ID, "", 25, TimelinePageOptions{PageShape: PageShape{}})
+							_, err := a.ListThreadSliceAround(context.Background(), row.ID, "", 25, TimelinePageOptions{PageShape: PageShape{}})
 							return err
 						},
 						"older": func() error {
-							_, err := a.ListItemsBeforeCursor(row.ID, store.TimelineCursor{}, 25, TimelinePageOptions{PageShape: PageShape{}})
+							_, err := a.ListItemsBeforeCursor(context.Background(), row.ID, store.TimelineCursor{}, 25, TimelinePageOptions{PageShape: PageShape{}})
 							return err
 						},
 						"newer": func() error {
-							_, err := a.ListItemsAfterCursor(row.ID, store.TimelineCursor{}, 25, TimelinePageOptions{PageShape: PageShape{}})
+							_, err := a.ListItemsAfterCursor(context.Background(), row.ID, store.TimelineCursor{}, 25, TimelinePageOptions{PageShape: PageShape{}})
 							return err
 						},
 						"subagent":   func() error { _, err := a.ListSubagentDescendants(row.ID, "root", true); return err },
@@ -150,10 +150,16 @@ func TestForkPreparationPublication(t *testing.T) {
 						"projection": func() error { _, err := a.GetThreadItemProjectionSource(row.ID, "item"); return err },
 						"turns":      func() error { _, err := a.ListRecentTurns(row.ID, 10); return err },
 
-						"items":    func() error { _, err := a.ListItems(row.ID, true); return err },
-						"sync":     func() error { _, err := a.SyncThreadWindow(row.ID, SyncThreadWindowRequest{}); return err },
-						"payload":  func() error { _, err := a.GetPayloadData(row.ID, "payload"); return err },
-						"runs":     func() error { _, err := a.ListActivityRunMembers(row.ID, ActivityRunMembersRequest{}); return err },
+						"items": func() error { _, err := a.ListItems(row.ID, true); return err },
+						"sync": func() error {
+							_, err := a.SyncThreadWindow(context.Background(), row.ID, SyncThreadWindowRequest{})
+							return err
+						},
+						"payload": func() error { _, err := a.GetPayloadData(row.ID, "payload"); return err },
+						"runs": func() error {
+							_, err := a.ListActivityRunMembers(context.Background(), row.ID, ActivityRunMembersRequest{})
+							return err
+						},
 						"edits":    func() error { _, err := a.ListThreadEditDiffs(row.ID); return err },
 						"mutation": func() error { return a.threadApplication().CheckMutable(row.ID) },
 					} {

@@ -23,7 +23,6 @@ export function makeStubPanelContext(overrides: Partial<PanelContext> = {}): Pan
     items: [],
     timelineRevision: 0,
     getItemById: () => undefined,
-    ensureSubagentChildren: async () => false,
     closeAgentPane() {},
     close() {},
     replaceThread() {},

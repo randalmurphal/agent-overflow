@@ -30,7 +30,7 @@ export function compareCursors(a: TimelineCursorLike, b: TimelineCursorLike): nu
   return 0;
 }
 
-export function compareItemToCursor(item: Item, cursor: TimelineCursorLike): number {
+export function compareItemToCursor(item: Pick<Item, 'id' | 'turnIndex' | 'itemIndex'>, cursor: TimelineCursorLike): number {
   return compareCursors(
     { turnIndex: item.turnIndex, itemIndex: item.itemIndex, itemId: item.id },
     cursor,

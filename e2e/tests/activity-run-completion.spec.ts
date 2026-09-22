@@ -45,10 +45,16 @@ test('a completion forms its card when its launch is outside the shipped activit
   await harness.rpc('SendMessage', threadId, 'investigate', null);
   await waitForGate(harness, 'finished');
   type Row = { id: string; kind: string; completionOf?: string; completionLaunch?: { id: string } };
-  const tail = await harness.rpc<{ items: Row[] }>('ListThreadSliceAround', threadId, '', 200,
+  const readTail = () => harness.rpc<{ items: Row[] }>('ListThreadSliceAround', threadId, '', 200,
     { inlinePreviews: false, runWindowRows: 30, maxBytes: 1000000 });
+  // The mock reaching its gate means the final line was emitted, not that
+  // the session importer has committed the completion to the store yet.
+  await expect.poll(async () => {
+    const tail = await readTail();
+    return tail.items.find(item => item.completionOf === 'agent-launch')?.completionLaunch?.id;
+  }).toBe('agent-launch');
+  const tail = await readTail();
   expect(tail.items.some(item => item.id === 'agent-launch')).toBe(false);
-  expect(tail.items.find(item => item.completionOf === 'agent-launch')?.completionLaunch?.id).toBe('agent-launch');
 
   await harness.open(page);
   await page.getByText('Offscreen agent report', { exact: true }).click();

@@ -82,9 +82,10 @@ describe('coldLoadTrace', () => {
     });
   });
 
-  it('starts a cache-restore session already painted from L1', () => {
+  it('records an L1-backed window when verification releases it', () => {
     coldLoadSwitchStart('pane-1', 'thread-a', 'cache-restore');
     coldLoadSyncStatus('pane-1', 'fresh');
+    coldLoadItemsApplied('pane-1', 4, true);
     mockNow = 12;
     coldLoadWarmEdge('pane-1', 'thread-a', true, 'settled');
 
@@ -101,8 +102,7 @@ describe('coldLoadTrace', () => {
   });
 
   it('reports a sync verdict that lands after the session closed', () => {
-    // The warm gate settles over the replica paint before the answer
-    // returns, so the consolidated record goes out with syncStatus null.
+    // A late sync verdict still gets its own record if the session closed.
     coldLoadSwitchStart('pane-1', 'thread-a', 'fetch');
     coldLoadPaintSource('pane-1', 'replica');
     mockNow = 8;
@@ -210,10 +210,16 @@ describe('coldLoadTrace', () => {
     expect(coldLoadRecords()).toHaveLength(1);
   });
 
-  it('closes a cache-restore session on its first warm edge — it never sees itemsApplied', () => {
+  it('holds an L1 session across a pre-verification warm edge', () => {
     coldLoadSwitchStart('pane-1', 'thread-a', 'cache-restore');
     mockNow = 20;
     coldLoadWarmEdge('pane-1', 'thread-a', true, 'failsafe');
+    expect(coldLoadRecords()).toHaveLength(0);
+    mockNow = 30;
+    coldLoadItemsApplied('pane-1', 5, true);
+    coldLoadWarmEdge('pane-1', 'thread-a', false, null);
+    mockNow = 45;
+    coldLoadWarmEdge('pane-1', 'thread-a', true, 'quiet');
 
     const records = coldLoadRecords();
     expect(records).toHaveLength(1);
@@ -221,11 +227,12 @@ describe('coldLoadTrace', () => {
       data: {
         source: 'cache-restore',
         fetchMs: null,
-        itemCount: null,
-        settleMs: 20, // switchStart(0) -> warmEdge(20), no itemsApplied base
-        totalMs: 20,
-        warmReason: 'failsafe',
-        warmupRearmed: false,
+        itemCount: 5,
+        settleMs: 15,
+        totalMs: 45,
+        warmReason: 'quiet',
+        warmupRearmed: true,
+        warmBeforeItems: 1,
       },
     });
   });
@@ -237,6 +244,7 @@ describe('coldLoadTrace', () => {
     // User switched away before thread-a warmed; a new switch starts.
     mockNow = 20;
     coldLoadSwitchStart('pane-1', 'thread-b', 'cache-restore');
+    coldLoadItemsApplied('pane-1', 3, true);
     mockNow = 25;
     coldLoadWarmEdge('pane-1', 'thread-b', true, 'settled');
 
@@ -313,6 +321,7 @@ describe('coldLoadTrace', () => {
     // A session that never saw a priors stamp reports null, not undefined
     // (the record field is always present).
     coldLoadSwitchStart('pane-2', 'thread-b', 'cache-restore');
+    coldLoadItemsApplied('pane-2', 3, true);
     coldLoadWarmEdge('pane-2', 'thread-b', true, 'quiet');
     const second = coldLoadRecords()[1] as { data: { priors: unknown } };
     expect(second.data.priors).toBeNull();

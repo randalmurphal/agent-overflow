@@ -47,7 +47,6 @@ export interface ThreadTimelineWindowOptions {
     nextItems: Item[],
     options?: {
       disposeDropped?: boolean;
-      exhaustedScope?: ReadonlySet<string>;
       afterCommit?: () => void;
     },
   ): boolean;
@@ -59,7 +58,6 @@ export interface ThreadTimelineWindowOptions {
     nextItems: Item[],
     options?: {
       disposeDropped?: boolean;
-      exhaustedScope?: ReadonlySet<string>;
       afterCommit?: () => void;
     },
   ): boolean;
@@ -69,8 +67,8 @@ export interface ThreadTimelineWindowOptions {
   getSwitchGeneration(): number;
   /** Registered pane scroll controller (or null). applyPrunedWindow queries its retention guard. */
   getScrollController(): PaneScrollController | null;
-  /** Pane-owned subagent transcript hydration — loadUntilItem's subtree hydration. */
-  hydrateSubagentChildren?(rootItemID: string): Promise<boolean>;
+  /** Retain a navigation target and its ancestry in the host window. */
+  mountNavigationItems?(items: readonly Item[]): void;
   /**
    * The pane's activity-run registry. Read per call: it is constructed
    * after this factory, so the option is an arrow, not a reference.
@@ -953,8 +951,7 @@ export function createThreadTimelineWindow(
    * the nav rail) before they dispatch the scroll intent. When the item
    * is already in the window this is a cheap `Array.some` and no backend
    * call. Otherwise the window is replaced by a bounded slice around the
-   * item (or around its launch root for a subagent child, whose subtree
-   * is then hydrated).
+   * item (or its launch root for a child, retaining only the target ancestry).
    *
    * The result names why the item is not scrollable, because the callers
    * answer differently: `missing` is the only outcome that means the row
@@ -993,27 +990,20 @@ export function createThreadTimelineWindow(
     // paging in a whole turn window we don't need.
     if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
 
-    // Subagent children never appear in history windows. Walk the
-    // parent chain to the top-level launch root so the slice anchors
-    // on a row the window will actually contain, then hydrate the
-    // root's subtree so the scroll can resolve to the containing
-    // group card. The visited set bounds corrupt parent cycles; a
-    // broken chain falls back to anchoring on the child's own
-    // coordinates (the slice still positions correctly — only the
-    // subtree hydration is skipped, and the trailing containment
-    // check reports the miss).
+    // Load the target ancestry only. Expanded cards own independent paged scopes.
     let sliceAnchorID = itemID;
-    let subagentRootID = '';
+    const navigationItems: Item[] = [];
     // The top-level row the window has to hold for the target to be
     // scrollable: the target itself, or its launch root for a subagent child.
     let anchorItem = fetched;
     if (options.selection?.().scopeRootId && !includes(fetched)) return 'missing';
     if (!options.selection?.().scopeRootId && (fetched.parentId ?? '') !== '') {
       let walker = fetched;
+      navigationItems.push(fetched);
       const visited = new Set<string>([walker.id]);
       while (
         (walker.parentId ?? '') !== '' &&
-        !visited.has(walker.parentId ?? '')
+        !visited.has(walker.parentId ?? '') && visited.size < 16
       ) {
         let parentItem: Item;
         try {
@@ -1022,20 +1012,25 @@ export function createThreadTimelineWindow(
             walker.parentId ?? '',
           )) as Item;
         } catch (err) {
+          if (superseded()) return 'superseded';
           console.error('loadUntilItem parent walk failed:', err);
-          break;
+          addToast('error', 'Failed to load message');
+          return 'failed';
         }
         if (superseded()) return 'superseded';
-        if (!parentItem?.id || parentItem.threadId !== currentThread.id)
+        if (!parentItem?.id || parentItem.id !== walker.parentId || parentItem.threadId !== currentThread.id)
           break;
         visited.add(parentItem.id);
+        navigationItems.push(parentItem);
         walker = parentItem;
       }
-      if ((walker.parentId ?? '') === '') {
-        sliceAnchorID = walker.id;
-        subagentRootID = walker.id;
-        anchorItem = walker;
+      if ((walker.parentId ?? '') !== '') {
+        console.error('loadUntilItem: invalid target ancestry', { itemID, parentId: walker.parentId });
+        addToast('error', 'Failed to load message ancestry');
+        return 'failed';
       }
+      sliceAnchorID = walker.id;
+      anchorItem = walker;
     }
 
     // The anchor sits inside a run the window already holds, in the part
@@ -1046,9 +1041,8 @@ export function createThreadTimelineWindow(
     // through to the whole-window slice below.
     if (await options.activityRuns().loadUnshippedMember(anchorItem)) {
       if (superseded()) return 'superseded';
-      if (subagentRootID) {
-        await options.hydrateSubagentChildren?.(subagentRootID);
-        if (superseded()) return 'superseded';
+      if (navigationItems.length && options.getItems().some(item => item.id === sliceAnchorID)) {
+        options.mountNavigationItems?.(navigationItems);
       }
       if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
     }
@@ -1072,9 +1066,8 @@ export function createThreadTimelineWindow(
         disposeDropped: true,
         afterCommit: () => applyWindowMetadataFromPaged(paged),
       });
-      if (subagentRootID) {
-        await options.hydrateSubagentChildren?.(subagentRootID);
-        if (superseded()) return 'superseded';
+      if (navigationItems.length && options.getItems().some(item => item.id === sliceAnchorID)) {
+        options.mountNavigationItems?.(navigationItems);
       }
     } catch (err) {
       if (superseded()) return 'superseded';
@@ -1087,7 +1080,7 @@ export function createThreadTimelineWindow(
     if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
     // The backend confirmed the row exists, then shipped a window that
     // does not hold it: a contract fault (an anchored slice that dropped
-    // its anchor, a subtree hydration that skipped a child), not a
+    // its anchor, a navigation ancestry that skipped a child), not a
     // deleted row.
     console.error(
       `loadUntilItem: window loaded around ${sliceAnchorID} does not contain ${itemID}`,

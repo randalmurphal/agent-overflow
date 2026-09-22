@@ -262,12 +262,13 @@ decision and the `writeScrollTop` chokepoint, or it doesn't go in.
 ## Thread Switch
 
 `pane.switchThread` is the entry point. It snapshots the outgoing pane,
-restores a bounded cache snapshot when present, and otherwise fetches a
-viewport-sized slice with `App.ListThreadSliceAround(threadID,
-anchorItemID, SLICE_AROUND_ITEM_BUDGET)`.
+installs a bounded cache snapshot when present, and verifies it with
+`SyncThreadWindow`. A missing or stale snapshot gets a viewport-sized
+page from that call. The timeline stays hidden until verification, so
+scroll restoration uses the final window instead of the staged one.
 
 The pipeline itself (`snapshotOutgoingPane`,
-`installCacheOrFreshState`, `paintReplicaWindow`, `runItemWindowSync`,
+`installCacheOrFreshState`, `installReplicaWindow`, `runItemWindowSync`,
 `applySyncResponse`, `runParallelLoad` and `refreshFromBackend`) lives
 in `frontend/src/lib/stores/threadSwitchLoad.svelte.ts`;
 `thread.svelte.ts` keeps the pane state it writes through and exposes
@@ -459,19 +460,12 @@ active, until `ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS`, past which
 the cut runs mid-stream. The ceiling ends the deferral only; the
 visible-row rule holds at every count.
 
-Subagent child rows get a tighter bound than the window cap. Streaming
-children must live in `pane.items` (the delta pipeline applies only to
-loaded rows), but once a child settles and nothing can render it
-(collapsed inline card, backgrounded launch, Codex spawn), the pane evicts
-the row and folds its count/preview into a per-anchor registry
-(`utils/subagentFold.ts`). Collapsing an expanded card evicts its settled
-subtree the same way. Card expansion re-hydrates from SQLite via
-`ListSubagentDescendants` and reclaims the folded ids. An id is folded
-XOR loaded, never both. Folds ride the thread-switch snapshot cache with
-the window they describe, and a folded id arriving again over the wire
-(reconnect replay) is dropped, not re-inserted. Net effect: per-pane
-subagent memory is O(active children), not O(transcript), and the window
-cap counts only renderable rows.
+Subagent child rows leave the main pane when they settle. The pane retains
+active rows for stream deltas and folds settled counts and previews in
+`utils/subagentFold.ts`. Inline cards and agent panes own independent paged
+scopes; expanding a card does not retain its transcript in the main pane.
+Explicit navigation reclaims only the target and its ancestry from the fold.
+Folds follow the thread-switch snapshot and suppress replayed settled rows.
 
 ## Run Height Changes
 
@@ -674,14 +668,11 @@ rather than a missing case:
   over an unrelated surface (the same stand-down `armStructuralSpring`
   makes).
 - **First content mount only.** With the IndexedDB replica
-  (`docs/architecture/thread-replica-sync.md` §6.1) a cold open can mount rows
-  twice: the durable paint, then the `SyncThreadWindow` page that
-  replaces it. The paint re-arms (it is an initial slice in every way
-  that matters to the gate), and the page does NOT, because by then the
-  reader may already be looking at those rows and re-closing the gate
-  would blank content that is on screen. `runItemWindowSync`'s
-  `paintSource` is the discriminator, and it rides the cold-load trace
-  alongside the sync verdict.
+  (`docs/architecture/thread-replica-sync.md` §6.1), staged rows stay
+  unmounted through verification. `runItemWindowSync` arms the warm gate
+  immediately before releasing the final window, including a page-less
+  cache validation. A retry over visible rows re-arms only for a first
+  mount or a backend lineage change.
 
 A warm sync that returns a page refreshes the retained timeline extent
 before replacing visible rows. `threadRetainedTimelineRefresh` assembles
@@ -1621,9 +1612,9 @@ controller-routed write (the virtualizer performs it through
 
 A hit inside a subagent transcript never appears in a history window
 (windows hold top-level rows only). `loadUntilItem` walks the parent
-chain to the launch root, slices the window around that root, hydrates
-the subtree via `ListSubagentDescendants`, and the scroll resolves to
-the containing `SubagentGroup` card.
+chain to the launch root, slices the window around that root and retains
+only the target and that chain. The scroll resolves to the containing
+`SubagentGroup` card; expansion uses its own bounded digest window.
 
 ## Discussion Mode
 

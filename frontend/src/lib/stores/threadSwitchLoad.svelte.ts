@@ -132,7 +132,6 @@ export interface ThreadSwitchLoadOptions {
     nextItems: Item[],
     options?: {
       disposeDropped?: boolean;
-      exhaustedScope?: ReadonlySet<string>;
       afterCommit?: () => void;
     },
   ): boolean;
@@ -188,11 +187,13 @@ export interface ThreadSwitchLoadOptions {
 }
 
 export interface ThreadSwitchLoad {
+  /** The switched thread's cached or replica window has not been verified yet. */
+  readonly historyWindowPending: boolean;
   /**
    * Spinner-flash gate. `loading` flips true the moment `switchThread`
    * starts; this only resolves true after `SPINNER_THRESHOLD_MS`, so a
    * sub-100ms switch never paints a spinner. The pane pairs it with
-   * `items.length === 0` in `showLoadingSpinner`.
+   * the unverified-window state in `showLoadingSpinner`.
    */
   readonly pastSpinnerThreshold: boolean;
   /** Point the pane at `newThread`: snapshot the outgoing one, reset, paint, converge. */
@@ -260,7 +261,7 @@ const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
 /**
  * Owns a thread pane's switch / window-sync / replica pipeline: the
  * outgoing-pane snapshot (L1 + durable write-back), the incoming reset,
- * the cache-or-replica paint, the single `SyncThreadWindow` convergence,
+   * the staged cache or replica window, the single `SyncThreadWindow` convergence,
  * the parallel hydration fan-out, and the post-gap `refreshFromBackend`
  * re-pull. It also owns the state that only this pipeline touches — the
  * window attestation (docs/architecture/thread-replica-sync.md §3.4), the
@@ -310,6 +311,7 @@ export function createThreadSwitchLoad(
    * threshold (~100ms = "instant" to the user).
    */
   let pastSpinnerThreshold: boolean = $state(false);
+  let historyWindowPending = $state(false);
   let spinnerThresholdTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Ids the wire touched while a window sync was in flight. Non-null
@@ -584,13 +586,8 @@ export function createThreadSwitchLoad(
     }, REPLICA_WRITE_BACK_DELAY_MS);
   }
 
-  /**
-   * Paint a replica window onto the freshly-reset pane. Goes through the
-   * same `applyInitialSlice` chokepoint a server slice does — these rows
-   * are paint-only and the sync page replaces them, so nothing about the
-   * install may differ from the real thing.
-   */
-  function paintReplicaWindow(body: ReplicaBody, threadId: string): void {
+  /** Install replica rows through the same initial-slice path as a server page. */
+  function installReplicaWindow(body: ReplicaBody, threadId: string): void {
     options.timelineWindow.applyInitialSlice(
       {
         items: body.items,
@@ -822,7 +819,8 @@ export function createThreadSwitchLoad(
 
   /**
    * Look up the incoming thread's cached snapshot and saved scroll
-   * anchor, install the snapshot (or fresh empty state) onto the pane,
+   * anchor, install the snapshot (or fresh empty state) onto the pane for
+   * verification, without painting it until SyncThreadWindow settles,
    * and reset per-row UI registries. Returns the snapshot (so the
    * initial load can decide to skip the fetch on cache hit) and the
    * anchor item id (empty string means tail-load).
@@ -896,10 +894,8 @@ export function createThreadSwitchLoad(
   /**
    * Arm the spinner-flash gate. `loading` flips true the moment
    * `switchThread` starts; `showLoadingSpinner` only resolves to true
-   * after `SPINNER_THRESHOLD_MS` AND when items.length === 0. Cache
-   * hits never see the spinner because items render immediately;
-   * sub-100ms cache misses skip it because the initial slice
-   * populates items before the timer fires.
+   * after `SPINNER_THRESHOLD_MS` while the window is unverified. A fast
+   * verification skips it, including on cache hits.
    */
   function armSpinnerThreshold(): void {
     if (spinnerThresholdTimer !== null) {
@@ -1067,13 +1063,13 @@ export function createThreadSwitchLoad(
   }
 
   /**
-   * The cold-open item leg: paint whatever durable copy exists, then
-   * converge it against the backend with one `SyncThreadWindow` call
+   * The cold-open item leg: retain whatever durable copy exists as
+   * verification evidence, then converge it with one `SyncThreadWindow` call
    * (docs/architecture/thread-replica-sync.md §6.1).
    *
    * Ordering, and why it is not a race:
    *
-   *  - An L1 hit has already painted synchronously in
+   *  - An L1 hit has already installed synchronously in
    *    `installCacheOrFreshState`, and its snapshot carries the stamp
    *    that described those rows.
    *  - On an L1 miss the IndexedDB read runs BEFORE the RPC is issued.
@@ -1103,18 +1099,18 @@ export function createThreadSwitchLoad(
       && options.streamingReveal.smootherCount() === 0 ? cached.historyStamp : null;
 
     /**
-     * Describe the rows this pane has painted, for the ask below. A turn
+     * Describe the rows this pane holds, for the ask below. A turn
      * on the open thread leaves the L1 snapshot stampless, so the window
      * is often the ONLY evidence the pane can offer
      * (docs/architecture/thread-replica-sync.md §3.4).
      *
-     * Only over a real paint: with nothing painted there is nothing to
+     * Only over a held window: with no rows there is nothing to
      * describe, and an un-echoed optimistic row makes the window one no
      * rev ever had, so the pane does not claim it. Rows the live-state
      * leg appends later are not persisted rows either; they simply fail
      * verification and earn a page, which needs no special case.
      */
-    const paintedWindow = (): HeldWindow | null => {
+    const heldWindow = (): HeldWindow | null => {
       if (paintSource === 'none' || options.optimisticItemIds.size > 0) return null;
       return heldWindowOf(
         options.activityRuns.loadedItems(options.getItems()),
@@ -1150,7 +1146,7 @@ export function createThreadSwitchLoad(
         const body = await getReplicaWindow(threadId);
         if (gen !== options.getSwitchGeneration()) return;
         if (body && options.getItems().length === 0 && !liveTouchedDuringSync?.size && !liveRemovedDuringSync?.size) {
-          paintReplicaWindow(body, threadId);
+          installReplicaWindow(body, threadId);
           paintSource = 'replica';
           haveStamp = { epoch: body.epoch, rev: body.rev, attested: true };
           // The envelope's own stamp, paired with the envelope's own
@@ -1158,12 +1154,6 @@ export function createThreadSwitchLoad(
           // pane keeps the paint — and must keep the stamp that
           // describes these rows.
           attestCurrentWindow(body.epoch, body.rev);
-          // Replica rows are structural content mounting into an empty
-          // pane, so they re-close the warm gate exactly as an initial
-          // slice does — synchronously with the mutation, before the
-          // flush that mounts them.
-          const rearmed = options.armInitialSliceWarmup();
-          coldLoadItemsApplied(paneId, options.getItems().length, rearmed);
         }
       }
       coldLoadPaintSource(paneId, paintSource);
@@ -1172,7 +1162,7 @@ export function createThreadSwitchLoad(
       // the ask (see `observeAnswerLineage`).
       const believed = getBackendIdentity(backend);
       let sentStamp = haveStamp;
-      let sentWindow = paintedWindow();
+      let sentWindow = heldWindow();
       const retained = captureRetainedTimelineWindow(options.getItems(), options.timelineWindow, options.activityRuns,
         !sliceAnchorId && !options.timelineWindow.hasMoreNewer);
       let response = await ask(sentStamp, sentWindow);
@@ -1231,10 +1221,11 @@ export function createThreadSwitchLoad(
       const deferredItems = liveState?.deferredItems ?? [];
       if (gen !== options.getSwitchGeneration()) return;
       coldLoadSyncStatus(paneId, response.status);
-      // Nothing painted, or what was painted belongs to a dead lineage:
-      // either way the response's rows are structural content mounting
-      // into an effectively empty pane, so the warm gate re-closes.
-      const rearmWarmup = paintSource === 'none' || lineageChanged;
+      // An initial switch reveals only after this sync settles, so its
+      // warm gate arms at that boundary. A retry keeps existing rows
+      // visible; only a first mount or lineage change re-arms it here.
+      const rearmWarmup = !historyWindowPending
+        && (options.getItems().length === 0 || lineageChanged);
       applySyncResponse(
         response,
         newThread,
@@ -1282,8 +1273,22 @@ export function createThreadSwitchLoad(
       // already armed its own set, and clearing it here would blind that
       // switch to the arrivals it is about to reconcile against.
       if (gen === options.getSwitchGeneration()) {
-        liveTouchedDuringSync = null;
-        liveRemovedDuringSync = null;
+        try {
+          if (historyWindowPending) {
+            // The staged window had no DOM while verification ran. Arm
+            // immediately before it can mount, including page-less fresh
+            // answers and slow links that outlived the earlier warm gate.
+            const rearmed = options.armInitialSliceWarmup();
+            coldLoadItemsApplied(paneId, options.getItems().length, rearmed);
+          }
+        } catch (warmupError) {
+          console.error('Failed to prepare verified thread window:', warmupError);
+          options.setPaneError(`Could not prepare conversation history: ${errString(warmupError)}`, 'history-load');
+        } finally {
+          historyWindowPending = false;
+          liveTouchedDuringSync = null;
+          liveRemovedDuringSync = null;
+        }
       }
     }
   }
@@ -1444,6 +1449,7 @@ export function createThreadSwitchLoad(
     // below and by the outer finally to decide whether the spinner
     // can be cleared (a concurrent switch keeps it up).
     const gen = options.bumpSwitchGeneration();
+    historyWindowPending = true;
     // Live-state hydration token. The live-state leg always consumes
     // it through the fetch result's `apply()` finally; the outer
     // finally below only finishes it as defense-in-depth against a
@@ -1492,6 +1498,7 @@ export function createThreadSwitchLoad(
       // newer switch has superseded ours — a concurrent switch is
       // supposed to keep the indicator up.
       if (gen === options.getSwitchGeneration()) {
+        historyWindowPending = false;
         options.setLoading(false);
         // `runItemWindowSync` clears this in its own finally, so this
         // is a no-op on every path that reached it. It is the cover
@@ -1812,6 +1819,7 @@ export function createThreadSwitchLoad(
     refreshScheduler.reset();
     while (refreshWaiters.length > 0) refreshWaiters.pop()?.resolve();
     pastSpinnerThreshold = false;
+    historyWindowPending = false;
   }
 
   function recordItemMutation(itemId: string): void {
@@ -1834,6 +1842,9 @@ export function createThreadSwitchLoad(
   }
 
   return {
+    get historyWindowPending() {
+      return historyWindowPending;
+    },
     get pastSpinnerThreshold() {
       return pastSpinnerThreshold;
     },

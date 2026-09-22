@@ -79,7 +79,7 @@ func TestSyncThreadWindowStatuses(t *testing.T) {
 	if got.Page == nil {
 		t.Fatal("stale answer must carry the window")
 	}
-	window, err := s.ListThreadSliceAround("t", "", 200, testRunWindowRows, TimelineSelection{})
+	window, err := s.ListThreadSliceAround(context.Background(), "t", "", 200, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list thread slice around: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestSyncThreadWindowHonorsAnchor(t *testing.T) {
 	if got.Page == nil {
 		t.Fatal("expected a page")
 	}
-	want, err := s.ListThreadSliceAround("t", "t-i2", 4, testRunWindowRows, TimelineSelection{})
+	want, err := s.ListThreadSliceAround(context.Background(), "t", "t-i2", 4, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list thread slice around: %v", err)
 	}

@@ -79,6 +79,9 @@ const CapabilityHeartbeat = "transport.heartbeat.v1"
 // CapabilityTimelineScopes supports selected transcript pages, members and sync.
 const CapabilityTimelineScopes = "timeline.scopes.v1"
 
+// CapabilityTimelineDigests supports execution-bounded inline agent pages.
+const CapabilityTimelineDigests = "timeline.digests.v1"
+
 var serverCapabilities = []string{
 	CapabilityRemoteNotifications,
 	CapabilityPasskeys,
@@ -91,6 +94,7 @@ var serverCapabilities = []string{
 	CapabilityHeartbeat,
 	CapabilityThreadTools,
 	CapabilityTimelineScopes,
+	CapabilityTimelineDigests,
 }
 
 // serverCapabilitiesWithBrowser is that list plus the one flag whose

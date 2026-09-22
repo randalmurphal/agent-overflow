@@ -26,13 +26,13 @@ import (
 // held-window and retention decision rests on.
 const maxActivityRunScanRows = 100000
 
-// activityScanChunkRows is how many rows one scan statement reads. Large
-// enough that a page of prose costs one statement per side, small enough
-// that walking to the edge of a 5,000-member run does not materialize it
-// in one allocation. A run's rows are still held for the length of one
-// page composition (the pairing rule needs the whole membership), which
-// is why maxActivityRunScanRows bounds a run rather than a chunk.
-const activityScanChunkRows = 512
+// Start small for ordinary pages, then grow the batch only while a walk
+// keeps consuming it. Long runs otherwise pay one SQL round trip per 512
+// members even though the run must be scanned as one unit.
+const (
+	activityScanChunkRows    = 512
+	maxActivityScanChunkRows = 8192
+)
 
 // fileChangeToolNames are the tools whose one call renders as one row per
 // file (frontend/src/lib/utils/fileChangeRows.ts). The scan reads the
@@ -155,6 +155,7 @@ var importedActivityScanColumns = activityScanColumns(
 func queryActivityScanRows(
 	q sqlQueryer,
 	threadID string,
+	capacity int,
 	selectedSQL string,
 	selectedArgs ...any,
 ) ([]activityScanRow, error) {
@@ -173,9 +174,8 @@ func queryActivityScanRows(
 		UNION ALL
 		SELECT `+importedActivityScanColumns+`
 		  FROM selected
-		  CROSS JOIN thread_import_chunks AS refs
-		  JOIN import_history_items AS items
-		    ON items.chunk_id = refs.chunk_id AND items.id = selected.id
+		  CROSS JOIN import_history_items AS items ON items.id = selected.id
+		  CROSS JOIN thread_import_chunks AS refs ON refs.chunk_id = items.chunk_id
 		  LEFT JOIN payloads AS local_payloads
 		    ON local_payloads.thread_id = refs.thread_id AND local_payloads.id = items.payload_id
 		  LEFT JOIN import_history_payloads AS imported_payloads
@@ -191,34 +191,28 @@ func queryActivityScanRows(
 	}
 	defer rows.Close()
 
-	out := []activityScanRow{}
+	out := make([]activityScanRow, 0, capacity)
+	var row activityScanRow
+	var totalFiles sql.NullFloat64
+	var diffFiles, inputFiles sql.NullInt64
+	targets := []any{
+		&row.ID, &row.TurnIndex, &row.ItemIndex,
+		&row.Kind, &row.ToolName, &row.Status, &row.CompletionOf,
+		&row.Rev, &row.PayloadKind, &row.MCP,
+		&totalFiles, &diffFiles, &inputFiles,
+	}
 	for rows.Next() {
-		row, err := scanActivityScanRow(rows)
-		if err != nil {
+		row = activityScanRow{}
+		if err := rows.Scan(targets...); err != nil {
 			return nil, fmt.Errorf("store: scan activity scan row for %s: %w", threadID, err)
 		}
+		row.DisplayRows = displayRowCount(row.ToolName, totalFiles, diffFiles, inputFiles)
 		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate activity scan rows for %s: %w", threadID, err)
 	}
 	return out, nil
-}
-
-func scanActivityScanRow(scanner interface{ Scan(...any) error }) (activityScanRow, error) {
-	var row activityScanRow
-	var totalFiles sql.NullFloat64
-	var diffFiles, inputFiles sql.NullInt64
-	if err := scanner.Scan(
-		&row.ID, &row.TurnIndex, &row.ItemIndex,
-		&row.Kind, &row.ToolName, &row.Status, &row.CompletionOf,
-		&row.Rev, &row.PayloadKind, &row.MCP,
-		&totalFiles, &diffFiles, &inputFiles,
-	); err != nil {
-		return activityScanRow{}, err
-	}
-	row.DisplayRows = displayRowCount(row.ToolName, totalFiles, diffFiles, inputFiles)
-	return row, nil
 }
 
 // maxDisplayRows bounds one row's projected file count. A count is a
@@ -275,6 +269,7 @@ type activityScanWalk struct {
 	// buf holds the rows read and not yet consumed, from index `at`.
 	buf       []activityScanRow
 	at        int
+	chunkRows int
 	exhausted bool
 }
 
@@ -282,7 +277,7 @@ type activityScanWalk struct {
 // name a row that no longer exists or was never visible: only its
 // coordinate is used.
 func newActivityScanWalk(q sqlQueryer, threadID string, from TimelineCursor, newer bool, scope timelineScope) *activityScanWalk {
-	return &activityScanWalk{q: q, threadID: threadID, newer: newer, from: from, scope: scope}
+	return &activityScanWalk{q: q, threadID: threadID, newer: newer, from: from, scope: scope, chunkRows: activityScanChunkRows}
 }
 
 // peekAt returns the k-th unconsumed row in walk order without consuming
@@ -322,9 +317,9 @@ func (w *activityScanWalk) fill() error {
 		Where:     filter + comparison,
 		WhereArgs: append(args, w.from.TurnIndex, w.from.TurnIndex, w.from.ItemIndex),
 		OrderBy:   order,
-		Limit:     activityScanChunkRows,
+		Limit:     w.chunkRows,
 	})
-	chunk, err := queryActivityScanRows(w.q, w.threadID, selectedSQL, selectedArgs...)
+	chunk, err := queryActivityScanRows(w.q, w.threadID, w.chunkRows, selectedSQL, selectedArgs...)
 	if err != nil {
 		return err
 	}
@@ -340,9 +335,15 @@ func (w *activityScanWalk) fill() error {
 		w.buf = append(w.buf[:0], w.buf[w.at:]...)
 		w.at = 0
 	}
-	w.buf = append(w.buf, chunk...)
-	if len(chunk) < activityScanChunkRows {
+	if len(w.buf) == 0 {
+		w.buf = chunk
+	} else {
+		w.buf = append(w.buf, chunk...)
+	}
+	if len(chunk) < w.chunkRows {
 		w.exhausted = true
+	} else if w.chunkRows < maxActivityScanChunkRows {
+		w.chunkRows = min(maxActivityScanChunkRows, w.chunkRows*2)
 	}
 	return nil
 }

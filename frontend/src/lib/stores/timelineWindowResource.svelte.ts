@@ -1,11 +1,12 @@
 import { createEntityStore } from './entityStore.svelte';
 import type { BackendKey } from '../transport/backendKey';
 import type { PagedItems, TimelineScopeContext } from '../../../bindings/agent-overflow/internal/store/models';
+import type { Item } from '../types/models';
 import type { TimelineMutation } from './timelineSurfaces';
 import { holdBackendRecovery } from './transportRecovery';
 
 export type WindowObservation = TimelineMutation
-  | { kind: 'snapshot'; page?: PagedItems | null; scope?: TimelineScopeContext | null; gone: boolean; contextVersion: number; touched: ReadonlySet<string> };
+  | { kind: 'snapshot'; page?: PagedItems | null; scope?: TimelineScopeContext | null; gone: boolean; contextVersion: number; touched: ReadonlySet<string>; unheldItems: ReadonlyMap<string, Item> };
 export interface WindowResource {
   backend(): BackendKey | undefined;
   read(signal: AbortSignal): Promise<WindowObservation | null>;

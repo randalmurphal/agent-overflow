@@ -2066,14 +2066,57 @@ export class TimelineCursor {
 }
 
 /**
+ * TimelineDigestContext fixes an inline card to its execution while the agent
+ * pane remains a continuous transcript. Bounds are exclusive at After and
+ * Before; completion timestamps are inclusive at CompletedAt.
+ */
+export class TimelineDigestContext {
+    "after"?: TimelineCursor | null;
+    "before"?: TimelineCursor | null;
+    "startedAfter"?: number | null;
+    "completedAt"?: number | null;
+    "promptId": string;
+    "answerId": string;
+
+    /** Creates a new TimelineDigestContext instance. */
+    constructor($$source: Partial<TimelineDigestContext> = {}) {
+        if (!("promptId" in $$source)) {
+            this["promptId"] = "";
+        }
+        if (!("answerId" in $$source)) {
+            this["answerId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new TimelineDigestContext instance from a string or object.
+     */
+    static createFrom($$source: any = {}): TimelineDigestContext {
+        const $$createField0_0 = $$createType22;
+        const $$createField1_0 = $$createType22;
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        if ("after" in $$parsedSource) {
+            $$parsedSource["after"] = $$createField0_0($$parsedSource["after"]);
+        }
+        if ("before" in $$parsedSource) {
+            $$parsedSource["before"] = $$createField1_0($$parsedSource["before"]);
+        }
+        return new TimelineDigestContext($$parsedSource as Partial<TimelineDigestContext>);
+    }
+}
+
+/**
  * TimelineScopeContext supplies agent identity independently of the loaded range.
- * Lifecycle and Completion refer to the latest persisted execution; live provider
- * state remains authoritative while that execution runs.
+ * Lifecycle and Completion refer to the selected digest execution, or the latest
+ * persisted execution for a continuous scope. Live provider state owns execution.
  */
 export class TimelineScopeContext {
     "root": Item;
     "lifecycle": Item;
     "completion"?: Item | null;
+    "digest"?: TimelineDigestContext | null;
 
     /** Creates a new TimelineScopeContext instance. */
     constructor($$source: Partial<TimelineScopeContext> = {}) {
@@ -2094,6 +2137,7 @@ export class TimelineScopeContext {
         const $$createField0_0 = $$createType0;
         const $$createField1_0 = $$createType0;
         const $$createField2_0 = $$createType15;
+        const $$createField3_0 = $$createType24;
         let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
         if ("root" in $$parsedSource) {
             $$parsedSource["root"] = $$createField0_0($$parsedSource["root"]);
@@ -2104,6 +2148,9 @@ export class TimelineScopeContext {
         if ("completion" in $$parsedSource) {
             $$parsedSource["completion"] = $$createField2_0($$parsedSource["completion"]);
         }
+        if ("digest" in $$parsedSource) {
+            $$parsedSource["digest"] = $$createField3_0($$parsedSource["digest"]);
+        }
         return new TimelineScopeContext($$parsedSource as Partial<TimelineScopeContext>);
     }
 }
@@ -2111,11 +2158,13 @@ export class TimelineScopeContext {
 /**
  * TimelineSelection identifies history independently of its wire projection.
  * The zero value selects the main transcript. Tools selects only tool activity
- * within an agent transcript, for the background tray.
+ * within an agent transcript, for the background tray. DigestItemID selects
+ * the launch or completion whose execution an inline card summarizes.
  */
 export class TimelineSelection {
     "scopeRootId"?: string;
     "tools"?: boolean;
+    "digestItemId"?: string;
 
     /** Creates a new TimelineSelection instance. */
     constructor($$source: Partial<TimelineSelection> = {}) {
@@ -2657,3 +2706,6 @@ const $$createType18 = $Create.Array($$createType2);
 const $$createType19 = TimelineCursor.createFrom;
 const $$createType20 = Project.createFrom;
 const $$createType21 = ThreadOrigin.createFrom;
+const $$createType22 = $Create.Nullable($$createType19);
+const $$createType23 = TimelineDigestContext.createFrom;
+const $$createType24 = $Create.Nullable($$createType23);

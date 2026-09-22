@@ -291,6 +291,8 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * rebuild the spring every time the pin it sets moves.
    */
   windowAnchor(runId: string): string | null;
+  /** Whether a retained span is pinned to a reader position inside its run. */
+  readerPinnedSpan(firstItemId: string, lastItemId: string): boolean;
   /**
    * Whether the run holds `itemId` RIGHT NOW.
    *
@@ -1650,6 +1652,16 @@ export function createThreadActivityRuns(
       revision += 1;
     },
     windowAnchor: (runId) => entries.get(runId)?.windowStartItemId ?? null,
+    readerPinnedSpan: (firstItemId, lastItemId) => {
+      const runId = runIdByMember.get(firstItemId) ?? runIdByMember.get(lastItemId);
+      const entry = runId ? entries.get(runId) : null;
+      if (entry) return entry.windowStartItemId !== null || entry.scroll?.escaped === true;
+      const threadId = options.threadId();
+      if (!threadId) return false;
+      const archived = archive.get(archiveKey(threadId, firstItemId))
+        ?? archive.get(archiveKey(threadId, lastItemId));
+      return Boolean(archived && (archived.windowStartItemId !== null || archived.scroll?.escaped));
+    },
     containsMember: (runId, itemId) => entries.get(runId)?.members.has(itemId) ?? false,
     spansItem: (runId, itemId, cursor) => {
       const entry = entries.get(runId);

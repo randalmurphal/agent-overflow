@@ -1667,6 +1667,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 112, Name: "transcript_root_index", SQL: transcriptRootIndexV112SQL},
 	{Version: 113, Name: "async_questions", SQL: asyncQuestionsV113SQL},
 	{Version: 114, Name: "async_answer_delivery", SQL: asyncAnswerDeliveryV114SQL},
+	{Version: 115, Name: "imported_parent_lookup", SQL: importedParentLookupV115SQL},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

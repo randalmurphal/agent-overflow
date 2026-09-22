@@ -184,20 +184,20 @@ describe('cold-open window sync', () => {
     pane.clear();
   });
 
-  it('paints the replica window before the sync answers', async () => {
+  it('stages the replica window before the sync answers', async () => {
     await putReplicaWindow(THREAD_ID, replicaBody([row('i0'), row('i1')], 3, 11));
-    const painted: string[][] = [];
+    const staged: string[][] = [];
     const pane = createThreadPane();
     installSync(() => {
-      // Runs after the replica read, so the pane already shows the
-      // durable copy: this is the "instant paint" the design exists for.
-      painted.push(pane.items.map((it) => it.id));
+      // The replica read precedes the ask, so the durable rows are
+      // available as verification evidence before the response.
+      staged.push(pane.items.map((it) => it.id));
       return { status: 'fresh', epoch: 3, rev: 11 };
     });
 
     await pane.switchThread(makeThread({ id: THREAD_ID }));
 
-    expect(painted).toEqual([['i0', 'i1']]);
+    expect(staged).toEqual([['i0', 'i1']]);
     expect(pane.items.map((it) => it.id)).toEqual(['i0', 'i1']);
   });
 
@@ -647,13 +647,34 @@ describe('cold-open window sync', () => {
     await pane.switchThread(makeThread({ id: THREAD_ID }));
 
     expect(pane.items.map((it) => it.id)).toEqual(['j0']);
-    // One arm for the replica paint, one for the page that replaced
-    // 100% of it. A dead-lineage paint is not a reconcile the reader can
-    // be left looking at, so the gate closes over the replacement the
-    // same way a first content mount does.
-    expect(arms).toBe(2);
+    // The staged replica is never mounted. Only the final window arms.
+    expect(arms).toBe(1);
 
     __resetBackendIdentityForTest();
+  });
+
+  it('arms the warm gate at verification even when a cached window answers fresh', async () => {
+    await putReplicaWindow(THREAD_ID, replicaBody([row('i0')], 3, 11));
+    const pane = createThreadPane();
+    let arms = 0;
+    pane.attachScrollController(countingWarmupController(() => { arms += 1; }));
+    const answer = deferred<void>();
+    const asked = deferred<void>();
+    setBindingMock('SyncThreadWindow', async () => {
+      asked.resolve();
+      await answer.promise;
+      return { status: 'fresh', epoch: 3, rev: 11, generation: 'gen-1' };
+    });
+
+    const open = pane.switchThread(makeThread({ id: THREAD_ID }));
+    await asked.promise;
+    expect(pane.items.map(item => item.id)).toEqual(['i0']);
+    expect(pane.historyWindowPending).toBe(true);
+    expect(arms).toBe(0);
+    answer.resolve();
+    await open;
+    expect(pane.historyWindowPending).toBe(false);
+    expect(arms).toBe(1);
   });
 
   it('disarms the in-flight-sync ledger when the pane is cleared mid-load', async () => {
@@ -666,6 +687,7 @@ describe('cold-open window sync', () => {
 
     const open = pane.switchThread(makeThread({ id: THREAD_ID }));
     expect(pane.__syncLedgerArmedForTest()).toBe(true);
+    expect(pane.historyWindowPending).toBe(true);
 
     pane.clear();
     // Only `runItemWindowSync`'s finally used to clear this, and clear()
@@ -673,10 +695,12 @@ describe('cold-open window sync', () => {
     // lifetime and every later upsert accumulated into a set the next
     // page application reads as "arrived during my sync, do not drop".
     expect(pane.__syncLedgerArmedForTest()).toBe(false);
+    expect(pane.historyWindowPending).toBe(false);
 
     held.resolve();
     await open;
     expect(pane.__syncLedgerArmedForTest()).toBe(false);
+    expect(pane.historyWindowPending).toBe(false);
   });
 
   // The second route to a page-less `fresh`: a turn on the open thread

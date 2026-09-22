@@ -82,3 +82,14 @@ it('checks an explicit RPC target without consuming the routing pin', async () =
   expect(() => withBackendTarget('remote', () => ListThreadSliceAround('thread', '', 20, {}, { scopeRootId: 'agent' }))).toThrow('Update the computer');
   expect(rpc).toHaveBeenCalledOnce();
 });
+
+it.each(readers)('%s requires execution-digest support and recovers after upgrade', async (name, read) => {
+  const rpc = setBindingMock(name, async () => ({}));
+  __setTransportHelloForTest(hello);
+  const selection = { scopeRootId: 'agent', digestItemId: 'completion' };
+  expect(() => read(selection)).toThrow('Update the computer');
+  expect(rpc).not.toHaveBeenCalled();
+  __setTransportHelloForTest({ ...hello, capabilities: [...hello.capabilities, 'timeline.digests.v1'] });
+  await read(selection);
+  expect(rpc).toHaveBeenCalledOnce();
+});

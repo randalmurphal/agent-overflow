@@ -463,19 +463,17 @@ func (s *Store) ThreadHistoryStamp(threadID string) (HistoryStamp, bool, error) 
 // what keeps a reopen after a turn on the same thread free, where a stamp
 // the turn invalidated cannot.
 func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID string, itemBudget, runWindowRows int, have HistoryStamp, held *HeldWindow, selection TimelineSelection) (ThreadWindowSync, error) {
-	tx, err := s.reader().BeginTx(ctx, nil)
-	if err != nil {
-		return ThreadWindowSync{}, fmt.Errorf("store: begin sync thread window for %s: %w", threadID, err)
-	}
-	// Read-only: the read pool's connections carry query_only(1), and
-	// nothing here writes. Rollback is the whole cleanup.
-	defer tx.Rollback()
+	return readSnapshotContext(ctx, s.reader(), "sync thread window", func(q sqlQueryer) (ThreadWindowSync, error) {
+		return s.syncThreadWindow(q, threadID, anchorItemID, itemBudget, runWindowRows, have, held, selection)
+	})
+}
 
-	stamp, found, err := readHistoryStampTx(tx, threadID)
+func (s *Store) syncThreadWindow(q sqlQueryer, threadID, anchorItemID string, itemBudget, runWindowRows int, have HistoryStamp, held *HeldWindow, selection TimelineSelection) (ThreadWindowSync, error) {
+	stamp, found, err := readHistoryStampTx(q, threadID)
 	if err != nil {
 		return ThreadWindowSync{}, err
 	}
-	identity, err := identityFrom(tx)
+	identity, err := identityFrom(q)
 	if err != nil {
 		return ThreadWindowSync{}, err
 	}
@@ -483,7 +481,7 @@ func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID str
 		return ThreadWindowSync{Status: SyncGone, Generation: identity.ReplicaGeneration}, nil
 	}
 
-	scope, err := s.resolveTimelineScope(tx, threadID, selection)
+	scope, err := s.resolveTimelineScope(q, threadID, selection)
 	if errors.Is(err, ErrTimelineScopeGone) {
 		return ThreadWindowSync{Status: SyncGone, Generation: identity.ReplicaGeneration}, nil
 	}
@@ -507,7 +505,7 @@ func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID str
 		return out, nil
 	}
 	if held != nil {
-		verified, err := verifyHeldWindowTx(tx, threadID, *held, scope)
+		verified, err := verifyHeldWindowTx(q, threadID, *held, scope)
 		if err != nil {
 			return ThreadWindowSync{}, err
 		}
@@ -521,7 +519,7 @@ func (s *Store) SyncThreadWindow(ctx context.Context, threadID, anchorItemID str
 		}
 	}
 
-	page, err := s.listThreadSliceAround(tx, threadID, anchorItemID, itemBudget, runWindowRows, scope)
+	page, err := s.listThreadSliceAround(q, threadID, anchorItemID, itemBudget, runWindowRows, scope)
 	if err != nil {
 		return ThreadWindowSync{}, err
 	}

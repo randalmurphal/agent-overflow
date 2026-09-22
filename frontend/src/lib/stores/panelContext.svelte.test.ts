@@ -54,7 +54,6 @@ describe('makePanelContext', () => {
     expect(ctx.getItemById('item-2')?.id).toBe('item-2');
     expect(ctx.getItemById('missing')).toBeUndefined();
     expect(ctx.timelineRevision).toBe(pane.timelineRevision);
-    expect(await ctx.ensureSubagentChildren('item-1')).toBe(false);
   });
 
   it('keeps object identity stable while the pane reassigns its thread', async () => {

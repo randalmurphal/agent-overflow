@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -73,19 +74,16 @@ func (r ActivityRunMembersRequest) storeRequest(limit int) store.ActivityRunMemb
 // stub only.
 //
 // The rows are projected and bounded by the caller's byte ceiling like
-// any page. When the ceiling drops rows, the call is REPEATED with the
-// smaller limit rather than the rows being dropped from the response: the
-// stub has to describe the span the caller ends up holding, and stub
-// arithmetic belongs to the store, not to a caller editing counts it did
-// not derive.
+// any page. The store folds dropped rows into the stub it already computed,
+// keeping the returned span exact without walking the whole run twice.
 //
 //ao:scope threads:read
-func (a *App) ListActivityRunMembers(threadID string, req ActivityRunMembersRequest) (store.ActivityRunMembers, error) {
+func (a *App) ListActivityRunMembers(ctx context.Context, threadID string, req ActivityRunMembersRequest) (store.ActivityRunMembers, error) {
 	if err := a.store.CheckForkReady(threadID); err != nil {
 		return store.ActivityRunMembers{}, err
 	}
 	shape := req.Shape.normalize()
-	members, err := a.store.ListActivityRunMembers(threadID, req.storeRequest(req.Limit))
+	members, err := a.store.ListActivityRunMembers(ctx, threadID, req.storeRequest(req.Limit))
 	if err != nil {
 		return store.ActivityRunMembers{}, activityRunMembersError(err)
 	}
@@ -95,11 +93,11 @@ func (a *App) ListActivityRunMembers(threadID string, req ActivityRunMembersRequ
 	if admitted >= len(members.Items) {
 		return members, nil
 	}
-	members, err = a.store.ListActivityRunMembers(threadID, req.storeRequest(admitted))
+	from := admittedMemberWindow(members, req, admitted, len(members.Items))
+	members, err = members.TrimFresh(from, from+admitted)
 	if err != nil {
 		return store.ActivityRunMembers{}, activityRunMembersError(err)
 	}
-	members.Items = itemwire.ProjectItems(slicesx.OrEmpty(members.Items), shape.InlinePreviews)
 	return members, nil
 }
 

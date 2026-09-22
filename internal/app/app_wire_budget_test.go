@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"compress/flate"
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -165,7 +166,7 @@ func TestColdWindowWireBudget(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, heavyThreadShape())
 
-	page, err := app.ListThreadSliceAround(thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: wireRunWindowRows}})
+	page, err := app.ListThreadSliceAround(context.Background(), thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: wireRunWindowRows}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestColdWindowWireBudget(t *testing.T) {
 	assertWireCeilings(t, "cold window", raw, compressed,
 		coldWindowRawCeiling, coldWindowCompressedCeiling)
 
-	on, err := app.ListThreadSliceAround(thread.ID, "", 200,
+	on, err := app.ListThreadSliceAround(context.Background(), thread.ID, "", 200,
 		TimelinePageOptions{PageShape: PageShape{InlinePreviews: true, RunWindowRows: wireRunWindowRows}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround(previews on): %v", err)
@@ -194,7 +195,7 @@ func TestProseWindowWireBudget(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, proseRunThreadShape())
 
-	page, err := app.ListThreadSliceAround(thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: wireRunWindowRows}})
+	page, err := app.ListThreadSliceAround(context.Background(), thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: wireRunWindowRows}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround: %v", err)
 	}
@@ -210,7 +211,7 @@ func TestProseWindowWireBudget(t *testing.T) {
 	assertWireCeilings(t, "prose window", raw, compressed,
 		proseWindowRawCeiling, proseWindowCompressedCeiling)
 
-	on, err := app.ListThreadSliceAround(thread.ID, "", 200,
+	on, err := app.ListThreadSliceAround(context.Background(), thread.ID, "", 200,
 		TimelinePageOptions{PageShape: PageShape{InlinePreviews: true, RunWindowRows: wireRunWindowRows}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround(previews on): %v", err)
@@ -236,13 +237,13 @@ func TestColdWindowWireBudget_ProjectionIsWhatMakesIt(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, proseRunThreadShape())
 
-	projected, err := app.ListThreadSliceAround(thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: wireRunWindowRows}})
+	projected, err := app.ListThreadSliceAround(context.Background(), thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: wireRunWindowRows}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround: %v", err)
 	}
 	// The same page from the store, so the difference measured is the
 	// projection alone and not the run window the shape already applied.
-	unprojected, err := app.store.ListThreadSliceAround(thread.ID, "", 200, wireRunWindowRows, store.TimelineSelection{})
+	unprojected, err := app.store.ListThreadSliceAround(context.Background(), thread.ID, "", 200, wireRunWindowRows, store.TimelineSelection{})
 	if err != nil {
 		t.Fatalf("store.ListThreadSliceAround: %v", err)
 	}
@@ -281,11 +282,11 @@ func TestColdWindowWireBudget_TheRunWindowIsWhatMakesIt(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, heavyThreadShape())
 
-	windowed, err := app.ListThreadSliceAround(thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: wireRunWindowRows}})
+	windowed, err := app.ListThreadSliceAround(context.Background(), thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: wireRunWindowRows}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround: %v", err)
 	}
-	wide, err := app.ListThreadSliceAround(thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: 200}})
+	wide, err := app.ListThreadSliceAround(context.Background(), thread.ID, "", 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: 200}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround(wide run window): %v", err)
 	}

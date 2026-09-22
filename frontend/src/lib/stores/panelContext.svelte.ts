@@ -51,11 +51,6 @@ export interface PanelContext {
   /** Row lookup by id, for resolving a scope/breadcrumb to its launch row.
    *  Agent panel only. */
   getItemById(itemId: string): Item | undefined;
-  /** Hydrate the evicted child transcript under a subagent launch anchor
-   *  (`threadSubagentMemory.hydrateChildren`). Scoping the pane to a node
-   *  whose children were evicted is exactly the case that needs it. Agent
-   *  panel only. */
-  ensureSubagentChildren(rootItemId: string): Promise<boolean>;
   /** Close the agent companion for this source pane and drop its scope.
    *  The body calls this when the scoped row resolves to nothing. */
   closeAgentPane(): void;
@@ -96,7 +91,6 @@ export function makePanelContext(pane: ThreadPane, close: () => void): PanelCont
     get items() { return pane.items; },
     get timelineRevision() { return pane.timelineRevision; },
     getItemById: (itemId) => pane.getItemById(itemId),
-    ensureSubagentChildren: (rootItemId) => pane.ensureSubagentChildren(rootItemId),
     closeAgentPane: () => pane.closeAgentPane(),
     close,
     replaceThread: syncThread,

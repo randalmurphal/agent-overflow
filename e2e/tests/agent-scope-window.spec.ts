@@ -8,6 +8,30 @@ const COUNT = 2100;
 
 test('a large subagent transcript pages activity members independently of its main thread', async ({ harness, page }) => {
   test.setTimeout(90_000);
+  let bulkReads = 0;
+  const digestPages: number[] = [];
+  const digestMembers: number[] = [];
+  const requests = new Set<unknown>();
+  await page.routeWebSocket(/\/ws(?:\?|$)/, socket => {
+    const server = socket.connectToServer();
+    socket.onMessage(message => {
+      const frame = JSON.parse(String(message));
+      if (frame.type === 'rpc') {
+        if (frame.methodId === 1299118478) bulkReads++;
+        if (frame.params?.[1]?.selection?.digestItemId) requests.add(frame.id);
+      }
+      server.send(message);
+    });
+    server.onMessage(message => {
+      const frame = JSON.parse(String(message));
+      if (requests.delete(frame.id)) {
+        const result = frame.result ?? frame.data;
+        if (result?.page) digestPages.push(result.page.items.length);
+        else if (result?.items) digestMembers.push(result.items.length);
+      }
+      socket.send(message);
+    });
+  });
   const activity = Array.from({ length: COUNT }, (_, index) => [
     toolUseLine(`call-${index}`, `bash-${index}`, 'Bash', { command: `echo scope-command-${index}` }, 'scope-root'),
     toolResultLine(`bash-${index}`, 'done', { parentToolUseId: 'scope-root' }),
@@ -31,6 +55,23 @@ test('a large subagent transcript pages activity members independently of its ma
 
   const main = page.getByTestId('message-timeline-scroll').first();
   const card = main.getByTestId('subagent-group').first();
+  expect(bulkReads).toBe(0);
+  expect(digestPages).toEqual([]);
+  await card.getByTestId('subagent-group-toggle').click();
+  const digest = card.getByTestId('subagent-group-body');
+  await expect(digest.getByText('Scoped history complete', { exact: true })).toBeVisible();
+  await expect.poll(() => digestPages.length).toBeGreaterThan(0);
+  expect(Math.max(...digestPages)).toBeLessThan(40);
+  expect(bulkReads).toBe(0);
+  const clip = digest.getByTestId('subagent-group-scroll');
+  expect(digestMembers).toEqual([]);
+  await clip.hover();
+  await page.mouse.wheel(0, -3000);
+  await expect.poll(() => digestMembers.length).toBeGreaterThan(0);
+  expect(Math.max(...digestMembers)).toBeLessThanOrEqual(25);
+  expect(digestMembers.reduce((sum, n) => sum + n, 0)).toBeLessThan(100);
+  await card.getByTestId('subagent-group-toggle').click();
+  await expect(digest).toHaveCount(0);
   await card.getByTestId('subagent-group-open-pane').first().click();
   const pane = page.getByTestId('companion-pane-agent-body');
   await expect(pane.getByText('Scoped history complete', { exact: true })).toBeVisible();

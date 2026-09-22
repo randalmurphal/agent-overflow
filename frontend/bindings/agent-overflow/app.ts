@@ -2575,11 +2575,8 @@ export function IsWSL(): $CancellablePromise<boolean> {
  * stub only.
  * 
  * The rows are projected and bounded by the caller's byte ceiling like
- * any page. When the ceiling drops rows, the call is REPEATED with the
- * smaller limit rather than the rows being dropped from the response: the
- * stub has to describe the span the caller ends up holding, and stub
- * arithmetic belongs to the store, not to a caller editing counts it did
- * not derive.
+ * any page. The store folds dropped rows into the stub it already computed,
+ * keeping the returned span exact without walking the whole run twice.
  */
 export function ListActivityRunMembers(threadID: string, req: app$0.ActivityRunMembersRequest): $CancellablePromise<store$0.ActivityRunMembers> {
     return $Call.ByID(1602023272, threadID, req).then(($result: any) => {
@@ -2940,14 +2937,8 @@ export function ListServiceReleases(): $CancellablePromise<app$0.ReleaseSummary[
 }
 
 /**
- * ListSubagentDescendants loads the full child transcript under a
- * subagent launch row, on demand when its SubagentGroup card expands.
- * History windows deliberately exclude rows with a parent_id (see
- * internal/store/paging.go topLevelItemsFilter); this is the expansion
- * path that hydrates them. The result is every visible transitive
- * descendant in timeline order, capped store-side at the same scale as
- * maxWindowItems (newest rows win) so an unintended LAN-attached caller
- * can't stream an unbounded subtree per call.
+ * ListSubagentDescendants retains the bounded transitive read for older clients.
+ * Current agent surfaces use selected timeline pages and run-member reads.
  */
 export function ListSubagentDescendants(threadID: string, rootItemID: string, inlinePreviews: boolean): $CancellablePromise<store$0.Item[]> {
     return $Call.ByID(1299118478, threadID, rootItemID, inlinePreviews).then(($result: any) => {

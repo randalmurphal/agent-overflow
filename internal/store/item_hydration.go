@@ -45,8 +45,8 @@ var importedItemHydrationColumns = itemHydrationColumns(
 // because both physical branches consume it), then:
 //
 //   - local rows probe items(thread_id,id) and payloads(thread_id,id);
-//   - imported rows probe the thread's chunk refs and the chunk-scoped item /
-//     payload primary keys;
+//   - imported rows probe the item ID index, check the owning chunk's thread
+//     membership, then resolve the chunk-scoped payload;
 //   - a local payload overlay wins over its immutable imported payload, which
 //     preserves timeline_payloads' copy-on-write shadowing contract.
 //
@@ -73,9 +73,8 @@ func queryHydratedTimelineItems(
 		UNION ALL
 		SELECT `+importedItemHydrationColumns+`
 		  FROM selected
-		  CROSS JOIN thread_import_chunks AS refs
-		  JOIN import_history_items AS items
-		    ON items.chunk_id = refs.chunk_id AND items.id = selected.id
+		  CROSS JOIN import_history_items AS items ON items.id = selected.id
+		  CROSS JOIN thread_import_chunks AS refs ON refs.chunk_id = items.chunk_id
 		  LEFT JOIN payloads AS local_payloads
 		    ON local_payloads.thread_id = refs.thread_id AND local_payloads.id = items.payload_id
 		  LEFT JOIN import_history_payloads AS imported_payloads

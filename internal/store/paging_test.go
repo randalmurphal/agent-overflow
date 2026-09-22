@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -193,7 +194,7 @@ func TestListItemsBeforeCursor_OuterThreadFilterRequired(t *testing.T) {
 	// Thread B: same id "X" at a different coordinate.
 	seedItem(t, s, "b", "X", 5, 0, "")
 
-	paged, err := s.ListItemsBeforeCursor("a", TimelineCursor{TurnIndex: 2, ItemIndex: 0, ItemID: "Z"}, 10, testRunWindowRows, TimelineSelection{})
+	paged, err := s.ListItemsBeforeCursor(context.Background(), "a", TimelineCursor{TurnIndex: 2, ItemIndex: 0, ItemID: "Z"}, 10, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("list before cursor: %v", err)
 	}
@@ -219,7 +220,7 @@ func TestListThreadSliceAround_EmptyAnchorReturnsTail(t *testing.T) {
 		seedItem(t, s, "t", idForTurn(i), i, 0, "")
 	}
 
-	paged, err := s.ListThreadSliceAround("t", "", 3, testRunWindowRows, TimelineSelection{})
+	paged, err := s.ListThreadSliceAround(context.Background(), "t", "", 3, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("slice around: %v", err)
 	}
@@ -253,7 +254,7 @@ func TestListThreadSliceAround_EmptyThreadReturnsEmpty(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	paged, err := s.ListThreadSliceAround("t", "", 50, testRunWindowRows, TimelineSelection{})
+	paged, err := s.ListThreadSliceAround(context.Background(), "t", "", 50, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("slice around: %v", err)
 	}
@@ -284,7 +285,7 @@ func TestListThreadSliceAround_AnchorInMiddle(t *testing.T) {
 		seedItem(t, s, "t", idForTurn(i), i, 0, "")
 	}
 
-	paged, err := s.ListThreadSliceAround("t", idForTurn(5), 4, testRunWindowRows, TimelineSelection{})
+	paged, err := s.ListThreadSliceAround(context.Background(), "t", idForTurn(5), 4, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("slice around: %v", err)
 	}
@@ -323,7 +324,7 @@ func TestListItemsBeforeCursor_CapsWithinDenseTurn(t *testing.T) {
 		seedItem(t, s, "t", fmt.Sprintf("i-%d", index), 0, index, "")
 	}
 
-	paged, err := s.ListItemsBeforeCursor("t", TimelineCursor{TurnIndex: 0, ItemIndex: 8, ItemID: "i-8"}, 3, testRunWindowRows, TimelineSelection{})
+	paged, err := s.ListItemsBeforeCursor(context.Background(), "t", TimelineCursor{TurnIndex: 0, ItemIndex: 8, ItemID: "i-8"}, 3, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("items before cursor: %v", err)
 	}
@@ -361,7 +362,7 @@ func TestPagingCursorsAcceptHeadHealedNegativeIndex(t *testing.T) {
 	seedItem(t, s, "t", "t1-head", 1, -1, "")
 	seedItem(t, s, "t", "t1-a", 1, 0, "")
 
-	paged, err := s.ListItemsBeforeCursor("t", TimelineCursor{TurnIndex: 1, ItemIndex: -1, ItemID: "t1-head"}, 10, testRunWindowRows, TimelineSelection{})
+	paged, err := s.ListItemsBeforeCursor(context.Background(), "t", TimelineCursor{TurnIndex: 1, ItemIndex: -1, ItemID: "t1-head"}, 10, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("items before head cursor: %v", err)
 	}
@@ -369,7 +370,7 @@ func TestPagingCursorsAcceptHeadHealedNegativeIndex(t *testing.T) {
 		t.Errorf("items before head-healed prompt: got %v, want %v", got, want)
 	}
 
-	paged, err = s.ListItemsAfterCursor("t", TimelineCursor{TurnIndex: 0, ItemIndex: 1, ItemID: "t0-b"}, 10, testRunWindowRows, TimelineSelection{})
+	paged, err = s.ListItemsAfterCursor(context.Background(), "t", TimelineCursor{TurnIndex: 0, ItemIndex: 1, ItemID: "t0-b"}, 10, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("items after cursor: %v", err)
 	}
@@ -381,7 +382,7 @@ func TestPagingCursorsAcceptHeadHealedNegativeIndex(t *testing.T) {
 	}
 
 	// The empty sentinel stays invalid: its TurnIndex is -1.
-	paged, err = s.ListItemsBeforeCursor("t", emptyTimelineCursor(), 10, testRunWindowRows, TimelineSelection{})
+	paged, err = s.ListItemsBeforeCursor(context.Background(), "t", emptyTimelineCursor(), 10, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("items before sentinel: %v", err)
 	}
@@ -399,7 +400,7 @@ func TestListItemsAfterCursor_CapsWithinDenseTurn(t *testing.T) {
 		seedItem(t, s, "t", fmt.Sprintf("i-%d", index), 0, index, "")
 	}
 
-	paged, err := s.ListItemsAfterCursor("t", TimelineCursor{TurnIndex: 0, ItemIndex: 1, ItemID: "i-1"}, 3, testRunWindowRows, TimelineSelection{})
+	paged, err := s.ListItemsAfterCursor(context.Background(), "t", TimelineCursor{TurnIndex: 0, ItemIndex: 1, ItemID: "i-1"}, 3, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("items after cursor: %v", err)
 	}
@@ -432,7 +433,7 @@ func TestListThreadSliceAround_CapsWithinDenseTurn(t *testing.T) {
 		seedItem(t, s, "t", fmt.Sprintf("i-%d", index), 0, index, "")
 	}
 
-	paged, err := s.ListThreadSliceAround("t", "i-5", 4, testRunWindowRows, TimelineSelection{})
+	paged, err := s.ListThreadSliceAround(context.Background(), "t", "i-5", 4, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("slice around dense turn: %v", err)
 	}
@@ -462,7 +463,7 @@ func TestListThreadSliceAround_MissingAnchorFallsBackToTail(t *testing.T) {
 		seedItem(t, s, "t", idForTurn(i), i, 0, "")
 	}
 
-	paged, err := s.ListThreadSliceAround("t", "ghost", 2, testRunWindowRows, TimelineSelection{})
+	paged, err := s.ListThreadSliceAround(context.Background(), "t", "ghost", 2, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("slice around: %v", err)
 	}
@@ -489,7 +490,7 @@ func TestListThreadSliceAround_ChildAnchorPositionsWindow(t *testing.T) {
 	}
 	seedItem(t, s, "t", "child", 6, 0, "parent")
 
-	paged, err := s.ListThreadSliceAround("t", "child", 4, testRunWindowRows, TimelineSelection{})
+	paged, err := s.ListThreadSliceAround(context.Background(), "t", "child", 4, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("slice around: %v", err)
 	}
@@ -534,7 +535,7 @@ func TestListThreadSliceAround_ChildAnchorLoadsNoSiblings(t *testing.T) {
 	seedItem(t, s, "t", "noise-0", 0, 0, "")
 	seedItem(t, s, "t", "noise-7", 7, 0, "")
 
-	paged, err := s.ListThreadSliceAround("t", "c-4", 2, testRunWindowRows, TimelineSelection{})
+	paged, err := s.ListThreadSliceAround(context.Background(), "t", "c-4", 2, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("slice around: %v", err)
 	}
@@ -576,7 +577,7 @@ func TestListThreadSliceAround_CrossThreadIsolation(t *testing.T) {
 	seedItem(t, s, "b", "anchor", 0, 0, "")
 	seedItem(t, s, "b", "intruder", 1, 0, "")
 
-	paged, err := s.ListThreadSliceAround("a", "anchor", 4, testRunWindowRows, TimelineSelection{})
+	paged, err := s.ListThreadSliceAround(context.Background(), "a", "anchor", 4, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("slice around: %v", err)
 	}
@@ -603,7 +604,7 @@ func TestListThreadSliceAround_DefaultsToFiftyItems(t *testing.T) {
 		seedItem(t, s, "t", idForTurn(i), i, 0, "")
 	}
 
-	paged, err := s.ListThreadSliceAround("t", "", 0, testRunWindowRows, TimelineSelection{}) // <=0 → default 50
+	paged, err := s.ListThreadSliceAround(context.Background(), "t", "", 0, testRunWindowRows, TimelineSelection{}) // <=0 → default 50
 	if err != nil {
 		t.Fatalf("slice around: %v", err)
 	}
@@ -642,7 +643,7 @@ func TestListThreadSliceAround_FiltersPlanUpdateNotifications(t *testing.T) {
 	}
 	seedItem(t, s, "t", "c", 2, 0, "")
 
-	paged, err := s.ListThreadSliceAround("t", "b", 4, testRunWindowRows, TimelineSelection{})
+	paged, err := s.ListThreadSliceAround(context.Background(), "t", "b", 4, testRunWindowRows, TimelineSelection{})
 	if err != nil {
 		t.Fatalf("slice around: %v", err)
 	}

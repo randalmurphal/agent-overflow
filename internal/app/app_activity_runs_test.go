@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -88,7 +89,7 @@ func TestListThreadSliceAround_AnchorInsideALongRun(t *testing.T) {
 	thread, memberIDs := seedLongRunThread(t, app, members)
 	anchor := memberIDs[250]
 
-	page, err := app.ListThreadSliceAround(thread.ID, anchor, 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: runWindow}})
+	page, err := app.ListThreadSliceAround(context.Background(), thread.ID, anchor, 200, TimelinePageOptions{PageShape: PageShape{RunWindowRows: runWindow}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestListThreadSliceAround_AnchorInsideALongRun(t *testing.T) {
 	// The same page under a ceiling a fraction of the window's size. The
 	// anchor survives; what it loses folds into the stub rather than out
 	// of the page's range.
-	trimmed, err := app.ListThreadSliceAround(thread.ID, anchor, 200,
+	trimmed, err := app.ListThreadSliceAround(context.Background(), thread.ID, anchor, 200,
 		TimelinePageOptions{PageShape: PageShape{RunWindowRows: runWindow, MaxBytes: 8 << 10}})
 	if err != nil {
 		t.Fatalf("ListThreadSliceAround(trimmed): %v", err)
@@ -163,7 +164,7 @@ func TestListActivityRunMembers_ProjectsUnderTheCallersPreference(t *testing.T) 
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, railRunShape(60))
 
-	off, err := app.ListActivityRunMembers(thread.ID, ActivityRunMembersRequest{
+	off, err := app.ListActivityRunMembers(context.Background(), thread.ID, ActivityRunMembersRequest{
 		RunFirstItemID: "item-0000",
 		Direction:      store.ActivityRunMembersBefore,
 		Limit:          20,
@@ -182,7 +183,7 @@ func TestListActivityRunMembers_ProjectsUnderTheCallersPreference(t *testing.T) 
 			off.Stub.MemberCount, off.Stub.UnshippedBefore)
 	}
 
-	on, err := app.ListActivityRunMembers(thread.ID, ActivityRunMembersRequest{
+	on, err := app.ListActivityRunMembers(context.Background(), thread.ID, ActivityRunMembersRequest{
 		RunFirstItemID: "item-0000",
 		Direction:      store.ActivityRunMembersBefore,
 		Limit:          20,
@@ -208,7 +209,7 @@ func TestListActivityRunMembers_ByteCeilingShrinksTheAnswerNotTheStub(t *testing
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, railRunShape(60))
 
-	full, err := app.ListActivityRunMembers(thread.ID, ActivityRunMembersRequest{
+	full, err := app.ListActivityRunMembers(context.Background(), thread.ID, ActivityRunMembersRequest{
 		RunFirstItemID: "item-0000",
 		Direction:      store.ActivityRunMembersBefore,
 		Limit:          20,
@@ -216,7 +217,7 @@ func TestListActivityRunMembers_ByteCeilingShrinksTheAnswerNotTheStub(t *testing
 	if err != nil {
 		t.Fatalf("ListActivityRunMembers: %v", err)
 	}
-	bounded, err := app.ListActivityRunMembers(thread.ID, ActivityRunMembersRequest{
+	bounded, err := app.ListActivityRunMembers(context.Background(), thread.ID, ActivityRunMembersRequest{
 		RunFirstItemID: "item-0000",
 		Direction:      store.ActivityRunMembersBefore,
 		Limit:          20,
@@ -257,7 +258,7 @@ func TestListActivityRunMembers_AroundKeepsTheTargetUnderTheCeiling(t *testing.T
 	thread := seedHeavyThread(t, app, railRunShape(60))
 	const target = "item-0020"
 
-	bounded, err := app.ListActivityRunMembers(thread.ID, ActivityRunMembersRequest{
+	bounded, err := app.ListActivityRunMembers(context.Background(), thread.ID, ActivityRunMembersRequest{
 		RunFirstItemID:    "item-0000",
 		LoadedFirstItemID: "item-0055",
 		LoadedLastItemID:  "item-0059",
@@ -298,7 +299,7 @@ func TestListActivityRunMembers_ReportsAStaleRun(t *testing.T) {
 	app := newTestAppWithStore(t)
 	thread := seedHeavyThread(t, app, railRunShape(20))
 
-	_, err := app.ListActivityRunMembers(thread.ID, ActivityRunMembersRequest{
+	_, err := app.ListActivityRunMembers(context.Background(), thread.ID, ActivityRunMembersRequest{
 		RunFirstItemID: "item-0004",
 		Direction:      store.ActivityRunMembersBefore,
 		Limit:          5,

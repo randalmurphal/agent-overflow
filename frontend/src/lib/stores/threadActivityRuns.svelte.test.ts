@@ -830,6 +830,16 @@ describe('state across a sweep', () => {
     expect(runs.scrollSnapshot(back.runId)).toEqual({ scrollTop: 240, escaped: true });
   });
 
+  it('keeps a reader pin discoverable while a switched run is archived', () => {
+    const runs = registry({ threadId: () => 'thread-1' });
+    const [run] = pass(runs, [['a', 'b', 'c']]);
+    expect(runs.readerPinnedSpan('a', 'c')).toBe(false);
+    runs.setWindowAnchor(run.runId, 'a');
+    expect(runs.readerPinnedSpan('a', 'c')).toBe(true);
+    runs.clear();
+    expect(runs.readerPinnedSpan('a', 'c')).toBe(true);
+  });
+
   it('is found again by the run tail when the prune cut its head', () => {
     const runs = registry();
     const [run] = pass(runs, [['a', 'b', 'c', 'd']]);

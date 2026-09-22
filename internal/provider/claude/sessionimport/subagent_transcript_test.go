@@ -3,6 +3,7 @@ package sessionimport
 import (
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -220,6 +221,67 @@ func TestConvertSubagentTranscriptMatchesTheJoinedImport(t *testing.T) {
 	}
 	if joinedRendered := strings.Join(nested, "\n"); joinedRendered != got {
 		t.Fatalf("standalone conversion diverges from the joined import:\nstandalone:\n%s\njoined:\n%s", got, joinedRendered)
+	}
+}
+
+func TestConvertSubagentTranscriptStreamsLargeRecordsAndPairsDistantSummaries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-large.jsonl")
+	largeOutput := strings.Repeat("x", 17<<20)
+	boundary := map[string]any{
+		"type": "system", "subtype": "compact_boundary", "uuid": "compact-1",
+		"content": "Conversation compacted", "timestamp": "2026-01-01T00:00:01.000Z",
+	}
+	summary := userRow("summary-1", "compact-1", "retained facts", "2026-01-01T00:00:04.000Z",
+		with("isCompactSummary", true))
+	rows := []map[string]any{
+		userRow("s1", "", "the task prompt", "", with("isSidechain", true)),
+		boundary,
+		assistantRow("s2", "compact-1", "msg_tool", []any{
+			toolUseBlock("toolu_large", "Bash", map[string]any{"command": "cat big"}),
+		}, "2026-01-01T00:00:02.000Z", with("isSidechain", true)),
+		toolResultRow("s3", "s2", "toolu_large", largeOutput, "2026-01-01T00:00:03.000Z",
+			with("isSidechain", true)),
+		summary,
+		assistantRow("s4", "summary-1", "msg_final", []any{textBlock("final answer")},
+			"2026-01-01T00:00:05.000Z", with("isSidechain", true)),
+	}
+	lines := make([]any, len(rows))
+	for i := range rows {
+		lines[i] = rows[i]
+	}
+	writeJSONL(t, path, lines...)
+
+	got, err := ConvertSubagentTranscript(path, "toolu_task")
+	if err != nil {
+		t.Fatalf("ConvertSubagentTranscript: %v", err)
+	}
+	if got.FinalAssistantText() != "final answer" {
+		t.Fatalf("final text = %q", got.FinalAssistantText())
+	}
+	var largeResult, compaction bool
+	for _, event := range got.Events {
+		if event.Kind == provider.EventToolComplete && event.ItemID == "toolu_large" && len(event.Content) == len(largeOutput) {
+			largeResult = true
+		}
+		if event.Kind == provider.EventCompactBoundary && strings.Contains(string(event.Meta), "retained facts") {
+			compaction = true
+		}
+	}
+	if !largeResult || !compaction {
+		t.Fatalf("large result or distant compaction summary missing: result=%v compaction=%v", largeResult, compaction)
+	}
+	// The file converter must retain the whole-import converter's clock,
+	// event identities, and summary pairing even across the large row.
+	joinedRows, err := readSubagentRows(path)
+	if err != nil {
+		t.Fatalf("readSubagentRows for whole-session import: %v", err)
+	}
+	if len(joinedRows) != len(rows) {
+		t.Fatalf("whole-session subagent reader kept %d rows, want %d", len(joinedRows), len(rows))
+	}
+	baseline := ConvertSubagentRows(joinedRows, "toolu_task")
+	if !reflect.DeepEqual(got.Events, baseline.Events) || !reflect.DeepEqual(got.Warnings, baseline.Warnings) {
+		t.Fatal("streamed file conversion diverged from whole-session conversion")
 	}
 }
 

@@ -195,28 +195,38 @@ type activityFoldRow struct {
 // Every per-member fact the page-level byte trim may later need is
 // decided here, because here is where the whole run is in hand.
 func buildActivityRunStub(rows []activityScanRow, shippedFrom, shippedTo int) ActivityRunStub {
-	memberIDs := make(map[string]struct{}, len(rows))
+	// Index only launch IDs named by completions. A long run may contain
+	// thousands of other members, none of which pairing needs to retain.
+	var completionTargets map[string]struct{}
 	for _, row := range rows {
-		memberIDs[row.ID] = struct{}{}
+		if row.Kind == toolCompletionKind && row.CompletionOf != "" {
+			if completionTargets == nil {
+				completionTargets = make(map[string]struct{})
+			}
+			completionTargets[row.CompletionOf] = struct{}{}
+		}
 	}
 	// A completion supersedes its launch's status, and counts zero rows
 	// itself, only when the launch is a member of the SAME run.
-	completedMembers := make(map[string]struct{})
+	var completedMembers map[string]struct{}
 	for _, row := range rows {
-		if row.Kind != toolCompletionKind || row.CompletionOf == "" {
-			continue
-		}
-		if _, ok := memberIDs[row.CompletionOf]; ok {
-			completedMembers[row.CompletionOf] = struct{}{}
+		if _, ok := completionTargets[row.ID]; ok {
+			if completedMembers == nil {
+				completedMembers = make(map[string]struct{})
+			}
+			completedMembers[row.ID] = struct{}{}
 		}
 	}
-	shippedCompletions := make(map[string]struct{})
+	var shippedCompletions map[string]struct{}
 	for i := shippedFrom; i < shippedTo; i++ {
 		row := rows[i]
 		if row.Kind != toolCompletionKind || row.CompletionOf == "" {
 			continue
 		}
-		if _, ok := memberIDs[row.CompletionOf]; ok {
+		if _, ok := completedMembers[row.CompletionOf]; ok {
+			if shippedCompletions == nil {
+				shippedCompletions = make(map[string]struct{})
+			}
 			shippedCompletions[row.CompletionOf] = struct{}{}
 		}
 	}
@@ -261,7 +271,7 @@ func buildActivityRunStub(rows []activityScanRow, shippedFrom, shippedTo int) Ac
 		}
 		_, completionShipped := shippedCompletions[row.ID]
 		if row.Kind == toolCompletionKind && row.CompletionOf != "" {
-			if _, ok := memberIDs[row.CompletionOf]; ok {
+			if _, ok := completedMembers[row.CompletionOf]; ok {
 				fold.completionOfMember = row.CompletionOf
 				fold.displayRows = 0
 			}

@@ -36,6 +36,7 @@ export {
     ThreadOrigin,
     ThreadTransfer,
     TimelineCursor,
+    TimelineDigestContext,
     TimelineScopeContext,
     TimelineSelection,
     Turn,

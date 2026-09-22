@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -15,6 +16,21 @@ import (
 type sqlQueryer interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 	QueryRow(query string, args ...any) *sql.Row
+}
+
+// contextReadTx keeps every statement in a snapshot under the deadline that
+// owns the transaction. A BeginTx deadline alone does not interrupt Query.
+type contextReadTx struct {
+	*sql.Tx
+	ctx context.Context
+}
+
+func (q contextReadTx) Query(query string, args ...any) (*sql.Rows, error) {
+	return q.Tx.QueryContext(q.ctx, query, args...)
+}
+
+func (q contextReadTx) QueryRow(query string, args ...any) *sql.Row {
+	return q.Tx.QueryRowContext(q.ctx, query, args...)
 }
 
 // placeholders renders `?,?,?` for an `IN (...)` clause of count binds.

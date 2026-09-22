@@ -1,6 +1,7 @@
 package sessionimport
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -64,6 +65,29 @@ func TestConvertWarnsWhenSubagentTranscriptIsGone(t *testing.T) {
 	}
 }
 
+func TestConvertReportsUnreadableSubagentSeparatelyFromMissing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, sessionA+".jsonl")
+	writeJSONL(t, path,
+		userRow("u1", "", "delegate it", "2026-01-01T00:00:00.000Z"),
+		assistantRow("a1", "u1", "msg_1", []any{
+			toolUseBlock("toolu_task", "Task", map[string]any{"description": "do work"}),
+		}, "2026-01-01T00:00:01.000Z"),
+		toolResultRow("r1", "a1", "toolu_task", "agent finished", "2026-01-01T00:00:05.000Z",
+			with("toolUseResult", map[string]any{"agentId": "unreadable", "status": "completed"})),
+	)
+	if err := os.MkdirAll(filepath.Join(dir, sessionA, subagentsSubdir, "agent-unreadable.jsonl"), 0o755); err != nil {
+		t.Fatalf("create unreadable sidechain path: %v", err)
+	}
+	branch := loadBranch(t, path, 0, 1)
+	if !hasWarning(branch.Warnings, WarnUnreadableSubagent) || hasWarning(branch.Warnings, WarnMissingSubagent) {
+		t.Fatalf("warnings = %+v, want unreadable rather than missing", branch.Warnings)
+	}
+	if len(branch.Events) == 0 {
+		t.Fatal("an unreadable subagent must not drop parent rows")
+	}
+}
+
 func TestSubagentTranscriptPathRefusesTraversal(t *testing.T) {
 	for _, agentID := range []string{"../escape", "sub/dir", `back\slash`, ".hidden", ""} {
 		if _, ok := subagentTranscriptPath("/session", agentID); ok {
@@ -73,6 +97,14 @@ func TestSubagentTranscriptPathRefusesTraversal(t *testing.T) {
 	got, ok := subagentTranscriptPath("/session", "abc123")
 	if !ok || got != filepath.Join("/session", subagentsSubdir, "agent-abc123.jsonl") {
 		t.Errorf("subagentTranscriptPath = %q, %v", got, ok)
+	}
+	branch := Branch{Chain: newRows([]map[string]any{
+		toolResultRow("r1", "", "toolu_task", "done", "2026-01-01T00:00:01.000Z",
+			with("toolUseResult", map[string]any{"agentId": "../escape"})),
+	})}
+	_, warnings := LoadSubagents(t.TempDir(), []Branch{branch})
+	if !hasWarning(warnings, WarnUnreadableSubagent) {
+		t.Errorf("invalid agent id was silently skipped: %+v", warnings)
 	}
 }
 

@@ -1,26 +1,10 @@
 // Per-launch-anchor live aggregates for subagent children that have been
 // evicted from pane memory.
 //
-// During a live turn, subagent child rows stream into `pane.items` so the
-// card UX (per-agent entry counters, latest-action preview, expanded live
-// transcript) can render from real rows. Once a child reaches a terminal
-// status and its card is collapsed — every launch kind renders its
-// transcript inline in the same card, so that is the whole rule — the row
-// is dropped from pane memory and folded here: the id is remembered for
-// replay dedupe, the count is remembered for the collapsed-card entry
-// counter, and the latest terminal preview is remembered for the card's
-// "what did it do last" line. SQLite keeps the authoritative rows (triage
-// persists every item before emitting it), so expansion re-hydrates the
-// transcript through ListSubagentDescendants and `reclaim`s the ids from
-// this registry — counts never double.
-//
-// Invariant: an item id is never simultaneously in pane.items and in a
-// fold. Eviction adds it here as it leaves the items array; hydration
-// removes it here before the row merges back in.
-//
-// Pure bookkeeping — no Svelte reactivity. The owning pane bumps its
-// `timelineRevision` whenever a fold mutates so the grouping derivation
-// re-reads the aggregates.
+// Active rows stay in the main pane for streaming. Settled rows leave it;
+// this registry retains their counts, previews and IDs for replay dedupe.
+// Expanded cards own separate paged windows. Explicit navigation reclaims
+// only its target ancestry, keeping each ID either folded or loaded.
 
 import type { Item } from '../types/models';
 

@@ -189,9 +189,8 @@ export interface SubagentGroupNode {
    */
   descendantCount: number;
   /**
-   * Descendants actually present in memory under this group. When this
-   * trails `descendantCount` the child transcript is paged out and
-   * loads on demand via ListSubagentDescendants when the card expands.
+   * Descendants in the host window. Expanded cards load their own paged
+   * digest independently of this count.
    */
   loadedDescendantCount: number;
   /**

@@ -48,6 +48,7 @@ export interface AgentScopeViewOptions {
    */
   viewKey: string;
   toolsOnly?: boolean;
+  digestItemId?: string;
   /**
    * Where opening a nested launch from inside this view routes. The
    * companion grows its breadcrumb (`pushScope`); the tray digest opens
@@ -63,7 +64,7 @@ export function createAgentScopeView(
 ): AgentScopeView {
   if (!sourcePane.thread) throw new Error('An agent pane requires a thread');
   const scrollKey = `${sourcePane.paneId}:${sourcePane.threadId}~${options.viewKey}:${scopeItemId}`;
-  const owner = createScopedTimeline(sourcePane.thread, { scopeRootId: scopeItemId, tools: options.toolsOnly }, scrollKey);
+  const owner = createScopedTimeline(sourcePane.thread, { scopeRootId: scopeItemId, tools: options.toolsOnly, digestItemId: options.digestItemId }, scrollKey);
   const { itemWindow, window, rows, reveal, runs, scroll } = owner;
   // Only presentation lifts direct children to roots; stored rows retain their identity.
   let scopedItems = $derived.by(() => {
@@ -71,7 +72,7 @@ export function createAgentScopeView(
     return itemWindow.getItems().map(item => ({ ...item, parentId: undefined }));
   });
   let root = $derived((owner.scope?.root as Item | undefined) ?? sourcePane.getItemById(scopeItemId));
-  let lifecycle = $derived((root && liveCodexAgent(root.threadId, root.id))
+  let lifecycle = $derived((!options.digestItemId && root ? liveCodexAgent(root.threadId, root.id) : undefined)
     ?? owner.scope?.lifecycle as Item | undefined ?? root);
   let lifecycleCompletion = $derived(owner.scope?.completion as Item | undefined);
   const timelineTurns: TimelineTurnFacet = {
@@ -126,6 +127,7 @@ export function createAgentScopeView(
       reveal.pruneSettledThinkingTails(retention.itemIds);
     },
     get loading() { return owner.loading; },
+    get historyWindowPending() { return false; },
     get showLoadingSpinner() { return owner.loading && scopedItems.length === 0; },
     get historyRevision() { return itemWindow.historyRevision; },
     get timelineRevision() { return itemWindow.timelineRevision; },
@@ -215,7 +217,6 @@ export function createAgentScopeView(
     get materializeDraftPlaceholder() { return sourcePane.materializeDraftPlaceholder; },
     get adoptMaterializedDraftThread() { return sourcePane.adoptMaterializedDraftThread; },
     get ensureMaterializedThread() { return sourcePane.ensureMaterializedThread; },
-    get ensureSubagentChildren() { return sourcePane.ensureSubagentChildren; },
     get addApproval() { return sourcePane.addApproval; },
     get removeApproval() { return sourcePane.removeApproval; },
     get addUserInput() { return sourcePane.addUserInput; },
