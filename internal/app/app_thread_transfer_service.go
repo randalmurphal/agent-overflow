@@ -64,6 +64,9 @@ func (a *App) startThreadTransfers() error {
 	}
 	jobs, err := threadtransfer.NewJobs(a.lifeCtx(), a.store, admittedTransferRunner{a, source}, admittedTransferRunner{a, destination}, func(err error) string { return err.Error() }, func(row store.ThreadTransfer) {
 		a.emit(eventchan.ThreadTransfer, row)
+		if err := a.announceTransferredDraft(row); err != nil {
+			log.Printf("app: announce transferred draft: %v", err)
+		}
 	}, func(err error) { log.Printf("app: conversation transfer scheduler: %v", err) })
 	if err != nil {
 		return err

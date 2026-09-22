@@ -69,6 +69,14 @@ qualifies costs nothing.
 
 ## Sidebar, threads, drafts
 
+- Changing a draft's project in the thread carries its composer content,
+  attachments, captured terminal text and selected settings. The destination
+  starts with that project's ordinary workspace defaults. The emptied source
+  follows normal draft cleanup, including retaining an existing worktree draft.
+  Sidebar navigation and New Thread remain separate actions. Moving to another
+  computer clears the source-plan acceptance link; the prompt remains intact
+  and the original plan stays unaccepted.
+
 - Multi-computer ownership and UI follow [Connected computers](specs/connected-computers.md): frontend-local preferences, selectable host configuration, portable conversations, optional peer tools, and machine names in the existing metadata row. No additional sidebar attention feed or artifact dashboard.
 
 - Message nav rail: one position claim at all times (one current tick, the

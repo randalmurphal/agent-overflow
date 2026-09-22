@@ -76,6 +76,8 @@ export const AcceptOwnDeviceIntroduction = dispatch('AcceptOwnDeviceIntroduction
 export const ArchiveThread = dispatch('ArchiveThread');
 export const UnarchiveThread = dispatch('UnarchiveThread');
 export const CreateThread = dispatch('CreateThread');
+export const MoveDraftToThread = dispatch('MoveDraftToThread');
+export const BeginDraftProjectTransfer = dispatch('BeginDraftProjectTransfer');
 export const GetThreadDefaults = dispatch('GetThreadDefaults');
 // StartTerminal is imported by stores/bindings.ts. The unit (happy-dom)
 // project resolves a missing named export leniently, so its absence went

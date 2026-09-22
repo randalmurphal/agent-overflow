@@ -73,13 +73,12 @@ func (s *Store) ExportThreadHistory(ctx context.Context, threadID string, output
 	return s.ExportThreadHistoryWith(ctx, threadID, output, ThreadHistoryExport{})
 }
 
-// ThreadHistoryExport lets the owning provider adapter rewrite structured
-// native identities in the snapshot, without mutating the source history.
-// Only metadata is exposed: native-reference rewrites cannot change AO row
-// identity, ordering, or prose. Hydrated pages are in timeline order, which can
+// ThreadHistoryExport transforms native item metadata and the unsent draft
+// without mutating the source. Hydrated pages are in timeline order, which can
 // differ from the ID order used to select each page.
 type ThreadHistoryExport struct {
 	ItemMeta func(string) (string, error)
+	Draft    func(ThreadDraft) (ThreadDraft, error)
 }
 
 func (s *Store) ExportThreadHistoryWith(ctx context.Context, threadID string, output io.Writer, transform ThreadHistoryExport) error {
@@ -161,6 +160,15 @@ func (s *Store) ExportThreadHistoryWith(ctx context.Context, threadID string, ou
 	if draft, found, err := s.GetThreadDraft(threadID); err != nil {
 		return err
 	} else if found {
+		if transform.Draft != nil {
+			draft, err = transform.Draft(draft)
+			if err != nil {
+				return err
+			}
+			if draft.ThreadID != threadID {
+				return errors.New("transfer: draft transform changed thread identity")
+			}
+		}
 		if err := writeHistoryRecord(output, "draft", draft); err != nil {
 			return err
 		}
@@ -465,9 +473,15 @@ func readTransferHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, input
 				}
 				draft.PendingPlanImplementation = string(fields["sourceProposedPlan"])
 			}
-			// Terminal handles belong to processes on the source computer.
-			hasContent := strings.TrimSpace(draft.Content) != "" || (draft.Attachments != "[]" && draft.Attachments != "null") || draft.PendingPlanImplementation != ""
-			_, err := tx.Exec(`INSERT INTO thread_drafts (thread_id,content,attachments,terminal_chips,pending_plan_implementation,updated_at,has_content) VALUES (?,?,?,'[]',?,?,?)`, target.ID, draft.Content, draft.Attachments, nilIfEmpty(draft.PendingPlanImplementation), draft.UpdatedAt, boolToInt(hasContent))
+			// Captured snippets contain text, not live terminal handles.
+			if draft.TerminalChips == "" {
+				draft.TerminalChips = "[]"
+			}
+			if !json.Valid([]byte(draft.TerminalChips)) {
+				return errors.New("transfer: invalid terminal snippets")
+			}
+			hasContent := strings.TrimSpace(draft.Content) != "" || (draft.Attachments != "[]" && draft.Attachments != "null") || draft.PendingPlanImplementation != "" || (draft.TerminalChips != "[]" && draft.TerminalChips != "null")
+			_, err := tx.Exec(`INSERT INTO thread_drafts (thread_id,content,attachments,terminal_chips,pending_plan_implementation,updated_at,has_content) VALUES (?,?,?,?,?,?,?)`, target.ID, draft.Content, draft.Attachments, draft.TerminalChips, nilIfEmpty(draft.PendingPlanImplementation), draft.UpdatedAt, boolToInt(hasContent))
 			if err != nil {
 				return err
 			}

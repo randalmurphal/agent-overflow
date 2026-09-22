@@ -95,10 +95,10 @@ func (installer appTransferInstaller) Prepare(ctx context.Context, row store.Thr
 	if err != nil {
 		return nil, err
 	}
-	if err := a.providerDiscoveryService().CheckTransferReadiness(ctx, manifest.Thread.Provider, minimumCodexVersion); err != nil {
-		return nil, err
-	}
 	if len(manifest.Native) > 0 {
+		if err := a.providerDiscoveryService().CheckTransferReadiness(ctx, manifest.Thread.Provider, minimumCodexVersion); err != nil {
+			return nil, err
+		}
 		if err := a.store.BindThreadTransferSessions(row.ID, manifest.Native); err != nil {
 			return nil, err
 		}
@@ -111,6 +111,9 @@ func (installer appTransferInstaller) Prepare(ctx context.Context, row store.Thr
 		target.WorktreePath = target.WorkspacePath
 	}
 	target.Branch = details.Branch
+	if target.Branch == "" {
+		target.Branch = a.gitCore().CurrentBranch(target.WorkspacePath)
+	}
 	target.RuntimeMode = details.Intent.RuntimeMode
 	target.SessionRef, target.PendingForkRef, target.PendingForkResumeAt = manifest.SessionRef, "", ""
 	target.DiscussionID, target.ParentThreadID, target.GroupID, target.ForkedFromThreadID = "", "", "", ""

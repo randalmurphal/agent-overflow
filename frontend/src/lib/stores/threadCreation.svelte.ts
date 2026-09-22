@@ -20,6 +20,7 @@ import { preferredProjectTarget } from './projectTargets';
 import { withBackendTarget } from '../transport/backends';
 import { noteThread, projectBackend } from '../transport/entityIndex';
 import { HOME_BACKEND } from '../transport/backendKey';
+import { moveDraftProject } from './draftProjectMove';
 
 interface DraftDefaultsRequest {
   token: object;
@@ -128,19 +129,29 @@ async function loadAndStartDraftPlaceholder(
   return true;
 }
 
-/**
- * Replace the pane's draft placeholder with one keyed on the new project and
- * seed it from that project's defaults. ProjectPicker calls this so the
- * placeholder's toolbar (model, effort, runtime mode) and workspace strip
- * (current git branch) stay populated across flips — calling
- * `pane.startDraftPlaceholder` directly drops the seeded values and the
- * toolbar/branch render empty.
- */
-export async function flipPaneDraftPlaceholder(
+/** Change the draft's project, carrying its content and selected settings. */
+export async function switchDraftProject(
   pane: ThreadPane,
   project: Project,
 ): Promise<boolean> {
-  return loadAndStartDraftPlaceholder(pane, project);
+  return moveDraftProject(pane, project, async () => {
+    const source = pane.thread!;
+    const selected: DraftPlaceholderDefaults = {
+      provider: source.provider, model: source.model, reasoningEffort: source.reasoningEffort,
+      fastMode: source.fastMode ?? false, contextWindow: source.contextWindow, runtimeMode: source.runtimeMode,
+      autoCompactStandardPercent: source.autoCompactStandardPercent,
+      autoCompactExtendedPercent: source.autoCompactExtendedPercent,
+    };
+    pane.startDraftPlaceholder(project, source.mode === 'plan' ? 'plan' : 'chat', selected);
+    const request = beginDraftDefaultsRequest(pane);
+    try {
+      const defaults = await withBackendTarget(projectBackend(project.id) ?? HOME_BACKEND,
+        () => GetThreadDefaults({ projectId: project.id, mode: source.mode }));
+      if (!draftDefaultsRequestIsCurrent(pane, request)) return false;
+      pane.applyDraftPlaceholderDefaults({ ...defaults, ...(source.model ? selected : {}) });
+      return true;
+    } finally { finishDraftDefaultsRequest(pane, request); }
+  });
 }
 
 /**

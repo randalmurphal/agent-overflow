@@ -12,11 +12,8 @@
   // projects on a thread with messages would mean re-targeting messages
   // mid-conversation, which isn't a thing we support.
   //
-  // Switch flow: replace the current placeholder with one for the new
-  // project. Any materialized draft for the previous project stays in
-  // the sidebar (its composer-draft row keeps it visible) — same
-  // behavior as clicking the sidebar pencil on multiple projects in
-  // succession.
+  // Project changes carry the unsent composer and its selected settings.
+  // The emptied source follows the ordinary empty-draft cleanup policy.
 
   import type { ThreadPane } from '../../../stores/thread.svelte';
   import Popover from '../../primitives/Popover.svelte';
@@ -27,7 +24,7 @@
   import MenuItem from '../../primitives/MenuItem.svelte';
   import { getProject, projectEntries, projectSpansBackends } from '../../../stores/projects.svelte';
   import {
-    flipPaneDraftPlaceholder,
+    switchDraftProject,
   } from '../../../stores/threadCreation.svelte';
   import { addToast } from '../../../stores/toast.svelte';
   import { setPaneBackend } from '../../../stores/selectedBackend.svelte';
@@ -97,16 +94,9 @@
     try {
       const project = getProject(projectId)?.project;
       if (!project) throw new Error('Project not found');
-      // A project lives on one machine, so choosing it chooses the machine
-      // the draft is created on. Staged before the flip: the flip's own
-      // RPCs take the `selected` route and must already know where.
-      setPaneBackend(pane.paneId, projectBackend(projectId) ?? HOME_BACKEND);
-      // flipPaneDraftPlaceholder fetches the destination project's seed
-      // defaults (current branch, last-used model for the project) so
-      // the placeholder doesn't surface as a blank toolbar after the
-      // project flip. Calling pane.startDraftPlaceholder directly would
-      // drop those values.
-      await flipPaneDraftPlaceholder(pane, project);
+      if (await switchDraftProject(pane, project)) {
+        setPaneBackend(pane.paneId, projectBackend(projectId) ?? HOME_BACKEND);
+      }
     } catch (err) {
       console.error('Failed to switch draft project:', err);
       addToast('error', userFacingError(err));

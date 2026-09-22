@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   openDraftThreadForProject,
-  flipPaneDraftPlaceholder,
+  switchDraftProject,
   resolveDraftTargetProject,
 } from './threadCreation.svelte';
 import { upsertThreadGroup, resetThreadGroupsForTest, applyThreadGroupUpdated } from './threadGroups.svelte';
@@ -155,7 +155,7 @@ describe('openDraftThreadForProject', () => {
     expect(pane.thread?.groupId).toBe('g1');
     expect(isGroupExpanded('g1')).toBe(false);
     expect(create).not.toHaveBeenCalled();
-    await flipPaneDraftPlaceholder(pane, makeProject({ id: 'other-project' }));
+    await switchDraftProject(pane, makeProject({ id: 'other-project' }));
     expect(pane.thread?.groupId).toBeUndefined();
     pane.clear();
   });
@@ -365,7 +365,7 @@ describe('openDraftThreadForProject', () => {
     });
   });
 
-  it('carries the current placeholder selection across a project flip until defaults land', async () => {
+  it('keeps the current placeholder selection when destination workspace defaults land', async () => {
     const project = makeProject();
     const other = makeProject({ id: 'project-2', path: '/tmp/p2', name: 'Project Two' });
     addProjectLocal(project);
@@ -377,7 +377,7 @@ describe('openDraftThreadForProject', () => {
 
     const pendingDefaults = deferred<ThreadDefaults>();
     setBindingMock('GetThreadDefaults', () => pendingDefaults.promise);
-    const flipping = flipPaneDraftPlaceholder(pane, other);
+    const flipping = switchDraftProject(pane, other);
 
     // Already on the new project, still showing the model the toolbar had.
     expect(pane.thread).toMatchObject({
@@ -397,7 +397,7 @@ describe('openDraftThreadForProject', () => {
     await expect(flipping).resolves.toBe(true);
     expect(pane.thread).toMatchObject({
       projectId: other.id,
-      model: 'gpt-5.4-mini',
+      model: 'gpt-5.4',
       branch: 'feature/other',
     });
     pane.clear();

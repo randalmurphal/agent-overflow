@@ -303,6 +303,16 @@ export function BackgroundClaudeTask(threadID: string, toolUseID: string): $Canc
 }
 
 /**
+ * BeginDraftProjectTransfer copies a draft through the durable transfer journal.
+ * Completion consumes its exact source snapshot without retiring the worktree.
+ */
+export function BeginDraftProjectTransfer(threadID: string, operationID: string, destinationBackendID: string, snapshot: app$0.DraftSnapshot): $CancellablePromise<app$0.ThreadTransferIntent> {
+    return $Call.ByID(3256859589, threadID, operationID, destinationBackendID, snapshot).then(($result: any) => {
+        return $$createType8($result);
+    });
+}
+
+/**
  * BeginPasskeyRegistration starts enrolling a new credential for the
  * owner account.
  * 
@@ -314,7 +324,7 @@ export function BackgroundClaudeTask(threadID: string, toolUseID: string): $Canc
  */
 export function BeginPasskeyRegistration(label: string): $CancellablePromise<app$0.PasskeyChallengeResult> {
     return $Call.ByID(1189501287, label).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
@@ -332,7 +342,7 @@ export function BeginPasskeyRegistration(label: string): $CancellablePromise<app
  */
 export function BeginPasskeyStepUp(): $CancellablePromise<app$0.PasskeyChallengeResult> {
     return $Call.ByID(3214812657).then(($result: any) => {
-        return $$createType8($result);
+        return $$createType9($result);
     });
 }
 
@@ -342,7 +352,7 @@ export function BeginPasskeyStepUp(): $CancellablePromise<app$0.PasskeyChallenge
  */
 export function BeginThreadTransfer(threadID: string, operationID: string, destinationBackendID: string, kind: string, includeWorkspace: boolean): $CancellablePromise<app$0.ThreadTransferIntent> {
     return $Call.ByID(3037746585, threadID, operationID, destinationBackendID, kind, includeWorkspace).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType8($result);
     });
 }
 
@@ -1983,7 +1993,7 @@ export function GetThreadTransferDestinationProject(operationID: string): $Cance
  */
 export function GetThreadTransferIntent(threadID: string, operationID: string): $CancellablePromise<app$0.ThreadTransferIntent> {
     return $Call.ByID(704384690, threadID, operationID).then(($result: any) => {
-        return $$createType9($result);
+        return $$createType8($result);
     });
 }
 
@@ -3236,6 +3246,16 @@ export function MintOwnDevicePairingOnNetwork(deviceClass: string, networkChoice
  */
 export function MintPreviewURL(threadID: string, port: number, path: string): $CancellablePromise<string> {
     return $Call.ByID(1471520668, threadID, port, path);
+}
+
+/**
+ * MoveDraftToThread moves a saved composer into an empty destination on this
+ * computer. The source's workspace and ordinary empty-draft policy are retained.
+ */
+export function MoveDraftToThread(threadID: string, destinationThreadID: string, snapshot: app$0.DraftSnapshot): $CancellablePromise<app$0.Draft> {
+    return $Call.ByID(913927214, threadID, destinationThreadID, snapshot).then(($result: any) => {
+        return $$createType51($result);
+    });
 }
 
 /**
@@ -6191,8 +6211,8 @@ const $$createType4 = app$0.RemoteArtifact.createFrom;
 const $$createType5 = app$0.RemoteLogArtifact.createFrom;
 const $$createType6 = $Create.Array($Create.Any);
 const $$createType7 = store$0.Thread.createFrom;
-const $$createType8 = app$0.PasskeyChallengeResult.createFrom;
-const $$createType9 = app$0.ThreadTransferIntent.createFrom;
+const $$createType8 = app$0.ThreadTransferIntent.createFrom;
+const $$createType9 = app$0.PasskeyChallengeResult.createFrom;
 const $$createType10 = store$0.ThreadTransfer.createFrom;
 const $$createType11 = dirbrowse$0.Listing.createFrom;
 const $$createType12 = browser$0.CompanionEvent.createFrom;

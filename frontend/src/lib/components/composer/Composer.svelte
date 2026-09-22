@@ -111,7 +111,7 @@
   let focusThreadId: string | null = null;
   let emptyDraftCleanupKey: string | null = null;
 
-  let isDisabled = $derived(!pane.canCompose);
+  let isDisabled = $derived(!pane.canCompose || draft.moving);
   // Sending rides `threads:operate`, answering a prompt rides
   // `approvals:respond`, and attaching rides `attachments:write`. Each
   // control asks for the capability IT needs rather than for a mode: a
@@ -286,6 +286,7 @@
   function emptyDraftCleanupHasActiveWork(): boolean {
     return (
       draft.hydrating ||
+      draft.moving ||
       draft.hasPendingSave ||
       sending ||
       pane.sendInFlight ||
@@ -943,6 +944,7 @@
   }
 
   let releaseDraftRegistration: (() => void) | null = null;
+  let releaseUploadWaiter: (() => void) | null = null;
 
   onMount(() => {
     releasePlanEvents = retainProposedPlanEventListener(() => pane.threadId);
@@ -955,6 +957,7 @@
     // standalone Composer mount (tests, future design-only composer
     // path) has a working registration.
     releaseDraftRegistration = registerComposerDraft(pane.paneId, draft);
+    releaseUploadWaiter = draft.registerUploadWaiter(() => surface?.waitForUploads() ?? Promise.resolve());
     releaseActivityRail = activityRail.mount();
   });
 
@@ -963,6 +966,8 @@
     releasePlanEvents?.();
     releaseDraftRegistration?.();
     releaseDraftRegistration = null;
+    releaseUploadWaiter?.();
+    releaseUploadWaiter = null;
     releaseActivityRail?.();
     releaseActivityRail = null;
   });
@@ -988,6 +993,8 @@
   {/if}
   <div
     bind:this={composerRoot}
+    inert={draft.moving}
+    aria-busy={draft.moving}
     class="pointer-events-auto mx-auto w-full max-w-[68rem] rounded-[var(--radius-composer)] border border-border-subtle bg-card shadow-sheet overflow-hidden
            focus-within:border-border focus-within:shadow-menu transition-[border-color,box-shadow] duration-200"
     role="region"

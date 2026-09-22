@@ -72,6 +72,9 @@ function patchRequest(id: string, patch: Partial<TransferRequest>): void {
 export async function submitConversationTransfer(destination: BackendKey, projectID: string, kind: TransferKind, includeWorkspace: boolean): Promise<void> {
   const request = pending;
   if (!request || request.submitting) return;
+  if (request.intent && (request.destination !== destination || request.intent.kind !== kind || request.intent.includeWorkspace !== includeWorkspace)) {
+    patchRequest(request.operationID, { error: 'Finish or cancel the reserved transfer before changing its destination or mode.' }); return;
+  }
   if (!hasScope('threads:operate', request.source) || !hasScope('threads:operate', destination) || (includeWorkspace && !hasScope('git:operate', destination))) {
     patchRequest(request.operationID, { error: 'Transfer access is needed on both computers, and Git access on the destination when including workspace changes.' }); return;
   }
@@ -91,7 +94,7 @@ export async function submitConversationTransfer(destination: BackendKey, projec
   patchRequest(request.operationID, { submitted: true, submitting: true, destination, projectID, kind, includeWorkspace, error: '' });
   let began = false;
   try {
-    const intent = await withBackendTarget(request.source, () => BeginThreadTransfer(request.thread.id, request.operationID, destinationID, kind, includeWorkspace));
+    const intent = request.intent ?? await withBackendTarget(request.source, () => BeginThreadTransfer(request.thread.id, request.operationID, destinationID, kind, includeWorkspace));
     began = true;
     if (intent.sourceBackendId !== sourceID || intent.destinationBackendId !== destinationID) throw new Error('A computer changed identity during transfer setup. Reconnect before retrying.');
     patchRequest(request.operationID, { intent });

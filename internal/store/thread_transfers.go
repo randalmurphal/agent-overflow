@@ -246,6 +246,11 @@ func (s *Store) AdvanceThreadTransfer(id, phase, manifestHash string) (ThreadTra
 	if !allowed {
 		return ThreadTransfer{}, fmt.Errorf("transfer: cannot change %s to %s", row.Phase, phase)
 	}
+	if phase == "complete" {
+		if err := consumeTransferredDraft(tx, row); err != nil {
+			return ThreadTransfer{}, err
+		}
+	}
 	row.Phase, row.ManifestHash, row.Error, row.UpdatedAt = phase, manifestHash, "", time.Now().UnixMilli()
 	row.NeedsDestination = phase == "preparing" && row.Direction == "outgoing" && len(row.PeerState) == 0
 	_, err = tx.Exec(`UPDATE thread_transfers SET phase = ?, manifest_hash = ?, error = '', updated_at = ? WHERE id = ?`, phase, manifestHash, row.UpdatedAt, id)
@@ -289,9 +294,10 @@ type transferQuerier interface{ QueryRow(string, ...any) *sql.Row }
 func checkThreadTransferAccess(q transferQuerier, threadID string) error {
 	var id, backend, direction, kind, phase string
 	var archiveSize int64
-	err := q.QueryRow(`SELECT id, peer_backend_id, direction, kind, phase, archive_size FROM thread_transfers
+	var draftMove bool
+	err := q.QueryRow(`SELECT id, peer_backend_id, direction, kind, phase, archive_size, json_type(private_state, '$.draftToConsume') IS NOT NULL FROM thread_transfers
 WHERE thread_id = ? AND phase <> 'canceled'
-ORDER BY rowid DESC LIMIT 1`, threadID).Scan(&id, &backend, &direction, &kind, &phase, &archiveSize)
+ORDER BY rowid DESC LIMIT 1`, threadID).Scan(&id, &backend, &direction, &kind, &phase, &archiveSize, &draftMove)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -303,7 +309,7 @@ ORDER BY rowid DESC LIMIT 1`, threadID).Scan(&id, &backend, &direction, &kind, &
 	}
 	// A sealed copy has private native identities and immutable archive bytes.
 	// Its upload/recovery no longer needs to hold the original conversation.
-	if direction == "outgoing" && kind == "copy" && archiveSize > 0 {
+	if direction == "outgoing" && kind == "copy" && archiveSize > 0 && !draftMove {
 		return nil
 	}
 	return &ThreadTransferError{OperationID: id, BackendID: backend, Moved: direction == "outgoing" && kind == "move" && (phase == "committed" || phase == "complete")}
@@ -321,7 +327,7 @@ ORDER BY rowid DESC LIMIT 1`, threadID).Scan(&id, &backend, &direction, &kind, &
 func threadTransferReadableExpr(alias string) string {
 	return `COALESCE((SELECT CASE
 		      WHEN phase = 'complete' AND NOT (direction = 'outgoing' AND kind = 'move') THEN 1
-		      WHEN direction = 'outgoing' AND kind = 'copy' AND archive_size > 0 THEN 1
+		      WHEN direction = 'outgoing' AND kind = 'copy' AND archive_size > 0 AND json_type(private_state, '$.draftToConsume') IS NULL THEN 1
 		      ELSE 0
 		    END
 		    FROM thread_transfers

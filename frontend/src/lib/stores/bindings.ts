@@ -698,6 +698,8 @@ export {
 // object and cast the result without going through the class ceremony.
 import {
   CreateThread as CreateThreadRaw,
+  MoveDraftToThread as MoveDraftToThreadRaw,
+  BeginDraftProjectTransfer as BeginDraftProjectTransferRaw,
   GetThreadDefaults as GetThreadDefaultsRaw,
   SendMessageWithOptions as SendMessageWithOptionsRaw,
   StartTerminal as StartTerminalRaw,
@@ -707,6 +709,7 @@ import {
 } from '../../../bindings/agent-overflow/app.js';
 import {
   CreateThreadOptions as CreateThreadOptionsClass,
+  DraftSnapshot as DraftSnapshotClass,
   ContextSettingsUpdate as ContextSettingsUpdateClass,
   NewThreadDefaultsUpdate as NewThreadDefaultsUpdateClass,
   SendMessageOptions as SendMessageOptionsClass,
@@ -774,6 +777,14 @@ export function UpdateNewThreadDefaults(
 
 export function CreateThread(opts: CreateThreadOptions): Promise<Thread> {
   return CreateThreadRaw(new CreateThreadOptionsClass(opts)) as unknown as Promise<Thread>;
+}
+
+export function MoveDraftToThread(threadId: string, destinationThreadId: string, snapshot: DraftSnapshot) {
+  return MoveDraftToThreadRaw(threadId, destinationThreadId, new DraftSnapshotClass(snapshot));
+}
+
+export function BeginDraftProjectTransfer(threadId: string, operationId: string, destinationBackendId: string, snapshot: DraftSnapshot) {
+  return BeginDraftProjectTransferRaw(threadId, operationId, destinationBackendId, new DraftSnapshotClass(snapshot));
 }
 
 // StartTerminal wrapper. Same plain-object-in / class-wrap pattern as

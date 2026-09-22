@@ -439,6 +439,8 @@ export interface DraftPlaceholderDefaults {
   reasoningEffort?: string;
   fastMode?: boolean;
   contextWindow?: number;
+  autoCompactStandardPercent?: number;
+  autoCompactExtendedPercent?: number;
   runtimeMode?: string;
   branch?: string;
   workspacePath?: string;

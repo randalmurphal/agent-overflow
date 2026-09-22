@@ -1,6 +1,6 @@
 import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 import type { Attachment } from '../types/attachment';
-import type { TerminalChip } from '../types/draft';
+import type { DraftSnapshot, TerminalChip } from '../types/draft';
 import type { SourceProposedPlan } from '../types/models';
 
 const MAX_CACHED_DRAFTS = 100;
@@ -68,13 +68,21 @@ export function draftSnapshotMatchesPersistedState(
   a: ComposerDraftSnapshot,
   b: ComposerDraftSnapshot,
 ): boolean {
+  return draftTextAndContextMatch(a, b)
+    && a.attachments.length === b.attachments.length
+    && a.attachments.every((attachment, index) => attachment.id === b.attachments[index]?.id);
+}
+
+/** Attachment identities change on a move; text and captured context do not. */
+export function draftTextAndContextMatch(
+  a: Pick<DraftSnapshot, 'content' | 'terminalChips' | 'sourceProposedPlan'>,
+  b: Pick<DraftSnapshot, 'content' | 'terminalChips' | 'sourceProposedPlan'>,
+): boolean {
   return a.content === b.content
     && a.sourceProposedPlan?.threadId === b.sourceProposedPlan?.threadId
     && a.sourceProposedPlan?.itemId === b.sourceProposedPlan?.itemId
     && a.sourceProposedPlan?.payloadId === b.sourceProposedPlan?.payloadId
     && a.sourceProposedPlan?.title === b.sourceProposedPlan?.title
-    && a.attachments.length === b.attachments.length
-    && a.attachments.every((attachment, index) => attachment.id === b.attachments[index]?.id)
     && a.terminalChips.length === b.terminalChips.length
     && a.terminalChips.every((chip, index) => {
       const other = b.terminalChips[index];

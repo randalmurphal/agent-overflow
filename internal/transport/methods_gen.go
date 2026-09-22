@@ -56,6 +56,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "AttachThreadWorktree", ID: 2367642633, Scope: "git:operate", Route: "thread"},                            // main.App.AttachThreadWorktree
 	{Name: "AutoResumeThread", ID: 4095667805, Scope: "threads:operate", Route: "thread"},                            // main.App.AutoResumeThread
 	{Name: "BackgroundClaudeTask", ID: 2098425262, Scope: "threads:operate", Route: "thread"},                        // main.App.BackgroundClaudeTask
+	{Name: "BeginDraftProjectTransfer", ID: 3256859589, Scope: "threads:operate", Route: "thread"},                   // main.App.BeginDraftProjectTransfer
 	{Name: "BeginPasskeyRegistration", ID: 1189501287, Scope: "access:admin", Route: "home", StepUp: true},           // main.App.BeginPasskeyRegistration
 	{Name: "BeginPasskeyStepUp", ID: 3214812657, Scope: "session", Route: "home"},                                    // main.App.BeginPasskeyStepUp
 	{Name: "BeginThreadTransfer", ID: 3037746585, Scope: "threads:operate", Route: "thread"},                         // main.App.BeginThreadTransfer
@@ -280,6 +281,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "MintOwnDevicePairing", ID: 939299731, Scope: "access:admin", Route: "home", StepUp: true},                // main.App.MintOwnDevicePairing
 	{Name: "MintOwnDevicePairingOnNetwork", ID: 1802705420, Scope: "access:admin", Route: "home", StepUp: true},      // main.App.MintOwnDevicePairingOnNetwork
 	{Name: "MintPreviewURL", ID: 1471520668, Scope: "preview:open", Route: "thread"},                                 // main.App.MintPreviewURL
+	{Name: "MoveDraftToThread", ID: 913927214, Scope: "threads:operate", Route: "thread"},                            // main.App.MoveDraftToThread
 	{Name: "MoveThreadTerminals", ID: 3013708277, Scope: "terminal:operate", Route: "thread"},                        // main.App.MoveThreadTerminals
 	{Name: "NotificationActivated", ID: 2831503793, Scope: "host", Route: "home"},                                    // main.App.NotificationActivated
 	{Name: "OpenComputerPairing", ID: 3980787304, Scope: "access:admin", Route: "home", StepUp: true},                // main.App.OpenComputerPairing

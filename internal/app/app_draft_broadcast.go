@@ -2,12 +2,32 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadtransfer"
 	"agent-overflow/internal/transport"
 )
+
+// The transfer completion transaction consumes the source without a frontend.
+// Its persisted journal is also the authority for the convergence notification.
+func (a *App) announceTransferredDraft(row store.ThreadTransfer) error {
+	if row.Direction != "outgoing" || row.Phase != "complete" {
+		return nil
+	}
+	var source threadtransfer.SourceData
+	if err := json.Unmarshal(row.PrivateState, &source); err != nil {
+		return err
+	}
+	if source.DraftToConsume != nil {
+		a.broadcastDraft(transport.ClientIdentity{}, DraftUpdatedEvent{ThreadID: row.ThreadID, UpdatedAt: row.UpdatedAt})
+		a.broadcastThreadRowByID(row.ThreadID)
+		return a.cleanupMovedDraftAttachments(*source.DraftToConsume)
+	}
+	return nil
+}
 
 // The `draft:updated` broadcast chokepoint.
 //
@@ -78,6 +98,15 @@ func (a *App) writeThreadDraft(who transport.ClientIdentity, draft store.ThreadD
 		ThreadID:  draft.ThreadID,
 		UpdatedAt: draft.UpdatedAt,
 	})
+	return nil
+}
+
+func (a *App) writeMovedThreadDraft(who transport.ClientIdentity, source, destination store.ThreadDraft) error {
+	if err := a.store.MoveThreadDraft(source, destination); err != nil {
+		return err
+	}
+	a.broadcastDraft(who, DraftUpdatedEvent{ThreadID: destination.ThreadID, UpdatedAt: destination.UpdatedAt})
+	a.broadcastDraft(who, DraftUpdatedEvent{ThreadID: source.ThreadID, UpdatedAt: destination.UpdatedAt})
 	return nil
 }
 

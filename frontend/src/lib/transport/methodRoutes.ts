@@ -27,6 +27,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2367642633: 'thread', // AttachThreadWorktree
 	4095667805: 'thread', // AutoResumeThread
 	2098425262: 'thread', // BackgroundClaudeTask
+	3256859589: 'thread', // BeginDraftProjectTransfer
 	1189501287: 'home', // BeginPasskeyRegistration
 	3214812657: 'home', // BeginPasskeyStepUp
 	3037746585: 'thread', // BeginThreadTransfer
@@ -251,6 +252,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	939299731: 'home', // MintOwnDevicePairing
 	1802705420: 'home', // MintOwnDevicePairingOnNetwork
 	1471520668: 'thread', // MintPreviewURL
+	913927214: 'thread', // MoveDraftToThread
 	3013708277: 'thread', // MoveThreadTerminals
 	2831503793: 'home', // NotificationActivated
 	3980787304: 'home', // OpenComputerPairing

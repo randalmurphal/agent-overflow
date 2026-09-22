@@ -65,8 +65,8 @@ it('retries a lost offer with the same operation, copy mode and captured hosts',
   await submitConversationTransfer('laptop', 'project-target', 'copy', true);
   expect(pendingConversationTransfer()?.error).toContain('Connection lost');
   await submitConversationTransfer('laptop', 'project-target', 'copy', true);
-  expect(begin.mock.calls[0]).toEqual(begin.mock.calls[1]);
-  expect(calls).toEqual(['begin:tower', 'offer:laptop', 'begin:tower', 'offer:laptop', 'bind:tower']);
+  expect(begin).toHaveBeenCalledTimes(1);
+  expect(calls).toEqual(['begin:tower', 'offer:laptop', 'offer:laptop', 'bind:tower']);
   expect(computerTransfers('tower').rows[0].id).toBe(operation);
   expect(JSON.stringify(pendingConversationTransfer())).not.toContain('private-grant');
 });
@@ -115,4 +115,19 @@ it('unlocks choices after a definitive first Begin refusal but preserves an unce
   setBindingMock('BeginThreadTransfer', async () => { takePinnedBackend(); throw new Error('Connection lost'); });
   await submitConversationTransfer('laptop', 'project-target', 'move', false);
   expect(pendingConversationTransfer()).toMatchObject({ submitted: true, kind: 'move', includeWorkspace: false });
+});
+
+it('finishes a recovered draft reservation without starting an ordinary conversation copy', async () => {
+  const { begin } = setupBindings();
+  const intent = { operationId: 'op-1', sourceBackendId: SOURCE, destinationBackendId: REMOTE_BACKEND_UUID, kind: 'copy', includeWorkspace: false, sourceThreadId: thread.id, targetThreadId: 'copy-id', provider: 'claude', runtimeMode: 'full', ownershipEpoch: 0, activationHash: 'hash' };
+  setBindingMock('GetThreadTransferIntent', async () => intent);
+  setBindingMock('GetThreadTransferDestinationProject', async () => '');
+  const offer = setBindingMock('CreateThreadTransferOffer', async () => { takePinnedBackend(); return {}; });
+  await recoverConversationTransfer('tower', row(), thread);
+  await submitConversationTransfer('laptop', 'project-target', 'move', true);
+  expect(offer).not.toHaveBeenCalled();
+  await submitConversationTransfer('laptop', 'project-target', 'copy', false);
+  expect(begin).not.toHaveBeenCalled();
+  expect(offer).toHaveBeenCalledWith(intent, 'project-target', '', '');
+  expect(pendingConversationTransfer()?.error).toBe('');
 });

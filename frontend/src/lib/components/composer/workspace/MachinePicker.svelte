@@ -14,7 +14,7 @@
   import Menu from '../../primitives/Menu.svelte';
   import MenuItem from '../../primitives/MenuItem.svelte';
   import { getProject, projectSiblingOn } from '../../../stores/projects.svelte';
-  import { flipPaneDraftPlaceholder } from '../../../stores/threadCreation.svelte';
+  import { switchDraftProject } from '../../../stores/threadCreation.svelte';
   import { setPaneBackend, setSelectedBackend } from '../../../stores/selectedBackend.svelte';
   import {
     attachedBackendEntry,
@@ -117,7 +117,7 @@
     }
   }
   async function switchToProject(project: Project, key: BackendKey): Promise<void> {
-    if (await flipPaneDraftPlaceholder(pane, project)) {
+    if (await switchDraftProject(pane, project)) {
       setPaneBackend(pane.paneId, key);
       setSelectedBackend(key);
       rememberProjectTarget(project, key);

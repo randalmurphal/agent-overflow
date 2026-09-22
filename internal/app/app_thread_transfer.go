@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 
 	"agent-overflow/internal/entityid"
 	"agent-overflow/internal/eventchan"
@@ -57,6 +58,23 @@ type transferDestinationDetails struct {
 //
 //ao:scope threads:operate
 func (a *App) BeginThreadTransfer(ctx context.Context, threadID, operationID, destinationBackendID, kind string, includeWorkspace bool) (ThreadTransferIntent, error) {
+	return a.beginThreadTransfer(ctx, threadID, operationID, destinationBackendID, kind, includeWorkspace, nil)
+}
+
+// BeginDraftProjectTransfer copies a draft through the durable transfer journal.
+// Completion consumes its exact source snapshot without retiring the worktree.
+//
+//ao:scope threads:operate
+func (a *App) BeginDraftProjectTransfer(ctx context.Context, threadID, operationID, destinationBackendID string, snapshot DraftSnapshot) (ThreadTransferIntent, error) {
+	draft, err := encodeThreadDraft(threadID, snapshot)
+	if err != nil {
+		return ThreadTransferIntent{}, err
+	}
+	draft.UpdatedAt = 0
+	return a.beginThreadTransfer(ctx, threadID, operationID, destinationBackendID, "copy", false, &draft)
+}
+
+func (a *App) beginThreadTransfer(ctx context.Context, threadID, operationID, destinationBackendID, kind string, includeWorkspace bool, draft *store.ThreadDraft) (ThreadTransferIntent, error) {
 	release, admitErr := a.workAdmission.begin(ctx)
 	if admitErr != nil {
 		return ThreadTransferIntent{}, admitErr
@@ -96,7 +114,7 @@ func (a *App) BeginThreadTransfer(ctx context.Context, threadID, operationID, de
 		var data threadtransfer.SourceData
 		var details transferSourceDetails
 		if previous.ThreadID != threadID || previous.PeerBackendID != destinationBackendID || previous.Kind != kind || previous.Direction != "outgoing" ||
-			json.Unmarshal(previous.PrivateState, &data) != nil || json.Unmarshal(data.Details, &details) != nil || details.IncludeWorkspace != includeWorkspace {
+			json.Unmarshal(previous.PrivateState, &data) != nil || json.Unmarshal(data.Details, &details) != nil || details.IncludeWorkspace != includeWorkspace || !reflect.DeepEqual(data.DraftToConsume, draft) {
 			return ThreadTransferIntent{}, errors.New("This transfer ID already belongs to a different request.")
 		}
 		return a.transferIntent(previous, details), nil
@@ -120,6 +138,19 @@ func (a *App) BeginThreadTransfer(ctx context.Context, threadID, operationID, de
 	if err := a.checkTransferIdle(thread); err != nil {
 		return ThreadTransferIntent{}, err
 	}
+	if draft != nil {
+		if err := a.store.CheckUnsentDraft(threadID); err != nil {
+			return ThreadTransferIntent{}, err
+		}
+		current, _, err := a.store.GetThreadDraft(threadID)
+		if err != nil {
+			return ThreadTransferIntent{}, err
+		}
+		current.UpdatedAt = 0
+		if current != *draft {
+			return ThreadTransferIntent{}, errors.New("The draft changed while switching projects. Try again.")
+		}
+	}
 	details := transferSourceDetails{Provider: thread.Provider, RuntimeMode: thread.RuntimeMode, IncludeWorkspace: includeWorkspace}
 	encoded, err := json.Marshal(details)
 	if err != nil {
@@ -129,7 +160,7 @@ func (a *App) BeginThreadTransfer(ctx context.Context, threadID, operationID, de
 	if err != nil {
 		return ThreadTransferIntent{}, err
 	}
-	private, err := json.Marshal(threadtransfer.SourceData{ActivationSecret: secret, Details: encoded})
+	private, err := json.Marshal(threadtransfer.SourceData{ActivationSecret: secret, Details: encoded, DraftToConsume: draft})
 	if err != nil {
 		return ThreadTransferIntent{}, err
 	}

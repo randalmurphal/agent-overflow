@@ -73,6 +73,8 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
   // afterwards so subsequent turns in this thread don't re-mark.
   let sourceProposedPlan: SourceProposedPlan | null = $state(null);
   let hydrating: boolean = $state(false);
+  let movingContext = $state<symbol | null>(null);
+  let waitForUploads: (() => Promise<void>) | null = null;
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingSaveGeneration = 0;
@@ -476,6 +478,19 @@ export function createComposerDraftStore(options: DraftStoreOptions = {}) {
     get terminalChips() { return terminalChips; },
     get sourceProposedPlan() { return sourceProposedPlan; },
     get hydrating() { return hydrating; },
+    get moving() { return movingContext === contextKey; },
+    registerUploadWaiter(waiter: () => Promise<void>): () => void {
+      waitForUploads = waiter;
+      return () => { if (waitForUploads === waiter) waitForUploads = null; };
+    },
+    beginMove(): () => void {
+      if (movingContext === contextKey) throw new Error('This draft is already changing projects.');
+      const claim = contextKey;
+      movingContext = claim;
+      return () => { if (movingContext === claim) movingContext = null; };
+    },
+    async settleUploads(): Promise<void> { await waitForUploads?.(); },
+    snapshot(): ComposerDraftSnapshot { return cloneDraftSnapshot(buildSnapshot()); },
     get hasPendingSave() { return hasPendingSave; },
     get ownsEmptyThreadCleanup() { return ownsEmptyThreadCleanup; },
     get hasDraft() {

@@ -144,7 +144,7 @@ func TestTransferHistoryRoundTripWithLargePayloadAndSubagentRows(t *testing.T) {
 		t.Fatalf("lost attachments: %+v %v", attachments, err)
 	}
 	draft, found, err := destination.GetThreadDraft(target.ID)
-	if err != nil || !found || draft.Content != "continue here" || draft.TerminalChips != "[]" {
+	if err != nil || !found || draft.Content != "continue here" || draft.TerminalChips != `["source-terminal"]` {
 		t.Fatalf("draft: %+v %v", draft, err)
 	}
 	stored, err := destination.GetThread(target.ID)

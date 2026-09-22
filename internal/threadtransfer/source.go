@@ -23,8 +23,9 @@ import (
 // The app may add snapshot/recovery details without teaching this pipe provider
 // formats. Those details remain covered by the immutable journal request.
 type SourceData struct {
-	ActivationSecret string          `json:"activationSecret"`
-	Details          json.RawMessage `json:"details,omitempty"`
+	ActivationSecret string             `json:"activationSecret"`
+	Details          json.RawMessage    `json:"details,omitempty"`
+	DraftToConsume   *store.ThreadDraft `json:"draftToConsume,omitempty"`
 }
 
 // SourceSnapshotter creates archive.tar and a durable completion marker in the
