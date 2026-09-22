@@ -63,6 +63,13 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			}
 		}
 
+		// The process moved its own working directory (EnterWorktree /
+		// ExitWorktree). Both Claude providers share the parser that
+		// emits this, and both leave the thread row to follow the move.
+		if evt.Kind == provider.EventWorkspaceChanged {
+			a.followProviderWorkspaceChange(threadID, sessionToken, evt)
+		}
+
 		// A successful turn start is the wire-level proof that the new
 		// session is alive and serving. Reset the per-thread auto-
 		// reconnect attempt counter so a later (unrelated) death gets a

@@ -205,6 +205,16 @@ const (
 	EventCommandOutput EventKind = "command_output"
 	EventThinking      EventKind = "thinking"
 	EventProposedPlan  EventKind = "proposed_plan"
+
+	// EventWorkspaceChanged reports that the provider process moved its own
+	// working directory mid-session: Claude's `EnterWorktree` (create or
+	// enter a `.claude/worktrees/` checkout) and `ExitWorktree` (return to
+	// the launch directory, optionally deleting the worktree). Emitted only
+	// for the top-level agent; a subagent's move is scoped to that agent
+	// and never changes the thread. Meta is WorkspaceChangeMeta. The app
+	// follows it onto the thread row (app_worktree_follow.go) without
+	// restarting the session, since the process already lives at Cwd.
+	EventWorkspaceChanged EventKind = "workspace_changed"
 )
 
 // AllEventKinds is the canonical list of EventKind values. Triage and the
@@ -258,6 +268,7 @@ var AllEventKinds = []EventKind{
 	EventCommandOutput,
 	EventThinking,
 	EventProposedPlan,
+	EventWorkspaceChanged,
 }
 
 // ProviderEvent is the normalized event emitted by both provider protocols.
@@ -507,6 +518,22 @@ func (*TruncatedTurnCompleteMeta) isTurnCompleteMeta() {}
 // (the `{stop:true}` ack reports `scheduledFor: 0, stopped: true`).
 type SessionWakeupMeta struct {
 	ScheduledForUnixMs int64 `json:"scheduledForUnixMs"`
+}
+
+// WorkspaceChangeMeta is the typed payload for EventWorkspaceChanged.
+//
+// Cwd is the directory the provider process works in AFTER the change: the
+// worktree it entered, or the directory it returned to on exit. It is the
+// value the thread's workspace must follow. WorktreePath and Branch describe
+// the worktree involved: on an enter they name Cwd's checkout; on an exit
+// they name the worktree left behind (kept on disk, or removed when
+// RemovedWorktree is true). Tool is the provider tool that reported the move.
+type WorkspaceChangeMeta struct {
+	Tool            string `json:"tool"`
+	Cwd             string `json:"cwd"`
+	WorktreePath    string `json:"worktreePath,omitempty"`
+	Branch          string `json:"branch,omitempty"`
+	RemovedWorktree bool   `json:"removedWorktree,omitempty"`
 }
 
 // CompactionStatusMeta is the typed payload for EventCompactionStatus.

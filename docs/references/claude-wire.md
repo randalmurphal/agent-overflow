@@ -2410,6 +2410,68 @@ skill's prompt silently degrades to a solo pass when the tool is
 absent ("If the Agent tool is not available ... perform each angle
 yourself") and says nothing about it in its output.
 
+### E10: `EnterWorktree` / `ExitWorktree` (the CLI moves its own cwd)
+
+`EnterWorktree` (2.1.257 bundle strings; 2.1.88 source for the
+mechanism) creates or reuses `<repoRoot>/.claude/worktrees/<name>` on
+branch `worktree-<name>` (nested names flatten with `+`), then
+`process.chdir`s the CLI into it and records the move as a
+`{"type":"worktree-state", ..., "worktreeSession":{...}}` transcript
+row. The `path` variant enters an existing worktree of the same
+repository (it must appear in `git worktree list`). `ExitWorktree`
+chdirs back to the launch directory, writes `worktreeSession: null`,
+and with `action: "remove"` deletes the directory and the branch. The
+worktree is LOCKED while entered (`git worktree list --porcelain` shows a
+bare `locked` line), so a plain `git worktree remove --force` refuses it;
+AO's removal lifts the lock first (`gitops.Core.RemoveWorktreeForce`).
+Resuming a session whose recorded worktree no longer exists prints a
+notice on stderr, clears the binding and continues in the launch cwd
+(verified 2.1.257).
+
+The structured result rides the `user` envelope's `tool_use_result`
+sibling exactly as E1 describes, beside a prose `tool_result` whose
+wording varies (Created / Entered / Resumed / Reused):
+
+```json
+{"type":"user","message":{"role":"user","content":[
+  {"type":"tool_result","tool_use_id":"toolu_1",
+   "content":"Created worktree at /repo/.claude/worktrees/x on branch worktree-x"}]},
+ "tool_use_result":{"worktreePath":"/repo/.claude/worktrees/x",
+   "worktreeBranch":"worktree-x","message":"Created worktree ..."}}
+```
+
+`ExitWorktree` returns `{action:"keep"|"remove", originalCwd,
+worktreePath, worktreeBranch?, tmuxSessionName?, discardedFiles (count),
+discardedCommits (count), message}`.
+
+No later envelope restates the cwd: `system/init` is the only
+envelope that carries one, and it is emitted once. A subagent's
+`EnterWorktree` (including an `Agent` launched with `isolation:
+"worktree"`) is agent-scoped and its `user` row omits
+`tool_use_result` like every sidechain result (§E2b).
+
+AO handling (`internal/provider/claude/parse_worktree.go`,
+`internal/app/app_worktree_follow.go`): the parser reads the
+`tool_use_result` of a top-level, non-error result into
+`EventWorkspaceChanged`; a top-level result without the structured
+sibling is an `EventError` on the thread, never a guess from the prose.
+The app moves the thread row to the reported directory when it is the
+project root or a registered worktree of the thread's project, without
+restarting the session (the process already lives there) and without
+the idle gate that user-driven moves have. `action: "remove"` also
+reattaches other threads on the deleted worktree to the project root.
+The CLI moves the transcript itself: on enter the file leaves the launch
+cwd's slug dir (which keeps only `memory/`) for the worktree's slug dir,
+with a `{"type":"relocated","relocatedCwd":...}` row and the
+`worktree-state` row appended; on exit (`remove` verified) it moves back and the emptied
+worktree slug dir is left behind. `--resume` from either directory finds
+it and restores the recorded worktree cwd (`system/init.cwd` reports the
+worktree; verified 2.1.257 in `-p` mode). The app's start-time
+`settleClaudeTranscriptForWorkspace` is therefore a no-op after a followed
+move and only acts when row and file disagree. The claude-tui provider's
+PostToolUse hook carries the same
+`tool_response`, so both providers share this path.
+
 ### Subagent approvals carry `agent_id`
 
 A subagent's tool ask reaches the client through the SAME

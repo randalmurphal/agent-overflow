@@ -31,6 +31,7 @@ Every normalized `ProviderEvent` flows through `Router.Handle` in
 | `command_output` | `handleCommandOutput`: streaming deltas accumulate in the stream-persist buffer and land as one payload append + one `provider:item_event` upsert per flush window (100ms / 64KB / lifecycle boundary); a `Replace` snapshot (Codex aggregatedOutput) discards the pending buffer and rewrites the payload. |
 | `thinking` | `handleThinking`: create the thinking row/payload on first content, emit ordered `provider:item_event` deltas for follow-up reasoning, flush summary preview + payload data from the stream buffer. |
 | `proposed_plan` | `handleProposedPlan`: persist plan payload, emit `provider:item_event` upsert + a `thread:updated` `full` row (the Plan ready badge is a derived column of that row). |
+| `workspace_changed` | No-op in triage: the tool row already records the call. `internal/app/app_worktree_follow.go` moves the thread's workspace columns and broadcasts the `thread:updated` `full` row. |
 
 Routing lands on typed channels. Timeline mutations use
 `provider:item_event` (ordered upserts and live text/thinking deltas);

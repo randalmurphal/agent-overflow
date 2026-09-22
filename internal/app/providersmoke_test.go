@@ -35,6 +35,10 @@
 //     the session importer's lazy branch materialisation cut, and continues
 //     THAT branch's conversation. See providersmoke_importbranch_test.go.
 //
+//  5. WORKTREE FOLLOW (Claude only) — the CLI's own EnterWorktree / ExitWorktree
+//     move the thread row and a stopped session resumes from the row's
+//     workspace afterwards. See providersmoke_worktree_test.go.
+//
 // Nothing here overrides `claudeBinaryPath` / `codexBinaryPath`: the point is to
 // exercise the exact default binary resolution production uses. There is no
 // t.Skip anywhere in this file either — a manual gate that quietly does nothing

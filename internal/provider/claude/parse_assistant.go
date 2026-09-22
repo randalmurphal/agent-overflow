@@ -491,6 +491,13 @@ func (p *Parser) appendToolUseEvent(
 		return events
 	}
 
+	// EnterWorktree / ExitWorktree render as ordinary tool rows AND move
+	// the process's working directory; the result side emits the
+	// workspace change (parse_worktree.go).
+	if isWorktreeToolName(block.Name) {
+		p.markWorktreeTool(block.ID, block.Name, parentToolUseID)
+	}
+
 	isBackground := hasRunInBackground(block.Input)
 	if isBackground {
 		p.markBackground(block.ID, backgroundHintInput)

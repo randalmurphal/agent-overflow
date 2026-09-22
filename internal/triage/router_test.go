@@ -107,6 +107,7 @@ func TestAllEventKindsListIsComplete(t *testing.T) {
 		provider.EventCommandOutput:              true,
 		provider.EventThinking:                   true,
 		provider.EventProposedPlan:               true,
+		provider.EventWorkspaceChanged:           true, // Claude EnterWorktree/ExitWorktree; the app follows it onto the thread row
 	}
 
 	got := make(map[provider.EventKind]bool, len(provider.AllEventKinds))

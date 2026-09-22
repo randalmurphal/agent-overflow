@@ -188,6 +188,7 @@ test-race:
 #
 # -timeout covers the sum of the in-test deadlines (6m per workflow leg, 3m for
 # the imported-branch scenario, 6m for the merge scenario, 6m per revert leg,
+# 5m for the worktree follow scenario,
 # plus auth probes) with
 # headroom, so a wedged turn fails through the gate's own diagnostics rather
 # than as a bare test-binary timeout panic.
@@ -195,7 +196,7 @@ provider-smoke-compile:
 	go test -tags providersmoke -run '^$$' ./internal/app
 
 provider-smoke:
-	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 35m ./internal/app
+	go test -tags providersmoke -run 'TestProviderSmoke' -v -count=1 -timeout 40m ./internal/app
 
 # Focused real-provider rollback/resume gate; also included in provider-smoke.
 provider-smoke-revert:

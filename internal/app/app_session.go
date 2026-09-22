@@ -170,6 +170,15 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	if err := a.stopExistingSessionLocked(threadID); err != nil {
 		return fmt.Errorf("start session: %w", err)
 	}
+	// The transcript must sit under the workspace's project slug before
+	// `--resume` runs from that cwd. The CLI relocates it itself when it
+	// moves (EnterWorktree / ExitWorktree, app_worktree_follow.go); this is
+	// the safety net for a row and a file that disagree, and it runs here
+	// because the prior process is fully stopped and nothing else writes
+	// the file.
+	if !opts.ForkSession {
+		a.settleClaudeTranscriptForWorkspace(t)
+	}
 
 	// Resolve the resume cursor only after the prior session is fully
 	// stopped: Close blocks on the read loop, and the CLI can append

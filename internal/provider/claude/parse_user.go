@@ -471,6 +471,11 @@ func (p *Parser) appendToolResultBlock(
 	if flaggedAtLaunch {
 		p.clearBackground(toolUseID)
 	}
+	// EnterWorktree / ExitWorktree: the completion above is the tool row;
+	// this is the session-level fact that the process now works elsewhere.
+	if use, ok := p.takeWorktreeTool(toolUseID); ok {
+		events = p.appendWorkspaceChangeEvent(events, threadID, now, toolUseID, use, block, toolUseResultRaw)
+	}
 
 	// Additive TaskOutput enrichment: this lets a later
 	// `task_updated` or another TaskOutput poll upsert the same

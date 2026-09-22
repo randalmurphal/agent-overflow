@@ -107,3 +107,57 @@ func TestAskUserQuestionControlRequest(t *testing.T) {
 		t.Errorf("reconstructed options = %+v", ui.Questions[0].Options)
 	}
 }
+
+// TestPostToolUseEnterWorktreeEnvelope proves the PostToolUse hook's
+// tool_response reaches the shared parser as the tool_use_result sibling, so
+// claude-tui's EnterWorktree produces the same EventWorkspaceChanged the
+// headless wire does. The assistant tool_use arrives through the SSE
+// reconstruction; here it is spelled directly.
+func TestPostToolUseEnterWorktreeEnvelope(t *testing.T) {
+	p := claude.NewParser()
+	parseEnvelope(t, p, json.RawMessage(`{"type":"assistant","message":{"id":"msg-wt","role":"assistant","content":[`+
+		`{"type":"tool_use","id":"toolu_wt","name":"EnterWorktree","input":{"name":"feature-x"}}]}}`))
+
+	events := parseEnvelope(t, p, postToolUseEnvelope(hookPayload{
+		HookEventName: "PostToolUse",
+		ToolName:      "EnterWorktree",
+		ToolUseID:     "toolu_wt",
+		ToolResponse:  json.RawMessage(`{"worktreePath":"/repo/.claude/worktrees/feature-x","worktreeBranch":"worktree-feature-x","message":"Created worktree"}`),
+	}))
+
+	changes := findKind(events, provider.EventWorkspaceChanged)
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 workspace change, got %d (%v)", len(changes), kindsOf(events))
+	}
+	var meta provider.WorkspaceChangeMeta
+	if err := json.Unmarshal(changes[0].Meta, &meta); err != nil {
+		t.Fatalf("unmarshal meta: %v", err)
+	}
+	if meta.Cwd != "/repo/.claude/worktrees/feature-x" || meta.Branch != "worktree-feature-x" || meta.Tool != "EnterWorktree" {
+		t.Errorf("meta = %+v", meta)
+	}
+	if len(findKind(events, provider.EventToolComplete)) != 1 {
+		t.Errorf("tool completion missing: %v", kindsOf(events))
+	}
+}
+
+// A PostToolUseFailure for EnterWorktree is a refused move: no workspace
+// change and no error beyond the failed tool row itself.
+func TestPostToolUseFailureEnterWorktreeMovesNothing(t *testing.T) {
+	p := claude.NewParser()
+	parseEnvelope(t, p, json.RawMessage(`{"type":"assistant","message":{"id":"msg-wt","role":"assistant","content":[`+
+		`{"type":"tool_use","id":"toolu_wt2","name":"EnterWorktree","input":{"name":"feature-x"}}]}}`))
+
+	events := parseEnvelope(t, p, postToolUseFailureEnvelope(hookPayload{
+		HookEventName: "PostToolUseFailure",
+		ToolName:      "EnterWorktree",
+		ToolUseID:     "toolu_wt2",
+		Error:         "Already in a worktree session",
+	}))
+	if n := len(findKind(events, provider.EventWorkspaceChanged)); n != 0 {
+		t.Fatalf("refused EnterWorktree produced %d workspace changes (%v)", n, kindsOf(events))
+	}
+	if n := len(findKind(events, provider.EventError)); n != 0 {
+		t.Fatalf("refused EnterWorktree produced %d error events (%v)", n, kindsOf(events))
+	}
+}

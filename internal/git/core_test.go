@@ -374,3 +374,86 @@ func TestLimitedBufferTruncates(t *testing.T) {
 		t.Fatal("expected buffer to report truncation")
 	}
 }
+
+// Claude Code locks the worktrees it enters, and git refuses to remove a
+// locked worktree with one --force. Removal lifts the lock first, on both
+// the guarded and the forced path.
+func TestRemoveWorktreeLiftsLock(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		t.Run(map[bool]string{false: "guarded", true: "forced"}[force], func(t *testing.T) {
+			repo := testutil.InitGitRepo(t)
+			core := NewCore()
+			worktreePath := filepath.Join(repo, ".claude", "worktrees", "locked-demo")
+			if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := core.CreateWorktree(repo, worktreePath, "worktree-locked-demo"); err != nil {
+				t.Fatalf("CreateWorktree: %v", err)
+			}
+			testutil.RunGit(t, repo, "worktree", "lock", "--", worktreePath)
+			locked, err := core.worktreeLocked(repo, worktreePath)
+			if err != nil || !locked {
+				t.Fatalf("worktreeLocked = %v, %v; want locked", locked, err)
+			}
+
+			if err := core.RemoveWorktreeForce(repo, worktreePath, force); err != nil {
+				t.Fatalf("RemoveWorktreeForce(force=%v) on a locked worktree: %v", force, err)
+			}
+			if _, err := os.Stat(worktreePath); !os.IsNotExist(err) {
+				t.Fatalf("worktree still on disk after removal: %v", err)
+			}
+			worktrees, err := core.ListWorktrees(repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, wt := range worktrees {
+				if SameFilesystemPath(wt.Path, worktreePath) {
+					t.Fatalf("worktree still listed after removal: %+v", wt)
+				}
+			}
+		})
+	}
+}
+
+// A dirty locked worktree still needs the caller's force: lifting the lock
+// must not silently bypass git's dirty-tree guard.
+func TestRemoveWorktreeLiftsLockButKeepsDirtyGuard(t *testing.T) {
+	repo := testutil.InitGitRepo(t)
+	core := NewCore()
+	worktreePath := filepath.Join(t.TempDir(), "locked-dirty")
+	if err := core.CreateWorktree(repo, worktreePath, "feature/locked-dirty"); err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreePath, "scratch.txt"), []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testutil.RunGit(t, repo, "worktree", "lock", "--", worktreePath)
+
+	if err := core.RemoveWorktreeForce(repo, worktreePath, false); err == nil {
+		t.Fatal("guarded removal of a dirty worktree succeeded; want git's dirty-tree refusal")
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Fatalf("guarded refusal removed the worktree anyway: %v", err)
+	}
+	if err := core.RemoveWorktreeForce(repo, worktreePath, true); err != nil {
+		t.Fatalf("forced removal after refusal: %v", err)
+	}
+}
+
+func TestParseWorktreeEntriesReadsBareAndReasonedLocks(t *testing.T) {
+	entries := parseWorktreeEntries("worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n" +
+		"worktree /repo/.claude/worktrees/x\nHEAD abc\nbranch refs/heads/worktree-x\nlocked\n\n" +
+		"worktree /repo/.claude/worktrees/y\nHEAD abc\nbranch refs/heads/worktree-y\nlocked keep me\n\n")
+	if len(entries) != 3 {
+		t.Fatalf("entries = %d, want 3: %+v", len(entries), entries)
+	}
+	if entries[0].locked {
+		t.Errorf("root reported locked: %+v", entries[0])
+	}
+	if !entries[1].locked || entries[1].lockReason != "" {
+		t.Errorf("bare lock = %+v, want locked without reason", entries[1])
+	}
+	if !entries[2].locked || entries[2].lockReason != "keep me" {
+		t.Errorf("reasoned lock = %+v, want locked with reason", entries[2])
+	}
+}

@@ -82,6 +82,14 @@ qualifies costs nothing.
   `wire_only` included; do not add a reader-authored filter there.
 - A thread deliberately renamed "New Thread" re-heals its title; there is
   no "user named this" bit, and that is intended.
+- A thread's workspace follows a move the PROVIDER makes mid-session
+  (Claude's `EnterWorktree` / `ExitWorktree`): the row updates from the
+  tool's structured result, the live session is not restarted, and the
+  transcript follows the CLI's own relocation (settled at the next
+  session start only when row and file disagree).
+  A directory the row cannot represent (outside the project's worktrees)
+  is refused with an error on the thread, not recorded.
+  See `docs/references/claude-wire.md` §E10.
 - Draft worktree and branch operations are DISK state, not thread state:
   project-scoped RPCs, bound to the thread at send or creation. Accepted
   consequences: an abandoned draft's worktree stays in pickers; a restart

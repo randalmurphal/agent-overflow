@@ -246,6 +246,13 @@ export function classifyToolName(
         label: "plan",
         isSubagent: false,
       };
+    case "EnterWorktree":
+    case "ExitWorktree":
+      return {
+        icon: "generic",
+        label: "worktree",
+        isSubagent: false,
+      };
     case "advisor":
       return {
         icon: "brain",

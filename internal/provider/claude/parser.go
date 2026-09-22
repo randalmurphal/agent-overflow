@@ -57,6 +57,12 @@ type Parser struct {
 	// (TaskCreate/TaskUpdate branch) and parse_user.go
 	// applyPendingTaskMutation.
 	pendingTaskMutations map[string]pendingTaskMutation
+	// worktreeToolUses holds the in-flight `EnterWorktree` / `ExitWorktree`
+	// calls between their assistant tool_use and the matching user
+	// tool_result. The call still renders as an ordinary tool row; the
+	// result additionally emits EventWorkspaceChanged so the thread's
+	// workspace follows the process. See parse_worktree.go.
+	worktreeToolUses map[string]worktreeToolUse
 	// advisorToolUses flags `server_tool_use` IDs (the `srvtoolu_*`
 	// prefix) emitted by Claude's server-side advisor tool. The matching
 	// `advisor_tool_result` content block on a later assistant envelope
@@ -375,6 +381,7 @@ func (p *Parser) Close() {
 	p.backgroundToolUses = nil
 	p.todoWriteToolUses = nil
 	p.pendingTaskMutations = nil
+	p.worktreeToolUses = nil
 	p.advisorToolUses = nil
 	p.toolUseParents = nil
 	p.taskToolUses = nil

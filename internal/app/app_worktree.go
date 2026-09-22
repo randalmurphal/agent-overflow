@@ -351,18 +351,9 @@ func (a *App) removeProjectWorktree(project, worktreePath string, force bool) er
 	if !slices.Equal(attached, slices.Compact(recheck)) {
 		return fmt.Errorf("worktree %s occupancy changed during removal; retry", worktreePath)
 	}
-	// A pending handoff still needs this source state. A confirmed move's
-	// local rows are immutable history caches: removal may reclaim the old
-	// checkout, but must not reattach or resume those retired conversations.
-	mutable := make([]string, 0, len(attached))
-	for _, id := range attached {
-		retired, err := a.threadApplication().CheckCleanup(id)
-		if err != nil {
-			return err
-		}
-		if !retired {
-			mutable = append(mutable, id)
-		}
+	mutable, err := a.mutableWorkspaceThreads(attached)
+	if err != nil {
+		return err
 	}
 
 	if err := a.ensureWorkspaceChangeAllowed("remove this worktree", worktreePath); err != nil {
@@ -383,26 +374,56 @@ func (a *App) removeProjectWorktree(project, worktreePath string, force bool) er
 	if err := core.RemoveWorktreeForce(project, worktreePath, force); err != nil {
 		return err
 	}
+	if err := a.reattachThreadsFromRemovedWorktree(project, worktreePath, mutable); err != nil {
+		return fmt.Errorf("worktree removed but %w", err)
+	}
+	return nil
+}
+
+// mutableWorkspaceThreads filters a locked occupant set down to the threads
+// whose rows this process may rewrite. A pending handoff still needs its
+// source state; a confirmed move's local rows are immutable history caches:
+// removal may reclaim the old checkout, but must not reattach or resume
+// those retired conversations.
+func (a *App) mutableWorkspaceThreads(attached []string) ([]string, error) {
+	mutable := make([]string, 0, len(attached))
+	for _, id := range attached {
+		retired, err := a.threadApplication().CheckCleanup(id)
+		if err != nil {
+			return nil, err
+		}
+		if !retired {
+			mutable = append(mutable, id)
+		}
+	}
+	return mutable, nil
+}
+
+// reattachThreadsFromRemovedWorktree moves every listed thread that still
+// points at a worktree which no longer exists back to the project root.
+// The caller holds each thread's action lock and has already removed the
+// checkout (or learned that the provider did).
+//
+// Best-effort sweep: the worktree is already gone, so per-thread refresh
+// failures must NOT bail mid-loop and leave siblings pointing at a deleted
+// path. Errors accumulate and surface together at the end; any successfully
+// mutated thread is broadcast immediately so its UI catches up regardless
+// of what happens to its neighbours.
+//
+// UpdatedAt is deliberately left untouched. The sweep is a system-driven
+// reattach, not a user-driven activity event; bumping the timestamp would
+// jump every reattached thread to the top of the sidebar (which sorts by
+// updated_at DESC), erasing the order the user had built up. The frontend's
+// syncThreadRow does a max-merge on updatedAt, so the unchanged timestamp in
+// the broadcast event is invariant-safe.
+func (a *App) reattachThreadsFromRemovedWorktree(project, worktreePath string, mutable []string) error {
 	if a.workspaceFiles != nil {
 		// The path no longer exists; drop any cached file list before another
 		// thread's @-mention picker reaches for it.
 		a.workspaceFiles.Invalidate(worktreePath)
 	}
-
+	core := a.gitCore()
 	projectBranch := core.CurrentBranch(project)
-	// Best-effort sweep: the worktree is already gone, so per-thread refresh
-	// failures should NOT bail mid-loop and leave siblings pointing at a
-	// deleted path. Accumulate errors and surface them together at the end —
-	// any successfully-mutated thread is broadcast immediately so its UI
-	// catches up regardless of what happens to its neighbours.
-	//
-	// We deliberately leave UpdatedAt untouched here. The sweep is a
-	// system-driven reattach, not a user-driven activity event — bumping
-	// the timestamp would jump every reattached thread to the top of the
-	// sidebar (which sorts by updated_at DESC), erasing the order the user
-	// had built up. The frontend's syncThreadRow does a max-merge on
-	// updatedAt, so the unchanged timestamp in the broadcast event is
-	// invariant-safe.
 	var sweepErrs []error
 	for _, id := range mutable {
 		t, err := a.store.GetThread(id)
@@ -457,7 +478,7 @@ func (a *App) removeProjectWorktree(project, worktreePath string, force bool) er
 		}
 	}
 	if len(sweepErrs) > 0 {
-		return fmt.Errorf("worktree removed but %d threads need attention: %w", len(sweepErrs), errors.Join(sweepErrs...))
+		return fmt.Errorf("%d threads need attention: %w", len(sweepErrs), errors.Join(sweepErrs...))
 	}
 	return nil
 }
@@ -536,6 +557,53 @@ func (a *App) copyClaudeSessionForWorkspaceChange(t store.Thread, fromWorkspace 
 		}
 	}
 	return purge, nil
+}
+
+// settleClaudeTranscriptForWorkspace moves a Claude thread's own transcript
+// under its current workspace slug when it is filed elsewhere. It runs at
+// session start, after the prior process is stopped, because that is the
+// one moment nothing appends to the file. The CLI relocates the transcript
+// itself when it changes directory (EnterWorktree / ExitWorktree, verified
+// 2.1.257), so for a row that followed the move this is a no-op; it exists
+// for the row and the file disagreeing, such as a move the app refused to
+// record, so that `--resume` from the row's workspace still resolves.
+//
+// Only SessionRef is settled. A PendingForkRef names the SOURCE thread's
+// transcript, which must stay where its owner resumes it.
+//
+// Failures are surfaced on the thread and never block the start: the CLI
+// still gets its chance to resolve the transcript, and if it cannot, its
+// own "No conversation found" reaches the user through the normal path.
+func (a *App) settleClaudeTranscriptForWorkspace(t store.Thread) {
+	if t.Provider != string(provider.Claude) && t.Provider != string(provider.ClaudeTUI) {
+		return
+	}
+	ref := strings.TrimSpace(t.SessionRef)
+	workspace := strings.TrimSpace(t.WorkspacePath)
+	if ref == "" || workspace == "" {
+		return
+	}
+	projectsDir, err := a.claudeProjectsDir()
+	if err != nil {
+		a.emitErrorToThread(t.ID, fmt.Sprintf("workspace change: transcript could not be located: %v", err))
+		return
+	}
+	// fromWorkspace == destWorkspace: the primary lookup answers when the
+	// file is already in place; the miss falls through to the project-dir
+	// scan that finds it wherever the previous cwd filed it.
+	src, dest, err := sessionfork.RelocateSession(projectsDir, ref, workspace, workspace)
+	switch {
+	case err == nil:
+		if src != dest {
+			a.purgeRelocatedClaudeSessions(t.ID, []string{src})
+		}
+	case errors.Is(err, sessionfork.ErrSessionFileNotFound):
+		// Nothing on disk to settle; resume surfaces its own verdict.
+	case errors.Is(err, sessionfork.ErrSubagentCopyIncomplete):
+		log.Printf("thread %s: claude session %s settled under %s but subagent history incomplete: %v", t.ID, ref, workspace, err)
+	default:
+		a.emitErrorToThread(t.ID, fmt.Sprintf("workspace change: transcript for session %s could not be moved under %s: %v", ref, workspace, err))
+	}
 }
 
 // purgeRelocatedClaudeSessions removes the pre-move source transcripts returned
@@ -723,14 +791,18 @@ func checkoutMoveFrom(thread store.Thread, label string) threadCheckoutMove {
 // commitThreadCheckout persists a thread whose workspace / worktree / branch
 // the caller has just rewritten, and BROADCASTS the row it moved.
 //
-// It is the chokepoint for all three paths that move a thread's checkout —
-// cutting a new worktree, attaching an existing branch's, and switching to a
-// workspace that already exists — so no caller can move one silently: the
-// RPC's return value only ever reaches the client that issued it, and the two
-// worktree paths returned it with no broadcast at all until 2026-09-03. It
-// also keeps the ORDER those paths share in one place: relocate the Claude
-// transcript, commit, purge the stale copies, release a setup run for the
-// workspace the thread has left, then restart the session.
+// It is the chokepoint for the three USER-driven paths that move a thread's
+// checkout (cutting a new worktree, attaching an existing branch's, and
+// switching to a workspace that already exists) so no caller can move one
+// silently: the RPC's return value only ever reaches the client that issued
+// it. It also keeps the ORDER those paths share in one place: relocate the
+// Claude transcript, commit, purge the stale copies, release a setup run for
+// the workspace the thread has left, then restart the session.
+//
+// The PROVIDER-driven move (EnterWorktree / ExitWorktree, see
+// app_worktree_follow.go) bypasses this on purpose: the process already
+// runs at the new directory and is still writing its transcript under the
+// old slug, so neither the restart nor the relocation applies there.
 func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove) (store.Thread, error) {
 	threadID := thread.ID
 	rollback := func() {

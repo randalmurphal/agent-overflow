@@ -448,6 +448,12 @@ func (r *Router) dispatch(evt provider.ProviderEvent) error {
 		return r.handleThinking(evt)
 	case provider.EventProposedPlan:
 		return r.handleProposedPlan(evt)
+	case provider.EventWorkspaceChanged:
+		// A provider-initiated workspace move. The tool row is already the
+		// timeline record; the thread's workspace columns are owned by the
+		// app's worktree transactions (app_worktree_follow.go), which the
+		// session event handler dispatches to. Nothing to persist here.
+		return nil
 	default:
 		// No-op: the event has no routing decision. Return the sentinel so
 		// the exhaustiveness test in router_test.go can flag the drift.

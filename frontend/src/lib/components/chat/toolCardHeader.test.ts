@@ -159,6 +159,16 @@ describe("classifyToolName", () => {
     expect(classifyToolName(name).icon).toBe("checklist");
   });
 
+  it.each(["EnterWorktree", "ExitWorktree"])(
+    "%s is the worktree category, not a subagent",
+    (name) => {
+      const out = classifyToolName(name);
+      expect(out.icon).toBe("generic");
+      expect(out.label).toBe("worktree");
+      expect(out.isSubagent).toBe(false);
+    },
+  );
+
   it("unknown tool names fall through to the generic category", () => {
     const out = classifyToolName("SomeCustomTool");
     expect(out.icon).toBe("generic");
