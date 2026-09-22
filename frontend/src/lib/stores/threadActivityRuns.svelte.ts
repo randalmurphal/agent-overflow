@@ -27,7 +27,8 @@
 // is the `activityRunDefault` setting.
 
 import { timelineNodeHasRail } from '../utils/timelineRail';
-import { compareItemToCursor, compareItemsByTimelinePosition } from './threadItems';
+import { compareItemsByTimelinePosition } from './threadItems';
+import { createActivityRunLookup } from './activityRunLookup';
 import { activityRunLoadedItems, type RunWindowBounds } from './activityRunLoadedItems';
 export type { RunWindowBounds } from './activityRunLoadedItems';
 import { compositeKey } from '../utils/compositeKey';
@@ -751,33 +752,30 @@ export function createThreadActivityRuns(
     reportFailure: (message, err, silent) =>
       options.reportFetchFailure(message, err, silent),
     onStubApplied: (stub) => {
-      syncRunSpans(options.items(), [stub]);
+      const spans = syncRunSpans(options.items(), [stub]);
       const record = records.get(stub.firstItemId);
-      const span = record ? spanOfRecord(spansByMemberId(options.items()), record) : null;
+      const span = record ? spanOfRecord(spans, record) : null;
       return span ? span.items.map(item => item.id) : [];
     },
   });
 
   /** The ids of the members a record's run currently has loaded. */
   function loadedMemberIds(record: ActivityRunRecord): ReadonlySet<string> {
-    const span = spanOfRecord(spansByMemberId(options.items()), record);
+    const span = spanOfRecord(projectRunSpans(options.items()).spansById, record);
     return new Set(span ? span.items.map((item) => item.id) : []);
   }
 
-  /** Every loaded member id mapped to the span holding it. */
-  function spansByMemberId(items: readonly Item[], bounds = options.windowBounds(), stubs: readonly ActivityRunStub[] = []): Map<string, ActivityRunSpan> {
-    const byId = new Map<string, ActivityRunSpan>();
-    const window = activityRunLoadedItems(items, bounds, records, stubs, runKeyByMemberId, item => isWindowedTimelineRow(item, options.selection?.()));
-    const descriptions = new Map([...records.values()].map(record => [record.runFirstItemId, record.stub]));
-    for (const stub of stubs) descriptions.set(stub.firstItemId, stub);
-    const describedRuns = [...descriptions.values()];
-    const knownMember = (item: Item): boolean => describedRuns.some(stub =>
-      compareItemToCursor(item, { turnIndex: stub.firstTurnIndex, itemIndex: stub.firstItemIndex, itemId: stub.firstItemId }) >= 0
-      && compareItemToCursor(item, { turnIndex: stub.lastTurnIndex, itemIndex: stub.lastItemIndex, itemId: stub.lastItemId }) <= 0);
-    for (const span of groupActivityRunSpans(window, knownMember, (item) => isWindowedTimelineRow(item, options.selection?.()))) {
-      for (const item of span.items) byId.set(item.id, span);
+  /** Filter and group once; membership and positional bounds use the same view. */
+  function projectRunSpans(items: readonly Item[], bounds = options.windowBounds(), stubs: readonly ActivityRunStub[] = []) {
+    const lookup = createActivityRunLookup(records, stubs);
+    const selection = options.selection?.();
+    const includes = (item: Item) => isWindowedTimelineRow(item, selection);
+    const windowed = activityRunLoadedItems(items, bounds, lookup, runKeyByMemberId, includes).filter(includes);
+    const spansById = new Map<string, ActivityRunSpan>();
+    for (const span of groupActivityRunSpans(windowed, item => lookup.find(item) !== undefined, includes)) {
+      for (const item of span.items) spansById.set(item.id, span);
     }
-    return byId;
+    return { windowed, spansById };
   }
 
   /**
@@ -824,13 +822,10 @@ export function createThreadActivityRuns(
     items: readonly Item[],
     stubs?: readonly ActivityRunStub[],
     bounds = options.windowBounds(),
-  ): void {
-    const windowed = activityRunLoadedItems(items, bounds, records, stubs ?? [], runKeyByMemberId, item => isWindowedTimelineRow(item, options.selection?.())).filter((item) => isWindowedTimelineRow(item, options.selection?.()));
+  ): ReadonlyMap<string, ActivityRunSpan> {
+    const { windowed, spansById } = projectRunSpans(items, bounds, stubs);
     const positionById = new Map<string, number>();
-    for (let index = 0; index < windowed.length; index += 1) {
-      positionById.set(windowed[index].id, index);
-    }
-    const spansById = spansByMemberId(windowed, bounds, stubs);
+    for (let index = 0; index < windowed.length; index += 1) positionById.set(windowed[index].id, index);
 
     // Claimed so two records cannot describe one span: a run whose first
     // member changed identity would otherwise be counted twice in the held
@@ -896,6 +891,7 @@ export function createThreadActivityRuns(
     }
     windowRevision += 1;
     revision += 1;
+    return spansById;
   }
 
   function coordinateOf(item: Item): RunCoordinate {
@@ -924,8 +920,8 @@ export function createThreadActivityRuns(
     nextItems: readonly Item[],
     bounds = options.windowBounds(),
   ): void {
-    const previousSpans = spansByMemberId(previousItems, bounds);
-    const nextSpans = spansByMemberId(nextItems, bounds);
+    const previousSpans = projectRunSpans(previousItems, bounds).spansById;
+    const nextSpans = projectRunSpans(nextItems, bounds).spansById;
     for (const [key, record] of [...records]) {
       const before = spanOfRecord(previousSpans, record);
       const after = spanOfRecord(nextSpans, record);
@@ -1514,7 +1510,11 @@ export function createThreadActivityRuns(
 
   return {
     get windowRevision() { return windowRevision; },
-    loadedItems: (items) => activityRunLoadedItems(items, options.windowBounds(), records, [], runKeyByMemberId),
+    loadedItems: (items) => {
+      const selection = options.selection?.();
+      return activityRunLoadedItems(items, options.windowBounds(), createActivityRunLookup(records, []),
+        runKeyByMemberId, item => isWindowedTimelineRow(item, selection));
+    },
     get revision() {
       return revision;
     },
@@ -1694,7 +1694,7 @@ export function createThreadActivityRuns(
       memberFetch.scheduleRefresh();
     },
     snapshotStubs: () => {
-      const spansById = spansByMemberId(options.items());
+      const spansById = projectRunSpans(options.items()).spansById;
       const stubs: ActivityRunStub[] = [];
       for (const record of records.values()) {
         const span = spanOfRecord(spansById, record);

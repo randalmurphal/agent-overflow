@@ -13,17 +13,19 @@ import { activityRunRow, activityRunProse, activityRunStub } from '../../test/he
 import { formatFnv1a64 } from '../utils/fnv1a';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import type { Item } from '../types/models';
+import type { TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
 
 /** The pane's window, mutable so the registry's getters see the change. */
 const registries: ReturnType<typeof createThreadActivityRuns>[] = [];
 afterEach(() => { for (const runs of registries.splice(0)) runs.clear(); });
 
-function fixture(initial: Item[] = [], bounds = { oldest: null, newest: null } as import('./threadActivityRuns.svelte').RunWindowBounds) {
+function fixture(initial: Item[] = [], bounds = { oldest: null, newest: null } as import('./threadActivityRuns.svelte').RunWindowBounds, selection?: TimelineSelection) {
   let items = initial;
   const mounted: { rows: Item[]; dropIds: string[] }[] = [];
   const failures: { message: string; silent: boolean }[] = [];
   const reloads = vi.fn(async () => {});
   const runs = createThreadActivityRuns({
+    selection: () => selection ?? {},
     defaultCollapsed: () => false,
     windowRows: () => 30,
     windowVerified: () => true,
@@ -503,4 +505,14 @@ it('discards a member response when the window was cut while it was loading', as
     stub: activityRunStub({ loadedFirstItemId: 'c', loadedLastItemId: 'e', unshippedBefore: 2, unshippedAfter: 0 }) }));
   await f.runs.fetchMembers(runId, { direction: 'after', limit: 1 });
   expect(f.items.map(item => item.id)).toContain('e');
+});
+
+it('uses the selected transcript when excluding context from unloaded run intervals', () => {
+  const items = ['a', 'b', 'c', 'd'].map((id, index) => activityRunRow(id, index + 1, { parentId: 'agent' }));
+  const f = fixture(items, { oldest: null, newest: null }, { scopeRootId: 'agent' });
+  f.runs.syncRunSpans(items, [activityRunStub()]);
+  expect(f.runs.loadedItems(items).map(item => item.id)).toEqual(['b', 'c', 'd']);
+  expect(f.runs.snapshotStubs()).toEqual([activityRunStub()]);
+  expect(f.runs.isLoadedMember('a')).toBe(false);
+  expect(f.runs.isLoadedMember('b')).toBe(true);
 });

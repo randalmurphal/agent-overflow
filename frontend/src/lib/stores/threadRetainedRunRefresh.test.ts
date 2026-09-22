@@ -113,3 +113,19 @@ it('rejects a span changed during its reads without publishing partial history',
   await expect(refreshRetainedRunWindows('t', fresh, groupActivityRunSpans(rows(0, 50)), shape, () => true)).rejects.toThrow('changed during refresh');
   expect(fresh.items).toHaveLength(30);
 });
+
+it('does not repeatedly merge the accumulated window when byte limits produce small pages', async () => {
+  let reads = 0;
+  const all = rows(0, 120).map((item, index) => ({ ...item, get id() { reads += 1; return `r${index}`; } }));
+  const fresh = page(all.slice(-30), [run(0, 119, 90, 119)]);
+  const previous = groupActivityRunSpans(all);
+  setBindingMock('ListItemsBeforeCursor', async (_thread, before: { itemIndex: number }) => {
+    const index = before.itemIndex - 1;
+    return page([all[index]], [run(0, 119, index, index)]);
+  });
+  setBindingMock('ListActivityRunMembers', async () => ({ items: [], stub: run(0, 119, 0, 119) }));
+  reads = 0;
+  const result = await refreshRetainedRunWindows('t', fresh, previous, shape, () => true);
+  expect(result.items).toHaveLength(120);
+  expect(reads).toBeLessThan(120 * 20);
+});

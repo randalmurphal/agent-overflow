@@ -42,7 +42,7 @@ export async function refreshRetainedRunWindows(
     let floor = cursor(span.items[0]);
     const ceiling = cursor(span.items[span.items.length - 1]);
     let before = { ...ceiling, itemIndex: ceiling.itemIndex + 1, itemId: '' };
-    let rows: Item[] = [];
+    const incomingRows: Item[] = [];
     const runs = new Map<string, ActivityRunStub>();
     const replaced: { first: TimelineCursor; last: TimelineCursor }[] = [];
     let oldest = result.oldestCursor;
@@ -71,7 +71,7 @@ export async function refreshRetainedRunWindows(
       }
       const selected = incoming.filter(item => compareItemToCursor(item, floor) >= 0 && compareItemToCursor(item, ceiling) <= 0);
       if (selected.length > 0) {
-        rows = mergeItemsById(selected, rows);
+        for (const item of selected) incomingRows.push(item);
         replaced.push({ first: chunk.oldestCursor, last: chunk.newestCursor });
         for (const run of chunk.runs) runs.set(run.firstItemId, run);
         if (compareCursors(chunk.oldestCursor, oldest) <= 0) {
@@ -87,6 +87,7 @@ export async function refreshRetainedRunWindows(
       before = first;
     }
     if (!isCurrent()) return page;
+    const rows = mergeItemsById(incomingRows, []);
     const refreshed: ActivityRunStub[] = [];
     for (const run of runs.values()) {
       const { first, last } = bounds(run);

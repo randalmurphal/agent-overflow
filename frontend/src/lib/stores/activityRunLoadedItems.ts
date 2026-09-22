@@ -1,7 +1,6 @@
 import type { Item } from '../types/models';
-import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
-import type { ActivityRunRecords } from './activityRunStubs';
-import { compareItemToCursor, compareItemsByTimelinePosition, itemsWithinLoadedWindow, type TimelineCursorLike } from './threadItems';
+import type { ActivityRunLookup } from './activityRunLookup';
+import { compareItemsByTimelinePosition, itemsWithinLoadedWindow, type TimelineCursorLike } from './threadItems';
 
 export interface RunWindowBounds {
   oldest: TimelineCursorLike | null;
@@ -13,32 +12,28 @@ export interface RunWindowBounds {
 export function activityRunLoadedItems(
   items: readonly Item[],
   bounds: RunWindowBounds,
-  records: ActivityRunRecords,
-  stubs: readonly ActivityRunStub[],
+  runs: ActivityRunLookup,
   previousMembers: ReadonlyMap<string, string>,
   includes: (item: Item) => boolean = item => !item.parentId,
 ): readonly Item[] {
   const window = itemsWithinLoadedWindow(items, bounds.oldest, bounds.newest);
-  if (records.size === 0 && stubs.length === 0) return window;
-  const byId = new Map(window.map(item => [item.id, item]));
-  const descriptions = new Map([...records.values()].map(record => [record.runFirstItemId, record.stub]));
-  for (const stub of stubs) descriptions.set(stub.firstItemId, stub);
-  const spans = [...descriptions.values()].map(stub => ({
-    stub,
-    first: byId.get(stub.loadedFirstItemId),
-    last: byId.get(stub.loadedLastItemId),
-  }));
-  const keep = (item: Item): boolean => {
-    if (!includes(item)) return true;
-    for (const { stub, first, last } of spans) {
-      if (compareItemToCursor(item, { turnIndex: stub.firstTurnIndex, itemIndex: stub.firstItemIndex, itemId: stub.firstItemId }) < 0
-        || compareItemToCursor(item, { turnIndex: stub.lastTurnIndex, itemIndex: stub.lastItemIndex, itemId: stub.lastItemId }) > 0) continue;
-      if (previousMembers.get(item.id) === stub.firstItemId) return true;
-      return (!!first || !!last)
+  if (runs.size === 0) return window;
+  const byId = new Map<string, Item>();
+  for (const item of window) byId.set(item.id, item);
+  let filtered: Item[] | undefined;
+  for (let index = 0; index < window.length; index += 1) {
+    const item = window[index];
+    const stub = includes(item) ? runs.find(item) : undefined;
+    let keep = true;
+    if (stub && previousMembers.get(item.id) !== stub.firstItemId) {
+      const first = byId.get(stub.loadedFirstItemId);
+      const last = byId.get(stub.loadedLastItemId);
+      keep = (!!first || !!last)
         && (!first || compareItemsByTimelinePosition(item, first) >= 0)
         && (!last || compareItemsByTimelinePosition(item, last) <= 0);
     }
-    return true;
-  };
-  return window.every(keep) ? window : window.filter(keep);
+    if (!keep) filtered ??= window.slice(0, index);
+    else filtered?.push(item);
+  }
+  return filtered ?? window;
 }
