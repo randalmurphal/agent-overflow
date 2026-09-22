@@ -26,13 +26,16 @@ inside a caller transaction accept `sqlExecutor` or `sqlQueryer`.
 ## Migration model
 
 `schema_v1.go` is a squashed baseline. `migrate.go` and `migration_v*.go` append
-changes in version order. A shipped migration is immutable. Changing its SQL
-would give two databases the same version with different schemas.
+changes in version order. A migration applied to persistent data is immutable,
+including application by a development build before the code is committed.
+Changing its SQL would give two databases the same version with different schemas.
 
 New rebuild migrations state their complete SQL directly. The remaining
 `mustReplaceOnce`, `mustReplaceEvery`, and `mustCutFrom` derivations are frozen
-legacy migrations guarded by `migrate_freeze_test.go`. Do not extend that
-pattern.
+legacy migrations. Do not extend that pattern. `migrate_freeze_test.go` pins the
+evaluated SQL of every migration, including referenced schema and trigger text.
+Record new versions before deployment; repair deployed versions with a forward
+migration.
 
 A rebuild must carry forward every column, index, trigger, and relationship
 added since the source definition. Rebuild migrations temporarily disable

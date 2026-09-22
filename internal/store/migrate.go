@@ -1664,6 +1664,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 109, Name: "attachment_owners", SQL: attachmentOwnersV109SQL, Rebuild: true},
 	{Version: 110, Name: "local_sessions", SQL: localSessionsV110SQL, Rebuild: true},
 	{Version: 111, Name: "scoped_timeline_indexes", SQL: scopedTimelineIndexesV111SQL},
+	{Version: 112, Name: "transcript_root_index", SQL: transcriptRootIndexV112SQL},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

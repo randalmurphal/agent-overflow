@@ -2,304 +2,149 @@ package store
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"os"
-	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
+	"fmt"
 	"testing"
 )
 
-// frozenMigrationGuidance is the one sentence every failure in this file ends
-// with. Written once so a hash mismatch and a missing freeze entry cannot give
-// two different accounts of the same rule.
-const frozenMigrationGuidance = "shipped migration SQL changed — shipped migrations are immutable; " +
-	"add a new migration instead. If you are certain this migration has never shipped, update the frozen hash."
-
-// frozenMigrationSQL pins the sha256 of the FINAL SQL text of every migration
-// whose text is DERIVED at package init from an earlier migration's text
-// (the mustReplaceOnce / mustReplaceEvery / mustCutFrom family in migrate.go).
-//
-// A derived migration is the store's one place where editing source A silently
-// rewrites already-shipped migration B: v43's rebuild is v39's text with a
-// substitution, v56's is v44's, and so on down the chain. A database that
-// applied B before the edit and one that applies it after then hold different
-// schemas from the same version number — a divergence nothing in the chain can
-// detect or repair, because the version row says the migration ran.
-//
-// The hashes are captured from the shipped tree. TestEveryDerivedMigrationIsFrozen
-// is what keeps this map complete: a NEW migration built with the derivation
-// helpers fails until its hash is added here.
+// Pin the evaluated SQL of every migration, including referenced trigger and
+// schema definitions. Persistent development databases also apply this chain.
+// Add hashes for new versions before deployment; repair deployed versions with
+// a forward migration instead of changing their SQL or recorded hash.
 var frozenMigrationSQL = map[int]string{
-	28: "1ae75644c52742546f4d3f2d639abb4d91f2985b8c66367945ddf4d60de9758d",
-	31: "07eb1088d2f304160b95cdda783af7efa204a7098edcef676373a1d31f8828dc",
-	34: "b4ff11a9eccb25d899f407a9c5704c535d379440ae35f856df1f516d3dc029f9",
-	39: "d77e162c0f548400ad9b876dcd4ed4d42b23615b772c782792ad732d8ad3215c",
-	43: "34326851328903e1c01c0b001b9b92a2d2c68c667a8ed2b628003355931a7958",
-	44: "a791f300012ab9d7a7e5bf238d5227bc510cadd599b6a18d7c000f9a28947368",
-	45: "d7d091f4697bc6e3ac42be97468dc04662a0ae293bf79820ba15a6cb48f2746a",
-	48: "ab1f8c0b914d3617cb97c897a2e19f8269e9764036adf6da7a6e2e978355078a",
-	56: "40580b3b011a0dbba688b6a6a6b15a12130977e428e8506e6c39a8f1f659ae27",
-	57: "e80e155278ebd5731667affaff0469aed4d4eff6092f142959d5ded2d0baba5e",
+	1:   "b685404186f8b714754bfc3fbd0b4e887a9e4bafe574753e1c66d5452989a1da",
+	2:   "263250f46ae8283ae531d3952644e37cf51368ce921ed3844ac3cbfc5fdb52a2",
+	3:   "03d901a9a90fe287103f118775bc081c34cff1480fc7fe21d90fab15edc9aa7a",
+	4:   "a2539d9e5e07fae4908be46a6cb4514c9879d93b926a1346b9556f052874961f",
+	5:   "659d29e9822641c4c439e852fa07691dda03964e4e3d2dd970d1239cee99c08e",
+	6:   "86abd7ef84b3bbff2b22e5531b5e7ad7f929d0b11776fc5a422612525d0964d3",
+	7:   "cfc9263bb4450465b3c9ac916368f9df8033fb88f3c9fc42752edd89f71ce81f",
+	8:   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	9:   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	10:  "4974355ae5c423050f1b583ff886d50ae492055885e0331efdf6da8078be1424",
+	11:  "ecb73d49f60d06921a4f30417ec425eeaa67e181b6ea1d3a4234452b8e678621",
+	12:  "9f8a9561a45297e1d18d0ff1cf5225c00114523d0abb7e2da3e2f1764a8fb131",
+	13:  "fbcc16f95f506ff2c621955ce4fbb014efa9c79c4b7aa6c6ddf6853c47c8cf13",
+	14:  "08de7b477524f9d050ec221fb6613f402dbbe5cde3704a31129ec20634fd98a1",
+	15:  "59feeba6a9e060f989cdc1692ae34cc6014530aee80953b8c96c309e91c0c07b",
+	16:  "9d9c8c3a31403a8e47bf0b11172282e2ed26ad5bf8a42598f78b2443cbe4abd0",
+	17:  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	18:  "7dae43b503a30431b28f104fd28114e41643284deada14b65758cc982b761055",
+	19:  "72808131235ca7bd1adc96f0316ec56b449d6c8026828183d862316bc1fb2f2d",
+	20:  "384eac1b76743e3045aa8c5cdff82f3f1f005edbf8f3f4ac610574ad3fa25b90",
+	21:  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	22:  "f2f720e02d8e901cb0bdea6d3c78998a1fffa7afef7dc1fc83d071eafca294c5",
+	23:  "2888e021a4d1f70603c1399d2f59f82d7416ea59829ccfef1fad4b1427cf4e1a",
+	24:  "3888182106faf39c42bea5b7f0dcf21ca979fe131282c50ba0a67d0ce012d1e3",
+	25:  "876e9fd2b00b9a9048f531eabd0a94c3a074612fc4903c221a3bd0756af1b29e",
+	26:  "d9ec71c79d40a7a066c99f102a93a0bced1a813ec46b2757798c7914f66c8a98",
+	27:  "81a2a4f386003a6710847430f47748926ad00cf4d1e012727a94e39dc5fee8fb",
+	28:  "1ae75644c52742546f4d3f2d639abb4d91f2985b8c66367945ddf4d60de9758d",
+	29:  "645e74fe1d5739199f9616660858e1438573d85d82e19a6e8c47ead639f08d56",
+	30:  "d52d50bf038becb4e3bf29ffd11ca25d7a376bfc484041c347132deecfe19ba7",
+	31:  "07eb1088d2f304160b95cdda783af7efa204a7098edcef676373a1d31f8828dc",
+	32:  "447abad99a9f9624311fec94c596d8337d2e6c73d570216a8c7acf038ee1ab5d",
+	33:  "e41109db49d69075c8008b30e5db95b8a0e0c277688757e1faa9c5fb1952abad",
+	34:  "b4ff11a9eccb25d899f407a9c5704c535d379440ae35f856df1f516d3dc029f9",
+	35:  "ed2baca5724e85847320f6180407bcf75b7676d9cd34295972f741ee9ed1857b",
+	36:  "b79a30e8d0a65899e431acf94a043cbba98b28e8511fda5fdbbac37484b729c1",
+	37:  "148903a0f327b01dc7477714265c77d8d41bc39e75a0bd8dca35f236de7997ca",
+	38:  "b6e03c9ff06080e2bda599d4236ad4366c85ad4597237bcc72c4b6d037065a1b",
+	39:  "d77e162c0f548400ad9b876dcd4ed4d42b23615b772c782792ad732d8ad3215c",
+	40:  "8d208d58260e979b40b9036f6d6aed067a743c0864a2b0cdc88112cfae495ac5",
+	41:  "12db4e9dca704512954a3a6d5e59a9498b2e0383bad8a25acad22b522cbd5a9f",
+	42:  "c22e094e3a8ac7209b17191e12a6c17aa0c3ca9247574bb60e6cb0364c959afd",
+	43:  "34326851328903e1c01c0b001b9b92a2d2c68c667a8ed2b628003355931a7958",
+	44:  "a791f300012ab9d7a7e5bf238d5227bc510cadd599b6a18d7c000f9a28947368",
+	45:  "d7d091f4697bc6e3ac42be97468dc04662a0ae293bf79820ba15a6cb48f2746a",
+	46:  "0602c3fd582059ad97a539be261a26f789fcea74fed58c124d3f4c2de4afcf3e",
+	47:  "194db3eac06303817a4c988fd6eb9eea085a44628c772d9195151c35040d004d",
+	48:  "ab1f8c0b914d3617cb97c897a2e19f8269e9764036adf6da7a6e2e978355078a",
+	49:  "13c92fc385890e27cbd713c39e7bb1be6a7252f067c46cb4acb3b7cf99be9ddf",
+	50:  "8792a9969e4134197171a5c71b7b3092b7da9621e70d74076ab41ce05ba86363",
+	51:  "24a0569a3bc30e8208b2b9a651f10429de489090897ae339730877e94475a591",
+	52:  "80c7a517d0d7e3f2f795d4b3a1919712df47e0c5a40e697140df9cb463ebf52a",
+	53:  "65ac1a4d6eed411e50b86e2812d5c7e7ba426cc31f93e325809ff52e8aca4d09",
+	54:  "3369f62e1213049dfdea6d30e40c3c29c06ca576bdccf2cfaa9bcc5f79e36a69",
+	55:  "41d606c543dbe39d37e06a610162345fd230320fab28a1f45c1a495572140e18",
+	56:  "40580b3b011a0dbba688b6a6a6b15a12130977e428e8506e6c39a8f1f659ae27",
+	57:  "e80e155278ebd5731667affaff0469aed4d4eff6092f142959d5ded2d0baba5e",
+	58:  "915a7cd0f86c40e5e29af04188aeaaff5ee28b5fd591e29a307324cb36d0834c",
+	59:  "ebd70ee607c24ae9948537457833d1d34b5ce67653679a7db3cc1932f106b209",
+	60:  "9aa3009bd5cfd67a2da8ff77fb11803d82b42b990f8a078ae01c7dbdb1d7c585",
+	61:  "694e482bb2e4734ac7e3cb69686b196dfe7bc03274595d7119b0555e6913ff58",
+	62:  "8c8e2caefd438859a41dd818377638b80f7d205abd0a9f06f724cfffc5232d63",
+	63:  "b8dd0d9956913c65e2590116a60803fbb3822c15633c7e5a7385ead44abd9c93",
+	64:  "9504d01c9984cc3a871c42ee978a40eec14f1d2c1d9ba3d845f4bf8d69dd738c",
+	65:  "7ae0801cf9c8acb3bfea442dae3ec1c3f86f33bc5ea632823d0c04f2bc67dd5a",
+	66:  "ffb5695b3f905d6450e6be3be053ce5ad11b18b9224f38a93f3e3db2d5f721cc",
+	67:  "8170586aede77ec5f21e21091b0a4df5e184d9240da89b477ca1c985d7667d9f",
+	68:  "b130386e3d7ff3105992b6d88ed5073091a1ff1c6e8afa17d8a498543b5eb441",
+	69:  "f806dfd506c2e3fdcfa1f94e071efa0db7c05bfef2ee45ad85686af885c66d3f",
+	70:  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	71:  "6e373cc81de43c341e34e53c1750d40225b41591879ae196bbe9a3fe6de48e6c",
+	72:  "fb93f94c122451f718f3a2591a2b24fe9c1bd49d95eb57a051266393ae06ed16",
+	73:  "56f98b524cbc7e7d6846f1ce40683b369c72bc526bf1d77a0567c55ae6421596",
+	74:  "d49d7e6e4c850534ecb435d53300c860be51fd135e320d1bdb5e9f2fa6e805ed",
+	75:  "00fb223bcea95e83b462df760b79f3a19be6b1968421ed882392d02c78598bf1",
+	76:  "834cbb72e7a6b1de1582a0ae1a8e10bcf7e78c4a61d2c36c5ff1ce842c27cd7b",
+	77:  "d60e7004f30aacb44c19c32cbc17331cd3f0f0451257699948dc38e1b6cfab30",
+	78:  "559d9785c656539642209b07d75751f6f2301ee7a71d1f8d22f2d5571186bcf3",
+	79:  "610a3ae167439fbe8a31b0b7326868bbd0381684088d5be9246c8fac20e46af0",
+	80:  "7a640a3cca95d16b8816c055c90d414b22df3c9849ba657520bdd0843a9aae2d",
+	81:  "a1da4202c39e50ffb0f5fd6e0a877fc604038bbec230033e097ae958d74384eb",
+	82:  "06c191d4409e7602b90330c33de1d10eb5201084a3c8b403f2ac47bb4116b98f",
+	83:  "a626b6fe6acd734a2bd7f7115916ae4bf37b0fb0ca0dea2e27a3bc3a99feff55",
+	84:  "2262761aeab1ee352a13af59b669d62f02c05ce622844c2c3a1caa7d96bad263",
+	85:  "0cbc89cf997015fe9050539b29ac98afc79850eca597766ef1d5950f8d778dc3",
+	86:  "011f613f6d13d98680bd44ed817c78a91b429cbcfa3872fb67dd2dd66e4f6a9b",
+	87:  "3e8dfc971a7bdf65e2f1054e043fb9d8c8611b8773a62ced52762c295064ca77",
+	88:  "36fb8b00d7a0f221a3cfa3a4c7284bc37394d6affa1a5a6e60093fa225b314b0",
+	89:  "335b9739377e3d7f64d9cb09f2522efc6f5f1934b814adff520d58f1f90921ee",
+	90:  "1bae18975885919f1bef6181540c1413bbb73bb27abfa926d45806d0107b6dbc",
+	91:  "73d545b20520f93f4ebba8f879e369306f12104432b5ddafaf9f9a259fd9e1ca",
+	92:  "fc032ebb0ea3dd832c05688844919aa23159529db2d75975b84c05b0c44dcc86",
+	93:  "0a7b8a96855fd8bec60af6b2a32c0254864b624b320453f4ceef3e73ae2fa248",
+	94:  "8233bdae19af537172a994ca7cecbac107c87e566b016ade5d4b9294a8ba7fdb",
+	95:  "f59a26174ff46b7e6e7ecc0867eedfd16bc30c7c298df6216e79fa6e841b0e85",
+	96:  "515cd9f12fa11d1adae74ade0ac4f08f48e1950b83c44898af7f02350ade7386",
+	97:  "67797b96d4eea6e3a43ef5852dd01fc33ede80e33f259163d739883e4e003e4c",
+	98:  "3893f8996422fda3a0effdfd45b2bf451f42180b962046f1fae8d775a384e7f6",
+	99:  "053c904758d37492cda2b6940a60c1d39c49d155c72e18800f507ff3ae9820a7",
+	100: "88c5c6d78c45477946763e810428182bc59b0f5be03a8a9cd55cb06c2a4165ba",
+	101: "d77bb1387245932721cdd0921c59745831fa70df53f2fd34657ab46dedc11014",
+	102: "6458ea4d8a3207e32d066326dc9c619f61bbea5c714beedae68a013dc7d3acda",
+	103: "03d5523f97287f73d48e301dc4e77a2c6e36412fe61e46aa928b3e5d50451066",
+	104: "f11ae6f5bcd8da6cbf710ac6ec718523a3432a42379d136c55f18f431702fc73",
+	105: "2a19369c0bdd7f3f45174b25bae8a4d3c100814e7f77f9e307670c377690d964",
+	106: "816470a451fe483c00745148b21a457e9bc74cb7e232ad115f85d015aa8758f6",
+	107: "a8559fd14375f203058489218786b1917f46c42724f93db46d42c07e8a035588",
+	108: "fe4f8c0347d296d6c935c675ac8e63df27e5fd9064647231f9ad7202c8603022",
+	109: "6c002eff31f12451deb301c695b979f8e5b46495614ab93d4c4d9c3975c5c4e7",
+	110: "9bb18de17cd05b8f8240021a70a70bee55132b2693c21efa06fe574916e126e0",
+	111: "70448eaccc18049ce24b9a69577b01a3df3404bbca931c0c7028023623d0a7d8",
+	112: "9213632421927e041a89893b924355a02f4115629a8e402da9f78dc163ee4fc7",
 }
 
-// TestShippedMigrationSQLIsFrozen hashes the final SQL of every frozen
-// migration — the text package init actually produced, derivations applied —
-// and compares it against the hash captured when that migration shipped.
 func TestShippedMigrationSQLIsFrozen(t *testing.T) {
-	byVersion := migrationsByVersion()
-
-	for _, version := range sortedVersions(frozenMigrationSQL) {
-		m, ok := byVersion[version]
-		if !ok {
-			t.Errorf("migration v%d is frozen but no longer exists in the chain: %s", version, frozenMigrationGuidance)
-			continue
-		}
-		want := frozenMigrationSQL[version]
-		if got := sha256Hex(m.SQL); got != want {
-			t.Errorf("migration v%d (%s): %s\n  frozen sha256: %s\n  current sha256: %s",
-				version, m.Name, frozenMigrationGuidance, want, got)
-		}
-	}
-}
-
-// TestEveryDerivedMigrationIsFrozen is the completeness half of the freeze: it
-// parses this package's source, works out which migrations take their SQL from
-// a derivation helper (directly or through another derived declaration), and
-// fails if any of them is missing from frozenMigrationSQL.
-//
-// Mechanical on purpose. A freeze list maintained by hand only protects the
-// migrations somebody remembered to add to it, and the whole hazard is that
-// the derivation is invisible at the migration's own entry — `SQL:
-// rebuildWorkItemRetryReasonsV56SQL` looks exactly like a const.
-func TestEveryDerivedMigrationIsFrozen(t *testing.T) {
-	byVersion := migrationsByVersion()
-
-	derived := derivedMigrationVersions(t)
-	if len(derived) == 0 {
-		t.Fatal("no derived migrations detected — the detector has drifted from migrate.go; " +
-			"if the derivation helpers are gone, delete this test with them")
-	}
-
-	for _, version := range derived {
-		if _, ok := frozenMigrationSQL[version]; ok {
-			continue
-		}
-		m := byVersion[version]
-		t.Errorf("migration v%d (%s) derives its SQL from an earlier migration but is not in frozenMigrationSQL.\n"+
-			"Add it so a later edit to the text it derives from cannot silently rewrite it:\n"+
-			"\t%d: %q,",
-			version, m.Name, version, sha256Hex(m.SQL))
-	}
-}
-
-func sha256Hex(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
-}
-
-func migrationsByVersion() map[int]Migration {
-	byVersion := make(map[int]Migration, len(migrations))
+	seen := make(map[int]bool, len(migrations))
 	for _, m := range migrations {
-		byVersion[m.Version] = m
-	}
-	return byVersion
-}
-
-func sortedVersions[V any](m map[int]V) []int {
-	out := make([]int, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Ints(out)
-	return out
-}
-
-// derivationHelpers are the functions that build one migration's SQL out of
-// another's. Any declaration whose initializer reaches one of these — through
-// any number of intermediate declarations — carries a shipped migration's text
-// inside it.
-var derivationHelpers = map[string]bool{
-	"mustReplaceOnce":  true,
-	"mustReplaceEvery": true,
-	"mustCutFrom":      true,
-}
-
-// derivedMigrationVersions returns, sorted, the version of every entry in the
-// `migrations` slice whose SQL expression reaches a derivation helper.
-func derivedMigrationVersions(t *testing.T) []int {
-	t.Helper()
-
-	fset := token.NewFileSet()
-	files := parsePackageSource(t, fset)
-
-	// Pass 1: every top-level declaration name paired with its initializer.
-	inits := map[string]ast.Expr{}
-	for _, f := range files {
-		for _, decl := range f.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok || (gen.Tok != token.VAR && gen.Tok != token.CONST) {
-				continue
-			}
-			for _, spec := range gen.Specs {
-				vs, ok := spec.(*ast.ValueSpec)
-				if !ok || len(vs.Values) != len(vs.Names) {
-					continue
-				}
-				for i, name := range vs.Names {
-					inits[name.Name] = vs.Values[i]
-				}
-			}
+		if seen[m.Version] {
+			t.Errorf("duplicate migration version %d", m.Version)
 		}
-	}
-
-	// Pass 2: fixpoint over "this initializer reaches a derivation helper, or
-	// references a name that does".
-	derivedNames := map[string]bool{}
-	for changed := true; changed; {
-		changed = false
-		for name, expr := range inits {
-			if derivedNames[name] {
-				continue
-			}
-			if exprIsDerived(expr, derivedNames) {
-				derivedNames[name] = true
-				changed = true
-			}
-		}
-	}
-
-	// Pass 3: walk the migrations slice literal.
-	migrationsLit := findCompositeLit(files, "migrations")
-	if migrationsLit == nil {
-		t.Fatal("could not find the `migrations` slice literal in this package's source")
-	}
-
-	var versions []int
-	for _, elt := range migrationsLit.Elts {
-		entry, ok := elt.(*ast.CompositeLit)
+		seen[m.Version] = true
+		got := fmt.Sprintf("%x", sha256.Sum256([]byte(m.SQL)))
+		want, ok := frozenMigrationSQL[m.Version]
 		if !ok {
+			t.Errorf("migration v%d (%s) has no frozen SQL hash; record this new version before deploying it:\n%d: %q,", m.Version, m.Name, m.Version, got)
 			continue
 		}
-		version, sqlExpr, ok := migrationEntryFields(entry)
-		if !ok || sqlExpr == nil {
-			continue
-		}
-		if exprIsDerived(sqlExpr, derivedNames) {
-			versions = append(versions, version)
+		if got != want {
+			t.Errorf("migration v%d (%s) SQL changed; add a forward migration instead of editing deployed SQL or its frozen hash\nwant: %s\n got: %s", m.Version, m.Name, want, got)
 		}
 	}
-	sort.Ints(versions)
-	return versions
-}
-
-// exprIsDerived reports whether expr calls a derivation helper or mentions a
-// name already known to be derived.
-func exprIsDerived(expr ast.Expr, derivedNames map[string]bool) bool {
-	found := false
-	ast.Inspect(expr, func(n ast.Node) bool {
-		if found {
-			return false
-		}
-		switch node := n.(type) {
-		case *ast.CallExpr:
-			if ident, ok := node.Fun.(*ast.Ident); ok && derivationHelpers[ident.Name] {
-				found = true
-				return false
-			}
-		case *ast.Ident:
-			if derivedNames[node.Name] {
-				found = true
-				return false
-			}
-		}
-		return true
-	})
-	return found
-}
-
-// migrationEntryFields pulls Version and the SQL expression out of one
-// `Migration{...}` literal.
-func migrationEntryFields(entry *ast.CompositeLit) (version int, sqlExpr ast.Expr, ok bool) {
-	for _, field := range entry.Elts {
-		kv, isKV := field.(*ast.KeyValueExpr)
-		if !isKV {
-			continue
-		}
-		key, isIdent := kv.Key.(*ast.Ident)
-		if !isIdent {
-			continue
-		}
-		switch key.Name {
-		case "Version":
-			lit, isLit := kv.Value.(*ast.BasicLit)
-			if !isLit || lit.Kind != token.INT {
-				continue
-			}
-			n, err := strconv.Atoi(lit.Value)
-			if err != nil {
-				continue
-			}
-			version, ok = n, true
-		case "SQL":
-			sqlExpr = kv.Value
+	for version := range frozenMigrationSQL {
+		if !seen[version] {
+			t.Errorf("frozen migration v%d was removed; preserve deployed migrations", version)
 		}
 	}
-	return version, sqlExpr, ok
-}
-
-func findCompositeLit(files []*ast.File, name string) *ast.CompositeLit {
-	for _, f := range files {
-		for _, decl := range f.Decls {
-			gen, isGen := decl.(*ast.GenDecl)
-			if !isGen || gen.Tok != token.VAR {
-				continue
-			}
-			for _, spec := range gen.Specs {
-				vs, isVS := spec.(*ast.ValueSpec)
-				if !isVS || len(vs.Names) != 1 || vs.Names[0].Name != name || len(vs.Values) != 1 {
-					continue
-				}
-				if lit, isLit := vs.Values[0].(*ast.CompositeLit); isLit {
-					return lit
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// parsePackageSource parses this package's non-test .go files. The test runs
-// with the package directory as its working directory, which is what makes the
-// bare glob correct.
-func parsePackageSource(t *testing.T, fset *token.FileSet) []*ast.File {
-	t.Helper()
-
-	names, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatalf("glob package source: %v", err)
-	}
-	var files []*ast.File
-	for _, name := range names {
-		if strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		src, err := os.ReadFile(name)
-		if err != nil {
-			t.Fatalf("read %s: %v", name, err)
-		}
-		f, err := parser.ParseFile(fset, name, src, 0)
-		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
-		}
-		files = append(files, f)
-	}
-	if len(files) == 0 {
-		t.Fatal("no package source files found next to the test")
-	}
-	return files
 }

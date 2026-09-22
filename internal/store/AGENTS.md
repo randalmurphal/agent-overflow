@@ -40,8 +40,9 @@ an atomic persistence decision; they must not become a business-logic layer.
 ## Schema and migrations
 
 - `schema_v1.go` is the squashed baseline. `migrate.go` and
-  `migration_v*.go` are the forward-only chain. Never edit a migration that may
-  have shipped. Add a migration and a test.
+  `migration_v*.go` are the forward-only chain. A migration applied to persistent
+  data, including by an uncommitted development build, is deployed and immutable.
+  Add a migration and a test; record each new version in `migrate_freeze_test.go`.
 - New rebuild migrations contain their final SQL directly. The old
   `mustReplaceOnce`, `mustReplaceEvery`, and `mustCutFrom` derivations are
   frozen compatibility code, not a pattern for new migrations.
