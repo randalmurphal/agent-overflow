@@ -1,10 +1,11 @@
 // Offscreen agent completion in a partially shipped run: launch context
-// travels with the completion, and opening the run preserves its ownership.
+// travels with the completion, opening the run preserves its ownership, and
+// the card expands to its backfilled digest, answer included.
 import { test, expect } from './fixtures.js';
 import {
   RESULT_LINE, asyncAgentAckLine, claudeScenario, emit, seedAgentThread,
   sidechainTranscript, startMock, taskNotificationLine, taskStartedLine,
-  taskUpdatedLine, textLines, toolResultLine, toolUseLine, waitForGate,
+  taskProgressLine, taskUpdatedLine, textLines, toolResultLine, toolUseLine, waitForGate,
 } from './agent-visibility-helpers.js';
 
 test('a completion forms its card when its launch is outside the shipped activity window', async ({ harness, page }) => {
@@ -24,8 +25,13 @@ test('a completion forms its card when its launch is outside the shipped activit
         asyncAgentAckLine('agent-launch', 'task-offscreen', 'investigate offscreen'),
         ...work,
       ]),
-      { writeFile: { path: 'offscreen.jsonl', content: sidechainTranscript([{ text: report }]) } },
+      { writeFile: { path: 'offscreen.jsonl', content: sidechainTranscript([
+        { tool: { id: 'side-read-1', name: 'Read', result: 'readme body' } },
+        { tool: { id: 'side-read-2', name: 'Read', result: 'readme body again' } },
+        { text: report },
+      ]) } },
       emit([
+        taskProgressLine('task-offscreen', 'agent-launch', 'Reading README', { total_tokens: 4321, tool_uses: 2, duration_ms: 90000 }, 'Read'),
         taskUpdatedLine('task-offscreen', { status: 'completed', end_time: 1787419835322 }),
         taskNotificationLine('task-offscreen', 'agent-launch', report, { outputFile: '${CWD}/offscreen.jsonl' }),
         ...textLines('msg-finished', 'Main agent acknowledged the report.'),
@@ -57,4 +63,17 @@ test('a completion forms its card when its launch is outside the shipped activit
   await expect(page.getByTestId('subagent-group')).toHaveCount(1);
   await expect(run.getByTestId('activity-run-later')).toHaveCount(0);
   await expect(page.getByText('Activity moved while it was loading', { exact: true })).toHaveCount(0);
+  await expect(card.getByTestId('subagent-group-tools')).toContainText('2 tools');
+  await expect(card.getByTestId('subagent-group-count')).toContainText('4 entries');
+
+  // The digest hydrates from the store without the launch row: the two
+  // backfilled Reads and the answer, which the backfill stamped with the
+  // transcript clock so it sits inside this execution.
+  await card.getByTestId('subagent-group-toggle').first().click();
+  const body = card.getByTestId('subagent-group-body').first();
+  await expect(body).toBeVisible();
+  await expect(body.getByTestId('tool-call-card')).toHaveCount(2);
+  await expect(body.getByText(report, { exact: true })).toHaveCount(1);
+  await expect(body.getByTestId('subagent-group-loading')).toHaveCount(0);
+  await expect(page.locator('[data-item-id="agent-launch"]')).toHaveCount(0);
 });

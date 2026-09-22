@@ -60,6 +60,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ProviderAccountUsageError,
 		eventchan.ProviderAccountsChanged,
 		eventchan.ProviderApproval,
+		eventchan.ProviderAsyncQuestionsChanged,
 		eventchan.ProviderBackgroundTaskState,
 		eventchan.ProviderBackgroundTasksChanged,
 		eventchan.ProviderCommandLifecycle,

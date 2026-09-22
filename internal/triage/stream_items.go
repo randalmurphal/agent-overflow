@@ -100,6 +100,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 			eventParentID(evt),
 			strings.TrimSpace(evt.ItemID),
 			evt.Content,
+			evt.Timestamp,
 		)
 	}
 	turnIndex, err := r.turnIndexForEvent(evt)

@@ -63,6 +63,17 @@ func sidechainTextRow(uuid, parent, messageID, text string, seconds int) map[str
 	}
 }
 
+func sidechainThinkingRow(uuid, parent, messageID, thinking string, seconds int) map[string]any {
+	return map[string]any{
+		"type": "assistant", "uuid": uuid, "parentUuid": parent, "isSidechain": true,
+		"timestamp": sidechainStamp(seconds),
+		"message": map[string]any{
+			"role": "assistant", "id": messageID, "model": "claude-test-1",
+			"content": []any{map[string]any{"type": "thinking", "thinking": thinking}},
+		},
+	}
+}
+
 func sidechainToolUseRow(uuid, parent, messageID, toolUseID, toolName string, seconds int) map[string]any {
 	return map[string]any{
 		"type": "assistant", "uuid": uuid, "parentUuid": parent, "isSidechain": true,
@@ -1007,4 +1018,63 @@ func TestSubagentOutputFilePreviewIsTheFinalReport(t *testing.T) {
 			t.Fatalf("a transcript with no assistant text and no report must carry no preview, got %q", preview)
 		}
 	})
+}
+
+// A backfilled row is history the agent already produced: its clock is the
+// transcript's timestamp, as it is for the tool and prompt rows, never the
+// time the notification made the Router write it. The completion sibling
+// is written before the backfill, and the card bounds its execution by
+// time, so a write-time clock put the agent's answer after its own
+// completion and out of the card (2026-09-21).
+func TestSubagentTranscriptBackfillStampsRowsWithTheTranscriptClock(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startAgentLaunch(t, router, "t1", "agent-clock", "", "task-clock")
+	stashAgentTerminal(t, router, "t1", "agent-clock", "task-clock")
+	notifyAgent(t, router, "t1", "agent-clock", "task-clock", writeSubagentTranscript(t, "agent-clock.jsonl",
+		sidechainPromptRow("s1", "the task prompt", 1),
+		sidechainThinkingRow("s2", "s1", "msg_think", "considering the layout", 2),
+		sidechainToolUseRow("s3", "s2", "msg_tool", "toolu_clock_read", "Read", 3),
+		sidechainToolResultRow("s4", "s3", "toolu_clock_read", "package main", 4),
+		sidechainTextRow("s5", "s4", "msg_close", "done: it is a main package", 5),
+	), nil)
+	router.WaitForPendingSettles()
+
+	sibling, found, err := st.GetThreadItem("t1", "complete:agent-clock")
+	if err != nil || !found {
+		t.Fatalf("completion sibling: found=%v err=%v", found, err)
+	}
+	stamp := func(seconds int) int64 {
+		return time.Date(2026, 1, 1, 0, 0, seconds, 0, time.UTC).UnixMilli()
+	}
+	// The prompt row is the provisional copy of the launch input, minted at
+	// launch time; the transcript only binds its uuid onto it. Every row
+	// the backfill MINTS carries the transcript clock.
+	want := map[string]int64{
+		"think:0:agent-clock:provider:msg_think#0": stamp(2),
+		"toolu_clock_read":                         stamp(3),
+		"text:0:agent-clock:provider:msg_close#0":  stamp(5),
+	}
+	children := childrenOfLaunch(t, st, "t1", "agent-clock", 0)
+	if len(children) != len(want)+1 {
+		t.Fatalf("backfilled children = %v, want the prompt plus %d rows", childIDs(children), len(want))
+	}
+	for _, child := range children {
+		if child.Kind == itemKindUserText {
+			continue
+		}
+		at, known := want[child.ID]
+		if !known {
+			t.Fatalf("unexpected backfilled row %s", child.ID)
+		}
+		if child.CreatedAt != at {
+			t.Fatalf("%s created_at = %d, want the transcript clock %d", child.ID, child.CreatedAt, at)
+		}
+		// A tool row settles at its result's clock; a block row at its own.
+		if child.UpdatedAt < child.CreatedAt || child.UpdatedAt > sibling.CreatedAt {
+			t.Fatalf("%s updated_at %d is outside [%d, %d]: the row must settle inside its execution", child.ID, child.UpdatedAt, child.CreatedAt, sibling.CreatedAt)
+		}
+	}
 }

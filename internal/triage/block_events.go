@@ -54,10 +54,10 @@ func (r *Router) handleContentBlockStop(evt provider.ProviderEvent) error {
 	stop := decodeBlockStopMeta(evt.Meta)
 	switch r.blockTypeForStop(evt.ThreadID, turnIndex, scope, evt.ItemID, stop.BlockType) {
 	case "thinking":
-		r.settleStreamingThinkingAsync(evt.ThreadID, turnIndex, scope, evt.ItemID, statusCompleted, evt.Content, evt.ContentPresent)
+		r.settleStreamingThinkingAsync(evt.ThreadID, turnIndex, scope, evt.ItemID, statusCompleted, evt.Content, evt.ContentPresent, evt.Timestamp)
 		return nil
 	case "text":
-		r.settleStreamingTextAsync(evt.ThreadID, turnIndex, scope, evt.ItemID, statusCompleted, evt.Content, evt.ContentPresent, blockDeliveryMeta(stop.Delivery))
+		r.settleStreamingTextAsync(evt.ThreadID, turnIndex, scope, evt.ItemID, statusCompleted, evt.Content, evt.ContentPresent, blockDeliveryMeta(stop.Delivery), evt.Timestamp)
 		return nil
 	default:
 		return nil

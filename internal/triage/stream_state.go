@@ -530,11 +530,11 @@ func (r *Router) doSettleStreamingText(threadID, scope, itemID, status, finalCon
 // immediately (duplicate settle calls no-op without spawning a second
 // goroutine). The heavy body runs on a goroutine tracked by
 // r.settleWG so app shutdown can drain.
-func (r *Router) settleStreamingTextAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent bool, blockMeta json.RawMessage) {
+func (r *Router) settleStreamingTextAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent bool, blockMeta json.RawMessage, at time.Time) {
 	itemID, active := r.takeActiveTextBlock(threadID, turnIndex, scope, providerItemID)
 	if !active {
 		if finalContentPresent && finalContent != "" {
-			if err := r.persistOrUpdateCompletedTextItem(threadID, turnIndex, scope, providerItemID, finalContent, blockMeta); err != nil {
+			if err := r.persistOrUpdateCompletedTextItem(threadID, turnIndex, scope, providerItemID, finalContent, blockMeta, at); err != nil {
 				r.reportCompletedHistoryConflict(threadID, scope, err)
 			}
 		}
@@ -582,7 +582,7 @@ func (r *Router) activeTextKeysForScope(threadID string, turnIndex int, scope st
 	return keys
 }
 
-func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int, scope, providerItemID, content string, blockMeta json.RawMessage) error {
+func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int, scope, providerItemID, content string, blockMeta json.RawMessage, at time.Time) error {
 	if providerItemID != "" {
 		r.WaitForPendingSettles()
 		if item, found, err := r.store.FindStreamItemByProviderItemID(threadID, turnIndex, itemKindAssistantText, scope, providerItemID); err != nil {
@@ -605,7 +605,7 @@ func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int
 			}
 			item.Summary = content
 			item.Status = statusCompleted
-			item.UpdatedAt = time.Now().UnixMilli()
+			item.UpdatedAt = rowClockMillis(at)
 			item.Meta = mergeItemMetaJSON(item.Meta, blockMeta)
 			r.enrichPathRefsFromTexts(threadID, &item, content)
 			r.enrichCodeSpans(&item)
@@ -613,12 +613,12 @@ func (r *Router) persistOrUpdateCompletedTextItem(threadID string, turnIndex int
 			return r.persistItem(item, &payload)
 		}
 	}
-	return r.persistCompletedTextItem(threadID, turnIndex, scope, providerItemID, content, blockMeta)
+	return r.persistCompletedTextItem(threadID, turnIndex, scope, providerItemID, content, blockMeta, at)
 }
 
-func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope, providerItemID, content string, blockMeta json.RawMessage) error {
+func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope, providerItemID, content string, blockMeta json.RawMessage, at time.Time) error {
 	itemID := scopedStreamItemID("text", turnIndex, scope, providerItemID, r.nextTextItemID(threadID, turnIndex, scope))
-	now := time.Now().UnixMilli()
+	now := rowClockMillis(at)
 	item := store.Item{
 		ID:        itemID,
 		ThreadID:  threadID,
@@ -1001,11 +1001,11 @@ func (r *Router) doSettleStreamingThinking(threadID, scope, itemID, status, fina
 	return r.persistItemFieldsAndPatch(item, update)
 }
 
-func (r *Router) settleStreamingThinkingAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent bool) {
+func (r *Router) settleStreamingThinkingAsync(threadID string, turnIndex int, scope, providerItemID, status, finalContent string, finalContentPresent bool, at time.Time) {
 	itemID, active := r.takeActiveThinkingBlock(threadID, turnIndex, scope, providerItemID)
 	if !active {
 		if finalContentPresent && finalContent != "" {
-			if err := r.persistOrUpdateCompletedThinkingItem(threadID, turnIndex, scope, providerItemID, finalContent); err != nil {
+			if err := r.persistOrUpdateCompletedThinkingItem(threadID, turnIndex, scope, providerItemID, finalContent, at); err != nil {
 				r.reportCompletedHistoryConflict(threadID, scope, err)
 			}
 		}
@@ -1053,7 +1053,7 @@ func (r *Router) activeThinkingKeysForScope(threadID string, turnIndex int, scop
 	return keys
 }
 
-func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string) error {
+func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string, at time.Time) error {
 	if providerItemID != "" {
 		r.WaitForPendingSettles()
 		if item, found, err := r.store.FindStreamItemByProviderItemID(threadID, turnIndex, itemKindThinking, scope, providerItemID); err != nil {
@@ -1075,7 +1075,7 @@ func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex
 			}
 			item.Summary = ThinkingSummaryPreview(content)
 			item.Status = statusCompleted
-			item.UpdatedAt = time.Now().UnixMilli()
+			item.UpdatedAt = rowClockMillis(at)
 			if item.PayloadID != "" {
 				if err := r.store.ReplacePayloadData(threadID, item.PayloadID, []byte(content), item.PayloadMeta, item.UpdatedAt); err != nil {
 					return fmt.Errorf("thinking final replace payload %s: %w", item.PayloadID, err)
@@ -1084,13 +1084,13 @@ func (r *Router) persistOrUpdateCompletedThinkingItem(threadID string, turnIndex
 			return r.persistItem(item, nil)
 		}
 	}
-	return r.persistCompletedThinkingItem(threadID, turnIndex, scope, providerItemID, content)
+	return r.persistCompletedThinkingItem(threadID, turnIndex, scope, providerItemID, content, at)
 }
 
-func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string) error {
+func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, scope, providerItemID, content string, at time.Time) error {
 	itemID := scopedStreamItemID("think", turnIndex, scope, providerItemID, r.nextThinkingItemID(threadID, turnIndex, scope))
 	payloadID := ThinkingPayloadID(itemID)
-	now := time.Now().UnixMilli()
+	now := rowClockMillis(at)
 	item := store.Item{
 		ID:        itemID,
 		ThreadID:  threadID,
@@ -1108,7 +1108,7 @@ func (r *Router) persistCompletedThinkingItem(threadID string, turnIndex int, sc
 	payload := store.Payload{
 		ID:        payloadID,
 		Kind:      itemKindThinking,
-		Meta:      BuildPayloadMeta(itemKindThinking, provider.ProviderEvent{ThreadID: threadID, Content: content, Timestamp: time.Now()}),
+		Meta:      BuildPayloadMeta(itemKindThinking, provider.ProviderEvent{ThreadID: threadID, Content: content, Timestamp: time.UnixMilli(now)}),
 		Data:      []byte(content),
 		CreatedAt: now,
 	}

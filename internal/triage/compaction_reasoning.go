@@ -108,6 +108,7 @@ func (r *Router) settleCompactionReasoning(evt provider.ProviderEvent) error {
 		statusCompleted,
 		evt.Content,
 		evt.ContentPresent,
+		evt.Timestamp,
 	)
 	return nil
 }

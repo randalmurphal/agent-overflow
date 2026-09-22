@@ -312,12 +312,19 @@ func (r *Router) findMatchingProposedPlanItemInCurrentTurn(evt provider.Provider
 	return store.Item{}, false, nil
 }
 
-func eventTimestampMillis(evt provider.ProviderEvent) int64 {
-	now := evt.Timestamp.UnixMilli()
-	if now == 0 {
-		now = time.Now().UnixMilli()
+// rowClockMillis is the row clock for a persisted item: the provider's own
+// event time, so a row written late (a transcript backfill, a recovered
+// block) sits where it happened rather than when it was written. Only an
+// event with no timestamp falls back to the wall clock.
+func rowClockMillis(at time.Time) int64 {
+	if at.IsZero() {
+		return time.Now().UnixMilli()
 	}
-	return now
+	return at.UnixMilli()
+}
+
+func eventTimestampMillis(evt provider.ProviderEvent) int64 {
+	return rowClockMillis(evt.Timestamp)
 }
 
 func eventItemID(evt provider.ProviderEvent) string {

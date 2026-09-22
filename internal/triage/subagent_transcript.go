@@ -306,13 +306,13 @@ func (r *Router) replaySubagentEvent(threadID string, launch store.Item, evt pro
 			return false, nil
 		}
 		return true, r.persistOrUpdateCompletedTextItem(
-			threadID, launch.TurnIndex, launch.ID, strings.TrimSpace(evt.ItemID), evt.Content, nil)
+			threadID, launch.TurnIndex, launch.ID, strings.TrimSpace(evt.ItemID), evt.Content, nil, evt.Timestamp)
 	case provider.EventThinking:
 		if evt.Content == "" {
 			return false, nil
 		}
 		return true, r.persistOrUpdateCompletedThinkingItem(
-			threadID, launch.TurnIndex, launch.ID, strings.TrimSpace(evt.ItemID), evt.Content)
+			threadID, launch.TurnIndex, launch.ID, strings.TrimSpace(evt.ItemID), evt.Content, evt.Timestamp)
 	case provider.EventError:
 		evt.Meta = replayedErrorMeta(evt.Meta)
 		return true, r.dispatch(evt)
