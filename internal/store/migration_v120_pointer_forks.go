@@ -269,6 +269,16 @@ SELECT turns.turn_id, l.thread_id, turns.turn_index, turns.started_at, turns.com
 //     moves from at or after a fork's cut to before it. A move of a row a
 //     fork reads is handed off first (handOffIDsTx), so the fork keeps
 //     its position.
+//   - trg_items_fork_reader_stamp: a fork's stamps are its own, so an
+//     ancestor's write moves them only when the fork shows the written row.
+//     A content change is handed off first, and the fork's copy stamps it.
+//     A write that reaches every thread showing the row updates it in place
+//     (a revision touch, the divider's source-deleted mark); the trigger
+//     advances the stamps of the forks whose cut follows the row and that
+//     do not hide it. The row stamping the history triggers cascade to a
+//     written row's anchors changes rev, not content, and the trigger skips
+//     it: an anchor's decoration reads the fork's own timeline, where a row
+//     after the cut or hidden by the fork does not appear.
 const forkTriggersSQL = `
 CREATE TRIGGER trg_threads_fork_source_delete BEFORE DELETE ON threads
 WHEN EXISTS (SELECT 1 FROM thread_fork_lineage WHERE ancestor_id = OLD.id)
@@ -333,10 +343,39 @@ BEGIN
      AND (NEW.turn_index, NEW.item_index) < (l.cut_turn_index, l.cut_item_index)
      AND (OLD.turn_index, OLD.item_index) >= (l.cut_turn_index, l.cut_item_index);
 END;
+
+CREATE TRIGGER trg_items_fork_reader_stamp AFTER UPDATE ON items
+WHEN OLD.rev IS NEW.rev
+ AND EXISTS (
+  SELECT 1 FROM thread_fork_lineage l
+   WHERE l.ancestor_id = OLD.thread_id
+     AND (l.cut_turn_index, l.cut_item_index) > (OLD.turn_index, OLD.item_index)
+)
+BEGIN
+  UPDATE threads SET
+    history_rev   = history_rev + 1,
+    history_epoch = history_epoch
+      + (OLD.turn_index IS NOT NEW.turn_index OR OLD.item_index IS NOT NEW.item_index)
+   WHERE id IN (
+     SELECT l.thread_id FROM thread_fork_lineage l
+      WHERE l.ancestor_id = OLD.thread_id
+        AND (l.cut_turn_index, l.cut_item_index) > (OLD.turn_index, OLD.item_index)
+        AND NOT EXISTS (
+          SELECT 1 FROM thread_fork_hidden hidden
+           WHERE hidden.thread_id = l.thread_id AND hidden.item_id = OLD.id
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM thread_fork_lineage nearer
+            JOIN thread_fork_hidden hidden ON hidden.thread_id = nearer.ancestor_id AND hidden.item_id = OLD.id
+           WHERE nearer.thread_id = l.thread_id AND nearer.depth < l.depth
+        )
+   );
+END;
 `
 
 const dropForkTriggersSQL = `DROP TRIGGER IF EXISTS trg_threads_fork_source_delete;
 DROP TRIGGER IF EXISTS trg_items_fork_position;
 DROP TRIGGER IF EXISTS trg_items_fork_position_update;
 DROP TRIGGER IF EXISTS trg_items_fork_snapshot;
-DROP TRIGGER IF EXISTS trg_items_fork_snapshot_move;`
+DROP TRIGGER IF EXISTS trg_items_fork_snapshot_move;
+DROP TRIGGER IF EXISTS trg_items_fork_reader_stamp;`

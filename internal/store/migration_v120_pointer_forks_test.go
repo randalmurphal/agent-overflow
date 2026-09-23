@@ -60,7 +60,7 @@ func TestMigrationV120PointerForks(t *testing.T) {
 	for _, object := range []string{
 		"thread_fork_lineage", "thread_fork_hidden", "idx_thread_fork_lineage_ancestor", "idx_threads_fork_source", "idx_items_unsettled",
 		"trg_threads_fork_source_delete", "trg_items_fork_position", "trg_items_fork_position_update",
-		"trg_items_fork_snapshot", "trg_items_fork_snapshot_move", "timeline_items", "timeline_payloads", "timeline_payload_chunks",
+		"trg_items_fork_snapshot", "trg_items_fork_snapshot_move", "trg_items_fork_reader_stamp", "timeline_items", "timeline_payloads", "timeline_payload_chunks",
 		"timeline_edit_file_snapshots", "timeline_turns",
 	} {
 		var n int

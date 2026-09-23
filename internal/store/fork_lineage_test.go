@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -709,11 +710,11 @@ func TestPointerForkPositionsStayOnTheirSideOfTheCut(t *testing.T) {
 	requireIDs(t, "F rows", itemIDs(forkRows(t, s, "F")), []string{"u0", "a0", "u1", "a1", "f2"})
 }
 
-// TestPointerForkStampsAndHeldWindows: a fork's stamp moves with its
-// source's, so a client is never told a fork is fresh when it is not, and
-// a window of the fork's own rows still verifies when nothing it shows
-// changed. Inherited rows carry no row stamp, so a window that holds them
-// never verifies. A hand-off leaves the fork's rows as they were.
+// TestPointerForkStampsAndHeldWindows: a source write after a fork's cut
+// leaves the fork fresh. A write that reaches a row the fork shows moves its
+// stamp, and a window of the fork's own rows still verifies; inherited rows
+// carry no row stamp, so a window that holds them does not. A hand-off
+// leaves the fork's rows as they were.
 func TestPointerForkStampsAndHeldWindows(t *testing.T) {
 	s := newTestStore(t)
 	seedLinearSource(t, s, "S", 2)
@@ -753,14 +754,19 @@ func TestPointerForkStampsAndHeldWindows(t *testing.T) {
 	if _, err := s.AppendItem(Item{ID: "late", ThreadID: "S", TurnIndex: 2, Kind: "user_text", Role: "user", Status: "completed"}); err != nil {
 		t.Fatal(err)
 	}
+	if got := sync(&whole); got != SyncFresh {
+		t.Fatalf("fork after a source write past its cut = %s, want fresh", got)
+	}
+
+	touchItemForTest(t, s, "S", "a1")
 	if historyStampOf(t, s, "F") == stamp {
-		t.Fatal("a source write left the fork's stamp")
+		t.Fatal("a revision touch of a row the fork shows left the fork's stamp")
 	}
 	if got := sync(nil); got != SyncStale {
-		t.Fatalf("fork after a source write = %s, want stale", got)
+		t.Fatalf("fork after a touch of a row it shows = %s, want stale", got)
 	}
 	if got := sync(&tail); got != SyncFresh {
-		t.Fatalf("fork's own window after a source write = %s, want fresh", got)
+		t.Fatalf("fork's own window after a touch of an inherited row = %s, want fresh", got)
 	}
 	if got := sync(&whole); got == SyncFresh {
 		t.Fatal("verified a window holding inherited rows")
@@ -777,100 +783,183 @@ func TestPointerForkStampsAndHeldWindows(t *testing.T) {
 	}
 }
 
-// ownHistoryStamp reads a thread row's own stamp columns, without the
-// ancestors' stamps readHistoryStampTx adds for a fork.
-func ownHistoryStamp(t *testing.T, s *Store, threadID string) HistoryStamp {
+// touchItemForTest is a revision touch of one row, the write a plan badge or
+// a plan comment makes (bumpHistoryRevForItemTx).
+func touchItemForTest(t *testing.T, s *Store, threadID, itemID string) {
 	t.Helper()
-	var stamp HistoryStamp
-	if err := s.db.QueryRow(`SELECT history_rev, history_epoch FROM threads WHERE id = ?`, threadID).Scan(&stamp.Rev, &stamp.Epoch); err != nil {
-		t.Fatalf("read own stamps of %s: %v", threadID, err)
-	}
-	return stamp
-}
-
-// TestPointerForkStampsSumTheLineage: a fork's stamps are its own plus its
-// ancestors', so an ancestor's write moves them without writing the fork's
-// thread row. Removing lineage rows (materializing a fork, deleting its
-// source, a revert that leaves nothing inherited) folds the removed
-// ancestors' stamps into the fork's own, so no stamp ever moves back and a
-// client can never see an old stamp over different rows.
-func TestPointerForkStampsSumTheLineage(t *testing.T) {
-	s := newTestStore(t)
-	seedLinearSource(t, s, "S", 3)
-	mustPointerFork(t, s, "S", "F", throughTurn(1))
-	if _, err := s.AppendItem(Item{ID: "f2", ThreadID: "F", TurnIndex: 2, Kind: "user_text", Role: "user", Status: "completed", Summary: "fork 2"}); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
 		t.Fatal(err)
 	}
-	mustPointerFork(t, s, "F", "G", ForkCut{})
-	stamps := func() map[string]HistoryStamp {
-		return map[string]HistoryStamp{"F": historyStampOf(t, s, "F"), "G": historyStampOf(t, s, "G")}
+	defer tx.Rollback()
+	if err := bumpHistoryRevForItemTx(tx, threadID, itemID, "test touch"); err != nil {
+		t.Fatal(err)
 	}
-	// requireForward fails a stamp that moved back and, when moved is not
-	// nil, a stamp that moved or stayed against it.
-	requireForward := func(what string, before, after map[string]HistoryStamp, moved []string) {
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// forkWindow is a thread's decorated window read.
+func forkWindow(t *testing.T, s *Store, threadID string) []Item {
+	t.Helper()
+	page, err := s.ListThreadSliceAround(context.Background(), threadID, "", 200, testRunWindowRows, TimelineSelection{})
+	if err != nil {
+		t.Fatalf("window of %s: %v", threadID, err)
+	}
+	return page.Items
+}
+
+// TestForkStampIgnoresSourceWritesPastTheCut: a fork's stamps are its own.
+// A source write after the fork's cut leaves them and the fork's window as
+// they were, including a write whose row stamping reaches a settled row
+// below the cut. A write that changes a row the fork shows moves them: a
+// content change through the hand-off's copy, a revision touch, spans on a
+// payload the fork shows, and a source deletion marking a divider the fork
+// shows from a materialized fork.
+func TestForkStampIgnoresSourceWritesPastTheCut(t *testing.T) {
+	s := newTestStore(t)
+	seedLinearSource(t, s, "S", 3)
+	for _, it := range []Item{
+		{ID: "root", ThreadID: "S", TurnIndex: 1, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Task", Summary: "Task", Meta: "{}"},
+		{ID: "c1", ThreadID: "S", TurnIndex: 1, ItemIndex: 3, ParentID: "root", Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "child 1", Meta: "{}"},
+	} {
+		if err := s.InsertItem(it); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.InsertItemWithPayload(
+		Item{ID: "tl", ThreadID: "S", TurnIndex: 1, ItemIndex: 4, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Bash", PayloadID: "pt", Meta: "{}"},
+		Payload{ID: "pt", Kind: "text", Meta: "{}", Data: []byte("out")},
+	); err != nil {
+		t.Fatal(err)
+	}
+	mustPointerFork(t, s, "S", "F", throughTurn(1))
+	mustPointerFork(t, s, "F", "G", ForkCut{})
+
+	type view struct {
+		stamp  HistoryStamp
+		window []Item
+	}
+	read := func() map[string]view {
+		out := map[string]view{}
+		for _, id := range []string{"F", "G"} {
+			out[id] = view{historyStampOf(t, s, id), forkWindow(t, s, id)}
+		}
+		return out
+	}
+	// requireViews fails a fork in moved whose stamp stayed, and a fork not
+	// in moved whose stamp or window changed.
+	requireViews := func(what string, before, after map[string]view, moved ...string) {
 		t.Helper()
 		for id, was := range before {
 			now := after[id]
-			if now.Rev < was.Rev || now.Epoch < was.Epoch {
-				t.Errorf("%s moved %s's stamp back: %+v -> %+v", what, id, was, now)
+			if slices.Contains(moved, id) {
+				if now.stamp.Rev <= was.stamp.Rev {
+					t.Errorf("%s left %s's stamp at %+v", what, id, now.stamp)
+				}
+				continue
 			}
-			if moved != nil && slices.Contains(moved, id) != (now != was) {
-				t.Errorf("%s: %s's stamp %+v -> %+v, want moved=%v", what, id, was, now, slices.Contains(moved, id))
+			if now.stamp != was.stamp {
+				t.Errorf("%s moved %s's stamp %+v -> %+v", what, id, was.stamp, now.stamp)
+			}
+			if !reflect.DeepEqual(now.window, was.window) {
+				t.Errorf("%s changed %s's window\n got %+v\nwant %+v", what, id, now.window, was.window)
 			}
 		}
 	}
-
-	own := map[string]HistoryStamp{"F": ownHistoryStamp(t, s, "F"), "G": ownHistoryStamp(t, s, "G")}
-	before := stamps()
-	if _, err := s.AppendItem(Item{ID: "late", ThreadID: "S", TurnIndex: 3, Kind: "user_text", Role: "user", Status: "completed", Summary: "late"}); err != nil {
-		t.Fatal(err)
-	}
-	after := stamps()
-	requireForward("a source write", before, after, []string{"F", "G"})
-	if err := s.DeleteThreadItem("S", "late"); err != nil {
-		t.Fatal(err)
-	}
-	deleted := stamps()
-	requireForward("a source delete", after, deleted, []string{"F", "G"})
-	for id, was := range after {
-		if deleted[id].Epoch <= was.Epoch {
-			t.Errorf("a source delete left %s's epoch at %d", id, deleted[id].Epoch)
+	rootRev := func() int64 {
+		t.Helper()
+		root, found, err := s.GetThreadItem("S", "root")
+		if err != nil || !found {
+			t.Fatalf("source root: found=%v err=%v", found, err)
 		}
-	}
-	for id, was := range own {
-		if now := ownHistoryStamp(t, s, id); now != was {
-			t.Errorf("source writes wrote %s's thread row: %+v -> %+v", id, was, now)
-		}
+		return root.Rev
 	}
 
-	before = stamps()
-	if err := s.MaterializeForkHistory(context.Background(), "F"); err != nil {
-		t.Fatal(err)
+	summary := "reply 2 edited"
+	for _, write := range []struct {
+		name string
+		run  func()
+	}{
+		{"a source append", func() {
+			if _, err := s.AppendItem(Item{ID: "late", ThreadID: "S", TurnIndex: 3, Kind: "user_text", Role: "user", Status: "completed", Summary: "late", Meta: "{}"}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a source update past the cut", func() {
+			if _, err := s.UpdateItemFields("S", "a2", ItemPartialUpdate{Summary: &summary}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a source delete past the cut", func() {
+			if err := s.DeleteThreadItem("S", "u2"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a child past the cut under a root below it", func() {
+			was := rootRev()
+			if err := s.InsertItem(Item{ID: "c2", ThreadID: "S", TurnIndex: 3, ItemIndex: 1, ParentID: "root", Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "child 2", Meta: "{}"}); err != nil {
+				t.Fatal(err)
+			}
+			if rootRev() == was {
+				t.Fatal("the child did not stamp its root below the cut")
+			}
+		}},
+		{"spans on a source payload past the cut", func() {
+			if err := s.InsertItemWithPayload(
+				Item{ID: "tl2", ThreadID: "S", TurnIndex: 3, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Bash", PayloadID: "pl", Meta: "{}"},
+				Payload{ID: "pl", Kind: "text", Meta: "{}", Data: []byte("late out")},
+			); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.UpdatePayloadSpans("S", "pl", `{"late":1}`, `{"late":2}`); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		before := read()
+		write.run()
+		requireViews(write.name, before, read())
 	}
-	requireIDs(t, "F lineage", forkLineage(t, s, "F"), nil)
-	after = stamps()
-	requireForward("materializing F", before, after, []string{"F", "G"})
-	if _, err := s.AppendItem(Item{ID: "later", ThreadID: "S", TurnIndex: 3, Kind: "user_text", Role: "user", Status: "completed", Summary: "later"}); err != nil {
-		t.Fatal(err)
-	}
-	requireForward("a source write after F materialized", after, stamps(), []string{"G"})
 
-	before = stamps()
-	if err := s.DeleteThread("S"); err != nil {
+	before := read()
+	if err := s.UpdatePayloadSpans("F", "pt", `{"preview":1}`, `{"full":1}`); err != nil {
 		t.Fatal(err)
 	}
-	requireIDs(t, "G lineage", forkLineage(t, s, "G"), []string{"1:F:2:1"})
-	requireForward("deleting the source", before, stamps(), nil)
+	requireViews("spans on a payload the forks show", before, read(), "F", "G")
 
-	seedLinearSource(t, s, "T", 2)
-	mustPointerFork(t, s, "T", "U", ForkCut{})
-	was := historyStampOf(t, s, "U")
-	if _, _, err := s.DeleteConversationFromTurn("U", 0); err != nil {
+	before = read()
+	touchItemForTest(t, s, "S", "a1")
+	requireViews("a revision touch of a row the forks show", before, read(), "F", "G")
+
+	// F takes a copy of a0 before the source changes it. G reads F's copy
+	// in place of the source's row, the same row.
+	before = read()
+	edited := "reply 0 edited"
+	if _, err := s.UpdateItemFields("S", "a0", ItemPartialUpdate{Summary: &edited}); err != nil {
 		t.Fatal(err)
 	}
-	requireIDs(t, "U lineage", forkLineage(t, s, "U"), nil)
-	if now := historyStampOf(t, s, "U"); now.Rev <= was.Rev || now.Epoch <= was.Epoch {
-		t.Errorf("unlinking U moved its stamp %+v -> %+v, want both forward", was, now)
+	requireViews("a source update below the cut", before, read(), "F")
+
+	// H materialized, so deleting its source reaches R, which reads H's
+	// divider, only through the divider's in-place mark.
+	seedLinearSource(t, s, "S2", 2)
+	mustPointerFork(t, s, "S2", "H", ForkCut{})
+	if err := s.MaterializeForkHistory(context.Background(), "H"); err != nil {
+		t.Fatal(err)
+	}
+	mustPointerFork(t, s, "H", "R", ForkCut{})
+	was := historyStampOf(t, s, "R")
+	if err := s.DeleteThread("S2"); err != nil {
+		t.Fatal(err)
+	}
+	if now := historyStampOf(t, s, "R"); now.Rev <= was.Rev {
+		t.Errorf("deleting H's source left R's stamp at %+v while R shows H's divider", now)
+	}
+	divider, found, err := s.GetThreadItem("R", forkDividerID("H"))
+	if err != nil || !found || !strings.Contains(divider.Meta, `"sourceDeleted":true`) {
+		t.Fatalf("R's view of H's divider = %+v found=%v err=%v", divider, found, err)
 	}
 }
 

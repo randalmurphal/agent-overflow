@@ -453,13 +453,23 @@ func handOffIDsTx(tx *sql.Tx, threadID string, ids []string) error {
 }
 
 // handOffReadIDsTx is handOffIDsTx once some thread is known to read
-// through threadID. Only the readers whose cut follows the first of the
-// rows are asked which rows they read, and all the readers at one depth are
-// asked in one statement: the rows a source writes while it runs are after
-// every fork's cut or, for a fork made mid-turn, rows it hides because it
-// took interrupted copies of them, so the write costs the same however many
-// forks there are. Depths run nearest first, for the reason handOff gives.
+// through threadID.
 func handOffReadIDsTx(tx *sql.Tx, threadID string, ids []string) error {
+	return forEachReaderShowingTx(tx, threadID, ids, func(reader string, rows []inheritedRow) error {
+		return copyInheritedRowsStampedTx(tx, reader, rows)
+	})
+}
+
+// forEachReaderShowingTx calls visit with every thread that shows some of
+// ids through threadID and the rows it shows. Only the readers whose cut
+// follows the first of the rows are asked which rows they read, and all the
+// readers at one depth are asked in one statement: the rows a source writes
+// while it runs are after every fork's cut or, for a fork made mid-turn,
+// rows it hides because it took interrupted copies of them, so the write
+// costs the same however many forks there are. Depths run nearest first and
+// each is asked after the nearer depths were visited, for the reason
+// handOff gives.
+func forEachReaderShowingTx(tx *sql.Tx, threadID string, ids []string, visit func(reader string, rows []inheritedRow) error) error {
 	from, found, err := firstRowOfTx(tx, threadID, ids)
 	if err != nil || !found {
 		return err
@@ -474,7 +484,7 @@ func handOffReadIDsTx(tx *sql.Tx, threadID string, ids []string) error {
 			return err
 		}
 		for _, reader := range slices.Sorted(maps.Keys(byReader)) {
-			if err := copyInheritedRowsStampedTx(tx, reader, byReader[reader]); err != nil {
+			if err := visit(reader, byReader[reader]); err != nil {
 				return err
 			}
 		}
@@ -561,6 +571,24 @@ func handOffPayloadTx(tx *sql.Tx, threadID, payloadID string) error {
 		return err
 	}
 	return handOffReadIDsTx(tx, threadID, ids)
+}
+
+// bumpPayloadReadersTx advances the stamp of every thread that shows
+// payloadID's rows through holder, for a write to the holder's payload row
+// that no hand-off precedes (UpdatePayloadSpans). The readers are found as
+// handOffPayloadTx finds them, so a payload whose rows follow every reader's
+// cut asks no reader.
+func bumpPayloadReadersTx(tx *sql.Tx, holder, payloadID, label string) error {
+	if read, err := readThroughTx(tx, holder); err != nil || !read {
+		return err
+	}
+	ids, err := payloadRowIDsTx(tx, holder, payloadID)
+	if err != nil || len(ids) == 0 {
+		return err
+	}
+	return forEachReaderShowingTx(tx, holder, ids, func(reader string, _ []inheritedRow) error {
+		return bumpHistoryRevTx(tx, reader, label)
+	})
 }
 
 // payloadRowIDsSQL reads the ids of the rows of a thread's timeline that

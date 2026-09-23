@@ -315,11 +315,11 @@ type sourceWriteCost struct {
 // fork took interrupted copies of the running rows and hides the source's,
 // and reads nothing after its cut, so no fork reads what the source writes
 // next. Those writes must cost the same with ten forks as with one and
-// change the rows they change with none: a fork's stamp sums its
-// ancestors' when read (readHistoryStampTx), so no write touches a fork's
-// thread row, and the hand-off asks every reader at a depth in one
-// statement (handOffReadIDsTx), and none for a row after every reader's
-// cut. Every statement also keeps to the lineage keys.
+// change the rows they change with none: a fork's stamps are its own and
+// move only for a row it shows, so no write touches a fork's thread row,
+// and the hand-off asks every reader at a depth in one statement
+// (handOffReadIDsTx), and none for a row after every reader's cut. Every
+// statement also keeps to the lineage keys.
 func TestSourceWritesCostTheSameForAnyForkCount(t *testing.T) {
 	writes := []struct {
 		name string
@@ -438,7 +438,7 @@ func TestPointerForkRowTriggersProbeTheLineage(t *testing.T) {
 	}
 	for _, name := range append(append([]string{}, revTriggerNames...),
 		"trg_items_fork_position", "trg_items_fork_position_update",
-		"trg_items_fork_snapshot", "trg_items_fork_snapshot_move", "trg_threads_fork_source_delete") {
+		"trg_items_fork_snapshot", "trg_items_fork_snapshot_move", "trg_items_fork_reader_stamp", "trg_threads_fork_source_delete") {
 		if triggers[name] == "" {
 			t.Fatalf("trigger %s is missing", name)
 		}

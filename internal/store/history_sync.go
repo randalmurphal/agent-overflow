@@ -481,21 +481,15 @@ func touchItemRowsTx(exec sqlExecutor, threadID, label, touchSQL string, args ..
 // readHistoryStampTx reads a thread's stamps. found=false means no thread
 // row — a deleted thread, which SyncThreadWindow reports as `gone`.
 //
-// A pointer fork reads its ancestors' rows, so its stamps are its own plus
-// every ancestor's in its lineage: any ancestor write moves them, and no
-// ancestor write touches the fork's row, so a write costs the same however
-// many forks read through its thread. Removing lineage rows folds the
-// removed ancestors' stamps into the fork's own first
-// (foldAncestorStampsTx), so the sums never move back.
+// A pointer fork's stamps are its own. An ancestor's write moves them only
+// when it changes a row the fork shows: the hand-off's copy
+// (copyInheritedRowsStampedTx), an in-place update the fork shows
+// (trg_items_fork_reader_stamp) and spans on a payload it shows
+// (UpdatePayloadSpans). A write after the fork's cut leaves them alone.
 func readHistoryStampTx(q sqlQueryer, threadID string) (HistoryStamp, bool, error) {
 	var stamp HistoryStamp
 	err := q.QueryRow(
-		`SELECT t.history_rev + COALESCE(SUM(a.history_rev), 0), t.history_epoch + COALESCE(SUM(a.history_epoch), 0)
-		   FROM threads t
-		   LEFT JOIN thread_fork_lineage l ON l.thread_id = t.id
-		   LEFT JOIN threads a ON a.id = l.ancestor_id
-		  WHERE t.id = ?
-		  GROUP BY t.id`,
+		`SELECT history_rev, history_epoch FROM threads WHERE id = ?`,
 		threadID,
 	).Scan(&stamp.Rev, &stamp.Epoch)
 	if errors.Is(err, sql.ErrNoRows) {

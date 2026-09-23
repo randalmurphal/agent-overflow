@@ -502,11 +502,12 @@ func (s *Store) UpdatePayloadMeta(threadID, id, meta string) error {
 // spans ride the item row on the wire (Item.PayloadPreviewSpans), so a
 // backfill genuinely changes what a windowed read returns.
 //
-// It is the one payload mutator that bumps the THREAD without stamping the
-// item rows (bumpHistoryRevForPayloadTx explains the split). Spans are a
-// derived highlight cache the client version-checks against the payload
-// content it already holds, so a held window whose spans are behind is
-// still a correct window and must not be forced to re-page.
+// It is the one payload mutator that bumps THREADS without stamping the
+// item rows (bumpHistoryRevForPayloadTx explains the split): the holder and
+// every fork that shows the payload's rows. Spans are a derived highlight
+// cache the client version-checks against the payload content it already
+// holds, so a held window whose spans are behind is still a correct window
+// and must not be forced to re-page.
 //
 // Returns sql.ErrNoRows (wrapped) if no payload matches id — the
 // span worker racing a thread deletion hits this and treats it as a
@@ -540,6 +541,9 @@ func (s *Store) UpdatePayloadSpans(threadID, id, previewSpans, spans string) err
 		return err
 	}
 	if err := bumpHistoryRevTx(tx, holder, label); err != nil {
+		return err
+	}
+	if err := bumpPayloadReadersTx(tx, holder, id, label); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

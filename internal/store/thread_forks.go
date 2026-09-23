@@ -782,9 +782,6 @@ func retractInheritedTx(tx *sql.Tx, threadID string, fromTurn int, predicate str
 	if !survives {
 		// Nothing inherited survives: the fork is an ordinary thread from
 		// here on. Its hides stay, since its forks read through them.
-		if err := foldAncestorStampsTx(tx, threadID, 1); err != nil {
-			return err
-		}
 		if _, err := tx.Exec(`DELETE FROM thread_fork_lineage WHERE thread_id = ?`, threadID); err != nil {
 			return fmt.Errorf("store: unlink fork %s: %w", threadID, err)
 		}
@@ -858,22 +855,6 @@ func retractInheritedTx(tx *sql.Tx, threadID string, fromTurn int, predicate str
 		}
 	}
 	return bumpForkViewTx(tx, threadID)
-}
-
-// foldAncestorStampsTx adds to threadID's own stamps those of its ancestors
-// at minDepth and beyond, before the caller deletes their lineage rows.
-// readHistoryStampTx sums a fork's ancestors into its stamps, so removing a
-// level without the fold would move them back.
-func foldAncestorStampsTx(tx *sql.Tx, threadID string, minDepth int) error {
-	if _, err := tx.Exec(`UPDATE threads SET
-		    history_rev = history_rev + (SELECT COALESCE(SUM(a.history_rev), 0)
-		      FROM thread_fork_lineage l JOIN threads a ON a.id = l.ancestor_id WHERE l.thread_id = ?1 AND l.depth >= ?2),
-		    history_epoch = history_epoch + (SELECT COALESCE(SUM(a.history_epoch), 0)
-		      FROM thread_fork_lineage l JOIN threads a ON a.id = l.ancestor_id WHERE l.thread_id = ?1 AND l.depth >= ?2)
-		  WHERE id = ?1`, threadID, minDepth); err != nil {
-		return fmt.Errorf("store: fold ancestor stamps into %s: %w", threadID, err)
-	}
-	return nil
 }
 
 // bumpForkViewTx records a change to which inherited rows a thread shows.
@@ -956,15 +937,6 @@ func detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 	}
 	if len(affected) == 0 {
 		return nil
-	}
-	readers, err := queryForkLevels(tx, `SELECT thread_id, depth FROM thread_fork_lineage WHERE ancestor_id = ?`, threadID)
-	if err != nil {
-		return fmt.Errorf("store: list fork levels of %s: %w", threadID, err)
-	}
-	for _, reader := range readers {
-		if err := foldAncestorStampsTx(tx, reader.threadID, reader.depth); err != nil {
-			return err
-		}
 	}
 	if _, err := tx.Exec(
 		`DELETE FROM thread_fork_lineage
@@ -1099,9 +1071,6 @@ func (s *Store) finishForkMaterialization(threadID string) error {
 	// The thread's hides stay: a thread forked from it reads its ancestors
 	// through the levels beyond it, filtered by those hides, including rows
 	// below a cut this thread lowered and therefore did not copy.
-	if err := foldAncestorStampsTx(tx, threadID, 1); err != nil {
-		return err
-	}
 	if _, err := tx.Exec(`DELETE FROM thread_fork_lineage WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("store: unlink materialized %s: %w", threadID, err)
 	}

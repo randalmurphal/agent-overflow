@@ -532,10 +532,12 @@ func TestHistoryContractProposedPlanRefusesUnknownThread(t *testing.T) {
 }
 
 // TestHistoryContractForkBumpsForkOnly pins the fork row of §3.2: making
-// a pointer fork and writing to it moves only the fork's stamps, while a
-// write to its source moves both, because the fork's reads include the
-// source's rows. A source that appeared to change on a fork's write would
-// make every open pane holding it re-fetch for nothing.
+// a pointer fork and writing to it moves only the fork's stamps. A source
+// write after the fork's cut moves only the source's, since the fork does
+// not read it; a source write to a row the fork shows hands the fork a copy
+// first, which moves the fork's rev. A stamp that moved on a write its
+// thread does not read would make every open pane holding it re-fetch for
+// nothing.
 func TestHistoryContractForkBumpsForkOnly(t *testing.T) {
 	s := newTestStore(t)
 	seedContractThread(t, s, "t")
@@ -567,8 +569,15 @@ func TestHistoryContractForkBumpsForkOnly(t *testing.T) {
 	if _, err := s.AppendItem(contractItem("t", "i2", 1)); err != nil {
 		t.Fatalf("append to source: %v", err)
 	}
+	if got := historyStampOf(t, s, "fork"); got != target {
+		t.Fatalf("source write past the cut moved fork stamps %+v -> %+v", target, got)
+	}
+	summary := "edited"
+	if _, err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{Summary: &summary}); err != nil {
+		t.Fatalf("update source row the fork shows: %v", err)
+	}
 	if got := historyStampOf(t, s, "fork"); got.Rev <= target.Rev || got.Epoch != target.Epoch {
-		t.Fatalf("source write left fork stamps %+v -> %+v, want rev up and epoch kept", target, got)
+		t.Fatalf("source write to a row the fork shows left fork stamps %+v -> %+v, want rev up and epoch kept", target, got)
 	}
 }
 

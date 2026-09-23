@@ -90,8 +90,9 @@ an atomic persistence decision; they must not become a business-logic layer.
   `bumpHistoryRevForItemTx` / `bumpHistoryRevForPayloadTx` so the owning row's
   `rev` moves with the thread stamp; plain `bumpHistoryRevTx` is only for a
   window-visible write with no owning item row. `UpdatePayloadSpans` bumps the
-  thread alone: spans are a client-version-checked cache. An item-coupled write
-  relies on the item trigger and must not double-bump.
+  holder and the forks that show the payload, not the row's `rev`: spans are a
+  client-version-checked cache. An item-coupled write relies on the item
+  trigger and must not double-bump.
 - `SyncThreadWindow` reads store identity, stamps, and rows in one read
   transaction so they describe one WAL snapshot.
 - `history_bulk_load` may suppress stamp triggers only in a transaction that
