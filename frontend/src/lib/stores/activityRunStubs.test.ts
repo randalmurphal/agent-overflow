@@ -143,14 +143,14 @@ describe('noteSpanMoved', () => {
   it('re-points the record and marks it dirty', () => {
     const records: ActivityRunRecords = new Map();
     const record = foldPageStub(records, stub(), span(loaded));
-    noteSpanMoved(record, span([...loaded, row('e', 4)]));
+    expect(noteSpanMoved(record, span([...loaded, row('e', 4)]))).toBe(true);
     expect(record).toMatchObject({ loadedLastItemId: 'e', dirty: true });
   });
 
   it('is a no-op when the span did not move', () => {
     const records: ActivityRunRecords = new Map();
     const record = foldPageStub(records, stub(), span(loaded));
-    noteSpanMoved(record, span(loaded));
+    expect(noteSpanMoved(record, span(loaded))).toBe(false);
     expect(record.dirty).toBe(false);
   });
 });

@@ -452,6 +452,45 @@ export function applyItemStreamEvent(evt: ItemStreamEvent, origin?: EventOrigin)
   scheduleItemEventFlush();
 }
 
+type CoalescedDelta = ItemDeltaEvent & { chunks: string[] };
+type DeferredDelta = { action: 'delta' } & CoalescedDelta;
+type ItemRowEvent = Extract<ItemStreamEvent, { action: 'meta' | 'patch' }>;
+type DeferredRowEvent = ItemRowEvent | DeferredDelta;
+
+function coalescedDelta(evt: ItemDeltaEvent): CoalescedDelta {
+  return {
+    threadId: evt.threadId,
+    itemId: evt.itemId,
+    kind: evt.kind,
+    delta: '',
+    updatedAt: evt.updatedAt,
+    chunks: [evt.delta],
+  };
+}
+
+function applyCoalescedDelta(delta: CoalescedDelta): void {
+  const coalesced: ItemDeltaEvent = {
+    threadId: delta.threadId,
+    itemId: delta.itemId,
+    kind: delta.kind,
+    delta: delta.chunks.join(''),
+    updatedAt: delta.updatedAt,
+  };
+  applyItemDelta(coalesced);
+  applyTimelineMutation(coalesced.threadId, { kind: 'delta', event: coalesced });
+}
+
+function applyItemRowEvent(evt: ItemRowEvent): void {
+  for (const pane of ingestPanes()) {
+    if (pane.threadId !== evt.threadId) continue;
+    if (evt.action === 'meta') pane.applyItemMeta(evt);
+    else pane.applyItemPatch(evt);
+  }
+  applyTimelineMutation(evt.threadId, evt.action === 'meta'
+    ? { kind: 'meta', event: evt }
+    : { kind: 'patch', event: evt });
+}
+
 export function flushItemEventQueue(): void {
   cancelItemEventFlushSchedule();
   if (itemEventQueueStart >= itemEventQueue.length) {
@@ -495,8 +534,16 @@ export function flushItemEventQueue(): void {
   const pendingUpserts: Item[] = [];
   const pendingUpsertItemKeys = new Set<string>();
   const notifiedUpserts: Item[] = [];
-  const pendingDeltas = new Map<string, ItemDeltaEvent & { chunks: string[] }>();
+  const pendingDeltas = new Map<string, CoalescedDelta>();
   const pendingDeltaItemKeys = new Set<string>();
+  // Row events that arrived after a pending upsert of their row. They apply
+  // right after that upsert batch, in arrival order, so rows created and then
+  // patched, re-tagged or streamed within one flush still commit once.
+  const deferredRowEvents: DeferredRowEvent[] = [];
+  const deferredRowItemKeys = new Set<string>();
+  // Each row's newest deferred event when it is a delta, so consecutive
+  // chunks for that row coalesce into it.
+  const deferredDeltaTails = new Map<string, DeferredDelta>();
 
   const itemConflictKey = (threadId: string, itemId: string): string =>
     compositeKey(threadId, itemId);
@@ -507,6 +554,31 @@ export function flushItemEventQueue(): void {
     notifiedUpserts.push(...pendingUpserts);
     pendingUpserts.length = 0;
     pendingUpsertItemKeys.clear();
+    if (deferredRowEvents.length === 0) return;
+    const deferred = deferredRowEvents.splice(0);
+    deferredRowItemKeys.clear();
+    deferredDeltaTails.clear();
+    for (const evt of deferred) {
+      if (evt.action === 'delta') applyCoalescedDelta(evt);
+      else applyItemRowEvent(evt);
+    }
+  };
+
+  const deferRowEvent = (evt: DeferredRowEvent, itemKey: string) => {
+    deferredRowEvents.push(evt);
+    deferredRowItemKeys.add(itemKey);
+    if (evt.action === 'delta') deferredDeltaTails.set(itemKey, evt);
+    else deferredDeltaTails.delete(itemKey);
+  };
+
+  const deferDelta = (evt: ItemDeltaEvent, itemKey: string) => {
+    const tail = deferredDeltaTails.get(itemKey);
+    if (tail?.kind === evt.kind) {
+      tail.chunks.push(evt.delta);
+      tail.updatedAt = Math.max(tail.updatedAt, evt.updatedAt);
+      return;
+    }
+    deferRowEvent({ action: 'delta', ...coalescedDelta(evt) }, itemKey);
   };
 
   const queueDelta = (evt: ItemDeltaEvent) => {
@@ -519,36 +591,26 @@ export function flushItemEventQueue(): void {
       existing.updatedAt = Math.max(existing.updatedAt, evt.updatedAt);
       return;
     }
-    pendingDeltas.set(key, { ...evt, delta: '', chunks: [evt.delta] });
+    pendingDeltas.set(key, coalescedDelta(evt));
     pendingDeltaItemKeys.add(itemConflictKey(evt.threadId, evt.itemId));
   };
 
   const flushPendingDeltas = () => {
     if (pendingDeltas.size === 0) return;
-    for (const delta of pendingDeltas.values()) {
-      const coalesced: ItemDeltaEvent = {
-        threadId: delta.threadId,
-        itemId: delta.itemId,
-        kind: delta.kind,
-        delta: delta.chunks.join(''),
-        updatedAt: delta.updatedAt,
-      };
-      applyItemDelta(coalesced);
-      applyTimelineMutation(coalesced.threadId, { kind: 'delta', event: coalesced });
-    }
+    for (const delta of pendingDeltas.values()) applyCoalescedDelta(delta);
     pendingDeltas.clear();
     pendingDeltaItemKeys.clear();
   };
 
-  // Apply order is preserved PER ITEM, not globally: a pending buffer
-  // only flushes early when the incoming event targets an item that
-  // buffer already holds. Items are independent in pane state, so
-  // cross-item reordering inside one rAF flush is safe — and it is what
-  // keeps a tool burst (upserts, patches, and deltas of many different
-  // rows interleaved on the wire) applying as one upsert batch -> one
-  // items-array swap -> one structural re-derive, instead of
-  // fragmenting into per-transition micro-batches that each paid an
-  // O(window) array copy and a full timeline regroup.
+  // Apply order is preserved PER ITEM, not globally. Items are independent
+  // in pane state, so cross-item reordering inside one rAF flush is safe,
+  // and it is what keeps a tool burst (upserts, patches, metas and deltas of
+  // many rows interleaved on the wire) applying as one upsert batch -> one
+  // items-array swap -> one structural re-derive. A row event behind a
+  // pending upsert of its row waits for that batch (`deferredRowEvents`);
+  // the batch applies early only when a row it holds is upserted again
+  // after such an event, or removed. A pending delta applies before any
+  // later event of its row.
   try {
     for (const evt of events) {
       if (!evt || !evt.threadId || !survivesCut(evt)) continue;
@@ -561,37 +623,24 @@ export function flushItemEventQueue(): void {
         if (!isValidItemForThread(evt.item, evt.threadId)) continue;
         const itemKey = itemConflictKey(evt.threadId, evt.item.id);
         // A queued delta for this row must land before the upsert
-        // replaces the row's summary wholesale.
+        // replaces the row's summary wholesale, and so must an event
+        // already waiting behind this row's pending upsert.
         if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
+        if (deferredRowItemKeys.has(itemKey)) flushPendingUpserts();
         pendingUpserts.push(evt.item);
         pendingUpsertItemKeys.add(itemKey);
         continue;
       }
-      if (evt.action === 'meta') {
-        // Re-validated meta blob (e.g. live path-link allowlist for an
-        // in-flight assistant_text row). Pending deltas for the same row
-        // must apply FIRST so the new meta lands against text the user
-        // has already seen; a pending upsert for the same row must apply
-        // too so the row exists by the time we set its meta.
+      if (evt.action === 'meta' || evt.action === 'patch') {
+        // Meta is a re-validated blob (e.g. the live path-link allowlist
+        // for an in-flight assistant_text row) and must land against text
+        // the user has already seen, so the row's pending deltas apply
+        // first. Both need the row to exist, so behind a pending upsert of
+        // the row they wait for that batch.
         const itemKey = itemConflictKey(evt.threadId, evt.itemId);
         if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
-        if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
-        for (const pane of ingestPanes()) {
-          if (pane.threadId !== evt.threadId) continue;
-          pane.applyItemMeta(evt);
-        }
-        applyTimelineMutation(evt.threadId, { kind: 'meta', event: evt });
-        continue;
-      }
-      if (evt.action === 'patch') {
-        const itemKey = itemConflictKey(evt.threadId, evt.itemId);
-        if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
-        if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
-        for (const pane of ingestPanes()) {
-          if (pane.threadId !== evt.threadId) continue;
-          pane.applyItemPatch(evt);
-        }
-        applyTimelineMutation(evt.threadId, { kind: 'patch', event: evt });
+        if (pendingUpsertItemKeys.has(itemKey)) deferRowEvent(evt, itemKey);
+        else applyItemRowEvent(evt);
         continue;
       }
       if (evt.action === 'remove') {
@@ -607,19 +656,19 @@ export function flushItemEventQueue(): void {
       if (evt.action !== 'delta') continue;
 
       // A pending upsert for this row carries the full summary; the
-      // delta extends it, so the upsert must land first.
-      if (pendingUpsertItemKeys.has(itemConflictKey(evt.threadId, evt.itemId))) {
-        flushPendingUpserts();
-      }
-      queueDelta(evt);
+      // delta extends it, so it waits for that batch.
+      const itemKey = itemConflictKey(evt.threadId, evt.itemId);
+      if (pendingUpsertItemKeys.has(itemKey)) deferDelta(evt, itemKey);
+      else queueDelta(evt);
     }
 
     // Tail order is safe: no item can be pending in BOTH buffers here.
-    // Queuing a delta flushes that row's pending upsert first, and
-    // buffering an upsert flushes that row's pending delta first (the
-    // per-item conflict checks above), so the two pending sets are always
-    // disjoint per item by the time we reach the tail. Draining deltas
-    // then upserts therefore can't reorder any single row's events.
+    // A delta is queued only for a row with no pending upsert, and
+    // buffering an upsert flushes that row's pending delta first, so the
+    // two pending sets are disjoint per item by the time we reach the
+    // tail. Deferred events belong to rows of the upsert batch and apply
+    // with it. Draining deltas then upserts therefore can't reorder any
+    // single row's events.
     flushPendingDeltas();
     flushPendingUpserts();
     // Sidebar activity is bumped only at meaningful interaction

@@ -213,7 +213,7 @@ export function createThreadItemStreamApply(
   ): ApplyItemUpsertsToWindowResult | null {
     const previousTail = options.getItems().at(-1);
     const applied = upsertItemsBatch(incoming, options.optimisticItemIds);
-    if (applied && !timelineWindow.hasMoreNewer) {
+    if (applied && applied.appendedItems.length > 0 && !timelineWindow.hasMoreNewer) {
       activityRuns.noteLiveAppend(applied.appendedItems, previousTail);
     }
     // Discharging an optimistic marker belongs HERE, not in
