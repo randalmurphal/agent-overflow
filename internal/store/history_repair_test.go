@@ -358,14 +358,24 @@ func TestUnsealThreadHistoryRestoresPrivateRows(t *testing.T) {
 		t.Fatalf("physical payload = %q, %v", data, err)
 	}
 
-	// The moved rows are stamped at the old revision and the thread stamp
-	// advances past them by exactly the moved row count; the epoch holds.
+	// Each transaction stamps the rows it moved at the thread stamp it started
+	// from and advances the stamp by their count, however the time budget
+	// split the move; the epoch holds.
 	got := historyStamp(t, s, "t")
 	if got.Rev != stamp.Rev+30 || got.Epoch != stamp.Epoch {
 		t.Fatalf("stamp = %+v, want rev %d epoch %d", got, stamp.Rev+30, stamp.Epoch)
 	}
-	if n := countRows(t, s, `SELECT count(*) FROM items WHERE thread_id='t' AND rev = ?`, stamp.Rev); n != 30 {
-		t.Fatalf("%d rows stamped at rev %d, want 30", n, stamp.Rev)
+	stamped := map[int64]int64{}
+	for _, item := range mustListItems(t, s, "t") {
+		stamped[item.Rev]++
+	}
+	for next := stamp.Rev; len(stamped) > 0; {
+		moved, ok := stamped[next]
+		if !ok {
+			t.Fatalf("moved rows are stamped at %v, want runs starting at rev %d", stamped, stamp.Rev)
+		}
+		delete(stamped, next)
+		next += moved
 	}
 	for _, item := range mustListItems(t, s, "t") {
 		if item.Rev < 0 {
