@@ -8,13 +8,13 @@ import (
 	"testing"
 )
 
-// TestMigrationV119PointerForks: the migration copies every payload a thread
+// TestMigrationV120PointerForks: the migration copies every payload a thread
 // borrowed through a v107 snapshot back into its own rows, whichever of the
 // three places the snapshot held the bytes in, retires the snapshot
 // triggers, and installs the pointer-fork schema whose views read a fork's
 // history through its lineage.
-func TestMigrationV119PointerForks(t *testing.T) {
-	db := migrateThrough(t, 118)
+func TestMigrationV120PointerForks(t *testing.T) {
+	db := migrateThrough(t, 119)
 	mustExec(t, db, `INSERT INTO threads(id,provider,workspace_path,created_at,updated_at) VALUES
 		('src','claude','/tmp',1,1),('borrower','claude','/tmp',1,1),('keeper','claude','/tmp',1,1),('importer','claude','/tmp',1,1)`)
 	// Borrowed from a live source payload, with its chunk and edit.
@@ -43,10 +43,10 @@ func TestMigrationV119PointerForks(t *testing.T) {
 		"keeper/q=kept chunks=[ tail] edits=[path:kept edit]",
 		"src/p=base chunks=[ chunk] edits=[file:original]",
 	}
-	requireIDs(t, "payloads before", v119PayloadState(t, db, "timeline_payloads", "timeline_payload_chunks", "timeline_edit_file_snapshots"), want)
-	migrateFrom(t, db, 118)
-	requireIDs(t, "payloads through the views", v119PayloadState(t, db, "timeline_payloads", "timeline_payload_chunks", "timeline_edit_file_snapshots"), want)
-	requireIDs(t, "physical payloads", v119PayloadState(t, db, "payloads", "payload_chunks", "edit_file_snapshots"), want)
+	requireIDs(t, "payloads before", v120PayloadState(t, db, "timeline_payloads", "timeline_payload_chunks", "timeline_edit_file_snapshots"), want)
+	migrateFrom(t, db, 119)
+	requireIDs(t, "payloads through the views", v120PayloadState(t, db, "timeline_payloads", "timeline_payload_chunks", "timeline_edit_file_snapshots"), want)
+	requireIDs(t, "physical payloads", v120PayloadState(t, db, "payloads", "payload_chunks", "edit_file_snapshots"), want)
 
 	var leftovers int
 	if err := db.QueryRow(`SELECT (SELECT count(*) FROM payload_snapshots) + (SELECT count(*) FROM payload_snapshot_refs)
@@ -113,9 +113,9 @@ func TestMigrationV119PointerForks(t *testing.T) {
 	}
 }
 
-// v119PayloadState renders every payload of the fixture threads with its
+// v120PayloadState renders every payload of the fixture threads with its
 // chunks and edit snapshots, read from the named tables or views.
-func v119PayloadState(t *testing.T, db *sql.DB, payloads, chunks, edits string) []string {
+func v120PayloadState(t *testing.T, db *sql.DB, payloads, chunks, edits string) []string {
 	t.Helper()
 	collect := func(query string, args ...any) []string {
 		t.Helper()
