@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { tick } from 'svelte';
 import { createBackgroundController } from './activityRailBackground.svelte';
-import { buildPane, makeItem } from '../../../test/helpers/chat';
+import { buildPane, makeItem, makeThread } from '../../../test/helpers/chat';
 import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { noteThread } from '../../transport/entityIndex';
 import { __attachBackendForTest, detachBackend } from '../../transport/backends';
 import { applyItemStreamEvent, flushItemEventQueue, resetItemEventQueue } from '../../stores/eventsItemStream';
-import type { Item, Project } from '../../types/models';
+import type { Item, Project, Thread } from '../../types/models';
 
 const remote = 'tray-owner';
 function attachOwner() {
@@ -145,9 +145,9 @@ describe('tray refresh reasons', () => {
     vi.useRealTimers();
   });
 
-  async function mountTray(listed: Item[]) {
+  async function mountTray(listed: Item[], thread?: Thread) {
     vi.useFakeTimers();
-    const pane = await buildPane();
+    const pane = await buildPane(thread);
     const read = setBindingMock('ListLiveBackgroundTasks', async () => listed);
     let controller!: ReturnType<typeof createBackgroundController>;
     release = $effect.root(() => {
@@ -231,6 +231,75 @@ describe('tray refresh reasons', () => {
     })]);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(read).toHaveBeenCalledTimes(3);
+  });
+
+  // A re-pushed launch the tray already lists is not a membership change:
+  // it updates its row in place and never reads.
+  function latestTool(summary: string, itemIndex: number, extra: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      ...extra,
+      subagentLatestToolSummary: summary,
+      subagentLatestToolTurnIndex: 0,
+      subagentLatestToolItemIndex: itemIndex,
+    });
+  }
+
+  function activity(controller: ReturnType<typeof createBackgroundController>, rowId: string): unknown {
+    const task = controller.tasks.find((t) => t.rowId === rowId);
+    return JSON.parse(task?.launch?.meta ?? '{}').subagentLatestToolSummary;
+  }
+
+  const claudeAgent = (id: string, meta?: string) => makeItem({
+    id, kind: 'tool_call', toolName: 'Agent', status: 'running', isBackground: true, meta,
+  });
+
+  it('updates a listed Claude launch from a re-push with a new activity summary, with no read', async () => {
+    const agent = claudeAgent('agent', latestTool('Read: a.ts', 3));
+    const { pane, read, controller } = await mountTray([agent]);
+
+    deliver(pane, [{ ...agent, rev: 2, meta: latestTool('Bash: pnpm test', 7, { subagentDescendantCount: 5 }) }]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(activity(controller, 'agent')).toBe('Bash: pnpm test');
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a listed launch\u2019s row for a re-push without the keys, with no read', async () => {
+    const agent = claudeAgent('agent', latestTool('Read: a.ts', 3));
+    const { pane, read, controller } = await mountTray([agent]);
+    const before = controller.tasks[0].launch;
+
+    deliver(pane, [{ ...agent, rev: 2, meta: JSON.stringify({ subagentDescendantCount: 5 }) }]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(controller.tasks[0].launch).toBe(before);
+    expect(activity(controller, 'agent')).toBe('Read: a.ts');
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a Codex agent\u2019s runtime row alone when its settled spawn row is re-pushed', async () => {
+    const runtime = makeItem({
+      id: 'spawn', kind: 'tool_call', toolName: 'collab_agent', status: 'running', isBackground: true,
+      meta: latestTool('Bash: ls', 2, { input: { tool: 'spawn_agent' } }),
+    });
+    const { pane, read, controller } = await mountTray([runtime], makeThread({ provider: 'codex' }));
+    const before = controller.tasks[0].launch;
+
+    deliver(pane, [{ ...runtime, status: 'completed', rev: 2, meta: latestTool('Read: stale.ts', 9, { input: { tool: 'spawn_agent' } }) }]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(controller.tasks[0].launch).toBe(before);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  // The scale this path exists for: every live agent's anchor is re-pushed
+  // as its children are written. None of those pushes changes membership.
+  it('reads nothing while 100 listed launches are re-pushed once a second for 10 s', async () => {
+    const agents = Array.from({ length: 100 }, (_, i) => claudeAgent(`agent-${i}`, latestTool('start', 0)));
+    const { pane, read, controller } = await mountTray(agents);
+    for (let second = 1; second <= 10; second += 1) {
+      deliver(pane, agents.map((agent) => ({ ...agent, rev: second, meta: latestTool(`step ${second}`, second) })));
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(activity(controller, 'agent-42')).toBe('step 10');
   });
 });
 

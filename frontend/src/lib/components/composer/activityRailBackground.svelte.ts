@@ -32,7 +32,7 @@ import type { Item } from '../../types/models';
 import { asProviderID, type ProviderID } from '../../types/providers';
 import { deriveTrayTasks, type TrayTask } from '../../utils/backgroundTray';
 import { createRefreshScheduler } from '../../utils/refreshScheduler';
-import { createCodexLatestToolProjection } from '../../utils/codexTrayProjection';
+import { createTrayLatestToolProjection } from '../../utils/codexTrayProjection';
 
 // Brief retention so a completion has time to flicker into view as the
 // terminal state but doesn't linger after the user has read it. Just
@@ -65,29 +65,48 @@ export function createBackgroundController(
   // Raw: every writer replaces the snapshot, and rows are read, never
   // mutated in place, so a deep proxy per row would only add cost.
   let backgroundItems: Item[] = $state.raw([]);
-  // Launch rows the snapshot lists, for deciding which upserts can change
-  // it. Rebuilt with each wholesale write, never per event.
-  let listedLaunches = new Set<string>();
-  const codexTools = createCodexLatestToolProjection();
+  // Launch rows the snapshot lists, for deciding what an upsert changes.
+  // Rebuilt with each wholesale write, never per event. A running row wins
+  // over another row with its id, as in `deriveTrayTasks`.
+  let listedLaunches = new Map<string, Item>();
+  const latestTools = createTrayLatestToolProjection();
 
   function replaceBackgroundItems(items: Item[]): void {
     backgroundItems = items;
-    listedLaunches = new Set();
+    listedLaunches = new Map();
     for (const item of items) {
-      if (!item.completionOf) listedLaunches.add(item.id);
+      if (!item.completionOf && (item.status === 'running' || !listedLaunches.has(item.id))) {
+        listedLaunches.set(item.id, item);
+      }
     }
-    codexTools.reset(items);
+    latestTools.reset(items);
   }
 
-  // What can change the tray: a background launch or a background task's
-  // terminal (both carry isBackground), or a write that settles a launch
-  // the tray lists, through its completion sibling or in place (a launch
-  // whose result cleared its background flag). A child's ordinary
-  // tool_completion names a launch the tray does not list.
-  function changesTray(item: Item): boolean {
-    if (item.isBackground) return true;
-    if (item.completionOf) return listedLaunches.has(item.completionOf);
-    return item.status !== 'running' && listedLaunches.has(item.id);
+  // A tray read is requested only when membership can change: a new
+  // background launch (or, for Codex, a new nested agent), a terminal, a
+  // completion of a listed launch, or a listed launch no longer running.
+  // A listed launch re-pushed while running carries its latest-tool
+  // decoration onto its row in place. A Codex agent's row is its runtime
+  // record, not the settled spawn row pushed here, so that push changes
+  // nothing. A child's ordinary tool_completion names no listed launch.
+  function applyUpsert(item: Item): void {
+    if (item.completionOf) {
+      if (item.isBackground || listedLaunches.has(item.completionOf)) refresh.request();
+      return;
+    }
+    const listed = listedLaunches.get(item.id);
+    if (listed === undefined) {
+      const nestedCodexAgent = provider === 'codex' && item.parentId && item.kind === 'tool_call'
+        && item.toolName === 'collab_agent';
+      if (item.isBackground || nestedCodexAgent) refresh.request();
+      return;
+    }
+    if (provider === 'codex' && listed.toolName === 'collab_agent') return;
+    if (item.status !== 'running') {
+      refresh.request();
+      return;
+    }
+    backgroundItems = latestTools.applyPushedLaunch(backgroundItems, item);
   }
 
   // A draft pane's thread is a synthetic placeholder no computer owns.
@@ -163,19 +182,13 @@ export function createBackgroundController(
     mount(): () => void {
       const cancelItemUpsert = onItemUpsert((item) => {
         if (item.threadId !== threadId) return;
-        if (provider === 'codex' && item.parentId && item.kind === 'tool_call') {
-          if (item.toolName === 'collab_agent') {
-            // A nested launch needs a store refresh so its own tray row joins
-            // the hierarchy. Ordinary child tools can update the existing
-            // tray projection directly and avoid a full recursive query per
-            // tool call; reconnect hydration still comes from the store.
-            refresh.request();
-          } else {
-            backgroundItems = codexTools.apply(backgroundItems, item);
-          }
+        if (provider === 'codex' && item.parentId && item.kind === 'tool_call' && item.toolName !== 'collab_agent') {
+          // A Codex agent's direct tool call updates the agent's row in
+          // place; reconnect hydration still comes from the store.
+          backgroundItems = latestTools.applyChildTool(backgroundItems, item);
           return;
         }
-        if (changesTray(item)) refresh.request();
+        applyUpsert(item);
       });
       const cancelBackgroundTasksChanged = wailsEventOn<BackgroundTasksChangedEvent>(
         'provider:background_tasks_changed',

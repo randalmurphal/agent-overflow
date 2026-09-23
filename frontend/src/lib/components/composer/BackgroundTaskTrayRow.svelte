@@ -17,7 +17,7 @@
   import { formatToolUses, resolveSubagentProgress } from '../../utils/subagentProgress';
   import { formatTokens } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
-  import { CODEX_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
+  import { TRAY_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
   import type { Item } from '../../types/models';
   import type { ProviderID } from '../../providers/catalog';
   import type { ThreadPane } from '../../stores/thread.svelte';
@@ -127,8 +127,8 @@
     progress && progress.totalTokens !== null ? `${formatTokens(progress.totalTokens)} tokens` : '',
   );
   let latestToolSummary = $derived.by(() => {
-    if (task.status !== 'running' || agentInfo?.provider !== 'codex') return '';
-    const value = parseJsonObject(task.launch?.meta)?.[CODEX_LATEST_TOOL_META.summary];
+    if (task.status !== 'running' || agentInfo === null) return '';
+    const value = parseJsonObject(task.launch?.meta)?.[TRAY_LATEST_TOOL_META.summary];
     return typeof value === 'string' ? value.trim() : '';
   });
   let activityLine = $derived(
