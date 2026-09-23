@@ -3,6 +3,7 @@ package transport
 import (
 	"encoding/json"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -156,9 +157,11 @@ type pendingDelta struct {
 	// gap rides through a merge. deliver stamps the loss announcement on
 	// whichever frame it delivers and forgets it; dropping the flag here
 	// would swallow the one resync instruction the client had coming.
-	gap       bool
-	entityKey string
-	channel   string
+	// gapThreads is the announcement's attribution (mergeGap).
+	gap        bool
+	gapThreads []string
+	entityKey  string
+	channel    string
 }
 
 // deltaCoalescer merges a backgrounded connection's transcript deltas.
@@ -243,7 +246,7 @@ func (c *deltaCoalescer) append(key deltaKey, frame *leaseItemFrame, e Event) {
 	p.text.WriteString(frame.Delta)
 	p.updatedAt = frame.UpdatedAt
 	p.seq = e.Seq
-	p.gap = p.gap || e.Gap
+	p.gap, p.gapThreads = mergeGap(p.gap, p.gapThreads, e)
 	if c.armed {
 		return
 	}
@@ -338,11 +341,12 @@ func mergedDeltaEvent(key deltaKey, p *pendingDelta) (Event, bool) {
 		return Event{}, false
 	}
 	merged := Event{
-		Channel:   p.channel,
-		Seq:       p.seq,
-		Data:      payload,
-		Gap:       p.gap,
-		EntityKey: p.entityKey,
+		Channel:    p.channel,
+		Seq:        p.seq,
+		Data:       payload,
+		Gap:        p.gap,
+		GapThreads: p.gapThreads,
+		EntityKey:  p.entityKey,
 	}
 	wire, err := encodeEventFrame(merged)
 	if err != nil {
@@ -351,4 +355,22 @@ func mergedDeltaEvent(key deltaKey, p *pendingDelta) (Event, bool) {
 	}
 	merged.WireBytes = wire
 	return merged, true
+}
+
+// mergeGap folds one frame's loss announcement into a pending merge's. The
+// merged frame announces every loss its parts did, so the thread lists
+// union, and one unattributed part leaves the whole announcement
+// unattributed.
+func mergeGap(gap bool, threads []string, next Event) (bool, []string) {
+	switch {
+	case !next.Gap:
+		return gap, threads
+	case !gap:
+		return true, next.GapThreads
+	case threads == nil || next.GapThreads == nil:
+		return true, nil
+	}
+	merged := slices.Concat(threads, next.GapThreads)
+	slices.Sort(merged)
+	return true, slices.Compact(merged)
 }

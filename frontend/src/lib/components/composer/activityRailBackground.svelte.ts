@@ -23,7 +23,7 @@ import { wailsEventOn } from '../../stores/wailsEvents';
 import { getTransportStatusFor, onBackendStatusChange } from '../../stores/transportStatus.svelte';
 import { threadBackend } from '../../transport/entityIndex';
 import { backendKeyForOrigin } from '../../transport/backends';
-import { transportGapChannel } from '../../transport/wsClient';
+import { transportGapChannel, type TransportGap } from '../../transport/wsClient';
 import type {
   BackgroundTaskStateEvent,
   BackgroundTasksChangedEvent,
@@ -212,10 +212,13 @@ export function createBackgroundController(
         refresh.reset();
         if (status.status === 'connected') refresh.request({ immediate: true });
       });
-      const cancelGap = wailsEventOn<{ channel: string }>(transportGapChannel, (gap, origin) => {
+      const cancelGap = wailsEventOn<TransportGap>(transportGapChannel, (gap, origin) => {
         if (!threadId || threadBackend(threadId) !== backendKeyForOrigin(origin.backendId)) return;
-        if (gap?.channel !== 'provider:item_event'
-          && gap?.channel !== 'provider:background_tasks_changed'
+        if (gap?.channel === 'provider:item_event') {
+          // Every row this tray reads is its own thread's: a loss the
+          // server attributed to other threads cost it nothing.
+          if (gap.threads && !gap.threads.includes(threadId)) return;
+        } else if (gap?.channel !== 'provider:background_tasks_changed'
           && gap?.channel !== 'provider:background_task_state') return;
         refresh.reset();
         refresh.request({ immediate: true });

@@ -2,6 +2,7 @@ import { refreshAsyncQuestions } from './asyncQuestions.svelte';
 import { refreshTimelineSurfaces } from './timelineSurfaces';
 import type { EventOrigin } from '../transport/handle';
 import { backendKeyForOrigin } from '../transport/backends';
+import type { TransportGap } from '../transport/wsClient';
 import { pendingItemEventsSettled } from './itemEventSettlement';
 // Transport-gap recovery event domain: coarse-grained resync when
 // wsClient.ts detects a missed seq on a channel — re-fetches sidebar
@@ -12,10 +13,14 @@ import { pendingItemEventsSettled } from './itemEventSettlement';
 // Two producers reach here, and the distinction matters for what a gap
 // implies. The RECONNECT one is the server's explicit `gap:true` marker:
 // the replay ring couldn't cover our cursor. The MID-CONNECTION one is
-// wsClient's forward-seq-skip detection: the bus dropped events into a
-// full subscriber buffer while the socket stayed up. Neither carries the
-// missed range or the entity key, so every branch below is a re-fetch of
-// current truth rather than a replay of what was lost.
+// the bus dropping events into a full subscriber buffer while the socket
+// stayed up, announced by the server's marker on the next frame that fits
+// or by wsClient's forward-seq-skip detection. None carries the missed
+// range, so every branch below is a re-fetch of current truth rather than
+// a replay of what was lost. Only the server's mid-connection marker can
+// say whose frames were lost (`TransportGap.threads`); the item-event
+// branch recovers just those threads, and every other gap recovers as if
+// any thread could have lost frames.
 import type { Thread } from '../types/models';
 import { iterPanes } from './panes.svelte';
 import { GetQueueState, GetThread } from './bindings';
@@ -126,6 +131,21 @@ function resyncThreadLiveActivity(origin?: EventOrigin): void {
   }));
 }
 
+/**
+ * An item-event loss the server attributed: recover exactly the named
+ * threads' panes, timeline surfaces and cached stamps. Everything an item
+ * event updates is keyed by its own thread (`applyItemStreamEvent`), so
+ * the sidebar and every other thread are as current as before the loss.
+ */
+function recoverItemEventThreads(threads: ReadonlySet<string>): void {
+  refreshTimelineSurfaces(undefined, threads);
+  threadItemCache.dropUnattestedStamps(threads);
+  for (const pane of ingestPanes()) {
+    if (!pane.threadId || !threads.has(pane.threadId)) continue;
+    holdBackendRecovery(threadMachine(pane.threadId, pane.thread?.projectId), pane.refreshFromBackend());
+  }
+}
+
 /** The blanket answer: forget the stamps, re-read the sidebar, refresh every pane. */
 function refreshEverything(): void {
   refreshTimelineSurfaces();
@@ -142,7 +162,7 @@ function refreshEverything(): void {
 // straddle upserts AND deltas; refreshing the whole pane is the
 // simplest correct response. (Channel semantics are documented at the
 // wiring site in events.ts.)
-export function applyTransportGap(gap: { channel: string; seq: number }, origin?: EventOrigin): void {
+export function applyTransportGap(gap: TransportGap, origin?: EventOrigin): void {
   const mutations = pendingItemEventsSettled();
   if (mutations) {
     holdBackendRecovery(backendKeyForOrigin(origin?.backendId ?? ''),
@@ -150,7 +170,7 @@ export function applyTransportGap(gap: { channel: string; seq: number }, origin?
   } else applySettledTransportGap(gap, origin);
 }
 
-function applySettledTransportGap(gap: { channel: string; seq: number }, origin?: EventOrigin): void {
+function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void {
   if (!gap || typeof gap.channel !== 'string') return;
   if (gap.channel === 'user_message:reverted') refreshAsyncQuestions(undefined, backendKeyForOrigin(origin?.backendId ?? ''));
   // The workflow channels, caught by PREFIX so a channel added later cannot
@@ -191,6 +211,10 @@ function applySettledTransportGap(gap: { channel: string; seq: number }, origin?
       resyncThreadLiveActivity(origin);
       return;
     case 'provider:item_event':
+      if (gap.threads) {
+        recoverItemEventThreads(new Set(gap.threads));
+        return;
+      }
       refreshTimelineSurfaces(backendKeyForOrigin(origin?.backendId ?? ''));
     case 'thread:updated': {
       // The gap carries no entity key, so we cannot say WHICH thread's

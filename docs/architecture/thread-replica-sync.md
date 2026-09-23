@@ -497,8 +497,9 @@ graded by durability:
   History validation uses the stamp paired with its actual rows.
 - **When unsure (transport gap, replay gap on any stamped or
   content-bearing channel), the client keeps the older stamp or drops
-  to unknown.** The drop must reach every cache: an L1 snapshot carries a
-  copy paired with its rows, and
+  to unknown.** The drop must reach every cache of every thread the gap
+  may have touched (the threads a `gapThreads` list names, else all): an
+  L1 snapshot carries a copy paired with its rows, and
   an unattested copy can name a rev whose frames the gap ate. It would
   spring a false `fresh` on the next warm re-entry and stay wrong for
   the session. Attested copies survive the gap, and that asymmetry is

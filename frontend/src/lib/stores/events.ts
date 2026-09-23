@@ -55,7 +55,7 @@ import type {
 import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { setSystemStats } from './systemStats.svelte';
 import { applyThreadGroupUpdated } from './threadGroups.svelte';
-import { transportGapChannel } from '../transport/wsClient';
+import { transportGapChannel, type TransportGap } from '../transport/wsClient';
 import { attachedBackends, backendKeyForOrigin } from '../transport/backends';
 import {
   forgetProject,
@@ -624,15 +624,15 @@ export function setupEventListeners(): () => void {
 
   // transport:gap — synthetic event fired by wsClient.ts when the
   // server reports a missed seq on a channel. Coarse-grained recovery:
-  // re-fetch the active pane's window so SQLite (the authoritative
-  // history cache) backfills whatever was lost. We don't try to be
-  // surgical because the gap signal doesn't carry the missed range.
+  // re-fetch the affected panes' windows so SQLite (the authoritative
+  // history cache) backfills whatever was lost. The gap signal doesn't
+  // carry the missed range; at most it names the threads that lost frames.
   //
   // The handler matches on the channel name we lost rather than each
   // payload kind because a single gap on `provider:item_event` can
   // straddle upserts AND deltas; refreshing the whole pane is the
   // simplest correct response.
-  const cancelTransportGap = wailsEventOn<{ channel: string; seq: number }>(
+  const cancelTransportGap = wailsEventOn<TransportGap>(
     transportGapChannel,
     applyTransportGap,
   );

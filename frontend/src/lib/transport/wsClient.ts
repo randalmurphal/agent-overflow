@@ -184,6 +184,9 @@ export { MAX_REPLAY_CHANNELS } from './frames';
 // Mirrors internal/transport/frame.go MaxWatchThreads. A set past this is
 // refused by the backend, so the client checks it rather than sending one.
 export const MAX_WATCH_THREADS = 256;
+// Mirrors internal/transport/frame.go MaxWatchThreadIDBytes, which bounds
+// every id a watch set, and so a gap's thread list, can hold.
+const MAX_WATCH_THREAD_ID_LENGTH = 256;
 
 // sameStringList compares two already-sorted lists elementwise. The watch
 // set is small (panes on a screen), so a loop beats building a Set per
@@ -3099,6 +3102,7 @@ export class WSClient {
     seq: number;
     data: unknown;
     gap?: boolean;
+    gapThreads?: string[];
   }): void {
     if (evt.gap === true) {
       // A gap marker is a resync instruction, not a data event, so it
@@ -3117,10 +3121,7 @@ export class WSClient {
         'transport: event gap marker received',
         `${clampString(evt.channel)} seq ${evt.seq}`,
       );
-      this.dispatchToSubscribers(TRANSPORT_GAP_CHANNEL, {
-        channel: evt.channel,
-        seq: evt.seq,
-      });
+      this.dispatchToSubscribers(TRANSPORT_GAP_CHANNEL, this.gapEvent(evt));
       this.dispatchToSubscribers(evt.channel, evt.data, evt.seq);
       return;
     }
@@ -3167,6 +3168,20 @@ export class WSClient {
     }
     this.recordChannelSeq(evt.channel, evt.seq);
     this.dispatchToSubscribers(evt.channel, evt.data, evt.seq);
+  }
+
+  // The gap event a server marker becomes. The marker's thread list is
+  // kept only when well formed; a malformed one is reported and dropped,
+  // which leaves an unattributed gap whose recovery covers every thread.
+  private gapEvent(evt: { channel: string; seq: number; gapThreads?: unknown }): TransportGap {
+    const threads = evt.gapThreads;
+    if (threads === undefined) return { channel: evt.channel, seq: evt.seq };
+    if (!Array.isArray(threads) || threads.length === 0 || threads.length > MAX_WATCH_THREADS
+      || !threads.every((id) => typeof id === 'string' && id !== '' && id.length <= MAX_WATCH_THREAD_ID_LENGTH)) {
+      this.noteUnknownInput('gap-threads');
+      return { channel: evt.channel, seq: evt.seq };
+    }
+    return { channel: evt.channel, seq: evt.seq, threads };
   }
 
   // recordChannelSeq updates the per-channel last-seen seq and evicts
@@ -3416,6 +3431,15 @@ export const wsClient = new WSClient();
 // Channel name for the synthetic gap event. Exported so subscribers
 // don't have to hard-code the literal.
 export const transportGapChannel = TRANSPORT_GAP_CHANNEL;
+
+/** The synthetic event on `transportGapChannel`: frames on `channel` were
+ *  lost. `threads`, when present, names every thread whose frames the
+ *  server dropped; absent, the loss may have touched any thread. */
+export interface TransportGap {
+  channel: string;
+  seq: number;
+  threads?: readonly string[];
+}
 
 // Vite HMR re-evaluates this module on edit; without disposing, stale
 // clients accumulate with surviving subscribers. dispose() is a no-op

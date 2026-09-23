@@ -438,6 +438,8 @@ type ServerFrame struct {
 	Seq     uint64          `json:"seq,omitempty"`
 	Data    json.RawMessage `json:"data,omitempty"`
 	Gap     bool            `json:"gap,omitempty"`
+	// GapThreads rides a Gap frame only; see Event.GapThreads.
+	GapThreads []string `json:"gapThreads,omitempty"`
 }
 
 // FrameError is the server's RPC or session-ended error envelope. Code is
@@ -571,16 +573,17 @@ var ErrAlreadyHandled = errors.New("already handled")
 
 // batchEventEntry is one event inside a batch frame. It carries the
 // subset of Event fields the client needs to dispatch: channel, seq,
-// data, and the gap flag. Since batch frames are spliced from
-// pre-encoded event envelopes (spliceBatchFrame), each entry on the
-// wire additionally carries an inert `"type":"event"` field that every
-// consumer ignores; this struct remains the consumer-side parse shape
-// (tests and the wsllauncher notification client decode through it).
+// data, and the gap flag with its thread attribution. Since batch frames
+// are spliced from pre-encoded event envelopes (spliceBatchFrame), each
+// entry on the wire additionally carries an inert `"type":"event"` field
+// that every consumer ignores; this struct remains the consumer-side parse
+// shape (tests and the wsllauncher notification client decode through it).
 type batchEventEntry struct {
-	Channel string          `json:"channel"`
-	Seq     uint64          `json:"seq"`
-	Data    json.RawMessage `json:"data"`
-	Gap     bool            `json:"gap,omitempty"`
+	Channel    string          `json:"channel"`
+	Seq        uint64          `json:"seq"`
+	Data       json.RawMessage `json:"data"`
+	Gap        bool            `json:"gap,omitempty"`
+	GapThreads []string        `json:"gapThreads,omitempty"`
 }
 
 // batchFrame is the server-side envelope for coalesced event delivery.

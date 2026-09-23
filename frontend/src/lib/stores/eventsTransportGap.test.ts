@@ -23,6 +23,7 @@ import {
 import { applyQueueStateChanged } from './eventsQueue';
 
 import { threadItemCache } from './threadItemCache';
+import { registerTimelineSurface } from './timelineSurfaces';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import {
   isWorkflowEnginePaused,
@@ -182,6 +183,78 @@ describe('transport gap', () => {
       rev: 30,
       attested: false,
     });
+  });
+});
+
+/**
+ * An item-event loss the server attributed (`TransportGap.threads`) is
+ * recovered for exactly the named threads. An unattributed one still
+ * recovers every thread, the sidebar included.
+ */
+describe('transport gap — attributed item-event loss', () => {
+  const releases: Array<() => void> = [];
+  beforeEach(() => {
+    resetPanesForTest();
+    threadItemCache.clear();
+    setBindingMock('ListThreads', async () => []);
+    setBindingMock('ListProjects', async () => []);
+    setBindingMock('ListThreadGroups', async () => []);
+  });
+  afterEach(() => {
+    for (const release of releases.splice(0)) release();
+    resetPanesForTest();
+  });
+
+  async function twoThreads() {
+    const named = await buildPane(makeThread({ id: 'named-thread' }), [], 'pane-named');
+    const other = await buildPane(makeThread({ id: 'other-thread' }), [], 'pane-other');
+    const paneRefresh = {
+      named: vi.spyOn(named, 'refreshFromBackend').mockResolvedValue(),
+      other: vi.spyOn(other, 'refreshFromBackend').mockResolvedValue(),
+    };
+    // An agent pane or digest over each thread, with no known owner yet.
+    const surfaceRefresh = { named: vi.fn(async () => {}), other: vi.fn(async () => {}) };
+    for (const threadId of ['named-thread', 'other-thread'] as const) {
+      releases.push(registerTimelineSurface({
+        threadId,
+        backend: () => undefined,
+        apply: () => {},
+        refresh: threadId === 'named-thread' ? surfaceRefresh.named : surfaceRefresh.other,
+      }));
+    }
+    threadItemCache.set('named-thread', snapshot('named-thread', { epoch: 1, rev: 30, attested: false }));
+    threadItemCache.set('other-thread', snapshot('other-thread', { epoch: 1, rev: 31, attested: false }));
+    return { paneRefresh, surfaceRefresh };
+  }
+
+  it('recovers only the named threads, and leaves the sidebar alone', async () => {
+    const { paneRefresh, surfaceRefresh } = await twoThreads();
+
+    applyTransportGap({ channel: 'provider:item_event', seq: 9, threads: ['named-thread', 'closed-thread'] });
+    await Promise.resolve();
+
+    expect(paneRefresh.named).toHaveBeenCalledOnce();
+    expect(paneRefresh.other).not.toHaveBeenCalled();
+    expect(surfaceRefresh.named).toHaveBeenCalledOnce();
+    expect(surfaceRefresh.other).not.toHaveBeenCalled();
+    expect(threadItemCache.get('named-thread')?.historyStamp).toBeNull();
+    expect(threadItemCache.get('other-thread')?.historyStamp).toEqual({ epoch: 1, rev: 31, attested: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(getBindingMock('ListThreads')).not.toHaveBeenCalled();
+  });
+
+  it('recovers every thread for an unattributed loss', async () => {
+    const { paneRefresh, surfaceRefresh } = await twoThreads();
+
+    applyTransportGap({ channel: 'provider:item_event', seq: 9 });
+
+    expect(paneRefresh.named).toHaveBeenCalledOnce();
+    expect(paneRefresh.other).toHaveBeenCalledOnce();
+    expect(surfaceRefresh.named).toHaveBeenCalled();
+    expect(surfaceRefresh.other).toHaveBeenCalled();
+    expect(threadItemCache.get('named-thread')?.historyStamp).toBeNull();
+    expect(threadItemCache.get('other-thread')?.historyStamp).toBeNull();
+    await vi.waitFor(() => expect(getBindingMock('ListThreads')).toHaveBeenCalledOnce());
   });
 });
 

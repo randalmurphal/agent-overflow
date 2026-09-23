@@ -3,6 +3,7 @@ package transport
 import (
 	"encoding/json"
 	"log"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -56,7 +57,9 @@ const DefaultSubscriberBuffer = 1024
 //     channel) in Subscriber.gapped, and the next event that DOES fit is
 //     stamped Gap:true (re-encoded per subscriber), so the client learns
 //     about the loss even when the dropped events were the channel's
-//     tail. The client's forward-skip detection (wsClient.ts
+//     tail. The announcement names the entity keys of the dropped frames
+//     (Event.GapThreads) when it can, so the client recovers only those
+//     threads. The client's forward-skip detection (wsClient.ts
 //     handleEventEntry) still covers the mid-stream case on its own; the
 //     sticky flag exists because that detection needs a later same-channel
 //     delivery to fire, which sustained traffic can delay for tens of seconds
@@ -236,13 +239,20 @@ func (r *ring) replayAfter(lastSeq uint64) (events []Event, hadGap bool) {
 // channels (event_entity.go) and is empty on every other frame, including
 // one whose payload the extractor could not attribute. Empty means
 // "deliver": see event_entity.go for why that direction is the safe one.
+//
+// GapThreads, on a Gap frame that announces a subscriber-buffer drop, is
+// the sorted entity keys of the frames dropped. Nil means the loss is not
+// attributed and the client recovers everything: a dropped frame had no
+// key, the keys outnumbered MaxWatchThreads, or the frame is a replay
+// marker, whose lost frames the ring no longer holds.
 type Event struct {
-	Channel   string
-	Seq       uint64
-	Data      json.RawMessage
-	Gap       bool
-	WireBytes []byte
-	EntityKey string
+	Channel    string
+	Seq        uint64
+	Data       json.RawMessage
+	Gap        bool
+	GapThreads []string
+	WireBytes  []byte
+	EntityKey  string
 }
 
 // NewEventBus returns a new bus with the given per-channel capacity.
@@ -404,17 +414,19 @@ func encodeEventFrame(evt Event) ([]byte, error) {
 	// ServerFrame is a shared RPC/event union; its optional fields must
 	// not decide what an event omits on the wire.
 	frame := struct {
-		Type    string          `json:"type"`
-		Channel string          `json:"channel"`
-		Seq     uint64          `json:"seq"`
-		Data    json.RawMessage `json:"data,omitempty"`
-		Gap     bool            `json:"gap,omitempty"`
+		Type       string          `json:"type"`
+		Channel    string          `json:"channel"`
+		Seq        uint64          `json:"seq"`
+		Data       json.RawMessage `json:"data,omitempty"`
+		Gap        bool            `json:"gap,omitempty"`
+		GapThreads []string        `json:"gapThreads,omitempty"`
 	}{
-		Type:    frameTypeEvent,
-		Channel: evt.Channel,
-		Seq:     evt.Seq,
-		Data:    evt.Data,
-		Gap:     evt.Gap,
+		Type:       frameTypeEvent,
+		Channel:    evt.Channel,
+		Seq:        evt.Seq,
+		Data:       evt.Data,
+		Gap:        evt.Gap,
+		GapThreads: evt.GapThreads,
 	}
 	return json.Marshal(frame)
 }
@@ -445,7 +457,7 @@ func (b *EventBus) subscribe(captureBaseline bool) (*Subscriber, map[string]uint
 	s := &Subscriber{
 		ch:     make(chan Event, b.subBuf),
 		done:   make(chan struct{}),
-		gapped: make(map[string]struct{}),
+		gapped: make(map[string]map[string]struct{}),
 	}
 	b.mu.Lock()
 	if b.closed.Load() {
@@ -750,11 +762,12 @@ type Subscriber struct {
 	// notification gate RAISES, never what this subscriber is sent.
 	presence atomic.Pointer[subscriberPresence]
 	// gapped records the channels this subscriber has dropped events on
-	// since it last learned about the loss. Written only inside deliver,
-	// which runs under the bus mutex (Emit's fanout is its sole call
-	// site), so no extra locking. See the EventBus doc comment for the
-	// announce protocol.
-	gapped map[string]struct{}
+	// since it last learned about the loss, each with the entity keys of
+	// the frames dropped (nil when the loss is not attributed, see
+	// noteDrop). Written only inside deliver, which runs under the bus
+	// mutex (Emit's fanout is its sole call site), so no extra locking.
+	// See the EventBus doc comment for the announce protocol.
+	gapped map[string]map[string]struct{}
 }
 
 type subscriberChannelFilter map[string]struct{}
@@ -920,12 +933,13 @@ func (s *Subscriber) deliver(e Event) {
 		s.flushGapMarkers(e.Channel)
 	}
 	out := e
-	if _, isGapped := s.gapped[e.Channel]; isGapped {
+	if threads, isGapped := s.gapped[e.Channel]; isGapped {
 		// Ride the loss announcement on this frame rather than spending
 		// a buffer slot on a standalone marker. Per-subscriber re-encode:
 		// WireBytes is shared across subscribers and must not be mutated.
 		stamped := e
 		stamped.Gap = true
+		stamped.GapThreads = gapThreadList(threads)
 		if wire, err := encodeEventFrame(stamped); err == nil {
 			stamped.WireBytes = wire
 			out = stamped
@@ -942,9 +956,47 @@ func (s *Subscriber) deliver(e Event) {
 		// one (the same reasoning as Replay's latest-only carve-out), so
 		// only deeper retentions need the loss announced.
 		if channelRetention(e.Channel) != RetentionLatestOnly {
-			s.gapped[e.Channel] = struct{}{}
+			s.noteDrop(e)
 		}
 	}
+}
+
+// noteDrop records a frame this subscriber could not take. The channel's
+// set collects the dropped frames' entity keys so the announcement can
+// name the threads that lost frames. A frame with no key cannot be
+// attributed, and neither can more keys than a watch set may hold, so
+// either leaves the channel's loss unattributed (a nil set) until it is
+// announced. An armed watch filter keeps the set within the watched
+// threads: deliver drops only frames it would have sent.
+func (s *Subscriber) noteDrop(e Event) {
+	threads, gapped := s.gapped[e.Channel]
+	switch {
+	case gapped && threads == nil:
+		// Already unattributed.
+	case e.EntityKey == "":
+		s.gapped[e.Channel] = nil
+	case !gapped:
+		s.gapped[e.Channel] = map[string]struct{}{e.EntityKey: {}}
+	default:
+		threads[e.EntityKey] = struct{}{}
+		if len(threads) > MaxWatchThreads {
+			s.gapped[e.Channel] = nil
+		}
+	}
+}
+
+// gapThreadList is the wire form of a gapped channel's set: sorted, and
+// nil for an unattributed loss.
+func gapThreadList(threads map[string]struct{}) []string {
+	if threads == nil {
+		return nil
+	}
+	list := make([]string, 0, len(threads))
+	for id := range threads {
+		list = append(list, id)
+	}
+	slices.Sort(list)
+	return list
 }
 
 // flushGapMarkers enqueues a standalone {gap:true} marker — the same
@@ -954,7 +1006,7 @@ func (s *Subscriber) deliver(e Event) {
 // retried on the next delivery. Runs under the bus mutex (see deliver),
 // which is what makes the s.bus.rings read safe.
 func (s *Subscriber) flushGapMarkers(deliveringChannel string) {
-	for channel := range s.gapped {
+	for channel, threads := range s.gapped {
 		if channel == deliveringChannel {
 			continue
 		}
@@ -964,10 +1016,11 @@ func (s *Subscriber) flushGapMarkers(deliveringChannel string) {
 			continue
 		}
 		marker := Event{
-			Channel: channel,
-			Seq:     r.seq,
-			Gap:     true,
-			Data:    json.RawMessage(`null`),
+			Channel:    channel,
+			Seq:        r.seq,
+			Gap:        true,
+			GapThreads: gapThreadList(threads),
+			Data:       json.RawMessage(`null`),
 		}
 		wire, err := encodeEventFrame(marker)
 		if err != nil {

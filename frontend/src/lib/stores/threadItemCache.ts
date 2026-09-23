@@ -106,9 +106,10 @@ export interface ThreadItemCache {
    * rows a sync actually returned, and any mutation since then advanced
    * the backend's rev past it, so the same `fresh` is impossible.
    * Dropping the whole cache would work but would also throw away every
-   * warm paint the gap did not endanger.
+   * warm paint the gap did not endanger. A gap that names the threads it
+   * lost frames for passes them, and only their snapshots lose stamps.
    */
-  dropUnattestedStamps(): void;
+  dropUnattestedStamps(threads?: ReadonlySet<string>): void;
   /** Test/diagnostic only — exposes current entry count without
    *  unfreezing the LRU contract. */
   readonly size: number;
@@ -193,11 +194,12 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
       cachedChars = 0;
     },
 
-    dropUnattestedStamps() {
+    dropUnattestedStamps(threads) {
       // Safe to mutate in place: `set` stores a private clone of the
       // stamp, and `get` hands out the stored snapshot only for the
       // pane to read.
-      for (const entry of byThread.values()) {
+      for (const [threadId, entry] of byThread) {
+        if (threads && !threads.has(threadId)) continue;
         if (entry.snapshot.historyStamp && !entry.snapshot.historyStamp.attested) {
           entry.snapshot.historyStamp = null;
         }

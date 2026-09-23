@@ -134,6 +134,26 @@ describe('background tray recovery', () => {
     await flush();
     expect(read).toHaveBeenCalledTimes(2);
   });
+
+  it('reads after an item-event loss only when the loss may have touched its thread', async () => {
+    attachOwner();
+    noteThread('thread-1', remote, 2);
+    const pane = await buildPane();
+    noteThread(pane.threadId!, remote, 2);
+    const read = setBindingMock('ListLiveBackgroundTasks', async () => [launch('running')]);
+    release = $effect.root(() => createBackgroundController(() => pane, Date.now).mount());
+    await flush();
+    expect(read).toHaveBeenCalledTimes(1);
+    emitWailsEvent('transport:gap', { channel: 'provider:item_event', seq: 1, threads: ['other-thread'] }, remote);
+    await flush();
+    expect(read).toHaveBeenCalledTimes(1);
+    emitWailsEvent('transport:gap', { channel: 'provider:item_event', seq: 2, threads: ['other-thread', pane.threadId] }, remote);
+    await flush();
+    expect(read).toHaveBeenCalledTimes(2);
+    emitWailsEvent('transport:gap', { channel: 'provider:item_event', seq: 3 }, remote);
+    await flush();
+    expect(read).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe('tray refresh reasons', () => {

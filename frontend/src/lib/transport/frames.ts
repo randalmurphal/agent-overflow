@@ -31,6 +31,9 @@ export interface ServerEventFrame {
   seq: number;
   data: unknown;
   gap?: boolean;
+  /** On a gap only: the threads whose frames the server dropped
+   *  (internal/transport Event.GapThreads). Absent when unattributed. */
+  gapThreads?: string[];
 }
 
 export interface ServerBatchFrame {
@@ -40,6 +43,7 @@ export interface ServerBatchFrame {
     seq: number;
     data: unknown;
     gap?: boolean;
+    gapThreads?: string[];
   }>;
 }
 
