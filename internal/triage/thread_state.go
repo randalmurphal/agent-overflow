@@ -299,7 +299,7 @@ type threadState struct {
 	// revertedTurn marks a thread whose next provider:turn_completed
 	// emission should carry RevertedUserMessage=true. Set by the App
 	// layer's revert-on-interrupt path BEFORE it tears down the session;
-	// consumed (read-and-clear) inside buildRoundCompletedEvent.
+	// consumed (read-and-clear) when handleTurnComplete claims the round.
 	// Defensively cleared by clearOpenTurn too, so a stale flag never
 	// leaks into a future turn. See revert_marker.go.
 	revertedTurn bool

@@ -361,12 +361,12 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// Two-cadence shape (see internal/triage/AGENTS.md "Wire-round vs
 	// logical-turn"):
 	//
-	//   1. Per-WIRE-ROUND emission (top of this handler).
-	//      `provider:turn_completed` fires once per `result` envelope so
-	//      the frontend's working indicator, Stop button, and composer
-	//      block correctly reflect "model is engaged right now."
-	//      takeOpenRound clears the round slot in the same critical
-	//      section it returns it; an empty slot means a synthetic
+	//   1. Per-WIRE-ROUND emission (claimed at the top of this handler,
+	//      emitted when it returns). `provider:turn_completed` fires once
+	//      per `result` envelope so the frontend's working indicator, Stop
+	//      button, and composer block correctly reflect "model is engaged
+	//      right now." takeOpenRound clears the round slot in the same
+	//      critical section it returns it; an empty slot means a synthetic
 	//      complete already raced ahead (handleError fatal path) — skip
 	//      the second emit so the frontend sees exactly one
 	//      turn_completed per round.
@@ -388,8 +388,8 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	//      envelope → model emits another response → second `result`
 	//      envelope. Both `result`s belong to one logical agent-overflow
 	//      turn; persistence settles on the first. The wire-round emit
-	//      at the top fires for the second too (each round gets its
-	//      own indicator on/off).
+	//      fires for the second too (each round gets its own indicator
+	//      on/off).
 	//   2. handleError synthesizes an EventTurnComplete with TruncatedTurnCompleteMeta,
 	//      then a real wire EventTurnComplete arrives anyway because the
 	//      subprocess kept streaming. takeOpenRound returns "" on the
@@ -413,13 +413,24 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	}
 	now := eventTimestampMillis(evt)
 
-	// Per-round emission. Always runs before the claimTurnSettlement gate
-	// so a second `result` envelope for the same logical turn still
-	// emits the round-end signal. takeOpenRound is a read-and-clear:
-	// at most one emit per round, regardless of synthesis races.
+	// Per-round emission. The round is claimed before the
+	// claimTurnSettlement gate so a second `result` envelope for the same
+	// logical turn still emits the round-end signal. takeOpenRound is a
+	// read-and-clear: at most one emit per round, regardless of synthesis
+	// races. The event is announced only after every settlement write
+	// below: a client that reacts by reading turn state (send admission,
+	// the workspace lock, revert eligibility) must find the turns row and
+	// its streaming items already settled. Registered after the other
+	// defers so it runs before them, and in particular before the queue
+	// boundary flush can start the next turn.
+	// The revert marker belongs to the round claimed here and is taken with
+	// it, before clearOpenTurn below drops any marker still pending.
 	round, hasRound := r.takeOpenRound(evt.ThreadID)
 	if hasRound && err == nil {
-		r.emit(eventchan.ProviderTurnCompleted, r.buildRoundCompletedEvent(evt, round.TurnID, turnIndex, now, meta))
+		reverted := r.consumeRevertedTurn(evt.ThreadID)
+		defer func() {
+			r.emit(eventchan.ProviderTurnCompleted, r.buildRoundCompletedEvent(evt, round.TurnID, turnIndex, now, meta, reverted))
+		}()
 	}
 
 	// Orphan error result: an error turn-complete with no open round, no
@@ -570,9 +581,8 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// wire said the turn was over. Persistence failures are logged
 	// inside settleTurnRow; we keep persistErr as the return so
 	// upstream (observability, error reporting) sees the real failure.
-	// The frontend's working indicator was already cleared by the
-	// per-round `provider:turn_completed` emission at the top of this
-	// handler.
+	// The per-round `provider:turn_completed` emission follows when this
+	// handler returns.
 	//
 	// Anchor recording does NOT happen here. Message anchors are
 	// recorded by app_send.go before provider stdin/RPC dispatch so
@@ -718,9 +728,9 @@ func (r *Router) persistedTurnID(evt provider.ProviderEvent, turnIndex int) stri
 // turn_complete with no matching turn_start because the first event
 // arrived mid-crash-recovery) are tolerated — the UPDATE's
 // sql.ErrNoRows is logged and the function returns. The frontend-
-// facing `provider:turn_completed` emission has already fired by the
-// time this runs (see handleTurnComplete: takeOpenRound + emit at the
-// top, then claimTurnSettlement gate, then this).
+// facing `provider:turn_completed` emission follows this write (see
+// handleTurnComplete: takeOpenRound at the top, claimTurnSettlement
+// gate, this, then the deferred emit).
 //
 // Top-level turn settle bumps thread activity through
 // Store.MarkThreadActivity. Nested/internal turns only update turn state,
@@ -770,21 +780,20 @@ func turnCountsAsThreadActivity(evt provider.ProviderEvent) bool {
 //
 // Pure projection — does not write the `turns` row. settleTurnRow
 // owns the UPDATE and runs once per logical turn under the
-// claimTurnSettlement gate.
+// claimTurnSettlement gate. reverted is the revert marker taken when the
+// round was claimed.
 //
-// No persistErr parameter: this fires at the TOP of handleTurnComplete
-// before any persistence runs, so there is no upstream persistence
-// error to fold into the payload's stop_reason / error_message
-// fields. If a persistence failure occurs later in handleTurnComplete,
-// it surfaces through `persistErr` on the function return rather than
-// retroactively rewriting the wire-round emission the frontend has
-// already received.
+// No persistErr parameter: the payload reports what the provider said
+// about the round. A persistence failure in handleTurnComplete surfaces
+// through its returned error, not through the round's stop_reason or
+// error_message.
 func (r *Router) buildRoundCompletedEvent(
 	evt provider.ProviderEvent,
 	roundID string,
 	turnIndex int,
 	now int64,
 	meta turnCompleteMeta,
+	reverted bool,
 ) TurnCompletedEvent {
 	fields := decodeTurnCompleteFields(evt, r.persistedTurnID(evt, turnIndex), meta, nil)
 	startedAt := now
@@ -811,7 +820,7 @@ func (r *Router) buildRoundCompletedEvent(
 		TokenUsage:          meta.Usage,
 		ErrorMessage:        fields.errorMessage,
 		Aborted:             meta.Aborted || meta.Truncated,
-		RevertedUserMessage: r.consumeRevertedTurn(evt.ThreadID),
+		RevertedUserMessage: reverted,
 		CountsAsActivity:    turnCountsAsThreadActivity(evt),
 		HistoryRev:          stamp.Rev,
 		HistoryEpoch:        stamp.Epoch,
@@ -1276,7 +1285,7 @@ func (r *Router) isTurnSettled(threadID string, turnIndex int) bool {
 //
 // Overwrites any prior round snapshot for the thread — a leaked round (e.g.
 // if currentTurnIndex failed in the prior handleTurnComplete and the
-// emit at the top was skipped) cannot survive into the next round.
+// round-end emit was skipped) cannot survive into the next round.
 // CleanupThread also sweeps this map.
 func (r *Router) setOpenRoundSnapshot(snapshot ActiveTurnSnapshot) {
 	if snapshot.ThreadID == "" || snapshot.TurnID == "" {
@@ -1431,8 +1440,8 @@ func (r *Router) clearOpenTurn(threadID string) {
 	// already or the turn closed without forward progress; either way
 	// the next turn starts with a clean flag.
 	st.openAPIRetryRow = false
-	// revertedTurns is normally read-and-cleared inside
-	// buildRoundCompletedEvent. Defensive sweep here covers the case
+	// revertedTurn is normally read-and-cleared when handleTurnComplete
+	// claims the round. Defensive sweep here covers the case
 	// where MarkTurnReverted was set but no turn-completed actually
 	// fires (rare — e.g. the thread had no open turn so no
 	// synthesizeTruncatedTurnComplete ran).

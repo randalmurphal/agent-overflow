@@ -577,9 +577,13 @@ One-to-one with a user → assistant round-trip. The authoritative
 
 - `EventTurnStart` → triage → `provider:turn_started` to frontend,
   writes turn row with `completed_at=null`.
-- `EventTurnComplete` → triage → `provider:turn_completed` to
-  frontend, updates turn row, force-closes orphan non-background
-  running tool_calls.
+- `EventTurnComplete` → triage → updates turn row, settles streaming
+  items, force-closes orphan non-background running tool_calls, then
+  emits `provider:turn_completed` to the frontend. The event follows
+  settlement so a client that reads turn state on receipt (send
+  admission, workspace lock, revert eligibility) sees the turn closed,
+  and it precedes the queue boundary flush that can start the next
+  turn.
 
 ### Wire-round vs logical-turn cadence
 
@@ -641,10 +645,10 @@ stateDiagram-v2
     RoundOpen --> SettledBetweenRounds: soft or real EventTurnComplete, first claim
     note right of SettledBetweenRounds
       takeOpenRound()
-      emit provider:turn_completed
       settledTurns[thread|turn]=true
-      clearOpenTurn()
       update turns row
+      clearOpenTurn()
+      emit provider:turn_completed
     end note
 
     SettledBetweenRounds --> ReRoundOpen: EventInit after settled turn
@@ -657,8 +661,8 @@ stateDiagram-v2
     ReRoundOpen --> SettledBetweenRounds: soft or real EventTurnComplete, already settled
     note right of SettledBetweenRounds
       takeOpenRound()
-      emit provider:turn_completed
       UpdateTurnLatePayload()
+      emit provider:turn_completed
     end note
 
     RoundOpen --> Idle: session_died / cleanup

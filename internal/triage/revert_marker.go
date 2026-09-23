@@ -16,8 +16,8 @@ package triage
 
 // MarkTurnReverted flags the thread so the next provider:turn_completed
 // emission for any in-flight round carries RevertedUserMessage=true.
-// Read-and-clear via consumeRevertedTurn happens inside
-// buildRoundCompletedEvent. The marker is one-shot per set.
+// Read-and-clear via consumeRevertedTurn happens when handleTurnComplete
+// claims the round. The marker is one-shot per set.
 func (r *Router) MarkTurnReverted(threadID string) {
 	if threadID == "" {
 		return
@@ -42,9 +42,9 @@ func (r *Router) ClearTurnReverted(threadID string) {
 
 // consumeRevertedTurn returns true and clears the marker when the
 // thread is flagged for revert. Safe to call when no marker is set
-// (returns false). Called by buildRoundCompletedEvent so the wire
-// payload reflects the revert; subsequent rounds on the same thread
-// emit cleanly without the flag.
+// (returns false). Called by handleTurnComplete as it claims the round so
+// the wire payload reflects the revert; subsequent rounds on the same
+// thread emit cleanly without the flag.
 func (r *Router) consumeRevertedTurn(threadID string) bool {
 	if threadID == "" {
 		return false
