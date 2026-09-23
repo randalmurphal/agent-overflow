@@ -533,34 +533,44 @@ func TestHistoryContractProposedPlanRefusesUnknownThread(t *testing.T) {
 	}
 }
 
-// TestHistoryContractForkCloneBumpsTargetOnly pins the fork row of §3.2:
-// cloning history writes rows on the TARGET thread, so only its stamps
-// move. A source thread that appeared to change would make every open
-// pane holding it re-fetch for nothing.
-func TestHistoryContractForkCloneBumpsTargetOnly(t *testing.T) {
+// TestHistoryContractForkBumpsForkOnly pins the fork row of §3.2: making
+// a pointer fork and writing to it moves only the fork's stamps, while a
+// write to its source moves both, because the fork's reads include the
+// source's rows. A source that appeared to change on a fork's write would
+// make every open pane holding it re-fetch for nothing.
+func TestHistoryContractForkBumpsForkOnly(t *testing.T) {
 	s := newTestStore(t)
 	seedContractThread(t, s, "t")
 	if _, err := s.AppendItem(contractItem("t", "i1", 0)); err != nil {
 		t.Fatalf("seed source item: %v", err)
 	}
-	mustCreateThread(t, s, "fork")
-
 	source := historyStampOf(t, s, "t")
-	target := historyStampOf(t, s, "fork")
 
-	if _, err := s.CloneThreadItems("t", "fork", nil); err != nil {
-		t.Fatalf("clone thread items: %v", err)
-	}
-
+	mustPointerFork(t, s, "t", "fork", ForkCut{})
 	if got := historyStampOf(t, s, "t"); got != source {
 		t.Fatalf("source stamps moved on a fork: %+v -> %+v", source, got)
 	}
-	got := historyStampOf(t, s, "fork")
-	if got.Rev <= target.Rev {
-		t.Fatalf("fork target rev did not advance: %d -> %d", target.Rev, got.Rev)
+
+	target := historyStampOf(t, s, "fork")
+	own := contractItem("fork", "own", 0)
+	own.TurnIndex = 1
+	if _, err := s.AppendItem(own); err != nil {
+		t.Fatalf("append to fork: %v", err)
 	}
-	if got.Epoch != target.Epoch {
-		t.Fatalf("fork target epoch moved (%d -> %d); a clone only inserts", target.Epoch, got.Epoch)
+	if got := historyStampOf(t, s, "t"); got != source {
+		t.Fatalf("source stamps moved on a fork write: %+v -> %+v", source, got)
+	}
+	got := historyStampOf(t, s, "fork")
+	if got.Rev <= target.Rev || got.Epoch != target.Epoch {
+		t.Fatalf("fork write stamps = %+v -> %+v, want rev up and epoch kept", target, got)
+	}
+
+	target = got
+	if _, err := s.AppendItem(contractItem("t", "i2", 1)); err != nil {
+		t.Fatalf("append to source: %v", err)
+	}
+	if got := historyStampOf(t, s, "fork"); got.Rev <= target.Rev || got.Epoch != target.Epoch {
+		t.Fatalf("source write left fork stamps %+v -> %+v, want rev up and epoch kept", target, got)
 	}
 }
 

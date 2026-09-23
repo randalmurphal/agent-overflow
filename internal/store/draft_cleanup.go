@@ -58,6 +58,12 @@ func (s *Store) DeleteEmptyDraftThread(threadID string) (bool, error) {
 		return false, fmt.Errorf("store: begin delete empty draft thread %s: %w", threadID, err)
 	}
 	defer tx.Rollback()
+	// A thread whose history was reverted away can still be a fork source.
+	// The detach rolls back with the transaction when the guard below
+	// keeps the thread.
+	if err := detachForkDescendantsTx(tx, threadID); err != nil {
+		return false, err
+	}
 	result, err := tx.Exec(
 		`DELETE FROM threads
 		  WHERE id = ?
@@ -87,12 +93,13 @@ func (s *Store) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("store: delete empty draft thread %s rows affected: %w", threadID, err)
 	}
-	if affected > 0 {
-		// The thread had no items, but it had a title, and the contentless
-		// index rows do not cascade with the mapping row that names them.
-		if err := deleteThreadSearchThreadTx(tx, threadID); err != nil {
-			return false, err
-		}
+	if affected == 0 {
+		return false, nil
+	}
+	// The thread had no items, but it had a title, and the contentless
+	// index rows do not cascade with the mapping row that names them.
+	if err := deleteThreadSearchThreadTx(tx, threadID); err != nil {
+		return false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("store: commit delete empty draft thread %s: %w", threadID, err)

@@ -110,12 +110,22 @@ type subagentRoundBounds struct {
 // notifications never render, so they must not count against the
 // collapsed card's "N entries" badge either.
 //
-// Placeholder order: local base hop (thread id, roots...), imported base
-// hop (thread id, roots...), local recursive hop (thread id), imported
-// recursive hop (thread id).
+// A pointer fork adds one local and one imported hop over its lineage, so
+// a subtree the fork inherits walks the ancestor's rows under the same
+// visibility rule as the timeline arms.
+//
+// Placeholder order: the four base hops (local, imported, inherited local,
+// inherited imported), each (thread id, roots...), then the four recursive
+// hops in the same order, each (thread id).
 func descendantsCTEFromRoots(rootCount int) string {
+	return descendantsCTEFromRootsWhere(rootCount, visibleItemsFilterFor)
+}
+
+// descendantsCTEFromRootsWhere is descendantsCTEFromRoots with the row
+// filter supplied: filter renders a predicate over the given alias prefix.
+func descendantsCTEFromRootsWhere(rootCount int, filter func(alias string) string) string {
 	roots := placeholders(rootCount)
-	visible := visibleItemsFilterFor("items.")
+	visible := filter("items.")
 	return `WITH RECURSIVE rel(root, id) AS (
 		SELECT items.parent_id, items.id
 		  FROM items
@@ -133,6 +143,26 @@ func descendantsCTEFromRoots(rootCount int) string {
 		   AND ` + visible + `
 		   AND ` + importedNotOverridden + `
 		UNION
+		SELECT items.parent_id, items.id
+		  FROM thread_fork_lineage l
+		  CROSS JOIN items ON items.thread_id = l.ancestor_id
+		 WHERE l.thread_id = ?
+		   AND items.parent_id IN (` + roots + `)
+		   AND items.parent_id <> ''
+		   AND ` + visible + `
+		   AND ` + inheritedItemVisibleSQL + `
+		UNION
+		SELECT items.parent_id, items.id
+		  FROM import_history_items items
+		  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = items.chunk_id
+		  CROSS JOIN thread_fork_lineage l ON l.ancestor_id = refs.thread_id
+		 WHERE l.thread_id = ?
+		   AND items.parent_id IN (` + roots + `)
+		   AND items.parent_id <> ''
+		   AND ` + visible + `
+		   AND ` + importedNotOverridden + `
+		   AND ` + inheritedItemVisibleSQL + `
+		UNION
 		SELECT rel.root, items.id
 		  FROM rel
 		  CROSS JOIN items ON items.parent_id = rel.id
@@ -148,21 +178,41 @@ func descendantsCTEFromRoots(rootCount int) string {
 		   AND items.parent_id <> ''
 		   AND ` + visible + `
 		   AND ` + importedNotOverridden + `
+		UNION
+		SELECT rel.root, items.id
+		  FROM rel
+		  CROSS JOIN thread_fork_lineage l
+		  CROSS JOIN items ON items.thread_id = l.ancestor_id AND items.parent_id = rel.id
+		 WHERE l.thread_id = ?
+		   AND items.parent_id <> ''
+		   AND ` + visible + `
+		   AND ` + inheritedItemVisibleSQL + `
+		UNION
+		SELECT rel.root, items.id
+		  FROM rel
+		  CROSS JOIN import_history_items items ON items.parent_id = rel.id
+		  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = items.chunk_id
+		  CROSS JOIN thread_fork_lineage l ON l.ancestor_id = refs.thread_id
+		 WHERE l.thread_id = ?
+		   AND items.parent_id <> ''
+		   AND ` + visible + `
+		   AND ` + importedNotOverridden + `
+		   AND ` + inheritedItemVisibleSQL + `
 	)`
 }
 
 // descendantsCTEArgs renders descendantsCTEFromRoots' bind values in the
-// order its four arms consume them. One function, so the arm order and
+// order its eight hops consume them. One function, so the hop order and
 // the arg order cannot drift apart.
 func descendantsCTEArgs(threadID string, rootIDs []string) []any {
-	args := make([]any, 0, 2*len(rootIDs)+4)
-	for range 2 {
+	args := make([]any, 0, 4*len(rootIDs)+8)
+	for range 4 {
 		args = append(args, threadID)
 		for _, id := range rootIDs {
 			args = append(args, id)
 		}
 	}
-	return append(args, threadID, threadID)
+	return append(args, threadID, threadID, threadID, threadID)
 }
 
 // descendantsCTE is the LOCAL-ONLY `rel(root, id) AS (...)` clause,
@@ -432,12 +482,12 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 // index instead of probing the parent index (measured on the arms parity
 // fixture). One agent has a handful of rounds, so the sort is free.
 // TestSubagentResumeRoundProbeProbesTheParentIndexes is the tripwire.
-func subagentResumeRoundsQuery(threadID string, rootIDs []string) (string, []any) {
+func subagentResumeRoundsQuery(q sqlQueryer, threadID string, rootIDs []string) (string, []any, error) {
 	rootArgs := make([]any, 0, len(rootIDs))
 	for _, id := range rootIDs {
 		rootArgs = append(rootArgs, id)
 	}
-	return timelineArms(threadID, timelineSelection{
+	return timelineArms(q, threadID, timelineSelection{
 		Columns: func(string, string) string {
 			return `items.parent_id AS root, items.id AS id, items.meta AS meta,
 			        items.turn_index AS turn_index, items.item_index AS item_index`
@@ -452,7 +502,10 @@ func subagentResumeRoundsQuery(threadID string, rootIDs []string) (string, []any
 }
 
 func (s *Store) subagentResumeRounds(q sqlQueryer, threadID string, rootIDs []string) ([]subagentRound, error) {
-	query, args := subagentResumeRoundsQuery(threadID, rootIDs)
+	query, args, err := subagentResumeRoundsQuery(q, threadID, rootIDs)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := q.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query subagent resume rounds for %s: %w", threadID, err)
@@ -568,7 +621,7 @@ func (s *Store) subagentLaunchRowsByID(q sqlQueryer, threadID string, ids []stri
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	source, queryArgs := timelineArms(threadID, timelineSelection{
+	source, queryArgs, err := timelineArms(q, threadID, timelineSelection{
 		Columns: func(string, string) string {
 			return "items.id AS id, items.kind AS kind, items.tool_name AS tool_name, items.meta AS meta"
 		},
@@ -576,6 +629,9 @@ func (s *Store) subagentLaunchRowsByID(q sqlQueryer, threadID string, ids []stri
 		Where:     "items.id IN (" + placeholders + ")",
 		WhereArgs: args,
 	})
+	if err != nil {
+		return nil, err
+	}
 	rows, err := q.Query(source, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve subagent launches for completions in %s: %w", threadID, err)
@@ -714,7 +770,7 @@ func mergeReadTimeMeta(itemMeta string, decoration map[string]any) (string, erro
 // SubagentCompletedChildIndex restores the execution boundary from immutable
 // completion records after the session's live projection has been discarded.
 func (s *Store) SubagentCompletedChildIndex(threadID, launchID string) (int, error) {
-	source, args := timelineArms(threadID, timelineSelection{
+	source, args, err := timelineArms(s.reader(), threadID, timelineSelection{
 		Columns: func(string, string) string {
 			return "json_extract(items.meta, '$.codex_execution_child_end_index') AS child_end"
 		},
@@ -722,6 +778,9 @@ func (s *Store) SubagentCompletedChildIndex(threadID, launchID string) (int, err
 		Where:     "items.completion_of <> '' AND items.completion_of = ?",
 		WhereArgs: []any{launchID},
 	})
+	if err != nil {
+		return 0, err
+	}
 	var end int
 	if err := s.reader().QueryRow("SELECT COALESCE(MAX(child_end), 0) FROM ("+source+")", args...).Scan(&end); err != nil {
 		return 0, fmt.Errorf("store: read completed subagent boundary: %w", err)
@@ -817,12 +876,15 @@ func (s *Store) listSubagentDescendants(q sqlQueryer, threadID, rootItemID strin
 	// arms, never through the timeline_items view (timeline_arms.go);
 	// queryHydratedTimelineItems then resolves the surviving ids the same
 	// way and keeps every statement on one read pool.
-	selectedSQL, selectedArgs := timelineIDSelection(threadID, timelineSelection{
+	selectedSQL, selectedArgs, err := timelineIDSelection(q, threadID, timelineSelection{
 		Source:  "rel",
 		Where:   "items.id = rel.id",
 		OrderBy: "turn_index DESC, item_index DESC",
 		Limit:   maxSubagentDescendants,
 	})
+	if err != nil {
+		return nil, err
+	}
 	items, err := queryHydratedTimelineItems(
 		q, threadID,
 		descendantsCTEFromRoots(1)+"\n"+selectedSQL,

@@ -15,7 +15,7 @@ import (
 // fallback lookup for late completion events; the hot delta path keeps the
 // in-memory item id and never pays this JSON predicate.
 func (s *Store) FindStreamItemByProviderItemID(threadID string, turnIndex int, kind, parentID, providerItemID string) (Item, bool, error) {
-	selection, args := timelineIDSelection(threadID, timelineSelection{
+	selection, args, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
 		Turn: "?", TurnArgs: []any{turnIndex},
 		Where: `items.kind = ?
 		    AND items.parent_id = ?
@@ -24,6 +24,9 @@ func (s *Store) FindStreamItemByProviderItemID(threadID string, turnIndex int, k
 		OrderBy:   "item_index ASC",
 		Limit:     1,
 	})
+	if err != nil {
+		return Item{}, false, err
+	}
 	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find stream item by provider item id: %w", err)
@@ -44,7 +47,10 @@ func (s *Store) ListItems(threadID string) ([]Item, error) {
 }
 
 func (s *Store) ListItemsForTurn(threadID string, turnIndex int) ([]Item, error) {
-	selection, args := turnIDSelection(threadID, turnIndex)
+	selection, args, err := turnIDSelection(s.reader(), threadID, turnIndex)
+	if err != nil {
+		return nil, err
+	}
 	items, err := queryHydratedTimelineItems(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list items for thread %s turn %d: %w", threadID, turnIndex, err)
@@ -67,29 +73,44 @@ func (s *Store) NextTurnIndex(threadID string) (int, error) {
 	return int(index.Int64) + 1, nil
 }
 
+// lastTurnIndex reads the newest row through the timeline arms, each an
+// index walk that stops at its first row, and the thread's own turn rows.
+// A fork owns the row of its cut turn and every later one, so its own turn
+// rows are never older than the turns it inherits.
 func (s *Store) lastTurnIndex(threadID string) (sql.NullInt64, error) {
+	q := s.reader()
+	newest, args, err := timelineArms(q, threadID, timelineSelection{
+		Columns: timelineIDColumns,
+		OrderBy: "turn_index DESC, item_index DESC",
+		Limit:   1,
+	})
+	if err != nil {
+		return sql.NullInt64{}, err
+	}
 	var maxIndex sql.NullInt64
-	err := s.reader().QueryRow(
+	if err := q.QueryRow(
 		`SELECT MAX(turn_index)
 		   FROM (
-		         SELECT turn_index FROM timeline_items WHERE thread_id = ?
+		         SELECT turn_index FROM (`+newest+`)
 		         UNION ALL
-		         SELECT turn_index FROM turns WHERE thread_id = ?
+		         SELECT MAX(turn_index) FROM turns WHERE thread_id = ?
 		        )`,
-		threadID, threadID,
-	).Scan(&maxIndex)
-	if err != nil {
+		append(args, threadID)...,
+	).Scan(&maxIndex); err != nil {
 		return sql.NullInt64{}, fmt.Errorf("store: last turn index: %w", err)
 	}
 	return maxIndex, nil
 }
 
 func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item, bool, error) {
-	selection, args := timelineIDSelection(threadID, timelineSelection{
+	selection, args, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
 		Turn: "?", TurnArgs: []any{turnIndex},
 		Where: "items.kind = ?", WhereArgs: []any{kind},
 		OrderBy: "item_index DESC", Limit: 1,
 	})
+	if err != nil {
+		return Item{}, false, err
+	}
 	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find turn item: %w", err)
@@ -118,10 +139,13 @@ func (s *Store) FindToolCallItemByTaskID(threadID, taskID string) (Item, bool, e
 	if taskID == "" {
 		return Item{}, false, nil
 	}
-	selection, args := timelineKeyedIDSelection(threadID,
+	selection, args, err := timelineKeyedIDSelection(s.reader(), threadID,
 		"items.updated_at AS updated_at",
 		"json_extract(items.meta, '$.task_id') = ?", []any{taskID},
 		"updated_at DESC", 1)
+	if err != nil {
+		return Item{}, false, err
+	}
 	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find tool call by task id %s: %w", taskID, err)
@@ -147,10 +171,13 @@ func (s *Store) FindOriginalAgentLaunchByTaskID(threadID, taskID, excludeItemID 
 	if taskID == "" {
 		return Item{}, false, nil
 	}
-	selection, args := timelineKeyedIDSelection(threadID,
+	selection, args, err := timelineKeyedIDSelection(s.reader(), threadID,
 		"items.created_at AS created_at",
 		"json_extract(items.meta, '$.task_id') = ? AND items.id <> ?", []any{taskID, excludeItemID},
 		"created_at ASC", 1)
+	if err != nil {
+		return Item{}, false, err
+	}
 	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find original agent launch by task id %s: %w", taskID, err)
@@ -182,7 +209,10 @@ func (s *Store) FindUserTextItemBySendID(threadID, sendID string) (Item, bool, e
 	if sendID == "" {
 		return Item{}, false, nil
 	}
-	query, args := sendIdentityQuery(threadID, sendID)
+	query, args, err := sendIdentityQuery(s.reader(), threadID, sendID)
+	if err != nil {
+		return Item{}, false, err
+	}
 	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, query, args...)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find user text item by send id for thread %s: %w", threadID, err)
@@ -190,7 +220,10 @@ func (s *Store) FindUserTextItemBySendID(threadID, sendID string) (Item, bool, e
 	if found {
 		return item, true, nil
 	}
-	query, args = joinedSendIdentityQuery(threadID, sendID)
+	query, args, err = joinedSendIdentityQuery(s.reader(), threadID, sendID)
+	if err != nil {
+		return Item{}, false, err
+	}
 	item, found, err = queryOneHydratedTimelineItem(s.reader(), threadID, query, args...)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find joined user text item by send id for thread %s: %w", threadID, err)
@@ -198,8 +231,8 @@ func (s *Store) FindUserTextItemBySendID(threadID, sendID string) (Item, bool, e
 	return item, found, nil
 }
 
-func sendIdentityQuery(threadID, sendID string) (string, []any) {
-	return timelineIDSelection(threadID, timelineSelection{
+func sendIdentityQuery(q sqlQueryer, threadID, sendID string) (string, []any, error) {
+	return timelineIDSelection(q, threadID, timelineSelection{
 		KeyFirst: true,
 		Where: readerAuthoredUserTextFilterFor("items.") +
 			` AND json_valid(items.meta) AND json_extract(items.meta, '$.sendId') IS NOT NULL
@@ -221,8 +254,8 @@ func sendIdentityQuery(threadID, sendID string) (string, []any) {
 // `json_extract(... '$.joinedSendIds') IS NOT NULL` is repeated verbatim from
 // the index predicate: SQLite applies a partial index only when the query
 // textually implies its WHERE clause.
-func joinedSendIdentityQuery(threadID, sendID string) (string, []any) {
-	return timelineIDSelection(threadID, timelineSelection{
+func joinedSendIdentityQuery(q sqlQueryer, threadID, sendID string) (string, []any, error) {
+	return timelineIDSelection(q, threadID, timelineSelection{
 		Where: readerAuthoredUserTextFilterFor("items.") +
 			` AND json_valid(items.meta)
 			  AND json_extract(items.meta, '$.joinedSendIds') IS NOT NULL
@@ -274,34 +307,31 @@ func (s *Store) FindProvisionalSubagentPrompt(threadID, parentID, content string
 
 // GetThreadItemByPayloadID returns the newest item on threadID whose
 // payload_id OR input_payload_id matches payloadID, so a payload id is
-// not usable outside the thread that references it. The two partial
-// indexes (idx_items_payload_id, idx_items_input_payload_id) cover the
-// two local columns; UNION keeps each branch index-friendly. A single
-// OR-clause forces SQLite onto the broad thread_id index instead, which
-// would scan every row in the thread on every lazy-load click. An
-// imported row's payload lives in its own chunk, so the imported branch
-// starts from the payload's chunk rows and scans only those chunks.
+// not usable outside the thread that references it. The rows are found
+// through the payload keys (ownPayloadRowArms), never by scanning the
+// thread: a single OR-clause over the two local columns would send SQLite
+// onto the broad thread_id index, on every lazy-load click. A pointer
+// fork's inherited rows are found the same way (inheritedPayloadRowArms).
 func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool, error) {
+	q := s.reader()
+	depth, err := forkLineageDepth(q, threadID)
+	if err != nil {
+		return Item{}, false, err
+	}
+	const columns = "items.id AS id, items.updated_at AS updated_at"
+	rows, arms := ownPayloadRowArms(columns), payloadRowArmCount
+	if depth > 0 {
+		rows += "\n		UNION ALL\n		" + inheritedPayloadRowArms(columns, allLevels)
+		arms += payloadRowArmCount
+	}
 	item, found, err := queryOneHydratedTimelineItem(
-		s.reader(), threadID,
+		q, threadID,
 		`SELECT id FROM (
-		     SELECT id, updated_at FROM items
-		      WHERE thread_id = ? AND payload_id = ?
-		     UNION
-		     SELECT id, updated_at FROM items
-		      WHERE thread_id = ? AND input_payload_id = ?
-		     UNION
-		     SELECT items.id, items.updated_at
-		       FROM import_history_payloads payload
-		       CROSS JOIN thread_import_chunks refs ON refs.chunk_id = payload.chunk_id
-		       CROSS JOIN import_history_items items ON items.chunk_id = payload.chunk_id
-		      WHERE payload.id = ? AND refs.thread_id = ?
-		        AND (items.payload_id = payload.id OR items.input_payload_id = payload.id)
-		        AND `+importedNotOverridden+`
+		     `+rows+`
 		 )
 		 ORDER BY updated_at DESC
 		 LIMIT 1`,
-		threadID, payloadID, threadID, payloadID, payloadID, threadID,
+		repeatArgs(arms, []any{threadID, payloadID})...,
 	)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: get item by payload id %s on thread %s: %w", payloadID, threadID, err)
@@ -364,13 +394,16 @@ func (s *Store) ListThreadUserMessageTicks(threadID string, selection TimelineSe
 			filter += " AND " + userMessageTickFilterFor("items.")
 		}
 
-		sql, args := timelineArms(threadID, timelineSelection{
+		sql, args, err := timelineArms(q, threadID, timelineSelection{
 			Columns: func(string, string) string {
 				return `items.id AS id, items.turn_index AS turn_index, items.item_index AS item_index`
 			},
 			Where: filter, WhereArgs: filterArgs,
 			OrderBy: "turn_index ASC, item_index ASC",
 		})
+		if err != nil {
+			return nil, err
+		}
 		rows, err := q.Query(sql, args...)
 		if err != nil {
 			return nil, fmt.Errorf("store: list user message ticks on thread %s: %w", threadID, err)
@@ -416,7 +449,7 @@ func (s *Store) ListThreadUserMessageHistory(threadID string, limit int) ([]User
 	if limit <= 0 {
 		return []UserMessageHistoryEntry{}, nil
 	}
-	sql, args := timelineArms(threadID, timelineSelection{
+	sql, args, err := timelineArms(s.reader(), threadID, timelineSelection{
 		Columns: func(string, string) string {
 			return `items.id AS id, items.turn_index AS turn_index,
 			        items.item_index AS item_index, items.summary AS summary`
@@ -425,6 +458,9 @@ func (s *Store) ListThreadUserMessageHistory(threadID string, limit int) ([]User
 		OrderBy: "turn_index DESC, item_index DESC",
 		Limit:   limit,
 	})
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.reader().Query(sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list user message history on thread %s: %w", threadID, err)
@@ -454,7 +490,7 @@ func (s *Store) ListThreadUserMessageHistory(threadID string, limit int) ([]User
 // never quotes another agent back at itself. Wire-only injections and
 // subagent prompts are already excluded by the shared predicate.
 func (s *Store) LatestHumanUserText(threadID string) (string, bool, error) {
-	query, args := timelineArms(threadID, timelineSelection{
+	query, args, err := timelineArms(s.reader(), threadID, timelineSelection{
 		Columns: func(string, string) string {
 			return `items.summary AS summary, items.turn_index AS turn_index, items.item_index AS item_index`
 		},
@@ -463,9 +499,12 @@ func (s *Store) LatestHumanUserText(threadID string) (string, bool, error) {
 		OrderBy: "turn_index DESC, item_index DESC",
 		Limit:   1,
 	})
+	if err != nil {
+		return "", false, err
+	}
 	var summary string
 	var turnIndex, itemIndex int
-	err := s.reader().QueryRow(query, args...).Scan(&summary, &turnIndex, &itemIndex)
+	err = s.reader().QueryRow(query, args...).Scan(&summary, &turnIndex, &itemIndex)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -505,10 +544,13 @@ func (s *Store) FindNotificationItemByTaskID(threadID, taskID string) (Item, boo
 	// planner walk the thread's ordering index newest-first probing meta
 	// per row instead of using the narrow partial expression index (13ms
 	// vs 0.04ms on a 38k-item thread).
-	selection, args := timelineKeyedIDSelection(threadID,
+	selection, args, err := timelineKeyedIDSelection(s.reader(), threadID,
 		"items.turn_index AS turn_index, items.item_index AS item_index",
 		"items.kind = 'notification' AND json_extract(items.meta, '$.task_id') = ?", []any{taskID},
 		"turn_index DESC, item_index DESC", 1)
+	if err != nil {
+		return Item{}, false, err
+	}
 	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find notification by task_id %s: %w", taskID, err)
@@ -517,7 +559,10 @@ func (s *Store) FindNotificationItemByTaskID(threadID, taskID string) (Item, boo
 }
 
 func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
-	selection, args := turnIDSelection(threadID, turnIndex)
+	selection, args, err := turnIDSelection(s.reader(), threadID, turnIndex)
+	if err != nil {
+		return nil, err
+	}
 	items, err := queryHydratedTimelineItems(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list turn items for thread %s turn %d: %w", threadID, turnIndex, err)
@@ -533,11 +578,14 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 // (e.g. tool_result_diff_upgrade.loadSummaryOnlyToolResultCandidate)
 // keep ListTurnItems, which hydrates them.
 func (s *Store) ListTurnItemsSansPayload(threadID string, turnIndex int) ([]Item, error) {
-	query, args := timelineArms(threadID, timelineSelection{
+	query, args, err := timelineArms(s.reader(), threadID, timelineSelection{
 		Columns: itemColumnsSansPayloadFor,
 		Turn:    "?", TurnArgs: []any{turnIndex},
 		OrderBy: "item_index",
 	})
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list turn items (sans payload) for thread %s turn %d: %w", threadID, turnIndex, err)
@@ -618,7 +666,7 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 	//
 	// One row past the window: its arrival is what proves rows were
 	// dropped, and it is discarded immediately after.
-	windowSQL, windowArgs := timelineArms(threadID, timelineSelection{
+	windowSQL, windowArgs, err := timelineArms(tx, threadID, timelineSelection{
 		Columns: func(threadIDExpr, revExpr string) string {
 			return `items.id, ` + threadIDExpr + ` AS thread_id,
 			        items.turn_index AS turn_index, items.item_index AS item_index,
@@ -636,6 +684,9 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 		OrderBy: "turn_index DESC, item_index DESC",
 		Limit:   limit + 1,
 	})
+	if err != nil {
+		return nil, false, err
+	}
 	windowRows, err := tx.Query(windowSQL, windowArgs...)
 	if err != nil {
 		return nil, false, fmt.Errorf("store: thread title context items for %s: %w", threadID, err)
@@ -657,7 +708,7 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 	// itself once it overruns, so the pin is the only place the
 	// difference could show, and it only shows for a thread whose opening
 	// message is both enormous and still in the newest-N rows.
-	earliestSQL, earliestArgs := timelineArms(threadID, timelineSelection{
+	earliestSQL, earliestArgs, err := timelineArms(tx, threadID, timelineSelection{
 		Columns: func(threadIDExpr, revExpr string) string {
 			return `items.id, ` + threadIDExpr + ` AS thread_id,
 			        items.turn_index AS turn_index, items.item_index AS item_index,
@@ -676,6 +727,9 @@ func (s *Store) ThreadTitleContextItems(threadID string, limit int) ([]Item, boo
 		OrderBy: "turn_index ASC, item_index ASC",
 		Limit:   1,
 	})
+	if err != nil {
+		return nil, false, err
+	}
 	earliestRows, err := tx.Query(earliestSQL, earliestArgs...)
 	if err != nil {
 		return nil, false, fmt.Errorf("store: earliest thread title context item for %s: %w", threadID, err)
@@ -724,7 +778,7 @@ func threadTitleContextWindowHolds(window []Item, candidate Item) bool {
 
 func (s *Store) HasMatchingSystemItem(threadID string, turnIndex int, kind, parentID, summary string) (bool, error) {
 	var exists int
-	query, args := timelineArms(threadID, timelineSelection{
+	query, args, err := timelineArms(s.reader(), threadID, timelineSelection{
 		Columns: func(string, string) string { return "1" },
 		Turn:    "?", TurnArgs: []any{turnIndex},
 		Where: `items.kind = ?
@@ -733,7 +787,10 @@ func (s *Store) HasMatchingSystemItem(threadID string, turnIndex int, kind, pare
 			   AND items.summary = ?`,
 		WhereArgs: []any{kind, parentID, summary},
 	})
-	err := s.reader().QueryRow(`SELECT EXISTS(`+query+`)`, args...).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	err = s.reader().QueryRow(`SELECT EXISTS(`+query+`)`, args...).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("store: matching system item for thread %s turn %d: %w", threadID, turnIndex, err)
 	}
@@ -761,13 +818,16 @@ func (s *Store) LatestToolCallByName(threadID string, turnIndex int, toolNames [
 	for _, name := range toolNames {
 		names = append(names, name)
 	}
-	query, args := timelineIDSelection(threadID, timelineSelection{
+	query, args, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
 		Turn: "?", TurnArgs: []any{turnIndex},
 		Where:     `items.kind = 'tool_call' AND lower(items.tool_name) IN (` + placeholders(len(names)) + `)`,
 		WhereArgs: names,
 		OrderBy:   "item_index DESC",
 		Limit:     1,
 	})
+	if err != nil {
+		return Item{}, false, err
+	}
 
 	it, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, query, args...)
 	if err != nil {
@@ -783,7 +843,10 @@ func (s *Store) LatestToolCallByName(threadID string, turnIndex int, toolNames [
 // it precedes the queued message in the provider transcript.
 func (s *Store) MaxItemIndexForTurn(threadID string, turnIndex int) (int, bool, error) {
 	var maxIndex sql.NullInt64
-	query, args := turnAggregateQuery(threadID, turnIndex, "MAX", "item_index")
+	query, args, err := turnAggregateQuery(s.reader(), threadID, turnIndex, "MAX", "item_index")
+	if err != nil {
+		return 0, false, err
+	}
 	if err := s.reader().QueryRow(query, args...).Scan(&maxIndex); err != nil {
 		return 0, false, fmt.Errorf("store: max item index for %s/%d: %w", threadID, turnIndex, err)
 	}

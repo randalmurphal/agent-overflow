@@ -39,7 +39,7 @@ func (s *Store) ThreadTurnPreview(threadID, itemID string) (TurnPreview, bool, e
 func (s *Store) threadTurnPreview(q sqlQueryer, threadID, itemID string) (TurnPreview, bool, error) {
 	var userText, parentID string
 	var turnIndex, itemIndex int
-	anchor, anchorArgs := timelineArms(threadID, timelineSelection{
+	anchor, anchorArgs, err := timelineArms(q, threadID, timelineSelection{
 		Columns: func(string, string) string {
 			return "items.summary, items.turn_index, items.item_index, items.parent_id"
 		},
@@ -47,7 +47,10 @@ func (s *Store) threadTurnPreview(q sqlQueryer, threadID, itemID string) (TurnPr
 		Where:     "items.id = ? AND " + userMessageTickFilterFor("items."),
 		WhereArgs: []any{itemID},
 	})
-	err := q.QueryRow(anchor, anchorArgs...).Scan(&userText, &turnIndex, &itemIndex, &parentID)
+	if err != nil {
+		return TurnPreview{}, false, err
+	}
+	err = q.QueryRow(anchor, anchorArgs...).Scan(&userText, &turnIndex, &itemIndex, &parentID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TurnPreview{}, false, nil
 	}
@@ -65,7 +68,7 @@ func (s *Store) threadTurnPreview(q sqlQueryer, threadID, itemID string) (TurnPr
 	}
 	// The ordering keys ride the projection because the compound needs
 	// them (timeline_arms.go); the scan drops them.
-	walkSQL, walkArgs := timelineArms(threadID, timelineSelection{
+	walkSQL, walkArgs, err := timelineArms(q, threadID, timelineSelection{
 		Columns: func(string, string) string {
 			return `items.kind AS kind, items.summary AS summary,
 			        COALESCE(CASE WHEN json_valid(items.meta)
@@ -82,6 +85,9 @@ func (s *Store) threadTurnPreview(q sqlQueryer, threadID, itemID string) (TurnPr
 		OrderBy:   "turn_index ASC, item_index ASC",
 		Limit:     turnPreviewScanLimit,
 	})
+	if err != nil {
+		return TurnPreview{}, false, err
+	}
 	rows, err := q.Query(walkSQL, walkArgs...)
 	if err != nil {
 		return TurnPreview{}, false, fmt.Errorf("store: turn preview walk after %s on thread %s: %w", itemID, threadID, err)

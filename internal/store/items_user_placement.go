@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"agent-overflow/internal/itemmeta"
@@ -23,9 +24,13 @@ func (s *Store) CaptureUserPlacementBoundary(threadID string, turnIndex int, mov
 			sel.WhereArgs = append(sel.WhereArgs, id)
 		}
 	}
-	query, args := timelineArms(threadID, sel)
+	q := s.reader()
+	query, args, err := timelineArms(q, threadID, sel)
+	if err != nil {
+		return "", fmt.Errorf("store: capture user placement boundary: %w", err)
+	}
 	var id string
-	err := s.reader().QueryRow(`SELECT id FROM (`+query+`)`, args...).Scan(&id)
+	err = q.QueryRow(`SELECT id FROM (`+query+`)`, args...).Scan(&id)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -105,7 +110,10 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 	}
 	if park {
 		var minimum int
-		query, args := turnAggregateQuery(threadID, turnIndex, "MIN", "item_index")
+		query, args, err := turnAggregateQuery(tx, threadID, turnIndex, "MIN", "item_index")
+		if err != nil {
+			return nil, err
+		}
 		if err := tx.QueryRow(query, args...).Scan(&minimum); err != nil {
 			return nil, err
 		}
@@ -207,21 +215,17 @@ func loadUserPlacementGroupTx(tx *sql.Tx, threadID string, turnIndex int, items 
 	existing := make([]bool, len(group))
 	for i := range group {
 		item := &group[i]
-		row, readErr := readBackItemTx(tx, threadID, item.ID)
-		if readErr == sql.ErrNoRows {
-			localized, err := localizeImportedItemTx(tx, threadID, item.ID, "store: place user item")
-			if err != nil {
-				return nil, nil, err
-			}
-			if localized {
-				row, readErr = readBackItemTx(tx, threadID, item.ID)
-			}
+		err := requireMutableItemTx(tx, threadID, item.ID, "store: place user item")
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, nil, err
 		}
-		if readErr == nil {
+		if err == nil {
+			row, readErr := readBackItemTx(tx, threadID, item.ID)
+			if readErr != nil {
+				return nil, nil, readErr
+			}
 			*item = row
 			existing[i] = true
-		} else if readErr != sql.ErrNoRows {
-			return nil, nil, readErr
 		}
 		if item.ThreadID != threadID || item.TurnIndex != turnIndex || item.Kind != "user_text" || item.Role != "user" || item.ParentID != "" {
 			return nil, nil, fmt.Errorf("store: placement item %s is not a top-level user message in the target turn", item.ID)
@@ -249,7 +253,10 @@ func userPlacementSuffixTx(tx *sql.Tx, threadID string, turnIndex int, boundaryI
 	if boundaryID != "" {
 		sel.Where, sel.WhereArgs = `items.item_index > ?`, []any{boundary}
 	}
-	suffixQuery, suffixArgs := timelineArms(threadID, sel)
+	suffixQuery, suffixArgs, err := timelineArms(tx, threadID, sel)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := tx.Query(suffixQuery, suffixArgs...)
 	if err != nil {
 		return nil, err
@@ -291,11 +298,14 @@ func shiftUserPlacementSuffixTx(tx *sql.Tx, threadID string, turnIndex int, suff
 	}
 	// Boundaries are numeric history metadata. User rows moving around them
 	// do not change provider-order membership, but displaced content does.
-	metaQuery, metaArgs := timelineArms(threadID, timelineSelection{
+	metaQuery, metaArgs, err := timelineArms(tx, threadID, timelineSelection{
 		Columns: func(string, string) string { return "items.id, items.meta" },
 		Turn:    "?", TurnArgs: []any{turnIndex},
 		Where: `items.meta LIKE '%"promoted_echo_boundary"%'`,
 	})
+	if err != nil {
+		return err
+	}
 	metas, err := tx.Query(metaQuery, metaArgs...)
 	if err != nil {
 		return err
@@ -347,13 +357,16 @@ func shiftUserPlacementSuffixTx(tx *sql.Tx, threadID string, turnIndex int, suff
 // turnItemIndexTx resolves a row of the turn to its item_index through
 // each arm's id index; sql.ErrNoRows when the turn has no such row.
 func turnItemIndexTx(q sqlQueryer, threadID string, turnIndex int, id string) (int, error) {
-	query, args := timelineArms(threadID, timelineSelection{
+	query, args, err := timelineArms(q, threadID, timelineSelection{
 		Columns:   func(string, string) string { return "items.item_index" },
 		KeyFirst:  true,
 		Where:     "items.id = ? AND items.turn_index = ?",
 		WhereArgs: []any{id, turnIndex},
 	})
+	if err != nil {
+		return 0, err
+	}
 	var index int
-	err := q.QueryRow(query, args...).Scan(&index)
+	err = q.QueryRow(query, args...).Scan(&index)
 	return index, err
 }

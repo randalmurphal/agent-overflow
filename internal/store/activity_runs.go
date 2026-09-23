@@ -52,6 +52,13 @@ func (r activityScanRow) isRailRow() bool {
 	return r.PayloadKind != railExemptPayloadKind
 }
 
+// isBell reports a notification an activity run can absorb. A fork's
+// divider is a notification that marks where inherited history ends, so it
+// always stands on its own (activityRunGrouping.ts isAbsorbableNotification).
+func (r activityScanRow) isBell() bool {
+	return r.Kind == notificationKind && r.ToolName != forkDividerToolName
+}
+
 // isFailedStatus and isRunningStatus are §4's status rules.
 // `declined` is a user decision, not a failure.
 func (r activityScanRow) isFailedStatus() bool {

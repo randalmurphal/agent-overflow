@@ -1129,18 +1129,19 @@ export function ForkSideChat(threadID: string): $CancellablePromise<store$0.Thre
 }
 
 /**
- * ForkThread copies a source thread's timeline into a new fork and wires
- * the provider-specific resume state. The whole sequence is atomic from
- * the caller's point of view: if any step fails, the partially-created
- * fork is torn down so no half-forked rows linger.
+ * ForkThread creates a pointer fork of a source thread and wires the
+ * provider-specific resume state. The fork copies no history: it reads the
+ * source's rows before its cut (store.CreatePointerFork). The whole sequence
+ * is atomic from the caller's point of view: if any step fails, the
+ * partially-created fork is torn down so no half-forked rows linger.
  * 
- * When atTurnIndex is non-nil, the fork is sliced at that turn (0-indexed):
- * items with turn_index > *atTurnIndex are dropped, the provider session
- * is forked + truncated to match. Message-anchor rows intentionally stay
+ * When atTurnIndex is non-nil, the fork is cut after that turn (0-indexed):
+ * it does not show turns after *atTurnIndex, and the provider session is
+ * forked + truncated to match. Message-anchor rows intentionally stay
  * behind with the source thread; the fork starts with none (rollback/fork
  * helpers synthesize from item meta when a row is absent). atTurnIndex ==
- * nil preserves the existing fork-at-tail behavior (clone everything,
- * fork provider state at the latest message).
+ * nil forks at the tail (the whole timeline, provider state at the latest
+ * message).
  * 
  * The "atomic unit" is emulated in the app layer rather than a single
  * SQLite transaction because the fork flow crosses a boundary — it has
@@ -4272,8 +4273,8 @@ export function RetryThreadWorktreeSetup(threadID: string): $CancellablePromise<
  *     turn is still live (Stop button); it interrupts the turn first and
  *     DOES restore the prompt to the composer, because it has no
  *     replacement to send.
- *   - ForkThreadFromMessage clones the kept prefix into a NEW thread and
- *     leaves the source thread untouched.
+ *   - ForkThreadFromMessage starts a NEW thread that shows the kept
+ *     prefix and leaves the source thread untouched.
  * 
  * This one mutates the current thread and keeps it. It shares the whole
  * destructive tail (provider rollback -> truncate) with

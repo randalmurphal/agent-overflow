@@ -24,7 +24,7 @@ import (
 // content.
 //
 // Truncation-position consumers (revert's DeleteConversationFromItem,
-// fork-from-message's clone) branch on this marker: cutting "at the
+// fork-from-message's cut) branch on this marker: cutting "at the
 // message" in PROVIDER order must keep the same-turn suffix for marked
 // rows and drop it for everything else. The marker rides items.meta —
 // the row's only durable home — and every later meta write goes

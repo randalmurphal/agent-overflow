@@ -7,15 +7,12 @@ import (
 	"testing"
 )
 
-func snapshotForkFixture(t *testing.T) *Store {
+// payloadForkFixture is a source with one row whose payload has an append
+// chunk and an edit snapshot, and a pointer fork of it.
+func payloadForkFixture(t *testing.T) *Store {
 	t.Helper()
 	s := newTestStore(t)
-	for _, id := range []string{"source", "fork", "second"} {
-		thread := makeThread(id, "claude")
-		if err := s.CreateThread(thread); err != nil {
-			t.Fatal(err)
-		}
-	}
+	mustCreateThread(t, s, "source")
 	item := Item{ID: "item", ThreadID: "source", Kind: "assistant_text", Role: "assistant", Status: "completed", PayloadID: "payload", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
 	if err := s.InsertItemWithPayload(item, Payload{ID: "payload", Kind: "text", Meta: "{}", Data: []byte("base"), CreatedAt: 1}); err != nil {
 		t.Fatal(err)
@@ -26,13 +23,13 @@ func snapshotForkFixture(t *testing.T) *Store {
 	if err := s.PutEditFileSnapshot("source", "payload", "file", "original", 2); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CloneThreadHistoryThroughTurn("source", "fork", nil); err != nil {
-		t.Fatal(err)
-	}
+	mustPointerFork(t, s, "source", "fork", ForkCut{})
 	return s
 }
 
-func requireSnapshotPayload(t *testing.T, s *Store, thread, want string) {
+// requireForkPayload reads the payload whole and through every chunked
+// window, the two shapes the payload readers take.
+func requireForkPayload(t *testing.T, s *Store, thread, want string) {
 	t.Helper()
 	got, err := s.GetPayloadData(thread, "payload")
 	if err != nil || string(got) != want {
@@ -46,47 +43,36 @@ func requireSnapshotPayload(t *testing.T, s *Store, thread, want string) {
 	}
 }
 
-func TestForkPayloadSnapshotSharesBytesAndFlattensForks(t *testing.T) {
-	s := snapshotForkFixture(t)
-	if _, err := s.CloneThreadHistoryThroughTurn("fork", "second", nil); err != nil {
+// TestPointerForkReadsPayloadsThroughEveryLevel: a fork and a fork of it
+// read the source's payload, chunks and snapshots without a byte copied.
+func TestPointerForkReadsPayloadsThroughEveryLevel(t *testing.T) {
+	s := payloadForkFixture(t)
+	mustPointerFork(t, s, "fork", "second", ForkCut{})
+	var copied int
+	if err := s.db.QueryRow(`SELECT (SELECT count(*) FROM payloads WHERE thread_id IN ('fork','second'))
+		+ (SELECT count(*) FROM payload_chunks WHERE thread_id IN ('fork','second'))
+		+ (SELECT count(*) FROM edit_file_snapshots WHERE thread_id IN ('fork','second'))`).Scan(&copied); err != nil {
 		t.Fatal(err)
 	}
-	var snapshots, refs, bytesCopied int
-	if err := s.db.QueryRow(`SELECT (SELECT count(*) FROM payload_snapshots),(SELECT count(*) FROM payload_snapshot_refs),(SELECT sum(length(data)) FROM payloads WHERE thread_id IN ('fork','second'))`).Scan(&snapshots, &refs, &bytesCopied); err != nil {
-		t.Fatal(err)
+	if copied != 0 {
+		t.Fatalf("forks store %d payload rows, want none", copied)
 	}
-	if snapshots != 1 || refs != 2 || bytesCopied != 0 {
-		t.Fatalf("snapshots=%d refs=%d copied=%d", snapshots, refs, bytesCopied)
-	}
-	if err := s.DeleteThread("source"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.DeleteThread("fork"); err != nil {
-		t.Fatal(err)
-	}
-	requireSnapshotPayload(t, s, "second", "base chunk")
-	content, found, err := s.GetEditFileSnapshot("second", "payload", "file")
-	if err != nil || !found || content != "original" {
-		t.Fatalf("edit=%q found=%v: %v", content, found, err)
-	}
-	if err := s.DeleteThread("second"); err != nil {
-		t.Fatal(err)
-	}
-	for _, table := range []string{"payload_snapshots", "payload_snapshot_refs", "payload_snapshot_chunks", "payload_snapshot_edits"} {
-		var count int
-		if err := s.db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&count); err != nil {
-			t.Fatal(err)
-		}
-		if count != 0 {
-			t.Fatalf("%s retains %d rows", table, count)
+	for _, thread := range []string{"fork", "second"} {
+		requireForkPayload(t, s, thread, "base chunk")
+		content, found, err := s.GetEditFileSnapshot(thread, "payload", "file")
+		if err != nil || !found || content != "original" {
+			t.Fatalf("%s edit=%q found=%v: %v", thread, content, found, err)
 		}
 	}
 }
 
-func TestForkPayloadSnapshotIndependentMutations(t *testing.T) {
+// TestPointerForkPayloadMutationsStayOnTheirSide: a content write on either
+// side leaves the other's history as it was; an edit snapshot is a cache of
+// the edit and is shared where the payload is.
+func TestPointerForkPayloadMutationsStayOnTheirSide(t *testing.T) {
 	for _, change := range []string{"append source", "replace source", "edit source", "append fork", "replace fork", "edit fork"} {
 		t.Run(change, func(t *testing.T) {
-			s := snapshotForkFixture(t)
+			s := payloadForkFixture(t)
 			var err error
 			switch change {
 			case "append source":
@@ -113,10 +99,9 @@ func TestForkPayloadSnapshotIndependentMutations(t *testing.T) {
 				if change == "replace "+thread {
 					want = "replacement"
 				}
-				requireSnapshotPayload(t, s, thread, want)
-				// ReplacePayloadData preserves the existing edit snapshot.
+				requireForkPayload(t, s, thread, want)
 				edit := "original"
-				if change == "edit "+thread {
+				if strings.HasPrefix(change, "edit ") {
 					edit = "changed"
 				}
 				got, found, err := s.GetEditFileSnapshot(thread, "payload", "file")
@@ -128,8 +113,10 @@ func TestForkPayloadSnapshotIndependentMutations(t *testing.T) {
 	}
 }
 
-func TestForkPayloadSnapshotRestore(t *testing.T) {
-	s := snapshotForkFixture(t)
+// TestPointerForkPayloadRestore: a snapshot restores the fork's pointer, and
+// the fork's history then belongs to the restored source again.
+func TestPointerForkPayloadRestore(t *testing.T) {
+	s := payloadForkFixture(t)
 	path := filepath.Join(t.TempDir(), "snapshot.sqlite")
 	if err := s.SnapshotTo(path); err != nil {
 		t.Fatal(err)
@@ -140,18 +127,23 @@ func TestForkPayloadSnapshotRestore(t *testing.T) {
 	if _, err := s.RestoreFrom(path); err != nil {
 		t.Fatal(err)
 	}
-	requireSnapshotPayload(t, s, "fork", "base chunk")
+	requireForkPayload(t, s, "fork", "base chunk")
+	if n := ownRowCount(t, s, "fork"); n != 1 {
+		t.Fatalf("restored fork stores %d rows, want only its divider", n)
+	}
 	if err := s.DeleteThread("source"); err != nil {
 		t.Fatal(err)
 	}
-	requireSnapshotPayload(t, s, "fork", "base chunk")
+	if _, err := s.GetPayloadData("fork", "payload"); err == nil {
+		t.Fatal("fork reads the deleted source's payload")
+	}
 }
 
-func TestForkPayloadSnapshotImportedHistory(t *testing.T) {
+// TestPointerForkImportedPayloads: a fork reads the source's imported
+// history, and its own write copies the rows that reference the payload.
+func TestPointerForkImportedPayloads(t *testing.T) {
 	s := newTestStore(t)
-	for _, id := range []string{"source", "fork"} {
-		newImportTargetThread(t, s, id)
-	}
+	newImportTargetThread(t, s, "source")
 	if err := s.ApplyImportBatch("source", importBatchFixture("source")); err != nil {
 		t.Fatal(err)
 	}
@@ -159,22 +151,24 @@ func TestForkPayloadSnapshotImportedHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CloneThreadHistoryThroughTurn("source", "fork", nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.DeleteThread("source"); err != nil {
-		t.Fatal(err)
-	}
-	got, err := s.GetPayloadData("fork", "payload-out")
-	if err != nil || !bytes.Equal(got, want) {
+	mustPointerFork(t, s, "source", "fork", ForkCut{})
+	if got, err := s.GetPayloadData("fork", "payload-out"); err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("fork=%q want=%q err=%v", got, want, err)
 	}
 	if err := s.AppendPayloadData("fork", "payload-out", []byte(" extra"), "{}", 3); err != nil {
 		t.Fatal(err)
 	}
-	got, err = s.GetPayloadData("fork", "payload-out")
-	if err != nil || string(got) != string(want)+" extra" {
+	if got, err := s.GetPayloadData("fork", "payload-out"); err != nil || string(got) != string(want)+" extra" {
 		t.Fatalf("appended=%q: %v", got, err)
+	}
+	if got, err := s.GetPayloadData("source", "payload-out"); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("source=%q: %v", got, err)
+	}
+	if err := s.DeleteThread("source"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.GetPayloadData("fork", "payload-out"); err != nil || string(got) != string(want)+" extra" {
+		t.Fatalf("fork lost the row it owns: %q %v", got, err)
 	}
 	if err := s.DeleteThread("fork"); err != nil {
 		t.Fatal(err)
@@ -185,49 +179,16 @@ func TestForkPayloadSnapshotImportedHistory(t *testing.T) {
 	}
 }
 
-func TestForkPayloadSnapshotRawMutationAndRollback(t *testing.T) {
-	for _, query := range []string{
-		`UPDATE payloads SET data=x'6e6577' WHERE thread_id='source'`,
-		`UPDATE payload_chunks SET data=x'6e6577' WHERE thread_id='source'`,
-		`DELETE FROM payload_chunks WHERE thread_id='source'`,
-		`DELETE FROM edit_file_snapshots WHERE thread_id='source'`,
-	} {
-		t.Run(query, func(t *testing.T) {
-			s := snapshotForkFixture(t)
-			tx, err := s.db.Begin()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := tx.Exec(query); err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.Rollback(); err != nil {
-				t.Fatal(err)
-			}
-			requireSnapshotPayload(t, s, "source", "base chunk")
-			requireSnapshotPayload(t, s, "fork", "base chunk")
-			if _, err := s.db.Exec(query); err != nil {
-				t.Fatal(err)
-			}
-			requireSnapshotPayload(t, s, "fork", "base chunk")
-			got, found, err := s.GetEditFileSnapshot("fork", "payload", "file")
-			if err != nil || !found || got != "original" {
-				t.Fatalf("edit=%q found=%v: %v", got, found, err)
-			}
-		})
-	}
-}
-
-func TestForkPayloadSnapshotQueriesStayIndexed(t *testing.T) {
-	s := snapshotForkFixture(t)
+// TestPointerForkPayloadQueriesStayIndexed: the payload views reach an
+// ancestor's rows by index; nothing scans payloads across threads.
+func TestPointerForkPayloadQueriesStayIndexed(t *testing.T) {
+	s := payloadForkFixture(t)
 	for _, query := range []string{
 		`SELECT data FROM timeline_payloads WHERE thread_id=? AND id=?`,
 		`SELECT data FROM timeline_payload_chunks WHERE thread_id=? AND payload_id=? ORDER BY chunk_index`,
 		`SELECT content FROM timeline_edit_file_snapshots WHERE thread_id=? AND payload_id=? AND path='file'`,
 	} {
 		for _, row := range explainPlan(t, s, query, "fork", "payload") {
-			// A scan of a UNION coroutine is bounded by its indexed arms. Physical
-			// payloads, refs and chunks must never be scanned across threads.
 			if strings.HasPrefix(row.detail, "SCAN ") && !strings.Contains(row.detail, "timeline_") {
 				t.Errorf("unbounded plan for %s: %s", query, row.detail)
 			}
@@ -235,7 +196,7 @@ func TestForkPayloadSnapshotQueriesStayIndexed(t *testing.T) {
 	}
 }
 
-func TestForkPayloadSnapshotMigrationPreservesExistingData(t *testing.T) {
+func TestPayloadViewsMigrationPreservesExistingData(t *testing.T) {
 	db := migrateThrough(t, 105)
 	mustExec(t, db, `INSERT INTO threads(id,title,provider,workspace_path,model,created_at,updated_at,mode) VALUES('old','old','claude','/tmp','',1,1,'chat')`)
 	mustExec(t, db, `INSERT INTO payloads(thread_id,id,kind,meta,data,created_at) VALUES('old','payload','text','{}',x'616263',1)`)
@@ -250,8 +211,10 @@ func TestForkPayloadSnapshotMigrationPreservesExistingData(t *testing.T) {
 	}
 }
 
-func TestForkPayloadSnapshotTransferUsesInheritedBytes(t *testing.T) {
-	s := snapshotForkFixture(t)
+// TestPointerForkTransferCarriesInheritedBytes: exporting a fork carries the
+// history it reads, so the received copy outlives the source.
+func TestPointerForkTransferCarriesInheritedBytes(t *testing.T) {
+	s := payloadForkFixture(t)
 	destination := newTestStore(t)
 	thread, err := s.GetThread("fork")
 	if err != nil {
@@ -261,18 +224,20 @@ func TestForkPayloadSnapshotTransferUsesInheritedBytes(t *testing.T) {
 	if err := s.ExportThreadHistoryWith(t.Context(), thread.ID, &data, ThreadHistoryExport{}); err != nil {
 		t.Fatal(err)
 	}
-	thread.ID = "received"
+	// The install clears links to threads the destination does not have.
+	thread.ID, thread.ForkedFromThreadID = "received", ""
 	if err := destination.ImportThreadHistory(t.Context(), thread, &data); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteThread("source"); err != nil {
 		t.Fatal(err)
 	}
-	requireSnapshotPayload(t, destination, thread.ID, "base chunk")
+	requireForkPayload(t, destination, thread.ID, "base chunk")
+	requireForkPayload(t, s, "fork", "base chunk")
 }
 
 func TestProviderIDRemapIsAtomic(t *testing.T) {
-	s := snapshotForkFixture(t)
+	s := payloadForkFixture(t)
 	err := s.RemapProviderIDs("source", []ItemMetaUpdate{{ItemID: "item", Meta: `{"provider_item_id":"new"}`}, {ItemID: "missing", Meta: `{}`}}, nil)
 	if err == nil {
 		t.Fatal("missing row remap succeeded")
@@ -283,35 +248,31 @@ func TestProviderIDRemapIsAtomic(t *testing.T) {
 	}
 }
 
-func TestForkPayloadSnapshotDiffReaders(t *testing.T) {
+// TestPointerForkDiffReaders: the edit-diff readers resolve a fork's
+// inherited diff rows and their patch payloads, and stop showing them once
+// the source, which owns them, is deleted.
+func TestPointerForkDiffReaders(t *testing.T) {
 	s := newTestStore(t)
-	for _, id := range []string{"source", "fork"} {
-		if err := s.CreateThread(makeThread(id, "claude")); err != nil {
-			t.Fatal(err)
-		}
-	}
+	mustCreateThread(t, s, "source")
 	patch := []byte("--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new\n")
 	item := Item{ThreadID: "source", ID: "edit", Kind: "tool_call", Role: "assistant", Status: "completed", PayloadID: "patch", Meta: "{}"}
 	if err := s.InsertItemWithPayload(item, Payload{ID: "patch", Kind: "diff", Meta: "{}", Data: patch}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CloneThreadHistoryThroughTurn("source", "fork", nil); err != nil {
+	mustPointerFork(t, s, "source", "fork", ForkCut{})
+	list, err := s.ListEditDiffItems("fork")
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list=%+v: %v", list, err)
+	}
+	patches, err := s.ListTurnEditDiffPatches("fork", 0)
+	if err != nil || len(patches) != 1 || !bytes.Equal(patches[0].Data, patch) {
+		t.Fatalf("patches=%+v: %v", patches, err)
+	}
+	if err := s.DeleteThread("source"); err != nil {
 		t.Fatal(err)
 	}
-	for _, deleteSource := range []bool{false, true} {
-		if deleteSource {
-			if err := s.DeleteThread("source"); err != nil {
-				t.Fatal(err)
-			}
-		}
-		list, err := s.ListEditDiffItems("fork")
-		if err != nil || len(list) != 1 {
-			t.Fatalf("list=%+v: %v", list, err)
-		}
-		patches, err := s.ListTurnEditDiffPatches("fork", 0)
-		if err != nil || len(patches) != 1 || !bytes.Equal(patches[0].Data, patch) {
-			t.Fatalf("patches=%+v: %v", patches, err)
-		}
+	if list, err := s.ListEditDiffItems("fork"); err != nil || len(list) != 0 {
+		t.Fatalf("list after source deletion=%+v: %v", list, err)
 	}
 }
 
@@ -348,32 +309,27 @@ func TestUserMessageMetadataIncludesImportedAndLocalRows(t *testing.T) {
 	}
 }
 
-func TestForkPayloadSnapshotImportedDiffJoinIsBounded(t *testing.T) {
-	s := snapshotForkFixture(t)
-	for _, row := range explainPlan(t, s, `SELECT COALESCE(p.data, original.data) FROM thread_import_chunks refs JOIN import_history_items i ON i.chunk_id=refs.chunk_id LEFT JOIN resolved_payloads p ON p.thread_id=refs.thread_id AND p.id=i.payload_id LEFT JOIN import_history_payloads original ON original.chunk_id=i.chunk_id AND original.id=i.payload_id WHERE refs.thread_id=?`, "fork") {
-		if strings.HasPrefix(row.detail, "SCAN p") {
-			t.Errorf("unbounded imported diff join: %s", row.detail)
-		}
-	}
-}
-
 // SQLite must answer preview byte counts from record headers. Evaluating
-// length(COALESCE(blob,...)) instead reads entire tool outputs first.
-func TestForkPayloadLengthsNeverMaterializeBlobs(t *testing.T) {
-	s := snapshotForkFixture(t)
+// length(COALESCE(blob,...)) instead reads entire tool outputs first. The
+// fork's read goes through the lineage arms.
+func TestPointerForkPayloadLengthsNeverMaterializeBlobs(t *testing.T) {
+	s := payloadForkFixture(t)
 	type physicalBlob struct {
 		name   string
 		column int
 	}
 	roots := map[int]physicalBlob{}
-	for table, column := range map[string]int{"payloads": 4, "import_history_payloads": 4, "payload_chunks": 4, "payload_snapshots": 4, "payload_snapshot_chunks": 3} {
+	for table, column := range map[string]int{"payloads": 4, "import_history_payloads": 4, "payload_chunks": 4} {
 		var root int
 		if err := s.db.QueryRow(`SELECT rootpage FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&root); err != nil {
 			t.Fatal(err)
 		}
 		roots[root] = physicalBlob{table, column}
 	}
-	query, args := payloadLengthsQuery("fork", "payload")
+	query, args, err := payloadLengthsQuery(s.db, "fork", "payload")
+	if err != nil {
+		t.Fatal(err)
+	}
 	rows, err := s.db.Query("EXPLAIN "+query, args...)
 	if err != nil {
 		t.Fatal(err)
@@ -411,5 +367,8 @@ func TestForkPayloadLengthsNeverMaterializeBlobs(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no physical length reads checked")
+	}
+	if base, _, err := s.payloadLengths("fork", "payload"); err != nil || base != len("base") {
+		t.Fatalf("fork payload length = %d err=%v", base, err)
 	}
 }

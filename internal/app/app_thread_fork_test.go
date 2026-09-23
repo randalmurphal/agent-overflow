@@ -280,7 +280,7 @@ func TestForkThreadFromMessageKeepsSharedTurnPrefix(t *testing.T) {
 		t.Fatalf("fork from message: %v", err)
 	}
 
-	items, err := app.store.ListItems(fork.ID)
+	items, err := forkConversationItems(app.store, fork.ID)
 	if err != nil {
 		t.Fatalf("list fork items: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestForkThreadFromMessageMidTurnZeroKeepsPrefix(t *testing.T) {
 		t.Fatalf("fork from message: %v", err)
 	}
 
-	items, err := app.store.ListItems(fork.ID)
+	items, err := forkConversationItems(app.store, fork.ID)
 	if err != nil {
 		t.Fatalf("list fork items: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestForkThreadFromMessageSynthesizesOnAnchorTurnDrift(t *testing.T) {
 	// The synthesized anchor keys the slice on the ITEM's provider id
 	// (u1), so the fork keeps exactly turn 0.
 	assertClaudeSessionText(t, workspace, fork.SessionRef, []string{"first"}, []string{"second"})
-	items, err := app.store.ListItems(fork.ID)
+	items, err := forkConversationItems(app.store, fork.ID)
 	if err != nil {
 		t.Fatalf("list fork items: %v", err)
 	}

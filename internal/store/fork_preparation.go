@@ -31,7 +31,7 @@ func (s *Store) FinishForkPreparation(threadID string) (Thread, error) {
 }
 
 // CheckForkReady gates public history loads independently of client state.
-// Internal cloning reads the store directly while holding the fork action lock.
+// Fork creation reads the store directly while holding the fork action lock.
 func (s *Store) CheckForkReady(threadID string) error {
 	var preparing bool
 	err := s.reader().QueryRow(`SELECT EXISTS(SELECT 1 FROM threads WHERE id = ? AND fork_preparing = 1)`, threadID).Scan(&preparing)

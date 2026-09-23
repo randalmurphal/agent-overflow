@@ -1,7 +1,7 @@
 // Claude half of the fork saga (app_thread_fork.go): session-JSONL
 // slicing at a turn / message cut, the mid-turn capture that pins a
 // live-source tail fork's lazy cut, and the provider-id remap that
-// keeps cloned rows pointing at a slice's reminted uuids.
+// keeps the fork's rows pointing at a slice's reminted uuids.
 package app
 
 import (
@@ -18,7 +18,7 @@ import (
 
 // forkClaudeThread wires Claude's resume state for the new fork.
 //
-// Every tail fork pins the lazy --fork-session cut before cloning history.
+// Every tail fork pins the lazy --fork-session cut before the fork's cut.
 // The source may advance while the fork waits for its first send, including
 // when the source was idle at fork time. An unstarted fork retains its
 // inherited pin. The first send repairs that pin against CLI resume filters.
@@ -70,7 +70,7 @@ func (a *App) forkClaudeThread(source store.Thread, atTurnIndex *int, midTurnCut
 		// cut whenever a live session is registered, so arriving here with
 		// one means a caller skipped the capture — and the unpinned lazy
 		// path below would snapshot the transcript at the fork's FIRST
-		// SEND, minutes or turns after the timeline was cloned (the
+		// SEND, minutes or turns after the timeline was cut (the
 		// 2026-08-22 skew incident). Refuse loudly instead of silently
 		// deferring the cut.
 		if _, ok := a.activeClaudeSession(source.ID); ok {
@@ -114,10 +114,10 @@ func (a *App) forkClaudeThread(source store.Thread, atTurnIndex *int, midTurnCut
 }
 
 // claudeMidTurnCut is the transcript cut for a Claude tail fork,
-// resolved BEFORE the SQLite clone so the pin and the cloned timeline
+// resolved BEFORE the SQLite fork so the pin and the fork's timeline
 // describe the same moment (see ForkThread). A zero SourcePath or Leaf
 // is the sanctioned degenerate case: the fork starts a FRESH provider
-// thread on its first send and the cloned prompt is its whole
+// thread on its first send and the inherited prompt is its whole
 // transcript.
 type claudeMidTurnCut struct {
 	SessionRef    string
@@ -135,7 +135,7 @@ func (c claudeMidTurnCut) degenerate() bool {
 }
 
 // captureClaudeMidTurnCut resolves where a mid-turn tail fork will cut
-// the source transcript. It runs before the clone and performs no
+// the source transcript. It runs before the SQLite fork and performs no
 // writes.
 //
 // The leaf comes from the live session's stdout tracker
@@ -322,7 +322,7 @@ func (a *App) lookupTurnAnchorClaudeUUID(threadID string, turnIndex int) string 
 // ordinal-walk fallback. Maintains the invariant "stored UUID always
 // matches the active session's JSONL".
 //
-// Callers: the fork pipeline (cloned items; forks carry no anchor rows
+// Callers: the fork pipeline (the fork's items; forks carry no anchor rows
 // — that loop is a no-op there) and rollbackClaudeThreadToMessage
 // (surviving items + anchors of the SAME thread after its
 // SessionRef moves to the slice).

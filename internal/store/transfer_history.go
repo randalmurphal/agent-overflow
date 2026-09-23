@@ -100,6 +100,12 @@ func (s *Store) ExportThreadHistoryWith(ctx context.Context, threadID string, ou
 	} else if active {
 		return errors.New("transfer: wait for the conversation to finish before transferring it")
 	}
+	// A conversation that leaves this database carries its history, so a
+	// pointer fork first takes its own copy of what it reads from its
+	// source. The attachments of inherited messages become its own with them.
+	if err := s.MaterializeForkHistory(ctx, threadID); err != nil {
+		return err
+	}
 	if err := writeHistoryRecord(output, "thread", thread); err != nil {
 		return err
 	}
@@ -148,7 +154,7 @@ func (s *Store) ExportThreadHistoryWith(ctx context.Context, threadID string, ou
 			}
 		}
 	}
-	if err := exportTransferRows(ctx, s.reader(), output, "turn", `SELECT `+turnColumns+` FROM turns WHERE thread_id = ? ORDER BY turn_index`, threadID, scanTurnRow); err != nil {
+	if err := exportTransferRows(ctx, s.reader(), output, "turn", `SELECT `+turnColumns+` FROM timeline_turns WHERE thread_id = ? ORDER BY turn_index`, threadID, scanTurnRow); err != nil {
 		return err
 	}
 	if err := exportTransferRows(ctx, s.reader(), output, "anchor", `SELECT `+messageAnchorColumns+` FROM message_anchors WHERE thread_id = ? ORDER BY turn_index, user_item_id`, threadID, scanMessageAnchor); err != nil {

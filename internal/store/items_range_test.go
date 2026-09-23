@@ -251,7 +251,7 @@ func TestListItemsInRangeWalksTheOrderingIndex(t *testing.T) {
 			if !tc.includeChildren {
 				where += "\n		   AND " + topLevelItemsFilterFor("items.")
 			}
-			query, args := timelineIDSelection(timelineParityThreadID, timelineSelection{
+			query, args := mustTimelineIDSelection(t, s, timelineParityThreadID, timelineSelection{
 				Where:     where,
 				WhereArgs: []any{0, 0, 3, 2},
 				OrderBy:   "turn_index ASC, item_index ASC",

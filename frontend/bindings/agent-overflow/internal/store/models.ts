@@ -1553,7 +1553,7 @@ export class Thread {
      * the source-session leaf uuid captured when the fork was taken. The
      * fork's first session start passes it (repaired against the CLI's
      * resume filters) as --resume-session-at alongside --fork-session so
-     * the cut lands where the timeline was cloned, not wherever the source
+     * the cut lands where the timeline was cut, not wherever the source
      * has grown to by first send. Empty on non-lazy forks and legacy
      * unpinned forks. Cleared with PendingForkRef by both
      * session-ref writers.
@@ -2215,10 +2215,11 @@ export class Turn {
      * ProviderTurnID is the provider-assigned wire turn id (Codex
      * `turn/started`), or "" when the provider has none on the wire
      * (Claude). TurnID is always thread-scoped; this field remains verbatim.
-     * Kept separate from the TurnID PRIMARY KEY because forked threads
-     * carry cloned copies of their source's turns under fresh row ids
-     * while preserving this value — it is the `thread/fork` lastTurnId
-     * anchor the Codex revert/fork flows cut history on.
+     * Kept separate from the TurnID PRIMARY KEY because a fork's copies
+     * of its source's turns (the turns at its cut, or all of them once
+     * materialized) take fresh row ids while preserving this value. It is
+     * the `thread/fork` lastTurnId anchor the Codex revert/fork flows cut
+     * history on.
      */
     "providerTurnId"?: string;
 

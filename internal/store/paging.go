@@ -392,9 +392,12 @@ func hasItemsBeyond(q sqlQueryer, threadID string, cursor TimelineCursor, scope 
 		// that is none of them.
 		sel.Turn, sel.TurnArgs, sel.FromTurn = "?", []any{cursor.TurnIndex}, true
 	}
-	probe, probeArgs := timelineArms(threadID, sel)
+	probe, probeArgs, err := timelineArms(q, threadID, sel)
+	if err != nil {
+		return false, fmt.Errorf("probe timeline edge: %w", err)
+	}
 	var exists bool
-	err := q.QueryRow(`SELECT EXISTS(`+probe+`)`, probeArgs...).Scan(&exists)
+	err = q.QueryRow(`SELECT EXISTS(`+probe+`)`, probeArgs...).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("probe timeline edge: %w", err)
 	}

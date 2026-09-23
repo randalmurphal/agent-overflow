@@ -140,7 +140,10 @@ func TestFindUserTextItemBySendIDRefusesAnEmptyQuestion(t *testing.T) {
 
 func TestSendIdentityLookupUsesBothSparseIndexes(t *testing.T) {
 	s := newTestStore(t)
-	query, args := sendIdentityQuery("thread", "send-id")
+	query, args, err := sendIdentityQuery(s.db, "thread", "send-id")
+	if err != nil {
+		t.Fatal(err)
+	}
 	rows, err := s.db.Query("EXPLAIN QUERY PLAN "+query, args...)
 	if err != nil {
 		t.Fatal(err)
@@ -286,7 +289,10 @@ func TestFindUserTextItemBySendIDResolvesJoinedMembers(t *testing.T) {
 // scan message history on either timeline arm.
 func TestJoinedSendIdentityLookupUsesBothSparseIndexes(t *testing.T) {
 	s := newTestStore(t)
-	query, args := joinedSendIdentityQuery("thread", "send-id")
+	query, args, err := joinedSendIdentityQuery(s.db, "thread", "send-id")
+	if err != nil {
+		t.Fatal(err)
+	}
 	rows, err := s.db.Query("EXPLAIN QUERY PLAN "+query, args...)
 	if err != nil {
 		t.Fatal(err)

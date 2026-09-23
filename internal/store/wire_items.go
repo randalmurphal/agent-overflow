@@ -46,12 +46,16 @@ func (s *Store) ItemReadNeedsDecoration(item Item) (bool, error) {
 		return true, nil
 	}
 	var hasChild int
-	children, args := timelineArms(item.ThreadID, timelineSelection{
+	q := s.reader()
+	children, args, err := timelineArms(q, item.ThreadID, timelineSelection{
 		Columns:  func(string, string) string { return "1" },
 		KeyFirst: true,
 		Where:    "items.parent_id <> '' AND items.parent_id = ?", WhereArgs: []any{item.ID},
 	})
-	if err := s.reader().QueryRow(`SELECT EXISTS(`+children+`)`, args...).Scan(&hasChild); err != nil {
+	if err != nil {
+		return false, err
+	}
+	if err := q.QueryRow(`SELECT EXISTS(`+children+`)`, args...).Scan(&hasChild); err != nil {
 		return false, fmt.Errorf("store: probe children of %s/%s: %w", item.ThreadID, item.ID, err)
 	}
 	return hasChild != 0, nil
@@ -77,11 +81,14 @@ func (s *Store) listWireItemsTx(q sqlQueryer, threadID string, ids []string) ([]
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	selectedSQL, selectedArgs := timelineIDSelection(threadID, timelineSelection{
+	selectedSQL, selectedArgs, err := timelineIDSelection(q, threadID, timelineSelection{
 		KeyFirst:  true,
 		Where:     "items.id IN (" + placeholders(len(ids)) + ")",
 		WhereArgs: args,
 	})
+	if err != nil {
+		return nil, err
+	}
 	return s.querySelectedPagedItems(q, threadID, selectedSQL, selectedArgs...)
 }
 
@@ -118,14 +125,17 @@ func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) (
 	for id := range emitted {
 		var parentID, completionOf string
 		var rev int64
-		written, args := timelineArms(threadID, timelineSelection{
+		written, args, err := timelineArms(tx, threadID, timelineSelection{
 			Columns: func(_, revExpr string) string {
 				return "items.parent_id, items.completion_of, " + revExpr
 			},
 			KeyFirst: true,
 			Where:    "items.id = ?", WhereArgs: []any{id},
 		})
-		err := tx.QueryRow(written, args...).Scan(&parentID, &completionOf, &rev)
+		if err != nil {
+			return nil, err
+		}
+		err = tx.QueryRow(written, args...).Scan(&parentID, &completionOf, &rev)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}

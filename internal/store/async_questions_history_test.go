@@ -9,7 +9,6 @@ import (
 func TestAsyncQuestionHistoryTransferCloneAndCut(t *testing.T) {
 	s, destination := newTestStore(t), newTestStore(t)
 	mustCreateThread(t, s, "q")
-	mustCreateThread(t, s, "fork")
 	item := questionFixture(t, s, "q", "question:call")
 	answers := []AsyncQuestionAnswer{{ItemID: item.ID, Index: 0, Answer: "One"}}
 	body, _, err := s.AsyncAnswerMessage("q", "send", answers)
@@ -40,12 +39,8 @@ func TestAsyncQuestionHistoryTransferCloneAndCut(t *testing.T) {
 	if err != nil || len(rows) != 2 || rows[0].State != "delivered" || rows[0].UserItemID != "answer" || rows[1].State != "dismissed" {
 		t.Fatalf("transfer=%+v %v", rows, err)
 	}
-	cut := 0
-	ids, err := s.CloneThreadItems("q", "fork", &cut)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows, err = s.ListAsyncQuestions("fork", ids[item.ID])
+	mustPointerFork(t, s, "q", "fork", throughTurn(0))
+	rows, err = s.ListAsyncQuestions("fork", item.ID)
 	if err != nil || len(rows) != 2 || rows[0].State != "unanswered" || rows[0].SendID != "" || rows[1].State != "dismissed" {
 		t.Fatalf("fork=%+v %v", rows, err)
 	}

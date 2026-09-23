@@ -196,6 +196,10 @@ func (f ThreadSearchFilter) threadRowConditions(alias string) ([]string, []any) 
 // Every filter is applied in SQL, so LIMIT and OFFSET count the rows the
 // caller receives. A caller that drops rows of its own can no longer page
 // by the offset it passed in.
+//
+// A message is indexed once, under the thread that owns its row. A pointer
+// fork shows its source's rows without an index row of its own, so a match
+// on a row a fork inherits is also a hit in the fork, at the same rank.
 func (s *Store) SearchThreads(query string, filter ThreadSearchFilter) ([]ThreadSearchHit, error) {
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
@@ -213,7 +217,7 @@ func (s *Store) SearchThreads(query string, filter ThreadSearchFilter) ([]Thread
 		offset = 0
 	}
 
-	conditions := []string{"thread_search MATCH ?"}
+	var conditions []string
 	args := []any{trimmed}
 
 	rowConditions, rowArgs := filter.threadRowConditions("t.")
@@ -237,22 +241,47 @@ func (s *Store) SearchThreads(query string, filter ThreadSearchFilter) ([]Thread
 	}
 	args = append(args, limit, offset)
 
-	summary, _ := timelineArms("", timelineSelection{
+	summary, _ := correlatedTimelineArms(timelineSelection{
 		Columns:  func(string, string) string { return "items.summary" },
 		Thread:   "r.thread_id",
 		KeyFirst: true,
 		Where:    "items.id = r.item_id",
 	})
 	rows, err := s.reader().Query(
-		`SELECT r.thread_id, r.item_id, r.source, r.kind, bm25(thread_search),
+		`WITH matched AS MATERIALIZED (
+		   SELECT m.rowid AS rowid, m.thread_id AS thread_id, m.item_id AS item_id,
+		          m.source AS source, m.kind AS kind, bm25(thread_search) AS rank
+		     FROM thread_search
+		     JOIN thread_search_rows m ON m.rowid = thread_search.rowid
+		    WHERE thread_search MATCH ?
+		 ), r AS (
+		   SELECT rowid, thread_id, item_id, source, kind, rank FROM matched
+		   UNION ALL
+		   SELECT matched.rowid, l.thread_id, matched.item_id, matched.source, matched.kind, matched.rank
+		     FROM matched
+		     CROSS JOIN items ON items.thread_id = matched.thread_id AND items.id = matched.item_id
+		     CROSS JOIN thread_fork_lineage l ON l.ancestor_id = matched.thread_id
+		    WHERE matched.source = '`+ThreadSearchSourceItem+`' AND matched.item_id <> ''
+		      AND `+inheritedItemVisibleSQL+`
+		   UNION ALL
+		   SELECT matched.rowid, l.thread_id, matched.item_id, matched.source, matched.kind, matched.rank
+		     FROM matched
+		     CROSS JOIN import_history_items items ON items.id = matched.item_id
+		     CROSS JOIN thread_import_chunks refs
+		        ON refs.chunk_id = items.chunk_id AND refs.thread_id = matched.thread_id
+		     CROSS JOIN thread_fork_lineage l ON l.ancestor_id = matched.thread_id
+		    WHERE matched.source = '`+ThreadSearchSourceImport+`'
+		      AND `+importedNotOverridden+`
+		      AND `+inheritedItemVisibleSQL+`
+		 )
+		 SELECT r.thread_id, r.item_id, r.source, r.kind, r.rank,
 		        CASE WHEN r.kind = 'title' THEN t.title
 		             ELSE COALESCE((`+summary+`), '')
 		        END
-		   FROM thread_search
-		   JOIN thread_search_rows r ON r.rowid = thread_search.rowid
+		   FROM r
 		   JOIN owned_threads t ON t.id = r.thread_id
 		  WHERE `+strings.Join(conditions, " AND ")+`
-		  ORDER BY bm25(thread_search) ASC, r.rowid ASC
+		  ORDER BY r.rank ASC, r.rowid ASC, r.thread_id ASC
 		  LIMIT ? OFFSET ?`,
 		args...,
 	)
@@ -533,7 +562,7 @@ func indexThreadTitlesTx(tx *sql.Tx) error {
 // already gone can never be returned by a search, because every hit joins the
 // mapping row.
 func sweepThreadSearchOrphansTx(tx *sql.Tx) error {
-	logical, _ := timelineArms("", timelineSelection{
+	logical, _ := correlatedTimelineArms(timelineSelection{
 		Columns:  func(string, string) string { return "1" },
 		Thread:   "r.thread_id",
 		KeyFirst: true,

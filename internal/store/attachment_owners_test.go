@@ -1,10 +1,17 @@
 package store
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
+// TestForkAttachmentOwnersFollowCutAndRollback pins attachment access for
+// pointer forks: a fork may read an attachment its source owns only while
+// it shows a row that references it, a fork that takes its own copy of such
+// a row takes ownership with it, and a failed fork leaves nothing behind.
 func TestForkAttachmentOwnersFollowCutAndRollback(t *testing.T) {
 	s := newTestStore(t)
-	for _, id := range []string{"source", "fork", "foreign", "failed"} {
+	for _, id := range []string{"source", "foreign"} {
 		if err := s.CreateThread(makeThread(id, "claude")); err != nil {
 			t.Fatal(err)
 		}
@@ -23,33 +30,53 @@ func TestForkAttachmentOwnersFollowCutAndRollback(t *testing.T) {
 	if err := s.InsertItem(Item{ID: "first", ThreadID: "source", Kind: "user_text", Role: "user", Status: "completed", Meta: `{"attachments":[{"id":"early","threadId":"source"},{"id":"unrelated","threadId":"foreign"}]}`}); err != nil {
 		t.Fatal(err)
 	}
-	// Imported history carries attachment references too.
-	if err := s.ApplyImportBatch("source", ImportBatch{Rows: []ImportRow{{Item: Item{ID: "generated", TurnIndex: 1, Kind: "assistant_text", Role: "assistant", Status: "completed", Meta: `{"attachments":[{"id":"late","threadId":"source"}]}`}}}}); err != nil {
+	// Imported history carries attachment references too, here in the
+	// bare id shape.
+	if err := s.ApplyImportBatch("source", ImportBatch{Rows: []ImportRow{{Item: Item{ID: "generated", TurnIndex: 1, Kind: "assistant_text", Role: "assistant", Status: "completed", Meta: `{"attachments":["late"]}`}}}}); err != nil {
 		t.Fatal(err)
 	}
-	cut := 0
-	if _, err := s.CloneThreadHistoryThroughTurn("source", "fork", &cut); err != nil {
+	requireOwnership := func(stage, thread string, want map[string]bool) {
+		t.Helper()
+		for id, owned := range want {
+			got, err := s.OwnsAttachment(thread, id)
+			if err != nil || got != owned {
+				t.Fatalf("%s: %s owns %s = %v err=%v, want %v", stage, thread, id, got, err, owned)
+			}
+		}
+	}
+
+	mustPointerFork(t, s, "source", "fork", throughTurn(0))
+	requireOwnership("cut", "fork", map[string]bool{"early": true, "late": false, "unrelated": false})
+	mustPointerFork(t, s, "source", "whole", ForkCut{})
+	requireOwnership("whole", "whole", map[string]bool{"early": true, "late": true, "unrelated": false})
+
+	// A row the fork stops showing takes its attachment access with it.
+	if err := s.DeleteThreadItem("whole", "generated"); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"early", "late", "unrelated"} {
-		owned, err := s.OwnsAttachment("fork", id)
-		if err != nil || owned != (id == "early") {
-			t.Fatalf("cut ownership %s=%v err=%v", id, owned, err)
-		}
+	requireOwnership("hidden", "whole", map[string]bool{"early": true, "late": false})
+
+	// A copy owns what it shows, and keeps it once the source is gone.
+	if err := s.MaterializeForkHistory(context.Background(), "fork"); err != nil {
+		t.Fatal(err)
 	}
-	mustExec(t, s.db, `INSERT INTO turns(turn_id,thread_id,turn_index,started_at,completed_at) VALUES('source:0','source',0,1,2)`)
-	mustExec(t, s.db, `CREATE TRIGGER fail_fork_turn BEFORE INSERT ON turns WHEN NEW.thread_id='failed' BEGIN SELECT RAISE(ABORT,'fail after owner clone'); END`)
-	if _, err := s.CloneThreadHistoryThroughTurn("source", "failed", nil); err == nil {
-		t.Fatal("failed clone succeeded")
+	var direct int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM attachment_owners WHERE thread_id = 'fork'`).Scan(&direct); err != nil || direct != 1 {
+		t.Fatalf("materialized fork owns %d attachments err=%v, want early", direct, err)
 	}
-	for _, id := range []string{"early", "late"} {
-		owned, err := s.OwnsAttachment("failed", id)
-		if err != nil || owned {
-			t.Fatalf("failed fork retained %s=%v err=%v", id, owned, err)
-		}
-		owned, err = s.OwnsAttachment("source", id)
-		if err != nil || !owned {
-			t.Fatalf("failed fork changed source %s=%v err=%v", id, owned, err)
-		}
+
+	mustExec(t, s.db, `INSERT INTO turns(turn_id,thread_id,turn_index,started_at,completed_at) VALUES('source:1','source',1,1,2)`)
+	mustExec(t, s.db, `CREATE TRIGGER fail_fork_turn BEFORE INSERT ON turns WHEN NEW.thread_id='failed' BEGIN SELECT RAISE(ABORT,'fail after linking'); END`)
+	failed := makeThread("failed", "claude")
+	if err := s.CreatePointerFork(failed, "source", ForkCut{}, testInterruptedSummary, 1); err == nil {
+		t.Fatal("failed fork succeeded")
 	}
+	requireOwnership("failed fork", "failed", map[string]bool{"early": false, "late": false})
+	requireOwnership("source after failed fork", "source", map[string]bool{"early": true, "late": true})
+
+	if err := s.DeleteThread("source"); err != nil {
+		t.Fatal(err)
+	}
+	requireOwnership("source deleted", "fork", map[string]bool{"early": true, "late": false})
+	requireOwnership("source deleted", "whole", map[string]bool{"early": false, "late": false})
 }

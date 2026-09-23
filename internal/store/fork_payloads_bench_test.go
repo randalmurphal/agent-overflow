@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+// BenchmarkForkPayloadLength compares a preview byte count read on the
+// owning thread with the same read through a pointer fork's lineage arm.
 func BenchmarkForkPayloadLength(b *testing.B) {
 	path := filepath.Join(b.TempDir(), "store.sqlite")
 	if err := copyTestStoreTemplate(path); err != nil {
@@ -20,10 +22,9 @@ func BenchmarkForkPayloadLength(b *testing.B) {
 			b.Error(err)
 		}
 	}()
-	for _, id := range []string{"source", "fork"} {
-		if err := s.CreateThread(Thread{ID: id, ProjectID: defaultTestProjectID, Title: id, Provider: "claude", WorkspacePath: "/tmp"}); err != nil {
-			b.Fatal(err)
-		}
+	source := Thread{ID: "source", ProjectID: defaultTestProjectID, Title: "source", Provider: "claude", WorkspacePath: "/tmp"}
+	if err := s.CreateThread(source); err != nil {
+		b.Fatal(err)
 	}
 	if err := s.InsertItemWithPayload(Item{ThreadID: "source", ID: "item", Kind: "assistant_text", Role: "assistant", Status: "completed", PayloadID: "payload"}, Payload{ID: "payload", Kind: "text", Data: bytes.Repeat([]byte("x"), 32<<20)}); err != nil {
 		b.Fatal(err)
@@ -31,7 +32,9 @@ func BenchmarkForkPayloadLength(b *testing.B) {
 	if err := s.AppendPayloadData("source", "payload", bytes.Repeat([]byte("y"), 32<<20), "{}", 1); err != nil {
 		b.Fatal(err)
 	}
-	if _, err := s.CloneThreadItems("source", "fork", nil); err != nil {
+	fork := source
+	fork.ID = "fork"
+	if err := s.CreatePointerFork(fork, "source", ForkCut{}, func(summary string) string { return summary }, 1); err != nil {
 		b.Fatal(err)
 	}
 	for _, mode := range []string{"physical", "source", "fork"} {

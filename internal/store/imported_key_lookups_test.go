@@ -415,7 +415,10 @@ func keyedLookups() []keyedLookup {
 			if err := s.reader().QueryRow(`SELECT EXISTS(SELECT 1 FROM proposed_plans WHERE proposed_plans.thread_id = ? AND EXISTS(`+proposedPlanItemSQL()+`))`, th).Scan(&planned); err != nil {
 				t.Error(err)
 			}
-			query, args := threadReadStateQuery(th)
+			query, args, err := threadReadStateQuery(s.reader(), th)
+			if err != nil {
+				t.Fatal(err)
+			}
 			var completed, started, errorAt, readAt sql.NullInt64
 			if err := s.reader().QueryRow(query, args...).Scan(&completed, &started, &errorAt, &readAt); err != nil {
 				t.Error(err)

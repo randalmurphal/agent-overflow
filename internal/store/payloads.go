@@ -6,9 +6,6 @@ import (
 )
 
 func upsertPayloadTx(exec sqlExecutor, threadID string, payload Payload, label string) error {
-	if err := dropPayloadSnapshotRefTx(exec, threadID, payload.ID); err != nil {
-		return err
-	}
 	if _, err := exec.Exec(
 		`DELETE FROM payload_chunks WHERE thread_id = ? AND payload_id = ?`, threadID, payload.ID,
 	); err != nil {
@@ -131,15 +128,18 @@ func (s *Store) AppendItemWithPayload(item Item, payload Payload) (int, error) {
 
 // payloadByIDQuery reads one logical payload of a thread through
 // timelinePayloadArms. columns is written against alias `p`.
-func payloadByIDQuery(threadID, id, columns string) (string, []any) {
-	return timelinePayloadArms(threadID, func(string, string) string { return columns }, "p.id = ?", []any{id})
+func payloadByIDQuery(q sqlQueryer, threadID, id, columns string) (string, []any, error) {
+	return timelinePayloadArms(q, threadID, func(string, string) string { return columns }, "p.id = ?", []any{id})
 }
 
 func (s *Store) GetPayloadMeta(threadID, id string) (PayloadMeta, error) {
-	query, args := payloadByIDQuery(threadID, id, "p.id, p.kind, p.meta, p.created_at")
-	row := s.reader().QueryRow(query, args...)
+	q := s.reader()
+	query, args, err := payloadByIDQuery(q, threadID, id, "p.id, p.kind, p.meta, p.created_at")
+	if err != nil {
+		return PayloadMeta{}, fmt.Errorf("store: get payload meta %s: %w", id, err)
+	}
 	var pm PayloadMeta
-	err := row.Scan(&pm.ID, &pm.Kind, &pm.Meta, &pm.CreatedAt)
+	err = q.QueryRow(query, args...).Scan(&pm.ID, &pm.Kind, &pm.Meta, &pm.CreatedAt)
 	if err != nil {
 		return PayloadMeta{}, fmt.Errorf("store: get payload meta %s: %w", id, err)
 	}
@@ -148,8 +148,11 @@ func (s *Store) GetPayloadMeta(threadID, id string) (PayloadMeta, error) {
 
 func (s *Store) GetPayloadData(threadID, id string) ([]byte, error) {
 	var data []byte
-	query, args := payloadByIDQuery(threadID, id, "p.data")
-	err := s.reader().QueryRow(query, args...).Scan(&data)
+	query, args, err := payloadByIDQuery(s.reader(), threadID, id, "p.data")
+	if err != nil {
+		return nil, fmt.Errorf("store: get payload data %s: %w", id, err)
+	}
+	err = s.reader().QueryRow(query, args...).Scan(&data)
 	if err != nil {
 		return nil, fmt.Errorf("store: get payload data %s: %w", id, err)
 	}
@@ -221,8 +224,11 @@ func (s *Store) GetPayloadChunk(threadID, id string, offset, maxBytes int) ([]by
 			baseLimit = baseLen
 		}
 		var base []byte
-		query, args := payloadByIDQuery(threadID, id, "p.data AS data")
-		err := s.reader().QueryRow(
+		query, args, err := payloadByIDQuery(s.reader(), threadID, id, "p.data AS data")
+		if err != nil {
+			return nil, 0, false, fmt.Errorf("store: get payload base chunk %s: %w", id, err)
+		}
+		err = s.reader().QueryRow(
 			`SELECT substr(data, ?, ?) FROM (`+query+`)`,
 			append([]any{offset + 1, baseLimit - offset}, args...)...,
 		).Scan(&base)
@@ -274,22 +280,28 @@ func (s *Store) GetPayloadChunk(threadID, id string, offset, maxBytes int) ([]by
 
 // payloadLengthsQuery reads a payload's base length and the end of its
 // appended chunks.
-func payloadLengthsQuery(threadID, id string) (string, []any) {
-	base, args := timelinePayloadArms(threadID, func(_, dataLength string) string {
+func payloadLengthsQuery(q sqlQueryer, threadID, id string) (string, []any, error) {
+	base, args, err := timelinePayloadArms(q, threadID, func(_, dataLength string) string {
 		return dataLength + " AS data_length"
 	}, "p.id = ?", []any{id})
+	if err != nil {
+		return "", nil, err
+	}
 	return `SELECT data_length,
 		        (SELECT MAX(start_offset + data_length)
 		           FROM timeline_payload_chunks
 		          WHERE thread_id = ? AND payload_id = ?)
-		   FROM (` + base + `)`, append([]any{threadID, id}, args...)
+		   FROM (` + base + `)`, append([]any{threadID, id}, args...), nil
 }
 
 func (s *Store) payloadLengths(threadID, id string) (int, int, error) {
 	var baseLen int
 	var appendedEnd sql.NullInt64
-	query, args := payloadLengthsQuery(threadID, id)
-	err := s.reader().QueryRow(query, args...).Scan(&baseLen, &appendedEnd)
+	query, args, err := payloadLengthsQuery(s.reader(), threadID, id)
+	if err != nil {
+		return 0, 0, fmt.Errorf("store: get payload length %s: %w", id, err)
+	}
+	err = s.reader().QueryRow(query, args...).Scan(&baseLen, &appendedEnd)
 	if err != nil {
 		return 0, 0, fmt.Errorf("store: get payload length %s: %w", id, err)
 	}
@@ -338,10 +350,7 @@ func (s *Store) AppendPayloadData(threadID, id string, delta []byte, meta string
 // flush window costs one transaction instead of two.
 func appendPayloadDataTx(tx *sql.Tx, threadID, id string, delta []byte, meta string, createdAt int64) error {
 	label := fmt.Sprintf("store: append payload data %s", id)
-	if err := ensureLocalPayloadTx(tx, threadID, id, label); err != nil {
-		return err
-	}
-	if err := materializePayloadSnapshotTx(tx, threadID, id); err != nil {
+	if err := requireMutablePayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
 	result, err := tx.Exec(
@@ -396,7 +405,7 @@ func (s *Store) ReplacePayloadData(threadID, id string, data []byte, meta string
 	}
 	defer tx.Rollback()
 	label := fmt.Sprintf("store: replace payload data %s", id)
-	if err := ensureLocalPayloadTx(tx, threadID, id, label); err != nil {
+	if err := requireMutablePayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
 
@@ -405,9 +414,6 @@ func (s *Store) ReplacePayloadData(threadID, id string, data []byte, meta string
 	// content; the persist tap recomputes them for the new data. The
 	// blobs are content-addressed per file, so a stale blob would be
 	// inert anyway — clearing just keeps the row honest.
-	if err := materializePayloadSnapshotTx(tx, threadID, id); err != nil {
-		return err
-	}
 	result, err := tx.Exec(
 		`UPDATE payloads SET data = ?, meta = ?, created_at = ?, preview_spans = '', spans = ''
 		  WHERE thread_id = ? AND id = ?`,
@@ -451,7 +457,7 @@ func (s *Store) UpdatePayloadMeta(threadID, id, meta string) error {
 		return fmt.Errorf("store: begin update payload meta %s: %w", id, err)
 	}
 	defer tx.Rollback()
-	if err := ensureLocalPayloadTx(tx, threadID, id, label); err != nil {
+	if err := requireMutablePayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
 
@@ -501,13 +507,20 @@ func (s *Store) UpdatePayloadSpans(threadID, id, previewSpans, spans string) err
 		return fmt.Errorf("store: begin update payload spans %s: %w", id, err)
 	}
 	defer tx.Rollback()
-	if err := ensureLocalPayloadTx(tx, threadID, id, label); err != nil {
+	// Spans are a cache of the payload's content, so they are written where
+	// the content lives: a pointer fork's inherited payload gets its spans
+	// on the ancestor's row, and every fork that reads it sees them.
+	holder, err := payloadHolderTx(tx, threadID, id)
+	if err != nil {
+		return err
+	}
+	if err := ensureLocalPayloadTx(tx, holder, id, label); err != nil {
 		return err
 	}
 
 	result, err := tx.Exec(
 		`UPDATE payloads SET preview_spans = ?, spans = ? WHERE thread_id = ? AND id = ?`,
-		previewSpans, spans, threadID, id,
+		previewSpans, spans, holder, id,
 	)
 	if err != nil {
 		return fmt.Errorf("%s: %w", label, err)
@@ -515,7 +528,7 @@ func (s *Store) UpdatePayloadSpans(threadID, id, previewSpans, spans string) err
 	if err := requireRowsAffected(result, label); err != nil {
 		return err
 	}
-	if err := bumpHistoryRevTx(tx, threadID, label); err != nil {
+	if err := bumpHistoryRevTx(tx, holder, label); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -529,7 +542,10 @@ func (s *Store) UpdatePayloadSpans(threadID, id, previewSpans, spans string) err
 // the highlight RPC path.
 func (s *Store) GetPayloadSpans(threadID, id string) (string, error) {
 	var spans string
-	query, args := payloadByIDQuery(threadID, id, "p.spans")
+	query, args, err := payloadByIDQuery(s.reader(), threadID, id, "p.spans")
+	if err != nil {
+		return "", fmt.Errorf("store: get payload spans %s: %w", id, err)
+	}
 	if err := s.reader().QueryRow(query, args...).Scan(&spans); err != nil {
 		return "", fmt.Errorf("store: get payload spans %s: %w", id, err)
 	}

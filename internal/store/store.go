@@ -405,7 +405,7 @@ type Thread struct {
 	// the source-session leaf uuid captured when the fork was taken. The
 	// fork's first session start passes it (repaired against the CLI's
 	// resume filters) as --resume-session-at alongside --fork-session so
-	// the cut lands where the timeline was cloned, not wherever the source
+	// the cut lands where the timeline was cut, not wherever the source
 	// has grown to by first send. Empty on non-lazy forks and legacy
 	// unpinned forks. Cleared with PendingForkRef by both
 	// session-ref writers.

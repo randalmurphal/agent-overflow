@@ -31,13 +31,8 @@ func TestImportedHistoryDeletedItemCannotBeMutated(t *testing.T) {
 func TestDeleteImportedItemDoesNotMaterializeAndCollectsLastReference(t *testing.T) {
 	s := newTestStore(t)
 	importedHistoryFixture(t, s, "source", 1)
-	if err := s.CreateThread(makeThread("fork", "claude")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CloneThreadHistoryThroughTurn("source", "fork", nil); err != nil {
-		t.Fatal(err)
-	}
-	mustExec(t, s.db, `CREATE TRIGGER reject_delete_materialization BEFORE INSERT ON items BEGIN SELECT RAISE(ABORT,'delete copied immutable history'); END`)
+	mustPointerFork(t, s, "source", "fork", ForkCut{})
+	mustExec(t, s.db, `CREATE TRIGGER reject_delete_materialization BEFORE INSERT ON items WHEN NEW.thread_id = 'source' BEGIN SELECT RAISE(ABORT,'delete copied immutable history'); END`)
 	if err := s.DeleteThreadItem("source", "item-000"); err != nil {
 		t.Fatal(err)
 	}
@@ -82,18 +77,9 @@ func TestImportedHistoryForkIsolationSearchAndLastReference(t *testing.T) {
 	s := newTestStore(t)
 	importedHistoryFixture(t, s, "source", 140)
 	for _, pair := range [][2]string{{"source", "fork"}, {"fork", "grandchild"}} {
-		if err := s.CreateThread(makeThread(pair[1], "claude")); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.CloneThreadHistoryThroughTurn(pair[0], pair[1], nil); err != nil {
-			t.Fatal(err)
-		}
-		var private int
-		if err := s.db.QueryRow(`SELECT count(*) FROM items WHERE thread_id=?`, pair[1]).Scan(&private); err != nil {
-			t.Fatal(err)
-		}
-		if private != 0 {
-			t.Fatalf("fork copied %d imported items", private)
+		mustPointerFork(t, s, pair[0], pair[1], ForkCut{})
+		if private := ownRowCount(t, s, pair[1]); private != 1 {
+			t.Fatalf("fork stores %d rows, want only its divider", private)
 		}
 	}
 	if err := s.BuildSearchIndex(context.Background()); err != nil {
@@ -122,18 +108,24 @@ func TestImportedHistoryForkIsolationSearchAndLastReference(t *testing.T) {
 			t.Fatalf("%s observed source mutation: %q", thread, data)
 		}
 	}
+	// History belongs to the source: deleting it takes what the forks read
+	// from it, and they keep only the rows they own.
 	if err := s.DeleteThread("source"); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.GetPayloadData("grandchild", "item-139"); err == nil {
+		t.Fatal("grandchild still reads the deleted source's history")
+	}
+	// The fork took its own copy of the row the source rewrote, and the
+	// grandchild reads it from the fork until the fork goes too.
+	if data, err := s.GetPayloadData("grandchild", "item-000"); err != nil || string(data) != "original chunk" {
+		t.Fatalf("grandchild lost the fork's copy: %q %v", data, err)
 	}
 	if err := s.DeleteThread("fork"); err != nil {
 		t.Fatal(err)
 	}
-	data, err := s.GetPayloadData("grandchild", "item-139")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "original chunk" {
-		t.Fatalf("last branch lost payload: %q", data)
+	if _, err := s.GetPayloadData("grandchild", "item-000"); err == nil {
+		t.Fatal("grandchild still reads the deleted fork's history")
 	}
 	if err := s.DeleteThread("grandchild"); err != nil {
 		t.Fatal(err)
@@ -152,14 +144,10 @@ func TestImportedHistoryCutsKeepSharedPrefix(t *testing.T) {
 		t.Run(fmt.Sprint("message=", message), func(t *testing.T) {
 			s := newTestStore(t)
 			importedHistoryFixture(t, s, "source", 140)
-			if err := s.CreateThread(makeThread("fork", "claude")); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := s.CloneThreadHistoryThroughTurn("source", "fork", nil); err != nil {
-				t.Fatal(err)
-			}
-			// Any materialization of the kept prefix makes this test fail.
-			if _, err := s.db.Exec(`CREATE TRIGGER reject_history_materialization BEFORE INSERT ON items WHEN NEW.thread_id='fork' BEGIN SELECT RAISE(ABORT,'cut materialized history'); END`); err != nil {
+			mustPointerFork(t, s, "source", "fork", ForkCut{})
+			// Any materialization of the kept prefix makes this test fail; the
+			// divider moving to the new cut is the fork's only write.
+			if _, err := s.db.Exec(`CREATE TRIGGER reject_history_materialization BEFORE INSERT ON items WHEN NEW.thread_id='fork' AND NEW.id <> 'fork-origin-fork' BEGIN SELECT RAISE(ABORT,'cut materialized history'); END`); err != nil {
 				t.Fatal(err)
 			}
 			want := 70
@@ -168,7 +156,8 @@ func TestImportedHistoryCutsKeepSharedPrefix(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(kept) != 5 {
+				// The anchor turn keeps its five rows and the divider at the cut.
+				if len(kept) != 6 {
 					t.Fatalf("kept anchor turn has %d rows", len(kept))
 				}
 				want = 75
@@ -177,10 +166,7 @@ func TestImportedHistoryCutsKeepSharedPrefix(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			items, err := s.ListItems("fork")
-			if err != nil {
-				t.Fatal(err)
-			}
+			items := forkRows(t, s, "fork")
 			if len(items) != want {
 				t.Fatalf("kept %d rows, want %d", len(items), want)
 			}
@@ -201,17 +187,10 @@ func TestImportedHistoryCutsKeepSharedPrefix(t *testing.T) {
 			if _, err := s.db.Exec(`DROP TRIGGER reject_history_materialization`); err != nil {
 				t.Fatal(err)
 			}
-			if err := s.CreateThread(makeThread("grandchild", "claude")); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := s.CloneThreadHistoryThroughTurn("fork", "grandchild", nil); err != nil {
-				t.Fatal(err)
-			}
-			items, err = s.ListItems("grandchild")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(items) != want {
+			mustPointerFork(t, s, "fork", "grandchild", ForkCut{})
+			items = forkRows(t, s, "grandchild")
+			// The grandchild shows the fork's own divider among what it inherits.
+			if len(items) != want+1 {
 				t.Fatalf("fork after cut restored deleted history: %d", len(items))
 			}
 		})
@@ -225,12 +204,7 @@ func TestImportedHistoryForkCopiesPayloadOverrides(t *testing.T) {
 	if err := s.ReplacePayloadData("source", "item-000", []byte("new bytes"), `{"new":true}`, 2); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateThread(makeThread("fork", "claude")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CloneThreadHistoryThroughTurn("source", "fork", nil); err != nil {
-		t.Fatal(err)
-	}
+	mustPointerFork(t, s, "source", "fork", ForkCut{})
 	data, err := s.GetPayloadData("fork", "item-000")
 	if err != nil {
 		t.Fatal(err)
@@ -246,12 +220,7 @@ func TestImportedHistorySnapshotRestoreWithPrivateOverride(t *testing.T) {
 	if err := s.UpdateItemMeta("source", "item-000", `{"override":true}`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateThread(makeThread("fork", "claude")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CloneThreadHistoryThroughTurn("source", "fork", nil); err != nil {
-		t.Fatal(err)
-	}
+	mustPointerFork(t, s, "source", "fork", ForkCut{})
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	if err := s.SnapshotTo(path); err != nil {
 		t.Fatal(err)
@@ -263,23 +232,19 @@ func TestImportedHistorySnapshotRestoreWithPrivateOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"source", "fork"} {
-		items, err := s.ListItems(id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(items) != 80 {
+		if items := forkRows(t, s, id); len(items) != 80 {
 			t.Fatalf("restored %s has %d rows", id, len(items))
 		}
+	}
+	data, err := s.GetPayloadData("fork", "item-079")
+	if err != nil || string(data) != "original chunk" {
+		t.Fatalf("restored fork lost data: %q %v", data, err)
 	}
 	if err := s.DeleteThread("source"); err != nil {
 		t.Fatal(err)
 	}
-	data, err := s.GetPayloadData("fork", "item-079")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "original chunk" {
-		t.Fatalf("restored fork lost data: %q", data)
+	if items := forkRows(t, s, "fork"); len(items) != 0 {
+		t.Fatalf("fork of a deleted source still shows %d of its rows", len(items))
 	}
 }
 
@@ -366,12 +331,7 @@ func TestImportedHistoryCutCollectsPrivatePayloadOverrides(t *testing.T) {
 	if err := s.ReplacePayloadData("source", "item-011", []byte("private override"), "{}", 3); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateThread(makeThread("fork", "claude")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CloneThreadHistoryThroughTurn("source", "fork", nil); err != nil {
-		t.Fatal(err)
-	}
+	mustPointerFork(t, s, "source", "fork", ForkCut{})
 	if _, _, err := s.DeleteConversationFromItem("source", "item-011"); err != nil {
 		t.Fatal(err)
 	}

@@ -177,6 +177,7 @@ func TestForkPreparationPublication(t *testing.T) {
 						t.Errorf("ready state not durable: %+v %v", persisted, err)
 					}
 					items, err := a.ListItems(row.ID, true)
+					items = withoutForkDividers(items)
 					if err != nil || len(items) != 1 || items[0].Summary != "first" {
 						t.Errorf("published history=%+v: %v", items, err)
 					}
@@ -277,7 +278,7 @@ func TestIdleClaudeForkKeepsItsProviderCutAfterSourceAdvances(t *testing.T) {
 		if err != nil || resumeAt != "a0" {
 			t.Fatalf("provider resume cut=%q: %v", resumeAt, err)
 		}
-		items, err := a.store.ListItems(row.ID)
+		items, err := forkConversationItems(a.store, row.ID)
 		if err != nil || len(items) != 1 || items[0].Summary != "first" {
 			t.Fatalf("displayed cut drifted: %+v: %v", items, err)
 		}

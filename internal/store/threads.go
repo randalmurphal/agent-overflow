@@ -48,7 +48,7 @@ func hasUnreadNewestTurnErrorSQL() string {
 	sel.Thread = "threads.id"
 	sel.Columns = func(string, string) string { return "1" }
 	sel.Where += " AND (threads.last_read_at IS NULL OR threads.last_read_at < items.created_at)"
-	sql, _ := timelineArms("", sel)
+	sql, _ := correlatedTimelineArms(sel)
 	return sql
 }
 
@@ -58,7 +58,7 @@ func hasUnreadNewestTurnErrorSQL() string {
 // row and its imported payload are found by id, so a sidebar row costs
 // the same however many chunks its thread references.
 func proposedPlanItemSQL() string {
-	sql, _ := timelineArms("", timelineSelection{
+	sql, _ := correlatedTimelineArms(timelineSelection{
 		Columns:  func(string, string) string { return "1" },
 		Thread:   "proposed_plans.thread_id",
 		KeyFirst: true,
@@ -1032,7 +1032,13 @@ func (s *Store) DeleteThread(id string) error {
 // Draining items before the thread row is safe under the app layer's
 // idempotent-retry model: the thread row is the resumability anchor, and
 // a crash mid-drain leaves a thread a retried delete completes.
+//
+// Forks that read through the thread detach first, in their own
+// transaction, so none of them ever reads a partly drained history.
 func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
+	if err := s.detachForkDescendants(id); err != nil {
+		return err
+	}
 	for {
 		n, err := s.deleteThreadItemsChunk(id)
 		if err != nil {
@@ -1055,6 +1061,10 @@ func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 	// the thread, but the contentless FTS rows it names do not, so they
 	// come off here rather than being left behind.
 	if err := deleteThreadSearchThreadTx(tx, id); err != nil {
+		return err
+	}
+	// A fork made while the items drained.
+	if err := detachForkDescendantsTx(tx, id); err != nil {
 		return err
 	}
 	result, err := tx.Exec(`DELETE FROM threads WHERE id = ?`, id)
@@ -1200,7 +1210,7 @@ func (s *Store) MarkThreadActivity(threadID string, at int64) error {
 // flattened, so SQLite runs both arms whole and SCANs `items`. On the
 // author's 4.7 GB store the view form took 1.1 s warm for one thread and
 // the arms form 3 ms.
-func threadReadStateQuery(id string) (string, []any) {
+func threadReadStateQuery(q sqlQueryer, id string) (string, []any, error) {
 	sel := newestTurnErrors("?", []any{id})
 	sel.Columns = func(string, string) string { return `items.created_at AS created_at` }
 	// Same answer as MAX(created_at): descending order puts NULLs last,
@@ -1208,7 +1218,10 @@ func threadReadStateQuery(id string) (string, []any) {
 	// pair yields NULL either way.
 	sel.OrderBy = `created_at DESC`
 	sel.Limit = 1
-	newestErrorAt, args := timelineArms(id, sel)
+	newestErrorAt, args, err := timelineArms(q, id, sel)
+	if err != nil {
+		return "", nil, err
+	}
 	return `SELECT
 		    (SELECT MAX(completed_at) FROM turns
 		      WHERE thread_id = threads.id AND completed_at IS NOT NULL),
@@ -1220,7 +1233,7 @@ func threadReadStateQuery(id string) (string, []any) {
 		    (` + newestErrorAt + `),
 		    last_read_at
 		   FROM threads
-		  WHERE id = ?`, append(args, id)
+		  WHERE id = ?`, append(args, id), nil
 }
 
 // MarkThreadReadNow stamps last_read_at with the current unix-ms, clamped to
@@ -1254,7 +1267,10 @@ func (s *Store) MarkThreadReadNow(ctx context.Context, id string) (Thread, bool,
 	defer tx.Rollback()
 
 	var latestTurnCompletedAt, latestIncompleteStartedAt, latestErrorAt, lastReadAt sql.NullInt64
-	query, args := threadReadStateQuery(id)
+	query, args, err := threadReadStateQuery(tx, id)
+	if err != nil {
+		return Thread{}, false, err
+	}
 	err = tx.QueryRowContext(ctx, query, args...).
 		Scan(&latestTurnCompletedAt, &latestIncompleteStartedAt, &latestErrorAt, &lastReadAt)
 	if err != nil {
