@@ -10,7 +10,7 @@ import (
 
 // seedChildItem persists a subagent child row with an explicit summary
 // and status so the aggregate-preview tests can stage the exact shapes
-// pickLatestChildSummary distinguishes (active vs terminal, empty vs
+// the preview rule distinguishes (preview kind or not, empty vs
 // non-empty summary).
 func seedChildItem(
 	t *testing.T,
@@ -302,20 +302,20 @@ func TestListSubagentDescendants_HydratesPayloadMeta(t *testing.T) {
 	}
 }
 
-func TestDecorateSubagentAnchors_PreviewPrefersActiveThenLatest(t *testing.T) {
+func TestDecorateSubagentAnchors_PreviewIsTheNewestToolSummary(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	// Anchor A: a running child with a summary beats a later-coordinate
-	// terminal child — mirrors the frontend's pickLatestChildSummary.
+	// Anchor A: the newest tool summary wins over an older one that is
+	// still running; the card shows the agent's latest tool activity.
 	seedAnchorItem(t, s, "t", "anchor-a", 0, 0)
 	seedToolChildItem(t, s, "t", "a-run", 0, 1, "anchor-a", "working on auth", "running")
 	seedToolChildItem(t, s, "t", "a-done", 0, 2, "anchor-a", "finished tests", "completed")
 
-	// Anchor B: an active child with an EMPTY summary loses to a
-	// terminal child that actually has text.
+	// Anchor B: a newer child with an EMPTY summary leaves the newest
+	// child that has text in place.
 	seedAnchorItem(t, s, "t", "anchor-b", 1, 0)
 	seedToolChildItem(t, s, "t", "b-done", 1, 1, "anchor-b", "did the thing", "completed")
 	seedToolChildItem(t, s, "t", "b-run-empty", 1, 2, "anchor-b", "", "running")
@@ -333,8 +333,8 @@ func TestDecorateSubagentAnchors_PreviewPrefersActiveThenLatest(t *testing.T) {
 	if countA != 2 {
 		t.Errorf("anchor-a count: got %v, want 2", countA)
 	}
-	if summaryA != "working on auth" {
-		t.Errorf("anchor-a summary: got %q, want running child's summary", summaryA)
+	if summaryA != "finished tests" {
+		t.Errorf("anchor-a summary: got %q, want the newest child's summary", summaryA)
 	}
 
 	anchorB, ok := itemByID(paged.Items, "anchor-b")
@@ -346,7 +346,7 @@ func TestDecorateSubagentAnchors_PreviewPrefersActiveThenLatest(t *testing.T) {
 		t.Errorf("anchor-b count: got %v, want 2", countB)
 	}
 	if summaryB != "did the thing" {
-		t.Errorf("anchor-b summary: got %q, want non-empty terminal summary", summaryB)
+		t.Errorf("anchor-b summary: got %q, want the newest non-empty summary", summaryB)
 	}
 }
 

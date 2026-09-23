@@ -13,8 +13,8 @@ var subagentPreviewKindPredicate = "items.kind IN ('" + strings.Join(subagentPre
 // result as it arrives; a SQL window count plus ranked preview sorts and
 // retains the entire descendant set merely to return one row per anchor.
 type subagentAggregateRow struct {
-	root, id, kind, status, summary string
-	turnIndex, itemIndex            int
+	root, id, kind, summary string
+	turnIndex, itemIndex    int
 }
 
 func (s *Store) forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootIDs []string, visit func(subagentAggregateRow)) error {
@@ -23,7 +23,7 @@ func (s *Store) forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootI
 	}
 	resolvedSQL, resolvedArgs := timelineArms(threadID, timelineSelection{
 		Columns: func(string, string) string {
-			return `rel.root, items.id, items.kind, items.status,
+			return `rel.root, items.id, items.kind,
 			        CASE WHEN ` + subagentPreviewKindPredicate + ` THEN items.summary ELSE '' END,
 			        items.turn_index, items.item_index`
 		},
@@ -38,7 +38,7 @@ func (s *Store) forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootI
 	defer rows.Close()
 	for rows.Next() {
 		var row subagentAggregateRow
-		if err := rows.Scan(&row.root, &row.id, &row.kind, &row.status, &row.summary, &row.turnIndex, &row.itemIndex); err != nil {
+		if err := rows.Scan(&row.root, &row.id, &row.kind, &row.summary, &row.turnIndex, &row.itemIndex); err != nil {
 			return fmt.Errorf("store: scan subagent aggregate row: %w", err)
 		}
 		visit(row)
@@ -59,25 +59,24 @@ func previewKind(kind string) bool {
 	return slices.Contains(subagentPreviewKinds, kind)
 }
 
-func activeStatus(status string) bool { return status == "running" || status == "streaming" }
+// subagentPreviewBlank is the whitespace a preview summary may consist
+// of and still count as blank. It is ASCII so that a SQL spelling of
+// the same test can agree with this one byte for byte.
+const subagentPreviewBlank = " \t\n\v\f\r"
 
-func rankedSubagentSummary(row subagentAggregateRow) bool {
-	// SQLite's TRIM(summary) in the old rank strips ASCII spaces, not every
-	// Unicode whitespace character. Keep that rank; output normalization
-	// below still uses TrimSpace, as the previous read did after ranking.
-	return previewKind(row.kind) && strings.Trim(row.summary, " ") != ""
+// previewableSubagentRow reports whether a descendant can be its round's
+// preview: a preview-kind row with a nonblank summary.
+func previewableSubagentRow(kind, summary string) bool {
+	return previewKind(kind) && strings.Trim(summary, subagentPreviewBlank) != ""
 }
 
-// The comparison is the exact ORDER BY of the former SQL rank: eligible
-// nonblank summary, active status, newest coordinate, then smallest id.
+// betterSubagentPreview is the preview rule: the newest previewable row
+// in the round wins, ties by smallest id. A row's status does not enter
+// into it; the card shows the agent's latest tool activity.
 func betterSubagentPreview(a, b subagentAggregateRow) bool {
-	aSummary := rankedSubagentSummary(a)
-	bSummary := rankedSubagentSummary(b)
-	if aSummary != bSummary {
-		return aSummary
-	}
-	if aActive, bActive := activeStatus(a.status), activeStatus(b.status); aActive != bActive {
-		return aActive
+	aOK := previewableSubagentRow(a.kind, a.summary)
+	if bOK := previewableSubagentRow(b.kind, b.summary); aOK != bOK {
+		return aOK
 	}
 	if a.turnIndex != b.turnIndex {
 		return a.turnIndex > b.turnIndex
@@ -90,14 +89,13 @@ func betterSubagentPreview(a, b subagentAggregateRow) bool {
 
 func (state *subagentAggregateState) add(row subagentAggregateRow) {
 	state.aggregate.descendantCount++
+	if !previewableSubagentRow(row.kind, row.summary) {
+		return
+	}
 	if !state.hasPick || betterSubagentPreview(row, state.preview) {
 		state.preview = row
 		state.hasPick = true
-		if previewKind(row.kind) && strings.TrimSpace(row.summary) != "" {
-			state.aggregate.latestChildSummary = row.summary
-		} else {
-			state.aggregate.latestChildSummary = ""
-		}
+		state.aggregate.latestChildSummary = row.summary
 	}
 }
 
