@@ -11,6 +11,10 @@ import { tick } from 'svelte';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ChatView from './ChatView.svelte';
+// ChatView imports its terminal surface lazily. Loaded with the file, the
+// terminal-mode test waits for the mount rather than for a first import
+// transforming the surface's component graph, which is load-dependent.
+import '../terminal/TerminalView.svelte';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { focusPane, registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
 import { resetComposerDraftSnapshotsForTest } from '../../stores/composerDraft.svelte';
@@ -692,17 +696,10 @@ describe('<ChatView>', () => {
     setBindingMock('GetTerminalReplay', async () => '');
     const pane = await buildPane({ ...seedThread(), mode: 'terminal' });
     const { getByTestId, queryByTestId, container } = render(ChatView, { props: { pane } });
-    // TerminalView mounts through a lazy import, so wait for it to land.
-    // The timeout is explicit because what this waits on is MODULE RESOLUTION,
-    // not a state transition: on a loaded machine (the full suite running
-    // beside a Go test run) the dynamic import alone outruns waitFor's 1s
-    // default and the assertion fails on wall clock rather than on behaviour.
-    await waitFor(
-      () => {
-        expect(container.querySelector('[data-ui-surface="terminal"]')).not.toBeNull();
-      },
-      { timeout: 10_000 },
-    );
+    // TerminalView mounts behind an {#await} of its (preloaded) module.
+    await waitFor(() => {
+      expect(container.querySelector('[data-ui-surface="terminal"]')).not.toBeNull();
+    });
     expect(getByTestId('terminal-pane-close')).toBeInTheDocument();
     // The chat machinery must be absent — proves the branch replaces, not overlays.
     expect(queryByTestId('chat-header')).toBeNull();
