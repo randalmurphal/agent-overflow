@@ -133,6 +133,14 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	// database undoes it — and the git reads it makes take no action.
 	go a.backfillProjectIdentity()
 
+	// Finish the deferred phases of the store's one-time data migrations:
+	// paced write transactions that run once per database, after which
+	// this starts nothing. See store.DeferredMigration.
+	//
+	// NOT behind the activation gate. Its whole effect is SQLite rows,
+	// which restoring the database undoes.
+	a.startDeferredMigrations()
+
 	// Assert the persisted keep-awake state. Synchronous and cheap (one
 	// D-Bus round trip at most, nothing at all when the setting is off),
 	// and it must run on the boot path rather than lazily: the whole

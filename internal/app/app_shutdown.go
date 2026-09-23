@@ -256,6 +256,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.stopStoreMaintenance()
 	record("stop store maintenance", nil)
 
+	// Step 3c3: stop the deferred migration run. It writes to SQLite, so
+	// it must be joined before Step 9's store close. The run stops at the
+	// next transaction boundary and the next launch resumes it.
+	// Idempotent and blocks until the goroutine returns.
+	a.stopDeferredMigrations()
+	record("stop deferred migrations", nil)
+
 	// Step 3d: stop the background `git fetch` cadence. Each pass reads
 	// the project list from SQLite, so it must be joined before Step 9's
 	// store close; it spawns git subprocesses, so leaving it running

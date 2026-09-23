@@ -65,6 +65,9 @@ type Store struct {
 	// alias or reserving its provider identity. Entries reclaim themselves.
 	nativeLocksOnce sync.Once
 	nativeLocks     *keyedlock.Registry
+	// deferredMu serializes the runs that advance the deferred migration
+	// watermark. See DeferredMigration.
+	deferredMu sync.Mutex
 }
 
 // New opens (or creates) the SQLite database at the given path and runs migrations.

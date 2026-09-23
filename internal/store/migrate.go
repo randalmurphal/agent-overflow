@@ -100,6 +100,9 @@ type Migration struct {
 	// CASCADE against child tables — and foreign_keys can only be toggled
 	// outside a transaction, so these run through applyRebuildMigration.
 	Rebuild bool
+	// Deferred is the part of a one-time data fix too long to run while the
+	// store opens. See DeferredMigration.
+	Deferred *DeferredMigration
 }
 
 // migrations is the ordered list of all schema migrations. Squashed
@@ -1671,7 +1674,12 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 116, Name: "imported_key_lookups", SQL: importedKeyLookupsV116SQL},
 	{Version: 117, Name: "drop_history_preparation_index", SQL: dropHistoryPreparationIndexV117SQL},
 	{Version: 118, Name: "rev_trigger_carrier_probe", SQL: revTriggerCarrierProbeV118SQL},
-	{Version: 119, Name: "bulk_load_insert_stamps_row", SQL: bulkLoadInsertStampsRowV119SQL},
+	{
+		Version:  119,
+		Name:     "history_repair",
+		SQL:      historyRepairV119SQL,
+		Deferred: &DeferredMigration{Name: "fold_sealed_history_and_prune_orphan_payloads", Run: repairStoredHistory},
+	},
 	{Version: 120, Name: "pointer_forks", SQL: pointerForksV120SQL},
 }
 
@@ -1690,7 +1698,14 @@ func runMigrations(db *sql.DB) error {
 		return err
 	}
 
-	return applyPendingMigrations(db, applied)
+	if err := applyPendingMigrations(db, applied); err != nil {
+		return err
+	}
+	if applied == 0 {
+		// A new database has nothing for a deferred phase to fix.
+		return writeDeferredWatermark(db, latestDeferredVersion)
+	}
+	return nil
 }
 
 func configureDatabase(db *sql.DB) error {

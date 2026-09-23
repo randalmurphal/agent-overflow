@@ -265,6 +265,17 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 		return Identity{}, err
 	}
 
+	// The deferred migration watermark describes the rows, so it comes from
+	// the snapshot with them: a snapshot taken before a deferred phase
+	// finished still needs that phase.
+	var watermark int
+	if err := tx.QueryRow(`PRAGMA restore_src.user_version`).Scan(&watermark); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: read snapshot deferred migration watermark: %w", err)
+	}
+	if err := writeDeferredWatermark(tx, watermark); err != nil {
+		return Identity{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return Identity{}, fmt.Errorf("store: commit restore: %w", err)
 	}

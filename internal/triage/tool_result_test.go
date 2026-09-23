@@ -174,16 +174,25 @@ func TestFileChangeToolResultDoesNotOverwriteExistingExactPatch(t *testing.T) {
 		"+export const nativeTurnPatch = 3;",
 	}, "\n")
 
+	// The turn-level snapshot as Codex sends it (turn/diff/updated).
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventDiff,
 		ThreadID:  "t1",
 		Content:   turnDiff,
+		Meta:      json.RawMessage(`{"upgrade_only":true,"source":"turn/diff/updated"}`),
 		Replace:   true,
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("handle diff: %v", err)
 	}
 
+	item, found, err := st.GetThreadItem("t1", "item-file-change")
+	if err != nil || !found {
+		t.Fatalf("file change item after diff: found=%v err=%v", found, err)
+	}
+	if item.PayloadID != payloadID {
+		t.Fatalf("file change item payload = %q, want the exact patch %q", item.PayloadID, payloadID)
+	}
 	after, err := st.GetPayloadData("t1", payloadID)
 	if err != nil {
 		t.Fatalf("get payload data after diff: %v", err)
