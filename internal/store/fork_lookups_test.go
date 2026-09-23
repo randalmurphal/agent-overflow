@@ -1,8 +1,11 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -159,6 +162,134 @@ func TestPointerForkLookupsProbeTheLineage(t *testing.T) {
 		if !readLineage && lookup.name != forkChildRowWrite {
 			t.Errorf("%s: no statement read the fork's lineage; the check proved nothing", lookup.name)
 		}
+	}
+}
+
+// triggerPrograms lists the triggers whose programs a statement codes, one
+// entry per coded program, nested programs included. SQLite codes a row
+// trigger only into a statement that can fire it (an UPDATE OF trigger only
+// into an UPDATE that sets one of its columns), so a trigger absent here
+// does no work, not even its WHEN, when the statement runs.
+func triggerPrograms(t *testing.T, s *Store, query string, args ...any) []string {
+	t.Helper()
+	if len(args) == 0 {
+		args = make([]any, strings.Count(query, "?"))
+	}
+	rows, err := s.db.Query("EXPLAIN "+query, args...)
+	if err != nil {
+		t.Fatalf("explain: %v\n%s", err, query)
+	}
+	var programs []string
+	for rows.Next() {
+		var addr, p1, p2, p3, p5, comment any
+		var opcode string
+		var p4 sql.NullString
+		if err := rows.Scan(&addr, &opcode, &p1, &p2, &p3, &p4, &p5, &comment); err != nil {
+			t.Fatal(err)
+		}
+		if name, ok := strings.CutPrefix(p4.String, "-- TRIGGER "); ok {
+			programs = append(programs, name)
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	return programs
+}
+
+// The fork copy triggers guard row positions: two on insert, two on an
+// UPDATE OF turn_index, item_index. A write that keeps every row where it
+// is (a revision stamp, a content update, or an insert, including one under
+// history_bulk_load, whose own stamp is a revision-only update) must not
+// code the position pair at all, and only the insert itself codes the
+// insert pair. The writes run on a source that a pointer fork reads.
+func TestForkCopyTriggersSkipRevisionOnlyWrites(t *testing.T) {
+	s := newTestStore(t)
+	seedLinearSource(t, s, "S", 2)
+	sealItemsForTest(t, s, "S", "u0", "a0")
+	launch := Item{ID: "launch", ThreadID: "S", TurnIndex: 1, ItemIndex: 5, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "Task", Summary: "Task", Meta: "{}"}
+	if err := s.InsertItem(launch); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertItemWithPayload(
+		Item{ID: "tool", ThreadID: "S", TurnIndex: 1, ItemIndex: 6, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "Bash", ParentID: launch.ID, PayloadID: "pt", Meta: "{}"},
+		Payload{ID: "pt", Kind: "text", Meta: "{}", Data: []byte("out")},
+	); err != nil {
+		t.Fatal(err)
+	}
+	mustPointerFork(t, s, "S", "F", throughTurn(0))
+
+	const (
+		positionInsert = "trg_items_fork_position"
+		snapshotInsert = "trg_items_fork_snapshot"
+		positionUpdate = "trg_items_fork_position_update"
+		snapshotMove   = "trg_items_fork_snapshot_move"
+	)
+	moved := triggerPrograms(t, s, `UPDATE items SET turn_index = ?, item_index = ? WHERE thread_id = ? AND id = ?`)
+	if !slices.Contains(moved, positionUpdate) || !slices.Contains(moved, snapshotMove) {
+		t.Fatalf("a position update codes %v; the check cannot see the position triggers", moved)
+	}
+
+	summary := "edited"
+	writes := []struct {
+		name string
+		run  func()
+	}{
+		{"child insert", func() {
+			if err := s.InsertItem(Item{ID: "child", ThreadID: "S", TurnIndex: 1, ItemIndex: 7, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Read", ParentID: launch.ID, Summary: "Read", Meta: "{}"}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"child content update", func() {
+			if _, err := s.UpdateItemFields("S", "child", ItemPartialUpdate{Summary: &summary}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"payload append revision touch", func() {
+			if err := s.AppendPayloadData("S", "pt", []byte(" more"), "{}", 2); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"imported row the fork reads, localized under history_bulk_load", func() {
+			if _, err := s.UpdateItemFields("S", "a0", ItemPartialUpdate{Summary: &summary}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	rec := recordStatements(t, s)
+	var revisionTouches, bulkLoadInserts int
+	for _, write := range writes {
+		stmts := rec.capture(write.run)
+		bulkLoad := false
+		for _, stmt := range stmts {
+			query := strings.TrimSpace(stmt.query)
+			insert := strings.HasPrefix(query, "INSERT INTO items")
+			if strings.Contains(query, "SET rev = rev") {
+				revisionTouches++
+			}
+			if strings.HasPrefix(query, "UPDATE threads SET history_bulk_load") {
+				bulkLoad = fmt.Sprint(stmt.args[0]) == "1"
+			} else if bulkLoad && insert {
+				bulkLoadInserts++
+			}
+			counts := map[string]int{}
+			for _, name := range triggerPrograms(t, s, stmt.query, stmt.args...) {
+				counts[name]++
+			}
+			for _, name := range []string{positionUpdate, snapshotMove} {
+				if counts[name] > 0 {
+					t.Errorf("%s: the statement codes %s\n%s", write.name, name, query)
+				}
+			}
+			for _, name := range []string{positionInsert, snapshotInsert} {
+				if want := map[bool]int{true: 1}[insert]; counts[name] != want {
+					t.Errorf("%s: %d programs of %s, want %d\n%s", write.name, counts[name], name, want, query)
+				}
+			}
+		}
+	}
+	if revisionTouches == 0 || bulkLoadInserts == 0 {
+		t.Fatalf("recorded %d revision touches and %d bulk-load inserts; the writes no longer reach both", revisionTouches, bulkLoadInserts)
 	}
 }
 
