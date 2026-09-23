@@ -93,10 +93,14 @@ func (m ToolStartMeta) isMetaUpdateOnly() bool {
 		(m.TaskID != "" || m.SubagentModel != "" || m.ParentToolUseID != "")
 }
 
-func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
+// persistToolCallLaunch writes (or annotates) the launch row and returns
+// the row as it stands afterwards, with whether one exists, so the rest
+// of the start handler works on it without reading it again. When nothing
+// was written the returned row is the one the lookup found.
+func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, bool, error) {
 	itemID := eventItemID(evt)
 	if itemID == "" {
-		return nil
+		return store.Item{}, false, nil
 	}
 
 	meta := DecodeToolStartMeta(evt.Meta)
@@ -124,25 +128,25 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 
 	existing, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
 	if err != nil {
-		return fmt.Errorf("tool launch lookup %s: %w", itemID, err)
+		return store.Item{}, false, fmt.Errorf("tool launch lookup %s: %w", itemID, err)
 	}
 	if found && existing.Kind != itemKindToolCall {
-		return nil
+		return existing, true, nil
 	}
 
 	if found && existing.Status != statusRunning && isCodexSpawnAgentLaunch(existing, nil) {
 		if !metaUpdateOnly {
-			return nil
+			return existing, true, nil
 		}
 		// The whole update feeds the live projection; only the child's
 		// identity lands on the settled spawn row (codex_spawn_identity.go).
 		current := r.codexAgentRuntimeOrLaunch(existing)
 		current.Meta = mergeItemMetaJSON(current.Meta, evt.Meta)
 		if err := r.setCodexAgentRuntime(current); err != nil {
-			return err
+			return store.Item{}, false, err
 		}
 		r.emitBackgroundTasksChangedNudge(evt.ThreadID)
-		return r.persistCodexSpawnIdentity(existing, evt)
+		return existing, true, r.persistCodexSpawnIdentity(existing, evt)
 	}
 
 	if metaUpdateOnly {
@@ -170,7 +174,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 				SubagentModel:   meta.SubagentModel,
 				ParentToolUseID: stringsx.FirstNonEmptyTrimmed(eventParentID(evt), meta.ParentToolUseID),
 			})
-			return nil
+			return store.Item{}, false, nil
 		}
 		if meta.ToolName != "" {
 			existing.ToolName = meta.ToolName
@@ -187,11 +191,11 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		})
 		if err != nil {
 			log.Printf("triage: merge correlation fields into item meta %s: %v", itemID, err)
-			return nil
+			return existing, true, nil
 		}
 		parentChanged := parentToolUseID != "" && existing.ParentID == ""
 		if mergedMeta == existing.Meta && !parentChanged {
-			return nil
+			return existing, true, nil
 		}
 		existing.Meta = mergedMeta
 		if parentChanged {
@@ -203,7 +207,11 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 		// existing.InputPayloadID is preserved by shapeToolItemMeta so
 		// the launch's payload stays canonical.
 		inputPayload := r.shapeToolItemMeta(&existing, now)
-		return r.persistItemWithInputPayload(existing, nil, inputPayload)
+		persisted, err := r.persistItemWithEmit(existing, nil, inputPayload, true)
+		if err != nil {
+			return store.Item{}, false, err
+		}
+		return persisted, true, nil
 	}
 
 	toolName := stringsx.FirstNonEmptyTrimmed(meta.ToolName, evt.ItemType, "tool")
@@ -211,7 +219,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 
 	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
-		return fmt.Errorf("tool launch turn index %s: %w", itemID, err)
+		return store.Item{}, false, fmt.Errorf("tool launch turn index %s: %w", itemID, err)
 	}
 
 	item := store.Item{
@@ -289,8 +297,9 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	// shapeToolItemMeta drops the freshly-extracted payload; the
 	// original launch's payload is canonical.
 	inputPayload := r.shapeToolItemMeta(&item, now)
-	if err := r.persistItemWithInputPayload(item, nil, inputPayload); err != nil {
-		return err
+	persisted, err := r.persistItemWithEmit(item, nil, inputPayload, true)
+	if err != nil {
+		return store.Item{}, false, err
 	}
 
 	// A held task_id may belong to a shell that ALREADY exited: its
@@ -298,10 +307,21 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) error {
 	// as unresolvable) while no row existed. Now that the launch row is
 	// durable, drain the stash into the completion sibling so the tray
 	// row settles instead of ticking forever.
-	if heldFound && item.IsBackground && held.TaskID != "" {
+	drained := heldFound && item.IsBackground && held.TaskID != "" &&
 		r.settleStashedTerminalForLateLaunch(evt, item.ID, held.TaskID)
+	if err := r.persistProvisionalSubagentPrompt(item, meta, now); err != nil {
+		return persisted, true, err
 	}
-	return r.persistProvisionalSubagentPrompt(item, meta, now)
+	if drained {
+		// The sibling write settled the launch's meta in the store (the
+		// background settle triggers), so the row returned is read again.
+		reread, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
+		if err != nil {
+			return persisted, true, fmt.Errorf("tool launch reread %s: %w", itemID, err)
+		}
+		return reread, found, nil
+	}
+	return persisted, true, nil
 }
 
 // userInputValidationTexts returns the set of human-readable text
@@ -352,7 +372,10 @@ func userInputValidationTexts(toolName, metaJSON string) []string {
 	return texts
 }
 
-func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
+// persistToolCallCompletion settles the launch row handleToolComplete
+// read (and the result helpers may have rewritten): launch is that row as
+// it stands, found whether it exists.
+func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent, launch store.Item, found bool) error {
 	itemID := eventItemID(evt)
 	meta := DecodeToolCompleteMeta(evt.Meta)
 
@@ -360,10 +383,6 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 		return nil
 	}
 
-	launch, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
-	if err != nil {
-		return fmt.Errorf("tool completion lookup %s: %w", itemID, err)
-	}
 	if !found {
 		codexThread, err := r.isCodexThread(evt.ThreadID)
 		if err != nil {
@@ -555,25 +574,24 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent) error {
 	}
 
 	payload := completionPayloadForLaunch(launch, evt, meta, now)
-	var persistErr error
-	switch {
-	case payload == nil:
-		persistErr = r.persistItemWithInputPayload(launch, nil, inputPayload)
-	case launch.PayloadID == "":
-		persistErr = r.persistItemWithInputPayload(launch, payload, inputPayload)
-	case launch.PayloadKind == payloadKindToolCallResult:
-		payload.ID = launch.PayloadID
-		persistErr = r.persistItemWithInputPayload(launch, payload, inputPayload)
-	default:
-		persistErr = r.persistItemWithInputPayload(launch, nil, inputPayload)
+	if payload != nil && launch.PayloadID != "" {
+		// A linked tool_call_result payload is rewritten in place; a
+		// payload of any other kind (streamed command output, a file
+		// change) stays the row's payload.
+		if launch.PayloadKind == payloadKindToolCallResult {
+			payload.ID = launch.PayloadID
+		} else {
+			payload = nil
+		}
 	}
-	if persistErr != nil {
-		return persistErr
+	persisted, err := r.persistItemWithEmit(launch, payload, inputPayload, true)
+	if err != nil {
+		return err
 	}
 	// This row just went terminal. An AWAITED agent launch settles HERE
 	// and nowhere else — no completion sibling, no child terminal — so
 	// this is the one moment its live counters can become durable.
-	return r.persistFinalSubagentProgressIfLaunch(launch)
+	return r.persistFinalSubagentProgressIfLaunch(persisted)
 }
 
 // persistFinalSubagentProgressIfLaunch folds a settling AWAITED launch
@@ -1833,14 +1851,17 @@ func (r *Router) turnIndexForEvent(evt provider.ProviderEvent) (int, error) {
 	return r.currentTurnIndex(evt.ThreadID)
 }
 
+// turnIndexForScope places a scoped row in its scope's turn, read through
+// the tool-call link cache (tool_call_links.go); an unknown scope falls
+// through to the current turn.
 func (r *Router) turnIndexForScope(threadID, scope string) (int, error) {
-	if scope != "" {
-		parent, found, err := r.store.GetThreadItem(threadID, strings.TrimSpace(scope))
+	if scope = strings.TrimSpace(scope); scope != "" {
+		parent, found, err := r.lookupItemLink(threadID, scope)
 		if err != nil {
 			return 0, err
 		}
 		if found {
-			return parent.TurnIndex, nil
+			return parent.turnIndex, nil
 		}
 	}
 	return r.currentTurnIndex(threadID)
@@ -2272,14 +2293,14 @@ func (r *Router) takePendingToolCorrelation(threadID, itemID string) (itemMetaCo
 // Mirrors RecoverOrphanedBackgroundTasks' drain: a crash between the
 // Take and the sibling write leaves a stashless running launch, which
 // the session-end settle recovers as killed.
-func (r *Router) settleStashedTerminalForLateLaunch(evt provider.ProviderEvent, toolUseID, taskID string) {
+func (r *Router) settleStashedTerminalForLateLaunch(evt provider.ProviderEvent, toolUseID, taskID string) bool {
 	stash, found, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, taskID)
 	if err != nil {
 		log.Printf("triage: drain stash for late launch %s/%s: %v", evt.ThreadID, taskID, err)
-		return
+		return false
 	}
 	if !found {
-		return
+		return false
 	}
 	meta := backgroundTaskTerminalMeta{
 		TaskID:    taskID,
@@ -2290,6 +2311,7 @@ func (r *Router) settleStashedTerminalForLateLaunch(evt provider.ProviderEvent, 
 	if err := r.writeBackgroundCompletionSibling(evt, meta, true); err != nil {
 		log.Printf("triage: settle stashed terminal for late launch %s/%s: %v", evt.ThreadID, toolUseID, err)
 	}
+	return true
 }
 
 // settleParkedLaunchForRebind closes a PARKED agent's round when a §E6

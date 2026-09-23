@@ -12,6 +12,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // TestResolveCodexForkAnchorPicksLatestProviderBackedTurn locks the
@@ -695,6 +696,61 @@ func TestConversationRollbackCodexRevertsInPlaceWhenSupported(t *testing.T) {
 	if _, ok := app.activeCodexSession(thread.ID); ok {
 		t.Fatal("the cut session must not survive the revert")
 	}
+}
+
+// TestConversationRollbackCodexLiveRevertForgetsToolCallLinks: a live
+// thread/revert keeps the session, so no teardown clears the router's
+// cached tool-call links; the cut must drop them itself.
+func TestConversationRollbackCodexLiveRevertForgetsToolCallLinks(t *testing.T) {
+	app := newTestApp(t)
+	app.triage = triage.NewRouter(app.store, app.emit)
+	workspace := t.TempDir()
+	thread := createAppTestThread(t, app, "codex-live-cut-links", "codex", workspace)
+	thread.SessionRef = "provider-codex-live-cut"
+	if err := app.store.UpdateThread(thread); err != nil {
+		t.Fatalf("update thread: %v", err)
+	}
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	insertCodexTurn(t, app.store, thread.ID, 0, "turn-a")
+	insertCodexTurn(t, app.store, thread.ID, 1, "turn-b")
+	seedMessageAnchor(t, app.store, thread.ID, "user:1", 1, "", "")
+	requireLinksForgotten := primeCutToolCallLinks(t, app, thread.ID, 1)
+
+	revertLog := filepath.Join(t.TempDir(), "revert.log")
+	binary := writeCodexForkAtBinary(t, codexForkMock{
+		resumedThreadID: thread.SessionRef,
+		forkedThreadID:  "unused-fork",
+		userAgent:       "codex_cli_rs/0.149.0 (Linux; x86_64)",
+		historyMode:     "paginated",
+		revertLogPath:   revertLog,
+	})
+	sess, err := codex.NewSession(context.Background(), thread.ID, codex.Config{
+		Binary:         binary,
+		Model:          "test-model",
+		WorkDir:        workspace,
+		ResumeThreadID: thread.SessionRef,
+	}, func(provider.ProviderEvent) {})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	app.sessionManager().put(thread.ID, session{
+		Provider: string(provider.Codex),
+		Token:    "codex-live-cut-token",
+		Codex:    sess,
+	})
+
+	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+	if active, ok := app.activeCodexSession(thread.ID); !ok || active != sess {
+		t.Fatal("live Codex session was replaced around thread/revert")
+	}
+	if request := readCodexRevertRequest(t, revertLog); !strings.Contains(request, `"beforeTurnId":"turn-b"`) {
+		t.Fatalf("thread/revert request = %s, want beforeTurnId turn-b", request)
+	}
+	requireLinksForgotten()
 }
 
 // TestConversationRollbackCodexForksBelowTheRevertFloor: 0.147 has no

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 )
 
 const (
@@ -44,35 +45,37 @@ type ToolInlineDiffFile struct {
 	PreviewTruncated bool   `json:"previewTruncated,omitempty"`
 }
 
-func (r *Router) persistFileChangeToolResult(evt provider.ProviderEvent) error {
+// persistFileChangeToolResult attaches a file-change tool's diff payload
+// to its row. row is the tool's row as the handler carries it (found
+// reports whether it exists); the row is returned as this leaves it.
+// Nothing runs unless the tool is a file-change tool.
+func (r *Router) persistFileChangeToolResult(evt provider.ProviderEvent, row store.Item, found bool) (store.Item, bool, error) {
 	if evt.ItemID == "" || len(evt.Meta) == 0 {
-		return nil
+		return row, found, nil
 	}
 
 	// Resolve the tool name. Codex and the Claude EventToolStart path
 	// stamp ItemType directly. Claude's EventToolComplete leaves
 	// ItemType empty (parse_user.go's appendToolResultCompletion never
 	// sets it), so we recover the tool name from the persisted
-	// tool_call row's ToolName. Same lookup also surfaces the file
+	// tool_call row's ToolName. The same row also surfaces the file
 	// path the tool committed to write at start, used as a fallback
 	// for the new Claude extractor when tool_use_result.filePath is
 	// missing on older wire shapes.
 	toolName := evt.ItemType
 	claudeFallbackFilePath := ""
-	if toolName == "" && evt.Kind == provider.EventToolComplete {
-		if existing, found, err := r.store.GetThreadItem(evt.ThreadID, evt.ItemID); err == nil && found {
-			toolName = existing.ToolName
-			claudeFallbackFilePath = ExtractClaudeLaunchFilePath(existing.Meta)
-		}
+	if toolName == "" && evt.Kind == provider.EventToolComplete && found {
+		toolName = row.ToolName
+		claudeFallbackFilePath = ExtractClaudeLaunchFilePath(row.Meta)
 	}
 
 	if !IsFileChangeItemType(toolName) {
-		return nil
+		return row, found, nil
 	}
 
 	_, workspacePath, err := r.store.GetThreadProviderWorkspace(evt.ThreadID)
 	if err != nil {
-		return fmt.Errorf("lookup thread for tool result: %w", err)
+		return row, found, fmt.Errorf("lookup thread for tool result: %w", err)
 	}
 
 	var (
@@ -86,9 +89,9 @@ func (r *Router) persistFileChangeToolResult(evt provider.ProviderEvent) error {
 		meta, diffData, ok = ExtractFileChangeToolResult(evt.Meta, workspacePath)
 	}
 	if !ok {
-		return nil
+		return row, found, nil
 	}
-	return r.persistToolResult(evt, meta, diffData)
+	return r.persistToolResult(evt, meta, diffData, row, found)
 }
 
 func (r *Router) mergeToolResultPayload(threadID, payloadID string, next ToolResultMeta, nextDiff []byte) (ToolResultMeta, []byte) {

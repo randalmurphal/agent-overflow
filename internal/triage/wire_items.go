@@ -14,14 +14,16 @@ import (
 // emitItemUpsert / emitItemPatch. (A proposed plan is pushed from its
 // own decorated read, GetThreadProposedPlanItem, by payload_items.go and
 // the app layer; its stamped set is itself, so it has nothing to
-// refresh.) Two rules keep a pushed row a copy of what a page would read
-// at the revision it claims (docs/architecture/thread-replica-sync.md
-// §3.1):
+// refresh.) Two rules keep every row a client holds at a revision it can
+// prove (docs/architecture/thread-replica-sync.md §3.1):
 //
 //   - a row whose page read is decorated (store.ItemReadNeedsDecoration:
 //     an anchor with children, a carrier, a completion sibling, a plan)
-//     is pushed from that read, never from the write's own read-back,
-//     and a field patch to such a row is pushed as that read too,
+//     is pushed as written but marked unstamped, and noted so the next
+//     refresh pushes its page read. The write never reads the decorated
+//     row itself: that read walks the anchor's descendants, and the
+//     writes that land here arrive at tens per second on the provider
+//     event path. A field patch to such a row is pushed the same way,
 //     because a patch replaces the client's meta wholesale and the
 //     stored meta is not the decorated one;
 //   - a write stamps rows it did not touch (the parent anchor, resume
@@ -47,9 +49,8 @@ const (
 
 // wireItemRefresh is a thread's pending refresh: the rows pushed since
 // the last flush, each at the revision the client was pushed, and the
-// timer that will flush them. Guarded by r.mu. It lives on threadState;
-// the timer's callback holds the state pointer, so a flush that runs
-// after cleanupThread dropped the entry still finds its own set.
+// timer that will flush them. Held in r.wireRefresh under r.mu from the
+// first note until a flush takes it.
 type wireItemRefresh struct {
 	emitted  map[string]int64
 	timer    *time.Timer
@@ -60,25 +61,27 @@ func (r *Router) emitItemUpsert(item store.Item) {
 	r.emitItemUpserts(item.ThreadID, []store.Item{item})
 }
 
-// emitItemUpserts pushes rows written in one thread, reading the ones
-// with a decorated page read together. When that read fails they go out
-// as written but marked unstamped, and are noted at that revision so
-// the next refresh reads them again: the client never holds a provable
-// revision for a row it saw undecorated. A row deleted between its write
-// and the read is pushed as written; whoever deleted it pushes the remove.
+// emitItemUpserts pushes rows written in one thread. A row with a
+// decorated page read goes out as written but marked unstamped, and is
+// noted at that revision so the next refresh reads it: the client never
+// holds a provable revision for a row it saw undecorated.
 func (r *Router) emitItemUpserts(threadID string, items []store.Item) {
-	needsRead := make(map[string]bool, len(items))
 	for _, item := range items {
-		if item.Rev != store.UnstampedItemRev && r.itemReadNeedsDecoration(item) {
-			needsRead[item.ID] = true
+		if item.Rev == store.UnstampedItemRev {
+			r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
+			continue
 		}
+		if r.itemReadNeedsDecoration(item) {
+			item.Rev = store.UnstampedItemRev
+		}
+		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
+		r.noteWireItemEmitted(threadID, item.ID, item.Rev)
 	}
-	r.emitItemUpsertsReading(threadID, items, needsRead)
 }
 
 // itemReadNeedsDecoration is the store's probe with a failed probe
-// folded into "needed": the page read then decides, or fails and sends
-// the row unstamped.
+// folded into "needed": the row then goes out unstamped and the refresh
+// decides.
 func (r *Router) itemReadNeedsDecoration(item store.Item) bool {
 	needs, err := r.store.ItemReadNeedsDecoration(item)
 	if err != nil {
@@ -86,44 +89,6 @@ func (r *Router) itemReadNeedsDecoration(item store.Item) bool {
 		return true
 	}
 	return needs
-}
-
-func (r *Router) emitItemUpsertsReading(threadID string, items []store.Item, needsRead map[string]bool) {
-	ids := make([]string, 0, len(needsRead))
-	for _, item := range items {
-		if needsRead[item.ID] {
-			ids = append(ids, item.ID)
-		}
-	}
-	var read map[string]store.Item
-	readFailed := false
-	if len(ids) > 0 {
-		rows, err := r.store.ListWireItems(threadID, ids)
-		if err != nil {
-			log.Printf("triage: read wire rows %s %v: %v", threadID, ids, err)
-			readFailed = true
-		} else {
-			read = make(map[string]store.Item, len(rows))
-			for _, row := range rows {
-				read[row.ID] = row
-			}
-		}
-	}
-	for _, item := range items {
-		if item.Rev == store.UnstampedItemRev {
-			r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
-			continue
-		}
-		if needsRead[item.ID] {
-			if row, ok := read[item.ID]; ok {
-				item = row
-			} else if readFailed {
-				item.Rev = store.UnstampedItemRev
-			}
-		}
-		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
-		r.noteWireItemEmitted(threadID, item.ID, item.Rev)
-	}
 }
 
 func (r *Router) emitItemRemove(threadID, itemID, kind string) {
@@ -149,15 +114,15 @@ func (r *Router) emitItemPatch(threadID, itemID, kind string, rev int64, patch I
 // fields and pushes the change. Use instead of persistItem when the row
 // already exists and only a narrow set of fields changed (e.g.,
 // streaming settle: status + meta + updatedAt). A row with a decorated
-// page read is pushed as that read instead of a patch (see the file
-// comment).
+// page read is pushed as an unstamped upsert instead of a patch (see the
+// file comment); item must therefore be the whole row.
 func (r *Router) persistItemFieldsAndPatch(item store.Item, update store.ItemPartialUpdate) error {
 	rev, err := r.store.UpdateItemFields(item.ThreadID, item.ID, update)
 	if err != nil {
 		return err
 	}
-	// The written row: what the probe below judges, and the fallback
-	// push when the page read fails.
+	// The written row: what the probe below judges, and the push when
+	// the row's page read is decorated.
 	if update.Status != nil {
 		item.Status = *update.Status
 	}
@@ -175,7 +140,9 @@ func (r *Router) persistItemFieldsAndPatch(item store.Item, update store.ItemPar
 	}
 	item.Rev = rev
 	if r.itemReadNeedsDecoration(item) {
-		r.emitItemUpsertsReading(item.ThreadID, []store.Item{item}, map[string]bool{item.ID: true})
+		item.Rev = store.UnstampedItemRev
+		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
+		r.noteWireItemEmitted(item.ThreadID, item.ID, item.Rev)
 		return nil
 	}
 	r.emitItemPatch(item.ThreadID, item.ID, item.Kind, rev, patchFromPartial(update))
@@ -193,22 +160,28 @@ func patchFromPartial(u store.ItemPartialUpdate) ItemPatchFields {
 }
 
 // noteWireItemEmitted records that the client now holds itemID at rev
-// and arms the thread's refresh. A thread with no live state has no
-// quiet point coming, so its refresh runs here, before the caller
-// pushes anything else: a deferred one would race the next write and
-// push a row the write's own upsert already carried.
+// and arms the thread's refresh.
+//
+// Every thread takes the debounced refresh, including one with no live
+// state (a write from an app method, or a host-synthesized settle after
+// teardown). Such a thread used to run its refresh here, synchronously,
+// so that no deferred refresh could race its next write. That refresh is
+// the decorated page read of every anchor the write stamped, and on the
+// provider event path it cost a descendant walk per write (about 180 ms
+// on a thread with a large agent). A deferred refresh reads after the
+// writes that armed it, and a write that lands while one is running
+// arms the next, so the thread converges on its stored rows the same way
+// a live thread does.
 func (r *Router) noteWireItemEmitted(threadID, itemID string, rev int64) {
 	r.mu.Lock()
-	st := r.threadStateIfPresent(threadID)
-	if st == nil {
-		r.mu.Unlock()
-		r.refreshWireItems(threadID, map[string]int64{itemID: rev})
-		return
-	}
 	defer r.mu.Unlock()
-	pending := &st.wireRefresh
-	if pending.emitted == nil {
-		pending.emitted = make(map[string]int64)
+	if r.wireRefresh == nil {
+		r.wireRefresh = make(map[string]*wireItemRefresh)
+	}
+	pending := r.wireRefresh[threadID]
+	if pending == nil {
+		pending = &wireItemRefresh{emitted: make(map[string]int64)}
+		r.wireRefresh[threadID] = pending
 	}
 	// An unstamped note means "read this again"; otherwise the newest
 	// push wins, whatever order the emitting goroutines ran in.
@@ -221,7 +194,7 @@ func (r *Router) noteWireItemEmitted(threadID, itemID string, rev int64) {
 		r.refreshWG.Add(1)
 		pending.timer = time.AfterFunc(wireRefreshQuiet, func() {
 			defer r.refreshWG.Done()
-			r.refreshWireItems(threadID, r.takeWireRefresh(st, false))
+			r.refreshWireItems(threadID, r.takeWireRefresh(threadID, pending, false))
 		})
 		return
 	}
@@ -233,34 +206,31 @@ func (r *Router) noteWireItemEmitted(threadID, itemID string, rev int64) {
 	}
 }
 
-// takeWireRefresh hands the pending set to its flush. The timer's own
-// callback passes cancel=false: its refreshWG slot is released by the
-// callback. A synchronous flush passes cancel=true and releases the slot
-// itself when it beat the timer; a timer that already fired keeps the
-// slot and finds nothing to do.
-func (r *Router) takeWireRefresh(st *threadState, cancel bool) map[string]int64 {
+// takeWireRefresh hands a pending set to its flush. The timer's own
+// callback passes its entry and cancel=false: it takes the entry only if
+// no synchronous flush took it first, and its refreshWG slot is released
+// by the callback. A synchronous flush passes nil (whatever is pending)
+// and cancel=true, and releases the slot itself when it beat the timer;
+// a timer that already fired keeps the slot and finds nothing to do.
+func (r *Router) takeWireRefresh(threadID string, want *wireItemRefresh, cancel bool) map[string]int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	pending := &st.wireRefresh
+	pending := r.wireRefresh[threadID]
+	if pending == nil || (want != nil && pending != want) {
+		return nil
+	}
+	delete(r.wireRefresh, threadID)
 	if cancel && pending.timer != nil && pending.timer.Stop() {
 		r.refreshWG.Done()
 	}
-	emitted := pending.emitted
-	*pending = wireItemRefresh{}
-	return emitted
+	return pending.emitted
 }
 
 // flushWireItemRefresh runs the thread's pending refresh now: the turn
 // just completed or the session is being torn down, so nothing quieter
 // is coming.
 func (r *Router) flushWireItemRefresh(threadID string) {
-	r.mu.Lock()
-	st := r.threadStateIfPresent(threadID)
-	r.mu.Unlock()
-	if st == nil {
-		return
-	}
-	r.refreshWireItems(threadID, r.takeWireRefresh(st, true))
+	r.refreshWireItems(threadID, r.takeWireRefresh(threadID, nil, true))
 }
 
 // DrainWireItemRefresh runs every pending refresh now and waits for the
@@ -278,11 +248,9 @@ func (r *Router) DrainWireItemRefresh() {
 // flushAllWireItemRefresh runs every thread's pending refresh now.
 func (r *Router) flushAllWireItemRefresh() {
 	r.mu.Lock()
-	threadIDs := make([]string, 0, len(r.threads))
-	for threadID, st := range r.threads {
-		if st.wireRefresh.timer != nil {
-			threadIDs = append(threadIDs, threadID)
-		}
+	threadIDs := make([]string, 0, len(r.wireRefresh))
+	for threadID := range r.wireRefresh {
+		threadIDs = append(threadIDs, threadID)
 	}
 	r.mu.Unlock()
 	for _, threadID := range threadIDs {

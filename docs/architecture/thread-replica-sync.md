@@ -269,30 +269,31 @@ payload content on the client (`utils/payloadVersion.ts`), so a window whose
 spans are behind is still a correct window.
 
 Every pushed `ItemStreamEvent` is the row a page reads, at the revision
-it reads it (`TestEmittedItemEventsCarryStoredItemRev`), because a client
-builds its held window out of the rows it was pushed:
+it reads it, or claims no revision (`TestEmittedItemEventsCarryStoredItemRev`),
+because a client builds its held window out of the rows it was pushed:
 
 - an upsert of a row whose page read is the stored row sends the row
   read back inside its write transaction; the caller's input struct
   carries a pre-trigger value;
 - an upsert of a row whose page read is decorated
   (`store.ItemReadNeedsDecoration`: an anchor with a child row, a resume
-  carrier, a completion sibling, a proposed plan) sends `ListWireItems`,
-  the page's hydrate-and-decorate read in one read transaction, so the
-  pushed content and its `rev` are one snapshot. The write's own
-  read-back would be an altered row at the stored revision: the launch
-  without its descendant count. The gate is one `idx_items_parent`
-  probe, because the decorator leaves a childless root untouched;
-  measured on a file-backed store, the full page read is 0.66 ms
-  against 0.21 ms for the plain row read, and a plain tool call (every
-  tool start and result, every Codex command-output flush) is the
-  common case;
+  carrier, a completion sibling, a proposed plan) sends the write's
+  read-back marked `store.UnstampedItemRev` and notes the row at that
+  revision, so the anchor refresh below pushes its page read. The
+  read-back is an altered row (the launch without its descendant count)
+  and must not claim the stored revision. The write never runs the
+  decorated read itself: it walks the anchor's descendants, and the
+  writes under a large agent arrive at tens per second on the provider
+  event path. The gate is one `idx_items_parent` probe, because the
+  decorator leaves a childless root untouched, so a plain tool call
+  (every tool start and result, every Codex command-output flush) goes
+  out stamped;
 - a `patch` carries `patch.rev`, the revision `UpdateItemFields` read
   inside the same transaction as the write. Without it every settled row
   would hold the revision its last upsert carried and no window
   containing one could verify. A patch replaces the client's `meta`
   wholesale, so a decorated row is never patched: `persistItemFieldsAndPatch`
-  pushes its page read instead;
+  pushes it as an unstamped upsert instead;
 - an upsert whose row the emitter altered on purpose carries
   `store.UnstampedItemRev` (-1). The streaming reveal blanks the summary
   so the text can arrive as deltas, and that wire row is not the stored
@@ -310,7 +311,8 @@ those. Left there, a client that watched a subagent run would hold every
 anchor at a revision behind the store's and pay a page on each reopen,
 the cost §1 exists to remove. The router's anchor refresh
 (`internal/triage/wire_items.go`) closes it: every upsert and patch notes
-its row and pushed revision on the thread; at a quiet point the rows
+its row and pushed revision on the thread, whether or not the thread has
+a live session; at a quiet point the rows
 those writes stamped (`ListWireItemsBehind`, the trigger's own candidate
 select as a query, plus the launch a completion sibling settles) are
 read as a page would and pushed again, skipping a written row whose

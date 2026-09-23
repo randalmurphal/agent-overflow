@@ -332,9 +332,13 @@ type threadState struct {
 	// with the pending maps at the turn boundary. See interactive_claim.go.
 	answeredRequests map[string]struct{}
 
-	// wireRefresh is the rows pushed since the last anchor refresh and
-	// the timer that will flush them (wire_items.go).
-	wireRefresh wireItemRefresh
+	// toolCalls caches the placement (parent, turn) of tool_call rows the
+	// session persisted or asked about, so parent validation and scope
+	// placement do not re-read them per event. Bounded by
+	// maxToolCallLinksPerThread; swept with the threadState and dropped
+	// by ForgetToolCallLinks when a live cut deletes rows. See
+	// tool_call_links.go.
+	toolCalls toolCallLinks
 }
 
 // threadIdentity is per-thread state that must SURVIVE cleanupThread.

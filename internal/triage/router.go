@@ -140,6 +140,12 @@ type Router struct {
 	// drain runs on in-turn paths and must not wait out a quiet period;
 	// DrainWireItemRefresh is its drain.
 	refreshWG sync.WaitGroup
+	// wireRefresh holds each thread's pending anchor refresh: the rows
+	// pushed since the last one and the timer that will run it. Guarded
+	// by r.mu. An entry exists only while a refresh is pending, and it is
+	// keyed by thread rather than hung off threadState because a thread
+	// with no live state still pushes rows (wire_items.go).
+	wireRefresh map[string]*wireItemRefresh
 	// dispatchFlush is the app-layer callback invoked when the queue
 	// drains. Wired via SetFlushDispatcher; nil disables dispatch. Triage
 	// releases r.mu before invoking, and the callback must return quickly;
@@ -250,6 +256,7 @@ func NewRouter(st *store.Store, emit func(eventchan.Channel, any)) *Router {
 		},
 		threads:                    make(map[string]*threadState),
 		identities:                 make(map[string]*threadIdentity),
+		wireRefresh:                make(map[string]*wireItemRefresh),
 		unknownSessionStatusLogged: make(map[string]struct{}),
 		flushStampApplied:          make(map[uint64]struct{}),
 	}
@@ -526,7 +533,8 @@ func (r *Router) settleStreamingBeforeTimelineBoundary(evt provider.ProviderEven
 
 func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	if isToolStartMetaUpdateOnly(evt.Meta) {
-		return r.persistToolCallLaunch(evt)
+		_, _, err := r.persistToolCallLaunch(evt)
+		return err
 	}
 	var err error
 	evt, err = r.snapshotCodexWaitStartReceivers(evt)
@@ -549,11 +557,13 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 	// Lifecycle row first so the file-change / command-mutation helpers
 	// below find an existing item to attach their rich payload onto via
 	// UpsertItem — otherwise they'd race to AppendItem with the same
-	// evt.ItemID and trip the UNIQUE id constraint.
-	if err := r.persistToolCallLaunch(evt); err != nil {
+	// evt.ItemID and trip the UNIQUE id constraint. The launch row is
+	// carried to them rather than read again.
+	launch, launchFound, err := r.persistToolCallLaunch(evt)
+	if err != nil {
 		return err
 	}
-	if err := r.persistFileChangeToolResult(evt); err != nil {
+	if _, _, err := r.persistFileChangeToolResult(evt, launch, launchFound); err != nil {
 		return err
 	}
 	if err := r.capturePendingCommandInlineDiff(evt); err != nil {
@@ -563,6 +573,7 @@ func (r *Router) handleToolStart(evt provider.ProviderEvent) error {
 }
 
 func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
+	itemID := eventItemID(evt)
 	// Streamed command output may still sit in the persistence buffer.
 	// Flush it before completion runs: persistToolCallCompletion rebuilds
 	// command_output meta from the cumulative payload, and a buffered
@@ -571,7 +582,7 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	// Normally a no-op — Codex ships the aggregated-output Replace right
 	// before completion, which discards the buffer — this covers
 	// completions whose aggregatedOutput is absent.
-	if itemID := eventItemID(evt); itemID != "" {
+	if itemID != "" {
 		if err := r.flushStreamingItem(evt.ThreadID, itemID); err != nil {
 			return fmt.Errorf("flush streamed output before completion %s: %w", itemID, err)
 		}
@@ -582,18 +593,31 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 		}
 		return err
 	}
+	// The launch row is read once here and carried: the result helpers
+	// return it as they leave it, and the completion settles that row.
+	var launch store.Item
+	launchFound := false
+	if itemID != "" {
+		var err error
+		launch, launchFound, err = r.store.GetThreadItem(evt.ThreadID, itemID)
+		if err != nil {
+			return fmt.Errorf("tool completion lookup %s: %w", itemID, err)
+		}
+	}
 	// Same ordering rationale as handleToolStart: keep the lifecycle row
 	// authoritative on id ownership, let the rich-payload helpers update
 	// it in place, then flip status last so the final summary reflects
 	// any payload-derived label (e.g. file-change preview) rather than
 	// the generic "Bash: ls" we wrote at start.
-	if err := r.persistFileChangeToolResult(evt); err != nil {
+	launch, launchFound, err := r.persistFileChangeToolResult(evt, launch, launchFound)
+	if err != nil {
 		return err
 	}
-	if err := r.persistCommandInlineDiffToolResult(evt); err != nil {
+	launch, launchFound, err = r.persistCommandInlineDiffToolResult(evt, launch, launchFound)
+	if err != nil {
 		return err
 	}
-	if err := r.persistToolCallCompletion(evt); err != nil {
+	if err := r.persistToolCallCompletion(evt, launch, launchFound); err != nil {
 		return err
 	}
 	// The picture Codex's image-generation tool just saved becomes its own
@@ -1339,6 +1363,7 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 	if err != nil {
 		return store.Item{}, err
 	}
+	r.noteToolCallLink(persisted)
 	// Bump sidebar activity only for user-authored user_text rows.
 	// Provider-injected wire-only context and subagent-internal prompts
 	// are timeline history, not activity that should reshuffle the
@@ -1384,6 +1409,7 @@ func (r *Router) persistItemWithPayloadAppend(item store.Item, payloadID string,
 	if err != nil {
 		return err
 	}
+	r.noteToolCallLink(persisted)
 	if countsAsActivity {
 		r.bumpThreadActivityForUserText(persisted.ThreadID, persisted.UpdatedAt)
 	}
@@ -1393,58 +1419,6 @@ func (r *Router) persistItemWithPayloadAppend(item store.Item, payloadID string,
 	r.metrics.ItemsPersisted.Add(context.Background(), 1,
 		metric.WithAttributes(attribute.String("kind", persisted.Kind)))
 	return nil
-}
-
-// shouldDropParentID decides whether an item's parent_id should be
-// dropped before persistence. The spec invariant is that parent_id
-// ultimately points to a tool_call row, but text/thinking deltas from
-// a subagent can arrive before the parent Task tool_call is persisted
-// — so a missing parent is NOT grounds for dropping the link. Instead
-// we guard against two real corruption patterns:
-//
-//  1. Self-reference (parent_id == item.id).
-//  2. A cycle discovered by walking existing parent_id links back to
-//     the same row.
-//  3. A parent row that EXISTS but is not a tool_call (the invariant
-//     violation the spec actually cares about: a text item attached
-//     to another text item).
-//
-// Returns (true, reason) on drop; (false, "") when the link is either
-// valid or refers to a yet-unseen row that may arrive later. Lookup
-// failures downgrade to (false, "") — a transient store error never
-// blocks persistence.
-func (r *Router) shouldDropParentID(threadID, itemID, parentID string) (bool, string) {
-	if parentID == itemID {
-		return true, "self reference"
-	}
-	seen := map[string]struct{}{itemID: {}}
-	current := parentID
-	for hops := 0; hops < 16; hops++ {
-		if _, cycle := seen[current]; cycle {
-			return true, "cycle detected"
-		}
-		seen[current] = struct{}{}
-		parent, found, err := r.store.GetThreadItem(threadID, current)
-		if err != nil {
-			// Transient lookup error — keep the link, the store write
-			// below will surface any hard error.
-			return false, ""
-		}
-		if !found {
-			// Parent hasn't been persisted yet (common for subagent
-			// text deltas arriving before the Task tool_call row).
-			// Leave the link — the row may materialise shortly.
-			return false, ""
-		}
-		if parent.Kind != itemKindToolCall {
-			return true, fmt.Sprintf("parent kind %q is not tool_call", parent.Kind)
-		}
-		if parent.ParentID == "" {
-			return false, ""
-		}
-		current = parent.ParentID
-	}
-	return true, "parent chain too deep"
 }
 
 // PersistItem is the public chokepoint for non-provider callers that

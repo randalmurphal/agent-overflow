@@ -13,6 +13,7 @@ import (
 
 	"agent-overflow/internal/composerdraft"
 	"agent-overflow/internal/itemmeta"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
@@ -89,6 +90,29 @@ func TestConversationRollbackDeletesSelectedPromptAndRestoresDraft(t *testing.T)
 	if !ok || draft.Content != "second" {
 		t.Fatalf("draft = %+v ok=%v", draft, ok)
 	}
+}
+
+// TestConversationRollbackClaudeTUIForgetsToolCallLinks: the claude-tui
+// revert keeps the session live, so no teardown clears the router's
+// cached tool-call links; the cut must drop them itself.
+func TestConversationRollbackClaudeTUIForgetsToolCallLinks(t *testing.T) {
+	app := newTestApp(t)
+	thread := createAppTestThread(t, app, "tui", string(provider.ClaudeTUI), t.TempDir())
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	requireLinksForgotten := primeCutToolCallLinks(t, app, thread.ID, 1)
+
+	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	items, err := app.store.ListItems(thread.ID)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "user:0" {
+		t.Fatalf("items after rollback = %+v", items)
+	}
+	requireLinksForgotten()
 }
 
 func TestConversationRollbackRestoresDraftAttachments(t *testing.T) {
