@@ -197,6 +197,8 @@ func TestSoakScenarioIsShipped(t *testing.T) {
 // isolatedWorkspaceRoot is the same rule for the workspace boundary: a
 // mocked spawn runs in the thread's workspace, so a mode that set only the
 // provider pins would still let a scenario write into a real repository.
+// forgeCLIs is the same rule for gh and glab: a mode without it runs the
+// developer's real forge CLIs, logged in, against the network.
 func TestMockedBootModesShareOneIsolationHelper(t *testing.T) {
 	pins := []string{
 		"providerBinaryOverride",
@@ -205,6 +207,7 @@ func TestMockedBootModesShareOneIsolationHelper(t *testing.T) {
 		"backgroundFetchDisabled",
 		"mockEngine",
 		"isolatedWorkspaceRoot",
+		"forgeCLIs",
 	}
 	assignment := make([]*regexp.Regexp, len(pins))
 	for i, pin := range pins {

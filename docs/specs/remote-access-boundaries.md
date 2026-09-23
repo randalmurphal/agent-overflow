@@ -64,7 +64,12 @@ the bytes, not by what the reference claimed: `file` kinds are never
 rendered, only saved to the owning computer, downloaded by the browser
 or opened on the forge, and `image/svg+xml` uses a `data:` URL rather
 than a blob URL so a navigated-to SVG cannot run script on the app
-origin.
+origin. A forge `image` has the image menu (`utils/imageMenuActions.ts`):
+Copy Image rasterises the bytes the page already holds to PNG, and the
+save row runs the same activation as a file chip, labelled "Open on
+GitHub" or "Open on GitLab" where that activation opens the forge page
+instead of saving. The element is found by the nonce-gated href it
+carries, so forge-written HTML cannot name one.
 
 The same-origin bootstrap credential is closed: as of 2026-08-31
 (24486360) it is no longer readable by script.

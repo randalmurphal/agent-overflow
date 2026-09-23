@@ -207,6 +207,10 @@ type Core struct {
 	// override to drive TTL expiry deterministically.
 	nowFn func() time.Time
 
+	// forgeCLIs decides what executes for "gh" and "glab". Set once by
+	// NewCore's options; see WithIsolatedForgeCLIs.
+	forgeCLIs forgeCLIPolicy
+
 	// fetchFn runs the actual background `git fetch` for a repository.
 	// Production wires fetchOriginQuiet; tests substitute it to count
 	// and sequence invocations (single-flight has no observable effect
@@ -233,8 +237,9 @@ func prCacheKey(cwd, branch string) string {
 	return cwd + "\x00" + branch
 }
 
-// NewCore returns a Core configured with the default timeout and output limit.
-func NewCore() *Core {
+// NewCore returns a Core configured with the default timeout and output
+// limit, then applies opts.
+func NewCore(opts ...CoreOption) *Core {
 	core := &Core{
 		timeout:        defaultTimeout,
 		maxOutputBytes: defaultMaxOutputBytes,
@@ -253,6 +258,9 @@ func NewCore() *Core {
 	core.forges = map[string]Forge{
 		"github": &githubForge{core: core},
 		"gitlab": &gitlabForge{core: core},
+	}
+	for _, opt := range opts {
+		opt(core)
 	}
 	return core
 }
@@ -571,7 +579,8 @@ func (c *Core) runBinaryInput(binary, cwd, stdin string, args ...string) (comman
 // (extra env, stdin, a raised output cap) is expressed as a named field
 // rather than as another positional overload of the low-level runner.
 type commandSpec struct {
-	// binary is the executable resolved on PATH: "git", "gh", or "glab".
+	// binary names the program: "git", "gh", or "glab". The Core's
+	// forgeCLIs policy decides what executes for it (forge_cli.go).
 	binary string
 	// cwd is the child's working directory; empty inherits ours.
 	cwd string
@@ -644,7 +653,12 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, spec.binary, spec.args...)
+	target, err := c.forgeCLIs.resolve(spec.binary)
+	if err != nil {
+		return commandResult{}, err
+	}
+	cmd := exec.CommandContext(ctx, target.path, spec.args...)
+	cmd.Args[0] = target.argv0
 	// Background-cadence git (`status` every debounce edge) must not
 	// opportunistically rewrite .git/index: the write is a pure cache
 	// optimization for git, but it fires an fs event under the watched
@@ -660,7 +674,7 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 	if !spec.allowCredentialPrompt {
 		env = append(env, nonInteractiveEnv...)
 	}
-	cmd.Env = append(env, spec.extraEnv...)
+	cmd.Env = append(append(env, spec.extraEnv...), target.env...)
 	if spec.cwd != "" {
 		cmd.Dir = spec.cwd
 	}
@@ -680,7 +694,7 @@ func (c *Core) runSpec(spec commandSpec) (commandResult, error) {
 		cmd.Stdout = streamed
 	}
 
-	err := cmd.Run()
+	err = cmd.Run()
 	result := commandResult{
 		stdout: stdoutBuf.String(),
 		stderr: stderrBuf.String(),

@@ -7,6 +7,21 @@ import (
 	"agent-overflow/internal/atomicfile"
 )
 
+// AppDataEnv and DownloadsEnv are the variables the Windows launcher
+// exports to the WSL backend through WSLENV with the /p flag, which
+// translates each raw Windows path (C:\Users\user\AppData\Roaming) to
+// its /mnt/c form. The WSL side therefore reads Linux-rooted paths it can
+// stat directly (WSLConfigDir, WindowsDownloadsDir).
+const (
+	// AppDataEnv carries %APPDATA%, the parent of the launcher's
+	// wsl.json directory.
+	AppDataEnv = "AGENT_OVERFLOW_WIN_APPDATA"
+	// DownloadsEnv carries the user's Windows Downloads known folder, so
+	// a file the backend saves lands where the Windows user looks for it
+	// rather than in the WSL home.
+	DownloadsEnv = "AGENT_OVERFLOW_WIN_DOWNLOADS"
+)
+
 // FileName is the on-disk name of the launcher config under
 // %APPDATA%\agent-overflow\ (Windows) or its /mnt/c mirror (WSL).
 const FileName = "wsl.json"

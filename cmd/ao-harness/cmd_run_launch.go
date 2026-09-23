@@ -28,7 +28,7 @@ func launchManagedHarness(ctx context.Context, plan harnessrun.RunPlan) (*harnes
 		return nil, err
 	}
 	launched, err := harnessclient.Launch(ctx, harnessclient.LaunchOptions{
-		Binary: binary, DataRoot: plan.DataRoot, MockProvider: plan.MockProvider,
+		Binary: binary, DataRoot: plan.DataRoot, MockProvider: plan.MockProvider, MockForge: plan.MockForge,
 		Window: plan.Window, KeepHome: plan.KeepHome, DevAssetsURL: plan.DevAssetsURL,
 		Timeout: 45 * time.Second, StdoutPath: filepath.Join(plan.DataRoot, "run-backend.stdout.log"),
 		StderrPath: filepath.Join(plan.DataRoot, "run-backend.stderr.log"), MemoryLimitBytes: plan.Ceiling.MaxPrivateBytes,

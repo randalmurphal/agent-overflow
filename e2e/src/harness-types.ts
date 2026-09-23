@@ -7,6 +7,8 @@ export interface HarnessBootstrap {
   dataDir: string;
   homeDir?: string;
   mockProvider: string;
+  /** ao-mockforge, the fake gh and glab. Empty: every forge CLI call fails. */
+  mockForge: string;
   pid: number;
   version: string;
   /**
@@ -25,6 +27,8 @@ export interface LaunchOptions {
   binary?: string;
   /** ao-mockprovider path. Default: $AO_MOCKPROVIDER, else next to the binary. */
   mockProvider?: string;
+  /** ao-mockforge path. Default: $AO_MOCKFORGE, else next to the binary. */
+  mockForge?: string;
   /** Data root. Default: a fresh temp dir, removed on close(). */
   dataDir?: string;
   /** Extra environment (merged over process.env). */

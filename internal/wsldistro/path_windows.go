@@ -7,13 +7,6 @@ import (
 	"path/filepath"
 )
 
-// AppDataEnv is the env var the Windows launcher sets through WSLENV
-// before spawning the Linux backend. The constant is shared between
-// platforms so the launcher's setup code and the WSL-side reader
-// agree on the name; on Windows the value is read directly from the
-// process environment without WSLENV translation.
-const AppDataEnv = "AGENT_OVERFLOW_WIN_APPDATA"
-
 // WSLConfigDir returns the Windows-side path to the launcher's
 // wsl.json directory (%APPDATA%\agent-overflow) and a flag that's
 // true when %APPDATA% resolves.

@@ -78,3 +78,36 @@ func TestWSLConfigDir_RejectsRegularFile(t *testing.T) {
 		t.Errorf("ok = true on regular-file env; dir=%q", dir)
 	}
 }
+
+// TestWindowsDownloadsDir covers the Downloads export under the same
+// rules as the AppData one: honoured only when it names an existing
+// absolute directory, and returned as-is rather than joined.
+func TestWindowsDownloadsDir(t *testing.T) {
+	existing := t.TempDir()
+	regular := filepath.Join(existing, "not-a-dir")
+	if err := os.WriteFile(regular, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	cases := []struct {
+		name, value, want string
+		ok                bool
+	}{
+		{"unset", "", "", false},
+		{"existing directory", existing, existing, true},
+		{"missing path", filepath.Join(existing, "missing"), "", false},
+		{"regular file", regular, "", false},
+		{"relative path", "mnt/c/Users/u/Downloads", "", false},
+		// Resolves to the existing directory once cleaned, so only the
+		// segment check can refuse it.
+		{"traversal", existing + "/../" + filepath.Base(existing), "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(DownloadsEnv, tc.value)
+			got, ok := WindowsDownloadsDir()
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("WindowsDownloadsDir() = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}

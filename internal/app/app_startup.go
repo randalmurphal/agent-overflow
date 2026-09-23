@@ -14,7 +14,6 @@ import (
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
-	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
@@ -339,7 +338,7 @@ func (a *App) initStores() (string, *store.Store, error) {
 		)
 	}
 	a.storeIdentity.Store(&identity)
-	a.git = gitops.NewCore()
+	a.git = a.newGitCore()
 	a.gitWatch = gitwatch.NewManager(gitwatch.ManagerConfig{
 		StatusFn:     a.git.Status,
 		FastStatusFn: a.git.StatusFast,

@@ -566,6 +566,7 @@ func (h *Harness) HarnessReset() (err error) {
 	h.recording = nil
 	h.scenarioRules = nil
 	h.mu.Unlock()
+	h.forge.Reset()
 	if replayer != nil {
 		replayer.Stop()
 	}

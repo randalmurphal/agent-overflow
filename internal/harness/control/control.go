@@ -8,6 +8,10 @@
 // backend re-emits as harness:mock events so tests can await scenario
 // step boundaries instead of sleeping.
 //
+// The same listener answers the fake forge CLI (cmd/ao-mockforge): each
+// gh or glab invocation an isolated boot makes is one POST /forge
+// round trip (forge.go).
+//
 // Deliberately not the app transport: the transport boundary invariant
 // keeps that wire for UI clients only, and a second tiny listener means
 // mock traffic can never interleave with (or authenticate as) a UI

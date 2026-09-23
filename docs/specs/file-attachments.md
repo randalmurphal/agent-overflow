@@ -132,6 +132,18 @@ to the attachments root and referenced by path in the prompt.
   changes on the send control.
 - Copy: "Drop files to attach"; count/overflow toasts say "attachments".
 - `PendingAttachment` (dead type) is deleted.
+- Every attachment image (timeline grid, composer and editor thumbs, a
+  generated image, the lightbox) has a context menu, a long press on the
+  phone: Copy Image and Save Image
+  (`components/chat/ImageMenuHost.svelte`). Both act on the
+  original bytes from the download route, never the thumbnail. Copy writes
+  `image/png`, the one image type every engine can put on the clipboard; any
+  other image is re-encoded through a canvas first. Save follows
+  `utils/fileSaveAction.ts`: a browser download in a connected browser,
+  otherwise `SaveAttachment` on the owning computer. The menu sits in the
+  transient layer above the lightbox, and closing it leaves the lightbox
+  open. File chips have no menu. The same menu serves forge images in PR
+  and MR content (`docs/specs/remote-access-boundaries.md`).
 
 ### Transfer carrier
 
@@ -155,6 +167,17 @@ mints a download ticket and fetches
 `GET /attachments/{threadID}/{attachmentID}`, which serves `image` rows
 only. A `file`'s bytes are never handed to a client at all; the agent
 reaches them by path.
+
+`SaveAttachment` (`attachments:write`) writes an `image` row's bytes into
+the owning computer's Downloads folder under its filename, adding ` (2)`
+and so on rather than overwriting, and answers the path. Under WSL that
+folder is the Windows user's Downloads, which the Windows launcher exports
+as `AGENT_OVERFLOW_WIN_DOWNLOADS`; otherwise it is `~/Downloads`, or
+`downloads` in the data directory when there is none. An isolated boot
+(harness, tests) always uses the data directory. A name with no extension
+gets the one its classified type calls for, so a GitHub asset saved under
+its opaque id still opens. `SaveForgeAttachment` shares this folder and
+naming (`internal/app/app_downloads.go`).
 
 ## Verification
 

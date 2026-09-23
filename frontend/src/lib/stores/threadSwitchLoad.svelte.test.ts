@@ -582,7 +582,10 @@ describe('threadSwitchLoad', () => {
   });
 
   describe('switchThread spinner-flash gate', () => {
-    it('cache hit never flips showLoadingSpinner true even past the threshold', async () => {
+    // A cached window is staged unpainted until SyncThreadWindow verifies
+    // it, so a verification that outlives the threshold shows the spinner
+    // even though the pane holds rows.
+    it('an unverified cache hit shows the spinner only once verification outlives the threshold', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {
         const pane = createThreadPane();
@@ -597,17 +600,48 @@ describe('threadSwitchLoad', () => {
         await pane.switchThread(makeThread({ id: 't' }));
         await pane.switchThread(makeThread({ id: 'other' }));
 
-        // Re-enter — initial load hangs so loading=true persists.
+        // Re-enter; verification (the sync's page read) hangs.
         setBindingMock('ListThreadSliceAround', () => new Promise(() => {}));
         void pane.switchThread(makeThread({ id: 't' }));
         await Promise.resolve();
-        // Items painted from cache.
         expect(pane.items.length).toBe(1);
+        expect(pane.historyWindowPending).toBe(true);
+        expect(pane.showLoadingSpinner).toBe(false);
 
-        // Advance well past the 100ms threshold.
         vi.advanceTimersByTime(500);
         await Promise.resolve();
-        // Spinner stayed false because items.length > 0.
+        expect(pane.historyWindowPending).toBe(true);
+        expect(pane.showLoadingSpinner).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a verified cache hit never shows the spinner while other legs are still loading', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const pane = createThreadPane();
+        const items = [
+          makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
+        ];
+        setBindingMock('ListThreadSliceAround', async () => ({
+          items,
+          oldestTurnIndex: 0,
+          hasMore: false,
+        }));
+        await pane.switchThread(makeThread({ id: 't' }));
+        await pane.switchThread(makeThread({ id: 'other' }));
+
+        // Re-enter; verification answers, another leg of the switch hangs
+        // so the pane stays loading past the threshold.
+        setBindingMock('ListRecentTurns', () => new Promise(() => {}));
+        void pane.switchThread(makeThread({ id: 't' }));
+        await vi.waitFor(() => expect(pane.historyWindowPending).toBe(false));
+
+        vi.advanceTimersByTime(500);
+        await Promise.resolve();
+        expect(pane.loading).toBe(true);
+        expect(pane.items.length).toBe(1);
         expect(pane.showLoadingSpinner).toBe(false);
       } finally {
         vi.useRealTimers();

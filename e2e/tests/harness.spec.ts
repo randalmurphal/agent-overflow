@@ -9,11 +9,16 @@
 import { test, expect, type HarnessMockEvent, type SeedResult } from './fixtures.js';
 
 test('boots headless, serves the real SPA, answers harness RPCs', async ({ harness, page }) => {
-  const info = await harness.rpc<{ version: string; dbPath: string; mockProvider: string }>(
-    'HarnessInfo',
-  );
+  const info = await harness.rpc<{
+    version: string;
+    dbPath: string;
+    mockProvider: string;
+    mockForge: string;
+  }>('HarnessInfo');
   expect(info.dbPath).toContain(harness.bootstrap.dataDir);
   expect(info.mockProvider).toBe(harness.bootstrap.mockProvider);
+  expect(info.mockForge).not.toBe('');
+  expect(info.mockForge).toBe(harness.bootstrap.mockForge);
 
   await harness.open(page);
   await expect(page).toHaveTitle('Agent Overflow');

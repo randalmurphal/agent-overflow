@@ -49,6 +49,7 @@ type Bootstrap struct {
 	DataDir      string `json:"dataDir"`
 	HomeDir      string `json:"homeDir,omitempty"`
 	MockProvider string `json:"mockProvider"`
+	MockForge    string `json:"mockForge"`
 	PID          int    `json:"pid"`
 	Version      string `json:"version"`
 	PageMarker   string `json:"pageMarker,omitempty"`

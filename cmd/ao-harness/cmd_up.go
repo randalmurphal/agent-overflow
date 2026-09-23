@@ -36,6 +36,7 @@ func runUp(e *env, args []string) error {
 	dataDir := flags.String("data-dir", "", "data root to boot on (default: this worktree's per-checkout root)")
 	binary := flags.String("binary", "", "agent-overflow binary to run (default: $AO_HARNESS_BIN, else bin/agent-overflow beside this CLI)")
 	mockProvider := flags.String("mock-provider", "", "ao-mockprovider path (default: the backend resolves it beside itself)")
+	mockForge := flags.String("mock-forge", "", "ao-mockforge path, the fake gh and glab (default: the backend resolves it beside itself)")
 	devAssets := flags.String("dev-assets", "", "serve the frontend from this Vite dev server URL instead of the embedded build")
 	keepHome := flags.Bool("keep-home", false, "leave $HOME real for child processes; backend provider state stays isolated")
 	memoryLimit := flags.Uint64("memory-limit-bytes", governor.DefaultCeilingBytes, "hard per-instance memory limit covering the backend and descendants (default 2 GiB)")
@@ -96,6 +97,7 @@ func runUp(e *env, args []string) error {
 		Binary:           bin,
 		DataRoot:         dataRoot,
 		MockProvider:     *mockProvider,
+		MockForge:        *mockForge,
 		Soak:             *soak,
 		Autopilot:        *autopilot,
 		Window:           *window,
@@ -160,7 +162,7 @@ func runUp(e *env, args []string) error {
 		return e.writeJSON(map[string]any{
 			"id": id, "mode": mode, "window": *window, "pid": bs.PID, "port": bs.Port,
 			"url": pageURL, "dataRoot": bs.DataRoot, "dataDir": bs.DataDir,
-			"mockProvider": bs.MockProvider, "version": bs.Version, "backendStderr": stderrPath,
+			"mockProvider": bs.MockProvider, "mockForge": bs.MockForge, "version": bs.Version, "backendStderr": stderrPath,
 		})
 	}
 	e.printf("instance %s (%s%s) is up\n", id, mode, windowSuffix(*window))

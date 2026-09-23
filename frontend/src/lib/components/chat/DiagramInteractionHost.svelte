@@ -41,6 +41,8 @@
   // a few levels in (Streamdown's Mermaid creates its own container and
   // an outer `svg[data-mermaid-svg]` host).
   function handleInlineContextMenu(e: MouseEvent): void {
+    // Something nearer the target already opened its menu.
+    if (e.defaultPrevented) return;
     if (!(e.target instanceof Element)) return;
     const host = e.target.closest<HTMLElement>('[data-mermaid-source]');
     if (!host) return;

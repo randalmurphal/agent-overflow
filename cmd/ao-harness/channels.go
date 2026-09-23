@@ -41,6 +41,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.DiscussionState,
 		eventchan.DraftUpdated,
 		eventchan.GitStatus,
+		eventchan.HarnessForge,
 		eventchan.HarnessMock,
 		eventchan.HarnessPerf,
 		eventchan.HarnessReplay,

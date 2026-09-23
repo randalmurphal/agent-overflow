@@ -374,7 +374,30 @@ func (a *App) gitCore() *gitops.Core {
 	if a.git != nil {
 		return a.git
 	}
-	return gitops.NewCore()
+	return a.newGitCore()
+}
+
+// isolatedForgeCLIs is the forge CLI half of an isolated boot's pins; see
+// IsolationConfig.ForgeCLI.
+type isolatedForgeCLIs struct {
+	isolated bool
+	fake     string
+}
+
+// newGitCore is the one constructor of this App's git.Core, so no Core an
+// isolated boot builds can resolve gh or glab on PATH. The fake receives
+// the mock-control environment (providerExtraEnv), which is how it reaches
+// the harness that answers it.
+func (a *App) newGitCore() *gitops.Core {
+	if !a.forgeCLIs.isolated {
+		return gitops.NewCore()
+	}
+	env := make([]string, 0, len(a.providerExtraEnv))
+	for key, value := range a.providerExtraEnv {
+		env = append(env, key+"="+value)
+	}
+	slices.Sort(env)
+	return gitops.NewCore(gitops.WithIsolatedForgeCLIs(a.forgeCLIs.fake, env))
 }
 
 // lockWorkspaceThreads takes the per-thread action lock of EVERY thread

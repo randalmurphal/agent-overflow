@@ -110,7 +110,7 @@ describe('<ForgeAttachmentHost>', () => {
     }));
     const { container } = render(ForgeAttachmentHost, { props: { token: token(hrefFor()) } });
     expect(container.querySelector('[data-forge-attachment-loading]')).not.toBeNull();
-    settle({ url: 'blob:x', mimeType: 'image/png', kind: 'image', sizeBytes: 1, filename: 'a.png' });
+    settle({ url: 'blob:x', mimeType: 'image/png', kind: 'image', sizeBytes: 1, filename: 'a.png', blob: new Blob() });
     await waitFor(() => expect(container.querySelector('img')).not.toBeNull());
   });
 

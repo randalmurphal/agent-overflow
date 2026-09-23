@@ -1,17 +1,15 @@
 // What activating a forge attachment does, in one place, because the anchor
 // click delegate and the inline file chip must not drift. Which of the four
-// outcomes applies is `forgeAttachmentAction`'s decision; this module only
-// carries each one out and makes its result visible.
+// outcomes applies is `fileSaveAction`'s decision; this module only carries
+// each one out and makes its result visible.
 
 import { SaveForgeAttachment } from '../stores/bindings';
 import { addToast } from '../stores/toast.svelte';
-import { attachedBackendEntry, backendDisplayName } from '../stores/attachedBackends.svelte';
-import type { BackendKey } from '../transport/backendKey';
 import { withBackendTarget } from '../transport/backends';
 import { handleExternalURL } from './externalLinks';
 import { errString } from './errors';
 import { prReferenceWire } from './prReference';
-import { forgeAttachmentAction } from './forgeAttachmentAction';
+import { fileSaveAction, savedFileMessage } from './fileSaveAction';
 import { acquireForgeAttachment } from './forgeAttachmentCache';
 import {
   browserUrlForForgeAttachment,
@@ -26,22 +24,13 @@ export async function openForgeAttachment(parsed: ParsedForgeAttachmentHref): Pr
     parsed.webBase,
     parsed.pr,
   );
-  const action = forgeAttachmentAction(parsed.backend, browserUrl);
+  const action = fileSaveAction(parsed.backend, browserUrl);
   if (action === 'open-externally' && browserUrl) {
     await handleExternalURL(browserUrl);
     return;
   }
-  if (action === 'save-here') {
-    await saveOnOwningComputer(parsed, (path) => `Saved to ${path}`);
-    return;
-  }
-  if (action === 'save-there') {
-    // The path is on another computer, so the toast names it: a bare path
-    // would read as a file on this one that is not there.
-    await saveOnOwningComputer(
-      parsed,
-      (path) => `Saved on ${computerName(parsed.backend)}: ${path}`,
-    );
+  if (action === 'save-here' || action === 'save-there') {
+    await saveOnOwningComputer(parsed, action);
     return;
   }
   await downloadForgeAttachment(parsed);
@@ -49,21 +38,16 @@ export async function openForgeAttachment(parsed: ParsedForgeAttachmentHref): Pr
 
 async function saveOnOwningComputer(
   parsed: ParsedForgeAttachmentHref,
-  describe: (path: string) => string,
+  action: 'save-here' | 'save-there',
 ): Promise<void> {
   try {
     const path = await withBackendTarget(parsed.backend, () =>
       SaveForgeAttachment(prReferenceWire(parsed.pr), parsed.href),
     );
-    addToast('success', describe(path));
+    addToast('success', savedFileMessage(action, parsed.backend, path));
   } catch (err) {
     addToast('error', errString(err));
   }
-}
-
-function computerName(backend: BackendKey): string {
-  const entry = attachedBackendEntry(backend);
-  return entry ? backendDisplayName(entry) : backend;
 }
 
 async function downloadForgeAttachment(parsed: ParsedForgeAttachmentHref): Promise<void> {

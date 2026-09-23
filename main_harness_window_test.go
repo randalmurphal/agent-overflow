@@ -194,7 +194,7 @@ func TestHarnessInstanceFileCarriesBootstrapAndIdentity(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	for _, key := range []string{
-		"url", "port", "token", "dataRoot", "dataDir", "mockProvider", "pid", "version",
+		"url", "port", "token", "dataRoot", "dataDir", "mockProvider", "mockForge", "pid", "version",
 		"id", "mode", "window", "worktree", "startedAt",
 	} {
 		if _, ok := raw[key]; !ok {

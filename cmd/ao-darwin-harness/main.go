@@ -36,6 +36,7 @@ func main() {
 	plist := flags.String("plist", "build/darwin/Info.dev.plist", "Info.plist template")
 	driver := flags.String("driver", "", "path to the ao-harness driver")
 	mockProvider := flags.String("mock-provider", "", "path to ao-mockprovider (default: beside --binary)")
+	mockForge := flags.String("mock-forge", "", "path to ao-mockforge, the fake gh and glab (default: beside --binary when present)")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		fatal(err)
 	}
@@ -60,7 +61,16 @@ func main() {
 	if resolvedMock == "" {
 		resolvedMock = filepath.Join(filepath.Dir(*binary), "ao-mockprovider")
 	}
-	upArgs, err := supervisedUpArgs(backendArgs, executable, *dataRoot, resolvedMock)
+	// The backend runs from inside the generated bundle, so it cannot find
+	// ao-mockforge beside itself. Pass the sibling of --binary when it
+	// exists; without one the backend runs with forge CLIs disabled.
+	resolvedForge := strings.TrimSpace(*mockForge)
+	if resolvedForge == "" {
+		if sibling := filepath.Join(filepath.Dir(*binary), "ao-mockforge"); fileExists(sibling) {
+			resolvedForge = sibling
+		}
+	}
+	upArgs, err := supervisedUpArgs(backendArgs, executable, *dataRoot, resolvedMock, resolvedForge)
 	if err != nil {
 		fatal(err)
 	}
@@ -73,7 +83,12 @@ func main() {
 	}
 }
 
-func supervisedUpArgs(backendArgs []string, executable, dataRoot, mockProvider string) ([]string, error) {
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func supervisedUpArgs(backendArgs []string, executable, dataRoot, mockProvider, mockForge string) ([]string, error) {
 	soak := slices.Contains(backendArgs, "--soak")
 	autopilot := slices.Contains(backendArgs, "--autopilot")
 	for _, arg := range backendArgs {
@@ -92,6 +107,9 @@ func supervisedUpArgs(backendArgs []string, executable, dataRoot, mockProvider s
 	args := []string{"up", "--window", "--binary", executable, "--data-dir", dataRoot}
 	if strings.TrimSpace(mockProvider) != "" {
 		args = append(args, "--mock-provider", mockProvider)
+	}
+	if strings.TrimSpace(mockForge) != "" {
+		args = append(args, "--mock-forge", mockForge)
 	}
 	if soak {
 		args = append(args, "--soak")

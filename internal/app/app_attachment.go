@@ -106,6 +106,34 @@ func (a *App) MintAttachmentDownloadTicket(threadID, attachmentID string) (strin
 	return server.MintAttachmentDownloadTicket(threadID, attachmentID)
 }
 
+// SaveAttachment writes one of the thread's image attachments into the
+// Downloads folder of the computer that owns the thread (downloadsDir)
+// and returns the path it wrote. An existing file is never replaced; a
+// repeated save gets the " (2)" suffix.
+//
+// It exists for a client that cannot run a browser download of the bytes
+// itself: the embedded webview and the phone shell, which write the file
+// on the owning computer and say where. Ownership and kind are checked by
+// the same read the download route relies on (ReadThreadBytes): a stale
+// cross-thread id is refused, and so is a `file`, whose bytes are never
+// handed back through this surface (docs/specs/file-attachments.md).
+//
+// attachments:write rather than threads:read because it creates a file on
+// the host; an observe-tier session may read an image but not write files
+// to the owner's disk.
+//
+//ao:scope attachments:write
+func (a *App) SaveAttachment(threadID, attachmentID string) (string, error) {
+	if a.attachments == nil {
+		return "", fmt.Errorf("attachment store not initialized")
+	}
+	record, data, err := a.attachments.ReadThreadBytes(threadID, attachmentID)
+	if err != nil {
+		return "", err
+	}
+	return a.saveDownload(record.Filename, record.MimeType, data)
+}
+
 // claudeAdditionalDirs is what every Claude spawn (headless and
 // claude-tui) passes as `--add-dir`: the attachments root, so a session
 // can Read a file the user attached without raising a permission prompt

@@ -178,7 +178,7 @@ func runSoak(flags cliFlags) {
 		// --dev-assets` sets the variable and nothing reads it.
 		AllowDevServerAssets: true,
 	})
-	log.Printf("%s: data dir %s (mock provider %s)", label, paths.DataDir, paths.MockProvider)
+	log.Printf("%s: data dir %s (mock provider %s, mock forge %q)", label, paths.DataDir, paths.MockProvider, paths.MockForge)
 
 	if err := writeBootstrap(flags.printURLFD, srv); err != nil {
 		shutdownHeadless(appService, srv)

@@ -154,6 +154,7 @@ type RunPlan struct {
 	BaseDir      string         `json:"baseDir,omitempty"`
 	Binary       string         `json:"binary,omitempty"`
 	MockProvider string         `json:"mockProvider,omitempty"`
+	MockForge    string         `json:"mockForge,omitempty"`
 	Window       bool           `json:"window,omitempty"`
 	KeepHome     bool           `json:"keepHome,omitempty"`
 	DevAssetsURL string         `json:"devAssetsUrl,omitempty"`
@@ -175,6 +176,7 @@ func ApplyDefaults(p RunPlan) RunPlan {
 	p.BaseDir = normalizePlanPath(p.BaseDir)
 	p.Binary = normalizePlanPath(p.Binary)
 	p.MockProvider = normalizePlanPath(p.MockProvider)
+	p.MockForge = normalizePlanPath(p.MockForge)
 	if filepath.IsAbs(p.Scenario) {
 		p.Scenario = normalizePlanPath(p.Scenario)
 	}
@@ -391,7 +393,7 @@ func (p RunPlan) Validate() error {
 	default:
 		return fmt.Errorf("unknown run adapter %q", p.Adapter)
 	}
-	for name, value := range map[string]string{"instance": p.Instance, "output": p.Output, "capsule": p.Capsule, "baseDir": p.BaseDir, "binary": p.Binary, "mockProvider": p.MockProvider} {
+	for name, value := range map[string]string{"instance": p.Instance, "output": p.Output, "capsule": p.Capsule, "baseDir": p.BaseDir, "binary": p.Binary, "mockProvider": p.MockProvider, "mockForge": p.MockForge} {
 		if value != "" && !filepath.IsAbs(value) {
 			return fmt.Errorf("%s must be absolute", name)
 		}

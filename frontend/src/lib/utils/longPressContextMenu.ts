@@ -137,8 +137,8 @@ export function installLongPressContextMenu(options: Options = {}): () => void {
     if (!press || e === press.fired) return;
     if (press.fired?.defaultPrevented) {
       // The engine's own long-press event, after ours was handled.
-      e.stopImmediatePropagation();
       e.preventDefault();
+      e.stopImmediatePropagation();
       return;
     }
     // The engine got there first: it owns this press.

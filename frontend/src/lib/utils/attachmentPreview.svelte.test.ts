@@ -99,6 +99,7 @@ describe('createAttachmentPreviews with a cache', () => {
     const cache = mapCache();
     const foreign: ImagePreviewItem = {
       id: 'att-1',
+      threadId: 'thread-1',
       filename: 'image.png',
       mimeType: 'image/png',
       size: 10,

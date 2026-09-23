@@ -83,7 +83,8 @@ const superviseVerb = "supervise"
 //     binary a user double-clicks, and an unrecognised argument has always
 //     landed in the desktop boot.
 //  4. Inside a session, a leading flag this binary defines (--harness,
-//     --connect, --data-dir, --listen, --print-url-fd, --mock-provider) is a
+//     --connect, --data-dir, --listen, --print-url-fd, --mock-provider,
+//     --mock-forge) is a
 //     deliberate operator invocation and still boots — `make e2e` run from an
 //     agent session inherits AO_ENDPOINT and must keep working.
 //  5. Inside a session, anything else — no arguments at all, an unknown verb,
@@ -196,6 +197,7 @@ type bootFlags struct {
 	launcherWebview    *string
 	window             *bool
 	mockProvider       *string
+	mockForge          *string
 	resetTransportPort *bool
 }
 
@@ -223,6 +225,7 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 		launcherWebview:    flagSet.String("launcher-webview-profile", "", "--soak only: launcher WebView2 profile path; set by the Windows launcher."),
 		window:             flagSet.Bool("window", false, "harness/soak mode only: open the real Wails webview window on the isolated backend instead of running headless. GUI builds only. See docs/specs/testing-harness.md."),
 		mockProvider:       flagSet.String("mock-provider", "", "harness/soak mode only: path to the ao-mockprovider binary (default: alongside this executable)."),
+		mockForge:          flagSet.String("mock-forge", "", "harness/soak mode only: path to the ao-mockforge binary run in place of gh and glab (default: alongside this executable; absent, every gh/glab call fails)."),
 		resetTransportPort: flagSet.Bool(resetTransportPortFlag, false,
 			"discard this install's pinned transport port before binding and adopt whatever the OS hands out. The Windows launcher passes it on its one retry when the pinned port turned out to be unreachable from the host (see main_transport_port.go)."),
 	}
@@ -286,6 +289,10 @@ type cliFlags struct {
 	// mockProvider optionally overrides where --harness finds the
 	// ao-mockprovider binary (default: next to this executable).
 	mockProvider string
+	// mockForge optionally overrides where an isolated boot finds the
+	// ao-mockforge binary it runs in place of gh and glab (default: next
+	// to this executable).
+	mockForge string
 	// resetTransportPort discards the persisted transport port before
 	// binding, so this boot adopts a fresh one. See
 	// main_transport_port.go for the pin it clears and
@@ -320,6 +327,7 @@ func parseFlags(args []string) (cliFlags, error) {
 		launcherWebviewProfile: strings.TrimSpace(*values.launcherWebview),
 		window:                 *values.window,
 		mockProvider:           *values.mockProvider,
+		mockForge:              *values.mockForge,
 		resetTransportPort:     *values.resetTransportPort,
 	}
 	if out.isolatedProfile != "" && out.isolatedProfile != string(instanceinfo.ModePerf) {
@@ -460,6 +468,9 @@ func parseFlags(args []string) (cliFlags, error) {
 	}
 	if out.mockProvider != "" && !out.harness && !out.soak {
 		return cliFlags{}, errors.New("--mock-provider requires --harness or --soak")
+	}
+	if out.mockForge != "" && !out.harness && !out.soak {
+		return cliFlags{}, errors.New("--mock-forge requires --harness or --soak")
 	}
 	if out.connect != "" && out.resetTransportPort {
 		// --connect boots no local transport, so there is no pin to

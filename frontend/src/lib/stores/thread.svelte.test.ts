@@ -1092,6 +1092,7 @@ describe('createThreadPane', () => {
     pane.toggleSubagentGroupExpanded('group-x');
     pane.attachmentCacheFor(item.id).set('attachment-x', {
       id: 'attachment-x',
+      threadId: 'thread-1',
       filename: 'x.png',
       mimeType: 'image/png',
       size: 1,

@@ -11,6 +11,7 @@
 // on screen.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type SeedResult } from './fixtures.js';
+import { longPress } from './touch-helpers.js';
 
 test.beforeEach(async ({ harness }) => {
   await harness.rpc<SeedResult>('HarnessSeed', {
@@ -207,34 +208,6 @@ test('a menu opens anchored to the control that raised it', async ({ harness, pa
   await expectAnchored(page, menu, trigger);
   await expect(menu).toHaveAttribute('data-placement', /^top/);
 });
-
-/**
- * A held touch, the way a device produces one: raw touch events through
- * CDP, so the app's own long-press detector (utils/longPressContextMenu.ts)
- * is what turns it into a menu. Playwright's `tap` is a tap, and no engine
- * under emulation raises `contextmenu` for a hold on its own.
- */
-async function longPress(page: Page, target: Locator, opens: Locator): Promise<void> {
-  // A raw touch has none of the actionability waits Playwright's `tap`
-  // makes. The list renders during the initial sync, while the transport
-  // banner still occupies a row above it in compact layout; a box measured
-  // then is stale by the time the banner leaves.
-  await expect(page.getByTestId('transport-status-banner')).toHaveCount(0);
-  const box = await target.boundingBox();
-  if (!box) throw new Error('long-press target is not visible');
-  const x = box.x + box.width / 2;
-  const y = box.y + box.height / 2;
-  const cdp = await page.context().newCDPSession(page);
-  try {
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
-    // Hold until the app has answered the press, so the release cannot race
-    // the detector's timer.
-    await expect(opens).toBeVisible();
-    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-  } finally {
-    await cdp.detach();
-  }
-}
 
 test('a long press on a thread row opens its menu at the row and leaves the thread closed', async ({
   harness,

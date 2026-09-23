@@ -163,7 +163,7 @@ Source: `frontend/AGENTS.md`.
 
 | Term | Definition |
 |---|---|
-| **harness** | `--harness` boot mode: real backend + real SPA, isolated data dir, both provider binaries pointed at `ao-mockprovider`; headless by default, `--window` opens the real webview on it (`docs/architecture/agent-harness.md`). |
+| **harness** | `--harness` boot mode: real backend + real SPA, isolated data dir, both provider binaries pointed at `ao-mockprovider`, `gh`/`glab` replaced by `ao-mockforge`; headless by default, `--window` opens the real webview on it (`docs/architecture/agent-harness.md`). |
 | **soak rig** | The soak PRESET (`--autopilot`) on an isolated launcher-shell instance: left running for hours with harness-grade mocking to reproduce renderer hangs. Nothing asserts; ask `make soak-check` (or `ao-harness health`) later. `make soak` = `make harness-wsl` + autopilot on Windows; `make soak-window` is the native-window equivalent (`docs/architecture/soak-rig.md`). |
 | **harness instance** | One booted harness/soak backend, identified by the first 8 hex of the SHA-256 of its canonical data root; announced via `harness-instance.json` (with token) and a token-free registry row under the user cache dir (`internal/harness/instanceinfo`). |
 | **harness bridge** | The in-page half of the harness (`frontend/src/lib/harness/`), armed by the `harness` bootstrap flag: answers `HarnessUIQuery` with semantic viewport snapshots, element/globals probes, and perf-meter control (`agent-harness.md` § Frontend bridge and perf). |

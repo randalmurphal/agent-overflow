@@ -85,6 +85,74 @@ func TestExportAppDataToWSL_PrependsToExistingWSLENV(t *testing.T) {
 	}
 }
 
+// stubKnownDownloadsFolder replaces the known-folder lookup for one test.
+func stubKnownDownloadsFolder(t *testing.T, dir string, err error) {
+	t.Helper()
+	original := knownDownloadsFolder
+	knownDownloadsFolder = func() (string, error) { return dir, err }
+	t.Cleanup(func() { knownDownloadsFolder = original })
+}
+
+// TestExportDownloadsToWSL_ExportsTheKnownFolder: the folder crosses as a
+// /p rule ahead of any rules already in WSLENV, so wsl.exe translates it
+// to its /mnt/c form for the backend.
+func TestExportDownloadsToWSL_ExportsTheKnownFolder(t *testing.T) {
+	const prior = "AGENT_OVERFLOW_WIN_APPDATA/p"
+	want := `C:\Users\u\Downloads`
+	stubKnownDownloadsFolder(t, want, nil)
+	t.Setenv(wsldistro.DownloadsEnv, "")
+	t.Setenv("WSLENV", prior)
+
+	exportDownloadsToWSL()
+
+	if got := os.Getenv(wsldistro.DownloadsEnv); got != want {
+		t.Errorf("DownloadsEnv = %q, want %q", got, want)
+	}
+	if got, wantWSLENV := os.Getenv("WSLENV"), wsldistro.DownloadsEnv+"/p:"+prior; got != wantWSLENV {
+		t.Errorf("WSLENV = %q, want %q", got, wantWSLENV)
+	}
+}
+
+// TestExportDownloadsToWSL_UnresolvedFolderExportsNothing: a failed or
+// empty lookup leaves both variables alone, so the backend keeps its own
+// default instead of reading a stale or empty value.
+func TestExportDownloadsToWSL_UnresolvedFolderExportsNothing(t *testing.T) {
+	for name, stub := range map[string]struct {
+		dir string
+		err error
+	}{
+		"lookup failed": {"", errors.New("known folder unavailable")},
+		"empty path":    {"", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stubKnownDownloadsFolder(t, stub.dir, stub.err)
+			t.Setenv(wsldistro.DownloadsEnv, "leftover")
+			t.Setenv("WSLENV", "PYTHONPATH/p")
+
+			exportDownloadsToWSL()
+
+			if got := os.Getenv(wsldistro.DownloadsEnv); got != "leftover" {
+				t.Errorf("DownloadsEnv = %q, want it untouched", got)
+			}
+			if got := os.Getenv("WSLENV"); got != "PYTHONPATH/p" {
+				t.Errorf("WSLENV = %q, want it untouched", got)
+			}
+		})
+	}
+}
+
+// TestKnownDownloadsFolderResolves exercises the real lookup: every
+// interactive Windows user has a Downloads known folder.
+func TestKnownDownloadsFolderResolves(t *testing.T) {
+	dir, err := knownDownloadsFolder()
+	if err != nil {
+		t.Fatalf("knownDownloadsFolder: %v", err)
+	}
+	if !filepath.IsAbs(dir) {
+		t.Fatalf("knownDownloadsFolder = %q, want an absolute path", dir)
+	}
+}
+
 // TestForwardDebugEnvToWSL_Unset_NoOp covers the production default:
 // AGENT_OVERFLOW_DEBUG unset, the function must not touch WSLENV.
 func TestForwardDebugEnvToWSL_Unset_NoOp(t *testing.T) {

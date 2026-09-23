@@ -106,6 +106,7 @@
   import { getSidebarJumpThreadIds } from './lib/stores/sidebarThreadOrder';
   import { setAppShellWidth } from './lib/stores/layoutMetrics.svelte';
   import DiagramInteractionHost from './lib/components/chat/DiagramInteractionHost.svelte';
+  import ImageMenuHost from './lib/components/chat/ImageMenuHost.svelte';
   import FootnotePopoverHost from './lib/components/chat/FootnotePopoverHost.svelte';
   import ExternalLinkContextHost from './lib/components/shared/ExternalLinkContextHost.svelte';
   import {
@@ -693,6 +694,10 @@
   props={{}}
 />
 <Toast />
+<!-- Delegated contextmenu hosts, most specific first: document listeners run
+     in mount order and each host yields on an event already claimed, so a
+     press opens exactly one menu. -->
 <DiagramInteractionHost />
+<ImageMenuHost />
 <FootnotePopoverHost />
 <ExternalLinkContextHost />

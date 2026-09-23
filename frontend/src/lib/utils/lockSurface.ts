@@ -1,3 +1,5 @@
+import { suppressNativeContextMenu } from './browserHistoryGuard';
+
 /** Cover app portals as well as the root, and stop global shortcuts while locked. */
 export function createLockSurface(overlay: HTMLElement) {
   let locked = false;
@@ -24,7 +26,11 @@ export function createLockSurface(overlay: HTMLElement) {
     }
   };
   const stopAtCover = (event: Event) => {
-    if (locked) event.stopPropagation();
+    if (!locked) return;
+    // Stopped here, a right-click never reaches the window guard, so the
+    // native-menu policy is applied first.
+    if (event.type === 'contextmenu') suppressNativeContextMenu(event as MouseEvent);
+    event.stopPropagation();
   };
   for (const event of events) {
     window.addEventListener(event, blockOutside, true);

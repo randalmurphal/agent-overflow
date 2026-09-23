@@ -39,6 +39,7 @@ func runInfo(e *env, args []string) error {
 		e.printf("  data dir  %s\n", info.DataDir)
 		e.printf("  home      %s\n", orUnknown(info.HomeDir))
 		e.printf("  mock      %s\n", info.MockProvider)
+		e.printf("  forge     %s\n", orDisabled(info.MockForge))
 		e.printf("  db        %s\n", info.DBPath)
 		e.printf("  events    %s\n", info.EventLogDir)
 		e.printf("  ui trace  %s\n", info.UITracePath)
@@ -51,6 +52,15 @@ func runInfo(e *env, args []string) error {
 func orUnknown(s string) string {
 	if s == "" {
 		return "(unknown)"
+	}
+	return s
+}
+
+// orDisabled renders an absent fake forge CLI: the instance runs no gh or
+// glab at all, and every forge call fails.
+func orDisabled(s string) string {
+	if s == "" {
+		return "(none: gh and glab calls fail)"
 	}
 	return s
 }

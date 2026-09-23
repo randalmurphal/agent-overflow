@@ -158,16 +158,36 @@ describe('installBrowserHistoryGuard', () => {
       return el;
     }
 
-    function rightClick(target: EventTarget, init?: MouseEventInit): MouseEvent {
+    // A right-click the engine raised. Only a trusted event can open the
+    // native menu, so the guard acts on nothing else.
+    function rightClick(target: EventTarget, init?: MouseEventInit, trusted = true): MouseEvent {
       const event = new MouseEvent('contextmenu', {
         bubbles: true,
         cancelable: true,
         button: 2,
         ...init,
       });
+      if (trusted) Object.defineProperty(event, 'isTrusted', { value: true });
       target.dispatchEvent(event);
       return event;
     }
+
+    it('runs after app handlers, so an unclaimed event reads as unclaimed to them', () => {
+      cleanup = installBrowserHistoryGuard();
+      const claimedWhenSeen: boolean[] = [];
+      on('contextmenu', (event) => claimedWhenSeen.push(event.defaultPrevented));
+
+      const event = rightClick(mount(document.createElement('div')));
+      expect(claimedWhenSeen).toEqual([false]);
+      // The native menu is still suppressed by the end of the dispatch.
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it('leaves a synthetic contextmenu untouched', () => {
+      cleanup = installBrowserHistoryGuard();
+      const event = rightClick(mount(document.createElement('div')), undefined, false);
+      expect(event.defaultPrevented).toBe(false);
+    });
 
     it('suppresses the native menu on non-editable surfaces without blocking app handlers', () => {
       cleanup = installBrowserHistoryGuard();

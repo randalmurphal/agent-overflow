@@ -6,6 +6,7 @@
 // engine's behaviour untouched.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installBrowserHistoryGuard } from './browserHistoryGuard';
 import {
   installLongPressContextMenu,
   LONG_PRESS_HOLD_MS,
@@ -176,6 +177,27 @@ describe('installLongPressContextMenu', () => {
     prose.dispatchEvent(mouse('click'));
     expect(seen).toEqual(['click']);
     prose.remove();
+  });
+
+  it('treats a press on an element with no menu as unhandled with the app guard installed', () => {
+    // The guard that suppresses the native menu is live in every real page.
+    const releaseGuard = installBrowserHistoryGuard();
+    const vibrate = vi.fn();
+    Object.defineProperty(navigator, 'vibrate', { value: vibrate, configurable: true });
+    const bare = document.createElement('p');
+    document.body.appendChild(bare);
+    try {
+      bare.dispatchEvent(pointer('pointerdown'));
+      vi.advanceTimersByTime(LONG_PRESS_HOLD_MS);
+      bare.dispatchEvent(pointer('pointerup'));
+      bare.dispatchEvent(mouse('click'));
+      expect(vibrate).not.toHaveBeenCalled();
+      expect(seen).toEqual(['click']);
+    } finally {
+      bare.remove();
+      Reflect.deleteProperty(navigator, 'vibrate');
+      releaseGuard();
+    }
   });
 
   it('does not fire for a target that left the document during the hold', () => {

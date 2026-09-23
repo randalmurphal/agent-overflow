@@ -108,15 +108,6 @@ func runPlanAdapterManaged(e *env, ctx context.Context, plan harnessrun.RunPlan,
 			return err
 		}
 		flowArgs := functionalAdapterArgs(plan)
-		if plan.Window {
-			flowArgs = append(flowArgs, "--headed")
-		}
-		if plan.Binary != "" {
-			flowArgs = append(flowArgs, "--binary", plan.Binary)
-		}
-		if plan.MockProvider != "" {
-			flowArgs = append(flowArgs, "--mock-provider", plan.MockProvider)
-		}
 		cmd := exec.CommandContext(ctx, "node", append([]string{"--experimental-transform-types", script}, flowArgs...)...)
 		procutil.ConfigureGroup(cmd)
 		containmentGroup, err := containment.Prepare(plan.Ceiling.MaxPrivateBytes)
@@ -174,6 +165,9 @@ func functionalAdapterArgs(plan harnessrun.RunPlan) []string {
 	if plan.MockProvider != "" {
 		args = append(args, "--mock-provider", plan.MockProvider)
 	}
+	if plan.MockForge != "" {
+		args = append(args, "--mock-forge", plan.MockForge)
+	}
 	return args
 }
 
@@ -209,6 +203,9 @@ func compareAdapterArgs(plan harnessrun.RunPlan) []string {
 	}
 	if plan.MockProvider != "" {
 		args = append(args, "--mock-provider", plan.MockProvider)
+	}
+	if plan.MockForge != "" {
+		args = append(args, "--mock-forge", plan.MockForge)
 	}
 	if plan.CDP != "" {
 		args = append(args, "--cdp", plan.CDP)

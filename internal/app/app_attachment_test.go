@@ -628,3 +628,87 @@ func TestResolveSendMessageAttachmentsCapsBothKindsTogether(t *testing.T) {
 		t.Fatalf("expected the union cap to fire, got %v", err)
 	}
 }
+
+// TestSaveAttachmentWritesTheOriginalBytesWithoutOverwriting: the save
+// lands in the user's Downloads folder under the uploaded name, holds the
+// stored bytes unchanged, and a second save of the same name is a new
+// file rather than a replaced one.
+func TestSaveAttachmentWritesTheOriginalBytesWithoutOverwriting(t *testing.T) {
+	app := newAttachmentTestApp(t)
+	// After the fixture, which points HOME at its own temporary home.
+	downloads := homeWithDownloads(t)
+	payload := realPNGBytes(t)
+	record := uploadTestAttachment(t, app, "thr-a", "hero.png", "image/png", payload)
+
+	first, err := app.SaveAttachment("thr-a", record.ID)
+	if err != nil {
+		t.Fatalf("SaveAttachment: %v", err)
+	}
+	if want := filepath.Join(downloads, "hero.png"); first != want {
+		t.Fatalf("saved to %q, want %q", first, want)
+	}
+	saved, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatalf("read saved file: %v", err)
+	}
+	if !bytes.Equal(saved, payload) {
+		t.Fatalf("saved %d bytes, stored %d", len(saved), len(payload))
+	}
+
+	second, err := app.SaveAttachment("thr-a", record.ID)
+	if err != nil {
+		t.Fatalf("second SaveAttachment: %v", err)
+	}
+	if want := filepath.Join(downloads, "hero (2).png"); second != want {
+		t.Fatalf("second save went to %q, want %q", second, want)
+	}
+	if again, err := os.ReadFile(first); err != nil || !bytes.Equal(again, payload) {
+		t.Fatalf("first save changed after the second: %v", err)
+	}
+}
+
+// TestSaveAttachmentRefusesAnotherThreadsID is the same ownership line the
+// download mint holds: a stale id from another thread writes nothing.
+func TestSaveAttachmentRefusesAnotherThreadsID(t *testing.T) {
+	app := newAttachmentTestApp(t)
+	// After the fixture, which points HOME at its own temporary home.
+	downloads := homeWithDownloads(t)
+	record := uploadTestAttachment(t, app, "thr-a", "hero.png", "image/png", realPNGBytes(t))
+
+	if _, err := app.SaveAttachment("thr-b", record.ID); err == nil ||
+		!strings.Contains(err.Error(), "belongs to thread") {
+		t.Fatalf("SaveAttachment(thr-b) = %v, want an ownership refusal", err)
+	}
+	if _, err := app.SaveAttachment("thr-a", "missing"); err == nil {
+		t.Fatal("SaveAttachment answered for an id nothing stored")
+	}
+	assertDirEmpty(t, downloads)
+}
+
+// TestSaveAttachmentRefusesAFile: a `file` attachment's bytes are never
+// handed back through the image surfaces, and this is one of them.
+func TestSaveAttachmentRefusesAFile(t *testing.T) {
+	app := newAttachmentTestApp(t)
+	// After the fixture, which points HOME at its own temporary home.
+	downloads := homeWithDownloads(t)
+	record := uploadTestAttachment(t, app, "thr-a", "report.pdf", "application/pdf", []byte("%PDF-1.4\n"))
+	if record.Kind != store.AttachmentKindFile {
+		t.Fatalf("fixture kind = %q, want file", record.Kind)
+	}
+
+	if _, err := app.SaveAttachment("thr-a", record.ID); !errors.Is(err, attachment.ErrNotAnImage) {
+		t.Fatalf("SaveAttachment(file) = %v, want ErrNotAnImage", err)
+	}
+	assertDirEmpty(t, downloads)
+}
+
+func assertDirEmpty(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("%s holds %d entries, want none", dir, len(entries))
+	}
+}

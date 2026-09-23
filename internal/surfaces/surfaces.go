@@ -476,7 +476,9 @@ var Listeners = []Listener{
 		Posture:    PostureStructured,
 		Sites:      []string{"internal/harness/control/server.go"},
 		Why: "How mock providers collect their scenario assignment and " +
-			"report what they were sent. Present only in a --harness boot, " +
+			"report what they were sent, and how the fake forge CLI " +
+			"(ao-mockforge) gets its answers. Present only in a --harness " +
+			"or --soak boot, " +
 			"but enumerated unconditionally: a listener that exists in some " +
 			"boots is a listener. The token is per-process random and " +
 			"compared in constant time, and a failed check answers 404 " +
@@ -1175,7 +1177,7 @@ var Routes = []Route{
 			"the backend would have finished.",
 	},
 
-	// internal/harness/control — the mock-provider control plane.
+	// internal/harness/control — the mock-provider and mock-forge control plane.
 	{
 		Pattern:    "POST /register",
 		Listener:   "harness control plane",
@@ -1198,6 +1200,16 @@ var Routes = []Route{
 		Why: "A mock provider reports what it was sent on the wire. The " +
 			"body carries the exact prompt text and the mock's cwd, which " +
 			"is why the token is not decorative even on a loopback bind.",
+	},
+	{
+		Pattern:    "POST /forge",
+		Listener:   "harness control plane",
+		Credential: CredBearerToken,
+		Posture:    PostureStructured,
+		Why: "ao-mockforge forwards one gh or glab invocation (argv, cwd, " +
+			"stdin) and receives the fake forge's stdout, stderr and exit " +
+			"status as JSON. The request body is size-capped and strictly " +
+			"decoded; a boot with no fake forge answers 503.",
 	},
 
 	// internal/observability/pprofserve — the opt-in profiling mux.
@@ -1373,7 +1385,7 @@ var Origins = []Origin{
 		Listener: "harness control plane",
 		Author:   AuthorRuntime,
 		Posture:  PostureStructured,
-		Why:      "JSON this process writes about scenario state. Read by mock providers only.",
+		Why:      "JSON this process writes about scenario state and fake forge answers. Read by mock providers and ao-mockforge only.",
 	},
 	{
 		Name:     "built-in MCP endpoints",

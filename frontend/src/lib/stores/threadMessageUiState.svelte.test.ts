@@ -11,7 +11,7 @@ function fixture() {
   return { provisional, confirmed, items, ui, confirm };
 }
 
-const preview = (url: string) => ({ id: 'image', filename: 'image.png', mimeType: 'image/png', size: 1, url });
+const preview = (url: string) => ({ id: 'image', threadId: 'thread-1', filename: 'image.png', mimeType: 'image/png', size: 1, url });
 
 describe('message presentation lifetime', () => {
   it('preserves expansion and previews across confirmation, then clears them on pruning', () => {

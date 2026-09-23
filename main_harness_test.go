@@ -28,6 +28,7 @@ func TestParseFlagsHarnessConflicts(t *testing.T) {
 		{"--harness", "--data-dir", "/tmp/x", "--print-url-fd", "3"},
 		{"--data-dir", "/tmp/x", "--connect", "ws://host:1?token=t"},
 		{"--mock-provider", "/tmp/mp"},
+		{"--mock-forge", "/tmp/mf"},
 	}
 	for _, args := range cases {
 		if _, err := parseFlags(args); err == nil {
@@ -37,11 +38,11 @@ func TestParseFlagsHarnessConflicts(t *testing.T) {
 }
 
 func TestParseFlagsHarnessAccepted(t *testing.T) {
-	flags, err := parseFlags([]string{"--harness", "--data-dir", "/tmp/x", "--listen", "127.0.0.1:0", "--mock-provider", "/tmp/mp"})
+	flags, err := parseFlags([]string{"--harness", "--data-dir", "/tmp/x", "--listen", "127.0.0.1:0", "--mock-provider", "/tmp/mp", "--mock-forge", "/tmp/mf"})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	if !flags.harness || flags.dataDir != "/tmp/x" || flags.mockProvider != "/tmp/mp" {
+	if !flags.harness || flags.dataDir != "/tmp/x" || flags.mockProvider != "/tmp/mp" || flags.mockForge != "/tmp/mf" {
 		t.Fatalf("flags = %+v, want harness with data dir and mock provider", flags)
 	}
 	if flags.headless {
@@ -175,6 +176,31 @@ func TestResolveMockProviderValidatesExistence(t *testing.T) {
 	}
 	if got != bin {
 		t.Fatalf("resolved %q, want %q", got, bin)
+	}
+}
+
+func TestResolveMockForge(t *testing.T) {
+	if _, err := resolveMockForge(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("accepted an explicit --mock-forge that does not exist")
+	}
+	bin := filepath.Join(t.TempDir(), "mf")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+	if got, err := resolveMockForge(bin); err != nil || got != bin {
+		t.Fatalf("resolveMockForge(%q) = %q, %v", bin, got, err)
+	}
+	// The test binary has no ao-mockforge beside it: the default leaves
+	// forge CLIs disabled rather than failing the boot or reaching PATH.
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(exe), "ao-mockforge")); err == nil {
+		t.Skip("an ao-mockforge sits beside the test binary")
+	}
+	if got, err := resolveMockForge(""); err != nil || got != "" {
+		t.Fatalf("resolveMockForge(\"\") = %q, %v; want disabled", got, err)
 	}
 }
 

@@ -15,7 +15,8 @@ Both Windows and WSL processes may write through the NTFS automount, so readers
 must never observe a partial JSON document. Preserve independently owned
 `Config` fields during load-mutate-save flows.
 
-On WSL, WSLConfigDir resolves AGENT_OVERFLOW_WIN_APPDATA after WSLENV path
+On WSL, WSLConfigDir resolves AGENT_OVERFLOW_WIN_APPDATA and
+WindowsDownloadsDir resolves AGENT_OVERFLOW_WIN_DOWNLOADS after WSLENV path
 translation. Reject relative paths, traversal segments, nonexistent paths, and
 non-directories. On Windows, resolve the per-user AppData directory with the
 existing home fallback.

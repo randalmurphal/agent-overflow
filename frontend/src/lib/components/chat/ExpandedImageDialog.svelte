@@ -7,6 +7,7 @@
   import { focusTrap } from '../../utils/focusTrap';
   import { airspaceSurface } from '../../utils/paneAirspace.svelte';
   import type { ExpandedImagePreview } from '../../utils/attachmentPreview.svelte';
+  import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
 
   interface Props {
     preview: ExpandedImagePreview;
@@ -49,9 +50,12 @@
   });
 </script>
 
+<!-- z-[70]: the full-viewport media tier DiagramModal shares, above Modal's
+     z-[60] and below the z-[80] transient layer, so a context menu or toast
+     raised over the lightbox paints on top of it. -->
 <div
   bind:this={dialogRoot}
-  class="fixed inset-0 z-[90] flex items-center justify-center bg-scrim/88 p-4"
+  class="fixed inset-0 z-[70] flex items-center justify-center bg-scrim/88 p-4"
   use:airspaceSurface
   role="dialog"
   aria-modal="true"
@@ -112,6 +116,7 @@
         src={image.url}
         alt={image.filename}
         class="max-h-[86vh] max-w-[92vw] object-contain"
+        {...attachmentImageMenuTag(image)}
       />
       <div class="max-w-[92vw] truncate text-xs text-scrim-fg/78">
         {image.filename}{hasMultiple ? ` (${index + 1}/${preview.images.length})` : ''}
