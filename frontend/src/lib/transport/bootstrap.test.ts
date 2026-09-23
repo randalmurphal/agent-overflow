@@ -18,6 +18,8 @@ import {
 import { clearPairedSession, redeemPairing } from './deviceSession';
 import { __resetPageHostForTest } from './pageHost';
 import { __resetHomeEndpointForTest, setHomeEndpoint } from './homeEndpoint';
+import { fetchBackendManifest } from './manifestBackends';
+import { BackendStartingError, STARTUP_REPORT_LIMIT_BYTES } from './startupProgress';
 
 describe('isLoopbackHostname', () => {
   it('accepts every host that names this machine', () => {
@@ -373,6 +375,60 @@ describe('defaultBootstrap', () => {
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(BootstrapRejectedError);
     expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  // A starting backend's 503 carries its progress (internal/startupprogress).
+  // That answer is read, not released, and rejects as BackendStartingError
+  // so the transport can show the phase instead of an outage.
+  const startingReport = {
+    reason: 'starting',
+    phase: 'store.migrate',
+    detail: 'Applying migration 3 of 7 add_index',
+    step: 3,
+    steps: 7,
+    startedAt: 1_000,
+    updatedAt: 13_000,
+    updatingTo: '1.2.3',
+  };
+  function jsonResponse(status: number, body: string): Response {
+    return new Response(body, { status, headers: { 'content-type': 'application/json' } });
+  }
+
+  it('reads a starting report from the readiness gate', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(503, JSON.stringify(startingReport))));
+
+    const err = await defaultBootstrap().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BackendStartingError);
+    const { reason: _reason, ...progress } = startingReport;
+    expect((err as BackendStartingError).progress).toEqual(progress);
+  });
+
+  it('reads a starting report on an attached backend\'s manifest route', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(503, JSON.stringify(startingReport))));
+    const err = await fetchBackendManifest({
+      id: 'desk', backendId: 'b-desk', name: 'Desk', wsUrl: SAME_ORIGIN_WS, bootstrapUrl: '/bootstrap/desk.json',
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BackendStartingError);
+    expect((err as BackendStartingError).progress.phase).toBe('store.migrate');
+  });
+
+  it.each([
+    ['a JSON 503 that is not a report', JSON.stringify({ reason: 'draining' })],
+    ['a truncated report', '{"reason":"starting","phase":'],
+    ['a report over the size bound', JSON.stringify({ ...startingReport, detail: 'x'.repeat(STARTUP_REPORT_LIMIT_BYTES) })],
+  ])('keeps %s transient', async (_name, body) => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(503, body)));
+    const err = await defaultBootstrap().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(BackendStartingError);
+    expect((err as Error).message).toBe('bootstrap fetch failed: HTTP 503');
+  });
+
+  it('does not read a report from any status but 503', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(500, JSON.stringify(startingReport))));
+    const err = await defaultBootstrap().catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(BackendStartingError);
+    expect((err as Error).message).toBe('bootstrap fetch failed: HTTP 500');
   });
 
   it('surfaces response cleanup failure', async () => {

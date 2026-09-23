@@ -48,6 +48,21 @@ qualifies costs nothing.
 `VACUUM` is not run by the application. Mechanisms and measurements are in
 [the SQLite store document](architecture/sqlite-store.md#free-space).
 
+## Startup
+
+- A boot never shows an empty catalog. Until a computer's threads and
+  projects have answered, the sidebar shows a loading row for it, naming its
+  boot phase while it is starting, or its error with Retry. The empty-list
+  message appears only once both have loaded; rows already held stay visible.
+- Readiness reports progress. A starting backend names its phase, step and
+  elapsed time, and a boot right after an in-app update reads as finishing
+  that update. The launcher's loading page, the startup screen and the
+  sidebar show the same sentence. A replaced binary without the updater's
+  marker shows an ordinary start.
+- The Windows launcher fails a boot only when its progress stalls for 30 s,
+  and names the stalled phase. A slow boot that keeps reporting is never torn
+  down.
+
 ## Streaming and reveal
 
 - Nothing skips, rushes, or pops the readable reveal drain. A backlog-skip

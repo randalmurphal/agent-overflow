@@ -582,33 +582,40 @@ describe('threadSwitchLoad', () => {
   });
 
   describe('switchThread spinner-flash gate', () => {
-    it('cache hit never flips showLoadingSpinner true even past the threshold', async () => {
+    // A cache hit is staged, not shown, until SyncThreadWindow verifies it
+    // (docs/architecture/thread-replica-sync.md section 6.1), so a slow
+    // verification gets the same delayed spinner as an empty load.
+    it('cache hit awaiting verification shows the spinner only past the threshold', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {
         const pane = createThreadPane();
         const items = [
           makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
         ];
-        setBindingMock('ListThreadSliceAround', async () => ({
-          items,
-          oldestTurnIndex: 0,
-          hasMore: false,
-        }));
+        const slice = { items, oldestTurnIndex: 0, hasMore: false };
+        setBindingMock('ListThreadSliceAround', async () => slice);
         await pane.switchThread(makeThread({ id: 't' }));
         await pane.switchThread(makeThread({ id: 'other' }));
 
-        // Re-enter — initial load hangs so loading=true persists.
-        setBindingMock('ListThreadSliceAround', () => new Promise(() => {}));
-        void pane.switchThread(makeThread({ id: 't' }));
+        // Re-enter: verification waits until the test answers it.
+        let verify!: (page: typeof slice) => void;
+        setBindingMock('ListThreadSliceAround', () => new Promise<typeof slice>((resolve) => { verify = resolve; }));
+        const reentry = pane.switchThread(makeThread({ id: 't' }));
         await Promise.resolve();
-        // Items painted from cache.
+        // Rows installed from cache, below the threshold: no spinner.
         expect(pane.items.length).toBe(1);
+        expect(pane.historyWindowPending).toBe(true);
+        expect(pane.showLoadingSpinner).toBe(false);
 
-        // Advance well past the 100ms threshold.
         vi.advanceTimersByTime(500);
         await Promise.resolve();
-        // Spinner stayed false because items.length > 0.
+        expect(pane.showLoadingSpinner).toBe(true);
+
+        verify(slice);
+        await reentry;
+        expect(pane.historyWindowPending).toBe(false);
         expect(pane.showLoadingSpinner).toBe(false);
+        expect(pane.items.map((item) => item.id)).toEqual(['a']);
       } finally {
         vi.useRealTimers();
       }

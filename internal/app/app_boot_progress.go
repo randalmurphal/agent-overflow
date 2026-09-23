@@ -28,6 +28,12 @@ func (a *App) bootPhase(phase, detail string) (end func()) {
 	}
 }
 
+// BeginBootPhase reports a boot phase that runs outside App.Start, such as
+// the harness's startup hold, on the same readiness report.
+func BeginBootPhase(a *App, phase, detail string) (end func()) {
+	return a.bootPhase(phase, detail)
+}
+
 // bootPhaseDetail reports progress inside the innermost open boot phase.
 func (a *App) bootPhaseDetail(detail string, step, steps int) {
 	if a.bootProgress != nil {

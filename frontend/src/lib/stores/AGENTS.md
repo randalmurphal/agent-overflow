@@ -115,6 +115,12 @@ request generation, and relevant catalog or mutation revision before applying.
 Ownership moves invalidate thread history stamps, item caches, interrupt state,
 pending reads, and watched-thread routing for the old owner.
 
+`catalogLoad.svelte.ts` holds whether each computer's thread and project
+catalogs have loaded, and owns their retries until they do. A catalog that
+has not loaded is never presented as empty. Every read settles there: a
+failure inside `readComputerRows`, an answer in the same synchronous block
+that commits its rows.
+
 Frontend preferences and appearance libraries remain local to the frontend and
 survive host removal. Mirror only generated `FRONTEND_DEVICE_SETTINGS_KEYS` to
 computer device buckets, without holding a local save open for an unavailable

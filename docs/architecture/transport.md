@@ -148,6 +148,16 @@ The body is `internal/startupprogress`, which the Windows launcher shares.
 `StartupReporter` (`startup_progress.go`) turns `App.Start`'s boot phases
 into these reports; boot wiring installs it through `app.SetBootProgress`.
 
+The page reads the same report for its own backend and every attached one
+(`frontend/src/lib/transport/bootstrap.ts`). A starting report is not a
+connection failure: `WSClient` publishes status `starting` with the report,
+polls every 500 ms without backoff or dormancy, and connects on the first
+served manifest. Calls made meanwhile reject with a non-terminal
+`DisconnectedError`, which passive reads treat as offline. A bare or
+malformed 503 stays an ordinary transient failure on the reconnect ladder.
+The harness can hold a boot before `App.Start` for tests
+(`diagenv.HarnessHoldStartup`).
+
 ## HTTP RPC and additional receivers
 
 `POST /rpc` is the bounded one-shot RPC surface for the `ao` CLI. It accepts a

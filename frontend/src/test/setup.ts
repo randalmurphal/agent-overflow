@@ -27,6 +27,7 @@ import { resetProviderModelsForTest } from '../lib/stores/providerModels.svelte'
 import { clearAllThreadSizePriorsForTest } from '../lib/utils/virtual/priors';
 import { __resetSizePriorsStorageForTest } from '../lib/utils/virtual/priorsStorage';
 import { __setTransportStatusForTest } from '../lib/stores/transportStatus.svelte';
+import { resetCatalogLoadForTest } from '../lib/stores/catalogLoad.svelte';
 import { __resetGitStatusStoreForTest } from '../lib/stores/gitStatusStore.svelte';
 import { __resetPRReviewStoreForTest } from '../lib/stores/prReviewStore.svelte';
 import { __resetMcpServersStoreForTest } from '../lib/stores/mcpServers.svelte';
@@ -258,6 +259,9 @@ afterEach(() => {
   // timers against their thread (the replica write-back). Clear them
   // while the binding mocks they would call are still installed.
   resetPanesForTest();
+  // Catalog load state is per computer and module-level, and a failed read
+  // holds a retry timer that would call the next test's binding mocks.
+  resetCatalogLoadForTest();
   resetWailsMocks();
   resetBindingMocks();
   resetAttachmentTransferMocks();
