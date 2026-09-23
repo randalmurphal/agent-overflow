@@ -51,10 +51,13 @@ gets typed accessors and an entry in [schema.md](schema.md).
 
 A one-time data fix is a migration ([decisions](../decisions.md#background-maintenance)).
 When its work is too long to run while the store opens, the migration carries
-a `Deferred` phase (`migrate_deferred.go`). The chain applies the migration's
-SQL and records its version as usual. The app starts `RunDeferredMigrations`
-at boot, outside the activation gate, and joins it at shutdown; the phase runs
-as paced transactions inside the background-maintenance budget.
+a `Deferred` phase (`migrate_deferred.go`), an ordered list of named steps.
+The chain applies the migration's SQL and records its version as usual. The
+app starts `RunDeferredMigrations` at boot, outside the activation gate, and
+joins it at shutdown; the phase runs as paced transactions inside the
+background-maintenance budget. A step that replaces the database file waits
+for the app's `DeferredHost.AwaitFileSwap`, which holds it behind the
+activation gate.
 
 The gate is `PRAGMA user_version`, the deferred watermark: every phase of a
 migration at or below it has finished. The chain's version rows cannot carry
@@ -65,11 +68,20 @@ nothing. `RestoreFrom` takes the snapshot's watermark with its rows, and a
 phase that ran across a restore is not recorded and runs again on the restored
 rows. `migrate_freeze_test.go` pins the phase's name with the SQL.
 
-A phase is idempotent and its progress is the data. A quit, or an error that
-stops the phase, leaves the watermark for the next open. A row, chunk or batch
-whose write fails is logged once and left as it is, and the phase finishes, so
-no open repeats the failure. A phase is live code: it runs against the current
-schema and must keep working as the schema moves.
+A phase is idempotent and its progress is the data. Within a run, a thread,
+chunk or batch whose write fails is logged with its id and skipped, and a step
+that returns an error counts as one failed item; the run goes on, so one bad
+item cannot stall it. A run that finished every item moves the watermark past
+the phase and clears its row in `deferred_migration_failures`. A run that left
+failed items leaves the watermark and records their count and first error in
+that table, which lives in the same file as the watermark and moves with it
+on restore. The app raises the notice "History repair incomplete: N items
+failed; retrying on next start" (the phase's title, the `KindAppUpdate`
+toggle), and the next open runs the phase again: finished work is found done
+and only the failed items are retried. There is no attempt cap. A clean run
+after a failed one retracts the notice. A quit records nothing and the next
+open resumes. A phase is live code: it runs against the current schema and
+must keep working as the schema moves.
 
 ## History invalidation
 
@@ -160,11 +172,18 @@ native provider history. The final owner releases the metadata and bytes.
 
 Removed background sealing moved settled local rows into import chunks whose
 ids start with `sealed:`. Before v119, repointing an item at another payload
-left the old payload row behind. `repairStoredHistory`, v119's deferred phase
-(`history_repair.go`), folds the sealed rows back, releases sealed chunks only
-payload snapshots keep, and prunes payload rows nothing references. A thread
-whose fold fails keeps the rest of its sealed rows, which read as imported
-history; a leftover chunk or payload only holds space.
+left the old payload row behind, and a Claude background agent's completion
+payload held a copy of the agent's whole transcript. v119's deferred phase,
+"History repair", runs three steps:
+
+1. `repairStoredHistory` (`history_repair.go`) folds the sealed rows back,
+   releases sealed chunks only payload snapshots keep, and prunes payload rows
+   nothing references. A thread whose fold fails keeps the rest of its sealed
+   rows, which read as imported history, until the next open retries it.
+2. `blankLegacyTranscriptCopies` (`transcript_blank.go`) empties those
+   transcript copies, as described below.
+3. `convertToIncrementalVacuumStep` converts a pre-incremental file
+   ([Converting an existing database](#converting-an-existing-database)).
 
 `UnsealThreadHistory` moves a thread's sealed rows into `items` and
 `payloads` under `history_bulk_load`, keeping ids, positions, timestamps,
@@ -186,6 +205,22 @@ oversubscribed and a second repair writing the same disk, p50 17 ms, p99 49 ms,
 max 126 ms. The released pages (72 MB there) stay on the freelist for later
 writes; that is below `ReclaimFreeSpace`'s 20% threshold, so the file keeps its
 size.
+
+Current builds project a background agent's sidechain transcript into the
+thread and write its completion payload with empty data, keeping the output
+file, `outputFileState` "loaded" and the report preview in meta. The blank
+step selects a `tool_call_result` payload with data and
+`meta.outputFileState = 'loaded'` that a background `tool_completion` row
+(`completion_of <> ''`) of `Agent`, `Task` or `SendMessage` in a Claude thread
+names. It sets `data` to an empty blob and clears `spans`, keeping the row,
+meta, preview spans and creation time; item revisions do not move. Monitor and
+command output, payloads only a notification names, and foreground results
+keep their data. A batch is at most 64 payloads and 4 MiB, re-checks the
+selection inside its transaction, and is followed by a passive checkpoint when
+it emptied anything.
+On the measured copy this is 1,041 `Agent` payloads (1.19 GB) and 141
+`SendMessage` payloads (551 MB). The freed pages go to the freelist, and
+`ReclaimFreeSpace` returns them to the filesystem.
 
 ## Schema-owned invariants
 
@@ -341,6 +376,16 @@ rather than with `VACUUM`:
 The outgoing file is unlinked after the swap is visible, because unlinking a
 multi-gigabyte file costs about as much as the swap itself. The measured
 blocked window is a few milliseconds.
+
+The conversion runs as the last step of v119's deferred phase. A file that is
+already incremental finishes the step on its first check. Otherwise the step
+calls the app's wait (`storeFileSwapWait`) before each attempt. The wait holds
+until the activation gate opens, because a supervisor trial's rollback does
+not cover a replaced file; then it samples every 15 s until no turn is live,
+nothing has committed for 60 s, and the run's previous attempt is at least an
+hour old, and closes its `CommitWatcher` before returning. `ConvertNotQuiet`
+waits again; `ConvertAlreadyIncremental` and `ConvertUnsupported` finish the
+step. An error, or a wait that fails, is a failed item the next open retries.
 
 Crash safety is by file state, repaired in `Store.New` before anything opens the
 database: a leftover `.incremental.tmp` is always stale and is removed, a

@@ -9,13 +9,14 @@ import (
 	"time"
 )
 
-// History repair is migration v119's deferred phase (repairStoredHistory). It
-// undoes two kinds of stored-history debris. Removed background sealing moved
-// a thread's settled local rows into import chunks whose ids start with
-// "sealed:", which later forks of the thread share; the repair folds those
-// rows back into each referencing thread's items and payloads. Before v119,
-// repointing an item at another payload left the old payload row behind; the
-// repair prunes payload rows that nothing references.
+// History repair is the first step of migration v119's deferred phase
+// (repairStoredHistory). It undoes two kinds of stored-history debris.
+// Removed background sealing moved a thread's settled local rows into import
+// chunks whose ids start with "sealed:", which later forks of the thread
+// share; the repair folds those rows back into each referencing thread's
+// items and payloads. Before v119, repointing an item at another payload left
+// the old payload row behind; the repair prunes payload rows that nothing
+// references.
 //
 // Both repairs resume from the data: every batch is one writer transaction
 // that leaves the logical timeline (timeline_items, timeline_payloads, search
@@ -106,34 +107,29 @@ type orphanPayloadStats struct {
 	bytes    int64
 }
 
-// repairStoredHistory is migration v119's deferred phase. It folds every
-// sealed chunk back into the rows of the threads that reference it, releases
-// the sealed chunks only payload snapshots keep, and prunes the payload rows
-// nothing references. It logs a summary per repaired thread and a total.
+// repairStoredHistory is the first step of migration v119's deferred phase.
+// It folds every sealed chunk back into the rows of the threads that
+// reference it, releases the sealed chunks only payload snapshots keep, and
+// prunes the payload rows nothing references. It logs a summary per
+// repaired thread and a total.
 //
-// A thread, chunk or payload batch whose write fails is logged once and left
-// as it is, and the phase moves on and finishes: sealed rows still read as
-// imported history, and a leftover chunk or payload only holds space. Only a
-// failure to list the work, or to checkpoint, returns an error, which leaves
-// the phase for the next open.
-func repairStoredHistory(ctx context.Context, s *Store, pause ChunkPause) error {
+// A thread, chunk or payload batch whose write fails is reported to run and
+// left as it is, and the step goes on: sealed rows still read as imported
+// history, and a leftover chunk or payload only holds space. The next run
+// of the phase retries it. A failure to list the work, or to checkpoint,
+// ends the step with an error.
+func repairStoredHistory(ctx context.Context, s *Store, run *deferredRun) error {
 	start := time.Now()
+	failuresBefore := run.failures
 	threads, err := s.SealedHistoryThreads(ctx)
 	if err != nil {
 		return err
-	}
-	skipped := 0
-	skip := func(err error) {
-		skipped++
-		log.Printf("store: history repair: %v", err)
 	}
 	step := func() bool {
 		if ctx.Err() != nil {
 			return false
 		}
-		if pause != nil {
-			pause()
-		}
+		run.pause()
 		return ctx.Err() == nil
 	}
 	var folded UnsealStats
@@ -142,7 +138,7 @@ func repairStoredHistory(ctx context.Context, s *Store, pause ChunkPause) error 
 		if i > 0 && !step() {
 			return nil
 		}
-		stats, err := s.UnsealThreadHistory(ctx, id, pause)
+		stats, err := s.UnsealThreadHistory(ctx, id, run.pause)
 		folded.add(stats)
 		if stats.Chunks > 0 {
 			repaired++
@@ -150,28 +146,28 @@ func repairStoredHistory(ctx context.Context, s *Store, pause ChunkPause) error 
 				id, stats.Rows, stats.Payloads, stats.Chunks)
 		}
 		if err != nil {
-			skip(fmt.Errorf("thread %s keeps the rest of its sealed history: %w", id, err))
+			run.fail(fmt.Errorf("history repair: thread %s keeps the rest of its sealed history: %w", id, err))
 		}
 	}
 	if !step() {
 		return nil
 	}
-	detached, err := s.ReleaseDetachedSealedChunks(ctx, pause, skip)
+	detached, err := s.ReleaseDetachedSealedChunks(ctx, run.pause, run.fail)
 	if err != nil {
 		return err
 	}
 	if !step() {
 		return nil
 	}
-	pruned, err := s.pruneOrphanPayloads(ctx, pause, skip)
+	pruned, err := s.pruneOrphanPayloads(ctx, run.pause, run.fail)
 	if err != nil {
 		return err
 	}
 	if ctx.Err() != nil {
 		return nil
 	}
-	log.Printf("store: history repair: folded %d sealed rows from %d chunks in %d threads, released %d detached chunks, pruned %d orphan payloads (%d bytes), left %d failures in place, in %s",
-		folded.Rows, folded.Chunks, repaired, detached, pruned.payloads, pruned.bytes, skipped, time.Since(start).Round(time.Millisecond))
+	log.Printf("store: history repair: folded %d sealed rows from %d chunks in %d threads, released %d detached chunks, pruned %d orphan payloads (%d bytes), left %d failed items, in %s",
+		folded.Rows, folded.Chunks, repaired, detached, pruned.payloads, pruned.bytes, run.failures-failuresBefore, time.Since(start).Round(time.Millisecond))
 	return nil
 }
 
@@ -563,7 +559,7 @@ func (s *Store) ReleaseDetachedSealedChunks(ctx context.Context, pause ChunkPaus
 		}
 		after = chunkID
 		if err := s.releaseDetachedChunk(chunkID); err != nil {
-			skip(fmt.Errorf("sealed chunk %s left in place: %w", chunkID, err))
+			skip(fmt.Errorf("history repair: sealed chunk %s left in place: %w", chunkID, err))
 			continue
 		}
 		released++
@@ -659,9 +655,10 @@ func (s *Store) scanOrphanPayloads(ctx context.Context, visit func([]orphanPaylo
 // transactions of at most historyRepairRows rows and historyRepairBytes
 // bytes, each followed by a checkpoint, with pause between them. Each delete
 // re-checks the reference predicate inside its transaction, so a row
-// referenced since the scan is kept. Deleting a fork's payload can release the snapshot that was the last
-// borrower of its source payload; such sources are checked again in the same
-// call. A batch whose delete fails is left in place and reported to skip.
+// referenced since the scan is kept. Deleting a fork's payload can release
+// the snapshot that was the last borrower of its source payload; such sources
+// are checked again in the same call. A batch whose delete fails is left in
+// place and reported to skip.
 // Cancelling ctx stops at the next transaction and is not an error.
 func (s *Store) pruneOrphanPayloads(ctx context.Context, pause ChunkPause, skip func(error)) (orphanPayloadStats, error) {
 	var stats orphanPayloadStats
@@ -683,7 +680,7 @@ func (s *Store) pruneOrphanPayloads(ctx context.Context, pause ChunkPause, skip 
 			batch, sources, err := s.pruneOrphanPayloadBatch(page[start:end])
 			wrote = true
 			if err != nil {
-				skip(fmt.Errorf("%d orphan payloads from %s/%s left in place: %w", end-start, page[start].threadID, page[start].id, err))
+				skip(fmt.Errorf("history repair: %d orphan payloads from %s/%s left in place: %w", end-start, page[start].threadID, page[start].id, err))
 				start = end
 				continue
 			}

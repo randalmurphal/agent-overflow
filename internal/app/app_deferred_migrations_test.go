@@ -2,8 +2,13 @@ package app
 
 import (
 	"database/sql"
+	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/notify"
+	"agent-overflow/internal/store"
 )
 
 // seedPendingHistoryRepair leaves the database as an upgrade from before
@@ -130,5 +135,120 @@ func TestDeferredMigrationsStartNothingWhenNoneArePending(t *testing.T) {
 	app.deferredMigrations.mu.Unlock()
 	if started {
 		t.Fatal("a database with nothing pending started a run")
+	}
+}
+
+func execOnFile(t *testing.T, dbPath, statement string) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(statement); err != nil {
+		t.Fatalf("%q: %v", statement, err)
+	}
+}
+
+func waitForSends(t *testing.T, recorder *recordingNotificationSender, n int) []notify.Send {
+	t.Helper()
+	waitFor(t, "the deferred migration notice", func() bool { return len(recorder.snapshot()) >= n })
+	return recorder.snapshot()
+}
+
+// One failing item leaves the watermark, records the count and first error
+// durably and raises the notice. The next start, with the fault gone,
+// retries it, advances the watermark, clears the record and takes the
+// notice back.
+func TestDeferredMigrationFailureNoticesAndTheNextStartRetries(t *testing.T) {
+	app, dbPath := newTestAppWithStorePath(t)
+	recorder := &recordingNotificationSender{}
+	app.osNotifications = recorder
+	app.storeIdentity.Store(&store.Identity{BackendID: "backend-under-test"})
+	app.maintenance.chunkPause = time.Millisecond
+	seedPendingHistoryRepair(t, app, dbPath, "sealed")
+	execOnFile(t, dbPath, `CREATE TRIGGER fail_fold BEFORE INSERT ON items WHEN NEW.thread_id = 'sealed' BEGIN SELECT RAISE(ABORT, 'injected fault'); END`)
+
+	app.startDeferredMigrations()
+	sends := waitForSends(t, recorder, 1)
+	app.stopDeferredMigrations()
+
+	if !deferredMigrationsPending(t, app) {
+		t.Fatal("a run with a failed item advanced the watermark")
+	}
+	failure, err := app.store.DeferredMigrationFailure()
+	if err != nil || failure == nil || failure.Failures != 1 || !strings.Contains(failure.FirstError, "injected fault") {
+		t.Fatalf("recorded failure = %+v, %v", failure, err)
+	}
+	if len(sends) != 1 {
+		t.Fatalf("sends = %#v, want one notice", sends)
+	}
+	notice := sends[0]
+	if notice.ID != deferredMigrationNoticeID || notice.Kind != notify.KindAppUpdate || notice.Retract ||
+		notice.Title != "History repair incomplete" ||
+		!strings.HasPrefix(notice.Body, "1 item failed; retrying on next start.") ||
+		!strings.Contains(notice.Body, "injected fault") ||
+		notice.Target != (notify.Target{Kind: notify.TargetNone, BackendID: "backend-under-test"}) {
+		t.Fatalf("notice = %#v", notice)
+	}
+	if sealedRowFolded(t, app, "sealed") {
+		t.Fatal("the failing thread's row folded despite the fault")
+	}
+
+	execOnFile(t, dbPath, `DROP TRIGGER fail_fold`)
+	app.startDeferredMigrations()
+	sends = waitForSends(t, recorder, 2)
+	app.stopDeferredMigrations()
+
+	if deferredMigrationsPending(t, app) {
+		t.Fatal("the retry did not advance the watermark")
+	}
+	if failure, err := app.store.DeferredMigrationFailure(); err != nil || failure != nil {
+		t.Fatalf("failure record after the retry = %+v, %v", failure, err)
+	}
+	if !sealedRowFolded(t, app, "sealed") {
+		t.Fatal("the retry did not fold the row")
+	}
+	if len(sends) != 2 || sends[1] != (notify.Send{ID: deferredMigrationNoticeID, Kind: notify.KindAppUpdate, Retract: true}) {
+		t.Fatalf("sends after the retry = %#v, want the notice retracted", sends)
+	}
+}
+
+// A clean run with no earlier failure raises nothing.
+func TestDeferredMigrationsCleanRunIsSilent(t *testing.T) {
+	app, dbPath := newTestAppWithStorePath(t)
+	recorder := &recordingNotificationSender{}
+	app.osNotifications = recorder
+	app.maintenance.chunkPause = time.Millisecond
+	seedPendingHistoryRepair(t, app, dbPath, "sealed")
+
+	app.startDeferredMigrations()
+	waitFor(t, "the deferred migrations", func() bool { return !deferredMigrationsPending(t, app) })
+	app.stopDeferredMigrations()
+	if sends := recorder.snapshot(); len(sends) != 0 {
+		t.Fatalf("a clean run sent %#v", sends)
+	}
+}
+
+// A run that could not read or record its progress raises the notice with
+// that error, and the preference toggle silences it.
+func TestDeferredMigrationRunErrorNotices(t *testing.T) {
+	app := newTestAppWithStore(t)
+	recorder := &recordingNotificationSender{}
+	app.osNotifications = recorder
+
+	app.reportDeferredMigrations(false, errors.New("record watermark: disk I/O error"))
+	sends := recorder.snapshot()
+	if len(sends) != 1 || sends[0].Title != "Database maintenance incomplete" ||
+		sends[0].Body != "record watermark: disk I/O error. Retrying on next start." || sends[0].Kind != notify.KindAppUpdate {
+		t.Fatalf("sends = %#v", sends)
+	}
+
+	if _, err := app.settings.Update(map[string]any{"notifyAppUpdate": false}); err != nil {
+		t.Fatal(err)
+	}
+	app.reportDeferredMigrations(false, errors.New("again"))
+	if sends := recorder.snapshot(); len(sends) != 1 {
+		t.Fatalf("a silenced kind still sent: %#v", sends)
 	}
 }

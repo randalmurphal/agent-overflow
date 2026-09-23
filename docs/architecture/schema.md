@@ -77,6 +77,7 @@ conversation whose ownership moved to another computer.
 | `ui_state` | Opaque user/device settings plus legacy frontend-state migration buckets. `internal/settings` owns key meaning and scope derivation. |
 | `push_tokens`, `push_sender` | Push destinations and sender credentials used by remote notification delivery. |
 | `store_meta` | One row containing stable `backend_id` and history-lineage `replica_generation`. Restore preserves the former and remints the latter. |
+| `deferred_migration_failures` | One row per migration whose deferred phase last ran with failed items: count, first error and time. Read only above the `PRAGMA user_version` watermark; a clean run clears it. Restore takes the snapshot's rows with the snapshot's watermark ([sqlite-store.md](sqlite-store.md#deferred-phases)). |
 
 `thread_draft_recoveries` holds one staged replacement per thread until a user row
 owns its SendID or recovery merges it into the composer. It is durable application

@@ -44,8 +44,9 @@ an atomic persistence decision; they must not become a business-logic layer.
   data, including by an uncommitted development build, is deployed and immutable.
   Add a migration and a test; record each new version in `migrate_freeze_test.go`.
 - A one-time data fix is a migration. Work too long to run at open goes in
-  the migration's `Deferred` phase: idempotent, paced, progress in the data,
-  and a failing row logged once and left. Never fix a one-time state from a
+  the migration's `Deferred` phase: idempotent, paced, progress in the data.
+  A failing item is skipped for the run, recorded, and retried by the next
+  open; the watermark does not pass it. Never fix a one-time state from a
   sweep, timer or standing job
   ([deferred phases](../../docs/architecture/sqlite-store.md#deferred-phases)).
 - New rebuild migrations contain their final SQL directly. The old
@@ -128,7 +129,8 @@ an atomic persistence decision; they must not become a business-logic layer.
   `SnapshotTo` uses, is online-safe. Free space is reclaimed by
   `ReclaimFreeSpace` in paced
   `incremental_vacuum` chunks, and an existing database is converted to
-  incremental auto-vacuum by `ConvertToIncrementalVacuum`. Read
+  incremental auto-vacuum by `ConvertToIncrementalVacuum`, the last step of
+  v119's deferred phase. Read
   [sqlite-store.md](../../docs/architecture/sqlite-store.md#free-space) before
   changing either, or before adding an operation that replaces or reopens the
   database file.

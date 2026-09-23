@@ -1,6 +1,7 @@
 package store
 
-// v119 finishes removing background sealing and stops the payload leak.
+// v119 finishes removing background sealing, stops the payload leak and
+// repairs the history both left behind.
 //
 // An insert under history_bulk_load moves a row a read already showed, or
 // rebuilds a thread the same transaction emptied, so it changes no other
@@ -17,11 +18,26 @@ package store
 // apply the delete triggers' rule to the payload an update replaces: it goes
 // when no row of the thread references it.
 //
-// The deferred phase (repairStoredHistory) folds the sealed chunks back into
-// their threads' rows and prunes the payload rows the leak left.
+// deferred_migration_failures records what the last run of a pending
+// deferred phase left unfinished (DeferredMigration).
+//
+// The deferred phase folds the sealed chunks back into their threads' rows
+// and prunes the payload rows the leak left (repairStoredHistory), empties
+// the legacy transcript copies (blankLegacyTranscriptCopies), and converts a
+// database created before incremental auto-vacuum
+// (convertToIncrementalVacuumStep).
 var historyRepairV119SQL = `DROP TRIGGER trg_items_rev_insert;
 ` + historyRevInsertTriggerSQL + `
-` + payloadReplacementGCTriggersV119SQL
+` + payloadReplacementGCTriggersV119SQL + `
+` + deferredMigrationFailuresV119SQL
+
+const deferredMigrationFailuresV119SQL = `CREATE TABLE deferred_migration_failures (
+    version     INTEGER PRIMARY KEY,
+    failures    INTEGER NOT NULL CHECK (failures > 0),
+    first_error TEXT    NOT NULL,
+    failed_at   INTEGER NOT NULL
+);
+`
 
 const payloadReplacementGCTriggersV119SQL = `CREATE TRIGGER trg_items_gc_replaced_payload
 AFTER UPDATE OF payload_id ON items

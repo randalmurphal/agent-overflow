@@ -736,8 +736,8 @@ const STATIC_FIELDS = [
     section: 'notifications',
     heading: 'Notifications',
     label: 'App update notices',
-    hint: 'When an update did not apply and the app needs a hand.',
-    keywords: ['update', 'upgrade', 'restart', 'version'],
+    hint: 'When an update did not apply, or database maintenance could not finish and will retry.',
+    keywords: ['update', 'upgrade', 'restart', 'version', 'database', 'maintenance', 'repair'],
     conditional: true,
   },
   {

@@ -260,12 +260,9 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// a.sessions via stopSession; running it concurrently with
 		// Step 4's snapshotAndClear would race the session map.
 		"stop retention cleanup",
-		// "stop store maintenance" MUST appear before "close store" — the
-		// auto_vacuum conversion scheduler replaces the database file
-		// under both pools.
-		"stop store maintenance",
 		// "stop deferred migrations" MUST appear before "close store" —
-		// the run writes SQLite rows.
+		// the run writes SQLite rows and its auto_vacuum conversion
+		// replaces the database file under both pools.
 		"stop deferred migrations",
 		// "stop background git fetch" MUST appear before "close store" —
 		// every pass reads the project list out of SQLite. It sits here,

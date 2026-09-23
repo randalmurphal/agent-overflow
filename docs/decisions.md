@@ -52,7 +52,11 @@ One-time data fixes are migrations in the chain, run once and version-gated
 (ruling 2026-09-23). Work too long for a synchronous migration gets a deferred
 paced phase after open, and only then. No sweep, timer or standing job may
 exist to fix a one-time state; a sweep only does work that recurs by design
-(retention, reclaim). Mechanism in
+(retention, reclaim). A phase never abandons an item: a run skips a failing
+item so it can finish, but the phase is not recorded as done, the failure
+count and first error persist beside the watermark, the user gets a notice,
+and every later start retries, with no attempt cap (ruling 2026-09-23).
+Mechanism in
 [the SQLite store document](architecture/sqlite-store.md#deferred-phases).
 
 ## Streaming and reveal

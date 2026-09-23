@@ -3,33 +3,33 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"agent-overflow/internal/notify"
 	"agent-overflow/internal/store"
 )
 
-// One-time conversion of the database file to auto_vacuum=incremental.
+// The auto_vacuum conversion is the last step of the store's v119 deferred
+// phase (store.DeferredHost.AwaitFileSwap). New databases are created
+// incremental; the step rebuilds an older file as a snapshot swap, and the
+// whole point is that the user never notices. storeFileSwapWait decides
+// when:
 //
-// New databases are created incremental. A database created before that
-// keeps freed pages on its freelist forever: writes reuse them, so the
-// file never grows unnecessarily, but nothing short of rebuilding the
-// file ever shrinks it. Store.ConvertToIncrementalVacuum does the
-// rebuild as a snapshot swap; this decides when, and the whole point is
-// that the user never notices. The conditions are all about that:
-//
-//   - nothing to do once the database reports incremental, so the
-//     goroutine exits for good;
+//   - not during a supervisor trial, because the swap writes a snapshot
+//     beside the database and renames the old file aside, both outside
+//     the snapshot boundary a rollback restores;
 //   - no live turn, because the swap briefly stops writes;
 //   - no commit for the last quiet window, because a commit during the
 //     snapshot invalidates it and the attempt is wasted work;
 //   - at most one attempt an hour, because the snapshot is a full copy
 //     of the database.
 const (
-	// storeConvertPoll is the scheduler's tick. It is also the sample
-	// interval for the commit watcher, so the quiet window is measured
-	// to this granularity.
+	// storeConvertPoll is the wait's tick. It is also the sample interval
+	// for the commit watcher, so the quiet window is measured to this
+	// granularity.
 	storeConvertPoll = 15 * time.Second
 	// storeConvertQuietWindow is how long the database must have gone
 	// without a commit from any connection.
@@ -40,10 +40,18 @@ const (
 	storeConvertRetryInterval = time.Hour
 )
 
+// deferredMigrationNoticeID names the one notice deferred migration runs
+// raise, so a later run's notice replaces an earlier one and a finished
+// run takes it back.
+const deferredMigrationNoticeID = "store-deferred-migration"
+
+// deferredMigrationNoticeErrorRunes bounds the error a notice quotes.
+const deferredMigrationNoticeErrorRunes = 400
+
 // maintenanceTuning shortens the background maintenance timings so
-// tests can drive the retention sweep and the conversion scheduler
-// without waiting out production intervals. A zero field means the
-// production constant.
+// tests can drive the retention sweep and the conversion wait without
+// waiting out production intervals. A zero field means the production
+// constant.
 type maintenanceTuning struct {
 	settleUptime time.Duration
 	settlePoll   time.Duration
@@ -98,8 +106,9 @@ func (l *backgroundLoop) halt() {
 // (store.DeferredMigration) in the background, paced like the retention
 // sweep: one bounded transaction, then a chunk pause. With nothing pending,
 // which is every boot once a build's phases have finished, it starts nothing.
-// A quit stops the run at the next transaction and the next launch resumes
-// it. Idempotent. Shutdown joins it before the store closes.
+// A run that leaves items unfinished raises a notice and the next launch
+// retries them; a quit stops the run at the next transaction and the next
+// launch resumes it. Idempotent. Shutdown joins it before the store closes.
 func (a *App) startDeferredMigrations() {
 	if a.store == nil {
 		return
@@ -127,9 +136,16 @@ func (a *App) startDeferredMigrations() {
 	go func() {
 		defer a.deferredMigrations.done()
 		defer cancel()
-		if err := a.store.RunDeferredMigrations(ctx, a.maintenancePause(ctx)); err != nil {
+		prior, err := a.store.DeferredMigrationFailure()
+		if err != nil {
 			log.Printf("app: deferred migrations: %v", err)
 		}
+		host := store.DeferredHost{Pause: a.maintenancePause(ctx), AwaitFileSwap: a.storeFileSwapWait()}
+		runErr := a.store.RunDeferredMigrations(ctx, host)
+		if ctx.Err() != nil {
+			return
+		}
+		a.reportDeferredMigrations(prior != nil, runErr)
 	}()
 }
 
@@ -137,6 +153,56 @@ func (a *App) startDeferredMigrations() {
 // for it to return. Safe before start and safe to call twice.
 func (a *App) stopDeferredMigrations() {
 	a.deferredMigrations.halt()
+}
+
+// reportDeferredMigrations tells the user how a finished run left the
+// database. A phase whose run left failed items raises a notice with their
+// count and the first error; the data still reads correctly and the next
+// launch retries them. A run that could not read or record its progress
+// raises the notice with that error. A clean run takes back the notice an
+// earlier run raised.
+func (a *App) reportDeferredMigrations(hadFailure bool, runErr error) {
+	var send notify.Send
+	switch failure, err := a.store.DeferredMigrationFailure(); {
+	case runErr != nil:
+		log.Printf("app: deferred migrations: %v", runErr)
+		send = deferredMigrationNotice("Database maintenance incomplete",
+			fmt.Sprintf("%s. Retrying on next start.", truncateRunes(runErr.Error(), deferredMigrationNoticeErrorRunes)))
+	case err != nil:
+		log.Printf("app: deferred migrations: %v", err)
+		send = deferredMigrationNotice("Database maintenance incomplete",
+			fmt.Sprintf("%s. Retrying on next start.", truncateRunes(err.Error(), deferredMigrationNoticeErrorRunes)))
+	case failure != nil:
+		items := "items"
+		if failure.Failures == 1 {
+			items = "item"
+		}
+		send = deferredMigrationNotice(failure.Title+" incomplete",
+			fmt.Sprintf("%d %s failed; retrying on next start. First error: %s",
+				failure.Failures, items, truncateRunes(failure.FirstError, deferredMigrationNoticeErrorRunes)))
+	case hadFailure:
+		send = notify.Send{ID: deferredMigrationNoticeID, Kind: notify.KindAppUpdate, Retract: true}
+	default:
+		return
+	}
+	if !send.Retract {
+		send.Target = notify.Target{Kind: notify.TargetNone, BackendID: a.notificationBackendID()}
+	}
+	// Logged here rather than through logNotificationFailure, whose
+	// once-per-code record belongs to the notification queue's goroutine.
+	// The preference and attended-screen refusals are the user's choice,
+	// not a failure.
+	if err := a.notifyOS(send); err != nil {
+		var refusal *NotificationError
+		if errors.As(err, &refusal) && (refusal.Code == NotificationSuppressed || refusal.Code == NotificationScreenAttended) {
+			return
+		}
+		log.Printf("app: deferred migrations: notice: %v", err)
+	}
+}
+
+func deferredMigrationNotice(title, body string) notify.Send {
+	return notify.Send{ID: deferredMigrationNoticeID, Kind: notify.KindAppUpdate, Title: title, Body: body}
 }
 
 // maintenancePause is the chunk pause of a background run bound to ctx. It
@@ -155,118 +221,66 @@ func (a *App) maintenancePause(ctx context.Context) store.ChunkPause {
 	}
 }
 
-// startStoreMaintenance launches the auto_vacuum conversion scheduler.
-// Idempotent. Shutdown joins it before the store closes.
-func (a *App) startStoreMaintenance() {
-	stop, started := a.storeMaintenance.start()
-	if !started {
-		return
-	}
-	go func() {
-		defer a.storeMaintenance.done()
-		a.runStoreConversionLoop(stop)
-	}()
-}
-
-// stopStoreMaintenance signals the scheduler and waits for it to return.
-// Safe before start and safe to call twice.
-func (a *App) stopStoreMaintenance() {
-	a.storeMaintenance.halt()
-}
-
-// runStoreConversionLoop polls for a quiet moment and converts once.
-// It returns for good as soon as the database is incremental, or when
-// the database cannot be converted at all.
-func (a *App) runStoreConversionLoop(stop <-chan struct{}) {
-	if a.store == nil {
-		return
-	}
-	if mode, err := a.store.AutoVacuumMode(); err != nil {
-		log.Printf("app: store conversion: read auto_vacuum: %v", err)
-		return
-	} else if mode == store.AutoVacuumIncremental {
-		return
-	}
-
+// storeFileSwapWait returns the wait the auto_vacuum conversion makes
+// before each attempt (store.DeferredHost.AwaitFileSwap). It first waits
+// for the activation gate: a supervisor trial never replaces its database
+// file. Then it samples every poll until no turn is live, nothing has
+// committed for the quiet window, and the run's previous attempt is at
+// least storeConvertRetryInterval old. It holds a commit watcher only while
+// it waits, because the swap refuses to run while another connection holds
+// the file.
+func (a *App) storeFileSwapWait() func(context.Context) error {
 	quiet := newCommitQuietGate(a.retentionNow())
-	defer quiet.close()
-
-	ticker := time.NewTicker(a.storeConvertPollInterval())
-	defer ticker.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ticker.C:
-			if a.shuttingDown.Load() {
-				return
+	return func(ctx context.Context) error {
+		if err := WaitForActivation(a, ctx); err != nil {
+			return err
+		}
+		defer quiet.close()
+		ticker := time.NewTicker(a.storeConvertPollInterval())
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
 			}
-			if done := a.storeConversionTick(quiet, a.retentionNow()); done {
-				return
+			ready, err := a.storeSwapReady(ctx, quiet, a.retentionNow())
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return err
+			}
+			if ready {
+				return nil
 			}
 		}
 	}
 }
 
-// storeConversionTick runs one poll and reports whether the scheduler is
-// finished. A miss is silent: this runs every few seconds and nearly all
-// of its work is deciding to do nothing.
-func (a *App) storeConversionTick(quiet *commitQuietGate, now time.Time) bool {
+// storeSwapReady takes one sample and reports whether a conversion attempt
+// may start now. A miss is silent: nearly every sample decides to wait.
+func (a *App) storeSwapReady(ctx context.Context, quiet *commitQuietGate, now time.Time) (bool, error) {
 	if a.sessionManager().runtime.HasActiveTurn() {
 		quiet.disturb(now)
-		return false
+		return false, nil
 	}
 	watcher, err := quiet.watcher(a.store)
 	if err != nil {
-		log.Printf("app: store conversion: watch commits: %v", err)
-		return true
+		return false, fmt.Errorf("watch commits: %w", err)
 	}
-	version, err := watcher.DataVersion(a.lifeCtx())
+	version, err := watcher.DataVersion(ctx)
 	if err != nil {
-		if !errors.Is(err, context.Canceled) {
-			log.Printf("app: store conversion: read data_version: %v", err)
-		}
-		return true
+		return false, fmt.Errorf("read data_version: %w", err)
 	}
 	if !quiet.observe(version, now, a.storeConvertQuietWindow()) {
-		return false
+		return false, nil
 	}
 	if !quiet.attemptDue(now, storeConvertRetryInterval) {
-		return false
+		return false, nil
 	}
 	quiet.attempted(now)
-
-	// The watcher holds a connection to the database file, which the
-	// swap refuses to run underneath. Closing it also resets the quiet
-	// tracking: the next tick starts a fresh window.
-	quiet.close()
-
-	result, err := a.store.ConvertToIncrementalVacuum(a.lifeCtx())
-	if err != nil {
-		// Shutdown cancels the app context, which interrupts the
-		// snapshot mid-copy. That is the design, not a failure worth a
-		// line in the log.
-		if !errors.Is(err, context.Canceled) {
-			log.Printf("app: store conversion: %v", err)
-		}
-		return false
-	}
-	switch result.Outcome {
-	case store.ConvertConverted:
-		log.Printf(
-			"app: store conversion: database converted to incremental auto-vacuum; %d -> %d bytes, writes blocked %s",
-			result.SizeBefore, result.SizeAfter, result.BlockedWindow.Round(time.Millisecond),
-		)
-		return true
-	case store.ConvertAlreadyIncremental:
-		return true
-	case store.ConvertUnsupported:
-		return true
-	default:
-		// Not quiet after all: a commit landed during the snapshot. The
-		// hourly cap keeps this from repeating on a busy install.
-		return false
-	}
+	return true, nil
 }
 
 func (a *App) storeConvertPollInterval() time.Duration {

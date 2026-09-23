@@ -638,9 +638,6 @@ type App struct {
 	// maintenance shortens the background maintenance timings for
 	// tests. Zero fields mean production values.
 	maintenance maintenanceTuning
-	// storeMaintenance owns the one-time auto_vacuum conversion
-	// scheduler's stop gate. See app_store_maintenance.go.
-	storeMaintenance backgroundLoop
 	// deferredMigrations owns the stop gate of the run that finishes the
 	// store's deferred migration phases. See app_store_maintenance.go.
 	deferredMigrations backgroundLoop

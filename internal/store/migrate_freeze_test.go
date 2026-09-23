@@ -7,7 +7,7 @@ import (
 )
 
 // Pin the evaluated SQL of every migration, including referenced trigger and
-// schema definitions, and the name of its deferred phase. Persistent
+// schema definitions, and the names of its deferred steps. Persistent
 // development databases also apply this chain. Add hashes for new versions
 // before deployment; repair deployed versions with a forward migration
 // instead of changing their SQL or recorded hash.
@@ -130,18 +130,22 @@ var frozenMigrationSQL = map[int]string{
 	116: "d12e02d43f55b8e7ecf12d743129e6219d8edc92d5d442c912fba4d40d20b981",
 	117: "d233e6c55926d79e5c4d4b3327dbadb0d4bf4f171a611601b09709912a5a9839",
 	118: "128717e6242fedb799097340da2fc1c0c817883feab7981f6803a0f650ee4f4a",
-	119: "10802d79402de7a28c7ac075d058a137f8a09604198d2ec7429a875d559ac36d",
+	119: "c69b0d9bb765cc4da013e8fb9bb864e954a0093298873b9043ea8462f8821a06",
 }
 
 // frozenMigrationText is what a migration's frozen hash covers. A deferred
-// phase is live code, so its name stands for it: moving a phase to another
-// version or dropping it changes the hash, because the deferred watermark
-// records phases by version.
+// phase's steps are live code, so their names stand for them: moving a step
+// to another version, dropping it or adding one changes the hash, because
+// the deferred watermark records phases by version.
 func frozenMigrationText(m Migration) string {
 	if m.Deferred == nil {
 		return m.SQL
 	}
-	return m.SQL + "\n-- deferred phase: " + m.Deferred.Name
+	text := m.SQL
+	for _, step := range m.Deferred.Steps {
+		text += "\n-- deferred step: " + step.Name
+	}
+	return text
 }
 
 func TestShippedMigrationSQLIsFrozen(t *testing.T) {

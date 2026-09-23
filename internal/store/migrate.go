@@ -1675,10 +1675,17 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 117, Name: "drop_history_preparation_index", SQL: dropHistoryPreparationIndexV117SQL},
 	{Version: 118, Name: "rev_trigger_carrier_probe", SQL: revTriggerCarrierProbeV118SQL},
 	{
-		Version:  119,
-		Name:     "history_repair",
-		SQL:      historyRepairV119SQL,
-		Deferred: &DeferredMigration{Name: "fold_sealed_history_and_prune_orphan_payloads", Run: repairStoredHistory},
+		Version: 119,
+		Name:    "history_repair",
+		SQL:     historyRepairV119SQL,
+		Deferred: &DeferredMigration{
+			Title: "History repair",
+			Steps: []DeferredStep{
+				{Name: "fold_sealed_history_and_prune_orphan_payloads", Run: repairStoredHistory},
+				{Name: "blank_legacy_transcript_copies", Run: blankLegacyTranscriptCopies},
+				{Name: "auto_vacuum_conversion", Run: convertToIncrementalVacuumStep},
+			},
+		},
 	},
 }
 
@@ -1713,7 +1720,8 @@ func configureDatabase(db *sql.DB) error {
 	// created, and after that a plain PRAGMA cannot change it: on a
 	// database that already has tables this statement is a silent no-op,
 	// which is exactly what existing databases should get. They keep
-	// auto_vacuum=none until ConvertToIncrementalVacuum rebuilds them.
+	// auto_vacuum=none until v119's deferred phase rebuilds them
+	// (convertToIncrementalVacuumStep).
 	//
 	// Incremental is what lets ReclaimFreeSpace hand freed pages back to
 	// the filesystem in 128-page steps instead of rewriting the whole
