@@ -362,9 +362,8 @@
     };
   });
 
-  // A failed transcript backfill (the task_notification's output_file
-  // could not be read — triage stamps notification_output_state/error on
-  // the completion sibling, output_file_state/error on older rows). A
+  // A failed output-file read (triage stamps notification_output_state/error
+  // on the completion sibling, output_file_state/error on older rows). A
   // silently incomplete card body reads exactly like a complete one, so
   // the failure renders inline.
   let statusMeta = $derived(

@@ -304,10 +304,9 @@ type ProviderEvent struct {
 	Failure *FailureMeta `json:"-"`
 }
 
-// MetaTranscriptMirroredKey marks a subagent launch whose missing sidechain
-// is already being projected from the provider's live transcript mirror.
-// Terminal recovery may retain an on-disk fallback for older sessions but
-// must not parse the same transcript again when this marker is present.
+// MetaTranscriptMirroredKey marks a subagent launch whose sidechain is
+// projected from the provider's live transcript mirror. It is recorded on
+// the launch row; no reader depends on it.
 const MetaTranscriptMirroredKey = "transcript_mirrored"
 
 // MetaTranscriptSnapshotKey marks content reconstructed from a complete

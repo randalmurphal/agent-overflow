@@ -253,8 +253,8 @@ func joinedSendIdentityQuery(threadID, sendID string) (string, []any) {
 //
 // It is the reconciliation half of the §E6 resume prompt: that row is
 // minted from the rebind `system/task_started` (which has no provider
-// uuid to give) and the agent's terminal transcript later delivers the
-// same text WITH a uuid. Without this lookup the transcript row lands as
+// uuid to give) and the session mirror later delivers the agent's copy of
+// the same text WITH a uuid. Without this lookup the transcript row lands as
 // a second `user:wire:<uuid>` duplicate below the answer it asked for.
 //
 // The non-empty `parent_id` term is load-bearing: it is the predicate of the partial

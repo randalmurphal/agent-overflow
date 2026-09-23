@@ -1,10 +1,10 @@
 // Offscreen agent completion in a partially shipped run: launch context
 // travels with the completion, opening the run preserves its ownership, and
-// the card expands to its backfilled digest, answer included.
+// the card expands to its digest, answer included.
 import { test, expect } from './fixtures.js';
 import {
   RESULT_LINE, asyncAgentAckLine, claudeScenario, emit, seedAgentThread,
-  sidechainTranscript, startMock, taskNotificationLine, taskStartedLine,
+  startMock, taskNotificationLine, taskStartedLine,
   taskProgressLine, taskUpdatedLine, textLines, toolResultLine, toolUseLine, waitForGate,
 } from './agent-visibility-helpers.js';
 
@@ -19,17 +19,21 @@ test('a completion forms its card when its launch is outside the shipped activit
       emit([
         toolUseLine('msg-agent', 'agent-launch', 'Agent', {
           description: 'investigate offscreen', subagent_type: 'sweeper', run_in_background: true,
+          prompt: 'Investigate the offscreen report.',
         }),
         taskStartedLine('task-offscreen', 'agent-launch', 'investigate offscreen'),
         taskUpdatedLine('task-offscreen', { is_backgrounded: true }),
         asyncAgentAckLine('agent-launch', 'task-offscreen', 'investigate offscreen'),
         ...work,
       ]),
-      { writeFile: { path: 'offscreen.jsonl', content: sidechainTranscript([
-        { tool: { id: 'side-read-1', name: 'Read', result: 'readme body' } },
-        { tool: { id: 'side-read-2', name: 'Read', result: 'readme body again' } },
-        { text: report },
-      ]) } },
+      // An async-launched agent streams its sidechain on stdout.
+      emit([
+        toolUseLine('msg-side-1', 'side-read-1', 'Read', { file_path: 'README.md' }, 'agent-launch'),
+        toolResultLine('side-read-1', 'readme body', { parentToolUseId: 'agent-launch' }),
+        toolUseLine('msg-side-2', 'side-read-2', 'Read', { file_path: 'README.md' }, 'agent-launch'),
+        toolResultLine('side-read-2', 'readme body again', { parentToolUseId: 'agent-launch' }),
+        ...textLines('msg-side-report', report, 'agent-launch'),
+      ]),
       emit([
         taskProgressLine('task-offscreen', 'agent-launch', 'Reading README', { total_tokens: 4321, tool_uses: 2, duration_ms: 90000 }, 'Read'),
         taskUpdatedLine('task-offscreen', { status: 'completed', end_time: 1787419835322 }),
@@ -72,9 +76,8 @@ test('a completion forms its card when its launch is outside the shipped activit
   await expect(card.getByTestId('subagent-group-tools')).toContainText('2 tools');
   await expect(card.getByTestId('subagent-group-count')).toContainText('4 entries');
 
-  // The digest hydrates from the store without the launch row: the two
-  // backfilled Reads and the answer, which the backfill stamped with the
-  // transcript clock so it sits inside this execution.
+  // The digest hydrates from the store without the launch row: the
+  // opening prompt, the two Reads and the answer.
   await card.getByTestId('subagent-group-toggle').first().click();
   const body = card.getByTestId('subagent-group-body').first();
   await expect(body).toBeVisible();

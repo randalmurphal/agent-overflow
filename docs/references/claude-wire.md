@@ -2062,18 +2062,11 @@ nothing is ever parented to one. Three mechanisms hold it
   a known carrier onto the root before dispatch, which makes "a row
   parented to a carrier" unrepresentable regardless of which parser path
   emitted it;
-- every scope-resolving path (the terminal transcript replay, the
-  identity flip, the resume prompt row, the mirror compaction tap)
-  resolves through `transcriptRoot`, whose evidence order is the
+- every scope-resolving path (the identity flip, the parked-children
+  check, the resume prompt row, the mirror compaction tap) resolves
+  through `transcriptRoot`, whose evidence order is the
   `transcript_root_id` stamp, then the `resumes_tool_use_id` chain walked
   to its END, then `FindOriginalAgentLaunchByTaskID`.
-
-Reading the carrier as a scope is what the 2026-09-03 incident was: the
-terminal `task_notification` lands on the CARRIER, so replaying the
-agent's sidechain against it indexed nothing as already delivered — 474
-already-streamed round-1 `tool_call` rows were REPARENTED onto the
-carrier and 220 assistant_text / thinking rows duplicated under it
-(thread `612d4eeb`, carrier `toolu_01FyWrjQqtzGga45twD7FQ4t`).
 
 #### The resume message
 
@@ -2088,7 +2081,7 @@ collide with the agent's round-1 opening prompt, which is the ROOT's
 scope; its PLACEMENT is the root's, carried on the event meta as
 `transcript_root_id` so triage needs no lookup and does not depend on
 the carrier's own row having been written yet. It is provisional like
-the launch-input opening prompt: the terminal transcript later delivers
+the launch-input opening prompt: the session mirror later delivers
 the same text WITH its provider uuid, and
 `persistWireOnlySubagentPrompt` binds that uuid onto the standing row
 (`FindProvisionalSubagentPrompt`) rather than minting a second
@@ -2199,8 +2192,7 @@ shell or a watch task (`launchIsParked`, over
 the stash (`pending_background_task_terminals`), writes NO
 `tool_completion` sibling, still writes the `notification` row (the
 bell; the frontend hides every bell for the task once the completed
-sibling lands), still persists usage, and still runs the output_file
-backfill. The wake drops the stash and persists the parser's wake row
+sibling lands), and still persists usage. The wake drops the stash and persists the parser's wake row
 under the ROOT on the launch's turn, opening the woken round. The
 launch settles (sibling written) on the first stop with no live owned
 shell, on `task_updated{killed}`, on a §E6 rebind (the parked bound
@@ -2661,7 +2653,8 @@ as the on-disk pairing). AO's mirror handling deliberately drops
 batches for stdout-streaming agents to avoid duplicating their deltas;
 the compaction tap (`parse_transcript_mirror.go`) is the carve-out that
 forwards exactly these two row shapes so the divider lands at its real
-position instead of being appended by the terminal transcript replay.
+position. Nothing else delivers them: completion never reads the
+transcript.
 
 ### The subagent's opening prompt
 
@@ -3091,8 +3084,8 @@ CLI binary; the subtypes we use or plan to use:
   With `--session-mirror`, the same sidechain rows continue live as
   `transcript_mirror` frames. Its full transcript also remains in the
   `task_notification.output_file` (sidechain JSONL, `isSidechain:true`,
-  including `attachment` rows), which AO uses only as a compatibility
-  backfill for sessions started before mirror support.
+  including `attachment` rows), which AO never reads: completion takes
+  the agent's report from the notification `summary`.
 - `subtype: "set_permission_mode"`: switch the live session's permission
   mode (Plan ↔ chat ↔ accept-edits ↔ bypass). Takes `mode`. Escalating to
   `bypassPermissions` is REJECTED unless the process was launched with
@@ -3673,8 +3666,8 @@ Two gaps make this surface necessary:
 AO always enables the flag on new Claude processes. It incrementally projects
 received entries through the session-import converter's stateful
 `SidechainProjector`, then sends ordinary provider events through triage. It
-never tails transcript files for live updates. The terminal file converter
-remains only for an older process that has no mirrored marker.
+never tails transcript files for live updates, and completion never reads or
+replays the transcript file (ruling 2026-09-23).
 
 Rows whose scope or attribution is not known stay in a bounded buffer. An
 ordinary Agent's `agent_metadata.toolUseId` classifies the mirror as that

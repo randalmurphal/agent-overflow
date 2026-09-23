@@ -3,7 +3,6 @@ package sessionimport
 import (
 	"encoding/json"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +11,65 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-func TestSidechainProjectorPreservesStateAcrossMirrorBatches(t *testing.T) {
+// joinedSubagentEvents converts rows as agent7's sidechain inside a whole
+// session import and returns the events nested under its launch, with the
+// turn pinned to 0 as a mirrored projection carries it. The mirror and the
+// import write the same thread, so the import is the projector's reference.
+func joinedSubagentEvents(t *testing.T, rows ...any) []importir.Event {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, sessionA+".jsonl")
+	writeJSONL(t, path,
+		userRow("u1", "", "delegate it", "2026-01-01T00:00:00.000Z"),
+		assistantRow("a1", "u1", "msg_1", []any{
+			toolUseBlock("toolu_task", "Task", map[string]any{"description": "do work"}),
+		}, "2026-01-01T00:00:01.000Z"),
+		toolResultRow("r1", "a1", "toolu_task", "agent finished", "2026-01-01T00:00:09.000Z",
+			with("toolUseResult", map[string]any{"agentId": "agent7", "status": "completed"})),
+	)
+	writeJSONL(t, filepath.Join(dir, sessionA, subagentsSubdir, "agent-agent7.jsonl"), rows...)
+	var nested []importir.Event
+	for _, evt := range loadBranch(t, path, 0, 1).Events {
+		if evt.ParentToolUseID != "toolu_task" {
+			continue
+		}
+		evt.TurnIndex = 0
+		nested = append(nested, evt)
+	}
+	return nested
+}
+
+// projectInBatches runs rows through one projector, one Append per batch,
+// and closes it.
+func projectInBatches(t *testing.T, batches ...[]map[string]any) []importir.Event {
+	t.Helper()
+	projector, err := NewSidechainProjector("toolu_task")
+	if err != nil {
+		t.Fatalf("NewSidechainProjector: %v", err)
+	}
+	var events []importir.Event
+	for _, batch := range batches {
+		entries := make([]json.RawMessage, 0, len(batch))
+		for _, row := range batch {
+			encoded, marshalErr := json.Marshal(row)
+			if marshalErr != nil {
+				t.Fatalf("marshal fixture: %v", marshalErr)
+			}
+			entries = append(entries, encoded)
+		}
+		result, appendErr := projector.Append(entries)
+		if appendErr != nil {
+			t.Fatalf("Append: %v", appendErr)
+		}
+		events = append(events, result.Events...)
+	}
+	return append(events, projector.Close().Events...)
+}
+
+// The mirror delivers a sidechain in arbitrary batches. Split or whole, the
+// projection is exactly what a whole-session import produces for the same
+// rows: same events, same order, same ids.
+func TestSidechainProjectorMatchesTheJoinedImportAcrossMirrorBatches(t *testing.T) {
 	fixture := []map[string]any{
 		userRow("s1", "", "the task prompt", "2026-01-01T00:00:02.000Z", with("isSidechain", true)),
 		assistantRow("s2", "s1", "msg_sub", []any{textBlock("first block")},
@@ -25,32 +82,43 @@ func TestSidechainProjectorPreservesStateAcrossMirrorBatches(t *testing.T) {
 		toolResultRow("s5", "s4", "toolu_sub", "package main", "2026-01-01T00:00:06.000Z",
 			with("isSidechain", true)),
 	}
+	lines := make([]any, len(fixture))
+	split := make([][]map[string]any, len(fixture))
+	for i := range fixture {
+		lines[i] = fixture[i]
+		split[i] = []map[string]any{fixture[i]}
+	}
+	want := renderEvents(joinedSubagentEvents(t, lines...))
+	if want != strings.Join([]string{
+		`user_text turn=0 item=s1 parent=toolu_task src=s1 content="the task prompt"`,
+		`text_delta turn=0 item=msg_sub#0 parent=toolu_task src=s2 content="first block"`,
+		`text_delta turn=0 item=msg_sub#1 parent=toolu_task src=s3 content="second block"`,
+		`tool_start turn=0 item=toolu_sub parent=toolu_task src=s4 content=""`,
+		`tool_complete turn=0 item=toolu_sub parent=toolu_task src=s5 content="package main"`,
+	}, "\n") {
+		t.Fatalf("joined import reference changed:\n%s", want)
+	}
+
+	streamed := projectInBatches(t, split...)
+	if got := renderEvents(streamed); got != want {
+		t.Fatalf("one-row batches diverged from the joined import:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	if got := renderEvents(projectInBatches(t, fixture)); got != want {
+		t.Fatalf("one batch diverged from the joined import:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+	var promptMeta map[string]any
+	if err := json.Unmarshal(streamed[0].Meta, &promptMeta); err != nil {
+		t.Fatalf("opening prompt meta: %v", err)
+	}
+	if promptMeta[provider.MetaSubagentOpeningPromptKey] != true {
+		t.Fatalf("opening prompt meta = %s, want %s=true", streamed[0].Meta, provider.MetaSubagentOpeningPromptKey)
+	}
 
 	projector, err := NewSidechainProjector("toolu_task")
 	if err != nil {
 		t.Fatalf("NewSidechainProjector: %v", err)
 	}
-	var streamed []importir.Event
-	for _, entry := range fixture {
-		encoded, marshalErr := json.Marshal(entry)
-		if marshalErr != nil {
-			t.Fatalf("marshal fixture: %v", marshalErr)
-		}
-		batch, appendErr := projector.Append([]json.RawMessage{encoded})
-		if appendErr != nil {
-			t.Fatalf("Append: %v", appendErr)
-		}
-		streamed = append(streamed, batch.Events...)
-	}
-	streamed = append(streamed, projector.Close().Events...)
-
-	complete := ConvertSubagentRows(newRows(fixture), "toolu_task")
-	if got, want := renderEvents(streamed), renderEvents(complete.Events); got != want {
-		t.Fatalf("incremental projection diverged from complete conversion:\ngot:\n%s\nwant:\n%s", got, want)
-	}
-	if got := renderEvents(streamed); !strings.Contains(got, "item=msg_sub#0") || !strings.Contains(got, "item=msg_sub#1") {
-		t.Fatalf("assistant block ordinal reset across batches:\n%s", got)
-	}
+	projector.Close()
 	if result := projector.Close(); len(result.Events) != 0 || len(result.Warnings) != 0 {
 		t.Fatalf("second Close returned %+v", result)
 	}
@@ -91,9 +159,9 @@ func TestSidechainProjectorFoldsCompactSummaryAcrossMirrorBatches(t *testing.T) 
 	if len(result.Events) != 0 {
 		t.Fatalf("Close emitted an extra summary event: %s", renderEvents(result.Events))
 	}
-	complete := ConvertSubagentRows(newRows([]map[string]any{boundary, summary}), "toolu_task")
-	if got, want := renderEvents(streamed), renderEvents(complete.Events); got != want {
-		t.Fatalf("incremental compact projection diverged:\ngot:\n%s\nwant:\n%s", got, want)
+	whole := projectInBatches(t, []map[string]any{boundary, summary})
+	if got, want := renderEvents(streamed), renderEvents(whole); got != want {
+		t.Fatalf("split compact projection diverged from one batch:\ngot:\n%s\nwant:\n%s", got, want)
 	}
 	if len(streamed) != 1 || !strings.Contains(string(streamed[0].Meta), "kept facts") {
 		t.Fatalf("compact projection did not fold summary: %+v", streamed)
@@ -154,214 +222,56 @@ func TestSidechainProjectorUsesMirrorArrivalForTimestampLessRows(t *testing.T) {
 	}
 }
 
-// ConvertSubagentTranscript is the live path's entry point: one known
-// sidechain file, one known launch, no parent transcript in play. The
-// property that matters is that it produces exactly what a whole-session
-// import produces for the same rows — same events, same order, same ids —
-// because the two writers land in the same thread.
-func TestConvertSubagentTranscriptMatchesTheJoinedImport(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, sessionA+".jsonl")
-	writeJSONL(t, path,
-		userRow("u1", "", "delegate it", "2026-01-01T00:00:00.000Z"),
-		assistantRow("a1", "u1", "msg_1", []any{
-			toolUseBlock("toolu_task", "Task", map[string]any{"description": "do work"}),
-		}, "2026-01-01T00:00:01.000Z"),
-		toolResultRow("r1", "a1", "toolu_task", "agent finished", "2026-01-01T00:00:06.000Z",
-			with("toolUseResult", map[string]any{"agentId": "agent7", "status": "completed"})),
-	)
-	agentPath := filepath.Join(dir, sessionA, subagentsSubdir, "agent-agent7.jsonl")
-	writeJSONL(t, agentPath,
+// "Nothing convertible" means no rows a timeline can render. An agent
+// killed after being GIVEN its task still has its prompt, and that row is
+// the whole reason a killed agent's card is not blank, so the empty case
+// is a sidechain of pure machinery.
+func TestSidechainProjectorEmptyAndInvalidInputs(t *testing.T) {
+	promptOnly := projectInBatches(t, []map[string]any{
 		userRow("s1", "", "the task prompt", "2026-01-01T00:00:02.000Z", with("isSidechain", true)),
-		assistantRow("s2", "s1", "msg_sub", []any{textBlock("subagent thinking out loud")},
-			"2026-01-01T00:00:03.000Z", with("isSidechain", true)),
-		assistantRow("s3", "s2", "msg_sub2", []any{
-			toolUseBlock("toolu_sub", "Read", map[string]any{"file_path": "/repo/a.go"}),
-		}, "2026-01-01T00:00:04.000Z", with("isSidechain", true)),
-		toolResultRow("s4", "s3", "toolu_sub", "package main", "2026-01-01T00:00:05.000Z",
-			with("isSidechain", true)),
-	)
-
-	standalone, err := ConvertSubagentTranscript(agentPath, "toolu_task")
-	if err != nil {
-		t.Fatalf("ConvertSubagentTranscript: %v", err)
-	}
-	got := renderEvents(standalone.Events)
-	want := strings.Join([]string{
-		`user_text turn=0 item=s1 parent=toolu_task src=s1 content="the task prompt"`,
-		`text_delta turn=0 item=msg_sub#0 parent=toolu_task src=s2 content="subagent thinking out loud"`,
-		`tool_start turn=0 item=toolu_sub parent=toolu_task src=s3 content=""`,
-		`tool_complete turn=0 item=toolu_sub parent=toolu_task src=s4 content="package main"`,
-	}, "\n")
-	if got != want {
-		t.Fatalf("standalone events:\ngot:\n%s\nwant:\n%s", got, want)
-	}
-	if len(standalone.Events) == 0 {
-		t.Fatal("standalone transcript emitted no opening prompt")
-	}
-	var promptMeta map[string]any
-	if err := json.Unmarshal(standalone.Events[0].Meta, &promptMeta); err != nil {
-		t.Fatalf("opening prompt meta: %v", err)
-	}
-	if promptMeta[provider.MetaSubagentOpeningPromptKey] != true {
-		t.Fatalf("opening prompt meta = %s, want %s=true", standalone.Events[0].Meta, provider.MetaSubagentOpeningPromptKey)
+	})
+	if got := renderEvents(promptOnly); got != `user_text turn=0 item=s1 parent=toolu_task src=s1 content="the task prompt"` {
+		t.Fatalf("prompt-only sidechain produced:\n%s", got)
 	}
 
-	// The same rows read as part of the whole session: identical events,
-	// modulo the turn index the caller pins (a subagent has no turns of
-	// its own — invariant 10).
-	joined := loadBranch(t, path, 0, 1).Events
-	var nested []string
-	for _, evt := range joined {
-		if evt.ParentToolUseID != "toolu_task" {
-			continue
-		}
-		nested = append(nested, strings.Replace(
-			renderEvents([]importir.Event{evt}), "turn=1", "turn=0", 1))
+	machineryOnly := projectInBatches(t, []map[string]any{
+		userRow("m1", "", "Caveat: this is a caveat", "2026-01-01T00:00:02.000Z",
+			with("isSidechain", true), with("isMeta", true)),
+	})
+	if len(machineryOnly) != 0 {
+		t.Fatalf("machinery-only sidechain produced %d event(s)", len(machineryOnly))
 	}
-	if joinedRendered := strings.Join(nested, "\n"); joinedRendered != got {
-		t.Fatalf("standalone conversion diverges from the joined import:\nstandalone:\n%s\njoined:\n%s", got, joinedRendered)
+
+	if _, err := NewSidechainProjector("  "); err == nil {
+		t.Fatal("expected an empty launch tool_use id to be refused")
 	}
 }
 
-func TestConvertSubagentTranscriptStreamsLargeRecordsAndPairsDistantSummaries(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "agent-large.jsonl")
+// A sidechain file is trusted provider history: the whole-session import
+// streams it without a per-line display ceiling, so a tool result larger
+// than the root session's line limit arrives intact under its launch.
+func TestSubagentImportStreamsLargeRecords(t *testing.T) {
 	largeOutput := strings.Repeat("x", 17<<20)
-	boundary := map[string]any{
-		"type": "system", "subtype": "compact_boundary", "uuid": "compact-1",
-		"content": "Conversation compacted", "timestamp": "2026-01-01T00:00:01.000Z",
-	}
-	summary := userRow("summary-1", "compact-1", "retained facts", "2026-01-01T00:00:04.000Z",
-		with("isCompactSummary", true))
-	rows := []map[string]any{
-		userRow("s1", "", "the task prompt", "", with("isSidechain", true)),
-		boundary,
-		assistantRow("s2", "compact-1", "msg_tool", []any{
+	events := joinedSubagentEvents(t,
+		userRow("s1", "", "the task prompt", "2026-01-01T00:00:02.000Z", with("isSidechain", true)),
+		assistantRow("s2", "s1", "msg_tool", []any{
 			toolUseBlock("toolu_large", "Bash", map[string]any{"command": "cat big"}),
-		}, "2026-01-01T00:00:02.000Z", with("isSidechain", true)),
-		toolResultRow("s3", "s2", "toolu_large", largeOutput, "2026-01-01T00:00:03.000Z",
+		}, "2026-01-01T00:00:03.000Z", with("isSidechain", true)),
+		toolResultRow("s3", "s2", "toolu_large", largeOutput, "2026-01-01T00:00:04.000Z",
 			with("isSidechain", true)),
-		summary,
-		assistantRow("s4", "summary-1", "msg_final", []any{textBlock("final answer")},
+		assistantRow("s4", "s3", "msg_final", []any{textBlock("final answer")},
 			"2026-01-01T00:00:05.000Z", with("isSidechain", true)),
-	}
-	lines := make([]any, len(rows))
-	for i := range rows {
-		lines[i] = rows[i]
-	}
-	writeJSONL(t, path, lines...)
-
-	got, err := ConvertSubagentTranscript(path, "toolu_task")
-	if err != nil {
-		t.Fatalf("ConvertSubagentTranscript: %v", err)
-	}
-	if got.FinalAssistantText() != "final answer" {
-		t.Fatalf("final text = %q", got.FinalAssistantText())
-	}
-	var largeResult, compaction bool
-	for _, event := range got.Events {
+	)
+	var largeResult, finalAnswer bool
+	for _, event := range events {
 		if event.Kind == provider.EventToolComplete && event.ItemID == "toolu_large" && len(event.Content) == len(largeOutput) {
 			largeResult = true
 		}
-		if event.Kind == provider.EventCompactBoundary && strings.Contains(string(event.Meta), "retained facts") {
-			compaction = true
+		if event.Kind == provider.EventTextDelta && event.Content == "final answer" {
+			finalAnswer = true
 		}
 	}
-	if !largeResult || !compaction {
-		t.Fatalf("large result or distant compaction summary missing: result=%v compaction=%v", largeResult, compaction)
-	}
-	// The file converter must retain the whole-import converter's clock,
-	// event identities, and summary pairing even across the large row.
-	joinedRows, err := readSubagentRows(path)
-	if err != nil {
-		t.Fatalf("readSubagentRows for whole-session import: %v", err)
-	}
-	if len(joinedRows) != len(rows) {
-		t.Fatalf("whole-session subagent reader kept %d rows, want %d", len(joinedRows), len(rows))
-	}
-	baseline := ConvertSubagentRows(joinedRows, "toolu_task")
-	if !reflect.DeepEqual(got.Events, baseline.Events) || !reflect.DeepEqual(got.Warnings, baseline.Warnings) {
-		t.Fatal("streamed file conversion diverged from whole-session conversion")
-	}
-}
-
-// A transcript with nothing convertible in it is an empty result, never
-// an error: an agent killed before it produced anything still has a file.
-//
-// "Nothing convertible" means no rows a timeline can render. An agent
-// killed after being GIVEN its task still has its prompt, and that row
-// is the whole reason a killed agent's card is not blank — so the empty
-// case here is a transcript of pure machinery.
-func TestConvertSubagentTranscriptEmptyAndInvalidInputs(t *testing.T) {
-	dir := t.TempDir()
-	promptOnly := filepath.Join(dir, "agent-only-prompt.jsonl")
-	writeJSONL(t, promptOnly,
-		userRow("s1", "", "the task prompt", "2026-01-01T00:00:02.000Z", with("isSidechain", true)),
-	)
-	result, err := ConvertSubagentTranscript(promptOnly, "toolu_task")
-	if err != nil {
-		t.Fatalf("ConvertSubagentTranscript(prompt only): %v", err)
-	}
-	if got := renderEvents(result.Events); got != `user_text turn=0 item=s1 parent=toolu_task src=s1 content="the task prompt"` {
-		t.Fatalf("prompt-only transcript produced:\n%s", got)
-	}
-
-	machineryOnly := filepath.Join(dir, "agent-machinery.jsonl")
-	writeJSONL(t, machineryOnly,
-		userRow("m1", "", "Caveat: this is a caveat", "2026-01-01T00:00:02.000Z",
-			with("isSidechain", true), with("isMeta", true)),
-	)
-	empty, err := ConvertSubagentTranscript(machineryOnly, "toolu_task")
-	if err != nil {
-		t.Fatalf("ConvertSubagentTranscript(machinery only): %v", err)
-	}
-	if len(empty.Events) != 0 {
-		t.Fatalf("machinery-only transcript produced %d event(s)", len(empty.Events))
-	}
-
-	if _, err := ConvertSubagentTranscript(promptOnly, "  "); err == nil {
-		t.Fatal("expected an empty launch tool_use id to be refused")
-	}
-	if _, err := ConvertSubagentTranscript(filepath.Join(dir, "missing.jsonl"), "toolu_task"); err == nil {
-		t.Fatal("expected a missing transcript to be an error")
-	}
-}
-
-// FinalAssistantText is the agent's report: the last assistant message's
-// text blocks, all of them, and nothing from an earlier message.
-func TestConvertResultFinalAssistantText(t *testing.T) {
-	stamp := func(seconds int) string { return "2026-01-01T00:00:0" + string(rune('0'+seconds)) + ".000Z" }
-	dir := t.TempDir()
-	path := filepath.Join(dir, "agent-final.jsonl")
-	writeJSONL(t, path,
-		userRow("s1", "", "the task prompt", stamp(0), with("isSidechain", true)),
-		assistantRow("s2", "s1", "msg_1", []any{textBlock("first thoughts")}, stamp(1), with("isSidechain", true)),
-		assistantRow("s3", "s2", "msg_2", []any{
-			toolUseBlock("toolu_sub", "Read", map[string]any{"file_path": "/repo/a.go"}),
-		}, stamp(2), with("isSidechain", true)),
-		toolResultRow("s4", "s3", "toolu_sub", "package main", stamp(3), with("isSidechain", true)),
-		assistantRow("s5", "s4", "msg_3", []any{textBlock("Reviewed."), textBlock("No issues.")}, stamp(4), with("isSidechain", true)),
-	)
-	result, err := ConvertSubagentTranscript(path, "toolu_task")
-	if err != nil {
-		t.Fatalf("ConvertSubagentTranscript: %v", err)
-	}
-	if got := result.FinalAssistantText(); got != "Reviewed.\nNo issues." {
-		t.Fatalf("FinalAssistantText = %q", got)
-	}
-
-	promptOnly := filepath.Join(dir, "agent-prompt.jsonl")
-	writeJSONL(t, promptOnly,
-		userRow("s1", "", "the task prompt", stamp(0), with("isSidechain", true)),
-	)
-	silent, err := ConvertSubagentTranscript(promptOnly, "toolu_task")
-	if err != nil {
-		t.Fatalf("ConvertSubagentTranscript(prompt only): %v", err)
-	}
-	if got := silent.FinalAssistantText(); got != "" {
-		t.Fatalf("FinalAssistantText(prompt only) = %q, want empty", got)
-	}
-	if got := (ConvertResult{}).FinalAssistantText(); got != "" {
-		t.Fatalf("FinalAssistantText(empty) = %q, want empty", got)
+	if !largeResult || !finalAnswer {
+		t.Fatalf("large sidechain lost rows: result=%v final=%v", largeResult, finalAnswer)
 	}
 }

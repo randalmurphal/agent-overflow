@@ -283,12 +283,11 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 // that is otherwise dropped because its agent already streams on stdout.
 // The stdout feed never carries a sidechain's `system/compact_boundary` or
 // `isCompactSummary` rows (claude-wire.md §Subagent stream forwarding), so
-// without this the boundary only exists in the terminal transcript replay,
-// which appends it after the agent's final answer — the wrong position.
+// without this the boundary never reaches the thread.
 //
-// Failure here is logged and dropped rather than returned: the terminal
-// replay reconciles every boundary by uuid, so the fallback is today's
-// end-of-transcript placement, never a lost compaction.
+// Failure here is logged and the boundary is dropped rather than failing
+// the parse: completion never reads the transcript, so nothing delivers
+// it later.
 func (p *Parser) tapUnprojectedCompaction(
 	threadID string,
 	state *transcriptMirrorState,
@@ -338,17 +337,17 @@ func (p *Parser) tapUnprojectedCompaction(
 		scope = p.taskToolUseRef(agentID).ToolUseID
 	}
 	if scope == "" {
-		log.Printf("claude: transcript_mirror compaction for agent %q has no resolvable launch tool_use; deferring to terminal replay", agentID)
+		log.Printf("claude: transcript_mirror compaction for agent %q has no resolvable launch tool_use; dropping it", agentID)
 		return nil
 	}
 	tap, retargeted, err := state.compactionTap(threadID, agentID, scope)
 	if err != nil {
-		log.Printf("claude: transcript_mirror compaction tap for agent %q: %v; deferring to terminal replay", agentID, err)
+		log.Printf("claude: transcript_mirror compaction tap for agent %q: %v; dropping it", agentID, err)
 		return retargeted
 	}
 	rows, err := sessionimport.DecodeSidechainRows(picked, now)
 	if err != nil {
-		log.Printf("claude: transcript_mirror compaction tap decode for agent %q: %v; deferring to terminal replay", agentID, err)
+		log.Printf("claude: transcript_mirror compaction tap decode for agent %q: %v; dropping it", agentID, err)
 		return retargeted
 	}
 	for _, uuid := range uuids {
@@ -356,7 +355,7 @@ func (p *Parser) tapUnprojectedCompaction(
 	}
 	result, err := tap.projector.AppendRows(rows)
 	if err != nil {
-		log.Printf("claude: transcript_mirror compaction tap for agent %q: %v; deferring to terminal replay", agentID, err)
+		log.Printf("claude: transcript_mirror compaction tap for agent %q: %v; dropping it", agentID, err)
 		return retargeted
 	}
 	return append(retargeted, tapCompactionProviderEvents(threadID, agentID, result)...)
@@ -405,8 +404,8 @@ func (p *Parser) finishMirroredTask(threadID, taskID string) []provider.Provider
 	state := p.transcriptMirror
 	// The task terminal is the last mirror signal this agent gets; a tapped
 	// boundary still waiting for its summary row flushes here, BEFORE the
-	// notification event the caller appends, so triage persists it ahead of
-	// the transcript replay that would otherwise re-mint it.
+	// notification event the caller appends, so triage persists it before
+	// the completion settles the agent.
 	events := state.drainCompactionTap(threadID, taskID)
 	binding := state.taskScopes[taskID]
 	if binding.scope == "" {

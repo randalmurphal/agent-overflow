@@ -1412,7 +1412,7 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 			report = agentReportFromNotification(launch, notification.Summary)
 		}
 		var readErr error
-		payload, _, readErr = r.readBackgroundOutputFile(evt.ThreadID, launch, meta.OutputFile, report, meta.ExitCode, now)
+		payload, readErr = backgroundOutputPayload(launch, meta.OutputFile, report, meta.ExitCode, now)
 		if readErr != nil {
 			log.Printf("triage: read Claude background output file %q: %v", meta.OutputFile, readErr)
 			payload = nil

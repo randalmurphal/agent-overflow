@@ -72,7 +72,7 @@ subagent model and the user explicitly authorizes the corresponding change.
   resend actions and stays out of every reader-authored read (nav rail,
   title regeneration). Claude creates it from the Agent/Task launch input
   before child output as `user:subagent-prompt:<launchID>`. The inline echo
-  or sidechain transcript later stamps the transcript uuid onto that row in
+  or the session mirror later stamps the transcript uuid onto that row in
   place. Codex V2 records observed incoming NEW_TASK and MESSAGE deliveries as
   sender-attributed user rows in the recipient scope. Encrypted bodies show an
   explicit placeholder; readable text remains available. Message delivery does
@@ -86,9 +86,10 @@ subagent model and the user explicitly authorizes the corresponding change.
   that turn is written answerless at turn end, and an answer sampled in a
   later turn stays a delivery activity. A Claude background completion
   carries a preview of the agent's final assistant text as the notification
-  `summary` reports it (the sidechain transcript is the fallback). The
-  transcript is reconciled into paged child rows, not copied into the
-  completion payload. The answer itself is a NORMAL
+  `summary` reports it. Completion never reads the sidechain transcript
+  (ruling 2026-09-23); a summary without a report leaves the preview empty.
+  The agent's rows are the paged child rows the live stream and the session
+  mirror wrote, not a copy in the completion payload. The answer itself is a NORMAL
   message, not a special block (ruling 2026-08-23): a Codex child's
   transcript streams to the parent parented to the launch, so the answer
   already renders in the card body and the pane as its own assistant
@@ -128,8 +129,7 @@ subagent model and the user explicitly authorizes the corresponding change.
   (Claude only: `background_tasks` control_request by `tool_use_id`);
   no keyboard shortcut (Q9). Claude stops forwarding the node through the
   ordinary sidechain stream, but AO's always-on session mirror continues its
-  pane live. Sessions started before mirror support fall back to terminal
-  transcript recovery.
+  pane live.
 - Kill only where the wire can: Claude nodes with a task id
   (`stop_task`) and owned Codex child turns (`turn/interrupt`); never forks.
   A reusable Codex agent reads current execution metadata for its spinner,

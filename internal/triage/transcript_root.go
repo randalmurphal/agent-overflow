@@ -30,8 +30,9 @@ import (
 //   - carrierRootRewrite makes "a row parented to a carrier"
 //     unrepresentable for live events, regardless of which parser path
 //     emitted them.
-//   - Every scope-resolving path (the terminal replay, the identity
-//     flip, the resume prompt row) resolves through transcriptRoot.
+//   - Every scope-resolving path (the identity flip, the parked-children
+//     check, the resume prompt row, the prompt binding) resolves through
+//     transcriptRoot.
 
 // maxTranscriptRootHops bounds the resumes_tool_use_id walk. A round-N
 // carrier's `resumes_tool_use_id` names the round-(N-1) carrier, not the

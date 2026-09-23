@@ -180,7 +180,7 @@ func TestFindOriginalAgentLaunchByTaskID(t *testing.T) {
 // TestFindProvisionalSubagentPrompt pins the §E6 resume-prompt
 // reconciliation lookup: the row minted from the rebind
 // `system/task_started` (which has no provider uuid to give) is found by
-// (parent, exact summary) so the terminal transcript can bind its uuid
+// (parent, exact summary) so the mirrored transcript row can bind its uuid
 // onto it in place. A row that is already bound, one under another
 // parent, and one with different text are all misses — each would bind
 // the transcript's copy onto the wrong row.

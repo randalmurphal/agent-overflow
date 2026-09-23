@@ -1136,7 +1136,7 @@ describe('reveal smoothing', () => {
     it('keeps serving a retained tail through a consistent summary re-assert', async () => {
       // The validation must be a consistency check, not a
       // one-shot fuse: a patch that re-asserts the SAME summary the
-      // settle recorded (Claude terminal replays do this) leaves the
+      // settle recorded (a repeated provider delivery does this) leaves the
       // rendered string untouched, so the tail keeps serving.
       const clock = new FakeSmoothingClock();
       __setSmoothingClockForTest(clock);

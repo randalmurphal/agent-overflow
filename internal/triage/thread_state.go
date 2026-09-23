@@ -263,7 +263,7 @@ type threadState struct {
 	// transcript ROOT it is a lifecycle row for, so Handle can rewrite a
 	// carrier-parented live event onto the root before any handler sees
 	// it. Populated wherever transcriptRoot resolves (the keep-running
-	// flip, the terminal replay, the resume prompt row). Session-scoped:
+	// flip, the parked-children check, the resume prompt row). Session-scoped:
 	// the durable answer is the carrier row's own `transcript_root_id`
 	// stamp, so losing this map costs a lookup, never correctness.
 	// Bounded by maxCarrierRootsPerThread; swept with the threadState.

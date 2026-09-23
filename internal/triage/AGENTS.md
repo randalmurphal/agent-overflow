@@ -32,11 +32,11 @@ Stopped-thread events route according to their recorded ownership and lifecycle,
 
 Subagent scope is provider-established. Preserve `ParentToolUseID` and recursive ownership; never flatten a child event into the parent merely because the child thread is not visible.
 
-For Claude resumed async agents, the resume carrier owns that round's lifecycle while the original launch remains the transcript root. Resolve roots through `transcript_root.go` on live routing, backfill, prompts, and compaction paths. Nothing is parented to the carrier.
+For Claude resumed async agents, the resume carrier owns that round's lifecycle while the original launch remains the transcript root. Resolve roots through `transcript_root.go` on live routing, completion, prompts, and compaction paths. Nothing is parented to the carrier.
 
 Background classification comes only from typed provider signals documented in the lifecycle reference. Model prose and timing heuristics are not evidence. Live correlation maps must be bounded, cleared on terminal/session teardown, and protected by their owning mutex.
 
-Transcript backfill is additive and idempotent. It must preserve provider identity, parentage, and existing richer live rows while filling history that was unavailable during streaming.
+Completion never reads or replays an agent's transcript ([decisions](../../docs/decisions.md#subagents-and-background-work)). A command's `output_file` is the one completion read, bounded to the `command_output` payload.
 
 ## Streaming and exported shapes
 

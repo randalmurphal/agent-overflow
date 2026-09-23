@@ -366,7 +366,7 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
     expect(opened).toEqual([['agent:1', 'Explore']]);
   });
 
-  it('surfaces a failed transcript backfill as an inline error on the card', async () => {
+  it('surfaces a failed output-file read as an inline error on the card', async () => {
     // triage stamps notification_output_state/error when the
     // task_notification's output_file could not be read. A silently
     // incomplete body reads exactly like a complete one, so the card says

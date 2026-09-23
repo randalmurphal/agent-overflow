@@ -23,11 +23,10 @@ const (
 // the mirror batches AO otherwise ignores. The stdout forwarding path
 // (`--forward-subagent-text`) never carries a sidechain's
 // `system/compact_boundary` or `isCompactSummary` rows, so without the tap a
-// live compaction only surfaces when the terminal transcript replay appends
-// it — after the agent's final answer, at the wrong position. The tap feeds
-// ONLY those two row shapes through the same SidechainProjector the full
-// projections use, so the emitted boundary carries the transcript uuid that
-// makes triage's persist and the terminal replay's dedupe agree on one row.
+// live compaction never surfaces. The tap feeds ONLY those two row shapes
+// through the same SidechainProjector the full projections use, so the
+// emitted boundary carries the transcript uuid that session import also
+// keys the row by.
 type mirrorCompactionTap struct {
 	scope     string
 	projector *sessionimport.SidechainProjector
@@ -40,8 +39,7 @@ type mirrorCompactionTap struct {
 // or retargeting one as needed. A resume rebinds an agent to a new carrier
 // tool call; the old tap is closed and its pending boundary (if any) is
 // returned so it still lands under the launch it belongs to. A nil tap means
-// the ceiling was hit — the terminal replay still recovers the row, at the
-// cost of position.
+// the ceiling was hit and the caller drops the boundary.
 func (s *transcriptMirrorState) compactionTap(threadID, agentID, scope string) (*mirrorCompactionTap, []provider.ProviderEvent, error) {
 	tap := s.compactionTaps[agentID]
 	var retargeted []provider.ProviderEvent
@@ -229,6 +227,12 @@ func (s *transcriptMirrorState) providerEvents(threadID string, result sessionim
 		event.ThreadID = threadID
 		if event.Kind == provider.EventUserText && strings.TrimSpace(event.ItemID) != "" {
 			event.Meta = mergeJSONMetaValue(event.Meta, "provider_item_id", strings.TrimSpace(event.ItemID))
+		}
+		if event.Kind == provider.EventError {
+			// The error happened inside the mirrored agent or fork. The
+			// main turn's outcome is reported on stdout, so this lands as
+			// the agent's own row and never ends the turn.
+			event.Meta = mergeJSONMetaFlag(event.Meta, "fatal", false)
 		}
 		event.Meta = mergeJSONMetaFlag(event.Meta, provider.MetaTranscriptSnapshotKey, true)
 		events = append(events, event)

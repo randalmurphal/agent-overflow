@@ -124,6 +124,12 @@ qualifies costs nothing.
   preview that is the card's collapsed line. This holds for Claude and
   Codex alike (ruling 2026-09-10). See
   [Tool, task and turn lifecycle](architecture/turn-lifecycle.md).
+- Completion never reads or replays an agent's sidechain transcript
+  (ruling 2026-09-23). An agent's rows come from the live stream and the
+  session mirror; `transcript_mirror_degraded` is the only degraded
+  behavior. The completion preview is the report in the notification
+  `summary`. A command's `output_file` is still read into the bounded
+  `command_output` payload.
 - Monitor idle-wake: the CLI writes `<task-notification>` to the
   transcript only. A transcript-tail backfill was proposed and declined.
 - Pre-existing dangling Codex child rows in old fork threads are left inert

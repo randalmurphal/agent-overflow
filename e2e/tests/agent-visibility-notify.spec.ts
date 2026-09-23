@@ -30,7 +30,6 @@ import {
   itemMeta,
   listItems,
   seedAgentThread,
-  sidechainTranscript,
   startMock,
   taskNotificationLine,
   taskStartedLine,
@@ -189,6 +188,7 @@ test('a background agent’s card lands with its entry count and hydrates on exp
         toolUseLine('msg-bg', 'tu-bg', 'Agent', {
           description: 'shard reviewer',
           subagent_type: 'shard-reviewer',
+          prompt: 'Review the first shard.',
         }),
         taskStartedLine('task-bg', 'tu-bg', 'shard reviewer'),
         asyncAgentAckLine('tu-bg', 'task-bg', 'shard reviewer'),
@@ -208,11 +208,8 @@ test('a background agent’s card lands with its entry count and hydrates on exp
         ...textLines('msg-s3', 'Shard reviewed: nothing drifted.', 'tu-bg'),
       ]),
       { waitSignal: { name: 'settle' } },
-      // The output file as the CLI leaves it at notification time: the
-      // report row is not appended yet (the CLI notifies first), so the
-      // envelope's summary is the only copy of the report. Nothing here
-      // is new to the thread, so the backfill adds no rows.
-      { writeFile: { path: 'shard-output.jsonl', content: sidechainTranscript([]) } },
+      // The envelope's summary is the report. Completion never reads the
+      // output file, so it is never written.
       emit([
         taskUpdatedLine('task-bg', { status: 'completed', end_time: 1787419835322 }),
         taskNotificationLine('task-bg', 'tu-bg', 'Shard reviewed: nothing drifted.', {
@@ -237,15 +234,15 @@ test('a background agent’s card lands with its entry count and hydrates on exp
 
   await waitForGate(harness, 'stream');
   await advance(harness, mockId, 'stream');
-  // The live rows are persisted under the launch before the agent settles:
-  // two text rows and the Read. Backfill adds the prompt row on settle.
+  // The rows are persisted under the launch before the agent settles: the
+  // opening prompt from the launch input, two text rows and the Read.
   await expect
     .poll(async () => {
       const items = await listItems(harness, threadId);
       const rows = items.filter((i) => i.parentId === 'tu-bg');
       return rows.some((i) => i.summary?.includes('nothing drifted')) ? rows.length : 0;
     })
-    .toBe(3);
+    .toBe(4);
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
 
   await waitForGate(harness, 'settle');
@@ -254,6 +251,7 @@ test('a background agent’s card lands with its entry count and hydrates on exp
   await expect(card).toHaveAttribute('data-background', 'true');
   await expect(card.getByTestId('subagent-group-count')).toHaveText('4 entries');
   await expect(card.getByTestId('subagent-group-preview')).toContainText('Shard reviewed: nothing drifted.');
+  await expect(card.getByTestId('subagent-group-output-error')).toHaveCount(0);
 
   // Expanding hydrates the folded rows back from the store.
   await card.getByTestId('subagent-group-toggle').first().click();
