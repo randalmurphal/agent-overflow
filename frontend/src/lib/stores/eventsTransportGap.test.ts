@@ -24,6 +24,7 @@ import { applyQueueStateChanged } from './eventsQueue';
 
 import { threadItemCache } from './threadItemCache';
 import { registerTimelineSurface } from './timelineSurfaces';
+import { HOME_BACKEND } from '../transport/backendKey';
 import { getBindingMock, setBindingMock } from '../../test/mocks/bindings-app';
 import {
   isWorkflowEnginePaused,
@@ -243,15 +244,22 @@ describe('transport gap — attributed item-event loss', () => {
     expect(getBindingMock('ListThreads')).not.toHaveBeenCalled();
   });
 
-  it('recovers every thread for an unattributed loss', async () => {
+  it('recovers every thread once for an unattributed loss', async () => {
     const { paneRefresh, surfaceRefresh } = await twoThreads();
+    // A surface the gap's own computer owns, which a per-computer pass
+    // ahead of the blanket one would refresh twice.
+    const owned = vi.fn(async () => {});
+    releases.push(registerTimelineSurface({
+      threadId: 'named-thread', backend: () => HOME_BACKEND, apply: () => {}, refresh: owned,
+    }));
 
     applyTransportGap({ channel: 'provider:item_event', seq: 9 });
 
     expect(paneRefresh.named).toHaveBeenCalledOnce();
     expect(paneRefresh.other).toHaveBeenCalledOnce();
-    expect(surfaceRefresh.named).toHaveBeenCalled();
-    expect(surfaceRefresh.other).toHaveBeenCalled();
+    expect(surfaceRefresh.named).toHaveBeenCalledOnce();
+    expect(surfaceRefresh.other).toHaveBeenCalledOnce();
+    expect(owned).toHaveBeenCalledOnce();
     expect(threadItemCache.get('named-thread')?.historyStamp).toBeNull();
     expect(threadItemCache.get('other-thread')?.historyStamp).toBeNull();
     await vi.waitFor(() => expect(getBindingMock('ListThreads')).toHaveBeenCalledOnce());

@@ -138,7 +138,7 @@ function resyncThreadLiveActivity(origin?: EventOrigin): void {
  * the sidebar and every other thread are as current as before the loss.
  */
 function recoverItemEventThreads(threads: ReadonlySet<string>): void {
-  refreshTimelineSurfaces(undefined, threads);
+  refreshTimelineSurfaces(threads);
   threadItemCache.dropUnattestedStamps(threads);
   for (const pane of ingestPanes()) {
     if (!pane.threadId || !threads.has(pane.threadId)) continue;
@@ -215,7 +215,8 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
         recoverItemEventThreads(new Set(gap.threads));
         return;
       }
-      refreshTimelineSurfaces(backendKeyForOrigin(origin?.backendId ?? ''));
+      // Unattributed: any thread may have lost frames, so fall through to
+      // the blanket answer, which refreshes every surface once.
     case 'thread:updated': {
       // The gap carries no entity key, so we cannot say WHICH thread's
       // history moved without us: every stamp we hold may now be an
