@@ -197,7 +197,7 @@
         you want it to use. You can change this later from settings.
       </p>
       <div id="distros" class="distro-list"></div>
-      <div id="loading" class="loading">Booting backend in WSL... this can take a few seconds on first launch.</div>
+      <div id="loading" class="loading"><span id="ao-loading-status">Booting backend in WSL... this can take a few seconds on first launch.</span><span id="ao-loading-meta"></span></div>
       <div id="error" class="error" hidden></div>
     </div>
 
@@ -318,5 +318,6 @@
         }
       }
     </script>
+    <script src="/loading.js"></script>
   </body>
 </html>

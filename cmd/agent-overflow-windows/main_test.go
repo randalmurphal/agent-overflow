@@ -6,17 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/wsldistro"
@@ -312,143 +307,6 @@ func TestSingleInstanceIDs(t *testing.T) {
 	if prod != "com.agentoverflow.wsl" {
 		t.Fatalf("prod single-instance ID = %q", prod)
 	}
-}
-
-func TestProbeBootstrapRetriesServiceUnavailable(t *testing.T) {
-	var attempts atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if attempts.Add(1) < 3 {
-			http.Error(w, "backend not ready", http.StatusServiceUnavailable)
-			return
-		}
-		writeProbeBootstrap(t, w, r, "test-token")
-	}))
-	defer server.Close()
-
-	_, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("split test server addr: %v", err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("parse test server port: %v", err)
-	}
-
-	err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
-		AttemptTimeout: 100 * time.Millisecond,
-		Deadline:       time.Second,
-		PollInterval:   time.Millisecond,
-	})
-	if err != nil {
-		t.Fatalf("probeBootstrapWithConfig: %v", err)
-	}
-	if got := attempts.Load(); got != 3 {
-		t.Fatalf("attempts = %d, want 3", got)
-	}
-}
-
-func TestProbeBootstrapTreatsNonReadyHTTPErrorAsTerminal(t *testing.T) {
-	var attempts atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts.Add(1)
-		http.NotFound(w, r)
-	}))
-	defer server.Close()
-
-	_, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("split test server addr: %v", err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("parse test server port: %v", err)
-	}
-
-	err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
-		AttemptTimeout: 100 * time.Millisecond,
-		Deadline:       time.Second,
-		PollInterval:   time.Millisecond,
-	})
-	if err == nil {
-		t.Fatal("probeBootstrapWithConfig accepted 404, want error")
-	}
-	if got := attempts.Load(); got != 1 {
-		t.Fatalf("attempts = %d, want terminal response after 1 attempt", got)
-	}
-}
-
-func TestProbeBootstrapReturnsTypedStartupFailure(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "backend startup failed", http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	_, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("split test server addr: %v", err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("parse test server port: %v", err)
-	}
-
-	err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
-		AttemptTimeout: 100 * time.Millisecond,
-		Deadline:       time.Second,
-		PollInterval:   time.Millisecond,
-	})
-	var httpErr bootstrapHTTPError
-	if !errors.As(err, &httpErr) {
-		t.Fatalf("error = %v, want bootstrapHTTPError", err)
-	}
-	if httpErr.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want %d", httpErr.StatusCode, http.StatusInternalServerError)
-	}
-}
-
-func TestProbeBootstrapRejectsInvalidSuccessBody(t *testing.T) {
-	var attempts atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		// wsUrl names a port this responder does not listen on, so the
-		// manifest cannot be the backend this launcher booted.
-		_, _ = w.Write([]byte(`{"wsUrl":"ws://127.0.0.1:1/ws"}`))
-	}))
-	defer server.Close()
-
-	_, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("split test server addr: %v", err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("parse test server port: %v", err)
-	}
-
-	err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
-		AttemptTimeout: 100 * time.Millisecond,
-		Deadline:       time.Second,
-		PollInterval:   time.Millisecond,
-	})
-	if !errors.Is(err, errInvalidBootstrap) {
-		t.Fatalf("probeBootstrapWithConfig error = %v, want invalid bootstrap failure", err)
-	}
-	if got := attempts.Load(); got != 1 {
-		t.Fatalf("attempts = %d, want invalid 200 to be terminal", got)
-	}
-}
-
-func writeProbeBootstrap(t *testing.T, w http.ResponseWriter, r *http.Request, token string) {
-	t.Helper()
-	w.Header().Set("Content-Type", "application/json")
-	_, port, err := net.SplitHostPort(r.Host)
-	if err != nil {
-		t.Fatalf("split request host: %v", err)
-	}
-	// Shaped like the real manifest, which carries no credential: the
-	// page's is an HttpOnly cookie and this probe presents a header.
-	_, _ = fmt.Fprintf(w, `{"wsUrl":"ws://127.0.0.1:%s/ws"}`, port)
 }
 
 func TestResolveChosenDistro(t *testing.T) {
@@ -850,107 +708,6 @@ func TestBrowserArgsExtraArgsGate(t *testing.T) {
 	}
 }
 
-// TestProbeBootstrapUnreachableIsRetryable pins the signal the
-// fresh-port retry keys on: a probe that never got a single HTTP
-// response back over Windows localhost. Nothing is listening on the
-// probed port here, which is exactly what a Hyper-V excluded port range
-// looks like from the Windows side while the WSL backend serves
-// happily inside the distro.
-func TestProbeBootstrapUnreachableIsRetryable(t *testing.T) {
-	// Bind and release so the port is almost certainly free, then probe
-	// it: every attempt is refused at the transport layer.
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("probe for a free port: %v", err)
-	}
-	_, portStr, err := net.SplitHostPort(listener.Addr().String())
-	if err != nil {
-		t.Fatalf("split addr: %v", err)
-	}
-	if err := listener.Close(); err != nil {
-		t.Fatalf("release probe listener: %v", err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("parse port: %v", err)
-	}
-
-	err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
-		AttemptTimeout: 100 * time.Millisecond,
-		Deadline:       50 * time.Millisecond,
-		PollInterval:   time.Millisecond,
-	})
-	if err == nil {
-		t.Fatal("probeBootstrapWithConfig succeeded against a dead port")
-	}
-	if !errors.Is(err, errBackendUnreachable) {
-		t.Fatalf("error = %v, want it to carry errBackendUnreachable", err)
-	}
-	if !retryWithFreshTransportPort(err) {
-		t.Fatal("an unreachable backend must be retried on a fresh transport port")
-	}
-}
-
-// TestProbeBootstrapAnsweredFailuresAreNotRetryable is the other half:
-// once the backend has answered ANYTHING over Windows localhost, the
-// port is demonstrably reachable and moving it would churn the webview
-// origin (and every origin-scoped browser store) for nothing.
-func TestProbeBootstrapAnsweredFailuresAreNotRetryable(t *testing.T) {
-	cases := []struct {
-		name    string
-		handler http.HandlerFunc
-	}{
-		{
-			name: "startup failure",
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				http.Error(w, "backend startup failed", http.StatusInternalServerError)
-			},
-		},
-		{
-			name: "credential rejected",
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				http.NotFound(w, r)
-			},
-		},
-		{
-			name: "never becomes ready",
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				http.Error(w, "still booting", http.StatusServiceUnavailable)
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(tc.handler)
-			defer server.Close()
-
-			_, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
-			if err != nil {
-				t.Fatalf("split test server addr: %v", err)
-			}
-			port, err := strconv.Atoi(portStr)
-			if err != nil {
-				t.Fatalf("parse test server port: %v", err)
-			}
-
-			err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
-				AttemptTimeout: 100 * time.Millisecond,
-				Deadline:       50 * time.Millisecond,
-				PollInterval:   time.Millisecond,
-			})
-			if err == nil {
-				t.Fatal("probeBootstrapWithConfig succeeded, want failure")
-			}
-			if retryWithFreshTransportPort(err) {
-				t.Fatalf("error %v was classified as unreachable; a fresh port cannot fix an answered failure", err)
-			}
-			if tc.name == "never becomes ready" && !errors.Is(err, errBackendNotReady) {
-				t.Fatalf("error = %v, want readiness timeout", err)
-			}
-		})
-	}
-}
-
 // TestRetryWithFreshTransportPortIgnoresUnrelatedErrors keeps the
 // classifier from widening by accident: only the sentinel qualifies.
 // TestShutdownRequestLandedDistinguishesRefusalFromLostAnswer covers the
@@ -988,10 +745,20 @@ func TestShutdownRequestLandedDistinguishesRefusalFromLostAnswer(t *testing.T) {
 }
 
 func TestRetryWithFreshTransportPortIgnoresUnrelatedErrors(t *testing.T) {
-	for _, err := range []error{nil, errors.New("boom"), errLaunchFailed, bootstrapHTTPError{StatusCode: 500, URL: "u"}} {
+	answered := []error{
+		nil, errors.New("boom"), errLaunchFailed,
+		wsllauncher.BootstrapHTTPError{StatusCode: 500, URL: "u"},
+		wsllauncher.ErrBackendNotReady,
+		wsllauncher.ErrInvalidBootstrap,
+		&wsllauncher.BackendStalledError{Last: errors.New("connection refused")},
+	}
+	for _, err := range answered {
 		if retryWithFreshTransportPort(err) {
 			t.Errorf("retryWithFreshTransportPort(%v) = true", err)
 		}
+	}
+	if !retryWithFreshTransportPort(fmt.Errorf("GET x: %w after 3 attempts", wsllauncher.ErrBackendUnreachable)) {
+		t.Error("an unreachable backend must be retried on a fresh transport port")
 	}
 }
 
@@ -1004,51 +771,6 @@ func TestResetTransportPortArgMatchesTheBackendFlag(t *testing.T) {
 	const expected = "--reset-transport-port"
 	if resetTransportPortArg != expected {
 		t.Fatalf("resetTransportPortArg = %q, want %q (keep it in step with the backend flag)", resetTransportPortArg, expected)
-	}
-}
-
-// The first retries are cheap (an instant 503 while the backend finishes
-// ServiceStartup), so the gap starts short and grows toward the cap
-// instead of sleeping a full cap-sized tick after the first miss.
-func TestProbeBootstrapBacksOffFromTheInitialInterval(t *testing.T) {
-	var attempts atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if attempts.Add(1) < 3 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		_, port, _ := net.SplitHostPort(r.Host)
-		fmt.Fprintf(w, `{"wsUrl":"ws://127.0.0.1:%s/ws","token":"test-token"}`, port)
-	}))
-	defer server.Close()
-
-	_, portStr, err := net.SplitHostPort(server.Listener.Addr().String())
-	if err != nil {
-		t.Fatalf("split test server addr: %v", err)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("parse test server port: %v", err)
-	}
-
-	started := time.Now()
-	err = probeBootstrapWithConfig(port, "test-token", bootstrapProbeConfig{
-		AttemptTimeout: 100 * time.Millisecond,
-		Deadline:       time.Second,
-		PollInterval:   250 * time.Millisecond,
-		// InitialPollInterval left zero: the production default applies.
-	})
-	elapsed := time.Since(started)
-	if err != nil {
-		t.Fatalf("probeBootstrapWithConfig: %v", err)
-	}
-	if got := attempts.Load(); got != 3 {
-		t.Fatalf("attempts = %d, want 3", got)
-	}
-	// Two misses cost 25 ms + 50 ms of sleep; a flat 250 ms gap would cost
-	// 500 ms. Generous bound so a slow CI box cannot flake it.
-	if elapsed >= 250*time.Millisecond {
-		t.Fatalf("two retries took %s, want the backoff (25 ms + 50 ms), not the 250 ms cap", elapsed)
 	}
 }
 

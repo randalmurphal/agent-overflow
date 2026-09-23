@@ -29,3 +29,21 @@ func TestWriteAndParseRoundTripOnlyAStartingReport(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusNamesTheUpdateBeingFinished(t *testing.T) {
+	for _, c := range []struct {
+		p    Progress
+		want string
+	}{
+		{Progress{Detail: "Applying migration 3 of 7 add_index"}, "Applying migration 3 of 7 add_index"},
+		{Progress{}, "Starting"},
+		{Progress{Detail: "Applying migration 3 of 7 add_index", UpdatingTo: "1.2.3"}, "Finishing update to v1.2.3: applying migration 3 of 7 add_index"},
+		{Progress{Detail: "Opening the database", UpdatingTo: "v2.0.0"}, "Finishing update to v2.0.0: opening the database"},
+		{Progress{Detail: "WSL setup", UpdatingTo: "2.0.0"}, "Finishing update to v2.0.0: WSL setup"},
+		{Progress{UpdatingTo: "2.0.0"}, "Finishing update to v2.0.0: starting"},
+	} {
+		if got := c.p.Status(); got != c.want {
+			t.Errorf("Status(%+v) = %q, want %q", c.p, got, c.want)
+		}
+	}
+}

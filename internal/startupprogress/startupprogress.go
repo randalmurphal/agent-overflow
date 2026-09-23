@@ -10,6 +10,8 @@ package startupprogress
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
+	"unicode"
 )
 
 // Reason is the body's `reason` while the backend starts.
@@ -35,6 +37,41 @@ type Progress struct {
 	// UpdatingTo names the version this boot is finishing an in-app update
 	// to. Empty on an ordinary start.
 	UpdatingTo string `json:"updatingTo,omitempty"`
+}
+
+// Status is the sentence a person reads for p: the detail, prefixed with
+// the update being finished when there is one, as in "Finishing update to
+// v1.2.3: applying migration 3 of 7 add_index". The frontend's
+// startupStatusText renders the same sentence.
+func (p Progress) Status() string {
+	detail := p.Detail
+	if detail == "" {
+		detail = "Starting"
+	}
+	if p.UpdatingTo == "" {
+		return detail
+	}
+	return "Finishing update to " + DisplayVersion(p.UpdatingTo) + ": " + lowerFirst(detail)
+}
+
+// DisplayVersion writes a version the way the app shows it, with one
+// leading "v".
+func DisplayVersion(v string) string {
+	if strings.HasPrefix(v, "v") {
+		return v
+	}
+	return "v" + v
+}
+
+// lowerFirst lowercases a leading capital that starts an ordinary word,
+// leaving an acronym such as "WSL" intact.
+func lowerFirst(s string) string {
+	r := []rune(s)
+	if len(r) == 0 || !unicode.IsUpper(r[0]) || (len(r) > 1 && unicode.IsUpper(r[1])) {
+		return s
+	}
+	r[0] = unicode.ToLower(r[0])
+	return string(r)
 }
 
 type body struct {
