@@ -658,6 +658,13 @@ The quarantined `thread/started` display metadata is cached separately so the
 event remains unroutable while its nickname can still enrich the spawn row on
 first paint once ownership arrives.
 
+Live `thread/started` includes a `sessionId` shared by a root and its descendants.
+When it differs from the active root's session ID and no known parent or typed
+spawn links the thread to that root, the adapter discards its wire events and
+rejects its pending requests without a child-routing warning. Missing identity
+continues through quarantine. Historical `thread/read` metadata is not used for
+this filter: legacy resumed subagent records can carry their own session ID.
+
 This rule is recursive. A `subAgentActivity kind:"started"` received on a
 known child thread creates a nested edge from that child's spawn item to the
 grandchild provider thread. Grandchild output is scoped to the nested spawn

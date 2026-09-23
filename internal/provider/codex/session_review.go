@@ -246,9 +246,9 @@ type reviewStartResponse struct {
 // Delivery caveat for callers: an inline review runs on the session's own
 // thread and every notification it produces already routes. A DETACHED
 // review runs on a thread this session does not own, so its notifications
-// hit the fail-closed child-thread quarantine
-// (isUnmappedForeignProviderThread) and are dropped after the bounded
-// deadline. That is safe but inert — surfacing a detached review's
+// hit the child-thread routing gate and cannot enter the root projection.
+// A different session ID is discarded immediately; unresolved identity
+// expires in the bounded quarantine. Surfacing a detached review's
 // transcript needs the returned ReviewThreadID registered with the
 // routing tables first, which is not wired yet.
 func (s *Session) StartReview(ctx context.Context, target ReviewTarget, delivery ReviewDelivery) (ReviewStarted, error) {

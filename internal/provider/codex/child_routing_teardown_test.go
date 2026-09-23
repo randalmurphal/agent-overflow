@@ -13,11 +13,11 @@ import (
 // and therefore needs no live process.
 func deferOneChildNotification(t *testing.T, s *Session, providerThreadID string) {
 	t.Helper()
-	if !s.deferChildWireEvent(providerThreadID, deferredChildWireEvent{
+	if s.routeChildWireEvent(providerThreadID, deferredChildWireEvent{
 		Method: "item/started",
 		Params: json.RawMessage(`{"threadId":"` + providerThreadID + `"}`),
-	}) {
-		t.Fatalf("deferChildWireEvent refused the event")
+	}) != childWireDeferred {
+		t.Fatalf("routeChildWireEvent refused the event")
 	}
 }
 

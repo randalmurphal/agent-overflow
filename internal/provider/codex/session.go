@@ -264,6 +264,8 @@ type sessionChildRoutingState struct {
 	recoveryPending         map[string]bool
 	recoveryQueue           []string
 	recoveryRunning         bool
+	unrelatedThreads        map[string]struct{}
+	unrelatedOrder          []string
 	deferredChildWireEvents map[string][]deferredChildWireEvent
 	deferredChildWireCount  int
 	deferredChildWireBytes  int
@@ -322,6 +324,10 @@ type Session struct {
 	// this field into mu would introduce a self-deadlock; a second mutex would
 	// introduce a lock order. An atomic has neither.
 	codexThreadID atomic.Pointer[string]
+	// Codex shares sessionId across a root and its descendants. It is learned
+	// from the same thread/start or thread/resume response as codexThreadID;
+	// absent metadata leaves unknown threads on the normal quarantine path.
+	codexSessionID atomic.Pointer[string]
 	// turn is the per-turn state of this session's own thread; origins is who
 	// started each of those turns; turnConfig is what the next turn will ask
 	// for and settings is what Codex reports it is running.
@@ -572,6 +578,23 @@ func (s *Session) rootThreadID() string {
 // re-derive the ordering between the two. Safe to call while holding mu.
 func (s *Session) setRootThreadID(id string) {
 	s.codexThreadID.Store(&id)
+}
+
+func (s *Session) rootSessionID() string {
+	if id := s.codexSessionID.Load(); id != nil {
+		return *id
+	}
+	return ""
+}
+
+func (s *Session) setRootSessionID(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rootSessionID() != id {
+		s.childRouting.unrelatedThreads = nil
+		s.childRouting.unrelatedOrder = nil
+	}
+	s.codexSessionID.Store(&id)
 }
 
 // MCPOAuthCompletedHandler observes the wire-level completion of an

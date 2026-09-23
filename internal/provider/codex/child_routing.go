@@ -15,6 +15,7 @@ const (
 	maxDeferredChildEventsTotal     = 512
 	maxDeferredChildEventBytes      = 4 * 1024 * 1024
 	maxDeferredChildThreadIDBytes   = 256
+	maxRememberedUnrelatedThreads   = 256
 )
 
 // deferredChildOwnershipTimeout is how long a child thread's wire events stay
@@ -37,30 +38,137 @@ func (e deferredChildWireEvent) sizeBytes() int {
 	return len(e.Method) + len(e.Params) + len(e.RequestID) + len(e.RawLine)
 }
 
-// isUnmappedForeignProviderThread is the fail-closed boundary for app-server
-// multiplexing. Once the root provider thread is known, any other thread must
-// have a typed spawn ownership edge before its events may enter AO's parent
-// projection. This applies recursively: a grandchild is foreign until the
-// subAgentActivity emitted on its child parent maps it to the nested spawn row.
-func (s *Session) isUnmappedForeignProviderThread(providerThreadID string) bool {
+type childWireRoute uint8
+
+const (
+	childWireRoutable childWireRoute = iota
+	childWireUnrelated
+	childWireDeferred
+	childWireOverflow
+)
+
+func (s *Session) isUnrelatedProviderThread(providerThreadID string) bool {
+	if providerThreadID == "" || providerThreadID == s.rootThreadID() {
+		return false
+	}
+	s.mu.Lock()
+	_, unrelated := s.childRouting.unrelatedThreads[providerThreadID]
+	if s.collab.childParentByThread[providerThreadID] != "" {
+		unrelated = false
+	}
+	s.mu.Unlock()
+	return unrelated
+}
+
+// Caller holds mu. Corrections remove the ID from both structures so a later
+// insertion cannot leave a stale queue entry that evicts the new identity.
+func (s *Session) forgetUnrelatedProviderThreadLocked(providerThreadID string) bool {
+	if _, exists := s.childRouting.unrelatedThreads[providerThreadID]; !exists {
+		return false
+	}
+	delete(s.childRouting.unrelatedThreads, providerThreadID)
+	for i, id := range s.childRouting.unrelatedOrder {
+		if id == providerThreadID {
+			copy(s.childRouting.unrelatedOrder[i:], s.childRouting.unrelatedOrder[i+1:])
+			s.childRouting.unrelatedOrder[len(s.childRouting.unrelatedOrder)-1] = ""
+			s.childRouting.unrelatedOrder = s.childRouting.unrelatedOrder[:len(s.childRouting.unrelatedOrder)-1]
+			return true
+		}
+	}
+	log.Printf("codex: unrelated thread %s missing from bounded order", providerThreadID)
+	return true
+}
+
+// A different, explicitly reported sessionId proves this thread is outside
+// the root's agent tree. Absence is not proof: older or partial metadata must
+// stay quarantined until a typed spawn owns it or the deadline warns.
+func (s *Session) discardUnrelatedProviderThread(providerThreadID, sessionID, parentThreadID string) bool {
+	providerThreadID = strings.TrimSpace(providerThreadID)
+	if providerThreadID == "" || len(providerThreadID) > maxDeferredChildThreadIDBytes || providerThreadID == s.rootThreadID() {
+		return false
+	}
+	s.mu.Lock()
+	rootSessionID := s.rootSessionID()
+	linked := s.collab.childParentByThread[providerThreadID] != "" ||
+		parentThreadID == s.rootThreadID() ||
+		s.collab.childParentByThread[parentThreadID] != ""
+	if linked || (rootSessionID != "" && sessionID == rootSessionID) {
+		wasUnrelated := s.forgetUnrelatedProviderThreadLocked(providerThreadID)
+		s.mu.Unlock()
+		if wasUnrelated {
+			log.Printf("codex: corrected session identity for thread %s; retaining child routing", providerThreadID)
+		} else if linked && rootSessionID != "" && sessionID != "" && sessionID != rootSessionID {
+			log.Printf("codex: conflicting session identity for child %s: root=%s reported=%s parent=%s; retaining child routing", providerThreadID, rootSessionID, sessionID, parentThreadID)
+		}
+		return false
+	}
+	if _, unrelated := s.childRouting.unrelatedThreads[providerThreadID]; unrelated {
+		s.mu.Unlock()
+		return true
+	}
+	if rootSessionID == "" || sessionID == "" {
+		s.mu.Unlock()
+		return false
+	}
+	if s.childRouting.unrelatedThreads == nil {
+		s.childRouting.unrelatedThreads = make(map[string]struct{})
+	}
+	if _, exists := s.childRouting.unrelatedThreads[providerThreadID]; !exists {
+		if len(s.childRouting.unrelatedOrder) < maxRememberedUnrelatedThreads {
+			s.childRouting.unrelatedOrder = append(s.childRouting.unrelatedOrder, providerThreadID)
+		} else {
+			old := s.childRouting.unrelatedOrder[0]
+			delete(s.childRouting.unrelatedThreads, old)
+			copy(s.childRouting.unrelatedOrder, s.childRouting.unrelatedOrder[1:])
+			s.childRouting.unrelatedOrder[len(s.childRouting.unrelatedOrder)-1] = providerThreadID
+		}
+		s.childRouting.unrelatedThreads[providerThreadID] = struct{}{}
+	}
+	events := s.takeDeferredChildWireEventsLocked(providerThreadID)
+	s.mu.Unlock()
+
+	for _, event := range events {
+		if event.RequestID != "" {
+			s.rejectUnrelatedRequest(event.RequestID)
+		}
+	}
+	return true
+}
+
+func (s *Session) rejectUnrelatedRequest(requestID string) {
+	rpcID, err := json.Number(requestID).Int64()
+	if err != nil {
+		log.Printf("codex: reject unrelated thread request id %q: %v", requestID, err)
+		return
+	}
+	if err := s.writeErrorResponse(rpcID, -32000, "thread belongs to another Codex session"); err != nil {
+		log.Printf("codex: reject unrelated thread request %d: %v", rpcID, err)
+	}
+}
+
+// routeChildWireEvent makes the ownership decision and queue insertion under
+// one lock. A recovery worker may register a spawn concurrently with readLoop;
+// separate checks could enqueue an event after the spawn drained its queue.
+func (s *Session) routeChildWireEvent(providerThreadID string, event deferredChildWireEvent) childWireRoute {
 	providerThreadID = strings.TrimSpace(providerThreadID)
 	rootThreadID := strings.TrimSpace(s.rootThreadID())
 	if providerThreadID == "" || rootThreadID == "" || providerThreadID == rootThreadID {
-		return false
+		return childWireRoutable
 	}
-	return s.parentToolUseForProviderThread(providerThreadID) == ""
-}
-
-func (s *Session) deferChildWireEvent(providerThreadID string, event deferredChildWireEvent) bool {
-	providerThreadID = strings.TrimSpace(providerThreadID)
-	if providerThreadID == "" || len(providerThreadID) > maxDeferredChildThreadIDBytes {
-		return false
+	if len(providerThreadID) > maxDeferredChildThreadIDBytes {
+		return childWireOverflow
 	}
 	event.Method = strings.TrimSpace(event.Method)
 	eventBytes := event.sizeBytes()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.collab.childParentByThread[providerThreadID] != "" {
+		return childWireRoutable
+	}
+	if _, unrelated := s.childRouting.unrelatedThreads[providerThreadID]; unrelated {
+		return childWireUnrelated
+	}
 	if s.childRouting.deferredChildWireEvents == nil {
 		s.childRouting.deferredChildWireEvents = make(map[string][]deferredChildWireEvent)
 	}
@@ -69,7 +177,7 @@ func (s *Session) deferChildWireEvent(providerThreadID string, event deferredChi
 		s.childRouting.deferredChildWireCount >= maxDeferredChildEventsTotal ||
 		eventBytes > maxDeferredChildEventBytes ||
 		s.childRouting.deferredChildWireBytes > maxDeferredChildEventBytes-eventBytes {
-		return false
+		return childWireOverflow
 	}
 	event.Params = append(json.RawMessage(nil), event.Params...)
 	event.RawLine = append(json.RawMessage(nil), event.RawLine...)
@@ -96,7 +204,7 @@ func (s *Session) deferChildWireEvent(providerThreadID string, event deferredChi
 			})
 		})
 	}
-	return true
+	return childWireDeferred
 }
 
 func (s *Session) takeDeferredChildWireEvents(providerThreadID string) []deferredChildWireEvent {
@@ -122,6 +230,12 @@ func (s *Session) takeDeferredChildWireEventsUnlessClosing(providerThreadID stri
 	if stopIfClosing && s.closing.Load() {
 		return nil
 	}
+	return s.takeDeferredChildWireEventsLocked(providerThreadID)
+}
+
+// Caller holds mu. Keeping removal under the classification lock prevents a
+// concurrent typed spawn from claiming a queue after its route was discarded.
+func (s *Session) takeDeferredChildWireEventsLocked(providerThreadID string) []deferredChildWireEvent {
 	events := s.childRouting.deferredChildWireEvents[providerThreadID]
 	if len(events) == 0 {
 		return nil
@@ -231,22 +345,29 @@ func (s *Session) warnChildRoutingOverflow(providerThreadID, method string, requ
 
 func (s *Session) dispatchServerRequest(method string, id *json.Number, params json.RawMessage, line []byte) {
 	providerThreadID := providerThreadIDFromParams(params)
-	if !s.isUnmappedForeignProviderThread(providerThreadID) {
-		s.handleServerRequest(method, id, params, line)
-		return
-	}
-
 	requestID := ""
 	if id != nil {
 		requestID = id.String()
 	}
-	if s.deferChildWireEvent(providerThreadID, deferredChildWireEvent{
+	switch s.routeChildWireEvent(providerThreadID, deferredChildWireEvent{
 		Method:    method,
 		Params:    params,
 		RequestID: requestID,
 		RawLine:   line,
 	}) {
+	case childWireUnrelated:
+		if id != nil {
+			s.rejectUnrelatedRequest(requestID)
+		}
 		return
+	case childWireRoutable:
+		s.handleServerRequest(method, id, params, line)
+		return
+	case childWireDeferred:
+		return
+	case childWireOverflow:
+		s.warnChildRoutingOverflow(providerThreadID, method, id)
+	default:
+		panic("codex: invalid child wire route")
 	}
-	s.warnChildRoutingOverflow(providerThreadID, method, id)
 }

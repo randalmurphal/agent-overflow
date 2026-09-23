@@ -44,7 +44,9 @@ func TestRecoverChildOwnershipUsesOriginalSpawnAndKeepsNestedScope(t *testing.T)
 		}
 		s.collabAsyncWG.Wait()
 	})
-	s.deferChildWireEvent("helper", deferredChildWireEvent{Method: "item/agentMessage/delta", Params: json.RawMessage(`{"threadId":"helper","turnId":"helper-turn","itemId":"answer","delta":"child text"}`)})
+	if s.routeChildWireEvent("helper", deferredChildWireEvent{Method: "item/agentMessage/delta", Params: json.RawMessage(`{"threadId":"helper","turnId":"helper-turn","itemId":"answer","delta":"child text"}`)}) != childWireDeferred {
+		t.Fatal("helper event was not deferred")
+	}
 	if err := s.recoverChildOwnership(ctx, "helper", make(map[string]bool)); err != nil {
 		t.Fatal(err)
 	}

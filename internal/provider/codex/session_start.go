@@ -239,6 +239,7 @@ func (s *Session) startOrResumeThread(ctx context.Context, cfg Config) error {
 		return err
 	}
 	s.setRootThreadID(responseThreadID)
+	s.setRootSessionID(readNestedString(resp, "thread", "sessionId"))
 	// The start/resume response is the only place a thread states its
 	// persisted history contract; `thread/revert` is available on one of
 	// the two (session_revert.go).

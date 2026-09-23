@@ -23,7 +23,7 @@ const rootThreadHandshakeTimeout = 15 * time.Second
 // stable reproducer.
 //
 // The reader side drives the three shapes of read that exist: through the
-// real dispatch entry point, through the fail-closed routing predicate, and
+// real dispatch entry point, through the unrelated-thread predicate, and
 // through a reader that is already holding s.mu.
 func TestRootThreadIDSurvivesHandshakeWindow(t *testing.T) {
 	const rootThread = "019fc2ff-9050-7971-ac4e-b902cc3b9f00"
@@ -40,7 +40,7 @@ func TestRootThreadIDSurvivesHandshakeWindow(t *testing.T) {
 			// the deferral path and leave an ownership-timeout timer running
 			// past the end of the test.
 			s.dispatchNotification("thread/settings/updated", params)
-			s.isUnmappedForeignProviderThread("child-thread")
+			s.isUnrelatedProviderThread(rootThread)
 			s.mu.Lock()
 			_ = s.rootThreadID()
 			s.mu.Unlock()

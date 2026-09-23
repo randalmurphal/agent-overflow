@@ -46,22 +46,35 @@ func (s *Session) dispatchNotification(method string, params json.RawMessage) {
 		return
 	}
 	providerThreadID := providerThreadIDFromParams(params)
-	if s.isUnmappedForeignProviderThread(providerThreadID) {
-		if s.deferChildWireEvent(providerThreadID, deferredChildWireEvent{
-			Method: method,
-			Params: params,
-		}) {
-			// MultiAgentV2 creates the child thread before it emits the parent-side
-			// subAgentActivity ownership item. Keep routing fail-closed, but retain
-			// display metadata only after the bounded quarantine accepts the event.
-			if method == "thread/started" {
-				s.rememberAgentMetaForProviderThread(providerThreadID, params)
-			}
-			s.scheduleChildOwnershipRecovery(providerThreadID)
-			return
+	if method == "thread/started" && s.discardUnrelatedProviderThread(
+		providerThreadID,
+		readNestedString(params, "thread", "sessionId"),
+		readNestedString(params, "thread", "parentThreadId"),
+	) {
+		return
+	}
+	switch s.routeChildWireEvent(providerThreadID, deferredChildWireEvent{
+		Method: method,
+		Params: params,
+	}) {
+	case childWireUnrelated:
+		return
+	case childWireDeferred:
+		// MultiAgentV2 creates the child thread before it emits the parent-side
+		// subAgentActivity ownership item. Retain display metadata only after
+		// the bounded quarantine accepts the event.
+		if method == "thread/started" {
+			s.rememberAgentMetaForProviderThread(providerThreadID, params)
 		}
+		s.scheduleChildOwnershipRecovery(providerThreadID)
+		return
+	case childWireOverflow:
 		s.warnChildRoutingOverflow(providerThreadID, method, nil)
 		return
+	case childWireRoutable:
+		// Continue with the root or owned child route below.
+	default:
+		panic("codex: invalid child wire route")
 	}
 
 	s.dispatchRoutableNotification(method, params, providerThreadID)

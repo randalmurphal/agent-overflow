@@ -13,7 +13,7 @@ import (
 const maxOwnershipRecoveryPages = 32
 
 func (s *Session) scheduleChildOwnershipRecovery(childID string) {
-	if !s.appServerAtLeast("0.153.4") || s.closing.Load() {
+	if !s.appServerAtLeast("0.153.4") || s.closing.Load() || s.isUnrelatedProviderThread(childID) {
 		return
 	}
 	s.mu.Lock()
@@ -55,7 +55,7 @@ func (s *Session) scheduleChildOwnershipRecovery(childID string) {
 }
 
 func (s *Session) recoverChildOwnership(ctx context.Context, childID string, seen map[string]bool) error {
-	if childID == s.rootThreadID() || s.parentToolUseForProviderThread(childID) != "" {
+	if childID == s.rootThreadID() || s.parentToolUseForProviderThread(childID) != "" || s.isUnrelatedProviderThread(childID) {
 		return nil
 	}
 	if seen[childID] || len(seen) >= 16 {

@@ -599,6 +599,9 @@ func (s *Session) registerChildOwnershipWithSource(sourceThreadID, childThreadID
 			}
 		}
 	}
+	if s.forgetUnrelatedProviderThreadLocked(childThreadID) {
+		log.Printf("codex: typed spawn for previously unrelated thread %s; preserving spawn ownership", childThreadID)
+	}
 	s.collab.childParentByThread[childThreadID] = parentToolUseID
 	if s.collab.childRuntimeByThread == nil {
 		s.collab.childRuntimeByThread = make(map[string]childRuntimeState)
