@@ -64,6 +64,11 @@ export interface ThreadTimelineWindowOptions {
   ): boolean;
   getThread(): Thread | null;
   selection?(): TimelineSelection;
+  /**
+   * Rows of the loaded window the selection pages, maintained by the
+   * pane's commit chokepoints (`threadItemWindow.windowedRowCount`).
+   */
+  windowedRowCount(): number;
   /** Pane switch generation — captured at load start, compared after awaits. */
   getSwitchGeneration(): number;
   /** Registered pane scroll controller (or null). applyPrunedWindow queries its retention guard. */
@@ -537,8 +542,7 @@ export function createThreadTimelineWindow(
   }
 
   function pruneToRecentWindowIfNeeded(): void {
-    const items = options.getItems();
-    const loadedTopLevel = topLevelCount(items);
+    const loadedTopLevel = options.windowedRowCount();
     if (loadedTopLevel <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) return;
     const thread = options.getThread();
     const activeTurn = thread !== null ? getActiveTurn(thread.id) : null;
@@ -558,7 +562,7 @@ export function createThreadTimelineWindow(
     }
     if (recentWindowPrunePending && !exceedsHardCeiling) return;
     const next = keepWindowNearReader(
-      items,
+      options.getItems(),
       ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS,
       'centered',
     );
@@ -769,7 +773,7 @@ export function createThreadTimelineWindow(
    */
   function settleRecentWindowPrune(): void {
     if (hasMoreNewer) return;
-    if (topLevelCount(options.getItems()) <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) {
+    if (options.windowedRowCount() <= ACTIVE_TIMELINE_WINDOW_MAX_ITEMS) {
       recentWindowPrunePending = false;
       return;
     }

@@ -302,6 +302,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     replaceTimelineItems,
     installTimelineItems,
     getThread: () => thread,
+    windowedRowCount: itemWindow.windowedRowCount,
     getSwitchGeneration: () => switchGeneration,
     getScrollController: () => paneScroll.controller,
     // Declared below; the arrow keeps the read lazy, like the

@@ -219,7 +219,7 @@ describe('threadItems', () => {
 
     expect(next?.items.map((item) => item.id)).toEqual(['last', 'first', 'middle']);
     expect(next?.items[0]).toBe(replacement);
-    expect(next?.indexesNeedRebuild).toBe(true);
+    expect(next?.reindexFrom).toBe(0);
   });
 
   it('drops new rows below the loaded floor but still accepts existing-row corrections', () => {
@@ -337,7 +337,11 @@ describe('threadItems', () => {
       oldestLoadedTurnIndex: 2,
     });
 
-    expect(next?.items[0]).toBe(decided);
+    // A held row rewritten in place: the window keeps its identity and the
+    // commit applies the write.
+    expect(next?.items).toBe(current);
+    expect(next?.rowWrites).toEqual([{ index: 0, previous: current[0], item: decided }]);
+    expect(next?.reindexFrom).toBe(current.length);
   });
 
   it('does not flag same-row successful command output chrome as structural', () => {
@@ -369,7 +373,7 @@ describe('threadItems', () => {
       oldestLoadedTurnIndex: 0,
     });
 
-    expect(next?.items[0]).toBe(completed);
+    expect(next?.rowWrites[0]?.item).toBe(completed);
     expect(next?.structureChanged).toBe(false);
     // …but the row LEFT the active set, which is a retention change with
     // no structural change in tow. The two flags are independent.
@@ -496,7 +500,7 @@ describe('threadItems', () => {
       oldestLoadedTurnIndex: 0,
     });
 
-    expect(next?.items[0]).toBe(completed);
+    expect(next?.rowWrites[0]?.item).toBe(completed);
     expect(next?.structureChanged).toBe(false);
   });
 
@@ -573,7 +577,7 @@ describe('applyItemUpsertsToWindow row-UI retention flag', () => {
   it('stays false for a text-only delta upsert on a streaming row', () => {
     const grown = { ...streaming, summary: 'partial plus more', updatedAt: 5 };
     const next = applyOver([streaming], [grown]);
-    expect(next?.items[0]).toBe(grown);
+    expect(next?.rowWrites[0]?.item).toBe(grown);
     expect(next?.rowUiRetentionChanged).toBe(false);
   });
 
@@ -618,7 +622,7 @@ describe('applyItemUpsertsToWindow row-UI retention flag', () => {
       { ...streaming, summary: 'more text', updatedAt: 5 },
       { ...settledTail, turnIndex: 2, updatedAt: 5 },
     ]);
-    expect(next?.indexesNeedRebuild).toBe(true);
+    expect(next?.reindexFrom).toBe(0);
     expect(next?.rowUiRetentionChanged).toBe(false);
   });
 

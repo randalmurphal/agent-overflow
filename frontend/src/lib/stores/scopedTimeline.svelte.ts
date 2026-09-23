@@ -56,7 +56,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     },
   };
   const itemWindow = createThreadItemWindow({
-    optimisticItemIds, scopeRootId: () => selection.scopeRootId, streamingReveal: () => reveal, rowUiState: () => rows,
+    optimisticItemIds, selection: () => selection, streamingReveal: () => reveal, rowUiState: () => rows,
     activityRuns: () => runs, switchLoad: () => mutations,
   });
   const { getItems, getItemById, itemIndexById, writeItemAt, appendDirectAssistantLiteral,
@@ -74,7 +74,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     appendLivePayloadDeltaForItem: rows.appendLivePayloadDeltaForItem,
   });
   const window = createThreadTimelineWindow({
-    getItems, replaceTimelineItems, installTimelineItems, getThread: () => thread,
+    getItems, replaceTimelineItems, installTimelineItems, getThread: () => thread, windowedRowCount: itemWindow.windowedRowCount,
     getSwitchGeneration: () => generation, getScrollController: () => scroll.controller,
     activityRuns: () => runs, selection: () => selection,
   });

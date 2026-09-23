@@ -11,6 +11,7 @@ import { cursorFromItem } from './threadItems';
 import type { Item } from '../types/models';
 import { ActivityRunStub, type PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { ACTIVE_TIMELINE_WINDOW_MAX_ITEMS, ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS } from './threadPaneShared';
 
 const threadId = 'scope-thread';
 const root = makeItem({ id: 'agent', threadId, kind: 'tool_call', toolName: 'Agent', status: 'running' });
@@ -138,6 +139,18 @@ describe('independent agent timeline', () => {
     push(row('second', 2));
     applyItemStreamEvent({ action: 'remove', threadId, itemId: 'second' }); flushItemEventQueue();
     expect(view.pane.getItemById('second')).toBeUndefined();
+  });
+
+  it('prunes its window by the rows of its own scope', async () => {
+    const pane = await setup([root]);
+    const loaded = Array.from({ length: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS }, (_, index) => row(`r${index}`, index + 1));
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page(loaded) }));
+    const view = await open(pane);
+    expect(view.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_MAX_ITEMS);
+    push(row('tail', ACTIVE_TIMELINE_WINDOW_MAX_ITEMS + 1));
+    expect(view.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+    expect(view.items.at(-1)?.id).toBe('tail');
+    expect(view.pane.hasMoreHistory).toBe(true);
   });
 
   it('does not admit live history below its loaded floor and leaves it pageable', async () => {

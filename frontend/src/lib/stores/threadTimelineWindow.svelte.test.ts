@@ -1977,6 +1977,44 @@ describe('threadTimelineWindow', () => {
       expect(pane.hasMoreNewer).toBe(false);
     });
 
+    it('counts only windowed rows toward the active window cap', async () => {
+      const pane = createThreadPane();
+      const max = ACTIVE_TIMELINE_WINDOW_MAX_ITEMS;
+      const conversation = Array.from({ length: max - 1 }, (_, index) =>
+        makeItem({ id: `t${index}`, threadId: 't', turnIndex: index, itemIndex: 0 }),
+      );
+      const planUpdates = Array.from({ length: 5 }, (_, index) =>
+        makeItem({ id: `plan${index}`, threadId: 't', turnIndex: index, itemIndex: 1, kind: 'notification', toolName: 'plan_update' }),
+      );
+      const initial = [...conversation, ...planUpdates]
+        .sort((a, b) => a.turnIndex - b.turnIndex || a.itemIndex - b.itemIndex);
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: initial,
+        oldestTurnIndex: 0,
+        newestTurnIndex: max - 2,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+
+      // Reaches the cap exactly: the plan updates are not rows the window
+      // pages, so nothing is pruned.
+      pane.upsertItem(makeItem({ id: `t${max - 1}`, threadId: 't', turnIndex: max - 1, itemIndex: 0 }));
+      expect(pane.items).toHaveLength(max + 5);
+      expect(pane.hasMoreHistory).toBe(false);
+
+      // A kind change in place moves a row out of the count too.
+      pane.upsertItem({ ...conversation[10], kind: 'notification', toolName: 'plan_update', updatedAt: conversation[10].updatedAt + 1 });
+      pane.upsertItem(makeItem({ id: `t${max}`, threadId: 't', turnIndex: max, itemIndex: 0 }));
+      expect(pane.items).toHaveLength(max + 6);
+      expect(pane.hasMoreHistory).toBe(false);
+
+      pane.upsertItem(makeItem({ id: `t${max + 1}`, threadId: 't', turnIndex: max + 1, itemIndex: 0 }));
+      expect(pane.items.length).toBeLessThan(max);
+      expect(pane.hasMoreHistory).toBe(true);
+    });
+
     // Incident 2026-08-31: a busy subagent with an open companion pane held
     // 1000+ live child rows loaded (the companion scope blocks fold
     // eviction), the raw-count caps read that invisible mass as a full
