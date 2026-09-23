@@ -21,6 +21,7 @@ import (
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/pagehost"
+	"agent-overflow/internal/startupprogress"
 
 	"github.com/coder/websocket"
 )
@@ -385,12 +386,19 @@ type Config struct {
 	// name costs and why exactly one is accepted rather than all of them.
 	CanonicalHost string
 
-	// RequireReadyForBootstrap makes /bootstrap.json return 503 until
-	// MarkReady is called. Default false preserves the normal desktop
-	// path, where the frontend may connect while Wails is still running
-	// ServiceStartup. Headless launchers use this to publish the port
-	// early but hold navigation until the backend is actually ready.
+	// RequireReadyForBootstrap holds the server until MarkReady: the
+	// bootstrap answers 503 (with StartupProgress once the boot reports
+	// any), /ws admits only this machine's processes and answers every
+	// RPC outside StartupMethods with temporarily_unavailable, and every
+	// other route except /healthz, the page URL and the SPA assets closes
+	// without an answer. So no App method outside StartupMethods runs
+	// before the App has started. Every executable boot sets it; a server
+	// built without it starts ready.
 	RequireReadyForBootstrap bool
+	// StartupMethods names the RPC methods served before MarkReady: the
+	// process-lifecycle calls a launcher makes while the backend is still
+	// starting. Each must be safe on an App whose Start has not finished.
+	StartupMethods []string
 	// WaitForActivation keeps client requests outside an uncommitted supervisor
 	// trial. Only the read-only health endpoint remains available. In particular,
 	// credential renewal must not escape a database that could be rolled back.
@@ -544,6 +552,11 @@ type Server struct {
 	shutDown atomic.Bool
 
 	ready atomic.Bool
+	// startupProgress is what a not-ready bootstrap reports. Nil until the
+	// boot sets any, which keeps the bare 503 (startup_progress.go).
+	startupProgress atomic.Pointer[startupprogress.Progress]
+	// startupMethods is Config.StartupMethods as a set, fixed at New.
+	startupMethods map[string]bool
 
 	startupFailed atomic.Bool
 
@@ -665,6 +678,10 @@ func New(cfg Config) (*Server, error) {
 	}
 	if !cfg.RequireReadyForBootstrap {
 		s.ready.Store(true)
+	}
+	s.startupMethods = make(map[string]bool, len(cfg.StartupMethods))
+	for _, name := range cfg.StartupMethods {
+		s.startupMethods[name] = true
 	}
 	return s, nil
 }
@@ -940,7 +957,7 @@ func (s *Server) buildHTTPServer() *http.Server {
 	}
 	mux.Handle("/", assetFinal)
 	return &http.Server{
-		Handler:           s.trialGuard(mux),
+		Handler:           s.trialGuard(s.readinessGuard(mux)),
 		ReadHeaderTimeout: s.cfg.HTTPReadHeaderTimeout,
 		ReadTimeout:       s.cfg.HTTPReadTimeout,
 		WriteTimeout:      s.cfg.HTTPWriteTimeout,
@@ -950,6 +967,49 @@ func (s *Server) buildHTTPServer() *http.Server {
 		// rootCtx so existing handlers don't see a spurious cancel.
 		BaseContext: func(_ net.Listener) context.Context { return s.rootCtx },
 	}
+}
+
+// readinessGuard refuses every route that reaches App state until
+// MarkReady. The bootstrap answers for itself (it reports progress), and
+// /healthz, the page URL and the SPA assets name the server rather than
+// act on the App, so the page can load and show that it is starting. /ws
+// stays open to this machine's processes, whose RPCs the connection gates
+// by StartupMethods (conn.go), because the launcher asks a backend it is
+// abandoning to stop before that backend is ready. Everything else, the
+// credential, transfer, bundle and attached-backend routes and an
+// off-host upgrade included, is closed without a response, the shape the
+// trial guard uses: a client reads it as a transient network failure and
+// retries, never as a refused credential.
+func (s *Server) readinessGuard(mux *http.ServeMux) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.Ready() && !servedBeforeReady(mux, r) {
+			panic(http.ErrAbortHandler)
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// servedBeforeReady reports whether a not-ready server serves r. "/" is
+// the SPA asset handler.
+func servedBeforeReady(mux *http.ServeMux, r *http.Request) bool {
+	_, pattern := mux.Handler(r)
+	switch pattern {
+	case "/", BootstrapPath, HealthPath, PageURLPath:
+		return true
+	case WSPath:
+		return loopback.PeerAddress(r.RemoteAddr)
+	}
+	return false
+}
+
+// rpcBeforeReady refuses a method outside StartupMethods until MarkReady.
+// temporarily_unavailable is the retryable answer: the caller may ask
+// again once the bootstrap reports ready.
+func (s *Server) rpcBeforeReady(method string) *FrameError {
+	if s.Ready() || s.startupMethods[method] {
+		return nil
+	}
+	return &FrameError{Code: ErrCodeTemporarilyUnavailable, Message: "backend is starting"}
 }
 
 func (s *Server) trialGuard(next http.Handler) http.Handler {
@@ -1598,6 +1658,9 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.Ready() {
+		if s.writeStartupProgress(w) {
+			return
+		}
 		h.Set("Content-Type", "text/plain; charset=utf-8")
 		http.Error(w, "backend not ready", http.StatusServiceUnavailable)
 		return
@@ -1997,6 +2060,21 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A connection admitted before MarkReady (a process on this machine,
+	// served StartupMethods only) gets a hello without the fields the App
+	// supplies: routes, the browser capability and the backend name read
+	// state the running App.Start is still writing.
+	var (
+		routes           []computerroute.Route
+		browserAvailable func() bool
+		backendName      string
+	)
+	if s.Ready() {
+		routes = s.computerRoutes(backendID)
+		browserAvailable = s.cfg.BrowserAvailable
+		backendName = s.backendName()
+	}
+
 	// Use the server's root context so Shutdown can cancel us promptly,
 	// not r.Context() which net/http only cancels on connection close.
 	runConnHandler(s.rootCtx, conn, s.cfg.Dispatcher, s.cfg.EventBus, connSettings{
@@ -2007,17 +2085,18 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		sessionConns:      s.sessionConns,
 		sessions:          s.cfg.Sessions,
 		stepUpProof:       s.cfg.StepUpProof,
+		rpcBeforeReady:    s.rpcBeforeReady,
 		sessionRecheck:    s.cfg.SessionRecheckInterval,
 		maxLifetime:       s.cfg.MaxRemoteConnLifetime,
 		hello: helloFrame{
-			Routes: s.computerRoutes(backendID),
+			Routes: routes,
 			// Resolved per accept, not at boot: the browser Manager picks
 			// its engine during the App's startup, which runs after this
 			// Config is built.
-			Capabilities: advertisedCapabilities(s.cfg.BrowserAvailable, s.cfg.ThreadTransfers != nil, s.cfg.FilePreviews, s.cfg.OmitThreadToolsCapability),
+			Capabilities: advertisedCapabilities(browserAvailable, s.cfg.ThreadTransfers != nil, s.cfg.FilePreviews, s.cfg.OmitThreadToolsCapability),
 			BackendID:    backendID,
 			LaunchID:     s.launchID,
-			BackendName:  s.backendName(),
+			BackendName:  backendName,
 			// Sampled per accept: the field's whole purpose is letting a
 			// client measure its own skew against this backend, which a
 			// value cached at boot would silently corrupt by the process

@@ -1064,6 +1064,9 @@ func TestReconcileWSLUpdateMarkerAbsent(t *testing.T) {
 	if a.updater.applyFailure != "" {
 		t.Fatalf("notice = %q, want empty on an ordinary boot", a.updater.applyFailure)
 	}
+	if got := a.AppliedUpdate(); got != "" {
+		t.Fatalf("AppliedUpdate = %q, want empty on an ordinary boot", got)
+	}
 	// No marker means no install was ever handed over, so the boot check has no
 	// business deleting anything a download in this session might be mid-stage.
 	if _, err := os.Stat(staged); err != nil {
@@ -1084,6 +1087,11 @@ func TestReconcileWSLUpdateMarkerMatchClearsAndSweeps(t *testing.T) {
 
 	if a.updater.applyFailure != "" {
 		t.Fatalf("notice = %q, want empty when the swap worked", a.updater.applyFailure)
+	}
+	// The boot's readiness report reads this to present the boot as
+	// finishing the update.
+	if got := a.AppliedUpdate(); got != "0.0.10" {
+		t.Fatalf("AppliedUpdate = %q, want the version the marker named", got)
 	}
 	if m := readMarker(t, mode.markerDir); m != nil {
 		t.Fatalf("marker = %+v, want cleared once its question is answered", m)
@@ -1108,6 +1116,9 @@ func TestReconcileWSLUpdateMarkerMismatchRecordsNotice(t *testing.T) {
 	if a.updater.applyFailure != want {
 		t.Fatalf("notice = %q, want %q", a.updater.applyFailure, want)
 	}
+	if got := a.AppliedUpdate(); got != "" {
+		t.Fatalf("AppliedUpdate = %q, want empty when the swap did not apply", got)
+	}
 	if m := readMarker(t, mode.markerDir); m != nil {
 		t.Fatalf("marker = %+v, want cleared so the next boot does not re-accuse", m)
 	}
@@ -1130,6 +1141,9 @@ func TestReconcileWSLUpdateMarkerCorruptIsLoudAndSelfHealing(t *testing.T) {
 
 	if !strings.Contains(a.updater.applyFailure, "unreadable") {
 		t.Fatalf("notice = %q, want it to name the unreadable record", a.updater.applyFailure)
+	}
+	if got := a.AppliedUpdate(); got != "" {
+		t.Fatalf("AppliedUpdate = %q, want empty when the record is unreadable", got)
 	}
 	if _, err := os.Stat(selfupdate.MarkerPath(mode.markerDir)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("a corrupt marker must be cleared (stat err = %v)", err)

@@ -647,7 +647,10 @@ var Routes = []Route{
 			"A live durable session also admits it (without the cookie " +
 			"mint): the paired-device page holds no page credential " +
 			"after a backend restart, and the manifest must not be " +
-			"stricter than the /ws upgrade it describes.",
+			"stricter than the /ws upgrade it describes. Until the backend " +
+			"is ready it answers 503 with the boot's phase and step, behind " +
+			"the same credential checks, and every route except this one, " +
+			"/healthz, /pageurl and the assets closes without an answer.",
 	},
 	{
 		Pattern:    "/ws",
@@ -1136,7 +1139,8 @@ var Routes = []Route{
 		Why: "Issues this origin's own page cookie. Deliberately not a " +
 			"proxy of the upstream's bootstrap: the stub cannot set a " +
 			"cookie for another origin, so the page's credential has to be " +
-			"minted here.",
+			"minted here. The one upstream body it passes on is a starting " +
+			"report, re-encoded from its parsed fields.",
 	},
 	{
 		Pattern:    "/ws",

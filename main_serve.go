@@ -121,12 +121,6 @@ func runServe(flags cliFlags) {
 
 	srv := bootTransport(appService, flags.listenAddr, bootTransportOptions{
 		BackendLockHeldBySupervisor: supervisor != nil && supervisor.ownsDataRoot,
-		// A browser pointed at a serve host must not load the SPA against a
-		// backend whose store is not open yet: /bootstrap.json answers 503
-		// until MarkReady, and the page retries. The desktop boot can skip
-		// this because the window it opens is under the same process's
-		// control; a remote browser is not.
-		RequireReadyForBootstrap: true,
 	})
 	appservice.ConfigureTransportNotifications(appService.App)
 	// The bus exists now, so the boot's update check can say its piece to a

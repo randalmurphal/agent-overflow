@@ -117,12 +117,11 @@ func runHarness(flags cliFlags) {
 	appservice.SetProviderExtraEnv(appService.App, providerEnv)
 	defer controlServer.Shutdown()
 	srv := bootTransport(appService, flags.listenAddr, bootTransportOptions{
-		RequireReadyForBootstrap: true,
-		IgnorePersistedNetwork:   true,
-		HarnessReceiver:          h,
-		HarnessPageMarker:        harnessrpc.PageMarker(h),
-		HarnessMethodsSink:       func(names []string) { harnessrpc.SetWireMethods(h, names) },
-		AllowDevServerAssets:     true,
+		IgnorePersistedNetwork: true,
+		HarnessReceiver:        h,
+		HarnessPageMarker:      harnessrpc.PageMarker(h),
+		HarnessMethodsSink:     func(names []string) { harnessrpc.SetWireMethods(h, names) },
+		AllowDevServerAssets:   true,
 	})
 	log.Printf("transport: harness mode (data dir %s)", paths.DataDir)
 
