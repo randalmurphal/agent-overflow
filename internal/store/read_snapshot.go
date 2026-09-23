@@ -18,6 +18,11 @@ func readSnapshotContext[T any](ctx context.Context, db *sql.DB, label string, r
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
+		// A deadline that fires while BEGIN runs interrupts it, and the
+		// driver reports the interruption rather than the context's error.
+		if ctxErr := ctx.Err(); ctxErr != nil && !errors.Is(err, ctxErr) {
+			err = errors.Join(ctxErr, err)
+		}
 		return value, fmt.Errorf("store: begin %s: %w", label, err)
 	}
 	defer func() {
