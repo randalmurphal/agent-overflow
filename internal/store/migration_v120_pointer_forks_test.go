@@ -113,6 +113,31 @@ func TestMigrationV120PointerForks(t *testing.T) {
 	}
 }
 
+// TestPayloadSnapshotCopyBackFollowsTheRefs: the copy-back runs once on a
+// database of any size, so every statement reads the payload tables by key
+// from the borrowed payloads. A scan of payloads read every payload row of
+// the 5.8 GB reference database (230 ms warm) to find none.
+func TestPayloadSnapshotCopyBackFollowsTheRefs(t *testing.T) {
+	s := &Store{db: migrateThrough(t, 119)}
+	statements := 0
+	for _, statement := range strings.Split(payloadSnapshotCopyBackSQL, ";") {
+		if statement = strings.TrimSpace(statement); statement == "" {
+			continue
+		}
+		statements++
+		plan := explainPlan(t, s, statement)
+		names := historyTableNames(statement)
+		for _, r := range plan {
+			if m := planAccessPattern.FindStringSubmatch(r.detail); m != nil && m[1] == "SCAN" && names[m[2]] != "" {
+				t.Errorf("%q scans %s\n%s\n%s", r.detail, names[m[2]], statement, planText(plan))
+			}
+		}
+	}
+	if statements != 5 {
+		t.Fatalf("explained %d copy-back statements, want 5", statements)
+	}
+}
+
 // v120PayloadState renders every payload of the fixture threads with its
 // chunks and edit snapshots, read from the named tables or views.
 func v120PayloadState(t *testing.T, db *sql.DB, payloads, chunks, edits string) []string {

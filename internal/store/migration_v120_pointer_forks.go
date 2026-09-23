@@ -39,31 +39,7 @@ CREATE TABLE thread_fork_hidden (
 CREATE INDEX idx_threads_fork_source ON threads(fork_source_thread_id) WHERE fork_source_thread_id <> '';
 CREATE INDEX idx_items_unsettled ON items(thread_id, turn_index, item_index) WHERE status IN ('running', 'streaming');
 
-` + dropPayloadSnapshotCopyOnWriteSQL + `
-UPDATE payloads
-   SET data = (SELECT r.data FROM resolved_payloads r WHERE r.thread_id = payloads.thread_id AND r.id = payloads.id)
- WHERE EXISTS (SELECT 1 FROM payload_snapshot_refs r WHERE r.thread_id = payloads.thread_id AND r.payload_id = payloads.id);
-INSERT INTO payload_chunks(thread_id, payload_id, chunk_index, start_offset, data, created_at)
-SELECT r.thread_id, r.payload_id, c.chunk_index, c.start_offset, c.data, c.created_at
-  FROM payload_snapshot_refs r
-  JOIN payload_snapshots s ON s.id = r.snapshot_id
-  JOIN payload_chunks c ON c.thread_id = s.source_thread_id AND c.payload_id = s.payload_id
-UNION ALL
-SELECT r.thread_id, r.payload_id, c.chunk_index, c.start_offset, c.data, c.created_at
-  FROM payload_snapshot_refs r
-  JOIN payload_snapshot_chunks c ON c.snapshot_id = r.snapshot_id;
-INSERT INTO edit_file_snapshots(thread_id, payload_id, path, content, created_at)
-SELECT r.thread_id, r.payload_id, e.path, e.content, e.created_at
-  FROM payload_snapshot_refs r
-  JOIN payload_snapshots s ON s.id = r.snapshot_id
-  JOIN edit_file_snapshots e ON e.thread_id = s.source_thread_id AND e.payload_id = s.payload_id
-UNION ALL
-SELECT r.thread_id, r.payload_id, e.path, e.content, e.created_at
-  FROM payload_snapshot_refs r
-  JOIN payload_snapshot_edits e ON e.snapshot_id = r.snapshot_id;
-DELETE FROM payload_snapshot_refs;
-DELETE FROM payload_snapshots;
-DROP TRIGGER trg_payload_snapshot_refs_gc;
+` + dropPayloadSnapshotCopyOnWriteSQL + payloadSnapshotCopyBackSQL + `DROP TRIGGER trg_payload_snapshot_refs_gc;
 DROP TRIGGER trg_payload_snapshots_import_gc;
 DROP TRIGGER trg_thread_import_chunks_gc;
 CREATE TRIGGER trg_thread_import_chunks_gc AFTER DELETE ON thread_import_chunks BEGIN
@@ -89,6 +65,36 @@ const (
 	forkLineageMaxDepth    = 32
 	forkLineageMaxDepthSQL = "32"
 )
+
+// payloadSnapshotCopyBackSQL copies every borrowed payload graph into the
+// payload rows that referenced it, then empties the snapshot tables. Each
+// statement is driven by payload_snapshot_refs, so its cost follows the
+// borrowed payloads, not the size of payloads, payload_chunks or
+// edit_file_snapshots.
+const payloadSnapshotCopyBackSQL = `UPDATE payloads
+   SET data = (SELECT r.data FROM resolved_payloads r WHERE r.thread_id = payloads.thread_id AND r.id = payloads.id)
+ WHERE (thread_id, id) IN (SELECT thread_id, payload_id FROM payload_snapshot_refs);
+INSERT INTO payload_chunks(thread_id, payload_id, chunk_index, start_offset, data, created_at)
+SELECT r.thread_id, r.payload_id, c.chunk_index, c.start_offset, c.data, c.created_at
+  FROM payload_snapshot_refs r
+  JOIN payload_snapshots s ON s.id = r.snapshot_id
+  JOIN payload_chunks c ON c.thread_id = s.source_thread_id AND c.payload_id = s.payload_id
+UNION ALL
+SELECT r.thread_id, r.payload_id, sc.chunk_index, sc.start_offset, sc.data, sc.created_at
+  FROM payload_snapshot_refs r
+  JOIN payload_snapshot_chunks sc ON sc.snapshot_id = r.snapshot_id;
+INSERT INTO edit_file_snapshots(thread_id, payload_id, path, content, created_at)
+SELECT r.thread_id, r.payload_id, e.path, e.content, e.created_at
+  FROM payload_snapshot_refs r
+  JOIN payload_snapshots s ON s.id = r.snapshot_id
+  JOIN edit_file_snapshots e ON e.thread_id = s.source_thread_id AND e.payload_id = s.payload_id
+UNION ALL
+SELECT r.thread_id, r.payload_id, se.path, se.content, se.created_at
+  FROM payload_snapshot_refs r
+  JOIN payload_snapshot_edits se ON se.snapshot_id = r.snapshot_id;
+DELETE FROM payload_snapshot_refs;
+DELETE FROM payload_snapshots;
+`
 
 // dropPayloadSnapshotCopyOnWriteSQL removes the v107 BEFORE triggers that
 // preserved a borrowed payload graph. It is the frozen v107 trigger list.
