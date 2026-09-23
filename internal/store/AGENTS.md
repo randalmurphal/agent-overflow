@@ -90,7 +90,9 @@ an atomic persistence decision; they must not become a business-logic layer.
 - `SyncThreadWindow` reads store identity, stamps, and rows in one read
   transaction so they describe one WAL snapshot.
 - `history_bulk_load` may suppress stamp triggers only in a transaction that
-  writes the exact aggregate revision before commit.
+  writes the exact aggregate revision before commit. An item it inserts must
+  be one a read already showed, or the thread must be rebuilt in the same
+  transaction: under the flag the insert trigger stamps only the new row.
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by

@@ -12,7 +12,8 @@ import (
 
 // Retention TTL sweep. Background goroutine that prunes stale threads
 // (and their on-disk side effects), dated provider-event log files, and
-// bug-report bookmark files. Each sweep reads Retention.Days from
+// bug-report bookmark files, then repairs stored history (see
+// repairStoredHistory). Each sweep reads Retention.Days from
 // settings live so toggling the window doesn't require a restart;
 // Retention.Days <= 0 disables the deletes silently. It does not
 // disable the sweep: the free-space tail is gated by the freelist, not
@@ -169,13 +170,14 @@ func (a *App) retentionPause() {
 	time.Sleep(orDuration(a.maintenance.chunkPause, retentionChunkPause))
 }
 
-// runRetentionSweep performs one sweep tick: the TTL deletes, then the
-// store's free-space tail.
+// runRetentionSweep performs one sweep tick: the TTL deletes, the stored
+// history repair, then the store's free-space tail.
 //
 // Package-visible so tests can drive a single sweep with a pinned
 // clock without spinning the ticker.
 func (a *App) runRetentionSweep(now time.Time) {
 	a.runRetentionDeletes(now)
+	a.repairStoredHistory()
 	a.reclaimStoreFreeSpace()
 }
 

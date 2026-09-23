@@ -132,6 +132,37 @@ retains ownership of attachments referenced by its kept timeline rows. Deleting
 an original thread keeps those paths available to surviving forks and their
 native provider history. The final owner releases the metadata and bytes.
 
+## History repair
+
+Removed background sealing moved settled local rows into import chunks whose
+ids start with `sealed:`. The retention sweep's `repairStoredHistory` folds
+them back and then prunes payload rows nothing references
+(`history_repair.go`). It runs after the sweep's deletes and before
+`ReclaimFreeSpace`. The data is the progress: there is no job table, and a
+quit or crash leaves the rest for the next sweep. With nothing left, a sweep
+pays one indexed probe and one read-only scan of `payloads`.
+
+`UnsealThreadHistory` moves a thread's sealed rows into `items` and
+`payloads` under `history_bulk_load`, keeping ids, positions, timestamps,
+payload bytes, highlight spans and search rowids. Each moved row's insert
+probes every sealed reference covering its turn, so chunks go latest turn
+first and smallest first within a turn, and rows move in pieces of at most
+16. A transaction stops taking pieces after 10 ms, 256 rows or 4 MiB. Between
+the transactions of a split chunk, each moved row has an override, the state
+`localizeImportedItemTx` leaves; the last piece releases the reference.
+`PruneOrphanPayloads` deletes payload rows that no logical timeline row names
+and no payload snapshot borrows, at most 256 rows and 4 MiB per transaction,
+re-checking the references inside each one. Every repair transaction is
+followed by a passive checkpoint, so SQLite's automatic checkpoint never
+copies a backlog of repair frames inside a later commit.
+
+Measured on a 5.86 GB copy with 178,267 sealed rows in 15,204 chunks: 9,730
+transactions, p50 15 ms, p99 27 ms, max 74 ms; with the processors
+oversubscribed and a second repair writing the same disk, p50 17 ms, p99 49 ms,
+max 126 ms. The released pages (72 MB there) stay on the freelist for later
+writes; that is below `ReclaimFreeSpace`'s 20% threshold, so the file keeps its
+size.
+
 ## Schema-owned invariants
 
 Four trigger families ride `items`:

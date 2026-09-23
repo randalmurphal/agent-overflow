@@ -8,4 +8,4 @@ package store
 // the affinity-free comparison (stampedRowIDsFor). The rows they stamp are
 // unchanged.
 var revTriggerCarrierProbeV118SQL = dropHistoryRevTriggersSQL + `
-` + historyRevTriggersSQL
+` + historyRevTriggersV118SQL

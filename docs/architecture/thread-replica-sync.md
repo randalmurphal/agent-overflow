@@ -100,8 +100,8 @@ reason: a brand-new thread genuinely is at the origin.
 ### 3.1 Enforcement: triggers on `items`, thread-scoped payload API
 
 Item-side bumps are SQLite triggers (installed by v55, alongside the
-existing `trg_items_gc_*` precedent; replayed drop-then-create by v100
-when their bodies changed), so no store function, present or future, can
+existing `trg_items_gc_*` precedent; replayed drop-then-create by a later
+migration when a body changes), so no store function, present or future, can
 write an item row without advancing the contract. The same triggers
 stamp the per-row revision `items.rev`: the thread's `history_rev` as of
 the last write that changed what a read of that row returns. Two reads of
@@ -113,7 +113,11 @@ CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
   UPDATE threads SET history_rev = history_rev + 1
    WHERE id = NEW.thread_id AND history_bulk_load = 0;
   UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = items.thread_id)
-   WHERE thread_id = NEW.thread_id AND id IN (<rows a write to NEW changed>);
+   WHERE thread_id = NEW.thread_id AND id = NEW.id
+     AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 1;
+  UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = items.thread_id)
+   WHERE thread_id = NEW.thread_id AND id IN (<rows a write to NEW changed>)
+     AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 0;
 END;
 
 CREATE TRIGGER trg_items_rev_update AFTER UPDATE ON items
@@ -227,6 +231,18 @@ flag are still stamped, with the thread's current `history_rev`; because the
 aggregate bump lands before commit, `history_rev` ends greater than every rev
 stamped inside the batch, so no client can hold a rev a later read would
 reproduce for different bytes.
+
+Under the flag the insert trigger stamps only the inserted row. Every
+insert into `items` under the flag moves a row a read already showed from
+imported history (`localizeImportedItemTx`, `UnsealThreadHistory`) or
+rebuilds a thread whose rows the same transaction deleted (a returning
+transfer), so no other row's read changes; stamping the inserted row's
+anchors would rewrite each of them once per moved child. A writer that
+inserts a row no read showed must not hold the flag. The update and delete
+triggers stamp the full set under the flag, because thread deletion chunks
+delete under it and a delete changes its anchors' reads.
+`TestMigrationV119BulkLoadInsertStampsOnlyTheRow` pins both sides of the
+insert gate.
 
 Payload-side bumps stay explicit in the payload mutators rather than adding a
 second trigger path. Since migration v58 payload rows carry `thread_id`, the
@@ -877,8 +893,9 @@ the freshly returned window, so there is nothing stale to page into.
 - **Row revisions (Go)**: exact `history_rev`/`items.rev` arithmetic for
   insert, update, delete and child writes; every exported item writer
   advances the touched row's rev and returns it; payload and plan writers
-  stamp their owning item row; bulk load stamps rows and still ends with
-  `history_rev` above every rev it wrote; every pushed item event is its
+  stamp their owning item row; bulk load stamps the rows it inserts,
+  leaves their anchors alone and still ends with `history_rev` above
+  every rev it wrote; every pushed item event is its
   page read at the revision its write produced, including settle
   patches, while a deliberately altered wire row carries none; after a
   subagent turn the last push of every top-level row builds a window

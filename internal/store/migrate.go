@@ -1671,6 +1671,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 116, Name: "imported_key_lookups", SQL: importedKeyLookupsV116SQL},
 	{Version: 117, Name: "drop_history_preparation_index", SQL: dropHistoryPreparationIndexV117SQL},
 	{Version: 118, Name: "rev_trigger_carrier_probe", SQL: revTriggerCarrierProbeV118SQL},
+	{Version: 119, Name: "bulk_load_insert_stamps_row", SQL: bulkLoadInsertStampsRowV119SQL},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies
