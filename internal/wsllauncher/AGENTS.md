@@ -29,7 +29,9 @@ proven unreachable listener.
 
 Bootstrap.PageURL comes from the backend and contains no credential. Reject a
 bootstrap record without it. Bootstrap.Token authenticates launcher probes and
-connections; never place it in a URL.
+connections; never place it in a URL. `ProbeBootstrap` classifies its failure
+by evidence: never answered, stalled after a starting report, bare 503, or an
+answered refusal. Only the first justifies a fresh port.
 
 Every WebView navigation obtains a fresh URL and one-time page ticket. Deliver
 the ticket through uiwindow.DeliverPageTicket, separate from the logged URL.
