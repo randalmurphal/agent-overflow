@@ -622,14 +622,14 @@ describe('threadPaneScroll', () => {
     });
   });
 
-  // The warm-up gate is armed at the switch edge, but on the FETCH path
-  // the pane then sits empty for the whole round trip — and an empty
-  // mount window still delivers a zero-height content-geometry sample,
-  // which the gate reads as cascade evidence and opens on ~QUIET_MS
-  // later. So by the time the slice lands, the gate is already open and
-  // the estimate cascade runs in front of the reader. The pane data
-  // layer re-closes it as part of applying that slice, synchronously
-  // with the item mutation (see PaneScrollController.armWarmup).
+  // The warm-up gate is armed at the switch edge, but the pane then sits
+  // empty while the window is fetched or, for a cached window, verified.
+  // An empty mount window still delivers a zero-height content-geometry
+  // sample, which the gate reads as cascade evidence and opens on
+  // ~QUIET_MS later. So by the time the window is released, the gate is
+  // already open and the estimate cascade runs in front of the reader.
+  // The pane data layer re-closes it immediately before releasing the
+  // window (see PaneScrollController.armWarmup).
   describe('warm-gate re-arm on initial slice', () => {
     function attachWarmupSpy(pane: ReturnType<typeof createThreadPane>) {
       const armWarmup = vi.fn();
@@ -675,10 +675,10 @@ describe('threadPaneScroll', () => {
       expect(armWarmup).not.toHaveBeenCalled();
     });
 
-    it('does not re-arm on a cache-restore switch', async () => {
-      // Cached items are present synchronously at the switch edge, so
-      // the arm made there already covers their mount — and there is no
-      // initial slice to apply.
+    it('re-arms once when a cached window is released after verification', async () => {
+      // Cached rows are staged unmounted while SyncThreadWindow verifies
+      // them, so the switch-edge arm does not cover their mount; the gate
+      // arms once at release.
       const thread = makeThread({ id: 'thread-cached' });
       const pane = await buildPane(thread, [
         makeItem({ id: 'a', threadId: thread.id, turnIndex: 0, itemIndex: 0 }),
@@ -701,10 +701,14 @@ describe('threadPaneScroll', () => {
       await pane.switchThread(other);
 
       const armWarmup = attachWarmupSpy(pane);
-      await pane.switchThread(thread);
+      const switching = pane.switchThread(thread);
+      expect(pane.historyWindowPending).toBe(true);
+      expect(armWarmup).not.toHaveBeenCalled();
+      await switching;
 
       expect(pane.items.map((it) => it.id)).toEqual(['a']);
-      expect(armWarmup).not.toHaveBeenCalled();
+      expect(pane.historyWindowPending).toBe(false);
+      expect(armWarmup).toHaveBeenCalledTimes(1);
     });
 
     it('does not re-arm for streaming appends or older paging', async () => {

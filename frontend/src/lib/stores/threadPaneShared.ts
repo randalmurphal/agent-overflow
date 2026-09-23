@@ -287,9 +287,9 @@ export interface PaneScrollController {
    * exists to hide, in front of the reader.
    *
    * The pane data layer is the sole caller (`armInitialSliceWarmup` in
-   * thread.svelte.ts), from the initial-slice application only, and
-   * synchronously with the item mutation — strictly before the flush
-   * that mounts those rows, the same ordering contract
+   * thread.svelte.ts), when it releases a switch's fetched or verified
+   * cached window, strictly before the flush that mounts those rows,
+   * the same ordering contract
    * `markStructuralContentPending` carries. Incremental appends and
    * load-older pages deliberately do NOT re-arm: they mount against
    * content the reader is already looking at, and hiding that is a blank
