@@ -93,77 +93,56 @@ type subagentRoundBounds struct {
 	round    bool
 }
 
-// descendantsCTEFromRoots walks parent_id edges downward from an
-// explicit list of root item ids over the LOGICAL timeline — local rows
-// plus the thread's imported history — carrying the originating root
+// descendantsWalk renders the `WITH RECURSIVE rel(root, id)` walk down
+// parent_id edges from rootIDs over threadID's LOGICAL timeline (local
+// rows plus imported history, and for a pointer fork its ancestors' rows)
+// and returns it with its bind values. It carries the originating root
 // through the recursion so per-root aggregates fall out of a GROUP BY.
-// UNION (not UNION ALL) dedups (root, id) pairs during recursion, so a
-// pathological parent_id cycle terminates instead of looping forever.
+// filter renders the row predicate over an alias prefix; the window
+// loaders pass visibleItemsFilterFor, since plan_update notifications
+// never render and must not count against the collapsed card's
+// "N entries" badge either.
+//
+// The UNION into the recursive hops dedups (root, id) pairs in the queue,
+// so a pathological parent_id cycle terminates instead of looping
+// forever. The base hops are joined by UNION ALL: a UNION there makes
+// SQLite merge sorted hops, and it sorts the local hop by walking the
+// thread's rows in id order instead of probing idx_items_parent.
 //
 // Each physical hop starts from the parent identity. Imported hops probe
-// parent_id across chunks, then verify the candidate chunk belongs to this
-// thread. Starting from the thread's chunk list would multiply every queued
-// descendant by every attached chunk. CROSS JOIN preserves the lookup order;
-// explicit nonempty parent predicates admit the partial parent indexes.
+// parent_id across chunks, then verify the candidate chunk belongs to the
+// thread. Starting from the thread's chunk list would multiply every
+// queued descendant by every attached chunk. CROSS JOIN preserves the
+// lookup order; explicit nonempty parent predicates admit the partial
+// parent indexes.
 //
-// The visible-items filter matches the window loaders: plan_update
-// notifications never render, so they must not count against the
-// collapsed card's "N entries" badge either.
-//
-// A pointer fork adds one local and one imported hop over its lineage, so
-// a subtree the fork inherits walks the ancestor's rows under the same
-// visibility rule as the timeline arms.
-//
-// Placeholder order: the four base hops (local, imported, inherited local,
-// inherited imported), each (thread id, roots...), then the four recursive
-// hops in the same order, each (thread id).
-func descendantsCTEFromRoots(rootCount int) string {
-	return descendantsCTEFromRootsWhere(rootCount, visibleItemsFilterFor)
-}
-
-// descendantsCTEFromRootsWhere is descendantsCTEFromRoots with the row
-// filter supplied: filter renders a predicate over the given alias prefix.
-func descendantsCTEFromRootsWhere(rootCount int, filter func(alias string) string) string {
-	roots := placeholders(rootCount)
+// A pointer fork adds one local and one imported hop over its lineage,
+// base and recursive, under the timeline arms' visibility rule: each
+// reads the lineage by the fork's id, then the ancestor's parent index.
+// They render only for a thread with lineage rows (forkLineageDepth), as
+// timelineArms renders its lineage arms.
+func descendantsWalk(q sqlQueryer, threadID string, rootIDs []string, filter func(alias string) string) (string, []any, error) {
+	depth, err := forkLineageDepth(q, threadID)
+	if err != nil {
+		return "", nil, err
+	}
+	roots := "items.parent_id IN (" + placeholders(len(rootIDs)) + ")"
 	visible := filter("items.")
-	return `WITH RECURSIVE rel(root, id) AS (
-		SELECT items.parent_id, items.id
+	hops := 2
+	base := `SELECT items.parent_id, items.id
 		  FROM items
-		 WHERE items.thread_id = ?
-		   AND items.parent_id IN (` + roots + `)
+		 WHERE items.thread_id = ? AND ` + roots + `
 		   AND items.parent_id <> ''
 		   AND ` + visible + `
-		UNION
+		UNION ALL
 		SELECT items.parent_id, items.id
 		  FROM import_history_items items
 		  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = items.chunk_id
-		 WHERE refs.thread_id = ?
-		   AND items.parent_id IN (` + roots + `)
+		 WHERE refs.thread_id = ? AND ` + roots + `
 		   AND items.parent_id <> ''
 		   AND ` + visible + `
-		   AND ` + importedNotOverridden + `
-		UNION
-		SELECT items.parent_id, items.id
-		  FROM thread_fork_lineage l
-		  CROSS JOIN items ON items.thread_id = l.ancestor_id
-		 WHERE l.thread_id = ?
-		   AND items.parent_id IN (` + roots + `)
-		   AND items.parent_id <> ''
-		   AND ` + visible + `
-		   AND ` + inheritedItemVisibleSQL + `
-		UNION
-		SELECT items.parent_id, items.id
-		  FROM import_history_items items
-		  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = items.chunk_id
-		  CROSS JOIN thread_fork_lineage l ON l.ancestor_id = refs.thread_id
-		 WHERE l.thread_id = ?
-		   AND items.parent_id IN (` + roots + `)
-		   AND items.parent_id <> ''
-		   AND ` + visible + `
-		   AND ` + importedNotOverridden + `
-		   AND ` + inheritedItemVisibleSQL + `
-		UNION
-		SELECT rel.root, items.id
+		   AND ` + importedNotOverridden
+	step := `SELECT rel.root, items.id
 		  FROM rel
 		  CROSS JOIN items ON items.parent_id = rel.id
 		 WHERE items.thread_id = ?
@@ -177,7 +156,30 @@ func descendantsCTEFromRootsWhere(rootCount int, filter func(alias string) strin
 		 WHERE refs.thread_id = ?
 		   AND items.parent_id <> ''
 		   AND ` + visible + `
+		   AND ` + importedNotOverridden
+	if depth > 0 {
+		hops = 4
+		base += `
+		UNION ALL
+		SELECT items.parent_id, items.id
+		  FROM thread_fork_lineage l
+		  CROSS JOIN items ON items.thread_id = l.ancestor_id
+		 WHERE l.thread_id = ? AND ` + roots + `
+		   AND items.parent_id <> ''
+		   AND ` + visible + `
+		   AND ` + inheritedItemVisibleSQL + `
+		UNION ALL
+		SELECT items.parent_id, items.id
+		  FROM thread_fork_lineage l
+		  CROSS JOIN import_history_items items
+		  CROSS JOIN thread_import_chunks refs
+		     ON refs.chunk_id = items.chunk_id AND refs.thread_id = l.ancestor_id
+		 WHERE l.thread_id = ? AND ` + roots + `
+		   AND items.parent_id <> ''
+		   AND ` + visible + `
 		   AND ` + importedNotOverridden + `
+		   AND ` + inheritedItemVisibleSQL
+		step += `
 		UNION
 		SELECT rel.root, items.id
 		  FROM rel
@@ -190,29 +192,27 @@ func descendantsCTEFromRootsWhere(rootCount int, filter func(alias string) strin
 		UNION
 		SELECT rel.root, items.id
 		  FROM rel
+		  CROSS JOIN thread_fork_lineage l
 		  CROSS JOIN import_history_items items ON items.parent_id = rel.id
-		  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = items.chunk_id
-		  CROSS JOIN thread_fork_lineage l ON l.ancestor_id = refs.thread_id
+		  CROSS JOIN thread_import_chunks refs
+		     ON refs.chunk_id = items.chunk_id AND refs.thread_id = l.ancestor_id
 		 WHERE l.thread_id = ?
 		   AND items.parent_id <> ''
 		   AND ` + visible + `
 		   AND ` + importedNotOverridden + `
-		   AND ` + inheritedItemVisibleSQL + `
-	)`
-}
-
-// descendantsCTEArgs renders descendantsCTEFromRoots' bind values in the
-// order its eight hops consume them. One function, so the hop order and
-// the arg order cannot drift apart.
-func descendantsCTEArgs(threadID string, rootIDs []string) []any {
-	args := make([]any, 0, 4*len(rootIDs)+8)
-	for range 4 {
+		   AND ` + inheritedItemVisibleSQL
+	}
+	args := make([]any, 0, hops*(len(rootIDs)+2))
+	for range hops {
 		args = append(args, threadID)
 		for _, id := range rootIDs {
 			args = append(args, id)
 		}
 	}
-	return append(args, threadID, threadID, threadID, threadID)
+	for range hops {
+		args = append(args, threadID)
+	}
+	return "WITH RECURSIVE rel(root, id) AS (\n\t\t" + base + "\n\t\tUNION\n\t\t" + step + "\n\t)", args, nil
 }
 
 // descendantsCTE is the LOCAL-ONLY `rel(root, id) AS (...)` clause,
@@ -885,11 +885,11 @@ func (s *Store) listSubagentDescendants(q sqlQueryer, threadID, rootItemID strin
 	if err != nil {
 		return nil, err
 	}
-	items, err := queryHydratedTimelineItems(
-		q, threadID,
-		descendantsCTEFromRoots(1)+"\n"+selectedSQL,
-		append(descendantsCTEArgs(threadID, []string{rootItemID}), selectedArgs...)...,
-	)
+	walk, walkArgs, err := descendantsWalk(q, threadID, []string{rootItemID}, visibleItemsFilterFor)
+	if err != nil {
+		return nil, err
+	}
+	items, err := queryHydratedTimelineItems(q, threadID, walk+"\n"+selectedSQL, append(walkArgs, selectedArgs...)...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list subagent descendants for %s/%s: %w", threadID, rootItemID, err)
 	}

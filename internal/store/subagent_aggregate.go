@@ -33,8 +33,11 @@ func (s *Store) forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootI
 	if err != nil {
 		return err
 	}
-	args := append(descendantsCTEArgs(threadID, rootIDs), resolvedArgs...)
-	rows, err := q.Query(descendantsCTEFromRoots(len(rootIDs))+" SELECT * FROM ("+resolvedSQL+")", args...)
+	walk, walkArgs, err := descendantsWalk(q, threadID, rootIDs, visibleItemsFilterFor)
+	if err != nil {
+		return err
+	}
+	rows, err := q.Query(walk+" SELECT * FROM ("+resolvedSQL+")", append(walkArgs, resolvedArgs...)...)
 	if err != nil {
 		return fmt.Errorf("store: query subagent aggregates for %s: %w", threadID, err)
 	}

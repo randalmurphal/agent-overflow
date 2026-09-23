@@ -683,8 +683,12 @@ func TestSubagentWalksDoNotMaterializeTheView(t *testing.T) {
 			OrderBy: "turn_index DESC, item_index DESC",
 			Limit:   maxSubagentDescendants,
 		})
-		query := descendantsCTEFromRoots(1) + "\n" + selectedSQL
-		args := append(descendantsCTEArgs(timelineParityThreadID, []string{"loc-launch-2"}), selectedArgs...)
+		walk, walkArgs, err := descendantsWalk(s.reader(), timelineParityThreadID, []string{"loc-launch-2"}, visibleItemsFilterFor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		query := walk + "\n" + selectedSQL
+		args := append(walkArgs, selectedArgs...)
 		for _, r := range explainPlan(t, s, query, args...) {
 			if strings.Contains(r.detail, "timeline_items") {
 				t.Errorf("descendant walk touches the view: %q", r.detail)
@@ -708,9 +712,13 @@ func TestSubagentWalksDoNotMaterializeTheView(t *testing.T) {
 			Source: "rel",
 			Where:  "items.id = rel.id",
 		})
-		query := descendantsCTEFromRoots(1) + `
+		walk, walkArgs, err := descendantsWalk(s.reader(), timelineParityThreadID, []string{"loc-launch-2"}, visibleItemsFilterFor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		query := walk + `
 		SELECT root FROM (` + resolvedSQL + `)`
-		args := append(descendantsCTEArgs(timelineParityThreadID, []string{"loc-launch-2"}), resolvedArgs...)
+		args := append(walkArgs, resolvedArgs...)
 		for _, r := range explainPlan(t, s, query, args...) {
 			if strings.Contains(r.detail, "timeline_items") {
 				t.Errorf("aggregate resolution touches the view: %q", r.detail)

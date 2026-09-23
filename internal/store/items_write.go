@@ -872,9 +872,11 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, H
 	if _, err := deleteSharedHistoryFromTurnTx(tx, threadID, turnIndex, itemPredicate, itemArgs[1:]); err != nil {
 		return nil, HistoryStamp{}, err
 	}
+	// Every reverted row sits at or after the anchor turn; the bound keeps
+	// the delete on the turn range of the thread's index.
 	if _, err := deleteItemsAndSearchRowsTx(tx, threadID,
-		`DELETE FROM items WHERE thread_id = ? AND (`+itemPredicate+`) RETURNING id`,
-		itemArgs,
+		`DELETE FROM items WHERE thread_id = ? AND turn_index >= ? AND (`+itemPredicate+`) RETURNING id`,
+		append([]any{threadID, turnIndex}, itemArgs[1:]...),
 		fmt.Sprintf("store: delete items from item for thread %s", threadID),
 	); err != nil {
 		return nil, HistoryStamp{}, err

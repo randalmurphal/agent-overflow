@@ -298,8 +298,9 @@ func mustFind[T any](t *testing.T, what string) func(T, bool, error) {
 	}
 }
 
-func keyedLookups() []keyedLookup {
-	const th = keyedThreadID
+// keyedLookups runs each lookup on th: the seeded thread, or a pointer fork
+// of it (TestPointerForkLookupsProbeTheLineage).
+func keyedLookups(th string) []keyedLookup {
 	return []keyedLookup{
 		{name: "GetThreadItem imported", run: func(t *testing.T, s *Store) {
 			mustFind[Item](t, "imported")(s.GetThreadItem(th, "answer-1"))
@@ -487,7 +488,7 @@ func TestImportedLookupsDoNotEnumerateChunks(t *testing.T) {
 	seedKeyedLookupThread(t, s)
 	views := chunkRefViewSQL(t, s)
 	rec := recordStatements(t, s)
-	for _, lookup := range keyedLookups() {
+	for _, lookup := range keyedLookups(keyedThreadID) {
 		stmts := rec.capture(func() { lookup.run(t, s) })
 		if len(stmts) == 0 {
 			t.Errorf("%s: recorded no statements", lookup.name)

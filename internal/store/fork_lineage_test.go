@@ -345,6 +345,48 @@ func TestPointerForkSourceEmptiedThenCleanedUp(t *testing.T) {
 // TestPointerForkRevertBeforeTheCutRetracts: a fork's revert of rows it
 // inherits lowers its cut instead of copying or deleting them. The source
 // and a fork of the fork read what they read before.
+// lastRowThroughTurnTx probes the turns at or below its bound newest first
+// and finishes with one ordered read after lastRowProbeTurns empty turns.
+// The rows sit in a fork's source, so every probe reads the lineage arms.
+func TestLastRowThroughTurnFindsSparseRows(t *testing.T) {
+	s := newTestStore(t)
+	seedForkSource(t, s, "S", []Item{
+		{ID: "early", TurnIndex: 0, ItemIndex: 0, Kind: "user_text", Role: "user", Status: "completed", Summary: "early", Meta: "{}"},
+		{ID: "early-child", TurnIndex: 0, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "completed", ParentID: "early", Summary: "child", Meta: "{}"},
+		{ID: "late", TurnIndex: 9, ItemIndex: 0, Kind: "user_text", Role: "user", Status: "completed", Summary: "late", Meta: "{}"},
+	})
+	mustPointerFork(t, s, "S", "F", ForkCut{})
+	topLevel := "items.parent_id = '' AND items.id <> ?"
+	for _, tc := range []struct {
+		name    string
+		maxTurn int
+		where   string
+		args    []any
+		want    string
+	}{
+		{"bound turn holds it", 9, topLevel, []any{forkDividerID("F")}, "late"},
+		{"past the probes", 8, topLevel, []any{forkDividerID("F")}, "early"},
+		{"within the probes", 3, topLevel, []any{forkDividerID("F")}, "early"},
+		{"filtered past the probes", 9, topLevel + " AND items.id <> ?", []any{forkDividerID("F"), "late"}, "early"},
+		{"none", 9, "items.id = ?", []any{"missing"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tx, err := s.db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			row, found, err := lastRowThroughTurnTx(tx, "F", tc.maxTurn, tc.where, tc.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if found != (tc.want != "") || row.id != tc.want {
+				t.Fatalf("last row = %+v found=%v, want %q", row, found, tc.want)
+			}
+		})
+	}
+}
+
 func TestPointerForkRevertBeforeTheCutRetracts(t *testing.T) {
 	for _, mode := range []string{"turn", "item"} {
 		t.Run(mode, func(t *testing.T) {

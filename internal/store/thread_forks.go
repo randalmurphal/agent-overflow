@@ -255,27 +255,74 @@ func resolveForkCutTx(tx *sql.Tx, sourceID string, cut ForkCut) (forkCut, error)
 	}
 }
 
-// lastRowCutTx places a cut after the last row of threadID's timeline that
-// matches where.
-func lastRowCutTx(tx *sql.Tx, threadID, where string, args ...any) (forkCut, error) {
-	query, binds, err := timelineArms(tx, threadID, timelineSelection{
+// timelineRow is one row's identity and position.
+type timelineRow struct {
+	id         string
+	turn, item int
+}
+
+// lastRowTx reads the last row of threadID's timeline that matches where:
+// of the whole timeline, or of one turn when turn is not negative.
+func lastRowTx(tx *sql.Tx, threadID string, turn int, where string, args ...any) (timelineRow, bool, error) {
+	sel := timelineSelection{
 		Columns:   timelineIDColumns,
 		Where:     where,
 		WhereArgs: args,
 		OrderBy:   "turn_index DESC, item_index DESC",
 		Limit:     1,
-	})
+	}
+	if turn >= 0 {
+		sel.Turn, sel.TurnArgs = "?", []any{turn}
+	}
+	query, binds, err := timelineArms(tx, threadID, sel)
+	if err != nil {
+		return timelineRow{}, false, err
+	}
+	var row timelineRow
+	err = tx.QueryRow(query, binds...).Scan(&row.id, &row.turn, &row.item)
+	if errors.Is(err, sql.ErrNoRows) {
+		return timelineRow{}, false, nil
+	}
+	if err != nil {
+		return timelineRow{}, false, fmt.Errorf("store: read last row of %s: %w", threadID, err)
+	}
+	return row, true, nil
+}
+
+// lastRowCutTx places a cut after the last row of threadID's timeline that
+// matches where.
+func lastRowCutTx(tx *sql.Tx, threadID, where string, args ...any) (forkCut, error) {
+	row, found, err := lastRowTx(tx, threadID, -1, where, args...)
 	if err != nil {
 		return forkCut{}, err
 	}
-	var id string
-	var turn, item int
-	if err := tx.QueryRow(query, binds...).Scan(&id, &turn, &item); errors.Is(err, sql.ErrNoRows) {
+	if !found {
 		return forkCut{empty: true}, nil
-	} else if err != nil {
-		return forkCut{}, fmt.Errorf("store: read fork cut of %s: %w", threadID, err)
 	}
-	return forkCut{turn: turn, item: item + 1}, nil
+	return forkCut{turn: row.turn, item: row.item + 1}, nil
+}
+
+// lastRowProbeTurns bounds lastRowThroughTurnTx's turn-by-turn search.
+const lastRowProbeTurns = 4
+
+// lastRowThroughTurnTx is lastRowTx over the turns at or below maxTurn.
+// The rows it looks for (a revert's last survivor, the row a divider links
+// to) sit in maxTurn or just below it, so the turns are probed newest
+// first through the turn-ranged arms, which read only the chunk
+// references that can hold the turn. After lastRowProbeTurns empty turns,
+// one ordered read covers the rest.
+func lastRowThroughTurnTx(tx *sql.Tx, threadID string, maxTurn int, where string, args ...any) (timelineRow, bool, error) {
+	floor := max(maxTurn-lastRowProbeTurns+1, 0)
+	for turn := maxTurn; turn >= floor; turn-- {
+		row, found, err := lastRowTx(tx, threadID, turn, where, args...)
+		if err != nil || found {
+			return row, found, err
+		}
+	}
+	if floor == 0 {
+		return timelineRow{}, false, nil
+	}
+	return lastRowTx(tx, threadID, -1, "items.turn_index < ? AND ("+where+")", append([]any{floor}, args...)...)
 }
 
 // resolveBeforeItemCutTx is the fork twin of DeleteConversationFromItem's
@@ -561,8 +608,11 @@ func timelineSubtreeTx(q sqlQueryer, viewer string, roots []string) ([]string, e
 	if len(roots) == 0 {
 		return nil, nil
 	}
-	query := descendantsCTEFromRootsWhere(len(roots), func(string) string { return "1" }) + ` SELECT id FROM rel`
-	rows, err := q.Query(query, descendantsCTEArgs(viewer, roots)...)
+	walk, args, err := descendantsWalk(q, viewer, roots, func(string) string { return "1" })
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(walk+` SELECT id FROM rel`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: read subtree in %s: %w", viewer, err)
 	}
@@ -667,20 +717,12 @@ func copyForkQuestionsTx(tx *sql.Tx, sourceID, forkID string) error {
 // revert moved. It links to the last top-level row the fork inherits, which
 // is where "view in source" lands.
 func placeForkDividerTx(tx *sql.Tx, forkID string, origin forkOrigin, turn, item int, now int64) error {
-	query, binds, err := timelineArms(tx, forkID, timelineSelection{
-		Columns:   timelineIDColumns,
-		Where:     "items.parent_id = '' AND (items.turn_index, items.item_index) < (?, ?)",
-		WhereArgs: []any{turn, item},
-		OrderBy:   "turn_index DESC, item_index DESC",
-		Limit:     1,
-	})
+	target, _, err := lastRowThroughTurnTx(tx, forkID, turn,
+		"items.parent_id = '' AND (items.turn_index, items.item_index) < (?, ?)", turn, item)
 	if err != nil {
-		return err
-	}
-	var lastTurn, lastItem int
-	if err := tx.QueryRow(query, binds...).Scan(&origin.SourceItemID, &lastTurn, &lastItem); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("store: read fork %s link target: %w", forkID, err)
 	}
+	origin.SourceItemID = target.id
 	origin.Kind = forkDividerToolName
 	meta, err := json.Marshal(origin)
 	if err != nil {
@@ -732,13 +774,12 @@ func retractInheritedTx(tx *sql.Tx, threadID string, fromTurn int, predicate str
 	if err != nil {
 		return fmt.Errorf("store: read fork cut of %s: %w", threadID, err)
 	}
-	survivor, err := lastRowCutTx(tx, threadID,
-		"items.turn_index <= ? AND NOT ("+predicate+") AND items.id <> ?",
-		append(append([]any{maxTurn}, args...), forkDividerID(threadID))...)
+	survivor, survives, err := lastRowThroughTurnTx(tx, threadID, maxTurn,
+		"NOT ("+predicate+") AND items.id <> ?", append(append([]any{}, args...), forkDividerID(threadID))...)
 	if err != nil {
 		return err
 	}
-	if survivor.empty {
+	if !survives {
 		// Nothing inherited survives: the fork is an ordinary thread from
 		// here on. Its hides stay, since its forks read through them.
 		if _, err := tx.Exec(`DELETE FROM thread_fork_lineage WHERE thread_id = ?`, threadID); err != nil {
@@ -749,10 +790,11 @@ func retractInheritedTx(tx *sql.Tx, threadID string, fromTurn int, predicate str
 		}
 		return bumpForkViewTx(tx, threadID)
 	}
-	lowered := survivor.turn < cutTurn || (survivor.turn == cutTurn && survivor.item < cutItem)
+	// The cut sits just after the survivor.
+	lowered := survivor.turn < cutTurn || (survivor.turn == cutTurn && survivor.item+1 < cutItem)
 	newTurn, newItem := cutTurn, cutItem
 	if lowered {
-		newTurn, newItem = survivor.turn, survivor.item
+		newTurn, newItem = survivor.turn, survivor.item+1
 	}
 	reverted, err := queryInheritedRows(tx, threadID, allLevels, timelineSelection{
 		Turn: "?", TurnArgs: []any{fromTurn}, FromTurn: true,
