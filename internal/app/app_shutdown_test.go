@@ -264,6 +264,9 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// auto_vacuum conversion scheduler replaces the database file
 		// under both pools.
 		"stop store maintenance",
+		// "stop deferred migrations" MUST appear before "close store" —
+		// the run writes SQLite rows.
+		"stop deferred migrations",
 		// "stop background git fetch" MUST appear before "close store" —
 		// every pass reads the project list out of SQLite. It sits here,
 		// with the other timer-driven loops, so teardown has exactly one

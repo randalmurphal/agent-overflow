@@ -101,3 +101,84 @@ func errJoinRollback(err error, tx *sql.Tx) error {
 	}
 	return err
 }
+
+// Repointing an item's payload or input payload deletes the payload it
+// replaced when no row of the thread references it any more, the rule the
+// delete triggers apply. v118 left it behind.
+func TestMigrationV119CollectsReplacedPayloads(t *testing.T) {
+	db := migrateThrough(t, 118)
+	mustExec(t, db, `INSERT INTO projects(id,path,name,slug,created_at,updated_at) VALUES('p','/p','p','p',1,1)`)
+	mustExec(t, db, `INSERT INTO threads(id,project_id,title,provider,workspace_path,created_at,updated_at) VALUES('t','p','t','claude','/p',1,1),('u','p','u','claude','/p',1,1)`)
+	payloads := []string{"old", "shared", "input_shared", "old_input", "kept", "new"}
+	for _, thread := range []string{"t", "u"} {
+		for _, id := range payloads {
+			mustExec(t, db, `INSERT INTO payloads(thread_id,id,kind,meta,data,created_at) VALUES(?,?,'text','{}',CAST('bytes' AS BLOB),1)`, thread, id)
+		}
+	}
+	insertRow := func(thread, id, payload, input string) {
+		t.Helper()
+		mustExec(t, db, `INSERT INTO items(id,thread_id,turn_index,item_index,kind,role,status,summary,payload_id,input_payload_id,meta,created_at,updated_at)
+ VALUES(?,?,0,(SELECT count(*) FROM items WHERE thread_id=?),'tool_call','assistant','completed','row',NULLIF(?,''),NULLIF(?,''),'{}',1,1)`, id, thread, thread, payload, input)
+	}
+	for _, thread := range []string{"t", "u"} {
+		insertRow(thread, "exclusive", "old", "old_input")
+		insertRow(thread, "shares_result", "shared", "")
+		insertRow(thread, "result_peer", "shared", "")
+		insertRow(thread, "shares_input", "input_shared", "")
+		insertRow(thread, "input_peer", "", "input_shared")
+		insertRow(thread, "unchanged", "kept", "")
+	}
+	repoint := func(thread string) {
+		t.Helper()
+		for _, statement := range []string{
+			`UPDATE items SET payload_id = 'new', input_payload_id = 'new' WHERE thread_id = ? AND id = 'exclusive'`,
+			`UPDATE items SET payload_id = NULL WHERE thread_id = ? AND id = 'shares_result'`,
+			`UPDATE items SET payload_id = 'new' WHERE thread_id = ? AND id = 'shares_input'`,
+			`UPDATE items SET payload_id = 'kept', summary = 'edited' WHERE thread_id = ? AND id = 'unchanged'`,
+		} {
+			mustExec(t, db, statement, thread)
+		}
+	}
+	remaining := func(thread string) map[string]bool {
+		t.Helper()
+		rows, err := db.Query(`SELECT id FROM payloads WHERE thread_id = ?`, thread)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		got := map[string]bool{}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			got[id] = true
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	repoint("t")
+	if got := remaining("t"); len(got) != len(payloads) {
+		t.Fatalf("v118 repoint left payloads %v, want all %d kept", got, len(payloads))
+	}
+
+	migrateFrom(t, db, 118)
+	repoint("u")
+	got := remaining("u")
+	for _, id := range []string{"old", "old_input"} {
+		if got[id] {
+			t.Errorf("replaced exclusive payload %s survived", id)
+		}
+	}
+	for _, id := range []string{"shared", "input_shared", "kept", "new"} {
+		if !got[id] {
+			t.Errorf("payload %s still referenced by the thread was deleted", id)
+		}
+	}
+	if other := remaining("t"); len(other) != len(payloads) {
+		t.Errorf("repointing thread u changed thread t's payloads: %v", other)
+	}
+}

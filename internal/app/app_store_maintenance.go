@@ -94,6 +94,67 @@ func (l *backgroundLoop) halt() {
 	l.wg.Wait()
 }
 
+// startDeferredMigrations runs the store's pending deferred migration phases
+// (store.DeferredMigration) in the background, paced like the retention
+// sweep: one bounded transaction, then a chunk pause. With nothing pending,
+// which is every boot once a build's phases have finished, it starts nothing.
+// A quit stops the run at the next transaction and the next launch resumes
+// it. Idempotent. Shutdown joins it before the store closes.
+func (a *App) startDeferredMigrations() {
+	if a.store == nil {
+		return
+	}
+	pending, err := a.store.DeferredMigrationsPending()
+	if err != nil {
+		log.Printf("app: deferred migrations: %v", err)
+		return
+	}
+	if !pending {
+		return
+	}
+	stop, started := a.deferredMigrations.start()
+	if !started {
+		return
+	}
+	ctx, cancel := context.WithCancel(a.lifeCtx())
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	go func() {
+		defer a.deferredMigrations.done()
+		defer cancel()
+		if err := a.store.RunDeferredMigrations(ctx, a.maintenancePause(ctx)); err != nil {
+			log.Printf("app: deferred migrations: %v", err)
+		}
+	}()
+}
+
+// stopDeferredMigrations cancels a running deferred migration run and waits
+// for it to return. Safe before start and safe to call twice.
+func (a *App) stopDeferredMigrations() {
+	a.deferredMigrations.halt()
+}
+
+// maintenancePause is the chunk pause of a background run bound to ctx. It
+// returns early when ctx ends, and at once after shutdown began.
+func (a *App) maintenancePause(ctx context.Context) store.ChunkPause {
+	return func() {
+		if a.shuttingDown.Load() {
+			return
+		}
+		timer := time.NewTimer(orDuration(a.maintenance.chunkPause, retentionChunkPause))
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+	}
+}
+
 // startStoreMaintenance launches the auto_vacuum conversion scheduler.
 // Idempotent. Shutdown joins it before the store closes.
 func (a *App) startStoreMaintenance() {

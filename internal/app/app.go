@@ -641,6 +641,9 @@ type App struct {
 	// storeMaintenance owns the one-time auto_vacuum conversion
 	// scheduler's stop gate. See app_store_maintenance.go.
 	storeMaintenance backgroundLoop
+	// deferredMigrations owns the stop gate of the run that finishes the
+	// store's deferred migration phases. See app_store_maintenance.go.
+	deferredMigrations backgroundLoop
 	// codexThread owns provider-thread reconcile and cumulative-cost reads.
 	codexThreadOnce sync.Once
 	codexThread     *codexthread.Service

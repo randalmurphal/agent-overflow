@@ -47,6 +47,30 @@ Each schema change has a migration test. Tests should prove constraints and
 query behavior, not only that a column or index name exists. A new table also
 gets typed accessors and an entry in [schema.md](schema.md).
 
+### Deferred phases
+
+A one-time data fix is a migration ([decisions](../decisions.md#background-maintenance)).
+When its work is too long to run while the store opens, the migration carries
+a `Deferred` phase (`migrate_deferred.go`). The chain applies the migration's
+SQL and records its version as usual. The app starts `RunDeferredMigrations`
+at boot, outside the activation gate, and joins it at shutdown; the phase runs
+as paced transactions inside the background-maintenance budget.
+
+The gate is `PRAGMA user_version`, the deferred watermark: every phase of a
+migration at or below it has finished. The chain's version rows cannot carry
+it, because the chain treats `MAX(version)` as applied and later migrations
+record before a long phase finishes. A database the chain creates starts at the
+latest phase. With nothing pending, boot reads the header value and starts
+nothing. `RestoreFrom` takes the snapshot's watermark with its rows, and a
+phase that ran across a restore is not recorded and runs again on the restored
+rows. `migrate_freeze_test.go` pins the phase's name with the SQL.
+
+A phase is idempotent and its progress is the data. A quit, or an error that
+stops the phase, leaves the watermark for the next open. A row, chunk or batch
+whose write fails is logged once and left as it is, and the phase finishes, so
+no open repeats the failure. A phase is live code: it runs against the current
+schema and must keep working as the schema moves.
+
 ## History invalidation
 
 The frontend may retain a bounded thread window. `threads.history_rev` advances
@@ -135,12 +159,12 @@ native provider history. The final owner releases the metadata and bytes.
 ## History repair
 
 Removed background sealing moved settled local rows into import chunks whose
-ids start with `sealed:`. The retention sweep's `repairStoredHistory` folds
-them back and then prunes payload rows nothing references
-(`history_repair.go`). It runs after the sweep's deletes and before
-`ReclaimFreeSpace`. The data is the progress: there is no job table, and a
-quit or crash leaves the rest for the next sweep. With nothing left, a sweep
-pays one indexed probe and one read-only scan of `payloads`.
+ids start with `sealed:`. Before v119, repointing an item at another payload
+left the old payload row behind. `repairStoredHistory`, v119's deferred phase
+(`history_repair.go`), folds the sealed rows back, releases sealed chunks only
+payload snapshots keep, and prunes payload rows nothing references. A thread
+whose fold fails keeps the rest of its sealed rows, which read as imported
+history; a leftover chunk or payload only holds space.
 
 `UnsealThreadHistory` moves a thread's sealed rows into `items` and
 `payloads` under `history_bulk_load`, keeping ids, positions, timestamps,
@@ -150,7 +174,7 @@ first and smallest first within a turn, and rows move in pieces of at most
 16. A transaction stops taking pieces after 10 ms, 256 rows or 4 MiB. Between
 the transactions of a split chunk, each moved row has an override, the state
 `localizeImportedItemTx` leaves; the last piece releases the reference.
-`PruneOrphanPayloads` deletes payload rows that no logical timeline row names
+`pruneOrphanPayloads` deletes payload rows that no logical timeline row names
 and no payload snapshot borrows, at most 256 rows and 4 MiB per transaction,
 re-checking the references inside each one. Every repair transaction is
 followed by a passive checkpoint, so SQLite's automatic checkpoint never
@@ -169,8 +193,9 @@ Four trigger families ride `items`:
 
 - History triggers maintain revision and epoch counters, and the per-row
   `items.rev` stamp.
-- Payload-GC triggers collect payloads after item deletion when no item in the
-  thread references them. Repointing an item does not collect the old payload.
+- Payload-GC triggers collect a payload once no item in the thread references
+  it: after an item is deleted, and after an update repoints an item's
+  `payload_id` or `input_payload_id`.
 - Imported-history triggers enforce the immutable-base and mutable-overlay
   rules.
 - Background-settlement triggers maintain

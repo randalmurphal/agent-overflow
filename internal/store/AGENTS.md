@@ -43,6 +43,11 @@ an atomic persistence decision; they must not become a business-logic layer.
   `migration_v*.go` are the forward-only chain. A migration applied to persistent
   data, including by an uncommitted development build, is deployed and immutable.
   Add a migration and a test; record each new version in `migrate_freeze_test.go`.
+- A one-time data fix is a migration. Work too long to run at open goes in
+  the migration's `Deferred` phase: idempotent, paced, progress in the data,
+  and a failing row logged once and left. Never fix a one-time state from a
+  sweep, timer or standing job
+  ([deferred phases](../../docs/architecture/sqlite-store.md#deferred-phases)).
 - New rebuild migrations contain their final SQL directly. The old
   `mustReplaceOnce`, `mustReplaceEvery`, and `mustCutFrom` derivations are
   frozen compatibility code, not a pattern for new migrations.

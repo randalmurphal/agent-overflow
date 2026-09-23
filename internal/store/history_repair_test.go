@@ -788,7 +788,7 @@ func TestReleaseDetachedSealedChunks(t *testing.T) {
 	}
 	before := readRepairView(t, s, "cut")
 
-	released, err := s.ReleaseDetachedSealedChunks(context.Background(), nil)
+	released, err := s.ReleaseDetachedSealedChunks(context.Background(), nil, failOnSkip(t))
 	if err != nil || released != 1 {
 		t.Fatalf("released = %d, %v", released, err)
 	}
@@ -798,15 +798,92 @@ func TestReleaseDetachedSealedChunks(t *testing.T) {
 	if data, err := s.GetPayloadData("cut", "p-row-003"); err != nil || string(data) != "payload row-003 appended" {
 		t.Fatalf("cut payload = %q, %v", data, err)
 	}
-	if released, err := s.ReleaseDetachedSealedChunks(context.Background(), nil); err != nil || released != 0 {
+	if released, err := s.ReleaseDetachedSealedChunks(context.Background(), nil, failOnSkip(t)); err != nil || released != 0 {
 		t.Fatalf("second release = %d, %v", released, err)
 	}
+}
+
+// A chunk whose release fails stays, is reported once, and does not stop the
+// release of the next chunk.
+func TestReleaseDetachedSealedChunksSkipsAFailingChunk(t *testing.T) {
+	s := newTestStore(t)
+	// Each source's chunk outlives the source through its fork's payload
+	// snapshots, as in TestReleaseDetachedSealedChunks.
+	var chunks []string
+	for _, thread := range []string{"a", "b"} {
+		ids := localHistoryFixture(t, s, thread, 20)
+		chunks = append(chunks, sealItemsForTest(t, s, thread, ids...))
+		if err := s.CreateThread(makeThread("cut-"+thread, "claude")); err != nil {
+			t.Fatal(err)
+		}
+		through := 0
+		if _, err := s.CloneThreadHistoryThroughTurn(thread, "cut-"+thread, &through); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DeleteThread(thread); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := countRows(t, s, `SELECT count(*) FROM import_history_chunks`); n != 2 {
+		t.Fatalf("%d chunks kept by snapshots, want 2", n)
+	}
+	failing, other := chunks[0], chunks[1]
+	if other < failing {
+		failing, other = other, failing
+	}
+	mustExec(t, s.db, `CREATE TRIGGER fail_release BEFORE DELETE ON import_history_chunks WHEN OLD.id = '`+failing+`' BEGIN SELECT RAISE(ABORT, 'injected'); END`)
+
+	var skipped []error
+	released, err := s.ReleaseDetachedSealedChunks(context.Background(), nil, func(err error) { skipped = append(skipped, err) })
+	if err != nil || released != 1 {
+		t.Fatalf("released = %d, %v; want the other chunk", released, err)
+	}
+	if len(skipped) != 1 || !strings.Contains(skipped[0].Error(), failing) || !strings.Contains(skipped[0].Error(), "injected") {
+		t.Fatalf("skipped = %v; want the failing chunk once", skipped)
+	}
+	if n := countRows(t, s, `SELECT count(*) FROM import_history_chunks WHERE id = ?`, failing); n != 1 {
+		t.Fatal("the failing chunk was not left in place")
+	}
+	if n := countRows(t, s, `SELECT count(*) FROM import_history_chunks WHERE id = ?`, other); n != 0 {
+		t.Fatal("the failing chunk stopped the release of the next one")
+	}
+}
+
+// failOnSkip is the skip callback of a repair that must leave nothing.
+func failOnSkip(t *testing.T) func(error) {
+	t.Helper()
+	return func(err error) { t.Errorf("repair skipped: %v", err) }
+}
+
+// leakReplacedPayloads drops v119's replaced-payload collection, so
+// repointing an item leaves the old payload behind as it did before v119.
+func leakReplacedPayloads(t *testing.T, s *Store) {
+	t.Helper()
+	if _, err := s.db.Exec(`DROP TRIGGER trg_items_gc_replaced_payload; DROP TRIGGER trg_items_gc_replaced_input_payload`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func countOrphanPayloads(t *testing.T, s *Store) orphanPayloadStats {
+	t.Helper()
+	var stats orphanPayloadStats
+	if err := s.scanOrphanPayloads(context.Background(), func(page []orphanPayload) error {
+		for _, row := range page {
+			stats.payloads++
+			stats.bytes += row.bytes
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return stats
 }
 
 // TestPruneOrphanPayloadsDeletesOnlyUnreferenced keeps a payload for every
 // kind of reference and deletes rows only when none applies.
 func TestPruneOrphanPayloadsDeletesOnlyUnreferenced(t *testing.T) {
 	s := newTestStore(t)
+	leakReplacedPayloads(t, s)
 	if err := s.CreateThread(makeThread("local", "claude")); err != nil {
 		t.Fatal(err)
 	}
@@ -883,20 +960,16 @@ func TestPruneOrphanPayloadsDeletesOnlyUnreferenced(t *testing.T) {
 		{"fork", "pb3"}: "bytes of pb3", {"fork", "pa3"}: "bytes of pa3",
 		{"imported", "item-000"}: "overlay", {"imported", "item-001"}: "original chunk",
 	}
-	orphans, err := s.CountOrphanPayloads(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
 	// The source pa is still borrowed while the count runs.
-	if orphans != (OrphanPayloadStats{Payloads: 3, Bytes: pb1Bytes}) {
+	if orphans := countOrphanPayloads(t, s); orphans != (orphanPayloadStats{payloads: 3, bytes: pb1Bytes}) {
 		t.Fatalf("orphans = %+v, want 3 payloads, %d bytes", orphans, pb1Bytes)
 	}
 
-	pruned, err := s.PruneOrphanPayloads(context.Background(), nil)
+	pruned, err := s.pruneOrphanPayloads(context.Background(), nil, failOnSkip(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pruned != (OrphanPayloadStats{Payloads: 4, Bytes: pb1Bytes + paBytes}) {
+	if pruned != (orphanPayloadStats{payloads: 4, bytes: pb1Bytes + paBytes}) {
 		t.Fatalf("pruned = %+v, want 4 payloads, %d bytes", pruned, pb1Bytes+paBytes)
 	}
 	requireCheckpointed(t, s, "prune")
@@ -920,11 +993,77 @@ func TestPruneOrphanPayloadsDeletesOnlyUnreferenced(t *testing.T) {
 	if n := countRows(t, s, `SELECT count(*) FROM payload_snapshots WHERE NOT (source_thread_id='local' AND payload_id='pc')`); n != 0 {
 		t.Fatalf("%d snapshots of pruned payloads survived", n)
 	}
-	if orphans, err := s.CountOrphanPayloads(context.Background()); err != nil || orphans != (OrphanPayloadStats{}) {
-		t.Fatalf("orphans after prune = %+v, %v", orphans, err)
+	if orphans := countOrphanPayloads(t, s); orphans != (orphanPayloadStats{}) {
+		t.Fatalf("orphans after prune = %+v", orphans)
 	}
-	if pruned, err := s.PruneOrphanPayloads(context.Background(), nil); err != nil || pruned != (OrphanPayloadStats{}) {
+	if pruned, err := s.pruneOrphanPayloads(context.Background(), nil, failOnSkip(t)); err != nil || pruned != (orphanPayloadStats{}) {
 		t.Fatalf("second prune = %+v, %v", pruned, err)
+	}
+}
+
+// TestItemWritesLeaveNoOrphanPayloads is the tripwire for payload leaks: the
+// writers that repoint a row's payload or input payload, on a thread and on
+// its fork, leave no payload row that nothing references.
+func TestItemWritesLeaveNoOrphanPayloads(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("local", "claude")); err != nil {
+		t.Fatal(err)
+	}
+	upsert := func(thread, id, payloadID, inputID string) Item {
+		t.Helper()
+		item := Item{ID: id, ThreadID: thread, TurnIndex: 0, Kind: "command_result", Role: "assistant", Status: "completed", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
+		payload := &Payload{ID: payloadID, Kind: "command_output", Meta: "{}", Data: []byte("bytes of " + payloadID), CreatedAt: 1}
+		var input *Payload
+		if inputID != "" {
+			input = &Payload{ID: inputID, Kind: "tool_call_input", Meta: "{}", Data: []byte("input " + inputID), CreatedAt: 1}
+		}
+		persisted, err := s.UpsertItemWithInputPayload(item, payload, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return persisted
+	}
+	upsert("local", "a", "pa", "pa-in")
+	if err := s.AppendPayloadData("local", "pa", []byte(" more"), "{}", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutEditFileSnapshot("local", "pa", "a.go", "package a", 2); err != nil {
+		t.Fatal(err)
+	}
+	upsert("local", "b", "pb", "pa-in")
+	upsert("local", "c", "pc", "c-in")
+	if err := s.CreateThread(makeThread("fork", "claude")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CloneThreadHistoryThroughTurn("local", "fork", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	upsert("local", "a", "pa2", "pa-in2")
+	upsert("fork", "a", "pa3", "")
+	upsert("local", "c", "pc", "c-in2")
+	b := upsert("local", "b", "pb2", "")
+	b.PayloadID = "pa2"
+	if _, updated, err := s.UpdateItemIfRevision(b); err != nil || !updated {
+		t.Fatalf("conditional repoint = %v, %v", updated, err)
+	}
+
+	if orphans := countOrphanPayloads(t, s); orphans != (orphanPayloadStats{}) {
+		t.Fatalf("item writes left orphans %+v", orphans)
+	}
+	for _, gone := range [][2]string{{"local", "pa"}, {"local", "pb"}, {"local", "pb2"}, {"local", "c-in"}, {"fork", "pa"}} {
+		if n := countRows(t, s, `SELECT count(*) FROM payloads WHERE thread_id=? AND id=?`, gone[0], gone[1]); n != 0 {
+			t.Errorf("replaced payload %v survived", gone)
+		}
+	}
+	for key, want := range map[[2]string]string{
+		{"local", "pa2"}: "bytes of pa2", {"local", "pa-in2"}: "input pa-in2", {"local", "pa-in"}: "input pa-in",
+		{"fork", "pa3"}: "bytes of pa3", {"fork", "pa-in"}: "input pa-in", {"fork", "pb"}: "bytes of pb",
+		{"local", "pc"}: "bytes of pc", {"local", "c-in2"}: "input c-in2", {"fork", "c-in"}: "input c-in",
+	} {
+		if data, err := s.GetPayloadData(key[0], key[1]); err != nil || string(data) != want {
+			t.Errorf("payload %v = %q, %v; want %q", key, data, err, want)
+		}
 	}
 }
 
@@ -932,6 +1071,7 @@ func TestPruneOrphanPayloadsDeletesOnlyUnreferenced(t *testing.T) {
 // referenced between the scan and the delete.
 func TestPruneOrphanPayloadBatchRechecksReferences(t *testing.T) {
 	s := newTestStore(t)
+	leakReplacedPayloads(t, s)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatal(err)
 	}
@@ -957,7 +1097,7 @@ func TestPruneOrphanPayloadBatchRechecksReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	stats, released, err := s.pruneOrphanPayloadBatch(scanned)
-	if err != nil || stats != (OrphanPayloadStats{}) || len(released) != 0 {
+	if err != nil || stats != (orphanPayloadStats{}) || len(released) != 0 {
 		t.Fatalf("prune of a re-referenced payload = %+v %v %v", stats, released, err)
 	}
 	if data, err := s.GetPayloadData("t", "old"); err != nil || string(data) != "old" {
@@ -965,8 +1105,46 @@ func TestPruneOrphanPayloadBatchRechecksReferences(t *testing.T) {
 	}
 }
 
+// A batch whose delete fails stays, is reported once, and does not stop the
+// batches after it.
+func TestPruneOrphanPayloadsSkipsAFailingBatch(t *testing.T) {
+	s := newTestStore(t)
+	leakReplacedPayloads(t, s)
+	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
+		t.Fatal(err)
+	}
+	item := Item{ID: "a", ThreadID: "t", Kind: "compaction", Role: "system", Status: "completed", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
+	// The large payload exceeds the byte budget, so it is a batch of its own.
+	for _, payload := range []Payload{
+		{ID: "p1", Data: []byte("fails")},
+		{ID: "p2", Data: make([]byte, historyRepairBytes+1)},
+		{ID: "p3", Data: []byte("live")},
+	} {
+		payload.Kind, payload.Meta, payload.CreatedAt = "compaction", "{}", 1
+		if _, err := s.UpsertItem(item, &payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustExec(t, s.db, `CREATE TRIGGER fail_prune BEFORE DELETE ON payloads WHEN OLD.id = 'p1' BEGIN SELECT RAISE(ABORT, 'injected'); END`)
+
+	var skipped []error
+	pruned, err := s.pruneOrphanPayloads(context.Background(), nil, func(err error) { skipped = append(skipped, err) })
+	if err != nil || pruned.payloads != 1 {
+		t.Fatalf("pruned = %+v, %v; want the batch after the failing one", pruned, err)
+	}
+	if len(skipped) != 1 || !strings.Contains(skipped[0].Error(), "t/p1") || !strings.Contains(skipped[0].Error(), "injected") {
+		t.Fatalf("skipped = %v; want the failing batch once", skipped)
+	}
+	for id, want := range map[string]int{"p1": 1, "p2": 0, "p3": 1} {
+		if n := countRows(t, s, `SELECT count(*) FROM payloads WHERE thread_id='t' AND id=?`, id); n != want {
+			t.Errorf("payload %s rows = %d, want %d", id, n, want)
+		}
+	}
+}
+
 func TestPruneOrphanPayloadsStopsOnCancel(t *testing.T) {
 	s := newTestStore(t)
+	leakReplacedPayloads(t, s)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatal(err)
 	}
@@ -977,8 +1155,8 @@ func TestPruneOrphanPayloadsStopsOnCancel(t *testing.T) {
 		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	pruned, err := s.PruneOrphanPayloads(ctx, ChunkPause(cancel))
-	if err != nil || pruned.Payloads != historyRepairRows {
+	pruned, err := s.pruneOrphanPayloads(ctx, ChunkPause(cancel), failOnSkip(t))
+	if err != nil || pruned.payloads != historyRepairRows {
 		t.Fatalf("cancelled prune = %+v, %v; want one batch of %d", pruned, err, historyRepairRows)
 	}
 	if n := countRows(t, s, `SELECT count(*) FROM payloads WHERE thread_id='t'`); n != 2 {
