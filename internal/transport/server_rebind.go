@@ -144,6 +144,15 @@ func (s *Server) Rebind(addr string, opts *RebindOptions) error {
 			log.Printf("transport: rebind: close retired listener: %v", err)
 		}
 	}
+	// A closed listener refuses new dials, but connections it already
+	// accepted keep serving requests until the retired server stops. Close
+	// the idle keep-alive connections now and let in-flight requests close
+	// theirs after responding, so no request reaches the old address once
+	// Rebind returns. The server speaks only HTTP/1.1 (serverTLSConfig), so
+	// this covers every connection net/http still tracks.
+	if oldSrv != nil {
+		oldSrv.SetKeepAlivesEnabled(false)
+	}
 
 	// Force-close any evicted entry from the cap pop. Done on a fresh
 	// goroutine because Close() can block on hijacked WS sockets and we

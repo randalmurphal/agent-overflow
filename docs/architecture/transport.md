@@ -31,7 +31,9 @@ The isolated harness opts out of persisted network settings.
 `Rebind` keeps the current port for a host-only change and does not move to an
 ephemeral port. It creates the replacement listener before closing the current
 one. Its close-and-retry path applies only to address-in-use errors; other bind
-failures leave the working listener intact.
+failures leave the working listener intact. Before it returns, the retired
+server also stops HTTP keep-alive, so no request reaches the old address after
+the move. Upgraded WebSockets continue on their own connections.
 
 Every package-created listener passes through `bindListener`. Explicit IPv4
 addresses use `tcp4`, including `0.0.0.0`, so WSL's Windows relay receives an

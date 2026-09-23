@@ -1233,6 +1233,39 @@ func TestRebind_OldAddrStopsAccepting(t *testing.T) {
 	}
 }
 
+// TestRebind_RetiredServerRefusesKeptAliveConnections verifies that a
+// client holding an idle keep-alive connection to the old listener cannot
+// keep issuing requests to the retired server once Rebind returns. Closing
+// the listener refuses new dials, but an accepted connection is served
+// until the server itself stops, and the graceful shutdown runs on its own
+// goroutine. Repeated because the leak depends on that goroutine's timing.
+func TestRebind_RetiredServerRefusesKeptAliveConnections(t *testing.T) {
+	for iteration := 0; iteration < 50; iteration++ {
+		f := newServerFixture(t)
+		transport := &http.Transport{}
+		client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+		oldURL := "http://" + f.srv.Addr() + HealthPath
+		get := func() error {
+			resp, err := client.Get(oldURL)
+			if err != nil {
+				return err
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			return resp.Body.Close()
+		}
+		if err := get(); err != nil {
+			t.Fatalf("iteration %d: warm keep-alive connection: %v", iteration, err)
+		}
+		if err := f.srv.Rebind("127.0.0.1:0", nil); err != nil {
+			t.Fatalf("iteration %d: rebind: %v", iteration, err)
+		}
+		if err := get(); err == nil {
+			t.Fatalf("iteration %d: retired server answered on a kept-alive connection", iteration)
+		}
+		transport.CloseIdleConnections()
+	}
+}
+
 // TestRebind_ExistingWSContinues verifies that a WebSocket connection
 // established before Rebind keeps working after the rebind. The
 // hijacked TCP connection is owned by the handleWS goroutine; the
