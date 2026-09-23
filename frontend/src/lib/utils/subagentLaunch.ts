@@ -5,7 +5,7 @@
 // "does this row anchor a subagent?" for every shape AO renders as an
 // agent card (docs/specs/agent-visibility.md § "Anchor set"). Everything
 // above it — the timeline tree (`utils/subagentGrouping.ts`), the pane's
-// live-eviction fold (`stores/threadSubagentMemory.ts`), and the agent
+// live aggregates (`stores/threadSubagentMemory.ts`), and the agent
 // pane — is provider-neutral and must key on this and nothing else, so a
 // new launch shape lands in one place.
 //
@@ -260,14 +260,17 @@ export const NO_LOADED_SUBAGENT_CHILDREN: SubagentLaunchContext = {
  * Build a context over a list of loaded items. The parent-id index is
  * built on FIRST USE, not eagerly: `subagentLaunchInfo` reaches
  * `hasChildren` only for `Skill` rows, so a window with none never pays
- * for the pass.
+ * for the pass. `liveChildren` answers for streamed children, which a
+ * pane records without loading them (`threadSubagentMemory`).
  */
 export function subagentLaunchContextFrom(
   items: readonly Item[],
+  liveChildren?: (itemId: string) => boolean,
 ): SubagentLaunchContext {
   let parentIds: Set<string> | null = null;
   return {
     hasChildren(itemId: string): boolean {
+      if (liveChildren?.(itemId)) return true;
       if (parentIds === null) {
         parentIds = new Set<string>();
         for (const item of items) {

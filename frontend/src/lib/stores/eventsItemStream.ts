@@ -1,5 +1,4 @@
 import { applyTimelineMutation } from './timelineSurfaces';
-import { itemTranscriptScope } from '../utils/itemTranscriptScope';
 import { optimisticInterruptCut, noteHiddenInterruptItem } from './threadInterruptState.svelte';
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { threadBackend, HOME_BACKEND } from '../transport/entityIndex';
@@ -295,8 +294,7 @@ function applyItemUpserts(upserts: Item[]): void {
       changedThreadIds.add(threadId);
       for (const item of applied.changedItems) {
         const previous = previousItemsById.get(item.id);
-        if (providerUpsertAdvancesLiveContent(previous, item) ||
-          (!previous && itemTranscriptScope(item, pane.getItemById))) {
+        if (providerUpsertAdvancesLiveContent(previous, item)) {
           pane.markLiveContentAdvanced(item);
         }
       }

@@ -603,7 +603,6 @@ export function createThreadSwitchLoad(
       threadId,
     );
     options.subagentMemory.restoreFolds(body.subagentFolds ?? null);
-    options.subagentMemory.clearWindowDerivedState();
     // Only when the envelope has one: the ListRecentTurns leg may
     // already have landed with the authoritative row.
     if (body.latestSettledTurn) {
@@ -848,7 +847,6 @@ export function createThreadSwitchLoad(
         ...(cached
           ? [
               () => options.subagentMemory.restoreFolds(cached.subagentFolds),
-              () => options.subagentMemory.clearWindowDerivedState(),
               () => options.timelineWindow.installFromSnapshot(cached),
               () => options.setLatestSettledTurn(cached.latestSettledTurn),
               () => {
@@ -861,7 +859,7 @@ export function createThreadSwitchLoad(
               },
             ]
           : [
-              () => options.subagentMemory.resetForFreshThread(),
+              () => options.subagentMemory.clearFolds(),
               () => options.timelineWindow.resetForFreshThread(),
             ]),
         () => options.rowUiState.clear(),
@@ -995,11 +993,7 @@ export function createThreadSwitchLoad(
         liveTouchedDuringSync ?? EMPTY_ID_SET,
         liveRemovedDuringSync ?? EMPTY_ID_SET,
       );
-      // Live children whose anchor survived nowhere are swallowed, not
-      // installed — their later deltas stay silent, and hydration
-      // renders them when the anchor pages back in.
-      options.subagentMemory.recordAdmission([], next.orphanedLiveChildren);
-      options.installTimelineItems(next.items, {
+      options.installTimelineItems(next, {
         disposeDropped: true,
         afterCommit: () => {
           runWindowCommitEffects('synced thread window metadata', [
@@ -1664,8 +1658,7 @@ export function createThreadSwitchLoad(
         refreshMutations.ids,
         refreshMutations.removedIds,
       );
-      options.subagentMemory.recordAdmission([], next.orphanedLiveChildren);
-      options.installTimelineItems(next.items, {
+      options.installTimelineItems(next, {
         disposeDropped: true,
         afterCommit: () => {
           runWindowCommitEffects('refreshed thread window metadata', [
@@ -1675,7 +1668,7 @@ export function createThreadSwitchLoad(
             },
             () => {
               if (changedDuringFetch) {
-                options.timelineWindow.refreshCursorsAfterUpserts(next.items, true, snapshot);
+                options.timelineWindow.refreshCursorsAfterUpserts(next, true, snapshot);
               }
             },
           ]);

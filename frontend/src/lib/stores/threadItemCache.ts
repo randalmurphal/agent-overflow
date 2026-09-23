@@ -37,10 +37,10 @@ export interface ThreadItemSnapshot {
   hasMoreNewer: boolean;
   latestSettledTurn: SettledTurn | null;
   /**
-   * Folded (evicted) subagent children keyed by launch anchor. The
-   * snapshot's `items` deliberately exclude these rows, so the fold must
-   * travel with them or a warm re-entry renders collapsed cards with
-   * zeroed counts until the next live event or hydration.
+   * Live subagent aggregates keyed by launch anchor. The window never
+   * holds child rows, so the aggregates travel with it or a warm re-entry
+   * renders collapsed cards without their live counts and previews until
+   * the next live event or decoration.
    */
   subagentFolds?: SubagentFoldSnapshot | null;
   /**
@@ -233,13 +233,11 @@ function estimateSnapshotChars(snapshot: ThreadItemSnapshot): number {
   for (const item of snapshot.items) {
     chars += retainedItemChars(item);
   }
-  // Folded subagent children ride the snapshot as one id string per
-  // evicted row; a subagent-heavy turn can make the fold outweigh the
-  // visible rows, so it must count against the same budgets.
+  // Same terms the replica's `estimateBodyChars` counts for the folds.
   for (const anchor of snapshot.subagentFolds?.anchors ?? []) {
-    chars += anchor.terminalPreview.length;
-    for (const id of anchor.evictedIds) chars += id.length;
+    chars += anchor.anchorId.length + anchor.rootId.length + anchor.terminalPreview.length;
   }
+  for (const root of snapshot.subagentFolds?.roots ?? []) chars += root.rootId.length;
   // Same terms the replica's `estimateBodyChars` counts for a stub, so
   // the two tiers stay on one scale.
   for (const run of snapshot.runs ?? []) {

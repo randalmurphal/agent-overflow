@@ -56,7 +56,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     },
   };
   const itemWindow = createThreadItemWindow({
-    optimisticItemIds, streamingReveal: () => reveal, rowUiState: () => rows,
+    optimisticItemIds, scopeRootId: () => selection.scopeRootId, streamingReveal: () => reveal, rowUiState: () => rows,
     activityRuns: () => runs, switchLoad: () => mutations,
   });
   const { getItems, getItemById, itemIndexById, writeItemAt, appendDirectAssistantLiteral,

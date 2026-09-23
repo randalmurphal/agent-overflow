@@ -10,8 +10,9 @@
 // slice their transcript root at provider-established resume prompts.
 // Wait carriers group the completions they explicitly observed. Nested agent
 // cards recurse to MAX_DEPTH; deeper descendants render as leaves.
-// Live folds apply only to active cards. Completed cards use their own saved
-// aggregates, including when children have been evicted from frontend memory.
+// Streamed children never enter a pane window: cards combine loaded rows with
+// the decorated aggregates here, and read the pane's live aggregate
+// themselves. Completed cards use their own saved aggregates.
 
 import type { Item } from '../types/models';
 import { userMessageIdentity } from './userMessageIdentity';
@@ -29,10 +30,9 @@ import { reportFrontendDiagnostic } from './frontendErrorCapture';
 import { isCommandAgentResult } from './commandAgentResult';
 
 /**
- * Accessor into the pane's live-eviction fold registry. Group nodes add
- * the evicted-terminal count and compete the folded terminal preview
- * against loaded children, so a collapsed card renders identically
- * whether its settled transcript rows are in memory or evicted.
+ * Accessor into the pane's live subagent aggregates
+ * (`threadSubagentMemory`). The grouping pass reads it only for
+ * forked-skill detection: an anchor with a live child is a launch.
  */
 export type SubagentLiveAggregates = (
   anchorId: string,
@@ -115,7 +115,7 @@ function leafNode(item: Item, orphan = false): TimelineLeaf {
  *
  * Unlike a leaf, a card's output depends on more than its own Item, so a
  * hit requires validation against the CURRENT pass's inputs (buckets,
- * carrier links, completion folds, fold aggregates — see
+ * carrier links, completion folds, live launch detection — see
  * `groupItemsBySubagent`'s `cardStillValid`). The entry records the depth
  * it was built at because nested builds are depth-capped; entries die with
  * their Item, and any write to the launch/carrier row replaces the Item.
@@ -129,8 +129,6 @@ function leafNode(item: Item, orphan = false): TimelineLeaf {
 interface CachedCardBuild<Node> {
   node: Node;
   depth: number;
-  /** `aggregates?.(parent.id)` at build time; ref-stable per fold state. */
-  fold: SubagentFoldAggregate | undefined;
 }
 
 const launchGroupBuildByAnchor = new WeakMap<Item, CachedCardBuild<SubagentGroupNode>>();
@@ -182,10 +180,9 @@ export interface SubagentGroupNode {
   children: TimelineNode[];
   /**
    * Total child count (counts *all* descendants, not just immediate
-   * children). Composed from three sources: descendants loaded in
-   * memory, terminal descendants evicted into the pane's live fold
-   * (`SubagentLiveAggregates`), and — as a ratchet floor — the
-   * backend-decorated aggregate stamped on history-loaded anchors.
+   * children): descendants loaded in this window, ratcheted against the
+   * backend-decorated aggregate stamped on history-loaded anchors. The
+   * card adds the pane's live aggregate (`SubagentLiveAggregates`).
    */
   descendantCount: number;
   /**
@@ -194,18 +191,10 @@ export interface SubagentGroupNode {
    */
   loadedDescendantCount: number;
   /**
-   * Most recent descendant summary — drives the collapsed-header
-   * preview on `SubagentGroup`. Selection rule:
-   *   1. Highest-(turnIndex, itemIndex) loaded descendant whose status
-   *      is `running` or `streaming`. This keeps the preview locked to
-   *      whatever the subagent is actively working on.
-   *   2. With nothing active: the live fold's evicted-terminal preview
-   *      (`SubagentLiveAggregates`) when its position is at or after
-   *      the best loaded terminal; otherwise that loaded terminal.
-   *   3. The backend-decorated summary from the anchor's meta when no
-   *      loaded or folded descendant carries text (history loads keep
-   *      child rows paged out).
-   *   4. Empty string otherwise.
+   * Most recent loaded descendant summary (`pickLatestChildSummary`),
+   * falling back to the backend-decorated summary from the anchor's
+   * meta, then to ''. The card competes it against the pane's live
+   * aggregate.
    */
   latestChildSummary: string;
 }
@@ -397,8 +386,8 @@ function compareItems(a: Item, b: Item): number {
  * Normalize raw summary text into the collapsed-header preview shape:
  * whitespace collapsed, capped at PREVIEW_MAX_CHARS with an ellipsis.
  * Shared by loaded-children previews, the backend-decorated summary
- * fallback, and the pane's live-eviction fold (which captures the
- * preview at evict time) so all three render identically.
+ * fallback, and the pane's live aggregates (which capture the preview
+ * at admission) so all three render identically.
  */
 export function normalizePreviewText(summary: string): string {
   if (summary.length === 0) return '';
@@ -449,8 +438,8 @@ export function subagentActivityPreview(item: Item): string {
  * launch anchor with its transitive descendant count and the same
  * latest-child summary pickLatestChildSummary would compute (see
  * internal/store/subagent_items.go). Live anchors created by streaming
- * events carry no decoration — their active children are in memory and
- * their settled children are tracked by the pane's live-eviction fold
+ * events carry no decoration until the backend re-sends them; their
+ * streamed children are recorded by the pane's live aggregates
  * (utils/subagentFold.ts), surfaced through `SubagentLiveAggregates`.
  *
  * `count` is the anchor's ROUND: for a resumed agent the store bounds
@@ -492,9 +481,9 @@ export function decoratedSubagentAggregates(launch: Item, completion?: Item | nu
  * True when an item is in the middle of doing work — running tool
  * calls and actively-streaming text/thinking blocks both qualify.
  * Biases `pickLatestChildSummary` toward the subagent's current
- * activity, and defines "settled" for the pane's live-eviction policy
- * (thread.svelte.ts) — the two must share one status set or eviction
- * could fold a row the preview still treats as active.
+ * activity, and defines "active" for the pane's live aggregates
+ * (threadSubagentMemory.ts); the two share one status set so a loaded
+ * row and an admitted one compete on equal terms.
  */
 export function isItemActive(item: Item): boolean {
   return item.status === 'running' || item.status === 'streaming';
@@ -619,11 +608,10 @@ export function* renderedItemIdsWithin(
  * so the preview tracks what the subagent is doing now; falls back to
  * the most recent terminal descendant only when nothing is active.
  *
- * The pane's live-eviction `fold` competes on the terminal side:
- * active loaded descendants always win (evicted rows are terminal by
- * definition, so they can never outrank live work); with nothing
- * active, the folded terminal preview wins when its position is at or
- * after the best loaded terminal.
+ * The pane's `live` aggregate competes on both sides by position: its
+ * newest active preview against the best loaded active row, and, with
+ * nothing active anywhere, its newest terminal preview against the best
+ * loaded terminal row. Ties go to the live aggregate.
  *
  * Comparison key is `(turnIndex, itemIndex)` — the same canonical
  * ordering the timeline uses everywhere else.
@@ -636,7 +624,7 @@ export function* renderedItemIdsWithin(
  */
 export function pickLatestChildSummary(
   children: TimelineNode[],
-  fold?: SubagentFoldAggregate,
+  live?: SubagentFoldAggregate,
   getItem?: (id: string) => Item | undefined,
 ): string {
   // Candidates are carried as ITEMS, not as items paired with their
@@ -662,15 +650,22 @@ export function pickLatestChildSummary(
       if (!bestTerminal || compareItems(item, bestTerminal) > 0) bestTerminal = item;
     }
   }
+  if (live?.activePreview && (
+    !bestActive
+    || live.activeTurnIndex > bestActive.turnIndex
+    || (live.activeTurnIndex === bestActive.turnIndex && live.activeItemIndex >= bestActive.itemIndex)
+  )) {
+    return live.activePreview;
+  }
   if (bestActive) return normalizePreviewText(bestActive.summary ?? '');
-  if (fold && fold.terminalPreview) {
+  if (live?.terminalPreview) {
     if (
       !bestTerminal
-      || fold.terminalTurnIndex > bestTerminal.turnIndex
-      || (fold.terminalTurnIndex === bestTerminal.turnIndex
-        && fold.terminalItemIndex >= bestTerminal.itemIndex)
+      || live.terminalTurnIndex > bestTerminal.turnIndex
+      || (live.terminalTurnIndex === bestTerminal.turnIndex
+        && live.terminalItemIndex >= bestTerminal.itemIndex)
     ) {
-      return fold.terminalPreview;
+      return live.terminalPreview;
     }
   }
   return bestTerminal ? normalizePreviewText(bestTerminal.summary ?? '') : '';
@@ -678,9 +673,9 @@ export function pickLatestChildSummary(
 
 /**
  * Count every descendant (recursive) under a group node. Nested group
- * children contribute their own `descendantCount` — which already folds
- * in their evicted-terminal rows — so an outer card's entry counter
- * stays honest when an inner agent's settled transcript is paged out.
+ * children contribute their own `descendantCount`, which is ratcheted
+ * against their decoration, so an outer card's entry counter stays
+ * honest when an inner agent's transcript is not loaded.
  */
 function countDescendants(children: TimelineNode[]): number {
   let n = 0;
@@ -699,12 +694,10 @@ function countDescendants(children: TimelineNode[]): number {
 }
 
 /**
- * Assemble a SubagentGroupNode, reconciling three sources: children
- * loaded in memory (they track live status and win the preview), the
- * pane's live-eviction fold (terminal rows dropped from memory while
- * the card is collapsed), and the backend-decorated aggregates on the
- * anchor (history loads deliver anchors without child rows). The count
- * is loaded + folded, ratcheted against the decoration.
+ * Assemble a SubagentGroupNode from the children loaded in this window
+ * (they track live status and win the preview) and the backend-decorated
+ * aggregates on the anchor (history loads deliver anchors without child
+ * rows). The count is the loaded count, ratcheted against the decoration.
  */
 function subagentGroupNode(
   parent: Item,
@@ -712,7 +705,6 @@ function subagentGroupNode(
   anchor: Item,
   children: TimelineNode[],
   loadedDescendantCount: number,
-  aggregates: SubagentLiveAggregates | undefined,
   /**
    * The launch's background completion sibling, when one has loaded. Folded
    * onto the node as its status source; the FOLD adds nothing to the
@@ -720,16 +712,9 @@ function subagentGroupNode(
    * not wedge its body on "Loading 1 entries…").
    */
   completion?: Item,
-  // Evicted-fold counts of launches rendered as flattened leaves inside
-  // this group (depth-cap path). They are part of the true total but are
-  // NOT loaded rows — keeping them out of `loadedDescendantCount` keeps
-  // the card's hydrate-on-expand trigger (loaded < descendant) honest.
-  flattenedFoldCount = 0,
 ): SubagentGroupNode {
   const historical = anchor.id !== parent.id;
   const decorated = decoratedSubagentAggregates(parent, historical ? anchor : undefined);
-  const fold = historical ? undefined : aggregates?.(parent.id);
-  const liveTotal = loadedDescendantCount + (fold?.evictedCount ?? 0) + flattenedFoldCount;
   return {
     kind: 'group',
     parent,
@@ -737,9 +722,9 @@ function subagentGroupNode(
     groupKey: anchor.id,
     ...(completion ? { completion } : {}),
     children,
-    descendantCount: Math.max(liveTotal, decorated.count),
+    descendantCount: Math.max(loadedDescendantCount, decorated.count),
     loadedDescendantCount,
-    latestChildSummary: pickLatestChildSummary(children, fold) || decorated.summary,
+    latestChildSummary: pickLatestChildSummary(children) || decorated.summary,
   };
 }
 
@@ -1194,8 +1179,8 @@ export function visibleTimelineItemIdForItem(items: readonly Item[], itemId: str
 /**
  * Group items by subagent parentage. Pure function — does not mutate the
  * input and returns a fresh tree each call. `aggregates` (optional) is
- * the pane's live-eviction fold accessor; group nodes fold its evicted
- * counts and terminal previews into their collapsed-card aggregates.
+ * the pane's live aggregate accessor; an anchor with a live child counts
+ * as having children for forked-skill detection.
  */
 export function groupItemsBySubagent(
   items: readonly Item[],
@@ -1279,7 +1264,10 @@ export function groupItemsBySubagent(
   // Every launch in the window, provider-neutral. The context is built over
   // the same list, so forked-Skill detection sees exactly the rows this pass
   // is about to place.
-  const launchContext = subagentLaunchContextFrom(sortedWithCarriers);
+  const launchContext = subagentLaunchContextFrom(
+    sortedWithCarriers,
+    aggregates && ((itemId) => aggregates(itemId) !== undefined),
+  );
   const subagentLaunchIDs = new Set<string>();
   // Launches that run detached from the main turn (`launchRunsDetached`),
   // every provider. Their launch row is the pre-card leaf and never a
@@ -1545,7 +1533,7 @@ export function groupItemsBySubagent(
         children,
         descendantCount: children.length,
       };
-      waitGroupBuildByCarrier.set(item, { node, depth, fold: undefined });
+      waitGroupBuildByCarrier.set(item, { node, depth });
       return node;
     }
 
@@ -1595,10 +1583,7 @@ export function groupItemsBySubagent(
       // Cap depth: render the deeper descendants as flat leaf siblings of
       // this node's parent instead of nesting further. The group still
       // reports the full descendant count so the collapsed card is honest.
-      // Flattened nested launches contribute their evicted-fold counts
-      // here because they render as leaves, not fold-aware group nodes.
       const flatChildren: TimelineNode[] = [];
-      let flattenedFoldCount = 0;
       // `childrenByParent` is built from provider-supplied `parentId`s and
       // keyed by item id, neither of which this pass owns. A cycle in those
       // links is a synchronous allocate-until-dead loop (the queue grows
@@ -1632,14 +1617,11 @@ export function groupItemsBySubagent(
       enqueue(childItems);
       for (let head = 0; head < queue.length; head++) {
         const next = queue[head];
+        // A flattened launch renders as a LEAF with no card to build at
+        // its completion sibling; the sibling is a leaf of its own in this
+        // same bucket (it carries the launch's parentId), so it arrives
+        // through `enqueue` like any other descendant.
         flatChildren.push(leafNode(next));
-        if (subagentLaunchIDs.has(next.id)) {
-          flattenedFoldCount += aggregates?.(next.id)?.evictedCount ?? 0;
-          // A flattened launch renders as a LEAF with no card to build at
-          // its completion sibling; the sibling is a leaf of its own in
-          // this same bucket (it carries the launch's parentId), so it
-          // arrives through `enqueue` like any other descendant.
-        }
         enqueue(executionChildren(childrenByParent.get(next.id), item, anchor));
       }
       if (revisits > 0) {
@@ -1663,9 +1645,7 @@ export function groupItemsBySubagent(
         anchor,
         flatChildren,
         flatChildren.length,
-        aggregates,
         cardCompletion(item, anchor),
-        flattenedFoldCount,
       );
     }
 
@@ -1689,10 +1669,9 @@ export function groupItemsBySubagent(
       anchor,
       children,
       countDescendants(children),
-      aggregates,
       cardCompletion(item, anchor),
     );
-    launchGroupBuildByAnchor.set(anchor, { node, depth, fold: anchor.id === item.id ? aggregates?.(item.id) : undefined });
+    launchGroupBuildByAnchor.set(anchor, { node, depth });
     return node;
   }
 
@@ -1767,7 +1746,6 @@ export function groupItemsBySubagent(
     // leaves the anchor alone but changes the card's status source, so it
     // has to re-resolve through `cardCompletion` (2026-08-29).
     if (entry.depth !== depth || node.anchor !== anchor) return false;
-    if (anchor.id === node.parent.id && aggregates?.(node.parent.id) !== entry.fold) return false;
     if (cardCompletion(node.parent, anchor) !== node.completion) return false;
     const bucket = cardChildren(node.parent, anchor) ?? EMPTY_ITEMS;
     if (bucket.length !== node.children.length) return false;

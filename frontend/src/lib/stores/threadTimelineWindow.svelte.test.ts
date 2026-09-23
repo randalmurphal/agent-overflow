@@ -565,7 +565,7 @@ describe('threadTimelineWindow', () => {
       const added = getToasts().slice(toastsBefore);
       expect(added.map((t) => t.type)).toEqual(['error']);
       expect(consoleError).toHaveBeenCalledWith(
-        expect.stringContaining('window loaded around dropped does not contain dropped'),
+        expect.stringContaining('window loaded around dropped does not contain it'),
       );
       consoleError.mockRestore();
     });
@@ -720,98 +720,36 @@ describe('threadTimelineWindow', () => {
       expect(paged).toBe(0);
     });
 
-    it('loadUntilItem resolves a subagent child by loading only its ancestry and the root window', async () => {
-      // History windows exclude child rows, so a scroll-to-item target
-      // inside a subagent transcript must (1) walk the parent chain to
-      // the top-level launch root, (2) slice the window around the
-      // root, and (3) hydrate the root's descendants so the containing
-      // group card can resolve the scroll.
+    it('loadUntilItem reports a subagent child as missing without touching the window', async () => {
+      // History windows hold top-level rows only; a child target opens in
+      // its agent's scoped surface (`navigateToThreadItem`), never here.
       const pane = createThreadPane();
+      setBindingMock('GetThreadItem', async () => makeItem({
+        id: 'deep-child',
+        threadId: 't',
+        turnIndex: 4,
+        itemIndex: 3,
+        parentId: 'mid-launch',
+      }));
       const sliceAnchors: string[] = [];
-      setBindingMock(
-        'GetThreadItem',
-        async (_threadId: string, itemId: string) => {
-          if (itemId === 'deep-child') {
-            return makeItem({
-              id: 'deep-child',
-              threadId: 't',
-              turnIndex: 4,
-              itemIndex: 3,
-              parentId: 'mid-launch',
-            });
-          }
-          if (itemId === 'mid-launch') {
-            return makeItem({
-              id: 'mid-launch',
-              threadId: 't',
-              turnIndex: 4,
-              itemIndex: 1,
-              parentId: 'root-launch',
-              kind: 'tool_call',
-              toolName: 'Task',
-            });
-          }
-          if (itemId === 'root-launch') {
-            return makeItem({
-              id: 'root-launch',
-              threadId: 't',
-              turnIndex: 4,
-              itemIndex: 0,
-              kind: 'tool_call',
-              toolName: 'Task',
-            });
-          }
-          return makeItem({ id: '' });
-        },
-      );
-      setBindingMock(
-        'ListThreadSliceAround',
-        async (_threadId: string, anchorItemId: string) => {
-          sliceAnchors.push(anchorItemId);
-          if (anchorItemId === 'root-launch') {
-            return {
-              items: [
-                makeItem({
-                  id: 'root-launch',
-                  threadId: 't',
-                  turnIndex: 4,
-                  itemIndex: 0,
-                  kind: 'tool_call',
-                  toolName: 'Task',
-                }),
-                makeItem({ id: 'after', threadId: 't', turnIndex: 5 }),
-              ],
-              oldestTurnIndex: 4,
-              newestTurnIndex: 5,
-              hasMore: true,
-              hasMoreOlder: true,
-              hasMoreNewer: false,
-            };
-          }
-          return {
-            items: [makeItem({ id: 'tail', threadId: 't', turnIndex: 9 })],
-            oldestTurnIndex: 9,
-            newestTurnIndex: 9,
-            hasMore: true,
-            hasMoreOlder: true,
-            hasMoreNewer: false,
-          };
-        },
-      );
-      const bulk = setBindingMock('ListSubagentDescendants', async () => { throw new Error('Bulk fetch forbidden'); });
+      setBindingMock('ListThreadSliceAround', async (_threadId: string, anchorItemId: string) => {
+        sliceAnchors.push(anchorItemId);
+        return {
+          items: [makeItem({ id: 'tail', threadId: 't', turnIndex: 9 })],
+          oldestTurnIndex: 9,
+          newestTurnIndex: 9,
+          hasMore: true,
+          hasMoreOlder: true,
+          hasMoreNewer: false,
+        };
+      });
       await pane.switchThread(makeThread({ id: 't' }));
+      const before = pane.items;
+      const opened = sliceAnchors.length;
 
-      const ok = await pane.loadUntilItem('deep-child');
-
-      expect(ok).toBe('loaded');
-      expect(sliceAnchors.at(-1)).toBe('root-launch');
-      expect(bulk).not.toHaveBeenCalled();
-      expect(pane.items.map((it) => it.id)).toEqual([
-        'root-launch',
-        'mid-launch',
-        'deep-child',
-        'after',
-      ]);
+      expect(await pane.loadUntilItem('deep-child')).toBe('missing');
+      expect(sliceAnchors).toHaveLength(opened);
+      expect(pane.items).toBe(before);
     });
 
     it('loadOlder takes hasMoreHistory from the page, empty or not', async () => {

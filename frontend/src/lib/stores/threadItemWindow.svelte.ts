@@ -29,6 +29,7 @@ import type { ThreadRowUiState } from './threadRowUiState.svelte';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
 import type { ThreadSubagentMemory } from './threadSubagentMemory';
 import type { ThreadSwitchLoad } from './threadSwitchLoad.svelte';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 
 /** Shared "nothing was dropped" list, so the common replacement allocates none. */
 const NO_ITEMS: readonly Item[] = Object.freeze([]);
@@ -47,6 +48,12 @@ export interface TimelineCommitOptions {
  */
 export interface ThreadItemWindowOptions {
   optimisticItemIds: Set<string>;
+  /**
+   * The transcript whose direct rows this window holds: '' (or omitted)
+   * for a thread's main window, the launch id for an agent scope. Rows
+   * parented elsewhere are subagent children and never enter the window.
+   */
+  scopeRootId?(): string | undefined;
   streamingReveal(): ThreadStreamingReveal;
   rowUiState(): ThreadRowUiState;
   activityRuns(): ThreadActivityRuns;
@@ -325,12 +332,36 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     afterCommit?: () => void;
   }
 
+  /**
+   * Wholesale installs come from pages, snapshots and caches, all built
+   * from rows of this window's scope. A row parented elsewhere is refused
+   * here too, so no install path can put a subagent child in the window.
+   */
+  function rowsInScope(nextItems: Item[]): Item[] {
+    const scope = options.scopeRootId?.() ?? '';
+    let admitted: Item[] | null = null;
+    for (let index = 0; index < nextItems.length; index += 1) {
+      const item = nextItems[index];
+      if ((item.parentId ?? '') === scope) {
+        admitted?.push(item);
+        continue;
+      }
+      admitted ??= nextItems.slice(0, index);
+    }
+    if (admitted === null) return nextItems;
+    reportFrontendDiagnostic(
+      'timeline window: refused rows outside the window scope',
+      `${nextItems.length - admitted.length} of ${nextItems.length} rows`,
+    );
+    return admitted;
+  }
+
   function commitTimelineItems(
     nextItems: Item[],
     droppedItems: readonly Item[],
     commitOptions: TimelineItemsCommitOptions = {},
   ): boolean {
-    return options.streamingReveal().withReconciledItems(nextItems, (nextItems) => {
+    return options.streamingReveal().withReconciledItems(rowsInScope(nextItems), (nextItems) => {
       const previous = items;
       reconcileItemReplacements(previous, nextItems);
       items = nextItems;
@@ -346,15 +377,12 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       // `itemIndexById` no longer knows it.
       rebuildItemIndexes(items);
       syncItemBoxes(previous, items);
-      // Fold↔items chokepoint: folds are only meaningful while their
-      // anchor row is loaded — once an anchor leaves the window, the
-      // next load of its region decorates from SQLite. Every wholesale
-      // window replacement (prune, reconcile, revert, cache install,
-      // eviction) flows through here, so one sweep after the index
-      // rebuild keeps the registry consistent everywhere. Streamed upserts
-      // can replace provisional user records but cannot remove fold anchors.
-      // Eviction callers record their folds BEFORE replacing, with the
-      // anchors still loaded, so those folds are retained.
+      // Subagent aggregates are only meaningful while their root row is
+      // loaded; once it leaves the window, the next load of its region
+      // decorates from SQLite. Every wholesale replacement (prune,
+      // reconcile, revert, cache install) flows through here, so one sweep
+      // after the index rebuild keeps the aggregates consistent. Streamed
+      // upserts can replace provisional user records but never remove rows.
       try {
         options.subagentMemory?.().retainFoldAnchors();
       } catch (error) {
@@ -453,13 +481,9 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
   /**
    * Replace the window by dropping the rows `shouldDrop` selects. ONE
    * pass yields both the surviving array and the dropped rows, where
-   * `replaceTimelineItems` has to diff the two arrays afterwards — a
-   * second full walk plus a Set of every surviving id. Any caller that
-   * already knows which rows are leaving belongs here; subagent
-   * eviction, which drops a settled subtree on every settling batch, is
-   * why it exists. Returns the dropped rows in their previous order; a
-   * no-op drop leaves the window untouched, so it costs no revision
-   * bump.
+   * `replaceTimelineItems` has to diff the two arrays afterwards. Returns
+   * the dropped rows in their previous order; a no-op drop leaves the
+   * window untouched, so it costs no revision bump.
    */
   function dropTimelineItems(
     shouldDrop: (item: Item) => boolean,
@@ -556,6 +580,15 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     finalizeItemsCommit('timeline item upsert', afterCommit, next, errors);
   }
 
+  /**
+   * A projection input outside the rows changed how the rows group: a
+   * loaded `Skill` row admitted its first subagent child, which makes it a
+   * forked-skill card (`threadSubagentMemory`).
+   */
+  function noteStructureChanged(): void {
+    timelineRevision++;
+  }
+
   return {
     /**
      * The loaded window. Reading it inside a `$derived`/`$effect` tracks the
@@ -582,6 +615,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     installTimelineItems,
     dropTimelineItems,
     commitUpsertResult,
+    noteStructureChanged,
   };
 }
 

@@ -1,8 +1,8 @@
 // stores/threadSubagentFold.test.ts
 //
-// utils/subagentFold.ts through the pane: settled subagent children evict
-// into a per-anchor fold and rehydrate on expansion, which is how frontend
-// memory stays bounded by the visible thread.
+// utils/subagentFold.ts through the pane: streamed subagent children never
+// enter the pane window; each launch anchor's live aggregate records them
+// for its collapsed card, and scoped surfaces load the rows themselves.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createThreadPane } from './thread.svelte';
@@ -30,13 +30,12 @@ describe('subagent fold', () => {
     __resetAgentPaneStateForTest();
   });
 
-  describe('subagent live eviction (fold)', () => {
-    // Live turns stream subagent child rows into pane memory; once a
-    // child settles and nothing can render it (collapsed inline card,
-    // suppressed background launch), the pane drops the row and folds
-    // its count/preview into the per-anchor registry. SQLite keeps the
-    // canonical rows (triage persists before emitting), so expansion
-    // re-hydrates through ListSubagentDescendants.
+  describe('subagent live aggregates', () => {
+    // Live turns stream subagent child rows. The pane routes each one at
+    // admission to its launch anchor's aggregate (count, newest active and
+    // terminal previews) and never holds the row. SQLite keeps the
+    // canonical rows, so an expanded card or the agent pane loads them
+    // through a scoped surface.
     function launchItem(threadId: string, overrides: Partial<Item> = {}): Item {
       return makeItem({
         id: 'anchor',
@@ -83,242 +82,217 @@ describe('subagent fold', () => {
       return pane;
     }
 
-    it('evicts a terminal child of a collapsed inline card into the fold', async () => {
-      const pane = await paneWithAnchor('fold-evict');
+    it('records a settled child in the anchor aggregate without touching the window', async () => {
+      const pane = await paneWithAnchor('fold-admit');
+      const itemsBefore = pane.items;
+      const revisionBefore = pane.timelineRevision;
 
-      pane.upsertItem(childItem('fold-evict'));
+      pane.upsertItem(childItem('fold-admit'));
 
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);
+      expect(pane.items).toBe(itemsBefore);
+      expect(pane.timelineRevision).toBe(revisionBefore);
       expect(pane.subagentLiveAggregate('anchor')).toEqual({
-        evictedCount: 1,
+        count: 1,
+        activePreview: '',
+        activeTurnIndex: -1,
+        activeItemIndex: -1,
         terminalPreview: 'ran the build',
         terminalTurnIndex: 1,
         terminalItemIndex: 1,
       });
 
-      // A replayed upsert for the folded id (transport reconnect echo)
-      // must not re-insert the row or double-count it.
-      pane.upsertItem(childItem('fold-evict'));
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);
-      expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBe(1);
+      // A replayed upsert (transport reconnect echo) is not counted again.
+      pane.upsertItem(childItem('fold-admit'));
+      expect(pane.items).toBe(itemsBefore);
+      expect(pane.subagentLiveAggregate('anchor')?.count).toBe(1);
     });
 
-    it('releases only the evicted rows\' UI state, and keeps a shared payload alive', async () => {
-      // The drop chokepoint splits the window in one pass and hands the
-      // dropped rows straight to disposal, so the released set and the
-      // surviving array come from the same walk. This is the transition
-      // that catches a mismatch: two rows share a payload, and its UI
-      // state must survive the first eviction and die with the second.
-      const pane = await paneWithAnchor('fold-shared-payload');
-      const child = (id: string, itemIndex: number, status: Item['status']) =>
-        childItem('fold-shared-payload', {
-          id, itemIndex, status, payloadId: 'payload-p', kind: 'tool_call',
-        });
-      pane.upsertItem(child('child-1', 1, 'streaming'));
-      pane.upsertItem(child('child-2', 2, 'streaming'));
-      pane.expansionStateFor(pane.items.find((it) => it.id === 'child-1')!);
-      pane.expansionStateForPayload('payload-p', 'fold-shared-payload');
-      expect(pane.debugMemoryStats().rowUiState.itemExpansionStates).toBe(1);
-      expect(pane.debugMemoryStats().rowUiState.payloadExpansionStates).toBe(1);
-
-      pane.upsertItem(child('child-2', 2, 'completed'));
-      expect(pane.items.some((it) => it.id === 'child-2')).toBe(false);
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
-      // child-1 still points at the payload, so neither registry moves.
-      expect(pane.debugMemoryStats().rowUiState.itemExpansionStates).toBe(1);
-      expect(pane.debugMemoryStats().rowUiState.payloadExpansionStates).toBe(1);
-
-      pane.upsertItem(child('child-1', 1, 'completed'));
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);
-      expect(pane.debugMemoryStats().rowUiState.itemExpansionStates).toBe(0);
-      expect(pane.debugMemoryStats().rowUiState.payloadExpansionStates).toBe(0);
-      expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBe(2);
-    });
-
-    it('does not touch the window when a settling batch evicts nothing', async () => {
-      const pane = await paneWithAnchor('fold-noop');
-      pane.upsertItem(childItem('fold-noop', { id: 'child-1', status: 'streaming' }));
-      const revisionBefore = pane.timelineRevision;
-      const itemsBefore = pane.items;
-
-      // Settled, but not a descendant of the collapsed card — nothing to
-      // evict, so the drop must not replace the array or bump a revision.
-      pane.upsertItem(makeItem({
-        id: 'top-level', threadId: 'fold-noop', turnIndex: 1, itemIndex: 9,
-        status: 'completed',
+    it('admits 1,000 settled children onto 1,000 roots without committing the root list', async () => {
+      const threadId = 'fold-cost';
+      const roots: Item[] = [];
+      for (let i = 0; i < 1000; i += 1) {
+        const launch = i % 100 === 0;
+        roots.push(makeItem({
+          id: `root-${i}`, threadId, turnIndex: i, itemIndex: 0,
+          kind: launch ? 'tool_call' : 'assistant_text',
+          toolName: launch ? 'Agent' : undefined,
+          status: launch ? 'running' : 'completed',
+          summary: launch ? 'Agent: work' : `row ${i}`,
+        }));
+      }
+      const pane = createThreadPane();
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: roots, oldestTurnIndex: 0, newestTurnIndex: 999,
+        hasMore: false, hasMoreOlder: false, hasMoreNewer: false,
       }));
+      await pane.switchThread(makeThread({ id: threadId }));
+      expect(pane.items).toHaveLength(1000);
+      const before = pane.items;
+      const revision = pane.timelineRevision;
 
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
-      expect(pane.items).not.toBe(itemsBefore);
-      // One bump for the append itself, none for a no-op drop.
-      expect(pane.timelineRevision).toBe(revisionBefore + 1);
+      const started = performance.now();
+      for (let i = 0; i < 1000; i += 1) {
+        const anchor = (i % 10) * 100;
+        pane.applyProviderItemUpserts([makeItem({
+          id: `child-${i}`, threadId, turnIndex: anchor, itemIndex: 1 + i,
+          parentId: `root-${anchor}`, kind: 'tool_call', toolName: 'Bash',
+          status: 'completed', summary: `ran ${i}`,
+        })]);
+      }
+      const elapsed = performance.now() - started;
+
+      expect(pane.items).toBe(before);
+      expect(pane.timelineRevision).toBe(revision);
+      expect(pane.subagentLiveAggregate('root-0')?.count).toBe(100);
+      expect(pane.subagentLiveAggregate('root-900')?.terminalPreview).toBe('ran 999');
+      expect(elapsed).toBeLessThan(100);
     });
 
-    it('keeps a streaming child in memory and evicts it when it settles', async () => {
+    it('creates no row UI state for children', async () => {
+      const pane = await paneWithAnchor('fold-row-ui');
+      const before = pane.debugMemoryStats().rowUiState;
+      for (let i = 1; i <= 20; i += 1) {
+        pane.upsertItem(childItem('fold-row-ui', { id: `child-${i}`, itemIndex: i, payloadId: `payload-${i}` }));
+      }
+      expect(pane.debugMemoryStats().rowUiState).toEqual(before);
+      expect(pane.subagentLiveAggregate('anchor')?.count).toBe(20);
+    });
+
+    it('tracks a streaming child and settles it through the upsert that completes it', async () => {
       const pane = await paneWithAnchor('fold-streaming');
 
-      pane.upsertItem(
-        childItem('fold-streaming', { status: 'streaming', summary: 'working...' }),
-      );
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
-      expect(pane.subagentLiveAggregate('anchor')).toBeUndefined();
-
-      pane.upsertItem(childItem('fold-streaming', { summary: 'finished the build' }));
+      pane.upsertItem(childItem('fold-streaming', { status: 'streaming', summary: 'working...', updatedAt: 1 }));
       expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);
-      expect(pane.subagentLiveAggregate('anchor')?.terminalPreview).toBe(
-        'finished the build',
-      );
+      expect(pane.subagentLiveAggregate('anchor')).toMatchObject({ count: 1, activePreview: 'working...' });
+
+      pane.upsertItem(childItem('fold-streaming', { summary: 'finished the build', updatedAt: 2 }));
+      expect(pane.subagentLiveAggregate('anchor')).toMatchObject({
+        count: 1,
+        activePreview: '',
+        terminalPreview: 'finished the build',
+      });
     });
 
-    it('evicts a child settled by a wire status patch (streaming-text settle shape)', async () => {
+    it('settles a child through a wire status patch (streaming-text settle shape)', async () => {
       const pane = await paneWithAnchor('fold-patch');
+      pane.upsertItem(childItem('fold-patch', { id: 'tool', itemIndex: 1, status: 'running', summary: 'Bash: build', updatedAt: 1 }));
+      pane.upsertItem(childItem('fold-patch', {
+        id: 'text',
+        itemIndex: 2,
+        kind: 'assistant_text',
+        toolName: '',
+        status: 'streaming',
+        summary: 'partial',
+        updatedAt: 1,
+      }));
 
-      pane.upsertItem(
-        childItem('fold-patch', {
-          kind: 'assistant_text',
-          toolName: '',
-          status: 'streaming',
-          summary: 'partial',
-        }),
-      );
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
-
-      // Streaming text/thinking rows settle via triage field patches,
-      // not upserts — the eviction policy must cover this path too.
+      // Streaming text rows settle via triage field patches, not upserts.
       pane.applyItemPatch({
         threadId: 'fold-patch',
-        itemId: 'child-1',
+        itemId: 'text',
         kind: 'assistant_text',
         patch: { rev: 0, status: 'completed', summary: 'full text', updatedAt: 2 },
       });
+      pane.applyItemPatch({
+        threadId: 'fold-patch',
+        itemId: 'tool',
+        kind: 'tool_call',
+        patch: { rev: 0, status: 'completed', updatedAt: 2 },
+      });
 
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);
-      expect(pane.subagentLiveAggregate('anchor')).toEqual({
-        evictedCount: 1,
-        terminalPreview: '',
-        terminalTurnIndex: -1,
-        terminalItemIndex: -1,
+      expect(pane.items.some((it) => it.parentId === 'anchor')).toBe(false);
+      // Prose never becomes the preview; the settled tool does.
+      expect(pane.subagentLiveAggregate('anchor')).toMatchObject({
+        count: 2,
+        activePreview: '',
+        terminalPreview: 'Bash: build',
       });
     });
 
-    it('folds settled children independently of inline expansion', async () => {
+    it('keeps children out of the window whether the card is expanded or collapsed', async () => {
       const pane = await paneWithAnchor('fold-collapse');
+      let index = 1;
       for (const expanded of [true, false, true]) {
         expect(pane.toggleSubagentGroupExpanded('anchor')).toBe(expanded);
-        pane.upsertItem(childItem('fold-collapse', { id: `child-${expanded}-${pane.items.length}`, summary: 'ran tests' }));
+        pane.upsertItem(childItem('fold-collapse', { id: `child-${index}`, itemIndex: index, summary: 'ran tests' }));
         expect(pane.items.some(it => it.parentId === 'anchor')).toBe(false);
-        expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBeGreaterThan(0);
+        expect(pane.subagentLiveAggregate('anchor')?.count).toBe(index);
+        index += 1;
       }
     });
 
-    it('sweeps the settled subtree through a nested launch when the outer card collapses', async () => {
-      const pane = await paneWithAnchor('fold-backgrounded');
-      pane.toggleSubagentGroupExpanded('anchor');
-      pane.upsertItem(childItem('fold-backgrounded'));
-      // Nested expanded launch with a settled grandchild — both retained
-      // while the foreground cards are open.
-      pane.upsertItem(
-        childItem('fold-backgrounded', {
-          id: 'nested',
-          itemIndex: 2,
-          kind: 'tool_call',
-          toolName: 'Task',
-          status: 'running',
-          summary: 'Task: nested',
-        }),
-      );
-      pane.toggleSubagentGroupExpanded('nested');
-      pane.upsertItem(
-        childItem('fold-backgrounded', {
-          id: 'grandchild',
-          itemIndex: 3,
-          parentId: 'nested',
-          summary: 'deep work',
-        }),
-      );
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);
-      expect(pane.items.some((it) => it.id === 'grandchild')).toBe(false);
+    it('counts a nested launch transcript on the outer and the nested card', async () => {
+      const pane = await paneWithAnchor('fold-nested');
+      pane.upsertItem(childItem('fold-nested'));
+      pane.upsertItem(childItem('fold-nested', {
+        id: 'nested',
+        itemIndex: 2,
+        toolName: 'Task',
+        status: 'running',
+        summary: 'Task: nested',
+        updatedAt: 1,
+      }));
+      pane.upsertItem(childItem('fold-nested', {
+        id: 'grandchild',
+        itemIndex: 3,
+        parentId: 'nested',
+        summary: 'deep work',
+      }));
 
-      // Collapsing the OUTER card makes the whole transcript unrenderable,
-      // the nested card included — its own expansion no longer reaches a
-      // reader. The sweep resolves the chain through the nested launch:
-      // nested launches stay loaded as fold keys and cards, and their
-      // settled children fold under their own anchor so nested entry
-      // counters stay honest.
-      expect(pane.toggleSubagentGroupExpanded('anchor')).toBe(false);
-
-      expect(pane.items.some((it) => it.id === 'anchor')).toBe(true);
-      expect(pane.items.some((it) => it.id === 'nested')).toBe(true);
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);
-      expect(pane.items.some((it) => it.id === 'grandchild')).toBe(false);
-      expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBe(1);
-      expect(pane.subagentLiveAggregate('nested')?.evictedCount).toBe(1);
+      expect(pane.items.map((it) => it.id)).toEqual(['pre', 'anchor']);
+      expect(pane.subagentLiveAggregate('anchor')).toMatchObject({
+        count: 3,
+        activePreview: 'Task: nested',
+        terminalPreview: 'deep work',
+      });
+      expect(pane.subagentLiveAggregate('nested')).toMatchObject({ count: 1, terminalPreview: 'deep work' });
     });
 
-    it('folds terminal children of a collapsed background anchor while keeping streaming ones', async () => {
+    it('records streaming and settled children of a background anchor', async () => {
       const pane = await paneWithAnchor(
-        'fold-suppressed',
-        launchItem('fold-suppressed', { isBackground: true }),
+        'fold-background',
+        launchItem('fold-background', { isBackground: true }),
       );
+      pane.upsertItem(childItem('fold-background', { status: 'streaming', summary: 'live', updatedAt: 1 }));
+      pane.upsertItem(childItem('fold-background', { id: 'child-2', itemIndex: 2, summary: 'done already' }));
 
-      pane.upsertItem(
-        childItem('fold-suppressed', { status: 'streaming', summary: 'live' }),
-      );
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
-
-      pane.upsertItem(
-        childItem('fold-suppressed', {
-          id: 'child-2',
-          itemIndex: 2,
-          summary: 'done already',
-        }),
-      );
-      expect(pane.items.some((it) => it.id === 'child-2')).toBe(false);
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
-      expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBe(1);
+      expect(pane.items.some((it) => it.parentId === 'anchor')).toBe(false);
+      expect(pane.subagentLiveAggregate('anchor')).toMatchObject({
+        count: 2,
+        activePreview: 'live',
+        terminalPreview: 'done already',
+      });
     });
 
-    it('never folds rows whose parent is loaded but not a launch', async () => {
+    it('records no aggregate for a child of an unloaded or non-launch parent', async () => {
       const pane = await paneWithAnchor('fold-flat');
+      const itemsBefore = pane.items;
 
-      // Parent not loaded → nothing can render it, so it never enters
-      // pane memory at all (see threadSubagentMemory.test.ts).
-      pane.upsertItem(
-        childItem('fold-flat', { id: 'stray', itemIndex: 5, parentId: 'missing' }),
-      );
-      // Parent loaded but not a launch → flat leaf, stays.
-      pane.upsertItem(
-        childItem('fold-flat', { id: 'flat-child', itemIndex: 6, parentId: 'pre' }),
-      );
+      pane.upsertItem(childItem('fold-flat', { id: 'stray', itemIndex: 5, parentId: 'missing' }));
+      pane.upsertItem(childItem('fold-flat', { id: 'flat-child', itemIndex: 6, parentId: 'pre' }));
 
-      expect(pane.items.some((it) => it.id === 'stray')).toBe(false);
-      expect(pane.items.some((it) => it.id === 'flat-child')).toBe(true);
+      expect(pane.items).toBe(itemsBefore);
       expect(pane.subagentLiveAggregate('missing')).toBeUndefined();
       expect(pane.subagentLiveAggregate('pre')).toBeUndefined();
     });
 
-    it('drops the fold with its anchor on revert so re-upserts are not swallowed', async () => {
+    it('drops the aggregate with its anchor on revert and counts a restored child once', async () => {
       const pane = await paneWithAnchor('fold-revert');
       pane.upsertItem(childItem('fold-revert'));
-      expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBe(1);
+      expect(pane.subagentLiveAggregate('anchor')?.count).toBe(1);
 
       const removed = pane.removeItemsFromTurn(1, pane.threadId!);
 
       expect(removed.map((it) => it.id)).toEqual(['anchor']);
       expect(pane.subagentLiveAggregate('anchor')).toBeUndefined();
-      // The backend truncate deleted the child's row too; if the same ids
-      // arrive again (a rolled-back revert re-inserts the turn through
-      // `upsertItems`) they must land in pane memory instead of being
-      // treated as a folded echo. The anchor leads the restore batch, so
-      // the child is admitted with it; the card is expanded so the
-      // settled child is retained rather than immediately re-folded,
-      // making its presence a clean signal that nothing swallowed it.
-      pane.toggleSubagentGroupExpanded('anchor');
-      pane.upsertItems([...removed, childItem('fold-revert', { status: 'streaming' })]);
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
+      // A rolled-back revert re-inserts the turn through `upsertItems`; the
+      // anchor leads the batch, so its child is recorded against it again.
+      pane.upsertItems([...removed, childItem('fold-revert', { status: 'streaming', updatedAt: 3 })]);
+      expect(pane.items.map((it) => it.id)).toEqual(['pre', 'anchor']);
+      expect(pane.subagentLiveAggregate('anchor')).toMatchObject({ count: 1, activePreview: 'ran the build' });
     });
 
-    it('carries folds through the thread-switch snapshot cache', async () => {
+    it('carries aggregates through the thread-switch snapshot cache', async () => {
       const pane = createThreadPane();
       const sliceByThread: Record<string, Item[]> = {
         'fold-cache-a': [
@@ -340,25 +314,32 @@ describe('subagent fold', () => {
 
       await pane.switchThread(makeThread({ id: 'fold-cache-a' }));
       pane.upsertItem(childItem('fold-cache-a'));
-      expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBe(1);
+      expect(pane.subagentLiveAggregate('anchor')?.count).toBe(1);
 
-      // Folds belong to the thread — they must not leak into the next one.
+      // Aggregates belong to the thread; they must not leak into the next one.
       await pane.switchThread(makeThread({ id: 'fold-cache-b' }));
       expect(pane.subagentLiveAggregate('anchor')).toBeUndefined();
 
-      // Warm re-entry restores the fold with the cached window, so the
+      // Warm re-entry restores the aggregate with the cached window, so the
       // collapsed card's count survives without any live event.
       await pane.switchThread(makeThread({ id: 'fold-cache-a' }));
       expect(pane.subagentLiveAggregate('anchor')).toEqual({
-        evictedCount: 1,
+        count: 1,
+        activePreview: '',
+        activeTurnIndex: -1,
+        activeItemIndex: -1,
         terminalPreview: 'ran the build',
         terminalTurnIndex: 1,
         terminalItemIndex: 1,
       });
       expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);
+
+      // A replay of the carried child is not counted again.
+      pane.upsertItem(childItem('fold-cache-a'));
+      expect(pane.subagentLiveAggregate('anchor')?.count).toBe(1);
     });
 
-    it('drops a fold when the window prune drops its anchor', async () => {
+    it('drops an aggregate when the window prune drops its anchor', async () => {
       const pane = createThreadPane();
       const initial = [
         launchItem('fold-prune', { turnIndex: 0 }),
@@ -382,8 +363,8 @@ describe('subagent fold', () => {
       await pane.switchThread(makeThread({ id: 'fold-prune' }));
 
       pane.upsertItem(childItem('fold-prune', { turnIndex: 0 }));
-      expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBe(1);
-      // Folded children no longer count toward the window cap.
+      expect(pane.subagentLiveAggregate('anchor')?.count).toBe(1);
+      // Children never count toward the window cap.
       expect(pane.items).toHaveLength(MAX);
 
       pane.upsertItem(
@@ -392,7 +373,7 @@ describe('subagent fold', () => {
 
       expect(pane.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
       expect(pane.items.some((it) => it.id === 'anchor')).toBe(false);
-      // Folds are only meaningful while their anchor row is loaded —
+      // Aggregates are only meaningful while their anchor row is loaded;
       // the next load of that region decorates anchors from SQLite.
       expect(pane.subagentLiveAggregate('anchor')).toBeUndefined();
     });
@@ -400,18 +381,18 @@ describe('subagent fold', () => {
     it('a tray window survives host pruning without retaining an island in the host', async () => {
       const threadId = 'fold-held';
       const pane = createThreadPane();
+      const launch = launchItem(threadId, { turnIndex: 0, status: 'completed' });
       const children = Array.from({ length: 3 }, (_, index) =>
         childItem(threadId, { id: `child-${index}`, turnIndex: 0, itemIndex: index + 1 }),
       );
-      const initial = [
-        launchItem(threadId, { turnIndex: 0, status: 'completed' }),
-        ...children,
+      const hostPage = [
+        launch,
         ...Array.from({ length: MAX - 1 }, (_, index) =>
           makeItem({ id: `t${index + 1}`, threadId, turnIndex: index + 1, itemIndex: 0 }),
         ),
       ];
       setBindingMock('ListThreadSliceAround', async () => ({
-        items: initial,
+        items: hostPage,
         oldestTurnIndex: 0,
         newestTurnIndex: MAX - 1,
         hasMore: false,
@@ -419,7 +400,7 @@ describe('subagent fold', () => {
         hasMoreNewer: false,
       }));
       await pane.switchThread(makeThread({ id: threadId }));
-      installPaneMocks(initial);
+      installPaneMocks([launch, ...children, ...hostPage.slice(1)]);
       const view = createAgentScopeView(pane, 'anchor', { viewKey: 'tray', toolsOnly: true, openAgentPane: () => {} });
       view.start();
       await vi.waitFor(() => expect(view.pane.loading).toBe(false));
@@ -474,7 +455,7 @@ describe('subagent fold', () => {
       expect(pane.items.map(item => item.id)).toEqual(['t5', 't6']);
     });
 
-    it('clears folds on re-entry when the outgoing snapshot was too large to cache', async () => {
+    it('clears aggregates on re-entry when the outgoing snapshot was too large to cache', async () => {
       const pane = createThreadPane();
       const big = [
         launchItem('fold-reject', { turnIndex: 0 }),
@@ -499,22 +480,22 @@ describe('subagent fold', () => {
       }));
       await pane.switchThread(makeThread({ id: 'fold-reject' }));
       pane.upsertItem(childItem('fold-reject', { turnIndex: 0 }));
-      expect(pane.subagentLiveAggregate('anchor')?.evictedCount).toBe(1);
+      expect(pane.subagentLiveAggregate('anchor')?.count).toBe(1);
 
       await pane.switchThread(makeThread({ id: 'fold-reject-other' }));
       await pane.switchThread(makeThread({ id: 'fold-reject' }));
 
+      // The anchor now comes from SQLite with its decoration; nothing
+      // stale survives the fresh-state path.
       expect(pane.subagentLiveAggregate('anchor')).toBeUndefined();
-      // A stale fold would swallow this re-streamed row outright; the
-      // fresh-state clear lets it land (streaming rows always stay).
-      pane.upsertItem(
-        childItem('fold-reject', {
-          turnIndex: 0,
-          status: 'streaming',
-          summary: 'live again',
-        }),
-      );
-      expect(pane.items.some((it) => it.id === 'child-1')).toBe(true);
+      pane.upsertItem(childItem('fold-reject', {
+        turnIndex: 0,
+        status: 'streaming',
+        summary: 'live again',
+        updatedAt: 3,
+      }));
+      expect(pane.items.some((it) => it.id === 'child-1')).toBe(false);
+      expect(pane.subagentLiveAggregate('anchor')).toMatchObject({ count: 1, activePreview: 'live again' });
     });
 
     it('defers the recent-window prune while a turn is active and runs it on settle', async () => {

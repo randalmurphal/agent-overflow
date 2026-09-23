@@ -46,6 +46,29 @@ beforeEach(() => {
 });
 afterEach(() => { for (const view of views.splice(0)) view.dispose(); resetPanesForTest(); });
 
+describe('live subagent children', () => {
+  it('reach the agent pane and an expanded card, never the thread window', async () => {
+    const pane = await setup([root]);
+    const agentView = await open(pane);
+    const card = createAgentScopeView(pane, root.id, { viewKey: 'card:agent', toolsOnly: true, openAgentPane: vi.fn() });
+    views.push(card); card.start();
+    await vi.waitFor(() => expect(card.pane.loading).toBe(false));
+    const hostItems = pane.items;
+    const hostRevision = pane.timelineRevision;
+
+    push(row('live-tool', 1, { kind: 'tool_call', toolName: 'Bash', status: 'running', summary: 'go test' }));
+    push(row('live-text', 2, { kind: 'assistant_text', status: 'streaming', summary: 'thinking aloud' }));
+    push(row('live-tool', 1, { kind: 'tool_call', toolName: 'Bash', status: 'completed', summary: 'go test', updatedAt: 5 }));
+
+    expect(agentView.items.map(item => item.id)).toEqual(['live-tool', 'live-text']);
+    expect(agentView.pane.getItemById('live-tool')?.status).toBe('completed');
+    expect(card.items.map(item => item.id)).toEqual(['live-tool']);
+    expect(pane.items).toBe(hostItems);
+    expect(pane.timelineRevision).toBe(hostRevision);
+    expect(pane.subagentLiveAggregate(root.id)).toMatchObject({ count: 2, terminalPreview: 'go test' });
+  });
+});
+
 describe('independent agent timeline', () => {
   it('loads direct rows and completion siblings without borrowing host rows', async () => {
     const items = [root, row('child', 1), row('nested', 2, { kind: 'tool_call', toolName: 'Agent' }),
@@ -519,7 +542,9 @@ describe('execution digest timeline', () => {
     push(answer);
     await vi.waitFor(() => expect(view.items.map(it => it.id)).toEqual(['next-answer']));
     expect(sync).toHaveBeenCalledTimes(2);
-    expect(pane.getItemById('next-answer')?.parentId).toBe(root.id);
+    expect(view.pane.getItemById('next-answer')?.parentId).toBe(root.id);
+    // The child lives in the scoped surface only, never the thread window.
+    expect(pane.getItemById('next-answer')).toBeUndefined();
   });
 
   it.each(['upsert', 'delta', 'move'] as const)('reconciles a newly selected answer overlapping a live %s', async (change) => {

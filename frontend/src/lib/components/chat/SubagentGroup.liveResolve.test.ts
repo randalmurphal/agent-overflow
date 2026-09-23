@@ -57,13 +57,17 @@ function agentLaunch(overrides: Partial<Item> = {}): Item {
 }
 
 /**
- * Builds the pane and captures the group node ONCE. The node keeps the
- * item objects it was built from, so every later store write leaves it
- * stale — which is precisely the production condition being tested.
+ * Builds the pane the way production does: history pages hold top-level
+ * rows only, and subagent children stream in afterwards, landing in their
+ * launch anchor's live aggregate. Captures the group node ONCE. The node
+ * keeps the item objects it was built from, so every later store write
+ * leaves it stale, which is precisely the production condition being tested.
  */
 async function setup(items: Item[]): Promise<{ pane: ThreadPane; group: SubagentGroupNode }> {
   const pane = await buildPane(undefined, items);
-  return { pane, group: findGroup(groupItemsBySubagent([...pane.items])) };
+  const children = items.filter((item) => item.parentId);
+  if (children.length > 0) pane.upsertItems(children);
+  return { pane, group: findGroup(groupItemsBySubagent([...pane.items], pane.subagentLiveAggregate)) };
 }
 
 function indicatorState(container: HTMLElement): string | null {
@@ -118,11 +122,7 @@ describe('<SubagentGroup> live resolution against the pane', () => {
     expect(getByTestId('subagent-group-preview').textContent).toContain('beta.ts');
   });
 
-  it('falls back to the node snapshot when a settled child is evicted', async () => {
-    // The other half of the resolver contract. A collapsed card's settled
-    // descendants are evicted from the window, so `getItemById` starts
-    // answering undefined for a row the node still lists. The preview must
-    // land on the snapshot, not blank out.
+  it('moves the preview to a child\'s settled text when it completes', async () => {
     const { pane, group } = await setup([
       agentLaunch(),
       makeItem({
@@ -132,6 +132,7 @@ describe('<SubagentGroup> live resolution against the pane', () => {
       }),
     ]);
     const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(getByTestId('subagent-group-preview').textContent).toContain('reading alpha.ts');
 
     pane.upsertItem(makeItem({
       id: 'child:1', itemIndex: 1, parentId: 'agent:1',
@@ -140,8 +141,9 @@ describe('<SubagentGroup> live resolution against the pane', () => {
     }));
     await tick();
 
-    expect(pane.getItemById('child:1'), 'settled child must be evicted here').toBeUndefined();
-    expect(getByTestId('subagent-group-preview').textContent).toContain('reading alpha.ts');
+    expect(pane.getItemById('child:1'), 'children never enter the pane window').toBeUndefined();
+    expect(getByTestId('subagent-group-preview').textContent).toContain('read alpha.ts');
+    expect(getByTestId('subagent-group-preview').textContent).not.toContain('reading');
   });
 
   it('picks up an entry-count decoration that lands without a structural rebuild', async () => {
@@ -150,7 +152,8 @@ describe('<SubagentGroup> live resolution against the pane', () => {
       makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'one' }),
     ]);
     const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
-    expect(group.descendantCount).toBe(1);
+    // The node holds no children; the count is the live aggregate's.
+    expect(group.descendantCount).toBe(0);
     expect(getByTestId('subagent-group-count').textContent).toContain('1 entry');
 
     pane.applyItemMeta({

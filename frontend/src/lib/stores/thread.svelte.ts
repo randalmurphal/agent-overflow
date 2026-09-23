@@ -12,7 +12,7 @@
 //   threadTimelineWindow.svelte.ts    history cursors and the load methods
 //   threadItemStreamApply.ts          the upsert/delta/meta/patch machine
 //   threadSwitchLoad.svelte.ts        switch, sync, replica, cache pipeline
-//   threadSubagentMemory.ts           fold registry, eviction, child hydration
+//   threadSubagentMemory.ts           live aggregates of streamed subagent children
 //   threadRowUiState.svelte.ts        per-row expansion/attachment state
 //   threadDraftPlaceholder.svelte.ts  the pre-materialization phase
 //   threadPaneScroll.svelte.ts        controller slot, spring arming, scroll intent
@@ -25,7 +25,6 @@
 // Add per-thread runtime state to one of those (or a new one composed here),
 // never to a store beside the pane.
 
-import { itemTranscriptScope } from '../utils/itemTranscriptScope';
 import { parseUserMessageMeta } from '../utils/userMessageMeta';
 import type { Item, Thread } from '../types/models';
 import type {
@@ -160,22 +159,14 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
    */
   let switchGeneration = $state(0);
   const optimisticItemIds = new Set<string>();
-  // Non-reactive liveness for the main transcript. Agent scopes subscribe
-  // for their own lifetime; hidden child activity never extends this stamp.
-  // The controller reads it imperatively for its sentinel, viewport nudges,
-  // and initial-settle retirement. Snapshot correction has its own lifetime.
+  // Non-reactive liveness for the main transcript. Only window rows stamp
+  // it; subagent children never enter the window, so hidden child activity
+  // never extends it. The controller reads it imperatively for its
+  // sentinel, viewport nudges, and initial-settle retirement. Snapshot
+  // correction has its own lifetime.
   let lastLiveContentAt = 0;
-  const liveContentListeners = new Set<(scopeId: string, at: number) => void>();
-  function stampLiveContent(item?: Item): void {
-    const at = nowForLiveContent();
-    const scopeId = item ? itemTranscriptScope(item, getItemById) : '';
-    if (!scopeId) lastLiveContentAt = at;
-    for (const listener of liveContentListeners) listener(scopeId, at);
-  }
-
-  function subscribeLiveContent(listener: (scopeId: string, at: number) => void): () => void {
-    liveContentListeners.add(listener);
-    return () => { liveContentListeners.delete(listener); };
+  function stampLiveContent(): void {
+    lastLiveContentAt = nowForLiveContent();
   }
 
   // The pane's user-facing error surface (one slot per kind, banner-stack
@@ -207,6 +198,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     installTimelineItems,
     dropTimelineItems,
     commitUpsertResult,
+    noteStructureChanged,
   } = itemWindow;
 
   // Scroll-surface edge: the registered controller slot, the scroll-to-item
@@ -312,7 +304,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     getThread: () => thread,
     getSwitchGeneration: () => switchGeneration,
     getScrollController: () => paneScroll.controller,
-    mountNavigationItems: (items) => subagentMemory.mountNavigationItems(items),
     // Declared below; the arrow keeps the read lazy, like the
     // subagentMemory one above.
     activityRuns: () => activityRuns,
@@ -471,20 +462,18 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
   });
 
-  // Subagent transcript-memory domain (the live-eviction fold registry,
-  // settled-child eviction policy, and on-demand child hydration) lives
-  // in threadSubagentMemory.ts.
+  // Subagent children never enter the window. Their launch anchors'
+  // live aggregates (count and previews for collapsed cards) live in
+  // threadSubagentMemory.ts.
   const subagentMemory = createThreadSubagentMemory({
-    getItems,
     getThreadId: () => thread?.id ?? null,
-    getItemIndex: (itemId) => itemIndexById.get(itemId),
-    replaceTimelineItems,
-    dropTimelineItems,
+    getLoadedItem: (itemId) => {
+      const index = itemIndexById.get(itemId);
+      return index === undefined ? undefined : getItems()[index];
+    },
+    noteStructureChanged,
   });
 
-  // Subagent eviction policy (evictableAnchorIdFor, collectSettledSubtree,
-  // commitSubagentEvictions, evictSettledChildren, evictCollapsedSubtree)
-  // lives in threadSubagentMemory.ts as `subagentMemory`.
   // The per-item smoother + reveal-gate sequencer (disposeSmootherFor,
   // disposeAll, recomputeReveal, getOrCreateSmoothing, etc.) live in
   // threadStreamingReveal.svelte.ts as `streamingReveal`. Both item-window
@@ -698,7 +687,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // leak into the next thread.
     switchLoad.resetPipeline();
     timelineWindow.resetForFreshThread();
-    subagentMemory.clearWindowDerivedState();
     // See switchThread: both `timelineWindow`'s internal
     // `pagingGeneration` and `scrollToItemRequest.nonce` stay
     // monotonic for the pane's lifetime so no consumer observes a
@@ -780,8 +768,7 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     // events.ts (a new row arriving). The optimistic user-send echo and
     // rollback-restore call `upsertItems` directly and intentionally do
     // NOT route through here, so they stay sync-pinned.
-    markLiveContentAdvanced: (item: Item) => stampLiveContent(item),
-    subscribeLiveContent,
+    markLiveContentAdvanced: (_item: Item) => stampLiveContent(),
     setDraftPlaceholderMode: draftState.setDraftPlaceholderMode,
     applyDraftPlaceholderDefaults: draftState.applyDraftPlaceholderDefaults,
     applyDraftPlaceholderWorkspace: draftState.applyDraftPlaceholderWorkspace,
@@ -1282,21 +1269,9 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     expansionStateForPayload: rowUiState.expansionStateForPayload,
     retainExpansionStateForPayload: rowUiState.retainExpansionStateForPayload,
     isSubagentGroupExpanded: rowUiState.isSubagentGroupExpanded,
-    /**
-     * Expansion toggle with live eviction on collapse: the settled rows
-     * of a card the user just closed fold out of pane memory (counts and
-     * preview survive via the fold registry; the rows re-hydrate from
-     * SQLite on the next expand). Active rows stay — the delta pipeline
-     * requires streaming rows to exist in the window.
-     */
-    toggleSubagentGroupExpanded(groupKey: string): boolean {
-      const willExpand = rowUiState.toggleSubagentGroupExpanded(groupKey);
-      if (!willExpand) subagentMemory.evictCollapsedSubtree(groupKey);
-      return willExpand;
-    },
-    /** Live fold aggregate for a launch anchor — MessageTimeline threads
-     *  this into the grouping pipeline. Reads are revision-driven: every
-     *  fold mutation rides a timelineRevision bump. */
+    toggleSubagentGroupExpanded: rowUiState.toggleSubagentGroupExpanded,
+    /** Live aggregate of a launch anchor's streamed children. Reactive per
+     *  anchor: a card wakes only when its own anchor changes. */
     subagentLiveAggregate(anchorId: string): SubagentFoldAggregate | undefined {
       return subagentMemory.aggregate(anchorId);
     },

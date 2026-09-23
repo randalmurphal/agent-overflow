@@ -176,7 +176,6 @@ export function createAgentScopeView(
     get draftPlaceholder() { return sourcePane.draftPlaceholder; },
     get hasDraftPlaceholder() { return sourcePane.hasDraftPlaceholder; },
     get canCompose() { return sourcePane.canCompose; },
-    get subscribeLiveContent() { return sourcePane.subscribeLiveContent; },
     get markLiveContentAdvanced() { return sourcePane.markLiveContentAdvanced; },
     get setDraftPlaceholderMode() { return sourcePane.setDraftPlaceholderMode; },
     get applyDraftPlaceholderDefaults() { return sourcePane.applyDraftPlaceholderDefaults; },

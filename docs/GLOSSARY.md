@@ -109,7 +109,7 @@ Source: `docs/architecture/frontend-scroll.md`, `docs/architecture/scroll-contra
 | **rail** | The continuous left border marking activity-row membership. Rail continuity and run continuity are the same property. |
 | **reveal gate** | The position in the item window past which nothing renders yet, driven by the per-item smoother. |
 | **smoother** | `PerItemSmoother`: word-aligned reveal controller holding `received` (wire accumulator) vs `revealed` (animated cursor). Nothing is skipped or rushed; bursty streams make the backlog self-correcting. |
-| **subagent fold** | Settled subagent children evicted from pane memory into a per-anchor registry and re-hydrated from SQLite on card expansion. An id is folded XOR loaded. |
+| **subagent fold** | The per-launch-anchor live aggregate (entry count, newest active and settled previews) that records streamed subagent children. Children never enter a pane window; expanded cards and the agent pane load them through scoped surfaces. |
 | **size priors** | Per-thread, per-row measured-size persistence feeding the virtualizer's estimate resolver. |
 | **engine compensation** | The windowing engine never writes `scrollTop`; geometry changes surface as observations routed to the scroll controller. |
 | **the Print Doctrine** | The transcript renders like print: exactly two motion owners inside the timeline scroller (scroll glide, streaming line-slide). Everything else is still ink, enforced by tripwire tests. |

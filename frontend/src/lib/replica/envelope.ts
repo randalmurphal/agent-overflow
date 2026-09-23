@@ -44,7 +44,9 @@ export const REPLICA_ENVELOPE_VERSION = 1;
 // gave each stub its edge coordinates, which is how a jump tells a member
 // the pane does not hold from a row that is merely older than the run.
 // Schema 6 carries completion launch context independently of loaded rows.
-export const REPLICA_SCHEMA_VERSION = 6;
+// Schema 7 holds no subagent child rows and records each anchor's live
+// aggregate (count, terminal preview) plus per-root dedupe floors.
+export const REPLICA_SCHEMA_VERSION = 7;
 
 /**
  * Per-envelope caps, deliberately the same numbers `threadItemCache`
@@ -137,14 +139,20 @@ function plainCursor(cursor: TimelineCursorLike | null | undefined): TimelineCur
 }
 
 function plainFolds(folds: SubagentFoldSnapshot | null | undefined): SubagentFoldSnapshot | null {
-  if (!folds || !Array.isArray(folds.anchors)) return null;
+  if (!folds || !Array.isArray(folds.anchors) || !Array.isArray(folds.roots)) return null;
   return {
     anchors: folds.anchors.map((anchor) => ({
       anchorId: anchor.anchorId,
-      evictedIds: [...anchor.evictedIds],
+      rootId: anchor.rootId,
+      count: anchor.count,
       terminalPreview: anchor.terminalPreview,
       terminalTurnIndex: anchor.terminalTurnIndex,
       terminalItemIndex: anchor.terminalItemIndex,
+    })),
+    roots: folds.roots.map((root) => ({
+      rootId: root.rootId,
+      floorTurnIndex: root.floorTurnIndex,
+      floorItemIndex: root.floorItemIndex,
     })),
   };
 }
@@ -233,9 +241,9 @@ export function estimateBodyChars(body: ReplicaBody): number {
     for (const id of run.shippedSupersededLaunchIds) chars += id.length;
   }
   for (const anchor of body.subagentFolds?.anchors ?? []) {
-    chars += anchor.terminalPreview.length;
-    for (const id of anchor.evictedIds) chars += id.length;
+    chars += anchor.anchorId.length + anchor.rootId.length + anchor.terminalPreview.length;
   }
+  for (const root of body.subagentFolds?.roots ?? []) chars += root.rootId.length;
   return chars;
 }
 

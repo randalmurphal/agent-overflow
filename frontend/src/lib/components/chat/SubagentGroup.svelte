@@ -176,20 +176,19 @@
   // card sits at (Codex FINAL_ANSWER, Claude output-file report).
   let completionAnswer = $derived(completionAnswerPreview(parent, completionItem));
   let decorated = $derived(decoratedSubagentAggregates(parent, completionItem));
-  // Max, not replace — the same reconciliation `subagentGroupNode` does,
-  // re-run against the live anchor. The node's count already folds in
-  // loaded children, the eviction fold, and whatever decoration existed
-  // when it was built; only the decoration can move without a structural
-  // bump. Taking the max picks up a decoration that lands mid-turn and
-  // falls back to the structural count (never to zero) if a later upsert
-  // arrives without one.
-  let descendantCount = $derived(Math.max(group.descendantCount, decorated.count));
+  // The pane's aggregate of this launch's streamed children, which never
+  // enter the window. Reactive per anchor, so a child row landing under
+  // another card never wakes this one. A completed card reads only its own
+  // saved aggregates.
+  let liveAggregate = $derived(completionItem ? undefined : pane?.subagentLiveAggregate(parent.id));
+  // Max, not replace: the node's count covers loaded children and the
+  // decoration that existed when it was built; the decoration and the live
+  // aggregate move without a structural bump. Taking the max picks up a
+  // decoration that lands mid-turn and never falls back to zero if a later
+  // upsert arrives without one.
+  let descendantCount = $derived(Math.max(group.descendantCount, decorated.count, liveAggregate?.count ?? 0));
   let latestChildSummary = $derived(
-    pickLatestChildSummary(
-      group.children,
-      completionItem ? undefined : pane?.subagentLiveAggregate(parent.id),
-      (id) => pane?.getItemById(id),
-    )
+    pickLatestChildSummary(group.children, liveAggregate, (id) => pane?.getItemById(id))
       || decorated.summary
       || group.latestChildSummary,
   );
@@ -205,14 +204,14 @@
   let parentToolName = $derived((parent.toolName ?? '').trim());
 
   // The provider-neutral launch identity: kind chip, display name,
-  // async-ness. The context answers "does this launch have loaded
-  // children?" from the node itself — the group was BUILT from the rows
-  // the window holds, so no second index is needed. A group node whose
+  // async-ness. The context answers "does this launch have children?"
+  // from the node (built from the rows the window holds) and the live
+  // aggregate (streamed children the window never holds). A group node whose
   // row somehow stops answering the predicate (cannot happen for the
   // kinds the grouping mints, but the type allows it) falls back to a
   // plain foreground agent presentation rather than a blank header.
   const launchCtx: SubagentLaunchContext = {
-    hasChildren: () => group.children.length > 0 || group.descendantCount > 0,
+    hasChildren: () => group.children.length > 0 || group.descendantCount > 0 || liveAggregate !== undefined,
   };
   let identityItem = $derived(parent.toolName === 'collab_agent' && completionItem
     ? { ...parent, meta: completionItem.meta } : parent);

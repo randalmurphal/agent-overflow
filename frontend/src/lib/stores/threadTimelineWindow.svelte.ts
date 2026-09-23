@@ -14,6 +14,7 @@ import { addToast } from './toast.svelte';
 import {
   compareCursors,
   compareItemsByTimelinePosition,
+  compareItemToCursor,
   cursorFromItem,
   cursorsAfterItemUpserts,
   cursorIsValid,
@@ -67,8 +68,6 @@ export interface ThreadTimelineWindowOptions {
   getSwitchGeneration(): number;
   /** Registered pane scroll controller (or null). applyPrunedWindow queries its retention guard. */
   getScrollController(): PaneScrollController | null;
-  /** Retain a navigation target and its ancestry in the host window. */
-  mountNavigationItems?(items: readonly Item[]): void;
   /**
    * The pane's activity-run registry. Read per call: it is constructed
    * after this factory, so the option is an arrow, not a reference.
@@ -364,21 +363,10 @@ export function createThreadTimelineWindow(
   }
 
   /**
-   * Bound on the parent walks below. Real subagent trees are two or
-   * three deep; the cap exists only so corrupt provider parentId links
-   * cannot spin here (same guard as threadSubagentMemory's).
-   */
-  const MAX_PARENT_HOPS = 16;
-
-  /**
-   * Count of top-level rows — what every window cap below measures.
-   * Raw `items.length` is the wrong proxy for "screens of content":
-   * subagent children render inside their anchor's card (or an open
-   * agent companion), so a busy agent can hold a thousand loaded child
-   * rows while the timeline shows one card. Counting them made the
-   * forced prune evict the actual conversation to keep an invisible
-   * subtree (incident 2026-08-31, the sibling of the backend pagers'
-   * `topLevelItemsFilter` rule — see internal/store/paging.go).
+   * Whether a row counts toward the window caps. A window holds only rows
+   * of its own scope (`threadItemWindow` refuses the rest), so this
+   * excludes just the rows the timeline never renders as their own entry
+   * (`isWindowedTimelineRow`).
    */
   const includes = (item: Item) => isWindowedTimelineRow(item, options.selection?.());
 
@@ -390,52 +378,20 @@ export function createThreadTimelineWindow(
     return count;
   }
 
-  /**
-   * Cut the window by TOP-LEVEL position: an item is kept iff its
-   * top-level root (itself, or the launch anchor its parent chain
-   * resolves to) passes `keepsRoot`. Children therefore always travel
-   * with their anchor — a cut can neither strand a child without the
-   * anchor that renders it (the admission invariant) nor spend the
-   * retained budget on child rows while evicting the conversation.
-   */
-  function cutWindowByRootCursor(
+  /** Keep the rows inside `[oldest, newest]`. */
+  function cutWindowToRange(
     sourceItems: readonly Item[],
-    keepsRoot: (rootCursor: TimelineCursorLike) => boolean,
+    oldest: TimelineCursorLike,
+    newest: TimelineCursorLike,
   ): Item[] {
-    const byId = new Map<string, Item>();
-    for (const item of sourceItems) byId.set(item.id, item);
-    const rootCursorMemo = new Map<string, TimelineCursorLike>();
-    const rootCursorOf = (item: Item): TimelineCursorLike => {
-      const chain: string[] = [];
-      let walker = item;
-      let cursor: TimelineCursorLike | null = null;
-      for (let hops = 0; hops <= MAX_PARENT_HOPS; hops += 1) {
-        const memoized = rootCursorMemo.get(walker.id);
-        if (memoized) {
-          cursor = memoized;
-          break;
-        }
-        chain.push(walker.id);
-        const parentId = walker.parentId ?? '';
-        const parent = parentId === '' ? undefined : byId.get(parentId);
-        if (!parent) break; // top-level, or orphan: nearest loaded root
-        walker = parent;
-      }
-      cursor ??= cursorFromItem(walker);
-      for (const id of chain) rootCursorMemo.set(id, cursor);
-      return cursor;
-    };
-    const keepIds = new Set<string>();
-    for (const item of sourceItems) {
-      if (keepsRoot(rootCursorOf(item))) keepIds.add(item.id);
-    }
-    return sourceItems.filter((item) => keepIds.has(item.id));
+    return sourceItems.filter((item) =>
+      compareItemToCursor(item, oldest) >= 0 && compareItemToCursor(item, newest) <= 0);
   }
 
   /**
-   * Top-level index range `[first, last]` of the rows the viewport shows,
-   * resolved through each visible item's top-level root. Null when the
-   * reader holds the bottom or no visible row is in the window.
+   * Top-level index range `[first, last]` of the rows the viewport shows.
+   * Null when the reader holds the bottom or no visible row is in the
+   * window.
    */
   function visibleTopLevelRange(
     sourceItems: readonly Item[],
@@ -443,31 +399,20 @@ export function createThreadTimelineWindow(
   ): { first: number; last: number } | null {
     const visible = options.getScrollController()?.visibleTimelineItemIds?.() ?? null;
     if (!visible || visible.size === 0) return null;
-    const byId = new Map<string, Item>();
-    for (const item of sourceItems) byId.set(item.id, item);
     let oldest: TimelineCursorLike | null = null;
     let newest: TimelineCursorLike | null = null;
-    for (const id of visible) {
-      const start = byId.get(id);
-      if (!start) continue;
-      let walker: Item = start;
-      for (let hops = 0; hops < MAX_PARENT_HOPS; hops += 1) {
-        const parentId: string = walker.parentId ?? '';
-        const parent: Item | undefined = parentId === '' ? undefined : byId.get(parentId);
-        if (!parent) break;
-        walker = parent;
-      }
-      const cursor = cursorFromItem(walker);
-      if (!oldest || compareCursors(cursor, oldest) < 0) oldest = cursor;
-      if (!newest || compareCursors(cursor, newest) > 0) newest = cursor;
+    for (const item of sourceItems) {
+      if (!visible.has(item.id)) continue;
+      if (!oldest || compareItemToCursor(item, oldest) < 0) oldest = cursorFromItem(item);
+      if (!newest || compareItemToCursor(item, newest) > 0) newest = cursorFromItem(item);
     }
     if (!oldest || !newest) return null;
     let first = -1;
     let last = -1;
     for (let index = 0; index < topLevel.length; index += 1) {
-      const cursor = cursorFromItem(topLevel[index]);
-      if (first < 0 && compareCursors(cursor, oldest) >= 0) first = index;
-      if (compareCursors(cursor, newest) <= 0) last = index;
+      const item = topLevel[index];
+      if (first < 0 && compareItemToCursor(item, oldest) >= 0) first = index;
+      if (compareItemToCursor(item, newest) <= 0) last = index;
       else break;
     }
     if (first < 0 || last < first) return null;
@@ -583,12 +528,7 @@ export function createThreadTimelineWindow(
     const oldestKeep = cursorFromItem(topLevel[start]);
     const newestKeep = cursorFromItem(topLevel[end - 1]);
     return {
-      items: cutWindowByRootCursor(
-        sourceItems,
-        (rootCursor) =>
-          compareCursors(rootCursor, oldestKeep) >= 0
-          && compareCursors(rootCursor, newestKeep) <= 0,
-      ),
+      items: cutWindowToRange(sourceItems, oldestKeep, newestKeep),
       oldestCursor: oldestKeep,
       newestCursor: newestKeep,
       droppedHead: start > 0,
@@ -763,7 +703,7 @@ export function createThreadTimelineWindow(
     observationVersion++;
     const current = options.getItems();
     const byId = new Map(current.map(item => [item.id, item]));
-    const kept = dropIds.size === 0 ? current : cutWindowByRootCursor(current, cursor => !dropIds.has(cursor.itemId ?? ''));
+    const kept = dropIds.size === 0 ? current : current.filter(item => !dropIds.has(item.id));
     const incoming = rows.map(item => {
       const live = byId.get(item.id);
       return live && live.rev >= 0 && item.rev >= 0 && live.rev > item.rev ? live : item;
@@ -951,7 +891,8 @@ export function createThreadTimelineWindow(
    * the nav rail) before they dispatch the scroll intent. When the item
    * is already in the window this is a cheap `Array.some` and no backend
    * call. Otherwise the window is replaced by a bounded slice around the
-   * item (or its launch root for a child, retaining only the target ancestry).
+   * item. A row outside the window's scope (a subagent child in the main
+   * window) is `missing` here.
    *
    * The result names why the item is not scrollable, because the callers
    * answer differently: `missing` is the only outcome that means the row
@@ -990,48 +931,10 @@ export function createThreadTimelineWindow(
     // paging in a whole turn window we don't need.
     if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
 
-    // Load the target ancestry only. Expanded cards own independent paged scopes.
-    let sliceAnchorID = itemID;
-    const navigationItems: Item[] = [];
-    // The top-level row the window has to hold for the target to be
-    // scrollable: the target itself, or its launch root for a subagent child.
-    let anchorItem = fetched;
-    if (options.selection?.().scopeRootId && !includes(fetched)) return 'missing';
-    if (!options.selection?.().scopeRootId && (fetched.parentId ?? '') !== '') {
-      let walker = fetched;
-      navigationItems.push(fetched);
-      const visited = new Set<string>([walker.id]);
-      while (
-        (walker.parentId ?? '') !== '' &&
-        !visited.has(walker.parentId ?? '') && visited.size < 16
-      ) {
-        let parentItem: Item;
-        try {
-          parentItem = (await GetThreadItem(
-            currentThread.id,
-            walker.parentId ?? '',
-          )) as Item;
-        } catch (err) {
-          if (superseded()) return 'superseded';
-          console.error('loadUntilItem parent walk failed:', err);
-          addToast('error', 'Failed to load message');
-          return 'failed';
-        }
-        if (superseded()) return 'superseded';
-        if (!parentItem?.id || parentItem.id !== walker.parentId || parentItem.threadId !== currentThread.id)
-          break;
-        visited.add(parentItem.id);
-        navigationItems.push(parentItem);
-        walker = parentItem;
-      }
-      if ((walker.parentId ?? '') !== '') {
-        console.error('loadUntilItem: invalid target ancestry', { itemID, parentId: walker.parentId });
-        addToast('error', 'Failed to load message ancestry');
-        return 'failed';
-      }
-      sliceAnchorID = walker.id;
-      anchorItem = walker;
-    }
+    // Only rows of this window's scope can load here. A subagent child
+    // lives in its agent's scoped surface (`navigateToThreadItem` opens it
+    // there), never in the main window.
+    if (options.selection?.().scopeRootId ? !includes(fetched) : (fetched.parentId ?? '') !== '') return 'missing';
 
     // The anchor sits inside a run the window already holds, in the part
     // of it the page did not ship (timeline-window-pages §6): one members
@@ -1039,11 +942,8 @@ export function createThreadTimelineWindow(
     // window stays exactly where the reader left it. A covering run that
     // cannot produce the row (a failed fetch, already reported) falls
     // through to the whole-window slice below.
-    if (await options.activityRuns().loadUnshippedMember(anchorItem)) {
+    if (await options.activityRuns().loadUnshippedMember(fetched)) {
       if (superseded()) return 'superseded';
-      if (navigationItems.length && options.getItems().some(item => item.id === sliceAnchorID)) {
-        options.mountNavigationItems?.(navigationItems);
-      }
       if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
     }
     if (superseded()) return 'superseded';
@@ -1052,7 +952,7 @@ export function createThreadTimelineWindow(
     try {
       const paged = await ListThreadSliceAround(
         currentThread.id,
-        sliceAnchorID,
+        itemID,
         SLICE_AROUND_ITEM_BUDGET,
         timelinePageShape(),
         options.selection?.(),
@@ -1066,9 +966,6 @@ export function createThreadTimelineWindow(
         disposeDropped: true,
         afterCommit: () => applyWindowMetadataFromPaged(paged),
       });
-      if (navigationItems.length && options.getItems().some(item => item.id === sliceAnchorID)) {
-        options.mountNavigationItems?.(navigationItems);
-      }
     } catch (err) {
       if (superseded()) return 'superseded';
       console.error('loadUntilItem ListThreadSliceAround failed:', err);
@@ -1080,10 +977,9 @@ export function createThreadTimelineWindow(
     if (options.getItems().some((it) => it.id === itemID)) return 'loaded';
     // The backend confirmed the row exists, then shipped a window that
     // does not hold it: a contract fault (an anchored slice that dropped
-    // its anchor, a navigation ancestry that skipped a child), not a
-    // deleted row.
+    // its anchor), not a deleted row.
     console.error(
-      `loadUntilItem: window loaded around ${sliceAnchorID} does not contain ${itemID}`,
+      `loadUntilItem: window loaded around ${itemID} does not contain it`,
     );
     addToast('error', 'Failed to load message');
     return 'failed';

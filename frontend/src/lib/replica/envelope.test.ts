@@ -145,17 +145,21 @@ describe('replica envelope', () => {
         anchors: [
           {
             anchorId: 'anchor',
-            evictedIds: ['abc', 'def'],
+            rootId: 'root',
+            count: 7,
             terminalPreview: '1234567890',
             terminalTurnIndex: 0,
             terminalItemIndex: 1,
           },
         ],
+        roots: [{ rootId: 'root', floorTurnIndex: 0, floorItemIndex: 3 }],
       },
     });
     expect(estimateBodyChars(withFold)).toBe(
-      'hello'.length + 'abc'.length + 'def'.length + '1234567890'.length,
+      'hello'.length + 'anchor'.length + 'root'.length + '1234567890'.length + 'root'.length,
     );
+    // Normalization keeps the aggregate and floors as plain data.
+    expect(normalizeBody(withFold).subagentFolds).toEqual(withFold.subagentFolds);
   });
 
   it('refuses a window past the per-envelope item cap', () => {

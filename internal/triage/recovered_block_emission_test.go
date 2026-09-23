@@ -155,10 +155,10 @@ func TestRecoveredTopLevelBlocksEmitStreamingWireShape(t *testing.T) {
 
 // TestRecoveredSubagentBlockKeepsCompletedUpsertShape pins the subagent
 // carve-out: snapshot recovery is the NORMAL delivery path for subagent
-// messages (the CLI emits no partial stream events for them), they render
-// inside fold cards, and a settle patch would race the frontend's
-// evictSettledChildren before any reveal wrote text. Scoped recoveries
-// must therefore stay a single completed upsert — no delta, no patch.
+// messages (the CLI emits no partial stream events for them) and they
+// render inside subagent cards and scoped surfaces, which read one
+// settled upsert. Scoped recoveries must therefore stay a single
+// completed upsert — no delta, no patch.
 func TestRecoveredSubagentBlockKeepsCompletedUpsertShape(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")

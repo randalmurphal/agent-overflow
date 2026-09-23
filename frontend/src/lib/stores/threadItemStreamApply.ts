@@ -1,4 +1,3 @@
-import { itemTranscriptScope } from '../utils/itemTranscriptScope';
 import { isItemStatusRegression } from './threadItems';
 import type { Item, Thread } from '../types/models';
 import type {
@@ -59,8 +58,8 @@ const MAX_WARNED_MISSING_DELTA_IDS = 256;
 export interface ThreadItemStreamApply {
   /**
    * Merge a batch of Items into the loaded window. Returns the applied
-   * result, or null when nothing reached the window (empty batch, all
-   * rows folded or refused admission, or no row changed).
+   * result, or null when nothing reached the window (empty batch, only
+   * subagent children, rows refused admission, or no row changed).
    */
   upsertItemsBatch(incoming: Item[]): ApplyItemUpsertsToWindowResult | null;
   /** `upsertItemsBatch` plus optimistic-marker discharge and the append spring. */
@@ -77,10 +76,9 @@ export interface ThreadItemStreamApply {
 
 /**
  * Owns a thread pane's streaming item-application machine: the batched
- * upsert path (`applyItemUpsertsToWindow` + the admission and fold
- * swallows, live eviction, window prune, and reveal reconcile that ride it)
- * and the three single-row wire applications
- * — delta, meta and field patch.
+ * upsert path (child routing, `applyItemUpsertsToWindow`, and the window
+ * prune and reveal reconcile that ride it) and the three single-row wire
+ * applications: delta, meta and field patch.
  *
  * The pane data layer remains the sole mutator of `items` and of the
  * id→index map: this factory writes rows through
@@ -89,7 +87,7 @@ export interface ThreadItemStreamApply {
  * revision bump still happens at the pane's own chokepoints. It
  * deliberately does NOT own the window's cursors (threadTimelineWindow),
  * the per-item smoothers and reveal gate (threadStreamingReveal), the
- * subagent fold policy (threadSubagentMemory), or the switch/sync
+ * subagent live aggregates (threadSubagentMemory), or the switch/sync
  * pipeline (threadSwitchLoad) — it drives all four through their handles.
  */
 export function createThreadItemStreamApply(
@@ -125,13 +123,6 @@ export function createThreadItemStreamApply(
         (errors ??= []).push(error);
       }
     }
-    // Fold settled children before checking the top-level window budget.
-    // Streaming children must not displace conversation rows.
-    try {
-      subagentMemory?.evictSettledChildren(next.changedItems);
-    } catch (error) {
-      (errors ??= []).push(error);
-    }
     if (next.appendedItems.length > 0 && !timelineWindow.hasMoreNewer) {
       try {
         timelineWindow.pruneToRecentWindowIfNeeded();
@@ -144,23 +135,42 @@ export function createThreadItemStreamApply(
     }
   }
 
+  /**
+   * Route a batch at the admission chokepoint. Rows of this surface's
+   * scope merge into the window; every other row is a subagent child,
+   * which the main pane records against its launch anchor's aggregate
+   * (`threadSubagentMemory.admitChildren`) and a scoped surface ignores.
+   * Children are admitted after the window commit so an anchor landing in
+   * the same batch resolves them.
+   */
   function upsertItemsBatch(
     incoming: Item[],
     optimisticItemIds?: ReadonlySet<string>,
   ): ApplyItemUpsertsToWindowResult | null {
     if (incoming.length === 0) return null;
-
-    // Re-delivered upserts for folded children (transport replay after a
-    // reconnect) must not re-insert rows the fold already counted. The
-    // canonical row lives in SQLite — persisted before the event was
-    // emitted — so the count survives the swallow; an enriched echo's
-    // new content (e.g. a completion re-persisted with an inline diff
-    // upgrade) surfaces when expansion rehydrates the transcript.
-    if (incoming.some((it) => subagentMemory?.isEvicted(it.id))) {
-      incoming = incoming.filter((it) => !subagentMemory?.isEvicted(it.id));
-      if (incoming.length === 0) return null;
+    const scope = options.scopeRootId ?? '';
+    let rows = incoming;
+    let children: Item[] | null = null;
+    for (let index = 0; index < incoming.length; index += 1) {
+      if ((incoming[index].parentId ?? '') === scope) continue;
+      rows = incoming.slice(0, index);
+      children = [incoming[index]];
+      for (let rest = index + 1; rest < incoming.length; rest += 1) {
+        const item = incoming[rest];
+        if ((item.parentId ?? '') === scope) rows.push(item);
+        else children.push(item);
+      }
+      break;
     }
+    const applied = rows.length > 0 ? upsertWindowRows(rows, optimisticItemIds) : null;
+    if (children) subagentMemory?.admitChildren(children);
+    return applied;
+  }
 
+  function upsertWindowRows(
+    incoming: Item[],
+    optimisticItemIds?: ReadonlySet<string>,
+  ): ApplyItemUpsertsToWindowResult | null {
     const thread = options.getThread();
     return streamingReveal.withReconciledItems(incoming, (incoming) => {
       const previousItems = options.getItems();
@@ -184,28 +194,13 @@ export function createThreadItemStreamApply(
     // does not hold: the record is marked dirty and the debounced stub
     // refresh restates the run (see `ApplyItemUpsertsToWindowOptions`).
     for (const runKey of next.dirtiedRunKeys) activityRuns.markRunDirty(runKey);
-    // Admission is decided inside the merge itself (see
-    // `rejectedParentedItems`): a new child lands only when its anchor
-    // is loaded or landed earlier in the same batch, so the
-    // floor/ceiling filters can never strip an anchor out from under a
-    // child that was vouched for separately. This is the LIVE-STREAM
-    // boundary only — cache restore and replica paint install rows
-    // wholesale through `replaceTimelineItems` (server windows are
-    // top-level-only; snapshots hold rows this pane already admitted),
-    // and the window-sync page install enforces the same contract via
-    // `reconcileSnapshotPage.orphanedLiveChildren`.
-    subagentMemory?.recordAdmission(
-      next.appendedItems,
-      next.rejectedParentedItems,
-    );
     if (next.droppedOlderItems) timelineWindow.noteDroppedOlderItems();
     if (next.droppedNewerItems) {
       timelineWindow.noteDroppedNewerItems();
     }
     if (!next.structureChanged && next.changedItems.length === 0) {
-      // A merge that produced only admission rejections reads as
-      // "nothing reached the window" to callers — the rejections were
-      // recorded above and are not theirs to see.
+      // A merge that only refused rows reads as "nothing reached the
+      // window" to callers, except a refusal past the newer edge.
       return next.droppedNewerItems ? next : null;
     }
     options.commitUpsertResult(next, (committed) => finishCommittedUpsert(committed, previousItems));
@@ -250,7 +245,7 @@ export function createThreadItemStreamApply(
     // the composer's optimistic user-send arms at its own call site
     // (`pane.armStructuralSpring()` before its upsert) without the
     // stamp.
-    if (applied && applied.appendedItems.some(item => itemTranscriptScope(item, options.getItemById) === (options.scopeRootId ?? ''))) {
+    if (applied && applied.appendedItems.length > 0) {
       options.armLiveContentAppendSpring();
     }
     return applied;
@@ -263,13 +258,10 @@ export function createThreadItemStreamApply(
     const index = itemIndexById.get(evt.itemId);
     if (index === undefined) {
       if (options.scopeRootId !== undefined) return;
-      // Expected miss: the row was refused window admission because its
-      // anchor isn't loadable here, so its deltas have nothing to write
-      // into. SQLite has the streamed text; hydration renders it if the
-      // anchor comes back. Consulted only AFTER the index miss — a
-      // loaded row always applies whatever the ledger says, which is
-      // what makes a stale swallow entry harmless.
-      if (subagentMemory?.isSwallowedChild(evt.itemId)) return;
+      // Expected miss: subagent children never enter the window, so their
+      // deltas have nothing to write into. Scoped surfaces that hold the
+      // row apply the same event to their own windows.
+      if (subagentMemory?.isKnownChild(evt.itemId)) return;
       // The wire contract from triage is: the upsert that creates a
       // streaming row ALWAYS precedes any delta for that row
       // (handleTextDelta in internal/triage/stream_items.go inserts
@@ -351,15 +343,11 @@ export function createThreadItemStreamApply(
     const thread = options.getThread();
     if (thread && evt.threadId !== thread.id) return;
     const index = itemIndexById.get(evt.itemId);
+    // A tracked child has no window row and no smoother to reconcile.
+    if (index === undefined && subagentMemory?.applyChildPatch(evt)) return;
     const current = index === undefined ? undefined : options.getItems()[index];
     if (current && evt.patch.status && isItemStatusRegression(current, { status: evt.patch.status, updatedAt: evt.patch.updatedAt })) return;
-    const next = streamingReveal.applyPatch(evt.itemId, evt.patch);
-    if (!next) return;
-    // Streaming children settle through THIS path, not upserts —
-    // triage's doSettleStreamingText/Thinking emit field patches.
-    // Without this hook, settled text rows under collapsed cards
-    // would stay in pane memory for the rest of the turn.
-    subagentMemory?.evictSettledChildren([next]);
+    streamingReveal.applyPatch(evt.itemId, evt.patch);
   }
 
   return {

@@ -67,18 +67,6 @@ export interface ApplyItemUpsertsToWindowResult {
    */
   summaryFieldsChangedIds: readonly string[];
   /**
-   * NEW parented rows refused because their anchor is not loadable in
-   * this window — neither already loaded nor landed earlier in the same
-   * batch. Deciding this inside the merge, after the floor/ceiling
-   * filters, is what makes the no-orphan contract airtight: a pre-filter
-   * that vouched for a same-batch anchor could disagree with the filter
-   * that then strips that anchor (below the floor after a prune),
-   * landing the child as an unreachable orphan row. The caller swallows
-   * these (`threadSubagentMemory.recordAdmission`) — SQLite holds the
-   * canonical rows, and hydration renders them once the anchor is back.
-   */
-  rejectedParentedItems: readonly Item[];
-  /**
    * Run record keys of rows refused because they fell inside a held run's
    * unshipped region. The caller marks each dirty
    * (`threadActivityRuns.markRunDirty`), which schedules the stub
@@ -89,8 +77,6 @@ export interface ApplyItemUpsertsToWindowResult {
 
 /** Shared empty list, so the overwhelmingly common "nothing moved" batch allocates none. */
 const NO_CHANGED_IDS: readonly string[] = Object.freeze([]);
-/** Shared empty list, so batches with no refused parented rows allocate none. */
-const NO_REJECTED_ITEMS: readonly Item[] = Object.freeze([]);
 
 /**
  * Apply streamed/upserted items to the currently loaded timeline window.
@@ -138,7 +124,6 @@ export function applyItemUpsertsToWindow({
   let droppedOlderItems = false;
   let retentionChanged = false;
   let summaryFieldsChangedIds: string[] | null = null;
-  let rejectedParentedItems: Item[] | null = null;
   let dirtiedRunKeys: Set<string> | null = null;
   // MIN_SAFE_INTEGER, not 0: head-healed prompts sit at NEGATIVE item
   // indexes, so 0 is not the start of a turn — a fallback floor at 0
@@ -167,7 +152,9 @@ export function applyItemUpsertsToWindow({
 
   for (const item of incoming) {
     if (currentThreadId !== null && item.threadId !== currentThreadId) continue;
-    if (scopeRootId !== undefined && (item.parentId ?? '') !== scopeRootId) continue;
+    // Only rows of this window's scope are admitted; the caller routes
+    // subagent children elsewhere before calling.
+    if ((item.parentId ?? '') !== (scopeRootId ?? '')) continue;
 
     const identity = optimisticIndexByIdentity.size > 0 ? userMessageIdentity(item) : null;
     const existingIndex = batchIndexById.get(item.id) ?? itemIndexById.get(item.id)
@@ -232,34 +219,17 @@ export function applyItemUpsertsToWindow({
       continue;
     }
 
-    // A new TOP-LEVEL row inside a held run's unshipped region is not a
-    // row this window can hold: see `runCoveringUnshipped`. Checked after
-    // the floor/ceiling filters, so a row those already refused costs no
-    // lookup, and before the parent admission, which only concerns
-    // children. Rows at or past the newest edge are outside every run's
+    // A new row inside a held run's unshipped region is not a row this
+    // window can hold: see `runCoveringUnshipped`. Checked after the
+    // floor/ceiling filters, so a row those already refused costs no
+    // lookup. Rows at or past the newest edge are outside every run's
     // range and append exactly as before.
-    if ((item.parentId ?? '') === (scopeRootId ?? '') && runCoveringUnshipped) {
+    if (runCoveringUnshipped) {
       const runKey = runCoveringUnshipped(item);
       if (runKey !== null) {
         (dirtiedRunKeys ??= new Set()).add(runKey);
         continue;
       }
-    }
-
-    // Admission for new subagent children, checked against what actually
-    // landed (batchIndexById excludes floor/ceiling-refused rows, and
-    // a rejected anchor never enters it, so grandchildren are refused
-    // transitively). Wire order puts a parent's upsert before its
-    // children's, so a same-batch anchor is always decided first.
-    const parentId = item.parentId ?? '';
-    if (
-      parentId !== (scopeRootId ?? '')
-      && parentId
-      && itemIndexById.get(parentId) === undefined
-      && !batchIndexById.has(parentId)
-    ) {
-      (rejectedParentedItems ??= []).push(item);
-      continue;
     }
 
     const source = next ?? current;
@@ -283,7 +253,6 @@ export function applyItemUpsertsToWindow({
     !changed
     && !droppedNewerItems
     && !droppedOlderItems
-    && rejectedParentedItems === null
     && dirtiedRunKeys === null
   ) {
     return null;
@@ -300,7 +269,6 @@ export function applyItemUpsertsToWindow({
       droppedOlderItems,
       rowUiRetentionChanged: false,
       summaryFieldsChangedIds: NO_CHANGED_IDS,
-      rejectedParentedItems: rejectedParentedItems ?? NO_REJECTED_ITEMS,
       dirtiedRunKeys: dirtiedRunKeys ? [...dirtiedRunKeys] : NO_CHANGED_IDS,
     };
   }
@@ -320,7 +288,6 @@ export function applyItemUpsertsToWindow({
     droppedOlderItems,
     rowUiRetentionChanged: retentionChanged,
     summaryFieldsChangedIds: summaryFieldsChangedIds ?? NO_CHANGED_IDS,
-    rejectedParentedItems: rejectedParentedItems ?? NO_REJECTED_ITEMS,
     dirtiedRunKeys: dirtiedRunKeys ? [...dirtiedRunKeys] : NO_CHANGED_IDS,
   };
 }
