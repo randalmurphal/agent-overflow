@@ -438,6 +438,73 @@ func TestPointerForkRevertBeforeTheCutRetracts(t *testing.T) {
 	}
 }
 
+// TestPointerForkCopiesEmptyPayloads: a tool result with no output has a
+// zero-length payload. Every copy a fork makes of an inherited row
+// (materializing its history, its own edit, the source's edit handing the
+// row off) must store that payload as a zero-length blob, whether the
+// source holds it locally or in imported history; a copy that bound the
+// scanned bytes would bind nil and fail payloads.data NOT NULL.
+func TestPointerForkCopiesEmptyPayloads(t *testing.T) {
+	edit := func(thread string) func(*testing.T, *Store) {
+		return func(t *testing.T, s *Store) {
+			summary := "edited"
+			if _, err := s.UpdateItemFields(thread, "empty-tool", ItemPartialUpdate{Summary: &summary}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	copies := []struct {
+		name string
+		copy func(*testing.T, *Store)
+	}{
+		{"materialize", func(t *testing.T, s *Store) {
+			if err := s.MaterializeForkHistory(context.Background(), "F"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"fork edit", edit("F")},
+		{"source edit", edit("S")},
+	}
+	for _, imported := range []bool{false, true} {
+		for _, c := range copies {
+			t.Run(fmt.Sprintf("%s imported=%v", c.name, imported), func(t *testing.T) {
+				s := newTestStore(t)
+				seedLinearSource(t, s, "S", 2)
+				if imported {
+					if err := s.InsertItemWithPayload(
+						Item{ID: "empty-tool", ThreadID: "S", TurnIndex: 0, ItemIndex: 5, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Bash", PayloadID: "pe", Meta: "{}"},
+						Payload{ID: "pe", Kind: "text", Meta: "{}", Data: []byte("x")},
+					); err != nil {
+						t.Fatal(err)
+					}
+					sealItemsForTest(t, s, "S", "u0", "a0", "empty-tool")
+					mustExec(t, s.db, `UPDATE import_history_payloads SET data = x'' WHERE id = 'pe'`)
+				} else {
+					mustExec(t, s.db, `INSERT INTO payloads(thread_id,id,kind,meta,data,created_at) VALUES('S','pe','text','{}',x'',1)`)
+					if err := s.InsertItem(Item{ID: "empty-tool", ThreadID: "S", TurnIndex: 0, ItemIndex: 5, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Bash", PayloadID: "pe", Meta: "{}"}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				mustPointerFork(t, s, "S", "F", ForkCut{})
+				c.copy(t, s)
+
+				var kind string
+				var length int
+				if err := s.db.QueryRow(`SELECT typeof(data), length(data) FROM payloads WHERE thread_id = 'F' AND id = 'pe'`).Scan(&kind, &length); err != nil {
+					t.Fatalf("F owns no copy of the empty payload: %v", err)
+				}
+				if kind != "blob" || length != 0 {
+					t.Fatalf("F's copy of the empty payload is a %d-byte %s", length, kind)
+				}
+				data, err := s.GetPayloadData("F", "pe")
+				if err != nil || len(data) != 0 {
+					t.Fatalf("F reads the empty payload as %q, %v", data, err)
+				}
+			})
+		}
+	}
+}
+
 // TestPointerForkMaterializes: a fork that must own its history (the
 // transfer export) copies every row it reads and drops its lineage, and
 // reads the same before and after. A fork of it reads what it read before.
