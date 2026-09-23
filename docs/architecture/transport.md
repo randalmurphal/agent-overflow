@@ -120,6 +120,34 @@ other route, including credential rotation, tickets, transfers, bundles, and
 WebSocket upgrades. A disconnected request stops waiting through its context.
 Activation failure is HTTP 503, distinct from credential refusal.
 
+### Startup readiness
+
+Every executable boot binds its listener before `App.Start` and calls
+`MarkReady` after it (`Config.RequireReadyForBootstrap`). Until then:
+
+- `/bootstrap.json` runs its origin and credential checks, then answers 503
+  with `Cache-Control: no-store` and `Retry-After: 1`. Once the boot reports
+  progress, the body is
+  `{"reason":"starting","phase","detail","step","steps","startedAt","updatedAt","updatingTo"}`
+  with Unix-millisecond times; before any report it is a bare text 503.
+  `MarkStartupFailed` answers 500.
+- `phase` is the `boot: phase=` log id and `detail` is display text.
+  `step` and `steps` count sub-steps such as pending migrations. `updatedAt`
+  advances with each report and once a second while a boot phase is open,
+  and stops when none is open, so clients judge a stall by it. `updatingTo`
+  names the version the boot is finishing an in-app update to.
+- `/healthz`, `/pageurl` and the SPA assets are served. A loopback `/ws`
+  upgrade is admitted; its hello omits routes, the browser capability and
+  the backend name, and every RPC outside `Config.StartupMethods` (the
+  launcher's `ShutdownBackend`) returns `temporarily_unavailable`. Every other
+  route, and an off-host upgrade, closes without a response.
+- The attached-backend bootstrap hop and the `--connect` stub pass a far
+  backend's starting report on unchanged.
+
+The body is `internal/startupprogress`, which the Windows launcher shares.
+`StartupReporter` (`startup_progress.go`) turns `App.Start`'s boot phases
+into these reports; boot wiring installs it through `app.SetBootProgress`.
+
 ## HTTP RPC and additional receivers
 
 `POST /rpc` is the bounded one-shot RPC surface for the `ao` CLI. It accepts a

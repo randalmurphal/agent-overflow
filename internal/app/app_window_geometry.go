@@ -16,8 +16,13 @@ import (
 // swallowed rather than surfaced. Restore reads the file directly at boot (see
 // loadPersistedWindowGeometry); it can't go through here because the settings
 // service isn't constructed until ServiceStartup, after the window is created.
+//
+// The window opens while Start runs, so a placement change can arrive
+// before the settings service exists. It is dropped until then: the
+// tracker keeps the latest placement and writes it on the next change or
+// when the window closes.
 func (a *App) persistWindowGeometry(g windowgeom.Geometry) {
-	if a.settings == nil {
+	if !a.settingsAttached.Load() || a.settings == nil {
 		return
 	}
 	if _, err := a.settings.Update(map[string]any{"window": g}); err != nil {

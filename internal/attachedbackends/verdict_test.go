@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/deviceclient"
+	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/transport"
 )
 
@@ -25,6 +26,8 @@ type peer struct {
 	mu         sync.Mutex
 	credential string
 	refusal    string
+	// starting, when set, is the report the manifest answers with.
+	starting *startupprogress.Progress
 	// window is how long each issued credential lasts; an hour unless a
 	// test shortens it to bring the next renewal due.
 	window    time.Duration
@@ -59,6 +62,13 @@ func (p *peer) route(w http.ResponseWriter, r *http.Request) {
 	case "/bootstrap.json":
 		if !p.honours(r) {
 			http.NotFound(w, r)
+			return
+		}
+		p.mu.Lock()
+		starting := p.starting
+		p.mu.Unlock()
+		if starting != nil {
+			startupprogress.Write(w, *starting)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"backendId": "peer", "backendName": "Peer"})
@@ -159,6 +169,37 @@ func TestManifestRotatesAnAgedCredentialAndRetiresARevokedSession(t *testing.T) 
 	}
 	if profiles := manager.Attached(); len(profiles) != 0 {
 		t.Errorf("attached after revocation = %+v, want none", profiles)
+	}
+}
+
+// TestManifestReportsAStartingPeer: a peer answering its manifest with a
+// starting report is reached and starting, not unreachable, so the hop
+// can show the peer's progress.
+func TestManifestReportsAStartingPeer(t *testing.T) {
+	manager, dir := newManager(t)
+	p := newPeer(t)
+	seedPeer(t, dir, p, false)
+	p.starting = &startupprogress.Progress{Phase: "store.migrate", Step: 1, Steps: 2, UpdatedAt: 7}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	held, err := manager.carrier("peer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = held.Manifest(ctx)
+	var starting *transport.BackendStartingError
+	if !errors.As(err, &starting) {
+		t.Fatalf("manifest from a starting peer = %v, want BackendStartingError", err)
+	}
+	if starting.Progress.Phase != "store.migrate" || starting.Progress.Steps != 2 || starting.Progress.UpdatedAt != 7 {
+		t.Fatalf("report = %+v, want the peer's", starting.Progress)
+	}
+	if held.lastReachedMs.Load() == 0 {
+		t.Error("a starting peer answered but was not recorded as reached")
+	}
+	if manager.Carrier("peer") == nil {
+		t.Error("a starting peer lost its carrier")
 	}
 }
 

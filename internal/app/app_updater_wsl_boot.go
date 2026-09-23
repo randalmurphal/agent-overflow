@@ -47,6 +47,16 @@ func initWSLUpdaterIn(a *App, currentVersion, markerDir string) {
 	log.Printf("updater: configured (current version %s, target wsl/%s, staging root %s)", currentVersion, runtime.GOARCH, configDir)
 }
 
+// AppliedUpdateVersion names the version this boot is finishing an in-app
+// update to, for the readiness report. Empty on an ordinary boot and where
+// no update path records one. Call after InitWSLUpdater.
+func AppliedUpdateVersion(a *App) string {
+	if a.updater == nil {
+		return ""
+	}
+	return a.updater.AppliedUpdate()
+}
+
 // notifyPendingUpdateApplyFailure presents the boot-detected failure only
 // after the notification transport has been wired. The same notice remains
 // available through CheckForUpdate for the life of the process.

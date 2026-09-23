@@ -48,7 +48,10 @@ type appUpdaterState struct {
 	installGen   uint64
 	installTimer *time.Timer
 	applyFailure string
-	wsl          *wslUpdateMode
+	// appliedUpdate is the version this boot finished an update to: the
+	// WSL install marker the previous run wrote named this build.
+	appliedUpdate string
+	wsl           *wslUpdateMode
 }
 
 // New returns an unconfigured updater service. Configure or ConfigureWSL must

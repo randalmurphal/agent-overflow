@@ -1670,9 +1670,26 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 115, Name: "imported_parent_lookup", SQL: importedParentLookupV115SQL},
 }
 
+// MigrationStep describes one pending migration as it begins.
+type MigrationStep struct {
+	Version int
+	Name    string
+	// Index counts this open's pending migrations from 1; Pending is how
+	// many there are.
+	Index, Pending int
+}
+
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies
 // any unapplied migrations in order.
 func runMigrations(db *sql.DB) error {
+	return runMigrationsContext(context.Background(), db, nil)
+}
+
+// runMigrationsContext is runMigrations bounded by ctx, reporting each
+// pending migration to onMigration (which may be nil) before it runs.
+// Cancelling ctx interrupts the running migration; its transaction rolls
+// back and it runs again on the next open.
+func runMigrationsContext(ctx context.Context, db *sql.DB, onMigration func(MigrationStep)) error {
 	if err := configureDatabase(db); err != nil {
 		return err
 	}
@@ -1685,7 +1702,7 @@ func runMigrations(db *sql.DB) error {
 		return err
 	}
 
-	return applyPendingMigrations(db, applied)
+	return applyPendingMigrations(ctx, db, applied, onMigration)
 }
 
 func configureDatabase(db *sql.DB) error {
@@ -1781,16 +1798,27 @@ func tableColumns(db sqlQueryer, table string) (map[string]bool, error) {
 	return columns, nil
 }
 
-func applyPendingMigrations(db *sql.DB, applied int) error {
+func applyPendingMigrations(ctx context.Context, db *sql.DB, applied int, onMigration func(MigrationStep)) error {
+	pending := 0
+	for _, m := range migrations {
+		if m.Version > applied {
+			pending++
+		}
+	}
+	index := 0
 	for _, m := range migrations {
 		if m.Version <= applied {
 			continue
 		}
-		apply := applyMigration
-		if m.Rebuild {
-			apply = applyRebuildMigration
+		index++
+		if onMigration != nil {
+			onMigration(MigrationStep{Version: m.Version, Name: m.Name, Index: index, Pending: pending})
 		}
-		if err := apply(db, m); err != nil {
+		apply := applyMigrationContext
+		if m.Rebuild {
+			apply = applyRebuildMigrationContext
+		}
+		if err := apply(ctx, db, m); err != nil {
 			return err
 		}
 	}
@@ -1798,17 +1826,24 @@ func applyPendingMigrations(db *sql.DB, applied int) error {
 }
 
 func applyMigration(db *sql.DB, m Migration) error {
+	return applyMigrationContext(context.Background(), db, m)
+}
+
+// applyMigrationContext runs m in one transaction bound to ctx. A Fix
+// runs its statements without ctx, so cancellation takes effect at the
+// next statement that carries it.
+func applyMigrationContext(ctx context.Context, db *sql.DB, m Migration) error {
 	log.Printf("store: applying migration v%d: %s", m.Version, m.Name)
 	if strings.TrimSpace(m.SQL) == "" && m.Fix == nil {
 		return fmt.Errorf("migration v%d (%s) has neither SQL nor Fix", m.Version, m.Name)
 	}
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin migration v%d: %w", m.Version, err)
 	}
 
 	if strings.TrimSpace(m.SQL) != "" {
-		if _, err := tx.Exec(m.SQL); err != nil {
+		if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("migration v%d (%s) failed: %w", m.Version, m.Name, err)
 		}
@@ -1819,7 +1854,7 @@ func applyMigration(db *sql.DB, m Migration) error {
 			return fmt.Errorf("migration v%d (%s) fixup failed: %w", m.Version, m.Name, err)
 		}
 	}
-	if _, err := tx.Exec(
+	if _, err := tx.ExecContext(ctx,
 		"INSERT INTO migration_versions (version, name) VALUES (?, ?)",
 		m.Version,
 		m.Name,
@@ -1857,6 +1892,13 @@ func addThreadPRRefColumn(tx *sql.Tx) error {
 // connection. Sequence: disable FK, run the rebuild + version bump in one
 // transaction, verify integrity with foreign_key_check, commit, re-enable FK.
 func applyRebuildMigration(db *sql.DB, m Migration) error {
+	return applyRebuildMigrationContext(context.Background(), db, m)
+}
+
+// applyRebuildMigrationContext is applyRebuildMigration bounded by ctx.
+// Restoring foreign_keys ignores ctx so a cancelled rebuild still hands
+// its connection back with enforcement on.
+func applyRebuildMigrationContext(ctx context.Context, db *sql.DB, m Migration) error {
 	// Refuse rather than run the Fix: this path used to ignore it
 	// silently, so a rebuild that also needed a Go-side data pass would
 	// record itself as applied with half its work never done — a forward-
@@ -1870,7 +1912,6 @@ func applyRebuildMigration(db *sql.DB, m Migration) error {
 		return fmt.Errorf("migration v%d (%s): a Rebuild migration cannot carry a Fix; split the data fixup into its own migration", m.Version, m.Name)
 	}
 	log.Printf("store: applying rebuild migration v%d: %s", m.Version, m.Name)
-	ctx := context.Background()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("pin connection for rebuild v%d: %w", m.Version, err)
@@ -1885,7 +1926,7 @@ func applyRebuildMigration(db *sql.DB, m Migration) error {
 	// cascade integrity for the rest of the process. Deferred after
 	// conn.Close so it runs first (LIFO).
 	defer func() {
-		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		if _, err := conn.ExecContext(context.Background(), "PRAGMA foreign_keys=ON"); err != nil {
 			log.Printf("store: WARNING failed to re-enable foreign_keys after rebuild v%d: %v", m.Version, err)
 		}
 	}()
