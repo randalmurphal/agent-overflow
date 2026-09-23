@@ -136,6 +136,32 @@ describe('<SubagentGroup> live resolution against the pane', () => {
     expect(queryByTestId('subagent-group-preview')?.textContent).not.toContain('alpha');
   });
 
+  it('reads the preview off the decoration alone, falling back to the node only without one', async () => {
+    const { pane, group } = await setup([
+      agentLaunch({ status: 'completed', meta: decorated(2, 'reading alpha.ts') }),
+    ]);
+    const { queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(group.latestChildSummary).toBe('reading alpha.ts');
+    expect(queryByTestId('subagent-group-preview')?.textContent).toContain('reading alpha.ts');
+
+    // Decorated with no preview (the store drops an empty summary key):
+    // the card shows none rather than the node's older one.
+    pane.applyItemMeta({
+      threadId: 'thread-1', itemId: 'agent:1', kind: 'tool_call',
+      meta: JSON.stringify({ subagentDescendantCount: 3 }), updatedAt: 8,
+    });
+    await tick();
+    expect(queryByTestId('subagent-group-count')?.textContent).toContain('3 entries');
+    expect(queryByTestId('subagent-group-preview')).toBeNull();
+
+    // A write that carries no decoration at all falls back to the node's.
+    pane.applyItemMeta({
+      threadId: 'thread-1', itemId: 'agent:1', kind: 'tool_call', meta: '', updatedAt: 9,
+    });
+    await tick();
+    expect(queryByTestId('subagent-group-preview')?.textContent).toContain('reading alpha.ts');
+  });
+
   it('picks up an entry-count decoration that lands without a structural rebuild', async () => {
     const { pane, group } = await setup([
       agentLaunch({ meta: JSON.stringify({ subagentDescendantCount: 1 }) }),

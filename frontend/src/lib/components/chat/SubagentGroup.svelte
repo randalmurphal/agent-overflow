@@ -50,7 +50,6 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     decoratedSubagentAggregates,
-    pickLatestChildSummary,
     type SubagentGroupNode,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
@@ -186,11 +185,9 @@
   // picks up a decoration that lands mid-turn and falls back to the
   // structural count (never to zero) if a later upsert arrives without one.
   let descendantCount = $derived(Math.max(group.descendantCount, decorated.count));
-  let latestChildSummary = $derived(
-    pickLatestChildSummary(group.children, (id) => pane?.getItemById(id))
-      || decorated.summary
-      || group.latestChildSummary,
-  );
+  // The backend ranks a card's children; the node's build-time preview
+  // stands in only for a write that carries no decoration at all.
+  let latestChildSummary = $derived(decorated.present ? decorated.summary : group.latestChildSummary);
   // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
   // the header's `controls` and the body's `id` must be one string.
   let groupDomId = $derived(chatRowDomId(pane, 'subagent-group', group.anchor.id));
@@ -310,8 +307,8 @@
 
   let previewText = $derived.by<string>(() => {
     // The live activity line is the freshest statement of what the agent
-    // is doing right now (`task_progress.description`); child summaries
-    // and the Initializing placeholder are the fallbacks.
+    // is doing right now (`task_progress.description`); the decorated
+    // child summary and the Initializing placeholder are the fallbacks.
     if (isRunning && progress.activity) return progress.activity;
     // A finished agent's answer is its collapsed line (Codex FINAL_ANSWER,
     // Claude output-file report); the last progress message is not what a

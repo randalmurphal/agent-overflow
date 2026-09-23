@@ -172,7 +172,9 @@ describe('groupItemsBySubagent', () => {
     const group = expectGroup(nodes[0]);
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['child']);
     expect(group.descendantCount).toBe(1);
-    expect(group.latestChildSummary).toBe('Read: file.ts');
+    // Loaded children never rank the preview; only the anchor's backend
+    // decoration supplies it, and this anchor carries none.
+    expect(group.latestChildSummary).toBe('');
   });
 
   it('does not use generic parentId nesting for non-agent rows', () => {
@@ -303,10 +305,8 @@ describe('groupItemsBySubagent', () => {
     expect(nodeContainsItem(group, 'bg-agent')).toBe(false);
     expect(findTimelineNodeIndex(nodes, 'complete:bg-agent')).toBe(3);
     expect(findTimelineNodeIndex(nodes, 'bg-agent')).toBe(1);
-    // The fold is the header, not a transcript entry: not counted, and
-    // never the collapsed preview.
+    // The fold is the header, not a transcript entry: not counted.
     expect(group.descendantCount).toBe(3);
-    expect(group.latestChildSummary).toBe('Bash: ls');
     for (const childId of ['child-bash', 'child-bash-done', 'child-text']) {
       expect(nodes.some((node) => nodeContainsItem(node, childId))).toBe(true);
     }
@@ -1583,7 +1583,6 @@ describe('groupItemsBySubagent — launch kinds', () => {
       'fork-text',
     ]);
     expect(group.descendantCount).toBe(2);
-    expect(group.latestChildSummary).toBe('Read: thing.ts');
   });
 
   it('detects a fork from an attributed row alone, with no meta stamp', () => {
@@ -2369,11 +2368,11 @@ describe('sliceRevealedNodes', () => {
   });
 });
 
-describe('subagent anchor decoration fallback', () => {
-  // History windows load launch anchors without their child rows; the
-  // store stamps `subagentDescendantCount` / `subagentLatestChildSummary`
-  // on the anchor's meta (internal/store/subagent_items.go) so the
-  // collapsed card renders identically before the transcript hydrates.
+describe('subagent anchor decoration', () => {
+  // No window holds a launch with its children; the store stamps
+  // `subagentDescendantCount` / `subagentLatestChildSummary` on the
+  // anchor's meta (internal/store/subagent_items.go) and that decoration
+  // is the card's only preview source.
   function decoratedLaunch(
     id: string,
     itemIndex: number,
@@ -2405,11 +2404,10 @@ describe('subagent anchor decoration fallback', () => {
     expect(group.children).toHaveLength(0);
     expect(group.descendantCount).toBe(7);
     expect(group.loadedDescendantCount).toBe(0);
-    // Decorated summaries normalize exactly like loaded-child previews.
     expect(group.latestChildSummary).toBe('running go test ./...');
   });
 
-  it('prefers loaded children for the preview and keeps the count monotonic', () => {
+  it('keeps the decorated preview over loaded children and the count monotonic', () => {
     const nodes = groupItemsBySubagent([
       decoratedLaunch('agent-1', 0, {
         subagentDescendantCount: 2,
@@ -2423,37 +2421,7 @@ describe('subagent anchor decoration fallback', () => {
     const group = expectGroup(nodes[0]);
     expect(group.descendantCount).toBe(3);
     expect(group.loadedDescendantCount).toBe(3);
-    expect(group.latestChildSummary).toBe('third step');
-  });
-
-  it('keeps prose and thinking out of the collapsed activity preview', () => {
-    const nodes = groupItemsBySubagent([
-      decoratedLaunch('agent-1', 0, { subagentDescendantCount: 3 }),
-      mkItem({
-        id: 'read',
-        itemIndex: 1,
-        parentId: 'agent-1',
-        kind: 'tool_call',
-        toolName: 'Read',
-        summary: 'Read parse_system.go',
-      }),
-      mkItem({
-        id: 'thinking',
-        itemIndex: 2,
-        parentId: 'agent-1',
-        kind: 'thinking',
-        summary: 'I should inspect one more path',
-      }),
-      mkItem({
-        id: 'prose',
-        itemIndex: 3,
-        parentId: 'agent-1',
-        kind: 'assistant_text',
-        summary: 'The review is complete',
-      }),
-    ]);
-
-    expect(expectGroup(nodes[0]).latestChildSummary).toBe('Read parse_system.go');
+    expect(group.latestChildSummary).toBe('stale decorated preview');
   });
 
   it('keeps the decorated count when loaded children trail it', () => {
@@ -2465,65 +2433,12 @@ describe('subagent anchor decoration fallback', () => {
     const group = expectGroup(nodes[0]);
     expect(group.descendantCount).toBe(5);
     expect(group.loadedDescendantCount).toBe(1);
-    expect(group.latestChildSummary).toBe('only loaded row');
+    // Decorated with no summary: the card shows no child preview rather
+    // than ranking the loaded row.
+    expect(group.latestChildSummary).toBe('');
   });
 
-  it('falls back to the decorated preview when loaded children carry no text', () => {
-    const nodes = groupItemsBySubagent([
-      decoratedLaunch('agent-1', 0, {
-        subagentDescendantCount: 1,
-        subagentLatestChildSummary: 'decorated preview',
-      }),
-      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', summary: '' }),
-    ]);
-
-    const group = expectGroup(nodes[0]);
-    expect(group.latestChildSummary).toBe('decorated preview');
-  });
-
-  // The candidate walk decides "does this row contribute text?" without
-  // building the preview, and normalizes only the winner. These two pin
-  // the halves of that split: the gate must reject exactly what
-  // normalization would have emptied, and the winner must still come out
-  // normalized rather than raw.
-  it('skips a whitespace-only child summary as a preview candidate', () => {
-    const nodes = groupItemsBySubagent([
-      decoratedLaunch('agent-1', 0, { subagentDescendantCount: 2 }),
-      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'real text' }),
-      mkItem({ id: 'c2', itemIndex: 2, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: '  \n\t ' }),
-    ]);
-
-    // c2 is the later row, so a gate that let it through would win and
-    // render an empty preview.
-    expect(expectGroup(nodes[0]).latestChildSummary).toBe('real text');
-  });
-
-  // Both winner branches, because they are separate returns: an active
-  // descendant and a terminal one must come out of the walk equally
-  // normalized.
-  for (const status of ['completed', 'streaming'] as const) {
-    it(`normalizes the winning ${status} child summary, not only the decoration`, () => {
-      const nodes = groupItemsBySubagent([
-        decoratedLaunch('agent-1', 0, { subagentDescendantCount: 1 }),
-        mkItem({
-          id: 'c1',
-          itemIndex: 1,
-          parentId: 'agent-1',
-          kind: 'tool_call',
-          toolName: 'Bash',
-          status,
-          summary: `\n  ran\n\n  tests ${'x'.repeat(400)}`,
-        }),
-      ]);
-
-      const summary = expectGroup(nodes[0]).latestChildSummary;
-      expect(summary.startsWith('ran tests ')).toBe(true);
-      expect(summary.endsWith('...')).toBe(true);
-      expect(summary.length).toBeLessThanOrEqual(163);
-    });
-  }
-
-  it('truncates an oversized decorated preview like child previews', () => {
+  it('truncates an oversized decorated preview', () => {
     const nodes = groupItemsBySubagent([
       decoratedLaunch('agent-1', 0, {
         subagentDescendantCount: 1,
@@ -3280,6 +3195,19 @@ describe('decoratedSubagentAggregates', () => {
     expect(agg.summary).toBe('go test ./...');
   });
 
+  // `present` separates "decorated with no preview" (the store always
+  // writes the count key, possibly 0, and drops an empty summary) from a
+  // write that carries no decoration, which a mounted card answers with
+  // the node's build-time preview.
+  it('reports whether the record carries the decoration at all', () => {
+    expect(decoratedSubagentAggregates(anchor({})))
+      .toEqual({ present: false, count: 0, transcriptCount: 0, summary: '' });
+    expect(decoratedSubagentAggregates(anchor({ subagentDescendantCount: 0 })))
+      .toEqual({ present: true, count: 0, transcriptCount: 0, summary: '' });
+    expect(decoratedSubagentAggregates(anchor({ subagentDescendantCount: '3', subagentLatestChildSummary: 'x' })).present)
+      .toBe(false);
+  });
+
   it('falls back to the round count when the anchor has no rounds', () => {
     expect(decoratedSubagentAggregates(anchor({ subagentDescendantCount: 4 })).transcriptCount).toBe(4);
   });
@@ -3296,7 +3224,9 @@ describe('decoratedSubagentAggregates', () => {
     const agg = decoratedSubagentAggregates(anchor({ subagentDescendantCount: 3, subagentLatestChildSummary: 'stale' }), completion);
     expect(agg.count).toBe(14);
     expect(agg.summary).toBe('go test ./...');
-    expect(decoratedSubagentAggregates(anchor({ subagentDescendantCount: 3 }), { ...completion, meta: '' }).count).toBe(0);
+    const bare = decoratedSubagentAggregates(anchor({ subagentDescendantCount: 3 }), { ...completion, meta: '' });
+    expect(bare.count).toBe(0);
+    expect(bare.present).toBe(false);
   });
 
   it('never lets the transcript count drop below the round count', () => {

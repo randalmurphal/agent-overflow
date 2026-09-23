@@ -32,14 +32,8 @@ import { isCommandAgentResult } from './commandAgentResult';
 export const MAX_DEPTH = 3;
 const PREVIEW_MAX_CHARS = 160;
 const PREVIEW_SCAN_CHARS = 512;
-// Not global: `test` on a `/g` regex advances `lastIndex` and would
-// answer differently on alternate calls.
-const NON_WHITESPACE = /\S/;
 
-// The one window both `normalizePreviewText` and `hasPreviewText` look
-// at — sharing it is what keeps "has a preview" structurally equal to
-// "the preview is non-empty" on the window half of that contract (the
-// other half, `\S` ⟺ collapse-to-empty, is asserted by test).
+// Bounds the whitespace-collapse pass to what a capped preview can show.
 function previewScanWindow(summary: string): string {
   return summary.length > PREVIEW_SCAN_CHARS
     ? summary.slice(0, PREVIEW_SCAN_CHARS)
@@ -181,9 +175,10 @@ export interface SubagentGroupNode {
    */
   loadedDescendantCount: number;
   /**
-   * Most recent loaded descendant summary (`pickLatestChildSummary`),
-   * falling back to the backend-decorated summary from the anchor's
-   * meta, then to ''.
+   * The backend-decorated summary from the anchor's meta at build time,
+   * or ''. The backend alone ranks a card's children; a mounted card
+   * re-reads the live anchor's decoration and falls back to this only
+   * when the anchor carries none.
    */
   latestChildSummary: string;
 }
@@ -374,8 +369,6 @@ function compareItems(a: Item, b: Item): number {
 /**
  * Normalize raw summary text into the collapsed-header preview shape:
  * whitespace collapsed, capped at PREVIEW_MAX_CHARS with an ellipsis.
- * Shared by loaded-children previews and the backend-decorated summary
- * fallback so both render identically.
  */
 export function normalizePreviewText(summary: string): string {
   if (summary.length === 0) return '';
@@ -385,49 +378,18 @@ export function normalizePreviewText(summary: string): string {
 }
 
 /**
- * Whether an item contributes observable activity text. Agent prose and
- * thinking belong in the pane and never become the collapsed card preview.
- *
- * Exactly `normalizePreviewText(summary) !== ''` without building the
- * preview: that function returns empty precisely when its scan window
- * holds no non-whitespace character, and `\S` finds the first one and
- * stops. The candidate walk asks this of every descendant on every
- * streaming tick of any of them, so it must not allocate — normalizing
- * is deferred to the one item that wins.
- */
-function hasPreviewText(item: Item): boolean {
-  return isSubagentActivityPreviewKind(item.kind)
-    && NON_WHITESPACE.test(previewScanWindow(item.summary ?? ''));
-}
-
-/** Rows that describe observable work rather than the agent's prose. */
-export function isSubagentActivityPreviewKind(kind: string): boolean {
-  switch (kind) {
-    case 'tool_call':
-    case 'tool_completion':
-    case 'terminal_interaction':
-    case 'error':
-    case 'api_error':
-      return true;
-    default:
-      return false;
-  }
-}
-
-export function subagentActivityPreview(item: Item): string {
-  return isSubagentActivityPreviewKind(item.kind)
-    ? normalizePreviewText(item.summary ?? '')
-    : '';
-}
-
-/**
  * Read the backend's subagent aggregates off a launch anchor's meta.
- * History windows load only top-level rows; the store decorates each
- * launch anchor with its transitive descendant count and the same
- * latest-child summary pickLatestChildSummary would compute (see
- * internal/store/subagent_items.go). A live anchor carries it once triage
- * re-pushes the row after its children are written
+ * No window holds a launch row together with its children, so the
+ * backend owns a card's count and preview: the store decorates each
+ * launch anchor with its transitive descendant count and its latest
+ * child summary (internal/store/subagent_items.go). A live anchor carries
+ * it once triage re-pushes the row after its children are written
  * (internal/triage/wire_items.go); until then it has none.
+ *
+ * `present` says whether the record carries the decoration at all (the
+ * store always writes the count key when it decorates, and drops the
+ * summary key when the summary is empty), so a card can tell "decorated
+ * with no preview" from "a write without the decoration".
  *
  * `count` is the anchor's ROUND: for a resumed agent the store bounds
  * the transcript root's aggregate to the rows before the first resume
@@ -446,11 +408,14 @@ export function subagentActivityPreview(item: Item): string {
  * launch row is not consulted.
  */
 export function decoratedSubagentAggregates(launch: Item, completion?: Item | null): {
+  present: boolean;
   count: number;
   transcriptCount: number;
   summary: string;
 } {
   const meta = parseJsonObject((completion ?? launch).meta);
+  const rawCount = meta?.subagentDescendantCount;
+  const present = typeof rawCount === 'number' && Number.isFinite(rawCount);
   const count = subagentDescendantCountFromMeta(meta);
   const rawTranscript = meta?.subagentTranscriptDescendantCount;
   const transcriptCount = Math.max(
@@ -461,17 +426,7 @@ export function decoratedSubagentAggregates(launch: Item, completion?: Item | nu
   );
   const rawSummary = meta?.subagentLatestChildSummary;
   const summary = typeof rawSummary === 'string' ? normalizePreviewText(rawSummary) : '';
-  return { count, transcriptCount, summary };
-}
-
-/**
- * True when an item is in the middle of doing work — running tool
- * calls and actively-streaming text/thinking blocks both qualify.
- * Biases `pickLatestChildSummary` toward the subagent's current
- * activity.
- */
-export function isItemActive(item: Item): boolean {
-  return item.status === 'running' || item.status === 'streaming';
+  return { present, count, transcriptCount, summary };
 }
 
 function itemWaitCarrierID(item: Item): string {
@@ -520,45 +475,11 @@ function timelineNodeRootItem(node: TimelineNode): Item {
 }
 
 /**
- * Walk every descendant Item under `nodes` (depth-first, preserving
- * arrival order) and yield it. Only the leaves' Items and group
- * parents' Items are surfaced — group nodes themselves are
- * structural, not items.
- */
-function* descendantItems(nodes: TimelineNode[]): Generator<Item> {
-  for (const node of nodes) {
-    if (node.kind === 'leaf') {
-      yield node.item;
-      continue;
-    }
-    if (node.kind === 'group' || node.kind === 'wait_group') {
-      // A folded `completion` is deliberately NOT yielded by either group
-      // kind: this walk feeds the collapsed-header preview, and the
-      // completion is the header's own status row. Yielding it would make
-      // every finished background agent's preview read "…-> done" instead
-      // of the last thing the agent actually did.
-      yield node.parent;
-      yield* descendantItems(node.children);
-      continue;
-    }
-    if (node.kind === 'read_group') {
-      for (const member of node.members) yield member;
-      continue;
-    }
-    if (node.kind === 'activity_run') {
-      yield* descendantItems(node.children);
-      continue;
-    }
-  }
-}
-
-/**
  * Every item id rendered somewhere inside `nodes` — the reach of the
  * auto-collapse gate's engagement peek (`hasUserExpansionWithin`), which
  * must see an expansion on ANY row a reader can touch, however deeply the
- * grouping nested it. Unlike `descendantItems` (the collapsed-header
- * preview scope) this includes a group's folded completion: that row
- * renders AS the group header, and its payload expands like any other.
+ * grouping nested it. This includes a group's folded completion: that
+ * row renders AS the group header, and its payload expands like any other.
  */
 export function* renderedItemIdsWithin(
   nodes: readonly TimelineNode[],
@@ -588,52 +509,6 @@ export function* renderedItemIdsWithin(
 }
 
 /**
- * Pick the descendant whose summary should appear in the collapsed
- * SubagentGroup header. Prefers active (running/streaming) descendants
- * so the preview tracks what the subagent is doing now; falls back to
- * the most recent terminal descendant only when nothing is active.
- *
- * Comparison key is `(turnIndex, itemIndex)` — the same canonical
- * ordering the timeline uses everywhere else.
- *
- * `getItem` re-resolves each descendant against the store, which is how
- * the mounted card tracks a streaming child: the node tree is a
- * structural snapshot, so without it the preview would only move when
- * the timeline's shape changed. Omitting it reads the snapshot as-is,
- * which is what the pure grouping pass wants.
- */
-export function pickLatestChildSummary(
-  children: TimelineNode[],
-  getItem?: (id: string) => Item | undefined,
-): string {
-  // Candidates are carried as ITEMS, not as items paired with their
-  // rendered preview: only the winner's text is ever used, and building
-  // a preview per candidate meant a whitespace-collapse pass and two
-  // string allocations for every descendant on every re-run. The walk
-  // is O(descendants) and re-runs whenever any descendant's row is
-  // rewritten (this reads each one through `getItem`, which is the
-  // point — that is how a streaming child moves the preview), so the
-  // per-candidate cost is what matters, not the loop.
-  let bestActive: Item | null = null;
-  let bestTerminal: Item | null = null;
-  for (const snapshot of descendantItems(children)) {
-    const item = getItem?.(snapshot.id) ?? snapshot;
-    if (!hasPreviewText(item)) continue;
-    if (isItemActive(item)) {
-      if (!bestActive || compareItems(item, bestActive) > 0) bestActive = item;
-    } else if (!bestActive) {
-      // Only track terminals while no active descendant is in the
-      // running. Once an active candidate appears we stop bothering
-      // with terminals — they can't beat an active winner regardless
-      // of order.
-      if (!bestTerminal || compareItems(item, bestTerminal) > 0) bestTerminal = item;
-    }
-  }
-  if (bestActive) return normalizePreviewText(bestActive.summary ?? '');
-  return bestTerminal ? normalizePreviewText(bestTerminal.summary ?? '') : '';
-}
-
-/**
  * Count every descendant (recursive) under a group node. Nested group
  * children contribute their own `descendantCount`, which is ratcheted
  * against their decoration, so an outer card's entry counter stays
@@ -656,10 +531,10 @@ function countDescendants(children: TimelineNode[]): number {
 }
 
 /**
- * Assemble a SubagentGroupNode from the children loaded in this window
- * (they track live status and win the preview) and the backend-decorated
- * aggregates on the anchor (history loads deliver anchors without child
- * rows). The count is the loaded count, ratcheted against the decoration.
+ * Assemble a SubagentGroupNode from the children loaded with it and the
+ * backend-decorated aggregates on the anchor. The count is the loaded
+ * count, ratcheted against the decoration; the preview is the
+ * decoration's alone.
  */
 function subagentGroupNode(
   parent: Item,
@@ -686,7 +561,7 @@ function subagentGroupNode(
     children,
     descendantCount: Math.max(loadedDescendantCount, decorated.count),
     loadedDescendantCount,
-    latestChildSummary: pickLatestChildSummary(children) || decorated.summary,
+    latestChildSummary: decorated.summary,
   };
 }
 

@@ -128,8 +128,8 @@ Two facts about that shape are load-bearing:
 
 A fifth `kind` had to be threaded through every node dispatcher.
 Compile- or runtime-enforced: `timelineNodeKey`, `timelineNodeItemId`,
-`timelineNodeRootItem`, `nodeContainsItem`, `descendantItems`,
-`countDescendants`, `nodeSignature` (which *throws* on an unknown kind).
+`timelineNodeRootItem`, `nodeContainsItem`, `countDescendants`,
+`nodeSignature` (which *throws* on an unknown kind).
 Silent if missed: `nodeRole`, `retainNode` / `retainActiveGroupKeys`,
 `messageTimelineTrace`, the row-estimate table.
 
