@@ -148,7 +148,7 @@ When index selection is part of behavior, tests assert both result parity and
 
 | Family | Purpose |
 |---|---|
-| History revision | Three `items` triggers maintain `threads.history_rev`, `threads.history_epoch`, and the per-row `items.rev` stamp on every row whose read result the write changed: the row, its completion sibling, and the anchors decorated from its parent chain (`stampedRowIDsSQL`: a recursive CTE walks the chain by primary key; the carrier leg probes the partial expression index `idx_items_transcript_root`). `rev` is written only here; the update trigger's `WHEN OLD.rev IS NEW.rev` guard keeps the stamping write from re-bumping the thread. |
+| History revision | Three `items` triggers maintain `threads.history_rev`, `threads.history_epoch`, and the per-row `items.rev` stamp on every row whose read result the write changed: the row, its completion sibling, and the anchors decorated from its parent chain (`stampedRowIDsSQL`: a recursive CTE walks the chain by primary key; the carrier leg probes the partial expression index `idx_items_transcript_root` by root id). `rev` is written only here; the update trigger's `WHEN OLD.rev IS NEW.rev` guard keeps the stamping write from re-bumping the thread. |
 | Payload collection | Item deletion removes payloads no longer referenced by either payload field in the same thread. Cascades collect payload chunks and edit snapshots. |
 | Imported-history integrity | Triggers reject implicit shadowing, coordinate overlap, chunk gaps, and ambiguous payload identity; the final thread or payload-snapshot reference collects immutable storage. |
 | Attachment ownership | Initial insertion creates the origin owner. Removing the final owner collects metadata; the attachment package releases file bytes. |

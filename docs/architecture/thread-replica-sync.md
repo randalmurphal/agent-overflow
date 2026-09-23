@@ -160,9 +160,13 @@ some top-level rows from other rows (`decorateSubagentAnchors`):
 
 Each leg is an index probe (the primary key, walked once per level of
 the chain by a recursive CTE, `idx_items_completion_of`, and the v100
-partial expression index `idx_items_transcript_root`), so a child write
-costs a handful of probes per nesting level whatever the thread's size;
-`TestItemRevisionStampProbesIndexes` pins the plan. The set is one
+partial expression index `idx_items_transcript_root`, keyed on the root
+id), so a child write costs a handful of probes per nesting level whatever
+the thread's size. The carrier leg compares against `+ancestors.id`: the
+CTE column's TEXT affinity would otherwise apply to the indexed
+expression and limit the probe to the thread's whole carrier set.
+`TestItemRevisionStampProbesIndexes` pins the plan of the query and
+`TestItemRevisionTriggersProbeCarriersByValue` the installed triggers. The set is one
 `id IN (...)` so an overlapping leg stamps a row once: a second stamp
 that left `rev` unchanged would pass the update trigger's guard below and
 bump the thread twice. `TestHeldWindowSeesThroughToAnchorsWalkedFromOutside`
