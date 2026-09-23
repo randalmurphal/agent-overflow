@@ -99,6 +99,11 @@ an atomic persistence decision; they must not become a business-logic layer.
   writes the exact aggregate revision before commit. An item it inserts must
   be one a read already showed, or the thread must be rebuilt in the same
   transaction: under the flag the insert trigger stamps only the new row.
+- A pointer fork reads its ancestors' rows in place. A writer that updates,
+  moves, deletes or hides a row another thread can read hands it off to the
+  forks that show it first (`handOffIDsTx`, `handOffPayloadTx`); add the
+  writer to `TestPointerForkSourceRewritesHandOff`
+  ([pointer forks](../../docs/architecture/sqlite-store.md#copies)).
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by

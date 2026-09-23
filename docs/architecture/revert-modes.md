@@ -6,9 +6,10 @@ identity of the message (Claude's wire uuid + parent uuid, and the AO
 `turn_index` Codex anchors resolve against), so the three
 message-boundary operations can slice provider history at that message:
 
-- **Fork-from-message** (`app_thread_fork.go`): clone the thread up to
-  a chosen user message into a new thread. The source thread is left
-  untouched.
+- **Fork-from-message** (`app_thread_fork.go`): fork the thread at a
+  chosen user message into a new thread that reads the source's history
+  before it ([pointer forks](sqlite-store.md#pointer-forks)). The source
+  thread is left untouched.
 - **Revert-on-interrupt** (`app_revert_on_interrupt.go`): the Stop/Esc
   un-send. When the newest turn has never settled and holds only one user
   message plus the model's unfinished reasoning or request retry/error

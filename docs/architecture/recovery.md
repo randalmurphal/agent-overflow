@@ -57,13 +57,13 @@ the fork click captures the live session's `CanonicalLeafUUID`
 already gone) into `PendingForkResumeAt` alongside
 `PendingForkRef = <source ref>`, and the fork's first send resolves the
 pin and passes `--resume-session-at` (see above), so the CLI's own
-fork cuts where the timeline was cloned rather than wherever the
+fork cuts where the AO fork was cut rather than wherever the
 source has grown to by then. Registration, not the turn row, is the
 liveness test: the CLI self-re-invokes on background task completions
 with the turn row long closed, and the transcript can grow whenever
 the process exists (forkClaudeThread refuses the UNPINNED lazy branch
 outright if a live session slipped past the capture). The pin is
-captured before the clone runs, so it and the cloned timeline describe
+captured before the fork is created, so it and the fork's cut describe
 one moment. Codex forks with no `lastTurnId` and gets back a
 thread whose copy already carries the turn-aborted marker. When
 nothing has been written yet, both refs stay empty and the fork's
@@ -72,10 +72,9 @@ but only for genuinely-early shapes (no session ref, no file yet, or
 a transcript that parses and holds no settled leaf). A stat/open/size
 failure reading the transcript fails the fork instead, so a fork can
 never silently arrive with a full timeline and no history behind it.
-The
-fork's cloned rows are settled by
-`store.SettleForkedThreadAsInterrupted`, which shares its item flip
-and its `stop_reason='interrupted'` with `RecoverCrashedTurns`. The
+`store.CreatePointerFork` copies the rows still running in the source
+into the fork and settles them with the item flip and
+`stop_reason='interrupted'` that `RecoverCrashedTurns` applies. The
 fork is in the same position a crash leftover is, holding rows no
 process will ever finish.
 

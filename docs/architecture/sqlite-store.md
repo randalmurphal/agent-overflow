@@ -93,7 +93,9 @@ transaction. Payload and plan writers instead call
 `bumpHistoryRevForPayloadTx` / `bumpHistoryRevForItemTx`, which touch the
 owning item rows so the row stamps move with the thread counter and fall back
 to the plain bump when the owner is imported history. `UpdatePayloadSpans` is
-deliberately excluded: spans are a derived cache the client version-checks.
+deliberately excluded: it advances the counters of the holder and of the forks
+that show the payload without touching `rev`, because spans are a derived cache
+the client version-checks.
 Item-coupled writes do not call any of them because their item mutation
 already fires the trigger.
 
@@ -114,9 +116,11 @@ rewind thread counters below values held by clients.
 ## Logical history
 
 Imported history has an immutable chunk base and a mutable local overlay.
-`timeline_items` and `timeline_payloads` expose the logical union. Triggers
-reject chunk gaps, overlapping identities or positions, and a local row that
-would shadow imported history without an explicit override.
+`timeline_items`, `timeline_payloads`, `timeline_payload_chunks`,
+`timeline_edit_file_snapshots` and `timeline_turns` expose the logical union,
+including the rows a pointer fork inherits ([Pointer forks](#pointer-forks)).
+Triggers reject chunk gaps, overlapping identities or positions, and a local
+row that would shadow imported history without an explicit override.
 
 The compound views are suitable for unordered set reads and thread-level
 existence probes. Ordered, limited, and recursive reads must render the
@@ -138,23 +142,118 @@ branches and threads. Payload accessors and joins always use both columns.
 `payloads.data`, payload chunks, and full highlight spans load on demand; list
 reads carry summaries, metadata, and capped preview spans.
 
-Forks retain thread-scoped item IDs. A fork attaches complete chunks and copies
-private rows and chunks intersecting a cut or override. New writes belong to
-the destination's private overlay. Revert adds deletion overrides and detaches
-empty chunks without materializing the retained prefix. Search mappings remain
-per thread and are inserted in bounded batches, preserving existing search
-results and tie ordering.
+Revert of imported history adds deletion overrides and detaches empty chunks
+without materializing the retained prefix.
 
-Private payloads share immutable snapshots through `resolved_payloads` and the
-logical chunk/edit-snapshot views. Schema triggers preserve borrowed bytes
-before source mutation or deletion. Forks of forks reuse the same snapshot.
-Writes detach a fork's payload when existing bytes or edit snapshots must
-survive the change.
+Attachment ownership is separate from its canonical storage path. An owner
+keeps the file available after the thread that stored it is deleted. The final
+owner releases the metadata and bytes.
 
-Attachment ownership is separate from its canonical storage path. A fork
-retains ownership of attachments referenced by its kept timeline rows. Deleting
-an original thread keeps those paths available to surviving forks and their
-native provider history. The final owner releases the metadata and bytes.
+## Pointer forks
+
+A pointer fork stores no copy of the history it inherits. `CreatePointerFork`
+records the source and the cut on the thread row (`fork_source_thread_id`,
+`fork_cut_turn_index`, `fork_cut_item_index`, `fork_source_title`) and writes
+one `thread_fork_lineage` row per ancestor level: the ancestor and the cut the
+fork reads it through, at most `forkLineageMaxDepth` levels. A cut is the first
+`(turn_index, item_index)` the fork does not inherit. The fork shows an
+ancestor's rows below that level's cut unless the fork or a nearer ancestor
+lists the id in `thread_fork_hidden`.
+
+Creation writes the lineage, the ids the fork hides (live background launches,
+rows an item cut excludes, and everything that hangs off either), copies of the
+rows still running in the source settled as interrupted, the source's turn rows
+from the one the cut falls in, the question state of the prompts the fork
+shows, and a divider row at the cut. Its cost follows the source's unsettled
+rows, not its length (`TestPointerForkOfALongThreadIsConstantTime`). The fork's own rows sit at or
+after its cut; a row that replaces an inherited one is hidden first
+(`trg_items_fork_position`).
+
+### Reads
+
+Each timeline view has lineage arms that apply the cut and hidden-id rules
+(`inheritedItemVisibleSQL`). Go-rendered reads (`timelineArms`, item
+hydration, payload arms) add lineage arms only for a thread with lineage rows,
+one pair per level, so a non-fork read's SQL is unchanged. A correlated read,
+whose thread is not known when the SQL is written, reads every level through
+one pair. Inherited rows read `rev = -1`. A payload, its append chunks and its
+edit snapshots resolve in the nearest thread of the lineage that holds the
+payload id: the thread that owns the row referencing it. A search hit on an
+ancestor row is a hit in every fork that shows the row, so creation writes no
+search rows.
+
+### Copies
+
+A fork takes its own copy of an inherited row only when it must own it
+(`fork_lineage.go`):
+
+- copy-on-write, before the fork mutates an inherited row or payload
+  (`requireMutableItemTx`, `requireMutablePayloadTx`);
+- hand-off, before any thread updates, moves, deletes or hides a row a fork
+  reads through it (`handOffIDsTx`, `handOffPayloadTx`), so the fork's history
+  stays what it was when the fork was made;
+- materialization, when the fork's history leaves this database
+  (`MaterializeForkHistory`, run by the transfer export). It copies in bounded
+  transactions, and the last one drops the lineage.
+
+A copy keeps the row's id, position and content and hides the ancestor's row
+from the copier, so the fork reads the same timeline before and after. A copy
+also makes the copier an owner of the attachments the row references and its
+previous owner owned (`ownCopiedAttachmentsTx`). A writer that changes a row
+another thread can read runs the hand-off first;
+`TestPointerForkSourceRewritesHandOff` lists the writers.
+
+A fork's revert of inherited rows lowers its cut to the last surviving row and
+hides any reverted row still below the new cut (`retractInheritedTx`). The
+ancestor's rows stay, and a fork made from this one keeps reading them through
+its own lineage.
+
+### Triggers and stamps
+
+`forkTriggersSQL` holds the fork triggers; `RestoreFrom` drops them for its row
+copy and reinstalls them.
+
+- `trg_items_fork_snapshot` and `trg_items_fork_snapshot_move` hide a row an
+  ancestor inserts or moves below a fork's cut after the fork was made, such as
+  a late background completion. A row that replaces one the ancestor already
+  showed under the same id (its copy of an inherited row, or its own imported
+  row localized) stays visible.
+- `trg_items_fork_position` and `trg_items_fork_position_update` keep a fork's
+  own rows at or after its cut.
+- `trg_items_fork_reader_stamp` advances the stamps of the forks that show an
+  ancestor row updated in place.
+- `trg_threads_fork_source_delete` refuses to delete a thread that forks still
+  read through.
+
+A fork's `history_rev` and `history_epoch` are its own counters. A write moves
+them only when it changes a row the fork shows, so a source continuing past a
+fork's cut leaves the fork's stamps unchanged, and a source write past every
+cut costs the same for any number of forks. The rule and its write paths are in
+[thread-replica-sync.md](thread-replica-sync.md#pointer-fork-stamps).
+
+### Source deletion
+
+Deleting a thread first detaches the forks that read through it
+(`detachForkDescendantsTx`). Each drops the lineage levels at and beyond the
+deleted thread and keeps its nearer levels, so the rows the deleted thread
+owned leave its timeline and its epoch advances. The divider of every fork made
+from the deleted thread, including the copies materialized forks and their
+forks hold, records `sourceDeleted` and the source title.
+
+### Attachments
+
+A fork may read an attachment an ancestor owns while it shows a row that
+references it (`OwnsAttachment`). The check runs only for an attachment the
+fork does not own itself and reads the ancestors' attachment-bearing rows below
+the cut through the partial indexes `idx_items_attachment_refs` and
+`idx_import_history_items_attachment_refs`.
+
+### Migration v120
+
+v120 creates the fork schema and retires payload snapshots, the previous way
+forks shared payloads. It copies each borrowed payload graph back into the
+payload rows that referenced it and empties the snapshot tables, at a cost that
+follows the borrowed payloads rather than the size of the payload tables.
 
 ## History repair
 
@@ -231,7 +330,7 @@ whole-row value from clobbering a concurrent lifecycle transition.
 `RestoreFrom` replaces the history dataset. It refuses restore while a remote
 command or transfer phase makes replacement unsafe, and it rejects snapshots
 that predate current incoming ownership. During the copy it drops and recreates
-history, background-settlement, payload-snapshot, attachment-ownership and
+history, background-settlement, pointer-fork, attachment-ownership and
 chunk-admission triggers. It restores the complete reference graph before
 reinstating them in the same transaction, preserving recorded counters and
 derived flags.
