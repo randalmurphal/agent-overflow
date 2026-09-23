@@ -1660,7 +1660,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 105, Name: "thread_group_names", SQL: threadGroupNamesV105SQL},
 	{Version: 106, Name: "fork_preparation", SQL: `ALTER TABLE threads ADD COLUMN fork_preparing INTEGER NOT NULL DEFAULT 0 CHECK(fork_preparing IN (0,1));`},
 	{Version: 107, Name: "payload_snapshots", SQL: payloadSnapshotsV107SQL},
-	{Version: 108, Name: "history_preparation", SQL: historyPreparationV108SQL},
+	{Version: 108, Name: "history_preparation", SQL: chunkAdmissionV108SQL},
 	{Version: 109, Name: "attachment_owners", SQL: attachmentOwnersV109SQL, Rebuild: true},
 	{Version: 110, Name: "local_sessions", SQL: localSessionsV110SQL, Rebuild: true},
 	{Version: 111, Name: "scoped_timeline_indexes", SQL: scopedTimelineIndexesV111SQL},
@@ -1669,6 +1669,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 114, Name: "async_answer_delivery", SQL: asyncAnswerDeliveryV114SQL},
 	{Version: 115, Name: "imported_parent_lookup", SQL: importedParentLookupV115SQL},
 	{Version: 116, Name: "imported_key_lookups", SQL: importedKeyLookupsV116SQL},
+	{Version: 117, Name: "drop_history_preparation_index", SQL: dropHistoryPreparationIndexV117SQL},
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies

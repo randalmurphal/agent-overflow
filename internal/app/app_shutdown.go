@@ -254,7 +254,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// Step 9's store close. Idempotent and blocks until the goroutine
 	// returns.
 	a.stopStoreMaintenance()
-	a.historyPreparation.halt()
 	record("stop store maintenance", nil)
 
 	// Step 3d: stop the background `git fetch` cadence. Each pass reads

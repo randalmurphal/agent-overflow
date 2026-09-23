@@ -339,7 +339,6 @@ func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep 
 // A complete immutable chunk can be attached directly. A cut, private
 // override, or unsettled foreground row keeps that chunk on the ordinary
 // copy path, where the established filtering and interruption rules apply.
-// Prepared chunks are bounded, so an edit or cut copies only its boundary.
 func cloneSharedHistoryTx(tx *sql.Tx, source, target string, kept map[string]string) (map[string]bool, error) {
 	rows, err := tx.Query(`SELECT refs.chunk_id, i.id, i.status, i.is_background, o.item_id IS NOT NULL OR i.kind IN ('user_text','tool_call','tool_completion','workflow_proposal') OR EXISTS(SELECT 1 FROM payloads p WHERE p.thread_id=refs.thread_id AND p.id IN (i.payload_id,i.input_payload_id))
  FROM thread_import_chunks refs JOIN import_history_items i ON i.chunk_id=refs.chunk_id

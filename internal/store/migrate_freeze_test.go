@@ -127,6 +127,7 @@ var frozenMigrationSQL = map[int]string{
 	114: "b0a6dca33ef74f85601867a153a65d16457582ce952c86de1fe77c20974f238c",
 	115: "a665ed6d0552e4d77ea60f4e04ca47bf0c023b25d3adaa99f43b4d9355272bd6",
 	116: "d12e02d43f55b8e7ecf12d743129e6219d8edc92d5d442c912fba4d40d20b981",
+	117: "d233e6c55926d79e5c4d4b3327dbadb0d4bf4f171a611601b09709912a5a9839",
 }
 
 func TestShippedMigrationSQLIsFrozen(t *testing.T) {

@@ -2,12 +2,11 @@ package store
 
 import "testing"
 
-func TestMigrationV108PreparedChunkAdmissionAndIndexes(t *testing.T) {
+func TestMigrationV108ChunkAdmissionAndIndexes(t *testing.T) {
 	db := migrateThrough(t, 107)
 	mustExec(t, db, `INSERT INTO projects(id,path,name,slug,created_at,updated_at) VALUES('p','/p','p','p',1,1)`)
 	mustExec(t, db, `INSERT INTO threads(id,project_id,title,provider,workspace_path,created_at,updated_at) VALUES('t','p','t','claude','/p',1,1)`)
 	migrateFrom(t, db, 107)
-	assertPlanUses(t, db, "idx_items_history_preparation", `EXPLAIN QUERY PLAN SELECT DISTINCT items.thread_id FROM items WHERE `+historyPreparationPredicate+` AND items.thread_id>? ORDER BY items.thread_id LIMIT 32`, "")
 	assertPlanUses(t, db, "idx_import_history_items_id", `EXPLAIN QUERY PLAN SELECT chunk_id FROM import_history_items WHERE id=?`, "same")
 	assertPlanUses(t, db, "idx_import_history_payloads_id", `EXPLAIN QUERY PLAN SELECT chunk_id FROM import_history_payloads WHERE id=?`, "payload")
 	chunk := func(id, item, payload string, turn, index int) {

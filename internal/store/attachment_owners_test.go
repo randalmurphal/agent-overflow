@@ -1,9 +1,6 @@
 package store
 
-import (
-	"context"
-	"testing"
-)
+import "testing"
 
 func TestForkAttachmentOwnersFollowCutAndRollback(t *testing.T) {
 	s := newTestStore(t)
@@ -23,17 +20,11 @@ func TestForkAttachmentOwnersFollowCutAndRollback(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, item := range []Item{
-		{ID: "first", Kind: "user_text", Role: "user", Meta: `{"attachments":[{"id":"early","threadId":"source"},{"id":"unrelated","threadId":"foreign"}]}`},
-		{ID: "generated", TurnIndex: 1, Kind: "assistant_text", Role: "assistant", Meta: `{"attachments":[{"id":"late","threadId":"source"}]}`},
-	} {
-		item.ThreadID = "source"
-		item.Status = "completed"
-		if err := s.InsertItem(item); err != nil {
-			t.Fatal(err)
-		}
+	if err := s.InsertItem(Item{ID: "first", ThreadID: "source", Kind: "user_text", Role: "user", Status: "completed", Meta: `{"attachments":[{"id":"early","threadId":"source"},{"id":"unrelated","threadId":"foreign"}]}`}); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := s.PrepareThreadHistory(context.Background(), "source"); err != nil {
+	// Imported history carries attachment references too.
+	if err := s.ApplyImportBatch("source", ImportBatch{Rows: []ImportRow{{Item: Item{ID: "generated", TurnIndex: 1, Kind: "assistant_text", Role: "assistant", Status: "completed", Meta: `{"attachments":[{"id":"late","threadId":"source"}]}`}}}}); err != nil {
 		t.Fatal(err)
 	}
 	cut := 0

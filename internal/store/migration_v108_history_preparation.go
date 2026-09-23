@@ -1,8 +1,10 @@
 package store
 
-// Prepared chunks may divide a turn. Collision checks use independent ID
-// and position probes instead of joining every pair of rows in that turn.
-const historyPreparationV108SQL = `
+// v108 indexed the rows that background history sealing could move (sealing
+// is removed; v117 drops that index) and rewrote chunk admission as
+// independent ID and position probes, so a chunk sharing a turn with existing
+// history is checked without joining every pair of rows in that turn.
+const chunkAdmissionV108SQL = `
 CREATE INDEX idx_items_history_preparation ON items(thread_id,turn_index,item_index)
  WHERE status NOT IN ('running','streaming')
  AND kind NOT IN ('user_text','tool_call','tool_completion','workflow_proposal')

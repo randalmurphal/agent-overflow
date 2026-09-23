@@ -640,8 +640,7 @@ type App struct {
 	maintenance maintenanceTuning
 	// storeMaintenance owns the one-time auto_vacuum conversion
 	// scheduler's stop gate. See app_store_maintenance.go.
-	storeMaintenance   backgroundLoop
-	historyPreparation backgroundLoop
+	storeMaintenance backgroundLoop
 	// codexThread owns provider-thread reconcile and cumulative-cost reads.
 	codexThreadOnce sync.Once
 	codexThread     *codexthread.Service

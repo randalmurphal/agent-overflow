@@ -120,9 +120,9 @@ type ThreadWindowSync struct {
 // no bulk-load writer UPDATES the content of an existing local row: such a
 // write would leave a stamp a client may already hold on different bytes.
 // Bulk-load writers localize an imported row or delete private rows during
-// pruning and preparation. Preparation preserves logical bytes and stamps;
-// a localized copy replaces a row held at rev -1. ApplyImportBatch writes
-// shared import history and adds its row count to history_rev before commit.
+// pruning. A localized copy replaces a row held at rev -1. ApplyImportBatch
+// writes shared import history and adds its row count to history_rev before
+// commit.
 
 // transcriptRootExpr is the SQL expression that reads a resume carrier's
 // `transcript_root_id` stamp. It is one string because the trigger

@@ -230,7 +230,6 @@ func (a *App) startUnattendedWork() error {
 	// outside the snapshot triple, so a rollback would leave them until
 	// the next boot clears them. See app_store_maintenance.go.
 	a.startStoreMaintenance()
-	a.startHistoryPreparation()
 
 	// Watch the provider binaries for an upgrade under a running app: a
 	// quiet tick is two stats, and a changed file re-reads the version,

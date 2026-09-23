@@ -90,15 +90,6 @@ func TestLargeLiveForkWithStreamLoad(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for {
-		n, err := app.store.PrepareThreadHistory(context.Background(), source.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if n == 0 {
-			break
-		}
-	}
 	other := store.BuildForkedThread(source)
 	other.ID = "other-stream"
 	if err := app.store.CreateThread(other); err != nil {

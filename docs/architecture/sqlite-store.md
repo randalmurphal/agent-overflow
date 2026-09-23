@@ -114,18 +114,12 @@ branches and threads. Payload accessors and joins always use both columns.
 `payloads.data`, payload chunks, and full highlight spans load on demand; list
 reads carry summaries, metadata, and capped preview spans.
 
-Forks retain thread-scoped item IDs. Completed content is prepared in the
-background into immutable chunks, capped at 64 rows and 4 MiB per transaction.
-Preparation preserves logical content, thread stamps and search rowids. User
-messages, tool execution records, anchors, plans, live rows and oversized
-payloads remain private. Preparation is optional for correctness; a fork can
-copy an unprepared prefix using payload snapshots.
-
-A fork attaches complete chunks and copies private rows and chunks intersecting
-a cut or override. New writes belong to the destination's private overlay.
-Revert adds deletion overrides and detaches empty chunks without materializing
-the retained prefix. Search mappings remain per thread and are inserted in
-bounded batches, preserving existing search results and tie ordering.
+Forks retain thread-scoped item IDs. A fork attaches complete chunks and copies
+private rows and chunks intersecting a cut or override. New writes belong to
+the destination's private overlay. Revert adds deletion overrides and detaches
+empty chunks without materializing the retained prefix. Search mappings remain
+per thread and are inserted in bounded batches, preserving existing search
+results and tie ordering.
 
 Private payloads share immutable snapshots through `resolved_payloads` and the
 logical chunk/edit-snapshot views. Schema triggers preserve borrowed bytes
