@@ -106,7 +106,7 @@ function wrap<T>(p: Promise<T>): CancellablePromise<T> {
   });
 }
 
-type Handler = (ev: { name: string; data: unknown; origin?: EventOrigin }) => void;
+type Handler = (ev: { name: string; data: unknown; origin?: EventOrigin; sequence?: number; replayed?: boolean }) => void;
 
 const listeners: Map<string, Set<Handler>> = new Map();
 
@@ -232,7 +232,7 @@ export function emitWailsEvent(
   name: string,
   data: unknown,
   backendId?: string,
-  replayed?: boolean,
+  delivery: { sequence?: number; replayed?: boolean } = {},
 ): void {
   const set = listeners.get(name);
   if (!set) return;
@@ -240,15 +240,14 @@ export function emitWailsEvent(
   // the frame arrived on, so a test sees the origin its subscribers will
   // see in the app. Defaults to HOME's identity, which is the only one a
   // single-backend test has; pass `backendId` to deliver a frame as if it
-  // came in on a second attached backend, and `replayed` to deliver it as
-  // the transport's reconnect replay would.
-  const origin: EventOrigin = {
-    backendId: backendId ?? getBackendIdentity().backendId,
-    ...(replayed ? { replayed: true } : {}),
-  };
+  // came in on a second attached backend. `delivery` carries the frame's
+  // own facts beside the origin, as the production shim does: its channel
+  // sequence, and `replayed` to deliver it as the transport's reconnect
+  // replay would.
+  const origin: EventOrigin = { backendId: backendId ?? getBackendIdentity().backendId };
   // Copy to avoid mutation-during-iteration if handlers unsubscribe.
   for (const handler of [...set]) {
-    handler({ name, data, origin });
+    handler({ name, data, origin, sequence: delivery.sequence, replayed: delivery.replayed });
   }
 }
 

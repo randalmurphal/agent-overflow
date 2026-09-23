@@ -97,9 +97,9 @@ Every screen presents its own notifications. A page that is not loopback-served
 and not the native shell runs `notifications/gate.ts` against its own settings
 and its own focus and raises a Web Notification; the host presents for the
 backend machine's own screen, and `notification:sound` stays loopback-only
-because the decision behind it is that screen's. `origin.replayed` marks a
-frame drained out of the reconnect replay window: only a subscriber that
-interrupts a person may read it.
+because the decision behind it is that screen's. The `replayed` argument
+`wailsEventOn` passes marks a frame drained out of the reconnect replay
+window: only a subscriber that interrupts a person may read it.
 
 Transport replay, watch splitting, and gap rules are documented in
 [transport.md](../../../../docs/architecture/transport.md#event-replay-and-filtering).

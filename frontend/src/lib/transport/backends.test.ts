@@ -128,10 +128,10 @@ function attachFake(overrides: Partial<BackendDescriptor> = {}): {
   };
 }
 
-let homeHandlers: Map<string, Set<(data: unknown) => void>>;
+let homeHandlers: Map<string, Set<(data: unknown, sequence?: number) => void>>;
 
-function deliverHome(channel: string, data: unknown): void {
-  for (const handler of homeHandlers.get(channel) ?? []) handler(data);
+function deliverHome(channel: string, data: unknown, sequence?: number): void {
+  for (const handler of homeHandlers.get(channel) ?? []) handler(data, sequence);
 }
 
 beforeEach(() => {
@@ -336,8 +336,9 @@ describe('event origin across two backends', () => {
     setBackendIdentityFromBootstrap(HOME_UUID, 'gen-1');
     const origins: unknown[] = [];
     const off = Events.On('provider:item_event', (ev) => origins.push(ev.origin));
-    deliverHome('provider:item_event', {});
-    deliverHome('provider:item_event', {});
+    // Sequenced, as every wire frame is.
+    deliverHome('provider:item_event', {}, 1);
+    deliverHome('provider:item_event', {}, 2);
     expect(origins[0]).toBe(origins[1]);
     off();
   });

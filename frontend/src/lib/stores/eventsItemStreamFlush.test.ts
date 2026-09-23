@@ -1,13 +1,27 @@
 // One item-event flush commits a pane's window once: row events that follow
 // a pending upsert of their row apply after the batch, in arrival order, and
 // a flush that reaches no window row moves none of the pane's structural
-// revisions.
+// revisions. What the flush needs from an event is derived once, at ingest.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Counts row keys without changing them.
+const keyCalls = vi.hoisted(() => ({ count: 0 }));
+vi.mock('../utils/compositeKey', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils/compositeKey')>();
+  return {
+    ...actual,
+    compositeKey: (...parts: (string | number | boolean)[]) => {
+      keyCalls.count += 1;
+      return actual.compositeKey(...parts);
+    },
+  };
+});
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import { activityRunProse, activityRunRow, activityRunStub } from '../../test/helpers/activityRuns';
 import { installThreadPaneTestEnv } from '../../test/helpers/threadPane';
 import { applyItemStreamEvent, flushItemEventQueue, resetItemEventQueue } from './eventsItemStream';
 import { resetPanesForTest } from './panes.svelte';
+import { registerTimelineSurface, type TimelineMutation } from './timelineSurfaces';
 import type { Item } from '../types/models';
 import type { ItemStreamEvent } from '../types/events';
 
@@ -104,6 +118,23 @@ describe('item event flush', () => {
     expect(pane.getItemById('text')?.summary).toBe('corrected tail');
   });
 
+  it('lands a row\'s queued delta before a later upsert of that row replaces its text', async () => {
+    const text = makeItem({ id: 'text', threadId, turnIndex: 1, itemIndex: 1, kind: 'assistant_text', status: 'streaming', summary: 'a' });
+    const pane = await buildPane(makeThread({ id: threadId }), [text]);
+    push(
+      { action: 'delta', threadId, itemId: 'text', kind: 'assistant_text', delta: 'b', updatedAt: 2 },
+      upsert({ ...text, summary: 'ab', updatedAt: 3 }),
+      // Another row's removal applies the pending upserts ahead of the tail.
+      upsert(tool('other', 2)),
+      { action: 'remove', threadId, itemId: 'other' },
+    );
+
+    flushItemEventQueue();
+    pane.__flushItemSmoothersForTest();
+
+    expect(pane.getItemById('text')?.summary).toBe('ab');
+  });
+
   it('applies a deferred patch before a removal of its row', async () => {
     const pane = await buildPane(makeThread({ id: threadId }));
     push(
@@ -163,5 +194,83 @@ describe('item event flush', () => {
     pane.__flushItemSmoothersForTest();
 
     expect(pane.getItemById('text')).toMatchObject({ summary: 'a', status: 'streaming' });
+  });
+
+  it('coalesces each of a row\'s delta kinds on its own, in the order it arrived', () => {
+    const deltas: Array<[string, string, string]> = [];
+    const surface = (id: string) => registerTimelineSurface({
+      threadId: id, backend: () => undefined, refresh: async () => {},
+      apply: (mutation: TimelineMutation) => {
+        if (mutation.kind === 'delta') deltas.push([mutation.event.itemId, mutation.event.kind, mutation.event.delta]);
+      },
+    });
+    const release = surface(threadId);
+    const delta = (itemId: string, kind: string, value: string): ItemStreamEvent =>
+      ({ action: 'delta', threadId, itemId, kind, delta: value, updatedAt: 1 });
+    push(
+      delta('a', 'assistant_text', 'one '),
+      delta('b', 'assistant_text', 'other'),
+      delta('a', 'thinking', 'think'),
+      delta('a', 'assistant_text', 'two'),
+    );
+
+    flushItemEventQueue();
+    release();
+
+    // Rows are independent, so only each row's own order is asserted.
+    expect(deltas.filter(([id]) => id === 'a')).toEqual([
+      ['a', 'assistant_text', 'one two'],
+      ['a', 'thinking', 'think'],
+    ]);
+    expect(deltas.filter(([id]) => id === 'b')).toEqual([['b', 'assistant_text', 'other']]);
+  });
+});
+
+describe('item event ingest', () => {
+  // Validation and sizing each read the item; a Proxy counts them apart.
+  // `inputPayloadId` is absent from these items, so only validation reads
+  // it (sizing walks own keys), and only sizing enumerates the keys.
+  function counted(item: Item, tally: { validations: number; sizings: number }): Item {
+    return new Proxy(item, {
+      get(target, key, receiver) {
+        if (key === 'inputPayloadId') tally.validations += 1;
+        return Reflect.get(target, key, receiver);
+      },
+      ownKeys(target) {
+        tally.sizings += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+  }
+
+  it('validates, sizes and keys each event once, and the flush repeats none of it', () => {
+    // No pane shows the thread, so nothing but this module touches the rows.
+    const tally = { validations: 0, sizings: 0 };
+    keyCalls.count = 0;
+    for (let i = 0; i < 20; i += 1) push(upsert(counted(tool(`row-${i}`, i), tally)));
+    for (let i = 0; i < 20; i += 1) {
+      push({ action: 'delta', threadId, itemId: 'stream', kind: 'assistant_text', delta: 'ab', updatedAt: i });
+    }
+    for (let i = 0; i < 20; i += 1) {
+      push({ action: 'delta', threadId, itemId: `row-${i}`, kind: 'assistant_text', delta: 'ab', updatedAt: i });
+    }
+    for (let i = 0; i < 20; i += 1) push(patch(`row-${i}`, { status: 'completed', updatedAt: i }));
+    const ingested = { ...tally, keys: keyCalls.count };
+
+    flushItemEventQueue();
+
+    expect(ingested).toEqual({ validations: 20, sizings: 20, keys: 80 });
+    expect({ ...tally, keys: keyCalls.count }).toEqual(ingested);
+  });
+
+  it('fails a frame whose id cannot key its row, and the rest of its batch applies', async () => {
+    const pane = await buildPane(makeThread({ id: threadId }));
+    push(upsert(tool('before', 1)));
+    expect(() => push(upsert(tool('bad\u0000id', 2)))).toThrow(/NUL separator/);
+    push(upsert(tool('after', 3)));
+
+    flushItemEventQueue();
+
+    expect(pane.items.map(item => item.id)).toEqual(['before', 'after']);
   });
 });

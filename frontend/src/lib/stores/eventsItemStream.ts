@@ -3,7 +3,6 @@ import { optimisticInterruptCut, noteHiddenInterruptItem } from './threadInterru
 import { getTransportHelloFor } from './transportStatus.svelte';
 import { threadBackend, HOME_BACKEND } from '../transport/entityIndex';
 import { getUndoableSend, retireUndoableSend } from './composerSendUndo';
-import type { EventOrigin } from '../transport/handle';
 import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 // Item-stream event batching: the provider:item_event ordered mutation
@@ -46,7 +45,19 @@ const ITEM_EVENT_QUEUE_FORCE_FLUSH_EVENTS = 2_000;
 // alone; accepted events are never truncated or dropped.
 const ITEM_EVENT_FLUSH_MAX_CHARS = 256 * 1024;
 const ITEM_EVENT_QUEUE_FORCE_FLUSH_CHARS = 2 * 1024 * 1024;
-type QueuedItemEvent = ItemStreamEvent & { sequence?: number };
+/**
+ * An accepted item event with what ingest derived from it, so the flush
+ * reuses them instead of deriving them again: `chars` for the text budgets,
+ * `rowKey` for the per-row ordering sets and delta coalescing, and the
+ * transport `sequence` the revert fence compares. `sequence` is the one
+ * mutable field: a revert stamps entries that arrived unsequenced.
+ */
+interface QueuedItemEvent {
+  readonly evt: ItemStreamEvent;
+  readonly chars: number;
+  readonly rowKey: string;
+  sequence: number | undefined;
+}
 let itemEventQueue: (QueuedItemEvent | undefined)[] = [];
 let itemEventQueueChars = 0;
 
@@ -59,22 +70,24 @@ export function fenceConversationSnapshot(threadId: string, sequence: number, tu
   cuts.set(threadId, { sequence, turnIndex: -1, kept: new Set(), ...turns, launchId: getTransportHelloFor(threadBackend(threadId) ?? HOME_BACKEND)?.launchId });
 }
 
-export function survivesRevertedTurnEvent(threadId: string, kind: 'turnStartedSequence' | 'turnCompletedSequence', origin?: EventOrigin): boolean {
+export function survivesRevertedTurnEvent(threadId: string, kind: 'turnStartedSequence' | 'turnCompletedSequence', sequence?: number): boolean {
   const cut = cuts.get(threadId);
   const launch = getTransportHelloFor(threadBackend(threadId) ?? HOME_BACKEND)?.launchId;
   if (cut?.launchId && launch && cut.launchId !== launch) return true;
   const boundary = cut?.[kind];
-  return boundary === undefined || origin?.sequence === undefined || origin.sequence > boundary;
+  return boundary === undefined || sequence === undefined || sequence > boundary;
 }
 
-function survivesCut(evt: QueuedItemEvent): boolean {
+function survivesCut(entry: QueuedItemEvent): boolean {
+  const evt = entry.evt;
   const cut = cuts.get(evt.threadId);
+  if (!cut) return true;
   const launch = getTransportHelloFor(threadBackend(evt.threadId) ?? HOME_BACKEND)?.launchId;
-  if (cut?.launchId && launch && cut.launchId !== launch) {
+  if (cut.launchId && launch && cut.launchId !== launch) {
     cuts.delete(evt.threadId);
     return true;
   }
-  if (!cut || evt.sequence === undefined || evt.sequence > cut.sequence) return true;
+  if (entry.sequence === undefined || entry.sequence > cut.sequence) return true;
   if (evt.action === 'upsert') {
     return evt.item.turnIndex < cut.turnIndex
       || (evt.item.turnIndex === cut.turnIndex && cut.kept.has(evt.item.id));
@@ -100,9 +113,9 @@ export function fenceRevertedItemEvents(cut: UserMessageRevertedEvent): void {
   // Unsequenced test/legacy deliveries still have a known ordering boundary
   // once they are in this queue. Stamp only those already received.
   for (let i = itemEventQueueStart; i < itemEventQueue.length; i++) {
-    const evt = itemEventQueue[i];
-    if (evt?.threadId !== cut.threadId || evt.sequence !== undefined) continue;
-    evt.sequence = cut.itemEventSequence ?? 0;
+    const entry = itemEventQueue[i];
+    if (entry?.evt.threadId !== cut.threadId || entry.sequence !== undefined) continue;
+    entry.sequence = cut.itemEventSequence ?? 0;
   }
   if (!cuts.has(cut.threadId)) cuts.set(cut.threadId, {
     sequence: 0, turnIndex: cut.turnIndex, kept: new Set(cut.keptAnchorTurnItemIds ?? []),
@@ -399,7 +412,13 @@ function applyItemDelta(evt: ItemDeltaEvent): void {
   }
 }
 
-export function applyItemStreamEvent(evt: ItemStreamEvent, origin?: EventOrigin): void {
+/**
+ * Validate one `provider:item_event` frame and queue it for the next flush.
+ * Everything the flush needs from the event is derived here, once; the
+ * flush trusts the queue and repeats none of it. `sequence` is the
+ * frame's transport sequence, absent for an unsequenced delivery.
+ */
+export function applyItemStreamEvent(evt: ItemStreamEvent, sequence?: number): void {
   if (!evt || !evt.threadId) return;
   if (evt.action === 'upsert' && evt.item) {
     // Boundary validation only, and now the ONLY global work this
@@ -442,15 +461,22 @@ export function applyItemStreamEvent(evt: ItemStreamEvent, origin?: EventOrigin)
   } else {
     return;
   }
-  const chars = itemEventChars(evt);
+  // The row key throws for an id carrying its separator, which fails this
+  // one frame here rather than the flush batch it would have joined.
+  const entry: QueuedItemEvent = {
+    evt,
+    chars: itemEventChars(evt),
+    rowKey: compositeKey(evt.threadId, evt.action === 'upsert' ? evt.item.id : evt.itemId),
+    sequence,
+  };
   while (itemEventQueueStart < itemEventQueue.length &&
     (itemEventQueue.length - itemEventQueueStart >= ITEM_EVENT_QUEUE_FORCE_FLUSH_EVENTS ||
-      itemEventQueueChars + chars > ITEM_EVENT_QUEUE_FORCE_FLUSH_CHARS)) {
+      itemEventQueueChars + entry.chars > ITEM_EVENT_QUEUE_FORCE_FLUSH_CHARS)) {
     flushItemEventQueue();
   }
-  itemEventQueue.push({ ...evt, sequence: origin?.sequence });
+  itemEventQueue.push(entry);
   itemEventQueued();
-  itemEventQueueChars += chars;
+  itemEventQueueChars += entry.chars;
   scheduleItemEventFlush();
 }
 
@@ -507,11 +533,10 @@ export function flushItemEventQueue(): void {
   let chars = 0;
   let itemEventQueueEnd = itemEventQueueStart;
   while (itemEventQueueEnd < itemEventQueue.length && events.length < ITEM_EVENT_FLUSH_MAX_EVENTS) {
-    const evt = itemEventQueue[itemEventQueueEnd]!;
-    const size = itemEventChars(evt);
-    if (events.length > 0 && chars + size > ITEM_EVENT_FLUSH_MAX_CHARS) break;
-    events.push(evt);
-    chars += size;
+    const entry = itemEventQueue[itemEventQueueEnd]!;
+    if (events.length > 0 && chars + entry.chars > ITEM_EVENT_FLUSH_MAX_CHARS) break;
+    events.push(entry);
+    chars += entry.chars;
     // Retire processed payload references immediately, even while a small
     // unprocessed tail keeps the backing queue array alive.
     itemEventQueue[itemEventQueueEnd++] = undefined;
@@ -538,8 +563,9 @@ export function flushItemEventQueue(): void {
   const pendingUpserts: Item[] = [];
   const pendingUpsertItemKeys = new Set<string>();
   const notifiedUpserts: Item[] = [];
-  const pendingDeltas = new Map<string, CoalescedDelta>();
-  const pendingDeltaItemKeys = new Set<string>();
+  // Each row's pending deltas, one coalesced lane per kind (a row's text
+  // and thinking streams coalesce separately), keyed by row.
+  const pendingDeltas = new Map<string, CoalescedDelta[]>();
   // Row events that arrived after a pending upsert of their row. They apply
   // right after that upsert batch, in arrival order, so rows created and then
   // patched, re-tagged or streamed within one flush still commit once.
@@ -548,9 +574,6 @@ export function flushItemEventQueue(): void {
   // Each row's newest deferred event when it is a delta, so consecutive
   // chunks for that row coalesce into it.
   const deferredDeltaTails = new Map<string, DeferredDelta>();
-
-  const itemConflictKey = (threadId: string, itemId: string): string =>
-    compositeKey(threadId, itemId);
 
   const flushPendingUpserts = () => {
     if (pendingUpserts.length === 0) return;
@@ -585,25 +608,27 @@ export function flushItemEventQueue(): void {
     deferRowEvent({ action: 'delta', ...coalescedDelta(evt) }, itemKey);
   };
 
-  const queueDelta = (evt: ItemDeltaEvent) => {
-    // Coalescing key includes kind (a row's text and thinking streams
-    // coalesce separately); the per-item conflict key does not.
-    const key = compositeKey(evt.threadId, evt.itemId, evt.kind);
-    const existing = pendingDeltas.get(key);
-    if (existing) {
-      existing.chunks.push(evt.delta);
-      existing.updatedAt = Math.max(existing.updatedAt, evt.updatedAt);
+  const queueDelta = (evt: ItemDeltaEvent, itemKey: string) => {
+    const lanes = pendingDeltas.get(itemKey);
+    if (!lanes) {
+      pendingDeltas.set(itemKey, [coalescedDelta(evt)]);
       return;
     }
-    pendingDeltas.set(key, coalescedDelta(evt));
-    pendingDeltaItemKeys.add(itemConflictKey(evt.threadId, evt.itemId));
+    for (const lane of lanes) {
+      if (lane.kind !== evt.kind) continue;
+      lane.chunks.push(evt.delta);
+      lane.updatedAt = Math.max(lane.updatedAt, evt.updatedAt);
+      return;
+    }
+    lanes.push(coalescedDelta(evt));
   };
 
   const flushPendingDeltas = () => {
     if (pendingDeltas.size === 0) return;
-    for (const delta of pendingDeltas.values()) applyCoalescedDelta(delta);
+    for (const lanes of pendingDeltas.values()) {
+      for (const delta of lanes) applyCoalescedDelta(delta);
+    }
     pendingDeltas.clear();
-    pendingDeltaItemKeys.clear();
   };
 
   // Apply order is preserved PER ITEM, not globally. Items are independent
@@ -614,22 +639,22 @@ export function flushItemEventQueue(): void {
   // pending upsert of its row waits for that batch (`deferredRowEvents`);
   // the batch applies early only when a row it holds is upserted again
   // after such an event, or removed. A pending delta applies before any
-  // later event of its row.
+  // later event of its row. A row's delta lanes apply together, in the
+  // order the row first arrived, which reorders only across rows.
   try {
-    for (const evt of events) {
-      if (!evt || !evt.threadId || !survivesCut(evt)) continue;
+    for (const entry of events) {
+      if (!survivesCut(entry)) continue;
+      const { evt, rowKey: itemKey } = entry;
       const hiddenFrom = optimisticInterruptCut(evt.threadId);
       if (hiddenFrom !== null && evt.action === 'upsert' && evt.item.turnIndex >= hiddenFrom) {
         noteHiddenInterruptItem(evt.threadId);
         continue;
       }
       if (evt.action === 'upsert') {
-        if (!isValidItemForThread(evt.item, evt.threadId)) continue;
-        const itemKey = itemConflictKey(evt.threadId, evt.item.id);
         // A queued delta for this row must land before the upsert
         // replaces the row's summary wholesale, and so must an event
         // already waiting behind this row's pending upsert.
-        if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
+        if (pendingDeltas.has(itemKey)) flushPendingDeltas();
         if (deferredRowItemKeys.has(itemKey)) flushPendingUpserts();
         pendingUpserts.push(evt.item);
         pendingUpsertItemKeys.add(itemKey);
@@ -641,8 +666,7 @@ export function flushItemEventQueue(): void {
         // the user has already seen, so the row's pending deltas apply
         // first. Both need the row to exist, so behind a pending upsert of
         // the row they wait for that batch.
-        const itemKey = itemConflictKey(evt.threadId, evt.itemId);
-        if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
+        if (pendingDeltas.has(itemKey)) flushPendingDeltas();
         if (pendingUpsertItemKeys.has(itemKey)) deferRowEvent(evt, itemKey);
         else applyItemRowEvent(evt);
         continue;
@@ -651,8 +675,7 @@ export function flushItemEventQueue(): void {
         // The row is gone from the store. Anything this flush still holds
         // for it describes a row that no longer exists, so both buffers
         // drain first and the removal is applied last.
-        const itemKey = itemConflictKey(evt.threadId, evt.itemId);
-        if (pendingDeltaItemKeys.has(itemKey)) flushPendingDeltas();
+        if (pendingDeltas.has(itemKey)) flushPendingDeltas();
         if (pendingUpsertItemKeys.has(itemKey)) flushPendingUpserts();
         applyItemRemoval(evt.threadId, evt.itemId);
         continue;
@@ -661,9 +684,8 @@ export function flushItemEventQueue(): void {
 
       // A pending upsert for this row carries the full summary; the
       // delta extends it, so it waits for that batch.
-      const itemKey = itemConflictKey(evt.threadId, evt.itemId);
       if (pendingUpsertItemKeys.has(itemKey)) deferDelta(evt, itemKey);
-      else queueDelta(evt);
+      else queueDelta(evt, itemKey);
     }
 
     // Tail order is safe: no item can be pending in BOTH buffers here.
