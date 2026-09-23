@@ -862,6 +862,50 @@ func TestUnsealThreadHistoryLocalizesEveryReference(t *testing.T) {
 	}
 }
 
+// A pointer fork reads its source's sealed rows through the lineage. Folding
+// them into the source's private rows leaves every fork's view as it was,
+// whether a chunk moves in one piece or in several.
+func TestUnsealThreadHistoryKeepsPointerForkViews(t *testing.T) {
+	for _, piece := range []int{historyRepairPieceRows, 7} {
+		t.Run(fmt.Sprintf("piece=%d", piece), func(t *testing.T) {
+			s := newTestStore(t)
+			ids := localHistoryFixture(t, s, "src", 40)
+			sealItemsForTest(t, s, "src", ids[:20]...)
+			sealItemsForTest(t, s, "src", ids[20:]...)
+			through := 1
+			for fork, cut := range map[string]ForkCut{"whole": {}, "cut": {ThroughTurn: &through}} {
+				if err := s.CreatePointerFork(makeThread(fork, "claude"), "src", cut, testInterruptedSummary, 999); err != nil {
+					t.Fatal(err)
+				}
+			}
+			views := map[string]repairView{}
+			for _, thread := range []string{"src", "whole", "cut"} {
+				views[thread] = readRepairView(t, s, thread)
+			}
+			// Each fork shows its inherited rows and its own divider row.
+			if len(views["whole"].Items) != 41 || len(views["cut"].Items) != 21 {
+				t.Fatalf("forks show %d and %d rows, want 41 and 21", len(views["whole"].Items), len(views["cut"].Items))
+			}
+
+			budget := defaultHistoryRepairBudget
+			budget.piece = piece
+			for more := true; more; {
+				var err error
+				if _, more, err = s.unsealThreadHistoryBatch("src", budget); err != nil {
+					t.Fatal(err)
+				}
+			}
+			requireNoImportedHistory(t, s)
+			for _, thread := range []string{"src", "whole", "cut"} {
+				requireSameLogicalView(t, thread, readRepairView(t, s, thread), views[thread])
+			}
+			if n := countRows(t, s, `SELECT count(*) FROM thread_fork_hidden`); n != 0 {
+				t.Fatalf("folding hid %d rows from the forks", n)
+			}
+		})
+	}
+}
+
 // TestReleaseDetachedSealedChunks: payload snapshots are retired (v120), so
 // nothing keeps a sealed chunk after its last reference goes. A copy fork
 // that copied part of the chunk holds its own bytes, and deleting the source
