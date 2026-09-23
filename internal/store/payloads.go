@@ -29,7 +29,7 @@ func upsertPayloadTx(exec sqlExecutor, threadID string, payload Payload, label s
 		    created_at = excluded.created_at,
 		    preview_spans = '',
 		    spans = ''`,
-		threadID, payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt,
+		payloadInsertArgs(threadID, payload)...,
 	); err != nil {
 		return fmt.Errorf("%s: %w", label, err)
 	}
@@ -42,9 +42,20 @@ const payloadInsertSQL = payloadInsertPrefix + ` VALUES ` + payloadInsertValues
 
 // payloadInsertArgs is the bind list payloadInsertSQL takes, in column
 // order — shared with the prepared-statement bulk path in
-// ApplyImportBatch so the two cannot drift.
+// ApplyImportBatch and with upsertPayloadTx so they cannot drift.
 func payloadInsertArgs(threadID string, payload Payload) []any {
-	return []any{threadID, payload.ID, payload.Kind, payload.Meta, payload.Data, payload.CreatedAt}
+	return []any{threadID, payload.ID, payload.Kind, payload.Meta, payloadDataArg(payload.Data), payload.CreatedAt}
+}
+
+// payloadDataArg is the bind value of payload data. Every payload data column
+// is BLOB NOT NULL, and the driver binds a nil slice as NULL. A nil slice is
+// also what the driver scans from a zero-length blob, so an empty payload read
+// back from the database arrives as nil.
+func payloadDataArg(data []byte) []byte {
+	if data == nil {
+		return []byte{}
+	}
+	return data
 }
 
 func insertPayloadTx(exec sqlExecutor, threadID string, payload Payload, label string) error {
@@ -411,7 +422,7 @@ func (s *Store) ReplacePayloadData(threadID, id string, data []byte, meta string
 	result, err := tx.Exec(
 		`UPDATE payloads SET data = ?, meta = ?, created_at = ?, preview_spans = '', spans = ''
 		  WHERE thread_id = ? AND id = ?`,
-		data, meta, createdAt, threadID, id,
+		payloadDataArg(data), meta, createdAt, threadID, id,
 	)
 	if err != nil {
 		return fmt.Errorf("store: replace payload data %s: %w", id, err)

@@ -216,7 +216,7 @@ func insertImportHistoryChunkRowsTx(tx *sql.Tx, chunk importHistoryChunk) error 
 		func(row importHistoryPayloadRow) []any {
 			return []any{
 				chunk.id, row.payload.ID, row.payload.Kind, row.payload.Meta,
-				row.payload.Data, row.payload.CreatedAt, "", "",
+				payloadDataArg(row.payload.Data), row.payload.CreatedAt, "", "",
 			}
 		},
 		func(row importHistoryPayloadRow) string { return row.itemID },
