@@ -33,6 +33,10 @@ var localItemsIndex = regexp.MustCompile(`\b(?:idx_items_[a-z_]+|sqlite_autoinde
 // range such as (turn_index,item_index)<(?,?).
 var planSearchKey = regexp.MustCompile(`USING (?:COVERING INDEX \S+|INDEX \S+|INTEGER PRIMARY KEY|PRIMARY KEY) \((.*)\)$`)
 
+// cutOnlyKey is a SEARCH key that pins the thread and bounds the rows by a
+// lineage cut alone: the step walks the thread's history below the cut.
+var cutOnlyKey = regexp.MustCompile(`^thread_id=\? AND (?:turn_index<\?|\(turn_index,item_index\)<\(\?,\?\))$`)
+
 var tableAliasPattern = regexp.MustCompile(`(?i)\b(` + strings.Join(historyTables, "|") + `)\s+(?:AS\s+)?([a-z_][a-z0-9_]*)`)
 
 // historyTableNames maps every name a plan can give a history table in
@@ -81,8 +85,9 @@ func lineagePlanViolations(plan []planRow, names map[string]string) (violations 
 				violations = append(violations, r.detail)
 			}
 		case localItemsIndex.MatchString(r.detail):
-			// A thread's own rows: the key must pin more than the thread.
-			if key == nil || key[1] == "thread_id=?" {
+			// A thread's own rows: the key must pin more than the thread,
+			// and more than an ancestor's rows below a lineage cut.
+			if key == nil || key[1] == "thread_id=?" || cutOnlyKey.MatchString(key[1]) {
 				violations = append(violations, r.detail)
 			}
 		}

@@ -47,6 +47,15 @@ const importedNotOverridden = `NOT EXISTS (
 		        WHERE o.thread_id = refs.thread_id AND o.item_id = items.id
 		   )`
 
+// inheritedKeyedItemVisibleSQL is inheritedItemVisibleSQL for a lineage arm
+// a key drives: ids, a payload, a parent or another lookup key. SQLite has
+// no statistics here and prices the cut, a range on the ancestor's
+// idx_items_thread_turn_item_unique, below an id list or a partial key
+// index, and so walks the ancestor's history below the cut. The unary plus
+// keeps the cut a filter on the rows the key's index finds.
+const inheritedKeyedItemVisibleSQL = `(+items.turn_index, +items.item_index) < (l.cut_turn_index, l.cut_item_index)
+   AND ` + inheritedItemNotHiddenSQL
+
 // importedItemRevExpr is the imported arm's `items.rev`. Imported history
 // rows live in shared immutable chunks keyed by chunk id, so there is no
 // thread-scoped place to stamp a per-row revision on them the way the item
@@ -292,20 +301,26 @@ func (r *armRenderer) ownArms() {
 }
 
 // lineageArms renders the local and imported arms of the lineage levels
-// level selects.
+// level selects. A lookup (KeyFirst, or rows from Source) finds the
+// ancestor's rows by its key and filters them by the cut; any other
+// selection walks the ancestor's timeline index up to the cut.
 func (r *armRenderer) lineageArms(level string) {
 	sel := r.sel
+	visible := inheritedItemVisibleSQL
+	if sel.KeyFirst || sel.Source != "" {
+		visible = inheritedKeyedItemVisibleSQL
+	}
 	r.b.arm(`SELECT `+sel.Columns("l.thread_id", importedItemRevExpr)+`
 		  FROM `+r.source+`thread_fork_lineage l
 		  CROSS JOIN items ON items.thread_id = l.ancestor_id
 		 WHERE l.thread_id = `+r.thread+level+r.lineageCut+r.localTurn+r.where+`
-		   AND `+inheritedItemVisibleSQL,
+		   AND `+visible,
 		r.threadArgs, repeatArgs(1+r.localTurnRenders, r.turnArgs), sel.WhereArgs)
 	r.b.arm(`SELECT `+sel.Columns("l.thread_id", importedItemRevExpr)+`
 		  FROM `+r.lineageImportedSource+`
 		 WHERE l.thread_id = `+r.thread+level+r.lineageCut+r.importedTurn+r.where+`
 		   AND `+importedNotOverridden+`
-		   AND `+inheritedItemVisibleSQL,
+		   AND `+visible,
 		r.threadArgs, repeatArgs(1+r.importedTurnRenders, r.turnArgs), sel.WhereArgs)
 }
 
@@ -515,13 +530,13 @@ func inheritedPayloadRowArms(columns, levels string) string {
 		  FROM thread_fork_lineage l
 		  CROSS JOIN items ON items.thread_id = l.ancestor_id
 		 WHERE l.thread_id = ?` + levels + ` AND items.payload_id = ?
-		   AND ` + inheritedItemVisibleSQL + `
+		   AND ` + inheritedKeyedItemVisibleSQL + `
 		UNION ALL
 		SELECT ` + columns + `
 		  FROM thread_fork_lineage l
 		  CROSS JOIN items ON items.thread_id = l.ancestor_id
 		 WHERE l.thread_id = ?` + levels + ` AND items.input_payload_id = ?
-		   AND ` + inheritedItemVisibleSQL + `
+		   AND ` + inheritedKeyedItemVisibleSQL + `
 		UNION ALL
 		SELECT ` + columns + `
 		  FROM thread_fork_lineage l
@@ -532,7 +547,7 @@ func inheritedPayloadRowArms(columns, levels string) string {
 		 WHERE l.thread_id = ?` + levels + ` AND ref_payload.id = ?
 		   AND (items.payload_id = ref_payload.id OR items.input_payload_id = ref_payload.id)
 		   AND ` + importedNotOverridden + `
-		   AND ` + inheritedItemVisibleSQL
+		   AND ` + inheritedKeyedItemVisibleSQL
 }
 
 // logicalPayloadReferenceSQL is true while a logical timeline row of

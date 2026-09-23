@@ -112,9 +112,12 @@ DROP TRIGGER trg_snapshot_edit_file_snapshots_DELETE;
 // written against the lineage row `l` and the ancestor row `items`. A row is
 // visible to l.thread_id when it sits before that level's cut and neither the
 // fork nor any nearer ancestor hid its id. Every lineage arm in this package
-// states it.
+// states it, or inheritedKeyedItemVisibleSQL when a key drives the arm.
 const inheritedItemVisibleSQL = `(items.turn_index, items.item_index) < (l.cut_turn_index, l.cut_item_index)
-   AND NOT EXISTS (
+   AND ` + inheritedItemNotHiddenSQL
+
+// inheritedItemNotHiddenSQL is inheritedItemVisibleSQL's hidden-id terms.
+const inheritedItemNotHiddenSQL = `NOT EXISTS (
        SELECT 1 FROM thread_fork_hidden hidden
         WHERE hidden.thread_id = l.thread_id AND hidden.item_id = items.id
    )
