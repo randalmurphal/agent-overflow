@@ -153,6 +153,40 @@ describe('independent agent timeline', () => {
     expect(view.pane.hasMoreHistory).toBe(true);
   });
 
+  it('does not walk its window for events of another scope', async () => {
+    let idReads = 0;
+    const counted = (item: Item): Item => {
+      const { id, ...rest } = item;
+      return Object.defineProperty(rest, 'id', { enumerable: true, get() { idReads += 1; return id; } }) as Item;
+    };
+    const pane = await setup([root]);
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page(Array.from({ length: 50 }, (_, i) => counted(row(`r${i}`, i + 1)))) }));
+    const view = await open(pane);
+    expect(view.items).toHaveLength(50);
+    idReads = 0;
+    for (let i = 0; i < 20; i += 1) {
+      push(makeItem({ id: `elsewhere${i}`, threadId, parentId: 'another-agent', itemIndex: i, kind: 'tool_call', toolName: 'Bash' }));
+      applyItemStreamEvent({ action: 'remove', threadId, itemId: `elsewhere${i}` });
+      flushItemEventQueue();
+    }
+    expect(idReads).toBe(0);
+    expect(view.items).toHaveLength(50);
+  });
+
+  it('presents each stored row through one lifted copy across structural revisions', async () => {
+    const pane = await setup([root]);
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page([row('a', 1), row('b', 2)]) }));
+    const view = await open(pane);
+    const [a] = view.items;
+    expect(a.parentId).toBeUndefined();
+    push(row('b', 2, { status: 'completed', summary: 'settled', updatedAt: 5 }));
+    push(row('c', 3));
+    expect(view.items.map(item => item.id)).toEqual(['a', 'b', 'c']);
+    expect(view.items[0]).toBe(a);
+    expect(view.items[1]).toMatchObject({ summary: 'settled', parentId: undefined });
+    expect(view.pane.getItemById('b')?.parentId).toBe(root.id);
+  });
+
   it('does not admit live history below its loaded floor and leaves it pageable', async () => {
     const pane = await setup([root]);
     setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page([row('current', 20)]) }));
