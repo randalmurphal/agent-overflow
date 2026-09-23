@@ -481,7 +481,9 @@ after a restart.
 The same settle also runs per thread while the app is alive:
 `Router.SettleBackgroundLaunchesForSessionEnd` fires from
 `teardownAndCloseSession` (user stop, idle reaper, config restart) and
-from `handleSessionDied` (unexpected process death). Background shells
+from `handleSessionDied` (unexpected process death), and after a Claude
+conversation rollback whose cut revived a launch
+([revert-modes.md](revert-modes.md#rollback-sequence)). Background shells
 die with the CLI process and a resume does not revive them, so every
 still-running backgrounded launch on the closed thread, including nested
 launches that top-level turn settlement does not cover, gets its

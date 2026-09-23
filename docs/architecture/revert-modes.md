@@ -10,10 +10,10 @@ message-boundary operations can slice provider history at that message:
   a chosen user message into a new thread. The source thread is left
   untouched.
 - **Revert-on-interrupt** (`app_revert_on_interrupt.go`): the Stop/Esc
-  un-send. When exactly one user message is in flight with no assistant
-  content yet, Stop rolls the message back (conversation only) and
-  restores it into the composer draft instead of leaving a dangling
-  turn.
+  un-send. When the newest turn has never settled and holds only one user
+  message plus the model's unfinished reasoning or request retry/error
+  rows, Stop rolls the message back (conversation only) and restores it
+  into the composer draft instead of leaving a dangling turn.
 - **Edit-and-resend** (`app_revert_and_resend.go`): stage the edited text in
   `thread_draft_recoveries`, roll back, prepare the provider, then publish the
   cut and persisted replacement together through `user_message:reverted`.
@@ -26,6 +26,15 @@ editing remains available. Draft autosaves wait behind restoration so switching
 panes cannot let the backend overwrite newer typing. A background guard or a
 raced assistant response declines the rollback and retains ordinary interrupt
 behavior.
+
+Eligibility is an allowlist, so a new row kind declines the un-send until it is
+classified. Any other row in the turn (agent output, a background completion or
+its notification, compaction, a command result, a user row the reader did not
+send) is content the provider conversation holds. A turn that has settled once
+stays committed even when the provider opens another round on it, such as
+Claude answering a background task notification after an earlier Stop. Headless
+Claude checks the turn again after its session stops and before the history is
+cut, because rows can land between the first check and the stop.
 
 Older-message replacement keeps the editor loading until preparation completes.
 The client transfers follow intent before applying the cut and replacement in
@@ -68,6 +77,11 @@ provider rollback and cache truncation. Early un-send also restores a prompt
 draft; edit/resend owns separate durable recovery. Background-task guards remain
 in the entry points. Early Stop declines rollback while tasks run; older-message
 replacement requires explicit consent to stop them.
+
+A Claude cut can delete the completion row of a background launch that stays in
+the kept history, which makes the launch live again. The Claude rollback settles
+such launches after the cut as the session-end settle would, since the stopped
+session no longer owns the work and the resumed CLI reports it as unfinished.
 
 Provider-side rollback differs by provider:
 

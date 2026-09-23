@@ -213,7 +213,7 @@ describe('canRevertEarlyInterrupt', () => {
 
     expect(result.canRevert).toBe(false);
     if (!result.canRevert) {
-      expect(result.reason).toBe('agent has responded');
+      expect(result.reason).toBe('turn holds assistant_text');
     }
   });
 
@@ -229,6 +229,115 @@ describe('canRevertEarlyInterrupt', () => {
     if (result.canRevert) {
       expect(result.userItem.id).toBe('u:0');
     }
+  });
+});
+
+describe('canRevertEarlyInterrupt turn contents', () => {
+  beforeEach(() => {
+    replaceQueueForThread('thread-1', []);
+  });
+
+  function rowOnTurn(kind: Item['kind'], overrides: Partial<Item> = {}): Item {
+    return {
+      id: `row:${kind}`,
+      threadId: 'thread-1',
+      turnIndex: 0,
+      kind,
+      role: 'assistant',
+      status: 'completed',
+      summary: '',
+      payloadId: '',
+      meta: '',
+      createdAt: 0,
+      updatedAt: 0,
+      ...overrides,
+    } as Item;
+  }
+
+  // Only the model's unfinished reasoning and request-level retry/error rows
+  // may share a turn with the message; the backend predicate uses the same set.
+  it.each([
+    ['thinking', true],
+    ['api_retry', true],
+    ['api_error', true],
+    ['error', true],
+    ['assistant_text', false],
+    ['tool_call', false],
+    ['tool_completion', false],
+    ['notification', false],
+    ['compaction', false],
+    ['compaction_reasoning', false],
+    ['command_result', false],
+    ['terminal_interaction', false],
+  ] as const)('a %s row allows the un-send: %s', (kind, allowed) => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.upsertItem(rowOnTurn(kind));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+
+    const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
+
+    expect(result.canRevert).toBe(allowed);
+    if (!result.canRevert) expect(result.reason).toBe(`turn holds ${kind}`);
+  });
+
+  it('rejects a turn holding a user row the reader did not send', () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.upsertItem(rowOnTurn('user_text', { id: 'echo:0', role: 'user', meta: '{"wire_only":true}' }));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+
+    const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
+
+    expect(result).toEqual({ canRevert: false, reason: 'turn holds user_text' });
+  });
+
+  // The reported sequence: Stop interrupted turn 0 while a background
+  // command ran, the command finished, and Claude started a new round on
+  // turn 0 to answer its notification. That round is active with only
+  // thinking so far, but the message was committed when the turn settled.
+  it('rejects a new round on a turn that already settled', () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.setActiveTurn({ turnId: 'round-1', turnIndex: 0, startedAt: 1 });
+    pane.settleTurn({
+      turnId: 'round-1',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 2,
+      stopReason: 'interrupted',
+      assistantMessageId: null,
+      tokenUsage: null,
+      aborted: true,
+      errorMessage: '',
+    });
+    pane.upsertItem(thinkingItem('think:0', 0));
+    pane.setActiveTurn({ turnId: 'round-2', turnIndex: 0, startedAt: 3 });
+
+    const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
+
+    expect(result).toEqual({ canRevert: false, reason: 'turn already settled' });
+  });
+
+  it('allows the un-send when only an earlier turn has settled', () => {
+    const pane = readyPane();
+    pane.settleTurn({
+      turnId: 'round-0',
+      turnIndex: 0,
+      startedAt: 1,
+      completedAt: 2,
+      stopReason: 'end_turn',
+      assistantMessageId: null,
+      tokenUsage: null,
+      aborted: false,
+      errorMessage: '',
+    });
+    pane.upsertItem(userItem('u:1', 1));
+    pane.setActiveTurn({ turnId: 'round-1', turnIndex: 1, startedAt: 3 });
+
+    const result = canRevertEarlyInterrupt(pane, EMPTY_DRAFT);
+
+    expect(result.canRevert).toBe(true);
   });
 });
 

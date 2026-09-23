@@ -199,6 +199,34 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		}
 	}
 
+	// The predicate read a turn the provider was still writing: agent output,
+	// a peer message or deferred rows can land between that read and the cut.
+	// Headless Claude is the one provider whose rollback AO performs after
+	// stopping the session, so stop it now and decide on rows nothing can add
+	// to. A decline here leaves the message in place, as a plain interrupt
+	// would; the next send resumes the unmodified session.
+	if thread.Provider == string(provider.Claude) {
+		if err := a.stopSession(threadID); err != nil {
+			if markedReverted {
+				a.triage.ClearTurnReverted(threadID)
+			}
+			return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: stop session: %w", err)
+		}
+		settledUserItem, reason, err := a.unsendTurnMessage(threadID, userItem.TurnIndex)
+		if err == nil && reason == "" && settledUserItem.ID != userItem.ID {
+			reason = "latest message changed"
+		}
+		if err != nil || reason != "" {
+			if markedReverted {
+				a.triage.ClearTurnReverted(threadID)
+			}
+			if err != nil {
+				return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: recheck stopped turn: %w", err)
+			}
+			return InterruptAndRevertResult{Reason: reason}, nil
+		}
+	}
+
 	// Resolve the message anchor for the provider-rollback helpers.
 	// When the at-send record didn't land, we synthesize one from the
 	// item row — Claude session-fork and Codex fork-at-turn read
@@ -246,25 +274,25 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 }
 
 // evaluateInterruptRevertPredicate runs the backend revert eligibility
-// check. Returns (true, userItem, "", nil) when the most-recent turn
-// holds exactly one revertable user_text, no agent-visible content has
-// landed, and the flush queue is empty. Otherwise returns the reason
-// the predicate declined so callers can log / emit it.
+// check. Returns (true, userItem, "", nil) when the newest turn is a send
+// that has not settled yet and holds nothing but that message and
+// unsendTurnCompanionKinds rows, and no queued or background work would be
+// lost. Otherwise returns the reason the predicate declined so callers can
+// log / emit it.
 //
-// Predicate (matches the frontend, intentionally; see plan):
-//   - There is at least one item in SQLite.
-//   - The newest turn (LastTurnIndex) contains a user_text role=user
-//     row that is not wire-only.
-//   - That turn contains no items of kind assistant_text or tool_call.
+// Predicate (the frontend's canRevertEarlyInterrupt mirrors it):
+//   - The newest turn (LastTurnIndex) has never settled. Once any round of
+//     it completes (an earlier plain Stop, a finished round) the message is
+//     committed history; a later round on the same turn index, such as the
+//     CLI answering a background task notification, does not make it
+//     undoable again.
+//   - That turn passes unsendTurnMessage.
 //   - The triage flush queue is empty for the thread (a queued
 //     follow-up means Stop should let the queue drain through, not
 //     discard everything).
 //   - No background task is running in the tray. Reverting shuts down the
 //     provider thread runtime, which kills background work; early Stop should
 //     preserve that work and fall back to a plain interrupt.
-//
-// Thinking blocks, error rows, and other synthetic kinds DO NOT block
-// the revert (matches Claude Code's `messagesAfterAreOnlySynthetic`).
 func (a *App) evaluateInterruptRevertPredicate(threadID string) (bool, store.Item, string, error) {
 	hasItems, err := a.store.HasItems(threadID)
 	if err != nil {
@@ -277,34 +305,14 @@ func (a *App) evaluateInterruptRevertPredicate(threadID string) (bool, store.Ite
 	if err != nil {
 		return false, store.Item{}, "", fmt.Errorf("last turn index: %w", err)
 	}
-	items, err := a.store.ListTurnItems(threadID, turnIndex)
-	if err != nil {
-		return false, store.Item{}, "", fmt.Errorf("list turn items: %w", err)
+	if turn, found, err := a.store.GetTurnByThreadIndex(threadID, turnIndex); err != nil {
+		return false, store.Item{}, "", fmt.Errorf("load latest turn: %w", err)
+	} else if found && turn.CompletedAt != nil {
+		return false, store.Item{}, "turn already settled", nil
 	}
-	var userItem store.Item
-	userCount := 0
-	for _, item := range items {
-		if item.Kind == "user_text" && item.Role == "user" {
-			if store.IsWireOnlyUserItem(item) {
-				continue
-			}
-			userItem = item
-			userCount++
-		}
-	}
-	if userCount == 0 {
-		return false, store.Item{}, "no user message in latest turn", nil
-	}
-	if userCount > 1 {
-		// Steered turns persist multiple user_text rows for one turn.
-		// Reverting one of them would break the steer ordering; let
-		// the plain interrupt path handle this case.
-		return false, store.Item{}, "turn has steered user messages", nil
-	}
-	for _, item := range items {
-		if item.Kind == "assistant_text" || item.Kind == "tool_call" {
-			return false, store.Item{}, "agent content present", nil
-		}
+	userItem, reason, err := a.unsendTurnMessage(threadID, turnIndex)
+	if err != nil || reason != "" {
+		return false, store.Item{}, reason, err
 	}
 	if a.pendingFlushWorkCount(threadID) > 0 {
 		return false, store.Item{}, "queued follow-up messages", nil
@@ -315,6 +323,62 @@ func (a *App) evaluateInterruptRevertPredicate(threadID string) (bool, store.Ite
 		return false, store.Item{}, "running background tasks", nil
 	}
 	return true, userItem, "", nil
+}
+
+// unsendTurnCompanionKinds are the only rows that may share a turn with the
+// message an early Stop un-sends. Each is either the model's unfinished
+// reasoning about that message or a request-level retry or error, so cutting
+// the turn loses nothing the provider conversation holds. Every other kind
+// declines the un-send, including kinds added later: agent output, background
+// completions and their notifications, compaction, command results and
+// wire-only user rows all record content that entered the conversation.
+var unsendTurnCompanionKinds = map[provider.ItemKind]bool{
+	provider.ItemThinking: true,
+	provider.ItemAPIRetry: true,
+	provider.ItemAPIError: true,
+	provider.ItemError:    true,
+}
+
+// unsendTurnMessage returns the turn's single reader-authored user message
+// when every other row in the turn is an unsendTurnCompanionKinds row.
+// Otherwise it returns the reason the turn cannot be un-sent.
+func (a *App) unsendTurnMessage(threadID string, turnIndex int) (store.Item, string, error) {
+	items, err := a.store.ListTurnItems(threadID, turnIndex)
+	if err != nil {
+		return store.Item{}, "", fmt.Errorf("list turn items: %w", err)
+	}
+	var userItem store.Item
+	userCount := 0
+	for _, item := range items {
+		if isReaderAuthoredUserItem(item) {
+			userItem = item
+			userCount++
+			continue
+		}
+		if !unsendTurnCompanionKinds[provider.ItemKind(item.Kind)] {
+			return store.Item{}, fmt.Sprintf("turn holds %s", item.Kind), nil
+		}
+	}
+	if userCount == 0 {
+		return store.Item{}, "no user message in latest turn", nil
+	}
+	if userCount > 1 {
+		// Steered turns persist multiple user_text rows for one turn.
+		// Reverting one of them would break the steer ordering; let
+		// the plain interrupt path handle this case.
+		return store.Item{}, "turn has steered user messages", nil
+	}
+	return userItem, "", nil
+}
+
+// isReaderAuthoredUserItem reports whether item is a top-level message the
+// user sent, as opposed to a subagent prompt (parented) or a wire-only echo
+// of content the provider consumed without an AO send.
+func isReaderAuthoredUserItem(item store.Item) bool {
+	return item.Kind == string(provider.ItemUserText) &&
+		item.Role == "user" &&
+		item.ParentID == "" &&
+		!store.IsWireOnlyUserItem(item)
 }
 
 // pendingFlushWorkCount sums every queued / in-flight follow-up message the

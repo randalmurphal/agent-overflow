@@ -88,8 +88,8 @@ func TestEvaluateInterruptRevertPredicateRejectsAssistantText(t *testing.T) {
 	if ok {
 		t.Fatalf("expected predicate false, got true")
 	}
-	if reason != "agent content present" {
-		t.Fatalf("reason = %q, want \"agent content present\"", reason)
+	if reason != "turn holds assistant_text" {
+		t.Fatalf("reason = %q, want \"turn holds assistant_text\"", reason)
 	}
 }
 
@@ -122,15 +122,15 @@ func TestEvaluateInterruptRevertPredicateRejectsToolCall(t *testing.T) {
 	if ok {
 		t.Fatalf("expected predicate false, got true")
 	}
-	if reason != "agent content present" {
-		t.Fatalf("reason = %q, want \"agent content present\"", reason)
+	if reason != "turn holds tool_call" {
+		t.Fatalf("reason = %q, want \"turn holds tool_call\"", reason)
 	}
 }
 
 // TestEvaluateInterruptRevertPredicateAllowsThinking confirms that
-// thinking rows DO NOT block the revert (matches Claude Code's
-// messagesAfterAreOnlySynthetic — only assistant_text and tool_call
-// count as "the agent has responded").
+// thinking rows DO NOT block the revert: the model's unfinished reasoning
+// is not in provider history (TestUnsendPredicateAcceptsOnlyCompanionKinds
+// covers the full kind set).
 func TestEvaluateInterruptRevertPredicateAllowsThinking(t *testing.T) {
 	app := newTestApp(t)
 	thread := createAppTestThread(t, app, "pred-think", "claude", t.TempDir())
@@ -513,8 +513,8 @@ func TestInterruptAndRevertIfCleanFallsBackWhenAssistantPresent(t *testing.T) {
 	if result.Reverted {
 		t.Fatalf("expected Reverted=false, got true")
 	}
-	if result.Reason != "agent content present" {
-		t.Fatalf("Reason = %q, want \"agent content present\"", result.Reason)
+	if result.Reason != "turn holds assistant_text" {
+		t.Fatalf("Reason = %q, want \"turn holds assistant_text\"", result.Reason)
 	}
 	// The user message must still be in SQLite — the fallback path
 	// MUST NOT delete anything.

@@ -409,6 +409,7 @@ export interface ThreadPaneIngest {
   readonly setProviderSessionAccount: (account: ProviderSessionAccountEvent | null) => void;
   readonly setLiveTodo: (steps: TodoStep[]) => void;
   readonly settleTurn: (settled: SettledTurn) => void;
+  readonly latestSettledTurn: SettledTurn | null;
   readonly applyEffectiveModel: (model: string, revision: number) => void;
   readonly replaceThread: (nextThread: Thread) => void;
   readonly refreshFromBackend: (requireItems?: boolean) => Promise<void>;

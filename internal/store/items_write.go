@@ -852,25 +852,10 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, H
 
 	// The anchor turn's kept-set, read AFTER the delete so it reflects
 	// exactly what the predicate left standing.
-	keptQuery, keptArgs := timelineIDSelection(threadID, timelineSelection{Where: "items.turn_index = ?", WhereArgs: []any{turnIndex}, OrderBy: "turn_index, item_index"})
-	keptRows, err := tx.Query(keptQuery, keptArgs...)
+	keptAnchorTurnItemIDs, err := listTurnTimelineItemIDs(tx, threadID, turnIndex)
 	if err != nil {
-		return nil, HistoryStamp{}, fmt.Errorf("store: list surviving anchor-turn items for thread %s: %w", threadID, err)
+		return nil, HistoryStamp{}, err
 	}
-	var keptAnchorTurnItemIDs []string
-	for keptRows.Next() {
-		var id string
-		if err := keptRows.Scan(&id); err != nil {
-			keptRows.Close()
-			return nil, HistoryStamp{}, fmt.Errorf("store: scan surviving anchor-turn item for thread %s: %w", threadID, err)
-		}
-		keptAnchorTurnItemIDs = append(keptAnchorTurnItemIDs, id)
-	}
-	if err := keptRows.Err(); err != nil {
-		keptRows.Close()
-		return nil, HistoryStamp{}, fmt.Errorf("store: iterate surviving anchor-turn items for thread %s: %w", threadID, err)
-	}
-	keptRows.Close()
 
 	// The anchor turn keeps its turn row while any items survive in it:
 	// the remaining prefix still happened.
@@ -913,6 +898,34 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, H
 		return nil, HistoryStamp{}, fmt.Errorf("store: commit delete conversation from item tx: %w", err)
 	}
 	return keptAnchorTurnItemIDs, stamp, nil
+}
+
+// ListTurnTimelineItemIDs returns the ids of one turn's timeline rows, mutable
+// and imported, in item order. A caller that writes into a cut's surviving
+// anchor turn after DeleteConversationFromItem re-reads its kept set here.
+func (s *Store) ListTurnTimelineItemIDs(threadID string, turnIndex int) ([]string, error) {
+	return listTurnTimelineItemIDs(s.reader(), threadID, turnIndex)
+}
+
+func listTurnTimelineItemIDs(q sqlQueryer, threadID string, turnIndex int) ([]string, error) {
+	query, args := timelineIDSelection(threadID, timelineSelection{Where: "items.turn_index = ?", WhereArgs: []any{turnIndex}, OrderBy: "turn_index, item_index"})
+	rows, err := q.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list turn %d items for thread %s: %w", turnIndex, threadID, err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: scan turn %d item for thread %s: %w", turnIndex, threadID, err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate turn %d items for thread %s: %w", turnIndex, threadID, err)
+	}
+	return ids, nil
 }
 
 // trimTurnSettleToSurvivorsTx rewrites a surviving turn row whose settle

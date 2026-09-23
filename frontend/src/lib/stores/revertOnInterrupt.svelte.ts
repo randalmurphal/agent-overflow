@@ -8,7 +8,7 @@ import { parseUserMessageMeta } from '../utils/userMessageMeta';
 
 import type { Attachment } from '../types/attachment';
 import type { TerminalChip } from '../types/draft';
-import type { Item } from '../types/models';
+import type { Item, ItemKind } from '../types/models';
 import type { ComposerDraftSnapshot } from './composerDraftSnapshots';
 import type { ErrorSurface, ThreadPaneIngest } from './threadPaneRoles';
 import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
@@ -31,6 +31,20 @@ import {
 } from './bindings';
 
 /**
+ * The only rows that may share a turn with the message an early Stop
+ * un-sends: the model's unfinished reasoning and request-level retries or
+ * errors. Everything else, including kinds added later, is content the
+ * provider conversation holds. Mirrors the backend's
+ * unsendTurnCompanionKinds.
+ */
+const UNSEND_TURN_COMPANION_KINDS: ReadonlySet<string> = new Set<string>([
+  'thinking',
+  'api_retry',
+  'api_error',
+  'error',
+] satisfies ItemKind[]);
+
+/**
  * Result of the frontend revert-eligibility predicate. Discriminated
  * on `canRevert` so callers don't have to defensively re-check
  * `userItem`: when the predicate says yes, the user row is guaranteed.
@@ -39,10 +53,14 @@ import {
  *   - The thread has an active turn.
  *   - The composer is empty (user hasn't started typing again).
  *   - The send queue is empty (no queued follow-up to drain).
- *   - The latest turn contains exactly one revertable user_text row
- *     and no assistant_text / tool_call rows. Thinking blocks and
- *     synthetic error rows DO NOT block the revert (matches Claude
- *     Code's TUI semantics).
+ *   - The turn has never settled. A later round on a settled turn (the
+ *     CLI answering a background task notification) does not make its
+ *     message undoable again.
+ *   - The turn holds exactly one reader-authored user_text and otherwise
+ *     only UNSEND_TURN_COMPANION_KINDS rows.
+ *
+ * Mirrors the backend's evaluateInterruptRevertPredicate, which stays
+ * authoritative; this copy only decides the optimistic presentation.
  */
 export type RevertEligibility =
   | { canRevert: true; userItem: Item }
@@ -90,28 +108,24 @@ export function canRevertEarlyInterrupt(
     return { canRevert: false, reason: 'queue has pending items' };
   }
 
-  // Scan items on the active turn. Only one user_text allowed; any
-  // assistant_text or tool_call means the agent has produced visible
-  // output and the revert would discard real work.
   const turnIndex = active?.turnIndex ?? pane.items.find((item) =>
     parseUserMessageMeta(item.meta).sendId === pending?.sendId)?.turnIndex;
   if (turnIndex === undefined) return { canRevert: false, reason: 'no pending user message' };
+  const settled = pane.latestSettledTurn;
+  if (settled && settled.turnIndex >= turnIndex) {
+    return { canRevert: false, reason: 'turn already settled' };
+  }
   let userItem: Item | undefined;
   let userCount = 0;
   for (const item of pane.items) {
     if (item.turnIndex !== turnIndex) continue;
-    if (item.kind === 'assistant_text' || item.kind === 'tool_call') {
-      return { canRevert: false, reason: 'agent has responded' };
-    }
     if (isReaderAuthoredUserText(item) && item.role === 'user') {
-      // Reader-authored only. A subagent's own prompt is a user_text row
-      // carrying the LAUNCH's turn index, so it sits in this turn and a
-      // bare kind test would count it as a mid-round steer. Today the
-      // launch's own tool_call returns above before that can happen; the
-      // predicate is here so the answer stays right if that ever moves,
-      // and because "did the reader write this" has one definition.
       userItem = item;
       userCount++;
+      continue;
+    }
+    if (!UNSEND_TURN_COMPANION_KINDS.has(item.kind)) {
+      return { canRevert: false, reason: `turn holds ${item.kind}` };
     }
   }
   if (userCount === 0 || !userItem) return { canRevert: false, reason: 'no user_text item' };
