@@ -884,6 +884,7 @@ func TestClaudeHeartbeatRefreshesOnlySessionLiveness(t *testing.T) {
 	for range 2 {
 		app.sessionEventHandler(thread.ID, "current", "claude")(frames[0])
 	}
+	waitProviderEvents(t, app, thread.ID)
 	if live.LastActivityUnixNano.Load() <= time.Unix(1, 0).UnixNano() {
 		t.Fatal("heartbeat did not update liveness")
 	}
@@ -896,6 +897,7 @@ func TestClaudeHeartbeatRefreshesOnlySessionLiveness(t *testing.T) {
 	}
 	live.LastActivityUnixNano.Store(1)
 	app.sessionEventHandler(thread.ID, "stale", "claude")(frames[0])
+	waitProviderEvents(t, app, thread.ID)
 	if live.LastActivityUnixNano.Load() != 1 {
 		t.Fatal("stale heartbeat updated replacement session")
 	}

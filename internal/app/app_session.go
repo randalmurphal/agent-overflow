@@ -220,8 +220,9 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	// Claude process that dies during startup (unusable
 	// --resume-session-at cursor) emits its only diagnostics pre-init.
 	// Clearing here is safe — stopExistingSessionLocked has fully
-	// drained the prior session's read loop (Close blocks on it), so no
-	// stale frame can slip through. This is the ONLY place the marker
+	// drained the prior session's read loop and its event queue
+	// (closeProviderSession waits for both), so no stale frame can slip
+	// through. This is the ONLY place the marker
 	// is cleared; see triage.MarkThreadActive.
 	if a.triage != nil {
 		a.triage.MarkThreadActive(threadID)
@@ -297,6 +298,11 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	a.sessionManager().put(threadID, newSess)
 	registeredRemote = true
 	registeredThread = true
+	// Codex reports its thread in an EventInit emitted before NewSession
+	// returns, and callers act on the started session as soon as this
+	// returns (a send, a fork reading the session ref). Handle what the
+	// provider emitted while starting before handing the session over.
+	a.drainProviderEvents(threadID, "start session")
 	if a.remoteMCP.revision.Load() != remoteRevision {
 		a.signalRemotePeers()
 	}
@@ -448,8 +454,8 @@ func (a *App) stopExistingSessionLocked(threadID string) error {
 	// already taken above, so its callback no-ops. Unlike
 	// teardownAndCloseSession there is no CleanupThread here (the
 	// replacement path deliberately keeps triage live), so the stream
-	// persist buffers must be drained explicitly first: Close drained
-	// the read loop, but a buffer armed by its final deltas would
+	// persist buffers must be drained explicitly first: the close drained
+	// the read loop and its events, but a buffer armed by its final deltas would
 	// otherwise fire its 250ms flush AFTER the purge and re-register
 	// the state it just removed.
 	if a.triage != nil {
@@ -901,7 +907,7 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	// go through a captured session already swapped out (round-12,
 	// CT12-2/CT12-3/C12-2). runPlainInterruptLocked holds the same lock
 	// via its caller — including across the ack wait, the established
-	// precedent that the provider read loop never blocks on this lock.
+	// precedent that the provider event worker never blocks on this lock.
 	// The in-triage epoch fences stay as defense for an interrupt that
 	// acquires this lock only after a replacement completed.
 	unlock, err := a.threadLocks().LockCtx(ctx, threadID)
@@ -924,8 +930,8 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	if providerSess == nil {
 		return false, fmt.Errorf("session has no provider")
 	}
-	// Sampled BEFORE the interrupt ack: awaiting it keeps the read loop
-	// processing wire events, so the cut turn can settle in the gap and
+	// Sampled BEFORE the interrupt ack: the event worker keeps handling
+	// wire events while it is awaited, so the cut turn can settle in the gap and
 	// a later sample would miss it (round-5, R5-4). The sample is also
 	// PUBLISHED onto the unconsumed pending flush entries pre-ack: the
 	// CLI's mid-loop queue drain can echo one back during the ack wait,
@@ -1152,7 +1158,8 @@ func (a *App) codexResendAfterInterrupt(
 // fresh.
 //
 // Runs on its own goroutine (see sessionEventHandler) because the
-// caller is the provider read loop and Close blocks on read-loop exit.
+// caller is the thread's event worker and closing the session drains
+// that worker's queue.
 // Two guards keep it from harming a user retry that races in:
 //
 //   - The token-guarded unregister means a retry that already replaced
@@ -1239,6 +1246,10 @@ func (a *App) teardownDeadPreInitSession(threadID, sessionToken string) {
 // triage state alone so the final wire frames have somewhere to land.
 func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 	a.workflowApplication().ReleaseUsageAttentionForThread(threadID)
+	// Events the provider emitted before the stop were read and must be
+	// persisted; CleanupThread below marks the thread stopped, after which
+	// triage drops them.
+	a.drainProviderEvents(threadID, "stop session")
 	if a.triage != nil {
 		// CleanupThread DROPS the thread's queued messages rather than
 		// restoring them (teardownDeadPreInitSession is the path that

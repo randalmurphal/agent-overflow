@@ -23,20 +23,21 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 	// clean exit-0 we didn't initiate). Captured in the closure so the
 	// disconnected branch can distinguish "process died on its own" (auto-
 	// reconnect candidate) from "we asked it to stop" (no-op). Plain bool:
-	// providers serialize delivery to this handler, so no atomic is needed.
-	// Claude calls it from its read loop; Codex also has collaboration workers
-	// and serializes all producers through Session.emitEvent.
+	// handle runs only on the thread's provider event worker, one event at
+	// a time (app_provider_event_queue.go).
 	var deathReported bool
 	// sawInit flips true on the session's first EventInit. An error
 	// turn-complete BEFORE init is the dead-on-arrival signature: the
 	// process failed during startup (Claude rejecting its
 	// --resume-session-at cursor emits result{error_during_execution}
 	// pre-init, then lingers alive) and can never serve a send. Same
-	// serialized-callback justification as deathReported.
+	// single-worker justification as deathReported.
 	var sawInit bool
-	return func(evt provider.ProviderEvent) {
-		evt = a.providerLifecycleService().PrepareEvent(threadID, sessionToken, evt)
-
+	// deathEpoch is the triage epoch when a status "error" was READ, which
+	// is what the queue restore below must compare against: by the time
+	// the worker handles the event, a replacement start may have bumped
+	// it. Zero for every other event.
+	handle := func(evt provider.ProviderEvent, deathEpoch uint64) {
 		// EventInit carries Claude's `system/init.mcp_servers` array
 		// via the SessionInfo meta. Feed each entry into the status
 		// cache so the popup shows authoritative provider state
@@ -81,7 +82,7 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 
 		if a.triage != nil {
 			if err := a.triage.Handle(evt); err != nil {
-				log.Printf("triage: %v", err)
+				log.Printf("triage: thread %s: %s event: %v", threadID, evt.Kind, err)
 			}
 		}
 		a.dispatchTurnObservers(threadID, evt)
@@ -91,7 +92,8 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 		// useless yet still alive — Claude does not exit after failing
 		// its --resume-session-at validation. Runs AFTER triage.Handle
 		// so the orphan error item is already persisted and visible.
-		// Goroutine because Close blocks on this very read loop.
+		// Goroutine because the teardown closes this session, and a close
+		// drains this worker's queue.
 		// Claude-only: the lingering-process failure mode is specific to
 		// the Claude CLI, Codex startup failures surface through its
 		// session-status/error paths, and Codex's readLoop starts before
@@ -146,22 +148,18 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 
 		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" {
 			deathReported = true
-			// The provider read loop must not wait for the thread action lock.
+			// The event worker must not wait for the thread action lock.
 			// NewSession and Send can emit this status while their caller holds
-			// that lock, and Close waits for this callback to return. Restore on a
+			// that lock, and a stop waits for this worker to drain. Restore on a
 			// separate goroutine, then fence the drain after the lock is acquired.
 			// The token covers a registered replacement. The triage epoch covers
 			// a replacement that called MarkThreadActive but has not registered
 			// its provider session yet.
-			epoch := uint64(0)
-			if a.triage != nil {
-				epoch = a.triage.ThreadEpoch(threadID)
-			}
 			go a.restoreUnconfirmedQueueOnSessionDeathIf(threadID, func() bool {
 				if current, ok := a.sessionManager().get(threadID); ok {
 					return current.Token == sessionToken
 				}
-				return a.triage != nil && a.triage.ThreadEpoch(threadID) == epoch
+				return a.triage != nil && a.triage.ThreadEpoch(threadID) == deathEpoch
 			})
 		}
 
@@ -171,7 +169,22 @@ func (a *App) sessionEventHandler(threadID, sessionToken, providerType string) f
 			if deathReported {
 				go a.attemptAutoReconnect(threadID)
 			}
+			// The provider emits nothing after "disconnected".
+			a.providerEvents.retireWhenIdle(threadID)
 		}
+	}
+	handleEvent := func(evt provider.ProviderEvent) { handle(evt, 0) }
+	return func(evt provider.ProviderEvent) {
+		// Activity and rate-limit attribution describe the wire as it is
+		// read, so they stay on the provider's goroutine; everything else
+		// runs on the thread's worker, in emission order.
+		evt = a.providerLifecycleService().PrepareEvent(threadID, sessionToken, evt)
+		if evt.Kind == provider.EventSessionStatus && evt.Content == "error" && a.triage != nil {
+			epoch := a.triage.ThreadEpoch(threadID)
+			a.providerEvents.enqueue(threadID, evt, func(evt provider.ProviderEvent) { handle(evt, epoch) })
+			return
+		}
+		a.providerEvents.enqueue(threadID, evt, handleEvent)
 	}
 }
 

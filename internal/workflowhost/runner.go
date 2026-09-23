@@ -496,17 +496,17 @@ func (r *Runner) finish(runKey string, outcome engine.Outcome) {
 }
 
 // finishOffWire is `finish` for a caller running ON the provider event path —
-// `observe`, dispatched synchronously on the session's read-loop goroutine.
+// `observe`, dispatched on the thread's provider event worker.
 //
 // The detach is synchronous, so the single-claim semantics are identical to
 // `finish`: any event behind this one finds no attempt. What moves off the wire
 // is the send barrier and the completion. `finishDetachedAttempt` waits out an
-// in-flight send, and a send can hold `sendMu` while it waits on the read loop
-// itself — a reconnect inside the send path blocks in `Session.Close` until the
-// read loop exits, and a dispatched send waits for a JSON-RPC reply only the
-// read loop can deliver. Blocking the read loop on `sendMu` therefore deadlocks
-// the two against each other permanently; `stopAndFinishOffWire` documents the
-// same rule for the interrupt half.
+// in-flight send, and a send can hold `sendMu` while it waits on that worker —
+// a reconnect inside the send path closes the session, and a close drains the
+// thread's event queue, and a dispatched send waits for a JSON-RPC reply the
+// read loop stops delivering once the blocked worker's queue fills. Blocking
+// the worker on `sendMu` therefore deadlocks the two against each other;
+// `stopAndFinishOffWire` documents the same rule for the interrupt half.
 func (r *Runner) finishOffWire(runKey string, outcome engine.Outcome) {
 	attempt, ok := r.detach(runKey)
 	if !ok {

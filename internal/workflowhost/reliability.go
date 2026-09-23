@@ -415,16 +415,15 @@ func (r *Runner) foldSessionDeathIntoLadder(runKey string, attempt *workflowAtte
 }
 
 // stopAndFinishOffWire is stopAndFinish for a caller running ON the provider
-// event path — `observe`, which is dispatched synchronously from the session's
-// event consumer.
+// event path — `observe`, which runs on the thread's provider event worker.
 //
-// The interrupt inside `stopAndFinish` waits for the CLI's control_response,
-// and that response can only arrive through the very pipeline this callback is
-// blocking. A live process therefore deadlocks the stop against itself until
-// the interrupt times out, and the run sits `running` for the whole of it —
-// which is what a park that decides mid-turn (a spent retry ladder or a typed
-// usage-limit refusal) does every time the provider is still alive to be
-// interrupted.
+// The stop inside `stopAndFinish` first waits out any in-flight send, which can
+// itself be waiting on this worker (see finishOffWire), then waits for the
+// interrupt's control_response. Run on the worker, the first wait can deadlock
+// and the second holds every later event of the thread, and the run sits
+// `running` for the whole of it — which is what a park that decides mid-turn
+// (a spent retry ladder or a typed usage-limit refusal) does every time the
+// provider is still alive to be interrupted.
 // `detach` is single-shot under the runner lock and happens before this method
 // returns to the event pipeline. Any later event therefore finds no attempt for
 // this key; only the interrupt wait and completion callback move off-wire.

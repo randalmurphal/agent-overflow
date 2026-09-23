@@ -383,6 +383,7 @@ func TestStartDiscussionMirrorsEarlyParticipantTurnDuringStartup(t *testing.T) {
 			TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
 			Timestamp:    time.UnixMilli(now),
 		})
+		waitProviderEvents(t, app, threadID)
 		return nil
 	}
 
@@ -622,6 +623,7 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
 		Timestamp:    time.UnixMilli(now + 5),
 	})
+	waitProviderEvents(t, app, children[0].ID)
 
 	messages, err := app.GetChannelMessages(parent.DiscussionID, -1, 10)
 	if err != nil {
@@ -659,6 +661,7 @@ func TestSessionEventHandlerMirrorsDiscussionTurnsIntoChannelAndConcludes(t *tes
 		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
 		Timestamp:    time.UnixMilli(now + 15),
 	})
+	waitProviderEvents(t, app, children[1].ID)
 
 	messages, err = app.GetChannelMessages(parent.DiscussionID, -1, 10)
 	if err != nil {

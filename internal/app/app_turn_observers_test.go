@@ -108,6 +108,7 @@ func TestTurnObserversDispatchAfterTriage(t *testing.T) {
 		ItemID:   "model-fallback:observer-order",
 		Meta:     json.RawMessage(`{"fallbackModel":"gpt-5.4-mini"}`),
 	})
+	waitProviderEvents(t, app, thread.ID)
 
 	if want := []string{"triage", "observer"}; !slices.Equal(order, want) {
 		t.Fatalf("dispatch order = %v, want %v", order, want)
@@ -141,6 +142,7 @@ func TestDiscussionTurnObserverPreservesWireErrorMessage(t *testing.T) {
 		ThreadID:     thread.ID,
 		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"},
 	})
+	waitProviderEvents(t, app, thread.ID)
 
 	want := "discussion sync failed: " + lookupErr.Error()
 	for len(emitted) > 0 {

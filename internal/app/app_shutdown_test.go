@@ -287,6 +287,9 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// instead of leaving it for the next boot's sweep.
 		"stop provider logins",
 		"close provider sessions",
+		// "drain provider events" follows session close, whose final
+		// events it handles, and precedes "close store".
+		"drain provider events",
 		// "stop orphan reaper" follows session close: each session
 		// releases its watched group on a clean close, so the sidecar has
 		// nothing left to reap by the time we close its control pipe.

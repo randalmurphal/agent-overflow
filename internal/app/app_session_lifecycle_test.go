@@ -51,6 +51,7 @@ func TestStaleSessionDisconnectDoesNotRemoveReplacement(t *testing.T) {
 		Content:   "disconnected",
 		Timestamp: time.Now(),
 	})
+	waitProviderEvents(t, app, thread.ID)
 
 	if _, err := app.SwitchThread(thread.ID); err != nil {
 		t.Fatalf("SwitchThread() error = %v", err)

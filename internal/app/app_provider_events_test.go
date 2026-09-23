@@ -117,6 +117,7 @@ func TestSessionEventHandlerDisconnectUnregistersSession(t *testing.T) {
 		Content:   "disconnected",
 		Timestamp: time.Now(),
 	})
+	waitProviderEvents(t, app, thread.ID)
 
 	_, present := app.sessionManager().get(thread.ID)
 	if present {
@@ -145,6 +146,8 @@ func TestSessionEventHandlerNonDisconnectStatusPreservesSession(t *testing.T) {
 		Content:   "ready",
 		Timestamp: time.Now(),
 	})
+
+	waitProviderEvents(t, app, thread.ID)
 
 	_, present := app.sessionManager().get(thread.ID)
 	if !present {
@@ -190,6 +193,8 @@ func TestSessionEventHandlerAutoReconnectsAfterAbnormalDeath(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
+	waitProviderEvents(t, app, thread.ID)
+
 	select {
 	case got := <-startCalls:
 		if got != thread.ID {
@@ -231,6 +236,8 @@ func TestSessionEventHandlerNoAutoReconnectWithoutDeathSignal(t *testing.T) {
 		Content:   "disconnected",
 		Timestamp: time.Now(),
 	})
+
+	waitProviderEvents(t, app, thread.ID)
 
 	select {
 	case <-startCalled:
@@ -276,6 +283,8 @@ func TestSessionEventHandlerNoAutoReconnectWithoutSessionRef(t *testing.T) {
 		Content:   "disconnected",
 		Timestamp: time.Now(),
 	})
+
+	waitProviderEvents(t, app, thread.ID)
 
 	select {
 	case <-startCalled:
@@ -344,6 +353,7 @@ func TestAutoReconnectSingleShotAcrossDeathsThroughHandler(t *testing.T) {
 			Content:   "disconnected",
 			Timestamp: time.Now(),
 		})
+		waitProviderEvents(t, app, thread.ID)
 	}
 
 	// First death: auto-reconnect fires.
@@ -417,6 +427,8 @@ func TestAttemptAutoReconnectSkippedDuringShutdown(t *testing.T) {
 		Content:   "disconnected",
 		Timestamp: time.Now(),
 	})
+
+	waitProviderEvents(t, app, thread.ID)
 
 	select {
 	case <-startCalled:

@@ -311,6 +311,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	sessionErrs := closeSessionsParallel(a, sessions, sessionShutdownTimeout)
 	record("close provider sessions", errors.Join(sessionErrs...))
 
+	// Step 4a: every provider event already read is handled before the
+	// store closes. Each close above drained its own thread; this covers a
+	// session that exited on its own and whose final events are still
+	// queued (app_provider_event_queue.go).
+	record("drain provider events", a.providerEvents.drainAll())
+
 	// Step 4b: stop the orphan-reaper sidecar (macOS). Sessions that closed
 	// cleanly above each released their group; any whose Close was abandoned
 	// on the parallel timeout stay watched and get reaped as we close the

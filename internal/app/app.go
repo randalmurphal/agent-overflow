@@ -150,6 +150,10 @@ type App struct {
 	// turnObservers fans provider events out to internal App features after
 	// triage handling has been attempted.
 	turnObservers appTurnObserverState
+	// providerEvents carries every provider event from the session's
+	// onEvent callback to its handling, one FIFO per thread, so triage
+	// never runs on a provider read loop (app_provider_event_queue.go).
+	providerEvents providerEventQueues
 	// discussionApp owns definition/channel services and every process-local
 	// deliberation ward. Session lifecycle remains on App behind its narrow
 	// ParticipantRuntime adapter.
