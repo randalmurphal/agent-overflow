@@ -14,7 +14,7 @@ import "fmt"
 // The migration also retires payload snapshots. Forks no longer borrow
 // payloads, so every borrowed graph is copied back into the payload rows that
 // referenced it before the copy-on-write triggers and views drop.
-var pointerForksV116SQL = `
+var pointerForksV119SQL = `
 ALTER TABLE threads ADD COLUMN fork_source_thread_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE threads ADD COLUMN fork_cut_turn_index INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE threads ADD COLUMN fork_cut_item_index INTEGER NOT NULL DEFAULT 0;
@@ -241,7 +241,7 @@ SELECT turns.turn_id, l.thread_id, turns.turn_index, turns.started_at, turns.com
 `
 
 // forkTriggersSQL is the latest DDL for the pointer-fork triggers. Migration
-// v116 installs it and RestoreFrom reinstalls it after the row copy, which
+// v119 installs it and RestoreFrom reinstalls it after the row copy, which
 // runs without these triggers so restored rows are the snapshot's exactly.
 //
 //   - trg_threads_fork_history: a fork's reads include its ancestors' rows,
