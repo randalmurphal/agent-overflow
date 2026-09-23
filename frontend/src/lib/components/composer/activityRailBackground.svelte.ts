@@ -32,8 +32,7 @@ import type { Item } from '../../types/models';
 import { asProviderID, type ProviderID } from '../../types/providers';
 import { deriveTrayTasks, type TrayTask } from '../../utils/backgroundTray';
 import { createRefreshScheduler } from '../../utils/refreshScheduler';
-import { parseJsonObject } from '../../utils/parseJsonObject';
-import { CODEX_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
+import { createCodexLatestToolProjection } from '../../utils/codexTrayProjection';
 
 // Brief retention so a completion has time to flicker into view as the
 // terminal state but doesn't linger after the user has read it. Just
@@ -47,55 +46,6 @@ const COMPLETION_RETENTION_MS = 200;
 // at a handful of list calls per second.
 const REFRESH_DELAY_MS = 100;
 const REFRESH_MAX_WAIT_MS = 400;
-
-function projectLatestCodexTool(items: Item[], tool: Item): Item[] {
-  const parentId = tool.parentId?.trim();
-  const summary = tool.summary.trim();
-  if (!parentId || !summary || tool.toolName === 'collab_agent') return items;
-
-  let changed = false;
-  const projected = items.map((item) => {
-    if (item.id !== parentId || item.toolName !== 'collab_agent' || item.status !== 'running') {
-      return item;
-    }
-    const parsedMeta = parseJsonObject(item.meta);
-    if (item.meta?.trim() && parsedMeta === null) {
-      console.error(`ActivityRail: malformed Codex launch meta for ${item.id}`);
-      return item;
-    }
-    const meta = parsedMeta ?? {};
-    const currentTurnValue = meta[CODEX_LATEST_TOOL_META.turnIndex];
-    const currentItemValue = meta[CODEX_LATEST_TOOL_META.itemIndex];
-    const currentTurn = typeof currentTurnValue === 'number'
-      ? currentTurnValue
-      : -1;
-    const currentItem = typeof currentItemValue === 'number'
-      ? currentItemValue
-      : -1;
-    if (
-      tool.turnIndex < currentTurn
-      || (tool.turnIndex === currentTurn && tool.itemIndex < currentItem)
-    ) {
-      return item;
-    }
-    if (
-      meta[CODEX_LATEST_TOOL_META.summary] === summary
-      && tool.turnIndex === currentTurn
-      && tool.itemIndex === currentItem
-    ) return item;
-    changed = true;
-    return {
-      ...item,
-      meta: JSON.stringify({
-        ...meta,
-        [CODEX_LATEST_TOOL_META.summary]: summary,
-        [CODEX_LATEST_TOOL_META.turnIndex]: tool.turnIndex,
-        [CODEX_LATEST_TOOL_META.itemIndex]: tool.itemIndex,
-      }),
-    };
-  });
-  return changed ? projected : items;
-}
 
 export interface BackgroundController {
   readonly tasks: TrayTask[];
@@ -112,7 +62,33 @@ export function createBackgroundController(
   getPane: () => ThreadPane,
   getNow: () => number,
 ): BackgroundController {
-  let backgroundItems: Item[] = $state([]);
+  // Raw: every writer replaces the snapshot, and rows are read, never
+  // mutated in place, so a deep proxy per row would only add cost.
+  let backgroundItems: Item[] = $state.raw([]);
+  // Launch rows the snapshot lists, for deciding which upserts can change
+  // it. Rebuilt with each wholesale write, never per event.
+  let listedLaunches = new Set<string>();
+  const codexTools = createCodexLatestToolProjection();
+
+  function replaceBackgroundItems(items: Item[]): void {
+    backgroundItems = items;
+    listedLaunches = new Set();
+    for (const item of items) {
+      if (!item.completionOf) listedLaunches.add(item.id);
+    }
+    codexTools.reset(items);
+  }
+
+  // What can change the tray: a background launch or a background task's
+  // terminal (both carry isBackground), or a write that settles a launch
+  // the tray lists, through its completion sibling or in place (a launch
+  // whose result cleared its background flag). A child's ordinary
+  // tool_completion names a launch the tray does not list.
+  function changesTray(item: Item): boolean {
+    if (item.isBackground) return true;
+    if (item.completionOf) return listedLaunches.has(item.completionOf);
+    return item.status !== 'running' && listedLaunches.has(item.id);
+  }
 
   // A draft pane's thread is a synthetic placeholder no computer owns.
   // There is nothing to read until it materializes, and asking would route
@@ -133,7 +109,7 @@ export function createBackgroundController(
     run: async (token) => {
       const id = threadId;
       if (!id) {
-        backgroundItems = [];
+        replaceBackgroundItems([]);
         return;
       }
       const owner = threadBackend(id);
@@ -141,7 +117,7 @@ export function createBackgroundController(
       try {
         const items = (await ListLiveBackgroundTasks(id)) as Item[] | null;
         if (!token.isCurrent() || id !== threadId) return;
-        backgroundItems = (items ?? []).filter((item) => item.threadId === id);
+        replaceBackgroundItems((items ?? []).filter((item) => item.threadId === id));
       } catch (err) {
         if (!token.isCurrent() || id !== threadId) return;
         console.error('ActivityRail: ListLiveBackgroundTasks failed:', err);
@@ -156,7 +132,7 @@ export function createBackgroundController(
   // reset() is what makes the outgoing thread's in-flight answer stale.
   $effect(() => {
     threadId;
-    backgroundItems = [];
+    replaceBackgroundItems([]);
     refresh.reset();
     refresh.request({ immediate: true });
   });
@@ -195,16 +171,11 @@ export function createBackgroundController(
             // tool call; reconnect hydration still comes from the store.
             refresh.request();
           } else {
-            backgroundItems = projectLatestCodexTool(backgroundItems, item);
+            backgroundItems = codexTools.apply(backgroundItems, item);
           }
           return;
         }
-        if (
-          item.isBackground
-          || item.completionOf
-        ) {
-          refresh.request();
-        }
+        if (changesTray(item)) refresh.request();
       });
       const cancelBackgroundTasksChanged = wailsEventOn<BackgroundTasksChangedEvent>(
         'provider:background_tasks_changed',
