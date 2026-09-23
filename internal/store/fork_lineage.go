@@ -4,6 +4,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
+	"math"
+	"slices"
 	"strconv"
 )
 
@@ -91,6 +94,52 @@ func scanInheritedRows(q sqlQueryer, viewer, query string, args []any) ([]inheri
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, fmt.Errorf("store: iterate inherited rows of %s: %w", viewer, err)
+	}
+	return out, nil
+}
+
+// readerRowColumns is inheritedRowColumns plus the reader, the thread whose
+// lineage row `l` is.
+func readerRowColumns(string, string) string {
+	return inheritedRowColumns("", "") + `, l.thread_id`
+}
+
+// readersInheritedRowsByID is inheritedRowsByID for every thread that reads
+// through threadID at depth with its cut after from, in one statement per
+// id batch: the readers are the lineage rows `r`, each the viewer of its own
+// lineage arms. The result maps each such reader to the rows it shows.
+func readersInheritedRowsByID(q sqlQueryer, threadID string, depth int, from timelineRow, ids []string) (map[string][]inheritedRow, error) {
+	out := make(map[string][]inheritedRow)
+	seen := make(map[[2]string]bool)
+	for start := 0; start < len(ids); start += forkCopyBatch {
+		clause, args := inClause("items.id", ids[start:min(start+forkCopyBatch, len(ids))])
+		query, binds := inheritedTimelineArms("", levelsFrom(depth), timelineSelection{
+			Columns:  readerRowColumns,
+			Source:   "thread_fork_lineage r",
+			Thread:   "r.thread_id",
+			KeyFirst: true,
+			Where: "r.ancestor_id = ? AND r.depth = ? AND (r.cut_turn_index, r.cut_item_index) > (?, ?)" +
+				"\n		   AND " + clause,
+			WhereArgs: append([]any{threadID, depth, from.turn, from.item}, args...),
+		})
+		rows, err := q.Query(query, binds...)
+		if err != nil {
+			return nil, fmt.Errorf("store: read rows forks read through %s: %w", threadID, err)
+		}
+		for rows.Next() {
+			var row inheritedRow
+			var reader string
+			if err := rows.Scan(&row.id, &row.payloadID, &row.inputPayloadID, &row.owner, &reader); err != nil {
+				return nil, errors.Join(fmt.Errorf("store: scan a row a fork reads through %s: %w", threadID, err), rows.Close())
+			}
+			if key := [2]string{reader, row.id}; !seen[key] {
+				seen[key] = true
+				out[reader] = append(out[reader], row)
+			}
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return nil, fmt.Errorf("store: iterate rows forks read through %s: %w", threadID, err)
+		}
 	}
 	return out, nil
 }
@@ -311,37 +360,68 @@ type forkReader struct {
 	depth    int
 }
 
-// forkReadersSQL runs before every write that changes a row another thread
-// may read, so it is one probe of idx_thread_fork_lineage_ancestor.
-const forkReadersSQL = `SELECT thread_id, depth FROM thread_fork_lineage WHERE ancestor_id = ? ORDER BY depth, thread_id`
+// forkReadExistsSQL asks whether any thread reads through a thread. It runs
+// before every write that changes a row another thread may read, so it is
+// one probe of idx_thread_fork_lineage_ancestor.
+const forkReadExistsSQL = `SELECT EXISTS (SELECT 1 FROM thread_fork_lineage WHERE ancestor_id = ?)`
 
-// forkReadersTx lists every thread that reads through threadID, nearest
-// first. A nearer reader's copy replaces the row for the readers that read
-// through it, so handing off in this order copies a row once per branch; a
-// farther reader copies only what the nearer one no longer reads, such as
-// rows below a cut the nearer reader lowered.
-func forkReadersTx(q sqlQueryer, threadID string) ([]forkReader, error) {
-	rows, err := q.Query(forkReadersSQL, threadID)
+// forkReadersSQL lists the threads that read through a thread at or after a
+// timeline position, nearest first: a reader whose cut at that thread's
+// level is at or before the position reads nothing there. It is one range
+// probe of idx_thread_fork_lineage_ancestor.
+const forkReadersSQL = `SELECT thread_id, depth FROM thread_fork_lineage
+ WHERE ancestor_id = ? AND (cut_turn_index, cut_item_index) > (?, ?)
+ ORDER BY depth, thread_id`
+
+// forkReaderDepthsSQL is forkReadersSQL's depths. The same range probe finds
+// none for a write after every reader's cut, the source's hot path.
+const forkReaderDepthsSQL = `SELECT DISTINCT depth FROM thread_fork_lineage
+ WHERE ancestor_id = ? AND (cut_turn_index, cut_item_index) > (?, ?)
+ ORDER BY depth`
+
+// readThroughTx reports whether any thread reads through threadID.
+func readThroughTx(q sqlQueryer, threadID string) (bool, error) {
+	var read bool
+	if err := q.QueryRow(forkReadExistsSQL, threadID).Scan(&read); err != nil {
+		return false, fmt.Errorf("store: probe fork readers of %s: %w", threadID, err)
+	}
+	return read, nil
+}
+
+// queryForkLevels scans (thread_id, depth) lineage rows.
+func queryForkLevels(q sqlQueryer, query string, args ...any) ([]forkReader, error) {
+	rows, err := q.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("store: list fork readers of %s: %w", threadID, err)
+		return nil, err
 	}
 	var readers []forkReader
 	for rows.Next() {
 		var reader forkReader
 		if err := rows.Scan(&reader.threadID, &reader.depth); err != nil {
-			return nil, errors.Join(fmt.Errorf("store: scan fork reader of %s: %w", threadID, err), rows.Close())
+			return nil, errors.Join(err, rows.Close())
 		}
 		readers = append(readers, reader)
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("store: iterate fork readers of %s: %w", threadID, err)
+	return readers, errors.Join(rows.Err(), rows.Close())
+}
+
+// forkReadersTx lists every thread that reads through threadID at or after
+// from, nearest first. A nearer reader's copy replaces the row for the
+// readers that read through it, so handing off in this order copies a row
+// once per branch; a farther reader copies only what the nearer one no
+// longer reads, such as rows below a cut the nearer reader lowered.
+func forkReadersTx(q sqlQueryer, threadID string, from timelineRow) ([]forkReader, error) {
+	readers, err := queryForkLevels(q, forkReadersSQL, threadID, from.turn, from.item)
+	if err != nil {
+		return nil, fmt.Errorf("store: list fork readers of %s: %w", threadID, err)
 	}
 	return readers, nil
 }
 
-// handOff copies into every reader of threadID the rows read selects for it.
-func handOff(tx *sql.Tx, threadID string, read func(reader forkReader) ([]inheritedRow, error)) error {
-	readers, err := forkReadersTx(tx, threadID)
+// handOff copies into every reader of threadID at or after from the rows
+// read selects for it.
+func handOff(tx *sql.Tx, threadID string, from timelineRow, read func(reader forkReader) ([]inheritedRow, error)) error {
+	readers, err := forkReadersTx(tx, threadID, from)
 	if err != nil {
 		return err
 	}
@@ -366,9 +446,93 @@ func handOffIDsTx(tx *sql.Tx, threadID string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	return handOff(tx, threadID, func(reader forkReader) ([]inheritedRow, error) {
-		return inheritedRowsByID(tx, reader.threadID, ids, levelsFrom(reader.depth))
-	})
+	if read, err := readThroughTx(tx, threadID); err != nil || !read {
+		return err
+	}
+	return handOffReadIDsTx(tx, threadID, ids)
+}
+
+// handOffReadIDsTx is handOffIDsTx once some thread is known to read
+// through threadID. Only the readers whose cut follows the first of the
+// rows are asked which rows they read, and all the readers at one depth are
+// asked in one statement: the rows a source writes while it runs are after
+// every fork's cut or, for a fork made mid-turn, rows it hides because it
+// took interrupted copies of them, so the write costs the same however many
+// forks there are. Depths run nearest first, for the reason handOff gives.
+func handOffReadIDsTx(tx *sql.Tx, threadID string, ids []string) error {
+	from, found, err := firstRowOfTx(tx, threadID, ids)
+	if err != nil || !found {
+		return err
+	}
+	depths, err := forkReaderDepthsTx(tx, threadID, from)
+	if err != nil {
+		return err
+	}
+	for _, depth := range depths {
+		byReader, err := readersInheritedRowsByID(tx, threadID, depth, from, ids)
+		if err != nil {
+			return err
+		}
+		for _, reader := range slices.Sorted(maps.Keys(byReader)) {
+			if err := copyInheritedRowsStampedTx(tx, reader, byReader[reader]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// forkReaderDepthsTx lists the depths of forkReaderDepthsSQL.
+func forkReaderDepthsTx(q sqlQueryer, threadID string, from timelineRow) ([]int, error) {
+	rows, err := q.Query(forkReaderDepthsSQL, threadID, from.turn, from.item)
+	if err != nil {
+		return nil, fmt.Errorf("store: list fork reader depths of %s: %w", threadID, err)
+	}
+	var depths []int
+	for rows.Next() {
+		var depth int
+		if err := rows.Scan(&depth); err != nil {
+			return nil, errors.Join(fmt.Errorf("store: scan a fork reader depth of %s: %w", threadID, err), rows.Close())
+		}
+		depths = append(depths, depth)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: iterate fork reader depths of %s: %w", threadID, err)
+	}
+	return depths, nil
+}
+
+// firstRowOfTx is the earliest position of ids in threadID's timeline.
+// found is false when the timeline shows none of them.
+func firstRowOfTx(tx *sql.Tx, threadID string, ids []string) (timelineRow, bool, error) {
+	var first timelineRow
+	found := false
+	for start := 0; start < len(ids); start += forkCopyBatch {
+		clause, args := inClause("items.id", ids[start:min(start+forkCopyBatch, len(ids))])
+		query, binds, err := timelineArms(tx, threadID, timelineSelection{
+			Columns: timelineIDColumns, KeyFirst: true, Where: clause, WhereArgs: args,
+		})
+		if err != nil {
+			return timelineRow{}, false, err
+		}
+		rows, err := tx.Query(query, binds...)
+		if err != nil {
+			return timelineRow{}, false, fmt.Errorf("store: read positions of %s rows: %w", threadID, err)
+		}
+		for rows.Next() {
+			var row timelineRow
+			if err := rows.Scan(&row.id, &row.turn, &row.item); err != nil {
+				return timelineRow{}, false, errors.Join(fmt.Errorf("store: scan position of a %s row: %w", threadID, err), rows.Close())
+			}
+			if !found || row.turn < first.turn || (row.turn == first.turn && row.item < first.item) {
+				first, found = row, true
+			}
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return timelineRow{}, false, fmt.Errorf("store: iterate positions of %s rows: %w", threadID, err)
+		}
+	}
+	return first, found, nil
 }
 
 // handOffOwnRowsTx is handOffIDsTx for threadID's own rows at or after
@@ -380,7 +544,7 @@ func handOffOwnRowsTx(tx *sql.Tx, threadID string, fromTurn int, where string, a
 	if where != "" {
 		sel.Where, sel.WhereArgs = "("+where+")", args
 	}
-	return handOff(tx, threadID, func(reader forkReader) ([]inheritedRow, error) {
+	return handOff(tx, threadID, timelineRow{turn: fromTurn, item: math.MinInt}, func(reader forkReader) ([]inheritedRow, error) {
 		return queryInheritedRows(tx, reader.threadID, levelAt(reader.depth), sel)
 	})
 }
@@ -389,18 +553,14 @@ func handOffOwnRowsTx(tx *sql.Tx, threadID string, fromTurn int, where string, a
 // reference payloadID, before threadID rewrites the payload's content. The
 // rows are found only when some thread reads through threadID.
 func handOffPayloadTx(tx *sql.Tx, threadID, payloadID string) error {
-	var ids []string
-	loaded := false
-	return handOff(tx, threadID, func(reader forkReader) ([]inheritedRow, error) {
-		if !loaded {
-			var err error
-			if ids, err = payloadRowIDsTx(tx, threadID, payloadID); err != nil {
-				return nil, err
-			}
-			loaded = true
-		}
-		return inheritedRowsByID(tx, reader.threadID, ids, levelsFrom(reader.depth))
-	})
+	if read, err := readThroughTx(tx, threadID); err != nil || !read {
+		return err
+	}
+	ids, err := payloadRowIDsTx(tx, threadID, payloadID)
+	if err != nil || len(ids) == 0 {
+		return err
+	}
+	return handOffReadIDsTx(tx, threadID, ids)
 }
 
 // payloadRowIDsSQL reads the ids of the rows of a thread's timeline that

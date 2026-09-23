@@ -777,6 +777,103 @@ func TestPointerForkStampsAndHeldWindows(t *testing.T) {
 	}
 }
 
+// ownHistoryStamp reads a thread row's own stamp columns, without the
+// ancestors' stamps readHistoryStampTx adds for a fork.
+func ownHistoryStamp(t *testing.T, s *Store, threadID string) HistoryStamp {
+	t.Helper()
+	var stamp HistoryStamp
+	if err := s.db.QueryRow(`SELECT history_rev, history_epoch FROM threads WHERE id = ?`, threadID).Scan(&stamp.Rev, &stamp.Epoch); err != nil {
+		t.Fatalf("read own stamps of %s: %v", threadID, err)
+	}
+	return stamp
+}
+
+// TestPointerForkStampsSumTheLineage: a fork's stamps are its own plus its
+// ancestors', so an ancestor's write moves them without writing the fork's
+// thread row. Removing lineage rows (materializing a fork, deleting its
+// source, a revert that leaves nothing inherited) folds the removed
+// ancestors' stamps into the fork's own, so no stamp ever moves back and a
+// client can never see an old stamp over different rows.
+func TestPointerForkStampsSumTheLineage(t *testing.T) {
+	s := newTestStore(t)
+	seedLinearSource(t, s, "S", 3)
+	mustPointerFork(t, s, "S", "F", throughTurn(1))
+	if _, err := s.AppendItem(Item{ID: "f2", ThreadID: "F", TurnIndex: 2, Kind: "user_text", Role: "user", Status: "completed", Summary: "fork 2"}); err != nil {
+		t.Fatal(err)
+	}
+	mustPointerFork(t, s, "F", "G", ForkCut{})
+	stamps := func() map[string]HistoryStamp {
+		return map[string]HistoryStamp{"F": historyStampOf(t, s, "F"), "G": historyStampOf(t, s, "G")}
+	}
+	// requireForward fails a stamp that moved back and, when moved is not
+	// nil, a stamp that moved or stayed against it.
+	requireForward := func(what string, before, after map[string]HistoryStamp, moved []string) {
+		t.Helper()
+		for id, was := range before {
+			now := after[id]
+			if now.Rev < was.Rev || now.Epoch < was.Epoch {
+				t.Errorf("%s moved %s's stamp back: %+v -> %+v", what, id, was, now)
+			}
+			if moved != nil && slices.Contains(moved, id) != (now != was) {
+				t.Errorf("%s: %s's stamp %+v -> %+v, want moved=%v", what, id, was, now, slices.Contains(moved, id))
+			}
+		}
+	}
+
+	own := map[string]HistoryStamp{"F": ownHistoryStamp(t, s, "F"), "G": ownHistoryStamp(t, s, "G")}
+	before := stamps()
+	if _, err := s.AppendItem(Item{ID: "late", ThreadID: "S", TurnIndex: 3, Kind: "user_text", Role: "user", Status: "completed", Summary: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	after := stamps()
+	requireForward("a source write", before, after, []string{"F", "G"})
+	if err := s.DeleteThreadItem("S", "late"); err != nil {
+		t.Fatal(err)
+	}
+	deleted := stamps()
+	requireForward("a source delete", after, deleted, []string{"F", "G"})
+	for id, was := range after {
+		if deleted[id].Epoch <= was.Epoch {
+			t.Errorf("a source delete left %s's epoch at %d", id, deleted[id].Epoch)
+		}
+	}
+	for id, was := range own {
+		if now := ownHistoryStamp(t, s, id); now != was {
+			t.Errorf("source writes wrote %s's thread row: %+v -> %+v", id, was, now)
+		}
+	}
+
+	before = stamps()
+	if err := s.MaterializeForkHistory(context.Background(), "F"); err != nil {
+		t.Fatal(err)
+	}
+	requireIDs(t, "F lineage", forkLineage(t, s, "F"), nil)
+	after = stamps()
+	requireForward("materializing F", before, after, []string{"F", "G"})
+	if _, err := s.AppendItem(Item{ID: "later", ThreadID: "S", TurnIndex: 3, Kind: "user_text", Role: "user", Status: "completed", Summary: "later"}); err != nil {
+		t.Fatal(err)
+	}
+	requireForward("a source write after F materialized", after, stamps(), []string{"G"})
+
+	before = stamps()
+	if err := s.DeleteThread("S"); err != nil {
+		t.Fatal(err)
+	}
+	requireIDs(t, "G lineage", forkLineage(t, s, "G"), []string{"1:F:2:1"})
+	requireForward("deleting the source", before, stamps(), nil)
+
+	seedLinearSource(t, s, "T", 2)
+	mustPointerFork(t, s, "T", "U", ForkCut{})
+	was := historyStampOf(t, s, "U")
+	if _, _, err := s.DeleteConversationFromTurn("U", 0); err != nil {
+		t.Fatal(err)
+	}
+	requireIDs(t, "U lineage", forkLineage(t, s, "U"), nil)
+	if now := historyStampOf(t, s, "U"); now.Rev <= was.Rev || now.Epoch <= was.Epoch {
+		t.Errorf("unlinking U moved its stamp %+v -> %+v, want both forward", was, now)
+	}
+}
+
 // TestPointerForkSearchFollowsTheCut: a fork's search finds the messages it
 // inherits, only below its cut and only while it shows them.
 func TestPointerForkSearchFollowsTheCut(t *testing.T) {
@@ -913,7 +1010,8 @@ func TestPointerForkQueriesStayIndexed(t *testing.T) {
 		args        []any
 		want        []string
 	}{
-		{"fork readers", forkReadersSQL, []any{"S"}, []string{"idx_thread_fork_lineage_ancestor"}},
+		{"fork readers", forkReadersSQL, []any{"S", 0, 0}, []string{"idx_thread_fork_lineage_ancestor"}},
+		{"fork reader depths", forkReaderDepthsSQL, []any{"S", 0, 0}, []string{"idx_thread_fork_lineage_ancestor"}},
 		{"payload rows", payloadRowIDsSQL, repeatArgs(2*payloadRowArmCount, []any{"G", "p"}), []string{"idx_items_payload_id", "idx_items_input_payload_id", "idx_import_history_payloads_id"}},
 	} {
 		plan := explainPlan(t, s, probe.query, probe.args...)

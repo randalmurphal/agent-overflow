@@ -30,8 +30,9 @@ var historyTables = []string{
 var localItemsIndex = regexp.MustCompile(`\b(?:idx_items_[a-z_]+|sqlite_autoindex_items_\d+)\b`)
 
 // planSearchKey is a SEARCH step's whole key, which may hold a row-value
-// range such as (turn_index,item_index)<(?,?).
-var planSearchKey = regexp.MustCompile(`USING (?:COVERING INDEX \S+|INDEX \S+|INTEGER PRIMARY KEY|PRIMARY KEY) \((.*)\)$`)
+// range such as (turn_index,item_index)<(?,?); an outer join's step ends
+// in LEFT-JOIN.
+var planSearchKey = regexp.MustCompile(`USING (?:COVERING INDEX \S+|INDEX \S+|INTEGER PRIMARY KEY|PRIMARY KEY) \((.*)\)(?: LEFT-JOIN)?$`)
 
 // cutOnlyKey is a SEARCH key that pins the thread and bounds the rows by a
 // lineage cut alone: the step walks the thread's history below the cut.
@@ -298,6 +299,121 @@ func TestForkCopyTriggersSkipRevisionOnlyWrites(t *testing.T) {
 	}
 }
 
+// forkReaderRowsRead matches the hand-off's read of the rows the readers
+// at one depth show (readersInheritedRowsByID).
+var forkReaderRowsRead = regexp.MustCompile(`\bthread_fork_lineage r\s`)
+
+// sourceWriteCost is what one write on a source costs the store: the
+// statements it runs and the rows they and their triggers change.
+type sourceWriteCost struct {
+	statements  int
+	rowsChanged int64
+}
+
+// TestSourceWritesCostTheSameForAnyForkCount: a source keeps running after
+// forks are made from it mid-turn (a side chat, a thread_ask copy). Each
+// fork took interrupted copies of the running rows and hides the source's,
+// and reads nothing after its cut, so no fork reads what the source writes
+// next. Those writes must cost the same with ten forks as with one and
+// change the rows they change with none: a fork's stamp sums its
+// ancestors' when read (readHistoryStampTx), so no write touches a fork's
+// thread row, and the hand-off asks every reader at a depth in one
+// statement (handOffReadIDsTx), and none for a row after every reader's
+// cut. Every statement also keeps to the lineage keys.
+func TestSourceWritesCostTheSameForAnyForkCount(t *testing.T) {
+	writes := []struct {
+		name string
+		// readerReads is how many reader-row reads the write makes with
+		// forks: one per depth for a row below their cuts, none after.
+		readerReads int
+		run         func(*testing.T, *Store)
+	}{
+		{"child insert", 0, func(t *testing.T, s *Store) {
+			if err := s.InsertItem(Item{ID: "child", ThreadID: "S", TurnIndex: 3, ItemIndex: 7, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "Read", ParentID: "launch", Summary: "Read", Meta: "{}"}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"child content update", 0, func(t *testing.T, s *Store) {
+			summary := "Read done"
+			if _, err := s.UpdateItemFields("S", "child", ItemPartialUpdate{Summary: &summary}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"running row content update", 1, func(t *testing.T, s *Store) {
+			summary := "Bash still running"
+			if _, err := s.UpdateItemFields("S", "tool", ItemPartialUpdate{Summary: &summary}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"running row payload append and revision touch", 1, func(t *testing.T, s *Store) {
+			if err := s.AppendPayloadData("S", "pt", []byte(" more"), "{}", 2); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	costs := map[int][]sourceWriteCost{}
+	for _, forks := range []int{0, 1, 10} {
+		s := newTestStore(t)
+		seedLinearSource(t, s, "S", 3)
+		if err := s.InsertItem(Item{ID: "launch", ThreadID: "S", TurnIndex: 3, ItemIndex: 5, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "Task", Summary: "Task", Meta: "{}"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.InsertItemWithPayload(
+			Item{ID: "tool", ThreadID: "S", TurnIndex: 3, ItemIndex: 6, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "Bash", ParentID: "launch", PayloadID: "pt", Meta: "{}"},
+			Payload{ID: "pt", Kind: "text", Meta: "{}", Data: []byte("out")},
+		); err != nil {
+			t.Fatal(err)
+		}
+		for i := range forks {
+			mustPointerFork(t, s, "S", fmt.Sprintf("F%d", i), ForkCut{})
+		}
+		rec := recordStatements(t, s)
+		totalChanges := func() int64 {
+			t.Helper()
+			var n int64
+			if err := s.db.QueryRow(`SELECT total_changes()`).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
+		for _, write := range writes {
+			before := totalChanges()
+			stmts := rec.capture(func() { write.run(t, s) })
+			costs[forks] = append(costs[forks], sourceWriteCost{statements: len(stmts), rowsChanged: totalChanges() - before})
+			readerReads := 0
+			for _, stmt := range stmts {
+				if forkReaderRowsRead.MatchString(stmt.query) {
+					readerReads++
+				}
+			}
+			if want := min(forks, write.readerReads); readerReads != want {
+				t.Errorf("%d forks, %s: %d reader-row reads, want %d", forks, write.name, readerReads, want)
+			}
+			for _, stmt := range stmts {
+				plan := explainPlan(t, s, stmt.query, stmt.args...)
+				violations, _ := lineagePlanViolations(plan, historyTableNames(stmt.query))
+				for _, node := range violations {
+					t.Errorf("%d forks, %s: %q leaves the lineage's keys\n%s\n%s", forks, write.name, node, stmt.query, planText(plan))
+				}
+			}
+		}
+		if forks > 0 {
+			if got := forkRows(t, s, "F0"); len(got) != 8 || got[7].ID != "tool" || got[7].Status == "running" {
+				t.Fatalf("fork rows = %+v, want the source's rows with the running ones interrupted", got)
+			}
+		}
+	}
+	for i, write := range writes {
+		none, one, ten := costs[0][i], costs[1][i], costs[10][i]
+		if ten != one {
+			t.Errorf("%s with 10 forks costs %+v, with 1 %+v", write.name, ten, one)
+		}
+		if one.rowsChanged != none.rowsChanged {
+			t.Errorf("%s with a fork changes %d rows, with none %d", write.name, one.rowsChanged, none.rowsChanged)
+		}
+	}
+}
+
 // Trigger programs do not appear in their statement's plan. Every
 // statement of the triggers a row write fires (the row stamping, fork
 // position and fork snapshot triggers on items, and the history stamp
@@ -322,7 +438,7 @@ func TestPointerForkRowTriggersProbeTheLineage(t *testing.T) {
 	}
 	for _, name := range append(append([]string{}, revTriggerNames...),
 		"trg_items_fork_position", "trg_items_fork_position_update",
-		"trg_items_fork_snapshot", "trg_items_fork_snapshot_move", "trg_threads_fork_history") {
+		"trg_items_fork_snapshot", "trg_items_fork_snapshot_move", "trg_threads_fork_source_delete") {
 		if triggers[name] == "" {
 			t.Fatalf("trigger %s is missing", name)
 		}

@@ -10,11 +10,9 @@ import (
 // contract tests never depend on the accessor they are checking.
 func historyStampOf(t *testing.T, s *Store, threadID string) HistoryStamp {
 	t.Helper()
-	var stamp HistoryStamp
-	if err := s.db.QueryRow(
-		`SELECT history_rev, history_epoch FROM threads WHERE id = ?`, threadID,
-	).Scan(&stamp.Rev, &stamp.Epoch); err != nil {
-		t.Fatalf("read history stamps for %s: %v", threadID, err)
+	stamp, found, err := readHistoryStampTx(s.db, threadID)
+	if err != nil || !found {
+		t.Fatalf("read history stamps for %s: found=%v err=%v", threadID, found, err)
 	}
 	return stamp
 }

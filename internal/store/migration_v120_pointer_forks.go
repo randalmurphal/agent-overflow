@@ -28,7 +28,7 @@ CREATE TABLE thread_fork_lineage (
     cut_item_index INTEGER NOT NULL,
     PRIMARY KEY (thread_id, depth)
 ) WITHOUT ROWID;
-CREATE INDEX idx_thread_fork_lineage_ancestor ON thread_fork_lineage(ancestor_id, thread_id);
+CREATE INDEX idx_thread_fork_lineage_ancestor ON thread_fork_lineage(ancestor_id, cut_turn_index, cut_item_index);
 
 CREATE TABLE thread_fork_hidden (
     thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -253,12 +253,6 @@ SELECT turns.turn_id, l.thread_id, turns.turn_index, turns.started_at, turns.com
 // v120 installs it and RestoreFrom reinstalls it after the row copy, which
 // runs without these triggers so restored rows are the snapshot's exactly.
 //
-//   - trg_threads_fork_history: a fork's reads include its ancestors' rows,
-//     so its history stamp must move whenever theirs does. The lineage is
-//     flattened, so one UPDATE reaches every descendant; recursive_triggers
-//     is OFF, so the descendants' own bump does not re-enter this trigger.
-//     Epoch moves with the ancestor's epoch. A write after the cut bumps the
-//     fork too: stale is safe, fresh would not be.
 //   - trg_threads_fork_source_delete: deleting a source must detach its
 //     forks first (detachForkDescendantsTx), or they would read a thread
 //     that no longer exists and never learn why.
@@ -276,15 +270,6 @@ SELECT turns.turn_id, l.thread_id, turns.turn_index, turns.started_at, turns.com
 //     fork reads is handed off first (handOffIDsTx), so the fork keeps
 //     its position.
 const forkTriggersSQL = `
-CREATE TRIGGER trg_threads_fork_history AFTER UPDATE OF history_rev, history_epoch ON threads
-WHEN NEW.history_rev IS NOT OLD.history_rev OR NEW.history_epoch IS NOT OLD.history_epoch
-BEGIN
-  UPDATE threads
-     SET history_rev = history_rev + 1,
-         history_epoch = history_epoch + (NEW.history_epoch IS NOT OLD.history_epoch)
-   WHERE id IN (SELECT thread_id FROM thread_fork_lineage WHERE ancestor_id = NEW.id);
-END;
-
 CREATE TRIGGER trg_threads_fork_source_delete BEFORE DELETE ON threads
 WHEN EXISTS (SELECT 1 FROM thread_fork_lineage WHERE ancestor_id = OLD.id)
 BEGIN
@@ -350,8 +335,7 @@ BEGIN
 END;
 `
 
-const dropForkTriggersSQL = `DROP TRIGGER IF EXISTS trg_threads_fork_history;
-DROP TRIGGER IF EXISTS trg_threads_fork_source_delete;
+const dropForkTriggersSQL = `DROP TRIGGER IF EXISTS trg_threads_fork_source_delete;
 DROP TRIGGER IF EXISTS trg_items_fork_position;
 DROP TRIGGER IF EXISTS trg_items_fork_position_update;
 DROP TRIGGER IF EXISTS trg_items_fork_snapshot;
