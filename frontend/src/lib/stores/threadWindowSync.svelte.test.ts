@@ -138,7 +138,6 @@ function replicaBody(items: Item[], epoch: number, rev: number) {
     hasMoreOlder: false,
     hasMoreNewer: false,
     latestSettledTurn: null,
-    subagentFolds: null,
     runs: [],
   };
 }

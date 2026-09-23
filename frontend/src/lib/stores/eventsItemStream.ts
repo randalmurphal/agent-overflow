@@ -413,6 +413,7 @@ export function applyItemStreamEvent(evt: ItemStreamEvent, origin?: EventOrigin)
   } else if (evt.action === 'delta') {
     if (!isBoundedString(evt.threadId, 512)) return;
     if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
+    if (evt.parentId !== undefined && !isBoundedString(evt.parentId, 512)) return;
     if (!isBoundedString(evt.kind, 128)) return;
     if (!isBoundedString(evt.delta) || evt.delta === '') return;
     if (!isFiniteNumber(evt.updatedAt)) return;
@@ -428,6 +429,7 @@ export function applyItemStreamEvent(evt: ItemStreamEvent, origin?: EventOrigin)
   } else if (evt.action === 'patch') {
     if (!isBoundedString(evt.threadId, 512)) return;
     if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
+    if (evt.parentId !== undefined && !isBoundedString(evt.parentId, 512)) return;
     if (!evt.patch || typeof evt.patch !== 'object') return;
     if (evt.patch.status !== undefined && !isBoundedString(evt.patch.status, 128)) return;
     if (evt.patch.summary !== undefined && !isBoundedString(evt.patch.summary)) return;
@@ -461,6 +463,7 @@ function coalescedDelta(evt: ItemDeltaEvent): CoalescedDelta {
   return {
     threadId: evt.threadId,
     itemId: evt.itemId,
+    parentId: evt.parentId,
     kind: evt.kind,
     delta: '',
     updatedAt: evt.updatedAt,
@@ -472,6 +475,7 @@ function applyCoalescedDelta(delta: CoalescedDelta): void {
   const coalesced: ItemDeltaEvent = {
     threadId: delta.threadId,
     itemId: delta.itemId,
+    parentId: delta.parentId,
     kind: delta.kind,
     delta: delta.chunks.join(''),
     updatedAt: delta.updatedAt,

@@ -28,7 +28,7 @@ const remote = { backendId: 'offline-gpu', generation: 'g1', name: 'GPU' };
 const project: ProjectWithCounts = { project: { id: 'project', name: 'repo', path: '/repo',
   sortPosition: 0, createdAt: 0, updatedAt: 0, archived: false }, threadCount: 1 };
 const body: ReplicaBody = { epoch: 1, rev: 1, savedAt: 1000, items: [], oldestCursor: null,
-  newestCursor: null, hasMoreOlder: false, hasMoreNewer: false, latestSettledTurn: null, subagentFolds: null, runs: [] };
+  newestCursor: null, hasMoreOlder: false, hasMoreNewer: false, latestSettledTurn: null, runs: [] };
 
 beforeEach(async () => {
   await __replicaSweepForTest();

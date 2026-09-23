@@ -628,9 +628,8 @@ export function createThreadTimelineWindow(
 
   /**
    * Cache-hit branch of `installCacheOrFreshState`: cursor/flag
-   * bookkeeping only. `replaceTimelineItems(cached.items)` and
-   * `subagentFolds.restore(...)` stay pane-side — this method owns
-   * only the window bookkeeping.
+   * bookkeeping only. `replaceTimelineItems(cached.items)` stays
+   * pane-side; this method owns only the window bookkeeping.
    */
   function installFromSnapshot(cached: ThreadItemSnapshot): void {
     setLoadedCursors(

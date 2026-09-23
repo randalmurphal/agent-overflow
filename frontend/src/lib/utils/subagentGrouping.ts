@@ -10,13 +10,13 @@
 // slice their transcript root at provider-established resume prompts.
 // Wait carriers group the completions they explicitly observed. Nested agent
 // cards recurse to MAX_DEPTH; deeper descendants render as leaves.
-// Streamed children never enter a pane window: cards combine loaded rows with
-// the decorated aggregates here, and read the pane's live aggregate
-// themselves. Completed cards use their own saved aggregates.
+// A pane window holds only rows of its own scope, so the main timeline loads
+// no subagent children: a collapsed card's count and preview come from the
+// backend aggregates decorated on its anchor row, ratcheted against any rows
+// a scoped window does load.
 
 import type { Item } from '../types/models';
 import { userMessageIdentity } from './userMessageIdentity';
-import type { SubagentFoldAggregate } from './subagentFold';
 import { parseJsonObject } from './parseJsonObject';
 import {
   claudeResumeTranscriptRootId,
@@ -28,15 +28,6 @@ import {
 } from './subagentLaunch';
 import { reportFrontendDiagnostic } from './frontendErrorCapture';
 import { isCommandAgentResult } from './commandAgentResult';
-
-/**
- * Accessor into the pane's live subagent aggregates
- * (`threadSubagentMemory`). The grouping pass reads it only for
- * forked-skill detection: an anchor with a live child is a launch.
- */
-export type SubagentLiveAggregates = (
-  anchorId: string,
-) => SubagentFoldAggregate | undefined;
 
 export const MAX_DEPTH = 3;
 const PREVIEW_MAX_CHARS = 160;
@@ -115,7 +106,7 @@ function leafNode(item: Item, orphan = false): TimelineLeaf {
  *
  * Unlike a leaf, a card's output depends on more than its own Item, so a
  * hit requires validation against the CURRENT pass's inputs (buckets,
- * carrier links, completion folds, live launch detection — see
+ * carrier links, completion folds; see
  * `groupItemsBySubagent`'s `cardStillValid`). The entry records the depth
  * it was built at because nested builds are depth-capped; entries die with
  * their Item, and any write to the launch/carrier row replaces the Item.
@@ -181,8 +172,7 @@ export interface SubagentGroupNode {
   /**
    * Total child count (counts *all* descendants, not just immediate
    * children): descendants loaded in this window, ratcheted against the
-   * backend-decorated aggregate stamped on history-loaded anchors. The
-   * card adds the pane's live aggregate (`SubagentLiveAggregates`).
+   * backend-decorated aggregate stamped on the anchor.
    */
   descendantCount: number;
   /**
@@ -193,8 +183,7 @@ export interface SubagentGroupNode {
   /**
    * Most recent loaded descendant summary (`pickLatestChildSummary`),
    * falling back to the backend-decorated summary from the anchor's
-   * meta, then to ''. The card competes it against the pane's live
-   * aggregate.
+   * meta, then to ''.
    */
   latestChildSummary: string;
 }
@@ -385,9 +374,8 @@ function compareItems(a: Item, b: Item): number {
 /**
  * Normalize raw summary text into the collapsed-header preview shape:
  * whitespace collapsed, capped at PREVIEW_MAX_CHARS with an ellipsis.
- * Shared by loaded-children previews, the backend-decorated summary
- * fallback, and the pane's live aggregates (which capture the preview
- * at admission) so all three render identically.
+ * Shared by loaded-children previews and the backend-decorated summary
+ * fallback so both render identically.
  */
 export function normalizePreviewText(summary: string): string {
   if (summary.length === 0) return '';
@@ -437,10 +425,9 @@ export function subagentActivityPreview(item: Item): string {
  * History windows load only top-level rows; the store decorates each
  * launch anchor with its transitive descendant count and the same
  * latest-child summary pickLatestChildSummary would compute (see
- * internal/store/subagent_items.go). Live anchors created by streaming
- * events carry no decoration until the backend re-sends them; their
- * streamed children are recorded by the pane's live aggregates
- * (utils/subagentFold.ts), surfaced through `SubagentLiveAggregates`.
+ * internal/store/subagent_items.go). A live anchor carries it once triage
+ * re-pushes the row after its children are written
+ * (internal/triage/wire_items.go); until then it has none.
  *
  * `count` is the anchor's ROUND: for a resumed agent the store bounds
  * the transcript root's aggregate to the rows before the first resume
@@ -481,9 +468,7 @@ export function decoratedSubagentAggregates(launch: Item, completion?: Item | nu
  * True when an item is in the middle of doing work — running tool
  * calls and actively-streaming text/thinking blocks both qualify.
  * Biases `pickLatestChildSummary` toward the subagent's current
- * activity, and defines "active" for the pane's live aggregates
- * (threadSubagentMemory.ts); the two share one status set so a loaded
- * row and an admitted one compete on equal terms.
+ * activity.
  */
 export function isItemActive(item: Item): boolean {
   return item.status === 'running' || item.status === 'streaming';
@@ -608,11 +593,6 @@ export function* renderedItemIdsWithin(
  * so the preview tracks what the subagent is doing now; falls back to
  * the most recent terminal descendant only when nothing is active.
  *
- * The pane's `live` aggregate competes on both sides by position: its
- * newest active preview against the best loaded active row, and, with
- * nothing active anywhere, its newest terminal preview against the best
- * loaded terminal row. Ties go to the live aggregate.
- *
  * Comparison key is `(turnIndex, itemIndex)` — the same canonical
  * ordering the timeline uses everywhere else.
  *
@@ -624,7 +604,6 @@ export function* renderedItemIdsWithin(
  */
 export function pickLatestChildSummary(
   children: TimelineNode[],
-  live?: SubagentFoldAggregate,
   getItem?: (id: string) => Item | undefined,
 ): string {
   // Candidates are carried as ITEMS, not as items paired with their
@@ -650,24 +629,7 @@ export function pickLatestChildSummary(
       if (!bestTerminal || compareItems(item, bestTerminal) > 0) bestTerminal = item;
     }
   }
-  if (live?.activePreview && (
-    !bestActive
-    || live.activeTurnIndex > bestActive.turnIndex
-    || (live.activeTurnIndex === bestActive.turnIndex && live.activeItemIndex >= bestActive.itemIndex)
-  )) {
-    return live.activePreview;
-  }
   if (bestActive) return normalizePreviewText(bestActive.summary ?? '');
-  if (live?.terminalPreview) {
-    if (
-      !bestTerminal
-      || live.terminalTurnIndex > bestTerminal.turnIndex
-      || (live.terminalTurnIndex === bestTerminal.turnIndex
-        && live.terminalItemIndex >= bestTerminal.itemIndex)
-    ) {
-      return live.terminalPreview;
-    }
-  }
   return bestTerminal ? normalizePreviewText(bestTerminal.summary ?? '') : '';
 }
 
@@ -1178,13 +1140,10 @@ export function visibleTimelineItemIdForItem(items: readonly Item[], itemId: str
 
 /**
  * Group items by subagent parentage. Pure function — does not mutate the
- * input and returns a fresh tree each call. `aggregates` (optional) is
- * the pane's live aggregate accessor; an anchor with a live child counts
- * as having children for forked-skill detection.
+ * input and returns a fresh tree each call.
  */
 export function groupItemsBySubagent(
   items: readonly Item[],
-  aggregates?: SubagentLiveAggregates,
 ): TimelineNode[] {
   if (items.length === 0) return [];
 
@@ -1264,10 +1223,7 @@ export function groupItemsBySubagent(
   // Every launch in the window, provider-neutral. The context is built over
   // the same list, so forked-Skill detection sees exactly the rows this pass
   // is about to place.
-  const launchContext = subagentLaunchContextFrom(
-    sortedWithCarriers,
-    aggregates && ((itemId) => aggregates(itemId) !== undefined),
-  );
+  const launchContext = subagentLaunchContextFrom(sortedWithCarriers);
   const subagentLaunchIDs = new Set<string>();
   // Launches that run detached from the main turn (`launchRunsDetached`),
   // every provider. Their launch row is the pre-card leaf and never a

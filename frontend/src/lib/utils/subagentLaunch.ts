@@ -4,10 +4,9 @@
 // `subagentLaunchInfo` is THE launch predicate: one function that answers
 // "does this row anchor a subagent?" for every shape AO renders as an
 // agent card (docs/specs/agent-visibility.md § "Anchor set"). Everything
-// above it — the timeline tree (`utils/subagentGrouping.ts`), the pane's
-// live aggregates (`stores/threadSubagentMemory.ts`), and the agent
-// pane — is provider-neutral and must key on this and nothing else, so a
-// new launch shape lands in one place.
+// above it (the timeline tree in `utils/subagentGrouping.ts` and the
+// agent pane) is provider-neutral and must key on this and nothing else,
+// so a new launch shape lands in one place.
 //
 // The four shapes, and the wire fact each is read from:
 //
@@ -20,10 +19,11 @@
 //     three signals, in cost order: a loaded child row attributed to the
 //     Skill tool_use, the `skillFork` stamp the parser writes from the
 //     completion's `tool_use_result {status:"forked", agentId,
-//     commandName}`, or the store's `subagentDescendantCount` decoration
-//     (history windows load no children at all, so neither of the first
-//     two is available on a cold thread). An INLINE skill has none of
-//     them and is not a launch — it stays a plain tool row.
+//     commandName}`, or the backend's `subagentDescendantCount`
+//     decoration (the main timeline loads no children at all, so a live
+//     fork shows through the meta signals; a history window has only the
+//     decoration). An INLINE skill has none of them and is not a launch;
+//     it stays a plain tool row.
 //   - Claude `SendMessage` background carrier — the §E6 resume rebind.
 //     The parser marks the resuming tool_use backgrounded and triage
 //     stamps the rebound `task_id` on it, so "backgrounded SendMessage
@@ -260,17 +260,14 @@ export const NO_LOADED_SUBAGENT_CHILDREN: SubagentLaunchContext = {
  * Build a context over a list of loaded items. The parent-id index is
  * built on FIRST USE, not eagerly: `subagentLaunchInfo` reaches
  * `hasChildren` only for `Skill` rows, so a window with none never pays
- * for the pass. `liveChildren` answers for streamed children, which a
- * pane records without loading them (`threadSubagentMemory`).
+ * for the pass.
  */
 export function subagentLaunchContextFrom(
   items: readonly Item[],
-  liveChildren?: (itemId: string) => boolean,
 ): SubagentLaunchContext {
   let parentIds: Set<string> | null = null;
   return {
     hasChildren(itemId: string): boolean {
-      if (liveChildren?.(itemId)) return true;
       if (parentIds === null) {
         parentIds = new Set<string>();
         for (const item of items) {
@@ -335,11 +332,20 @@ function trimmedInputString(
  *  2. `meta.skillFork` — what the parser stamps from the fork's
  *     completion (`{agentId, commandName}`), which survives on the launch
  *     row because triage merges completion meta into it;
- *  3. the store's descendant-count decoration, the only signal available
- *     on a history window (which loads no child rows at all).
+ *  3. the backend's descendant-count decoration, stamped on history loads
+ *     and on the row triage re-pushes once children are written; the main
+ *     timeline loads no child rows at all.
  */
 function isForkedSkillLaunch(item: Item, ctx: SubagentLaunchContext): boolean {
-  if (ctx.hasChildren(item.id)) return true;
+  return ctx.hasChildren(item.id) || hasForkedSkillMeta(item);
+}
+
+/**
+ * Signals 2 and 3 of `isForkedSkillLaunch`: the ones a `Skill` row carries
+ * on itself. Shared with `itemTimelineStructureChanged`, because a Skill
+ * row that gains one becomes a card with no child row loading.
+ */
+export function hasForkedSkillMeta(item: Item): boolean {
   const meta = parseJsonObject(item.meta);
   const fork = meta?.skillFork;
   if (fork !== null && typeof fork === 'object' && !Array.isArray(fork)) return true;

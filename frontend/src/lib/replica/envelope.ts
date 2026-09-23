@@ -22,7 +22,6 @@ import type {
   ActivityRunGroupKey,
   ActivityRunStub,
 } from '../../../bindings/agent-overflow/internal/store/models';
-import type { SubagentFoldSnapshot } from '../utils/subagentFold';
 import type { TimelineCursorLike } from '../stores/threadItems';
 import type { SettledTurn } from '../stores/threadTurnProjection';
 
@@ -44,8 +43,8 @@ export const REPLICA_ENVELOPE_VERSION = 1;
 // gave each stub its edge coordinates, which is how a jump tells a member
 // the pane does not hold from a row that is merely older than the run.
 // Schema 6 carries completion launch context independently of loaded rows.
-// Schema 7 holds no subagent child rows and records each anchor's live
-// aggregate (count, terminal preview) plus per-root dedupe floors.
+// Schema 7 holds no subagent child rows and no child aggregates: a
+// collapsed card reads its launch row's backend decoration.
 export const REPLICA_SCHEMA_VERSION = 7;
 
 /**
@@ -102,7 +101,6 @@ export interface ReplicaBody {
   runs: ActivityRunStub[];
   /** Paint-only; `ListRecentTurns` re-fetches it on every open. */
   latestSettledTurn: SettledTurn | null;
-  subagentFolds: SubagentFoldSnapshot | null;
 }
 
 export interface ReplicaEnvelope {
@@ -136,25 +134,6 @@ function plainCursor(cursor: TimelineCursorLike | null | undefined): TimelineCur
   };
   if (typeof cursor.itemId === 'string') plain.itemId = cursor.itemId;
   return plain;
-}
-
-function plainFolds(folds: SubagentFoldSnapshot | null | undefined): SubagentFoldSnapshot | null {
-  if (!folds || !Array.isArray(folds.anchors) || !Array.isArray(folds.roots)) return null;
-  return {
-    anchors: folds.anchors.map((anchor) => ({
-      anchorId: anchor.anchorId,
-      rootId: anchor.rootId,
-      count: anchor.count,
-      terminalPreview: anchor.terminalPreview,
-      terminalTurnIndex: anchor.terminalTurnIndex,
-      terminalItemIndex: anchor.terminalItemIndex,
-    })),
-    roots: folds.roots.map((root) => ({
-      rootId: root.rootId,
-      floorTurnIndex: root.floorTurnIndex,
-      floorItemIndex: root.floorItemIndex,
-    })),
-  };
 }
 
 function plainGroupKey(key: ActivityRunGroupKey | null | undefined): ActivityRunGroupKey | null {
@@ -216,7 +195,6 @@ export function normalizeBody(input: ReplicaBody): ReplicaBody {
     hasMoreNewer: input.hasMoreNewer === true,
     runs: plainRuns(input.runs),
     latestSettledTurn: plainSettledTurn(input.latestSettledTurn),
-    subagentFolds: plainFolds(input.subagentFolds),
   };
 }
 
@@ -224,8 +202,8 @@ export function normalizeBody(input: ReplicaBody): ReplicaBody {
  * Chars an envelope contributes to the replica-wide budget. Term for
  * term the accounting `threadItemCache.estimateSnapshotChars` uses
  * (summary + meta + payloadMeta + payloadPreviewSpans per row, plus the
- * fold's preview and id strings), so the in-memory and durable tiers —
- * which share the per-window caps above — are measured on one scale.
+ * run stubs' strings), so the in-memory and durable tiers, which share
+ * the per-window caps above, are measured on one scale.
  * Changing either estimator without the other silently desynchronises
  * what the two tiers will accept.
  */
@@ -240,10 +218,6 @@ export function estimateBodyChars(body: ReplicaBody): number {
     for (const id of run.unshippedPairedLaunchIds) chars += id.length;
     for (const id of run.shippedSupersededLaunchIds) chars += id.length;
   }
-  for (const anchor of body.subagentFolds?.anchors ?? []) {
-    chars += anchor.anchorId.length + anchor.rootId.length + anchor.terminalPreview.length;
-  }
-  for (const root of body.subagentFolds?.roots ?? []) chars += root.rootId.length;
   return chars;
 }
 
@@ -308,7 +282,6 @@ export function readEnvelope(raw: unknown): ReplicaBody | null {
     hasMoreNewer: body.hasMoreNewer === true,
     runs: plainRuns(body.runs as ActivityRunStub[]),
     latestSettledTurn: (body.latestSettledTurn as SettledTurn | null) ?? null,
-    subagentFolds: plainFolds(body.subagentFolds),
   };
 }
 

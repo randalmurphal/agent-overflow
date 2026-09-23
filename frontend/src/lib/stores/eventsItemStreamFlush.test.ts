@@ -131,11 +131,15 @@ describe('item event flush', () => {
     const timelineRevision = pane.timelineRevision;
     const runsRevision = pane.activityRuns.revision;
     const windowRevision = pane.activityRuns.windowRevision;
+    const memory = pane.debugMemoryStats();
 
     for (let i = 0; i < 40; i += 1) {
       push(
         upsert(activityRunRow(`child-${i}`, 8 + i, { parentId: 'agent', status: 'running' })),
-        { action: 'patch', threadId, itemId: `child-${i}`, kind: 'tool_call', patch: { rev: 1, status: 'completed', updatedAt: 9 } },
+        {
+          action: 'patch', threadId, itemId: `child-${i}`, parentId: 'agent', kind: 'tool_call',
+          patch: { rev: 1, status: 'completed', updatedAt: 9 },
+        },
       );
     }
     flushItemEventQueue();
@@ -144,6 +148,20 @@ describe('item event flush', () => {
     expect(pane.timelineRevision).toBe(timelineRevision);
     expect(pane.activityRuns.revision).toBe(runsRevision);
     expect(pane.activityRuns.windowRevision).toBe(windowRevision);
-    expect(pane.subagentLiveAggregate('agent')).toMatchObject({ count: 40, activePreview: '' });
+    expect(pane.debugMemoryStats()).toEqual(memory);
+  });
+
+  it('drops a delta or patch whose parentId is malformed', async () => {
+    const text = makeItem({ id: 'text', threadId, turnIndex: 1, itemIndex: 1, kind: 'assistant_text', status: 'streaming', summary: 'a' });
+    const pane = await buildPane(makeThread({ id: threadId }), [text]);
+    const malformed = 42 as unknown as string;
+    push(
+      { action: 'delta', threadId, itemId: 'text', parentId: malformed, kind: 'assistant_text', delta: 'b', updatedAt: 2 },
+      { action: 'patch', threadId, itemId: 'text', parentId: malformed, kind: 'assistant_text', patch: { rev: 1, status: 'completed', updatedAt: 3 } },
+    );
+    flushItemEventQueue();
+    pane.__flushItemSmoothersForTest();
+
+    expect(pane.getItemById('text')).toMatchObject({ summary: 'a', status: 'streaming' });
   });
 });

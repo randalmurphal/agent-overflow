@@ -1,7 +1,6 @@
 import { retainedItemChars, snapshotItem } from '../utils/itemMemory';
 import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
 import type { Item } from '../types/models';
-import type { SubagentFoldSnapshot } from '../utils/subagentFold';
 import type { TimelineCursorLike } from './threadItems';
 import type { SettledTurn } from './threadTurnProjection';
 import type { ThreadHistoryStamp } from './threadHistoryStamps';
@@ -37,18 +36,11 @@ export interface ThreadItemSnapshot {
   hasMoreNewer: boolean;
   latestSettledTurn: SettledTurn | null;
   /**
-   * Live subagent aggregates keyed by launch anchor. The window never
-   * holds child rows, so the aggregates travel with it or a warm re-entry
-   * renders collapsed cards without their live counts and previews until
-   * the next live event or decoration.
-   */
-  subagentFolds?: SubagentFoldSnapshot | null;
-  /**
    * The activity-run stubs describing the members `items` does not hold
    * (docs/architecture/timeline-window-pages.md §2). Travels with the
-   * window for the same reason the folds do: a warm re-entry that painted
-   * the rows without them would render every run as complete and describe
-   * a held window missing every unshipped member.
+   * window because a warm re-entry that painted the rows without them
+   * would render every run as complete and describe a held window missing
+   * every unshipped member.
    */
   runs?: ActivityRunStub[] | null;
   /**
@@ -171,12 +163,8 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
         hasMoreHistory: snapshot.hasMoreHistory,
         hasMoreNewer: snapshot.hasMoreNewer,
         latestSettledTurn: snapshot.latestSettledTurn,
-        // Reference-shared, not cloned: `snapshot()` allocates fresh
-        // plain data each call and `restore()` copies out of it, so no
-        // caller can mutate a stored fold after set().
-        subagentFolds: snapshot.subagentFolds ?? null,
-        // Reference-shared for the same reason the folds are: every
-        // producer hands over freshly built plain stubs.
+        // Reference-shared, not cloned: every producer hands over freshly
+        // built plain stubs.
         runs: snapshot.runs ?? null,
         historyStamp: snapshot.historyStamp ? { ...snapshot.historyStamp } : null,
       };
@@ -233,11 +221,6 @@ function estimateSnapshotChars(snapshot: ThreadItemSnapshot): number {
   for (const item of snapshot.items) {
     chars += retainedItemChars(item);
   }
-  // Same terms the replica's `estimateBodyChars` counts for the folds.
-  for (const anchor of snapshot.subagentFolds?.anchors ?? []) {
-    chars += anchor.anchorId.length + anchor.rootId.length + anchor.terminalPreview.length;
-  }
-  for (const root of snapshot.subagentFolds?.roots ?? []) chars += root.rootId.length;
   // Same terms the replica's `estimateBodyChars` counts for a stub, so
   // the two tiers stay on one scale.
   for (const run of snapshot.runs ?? []) {

@@ -72,7 +72,6 @@ function snapshot(threadId: string, stamp: ThreadHistoryStamp): ThreadItemSnapsh
     hasMoreHistory: false,
     hasMoreNewer: false,
     latestSettledTurn: null,
-    subagentFolds: null,
     historyStamp: stamp,
   };
 }

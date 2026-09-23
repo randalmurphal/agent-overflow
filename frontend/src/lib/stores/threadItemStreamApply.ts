@@ -7,7 +7,6 @@ import type {
 } from '../types/events';
 import { type ApplyItemUpsertsToWindowResult, applyItemUpsertsToWindow } from './threadItemUpserts';
 import type { ThreadTimelineWindow } from './threadTimelineWindow.svelte';
-import type { ThreadSubagentMemory } from './threadSubagentMemory';
 import type { ThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
 import { isSmoothLiveContentKind } from './threadPaneShared';
@@ -46,7 +45,10 @@ export interface ThreadItemStreamApplyOptions {
   /** The pane's optimistic-row ledger — discharged by a wire echo. */
   optimisticItemIds: Set<string>;
   timelineWindow: ThreadTimelineWindow;
-  subagentMemory?: ThreadSubagentMemory;
+  /**
+   * The transcript root of a scoped surface; omitted for a thread's main
+   * window, whose scope is the top level.
+   */
   scopeRootId?: string;
   streamingReveal: ThreadStreamingReveal;
   activityRuns: ThreadActivityRuns;
@@ -59,18 +61,24 @@ export interface ThreadItemStreamApply {
   /**
    * Merge a batch of Items into the loaded window. Returns the applied
    * result, or null when nothing reached the window (empty batch, only
-   * subagent children, rows refused admission, or no row changed).
+   * rows of another scope, rows refused admission, or no row changed).
    */
   upsertItemsBatch(incoming: Item[]): ApplyItemUpsertsToWindowResult | null;
   /** `upsertItemsBatch` plus optimistic-marker discharge and the append spring. */
   applyProviderItemUpserts(
     incoming: Item[],
   ): ApplyItemUpsertsToWindowResult | null;
-  /** Append a streaming text delta to a loaded row (smoothed or direct). */
+  /**
+   * Append a streaming text delta to a loaded row (smoothed or direct). A
+   * delta for a row of another scope is that scope's surface's to apply.
+   */
   applyItemDelta(evt: ItemDeltaEvent): void;
   /** Replace a loaded row's re-validated meta blob. */
   applyItemMeta(evt: ItemMetaEvent): void;
-  /** Apply a field patch (status / summary / meta / decision) to a loaded row. */
+  /**
+   * Apply a field patch (status / summary / meta / decision) to a loaded
+   * row. A patch for a row of another scope is ignored like its deltas.
+   */
   applyItemPatch(evt: ItemPatchEvent): void;
 }
 
@@ -86,15 +94,14 @@ export interface ThreadItemStreamApply {
  * `options.commitUpsertResult()`, so every assignment and every
  * revision bump still happens at the pane's own chokepoints. It
  * deliberately does NOT own the window's cursors (threadTimelineWindow),
- * the per-item smoothers and reveal gate (threadStreamingReveal), the
- * subagent live aggregates (threadSubagentMemory), or the switch/sync
- * pipeline (threadSwitchLoad) — it drives all four through their handles.
+ * the per-item smoothers and reveal gate (threadStreamingReveal), or the
+ * switch/sync pipeline (threadSwitchLoad); it drives them through their
+ * handles.
  */
 export function createThreadItemStreamApply(
   options: ThreadItemStreamApplyOptions,
 ): ThreadItemStreamApply {
-  const { activityRuns, itemIndexById, subagentMemory, streamingReveal, timelineWindow } =
-    options;
+  const { activityRuns, itemIndexById, streamingReveal, timelineWindow } = options;
 
   /**
    * Ids already reported by `applyItemDelta`'s missing-row warning. A
@@ -136,35 +143,33 @@ export function createThreadItemStreamApply(
   }
 
   /**
-   * Route a batch at the admission chokepoint. Rows of this surface's
-   * scope merge into the window; every other row is a subagent child,
-   * which the main pane records against its launch anchor's aggregate
-   * (`threadSubagentMemory.admitChildren`) and a scoped surface ignores.
-   * Children are admitted after the window commit so an anchor landing in
-   * the same batch resolves them.
+   * The admission chokepoint. Only rows of this surface's scope merge
+   * into the window. Every other row belongs to another scope (a subagent
+   * child, on the main window) and is dropped here: the surface of that
+   * scope receives it through the timeline mutation fan-out, and a
+   * collapsed card reads its launch row's backend aggregate.
    */
   function upsertItemsBatch(
     incoming: Item[],
     optimisticItemIds?: ReadonlySet<string>,
   ): ApplyItemUpsertsToWindowResult | null {
-    if (incoming.length === 0) return null;
     const scope = options.scopeRootId ?? '';
     let rows = incoming;
-    let children: Item[] | null = null;
     for (let index = 0; index < incoming.length; index += 1) {
       if ((incoming[index].parentId ?? '') === scope) continue;
       rows = incoming.slice(0, index);
-      children = [incoming[index]];
       for (let rest = index + 1; rest < incoming.length; rest += 1) {
         const item = incoming[rest];
         if ((item.parentId ?? '') === scope) rows.push(item);
-        else children.push(item);
       }
       break;
     }
-    const applied = rows.length > 0 ? upsertWindowRows(rows, optimisticItemIds) : null;
-    if (children) subagentMemory?.admitChildren(children);
-    return applied;
+    return rows.length > 0 ? upsertWindowRows(rows, optimisticItemIds) : null;
+  }
+
+  /** The event names a row of another scope, which this window never holds. */
+  function belongsToAnotherScope(parentId: string | undefined): boolean {
+    return (parentId ?? '') !== (options.scopeRootId ?? '');
   }
 
   function upsertWindowRows(
@@ -257,11 +262,9 @@ export function createThreadItemStreamApply(
     if (thread && evt.threadId !== thread.id) return;
     const index = itemIndexById.get(evt.itemId);
     if (index === undefined) {
+      // Expected miss: the surface of that scope applies the same event.
+      if (belongsToAnotherScope(evt.parentId)) return;
       if (options.scopeRootId !== undefined) return;
-      // Expected miss: subagent children never enter the window, so their
-      // deltas have nothing to write into. Scoped surfaces that hold the
-      // row apply the same event to their own windows.
-      if (subagentMemory?.isKnownChild(evt.itemId)) return;
       // The wire contract from triage is: the upsert that creates a
       // streaming row ALWAYS precedes any delta for that row
       // (handleTextDelta in internal/triage/stream_items.go inserts
@@ -343,8 +346,8 @@ export function createThreadItemStreamApply(
     const thread = options.getThread();
     if (thread && evt.threadId !== thread.id) return;
     const index = itemIndexById.get(evt.itemId);
-    // A tracked child has no window row and no smoother to reconcile.
-    if (index === undefined && subagentMemory?.applyChildPatch(evt)) return;
+    // Another scope's row has no window row and no smoother here.
+    if (index === undefined && belongsToAnotherScope(evt.parentId)) return;
     const current = index === undefined ? undefined : options.getItems()[index];
     if (current && evt.patch.status && isItemStatusRegression(current, { status: evt.patch.status, updatedAt: evt.patch.updatedAt })) return;
     streamingReveal.applyPatch(evt.itemId, evt.patch);

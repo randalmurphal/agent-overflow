@@ -12,7 +12,6 @@
 //   threadTimelineWindow.svelte.ts    history cursors and the load methods
 //   threadItemStreamApply.ts          the upsert/delta/meta/patch machine
 //   threadSwitchLoad.svelte.ts        switch, sync, replica, cache pipeline
-//   threadSubagentMemory.ts           live aggregates of streamed subagent children
 //   threadRowUiState.svelte.ts        per-row expansion/attachment state
 //   threadDraftPlaceholder.svelte.ts  the pre-materialization phase
 //   threadPaneScroll.svelte.ts        controller slot, spring arming, scroll intent
@@ -47,7 +46,6 @@ import { createGitStatusView, type GitStatusView } from './gitStatusStore.svelte
 import { workspaceRefForThread } from '../utils/workspaceKey';
 import type { WorkspaceRef } from '../types/git';
 import type { RevealBoundary } from '../utils/subagentGrouping';
-import type { SubagentFoldAggregate } from '../utils/subagentFold';
 import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import { createLiveTodoState } from './liveTodoState.svelte';
 import { createThreadPendingInteractiveState } from './threadPendingInteractiveState.svelte';
@@ -63,7 +61,6 @@ import { renderedFlushedUserItemIds } from './threadFlushRowReveal';
 import { confirmFlushedByUserItemId, getFlushedForThread } from './sendQueue.svelte';
 import type { StreamingAssistantRenderContext } from './streamingAssistantReveal';
 import { createThreadTimelineWindow } from './threadTimelineWindow.svelte';
-import { createThreadSubagentMemory } from './threadSubagentMemory';
 import { createThreadLiveStateHydration } from './threadLiveStateHydration';
 import { createThreadSwitchLoad } from './threadSwitchLoad.svelte';
 import { createThreadItemStreamApply } from './threadItemStreamApply';
@@ -185,7 +182,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     streamingReveal: () => streamingReveal,
     rowUiState: () => rowUiState,
     activityRuns: () => activityRuns,
-    subagentMemory: () => subagentMemory,
     switchLoad: () => switchLoad,
   });
   const {
@@ -198,7 +194,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     installTimelineItems,
     dropTimelineItems,
     commitUpsertResult,
-    noteStructureChanged,
   } = itemWindow;
 
   // Scroll-surface edge: the registered controller slot, the scroll-to-item
@@ -305,8 +300,8 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     windowedRowCount: itemWindow.windowedRowCount,
     getSwitchGeneration: () => switchGeneration,
     getScrollController: () => paneScroll.controller,
-    // Declared below; the arrow keeps the read lazy, like the
-    // subagentMemory one above.
+    // Declared below; the arrow keeps the read lazy, like the item
+    // window's collaborators above.
     activityRuns: () => activityRuns,
   });
   const pendingInteractiveState = createThreadPendingInteractiveState();
@@ -463,18 +458,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     },
   });
 
-  // Subagent children never enter the window. Their launch anchors'
-  // live aggregates (count and previews for collapsed cards) live in
-  // threadSubagentMemory.ts.
-  const subagentMemory = createThreadSubagentMemory({
-    getThreadId: () => thread?.id ?? null,
-    getLoadedItem: (itemId) => {
-      const index = itemIndexById.get(itemId);
-      return index === undefined ? undefined : getItems()[index];
-    },
-    noteStructureChanged,
-  });
-
   // The per-item smoother + reveal-gate sequencer (disposeSmootherFor,
   // disposeAll, recomputeReveal, getOrCreateSmoothing, etc.) live in
   // threadStreamingReveal.svelte.ts as `streamingReveal`. Both item-window
@@ -598,7 +581,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     optimisticItemIds,
     invalidatedDraftTerminalIds: draftState.invalidatedDraftTerminalIds,
     timelineWindow,
-    subagentMemory,
     rowUiState,
     activityRuns,
     streamingReveal,
@@ -620,7 +602,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     armLiveContentAppendSpring,
     optimisticItemIds,
     timelineWindow,
-    subagentMemory,
     streamingReveal,
     activityRuns,
   });
@@ -655,7 +636,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     updateEffectiveModel('');
     draftState.reset();
     replaceTimelineItems([]);
-    subagentMemory.clearFolds();
     rowUiState.clear();
     activityRuns.clear();
     // Clearing to empty: drop the live-content stamp too (see
@@ -1271,11 +1251,6 @@ export function createThreadPane(options: ThreadPaneOptions = {}) {
     retainExpansionStateForPayload: rowUiState.retainExpansionStateForPayload,
     isSubagentGroupExpanded: rowUiState.isSubagentGroupExpanded,
     toggleSubagentGroupExpanded: rowUiState.toggleSubagentGroupExpanded,
-    /** Live aggregate of a launch anchor's streamed children. Reactive per
-     *  anchor: a card wakes only when its own anchor changes. */
-    subagentLiveAggregate(anchorId: string): SubagentFoldAggregate | undefined {
-      return subagentMemory.aggregate(anchorId);
-    },
     /** Clamped user-message text the reader opened. Ephemeral per session —
      *  nothing about it goes to the backend. */
     isUserMessageExpanded: rowUiState.isUserMessageExpanded,

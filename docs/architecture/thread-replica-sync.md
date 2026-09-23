@@ -699,7 +699,7 @@ port; temporary token attachment does not create a durable pairing.
       newestCursor,
       hasMoreOlder, hasMoreNewer,
       latestSettledTurn,       // paint-only; ListRecentTurns re-fetches
-      subagentFolds,
+      runs,
     },
   }
   ```

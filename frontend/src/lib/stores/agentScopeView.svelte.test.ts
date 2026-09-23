@@ -48,7 +48,7 @@ beforeEach(() => {
 afterEach(() => { for (const view of views.splice(0)) view.dispose(); resetPanesForTest(); });
 
 describe('live subagent children', () => {
-  it('reach the agent pane and an expanded card, never the thread window', async () => {
+  it('reach the agent pane and an expanded card while the thread window keeps no state for them', async () => {
     const pane = await setup([root]);
     const agentView = await open(pane);
     const card = createAgentScopeView(pane, root.id, { viewKey: 'card:agent', toolsOnly: true, openAgentPane: vi.fn() });
@@ -56,17 +56,39 @@ describe('live subagent children', () => {
     await vi.waitFor(() => expect(card.pane.loading).toBe(false));
     const hostItems = pane.items;
     const hostRevision = pane.timelineRevision;
+    const hostMemory = pane.debugMemoryStats();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      push(row('live-tool', 1, { kind: 'tool_call', toolName: 'Bash', status: 'running', summary: 'go test' }));
+      push(row('live-text', 2, { kind: 'assistant_text', status: 'streaming', summary: 'thinking' }));
+      applyItemStreamEvent({
+        action: 'delta', threadId, itemId: 'live-text', parentId: root.id,
+        kind: 'assistant_text', delta: ' aloud', updatedAt: 3,
+      });
+      flushItemEventQueue();
+      agentView.pane.__flushItemSmoothersForTest();
+      expect(agentView.pane.getItemById('live-text')?.summary).toBe('thinking aloud');
+      applyItemStreamEvent({
+        action: 'patch', threadId, itemId: 'live-text', parentId: root.id, kind: 'assistant_text',
+        patch: { rev: 4, status: 'completed', updatedAt: 4 },
+      });
+      flushItemEventQueue();
+      push(row('live-tool', 1, { kind: 'tool_call', toolName: 'Bash', status: 'completed', summary: 'go test', updatedAt: 5 }));
 
-    push(row('live-tool', 1, { kind: 'tool_call', toolName: 'Bash', status: 'running', summary: 'go test' }));
-    push(row('live-text', 2, { kind: 'assistant_text', status: 'streaming', summary: 'thinking aloud' }));
-    push(row('live-tool', 1, { kind: 'tool_call', toolName: 'Bash', status: 'completed', summary: 'go test', updatedAt: 5 }));
-
-    expect(agentView.items.map(item => item.id)).toEqual(['live-tool', 'live-text']);
-    expect(agentView.pane.getItemById('live-tool')?.status).toBe('completed');
-    expect(card.items.map(item => item.id)).toEqual(['live-tool']);
-    expect(pane.items).toBe(hostItems);
-    expect(pane.timelineRevision).toBe(hostRevision);
-    expect(pane.subagentLiveAggregate(root.id)).toMatchObject({ count: 2, terminalPreview: 'go test' });
+      expect(agentView.items.map(item => item.id)).toEqual(['live-tool', 'live-text']);
+      expect(agentView.pane.getItemById('live-tool')?.status).toBe('completed');
+      expect(agentView.pane.getItemById('live-text')?.status).toBe('completed');
+      expect(card.items.map(item => item.id)).toEqual(['live-tool']);
+      // The thread window holds no row, index entry, smoother, row UI state
+      // or cursor move for any of them, and warns about none.
+      expect(pane.items).toBe(hostItems);
+      expect(pane.timelineRevision).toBe(hostRevision);
+      expect(pane.debugMemoryStats()).toEqual(hostMemory);
+      expect(pane.getItemById('live-text')).toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

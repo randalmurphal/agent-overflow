@@ -3,11 +3,13 @@ import type { Item } from '../types/models';
 import { itemTimelineStructureChanged } from './timelineStructure';
 import { extractClaudeTaskID } from './claudeTaskMeta';
 import { RAIL_EXEMPT_PAYLOAD_KINDS } from './timelineRail';
+import { hasForkedSkillMeta } from './subagentLaunch';
 
 // ORACLE: the retired key-builder this module used before the field-wise
 // rewrite (2026-08-25). Building two of these per streamed upsert — each
 // copying meta/payloadMeta into joined strings — was 15MB/30s of garbage;
 // the predicate must stay EXACTLY as sensitive as comparing these keys.
+// Later structural inputs extend the oracle (the forked-skill bit).
 function notificationFilterFingerprint(item: Item): string {
   if (item.kind === 'notification') return `notification:${extractClaudeTaskID(item) ?? ''}`;
   if (item.kind === 'tool_completion') return `completion:${extractClaudeTaskID(item) ?? ''}`;
@@ -30,6 +32,7 @@ function subagentGroupingFingerprint(item: Item): string {
     item.kind === 'tool_call' && item.toolName === 'collab_agent'
       ? [item.meta ?? '', item.payloadMeta ?? ''].join('\x1f')
       : '',
+    item.kind === 'tool_call' && item.toolName === 'Skill' && hasForkedSkillMeta(item) ? 'forked' : '',
   ].join('\x1f');
 }
 
@@ -110,6 +113,11 @@ const VARIANTS: Array<[string, Item]> = [
   ['updatedAt', baseItem({ updatedAt: 200 })],
   ['plain-meta', baseItem({ meta: '{"ignored":true}' })],
   ['payloadId-on-call', baseItem({ payloadId: 'pl1' })],
+  ['skill', baseItem({ toolName: 'Skill' })],
+  ['skill-meta', baseItem({ toolName: 'Skill', meta: '{"x":1}' })],
+  ['skill-fork', baseItem({ toolName: 'Skill', meta: '{"skillFork":{"agentId":"a1"}}' })],
+  ['skill-decorated', baseItem({ toolName: 'Skill', meta: '{"subagentDescendantCount":2}' })],
+  ['skill-decorated-more', baseItem({ toolName: 'Skill', meta: '{"subagentDescendantCount":5}' })],
 ];
 
 describe('itemTimelineStructureChanged', () => {

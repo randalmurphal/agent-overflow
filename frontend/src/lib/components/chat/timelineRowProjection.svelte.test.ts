@@ -154,7 +154,7 @@ describe('timeline row projection reactivity', () => {
       }));
       flushSync();
 
-      expect(pane.subagentLiveAggregate('agent:1')?.activePreview).toContain('thread.svelte.ts');
+      expect(pane.getItemById('child:1')).toBeUndefined();
       expect(projection.evaluations).toBe(evaluationsBefore);
       expect(projection.nodes).toBe(before);
     } finally {
@@ -163,16 +163,7 @@ describe('timeline row projection reactivity', () => {
   });
 
   it('holds revealedNodes identity when the group anchor settles', async () => {
-    const pane = await buildPane(undefined, [
-      agentLaunch('agent:1', 0),
-      // Left running on purpose: the pane evicts SETTLED descendants of a
-      // collapsed card, which is a real structural change. The anchor
-      // itself is never evicted, so its status flip is the clean case.
-      makeItem({
-        id: 'child:1', itemIndex: 1, parentId: 'agent:1',
-        kind: 'tool_call', toolName: 'Read', status: 'running', summary: 'Read a.ts',
-      }),
-    ]);
+    const pane = await buildPane(undefined, [agentLaunch('agent:1', 0)]);
     const projection = mountProjection(pane);
     try {
       const before = projection.nodes;
@@ -212,8 +203,8 @@ describe('timeline row projection reactivity', () => {
       }));
       flushSync();
 
-      // The card reads its count and preview off the live aggregate.
-      expect(pane.subagentLiveAggregate('agent:1')?.count).toBe(2);
+      // The card reads its count and preview off the anchor's decoration.
+      expect(pane.getItemById('child:2')).toBeUndefined();
       expect(projection.evaluations).toBe(evaluationsBefore);
       expect(projection.nodes).toBe(before);
     } finally {
@@ -221,22 +212,29 @@ describe('timeline row projection reactivity', () => {
     }
   });
 
-  it('rebuilds revealedNodes when a loaded Skill row admits its first live child', async () => {
-    const pane = await buildPane(undefined, [
-      makeItem({
-        id: 'skill:1', itemIndex: 0, kind: 'tool_call', toolName: 'Skill', status: 'running',
-        summary: 'Skill: brainstorm',
-        meta: JSON.stringify({ toolName: 'Skill', input: { skill: 'brainstorm' } }),
-      }),
-    ]);
+  it.each([
+    ['a decorated count', { subagentDescendantCount: 1 }],
+    ['the fork stamp', { skillFork: { agentId: 'fork-1', commandName: 'brainstorm' } }],
+  ])('rebuilds revealedNodes when a loaded Skill row\'s re-upsert carries %s', async (_signal, fork) => {
+    const input = { toolName: 'Skill', input: { skill: 'brainstorm' } };
+    const skill = makeItem({
+      id: 'skill:1', itemIndex: 0, kind: 'tool_call', toolName: 'Skill', status: 'running',
+      summary: 'Skill: brainstorm', meta: JSON.stringify(input),
+    });
+    const pane = await buildPane(undefined, [skill]);
     const projection = mountProjection(pane);
     try {
       expect(findGroup(projection.nodes)).toBeNull();
 
+      // The fork's streamed child never reaches the main window.
       pane.upsertItem(makeItem({
         id: 'fork-text', itemIndex: 1, parentId: 'skill:1',
         kind: 'assistant_text', status: 'streaming', summary: 'option A', updatedAt: 2,
       }));
+      flushSync();
+      expect(findGroup(projection.nodes)).toBeNull();
+
+      pane.upsertItem({ ...skill, meta: JSON.stringify({ ...input, ...fork }), rev: 2, updatedAt: 3 });
       flushSync();
 
       expect(findGroup(projection.nodes)?.parent.id).toBe('skill:1');

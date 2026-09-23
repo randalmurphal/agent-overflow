@@ -3,6 +3,7 @@ import { userMessageIdentity } from './userMessageIdentity';
 import { isPendingFlushRow } from './userMessageMeta';
 import { extractClaudeTaskID } from './claudeTaskMeta';
 import { RAIL_EXEMPT_PAYLOAD_KINDS } from './timelineRail';
+import { hasForkedSkillMeta } from './subagentLaunch';
 
 // Whether an in-place row replacement changes timeline STRUCTURE — the
 // grouping pipeline's inputs — and must bump `timelineRevision`. The
@@ -10,7 +11,8 @@ import { RAIL_EXEMPT_PAYLOAD_KINDS } from './timelineRail';
 // subagent grouping (parent/completion links, the tool metas it groups
 // by), read grouping (kind/tool/background), the notification filter
 // (Claude task identity + a tool call's completed flag), receiver labels
-// (collab_agent metas), structural meta/payload (completion rows), and
+// (collab_agent metas), forked-skill detection (the fork signals on a
+// `Skill` row's meta), structural meta/payload (completion rows), and
 // rail membership (the exempt-or-not BIT of payloadKind — a payload
 // attaching mid-stream must not read as structure; leaving the rail
 // happens at most once, when a card-style payload lands).
@@ -67,6 +69,13 @@ export function itemTimelineStructureChanged(previous: Item | undefined, next: I
     if (
       tool === 'collab_agent'
       && (previous.payloadMeta ?? '') !== (next.payloadMeta ?? '')
+    ) {
+      return true;
+    }
+    if (
+      metaChanged
+      && tool === 'Skill'
+      && hasForkedSkillMeta(previous) !== hasForkedSkillMeta(next)
     ) {
       return true;
     }

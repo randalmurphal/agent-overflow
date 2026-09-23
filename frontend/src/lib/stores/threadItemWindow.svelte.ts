@@ -27,7 +27,6 @@ import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import type { ThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import type { ThreadRowUiState } from './threadRowUiState.svelte';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
-import type { ThreadSubagentMemory } from './threadSubagentMemory';
 import type { ThreadSwitchLoad } from './threadSwitchLoad.svelte';
 import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
 import { isWindowedTimelineRow } from './threadWindowDigest';
@@ -60,7 +59,6 @@ export interface ThreadItemWindowOptions {
   streamingReveal(): ThreadStreamingReveal;
   rowUiState(): ThreadRowUiState;
   activityRuns(): ThreadActivityRuns;
-  subagentMemory?(): Pick<ThreadSubagentMemory, 'retainFoldAnchors'>;
   switchLoad(): Pick<ThreadSwitchLoad, 'noteItemMutation' | 'noteItemMutations' | 'noteItemWindowReplacement'>;
 }
 
@@ -392,17 +390,6 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       // `itemIndexById` no longer knows it.
       rebuildItemIndexes(items);
       syncItemBoxes(previous, items);
-      // Subagent aggregates are only meaningful while their root row is
-      // loaded; once it leaves the window, the next load of its region
-      // decorates from SQLite. Every wholesale replacement (prune,
-      // reconcile, revert, cache install) flows through here, so one sweep
-      // after the index rebuild keeps the aggregates consistent. Streamed
-      // upserts can replace provisional user records but never remove rows.
-      try {
-        options.subagentMemory?.().retainFoldAnchors();
-      } catch (error) {
-        errors.push(error);
-      }
       try {
         disposeDroppedItemState(droppedItems);
       } catch (error) {
@@ -604,15 +591,6 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     finalizeItemsCommit('timeline item upsert', afterCommit, next, errors);
   }
 
-  /**
-   * A projection input outside the rows changed how the rows group: a
-   * loaded `Skill` row admitted its first subagent child, which makes it a
-   * forked-skill card (`threadSubagentMemory`).
-   */
-  function noteStructureChanged(): void {
-    timelineRevision++;
-  }
-
   return {
     /**
      * The loaded window. Reading it inside a `$derived`/`$effect` tracks the
@@ -641,7 +619,6 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     installTimelineItems,
     dropTimelineItems,
     commitUpsertResult,
-    noteStructureChanged,
   };
 }
 

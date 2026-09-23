@@ -242,7 +242,6 @@ export function createAgentScopeView(
     get applyItemDelta() { return sourcePane.applyItemDelta; },
     get applyItemMeta() { return sourcePane.applyItemMeta; },
     get applyItemPatch() { return sourcePane.applyItemPatch; },
-    get subagentLiveAggregate() { return sourcePane.subagentLiveAggregate; },
     get setPaneError() { return sourcePane.setPaneError; },
     get clearPaneError() { return sourcePane.clearPaneError; },
     get setGeneralError() { return sourcePane.setGeneralError; },

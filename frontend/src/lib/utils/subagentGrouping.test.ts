@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import {
   decoratedSubagentAggregates,
   enforceUniqueTimelineNodeKeys,
-  pickLatestChildSummary,
   finalAssistantTextIdsByTurn,
   findTimelineNodeIndex,
   groupItemsBySubagent,
@@ -17,13 +16,11 @@ import {
   timelineNodeKey,
   visibleTimelineItemIdForItem,
   type SubagentGroupNode,
-  type SubagentLiveAggregates,
   type TimelineLeaf,
   type WaitGroupNode,
   type TimelineNode,
 } from './subagentGrouping';
 import { groupConsecutiveReads } from './readGrouping';
-import type { SubagentFoldAggregate } from './subagentFold';
 import type { Item } from '../types/models';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 
@@ -1633,6 +1630,33 @@ describe('groupItemsBySubagent — launch kinds', () => {
     expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['skill-1', 'after']);
   });
 
+  it('groups a Skill row as a card once its re-upsert carries a decorated count', () => {
+    // The main window holds no child rows, so a live fork shows through the
+    // decoration triage re-pushes on the launch row once children exist.
+    const input = { toolName: 'Skill', input: { skill: 'brainstorm' } };
+    const skill = mkItem({
+      id: 'skill-1',
+      itemIndex: 0,
+      kind: 'tool_call',
+      toolName: 'Skill',
+      status: 'running',
+      summary: 'Skill: brainstorm',
+      meta: toolMeta(input),
+    });
+    expect(expectLeaf(groupItemsBySubagent([skill])[0]).item.id).toBe('skill-1');
+
+    const decorated = {
+      ...skill,
+      rev: 2,
+      meta: toolMeta({ ...input, subagentDescendantCount: 2, subagentLatestChildSummary: 'option A' }),
+    };
+    const group = expectGroup(groupItemsBySubagent([decorated])[0]);
+    expect(group.parent.id).toBe('skill-1');
+    expect(group.children).toEqual([]);
+    expect(group.descendantCount).toBe(2);
+    expect(group.latestChildSummary).toBe('option A');
+  });
+
   it('renders a SendMessage resume carrier as a group and folds its round-2 completion', () => {
     // claude-wire.md §E6: round 2 of a resumed async agent is carried by the
     // resuming tool_use, and writes its own `complete:<carrierID>` sibling.
@@ -2342,111 +2366,6 @@ describe('sliceRevealedNodes', () => {
     const nodes = buildTimeline();
     expect(timelineNodeItemIndex(nodes[0])).toBe(0); // think leaf
     expect(timelineNodeItemIndex(nodes[1])).toBe(1); // Agent group → parent
-  });
-});
-
-describe('live subagent aggregates', () => {
-  // Streamed subagent children never enter the pane window; the pane
-  // records them per launch anchor (utils/subagentFold.ts). Cards read that
-  // aggregate themselves, so the grouping pass never folds it into a node
-  // (a child landing must not rebuild the tree). The pass consults it only
-  // to recognize a forked Skill whose children streamed live.
-  function aggregate(overrides: Partial<SubagentFoldAggregate> = {}): SubagentFoldAggregate {
-    return {
-      count: 0,
-      activePreview: '',
-      activeTurnIndex: -1,
-      activeItemIndex: -1,
-      terminalPreview: '',
-      terminalTurnIndex: -1,
-      terminalItemIndex: -1,
-      ...overrides,
-    };
-  }
-  function lookup(byAnchor: Record<string, SubagentFoldAggregate>): SubagentLiveAggregates {
-    return (anchorId) => byAnchor[anchorId];
-  }
-
-  it('builds card nodes from loaded rows and decoration only', () => {
-    const live = lookup({ 'agent-1': aggregate({ count: 3, terminalPreview: 'live preview', terminalItemIndex: 4 }) });
-    const group = expectGroup(groupItemsBySubagent([agentLaunch('agent-1', 0)], live)[0]);
-    expect(group.descendantCount).toBe(0);
-    expect(group.loadedDescendantCount).toBe(0);
-    expect(group.latestChildSummary).toBe('');
-  });
-
-  it('reuses a card when only its live aggregate changed', () => {
-    const items = [agentLaunch('agent-1', 0)];
-    let current = aggregate({ count: 1 });
-    const live: SubagentLiveAggregates = () => current;
-    const first = expectGroup(groupItemsBySubagent(items, live)[0]);
-    current = aggregate({ count: 2, activePreview: 'more' });
-    expect(groupItemsBySubagent(items, live)[0]).toBe(first);
-  });
-
-  it('groups a Skill row with live children as a forked-skill card', () => {
-    const skill = mkItem({
-      id: 'skill-1',
-      itemIndex: 0,
-      kind: 'tool_call',
-      toolName: 'Skill',
-      summary: 'Skill: brainstorm',
-      meta: toolMeta({ toolName: 'Skill', input: { skill: 'brainstorm' } }),
-    });
-    expect(expectLeaf(groupItemsBySubagent([skill])[0]).item.id).toBe('skill-1');
-    const live = lookup({ 'skill-1': aggregate({ count: 1 }) });
-    expect(expectGroup(groupItemsBySubagent([skill], live)[0]).parent.id).toBe('skill-1');
-  });
-});
-
-describe('pickLatestChildSummary with a live aggregate', () => {
-  function live(overrides: Partial<SubagentFoldAggregate>): SubagentFoldAggregate {
-    return {
-      count: 1,
-      activePreview: '',
-      activeTurnIndex: -1,
-      activeItemIndex: -1,
-      terminalPreview: '',
-      terminalTurnIndex: -1,
-      terminalItemIndex: -1,
-      ...overrides,
-    };
-  }
-  function leaf(item: Item): TimelineNode {
-    return { kind: 'leaf', item } as TimelineLeaf;
-  }
-  const loadedActive = (itemIndex: number) => leaf(mkItem({
-    id: `active-${itemIndex}`, itemIndex, kind: 'tool_call', toolName: 'Bash', status: 'running', summary: `loaded active ${itemIndex}`,
-  }));
-  const loadedTerminal = (itemIndex: number) => leaf(mkItem({
-    id: `done-${itemIndex}`, itemIndex, kind: 'tool_call', toolName: 'Bash', status: 'completed', summary: `loaded done ${itemIndex}`,
-  }));
-
-  it('uses the live aggregate alone when nothing is loaded', () => {
-    expect(pickLatestChildSummary([], live({ activePreview: 'live active', activeTurnIndex: 0, activeItemIndex: 2 }))).toBe('live active');
-    expect(pickLatestChildSummary([], live({ terminalPreview: 'live done', terminalTurnIndex: 0, terminalItemIndex: 2 }))).toBe('live done');
-    expect(pickLatestChildSummary([], live({}))).toBe('');
-  });
-
-  it('resolves active previews by position, ties to the live aggregate', () => {
-    const at5 = live({ activePreview: 'live active', activeTurnIndex: 0, activeItemIndex: 5 });
-    expect(pickLatestChildSummary([loadedActive(3)], at5)).toBe('live active');
-    expect(pickLatestChildSummary([loadedActive(5)], at5)).toBe('live active');
-    expect(pickLatestChildSummary([loadedActive(7)], at5)).toBe('loaded active 7');
-  });
-
-  it('prefers any active preview over a terminal one', () => {
-    const liveDoneLater = live({ terminalPreview: 'live done', terminalTurnIndex: 5, terminalItemIndex: 0 });
-    expect(pickLatestChildSummary([loadedActive(1)], liveDoneLater)).toBe('loaded active 1');
-    const liveActiveEarlier = live({ activePreview: 'live active', activeTurnIndex: 0, activeItemIndex: 1 });
-    expect(pickLatestChildSummary([loadedTerminal(9)], liveActiveEarlier)).toBe('live active');
-  });
-
-  it('resolves terminal previews by position, ties to the live aggregate', () => {
-    const at5 = live({ terminalPreview: 'live done', terminalTurnIndex: 0, terminalItemIndex: 5 });
-    expect(pickLatestChildSummary([loadedTerminal(2)], at5)).toBe('live done');
-    expect(pickLatestChildSummary([loadedTerminal(5)], at5)).toBe('live done');
-    expect(pickLatestChildSummary([loadedTerminal(9)], at5)).toBe('loaded done 9');
   });
 });
 
@@ -3393,27 +3312,14 @@ describe('decoratedSubagentAggregates', () => {
 });
 
 describe('a detached launch’s card reads its counts off the completion sibling', () => {
-  // While a background agent runs, the pane records its streamed rows in
-  // the live aggregate under the LAUNCH id. When the completion sibling
-  // lands the card moves onto it and, being a completed card, reads its
-  // saved aggregates instead of the live one. Those aggregates are the
+  // While a background agent runs, the main window holds none of its
+  // streamed rows. When the completion sibling lands the card moves onto
+  // it and reads the sibling's saved aggregates. Those aggregates are the
   // `subagentDescendantCount` triage stamps on the sibling at write time
   // (internal/triage completionMetaWithSubagentAggregates); a bare
   // sibling would count zero here and the expanded body would say "No
   // child entries captured" for a transcript that exists.
-  it('counts the stamped total with nothing loaded and the live aggregate keyed on the launch', () => {
-    const fold: SubagentLiveAggregates = (anchorId) =>
-      anchorId === 'bg-agent'
-        ? {
-          count: 3,
-          activePreview: '',
-          activeTurnIndex: -1,
-          activeItemIndex: -1,
-          terminalPreview: 'live preview',
-          terminalTurnIndex: 0,
-          terminalItemIndex: 3,
-        }
-        : undefined;
+  it('counts the stamped total with nothing loaded', () => {
     const nodes = groupItemsBySubagent(
       [
         mkItem({
@@ -3435,7 +3341,6 @@ describe('a detached launch’s card reads its counts off the completion sibling
           meta: JSON.stringify({ subagentDescendantCount: 3, subagentLatestChildSummary: 'go test ./...' }),
         }),
       ],
-      fold,
     );
 
     const card = expectGroup(nodes[1]);

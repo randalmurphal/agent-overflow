@@ -458,13 +458,14 @@ active, until `ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS`, past which
 the cut runs mid-stream. The ceiling ends the deferral only; the
 visible-row rule holds at every count.
 
-Subagent child rows never enter the main pane. The pane routes each
-streamed child at admission to its launch anchors' live aggregates in
-`utils/subagentFold.ts` (entry count, newest active and settled previews),
-which collapsed cards read. Inline cards and agent panes own independent
-paged scopes and receive live children through the timeline mutation
-fan-out; navigation to a child opens the agent pane. Aggregates follow the
-thread-switch snapshot and do not recount a replayed child.
+Subagent child rows never enter the main pane. Its item stream drops a
+row outside the window's scope, so the pane keeps no per-child state. A
+collapsed card reads its entry count and preview from the backend
+decoration on its launch row (`decoratedSubagentAggregates`), which triage
+re-pushes after the children are written (`internal/triage/wire_items.go`).
+Inline cards and agent panes own independent paged scopes and receive live
+children through the timeline mutation fan-out; navigation to a child opens
+the agent pane.
 
 ## Run Height Changes
 

@@ -71,6 +71,7 @@ func (r *Router) handleCompactionReasoning(evt provider.ProviderEvent) error {
 	}
 
 	flushAfterEmit := r.stageThinkingPersistenceForEmit(evt.ThreadID, itemID, payloadID, evt.Content, now)
+	// No ParentID: the row renders top-level (see the item above).
 	r.emitItemDelta(ItemDeltaEvent{
 		ThreadID:  evt.ThreadID,
 		ItemID:    itemID,

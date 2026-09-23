@@ -158,7 +158,7 @@ func TestRecoveredTopLevelBlocksEmitStreamingWireShape(t *testing.T) {
 // messages (the CLI emits no partial stream events for them) and they
 // render inside subagent cards and scoped surfaces, which read one
 // settled upsert. Scoped recoveries must therefore stay a single
-// completed upsert — no delta, no patch.
+// completed upsert: no delta, no patch.
 func TestRecoveredSubagentBlockKeepsCompletedUpsertShape(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")

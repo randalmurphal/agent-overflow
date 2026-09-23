@@ -76,6 +76,7 @@ func TestLeaseItemFrameMatchesItemStreamEvent(t *testing.T) {
 		Action:    "delta",
 		ThreadID:  "thread-A",
 		ItemID:    "item-1",
+		ParentID:  "agent-1",
 		Kind:      "assistant_text",
 		Delta:     "hello",
 		UpdatedAt: 1234,
@@ -87,6 +88,7 @@ func TestLeaseItemFrameMatchesItemStreamEvent(t *testing.T) {
 		Action:    itemStreamActionDelta,
 		ThreadID:  "thread-A",
 		ItemID:    "item-1",
+		ParentID:  "agent-1",
 		Kind:      "assistant_text",
 		Delta:     "hello",
 		UpdatedAt: 1234,
@@ -158,6 +160,39 @@ func TestDeltaCoalescerMergesPerRow(t *testing.T) {
 		if len(e.WireBytes) == 0 {
 			t.Fatalf("merged frame %d has no pre-encoded wire bytes", i)
 		}
+	}
+}
+
+// TestDeltaCoalescerKeepsTheRowParent: a merged delta names the row's
+// parent like the frames it replaces. A client whose window does not hold
+// the row reads it to ignore another scope's row instead of reporting a
+// missing one.
+func TestDeltaCoalescerKeepsTheRowParent(t *testing.T) {
+	var out []Event
+	c := deltaCoalescer{window: time.Hour, emit: func(e Event) { out = append(out, e) }}
+	child := func(text string, updatedAt int64) json.RawMessage {
+		buf, err := json.Marshal(triage.ItemStreamEvent{
+			Action: "delta", ThreadID: "thread-A", ItemID: "child-1", ParentID: "agent-1",
+			Kind: "assistant_text", Delta: text, UpdatedAt: updatedAt,
+		})
+		if err != nil {
+			t.Fatalf("marshal child delta: %v", err)
+		}
+		return buf
+	}
+	c.intercept(itemEvent(1, "thread-A", child("par", 10)))
+	c.intercept(itemEvent(2, "thread-A", deltaPayload(t, "thread-A", "top", "top", 11)))
+	c.intercept(itemEvent(3, "thread-A", child("ent", 12)))
+	c.flushAll()
+	if len(out) != 2 {
+		t.Fatalf("merged frames = %d, want one per row", len(out))
+	}
+	merged, top := decodeDelta(t, out[1]), decodeDelta(t, out[0])
+	if merged.ItemID != "child-1" || merged.Delta != "parent" || merged.ParentID != "agent-1" {
+		t.Fatalf("child merge = %+v, want child-1 \"parent\" under agent-1", merged)
+	}
+	if top.ParentID != "" {
+		t.Fatalf("top-level merge gained a parent: %+v", top)
 	}
 }
 

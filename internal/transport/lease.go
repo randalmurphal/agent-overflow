@@ -104,6 +104,7 @@ type leaseItemFrame struct {
 	ThreadID  string             `json:"threadId"`
 	Item      *leaseItemIdentity `json:"item,omitempty"`
 	ItemID    string             `json:"itemId,omitempty"`
+	ParentID  string             `json:"parentId,omitempty"`
 	Kind      string             `json:"kind,omitempty"`
 	Delta     string             `json:"delta,omitempty"`
 	UpdatedAt int64              `json:"updatedAt,omitempty"`
@@ -142,7 +143,9 @@ type deltaKey struct {
 // pendingDelta accumulates one row's merged text for the current window.
 type pendingDelta struct {
 	kind string
-	text strings.Builder
+	// parentID is the row's, the same on every frame merged for it.
+	parentID string
+	text     strings.Builder
 	// updatedAt is the LAST merged frame's stamp — the merged frame claims
 	// the freshness of the newest text it carries, never the oldest.
 	updatedAt int64
@@ -231,7 +234,7 @@ func (c *deltaCoalescer) append(key deltaKey, frame *leaseItemFrame, e Event) {
 		if c.pending == nil {
 			c.pending = make(map[deltaKey]*pendingDelta)
 		}
-		p = &pendingDelta{kind: frame.Kind, channel: e.Channel, entityKey: e.EntityKey}
+		p = &pendingDelta{kind: frame.Kind, parentID: frame.ParentID, channel: e.Channel, entityKey: e.EntityKey}
 		c.pending[key] = p
 		c.order = append(c.order, key)
 	} else {
@@ -325,6 +328,7 @@ func mergedDeltaEvent(key deltaKey, p *pendingDelta) (Event, bool) {
 		Action:    itemStreamActionDelta,
 		ThreadID:  key.threadID,
 		ItemID:    key.itemID,
+		ParentID:  p.parentID,
 		Kind:      p.kind,
 		Delta:     p.text.String(),
 		UpdatedAt: p.updatedAt,
