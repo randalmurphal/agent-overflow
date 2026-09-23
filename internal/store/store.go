@@ -19,8 +19,8 @@ import (
 // Store wraps SQLite and provides all persistence operations.
 //
 // Two pools back it. db is the single-connection writer: every write,
-// migration, snapshot restore, checkpoint and space reclamation runs
-// there, which is what lets RestoreFrom's temporary foreign_keys toggle
+// migration, snapshot restore, truncating checkpoint and space reclamation
+// runs there, which is what lets RestoreFrom's temporary foreign_keys toggle
 // behave as if it were global. The connection-scoped PRAGMAs both pools
 // depend on (foreign_keys, busy_timeout, synchronous, query_only) ride
 // the DSN so they survive connection recycling — see dsn.go.
@@ -277,17 +277,36 @@ func (s *Store) Close() error {
 // callers typically log and continue (the checkpoint is opportunistic;
 // the autocheckpoint and the next idle-boundary call will retry).
 //
-// Why we need this on top of wal_autocheckpoint: the default autocheckpoint
-// fires when the WAL crosses ~1000 pages (~4MB), but it runs synchronously
-// on the next write transaction and bails when any reader transaction is
-// open. In a streaming workload the writer is continuously busy and
-// readers (the dashboard + active thread paging) overlap with bursts —
-// the autocheckpoint window rarely opens. Calling PassiveCheckpoint
-// from turn-completion (when streaming is known to be idle for the
-// thread) gives the WAL a deterministic opportunity to recycle.
+// Why we need this on top of wal_autocheckpoint: the writer keeps SQLite's
+// default of 1000 pages, and the automatic checkpoint runs inside the commit
+// that grows the WAL past it, on the writer, so that commit pays for copying
+// whatever the WAL holds. Calling PassiveCheckpoint at idle boundaries (turn
+// completion, retention sweeps, after each history repair transaction) copies
+// frames before a commit has to.
+//
+// It runs on a read-pool connection. A WAL checkpoint takes the
+// checkpointer lock, not the write lock, so a writer commits while it
+// copies; issued on the single writer connection it would hold every write
+// for the length of the copy. With no read pool, or while reads are
+// quiesced for an operation that needs the database to itself, it runs on
+// the writer.
 func (s *Store) PassiveCheckpoint() error {
-	_, err := s.db.Exec("PRAGMA wal_checkpoint(PASSIVE)")
+	_, err := s.passiveCheckpoint()
 	return err
+}
+
+func (s *Store) passiveCheckpoint() (CheckpointResult, error) {
+	db := s.db
+	if s.read != nil && !s.readsQuiesced.Load() {
+		db = s.read
+	}
+	var res CheckpointResult
+	var busy int64
+	if err := db.QueryRow("PRAGMA wal_checkpoint(PASSIVE)").Scan(&busy, &res.WALFrames, &res.Checkpointed); err != nil {
+		return CheckpointResult{}, fmt.Errorf("store: passive checkpoint: %w", err)
+	}
+	res.Busy = busy != 0
+	return res, nil
 }
 
 // CheckpointResult is the three-column answer PRAGMA wal_checkpoint

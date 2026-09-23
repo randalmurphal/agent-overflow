@@ -71,7 +71,8 @@ var defaultHistoryRepairBudget = historyRepairBudget{
 const orphanPayloadPage = 1000
 
 // checkpointHistoryRepair copies the frames a repair transaction appended to
-// the WAL into the database file, outside any transaction. Left in the WAL,
+// the WAL into the database file, outside any transaction and on a read-pool
+// connection, so the writer is not held while it copies. Left in the WAL,
 // several transactions' frames are copied by SQLite's automatic checkpoint
 // inside whichever commit next passes 1,000 frames, possibly a live write's;
 // on the measured database such commits took up to 99 ms. Run after every

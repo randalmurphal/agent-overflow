@@ -183,6 +183,50 @@ func TestPassiveCheckpoint(t *testing.T) {
 	}
 }
 
+// A passive checkpoint copies committed frames while a write transaction
+// holds the writer connection, so a checkpoint never makes a write wait.
+func TestPassiveCheckpointDoesNotWaitForTheWriter(t *testing.T) {
+	s := openStoreAt(t)
+	t.Cleanup(func() { _ = s.Close() })
+	if s.read == nil {
+		t.Fatal("the store has no read pool")
+	}
+	for i := range 20 {
+		if err := s.CreateThread(makeThread(fmt.Sprintf("t-%02d", i), "claude")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE threads SET title = 'held' WHERE id = 't-00'`); err != nil {
+		t.Fatal(err)
+	}
+
+	type outcome struct {
+		res CheckpointResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := s.passiveCheckpoint()
+		done <- outcome{res, err}
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.res.Busy || got.res.WALFrames == 0 || got.res.Checkpointed != got.res.WALFrames {
+			t.Fatalf("checkpoint beside an open write = %+v, want every committed frame copied", got.res)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the passive checkpoint waited for the writer connection")
+	}
+}
+
 func TestCreateAndGetThreadRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 

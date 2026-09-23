@@ -7,8 +7,9 @@ chain. See [schema.md](schema.md) for table ownership.
 ## Connections
 
 The store uses one writer connection for writes, migrations, restore, and
-checkpoints. A small `query_only` pool serves ordinary reads from WAL
-snapshots. In-memory and non-WAL databases use the writer for reads.
+truncating checkpoints. A small `query_only` pool serves ordinary reads from
+WAL snapshots and passive checkpoints. In-memory and non-WAL databases use the
+writer for both.
 
 Connection-scoped PRAGMAs belong in the DSN assembled by `dsn.go`. Applying
 them once with `Exec` is unsafe because `database/sql` may replace a pooled
@@ -205,13 +206,18 @@ the transactions of a split chunk, each moved row has an override, the state
 `pruneOrphanPayloads` deletes payload rows that no logical timeline row names
 and no payload snapshot borrows, at most 256 rows and 4 MiB per transaction,
 re-checking the references inside each one. Every repair transaction is
-followed by a passive checkpoint, so SQLite's automatic checkpoint never
-copies a backlog of repair frames inside a later commit.
+followed by a passive checkpoint on a read-pool connection, which does not
+hold the writer. The writer keeps SQLite's default `wal_autocheckpoint` of
+1000 pages: the commit that grows the WAL past it checkpoints inside that
+commit, whichever write it is. The repair's own checkpoints keep its frames
+from becoming that backlog.
 
 Measured on a 5.86 GB copy with 178,267 sealed rows in 15,204 chunks: 9,730
 transactions, p50 15 ms, p99 27 ms, max 74 ms; with the processors
 oversubscribed and a second repair writing the same disk, p50 17 ms, p99 49 ms,
-max 126 ms. The released pages (72 MB there) stay on the freelist for later
+max 126 ms. A later run of that setup, with the load average between 26 and
+59, held the writer p50 15 ms, p99 60 ms, max 406 ms per transaction, against
+p50 27 ms, p99 96 ms, max 1.77 s with the checkpoint on the writer. The released pages (72 MB there) stay on the freelist for later
 writes; that is below `ReclaimFreeSpace`'s 20% threshold, so the file keeps its
 size.
 
@@ -322,6 +328,9 @@ include a negative control when practical.
 ## WAL maintenance
 
 Passive checkpoints recycle WAL pages but do not shrink the file.
+`PassiveCheckpoint` runs on a read-pool connection: a checkpoint takes the
+checkpointer lock, not the write lock, so commits continue while it copies. It
+uses the writer when there is no read pool or reads are quiesced.
 `TruncateCheckpoint` needs every reader gone, so it quiesces the read pool and
 routes reads onto the writer for its duration. That makes one stalled reader a
 stall for every reader, so it runs only where quiescence is structurally free:
