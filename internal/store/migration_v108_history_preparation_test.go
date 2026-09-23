@@ -17,9 +17,9 @@ func TestMigrationV108PreparedChunkAdmissionAndIndexes(t *testing.T) {
 		mustExec(t, db, `INSERT INTO import_history_items(chunk_id,id,turn_index,item_index,kind,role,summary,payload_id,created_at,updated_at) VALUES(?,?,?,?,'assistant_text','assistant','text',?,1,1)`, id, item, turn, index, payload)
 	}
 	chunk("first", "same", "payload", 0, 0)
-	mustExec(t, db, `INSERT INTO thread_import_chunks VALUES('t',0,'first')`)
+	mustExec(t, db, `INSERT INTO thread_import_chunks(thread_id,chunk_order,chunk_id) VALUES('t',0,'first')`)
 	chunk("same-turn", "other", "other-payload", 0, 1)
-	mustExec(t, db, `INSERT INTO thread_import_chunks VALUES('t',1,'same-turn')`)
+	mustExec(t, db, `INSERT INTO thread_import_chunks(thread_id,chunk_order,chunk_id) VALUES('t',1,'same-turn')`)
 	for _, fixture := range []struct {
 		id, item, payload string
 		turn, index       int
@@ -27,7 +27,7 @@ func TestMigrationV108PreparedChunkAdmissionAndIndexes(t *testing.T) {
 		{"duplicate-id", "same", "new", 8, 0}, {"duplicate-payload", "new", "payload", 9, 0}, {"duplicate-position", "newer", "newer-payload", 0, 0},
 	} {
 		chunk(fixture.id, fixture.item, fixture.payload, fixture.turn, fixture.index)
-		if _, err := db.Exec(`INSERT INTO thread_import_chunks VALUES('t',2,?)`, fixture.id); err == nil {
+		if _, err := db.Exec(`INSERT INTO thread_import_chunks(thread_id,chunk_order,chunk_id) VALUES('t',2,?)`, fixture.id); err == nil {
 			t.Fatalf("accepted %s", fixture.id)
 		}
 	}

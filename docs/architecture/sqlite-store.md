@@ -94,11 +94,20 @@ Imported history has an immutable chunk base and a mutable local overlay.
 reject chunk gaps, overlapping identities or positions, and a local row that
 would shadow imported history without an explicit override.
 
-The compound views are suitable for unordered set reads, existence probes,
-single-turn reads, and single-row lookups. Ordered, limited, and recursive reads
-must render the physical arms with `timelineArms` or
-`timelineIDSelection`. SQLite otherwise materializes and sorts the full logical
-thread before applying the bound.
+The compound views are suitable for unordered set reads and thread-level
+existence probes. Ordered, limited, and recursive reads must render the
+physical arms with `timelineArms` or `timelineIDSelection`. SQLite otherwise
+materializes and sorts the full logical thread before applying the bound.
+
+The views' imported arm starts from the thread's chunk references, so a lookup
+through them probes every chunk the thread references. Lookups by id, by
+another indexed key, or by turn render the arms instead. `KeyFirst` starts the
+imported arm from an index that leads with the key and ends with `chunk_id`,
+then checks the chunk's membership in the thread. `Turn` reads only the
+references whose copied turn range can hold the turn
+(`idx_thread_import_chunks_turns`); `FromTurn` does the same for a turn and
+every later one. `TestImportedLookupsDoNotEnumerateChunks` pins these plans,
+including the item and chunk-admission trigger probes.
 
 Payload keys are `(thread_id, id)`. Provider item IDs can repeat between
 branches and threads. Payload accessors and joins always use both columns.

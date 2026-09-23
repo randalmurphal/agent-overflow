@@ -93,7 +93,10 @@ an atomic persistence decision; they must not become a business-logic layer.
   writes the exact aggregate revision before commit.
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
-  `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`.
+  `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by
+  id, key, or turn set `KeyFirst`, `Turn`, or `FromTurn` so their cost does not
+  grow with the thread's import chunk count; add each new lookup to
+  `TestImportedLookupsDoNotEnumerateChunks`.
 - Background tool launches remain `running`; a sibling identified by
   `completion_of` carries completion. Use the schema-maintained
   `live_background_active` projection and preserve the distinction between tray

@@ -896,18 +896,7 @@ func TestSubagentResumeRoundProbeProbesTheParentIndexes(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
 
-	rootArgs := []any{"loc-launch-2"}
-	sql, args := timelineArms(timelineParityThreadID, timelineSelection{
-		Columns: func(string, string) string {
-			return `items.parent_id AS root, items.id AS id, items.meta AS meta,
-			        items.turn_index AS turn_index, items.item_index AS item_index`
-		},
-		Where: `items.kind = 'user_text'
-			   AND items.parent_id IN (` + placeholders(1) + `)
-			   AND items.parent_id <> ''
-			   AND items.meta LIKE '%` + metaKeySubagentResumePrompt + `%'`,
-		WhereArgs: rootArgs,
-	})
+	sql, args := subagentResumeRoundsQuery(timelineParityThreadID, []string{"loc-launch-2"})
 
 	var local, imported bool
 	for _, r := range explainPlan(t, s, sql, args...) {

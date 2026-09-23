@@ -201,15 +201,16 @@ func (s *Store) HasItemsAfterCursor(threadID string, turnIndex, itemIndex int) (
 	if threadID == "" {
 		return false, fmt.Errorf("store: has items after cursor: thread id is required")
 	}
+	probe, args := timelineArms(threadID, timelineSelection{
+		Columns:   func(string, string) string { return "1" },
+		Turn:      "?",
+		TurnArgs:  []any{turnIndex},
+		FromTurn:  true,
+		Where:     "(items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))",
+		WhereArgs: []any{turnIndex, turnIndex, itemIndex},
+	})
 	var found int
-	err := s.reader().QueryRow(
-		`SELECT EXISTS(
-		     SELECT 1 FROM timeline_items
-		      WHERE thread_id = ?
-		        AND (turn_index > ? OR (turn_index = ? AND item_index > ?))
-		 )`,
-		threadID, turnIndex, turnIndex, itemIndex,
-	).Scan(&found)
+	err := s.reader().QueryRow(`SELECT EXISTS(`+probe+`)`, args...).Scan(&found)
 	if err != nil {
 		return false, fmt.Errorf("store: has items after cursor for %s: %w", threadID, err)
 	}

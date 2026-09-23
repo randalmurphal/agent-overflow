@@ -230,7 +230,7 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 		return Identity{}, fmt.Errorf("store: restore: reinstall payload snapshots: %w", err)
 	}
 
-	if _, err := tx.Exec(attachmentOwnerTriggersSQL + sharedChunkAdmissionTriggersSQL); err != nil {
+	if _, err := tx.Exec(attachmentOwnerTriggersSQL + sharedChunkAdmissionTriggersV116SQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: reinstall attachment and chunk admission triggers: %w", err)
 	}
 

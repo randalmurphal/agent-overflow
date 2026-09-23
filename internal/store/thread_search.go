@@ -237,11 +237,16 @@ func (s *Store) SearchThreads(query string, filter ThreadSearchFilter) ([]Thread
 	}
 	args = append(args, limit, offset)
 
+	summary, _ := timelineArms("", timelineSelection{
+		Columns:  func(string, string) string { return "items.summary" },
+		Thread:   "r.thread_id",
+		KeyFirst: true,
+		Where:    "items.id = r.item_id",
+	})
 	rows, err := s.reader().Query(
 		`SELECT r.thread_id, r.item_id, r.source, r.kind, bm25(thread_search),
 		        CASE WHEN r.kind = 'title' THEN t.title
-		             ELSE COALESCE((SELECT logical.summary FROM timeline_items logical
-		                             WHERE logical.thread_id = r.thread_id AND logical.id = r.item_id), '')
+		             ELSE COALESCE((`+summary+`), '')
 		        END
 		   FROM thread_search
 		   JOIN thread_search_rows r ON r.rowid = thread_search.rowid
@@ -528,11 +533,16 @@ func indexThreadTitlesTx(tx *sql.Tx) error {
 // already gone can never be returned by a search, because every hit joins the
 // mapping row.
 func sweepThreadSearchOrphansTx(tx *sql.Tx) error {
+	logical, _ := timelineArms("", timelineSelection{
+		Columns:  func(string, string) string { return "1" },
+		Thread:   "r.thread_id",
+		KeyFirst: true,
+		Where:    "items.id = r.item_id",
+	})
 	rows, err := tx.Query(
 		`SELECT r.rowid FROM thread_search_rows r
 		  WHERE r.item_id <> ''
-		    AND NOT EXISTS (SELECT 1 FROM timeline_items logical
-		                     WHERE logical.thread_id = r.thread_id AND logical.id = r.item_id)`)
+		    AND NOT EXISTS (` + logical + `)`)
 	if err != nil {
 		return fmt.Errorf("store: read thread search orphans: %w", err)
 	}

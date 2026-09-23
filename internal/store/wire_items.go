@@ -36,8 +36,8 @@ func ItemReadIsDecorated(item Item) bool {
 // child row, so a tool call that is not a resume carrier and has no
 // child decorates to itself: the write's read-back is the page read.
 // Every other admitted row still needs ListWireItems. The probe is the
-// one subagentLaunchFilterFor makes, including prepared descendants in the
-// immutable history arm.
+// one subagentLaunchFilterFor makes, including descendants in the
+// immutable history arm, found through the parent key.
 func (s *Store) ItemReadNeedsDecoration(item Item) (bool, error) {
 	if !ItemReadIsDecorated(item) {
 		return false, nil
@@ -46,12 +46,12 @@ func (s *Store) ItemReadNeedsDecoration(item Item) (bool, error) {
 		return true, nil
 	}
 	var hasChild int
-	if err := s.reader().QueryRow(
-		`SELECT EXISTS(
-		    SELECT 1 FROM timeline_items child
-		     WHERE child.thread_id = ? AND child.parent_id = ? AND child.parent_id <> ''
-		)`, item.ThreadID, item.ID,
-	).Scan(&hasChild); err != nil {
+	children, args := timelineArms(item.ThreadID, timelineSelection{
+		Columns:  func(string, string) string { return "1" },
+		KeyFirst: true,
+		Where:    "items.parent_id <> '' AND items.parent_id = ?", WhereArgs: []any{item.ID},
+	})
+	if err := s.reader().QueryRow(`SELECT EXISTS(`+children+`)`, args...).Scan(&hasChild); err != nil {
 		return false, fmt.Errorf("store: probe children of %s/%s: %w", item.ThreadID, item.ID, err)
 	}
 	return hasChild != 0, nil
@@ -78,6 +78,7 @@ func (s *Store) listWireItemsTx(q sqlQueryer, threadID string, ids []string) ([]
 		args = append(args, id)
 	}
 	selectedSQL, selectedArgs := timelineIDSelection(threadID, timelineSelection{
+		KeyFirst:  true,
 		Where:     "items.id IN (" + placeholders(len(ids)) + ")",
 		WhereArgs: args,
 	})
@@ -117,10 +118,14 @@ func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) (
 	for id := range emitted {
 		var parentID, completionOf string
 		var rev int64
-		err := tx.QueryRow(
-			`SELECT parent_id, completion_of, rev FROM timeline_items WHERE thread_id = ? AND id = ?`,
-			threadID, id,
-		).Scan(&parentID, &completionOf, &rev)
+		written, args := timelineArms(threadID, timelineSelection{
+			Columns: func(_, revExpr string) string {
+				return "items.parent_id, items.completion_of, " + revExpr
+			},
+			KeyFirst: true,
+			Where:    "items.id = ?", WhereArgs: []any{id},
+		})
+		err := tx.QueryRow(written, args...).Scan(&parentID, &completionOf, &rev)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
