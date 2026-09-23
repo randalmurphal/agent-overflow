@@ -37,6 +37,15 @@ evaluated SQL of every migration, including referenced schema and trigger text.
 Record new versions before deployment; repair deployed versions with a forward
 migration.
 
+The chain only moves forward, so an older build cannot run on a database a
+newer one migrated. Before it configures or migrates anything, `runMigrations`
+refuses a database whose recorded migration version or deferred watermark is
+above this build's latest migration, with `SchemaTooNewError`: "database is at
+schema v121; this build knows v119; install the newer version". `Store.New`
+and the app's boot return it unwrapped, so the boot failure shows that
+sentence, and `RestoreFrom` refuses such a snapshot through the same check. The
+refusal leaves the file byte-for-byte as it was.
+
 A rebuild must carry forward every column, index, trigger, and relationship
 added since the source definition. Rebuild migrations temporarily disable
 foreign keys on the dedicated writer connection so dropping a parent table does

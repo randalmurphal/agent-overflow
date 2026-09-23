@@ -85,6 +85,10 @@ func New(dbPath string) (*Store, error) {
 
 	if err := runMigrations(db); err != nil {
 		db.Close()
+		// The refusal is already the sentence the boot failure shows.
+		if tooNew := (*SchemaTooNewError)(nil); errors.As(err, &tooNew) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("store: run migrations: %w", err)
 	}
 	if err := ensureStoreIdentity(db); err != nil {

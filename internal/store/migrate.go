@@ -1689,9 +1689,13 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	},
 }
 
-// runMigrations sets PRAGMAs, creates the version tracking table, and applies
-// any unapplied migrations in order.
+// runMigrations refuses a database a newer build migrated, then sets
+// PRAGMAs, creates the version tracking table, and applies any unapplied
+// migrations in order.
 func runMigrations(db *sql.DB) error {
+	if err := refuseNewerSchema(db); err != nil {
+		return err
+	}
 	if err := configureDatabase(db); err != nil {
 		return err
 	}
@@ -1710,6 +1714,48 @@ func runMigrations(db *sql.DB) error {
 	if applied == 0 {
 		// A new database has nothing for a deferred phase to fix.
 		return writeDeferredWatermark(db, latestDeferredVersion)
+	}
+	return nil
+}
+
+// SchemaTooNewError refuses a database a newer build has migrated: its
+// recorded migration version or deferred-phase watermark is above every
+// migration this build knows, so this build would run on a schema it does
+// not understand. Error is the sentence the user reads at boot.
+type SchemaTooNewError struct {
+	// Database is the newer of the database's migration version and its
+	// deferred-phase watermark.
+	Database int
+	// Build is this build's latest migration.
+	Build int
+}
+
+func (e *SchemaTooNewError) Error() string {
+	return fmt.Sprintf("database is at schema v%d; this build knows v%d; install the newer version", e.Database, e.Build)
+}
+
+// refuseNewerSchema returns a SchemaTooNewError when the database is ahead
+// of this build. It only reads, and runs before anything writes: even
+// configureDatabase's PRAGMAs commit to the file header.
+func refuseNewerSchema(db *sql.DB) error {
+	var tables int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'migration_versions'`).Scan(&tables); err != nil {
+		return fmt.Errorf("store: probe migration_versions: %w", err)
+	}
+	applied := 0
+	if tables > 0 {
+		var err error
+		if applied, err = currentMigrationVersion(db); err != nil {
+			return err
+		}
+	}
+	watermark, err := readDeferredWatermark(db)
+	if err != nil {
+		return err
+	}
+	known := migrations[len(migrations)-1].Version
+	if version := max(applied, watermark); version > known {
+		return &SchemaTooNewError{Database: version, Build: known}
 	}
 	return nil
 }

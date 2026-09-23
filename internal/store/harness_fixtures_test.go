@@ -31,17 +31,36 @@ const (
 // when historyRepairFixtureEnv names an absolute path whose directory exists
 // and which does not exist yet.
 func TestHistoryRepairHarnessFixture(t *testing.T) {
-	path := os.Getenv(historyRepairFixtureEnv)
+	writeHistoryRepairFixture(t, harnessFixturePath(t, historyRepairFixtureEnv))
+}
+
+// schemaAheadFixtureEnv names the database file TestSchemaAheadHarnessFixture
+// writes for e2e/tests/store-schema-ahead.spec.ts.
+const schemaAheadFixtureEnv = "AO_TEST_SCHEMA_AHEAD_FIXTURE"
+
+// TestSchemaAheadHarnessFixture writes a database a build two migrations
+// newer than this one left behind. It runs only when schemaAheadFixtureEnv
+// names the file to write.
+func TestSchemaAheadHarnessFixture(t *testing.T) {
+	stampAhead(t, harnessFixturePath(t, schemaAheadFixtureEnv), latestMigrationVersionForTest()+2, 0)
+}
+
+// harnessFixturePath returns the database path env names for a harness
+// fixture, and skips the test when it is unset. The path must be absolute,
+// its directory must exist, and nothing may be there yet.
+func harnessFixturePath(t *testing.T, env string) string {
+	t.Helper()
+	path := os.Getenv(env)
 	if path == "" {
-		t.Skip(historyRepairFixtureEnv + " is not set")
+		t.Skip(env + " is not set")
 	}
 	if !filepath.IsAbs(path) {
-		t.Fatalf("%s=%q is not an absolute path", historyRepairFixtureEnv, path)
+		t.Fatalf("%s=%q is not an absolute path", env, path)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("%s: refusing to write over an existing path (%v)", path, err)
 	}
-	writeHistoryRepairFixture(t, path)
+	return path
 }
 
 // TestHistoryRepairFixtureRepairs opens the fixture the way an upgraded

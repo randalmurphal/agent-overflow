@@ -313,6 +313,11 @@ func (a *App) initStores() (string, *store.Store, error) {
 
 	st, err := store.New(dbPath)
 	if err != nil {
+		// A database a newer build migrated is refused with the sentence
+		// the boot failure shows; it goes out as it is.
+		if tooNew := (*store.SchemaTooNewError)(nil); errors.As(err, &tooNew) {
+			return "", nil, err
+		}
 		return "", nil, fmt.Errorf("failed to open database: %w", err)
 	}
 	if err := repairSQLiteSidecarPermissions(dbPath); err != nil {
