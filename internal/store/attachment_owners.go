@@ -12,27 +12,40 @@ import (
 // ones before its cut; a fork that copies such a message takes ownership
 // with the copy (ownCopiedAttachmentsTx).
 //
-// The inherited case reads the fork's inherited rows, prefiltered by the
-// id's text, and runs only for an attachment the thread does not own and
-// one of its ancestors does. No index keys a row by the attachments its
-// meta lists, so that read walks the rows the fork inherits.
+// The inherited case runs only for an attachment the thread does not own
+// and one of its ancestors does. It reads the inherited rows whose meta
+// lists attachments at all (attachmentBearingSQL), prefiltered by the id's
+// text, so it costs the ancestors' attachment-bearing rows below the cut,
+// not every row the fork inherits.
 func (s *Store) OwnsAttachment(threadID, id string) (bool, error) {
-	inherited, inheritedArgs := inheritedTimelineArms(threadID, allLevels, timelineSelection{
-		Columns:   func(string, string) string { return "1" },
-		Where:     "instr(items.meta, ?) > 0 AND " + attachmentReferencedSQL,
-		WhereArgs: []any{id, id, id},
-	})
+	query, args := ownsAttachmentQuery(threadID, id)
 	var owned bool
-	err := s.reader().QueryRow(`SELECT EXISTS(SELECT 1 FROM attachment_owners WHERE thread_id=? AND attachment_id=?)
- OR (EXISTS(SELECT 1 FROM thread_fork_lineage l JOIN attachment_owners o ON o.thread_id=l.ancestor_id AND o.attachment_id=?
-       WHERE l.thread_id=?)
-     AND EXISTS(`+inherited+`))`,
-		append([]any{threadID, id, id, threadID}, inheritedArgs...)...).Scan(&owned)
-	if err != nil {
+	if err := s.reader().QueryRow(query, args...).Scan(&owned); err != nil {
 		return false, fmt.Errorf("store: check attachment ownership: %w", err)
 	}
 	return owned, nil
 }
+
+func ownsAttachmentQuery(threadID, id string) (string, []any) {
+	inherited, inheritedArgs := inheritedTimelineArms(threadID, allLevels, timelineSelection{
+		Columns:   func(string, string) string { return "1" },
+		Where:     attachmentBearingSQL + " AND instr(items.meta, ?) > 0 AND " + attachmentReferencedSQL,
+		WhereArgs: []any{id, id, id},
+	})
+	return `SELECT EXISTS(SELECT 1 FROM attachment_owners WHERE thread_id=? AND attachment_id=?)
+ OR (EXISTS(SELECT 1 FROM thread_fork_lineage l JOIN attachment_owners o ON o.thread_id=l.ancestor_id AND o.attachment_id=?
+       WHERE l.thread_id=?)
+     AND EXISTS(` + inherited + `))`, append([]any{threadID, id, id, threadID}, inheritedArgs...)
+}
+
+// attachmentBearingSQL is the predicate of the partial indexes
+// idx_items_attachment_refs and idx_import_history_items_attachment_refs
+// (migration v120). SQLite uses a partial index only for a query that
+// states the index's predicate, so this must stay the same expression.
+// Neither encoding/json nor SQLite's JSON functions escape a key's
+// letters, and a transfer re-encodes the meta whose attachments it
+// rewrites, so every row whose meta has an attachments key matches it.
+const attachmentBearingSQL = `instr(items.meta, '"attachments"') > 0`
 
 // attachmentReferencedSQL is true when the `items` row's meta lists the
 // attachment id bound twice, in either reference shape.

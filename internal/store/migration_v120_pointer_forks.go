@@ -38,6 +38,8 @@ CREATE TABLE thread_fork_hidden (
 
 CREATE INDEX idx_threads_fork_source ON threads(fork_source_thread_id) WHERE fork_source_thread_id <> '';
 CREATE INDEX idx_items_unsettled ON items(thread_id, turn_index, item_index) WHERE status IN ('running', 'streaming');
+CREATE INDEX idx_items_attachment_refs ON items(thread_id, turn_index, item_index) WHERE instr(meta, '"attachments"') > 0;
+CREATE INDEX idx_import_history_items_attachment_refs ON import_history_items(chunk_id, turn_index, item_index) WHERE instr(meta, '"attachments"') > 0;
 
 ` + dropPayloadSnapshotCopyOnWriteSQL + payloadSnapshotCopyBackSQL + `DROP TRIGGER trg_payload_snapshot_refs_gc;
 DROP TRIGGER trg_payload_snapshots_import_gc;

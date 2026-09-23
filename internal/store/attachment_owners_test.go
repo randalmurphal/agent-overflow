@@ -2,8 +2,41 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
+
+// TestOwnsAttachmentReadsOnlyAttachmentBearingRows pins the inherited
+// ownership check to the partial indexes over rows whose meta lists
+// attachments. Without them a check on a fork of a long thread reads every
+// row the fork inherits: 20 to 70 ms per check on an 81,000-row fork.
+func TestOwnsAttachmentReadsOnlyAttachmentBearingRows(t *testing.T) {
+	s := newTestStore(t)
+	query, args := ownsAttachmentQuery("fork", "a")
+	plan := explainPlan(t, s, query, args...)
+	used := map[string]bool{"idx_items_attachment_refs": false, "idx_import_history_items_attachment_refs": false}
+	for _, row := range plan {
+		if !strings.HasPrefix(row.detail, "SEARCH items ") && !strings.HasPrefix(row.detail, "SCAN items") {
+			continue
+		}
+		index := ""
+		for name := range used {
+			if strings.Contains(row.detail, "USING INDEX "+name+" ") {
+				index = name
+			}
+		}
+		if index == "" {
+			t.Errorf("ownership check reads items without an attachment index: %s\n%s", row.detail, planText(plan))
+			continue
+		}
+		used[index] = true
+	}
+	for name, ok := range used {
+		if !ok {
+			t.Errorf("ownership check does not use %s\n%s", name, planText(plan))
+		}
+	}
+}
 
 // TestForkAttachmentOwnersFollowCutAndRollback pins attachment access for
 // pointer forks: a fork may read an attachment its source owns only while
