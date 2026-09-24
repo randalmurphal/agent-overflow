@@ -375,11 +375,12 @@ func TestTrialRunCommandChecksEachRetryAgainstWhatTheLastAttemptLeft(t *testing.
 			t.Fatalf("retry = %+v", result)
 		}
 	})
+	// The command died with its trial: nothing recorded the end, and the
+	// trial's own writes cannot be told from anyone else's. The retry
+	// restores the snapshot, which ends the dead attempt, and runs on it.
 	t.Run("after an attempt that never recorded its end", func(t *testing.T) {
 		r := snapshotted(t)
 		interruptAttempt(t, r)
-		// The command died with its trial: nothing recorded the end, and
-		// the trial's own writes cannot be told from anyone else's.
 		if err := RecordAttempt(r.layout, r.dataDir, 1, false); err != nil {
 			t.Fatal(err)
 		}
@@ -387,14 +388,82 @@ func TestTrialRunCommandChecksEachRetryAgainstWhatTheLastAttemptLeft(t *testing.
 		var logged []string
 		cmd := r.command("u1")
 		cmd.Log = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
-		result := cmd.TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 2))
+		result := cmd.TrialRun(context.Background(), r.trialOptions(trialRecordsItsStart+trialWritesAndPrepares, 2))
 		if result.Outcome != UpdateOutcomePrepared {
 			t.Fatalf("retry = %+v", result)
 		}
-		if !strings.Contains(strings.Join(logged, "\n"), "could not be checked") {
-			t.Fatalf("log %q does not say the attempt ran unchecked", logged)
+		if got := r.read("seen"); got != "live\n" {
+			t.Fatalf("the retry's trial started on %q, want the snapshot", got)
+		}
+		if !strings.Contains(strings.Join(logged, "\n"), "restoring the database backup before attempt 2") {
+			t.Fatalf("log %q does not say the retry restored", logged)
+		}
+		if !strings.Contains(r.out.details(t), "Restoring the database") {
+			t.Fatal("the restore reported no progress")
+		}
+		snapshot, _, err := ReadSnapshot(r.layout)
+		if err != nil || snapshot.Left == nil || snapshot.Left.Attempt != 2 || !snapshot.Left.Ended {
+			t.Fatalf("manifest = %+v, %v; want attempt 2 ended", snapshot.Left, err)
 		}
 	})
+	// A trial that failed and whose restore did not finish leaves the
+	// restore marked. The next command finishes it, which ends the
+	// attempt, so the retry is checked against the restored database.
+	t.Run("after a restore that did not finish", func(t *testing.T) {
+		for _, foreign := range []bool{false, true} {
+			r := snapshotted(t)
+			failRestore(t, r, func() {
+				result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndCrashes, 1))
+				if result.Outcome != UpdateOutcomeFailed || !strings.Contains(result.Reason, "could not be restored") {
+					t.Fatalf("attempt 1 = %+v", result)
+				}
+			})
+			if absent(t, r.layout.MarkerPath()) {
+				t.Fatal("the failed restore left no marker")
+			}
+			if foreign {
+				// Another backend finishes the marked restore and writes.
+				if err := PrepareDataRoot(r.dataDir, PrepareOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				writeFile(t, r.db, "another backend's work")
+			}
+			r.out = &lockedBuffer{}
+			result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialRecordsItsStart+trialWritesAndPrepares, 2))
+			if foreign {
+				if result.Outcome != UpdateOutcomeChanged {
+					t.Fatalf("retry after another backend's write = %+v", result)
+				}
+				continue
+			}
+			if result.Outcome != UpdateOutcomePrepared {
+				t.Fatalf("retry = %+v", result)
+			}
+			if got := r.read("seen"); got != "live\n" {
+				t.Fatalf("the retry's trial started on %q, want the restored snapshot", got)
+			}
+		}
+	})
+}
+
+// trialRecordsItsStart prepends a note of the database the trial found.
+const trialRecordsItsStart = `cat "$DB" >> "$OBS/seen"
+printf '\n' >> "$OBS/seen"
+`
+
+// failRestore runs fn while the data directory refuses the restore's
+// removal of the live files, the way a full or failing disk would.
+func failRestore(t *testing.T, r *commandRig, fn func()) {
+	t.Helper()
+	if err := os.Chmod(r.dataDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := os.Chmod(r.dataDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	fn()
 }
 
 func TestTrialRunCommandRequiresThisUpdatesSnapshot(t *testing.T) {

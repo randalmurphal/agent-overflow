@@ -138,27 +138,18 @@ func (c UpdateCommand) TrialRun(ctx context.Context, opts TrialRunOptions) Updat
 	if event, ok := c.requireSnapshot(layout); !ok {
 		return event
 	}
-	checked, err := CheckLiveBeforeAttempt(layout, c.DataDir)
-	if err != nil {
-		var changed *LiveDatabaseChangedError
-		if errors.As(err, &changed) {
-			return failedEvent(UpdateOutcomeChanged, err)
-		}
-		return failedEvent(UpdateOutcomeRefused, err)
-	}
-	if !checked {
-		c.log("supervise: update %s attempt %d runs on the database an interrupted attempt left, which could not be checked",
-			c.UpdateID, opts.Attempt)
+	if event, ok := c.checkBeforeAttempt(layout, relay, opts.Attempt); !ok {
+		return event
 	}
 	if err := RecordAttempt(layout, c.DataDir, opts.Attempt, false); err != nil {
 		return failedEvent(UpdateOutcomeRefused, err)
 	}
-	// ended records what this attempt left once the database is settled:
-	// the trial's database, or the restored snapshot. A restore that did
-	// not finish leaves the attempt unended.
+	// ended records the database a trial that stopped without failing
+	// left. A restore records its own end, including one a later process
+	// finishes from the marker.
 	ended := func() {
 		if err := RecordAttempt(layout, c.DataDir, opts.Attempt, true); err != nil {
-			c.log("supervise: update %s attempt %d: %v; a retry runs without checking the database", c.UpdateID, opts.Attempt, err)
+			c.log("supervise: update %s attempt %d: %v; a retry restores the database backup first", c.UpdateID, opts.Attempt, err)
 		}
 	}
 
@@ -191,8 +182,33 @@ func (c UpdateCommand) TrialRun(ctx context.Context, opts TrialRunOptions) Updat
 		return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeFailed,
 			Reason: fmt.Sprintf("%s, and the database backup could not be restored: %v", failed.Reason, err)}
 	}
-	ended()
 	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeRolledBack, Reason: failed.Reason}
+}
+
+// checkBeforeAttempt runs CheckLiveBeforeAttempt. An attempt that never
+// recorded its end is undone first: its database holds writes no record
+// vouches for, so the snapshot is restored, which ends that attempt, and
+// this one runs on the snapshot.
+func (c UpdateCommand) checkBeforeAttempt(layout Layout, relay *commandRelay, attempt int) (UpdateEvent, bool) {
+	err := CheckLiveBeforeAttempt(layout, c.DataDir)
+	var unended *UnendedAttemptError
+	if errors.As(err, &unended) {
+		c.log("supervise: update %s: %v; restoring the database backup before attempt %d", c.UpdateID, err, attempt)
+		relay.step("update.restore", "Restoring the database")
+		if err := RestoreSnapshot(layout, c.DataDir, c.UpdateID, err.Error(), c.now(),
+			relay.copyProgress("update.restore", "Restoring the database")); err != nil {
+			return failedEvent(UpdateOutcomeFailed, fmt.Errorf("%v, and the database backup could not be restored: %w", unended, err)), false
+		}
+		err = CheckLiveBeforeAttempt(layout, c.DataDir)
+	}
+	if err != nil {
+		var changed *LiveDatabaseChangedError
+		if errors.As(err, &changed) {
+			return failedEvent(UpdateOutcomeChanged, err), false
+		}
+		return failedEvent(UpdateOutcomeRefused, err), false
+	}
+	return UpdateEvent{}, true
 }
 
 // Restore puts the snapshot back, or finishes a marked restore. reason is

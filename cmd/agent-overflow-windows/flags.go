@@ -29,7 +29,11 @@ type launcherFlags struct {
 	// short-circuit and the picker, and does NOT persist the choice
 	// to wsl.json — the override stays scoped to the current run so a
 	// dev-mode invocation doesn't clobber the user's saved pick.
-	Distro string
+	// RememberDistro saves it anyway: a launcher that continues another
+	// launch carries a picker or saved choice with it
+	// (wsllauncher.DistroArgs).
+	Distro         string
+	RememberDistro bool
 	// Embedding is the internal COM-server launch switch Windows appends when
 	// a toast is activated while the launcher is not already running. The
 	// normal boot still runs so Wails can register the toast callback while
@@ -77,10 +81,11 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 	fs := flag.NewFlagSet("agent-overflow", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	distro := fs.String(
-		"distro",
+		wsllauncher.DistroFlag,
 		"",
 		"skip the picker and launch directly in this WSL distro (used by `make dev-wsl`)",
 	)
+	rememberDistro := fs.Bool(wsllauncher.RememberDistroFlag, false, "internal: save the --distro choice after a successful launch, as a picker choice is")
 	embedding := fs.Bool("Embedding", false, "internal Windows toast activation mode")
 	profile := fs.String(
 		"profile",
@@ -98,6 +103,9 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 	}
 	if *updateApply != "" && !wsllauncher.ValidUpdateID(*updateApply) {
 		return launcherFlags{}, fmt.Errorf("--update-apply %q is not an update id", *updateApply)
+	}
+	if *rememberDistro && strings.TrimSpace(*distro) == "" {
+		return launcherFlags{}, errors.New("--remember-distro requires --distro")
 	}
 	if *updateApply != "" && strings.TrimSpace(*distro) == "" {
 		return launcherFlags{}, errors.New("--update-apply requires --distro, whose update record it runs")
@@ -121,6 +129,7 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 	}
 	return launcherFlags{
 		Distro:          strings.TrimSpace(*distro),
+		RememberDistro:  *rememberDistro,
 		Embedding:       *embedding,
 		Profile:         normalizedProfile,
 		UpdatePreflight: *updatePreflight,

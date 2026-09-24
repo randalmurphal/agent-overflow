@@ -9,6 +9,8 @@ import (
 
 	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/supervise"
+	"agent-overflow/internal/wsldistro"
+	"agent-overflow/internal/wsllauncher"
 )
 
 func TestParseLauncherFlags_Empty(t *testing.T) {
@@ -42,6 +44,25 @@ func TestParseLauncherFlags_Distro(t *testing.T) {
 				t.Fatalf("Distro = %q, want %q", got.Distro, tc.want)
 			}
 		})
+	}
+}
+
+// A relaunch carries the launch's choice of distro: the new launcher
+// chooses the same distro and saves it exactly when the old one would have.
+func TestParseLauncherFlags_CarriesTheDistroChoice(t *testing.T) {
+	distros := []wsllauncher.Distro{{Name: "Ubuntu-24.04"}, {Name: "Debian"}}
+	for _, transient := range []bool{false, true} {
+		got, err := parseLauncherFlags(wsllauncher.DistroArgs("Debian", transient))
+		if err != nil {
+			t.Fatalf("transient=%v: %v", transient, err)
+		}
+		chosen, gotTransient := resolveChosenDistro(got, &wsldistro.Config{Distro: "Ubuntu-24.04"}, distros)
+		if chosen != "Debian" || gotTransient != transient {
+			t.Fatalf("transient=%v: chose %q, transient %v", transient, chosen, gotTransient)
+		}
+	}
+	if _, err := parseLauncherFlags([]string{"--" + wsllauncher.RememberDistroFlag}); err == nil {
+		t.Fatal("--remember-distro without --distro was accepted")
 	}
 }
 

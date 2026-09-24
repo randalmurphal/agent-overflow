@@ -659,6 +659,17 @@ func TestSoakWindowIsSmallEnoughToParkBesideRealWork(t *testing.T) {
 	}
 }
 
+// TestAnUpdateApplierDoesNotOwnTheWindowPlacement: window.json has one
+// writer, the launch the user runs, never the update's applier.
+func TestAnUpdateApplierDoesNotOwnTheWindowPlacement(t *testing.T) {
+	if windowPlacementSink(true) != nil {
+		t.Fatal("the update's applier saves the window placement")
+	}
+	if windowPlacementSink(false) == nil {
+		t.Fatal("an ordinary launch does not save the window placement")
+	}
+}
+
 // TestWailsLogLevelIsolatedProfilesAreDebug: the fork logs half the
 // render-watchdog narrative ("armed", "standing down", "re-navigating")
 // at debug. An isolated instance that drops those has episode starts with

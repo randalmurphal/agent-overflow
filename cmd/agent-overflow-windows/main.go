@@ -289,6 +289,7 @@ func main() {
 	if applier {
 		app := buildApp(nil, "/loading", "", false, true)
 		app.updateApplyID, app.updateApplyDistro = flags.UpdateApply, flags.Distro
+		app.updateApplyTransient = !flags.RememberDistro
 		app.run()
 		return
 	}
@@ -432,31 +433,18 @@ func prependWSLENVRule(rule string) error {
 	return os.Setenv("WSLENV", merged)
 }
 
-// resolveChosenDistro picks the distro to launch in based on (in
-// order) the --distro override, then the saved wsl.json config, then
-// a single-distro auto-pick. Returns ("", false) when none matched
-// and the picker (or the WSL-missing page, if zero distros) should
-// run instead.
-//
-// The returned bool is the "transient" flag — true when an override
-// supplied the choice and the launcher should NOT persist it after a
-// successful boot. Picker selections, saved-config rehydrations, and
-// single-distro auto-picks are non-transient (the auto-pick is
-// effectively a "first-time setup" pick and should persist so the
-// next launch isn't asked again if the user later installs more
-// distros).
+// resolveChosenDistro is wsllauncher.ChooseDistro for these flags and the
+// saved wsl.json config. The returned bool is the "transient" flag: true
+// when the launcher must NOT persist the choice after a successful boot.
 func resolveChosenDistro(flags launcherFlags, cfg *wsldistro.Config, distros []wsllauncher.Distro) (string, bool) {
-	if flags.Distro != "" {
-		for _, d := range distros {
-			if d.Name == flags.Distro {
-				return d.Name, true
-			}
-		}
+	saved := ""
+	if cfg != nil {
+		saved = cfg.Distro
+	}
+	chosen, transient := wsllauncher.ChooseDistro(flags.Distro, flags.RememberDistro, saved, distros)
+	if flags.Distro != "" && chosen == "" {
 		// --distro pointed at a distro that wsl.exe doesn't know
 		// about (typo, distro uninstalled since the env var was set).
-		// Fall through to the picker so the user sees the real list
-		// rather than silently dropping back to a saved choice that
-		// might be the wrong dev environment entirely.
 		names := make([]string, 0, len(distros))
 		for _, d := range distros {
 			names = append(names, d.Name)
@@ -465,23 +453,8 @@ func resolveChosenDistro(flags launcherFlags, cfg *wsldistro.Config, distros []w
 			"warning: --distro %q not found among installed distros (%v); showing picker",
 			flags.Distro, names,
 		)
-		return "", false
 	}
-	if cfg != nil && cfg.Distro != "" {
-		for _, d := range distros {
-			if d.Name == cfg.Distro {
-				return d.Name, false
-			}
-		}
-	}
-	// Single-distro auto-pick: nothing to choose between, so don't
-	// make the user click. Persist on success so a later install of
-	// a second distro doesn't surprise the user with a picker on
-	// next launch — they explicitly own their pick now.
-	if len(distros) == 1 {
-		return distros[0].Name, false
-	}
-	return "", false
+	return chosen, transient
 }
 
 // openLog opens %APPDATA%\agent-overflow\launcher.log for append (or
@@ -576,14 +549,19 @@ type launcherApp struct {
 	updateInstalling atomic.Bool
 	// payloadDistro and payloadPath are the running backend's distro and
 	// Linux path, recorded by launchAndShow for an in-app update (under mu).
-	payloadDistro string
-	payloadPath   string
+	// payloadTransient is whether that launch saves its distro choice,
+	// which the update's relaunch carries (wsllauncher.DistroArgs).
+	payloadDistro    string
+	payloadPath      string
+	payloadTransient bool
 	// updateApplyID is the update --update-apply runs for the data root in
-	// updateApplyDistro, set before the app starts. updateRunning keeps
-	// that window open while it runs.
-	updateApplyID     string
-	updateApplyDistro string
-	updateRunning     atomic.Bool
+	// updateApplyDistro, set before the app starts, with the launch's
+	// choice of that distro. updateRunning keeps that window open while
+	// it runs.
+	updateApplyID        string
+	updateApplyDistro    string
+	updateApplyTransient bool
+	updateRunning        atomic.Bool
 	// yielded is set once this applier hid its window for a launch that
 	// joined the update.
 	yielded atomic.Bool
@@ -783,7 +761,7 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 		log.Printf("save config after launch: %v", err)
 	}
 	a.mu.Lock()
-	a.payloadDistro, a.payloadPath = distro, binPath
+	a.payloadDistro, a.payloadPath, a.payloadTransient = distro, binPath, transient
 	a.mu.Unlock()
 
 	// The backend assembles the page URL (main.go webviewPageURL): the
@@ -1480,7 +1458,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	// SetURL navigation because it's the same window object, and is stored
 	// Windows-side in window.json, not the WSL settings.
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
-		w, flush := uiwindow.RestoreAndTrack(app, opts, loadWindowGeometry(), saveWindowGeometry)
+		w, flush := uiwindow.RestoreAndTrack(app, opts, loadWindowGeometry(), windowPlacementSink(applier))
 		trimWebviewMemoryOnMinimise(w)
 		// Every SPA document this window loads is handed its one-time
 		// page ticket here, so the URL the launcher navigates to (and
@@ -1509,7 +1487,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 // failure; this goroutine just logs.
 func (a *launcherApp) afterWindow(chosen string, transient bool) {
 	if a.updateApplyID != "" {
-		a.runUpdateApply(a.updateApplyID, a.updateApplyDistro)
+		a.runUpdateApply(a.updateApplyID, a.updateApplyDistro, a.updateApplyTransient)
 		return
 	}
 	if chosen == "" || !a.launching.CompareAndSwap(false, true) {

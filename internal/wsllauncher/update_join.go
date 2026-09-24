@@ -81,39 +81,100 @@ func recordApplier(recordPath, id string, applier supervise.ProcessRef) error {
 
 // ProgressPublisher publishes an applier's progress for a joiner: the latest
 // report, written at most once per interval. Report never blocks.
+//
+// Each write replaces the file by rename (atomicfile), so a joiner reads the
+// previous report or the next, never part of one. Windows refuses the
+// rename while a joiner has the file open; the refused report is written
+// again at the next interval unless a newer one replaced it, so the file
+// always ends at the latest report.
 type ProgressPublisher struct {
-	path    string
-	relay   *supervise.ProgressRelay
+	path     string
+	interval time.Duration
+	write    func(path string, v any) error
+	logf     func(string, ...any)
+
+	mu      sync.Mutex
+	pending *startupprogress.Progress
+	wake    chan struct{}
 	closing chan struct{}
+	done    chan struct{}
 }
 
-// NewProgressPublisher publishes to path. A write that fails is logged once
-// and the next report is tried again; progress is not durable state.
+// NewProgressPublisher publishes to path. The first failed write is logged;
+// progress is not durable state.
 func NewProgressPublisher(path string, interval time.Duration, logf func(string, ...any)) *ProgressPublisher {
-	var once sync.Once
-	p := &ProgressPublisher{path: path, closing: make(chan struct{})}
-	p.relay = supervise.NewProgressRelay(func(progress startupprogress.Progress) error {
-		if err := atomicfile.WriteJSON(path, progress); err != nil {
-			once.Do(func() { logf("updater: publish the update's progress for a joining launch: %v", err) })
-		}
-		t := time.NewTimer(interval)
-		defer t.Stop()
-		select {
-		case <-t.C:
-		case <-p.closing:
-		}
-		return nil
-	})
+	return newProgressPublisher(path, interval, atomicfile.WriteJSON, logf)
+}
+
+func newProgressPublisher(path string, interval time.Duration, write func(string, any) error, logf func(string, ...any)) *ProgressPublisher {
+	p := &ProgressPublisher{
+		path: path, interval: interval, write: write, logf: logf,
+		wake:    make(chan struct{}, 1),
+		closing: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	go p.run()
 	return p
 }
 
 // Report publishes progress in place of any report not yet written.
-func (p *ProgressPublisher) Report(progress startupprogress.Progress) { p.relay.Report(progress) }
+func (p *ProgressPublisher) Report(progress startupprogress.Progress) {
+	p.mu.Lock()
+	p.pending = &progress
+	p.mu.Unlock()
+	p.signal()
+}
 
-// Close stops publishing and removes the file.
+func (p *ProgressPublisher) signal() {
+	select {
+	case p.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (p *ProgressPublisher) run() {
+	defer close(p.done)
+	logged := false
+	for {
+		select {
+		case <-p.wake:
+		case <-p.closing:
+			return
+		}
+		p.mu.Lock()
+		next := p.pending
+		p.pending = nil
+		p.mu.Unlock()
+		if next == nil {
+			continue
+		}
+		if err := p.write(p.path, *next); err != nil {
+			if !logged {
+				p.logf("updater: publish the update's progress for a joining launch: %v", err)
+				logged = true
+			}
+			p.mu.Lock()
+			if p.pending == nil {
+				p.pending = next
+			}
+			p.mu.Unlock()
+			p.signal()
+		}
+		t := time.NewTimer(p.interval)
+		select {
+		case <-t.C:
+		case <-p.closing:
+			t.Stop()
+			return
+		}
+	}
+}
+
+// Close stops publishing without waiting out the interval and removes the
+// file.
 func (p *ProgressPublisher) Close() error {
 	close(p.closing)
-	_ = p.relay.Close() // deliver never fails
+	<-p.done
 	if err := os.Remove(p.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("wsllauncher: remove the published update progress: %w", err)
 	}

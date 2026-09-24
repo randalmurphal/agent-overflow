@@ -11,7 +11,9 @@ payload installation, and launcher RPC transport in `internal/wsllauncher`.
   distro discovery, Wails, or single-instance setup.
 - `parseLauncherFlags` owns the CLI shape. `--distro` is transient and must not
   replace the saved default. An invalid override returns to the picker instead
-  of silently using saved configuration.
+  of silently using saved configuration. A launcher that starts another to
+  continue its launch passes its choice with `wsllauncher.DistroArgs`, whose
+  `--remember-distro` keeps a picker or saved choice one that is saved.
 - `--profile` and `AGENT_OVERFLOW_PROFILE` feed one validated
   `appidentity.RuntimeMode`. Use that mode for every isolated resource:
   instance identity, data roots, browser profiles, logs, window state, CDP,

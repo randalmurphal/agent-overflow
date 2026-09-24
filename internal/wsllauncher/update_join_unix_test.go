@@ -5,8 +5,10 @@ package wsllauncher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -409,6 +411,98 @@ func TestProgressPublisherCloseRemovesItsFileWithoutWaiting(t *testing.T) {
 	}
 	if _, found := readPublished(t, path); found {
 		t.Fatal("the published progress outlived the publisher")
+	}
+}
+
+// TestProgressPublisherNeverShowsAJoinerAPartialReport: a joiner reading
+// while reports are written finds a whole report every time.
+func TestProgressPublisherNeverShowsAJoinerAPartialReport(t *testing.T) {
+	path := UpdateProgressPath(supervise.LauncherRecordPath(t.TempDir(), "prod", "Ubuntu"))
+	publisher := NewProgressPublisher(path, time.Millisecond, t.Logf)
+	t.Cleanup(func() { _ = publisher.Close() })
+	// Large reports widen any window in which a write is visible half done.
+	body := strings.Repeat("x", 256<<10)
+	var last startupprogress.Progress
+	stop := make(chan struct{})
+	readerDone := make(chan error, 1)
+	reads := 0
+	go func() {
+		for {
+			select {
+			case <-stop:
+				readerDone <- nil
+				return
+			default:
+			}
+			var p startupprogress.Progress
+			if _, err := atomicfile.ReadJSON(path, &p); err != nil {
+				readerDone <- err
+				return
+			}
+			reads++
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		last = startupprogress.Progress{Phase: "update.trial", Detail: fmt.Sprintf("%d %s", i, body)}
+		publisher.Report(last)
+		time.Sleep(time.Millisecond)
+	}
+	waitFor(t, "the last report", func() bool { p, _ := readPublished(t, path); return p == last })
+	close(stop)
+	if err := <-readerDone; err != nil {
+		t.Fatalf("a joiner read a partial report after %d whole ones: %v", reads, err)
+	}
+}
+
+// TestProgressPublisherWritesARefusedReportAgain: Windows refuses the
+// rename while a joiner has the file open. The refused report is written
+// at the next interval, with no newer report to prompt it, and a report
+// that arrived meanwhile is not replaced by the older one.
+func TestProgressPublisherWritesARefusedReportAgain(t *testing.T) {
+	for _, newer := range []bool{false, true} {
+		path := UpdateProgressPath(supervise.LauncherRecordPath(t.TempDir(), "prod", "Ubuntu"))
+		first := startupprogress.Progress{Phase: "update.commit", Detail: "first"}
+		second := startupprogress.Progress{Phase: "update.commit", Detail: "second"}
+		var mu sync.Mutex
+		var logged []string
+		refused := 0
+		var publisher *ProgressPublisher
+		write := func(path string, v any) error {
+			mu.Lock()
+			refuse := refused == 0
+			refused++
+			mu.Unlock()
+			if refuse {
+				if newer {
+					publisher.Report(second)
+				}
+				return errors.New("Access is denied.")
+			}
+			return atomicfile.WriteJSON(path, v)
+		}
+		publisher = newProgressPublisher(path, 20*time.Millisecond, write, func(format string, args ...any) {
+			mu.Lock()
+			defer mu.Unlock()
+			logged = append(logged, fmt.Sprintf(format, args...))
+		})
+		publisher.Report(first)
+		want := first
+		if newer {
+			want = second
+		}
+		waitFor(t, "the refused report written again", func() bool { p, found := readPublished(t, path); return found && p == want })
+		time.Sleep(100 * time.Millisecond) // several intervals
+		if p, _ := readPublished(t, path); p != want {
+			t.Fatalf("newer=%v: published %+v, want %+v", newer, p, want)
+		}
+		if err := publisher.Close(); err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		if len(logged) != 1 {
+			t.Fatalf("logged %q, want the refusal once", logged)
+		}
+		mu.Unlock()
 	}
 }
 

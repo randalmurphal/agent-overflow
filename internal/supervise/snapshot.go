@@ -52,8 +52,10 @@ type AttemptRecord struct {
 	// Attempt is the attempt's number.
 	Attempt int `json:"attempt"`
 	// Ended is false from the moment the attempt's trial may write until
-	// its command records the database the trial left. A command that
-	// died in between (a killed VM, lost power) leaves it false.
+	// its command records the database the trial left, or a restore
+	// records the snapshot it put back. A command that died in between (a
+	// killed VM, lost power) leaves it false, and the next attempt
+	// restores the snapshot before its trial (UnendedAttemptError).
 	Ended bool           `json:"ended"`
 	Files []FileIdentity `json:"files,omitempty"`
 }
@@ -247,38 +249,49 @@ func describeIdentityChange(before, after FileIdentity) string {
 // update does not know about, and the next trial or a rollback would build
 // on it or discard it. A manifest without identities fails closed.
 //
-// checked is false, with a nil error, when the previous attempt never
-// recorded what its trial left: its command died while the trial could
-// write, and no identity can tell that trial's writes from another
-// process's. The attempt then runs on what is there.
-func CheckLiveBeforeAttempt(layout Layout, dataDir string) (checked bool, err error) {
+// A previous attempt that never recorded what its trial left is an
+// UnendedAttemptError: its command died while the trial could write, and
+// no identity can tell that trial's writes from another process's. The
+// caller restores the snapshot, which ends that attempt, and checks again.
+func CheckLiveBeforeAttempt(layout Layout, dataDir string) error {
 	snapshot, found, err := readSnapshotManifest(layout)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if !found {
-		return false, fmt.Errorf("supervise: there is no database snapshot in %s to compare against", layout.SnapshotDir())
+		return fmt.Errorf("supervise: there is no database snapshot in %s to compare against", layout.SnapshotDir())
 	}
 	expected, afterTrial := snapshot.Live, false
 	if left := snapshot.Left; left != nil {
 		if !left.Ended {
-			return false, nil
+			return &UnendedAttemptError{Attempt: left.Attempt}
 		}
 		expected, afterTrial = left.Files, true
 	}
 	if len(expected) == 0 {
-		return false, errors.New("supervise: the database snapshot records no file identities, so it cannot prove the database is unchanged")
+		return errors.New("supervise: the database snapshot records no file identities, so it cannot prove the database is unchanged")
 	}
 	for _, recorded := range expected {
 		live, err := identify(dataDir, recorded.Name)
 		if err != nil {
-			return false, err
+			return err
 		}
 		if live != recorded {
-			return false, &LiveDatabaseChangedError{Snapshot: recorded, Live: live, AfterTrial: afterTrial}
+			return &LiveDatabaseChangedError{Snapshot: recorded, Live: live, AfterTrial: afterTrial}
 		}
 	}
-	return true, nil
+	return nil
+}
+
+// UnendedAttemptError is a trial attempt that never recorded what it left
+// in the live database. Only restoring the snapshot puts the database back
+// in a state the update can vouch for.
+type UnendedAttemptError struct {
+	Attempt int
+}
+
+func (e *UnendedAttemptError) Error() string {
+	return fmt.Sprintf("trial attempt %d stopped without recording what it left in the database", e.Attempt)
 }
 
 // RecordAttempt records in the manifest what trial attempt attempt leaves
@@ -368,7 +381,8 @@ func ReadRestoreMarker(layout Layout) (RestoreMarker, bool, error) {
 // RestoreSnapshot puts the snapshot back over the live database, marker first.
 //
 // The order is the contract: write and sync the marker, remove every live
-// database file, copy the snapshot's back, sync the directory, THEN remove the
+// database file, copy the snapshot's back, sync the directory, record the
+// restored files as what the update's last attempt left, THEN remove the
 // marker. A crash at any point leaves a marker, and ResumeRestore run on the
 // next boot repeats the whole thing. That is safe because every step is
 // idempotent against the snapshot, and unsafe to skip because the middle of it
@@ -476,7 +490,29 @@ func applyRestore(layout Layout, dataDir string, progress CopyProgress) error {
 		}
 		copied += sizes[name]
 	}
-	return atomicfile.SyncDir(dataDir)
+	if err := atomicfile.SyncDir(dataDir); err != nil {
+		return err
+	}
+	return endAttemptAtRestore(layout, dataDir, snapshot)
+}
+
+// endAttemptAtRestore records that the update's last trial attempt, if one
+// started, left the snapshot just restored: a restore ends an attempt the
+// way its command's own record does, whichever process finishes it. It runs
+// before the marker is cleared, so a failure repeats the restore.
+func endAttemptAtRestore(layout Layout, dataDir string, snapshot Snapshot) error {
+	if snapshot.Left == nil {
+		return nil
+	}
+	files, _, err := identifyDatabase(dataDir)
+	if err != nil {
+		return err
+	}
+	snapshot.Left = &AttemptRecord{Attempt: snapshot.Left.Attempt, Ended: true, Files: files}
+	if err := atomicfile.WriteJSON(filepath.Join(layout.SnapshotDir(), snapshotManifest), snapshot); err != nil {
+		return fmt.Errorf("supervise: record the restored database for trial attempt %d: %w", snapshot.Left.Attempt, err)
+	}
+	return nil
 }
 
 const (

@@ -57,7 +57,7 @@ func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, st
 		return errLegacyTarget
 	}
 	a.mu.Lock()
-	distro, stable := a.payloadDistro, a.payloadPath
+	distro, stable, transient := a.payloadDistro, a.payloadPath, a.payloadTransient
 	a.mu.Unlock()
 	if distro == "" || stable == "" {
 		return errors.New("the running backend's install location is unknown")
@@ -127,7 +127,7 @@ func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, st
 		}
 		return fmt.Errorf("record the update: %w", err)
 	}
-	if err := startApplier(recordPath, launcherPath, id, distro); err != nil {
+	if err := startApplier(recordPath, launcherPath, id, distro, transient); err != nil {
 		// Settled before the error is reported, so no later launch tries
 		// to resume an update whose new launcher never ran.
 		if settleErr := wsllauncher.SettleLauncherUpdate(recordPath, id, supervise.UpdateFailed,
@@ -241,9 +241,10 @@ func startLauncherAfterThis(path string, args ...string) error {
 
 // startApplier starts the launcher at path to apply update id once this one
 // exits, and names it in the record before this one can exit, so a launch
-// in between joins the update instead of settling it.
-func startApplier(recordPath, path, id, distro string) error {
-	cmd, err := launcherAfterThis(path, "--update-apply", id, "--distro", distro)
+// in between joins the update instead of settling it. transient is this
+// launch's choice of distro, which the applier's relaunch carries.
+func startApplier(recordPath, path, id, distro string, transient bool) error {
+	cmd, err := launcherAfterThis(path, append([]string{"--update-apply", id}, wsllauncher.DistroArgs(distro, transient)...)...)
 	if err != nil {
 		return err
 	}
@@ -308,7 +309,8 @@ func (a *launcherApp) updateSequence(dir, distro string) wsllauncher.UpdateSeque
 // window hides instead of closing while the update runs. A launch while it
 // runs joins the update (wsllauncher.Join): this window hides for it, and
 // once the update ends this launcher quits and leaves the rest to it.
-func (a *launcherApp) runUpdateApply(id, distro string) {
+// transient is the choice of distro the install path is started with.
+func (a *launcherApp) runUpdateApply(id, distro string, transient bool) {
 	w := a.win()
 	a.updateRunning.Store(true)
 	w.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
@@ -378,7 +380,7 @@ func (a *launcherApp) runUpdateApply(id, distro string) {
 	default:
 		log.Printf("updater: update %s ended %s", id, end.State)
 	}
-	a.relaunchInstallPath(sequence.RecordPath)
+	a.relaunchInstallPath(sequence.RecordPath, distro, transient)
 }
 
 // yieldToJoiner is WatchJoiner's call while a launch that joined the update
@@ -399,15 +401,15 @@ func (a *launcherApp) yieldToJoiner() bool {
 }
 
 // relaunchInstallPath starts the launcher at the install path, which waits
-// for this one to exit, and quits.
-func (a *launcherApp) relaunchInstallPath(recordPath string) {
+// for this one to exit and launches distro with the same choice, and quits.
+func (a *launcherApp) relaunchInstallPath(recordPath, distro string, transient bool) {
 	record, found, err := supervise.LoadLauncherRecord(recordPath)
 	if err != nil || !found {
 		log.Printf("updater: no install path to start (found=%v): %v", found, err)
 		a.showUpdateFailure("The update finished, but Agent Overflow could not be restarted.", "Start Agent Overflow again.")
 		return
 	}
-	if err := startLauncherAfterThis(record.InstallPath); err != nil {
+	if err := startLauncherAfterThis(record.InstallPath, wsllauncher.DistroArgs(distro, transient)...); err != nil {
 		log.Printf("updater: start %s: %v", record.InstallPath, err)
 		a.showUpdateFailure("The update finished, but Agent Overflow could not be restarted.", "Start Agent Overflow again.")
 		return
@@ -420,7 +422,7 @@ func (a *launcherApp) relaunchInstallPath(recordPath string) {
 // while the window shows its progress. It returns false when this launch
 // must not start the backend: it handed off to the new launcher, left the
 // launch to the install path, or shows why it cannot start. transient is
-// launchAndShow's: a --distro override the install path is started with.
+// launchAndShow's: the choice of distro a launcher it starts carries.
 func (a *launcherApp) reconcileUpdate(distro string, transient bool) bool {
 	dir, ok := wsldistro.WSLConfigDir()
 	if !ok {
@@ -446,7 +448,7 @@ func (a *launcherApp) reconcileUpdate(distro string, transient bool) bool {
 	switch decision.Action {
 	case wsllauncher.ReconcileHandOff:
 		log.Printf("updater: resuming update %s with %s", decision.Record.Update.ID, decision.Record.StagedLauncher)
-		if err := startApplier(sequence.RecordPath, decision.Record.StagedLauncher, decision.Record.Update.ID, distro); err != nil {
+		if err := startApplier(sequence.RecordPath, decision.Record.StagedLauncher, decision.Record.Update.ID, distro, transient); err != nil {
 			log.Printf("updater: start %s: %v", decision.Record.StagedLauncher, err)
 			a.showUpdateFailure("The update could not resume.", "Start Agent Overflow again. Details are in the launcher log.")
 			return false
@@ -454,12 +456,8 @@ func (a *launcherApp) reconcileUpdate(distro string, transient bool) bool {
 		a.wails.Quit()
 		return false
 	case wsllauncher.ReconcileRelaunch:
-		var args []string
-		if transient {
-			args = []string{"--distro", distro}
-		}
 		log.Printf("updater: update %s committed while this launch waited; starting %s", decision.Record.Update.ID, decision.Record.InstallPath)
-		if err := startLauncherAfterThis(decision.Record.InstallPath, args...); err != nil {
+		if err := startLauncherAfterThis(decision.Record.InstallPath, wsllauncher.DistroArgs(distro, transient)...); err != nil {
 			log.Printf("updater: start %s: %v", decision.Record.InstallPath, err)
 			a.showUpdateFailure("The update finished, but Agent Overflow could not be restarted.", "Start Agent Overflow again.")
 			return false

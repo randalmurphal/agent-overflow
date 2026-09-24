@@ -74,8 +74,8 @@ func TestSnapshotRecordsTheLiveIdentitiesAndUpdateID(t *testing.T) {
 	if shm := byName["agent-overflow.db-shm"]; shm.Present {
 		t.Fatalf("an absent file was recorded present: %+v", shm)
 	}
-	if checked, err := CheckLiveBeforeAttempt(layout, dataDir); err != nil || !checked {
-		t.Fatalf("CheckLiveBeforeAttempt on an untouched database = %v, %v", checked, err)
+	if err := CheckLiveBeforeAttempt(layout, dataDir); err != nil {
+		t.Fatalf("CheckLiveBeforeAttempt on an untouched database = %v", err)
 	}
 }
 
@@ -113,7 +113,7 @@ func TestCheckLiveBeforeAttemptCatchesEveryKindOfChange(t *testing.T) {
 				t.Fatalf("TakeSnapshot: %v", err)
 			}
 			c.change(t, dataDir)
-			_, err := CheckLiveBeforeAttempt(layout, dataDir)
+			err := CheckLiveBeforeAttempt(layout, dataDir)
 			var changed *LiveDatabaseChangedError
 			if !errors.As(err, &changed) {
 				t.Fatalf("CheckLiveBeforeAttempt = %v, want a LiveDatabaseChangedError", err)
@@ -128,19 +128,19 @@ func TestCheckLiveBeforeAttemptCatchesEveryKindOfChange(t *testing.T) {
 func TestCheckLiveBeforeAttemptFailsClosedWithoutIdentities(t *testing.T) {
 	dataDir := t.TempDir()
 	layout := appLayout(t, dataDir)
-	if _, err := CheckLiveBeforeAttempt(layout, dataDir); err == nil {
+	if err := CheckLiveBeforeAttempt(layout, dataDir); err == nil {
 		t.Fatal("no snapshot verified as unchanged")
 	}
 	// A manifest written before identities existed.
 	writeFile(t, filepath.Join(layout.SnapshotDir(), "snapshot.json"), `{"files":["agent-overflow.db"],"takenAtMs":1}`)
-	if _, err := CheckLiveBeforeAttempt(layout, dataDir); err == nil || !strings.Contains(err.Error(), "no file identities") {
+	if err := CheckLiveBeforeAttempt(layout, dataDir); err == nil || !strings.Contains(err.Error(), "no file identities") {
 		t.Fatalf("CheckLiveBeforeAttempt = %v, want a refusal naming the missing identities", err)
 	}
 }
 
 // Once an attempt records what it left, that replaces the snapshot as what
 // the next attempt compares against; an attempt that never recorded its end
-// cannot be compared at all.
+// cannot be compared at all, and is named so the caller restores.
 func TestCheckLiveBeforeAttemptFollowsTheLastRecordedAttempt(t *testing.T) {
 	dataDir := t.TempDir()
 	layout := appLayout(t, dataDir)
@@ -153,25 +153,94 @@ func TestCheckLiveBeforeAttemptFollowsTheLastRecordedAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, db, "the trial's database")
-	if checked, err := CheckLiveBeforeAttempt(layout, dataDir); err != nil || checked {
-		t.Fatalf("after an unended attempt = %v, %v; want unchecked", checked, err)
+	var unended *UnendedAttemptError
+	if err := CheckLiveBeforeAttempt(layout, dataDir); !errors.As(err, &unended) || unended.Attempt != 1 {
+		t.Fatalf("after an unended attempt = %v, want an UnendedAttemptError for attempt 1", err)
 	}
 	if err := RecordAttempt(layout, dataDir, 1, true); err != nil {
 		t.Fatal(err)
 	}
-	if checked, err := CheckLiveBeforeAttempt(layout, dataDir); err != nil || !checked {
-		t.Fatalf("after an ended attempt = %v, %v; want checked and unchanged", checked, err)
+	if err := CheckLiveBeforeAttempt(layout, dataDir); err != nil {
+		t.Fatalf("after an ended attempt = %v, want unchanged", err)
 	}
 	snapshot, _, err := ReadSnapshot(layout)
 	if err != nil || snapshot.Left == nil || snapshot.Left.Attempt != 1 || len(snapshot.Live) != 3 {
 		t.Fatalf("manifest = %+v, %v; want the attempt beside the snapshot's own identities", snapshot, err)
 	}
 	writeFile(t, db, "another backend's database")
-	_, err = CheckLiveBeforeAttempt(layout, dataDir)
+	err = CheckLiveBeforeAttempt(layout, dataDir)
 	var changed *LiveDatabaseChangedError
 	if !errors.As(err, &changed) || !changed.AfterTrial {
 		t.Fatalf("CheckLiveBeforeAttempt = %v, want a change after the trial", err)
 	}
+}
+
+// A restore ends the attempt it undoes, whichever process finishes it: the
+// command that restores after a failed trial, or the next process to take
+// the lock and find the marker a failed restore left. The next attempt is
+// then checked against the restored database.
+func TestARestoreEndsTheUpdatesLastAttempt(t *testing.T) {
+	setup := func(t *testing.T) (Layout, string, string) {
+		dataDir := t.TempDir()
+		layout := appLayout(t, dataDir)
+		db := filepath.Join(dataDir, "agent-overflow.db")
+		writeFile(t, db, "database")
+		if _, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{UpdateID: "u1"}); err != nil {
+			t.Fatalf("TakeSnapshot: %v", err)
+		}
+		if err := RecordAttempt(layout, dataDir, 2, false); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, db, "a trial's partial database")
+		return layout, dataDir, db
+	}
+	ended := func(t *testing.T, layout Layout, dataDir, db string) {
+		t.Helper()
+		if got := readFile(t, db); got != "database" {
+			t.Fatalf("database = %q, want the snapshot", got)
+		}
+		snapshot, _, err := ReadSnapshot(layout)
+		if err != nil || snapshot.Left == nil || !snapshot.Left.Ended || snapshot.Left.Attempt != 2 {
+			t.Fatalf("manifest = %+v, %v; want attempt 2 ended", snapshot.Left, err)
+		}
+		if err := CheckLiveBeforeAttempt(layout, dataDir); err != nil {
+			t.Fatalf("CheckLiveBeforeAttempt after the restore = %v", err)
+		}
+		writeFile(t, db, "another backend's work")
+		var changed *LiveDatabaseChangedError
+		if err := CheckLiveBeforeAttempt(layout, dataDir); !errors.As(err, &changed) || !changed.AfterTrial {
+			t.Fatalf("CheckLiveBeforeAttempt after a write = %v, want a change against the restore", err)
+		}
+	}
+	t.Run("RestoreSnapshot", func(t *testing.T) {
+		layout, dataDir, db := setup(t)
+		if err := RestoreSnapshot(layout, dataDir, "u1", "the trial failed", time.Now(), nil); err != nil {
+			t.Fatal(err)
+		}
+		ended(t, layout, dataDir, db)
+	})
+	t.Run("a marked restore finished later", func(t *testing.T) {
+		layout, dataDir, db := setup(t)
+		writeFile(t, layout.MarkerPath(), `{"updateId":"u1","dataDir":`+quote(dataDir)+`,"reason":"x","writtenAtMs":1}`)
+		if _, resumed, err := ResumeRestore(layout, nil); err != nil || !resumed {
+			t.Fatalf("ResumeRestore = %v, %v", resumed, err)
+		}
+		ended(t, layout, dataDir, db)
+	})
+	t.Run("no attempt started", func(t *testing.T) {
+		dataDir := t.TempDir()
+		layout := appLayout(t, dataDir)
+		writeFile(t, filepath.Join(dataDir, "agent-overflow.db"), "database")
+		if _, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{UpdateID: "u1"}); err != nil {
+			t.Fatalf("TakeSnapshot: %v", err)
+		}
+		if err := RestoreSnapshot(layout, dataDir, "u1", "rolled back", time.Now(), nil); err != nil {
+			t.Fatal(err)
+		}
+		if snapshot, _, err := ReadSnapshot(layout); err != nil || snapshot.Left != nil {
+			t.Fatalf("manifest = %+v, %v; want no attempt invented", snapshot.Left, err)
+		}
+	})
 }
 
 func TestSnapshotRefusesAFileThatChangesWhileItIsCopied(t *testing.T) {

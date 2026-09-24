@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/harness/instanceinfo"
 )
 
 // startSleeper starts a child that runs until it is killed.
@@ -39,6 +41,25 @@ func TestCurrentProcessRefNamesThisProcess(t *testing.T) {
 	}
 	if running, err := self.Running(); err != nil || !running {
 		t.Fatalf("Running = %v, %v", running, err)
+	}
+}
+
+// A ProcessRef's start is the birth marker instanceinfo records for the
+// process, read by the one reader both use.
+func TestProcessRefStartIsTheInstanceIdentityStartTime(t *testing.T) {
+	cmd := startSleeper(t)
+	for _, pid := range []int{os.Getpid(), cmd.Process.Pid} {
+		ref, err := ProcessRefOf(pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		identity, err := instanceinfo.CaptureProcessIdentity(pid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ref.Start != identity.StartTime {
+			t.Fatalf("pid %d: ProcessRef start %q, identity start %q", pid, ref.Start, identity.StartTime)
+		}
 	}
 }
 

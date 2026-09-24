@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"agent-overflow/internal/harness/instanceinfo"
 )
 
 // ProcessRef names one process by its id and its start time, so an id the
-// system reused for another process never matches. Start is the platform's
-// birth marker: the creation FILETIME on Windows, the start time in clock
-// ticks since boot on Linux, and seconds.microseconds on macOS. It is
-// compared, never interpreted.
+// system reused for another process never matches. Start is the birth
+// marker instanceinfo reads (instanceinfo.ProcessStart), the StartTime of
+// its ProcessIdentity. It is compared, never interpreted.
 type ProcessRef struct {
 	PID   int    `json:"pid"`
 	Start string `json:"start"`
@@ -32,7 +33,7 @@ func ProcessRefOf(pid int) (ProcessRef, error) {
 	if pid <= 0 {
 		return ProcessRef{}, fmt.Errorf("process %d is not a process id", pid)
 	}
-	start, alive, err := processStart(pid)
+	start, alive, err := instanceinfo.ProcessStart(pid)
 	if err != nil {
 		return ProcessRef{}, err
 	}
@@ -56,7 +57,7 @@ func (r ProcessRef) Running() (bool, error) {
 	if err := r.valid(); err != nil {
 		return false, err
 	}
-	start, alive, err := processStart(r.PID)
+	start, alive, err := instanceinfo.ProcessStart(r.PID)
 	if err != nil {
 		return false, err
 	}
