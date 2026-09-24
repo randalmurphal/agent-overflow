@@ -327,21 +327,33 @@ describe('applyUserMessageReverted', () => {
   it('fences queued and delayed pre-cut frames while preserving the replacement', async () => {
     const pane = await seedPane();
     const old = makeItem({ id: 'old-output', threadId: 'thread-a', turnIndex: 1, itemIndex: 1, kind: 'assistant_text' });
-    applyItemStreamEvent({ action: 'upsert', threadId: 'thread-a', item: old }, { backendId: '', sequence: 10 });
+    applyItemStreamEvent({ action: 'upsert', threadId: 'thread-a', item: old }, 10);
     const replacement = makeItem({ id: 'new-user', threadId: 'thread-a', turnIndex: 1, kind: 'user_text', role: 'user' });
     const cut = { threadId: 'thread-a', userItemId: 'u:1', turnIndex: 1, historyEpoch: 2, historyRev: 20, itemEventSequence: 11, draftPendingResend: true, replacement };
     applyUserMessageReverted(cut);
     expect(pane.getItemById('new-user')).toBeDefined();
     expect(pane.getItemById('u:1')).toBeUndefined();
     // RPC cut before the delayed transport event and its older item frames.
-    applyItemStreamEvent({ action: 'upsert', threadId: 'thread-a', item: old }, { backendId: '', sequence: 11 });
-    applyItemStreamEvent({ action: 'upsert', threadId: 'thread-a', item: replacement }, { backendId: '', sequence: 12 });
+    applyItemStreamEvent({ action: 'upsert', threadId: 'thread-a', item: old }, 11);
+    applyItemStreamEvent({ action: 'upsert', threadId: 'thread-a', item: replacement }, 12);
     flushItemEventQueue();
     applyUserMessageReverted(cut);
     expect(pane.getItemById('old-output')).toBeUndefined();
     expect(pane.items.filter((item) => item.id === 'new-user')).toHaveLength(1);
     expect(pane.getItemById('u:0')).toBeDefined();
     expect(isThreadWorking('thread-a')).toBe(true);
+  });
+
+  it('fences an unsequenced frame the queue already held when the cut arrived', async () => {
+    const pane = await seedPane();
+    const old = makeItem({ id: 'old-output', threadId: 'thread-a', turnIndex: 1, itemIndex: 1, kind: 'assistant_text' });
+    applyItemStreamEvent({ action: 'upsert', threadId: 'thread-a', item: old });
+    applyUserMessageReverted({ threadId: 'thread-a', userItemId: 'u:1', turnIndex: 1, historyEpoch: 2, historyRev: 20, itemEventSequence: 11 });
+    const later = makeItem({ id: 'new-output', threadId: 'thread-a', turnIndex: 1, itemIndex: 2, kind: 'assistant_text' });
+    applyItemStreamEvent({ action: 'upsert', threadId: 'thread-a', item: later }, 12);
+    flushItemEventQueue();
+    expect(pane.getItemById('old-output')).toBeUndefined();
+    expect(pane.getItemById('new-output')).toBeDefined();
   });
 
 });
@@ -352,11 +364,11 @@ it('fences turn events that arrive after the RPC cut and allows the replacement 
   const pane = await seedPane();
   applyUserMessageReverted({ threadId: 'thread-a', userItemId: 'u:1', turnIndex: 1,
     historyRev: 30, historyEpoch: 1, itemEventSequence: 10, turnStartedSequence: 8, turnCompletedSequence: 7 });
-  applyTurnStarted({ threadId: 'thread-a', turnId: 'old', turnIndex: 1, startedAt: 1 }, { backendId: '', sequence: 8 });
+  applyTurnStarted({ threadId: 'thread-a', turnId: 'old', turnIndex: 1, startedAt: 1 }, 8);
   expect(isThreadWorking('thread-a')).toBe(false);
-  applyTurnStarted({ threadId: 'thread-a', turnId: 'new', turnIndex: 1, startedAt: 2 }, { backendId: '', sequence: 9 });
+  applyTurnStarted({ threadId: 'thread-a', turnId: 'new', turnIndex: 1, startedAt: 2 }, 9);
   expect(isThreadWorking('thread-a')).toBe(true);
-  applyTurnCompleted({ threadId: 'thread-a', turnId: 'old', turnIndex: 1, startedAt: 1, completedAt: 3, aborted: true } as any, { backendId: '', sequence: 7 });
+  applyTurnCompleted({ threadId: 'thread-a', turnId: 'old', turnIndex: 1, startedAt: 1, completedAt: 3, aborted: true } as any, 7);
   expect(isThreadWorking('thread-a')).toBe(true);
   expect(pane.latestSettledTurn?.turnId).not.toBe('old');
 });

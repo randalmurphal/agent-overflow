@@ -309,10 +309,12 @@ the only way those writers bump:
   tables on read (`decorateProposedPlanItems`).
 
 `UpdatePayloadSpans` is excluded on purpose and keeps the bare
-`bumpHistoryRevTx`. Spans are a derived cache with a documented "empty means
-not computed, ask the highlight RPC" fallback and are version-checked against
-payload content on the client (`utils/payloadVersion.ts`), so a window whose
-spans are behind is still a correct window.
+`bumpHistoryRevTx`, for the holder and for the forks that show the payload
+([Pointer-fork stamps](#pointer-fork-stamps)). Spans are a derived cache with a
+documented "empty means not computed, ask the highlight RPC" fallback and are
+version-checked against payload content on the client
+(`utils/payloadVersion.ts`), so a window whose spans are behind is still a
+correct window.
 
 Every pushed `ItemStreamEvent` is the row a page reads, at the revision
 it reads it, or claims no revision (`TestEmittedItemEventsCarryStoredItemRev`),
@@ -382,6 +384,41 @@ and always for a resume prompt, which can open a carrier under a parent
 it has seen; `TestAgentsFirstRowPushesItsCardAtOnce` and
 `TestSubagentToolEventReadsItsRowOnce` pin the push and its read cost.
 
+#### Pointer-fork stamps
+
+A pointer fork reads the rows before its cut from the threads that own
+them ([sqlite-store.md](sqlite-store.md#pointer-forks)). Its inherited
+rows read `rev = -1`, like imported rows, so a held window that contains
+one is fresh only through a stamp match (§5, step 1). A fork's
+`history_rev` and `history_epoch` are its own counters, and a write moves
+them only when it changes a row the fork shows:
+
+- A hand-off copy. Before an ancestor updates, moves, deletes or hides a
+  row a fork shows, `handOffIDsTx` copies the row into the fork and
+  advances the fork's revision once (`copyInheritedRowsStampedTx`).
+- An in-place update of a shown ancestor row, for a write that must reach
+  every thread showing the row: a revision touch
+  (`bumpHistoryRevForItemTx`) or the divider's `sourceDeleted` mark.
+  `trg_items_fork_reader_stamp` advances the stamps of the forks whose cut
+  follows the row and that do not hide it. It skips an update that changes
+  only `rev`, which is a subagent stamp serving an anchor at a new
+  revision: a fork walks an inherited anchor over its own timeline, where
+  a row past its cut or hidden by it does not appear.
+- `UpdatePayloadSpans` on a payload a fork shows (`bumpPayloadReadersTx`).
+- A change to which inherited rows the fork shows: its own delete or
+  revert of an inherited row, or the detach of a deleted source
+  (`bumpForkViewTx`, revision and epoch).
+
+A source write past a fork's cut changes nothing the fork shows, and an
+insert below the cut is hidden from the fork (`trg_items_fork_snapshot`),
+so neither moves the fork's stamps: a source continuing its own
+conversation leaves every open fork `fresh`. The readers of a written row
+are found through `idx_thread_fork_lineage_ancestor` by the row's
+position, so the work follows the forks that show the row, and a source
+write past every cut writes no fork row
+(`TestSourceWritesCostTheSameForAnyForkCount`).
+`TestForkStampIgnoresSourceWritesPastTheCut` pins both sides of the rule.
+
 ### 3.2 Operation → contract map
 
 | Operation (store) | Trigger path | Contract effect |
@@ -392,7 +429,11 @@ it has seen; `TestAgentsFirstRowPushesItsCardAtOnce` and
 | `BumpItemToTurnEnd` (reposition) | items UPDATE (index changed) | **epoch** |
 | `DeleteThreadItem`, `DeleteConversationFromTurn`, `DeleteConversationFromItem` | items DELETE | **epoch** |
 | `ReplacePayloadData`, `UpdatePayloadMeta`, `UpdatePayloadSpans` (async span backfill), bare `AppendPayloadData` | explicit, new `threadID` param | rev |
-| Fork clones (`CloneThreadItems`, `CloneThreadHistoryBeforeItem`) | items INSERT on the *target* thread | rev on target; source untouched |
+| `CreatePointerFork` | lineage rows, hidden ids and the fork's own rows (settled copies, divider) | rev on the fork; source untouched |
+| A write that updates, moves, deletes or hides a row a fork shows | hand-off copy into each such fork (`handOffIDsTx`), then the write | the write's own effect on its thread; rev on each fork that showed the row |
+| Revision touch or divider mark of a row forks show | items UPDATE, `trg_items_fork_reader_stamp` | rev on each fork that shows the row |
+| Fork deletes or reverts inherited rows; source deletion detaches forks | `bumpForkViewTx` | **epoch** on the fork |
+| Source write past every fork's cut | none on forks | fork stamps unchanged |
 | Import rollback / `DeleteThread` / retention sweep | thread row deleted | tombstone: replica entry dropped by the deleting client directly, and by any other client on the `gone` answer (§5) |
 | `RestoreFrom` (harness snapshot) | whole-DB replace | **generation** re-mint (§3.3) |
 | `decorateSubagentAnchors` (stamp read, or the walk for rows the triggers do not keep) | none: no write occurs | covered transitively: its inputs are the anchor's stamp and descendant item rows, whose writes bump rev |
@@ -559,8 +600,9 @@ graded by durability:
   History validation uses the stamp paired with its actual rows.
 - **When unsure (transport gap, replay gap on any stamped or
   content-bearing channel), the client keeps the older stamp or drops
-  to unknown.** The drop must reach every cache: an L1 snapshot carries a
-  copy paired with its rows, and
+  to unknown.** The drop must reach every cache of every thread the gap
+  may have touched (the threads a `gapThreads` list names, else all): an
+  L1 snapshot carries a copy paired with its rows, and
   an unattested copy can name a rev whose frames the gap ate. It would
   spring a false `fresh` on the next warm re-entry and stay wrong for
   the session. Attested copies survive the gap, and that asymmetry is
@@ -761,7 +803,7 @@ port; temporary token attachment does not create a durable pairing.
       newestCursor,
       hasMoreOlder, hasMoreNewer,
       latestSettledTurn,       // paint-only; ListRecentTurns re-fetches
-      subagentFolds,
+      runs,
     },
   }
   ```

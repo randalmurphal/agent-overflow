@@ -1,5 +1,5 @@
 // Frontend-only choices; a thread focus change never retargets telemetry.
-import { getAttachedBackends, backendDisplayName, backendReachable } from './attachedBackends.svelte';
+import { getAttachedBackends, backendDisplayName, backendReachable, backendStarting } from './attachedBackends.svelte';
 import { readFrontendValue, writeFrontendValue, onFrontendValueChanged } from './frontendStorage';
 import { SELECTED_BACKEND_KEY } from './selectedBackend.svelte';
 import { onBackendIdentity } from '../transport/backendIdentity';
@@ -49,6 +49,7 @@ export function telemetryComputers(kind: TelemetryKind) {
       name: backendDisplayName(computer),
       selected: selection === null ? kind === 'usage' || computer === defaultComputer : selection.includes(id) || (computer.home && selection.includes('@local')),
       connected: backendReachable(computer.id),
+      starting: backendStarting(computer.id),
     }];
   });
 }

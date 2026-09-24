@@ -5,11 +5,23 @@ import (
 	"fmt"
 )
 
-// ensureLocalPayloadTx gives one thread a mutable payload overlay when the
-// requested payload currently comes from immutable imported history. Copying
-// it is representation-only: timeline_payloads resolves to the same bytes
-// before and after, so callers bump history_rev only for the mutation that
-// follows.
+// requireMutablePayloadTx prepares threadID to rewrite a payload's content:
+// the forks that read the payload's rows through threadID take their own
+// copies first, then threadID gets a payload row it may write.
+func requireMutablePayloadTx(tx *sql.Tx, threadID, payloadID, label string) error {
+	if err := handOffPayloadTx(tx, threadID, payloadID); err != nil {
+		return fmt.Errorf("%s hand off payload %s/%s: %w", label, threadID, payloadID, err)
+	}
+	return ensureLocalPayloadTx(tx, threadID, payloadID, label)
+}
+
+// ensureLocalPayloadTx gives one thread a mutable payload row when the
+// requested payload currently comes from immutable imported history or from
+// a pointer fork's ancestor. Copying it is representation-only: the thread
+// reads the same bytes before and after, so callers bump history_rev only
+// for the mutation that follows. An inherited payload comes with the
+// inherited rows that reference it (shadowInheritedPayloadTx), so those
+// rows render the mutated payload too.
 func ensureLocalPayloadTx(tx *sql.Tx, threadID, payloadID, label string) error {
 	var local bool
 	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM payloads WHERE thread_id = ? AND id = ?)`, threadID, payloadID).Scan(&local); err != nil {
@@ -33,8 +45,14 @@ func ensureLocalPayloadTx(tx *sql.Tx, threadID, payloadID, label string) error {
 	if err != nil {
 		return fmt.Errorf("%s copy imported payload %s/%s: %w", label, threadID, payloadID, err)
 	}
-	if _, err := result.RowsAffected(); err != nil {
+	copied, err := result.RowsAffected()
+	if err != nil {
 		return fmt.Errorf("%s count copied imported payload %s/%s: %w", label, threadID, payloadID, err)
+	}
+	if copied == 0 {
+		if _, err := shadowInheritedPayloadTx(tx, threadID, payloadID); err != nil {
+			return fmt.Errorf("%s copy inherited payload %s/%s: %w", label, threadID, payloadID, err)
+		}
 	}
 
 	var exists int
@@ -158,23 +176,30 @@ func setHistoryBulkLoadTx(tx *sql.Tx, threadID string, enabled bool, label strin
 	return requireRowsAffected(result, fmt.Sprintf("%s set history materialization flag for %s", label, threadID))
 }
 
+// requireMutableItemTx prepares threadID to change one row of its timeline:
+// the forks that read the row through threadID take their own copies first,
+// then threadID gets a row it may write, localized from its imported history
+// or copied from an ancestor when it does not own one. It returns a wrapped
+// sql.ErrNoRows when threadID does not show the row.
 func requireMutableItemTx(tx *sql.Tx, threadID, itemID, label string) error {
-	var exists int
-	err := tx.QueryRow(
-		`SELECT 1 FROM items WHERE thread_id = ? AND id = ?`,
-		threadID, itemID,
-	).Scan(&exists)
-	if err == nil {
-		return nil
-	}
-	if err != sql.ErrNoRows {
-		return fmt.Errorf("%s inspect local item %s/%s: %w", label, threadID, itemID, err)
-	}
+	_, err := readMutableSubagentRowTx(tx, threadID, itemID, label)
+	return err
+}
+
+// ownShownItemTx gives threadID its own copy of a row it shows but does not
+// own: localized from its imported history, or copied from the ancestor a
+// pointer fork reads it from. It returns a wrapped sql.ErrNoRows when
+// threadID shows no such row.
+func ownShownItemTx(tx *sql.Tx, threadID, itemID, label string) error {
 	localized, err := localizeImportedItemTx(tx, threadID, itemID, label)
-	if err != nil {
+	if err != nil || localized {
 		return err
 	}
-	if !localized {
+	shadowed, err := shadowInheritedItemTx(tx, threadID, itemID)
+	if err != nil {
+		return fmt.Errorf("%s copy inherited item %s/%s: %w", label, threadID, itemID, err)
+	}
+	if !shadowed {
 		return fmt.Errorf("%s %s/%s: %w", label, threadID, itemID, sql.ErrNoRows)
 	}
 	return nil

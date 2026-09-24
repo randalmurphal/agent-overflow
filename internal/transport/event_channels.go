@@ -219,6 +219,20 @@ type ChannelPolicy struct {
 	// An empty entity key on such a channel is still DELIVERED: an event the
 	// extractor cannot attribute must not vanish (event_entity.go).
 	EntityFiltered bool
+	// TranscriptScopeFiltered narrows an EntityFiltered channel one level
+	// further: a frame addressed to a subagent's transcript scope (its
+	// row's `parentId`) reaches a watching connection only when the
+	// connection named that (thread, scope) pair; a root-scope frame keeps
+	// the thread rule (event_entity.go). Requires EntityFiltered. Distinct
+	// from Scope, which is the grant a session needs to see the channel.
+	//
+	// MEMBERSHIP RULE: the channel carries timeline rows, the emit funnel
+	// derives the row's parent for it (internal/app emitKeyed via
+	// internal/eventscope), and every frontend consumer of a child row
+	// either contributes that scope while it exists or reads the launch
+	// row instead. A frame this column cannot attribute is a root-scope
+	// frame, which is the delivering direction.
+	TranscriptScopeFiltered bool
 	// Why records the decision. A Why containing "unreviewed" means the
 	// row was captured from an emit site, not decided.
 	Why string
@@ -730,11 +744,12 @@ var channelPolicies = []ChannelPolicy{
 			"paths or identity. Keyed per thread.",
 	},
 	{
-		Channel:        eventchan.ProviderItemEvent,
-		Audience:       AudienceAny,
-		Retention:      RetentionDefault,
-		Scope:          ScopeThreadsRead,
-		EntityFiltered: true,
+		Channel:                 eventchan.ProviderItemEvent,
+		Audience:                AudienceAny,
+		Retention:               RetentionDefault,
+		Scope:                   ScopeThreadsRead,
+		EntityFiltered:          true,
+		TranscriptScopeFiltered: true,
 		Why: "The main transcript stream; a remote viewer that cannot see it " +
 			"has no product. Pinned remote-visible by " +
 			"TestEventVisibleToOrigin. Keyed by thread/item — never " +
@@ -757,7 +772,16 @@ var channelPolicies = []ChannelPolicy{
 			"eviction branch: an unwatched thread stops having its warm " +
 			"cache and replica window evicted mid-stream, and instead " +
 			"validates on read — the next open stamps the window and " +
-			"SyncThreadWindow answers stale with a replacing page.",
+			"SyncThreadWindow answers stale with a replacing page. " +
+			"TranscriptScopeFiltered: a subagent's rows reach only a " +
+			"connection that names its (thread, scope) pair. The main " +
+			"window admits root " +
+			"rows only, and a collapsed agent card reads its launch row's " +
+			"aggregate, so the child-row consumers are the scoped surfaces " +
+			"(agent pane, expanded card and tray digests), which contribute " +
+			"their scope while mounted, and the open background tray, which " +
+			"contributes its running agents' scopes; tray membership rides " +
+			"provider:background_tasks_changed.",
 	},
 	{
 		Channel:   eventchan.ProviderModelFallback,
@@ -1415,6 +1439,20 @@ var channelPolicies = []ChannelPolicy{
 			"pane still learns an update is staged. (Bridged from " +
 			"updater.EventUpdateReady on desktop; emitted directly by " +
 			"stageWSLUpdate on WSL.)",
+	},
+	{
+		Channel:   eventchan.UpdaterRestart,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeHost,
+		Why: "The App's restart-to-update state: what running work the " +
+			"restart waits for, then restarting, canceled or failed. " +
+			"RestartToUpdate and CancelRestartToUpdate are host-scoped and " +
+			"only this host restarts, so loopback-only with the rest of the " +
+			"lifecycle. Latest-only, and the membership rule holds: one " +
+			"restart at a time (RestartToUpdate refuses a second), each frame " +
+			"is the whole state, and a reconnecting pane wants the current " +
+			"one so it can offer Cancel.",
 	},
 	{
 		Channel:   eventchan.UpdaterVerifying,

@@ -2863,6 +2863,10 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 	"created_branch":           "write-once git origin (v78); it records where the workspace STOOD at creation, which is exactly what a whole-row write from a thread that has since moved would destroy",
 	"created_remote_url":       "write-once git origin (v78), same reason",
 	"created_head_commit":      "write-once git origin (v78), same reason",
+	"fork_source_thread_id":    "the pointer fork's source (v120), written by fork creation and cleared by source deletion or materialization; a stale struct must not relink or unlink history",
+	"fork_cut_turn_index":      "the pointer fork's cut (v120), owned with its lineage rows by fork creation and a fork's own revert",
+	"fork_cut_item_index":      "the other half of that cut (v120), same writers",
+	"fork_source_title":        "the divider's source title (v120), recorded at fork creation and when the source is deleted",
 	"newest_turn_error_at":     "the Failed pill's write-time aggregate (v121), maintained by the turn-error triggers",
 	"newest_turn_error_turn":   "the same aggregate's newest turn (v121), maintained by the same triggers",
 }

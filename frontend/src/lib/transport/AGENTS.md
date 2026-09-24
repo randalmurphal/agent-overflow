@@ -67,10 +67,12 @@ lower sequence than the old cursor. Forward skips on entity-filtered channels
 are not inferred as gaps after this client has sent a watch set; withheld frames
 legitimately consume sequence numbers. Explicit server gaps still recover.
 
-Watches are absolute per connection and are sent before replay on reconnect.
-`setWatchedThreadsEverywhere` splits known thread IDs by owner and sends unknown
-owners to every attached backend. Lease state describes platform suspension,
-not page visibility, and must be restated independently of watches.
+Watches (threads and subagent scopes) are absolute per connection and are sent
+before replay on reconnect. `setWatchedThreadsEverywhere` splits known thread
+IDs, and scopes by their thread, by owner and sends unknown owners to every
+attached backend. A scope set past the wire bound is omitted, never truncated.
+Lease state describes platform suspension, not page visibility, and must be
+restated independently of watches.
 
 The complete replay, gap, watch, and lease contracts are in
 [transport.md](../../../../docs/architecture/transport.md#event-replay-and-filtering).

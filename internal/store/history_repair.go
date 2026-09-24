@@ -199,11 +199,12 @@ func (s *Store) SealedHistoryThreads(ctx context.Context) ([]string, error) {
 // into its private rows, one bounded transaction and checkpoint at a time,
 // calling pause between transactions. Rows keep their ids, positions, meta
 // and timestamps; payloads keep their ids, bytes and highlight spans; search
-// rows keep their rowids. A chunk moved over several transactions is between
-// them in the state localizeImportedItemTx leaves: each moved row has an
-// override hiding its imported copy. The last piece removes the chunk's
-// overrides with the reference, and the chunk is deleted once no thread or
-// payload snapshot uses it.
+// rows keep their rowids. Each moved row is written the way
+// localizeImportedItemTx writes one: an override hides its imported copy
+// before the row is inserted, so a chunk moved over several transactions is
+// consistent between them and a pointer fork's snapshot trigger sees a
+// replacement, not a new row. The last piece removes the chunk's overrides
+// with the reference, and the chunk is deleted once no thread uses it.
 //
 // Moved rows are written under history_bulk_load and history_rev advances by
 // the number of moved rows, so the stamp ends above every revision the batch
@@ -319,7 +320,7 @@ func (s *Store) unsealThreadHistoryBatch(threadID string, budget historyRepairBu
 			}
 			remaining = remaining[len(piece):]
 			last := len(remaining) == 0
-			payloads, err := moveSealedRowsTx(tx, threadID, chunk.id, piece, last)
+			payloads, err := moveSealedRowsTx(tx, threadID, chunk.id, piece)
 			if err != nil {
 				return UnsealStats{}, false, err
 			}
@@ -378,11 +379,12 @@ func sealedRowsTx(tx *sql.Tx, threadID, chunkID string) ([]sealedRow, error) {
 }
 
 // moveSealedRowsTx moves the given rows of one chunk into the thread's
-// private rows with their payloads and search mappings. Unless the piece is
-// the chunk's last, each moved row gets an override so the chunk, which the
-// thread still references, no longer shows it. It returns the number of
-// payload rows copied. The caller holds history_bulk_load.
-func moveSealedRowsTx(tx *sql.Tx, threadID, chunkID string, piece []sealedRow, last bool) (int, error) {
+// private rows with their payloads and search mappings. Each moved row gets
+// an override first, so the chunk, which the thread still references, no
+// longer shows it, and trg_items_fork_snapshot does not hide the moved row
+// from the thread's pointer forks as a row they never showed. It returns the
+// number of payload rows copied. The caller holds history_bulk_load.
+func moveSealedRowsTx(tx *sql.Tx, threadID, chunkID string, piece []sealedRow) (int, error) {
 	if len(piece) == 0 {
 		return 0, nil
 	}
@@ -397,12 +399,10 @@ func moveSealedRowsTx(tx *sql.Tx, threadID, chunkID string, piece []sealedRow, l
 		return 0, fmt.Errorf("store: encode sealed row ids of %s: %w", chunkID, err)
 	}
 	idList := string(encoded)
-	if !last {
-		if _, err := tx.Exec(`INSERT INTO thread_import_item_overrides (thread_id, item_id)
+	if _, err := tx.Exec(`INSERT INTO thread_import_item_overrides (thread_id, item_id)
  SELECT ?1, i.id FROM import_history_items i WHERE i.chunk_id = ?2 AND i.id IN (SELECT value FROM json_each(?3))`,
-			threadID, chunkID, idList); err != nil {
-			return 0, fmt.Errorf("store: override moved sealed rows of %s: %w", chunkID, err)
-		}
+		threadID, chunkID, idList); err != nil {
+		return 0, fmt.Errorf("store: override moved sealed rows of %s: %w", chunkID, err)
 	}
 	// Payloads first: items reference them by foreign key. A payload the
 	// thread already overlays locally keeps its local bytes.

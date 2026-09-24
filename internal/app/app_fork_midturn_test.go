@@ -384,7 +384,7 @@ func TestForkThreadClaudeMidTurnWithoutSessionFileStartsFresh(t *testing.T) {
 			forked.SessionRef, forked.PendingForkRef, forked.PendingForkResumeAt)
 	}
 
-	forkItems, err := app.store.ListItems(forked.ID)
+	forkItems, err := forkConversationItems(app.store, forked.ID)
 	if err != nil {
 		t.Fatalf("ListItems(fork): %v", err)
 	}

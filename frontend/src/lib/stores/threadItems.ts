@@ -2,7 +2,6 @@ import type { Item } from '../types/models';
 import { userMessageIdentity } from '../utils/userMessageIdentity';
 
 const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
-const NO_REJECTED_ITEMS: readonly Item[] = Object.freeze([]);
 
 /** An older live observation cannot reopen an item already settled by a snapshot. */
 export function isItemStatusRegression(previous: Item, incoming: Pick<Item, 'status'> & Partial<Pick<Item, 'updatedAt'>>): boolean {
@@ -45,20 +44,12 @@ export function cursorFromItem(item: Item): TimelineCursorLike {
   };
 }
 
-/** Parent-walk bound; real subagent trees are two or three deep. */
-const MAX_ROOT_WALK_HOPS = 16;
-
 /**
- * The rows the chat timeline renders: every row whose top-level root sits
- * inside the loaded window `[oldest, newest]`. A held agent scope can
- * keep rows in pane memory outside that range (a launch paged in for a
- * tray digest or the companion, or a scope the prune spared at the
- * window's head); they belong to the scoped surface, not the transcript,
- * which must stay one contiguous span so its paging edges mean what
- * they say. Children key on their root, because a background agent's
- * rows carry the coordinates of whenever they arrived. Returns `items`
- * itself when nothing lies outside, which is every window without a
- * held island.
+ * The rows the chat timeline renders: every row inside the loaded window
+ * `[oldest, newest]`. A row held outside that range belongs to no
+ * transcript span the paging edges describe, so the timeline, which must
+ * stay one contiguous span, leaves it out. Returns `items` itself when
+ * nothing lies outside, which is every window without an outlier.
  */
 export function itemsWithinLoadedWindow(
   items: readonly Item[],
@@ -66,43 +57,13 @@ export function itemsWithinLoadedWindow(
   newest: TimelineCursorLike | null,
 ): readonly Item[] {
   if (items.length === 0 || !oldest || !newest) return items;
-  // Only a top-level row can be an island root, and the rows are sorted,
-  // so the outermost top-level rows decide whether any island exists. A
-  // child past the newest edge (hydrated under the last launch) is not
-  // one.
-  let first = 0;
-  while (first < items.length && (items[first].parentId ?? '') !== '') first += 1;
-  let last = items.length - 1;
-  while (last >= 0 && (items[last].parentId ?? '') !== '') last -= 1;
-  if (
-    first >= items.length
-    || (compareItemToCursor(items[first], oldest) >= 0 && compareItemToCursor(items[last], newest) <= 0)
-  ) {
+  // The rows are sorted, so the outermost rows decide whether any row
+  // lies outside.
+  if (compareItemToCursor(items[0], oldest) >= 0 && compareItemToCursor(items[items.length - 1], newest) <= 0) {
     return items;
   }
-  const byId = new Map<string, Item>();
-  for (const item of items) byId.set(item.id, item);
-  const insideById = new Map<string, boolean>();
-  const inside = (item: Item): boolean => {
-    const chain: string[] = [];
-    let walker = item;
-    let result: boolean | undefined;
-    for (let hops = 0; hops <= MAX_ROOT_WALK_HOPS; hops += 1) {
-      const memo = insideById.get(walker.id);
-      if (memo !== undefined) {
-        result = memo;
-        break;
-      }
-      chain.push(walker.id);
-      const parent = walker.parentId ? byId.get(walker.parentId) : undefined;
-      if (!parent) break;
-      walker = parent;
-    }
-    result ??= compareItemToCursor(walker, oldest) >= 0 && compareItemToCursor(walker, newest) <= 0;
-    for (const id of chain) insideById.set(id, result);
-    return result;
-  };
-  return items.filter(inside);
+  return items.filter((item) =>
+    compareItemToCursor(item, oldest) >= 0 && compareItemToCursor(item, newest) <= 0);
 }
 
 /** Reconcile page cuts before admission; moved outliers must not skip unloaded history. */
@@ -407,21 +368,14 @@ export function reconcileItemWindow(incoming: readonly Item[], current: readonly
  * (`adoptRevIfEqual`): "unchanged" means unchanged to a reader, and the
  * revision has no reader. `items` is `current` itself when nothing moved.
  *
- * `orphanedLiveChildren` are live-touched subagent children the merge
- * dropped because their launch anchor survived in neither the page nor
- * the live set — keeping them would install exactly the unreachable
- * orphan rows the admission boundary exists to prevent (same contract as
- * `rejectedParentedItems` on the upsert merge). The caller swallows them.
  */
 export function reconcileSnapshotPage(
   page: readonly Item[],
   current: readonly Item[],
   liveTouchedIds: ReadonlySet<string>,
   liveRemovedIds: ReadonlySet<string> = EMPTY_ID_SET,
-): { items: Item[]; orphanedLiveChildren: readonly Item[] } {
-  if (page.length === 0 && current.length === 0) {
-    return { items: current as Item[], orphanedLiveChildren: NO_REJECTED_ITEMS };
-  }
+): Item[] {
+  if (page.length === 0 && current.length === 0) return current as Item[];
 
   const currentById = new Map<string, Item>();
   for (const item of current) currentById.set(item.id, item);
@@ -448,19 +402,11 @@ export function reconcileSnapshotPage(
     next.push(item);
   }
 
-  let orphanedLiveChildren: Item[] | null = null;
-  // `current` is window-ordered, so a live parent is decided before its
-  // live children and the anchor check below is transitive.
   for (const item of current) {
     if (keptIds.has(item.id)) continue;
     const identity = userMessageIdentity(item);
     if (identity !== null && keptSends.has(identity)) continue;
     if (!liveTouchedIds.has(item.id)) continue;
-    const parentId = item.parentId ?? '';
-    if (parentId && !keptIds.has(parentId)) {
-      (orphanedLiveChildren ??= []).push(item);
-      continue;
-    }
     keptIds.add(item.id);
     next.push(item);
   }
@@ -470,16 +416,11 @@ export function reconcileSnapshotPage(
   // the wire is trusted to have got right.
   next.sort(compareItemsByTimelinePosition);
 
-  const orphaned = orphanedLiveChildren ?? NO_REJECTED_ITEMS;
-  if (next.length !== current.length) {
-    return { items: next, orphanedLiveChildren: orphaned };
-  }
+  if (next.length !== current.length) return next;
   for (let index = 0; index < current.length; index += 1) {
-    if (current[index] !== next[index]) {
-      return { items: next, orphanedLiveChildren: orphaned };
-    }
+    if (current[index] !== next[index]) return next;
   }
-  return { items: current as Item[], orphanedLiveChildren: orphaned };
+  return current as Item[];
 }
 
 /**

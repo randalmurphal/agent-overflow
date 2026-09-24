@@ -541,7 +541,10 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 		}
 	}
 
-	rounds, roundArgs := subagentResumeRoundsQuery(thread, jsonListForTest(t, "L"))
+	rounds, roundArgs, err := subagentResumeRoundsQuery(s.reader(), thread, jsonListForTest(t, "L"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	// The legacy selection reads the union of the thread's parent ids: its
 	// own derived table p, and the merge sort of the import arm's distinct
 	// parent ids, which span chunks.

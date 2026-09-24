@@ -371,3 +371,36 @@ func TestTransferHistoryCopiesReviewNotesWithoutAliasingTheirIDs(t *testing.T) {
 		}
 	}
 }
+
+// An empty payload crosses a transfer as an empty blob, whether the exported
+// thread owns it or reads it through a pointer fork.
+func TestTransferHistoryCarriesEmptyPayloads(t *testing.T) {
+	source, destination := newTestStore(t), newTestStore(t)
+	mustCreateThread(t, source, "src")
+	item := emptyPayloadItem("src", "a", 0)
+	item.PayloadID = "pe"
+	if err := source.InsertItemWithPayload(item, Payload{ID: "pe", Kind: "command_output", Meta: "{}", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.CreatePointerFork(makeThread("fork", "claude"), "src", ForkCut{}, testInterruptedSummary, 999); err != nil {
+		t.Fatal(err)
+	}
+	for _, exported := range []string{"src", "fork"} {
+		var snapshot bytes.Buffer
+		if err := source.ExportThreadHistory(context.Background(), exported, &snapshot); err != nil {
+			t.Fatalf("export %s: %v", exported, err)
+		}
+		target, err := source.GetThread(exported)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target.ID = "copy-of-" + exported
+		if err := destination.ImportThreadHistory(context.Background(), target, &snapshot); err != nil {
+			t.Fatalf("import %s: %v", exported, err)
+		}
+		requireEmptyBlob(t, destination, "payloads", "thread_id = ? AND id = ?", target.ID, "pe")
+		if data, err := destination.GetPayloadData(target.ID, "pe"); err != nil || len(data) != 0 {
+			t.Fatalf("%s payload = %q, %v", target.ID, data, err)
+		}
+	}
+}

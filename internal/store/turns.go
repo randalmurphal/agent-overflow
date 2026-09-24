@@ -37,10 +37,11 @@ type Turn struct {
 	// ProviderTurnID is the provider-assigned wire turn id (Codex
 	// `turn/started`), or "" when the provider has none on the wire
 	// (Claude). TurnID is always thread-scoped; this field remains verbatim.
-	// Kept separate from the TurnID PRIMARY KEY because forked threads
-	// carry cloned copies of their source's turns under fresh row ids
-	// while preserving this value — it is the `thread/fork` lastTurnId
-	// anchor the Codex revert/fork flows cut history on.
+	// Kept separate from the TurnID PRIMARY KEY because a fork's copies
+	// of its source's turns (the turns at its cut, or all of them once
+	// materialized) take fresh row ids while preserving this value. It is
+	// the `thread/fork` lastTurnId anchor the Codex revert/fork flows cut
+	// history on.
 	ProviderTurnID string `json:"providerTurnId,omitempty"`
 }
 
@@ -347,18 +348,9 @@ func (s *Store) sweepCrashedTurns(summarise func(string) string, now int64) ([]C
 }
 
 // flipCrashedTurnItemsTx flips one crashed turn's streaming/running
-// items to errored inside the recovery transaction. Backgrounded
-// tool_call launches are exempt — see RecoverCrashedTurns.
-func (s *Store) flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func(string) string, now int64) error {
-	return settleStrandedItemsTx(tx, s.sweepItemWrites(tx, c.ThreadID), &c.TurnIndex, summarise, now)
-}
-
-// settleStrandedItemsTx is the shared "no live process can ever finish
-// these rows" flip, used by BOTH interrupted-settle paths: the boot
-// crash sweep (RecoverCrashedTurns, one turn at a time) and the
-// mid-turn fork settle (SettleForkedThreadAsInterrupted, whole thread
-// — its clone has no session at all, so a running row in ANY turn is
-// stranded). turnIndex == nil means the whole thread.
+// items to errored inside the recovery transaction: no live process can
+// ever finish them. A fork settles the running rows it inherits the same
+// way when it is created (CreatePointerFork).
 //
 // Rows flip to `errored` with `summarise(summary)` and updated_at=now.
 // Backgrounded tool_call launches are EXEMPT (invariant 24), matching
@@ -367,30 +359,21 @@ func (s *Store) flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func
 // Nothing else on the row is touched — `decision` included. An
 // approval that never resolved is only answerable while triage holds
 // its pending request in memory, so the status flip is the whole
-// settle for those rows too (a fork thread has no triage state at
-// all, and a rebooted app has none either). A flipped agent child's
-// summary can move its launch's card; the settle carries no card and
-// recomputes those chains through w, the thread's bulk writes.
-func settleStrandedItemsTx(tx *sql.Tx, w *cardWrite, turnIndex *int, summarise func(string) string, now int64) error {
-	threadID := w.threadID
-	scope := threadID
-	args := []any{threadID}
-	turnFilter := ""
-	if turnIndex != nil {
-		scope = fmt.Sprintf("%s/%d", threadID, *turnIndex)
-		turnFilter = " AND turn_index = ?"
-		args = append(args, *turnIndex)
-	}
-
+// settle for those rows too (a rebooted app has no triage state). A
+// flipped agent child's summary can move its launch's card; the settle
+// carries no card and recomputes those chains through the sweep's bulk
+// writes (sweepItemWrites).
+func (s *Store) flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func(string) string, now int64) error {
+	threadID := c.ThreadID
 	rows, err := tx.Query(
 		`SELECT `+subagentRowColumns("")+` FROM items
-		  WHERE thread_id = ?`+turnFilter+`
+		  WHERE thread_id = ? AND turn_index = ?
 		    AND status IN ('streaming', 'running')
 		    AND NOT (is_background = 1 AND kind = 'tool_call')`,
-		args...,
+		threadID, c.TurnIndex,
 	)
 	if err != nil {
-		return fmt.Errorf("store: stranded item select %s: %w", scope, err)
+		return fmt.Errorf("store: stranded item select %s/%d: %w", threadID, c.TurnIndex, err)
 	}
 	var flips []subagentRow
 	for rows.Next() {
@@ -407,6 +390,7 @@ func settleStrandedItemsTx(tx *sql.Tx, w *cardWrite, turnIndex *int, summarise f
 	}
 	rows.Close()
 
+	w := s.sweepItemWrites(tx, threadID)
 	for _, f := range flips {
 		row := f
 		row.status, row.summary = "errored", summarise(f.summary)
@@ -449,7 +433,7 @@ func (s *Store) GetTurn(turnID string) (Turn, bool, error) {
 // when no row exists.
 func (s *Store) GetTurnByThreadIndex(threadID string, turnIndex int) (Turn, bool, error) {
 	row := s.reader().QueryRow(
-		`SELECT `+turnColumns+` FROM turns WHERE thread_id = ? AND turn_index = ?`,
+		`SELECT `+turnColumns+` FROM timeline_turns WHERE thread_id = ? AND turn_index = ?`,
 		threadID, turnIndex,
 	)
 	turn, err := scanTurnRow(row)
@@ -499,12 +483,21 @@ func (s *Store) ListRecentTurns(threadID string, limit int) ([]Turn, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
+	// A top-level compound, so the thread's own arm walks its index in
+	// order and stops at the limit; a fork's inherited turns follow its own.
 	rows, err := s.reader().Query(
 		`SELECT `+turnColumns+` FROM turns
 		  WHERE thread_id = ?
+		 UNION ALL
+		 SELECT turns.turn_id, l.thread_id, turns.turn_index, turns.started_at, turns.completed_at,
+		        turns.stop_reason, turns.assistant_message_id, turns.token_usage_json,
+		        turns.error_message, turns.provider_turn_id
+		   FROM thread_fork_lineage l
+		   CROSS JOIN turns ON turns.thread_id = l.ancestor_id
+		  WHERE l.thread_id = ? AND `+inheritedTurnVisibleSQL+`
 		  ORDER BY turn_index DESC
 		  LIMIT ?`,
-		threadID, limit,
+		threadID, threadID, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list recent turns for %s: %w", threadID, err)
@@ -568,8 +561,8 @@ func (s *Store) GetActiveTurn(threadID string) (Turn, bool, error) {
 // thread with no turn rows at all has no anchor to resolve against and
 // leaves the caller to fall back to the whole thread.
 //
-// The aggregate is deliberately one statement over the thread's own turn
-// rows (turns_thread_index) rather than a walk of a bounded recent
+// The aggregate is deliberately one statement over the thread's turn rows,
+// a fork's inherited ones included, rather than a walk of a bounded recent
 // listing: a thread with more turns than any listing cap would otherwise
 // resolve the anchor against the tail it happened to read.
 func (s *Store) FirstTurnIndexAtOrAfter(threadID string, startedAt int64) (turnIndex int, found, anyTurns bool, err error) {
@@ -577,7 +570,7 @@ func (s *Store) FirstTurnIndexAtOrAfter(threadID string, startedAt int64) (turnI
 	var total int64
 	err = s.reader().QueryRow(
 		`SELECT MIN(CASE WHEN started_at >= ? THEN turn_index END), COUNT(*)
-		   FROM turns WHERE thread_id = ?`,
+		   FROM timeline_turns WHERE thread_id = ?`,
 		startedAt, threadID,
 	).Scan(&index, &total)
 	if err != nil {

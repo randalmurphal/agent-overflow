@@ -9,6 +9,7 @@ import type { CatalogKind, CatalogRows } from '../replica/catalog';
 import { getBackendIdentity } from '../transport/backendIdentity';
 import { readBeforeDeadline } from '../utils/readBeforeDeadline';
 import { untrack } from 'svelte';
+import { settleCatalogRead } from './catalogLoad.svelte';
 
 interface ComputerCatalog<T> {
   read(backend: BackendKey): Promise<T[] | null>;
@@ -16,6 +17,22 @@ interface ComputerCatalog<T> {
   hasRows(backend: BackendKey): boolean;
   begin(backend: BackendKey): () => boolean;
   applyLate?(result: ComputerRows<T>): void;
+  /**
+   * One computer's current read failed with `error`. An answer, on time or
+   * late, is settled by whoever commits its rows (settleCatalogAnswers).
+   */
+  settle?(backend: BackendKey, error: unknown): void;
+}
+
+// The startup read budget: past it, a computer's answer applies late
+// through `applyLate` and the boot proceeds without it.
+export const COMPUTER_READ_DEADLINE_MS = 2500;
+
+export interface ComputerRowsOptions {
+  /** Read this computer alone; every other computer's rows are retained. */
+  only?: BackendKey;
+  /** Bound on each computer's answer, or null to wait for the RPC itself. */
+  deadlineMs?: number | null;
 }
 
 export function computerCatalog<K extends CatalogKind>(
@@ -38,6 +55,9 @@ export function computerCatalog<K extends CatalogKind>(
     read: (backend) => getReplicaCatalog(backend, kind),
     write: (backend, rows) => putReplicaCatalog(backend, kind, rows, stamps.get(backend) ?? null),
     hasRows: (backend) => populated.has(backend),
+    settle: kind === 'threads' || kind === 'projects'
+      ? (backend, error) => settleCatalogRead(kind, backend, false, error)
+      : undefined,
   };
 }
 
@@ -53,8 +73,10 @@ export async function readComputerRows<T>(
   cache?: ComputerCatalog<T>,
   admit?: (row: T, backend: BackendKey) => boolean,
   applyLate?: (result: ComputerRows<T>) => void,
+  options: ComputerRowsOptions = {},
 ): Promise<ComputerRows<T> | null> {
-  const targets = attachedBackends().slice();
+  const targets = attachedBackends().filter((entry) => options.only === undefined || entry.id === options.only);
+  const deadlineMs = options.deadlineMs === undefined ? COMPUTER_READ_DEADLINE_MS : options.deadlineMs;
   const results = await Promise.all(targets.map(async (target) => {
     const identity = getBackendIdentity(target.id);
     const currentRead = cache?.begin(target.id) ?? (() => true);
@@ -75,7 +97,8 @@ export async function readComputerRows<T>(
       // that is off.
       const status = target.status.status;
       if (status !== 'connected' && status !== 'disconnected') throw new DisconnectedError('Computer is offline.');
-      const rows = await readBeforeDeadline(withBackendTarget(target.id, read), 2500, (late) => {
+      const request = withBackendTarget(target.id, read);
+      const rows = (deadlineMs === null ? await request : await readBeforeDeadline(request, deadlineMs, (late) => {
         const apply = cache?.applyLate ?? applyLate;
         if (!apply || !stillCurrent()) return;
         const arrived = late ?? [];
@@ -83,7 +106,7 @@ export async function readComputerRows<T>(
         void cache?.write(target.id, arrived);
         apply({ rows: admit ? arrived.filter((row) => admit(row, target.id)) : arrived, answered: new Set([target.id]),
           attached: new Set(attachedBackends().map((entry) => entry.id)) });
-      }) ?? [];
+      })) ?? [];
       const current = getBackendIdentity(target.id);
       if (identity.backendId && (identity.backendId !== current.backendId || identity.generation !== current.generation)) {
         throw new Error('Computer history changed during the read.');
@@ -108,6 +131,10 @@ export async function readComputerRows<T>(
     const current = getBackendIdentity(target.id);
     if (result.identity.backendId !== current.backendId || result.identity.generation !== current.generation) continue;
     currentResults++;
+    // A failure settles here. An answer settles where its rows are
+    // committed (settleCatalogAnswers), so no render sees a catalog marked
+    // loaded before its rows land.
+    if (!result.answered) cache?.settle?.(target.id, result.error);
     error ??= result.error;
     hasCache ||= result.cached;
     if (result.answered) {

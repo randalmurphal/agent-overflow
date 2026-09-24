@@ -28,9 +28,12 @@ const (
 	commandOutputPersistByteThreshold = 64 * 1024
 )
 
+// ItemDeltaEvent is one streaming chunk of a row. ParentID is the row's
+// parent (see ItemStreamEvent).
 type ItemDeltaEvent struct {
 	ThreadID  string `json:"threadId"`
 	ItemID    string `json:"itemId"`
+	ParentID  string `json:"parentId,omitempty"`
 	Kind      string `json:"kind"`
 	Delta     string `json:"delta"`
 	UpdatedAt int64  `json:"updatedAt"`

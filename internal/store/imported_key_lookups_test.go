@@ -244,8 +244,9 @@ func mustFind[T any](t *testing.T, what string) func(T, bool, error) {
 	}
 }
 
-func keyedLookups() []keyedLookup {
-	const th = keyedThreadID
+// keyedLookups runs each lookup on th: the seeded thread, or a pointer fork
+// of it (TestPointerForkLookupsProbeTheLineage).
+func keyedLookups(th string) []keyedLookup {
 	return []keyedLookup{
 		{name: "GetThreadItem imported", run: func(t *testing.T, s *Store) {
 			mustFind[Item](t, "imported")(s.GetThreadItem(th, "answer-1"))
@@ -423,7 +424,7 @@ func TestImportedLookupsDoNotEnumerateChunks(t *testing.T) {
 	seedKeyedLookupThread(t, s)
 	views := chunkRefViewSQL(t, s)
 	rec := recordStatements(t, s)
-	for _, lookup := range keyedLookups() {
+	for _, lookup := range keyedLookups(keyedThreadID) {
 		stmts := rec.capture(func() { lookup.run(t, s) })
 		if len(stmts) == 0 {
 			t.Errorf("%s: recorded no statements", lookup.name)
@@ -600,18 +601,43 @@ func TestByIDReadCostIsIndependentOfChunkCount(t *testing.T) {
 		t.Fatalf("chunk references = %d, %v; want %d", refs, err, chunks)
 	}
 
-	start := time.Now()
-	for i := range 1000 {
-		id := fmt.Sprintf("row-%d", i*7919%chunks)
-		item, found, err := s.GetThreadItem(thread, id)
-		if err != nil || !found || item.ID != id {
-			t.Fatalf("GetThreadItem(%s) = %s, %v, %v", id, item.ID, found, err)
-		}
+	// The claim is independence of chunk count, so the reads are timed
+	// against the same reads over the same rows in one chunk, not against
+	// a wall-clock figure the race detector or a slow host would miss. The
+	// plan check below pins the mechanism.
+	const single = "one-chunk"
+	newImportTargetThread(t, s, single)
+	var batch ImportBatch
+	for turn := range chunks {
+		batch.Turns = append(batch.Turns, Turn{TurnID: fmt.Sprintf("%s:%d", single, turn), ThreadID: single, TurnIndex: turn, StartedAt: int64(turn) + 1})
+		batch.Rows = append(batch.Rows, ImportRow{Item: Item{
+			ID: fmt.Sprintf("row-%d", turn), TurnIndex: turn, Kind: "assistant_text", Role: "assistant",
+			Status: "completed", Summary: "tiny", CreatedAt: int64(turn) + 1, UpdatedAt: int64(turn) + 1,
+		}})
 	}
-	elapsed := time.Since(start)
-	t.Logf("1,000 by-id reads over %d chunks took %v", chunks, elapsed)
-	if elapsed > 250*time.Millisecond {
-		t.Errorf("1,000 by-id reads over %d chunks took %v", chunks, elapsed)
+	if err := s.ApplyImportBatch(single, batch); err != nil {
+		t.Fatalf("import one chunk: %v", err)
+	}
+	readAll := func(thread string) time.Duration {
+		start := time.Now()
+		for i := range 1000 {
+			id := fmt.Sprintf("row-%d", i*7919%chunks)
+			item, found, err := s.GetThreadItem(thread, id)
+			if err != nil || !found || item.ID != id {
+				t.Fatalf("GetThreadItem(%s, %s) = %s, %v, %v", thread, id, item.ID, found, err)
+			}
+		}
+		return time.Since(start)
+	}
+	// One warm pass each, so neither leg pays its statement compiles or
+	// first page reads inside the timed loop.
+	readAll(single)
+	readAll(thread)
+	one := readAll(single)
+	many := readAll(thread)
+	t.Logf("1,000 by-id reads took %v over %d chunks, %v over one", many, chunks, one)
+	if many > 3*one && many > one+100*time.Millisecond {
+		t.Errorf("1,000 by-id reads took %v over %d chunks, %v over one: the cost follows the chunk count", many, chunks, one)
 	}
 
 	rec := recordStatements(t, s)

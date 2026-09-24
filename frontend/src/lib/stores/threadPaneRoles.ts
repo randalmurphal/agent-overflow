@@ -63,7 +63,6 @@ import type {
 import type { ChannelMessage, ChannelStatePayload } from '../types/discussion';
 import type { AttachmentPreviewCache } from '../utils/attachmentPreview.svelte';
 import type { PayloadExpansionHandle } from '../utils/payloadExpansion.svelte';
-import type { SubagentFoldAggregate } from '../utils/subagentFold';
 import type { RevealBoundary } from '../utils/subagentGrouping';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
 import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
@@ -139,8 +138,7 @@ export interface PaneSession {
  * `chat/timelineRowUiRetention.ts`, `chat/timelineRowUiPrune.ts`,
  * `chat/messageTimelineTrace.ts`, `chat/MessageNavRail.svelte` +
  * `chat/messageNavRail.ts`, `stores/agentScopeView.svelte.ts`,
- * `utils/rowUiRetention.ts`, `utils/subagentFold.ts`,
- * `utils/timelineStructureSignature.ts`.
+ * `utils/rowUiRetention.ts`, `utils/timelineStructureSignature.ts`.
  */
 export interface TimelineSource {
   readonly threadId: string | null;
@@ -252,7 +250,6 @@ export interface RowUiRegistry {
   ) => PayloadExpansionLease;
   readonly isSubagentGroupExpanded: (groupKey: string) => boolean;
   readonly toggleSubagentGroupExpanded: (groupKey: string) => boolean;
-  readonly subagentLiveAggregate: (anchorId: string) => SubagentFoldAggregate | undefined;
   readonly isUserMessageExpanded: (itemId: string) => boolean;
   readonly setUserMessageExpanded: (itemId: string, expanded: boolean) => void;
   readonly diffCardExpandedOverride: (itemId: string, filePath: string) => boolean | undefined;

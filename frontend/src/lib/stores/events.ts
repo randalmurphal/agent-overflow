@@ -55,7 +55,7 @@ import type {
 import type { UserMessageRevertedEvent } from '../types/messageRevert';
 import { setSystemStats } from './systemStats.svelte';
 import { applyThreadGroupUpdated } from './threadGroups.svelte';
-import { transportGapChannel } from '../transport/wsClient';
+import { transportGapChannel, type TransportGap } from '../transport/wsClient';
 import { attachedBackends, backendKeyForOrigin } from '../transport/backends';
 import {
   forgetProject,
@@ -322,7 +322,8 @@ export function setupEventListeners(): () => void {
   // provider:item_event is the canonical ordered timeline mutation stream.
   // Upserts and deltas intentionally share one Wails channel so streaming
   // text cannot race lifecycle snapshots across separate event names.
-  const cancelItemEvent = wailsEventOn<ItemStreamEvent>('provider:item_event', applyItemStreamEvent);
+  const cancelItemEvent = wailsEventOn<ItemStreamEvent>('provider:item_event', (evt, _origin, sequence) =>
+    applyItemStreamEvent(evt, sequence));
 
   // provider:turn_{started,completed} — wire-pushed turn lifecycle.
   // Together with the live-state snapshots (threadLiveStateHydration.ts
@@ -331,8 +332,10 @@ export function setupEventListeners(): () => void {
   // registry (threadStatuses.svelte.ts → getActiveTurn) and
   // `pane.latestSettledTurn`. See invariant 22 and
   // docs/architecture/turn-lifecycle.md §Frontend state shape.
-  const cancelTurnStarted = wailsEventOn<TurnStartedEvent>('provider:turn_started', applyTurnStarted);
-  const cancelTurnCompleted = wailsEventOn<TurnCompletedEvent>('provider:turn_completed', applyTurnCompleted);
+  const cancelTurnStarted = wailsEventOn<TurnStartedEvent>('provider:turn_started', (evt, _origin, sequence) =>
+    applyTurnStarted(evt, sequence));
+  const cancelTurnCompleted = wailsEventOn<TurnCompletedEvent>('provider:turn_completed', (evt, _origin, sequence) =>
+    applyTurnCompleted(evt, sequence));
   // usage:thread_cost — a PROVIDER's own cost figure for a thread landed
   // after the turn that produced it had already settled (Codex asks its
   // backend asynchronously; see app_codex_thread.go). The turn-completed
@@ -624,15 +627,15 @@ export function setupEventListeners(): () => void {
 
   // transport:gap — synthetic event fired by wsClient.ts when the
   // server reports a missed seq on a channel. Coarse-grained recovery:
-  // re-fetch the active pane's window so SQLite (the authoritative
-  // history cache) backfills whatever was lost. We don't try to be
-  // surgical because the gap signal doesn't carry the missed range.
+  // re-fetch the affected panes' windows so SQLite (the authoritative
+  // history cache) backfills whatever was lost. The gap signal doesn't
+  // carry the missed range; at most it names the threads that lost frames.
   //
   // The handler matches on the channel name we lost rather than each
   // payload kind because a single gap on `provider:item_event` can
   // straddle upserts AND deltas; refreshing the whole pane is the
   // simplest correct response.
-  const cancelTransportGap = wailsEventOn<{ channel: string; seq: number }>(
+  const cancelTransportGap = wailsEventOn<TransportGap>(
     transportGapChannel,
     applyTransportGap,
   );

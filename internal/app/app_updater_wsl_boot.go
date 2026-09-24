@@ -12,11 +12,12 @@ import (
 // initWSLUpdater resolves process-global boot inputs before crossing into the
 // updater package. The WSL backend must be launched by the Windows launcher:
 // its injected AppData path is both the feature gate and staging root.
-func InitWSLUpdater(a *App, markerDir string) {
-	initWSLUpdaterIn(a, a.version, markerDir)
+// failure is the unsuccessful update the launcher passed on the argv.
+func InitWSLUpdater(a *App, markerDir string, failure appupdate.LauncherFailure) {
+	initWSLUpdaterIn(a, a.version, markerDir, failure)
 }
 
-func initWSLUpdaterIn(a *App, currentVersion, markerDir string) {
+func initWSLUpdaterIn(a *App, currentVersion, markerDir string, failure appupdate.LauncherFailure) {
 	if currentVersion == "dev" {
 		log.Printf("updater: disabled for dev build (version=%q)", currentVersion)
 		return
@@ -36,15 +37,27 @@ func initWSLUpdaterIn(a *App, currentVersion, markerDir string) {
 	}
 
 	if err := a.updater.ConfigureWSL(appupdate.WSLConfig{
-		CurrentVersion: currentVersion,
-		Arch:           runtime.GOARCH,
-		StagingRoot:    configDir,
-		MarkerDir:      markerDir,
+		CurrentVersion:  currentVersion,
+		Arch:            runtime.GOARCH,
+		StagingRoot:     configDir,
+		MarkerDir:       markerDir,
+		LauncherFailure: failure,
 	}); err != nil {
 		log.Printf("updater: init failed: %v — in-app updates disabled", err)
 		return
 	}
 	log.Printf("updater: configured (current version %s, target wsl/%s, staging root %s)", currentVersion, runtime.GOARCH, configDir)
+}
+
+// ReportUnsuccessfulUpdate records the notice for an update from this
+// version to `to` that the desktop's update record settled without
+// applying. NotifyPendingUpdateApplyFailure presents it.
+func ReportUnsuccessfulUpdate(a *App, to, reason string) {
+	if a.updater == nil {
+		log.Printf("updater: the update to %s did not apply (%s); no updater service carries the notice", to, reason)
+		return
+	}
+	a.updater.ReportUnsuccessfulUpdate(to, reason)
 }
 
 // notifyPendingUpdateApplyFailure presents the boot-detected failure only

@@ -106,14 +106,17 @@ func (s *Store) listWireItemsTx(q sqlQueryer, threadID string, ids []string) ([]
 	if err != nil {
 		return nil, err
 	}
-	selectedSQL, selectedArgs := wireItemsSelection(threadID, list)
+	selectedSQL, selectedArgs, err := wireItemsSelection(q, threadID, list)
+	if err != nil {
+		return nil, err
+	}
 	return s.querySelectedPagedItems(q, threadID, selectedSQL, selectedArgs...)
 }
 
 // wireItemsSelection selects the rows a JSON array of ids names, each by
-// key on both arms.
-func wireItemsSelection(threadID, ids string) (string, []any) {
-	return timelineIDSelection(threadID, timelineSelection{
+// key on every arm.
+func wireItemsSelection(q sqlQueryer, threadID, ids string) (string, []any, error) {
+	return timelineIDSelection(q, threadID, timelineSelection{
 		KeyFirst:  true,
 		Where:     "items.id IN (SELECT value FROM json_each(?))",
 		WhereArgs: []any{ids},
@@ -153,14 +156,17 @@ func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) (
 	for id := range emitted {
 		var parentID, completionOf string
 		var rev int64
-		written, args := timelineArms(threadID, timelineSelection{
+		written, args, err := timelineArms(tx, threadID, timelineSelection{
 			Columns: func(_, revExpr string) string {
 				return "items.parent_id, items.completion_of, " + revExpr
 			},
 			KeyFirst: true,
 			Where:    "items.id = ?", WhereArgs: []any{id},
 		})
-		err := tx.QueryRow(written, args...).Scan(&parentID, &completionOf, &rev)
+		if err != nil {
+			return nil, err
+		}
+		err = tx.QueryRow(written, args...).Scan(&parentID, &completionOf, &rev)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}

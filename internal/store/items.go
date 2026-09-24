@@ -118,7 +118,10 @@ func applyItemDefaults(item *Item) {
 
 func nextItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (int, error) {
 	var maxIndex sql.NullInt64
-	query, args := turnAggregateQuery(threadID, turnIndex, "MAX", "item_index")
+	query, args, err := turnAggregateQuery(tx, threadID, turnIndex, "MAX", "item_index")
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", label, err)
+	}
 	if err := tx.QueryRow(query, args...).Scan(&maxIndex); err != nil {
 		return 0, fmt.Errorf("%s: %w", label, err)
 	}
@@ -137,7 +140,10 @@ func nextItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (
 // row as turn-initial.
 func headItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (int, error) {
 	var minIndex sql.NullInt64
-	query, args := turnAggregateQuery(threadID, turnIndex, "MIN", "item_index")
+	query, args, err := turnAggregateQuery(tx, threadID, turnIndex, "MIN", "item_index")
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", label, err)
+	}
 	if err := tx.QueryRow(query, args...).Scan(&minIndex); err != nil {
 		return 0, fmt.Errorf("%s: %w", label, err)
 	}
@@ -165,7 +171,7 @@ func itemInsertArgs(item Item) []any {
 var itemInsertAdoptingSQL = itemInsertSQL + ` RETURNING ` + aggHasChildSQL("?2", "?1", "")
 
 // insertItemTx inserts one row and indexes its text when the row arrives
-// settled (a user message, a cloned or transferred row). A row that
+// settled (a user message, a fork's copy or a transferred row). A row that
 // arrives streaming is indexed later by the write that settles it. The
 // index write shares this transaction, so a rolled-back insert leaves
 // nothing searchable. w records the row for the subagent cards; a row

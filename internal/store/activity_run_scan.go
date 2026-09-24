@@ -133,17 +133,17 @@ func inputFilePathCountExpr(itemMeta string) string {
 		" WHERE paths.type = 'text' AND trim(paths.value) <> '') END"
 }
 
-var localActivityScanColumns = activityScanColumns(
-	"COALESCE(payloads.kind, '')",
-	"payloads.meta",
-	"items.rev",
-)
+func localActivityScanColumns(_, rev string) string {
+	return activityScanColumns("COALESCE(payloads.kind, '')", "payloads.meta", rev)
+}
 
-var importedActivityScanColumns = activityScanColumns(
-	"COALESCE(local_payloads.kind, imported_payloads.kind, '')",
-	"COALESCE(local_payloads.meta, imported_payloads.meta)",
-	importedItemRevExpr,
-)
+func importedActivityScanColumns(_, rev string) string {
+	return activityScanColumns(
+		"COALESCE(local_payloads.kind, imported_payloads.kind, '')",
+		"COALESCE(local_payloads.meta, imported_payloads.meta)",
+		rev,
+	)
+}
 
 // queryActivityScanRows resolves ids to scan rows through the physical
 // branch that owns each one, in (turn_index, item_index) order. It is
@@ -159,31 +159,15 @@ func queryActivityScanRows(
 	selectedSQL string,
 	selectedArgs ...any,
 ) ([]activityScanRow, error) {
-	args := append([]any{}, selectedArgs...)
-	args = append(args, threadID, threadID)
+	branches, branchArgs, err := resolveSelectedTimelineSQL(q, threadID, localActivityScanColumns, importedActivityScanColumns, "", "2, 3")
+	if err != nil {
+		return nil, fmt.Errorf("store: query activity scan rows for %s: %w", threadID, err)
+	}
+	args := append(append([]any{}, selectedArgs...), branchArgs...)
 	rows, err := q.Query(`
 		WITH selected(id) AS MATERIALIZED (
 			`+selectedSQL+`
-		)
-		SELECT `+localActivityScanColumns+`
-		  FROM selected
-		  CROSS JOIN items AS items
-		    ON items.thread_id = ? AND items.id = selected.id
-		  LEFT JOIN payloads AS payloads
-		    ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
-		UNION ALL
-		SELECT `+importedActivityScanColumns+`
-		  FROM selected
-		  CROSS JOIN import_history_items AS items ON items.id = selected.id
-		  CROSS JOIN thread_import_chunks AS refs ON refs.chunk_id = items.chunk_id
-		  LEFT JOIN payloads AS local_payloads
-		    ON local_payloads.thread_id = refs.thread_id AND local_payloads.id = items.payload_id
-		  LEFT JOIN import_history_payloads AS imported_payloads
-		    ON imported_payloads.chunk_id = items.chunk_id AND imported_payloads.id = items.payload_id
-		  LEFT JOIN thread_import_item_overrides AS overrides
-		    ON overrides.thread_id = refs.thread_id AND overrides.item_id = items.id
-		 WHERE refs.thread_id = ? AND overrides.item_id IS NULL
-		 ORDER BY 2, 3`,
+		)`+branches,
 		args...,
 	)
 	if err != nil {
@@ -313,12 +297,15 @@ func (w *activityScanWalk) fill() error {
 		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))`
 	}
 	filter, args := w.scope.filter("items.")
-	selectedSQL, selectedArgs := timelineIDSelection(w.threadID, timelineSelection{
+	selectedSQL, selectedArgs, err := timelineIDSelection(w.q, w.threadID, timelineSelection{
 		Where:     filter + comparison,
 		WhereArgs: append(args, w.from.TurnIndex, w.from.TurnIndex, w.from.ItemIndex),
 		OrderBy:   order,
 		Limit:     w.chunkRows,
 	})
+	if err != nil {
+		return err
+	}
 	chunk, err := queryActivityScanRows(w.q, w.threadID, w.chunkRows, selectedSQL, selectedArgs...)
 	if err != nil {
 		return err

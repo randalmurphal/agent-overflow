@@ -348,7 +348,7 @@ func TestCascade_ForkPreservesOriginalState(t *testing.T) {
 	}
 
 	// Item identities are thread-scoped; inherited IDs and summaries stay stable.
-	forkedItems, _ := app.store.ListItems(forked.ID)
+	forkedItems, _ := forkConversationItems(app.store, forked.ID)
 	if len(forkedItems) != 2 {
 		t.Fatalf("fork items = %d, want 2", len(forkedItems))
 	}

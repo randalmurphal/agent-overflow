@@ -208,6 +208,9 @@ var subagentRowSQL = `SELECT ` + subagentRowColumns("") + ` FROM items WHERE thr
 // readMutableSubagentRowTx is requireMutableItemTx that returns the row as
 // the card rules read it.
 func readMutableSubagentRowTx(tx *sql.Tx, threadID, itemID, label string) (subagentRow, error) {
+	if err := handOffIDsTx(tx, threadID, []string{itemID}); err != nil {
+		return subagentRow{}, fmt.Errorf("%s hand off item %s/%s: %w", label, threadID, itemID, err)
+	}
 	row, err := scanSubagentRow(tx.QueryRow(subagentRowSQL, threadID, itemID))
 	if !errors.Is(err, sql.ErrNoRows) {
 		if err != nil {
@@ -215,15 +218,11 @@ func readMutableSubagentRowTx(tx *sql.Tx, threadID, itemID, label string) (subag
 		}
 		return row, nil
 	}
-	localized, err := localizeImportedItemTx(tx, threadID, itemID, label)
-	if err != nil {
+	if err := ownShownItemTx(tx, threadID, itemID, label); err != nil {
 		return subagentRow{}, err
 	}
-	if !localized {
-		return subagentRow{}, fmt.Errorf("%s %s/%s: %w", label, threadID, itemID, sql.ErrNoRows)
-	}
 	if row, err = scanSubagentRow(tx.QueryRow(subagentRowSQL, threadID, itemID)); err != nil {
-		return subagentRow{}, fmt.Errorf("%s read localized item %s/%s: %w", label, threadID, itemID, err)
+		return subagentRow{}, fmt.Errorf("%s read copied item %s/%s: %w", label, threadID, itemID, err)
 	}
 	return row, nil
 }
@@ -905,7 +904,9 @@ func (s *Store) cardTxLocked(t *cardThread, label string, fn func(tx *sql.Tx) (f
 	return nil
 }
 
-// subagentChainRow is one row on a parent chain, read over both arms.
+// subagentChainRow is one row on a parent chain, read over every arm.
+// imported reports a row outside the local overlay: imported history, or
+// a row a pointer fork reads from an ancestor.
 type subagentChainRow struct {
 	id, parentID, kind, toolName string
 	imported, visible            bool
@@ -921,14 +922,17 @@ func subagentChainTx(q sqlQueryer, threadID, fromID string, visibleOnly bool) ([
 	for id, depth := fromID, 0; id != "" && depth < 64 && !seen[id]; depth++ {
 		seen[id] = true
 		row := subagentChainRow{id: id}
-		query, args := timelineArms(threadID, timelineSelection{
+		query, args, err := timelineArms(q, threadID, timelineSelection{
 			Columns: func(_, rev string) string {
 				return "items.parent_id, items.kind, items.tool_name, " + rev + " < 0, " + visibleItemsFilterFor("items.")
 			},
 			KeyFirst: true,
 			Where:    "items.id = ?", WhereArgs: []any{id},
 		})
-		err := q.QueryRow(query, args...).Scan(&row.parentID, &row.kind, &row.toolName, &row.imported, &row.visible)
+		if err != nil {
+			return nil, err
+		}
+		err = q.QueryRow(query, args...).Scan(&row.parentID, &row.kind, &row.toolName, &row.imported, &row.visible)
 		if errors.Is(err, sql.ErrNoRows) {
 			break
 		}
@@ -966,8 +970,19 @@ func (s *Store) resolveCardTx(tx *sql.Tx, t *cardThread, c *SubagentCard) (func(
 			continue
 		}
 		if row.imported {
-			if _, err := localizeImportedItemTx(tx, c.threadID, row.id, "store: open subagent card"); err != nil {
+			// An anchor outside the local overlay holds no stamp: an
+			// imported one is localized, and one a pointer fork reads from
+			// an ancestor is copied (shadowInheritedItemTx). Every anchor on
+			// a resolved chain is then local, so no later copy can put a
+			// stamp on the chain that no accumulator keeps.
+			localized, err := localizeImportedItemTx(tx, c.threadID, row.id, "store: open subagent card")
+			if err != nil {
 				return nil, false, "", err
+			}
+			if !localized {
+				if _, err := shadowInheritedItemTx(tx, c.threadID, row.id); err != nil {
+					return nil, false, "", err
+				}
 			}
 		}
 		anchors = append(anchors, row.id)
@@ -1649,6 +1664,14 @@ func (w *cardWrite) deleted(old subagentRow) {
 	if old.anchorable() {
 		w.seeds = append(w.seeds, old.id, old.root)
 	}
+}
+
+// subtreesChanged records anchors whose subtrees the write changed without
+// writing a row of theirs: a pointer fork's copied anchors when the fork
+// stops showing rows it inherits (forkViewChangedTx). finish recomputes
+// them with their families.
+func (w *cardWrite) subtreesChanged(ids []string) {
+	w.seeds = append(w.seeds, ids...)
 }
 
 // finish recomputes what the write changed that the rules do not follow,

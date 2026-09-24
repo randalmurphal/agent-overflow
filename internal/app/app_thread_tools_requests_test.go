@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -394,6 +395,14 @@ func TestThreadAskForksAReadOnlyScratchThreadAndDeletesIt(t *testing.T) {
 	f := newRequestFixture(t)
 	f.mockClaude(t, "the retry budget is three attempts")
 	target := f.forkableThread(t, "ask-source")
+	before, err := f.app.store.ListItems(target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp, _, err := f.app.store.ThreadHistoryStamp(target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	ack, err := f.adapter().Ask(t.Context(), f.callerIdentity(), threadtools.AskCall{
 		ThreadID: target.ID, Question: "what is the retry budget?", WaitSeconds: 20,
@@ -427,6 +436,18 @@ func TestThreadAskForksAReadOnlyScratchThreadAndDeletesIt(t *testing.T) {
 	})
 	if _, found, err := f.app.store.GetScratchThread(scratchID); err != nil || found {
 		t.Fatalf("scratch row survived: found=%v err=%v", found, err)
+	}
+	// The fork read the target's history without copying it, and its
+	// deletion left the target exactly as it was.
+	if rows, err := f.app.store.ListItems(scratchID); err != nil || len(rows) != 0 {
+		t.Fatalf("scratch history survived: %d rows, %v", len(rows), err)
+	}
+	after, err := f.app.store.ListItems(target.ID)
+	if err != nil || fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Fatalf("target history changed: %v\nbefore %+v\nafter  %+v", err, before, after)
+	}
+	if now, _, err := f.app.store.ThreadHistoryStamp(target.ID); err != nil || now != stamp {
+		t.Fatalf("target stamp moved %+v -> %+v: %v", stamp, now, err)
 	}
 	// The whole answer is still readable after the thread that wrote it is
 	// gone, which is the point of storing it on the request.

@@ -459,6 +459,26 @@ func explainPlan(t *testing.T, s *Store, query string, args ...any) []planRow {
 	return plan
 }
 
+// mustTimelineArms renders timelineArms for a test that holds s.
+func mustTimelineArms(t *testing.T, s *Store, threadID string, sel timelineSelection) (string, []any) {
+	t.Helper()
+	query, args, err := timelineArms(s.db, threadID, sel)
+	if err != nil {
+		t.Fatalf("render timeline arms: %v", err)
+	}
+	return query, args
+}
+
+// mustTimelineIDSelection renders timelineIDSelection for a test that holds s.
+func mustTimelineIDSelection(t *testing.T, s *Store, threadID string, sel timelineSelection) (string, []any) {
+	t.Helper()
+	query, args, err := timelineIDSelection(s.db, threadID, sel)
+	if err != nil {
+		t.Fatalf("render timeline id selection: %v", err)
+	}
+	return query, args
+}
+
 func planText(plan []planRow) string {
 	var b strings.Builder
 	for _, r := range plan {
@@ -621,7 +641,7 @@ func TestTimelineArmSelectionsWalkIndexes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			query, args := timelineIDSelection(timelineParityThreadID, tc.sel)
+			query, args := mustTimelineIDSelection(t, s, timelineParityThreadID, tc.sel)
 			assertLocalArmWalksAnIndex(t, s, tc.name, query, args...)
 		})
 	}
@@ -657,14 +677,18 @@ func TestSubagentWalksDoNotMaterializeTheView(t *testing.T) {
 	seedTimelineParityThread(t, s)
 
 	t.Run("ListSubagentDescendants", func(t *testing.T) {
-		selectedSQL, selectedArgs := timelineIDSelection(timelineParityThreadID, timelineSelection{
+		selectedSQL, selectedArgs := mustTimelineIDSelection(t, s, timelineParityThreadID, timelineSelection{
 			Source:  "rel",
 			Where:   "items.id = rel.id",
 			OrderBy: "turn_index DESC, item_index DESC",
 			Limit:   maxSubagentDescendants,
 		})
-		query := descendantsCTE + "\n" + selectedSQL
-		args := append(descendantsCTEArgs(timelineParityThreadID, jsonListForTest(t, "loc-launch-2")), selectedArgs...)
+		walk, walkArgs, err := descendantsWalk(s.reader(), timelineParityThreadID, []string{"loc-launch-2"}, visibleItemsFilterFor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		query := walk + "\n" + selectedSQL
+		args := append(walkArgs, selectedArgs...)
 		plan := explainPlan(t, s, query, args...)
 		for _, r := range plan {
 			if strings.Contains(r.detail, "timeline_items") {
@@ -692,7 +716,7 @@ func TestSubagentWalksDoNotMaterializeTheView(t *testing.T) {
 		if _, err := subagentAggregatesByRoot(s.reader(), timelineParityThreadID, []string{"loc-launch-2"}); err != nil {
 			t.Fatalf("aggregates: %v", err)
 		}
-		resolvedSQL, resolvedArgs := timelineArms(timelineParityThreadID, timelineSelection{
+		resolvedSQL, resolvedArgs := mustTimelineArms(t, s, timelineParityThreadID, timelineSelection{
 			Columns: func(string, string) string {
 				return `rel.root AS root, items.id AS id, items.kind AS kind,
 			        items.status AS status, items.summary AS summary,
@@ -701,9 +725,13 @@ func TestSubagentWalksDoNotMaterializeTheView(t *testing.T) {
 			Source: "rel",
 			Where:  "items.id = rel.id",
 		})
-		query := descendantsCTE + `
+		walk, walkArgs, err := descendantsWalk(s.reader(), timelineParityThreadID, []string{"loc-launch-2"}, visibleItemsFilterFor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		query := walk + `
 		SELECT root FROM (` + resolvedSQL + `)`
-		args := append(descendantsCTEArgs(timelineParityThreadID, jsonListForTest(t, "loc-launch-2")), resolvedArgs...)
+		args := append(walkArgs, resolvedArgs...)
 		for _, r := range explainPlan(t, s, query, args...) {
 			if strings.Contains(r.detail, "timeline_items") {
 				t.Errorf("aggregate resolution touches the view: %q", r.detail)

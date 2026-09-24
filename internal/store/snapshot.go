@@ -177,8 +177,11 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 		return Identity{}, fmt.Errorf("store: restore: drop background settle triggers: %w", err)
 	}
 
-	if _, err := tx.Exec(dropPayloadSnapshotTriggersSQL()); err != nil {
-		return Identity{}, fmt.Errorf("store: restore: suspend payload snapshots: %w", err)
+	// The pointer-fork triggers guard live writes: deleting a source that
+	// forks still read, or an item below a fork's cut. The clear and the
+	// copy replace every row with the snapshot's, lineage included.
+	if _, err := tx.Exec(dropForkTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: suspend fork triggers: %w", err)
 	}
 
 	if _, err := tx.Exec(dropAttachmentOwnerTriggersSQL + dropSharedChunkAdmissionTriggersSQL); err != nil {
@@ -237,8 +240,8 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 		return Identity{}, fmt.Errorf("store: restore: recreate background settle triggers: %w", err)
 	}
 
-	if _, err := tx.Exec(payloadSnapshotGCTriggersSQL + payloadSnapshotTriggersSQL()); err != nil {
-		return Identity{}, fmt.Errorf("store: restore: reinstall payload snapshots: %w", err)
+	if _, err := tx.Exec(forkTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: reinstall fork triggers: %w", err)
 	}
 
 	if _, err := tx.Exec(attachmentOwnerTriggersSQL + sharedChunkAdmissionTriggersV116SQL); err != nil {

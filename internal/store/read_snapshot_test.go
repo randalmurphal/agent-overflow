@@ -2,9 +2,13 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"testing"
 	"time"
+
+	sqlite "modernc.org/sqlite"
 )
 
 func TestReadSnapshotContextInterruptsStatement(t *testing.T) {
@@ -24,6 +28,49 @@ func TestReadSnapshotContextInterruptsStatement(t *testing.T) {
 	var probe int
 	if err := s.reader().QueryRowContext(t.Context(), "SELECT 1").Scan(&probe); err != nil || probe != 1 {
 		t.Fatalf("read pool unavailable after cancelled read: probe=%d err=%v", probe, err)
+	}
+}
+
+// interruptedBeginConnector models a read whose deadline fires while its
+// BEGIN runs: the driver interrupts the statement and reports the
+// interruption, not the context's error.
+type interruptedBeginConnector struct{ driver.Connector }
+
+func (c interruptedBeginConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	conn, err := c.Connector.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return interruptedBeginConn{conn}, nil
+}
+
+type interruptedBeginConn struct{ driver.Conn }
+
+func (interruptedBeginConn) BeginTx(ctx context.Context, _ driver.TxOptions) (driver.Tx, error) {
+	<-ctx.Done()
+	return nil, errors.New("interrupted (9)")
+}
+
+func TestReadSnapshotContextReportsDeadlineAtBegin(t *testing.T) {
+	s := newTestStore(t)
+	base, err := sqlite.NewConnector(poolDSN(s.path, readerConnPragmas))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := sql.OpenDB(interruptedBeginConnector{base})
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+	defer cancel()
+	_, err = readSnapshotContext(ctx, db, "interrupted begin", func(sqlQueryer) (int, error) {
+		t.Error("the read ran without a snapshot")
+		return 0, nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("begin interrupted by the deadline reported %v", err)
 	}
 }
 

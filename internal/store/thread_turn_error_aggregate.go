@@ -1,5 +1,10 @@
 package store
 
+import (
+	"database/sql"
+	"fmt"
+)
+
 // A thread's Failed pill is lit by its turn errors: the visible `error`
 // rows (both timeline arms) whose turn_index is at or after the newest turn
 // row, or 0 before the first turn. An orphan error has no turn row of its
@@ -28,6 +33,13 @@ package store
 // The triggers do not consult history_bulk_load: none of them walks the
 // thread, and the bulk paths (imports, thread deletion, transferred
 // history) move exactly the rows these aggregates count.
+//
+// A pointer fork also counts the error rows it reads through its lineage,
+// which sit at or before its cut turn. No trigger sees a change to that set
+// (the fork's creation, a revert of inherited rows, a hidden row, a detached
+// source); each such writer recomputes the pair with the lineage arms
+// (recomputeTurnErrorsTx). A copy of an inherited row changes no set: the
+// insert raises the pair with a row it already counts.
 //
 // thread_import_chunks rows are detached before an unreferenced chunk is
 // collected (trg_thread_import_chunks_gc), and SQLite does not order
@@ -67,6 +79,48 @@ func turnErrorRowsSQL(thread, skipChunk string) string {
 	   AND imported.kind = 'error'
 	   AND imported.turn_index >= ` + turnErrorNewestTurnSQL(thread) + `
 	   AND ` + turnErrorNotOverriddenSQL(thread)
+}
+
+// turnErrorLineageRowsSQL is turnErrorRowsSQL's arms for the rows a pointer
+// fork reads from its ancestors, under the timeline arms' visibility rule.
+// A thread without lineage rows probes them once.
+func turnErrorLineageRowsSQL(thread string) string {
+	return `SELECT items.created_at, items.turn_index
+	  FROM thread_fork_lineage l
+	  CROSS JOIN items ON items.thread_id = l.ancestor_id
+	 WHERE l.thread_id = ` + thread + ` AND items.kind = 'error'
+	   AND items.turn_index >= ` + turnErrorNewestTurnSQL(thread) + `
+	   AND ` + inheritedItemVisibleSQL + `
+	UNION ALL
+	SELECT items.created_at, items.turn_index
+	  FROM thread_fork_lineage l
+	  CROSS JOIN thread_import_chunks refs ON refs.thread_id = l.ancestor_id
+	  CROSS JOIN import_history_items items ON items.chunk_id = refs.chunk_id
+	 WHERE l.thread_id = ` + thread + `
+	   AND refs.max_turn_index >= ` + turnErrorNewestTurnSQL(thread) + `
+	   AND items.kind = 'error'
+	   AND items.turn_index >= ` + turnErrorNewestTurnSQL(thread) + `
+	   AND NOT EXISTS (SELECT 1 FROM thread_import_item_overrides overrides
+	              WHERE overrides.thread_id = l.ancestor_id AND overrides.item_id = items.id)
+	   AND ` + inheritedItemVisibleSQL
+}
+
+// recomputeForkTurnErrorsSQL rewrites one thread's pair from its own rows
+// and the rows it reads through its lineage.
+var recomputeForkTurnErrorsSQL = `UPDATE threads
+	   SET (newest_turn_error_at, newest_turn_error_turn) = (
+	       SELECT MAX(created_at), MAX(turn_index) FROM (` + turnErrorRowsSQL("threads.id", "") + `
+	UNION ALL
+	` + turnErrorLineageRowsSQL("threads.id") + `))
+	 WHERE id = ?`
+
+// recomputeTurnErrorsTx rewrites threadID's pair, for a write that changes
+// which rows a pointer fork reads through its lineage.
+func recomputeTurnErrorsTx(tx *sql.Tx, threadID string) error {
+	if _, err := tx.Exec(recomputeForkTurnErrorsSQL, threadID); err != nil {
+		return fmt.Errorf("store: recompute turn errors of %s: %w", threadID, err)
+	}
+	return nil
 }
 
 // turnErrorRecomputeSQL rewrites the pair of the threads rows `where`

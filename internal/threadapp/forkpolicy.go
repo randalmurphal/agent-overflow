@@ -38,17 +38,17 @@ func (s *Service) EnsureCanFork(source store.Thread, atTurnIndex *int) error {
 	return nil
 }
 
-func (s *Service) SettleForkAsInterrupted(forkThreadID string) error {
+// CreatePointerFork writes fork as a pointer fork of sourceID cut at cut.
+// Rows the fork inherits while they are still running in the source are
+// settled in the fork's own copy with the standard interrupted treatment,
+// the same shapes as the boot crash sweep and a user interrupt; the source
+// is not touched.
+func (s *Service) CreatePointerFork(fork store.Thread, sourceID string, cut store.ForkCut) error {
 	database, err := s.database("fork thread")
 	if err != nil {
 		return err
 	}
-	if err := database.SettleForkedThreadAsInterrupted(
-		forkThreadID, triage.InterruptedSummary, s.deps.Now().UnixMilli(),
-	); err != nil {
-		return fmt.Errorf("fork thread: settle fork as interrupted: %w", err)
-	}
-	return nil
+	return database.CreatePointerFork(fork, sourceID, cut, triage.InterruptedSummary, s.deps.Now().UnixMilli())
 }
 
 // ResolveCodexForkAnchor picks the latest provider-backed turn at or before
@@ -78,7 +78,7 @@ func (s *Service) ResolveCodexForkAnchor(
 	}
 	if providerBacked > 0 {
 		return "", false, fmt.Errorf(
-			"resolve codex fork anchor: thread %s has %d provider-backed turns at or before %d but no recorded provider turn id — likely a fork created before turn rows were cloned; fork the thread again from the desired message",
+			"resolve codex fork anchor: thread %s has %d provider-backed turns at or before %d but no recorded provider turn id — likely a fork made before forks carried turn rows; fork the thread again from the desired message",
 			threadID, providerBacked, lastKeptTurnIndex,
 		)
 	}

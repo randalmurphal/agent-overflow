@@ -170,6 +170,12 @@ export interface PendingInteractiveRequests {
 export interface ItemDeltaEvent {
   threadId: string;
   itemId: string;
+  /**
+   * The streaming row's parent, absent for a top-level row. A window that
+   * does not hold the row reads it to tell a row of another scope from a
+   * missing one (`threadItemStreamApply.applyItemDelta`).
+   */
+  parentId?: string;
   kind: string;
   delta: string;
   updatedAt: number;
@@ -187,6 +193,8 @@ export interface ItemDeltaEvent {
 export interface ItemMetaEvent {
   threadId: string;
   itemId: string;
+  /** The row's parent, absent for a top-level row (see `ItemDeltaEvent`). */
+  parentId?: string;
   kind: string;
   meta: string;
   updatedAt: number;
@@ -195,6 +203,8 @@ export interface ItemMetaEvent {
 export interface ItemPatchEvent {
   threadId: string;
   itemId: string;
+  /** The row's parent, absent for a top-level row (see `ItemDeltaEvent`). */
+  parentId?: string;
   kind: string;
   patch: {
     status?: Item['status'];

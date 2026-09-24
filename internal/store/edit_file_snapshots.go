@@ -32,12 +32,17 @@ func (s *Store) PutEditFileSnapshot(threadID, payloadID, path, content string, c
 	}
 	defer tx.Rollback()
 	label := fmt.Sprintf("store: put edit file snapshot %s %s", payloadID, path)
-	if err := ensureLocalPayloadTx(tx, threadID, payloadID, label); err != nil {
+	// A snapshot is a cache of the edit's content, so it is written where
+	// the payload lives, as UpdatePayloadSpans does: every fork that reads
+	// the payload reads the snapshot.
+	holder, err := payloadHolderTx(tx, threadID, payloadID)
+	if err != nil {
 		return err
 	}
-	if err := materializePayloadSnapshotTx(tx, threadID, payloadID); err != nil {
+	if err := ensureLocalPayloadTx(tx, holder, payloadID, label); err != nil {
 		return err
 	}
+	threadID = holder
 	result, err := tx.Exec(
 		`INSERT INTO edit_file_snapshots (thread_id, payload_id, path, content, created_at)
 		 SELECT ?, ?, ?, ?, ?
@@ -93,13 +98,17 @@ func (s *Store) GetEditFileSnapshot(threadID, payloadID, path string) (string, b
 // path, so the thread's other snapshots are never read.
 func (s *Store) GetLatestTurnEditFileSnapshot(threadID string, turnIndex int, path string) (string, bool, error) {
 	var blob []byte
-	turnRows, turnArgs := timelineArms(threadID, timelineSelection{
+	q := s.reader()
+	turnRows, turnArgs, err := timelineArms(q, threadID, timelineSelection{
 		Columns: func(string, string) string {
 			return "items.payload_id AS payload_id, items.item_index AS item_index"
 		},
 		Turn: "?", TurnArgs: []any{turnIndex},
 	})
-	err := s.reader().QueryRow(
+	if err != nil {
+		return "", false, err
+	}
+	err = q.QueryRow(
 		`SELECT content FROM (
 		   SELECT i.item_index AS item_index,
 		          (SELECT s.content FROM timeline_edit_file_snapshots s

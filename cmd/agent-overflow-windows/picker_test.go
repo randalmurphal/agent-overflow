@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"agent-overflow/internal/startuppage"
 	"agent-overflow/internal/wsllauncher"
 )
 
@@ -130,9 +131,9 @@ func injectionExcerpt(body string) string {
 
 func TestPickerErrorRoutesServeTheCurrentFailure(t *testing.T) {
 	page := startupFailureHTML(errLaunchFailed)
-	handler := pickerAssetHandler(nil, func() []byte { return page })
+	handler := pickerAssetHandler(nil, func() []byte { return page }, func() startuppage.Report { return startuppage.Report{} })
 	for _, path := range []string{"/startup-error", "/connectivity-error"} {
-		page = startupFailureHTML(bootstrapHTTPError{StatusCode: 404})
+		page = startupFailureHTML(wsllauncher.BootstrapHTTPError{StatusCode: 404})
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest("GET", path, nil))
 		if !strings.Contains(response.Body.String(), "HTTP 404") || strings.Contains(response.Body.String(), "localhostForwarding") {
@@ -141,5 +142,51 @@ func TestPickerErrorRoutesServeTheCurrentFailure(t *testing.T) {
 		if response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("failure page can be cached")
 		}
+	}
+}
+
+// TestLoadingRoutesServeTheLiveReport: /loading polls /loading.json through
+// /loading.js, so the page updates without a reload, and none of it is
+// cacheable.
+func TestLoadingRoutesServeTheLiveReport(t *testing.T) {
+	report := startuppage.Report{Title: "Starting Agent Overflow", Status: "Applying migration 1 of 2 a", Phase: "store.migrate", Step: 1, Steps: 2, ElapsedMs: 42}
+	handler := pickerAssetHandler(nil, func() []byte { return nil }, func() startuppage.Report { return report })
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("%s can be cached", path)
+		}
+		return rec
+	}
+
+	page := get("/loading").Body.String()
+	for _, want := range []string{`<script src="/loading.js">`, `id="ao-loading-title"`, `id="ao-loading-status"`, `id="ao-loading-meta"`} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("/loading lacks %s", want)
+		}
+	}
+	if !strings.Contains(pickerHTML, `<script src="/loading.js">`) || !strings.Contains(pickerHTML, `id="ao-loading-status"`) {
+		t.Fatal("the picker's post-pick loading line does not follow the launch report")
+	}
+
+	script := get("/loading.js")
+	if ct := script.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
+		t.Fatalf("/loading.js content type = %q", ct)
+	}
+	for _, want := range []string{`fetch("/loading.json"`, "setTimeout(poll, 500)", "r.status", "r.steps", "r.elapsedMs"} {
+		if !strings.Contains(script.Body.String(), want) {
+			t.Fatalf("/loading.js lacks %s", want)
+		}
+	}
+
+	rec := get("/loading.json")
+	var got startuppage.Report
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got != report {
+		t.Fatalf("/loading.json = %q (%v), want %+v", rec.Body.String(), err, report)
+	}
+	report.Step = 2
+	if err := json.Unmarshal(get("/loading.json").Body.Bytes(), &got); err != nil || got.Step != 2 {
+		t.Fatalf("/loading.json did not follow the report: %+v %v", got, err)
 	}
 }

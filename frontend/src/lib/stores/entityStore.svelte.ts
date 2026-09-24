@@ -76,8 +76,14 @@ export interface EntityStore<T, Ctx = void> {
    * re-list after a submit, while the poll pump is still failing). Such an
    * apply touches neither the error nor the retry curve; only an
    * observation of the failing thing itself clears them.
+   *
+   * `keepValue` marks an EVENT observation: a change to state the key's
+   * owner holds (a live row mutation against a timeline surface's window),
+   * not a new value for the entry. onApply runs with the held value as
+   * `prev`, and the held value is not rewritten. An apply of the value the
+   * entry already holds does not rewrite it either.
    */
-  apply(key: string, value: T, options?: { preserveError?: boolean }): void;
+  apply(key: string, value: T, options?: { preserveError?: boolean; keepValue?: boolean }): void;
   applyError(key: string, err: unknown): void;
   /** Re-run source() for a key (retry now / config change). No-op if no live entry. */
   invalidate(key: string): void;
@@ -370,7 +376,7 @@ export function createEntityStore<T, Ctx = void>(
     }
   }
 
-  function applyTo(entry: EntityEntry<T, Ctx>, value: T, preserveError = false): void {
+  function applyTo(entry: EntityEntry<T, Ctx>, value: T, preserveError = false, keepValue = false): void {
     // An observation proves the ACQUIRED resource healthy, so the pending
     // teardown-and-reacquire of it is pointless: drop it and put the curve
     // back at the bottom. Here rather than at the source's apply callback,
@@ -397,14 +403,14 @@ export function createEntityStore<T, Ctx = void>(
     // changed nothing had nothing to apply, and one that changed something
     // produced a new object. Reported, not thrown: the value IS the current
     // truth, and taking the surface down over a stale render helps nobody.
-    if (config.rawValue === true && prev !== null && Object.is(prev, value)) {
+    if (!keepValue && config.rawValue === true && prev !== null && Object.is(prev, value)) {
       const message = `${config.name}: applied the same object reference for ${entry.key}`;
       const detail = 'rawValue entries must be REPLACED, never mutated in place —'
         + ' a same-reference apply wakes no reader.';
       console.error(`${message}. ${detail}`);
       reportFrontendDiagnostic(message, detail);
     }
-    entry.value = value;
+    if (!keepValue && !Object.is(prev, value)) entry.value = value;
     if (!preserveError) entry.error = null;
     if (!config.onApply) return;
     try {
@@ -596,7 +602,7 @@ export function createEntityStore<T, Ctx = void>(
     apply(key, value, options) {
       const entry = lookup(key);
       if (!entry) return;
-      applyTo(entry, value, options?.preserveError === true);
+      applyTo(entry, value, options?.preserveError === true, options?.keepValue === true);
     },
 
     applyError(key, err) {

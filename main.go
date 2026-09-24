@@ -26,6 +26,7 @@ import (
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/bundle"
 	"agent-overflow/internal/cdprelay"
@@ -42,8 +43,11 @@ import (
 	"agent-overflow/internal/servercert"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellenv"
+	"agent-overflow/internal/startupprogress"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/wsllauncher"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
 )
@@ -130,10 +134,24 @@ func main() {
 	// JSON line and an exit, and a version being asked whether it can be
 	// talked to must not boot a transport to say so. See internal/supervise.
 	if len(os.Args) > 1 && os.Args[1] == supervise.PreflightSubcommand {
-		if err := supervise.WritePreflight(os.Stdout, version); err != nil {
+		if err := supervise.WritePreflight(os.Stdout, version, desktopUpdateTrial); err != nil {
 			fatalf("service preflight: %v", err)
 		}
 		return
+	}
+
+	// The in-app update's steps, run by the Windows launcher through
+	// wsl.exe, and the trial they start. Internal re-execs with their own
+	// argv and stdout contract (main_update.go), so they short-circuit here.
+	if len(os.Args) > 1 && isUpdateCommand(os.Args[1]) {
+		os.Exit(runUpdateCommand(os.Args[1], os.Args[2:]))
+	}
+
+	// The macOS and Linux desktop's update helper, started by the app it
+	// replaces or by a boot that refused to migrate its database live
+	// (main_update_apply.go).
+	if len(os.Args) > 1 && os.Args[1] == supervise.DesktopApplyCommand {
+		os.Exit(runDesktopApply(os.Args[2:]))
 	}
 
 	// This binary is also the workflow CLI (D30): there is no separate `ao`
@@ -254,9 +272,9 @@ func main() {
 		// needs its own isolated boot, not the ordinary one.
 		runSoak(flags)
 	case flags.headless:
-		runHeadless(flags.listenAddr, flags.printURLFD)
+		runHeadless(flags.listenAddr, flags.printURLFD, flags.updatingTo, flags.updateFailure, flags.refusePendingMigrations)
 	default:
-		runDesktop(flags.listenAddr)
+		runDesktop(flags.listenAddr, flags.waitFor)
 	}
 }
 
@@ -304,8 +322,22 @@ type bootTransportOptions struct {
 	// Set only from the parent's explicit activate-frame claim. An older
 	// supervisor omits it, so its child still takes the ordinary boot lock.
 	BackendLockHeldBySupervisor bool
-	IgnorePersistedNetwork      bool
-	RequireReadyForBootstrap    bool
+	// ServeLayoutOwnedBySupervisor is set for a serve child of a supervisor,
+	// which finishes its own restores and whose pending update is this
+	// child's trial. The boot still checks the in-app update layout.
+	ServeLayoutOwnedBySupervisor bool
+	IgnorePersistedNetwork       bool
+	// NoPortPin binds exactly the listen address and neither reads nor
+	// writes the persisted port: an update's trial must not move the port
+	// the published version later binds.
+	NoPortPin bool
+	// BootProgressObserver receives every startup report, heartbeats
+	// included. Only an update's trial sets it, to forward progress to the
+	// process judging the trial.
+	BootProgressObserver func(p startupprogress.Progress)
+	// UpdatingTo is the version whose committed update this boot finishes,
+	// from the platform's update record; the startup report names it.
+	UpdatingTo string
 	// HarnessReceiver, when non-nil, is registered on the dispatcher as
 	// a second RPC receiver under "main.Harness.<Method>". Only harness
 	// mode sets this — in every other boot the harness surface does not
@@ -341,13 +373,29 @@ func bootBrowserCDPRelay() *cdprelay.Endpoint {
 	return relay
 }
 
+// applyBootReadiness holds every boot's transport until MarkReady. Each
+// boot binds before its App has started, so nothing may reach App state
+// early: the bootstrap reports the boot's progress, and the one call
+// served is the launcher asking a backend it is abandoning to stop. The
+// desktop window opens in that state too.
+func applyBootReadiness(cfg *transport.Config) {
+	cfg.RequireReadyForBootstrap = true
+	cfg.StartupMethods = []string{wsllauncher.RPCShutdownBackend}
+}
+
 func bootTransport(appService *App, listenAddr string, opts bootTransportOptions) *transport.Server {
 	if !opts.BackendLockHeldBySupervisor {
-		lock, lockErr := acquireBackendInstanceLock(bootSettingsDir())
-		if lockErr != nil {
+		if lockErr := holdBackendLock(bootSettingsDir()); lockErr != nil {
 			fatalf("backend: %v", lockErr)
 		}
-		heldBackendLock = lock
+		// Under the lock and before the store opens: finish a restore an
+		// interrupted update left, and refuse to run on an update another
+		// process has not finished (docs/specs/app-update.md).
+		if err := supervise.PrepareDataRoot(bootSettingsDir(), supervise.PrepareOptions{
+			OwnsServeLayout: opts.ServeLayoutOwnedBySupervisor, Log: log.Printf,
+		}); err != nil {
+			fatalf("backend: %v", err)
+		}
 	}
 	started := time.Now()
 	defer logBootPhase("transport.total", started)
@@ -418,12 +466,11 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	}
 
 	cfg := transport.Config{
-		Dispatcher:               dispatcher,
-		EventBus:                 bus,
-		AssetHandler:             assetHandler,
-		DevAssetProxy:            devAssetProxy,
-		RequireReadyForBootstrap: opts.RequireReadyForBootstrap,
-		WaitForActivation:        func(ctx context.Context) error { return appservice.WaitForActivation(appService.App, ctx) },
+		Dispatcher:        dispatcher,
+		EventBus:          bus,
+		AssetHandler:      assetHandler,
+		DevAssetProxy:     devAssetProxy,
+		WaitForActivation: func(ctx context.Context) error { return appservice.WaitForActivation(appService.App, ctx) },
 		// The link-time stamp, injected rather than read by the transport:
 		// /healthz reports it, and the update watchdog compares it across
 		// a restart to tell a new build from a bounce.
@@ -506,6 +553,7 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		cfg.CDPTunnel = relay
 		appservice.SetBrowserCDPRelay(appService.App, relay)
 	}
+	applyBootReadiness(&cfg)
 	if cfg.CrossOriginIsolate {
 		log.Printf("transport: renderer diag mode — cross-origin isolation headers on (remote subresources will not load)")
 	}
@@ -520,7 +568,10 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	// stabilises the LAN share URL. --reset-transport-port drops the
 	// existing pin first, which is how the Windows launcher escapes a
 	// pinned port the host cannot reach.
-	portPin := pinTransportPort(&cfg, bootSettingsDir(), settingsPort, resetTransportPortPin)
+	var portPin transportPortPin
+	if !opts.NoPortPin {
+		portPin = pinTransportPort(&cfg, bootSettingsDir(), settingsPort, resetTransportPortPin)
+	}
 
 	// One decoration rule for every page URL this backend hands out, and
 	// the transport serves it (PageURLPath) to the local tooling that
@@ -540,11 +591,14 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		fatalf("transport: construct server: %v", err)
 	}
 	appService.SetTransportServer(srv)
+	// Before the listener serves, so the first not-ready bootstrap already
+	// reports progress. A boot that finishes an update reads as finishing it.
+	appservice.SetBootProgress(appService.App, transport.NewStartupReporter(srv, opts.UpdatingTo).Observe(opts.BootProgressObserver))
 	// A settings-driven rebind moves the listener without going through
 	// the boot path, so the port cache would otherwise keep naming an
 	// address nothing is on. Installed only when there is a directory to
 	// write to; a nil recorder is a no-op inside the App.
-	if dir := bootSettingsDir(); dir != "" {
+	if dir := bootSettingsDir(); dir != "" && !opts.NoPortPin {
 		appservice.SetBoundPortRecorder(appService.App, func(port int) { storeTransportPort(dir, port) })
 	}
 	// Revocation is only real if it reaches live connections: hand the
@@ -661,12 +715,15 @@ func applyServerCertificate(cfg *transport.Config, appService *App) {
 // bound, but /bootstrap.json returns 503 until ServiceStartup finishes
 // and MarkReady releases the WebView navigation. That separates "WSL
 // process has published a port" from "backend is ready to render."
-func runHeadless(listenAddr string, printURLFD int) {
+func runHeadless(listenAddr string, printURLFD int, updatingTo string, updateFailure appupdate.LauncherFailure, refusePendingMigrations bool) {
 	appService := newApp()
+	if refusePendingMigrations {
+		appservice.RefusePendingMigrations(appService.App)
+	}
 	// Before the transport server starts, so the updater RPC handlers see a
 	// fully wired App.updater.handle / App.updater.wsl without a race. Gated at runtime
 	// on the Windows launcher having spawned us; a no-op otherwise.
-	appservice.InitWSLUpdater(appService.App, bootSettingsDir())
+	appservice.InitWSLUpdater(appService.App, bootSettingsDir(), updateFailure)
 	// The launcher closes its window by asking this backend to stop. This
 	// mode's shell is the signal wait below, so the door hands the request
 	// to that wait and the teardown a Ctrl-C would get runs unchanged.
@@ -683,7 +740,7 @@ func runHeadless(listenAddr string, printURLFD int) {
 	// It shares ordinary desktop network preferences; the launcher does not
 	// inject a loopback --listen override that would undo saved LAN hosting.
 
-	srv := bootTransport(appService, listenAddr, bootTransportOptions{RequireReadyForBootstrap: true})
+	srv := bootTransport(appService, listenAddr, bootTransportOptions{UpdatingTo: updatingTo})
 	appservice.ConfigureTransportNotifications(appService.App)
 	// Now that the bus exists, the boot check above can say its piece. The
 	// notice itself was recorded before the server started, so a client that
@@ -722,10 +779,26 @@ func runHeadless(listenAddr string, printURLFD int) {
 	// this binary clear of the Wails import.
 	bootCtx, bootCancel := context.WithCancel(context.Background())
 	defer bootCancel()
+	cancelBootOnShutdownRequest(bootCtx, bootCancel, shutdownRequested)
 	phaseStarted = time.Now()
 	if err := appService.Start(bootCtx); err != nil {
 		logBootPhase("headless.service_startup", phaseStarted)
+		if bootCtx.Err() != nil {
+			log.Printf("headless: startup stopped by a shutdown request: %v", err)
+			waitForHeadlessShutdown(appService, srv, shutdownRequested)
+			return
+		}
 		log.Printf("app: service startup: %v", err)
+		if pending := (*store.MigrationsPendingError)(nil); errors.As(err, &pending) {
+			// The launcher that asked for the refusal stops this backend,
+			// migrates through a snapshot and a trial, and starts it again.
+			srv.MarkMigrationsPending(startupprogress.MigrationsPending{
+				Database: pending.Database, Build: pending.Build, Pending: pending.Pending,
+			})
+			log.Printf("headless: refused to migrate the database live; serving the refusal until shutdown")
+			waitForHeadlessShutdown(appService, srv, shutdownRequested)
+			return
+		}
 		srv.MarkStartupFailed()
 		log.Printf("headless: startup failed; serving terminal bootstrap failure until shutdown")
 		waitForHeadlessShutdown(appService, srv, shutdownRequested)
@@ -759,6 +832,20 @@ func armBackendShutdownDoor(appService *App) <-chan struct{} {
 		return nil
 	})
 	return requested
+}
+
+// cancelBootOnShutdownRequest cancels the boot context when the launcher
+// asks this backend to stop, so a request that arrives while App.Start
+// runs interrupts it (a migration rolls back) instead of waiting for it.
+// The watch ends with the boot context.
+func cancelBootOnShutdownRequest(bootCtx context.Context, cancel context.CancelFunc, requested <-chan struct{}) {
+	go func() {
+		select {
+		case <-requested:
+			cancel()
+		case <-bootCtx.Done():
+		}
+	}()
 }
 
 func waitForHeadlessShutdown(appService *App, srv *transport.Server, shutdown <-chan struct{}) {

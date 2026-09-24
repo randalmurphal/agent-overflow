@@ -24,6 +24,14 @@ Data-root identity defines the supervision domain. Locks, state, candidates,
 logs, and cleanup use the same resolved root. Never allow two supervisors to
 publish or run different generations for one root.
 
+## Desktop in-app update
+
+`desktop_*.go` hold the macOS and Linux desktop's update record, handoff,
+helper steps and recovery table (docs/specs/app-update.md, "macOS and Linux
+desktop"). They share `UpdateRun` with the Windows update commands; keep the
+order of steps there. The root package owns the helper's argv, window and
+processes (`main_update_apply*.go`).
+
 ## macOS bundles
 
 Never rewrite a running macOS application bundle. Publish a complete bundle at a

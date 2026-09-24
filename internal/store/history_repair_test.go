@@ -104,6 +104,104 @@ func sealItemsForTest(t *testing.T, s *Store, threadID string, ids ...string) st
 	return chunk.id
 }
 
+// legacyCopyForkForTest writes the copy fork the removed history clone made
+// of src, whose history is all sealed, through throughTurn (every turn when
+// negative): the source's chunks that end by the cut are attached, the rows
+// of a chunk the cut splits are copied with their payload bytes, and every
+// row is indexed for search in timeline order, shared rows on the import
+// arm. Such forks predate pointer forks and still share sealed chunks.
+func legacyCopyForkForTest(t *testing.T, s *Store, src, fork string, throughTurn int) {
+	t.Helper()
+	if err := s.CreateThread(makeThread(fork, "claude")); err != nil {
+		t.Fatal(err)
+	}
+	if throughTurn < 0 {
+		throughTurn = 1 << 30
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	const split = `FROM thread_import_chunks refs JOIN import_history_items items ON items.chunk_id = refs.chunk_id
+ WHERE refs.thread_id = ? AND refs.max_turn_index > ? AND items.turn_index <= ?`
+	if _, err := tx.Exec(`INSERT INTO thread_import_chunks(thread_id, chunk_order, chunk_id)
+ SELECT ?, chunk_order, chunk_id FROM thread_import_chunks WHERE thread_id = ? AND max_turn_index <= ? ORDER BY chunk_order`,
+		fork, src, throughTurn); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`INSERT INTO payloads(thread_id, id, kind, meta, data, created_at, preview_spans, spans)
+ SELECT ?, p.id, p.kind, p.meta, p.data, p.created_at, p.preview_spans, p.spans
+   FROM import_history_payloads p
+  WHERE EXISTS (SELECT 1 ` + split + ` AND items.chunk_id = p.chunk_id
+                   AND p.id IN (items.payload_id, items.input_payload_id))`,
+		`INSERT INTO items(id, thread_id, turn_index, item_index, kind, role, status, summary, payload_id, input_payload_id,
+   parent_id, is_background, completion_of, tool_name, decision, meta, created_at, updated_at)
+ SELECT items.id, ?, items.turn_index, items.item_index, items.kind, items.role, items.status, items.summary,
+        items.payload_id, items.input_payload_id, items.parent_id, items.is_background, items.completion_of,
+        items.tool_name, items.decision, items.meta, items.created_at, items.updated_at ` + split,
+	} {
+		if _, err := tx.Exec(statement, fork, src, throughTurn, throughTurn); err != nil {
+			t.Fatalf("legacy fork %s: %v\n%s", fork, err, statement)
+		}
+	}
+	rows, err := tx.Query(`SELECT id, kind, status, summary, shared FROM (
+   SELECT items.id, items.kind, items.status, items.summary, items.turn_index, items.item_index, 1 AS shared
+     FROM thread_import_chunks refs JOIN import_history_items items ON items.chunk_id = refs.chunk_id
+    WHERE refs.thread_id = ?1
+   UNION ALL
+   SELECT id, kind, status, summary, turn_index, item_index, 0 FROM items WHERE thread_id = ?1)
+ ORDER BY turn_index, item_index`, fork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var run []Item
+	var runShared bool
+	index := func() {
+		t.Helper()
+		source := ThreadSearchSourceItem
+		if runShared {
+			source = ThreadSearchSourceImport
+		}
+		if err := indexSettledItemsTx(tx, run, source); err != nil {
+			t.Fatal(err)
+		}
+		run = nil
+	}
+	var all []struct {
+		item   Item
+		shared bool
+	}
+	for rows.Next() {
+		var item Item
+		var shared bool
+		if err := rows.Scan(&item.ID, &item.Kind, &item.Status, &item.Summary, &shared); err != nil {
+			t.Fatal(err)
+		}
+		item.ThreadID = fork
+		all = append(all, struct {
+			item   Item
+			shared bool
+		}{item, shared})
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range all {
+		if len(run) > 0 && row.shared != runShared {
+			index()
+		}
+		run, runShared = append(run, row.item), row.shared
+	}
+	if len(run) > 0 {
+		index()
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // localHistoryFixture writes count settled assistant rows to a new thread,
 // ten per turn. Every row has its own payload; every third payload has an
 // append chunk, every fourth has highlight spans and every fifth row has an
@@ -721,31 +819,18 @@ func TestUnsealThreadHistoryLeavesAnchorStampsAlone(t *testing.T) {
 }
 
 // TestUnsealThreadHistoryLocalizesEveryReference covers a sealed chunk that
-// forks share: each referencing thread gets its own rows, overrides survive
-// as the rows they chose, and a fork that copied part of a chunk keeps its
-// bytes after the chunk is gone.
+// copy forks share: each referencing thread gets its own rows, overrides
+// survive as the rows they chose, and a fork that copied part of a chunk
+// keeps its bytes after the chunk is gone.
 func TestUnsealThreadHistoryLocalizesEveryReference(t *testing.T) {
 	s := newTestStore(t)
 	ids := localHistoryFixture(t, s, "src", 40)
 	sealItemsForTest(t, s, "src", ids[:20]...)
 	sealItemsForTest(t, s, "src", ids[20:]...)
-	for _, fork := range []string{"whole", "cut"} {
-		if err := s.CreateThread(makeThread(fork, "claude")); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := s.CloneThreadHistoryThroughTurn("src", "whole", nil); err != nil {
-		t.Fatal(err)
-	}
-	through := 2
-	if _, err := s.CloneThreadHistoryThroughTurn("src", "cut", &through); err != nil {
-		t.Fatal(err)
-	}
+	legacyCopyForkForTest(t, s, "src", "whole", -1)
+	legacyCopyForkForTest(t, s, "src", "cut", 2)
 	if n := countRows(t, s, `SELECT count(*) FROM (SELECT chunk_id FROM thread_import_chunks GROUP BY chunk_id HAVING count(*) > 1)`); n != 2 {
 		t.Fatalf("%d chunks shared by forks, want 2", n)
-	}
-	if n := countRows(t, s, `SELECT count(*) FROM payload_snapshots WHERE chunk_id IS NOT NULL`); n == 0 {
-		t.Fatal("the cut fork borrowed no chunk bytes")
 	}
 	// Fork-private changes over shared rows: a localized row, a deleted row
 	// and a payload overlay without a localized row.
@@ -795,9 +880,6 @@ func TestUnsealThreadHistoryLocalizesEveryReference(t *testing.T) {
 		}
 	}
 	requireNoImportedHistory(t, s)
-	if n := countRows(t, s, `SELECT count(*) FROM payload_snapshots WHERE chunk_id IS NOT NULL`); n != 0 {
-		t.Fatalf("%d snapshots still borrow a deleted chunk", n)
-	}
 	item, found, err := s.GetThreadItem("whole", "row-005")
 	if err != nil || !found || item.Meta != `{"localized":true}` {
 		t.Fatalf("localized row = %+v found=%v err=%v", item, found, err)
@@ -813,31 +895,69 @@ func TestUnsealThreadHistoryLocalizesEveryReference(t *testing.T) {
 	}
 }
 
+// A pointer fork reads its source's sealed rows through the lineage. Folding
+// them into the source's private rows leaves every fork's view as it was,
+// whether a chunk moves in one piece or in several.
+func TestUnsealThreadHistoryKeepsPointerForkViews(t *testing.T) {
+	for _, piece := range []int{historyRepairPieceRows, 7} {
+		t.Run(fmt.Sprintf("piece=%d", piece), func(t *testing.T) {
+			s := newTestStore(t)
+			ids := localHistoryFixture(t, s, "src", 40)
+			sealItemsForTest(t, s, "src", ids[:20]...)
+			sealItemsForTest(t, s, "src", ids[20:]...)
+			through := 1
+			for fork, cut := range map[string]ForkCut{"whole": {}, "cut": {ThroughTurn: &through}} {
+				if err := s.CreatePointerFork(makeThread(fork, "claude"), "src", cut, testInterruptedSummary, 999); err != nil {
+					t.Fatal(err)
+				}
+			}
+			views := map[string]repairView{}
+			for _, thread := range []string{"src", "whole", "cut"} {
+				views[thread] = readRepairView(t, s, thread)
+			}
+			// Each fork shows its inherited rows and its own divider row.
+			if len(views["whole"].Items) != 41 || len(views["cut"].Items) != 21 {
+				t.Fatalf("forks show %d and %d rows, want 41 and 21", len(views["whole"].Items), len(views["cut"].Items))
+			}
+
+			budget := defaultHistoryRepairBudget
+			budget.piece = piece
+			for more := true; more; {
+				var err error
+				if _, more, err = s.unsealThreadHistoryBatch("src", budget); err != nil {
+					t.Fatal(err)
+				}
+			}
+			requireNoImportedHistory(t, s)
+			for _, thread := range []string{"src", "whole", "cut"} {
+				requireSameLogicalView(t, thread, readRepairView(t, s, thread), views[thread])
+			}
+			if n := countRows(t, s, `SELECT count(*) FROM thread_fork_hidden`); n != 0 {
+				t.Fatalf("folding hid %d rows from the forks", n)
+			}
+		})
+	}
+}
+
+// TestReleaseDetachedSealedChunks: payload snapshots are retired (v120), so
+// nothing keeps a sealed chunk after its last reference goes. A copy fork
+// that copied part of the chunk holds its own bytes, and deleting the source
+// leaves no chunk to release.
 func TestReleaseDetachedSealedChunks(t *testing.T) {
 	s := newTestStore(t)
 	ids := localHistoryFixture(t, s, "src", 20)
 	sealItemsForTest(t, s, "src", ids...)
-	if err := s.CreateThread(makeThread("cut", "claude")); err != nil {
-		t.Fatal(err)
-	}
-	through := 0
-	if _, err := s.CloneThreadHistoryThroughTurn("src", "cut", &through); err != nil {
-		t.Fatal(err)
-	}
+	legacyCopyForkForTest(t, s, "src", "cut", 0)
+	before := readRepairView(t, s, "cut")
 	if err := s.DeleteThread("src"); err != nil {
 		t.Fatal(err)
 	}
-	if n := countRows(t, s, `SELECT count(*) FROM import_history_chunks`); n != 1 {
-		t.Fatalf("%d chunks kept by snapshots, want 1", n)
-	}
-	before := readRepairView(t, s, "cut")
+	requireNoImportedHistory(t, s)
 
 	released, err := s.ReleaseDetachedSealedChunks(context.Background(), nil, failOnSkip(t))
-	if err != nil || released != 1 {
+	if err != nil || released != 0 {
 		t.Fatalf("released = %d, %v", released, err)
 	}
-	requireNoImportedHistory(t, s)
-	requireCheckpointed(t, s, "release")
 	requireSameRepairView(t, "cut", readRepairView(t, s, "cut"), before)
 	if data, err := s.GetPayloadData("cut", "p-row-003"); err != nil || string(data) != "payload row-003 appended" {
 		t.Fatalf("cut payload = %q, %v", data, err)
@@ -851,25 +971,20 @@ func TestReleaseDetachedSealedChunks(t *testing.T) {
 // release of the next chunk.
 func TestReleaseDetachedSealedChunksSkipsAFailingChunk(t *testing.T) {
 	s := newTestStore(t)
-	// Each source's chunk outlives the source through its fork's payload
-	// snapshots, as in TestReleaseDetachedSealedChunks.
+	// Payload snapshots kept a chunk after its last reference before v120.
+	// v120 deletes such chunks and collects each chunk with its last
+	// reference, so the test drops that collection to leave two behind.
+	mustExec(t, s.db, `DROP TRIGGER trg_thread_import_chunks_gc`)
 	var chunks []string
 	for _, thread := range []string{"a", "b"} {
 		ids := localHistoryFixture(t, s, thread, 20)
 		chunks = append(chunks, sealItemsForTest(t, s, thread, ids...))
-		if err := s.CreateThread(makeThread("cut-"+thread, "claude")); err != nil {
-			t.Fatal(err)
-		}
-		through := 0
-		if _, err := s.CloneThreadHistoryThroughTurn(thread, "cut-"+thread, &through); err != nil {
-			t.Fatal(err)
-		}
 		if err := s.DeleteThread(thread); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if n := countRows(t, s, `SELECT count(*) FROM import_history_chunks`); n != 2 {
-		t.Fatalf("%d chunks kept by snapshots, want 2", n)
+		t.Fatalf("%d detached chunks, want 2", n)
 	}
 	failing, other := chunks[0], chunks[1]
 	if other < failing {
@@ -959,65 +1074,62 @@ func TestPruneOrphanPayloadsDeletesOnlyUnreferenced(t *testing.T) {
 	if err := s.ReplacePayloadData("imported", "item-000", []byte("overlay"), "{}", 3); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateThread(makeThread("fork", "claude")); err != nil {
+	if err := s.CreatePointerFork(makeThread("fork", "claude"), "local", ForkCut{}, testInterruptedSummary, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CloneThreadHistoryThroughTurn("local", "fork", nil); err != nil {
-		t.Fatal(err)
+	storedBytes := func(thread, id string) int64 {
+		t.Helper()
+		var n int64
+		if err := s.db.QueryRow(`SELECT `+payloadStoredBytesSQL+` FROM payloads p WHERE thread_id=? AND id=?`, thread, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
 	}
 
 	// The leak: a re-persisted row names a new payload id. pb1 carries an
-	// append chunk and an edit snapshot that must go with it.
+	// append chunk and an edit snapshot that must go with it. The fork reads
+	// row b, so the append first gives the fork row b with its own copy of
+	// pb1.
 	if err := s.AppendPayloadData("local", "pb1", []byte(" chunk"), "{}", 4); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PutEditFileSnapshot("local", "pb1", "b.go", "package b", 4); err != nil {
 		t.Fatal(err)
 	}
-	storedBytes := func(id string) int64 {
-		t.Helper()
-		var n int64
-		if err := s.db.QueryRow(`SELECT length(data) + (SELECT sum(length(data)) FROM payload_chunks WHERE thread_id='local' AND payload_id=?1)
- + (SELECT sum(length(content)) FROM edit_file_snapshots WHERE thread_id='local' AND payload_id=?1)
- FROM payloads WHERE thread_id='local' AND id=?1`, id).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-	pb1Bytes, paBytes := storedBytes("pb1"), storedBytes("pa")
+	orphanBytes := storedBytes("local", "pb1") + storedBytes("local", "pa") + storedBytes("local", "pc") + storedBytes("fork", "pb1")
 	upsert("local", "b", "pb2", "")
-	// The fork still reads pc through a snapshot of the source row, so the
-	// source row stays when the source stops naming it.
+	// Rewriting a row the fork reads hands the row and its payload to the
+	// fork first, so the source's pc is left unreferenced.
 	upsert("local", "c", "pc2", "")
-	// A fork row stops naming its snapshot-backed payload. The append above
-	// already gave that snapshot a private copy of pb1.
+	// A fork row stops naming its copy of pb1.
 	upsert("fork", "b", "pb3", "")
-	// Both sides stop naming pa. The source row is borrowed until the fork's
-	// row, which sorts first, is deleted with its snapshot reference.
+	// Both sides stop naming pa: the source's rewrite hands the fork row a
+	// and a copy of pa, which the fork's rewrite then leaves unreferenced.
 	upsert("local", "a", "pa2", "pa-in")
+	orphanBytes += storedBytes("fork", "pa")
 	upsert("fork", "a", "pa3", "pa-in")
 
 	kept := map[[2]string]string{
 		{"local", "pa-in"}: "input pa-in", {"local", "pb2"}: "bytes of pb2", {"local", "pc2"}: "bytes of pc2",
-		{"local", "pa2"}: "bytes of pa2", {"local", "pc"}: "bytes of pc",
-		{"fork", "pc"}: "bytes of pc", {"fork", "pa-in"}: "input pa-in",
+		{"local", "pa2"}: "bytes of pa2",
+		{"fork", "pc"}:   "bytes of pc", {"fork", "pa-in"}: "input pa-in",
 		{"fork", "pb3"}: "bytes of pb3", {"fork", "pa3"}: "bytes of pa3",
 		{"imported", "item-000"}: "overlay", {"imported", "item-001"}: "original chunk",
 	}
-	// The source pa is still borrowed while the count runs.
-	if orphans := countOrphanPayloads(t, s); orphans != (orphanPayloadStats{payloads: 3, bytes: pb1Bytes}) {
-		t.Fatalf("orphans = %+v, want 3 payloads, %d bytes", orphans, pb1Bytes)
+	orphans := countOrphanPayloads(t, s)
+	if orphans != (orphanPayloadStats{payloads: 5, bytes: orphanBytes}) {
+		t.Fatalf("orphans = %+v, want 5 payloads, %d bytes", orphans, orphanBytes)
 	}
 
 	pruned, err := s.pruneOrphanPayloads(context.Background(), nil, failOnSkip(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pruned != (orphanPayloadStats{payloads: 4, bytes: pb1Bytes + paBytes}) {
-		t.Fatalf("pruned = %+v, want 4 payloads, %d bytes", pruned, pb1Bytes+paBytes)
+	if pruned != orphans {
+		t.Fatalf("pruned = %+v, want %+v", pruned, orphans)
 	}
 	requireCheckpointed(t, s, "prune")
-	for _, gone := range [][2]string{{"local", "pb1"}, {"local", "pa"}, {"fork", "pb1"}, {"fork", "pa"}} {
+	for _, gone := range [][2]string{{"local", "pb1"}, {"local", "pa"}, {"local", "pc"}, {"fork", "pb1"}, {"fork", "pa"}} {
 		if n := countRows(t, s, `SELECT count(*) FROM payloads WHERE thread_id=? AND id=?`, gone[0], gone[1]); n != 0 {
 			t.Fatalf("orphan %v survived", gone)
 		}
@@ -1029,13 +1141,9 @@ func TestPruneOrphanPayloadsDeletesOnlyUnreferenced(t *testing.T) {
 		}
 	}
 	for _, table := range []string{"payload_chunks", "edit_file_snapshots"} {
-		if n := countRows(t, s, `SELECT count(*) FROM `+table+` WHERE thread_id='local' AND payload_id IN ('pb1','pa')`); n != 0 {
+		if n := countRows(t, s, `SELECT count(*) FROM `+table+` WHERE thread_id IN ('local','fork') AND payload_id IN ('pb1','pa')`); n != 0 {
 			t.Fatalf("%s kept %d rows of pruned payloads", table, n)
 		}
-	}
-	// Only the snapshot the fork still reads pc through survives.
-	if n := countRows(t, s, `SELECT count(*) FROM payload_snapshots WHERE NOT (source_thread_id='local' AND payload_id='pc')`); n != 0 {
-		t.Fatalf("%d snapshots of pruned payloads survived", n)
 	}
 	if orphans := countOrphanPayloads(t, s); orphans != (orphanPayloadStats{}) {
 		t.Fatalf("orphans after prune = %+v", orphans)
@@ -1076,10 +1184,7 @@ func TestItemWritesLeaveNoOrphanPayloads(t *testing.T) {
 	}
 	upsert("local", "b", "pb", "pa-in")
 	upsert("local", "c", "pc", "c-in")
-	if err := s.CreateThread(makeThread("fork", "claude")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.CloneThreadHistoryThroughTurn("local", "fork", nil); err != nil {
+	if err := s.CreatePointerFork(makeThread("fork", "claude"), "local", ForkCut{}, testInterruptedSummary, 1); err != nil {
 		t.Fatal(err)
 	}
 

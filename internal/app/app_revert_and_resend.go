@@ -58,8 +58,8 @@ type RevertAndResendResult struct {
 //     turn is still live (Stop button); it interrupts the turn first and
 //     DOES restore the prompt to the composer, because it has no
 //     replacement to send.
-//   - ForkThreadFromMessage clones the kept prefix into a NEW thread and
-//     leaves the source thread untouched.
+//   - ForkThreadFromMessage starts a NEW thread that shows the kept
+//     prefix and leaves the source thread untouched.
 //
 // This one mutates the current thread and keeps it. It shares the whole
 // destructive tail (provider rollback -> truncate) with

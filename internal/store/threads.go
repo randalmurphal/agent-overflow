@@ -17,7 +17,7 @@ import (
 // row and its imported payload are found by id, so a sidebar row costs
 // the same however many chunks its thread references.
 func proposedPlanItemSQL() string {
-	sql, _ := timelineArms("", timelineSelection{
+	sql, _ := correlatedTimelineArms(timelineSelection{
 		Columns:  func(string, string) string { return "1" },
 		Thread:   "proposed_plans.thread_id",
 		KeyFirst: true,
@@ -988,7 +988,13 @@ func (s *Store) DeleteThread(id string) error {
 // Draining items before the thread row is safe under the app layer's
 // idempotent-retry model: the thread row is the resumability anchor, and
 // a crash mid-drain leaves a thread a retried delete completes.
+//
+// Forks that read through the thread detach first, in their own
+// transaction, so none of them ever reads a partly drained history.
 func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
+	if err := s.detachForkDescendants(id); err != nil {
+		return err
+	}
 	for {
 		n, err := s.deleteThreadItemsChunk(id)
 		if err != nil {
@@ -1011,6 +1017,10 @@ func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 	// the thread, but the contentless FTS rows it names do not, so they
 	// come off here rather than being left behind.
 	if err := deleteThreadSearchThreadTx(tx, id); err != nil {
+		return err
+	}
+	// A fork made while the items drained.
+	if err := s.detachForkDescendantsTx(tx, id); err != nil {
 		return err
 	}
 	result, err := tx.Exec(`DELETE FROM threads WHERE id = ?`, id)

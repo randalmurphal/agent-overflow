@@ -194,6 +194,22 @@ describe('<BackgroundTaskTrayRow>', () => {
     expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Bash: pnpm test');
   });
 
+  it('shows a Claude agent row\u2019s latest-tool decoration when no live activity is ticking', () => {
+    const launch = makeItem({
+      id: 'bg-claude-agent',
+      kind: 'tool_call',
+      toolName: 'Agent',
+      status: 'running',
+      isBackground: true,
+      payloadMeta: JSON.stringify({ input: { subagent_type: 'Explorer', description: 'dig' } }),
+      meta: JSON.stringify({ subagentLatestToolSummary: 'Read: parser.go' }),
+    });
+
+    const { getByTestId } = renderTrayRow(taskFor(launch), 'claude');
+
+    expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Read: parser.go');
+  });
+
   it('routes generic tray rows through GenericToolCallRow', () => {
     const launch = makeItem({
       id: 'bg-generic',

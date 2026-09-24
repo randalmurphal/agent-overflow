@@ -37,18 +37,24 @@ type Service struct {
 // appUpdaterState travels as one unit with Service: the Wails updater handle,
 // provider, and all resolve/download/WSL-install state guarded by mu.
 type appUpdaterState struct {
-	handle       *updater.Updater
-	provider     *targetableProvider
-	mu           sync.Mutex
-	busy         bool
-	pending      *updater.Release
-	staged       *updater.Release
-	install      *updater.Release
-	installAcked bool
-	installGen   uint64
-	installTimer *time.Timer
-	applyFailure string
-	wsl          *wslUpdateMode
+	handle   *updater.Updater
+	provider *targetableProvider
+	mu       sync.Mutex
+	busy     bool
+	pending  *updater.Release
+	staged   *updater.Release
+	install  *updater.Release
+	// installAbandoned is the callback RestartToUpdate was given for the
+	// install in flight.
+	installAbandoned func()
+	installAcked     bool
+	installGen       uint64
+	installTimer     *time.Timer
+	applyFailure     string
+	wsl              *wslUpdateMode
+	// desktop is the macOS and Linux desktop's trial, nil without one
+	// (ConfigureDesktopTrial).
+	desktop *desktopTrialMode
 }
 
 // New returns an unconfigured updater service. Configure or ConfigureWSL must
@@ -152,6 +158,10 @@ func BridgedEvents() []string {
 // ForwardFrameworkEvent maps one Wails updater event onto the transport
 // channel shared by the desktop and WSL hosts.
 func (a *Service) ForwardFrameworkEvent(name string, data any) {
+	if name == updater.EventUpdateReady && a.desktopTrialConfigured() {
+		// desktopDownloaded emits it once the release is recorded.
+		return
+	}
 	if channel, ok := updaterEventBridge[name]; ok {
 		a.emit(channel, data)
 	}
@@ -240,6 +250,14 @@ type UpdateAvailability struct {
 	// still reach the panel: the boot-detected "didn't apply" notice must not
 	// vanish behind an offline check.
 	CheckError string `json:"checkError,omitempty"`
+	// RestartWaitingFor names the running work a requested restart to update
+	// is waiting for. The host sets it; it is empty unless a restart waits.
+	RestartWaitingFor string `json:"restartWaitingFor,omitempty"`
+	// RestartingTo is the version a restart to update handed this host to,
+	// read from the update's durable record, from the handoff until the
+	// process is replaced or the handoff is abandoned. A page loaded in
+	// between shows the restart underway rather than offering it again.
+	RestartingTo string `json:"restartingTo,omitempty"`
 }
 
 // CheckForUpdate asks the configured provider whether a newer release exists.
@@ -256,18 +274,15 @@ func (a *Service) CheckForUpdate() (UpdateAvailability, error) {
 	a.updater.mu.Lock()
 	defer a.updater.mu.Unlock()
 
-	// A download/install is in flight (only reachable from a second --connect
-	// client — the same client's UI blocks checks during a download). Running
-	// Check now would retarget the provider and overwrite the pending release
-	// the installer is about to use, so report the current state without
-	// probing the network. The busy client's next check, after the install
-	// settles, returns the authoritative answer.
+	// A download or install is in flight, including a restart that handed off
+	// (reachable from a second --connect client or a page loaded since; the
+	// client that started it blocks checks meanwhile). Running Check now would
+	// retarget the provider and overwrite the pending release the installer
+	// is about to use, so report the current state, RestartingTo included,
+	// without probing the network. The busy client's next check, after the
+	// install settles, returns the authoritative answer.
 	if a.updater.busy {
-		return UpdateAvailability{
-			Supported:        true,
-			CurrentVersion:   a.updater.handle.CurrentVersion(),
-			LastApplyFailure: a.updater.applyFailure,
-		}, nil
+		return a.availabilityLocked(), nil
 	}
 
 	// The passive check always reports the newest release: clear any tag a
@@ -311,6 +326,27 @@ func (a *Service) CheckForUpdate() (UpdateAvailability, error) {
 		out.ReleaseNotes = rel.Notes
 	}
 	return out, nil
+}
+
+// Availability is CheckForUpdate's answer from state alone, without a release
+// check: support, the running version and the boot notice.
+func (a *Service) Availability() UpdateAvailability {
+	if a.updater.handle == nil {
+		return UpdateAvailability{Supported: false, CurrentVersion: a.version}
+	}
+	a.updater.mu.Lock()
+	defer a.updater.mu.Unlock()
+	return a.availabilityLocked()
+}
+
+// availabilityLocked is Availability. Caller holds a.updater.mu.
+func (a *Service) availabilityLocked() UpdateAvailability {
+	return UpdateAvailability{
+		Supported:        true,
+		CurrentVersion:   a.updater.handle.CurrentVersion(),
+		LastApplyFailure: a.updater.applyFailure,
+		RestartingTo:     a.restartingToLocked(),
+	}
 }
 
 // snapshotRelease copies the parts of a resolved release the service retains, so
@@ -463,8 +499,11 @@ func (a *Service) DownloadUpdate(tag string) error {
 		// updater:ready the frontend acts on once the bytes have landed —
 		// verified again on the far side. Desktop mode never enters this branch
 		// and keeps the bridged event.
-		if a.updater.wsl != nil {
+		switch {
+		case a.updater.wsl != nil:
 			terminal = a.stageWSLUpdate(pending)
+		case a.desktopTrialConfigured():
+			terminal = a.desktopDownloaded(pending)
 		}
 	}()
 	return nil
@@ -493,17 +532,60 @@ const defaultRestartExitWatchdogDelay = 25 * time.Second
 // Windows launcher's, on a filesystem this process only sees through /mnt/c —
 // so it hands the staged artifact to the launcher instead and lets the launcher
 // kill it. See restartToUpdateWSL.
-func (a *Service) RestartToUpdate() error {
+//
+// onAbandoned runs if a handoff this call reported as started ends without a
+// restart: the WSL launcher failed, refused or went silent. The host reopens
+// what it closed for the restart there. On desktop every failure is this
+// call's error, and success quits the process.
+func (a *Service) RestartToUpdate(onAbandoned func()) error {
 	if a.updater.handle == nil {
 		return ErrUpdatesUnsupported
 	}
 	if a.updater.wsl != nil {
-		return a.restartToUpdateWSL()
+		return a.restartToUpdateWSL(onAbandoned)
+	}
+	if a.desktopTrialConfigured() {
+		return a.restartToUpdateDesktop()
 	}
 	if a.updater.handle.DownloadedPath() == "" {
 		return ErrUpdateNotReady
 	}
-	return a.restartWithExitWatchdog(a.updater.handle.Restart)
+	return a.restartWithExitWatchdog(a.frameworkRestart)
+}
+
+// frameworkRestart is the framework's swap and relaunch
+// (updater.Updater.Restart), which re-executes the running binary as its
+// helper. Tests replace it.
+var frameworkRestart = (*updater.Updater).Restart
+
+func (a *Service) frameworkRestart(ctx context.Context) error {
+	return frameworkRestart(a.updater.handle, ctx)
+}
+
+// RestartReady returns the error RestartToUpdate would refuse with now, or
+// nil, without starting anything. A host that waits for running work before
+// the restart asks first, so a restart with nothing to install is refused
+// before the wait rather than after it.
+func (a *Service) RestartReady() error {
+	if a.updater.handle == nil {
+		return ErrUpdatesUnsupported
+	}
+	if a.updater.wsl != nil {
+		a.updater.mu.Lock()
+		defer a.updater.mu.Unlock()
+		_, err := a.wslRestartTargetLocked()
+		return err
+	}
+	if a.desktopTrialConfigured() {
+		a.updater.mu.Lock()
+		defer a.updater.mu.Unlock()
+		_, _, err := a.desktopRestartTargetLocked()
+		return err
+	}
+	if a.updater.handle.DownloadedPath() == "" {
+		return ErrUpdateNotReady
+	}
+	return nil
 }
 
 // restartWithExitWatchdog arms a force-exit watchdog around the restart
@@ -518,16 +600,20 @@ func (a *Service) RestartToUpdate() error {
 // zombie that cancels it. Disarmed only when the helper spawn itself
 // fails and the app intentionally stays alive on the old version.
 func (a *Service) restartWithExitWatchdog(restart func(ctx context.Context) error) error {
-	delay := a.deps.RestartWatchdogDelay
-	if delay <= 0 {
-		delay = defaultRestartExitWatchdogDelay
-	}
-	disarm := a.armRestartExitWatchdog(delay)
+	disarm := a.armRestartExitWatchdog(a.restartWatchdogDelay())
 	if err := restart(a.context()); err != nil {
 		disarm()
 		return fmt.Errorf("restart to update: %w", err)
 	}
 	return nil
+}
+
+// restartWatchdogDelay is the host's shutdown budget for a restart.
+func (a *Service) restartWatchdogDelay() time.Duration {
+	if a.deps.RestartWatchdogDelay > 0 {
+		return a.deps.RestartWatchdogDelay
+	}
+	return defaultRestartExitWatchdogDelay
 }
 
 // armRestartExitWatchdog schedules a hard process exit after delay and

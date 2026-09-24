@@ -294,6 +294,13 @@ func TestThreadSearchIndexBuildsAtBootAndJoinsOnShutdown(t *testing.T) {
 	}
 
 	app.startThreadSearchIndex()
+	// A page's first catalog reads release the build.
+	if _, err := app.ListThreads(); err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if _, err := app.ListProjects(); err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
 	// The join is what shutdown does; after it the build has settled.
 	app.waitThreadSearchIndex()
 

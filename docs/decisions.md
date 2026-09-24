@@ -59,6 +59,41 @@ and every later start retries, with no attempt cap (ruling 2026-09-23).
 Mechanism in
 [the SQLite store document](architecture/sqlite-store.md#deferred-phases).
 
+## Startup
+
+- A boot never shows an empty catalog. Until a computer's threads and
+  projects have answered, the sidebar shows a loading row for it, naming its
+  boot phase while it is starting, or its error with Retry. The empty-list
+  message appears only once both have loaded; rows already held stay visible.
+- Readiness reports progress. A starting backend names its phase, step and
+  elapsed time, and a boot right after an in-app update reads as finishing
+  that update. The launcher's loading page, the startup screen and the
+  sidebar show the same sentence. The update record is the only source of
+  that version, so a boot the record does not name shows an ordinary start.
+- An in-app update migrates the database in a trial over a snapshot on every
+  platform: macOS, the Linux desktop, Windows and a supervised serve host.
+  The new version is kept only once it has booted fully. A failure, 30 s
+  without observed progress, or the 30 minute ceiling restores the snapshot,
+  keeps the previous version and reports the reason. No boot migrates an
+  existing database live: one that would, outside an update, runs the same
+  snapshot and trial first. An update to a version that predates the trial
+  keeps the framework's swap. Mechanism in
+  [the update spec](specs/app-update.md).
+- A migration or update trial that failed does not run again on its own.
+  The next launch of the same build over the same database schema version
+  shows the stored reason and phase with Retry; a different build or schema
+  version runs normally, and a trial that succeeds forgets the failure
+  (ruling 2026-09-24). Mechanism in
+  [the update spec](specs/app-update.md#failure-memory).
+- The Windows launcher fails a boot only when it makes no observed progress
+  for 30 s, and names the stalled phase. A heartbeat alone is not progress;
+  a new step, a database or WAL size change, or the process doing CPU or
+  storage work is. A slow boot that keeps working is never torn down; one
+  blocked on a lock is.
+- Heavy post-boot scans, such as the search index build, wait for the first
+  client's `ListThreads` and `ListProjects` answers, or 15 s after the backend
+  starts answering when no page reads.
+
 ## Streaming and reveal
 
 - Nothing skips, rushes, or pops the readable reveal drain. A backlog-skip

@@ -556,6 +556,12 @@ func touchItemRowsTx(exec sqlExecutor, threadID, label, touchSQL string, args ..
 
 // readHistoryStampTx reads a thread's stamps. found=false means no thread
 // row — a deleted thread, which SyncThreadWindow reports as `gone`.
+//
+// A pointer fork's stamps are its own. An ancestor's write moves them only
+// when it changes a row the fork shows: the hand-off's copy
+// (copyInheritedRowsStampedTx), an in-place update the fork shows
+// (trg_items_fork_reader_stamp) and spans on a payload it shows
+// (UpdatePayloadSpans). A write after the fork's cut leaves them alone.
 func readHistoryStampTx(q sqlQueryer, threadID string) (HistoryStamp, bool, error) {
 	var stamp HistoryStamp
 	err := q.QueryRow(

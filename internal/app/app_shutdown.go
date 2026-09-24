@@ -71,6 +71,7 @@ const (
 //wails:ignore
 func (a *App) Shutdown(ctx context.Context) error {
 	a.workAdmission.stopWaiting()
+	a.stopRestartUpdate()
 	a.closeComputerPairing()
 	// Step 0 (pre-shutdown): drain the transport server while every
 	// subsystem is still alive. Without this, a webview WS client that
@@ -509,8 +510,10 @@ func (a *App) ShutdownBackend() error {
 
 // ServiceShutdown is the Wails v3 lifecycle hook. We keep it as a thin
 // wrapper around Shutdown so the Wails runtime drives the same code path
-// tests exercise directly.
+// tests exercise directly. A desktop Start still running is canceled and
+// joined first, so Shutdown never tears down beside it.
 func (a *App) ServiceShutdown() error {
+	a.stopAsyncStart()
 	return a.Shutdown(context.Background())
 }
 

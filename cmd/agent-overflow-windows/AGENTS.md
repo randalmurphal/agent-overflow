@@ -11,7 +11,9 @@ payload installation, and launcher RPC transport in `internal/wsllauncher`.
   distro discovery, Wails, or single-instance setup.
 - `parseLauncherFlags` owns the CLI shape. `--distro` is transient and must not
   replace the saved default. An invalid override returns to the picker instead
-  of silently using saved configuration.
+  of silently using saved configuration. A launcher that starts another to
+  continue its launch passes its choice with `wsllauncher.DistroArgs`, whose
+  `--remember-distro` keeps a picker or saved choice one that is saved.
 - `--profile` and `AGENT_OVERFLOW_PROFILE` feed one validated
   `appidentity.RuntimeMode`. Use that mode for every isolated resource:
   instance identity, data roots, browser profiles, logs, window state, CDP,
@@ -22,7 +24,17 @@ payload installation, and launcher RPC transport in `internal/wsllauncher`.
 exactly once with `wsllauncher.ResetTransportPortFlag` only when Windows cannot
 reach the listener at all. Stop the old backend before retrying. An HTTP
 response proves that a new port will not address the failure. Error pages must
-describe the observed class without raw errors, bodies, credentials, or URLs.
+describe the observed class without raw errors, bodies, credentials, or URLs;
+a stall page may name the backend's reported phase, escaped and bounded.
+
+`wsllauncher.ProbeBootstrap` fails only after 30 s without progress: no HTTP
+response, a bare 503, or a
+[starting report](../../docs/architecture/transport.md#startup-readiness)
+whose `updatedAt` stopped advancing. A report whose `aliveAt` heartbeat also
+stopped fails as a backend that stopped responding. A boot that keeps
+progressing is never cut off. `/loading` and the picker poll the
+launcher-local `/loading.json` for the latest report and the launch's elapsed
+time.
 
 Trust a recorded payload path only when distro and embedded-byte digest match.
 Invalidate the digest before replacement and record the new path and digest
@@ -37,11 +49,11 @@ their validation at this process boundary.
 - Notifications retain stable IDs. Retractions use
   `RemoveDeliveredNotification`; Windows may be unable to retract a delivered
   toast. Do not turn that platform limit into a user-facing failure.
-- Update directives contain a validated bare filename. Create a fresh updater
-  per attempt. Report `proceeding` before replacement and use
-  `wsllauncher.ClassifyInstallAck`: proceed after an accepted or undelivered
-  acknowledgement and stop after an explicit refusal. Keep the exit watchdog
-  shorter than the helper's parent-exit timeout.
+- Update directives contain a validated bare filename. Report `proceeding`
+  before any work and use `wsllauncher.ClassifyInstallAck`: proceed after an
+  accepted or undelivered acknowledgement and stop after an explicit
+  refusal. The trial handoff and the swap follow (see Updates). Keep the
+  exit watchdog shorter than the helper's parent-exit timeout.
 - Keep-awake directives go through `internal/power`; its locked OS thread owns
   `SetThreadExecutionState`. Reject unknown modes.
 - Browser-host directives go through `internal/webview2host`. Create the host
@@ -58,6 +70,28 @@ WSL NAT address, proxy remote traffic through localhost, or forward launcher
 credentials to remote clients. The backend owns restored network settings and
 does not advertise until the launcher reports native state. See
 [`internal/nativenetwork`](../../internal/nativenetwork/AGENTS.md).
+
+## Updates
+
+An update runs the new launcher and its payload in a trial over a snapshot
+of the distro's database and rolls back on failure
+([app-update spec](../../docs/specs/app-update.md#windows-launcher-and-wsl-payload)).
+`wsllauncher.UpdateSequence` owns the order of steps and the recovery
+table; `update_trial.go` supplies the Windows side effects. Keep sequencing
+there, not in this package.
+
+- `beginTrialUpdate` stages the new launcher, runs its `--update-preflight`,
+  records the update, starts it with `--update-apply` and quits. A target
+  that writes no preflight answer, or the running version again, returns
+  `errLegacyTarget` and takes the Wails swap in `update.go`, with a fresh
+  updater per attempt.
+- Every launch (`launchAndShow`) runs `reconcileUpdate` for its distro
+  before anything starts in it. `afterWindow` runs `--update-apply` or the
+  launch once the window exists, so update progress and failure pages show
+  in the launcher's window.
+- A backend that refuses to migrate its database live is stopped and
+  migrated through a snapshot and a trial of the same payload before it
+  starts again (`migrateBeforeLaunch`).
 
 ## Lifetime, diagnostics, and build
 

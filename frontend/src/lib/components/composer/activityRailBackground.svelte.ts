@@ -16,14 +16,17 @@
 // `onMount`) and the returned `dispose` function (call from
 // `onDestroy`). No global state — one controller per Composer mount.
 
+import { untrack } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { ListLiveBackgroundTasks } from '../../stores/bindings';
+import { refreshWatchedThreads, registerWatchedScopeSource } from '../../stores/watchedThreads';
 import { onItemUpsert } from '../../stores/eventsItemStream';
 import { wailsEventOn } from '../../stores/wailsEvents';
 import { getTransportStatusFor, onBackendStatusChange } from '../../stores/transportStatus.svelte';
 import { threadBackend } from '../../transport/entityIndex';
 import { backendKeyForOrigin } from '../../transport/backends';
-import { transportGapChannel } from '../../transport/wsClient';
+import { transportGapChannel, type TransportGap } from '../../transport/wsClient';
+import type { WatchScope } from '../../transport/frames';
 import type {
   BackgroundTaskStateEvent,
   BackgroundTasksChangedEvent,
@@ -32,8 +35,7 @@ import type { Item } from '../../types/models';
 import { asProviderID, type ProviderID } from '../../types/providers';
 import { deriveTrayTasks, type TrayTask } from '../../utils/backgroundTray';
 import { createRefreshScheduler } from '../../utils/refreshScheduler';
-import { parseJsonObject } from '../../utils/parseJsonObject';
-import { CODEX_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
+import { createTrayLatestToolProjection } from '../../utils/codexTrayProjection';
 
 // Brief retention so a completion has time to flicker into view as the
 // terminal state but doesn't linger after the user has read it. Just
@@ -47,55 +49,6 @@ const COMPLETION_RETENTION_MS = 200;
 // at a handful of list calls per second.
 const REFRESH_DELAY_MS = 100;
 const REFRESH_MAX_WAIT_MS = 400;
-
-function projectLatestCodexTool(items: Item[], tool: Item): Item[] {
-  const parentId = tool.parentId?.trim();
-  const summary = tool.summary.trim();
-  if (!parentId || !summary || tool.toolName === 'collab_agent') return items;
-
-  let changed = false;
-  const projected = items.map((item) => {
-    if (item.id !== parentId || item.toolName !== 'collab_agent' || item.status !== 'running') {
-      return item;
-    }
-    const parsedMeta = parseJsonObject(item.meta);
-    if (item.meta?.trim() && parsedMeta === null) {
-      console.error(`ActivityRail: malformed Codex launch meta for ${item.id}`);
-      return item;
-    }
-    const meta = parsedMeta ?? {};
-    const currentTurnValue = meta[CODEX_LATEST_TOOL_META.turnIndex];
-    const currentItemValue = meta[CODEX_LATEST_TOOL_META.itemIndex];
-    const currentTurn = typeof currentTurnValue === 'number'
-      ? currentTurnValue
-      : -1;
-    const currentItem = typeof currentItemValue === 'number'
-      ? currentItemValue
-      : -1;
-    if (
-      tool.turnIndex < currentTurn
-      || (tool.turnIndex === currentTurn && tool.itemIndex < currentItem)
-    ) {
-      return item;
-    }
-    if (
-      meta[CODEX_LATEST_TOOL_META.summary] === summary
-      && tool.turnIndex === currentTurn
-      && tool.itemIndex === currentItem
-    ) return item;
-    changed = true;
-    return {
-      ...item,
-      meta: JSON.stringify({
-        ...meta,
-        [CODEX_LATEST_TOOL_META.summary]: summary,
-        [CODEX_LATEST_TOOL_META.turnIndex]: tool.turnIndex,
-        [CODEX_LATEST_TOOL_META.itemIndex]: tool.itemIndex,
-      }),
-    };
-  });
-  return changed ? projected : items;
-}
 
 export interface BackgroundController {
   readonly tasks: TrayTask[];
@@ -112,7 +65,52 @@ export function createBackgroundController(
   getPane: () => ThreadPane,
   getNow: () => number,
 ): BackgroundController {
-  let backgroundItems: Item[] = $state([]);
+  // Raw: every writer replaces the snapshot, and rows are read, never
+  // mutated in place, so a deep proxy per row would only add cost.
+  let backgroundItems: Item[] = $state.raw([]);
+  // Launch rows the snapshot lists, for deciding what an upsert changes.
+  // Rebuilt with each wholesale write, never per event. A running row wins
+  // over another row with its id, as in `deriveTrayTasks`.
+  let listedLaunches = new Map<string, Item>();
+  const latestTools = createTrayLatestToolProjection();
+
+  function replaceBackgroundItems(items: Item[]): void {
+    backgroundItems = items;
+    listedLaunches = new Map();
+    for (const item of items) {
+      if (!item.completionOf && (item.status === 'running' || !listedLaunches.has(item.id))) {
+        listedLaunches.set(item.id, item);
+      }
+    }
+    latestTools.reset(items);
+  }
+
+  // A tray read is requested only when membership can change: a new
+  // background launch (or, for Codex, a new nested agent), a terminal, a
+  // completion of a listed launch, or a listed launch no longer running.
+  // A listed launch re-pushed while running carries its latest-tool
+  // decoration onto its row in place. A Codex agent's row is its runtime
+  // record, not the settled spawn row pushed here, so that push changes
+  // nothing. A child's ordinary tool_completion names no listed launch.
+  function applyUpsert(item: Item): void {
+    if (item.completionOf) {
+      if (item.isBackground || listedLaunches.has(item.completionOf)) refresh.request();
+      return;
+    }
+    const listed = listedLaunches.get(item.id);
+    if (listed === undefined) {
+      const nestedCodexAgent = provider === 'codex' && item.parentId && item.kind === 'tool_call'
+        && item.toolName === 'collab_agent';
+      if (item.isBackground || nestedCodexAgent) refresh.request();
+      return;
+    }
+    if (provider === 'codex' && listed.toolName === 'collab_agent') return;
+    if (item.status !== 'running') {
+      refresh.request();
+      return;
+    }
+    backgroundItems = latestTools.applyPushedLaunch(backgroundItems, item);
+  }
 
   // A draft pane's thread is a synthetic placeholder no computer owns.
   // There is nothing to read until it materializes, and asking would route
@@ -133,7 +131,7 @@ export function createBackgroundController(
     run: async (token) => {
       const id = threadId;
       if (!id) {
-        backgroundItems = [];
+        replaceBackgroundItems([]);
         return;
       }
       const owner = threadBackend(id);
@@ -141,7 +139,7 @@ export function createBackgroundController(
       try {
         const items = (await ListLiveBackgroundTasks(id)) as Item[] | null;
         if (!token.isCurrent() || id !== threadId) return;
-        backgroundItems = (items ?? []).filter((item) => item.threadId === id);
+        replaceBackgroundItems((items ?? []).filter((item) => item.threadId === id));
       } catch (err) {
         if (!token.isCurrent() || id !== threadId) return;
         console.error('ActivityRail: ListLiveBackgroundTasks failed:', err);
@@ -156,9 +154,47 @@ export function createBackgroundController(
   // reset() is what makes the outgoing thread's in-flight answer stale.
   $effect(() => {
     threadId;
-    backgroundItems = [];
+    replaceBackgroundItems([]);
     refresh.reset();
     refresh.request({ immediate: true });
+  });
+
+  // The open tray body shows each running agent's latest-tool line, fed
+  // between list reads by child rows: a Codex agent's direct tool calls
+  // (scope: the agent's row) and a nested launch's re-pushes (scope: its
+  // parent). The backend sends those only to a connection watching the
+  // scope, so the scopes are watched while the body is open. A closed tray
+  // reads only the list, which every membership change nudges. Rows that
+  // were withheld before a scope was watched are recovered by re-reading
+  // the list once the watch naming it has been sent.
+  const trayScopeRoots = $derived.by((): string[] => {
+    const id = threadId;
+    if (!id || !getPane().activityRailBackgroundOpen) return [];
+    const roots = new Set<string>();
+    for (const item of backgroundItems) {
+      if (item.threadId !== id || item.completionOf || item.status !== 'running') continue;
+      if (item.parentId) roots.add(item.parentId);
+      if (provider === 'codex' && item.toolName === 'collab_agent') roots.add(item.id);
+    }
+    return [...roots].sort();
+  });
+  const trayScopeKey = $derived(trayScopeRoots.join('\u0000'));
+  let watchedTrayScopeKey = '';
+  // The scopes the watch source hands the composition. The source runs
+  // inside whichever reaction recomputes the set, which includes a close
+  // after the pane has left the registry and before this controller
+  // unmounts, so it reads this copy and never the pane.
+  let watchedTrayScopes: WatchScope[] = [];
+  $effect(() => {
+    const id = threadId;
+    const key = trayScopeKey;
+    untrack(() => {
+      const previous = new Set(watchedTrayScopeKey ? watchedTrayScopeKey.split('\u0000') : []);
+      watchedTrayScopeKey = key;
+      watchedTrayScopes = id ? trayScopeRoots.map(scopeRootId => ({ threadId: id, scopeRootId })) : [];
+      refreshWatchedThreads();
+      if (trayScopeRoots.some(root => !previous.has(root))) refresh.request({ immediate: true });
+    });
   });
 
   const tasks = $derived<TrayTask[]>(
@@ -185,26 +221,18 @@ export function createBackgroundController(
     get provider() { return provider; },
 
     mount(): () => void {
+      // A plain array, so the reaction that runs the composition does not
+      // come to depend on this tray.
+      const releaseScopes = registerWatchedScopeSource(() => watchedTrayScopes);
       const cancelItemUpsert = onItemUpsert((item) => {
         if (item.threadId !== threadId) return;
-        if (provider === 'codex' && item.parentId && item.kind === 'tool_call') {
-          if (item.toolName === 'collab_agent') {
-            // A nested launch needs a store refresh so its own tray row joins
-            // the hierarchy. Ordinary child tools can update the existing
-            // tray projection directly and avoid a full recursive query per
-            // tool call; reconnect hydration still comes from the store.
-            refresh.request();
-          } else {
-            backgroundItems = projectLatestCodexTool(backgroundItems, item);
-          }
+        if (provider === 'codex' && item.parentId && item.kind === 'tool_call' && item.toolName !== 'collab_agent') {
+          // A Codex agent's direct tool call updates the agent's row in
+          // place; reconnect hydration still comes from the store.
+          backgroundItems = latestTools.applyChildTool(backgroundItems, item);
           return;
         }
-        if (
-          item.isBackground
-          || item.completionOf
-        ) {
-          refresh.request();
-        }
+        applyUpsert(item);
       });
       const cancelBackgroundTasksChanged = wailsEventOn<BackgroundTasksChangedEvent>(
         'provider:background_tasks_changed',
@@ -228,15 +256,19 @@ export function createBackgroundController(
         refresh.reset();
         if (status.status === 'connected') refresh.request({ immediate: true });
       });
-      const cancelGap = wailsEventOn<{ channel: string }>(transportGapChannel, (gap, origin) => {
+      const cancelGap = wailsEventOn<TransportGap>(transportGapChannel, (gap, origin) => {
         if (!threadId || threadBackend(threadId) !== backendKeyForOrigin(origin.backendId)) return;
-        if (gap?.channel !== 'provider:item_event'
-          && gap?.channel !== 'provider:background_tasks_changed'
+        if (gap?.channel === 'provider:item_event') {
+          // Every row this tray reads is its own thread's: a loss the
+          // server attributed to other threads cost it nothing.
+          if (gap.threads && !gap.threads.includes(threadId)) return;
+        } else if (gap?.channel !== 'provider:background_tasks_changed'
           && gap?.channel !== 'provider:background_task_state') return;
         refresh.reset();
         refresh.request({ immediate: true });
       });
       return () => {
+        releaseScopes();
         cancelStatus();
         cancelGap();
         cancelItemUpsert();

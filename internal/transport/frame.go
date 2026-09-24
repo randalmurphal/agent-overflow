@@ -301,8 +301,27 @@ const MaxWatchThreads = 256
 // MaxWatchThreadIDBytes bounds one entity id in a watch frame. Thread ids
 // are short opaque strings; the cap is the same 256 handleSubscribe applies
 // to a channel name, for the same reason — the server stores what it is
-// given, so the per-item bound is the one that matters.
+// given, so the per-item bound is the one that matters. It also bounds both
+// ids of a WatchScope.
 const MaxWatchThreadIDBytes = 256
+
+// MaxWatchScopes bounds a connection's watched-scope set. A scope is one
+// open agent surface (an agent pane, an expanded card or tray digest, a
+// running agent in the open tray), so a real screen holds a handful. The
+// ceiling matches MaxWatchThreads for the same reason: one frame must not
+// make the server build an unbounded map.
+const MaxWatchScopes = 256
+
+// WatchScope names one transcript scope a connection is viewing: the rows
+// of ThreadID whose `parentId` is ScopeRootID, which are one subagent's rows
+// under its launch (event_entity.go). An object rather than a joined string
+// or a two-element array, so each id is validated on its own against
+// MaxWatchThreadIDBytes with no separator to escape, and a missing key
+// decodes to the empty string, which the refusal already covers.
+type WatchScope struct {
+	ThreadID    string `json:"threadId"`
+	ScopeRootID string `json:"scopeRootId"`
+}
 
 // MaxRPCParams caps the number of positional parameters a single RPC
 // frame can carry. Protects against pathological inputs that would
@@ -325,10 +344,12 @@ const MaxRPCParams = 64
 //     by Channels. Omitted by ordinary SPA connections, which retain the
 //     existing all-visible-channel behavior.
 //   - "watch": name the entities (thread ids) this connection is looking
-//     at, in Threads. Narrows the EntityFiltered channels only
-//     (event_entity.go); every other channel is unaffected. The set is
-//     absolute and idempotent, an empty array is legal and means "watching
-//     nothing", and a connection that never sends one stays wildcard.
+//     at, in Threads, and the subagent transcript scopes it is viewing, in
+//     Scopes. Narrows the EntityFiltered channels only (event_entity.go);
+//     every other channel is unaffected. Both sets are absolute and
+//     idempotent and each frame replaces both, an empty array is legal and
+//     means "watching nothing", and a connection that never sends one stays
+//     wildcard.
 //   - "lease": state this CLIENT's whole-app lifecycle in State, either
 //     "active" (the default every connection starts in) or "background".
 //     A backgrounded connection has its highlight seeds withheld and its
@@ -376,6 +397,24 @@ type ClientFrame struct {
 	// a bounded set of thread ids this client named. The frames differ in
 	// what the backend DOES with the set, which is the Type's job to say.
 	Threads []string `json:"threads,omitempty"`
+	// Scopes carries a watch frame's absolute scope set: the transcript
+	// scopes whose rows this connection receives on a
+	// TranscriptScopeFiltered channel (event_entity.go). Read only for a
+	// "watch" frame. Unlike Threads, an absent field (or null) and an empty
+	// array are different statements, kept apart by the decoder as a nil
+	// versus an empty slice:
+	//
+	//   - absent: the client states no scopes, so a watched thread admits
+	//     the rows of every scope. That is every client built before the
+	//     field existed, and the SPA's answer when its scope set exceeds
+	//     MaxWatchScopes: a set it cannot state fails open to delivery, not
+	//     to surfaces that stop receiving.
+	//   - `[]`: no scope is being viewed, so a watched thread admits only
+	//     its root-scope rows.
+	//
+	// `omitempty` therefore matters only to a Go sender, which cannot spell
+	// `[]` through this struct; no Go client sends a watch frame.
+	Scopes []WatchScope `json:"scopes,omitempty"`
 	// Focused carries a presence frame's window-focus bit. Read only for a
 	// frame whose Type is already "presence", where an absent field reads
 	// as false — "not attended", which is the resting state every
@@ -438,6 +477,8 @@ type ServerFrame struct {
 	Seq     uint64          `json:"seq,omitempty"`
 	Data    json.RawMessage `json:"data,omitempty"`
 	Gap     bool            `json:"gap,omitempty"`
+	// GapThreads rides a Gap frame only; see Event.GapThreads.
+	GapThreads []string `json:"gapThreads,omitempty"`
 }
 
 // FrameError is the server's RPC or session-ended error envelope. Code is
@@ -571,16 +612,17 @@ var ErrAlreadyHandled = errors.New("already handled")
 
 // batchEventEntry is one event inside a batch frame. It carries the
 // subset of Event fields the client needs to dispatch: channel, seq,
-// data, and the gap flag. Since batch frames are spliced from
-// pre-encoded event envelopes (spliceBatchFrame), each entry on the
-// wire additionally carries an inert `"type":"event"` field that every
-// consumer ignores; this struct remains the consumer-side parse shape
-// (tests and the wsllauncher notification client decode through it).
+// data, and the gap flag with its thread attribution. Since batch frames
+// are spliced from pre-encoded event envelopes (spliceBatchFrame), each
+// entry on the wire additionally carries an inert `"type":"event"` field
+// that every consumer ignores; this struct remains the consumer-side parse
+// shape (tests and the wsllauncher notification client decode through it).
 type batchEventEntry struct {
-	Channel string          `json:"channel"`
-	Seq     uint64          `json:"seq"`
-	Data    json.RawMessage `json:"data"`
-	Gap     bool            `json:"gap,omitempty"`
+	Channel    string          `json:"channel"`
+	Seq        uint64          `json:"seq"`
+	Data       json.RawMessage `json:"data"`
+	Gap        bool            `json:"gap,omitempty"`
+	GapThreads []string        `json:"gapThreads,omitempty"`
 }
 
 // batchFrame is the server-side envelope for coalesced event delivery.

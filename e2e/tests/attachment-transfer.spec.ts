@@ -197,7 +197,11 @@ test('a transfer ticket admits one request and says nothing about the rest', asy
   expect((await fetch(bare)).status).toBe(404);
 });
 
-test('a fork retains inherited images and usable history after deleting its source', async ({ harness, page }) => {
+// A fork reads the history before its cut, and the images it references,
+// from its source, which keeps owning them. Deleting the source takes that
+// history with it: the fork keeps its own rows and its divider, which
+// records the deletion, and still runs.
+test('a fork shows its source’s images until the source is deleted, then runs without them', async ({ harness, page }) => {
   const { plainScenario } = await import('./thread-tools-helpers.js');
   await harness.rpc('HarnessSetScenario', { scenario: plainScenario({ name: 'fork-attachment', provider: 'claude', texts: ['Image received.', 'Fork continued.'], afterTurns: 'repeatLast' }) });
   const threadId = await seedThread(harness, 'Image fork source');
@@ -211,28 +215,38 @@ test('a fork retains inherited images and usable history after deleting its sour
   await completed;
   const sourceItems = await harness.rpc<Array<{ summary: string; meta: string }>>('ListItems', threadId, true);
   expect(sourceItems.find((item) => item.summary.includes('Keep this image'))?.meta).toContain(FILENAME);
+  const [sourceAttachment] = await harness.rpc<AttachmentRow[]>('ListAttachments', threadId);
+  expect(sourceAttachment?.filename).toBe(FILENAME);
 
   const fork = await harness.rpc<{ id: string; title: string }>('ForkThread', threadId, null);
   const forkItems = await harness.rpc<Array<{ summary: string; meta: string }>>('ListItems', fork.id, true);
   expect(forkItems.find((item) => item.summary.includes('Keep this image'))?.meta).toContain(FILENAME);
-  await harness.rpc('DeleteThread', threadId);
   await page.getByText(fork.title, { exact: true }).click();
   await expect(page.getByText(/Keep this image in the fork\./)).toBeVisible();
   await page.getByLabel(`Preview ${FILENAME}`).click();
   const expanded = page.getByRole('dialog', { name: FILENAME }).getByRole('img', { name: FILENAME });
   await expect.poll(() => expanded.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(PNG_WIDTH);
   await page.keyboard.press('Escape');
-  const attachments = await harness.rpc<AttachmentRow[]>('ListAttachments', fork.id);
-  expect(attachments).toHaveLength(1);
-  expect(attachments[0].threadId).toBe(fork.id);
-  const ticket = await harness.rpc<string>('MintAttachmentDownloadTicket', fork.id, attachments[0].id);
+  expect(await harness.rpc<AttachmentRow[]>('ListAttachments', fork.id)).toHaveLength(0);
+  const ticket = await harness.rpc<string>('MintAttachmentDownloadTicket', fork.id, sourceAttachment.id);
   const response = await fetch(new URL(ticket, harness.url));
   expect(response.status).toBe(200);
   expect(Buffer.from(await response.arrayBuffer())).toEqual(PNG_BYTES);
+
+  await page.getByText('Image fork source', { exact: true }).click();
+  await harness.rpc('DeleteThread', threadId);
+  await page.getByText(fork.title, { exact: true }).click();
+  await expect(page.getByText('Forked from Image fork source', { exact: true })).toBeVisible();
+  await expect(page.getByText(/Keep this image in the fork\./)).toHaveCount(0);
+  const detached = await harness.rpc<Array<{ kind: string; summary: string; meta: string }>>('ListItems', fork.id, true);
+  expect(detached.map((item) => [item.kind, item.summary])).toEqual([['notification', 'Forked from Image fork source']]);
+  expect(JSON.parse(detached[0].meta)).toMatchObject({ sourceDeleted: true, sourceTitle: 'Image fork source' });
+  expect(await harness.rpc<AttachmentRow[]>('ListAttachments', fork.id)).toHaveLength(0);
+  await expect(harness.rpc('MintAttachmentDownloadTicket', fork.id, sourceAttachment.id)).rejects.toThrow();
   // Claude lazily forks its native session on this first send.
   const continued = harness.waitForEvent('provider:turn_completed');
-  await page.getByLabel('Message Input').fill('Continue with the inherited image.');
+  await page.getByLabel('Message Input').fill('Continue after the source is gone.');
   await page.getByTestId('composer-send').click();
   await continued;
-  await expect(page.getByText('Continue with the inherited image.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Continue after the source is gone.', { exact: true })).toBeVisible();
 });

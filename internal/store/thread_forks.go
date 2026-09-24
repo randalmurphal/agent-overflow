@@ -1,10 +1,12 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+	"math"
 	"time"
 
 	"agent-overflow/internal/entityid"
@@ -15,26 +17,23 @@ import (
 // fork-only fields: a fresh UUID, a "(fork)"-suffixed title, the
 // `ForkedFromThreadID` linkage, and a `created_at` / `updated_at` pair
 // at the current millisecond. The session-state fields
-// (`SessionRef`, `PendingForkRef`) are left empty — the app-side fork
+// (`SessionRef`, `PendingForkRef`) are left empty: the app-side fork
 // saga sets them once the provider-specific resume reference is known.
-// AutoCompactStandard/Extended Percent are intentionally NOT copied —
-// a fork starts with zero overrides so it picks up the live Settings
+// AutoCompactStandard/Extended Percent are intentionally NOT copied, so
+// a fork starts with zero overrides and picks up the live Settings
 // value on the first session start (the same default-resolution path a
 // brand-new thread follows).
 //
 // `LastTokenUsage` IS copied so the meter reflects the inherited
 // conversation history from frame 0. The new resumed session emits a
 // fresh `thread/tokenUsage/updated` on its first turn which overwrites
-// this seed with the live measurement. Without the copy the meter
-// would render 0% for forked threads even though the cloned items
-// occupy meaningful context.
+// this seed with the live measurement.
 //
 // `GroupID` IS copied: a fork of a grouped thread lands in the same
 // sidebar group (migration v76). The fork carries no pin, so the
 // "one pin per visible row" CHECK holds by construction.
 //
-// Pure: this only builds the row. The caller persists it (CreateThread)
-// and pairs it with the side-effecting clone steps.
+// Pure: this only builds the row. CreatePointerFork persists it.
 func BuildForkedThread(source Thread) Thread {
 	now := time.Now().UnixMilli()
 	return Thread{
@@ -59,596 +58,1099 @@ func BuildForkedThread(source Thread) Thread {
 	}
 }
 
-// CloneThreadItems copies the visible timeline items from sourceThreadID into
-// targetThreadID, preserving thread-scoped item identities and turn ordering.
-// The returned map contains the retained source item IDs and their target IDs.
-//
-// When throughTurnIndex is non-nil, only items whose turn_index is <= *throughTurnIndex
-// are copied — used for fork-at-point so the forked thread starts truncated
-// at the chosen turn. nil means clone every turn (existing fork-at-tail
-// behavior).
-//
-// Rows that are LIVE-backgrounded (`is_background=1`, status `running`
-// or `streaming`, and NO completion sibling inside the cut) are
-// SKIPPED, and so is everything hanging off one — see
-// `cloneThreadItemsTx`. Those rows point at PTYs / subagents owned by
-// the source session's provider subprocess, and the fork gets its own
-// subprocess that can never reach them. Copying them would strand the
-// forked thread with ghost rows that can never complete: the fork
-// settle (SettleForkedThreadAsInterrupted) exempts background
-// tool_calls in BOTH live statuses, so a copied one would be
-// permanently unsettleable. The parent thread is untouched — its
-// backgrounded launches keep running under its own session.
-//
-// A running background launch WITH a completion sibling is not live —
-// it is the permanent shape of every finished background task
-// (invariant 24: the sibling is the terminal, the launch's status
-// never flips) — and clones normally, subtree included. So do
-// non-background live rows; the filter is deliberately narrow.
-//
-// All inserts run in a single transaction so a 200-row clone takes one
-// fsync instead of 200. Per-row InsertItem would commit individually
-// and dominate the fork wall-clock for large threads.
-//
-// Forks call CloneThreadHistoryThroughTurn instead, which folds this
-// and the turns clone into ONE transaction. This entry point stands
-// alone for callers that want only the item half.
-func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughTurnIndex *int) (map[string]string, error) {
-	return s.inCloneTx(func(tx *sql.Tx) (map[string]string, error) {
-		return s.cloneThreadItemsTx(tx, sourceThreadID, targetThreadID, throughTurnKeep(throughTurnIndex))
-	})
+// ErrForkChainTooDeep reports a fork whose source already reads through
+// forkLineageMaxDepth levels.
+var ErrForkChainTooDeep = errors.New("store: fork chain is too deep")
+
+// ForkCut says how much of the source a pointer fork inherits. The zero
+// value is the whole timeline.
+type ForkCut struct {
+	// ThroughTurn keeps turns up to and including *ThroughTurn. A negative
+	// value keeps nothing.
+	ThroughTurn *int
+	// BeforeItemID keeps what precedes this user row in provider order:
+	// earlier turns, the anchor turn's rows before it, and for an
+	// interrupt-promoted anchor its turn's content successors (the rule
+	// DeleteConversationFromItem applies to a revert).
+	BeforeItemID string
 }
 
-// CloneThreadHistoryThroughTurn is the fork pipeline's clone: the item
-// rows and the turn rows of the same cut, read and written inside ONE
-// transaction.
-//
-// The single transaction is the point. Splitting the two halves lets a
-// turn complete between them, so the fork gets a turn row stamped
-// `completed_at`/`end_turn` over items that were snapshotted mid-stream
-// and then flipped to interrupted — a fork whose own two tables
-// disagree about whether its last turn finished. On the single writer
-// connection a transaction is also the only thing that makes the two
-// reads one snapshot.
-func (s *Store) CloneThreadHistoryThroughTurn(sourceThreadID, targetThreadID string, throughTurnIndex *int) (map[string]string, error) {
-	return s.inCloneTx(func(tx *sql.Tx) (map[string]string, error) {
-		idMap, err := s.cloneThreadItemsTx(tx, sourceThreadID, targetThreadID, throughTurnKeep(throughTurnIndex))
-		if err != nil {
-			return nil, err
-		}
-		if err := cloneThreadTurnsTx(tx, sourceThreadID, targetThreadID, throughTurnIndex); err != nil {
-			return nil, err
-		}
-		return idMap, nil
-	})
+// forkCut is a resolved cut: the first position the fork does not inherit,
+// placed right after the last row it does.
+type forkCut struct {
+	empty bool
+	turn  int
+	item  int
+	// hidden are inherited ids below the cut the fork does not show.
+	hidden []string
+	// trim clears the cut turn row's settle metadata, which described
+	// content the cut excluded.
+	trim bool
+	// turnsThrough is the last turn whose row the fork copies. A fork owns
+	// the row of the turn its cut falls in and every later one.
+	turnsThrough int
 }
 
-// throughTurnKeep renders the turn-granular cut as a cloneThreadItemsTx
-// keep predicate. nil keeps every turn.
-func throughTurnKeep(throughTurnIndex *int) func(Item) bool {
-	return func(item Item) bool {
-		return throughTurnIndex == nil || item.TurnIndex <= *throughTurnIndex
+// forkOrigin is the divider row's meta.
+type forkOrigin struct {
+	Kind           string `json:"kind"`
+	SourceThreadID string `json:"sourceThreadId"`
+	SourceTitle    string `json:"sourceTitle"`
+	SourceItemID   string `json:"sourceItemId,omitempty"`
+	SourceDeleted  bool   `json:"sourceDeleted,omitempty"`
+}
+
+// CreatePointerFork creates fork as a pointer fork of sourceID in one
+// writer transaction. The fork copies no history: it records its source and
+// cut, and every timeline read resolves the rows before the cut from the
+// source (docs/architecture/sqlite-store.md#pointer-forks). The writes are
+// the thread row, one lineage row per level, the rows the fork must own
+// because they are still running in the source (settled as interrupted),
+// the cut turn's row, the question state of inherited rows, and a divider
+// row at the cut.
+//
+// A cut that keeps nothing creates an ordinary empty thread.
+func (s *Store) CreatePointerFork(fork Thread, sourceID string, cut ForkCut, summarise func(string) string, now int64) error {
+	if summarise == nil {
+		return fmt.Errorf("store: create fork: summarise is required")
 	}
-}
-
-// inCloneTx runs one clone body inside a writer transaction, rolling
-// back on any error. Every clone entry point in this file shares it so
-// none of them can accidentally ship a half-cloned fork.
-func (s *Store) inCloneTx(body func(*sql.Tx) (map[string]string, error)) (map[string]string, error) {
+	if cut.ThroughTurn != nil && cut.BeforeItemID != "" {
+		return fmt.Errorf("store: create fork: a cut is either turn-granular or item-granular")
+	}
+	prepared, lastReadAtArg, err := prepareThreadForCreate(fork)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("store: begin clone tx: %w", err)
+		return fmt.Errorf("store: begin create fork: %w", err)
 	}
 	defer tx.Rollback()
-
-	idMap, err := body(tx)
-	if err != nil {
-		return nil, err
+	if err := insertThread(tx, prepared, lastReadAtArg); err != nil {
+		return fmt.Errorf("store: create fork thread: %w", err)
+	}
+	if err := s.linkPointerForkTx(tx, prepared.ID, sourceID, cut, summarise, now); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("store: commit clone tx: %w", err)
-	}
-	return idMap, nil
-}
-
-// cloneThreadItemsTx is the shared clone body behind CloneThreadItems,
-// CloneThreadHistoryThroughTurn, and CloneThreadHistoryBeforeItem: keep
-// decides which source rows copy; the live-background skip applies on
-// top of it unconditionally.
-//
-// The source read runs on the caller's transaction, not on the read
-// pool. That is what makes the items and the turns of one clone a
-// single snapshot: the writer is a single connection, so nothing else
-// can commit while this transaction is open.
-//
-// A skip is TRANSITIVE. A row is dropped when it is a LIVE background
-// launch (running/streaming with no completion sibling in the cut),
-// when keep rejects it, or when the row its `parent_id` /
-// `completion_of` names was itself dropped. Without that closure a
-// child of a dropped launch cloned with its parent_id unremapped — a
-// reference into the SOURCE thread, invisible to every window read and
-// permanent (fork thread d1166194 carried 5901 such rows, all pointing
-// at background-running Agent launches left behind in b44a738d).
-//
-// One forward pass suffices: ListItems orders by (turn_index,
-// item_index), and invariants 10 / 11 put a parent before its children
-// and a tool_call before the completion row that settles it in exactly
-// that order, so every id a row references has already been decided by
-// the time the row is examined.
-//
-// A reference to an id that is not in the source list at all is
-// pre-existing corruption in the SOURCE and copies verbatim — only ids
-// this pass deliberately dropped propagate.
-func (s *Store) cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep func(Item) bool) (map[string]string, error) {
-	// Cloning needs item columns only. Hydrating payload metadata and preview
-	// spans here reads heavy values that the insert does not use.
-	query, args := timelineArms(sourceThreadID, timelineSelection{
-		Columns: func(thread, rev string) string {
-			return itemHydrationColumns(thread, "''", "''", "''", "items.meta", rev)
-		},
-		OrderBy: "turn_index, item_index",
-	})
-	rows, err := tx.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("store: list source items for fork %s: %w", sourceThreadID, err)
-	}
-	var items []Item
-	for rows.Next() {
-		item, err := scanItemRow(rows)
-		if err != nil {
-			return nil, errors.Join(err, rows.Close())
-		}
-		items = append(items, item)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("store: read fork source: %w", err)
-	}
-
-	// A background launch's terminal is its completion SIBLING — the
-	// launch row itself stays `running` forever (invariant 24), so
-	// "live" cannot be read off the launch's own status. This pre-pass
-	// collects the launches settled by a sibling INSIDE the cut; keep
-	// filters it too, so a sibling beyond a through-turn cut cannot
-	// vouch for a launch the fork would then hold unsettleable.
-	settled := make(map[string]struct{})
-	for _, item := range items {
-		if item.CompletionOf != "" && keep(item) {
-			settled[item.CompletionOf] = struct{}{}
-		}
-	}
-
-	clonedItems := make([]Item, 0, len(items))
-	idMap := make(map[string]string, len(items))
-	skipped := make(map[string]struct{})
-	dropped := func(id string) bool {
-		if id == "" {
-			return false
-		}
-		_, ok := skipped[id]
-		return ok
-	}
-	for _, item := range items {
-		if isLiveBackgroundRow(item, settled) ||
-			!keep(item) ||
-			dropped(item.ParentID) ||
-			dropped(item.CompletionOf) {
-			skipped[item.ID] = struct{}{}
-			continue
-		}
-		oldID := item.ID
-		item.ThreadID = targetThreadID
-		idMap[oldID] = item.ID
-		clonedItems = append(clonedItems, item)
-	}
-	// A reference to a dropped id surviving to this pass means a writer
-	// broke the parents-precede-children ordering the forward pass rests
-	// on (a hand-authored InsertItem, an import batch) — the transitive
-	// skip above never saw it. Refuse the fork rather than mint the
-	// invisible cross-thread reference this function exists to prevent;
-	// the fork saga rolls the target thread back on error. Unknown ids
-	// (never in the source list) still copy verbatim.
-	for i := range clonedItems {
-		if next, ok := idMap[clonedItems[i].ParentID]; ok {
-			clonedItems[i].ParentID = next
-		} else if dropped(clonedItems[i].ParentID) {
-			return nil, fmt.Errorf("store: clone from thread %s: row %s references dropped parent %s out of source order",
-				sourceThreadID, clonedItems[i].ID, clonedItems[i].ParentID)
-		}
-		if next, ok := idMap[clonedItems[i].CompletionOf]; ok {
-			clonedItems[i].CompletionOf = next
-		} else if dropped(clonedItems[i].CompletionOf) {
-			return nil, fmt.Errorf("store: clone from thread %s: row %s completes dropped call %s out of source order",
-				sourceThreadID, clonedItems[i].ID, clonedItems[i].CompletionOf)
-		}
-	}
-
-	shared, err := cloneSharedHistoryTx(tx, sourceThreadID, targetThreadID, idMap)
-	if err != nil {
-		return nil, err
-	}
-	privateItems := make([]Item, 0, len(clonedItems)-len(shared))
-	for _, item := range clonedItems {
-		if !shared[item.ID] {
-			privateItems = append(privateItems, item)
-		}
-	}
-	if err := cloneThreadPayloadsTx(tx, sourceThreadID, targetThreadID, privateItems); err != nil {
-		return nil, err
-	}
-
-	// Bound statement size while amortizing driver calls and statement journals.
-	// Rows retain provider order; item triggers and search hooks still run.
-	cloned := len(clonedItems)
-	for start := 0; start < len(privateItems); start += 128 {
-		batch := privateItems[start:min(start+128, len(privateItems))]
-		args := make([]any, 0, len(batch)*18)
-		for _, item := range batch {
-			args = append(args,
-				item.ID, item.ThreadID, item.TurnIndex, item.ItemIndex,
-				item.Kind, item.Role, item.Status, item.Summary,
-				nilIfEmpty(item.PayloadID), nilIfEmpty(item.InputPayloadID), item.ParentID,
-				boolToInt(item.IsBackground), item.CompletionOf, item.ToolName, item.Decision, item.Meta,
-				item.CreatedAt, item.UpdatedAt,
-			)
-		}
-		const values = "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?),"
-		if _, err := tx.Exec(`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
-		    payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
-		    created_at, updated_at) VALUES `+strings.TrimSuffix(strings.Repeat(values, len(batch)), ","), args...); err != nil {
-			return nil, fmt.Errorf("store: clone items into thread %s: %w", targetThreadID, err)
-		}
-	}
-	// Index in logical timeline order even when storage alternates between
-	// private and shared rows. Search ranking ties retain that same order.
-	for start := 0; start < len(clonedItems); {
-		end := start + 1
-		for end < len(clonedItems) && end-start < 128 && shared[clonedItems[end].ID] == shared[clonedItems[start].ID] {
-			end++
-		}
-		source := ThreadSearchSourceItem
-		if shared[clonedItems[start].ID] {
-			source = ThreadSearchSourceImport
-		}
-		if err := indexSettledItemsTx(tx, clonedItems[start:end], source); err != nil {
-			return nil, err
-		}
-		start = end
-	}
-	var maxUpdatedAt int64
-	for _, item := range clonedItems {
-		maxUpdatedAt = max(maxUpdatedAt, item.UpdatedAt)
-	}
-
-	// Touch the destination thread's updated_at once at the end (mirrors
-	// per-row InsertItem's touch semantics, batched).
-	if cloned > 0 {
-		if _, err := tx.Exec(`UPDATE threads SET updated_at = ? WHERE id = ?`, maxUpdatedAt, targetThreadID); err != nil {
-			return nil, fmt.Errorf("store: touch fork thread %s updated_at: %w", targetThreadID, err)
-		}
-	}
-
-	// The copied rows arrive without the source's stamps (the copy reads
-	// stored meta, and stamps are per thread); the target's are rebuilt
-	// from its rows. The inserts above advanced its thread stamp.
-	if err := s.restampSubagentAggregatesTx(tx, targetThreadID); err != nil {
-		return nil, err
-	}
-
-	if err := cloneAsyncQuestionsTx(tx, sourceThreadID, targetThreadID, idMap); err != nil {
-		return nil, err
-	}
-	if err := cloneAttachmentOwnersTx(tx, sourceThreadID, targetThreadID); err != nil {
-		return nil, err
-	}
-	return idMap, nil
-}
-
-// A complete immutable chunk can be attached directly. A cut, private
-// override, or unsettled foreground row keeps that chunk on the ordinary
-// copy path, where the established filtering and interruption rules apply.
-func cloneSharedHistoryTx(tx *sql.Tx, source, target string, kept map[string]string) (map[string]bool, error) {
-	rows, err := tx.Query(`SELECT refs.chunk_id, i.id, i.status, i.is_background, o.item_id IS NOT NULL OR i.kind IN ('user_text','tool_call','tool_completion','workflow_proposal') OR EXISTS(SELECT 1 FROM payloads p WHERE p.thread_id=refs.thread_id AND p.id IN (i.payload_id,i.input_payload_id))
- FROM thread_import_chunks refs JOIN import_history_items i ON i.chunk_id=refs.chunk_id
- LEFT JOIN thread_import_item_overrides o ON o.thread_id=refs.thread_id AND o.item_id=i.id
- WHERE refs.thread_id=? ORDER BY refs.chunk_order,i.turn_index,i.item_index`, source)
-	if err != nil {
-		return nil, fmt.Errorf("store: read shared fork chunks: %w", err)
-	}
-	type chunk struct {
-		id      string
-		items   []string
-		private bool
-	}
-	var chunks []chunk
-	for rows.Next() {
-		var chunkID, id, status string
-		var background, overridden bool
-		if err := rows.Scan(&chunkID, &id, &status, &background, &overridden); err != nil {
-			return nil, errors.Join(err, rows.Close())
-		}
-		if len(chunks) == 0 || chunks[len(chunks)-1].id != chunkID {
-			chunks = append(chunks, chunk{id: chunkID})
-		}
-		c := &chunks[len(chunks)-1]
-		c.items = append(c.items, id)
-		_, retained := kept[id]
-		c.private = c.private || !retained || overridden || (!background && !settledItemStatus(status))
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("store: read shared fork chunks: %w", err)
-	}
-	shared := make(map[string]bool)
-	order := 0
-	for _, c := range chunks {
-		if c.private {
-			continue
-		}
-		if _, err := tx.Exec(`INSERT INTO thread_import_chunks(thread_id,chunk_order,chunk_id) VALUES(?,?,?)`, target, order, c.id); err != nil {
-			return nil, fmt.Errorf("store: attach shared fork chunk: %w", err)
-		}
-		order++
-		for _, id := range c.items {
-			shared[id] = true
-		}
-	}
-	if len(shared) != 0 {
-		if _, err := tx.Exec(`UPDATE threads SET history_rev=history_rev+? WHERE id=?`, len(shared), target); err != nil {
-			return nil, fmt.Errorf("store: stamp shared fork history: %w", err)
-		}
-	}
-	return shared, nil
-}
-
-// isLiveBackgroundRow is the clone's "owned by the source's provider
-// subprocess" test. A background launch's terminal is its completion
-// sibling, never its own status — the launch row stays `running`
-// forever (invariant 24) — so a launch named in `settled` is finished
-// history and clones as-is, sibling and subtree included (thread
-// c65dfb09's fork silently lost 1631 completed subagent rows to a
-// status-only version of this test). BOTH live statuses count for a
-// siblingless launch: a background tool_call is exempt from the fork
-// settle in either one, so a truly-live row cloned into a fork would
-// be permanently unsettleable — the ghost-row failure the skip exists
-// to prevent (fork d1166194, 5901 rows).
-func isLiveBackgroundRow(item Item, settled map[string]struct{}) bool {
-	if !item.IsBackground || (item.Status != "running" && item.Status != "streaming") {
-		return false
-	}
-	_, ok := settled[item.ID]
-	return !ok
-}
-
-// cloneThreadPayloadsTx clones metadata and shares immutable snapshots of
-// every referenced input/output payload graph. The snapshot is established
-// in the item clone transaction, before the source can change or disappear.
-func cloneThreadPayloadsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, items []Item) error {
-	payloadIDs := make(map[string]struct{})
-	for _, item := range items {
-		if item.PayloadID != "" {
-			payloadIDs[item.PayloadID] = struct{}{}
-		}
-		if item.InputPayloadID != "" {
-			payloadIDs[item.InputPayloadID] = struct{}{}
-		}
-	}
-	if len(payloadIDs) == 0 {
-		return nil
-	}
-
-	ids := make([]string, 0, len(payloadIDs))
-	for id := range payloadIDs {
-		ids = append(ids, id)
-	}
-	return clonePayloadSnapshotsTx(tx, sourceThreadID, targetThreadID, ids)
-}
-
-// CloneThreadTurns copies the source thread's turns rows (<=
-// *throughTurnIndex when non-nil, everything when nil) into the target
-// thread. turn_id is a global PRIMARY KEY, so cloned rows get a fresh
-// synthesized `<targetThreadID>:<turn_index>` id — the same convention
-// Claude turns use — while provider_turn_id is preserved verbatim.
-// That preserved wire id is the point of the clone: a Codex
-// `thread/fork` keeps the source's turn ids, so the cloned row is what
-// lets a later revert/fork inside the forked thread resolve its
-// `lastTurnId` anchor without reaching back to the (possibly deleted)
-// source thread.
-//
-// Forks call CloneThreadHistoryThroughTurn instead, which runs this and
-// the item clone in one transaction; this entry point stands alone for
-// callers that want only the turn half.
-func (s *Store) CloneThreadTurns(sourceThreadID, targetThreadID string, throughTurnIndex *int) error {
-	_, err := s.inCloneTx(func(tx *sql.Tx) (map[string]string, error) {
-		return nil, cloneThreadTurnsTx(tx, sourceThreadID, targetThreadID, throughTurnIndex)
-	})
-	return err
-}
-
-func cloneThreadTurnsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, throughTurnIndex *int) error {
-	cut := -1
-	if throughTurnIndex != nil {
-		cut = *throughTurnIndex
-	}
-	_, err := tx.Exec(
-		`INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at,
-		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id)
-		 SELECT ? || ':' || turn_index, ?, turn_index, started_at, completed_at,
-		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id
-		 FROM turns
-		 WHERE thread_id = ? AND (? < 0 OR turn_index <= ?)`,
-		targetThreadID, targetThreadID, sourceThreadID, cut, cut,
-	)
-	if err != nil {
-		return fmt.Errorf("store: clone turns into thread %s: %w", targetThreadID, err)
+		return fmt.Errorf("store: commit create fork: %w", err)
 	}
 	return nil
 }
 
-// SettleForkedThreadAsInterrupted applies the standard interrupted
-// treatment to a freshly-cloned fork: every stranded running/streaming
-// item flips to `errored` with summarise(summary), and every turn row
-// still open (`completed_at IS NULL`) closes with
-// stop_reason='interrupted'. Both halves are exactly what
-// RecoverCrashedTurns writes — they share settleStrandedItemsTx and the
-// same stop_reason string — because the fork is in the same position a
-// crash leftover is: its rows describe work no process will ever finish.
-// A mid-turn fork is a snapshot "as if interrupted right now", so it
-// settles the same way a real interrupt or the boot sweep would.
-//
-// Applied to the FORK ONLY, after the clone. The source thread is never
-// touched — it keeps streaming under its own live session, which is the
-// whole point of forking mid-turn.
-//
-// Backgrounded tool_call rows are exempt from the item flip (invariant
-// 24), and on the fork path that exemption is LOAD-BEARING: the clone
-// keeps every settled background launch — permanently `running` with
-// its completion sibling, the designed terminal shape — and flipping
-// one to errored here would rewrite finished work as interrupted. The
-// truly-live (siblingless) background rows the exemption would
-// otherwise strand never reach this settle: the clone drops them
-// transitively.
-//
-// Safe to run unconditionally: an idle source clones no open rows, so
-// both statements match nothing and the transaction is a no-op. Emits
-// nothing — the fork is returned through the RPC response and rendered
-// fresh, so there is no client holding a window of it to invalidate.
-func (s *Store) SettleForkedThreadAsInterrupted(threadID string, summarise func(string) string, now int64) error {
-	if threadID == "" {
-		return fmt.Errorf("store: settle forked thread: thread id is required")
+func (s *Store) linkPointerForkTx(tx *sql.Tx, forkID, sourceID string, cut ForkCut, summarise func(string) string, now int64) error {
+	var title string
+	var depth int
+	if err := tx.QueryRow(
+		`SELECT title, (SELECT COALESCE(MAX(depth), 0) FROM thread_fork_lineage WHERE thread_id = threads.id)
+		   FROM threads WHERE id = ?`, sourceID,
+	).Scan(&title, &depth); err != nil {
+		return fmt.Errorf("store: read fork source %s: %w", sourceID, err)
 	}
-	return s.bulkWriteItems(threadID, "fork settle", func(tx *sql.Tx, w *cardWrite) error {
-		if err := settleStrandedItemsTx(tx, w, nil, summarise, now); err != nil {
+	plan, err := resolveForkCutTx(tx, sourceID, cut)
+	if err != nil || plan.empty {
+		return err
+	}
+	if depth >= forkLineageMaxDepth {
+		return fmt.Errorf("%w: %s reads through %d levels", ErrForkChainTooDeep, sourceID, depth)
+	}
+	hidden, settle, err := forkUnsettledRowsTx(tx, sourceID, plan)
+	if err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(
+		`INSERT INTO thread_fork_lineage (thread_id, depth, ancestor_id, cut_turn_index, cut_item_index)
+		 VALUES (?, 1, ?, ?, ?)`, forkID, sourceID, plan.turn, plan.item,
+	); err != nil {
+		return fmt.Errorf("store: link fork %s: %w", forkID, err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO thread_fork_lineage (thread_id, depth, ancestor_id, cut_turn_index, cut_item_index)
+		 SELECT ?, depth + 1, ancestor_id,
+		        CASE WHEN (cut_turn_index, cut_item_index) < (?, ?) THEN cut_turn_index ELSE ? END,
+		        CASE WHEN (cut_turn_index, cut_item_index) < (?, ?) THEN cut_item_index ELSE ? END
+		   FROM thread_fork_lineage WHERE thread_id = ?`,
+		forkID, plan.turn, plan.item, plan.turn, plan.turn, plan.item, plan.item, sourceID,
+	); err != nil {
+		return fmt.Errorf("store: link fork %s through %s: %w", forkID, sourceID, err)
+	}
+	if _, err := tx.Exec(
+		`UPDATE threads SET fork_source_thread_id = ?, fork_cut_turn_index = ?, fork_cut_item_index = ?,
+		        fork_source_title = ?
+		  WHERE id = ?`, sourceID, plan.turn, plan.item, title, forkID,
+	); err != nil {
+		return fmt.Errorf("store: record fork %s source: %w", forkID, err)
+	}
+	if err := hideForkRowsTx(tx, forkID, hidden); err != nil {
+		return err
+	}
+
+	// Rows still running in the source are the source's live work. The
+	// fork owns a copy and settles it exactly as the crash sweep and a user
+	// interrupt do: the fork is a snapshot "as if interrupted right now".
+	// A settled summary can move an agent's card; the fork's writes carry
+	// no card and recompute those chains before it commits.
+	settled, err := inheritedRowsByID(tx, forkID, settle, allLevels)
+	if err != nil {
+		return err
+	}
+	if err := withHistoryBulkLoadTx(tx, forkID, func() error {
+		return copyInheritedRowsTx(tx, forkID, settled)
+	}); err != nil {
+		return err
+	}
+	w := s.bulkItemWrites(tx, forkID, false)
+	for _, row := range settled {
+		old, err := scanSubagentRow(tx.QueryRow(subagentRowSQL, forkID, row.id))
+		if err != nil {
+			return fmt.Errorf("store: read fork row %s/%s: %w", forkID, row.id, err)
+		}
+		next := old
+		next.status, next.summary = "errored", summarise(old.summary)
+		if err := w.updated(old, next); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(
-			`UPDATE turns
-			    SET completed_at = ?, stop_reason = 'interrupted'
-			  WHERE thread_id = ? AND completed_at IS NULL`,
-			now, threadID,
+			`UPDATE items SET status = 'errored', summary = ?, updated_at = ? WHERE thread_id = ? AND id = ?`,
+			next.summary, now, forkID, row.id,
 		); err != nil {
-			return fmt.Errorf("store: fork settle turns for %s: %w", threadID, err)
+			return fmt.Errorf("store: settle fork row %s/%s: %w", forkID, row.id, err)
 		}
-		return nil
-	})
+		if err := indexItemByIDTx(tx, forkID, row.id); err != nil {
+			return err
+		}
+	}
+
+	if err := copyForkTurnsTx(tx, forkID, sourceID, plan.turn, plan.turnsThrough); err != nil {
+		return err
+	}
+	if plan.trim {
+		if err := trimTurnSettleToSurvivorsTx(tx, forkID, plan.turn); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(
+		`UPDATE turns SET completed_at = ?, stop_reason = 'interrupted'
+		  WHERE thread_id = ? AND completed_at IS NULL`, now, forkID,
+	); err != nil {
+		return fmt.Errorf("store: settle fork %s turns: %w", forkID, err)
+	}
+	if err := copyForkQuestionsTx(tx, sourceID, forkID); err != nil {
+		return err
+	}
+	if err := placeForkDividerTx(tx, w, forkID, forkOrigin{SourceThreadID: sourceID, SourceTitle: title}, plan.turn, plan.item, now); err != nil {
+		return err
+	}
+	if err := recomputeTurnErrorsTx(tx, forkID); err != nil {
+		return err
+	}
+	return w.finish()
 }
 
-// CloneThreadHistoryBeforeItem copies into targetThreadID everything that
-// precedes the anchor item in PROVIDER order — the fork-side twin of
-// DeleteConversationFromItem's kept-set, for providers whose fork cuts
-// provider history at the message itself (Claude's session-file slice).
-// Codex forks stay on the turn-granular CloneThreadHistoryThroughTurn,
-// matching thread/fork's turn-boundary cut.
-//
-// Kept items: earlier turns, plus the anchor turn's rows before the anchor.
-// An interrupt-promoted anchor (itemmeta promotion marker) additionally
-// keeps its turn's content successors — everything but TOP-LEVEL user rows,
-// i.e. the interrupted round's streamed tail including parented wire-only
-// subagent prompts, which precede the promoted message in the provider
-// transcript; same-turn top-level user successors are later-queued messages
-// and stay behind. When the promoted row's echo stamped a provider-order
-// boundary (mid-loop consumption whose response persisted in the same
-// turn), content successors past it are that response and stay behind too. Turns rows clone where kept items exist;
-// whenever the cut excludes same-turn non-user content the cloned turn row's
-// settle metadata described it, so completed_at trims back to the last
-// cloned row and assistant_message_id clears (token usage kept) — the same
-// trim DeleteConversationFromItem applies.
-//
-// Every step — the anchor read, the item clone, the turn clone, the
-// excluded-content probe and the settle trim — runs in ONE transaction,
-// for the same reason CloneThreadHistoryThroughTurn does: a turn
-// completing between the item read and the turn clone would give the
-// fork a settled turn row over items snapshotted mid-stream. The fork
-// saga's rollback stack still wraps the call and deletes the fork thread
-// on any error.
-func (s *Store) CloneThreadHistoryBeforeItem(sourceThreadID, targetThreadID, anchorItemID string) (map[string]string, error) {
-	return s.inCloneTx(func(tx *sql.Tx) (map[string]string, error) {
-		var turnIndex, itemIndex int
-		var meta string
-		if err := tx.QueryRow(
-			`SELECT turn_index, item_index, meta FROM timeline_items WHERE thread_id = ? AND id = ?`,
-			sourceThreadID, anchorItemID,
-		).Scan(&turnIndex, &itemIndex, &meta); err != nil {
-			return nil, fmt.Errorf("store: clone history anchor lookup %s/%s: %w", sourceThreadID, anchorItemID, err)
+// resolveForkCutTx reads the cut from the source's timeline. Every cut is
+// placed right after the last row the fork inherits, so a row the source
+// adds later at a higher position is never inside it.
+func resolveForkCutTx(tx *sql.Tx, sourceID string, cut ForkCut) (forkCut, error) {
+	switch {
+	case cut.BeforeItemID != "":
+		return resolveBeforeItemCutTx(tx, sourceID, cut.BeforeItemID)
+	case cut.ThroughTurn != nil:
+		if *cut.ThroughTurn < 0 {
+			return forkCut{empty: true}, nil
 		}
-		promotion, err := itemmeta.DecodePromotionState(meta)
-		if err != nil {
-			// Corrupt anchor meta means the provider-order cut is undecidable;
-			// failing the fork beats silently cloning a set the session slice
-			// would disagree with.
-			return nil, fmt.Errorf("store: clone history anchor %s/%s: %w", sourceThreadID, anchorItemID, err)
-		}
+		plan, err := lastRowCutTx(tx, sourceID, "items.turn_index <= ?", *cut.ThroughTurn)
+		plan.turnsThrough = *cut.ThroughTurn
+		return plan, err
+	default:
+		plan, err := lastRowCutTx(tx, sourceID, "")
+		plan.turnsThrough = math.MaxInt32
+		return plan, err
+	}
+}
 
-		idMap, err := s.cloneThreadItemsTx(tx, sourceThreadID, targetThreadID, func(item Item) bool {
-			if item.TurnIndex != turnIndex {
-				return item.TurnIndex < turnIndex
+// timelineRow is one row's identity and position.
+type timelineRow struct {
+	id         string
+	turn, item int
+}
+
+// lastRowTx reads the last row of threadID's timeline that matches where:
+// of the whole timeline, or of one turn when turn is not negative.
+func lastRowTx(tx *sql.Tx, threadID string, turn int, where string, args ...any) (timelineRow, bool, error) {
+	sel := timelineSelection{
+		Columns:   timelineIDColumns,
+		Where:     where,
+		WhereArgs: args,
+		OrderBy:   "turn_index DESC, item_index DESC",
+		Limit:     1,
+	}
+	if turn >= 0 {
+		sel.Turn, sel.TurnArgs = "?", []any{turn}
+	}
+	query, binds, err := timelineArms(tx, threadID, sel)
+	if err != nil {
+		return timelineRow{}, false, err
+	}
+	var row timelineRow
+	err = tx.QueryRow(query, binds...).Scan(&row.id, &row.turn, &row.item)
+	if errors.Is(err, sql.ErrNoRows) {
+		return timelineRow{}, false, nil
+	}
+	if err != nil {
+		return timelineRow{}, false, fmt.Errorf("store: read last row of %s: %w", threadID, err)
+	}
+	return row, true, nil
+}
+
+// lastRowCutTx places a cut after the last row of threadID's timeline that
+// matches where.
+func lastRowCutTx(tx *sql.Tx, threadID, where string, args ...any) (forkCut, error) {
+	row, found, err := lastRowTx(tx, threadID, -1, where, args...)
+	if err != nil {
+		return forkCut{}, err
+	}
+	if !found {
+		return forkCut{empty: true}, nil
+	}
+	return forkCut{turn: row.turn, item: row.item + 1}, nil
+}
+
+// lastRowProbeTurns bounds lastRowThroughTurnTx's turn-by-turn search.
+const lastRowProbeTurns = 4
+
+// lastRowThroughTurnTx is lastRowTx over the turns at or below maxTurn.
+// The rows it looks for (a revert's last survivor, the row a divider links
+// to) sit in maxTurn or just below it, so the turns are probed newest
+// first through the turn-ranged arms, which read only the chunk
+// references that can hold the turn. After lastRowProbeTurns empty turns,
+// one ordered read covers the rest.
+func lastRowThroughTurnTx(tx *sql.Tx, threadID string, maxTurn int, where string, args ...any) (timelineRow, bool, error) {
+	floor := max(maxTurn-lastRowProbeTurns+1, 0)
+	for turn := maxTurn; turn >= floor; turn-- {
+		row, found, err := lastRowTx(tx, threadID, turn, where, args...)
+		if err != nil || found {
+			return row, found, err
+		}
+	}
+	if floor == 0 {
+		return timelineRow{}, false, nil
+	}
+	return lastRowTx(tx, threadID, -1, "items.turn_index < ? AND ("+where+")", append([]any{floor}, args...)...)
+}
+
+// resolveBeforeItemCutTx is the fork twin of DeleteConversationFromItem's
+// kept set: earlier turns, the anchor turn's rows before the anchor, and for
+// an interrupt-promoted anchor (itemmeta promotion marker) its turn's
+// content successors up to the echo boundary. Same-turn top-level user rows
+// after a promoted anchor are later-queued messages and stay behind; the
+// ones that sit among kept content are hidden. Whenever the cut excludes
+// same-turn content, the fork's copy of the turn row trims its settle
+// metadata, as the revert does.
+func resolveBeforeItemCutTx(tx *sql.Tx, sourceID, anchorID string) (forkCut, error) {
+	var turnIndex, itemIndex int
+	var meta string
+	anchor, anchorArgs, err := timelineArms(tx, sourceID, timelineSelection{
+		Columns: func(string, string) string {
+			return "items.turn_index AS turn_index, items.item_index AS item_index, items.meta AS meta"
+		},
+		KeyFirst: true,
+		Where:    "items.id = ?", WhereArgs: []any{anchorID},
+	})
+	if err != nil {
+		return forkCut{}, err
+	}
+	if err := tx.QueryRow(anchor, anchorArgs...).Scan(&turnIndex, &itemIndex, &meta); err != nil {
+		return forkCut{}, fmt.Errorf("store: fork anchor lookup %s/%s: %w", sourceID, anchorID, err)
+	}
+	promotion, err := itemmeta.DecodePromotionState(meta)
+	if err != nil {
+		// Corrupt anchor meta leaves the provider-order cut undecidable.
+		return forkCut{}, fmt.Errorf("store: fork anchor %s/%s: %w", sourceID, anchorID, err)
+	}
+
+	query, binds, err := timelineArms(tx, sourceID, timelineSelection{
+		Columns: func(string, string) string {
+			return `items.id AS id, items.turn_index AS turn_index, items.item_index AS item_index,
+			        items.role AS role, items.parent_id AS parent_id`
+		},
+		Where:     "items.turn_index = ? AND items.item_index > ?",
+		WhereArgs: []any{turnIndex, itemIndex},
+		OrderBy:   "turn_index, item_index",
+	})
+	if err != nil {
+		return forkCut{}, err
+	}
+	rows, err := tx.Query(query, binds...)
+	if err != nil {
+		return forkCut{}, fmt.Errorf("store: read fork anchor turn %s/%d: %w", sourceID, turnIndex, err)
+	}
+	type successor struct {
+		id   string
+		item int
+	}
+	var queued []successor
+	lastKept := itemIndex
+	kept := false
+	excluded := false
+	for rows.Next() {
+		var id, role, parent string
+		var turn, item int
+		if err := rows.Scan(&id, &turn, &item, &role, &parent); err != nil {
+			return forkCut{}, errors.Join(fmt.Errorf("store: scan fork anchor turn: %w", err), rows.Close())
+		}
+		topLevelUser := role == "user" && parent == ""
+		switch {
+		case !promotion.Promoted:
+			// Everything after a plain anchor stays behind; only content
+			// matters, for the trim.
+			excluded = excluded || !topLevelUser
+		case topLevelUser:
+			queued = append(queued, successor{id, item})
+		case promotion.HasEchoBoundary && item > promotion.EchoBoundary:
+			excluded = true
+		default:
+			kept = true
+			lastKept = item
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return forkCut{}, fmt.Errorf("store: iterate fork anchor turn: %w", err)
+	}
+
+	if !kept {
+		plan, err := lastRowCutTx(tx, sourceID, "(items.turn_index, items.item_index) < (?, ?)", turnIndex, itemIndex)
+		plan.turnsThrough = plan.turn
+		plan.trim = excluded && !plan.empty && plan.turn == turnIndex
+		return plan, err
+	}
+	plan := forkCut{turn: turnIndex, item: lastKept + 1, turnsThrough: turnIndex, trim: excluded}
+	plan.hidden = append(plan.hidden, anchorID)
+	for _, row := range queued {
+		if row.item < lastKept {
+			plan.hidden = append(plan.hidden, row.id)
+		}
+	}
+	return plan, nil
+}
+
+// forkUnsettledRowsTx decides what the fork does with the source's
+// unsettled rows below the cut, read through idx_items_unsettled, and
+// returns every row the fork hides:
+//
+//   - a background launch with no completion inside the cut is live work
+//     of the source's provider process, which the fork's own process can
+//     never finish. It is hidden (the fork shows no ghost row that can
+//     never complete).
+//   - a settled background launch (running forever beside its completion
+//     sibling, invariant 24) is finished history and stays.
+//   - every other running or streaming row is settled in the fork's copy.
+//
+// A background completion lands at the write head, possibly turns after its
+// launch, so a settled launch's completion is read unless the cut is at the
+// source's tail, where every row the source has is inside it. Unsettled
+// imported history is not examined: imported rows come from
+// a finished provider history. The hidden launches and the rows the cut
+// itself hides are expanded to everything that hangs off them
+// (forkHiddenClosureTx).
+func forkUnsettledRowsTx(tx *sql.Tx, sourceID string, plan forkCut) (hidden, settle []string, err error) {
+	rows, err := tx.Query(forkUnsettledRowsSQL, sourceID, plan.turn, plan.item, sourceID, plan.turn, plan.item)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: read unsettled rows of %s: %w", sourceID, err)
+	}
+	type unsettled struct {
+		id         string
+		background bool
+		kind       string
+		turn       int
+		live       bool
+	}
+	var found []unsettled
+	for rows.Next() {
+		var row unsettled
+		if err := rows.Scan(&row.id, &row.background, &row.kind, &row.turn, &row.live); err != nil {
+			return nil, nil, errors.Join(fmt.Errorf("store: scan unsettled row: %w", err), rows.Close())
+		}
+		found = append(found, row)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, nil, fmt.Errorf("store: iterate unsettled rows of %s: %w", sourceID, err)
+	}
+
+	tail, err := forkCutAtTailTx(tx, sourceID, plan)
+	if err != nil {
+		return nil, nil, err
+	}
+	var roots []string
+	candidates := make([]unsettled, 0, len(found))
+	for _, row := range found {
+		if !row.background {
+			candidates = append(candidates, row)
+			continue
+		}
+		completed := !row.live
+		if completed && !tail {
+			completion, completionArgs, err := timelineArms(tx, sourceID, timelineSelection{
+				Columns:   func(string, string) string { return "1" },
+				KeyFirst:  true,
+				Where:     "items.completion_of <> '' AND items.completion_of = ? AND (items.turn_index, items.item_index) < (?, ?)",
+				WhereArgs: []any{row.id, plan.turn, plan.item},
+			})
+			if err != nil {
+				return nil, nil, err
 			}
-			if item.ItemIndex < itemIndex {
-				return true
+			if err := tx.QueryRow(`SELECT EXISTS(`+completion+`)`, completionArgs...).Scan(&completed); err != nil {
+				return nil, nil, fmt.Errorf("store: read completion of %s/%s: %w", sourceID, row.id, err)
 			}
-			// Only TOP-LEVEL user successors are later-queued messages that
-			// stay behind; a parented wire-only user row (subagent prompt
-			// nested under its tool_call) is interrupted-tail content like any
-			// assistant row — the session slice retains it.
-			if !promotion.Promoted || (item.Role == "user" && item.ParentID == "") {
-				return false
-			}
-			return !promotion.HasEchoBoundary || item.ItemIndex <= promotion.EchoBoundary
-		})
+		}
+		if !completed {
+			roots = append(roots, row.id)
+			continue
+		}
+		if row.kind != "tool_call" {
+			candidates = append(candidates, row)
+		}
+	}
+	hidden, err = forkHiddenClosureTx(tx, sourceID, append(append([]string{}, plan.hidden...), roots...))
+	if err != nil {
+		return nil, nil, err
+	}
+	skip := make(map[string]bool, len(hidden))
+	for _, id := range hidden {
+		skip[id] = true
+	}
+	for _, row := range candidates {
+		if !skip[row.id] {
+			settle = append(settle, row.id)
+		}
+	}
+	return hidden, settle, nil
+}
+
+// forkUnsettledRowsSQL reads the running and streaming rows of a source's
+// timeline below a cut, its own and the ones it inherits, through
+// idx_items_unsettled. It binds (source, cut turn, cut item) twice.
+var forkUnsettledRowsSQL = `
+		SELECT items.id, items.is_background, items.kind, items.turn_index,
+		       COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
+		  FROM items
+		 WHERE items.thread_id = ? AND items.status IN ('running', 'streaming')
+		   AND (items.turn_index, items.item_index) < (?, ?)
+		UNION ALL
+		SELECT items.id, items.is_background, items.kind, items.turn_index,
+		       COALESCE(json_extract(items.meta, '$.live_background_active'), 1) != 0
+		  FROM thread_fork_lineage l
+		  CROSS JOIN items ON items.thread_id = l.ancestor_id
+		 WHERE l.thread_id = ? AND items.status IN ('running', 'streaming')
+		   AND (items.turn_index, items.item_index) < (?, ?)
+		   AND ` + inheritedItemVisibleSQL
+
+// forkCutAtTailTx reports whether the cut follows every row of the source's
+// timeline.
+func forkCutAtTailTx(tx *sql.Tx, sourceID string, plan forkCut) (bool, error) {
+	query, binds, err := timelineArms(tx, sourceID, timelineSelection{
+		Columns:   timelineIDColumns,
+		Where:     "(items.turn_index, items.item_index) >= (?, ?)",
+		WhereArgs: []any{plan.turn, plan.item},
+		OrderBy:   "turn_index, item_index",
+		Limit:     1,
+	})
+	if err != nil {
+		return false, err
+	}
+	var id string
+	var turn, item int
+	switch err := tx.QueryRow(query, binds...).Scan(&id, &turn, &item); {
+	case errors.Is(err, sql.ErrNoRows):
+		return true, nil
+	case err != nil:
+		return false, fmt.Errorf("store: read past the fork cut of %s: %w", sourceID, err)
+	}
+	return false, nil
+}
+
+// forkHiddenClosureTx expands the rows a fork hides to what hangs off them
+// in the source's timeline: rows under them through parent_id and rows that
+// complete them through completion_of, in any order. No row the fork shows
+// then references a row it hides.
+func forkHiddenClosureTx(tx *sql.Tx, sourceID string, roots []string) ([]string, error) {
+	seen := make(map[string]bool, len(roots))
+	var out []string
+	frontier := roots
+	for len(frontier) > 0 {
+		subtree, err := timelineSubtreeTx(tx, sourceID, frontier)
 		if err != nil {
 			return nil, err
 		}
+		var added []string
+		for _, id := range subtree {
+			if !seen[id] {
+				seen[id] = true
+				out = append(out, id)
+				added = append(added, id)
+			}
+		}
+		frontier = nil
+		for start := 0; start < len(added); start += forkCopyBatch {
+			clause, args := inClause("items.completion_of", added[start:min(start+forkCopyBatch, len(added))])
+			query, binds, err := timelineArms(tx, sourceID, timelineSelection{
+				Columns:   timelineIDColumns,
+				Where:     "items.completion_of <> '' AND " + clause,
+				WhereArgs: args,
+				OrderBy:   "turn_index, item_index",
+			})
+			if err != nil {
+				return nil, err
+			}
+			ids, err := queryIDs(tx, "SELECT id FROM ("+query+")", binds...)
+			if err != nil {
+				return nil, fmt.Errorf("store: read completions of hidden rows in %s: %w", sourceID, err)
+			}
+			for _, id := range ids {
+				if !seen[id] {
+					frontier = append(frontier, id)
+				}
+			}
+		}
+	}
+	return out, nil
+}
 
+// timelineSubtreeTx returns roots and every row under them in viewer's
+// timeline, walking parent_id through every physical arm.
+func timelineSubtreeTx(q sqlQueryer, viewer string, roots []string) ([]string, error) {
+	if len(roots) == 0 {
+		return nil, nil
+	}
+	walk, args, err := descendantsWalk(q, viewer, roots, func(string) string { return "1" })
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(walk+` SELECT id FROM rel`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: read subtree in %s: %w", viewer, err)
+	}
+	out := append([]string{}, roots...)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, errors.Join(fmt.Errorf("store: scan subtree row: %w", err), rows.Close())
+		}
+		out = append(out, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: iterate subtree in %s: %w", viewer, err)
+	}
+	return out, nil
+}
+
+// copyForkTurnsTx gives the fork its own row for the cut turn and for every
+// later turn through `through` the source knows about. turn_id is a global
+// key, so the copies take `<fork>:<turn_index>`; provider_turn_id is kept,
+// which is what lets a later revert or fork inside the fork resolve a Codex
+// `lastTurnId` without reading the source.
+func copyForkTurnsTx(tx *sql.Tx, forkID, sourceID string, from, through int) error {
+	if _, err := tx.Exec(
+		`INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at,
+		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id)
+		 SELECT ? || ':' || turn_index, ?, turn_index, started_at, completed_at,
+		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id
+		   FROM timeline_turns
+		  WHERE thread_id = ? AND turn_index >= ? AND turn_index <= ?`,
+		forkID, forkID, sourceID, from, through,
+	); err != nil {
+		return fmt.Errorf("store: copy fork %s turns: %w", forkID, err)
+	}
+	return nil
+}
+
+// copyForkQuestionsTx copies the question state of the rows the fork
+// shows. A submission still waiting for its message in the source did not
+// reach the fork's history, so it reopens.
+func copyForkQuestionsTx(tx *sql.Tx, sourceID, forkID string) error {
+	rows, err := tx.Query(`SELECT `+asyncQuestionColumns+` FROM async_questions
+		WHERE thread_id = ? ORDER BY created_at, rowid`, sourceID)
+	if err != nil {
+		return fmt.Errorf("store: read fork questions of %s: %w", sourceID, err)
+	}
+	var questions []AsyncQuestion
+	for rows.Next() {
+		q, err := scanAsyncQuestion(rows)
+		if err != nil {
+			return errors.Join(err, rows.Close())
+		}
+		questions = append(questions, q)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return fmt.Errorf("store: iterate fork questions of %s: %w", sourceID, err)
+	}
+	if len(questions) == 0 {
+		return nil
+	}
+	ids := make([]any, 0, 2*len(questions))
+	for _, q := range questions {
+		ids = append(ids, q.ItemID)
+		if q.UserItemID != "" {
+			ids = append(ids, q.UserItemID)
+		}
+	}
+	visibleQuery, visibleArgs, err := timelineArms(tx, forkID, timelineSelection{
+		Columns:  timelineIDColumns,
+		KeyFirst: true,
+		Where:    "items.id IN (" + placeholders(len(ids)) + ")", WhereArgs: ids,
+	})
+	if err != nil {
+		return err
+	}
+	shown, err := queryIDs(tx, `SELECT id FROM (`+visibleQuery+`)`, visibleArgs...)
+	if err != nil {
+		return fmt.Errorf("store: read fork question rows of %s: %w", forkID, err)
+	}
+	visible := make(map[string]bool, len(shown))
+	for _, id := range shown {
+		visible[id] = true
+	}
+	for _, q := range questions {
+		if !visible[q.ItemID] {
+			continue
+		}
+		if !visible[q.UserItemID] {
+			q.UserItemID = ""
+		}
+		if q.State == "submitted" || q.State == "restored" || (q.State == "delivered" && q.UserItemID == "") {
+			q.State, q.Answer, q.SendID, q.UserItemID = "unanswered", "", "", ""
+		}
+		if err := insertAsyncQuestionStateTx(tx, forkID, q); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// placeForkDividerTx writes the fork's divider at its cut, replacing one a
+// revert moved. It links to the last top-level row the fork inherits, which
+// is where "view in source" lands. The divider has no parent, so it counts
+// toward no card; w records it with the rest of the write.
+func placeForkDividerTx(tx *sql.Tx, w *cardWrite, forkID string, origin forkOrigin, turn, item int, now int64) error {
+	target, _, err := lastRowThroughTurnTx(tx, forkID, turn,
+		"items.parent_id = '' AND (items.turn_index, items.item_index) < (?, ?)", turn, item)
+	if err != nil {
+		return fmt.Errorf("store: read fork %s link target: %w", forkID, err)
+	}
+	origin.SourceItemID = target.id
+	origin.Kind = forkDividerToolName
+	meta, err := json.Marshal(origin)
+	if err != nil {
+		return fmt.Errorf("store: encode fork %s divider: %w", forkID, err)
+	}
+	id := forkDividerID(forkID)
+	if _, err := tx.Exec(`DELETE FROM items WHERE thread_id = ? AND id = ?`, forkID, id); err != nil {
+		return fmt.Errorf("store: clear fork %s divider: %w", forkID, err)
+	}
+	return insertItemTx(tx, w, Item{
+		ID:        id,
+		ThreadID:  forkID,
+		TurnIndex: turn,
+		ItemIndex: item,
+		Kind:      "notification",
+		Role:      "system",
+		Status:    "completed",
+		Summary:   "Forked from " + origin.SourceTitle,
+		ToolName:  forkDividerToolName,
+		Meta:      string(meta),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, fmt.Sprintf("store: write fork %s divider", forkID))
+}
+
+// retractInheritedTx is a fork's own revert of rows it inherits. The rows
+// are the source's, so they are not deleted: the fork's cut moves down to
+// the last surviving row, and an inherited row that survives the cut but is
+// reverted (a queued message among a promoted anchor's kept content) is
+// hidden. Rows between the new and the old cut are never copied; a thread
+// that forked from this one keeps reading them through its own lineage.
+// predicate selects the reverted rows with unqualified item columns, all at
+// or after fromTurn; every surviving row sits at or below maxTurn. The
+// caller deletes its own reverted rows first, after handing them off. The
+// stamps of the fork's copied anchors, whose subtrees can hold the rows
+// that leave, are recomputed by w's finish (forkCopyStampsTx).
+func retractInheritedTx(tx *sql.Tx, w *cardWrite, threadID string, fromTurn int, predicate string, args []any, maxTurn int) error {
+	var cutTurn, cutItem int
+	var source, title string
+	var forkedAt int64
+	var divider bool
+	err := tx.QueryRow(
+		`SELECT l.cut_turn_index, l.cut_item_index, t.fork_source_thread_id, t.fork_source_title, t.created_at,
+		        EXISTS(SELECT 1 FROM items WHERE items.thread_id = t.id AND items.id = ?)
+		   FROM thread_fork_lineage l JOIN threads t ON t.id = l.thread_id
+		  WHERE l.thread_id = ? AND l.depth = 1`, forkDividerID(threadID), threadID,
+	).Scan(&cutTurn, &cutItem, &source, &title, &forkedAt, &divider)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("store: read fork cut of %s: %w", threadID, err)
+	}
+	copies, err := forkCopyStampsTx(tx, threadID)
+	if err != nil {
+		return err
+	}
+	survivor, survives, err := lastRowThroughTurnTx(tx, threadID, maxTurn,
+		"NOT ("+predicate+") AND items.id <> ?", append(append([]any{}, args...), forkDividerID(threadID))...)
+	if err != nil {
+		return err
+	}
+	if !survives {
+		// Nothing inherited survives: the fork is an ordinary thread from
+		// here on. Its hides stay, since its forks read through them.
+		if _, err := tx.Exec(`DELETE FROM thread_fork_lineage WHERE thread_id = ?`, threadID); err != nil {
+			return fmt.Errorf("store: unlink fork %s: %w", threadID, err)
+		}
+		if _, err := tx.Exec(`DELETE FROM items WHERE thread_id = ? AND id = ?`, threadID, forkDividerID(threadID)); err != nil {
+			return fmt.Errorf("store: clear fork %s divider: %w", threadID, err)
+		}
+		return forkViewChangedTx(tx, w, threadID, copies)
+	}
+	// The cut sits just after the survivor.
+	lowered := survivor.turn < cutTurn || (survivor.turn == cutTurn && survivor.item+1 < cutItem)
+	newTurn, newItem := cutTurn, cutItem
+	if lowered {
+		newTurn, newItem = survivor.turn, survivor.item+1
+	}
+	reverted, err := queryInheritedRows(tx, threadID, allLevels, timelineSelection{
+		Turn: "?", TurnArgs: []any{fromTurn}, FromTurn: true,
+		Where:     "(" + predicate + ") AND (items.turn_index, items.item_index) < (?, ?)",
+		WhereArgs: append(append([]any{}, args...), newTurn, newItem),
+	})
+	if err != nil {
+		return err
+	}
+	if !lowered && len(reverted) == 0 && divider {
+		return nil
+	}
+	if len(reverted) > 0 {
+		ids := make([]string, len(reverted))
+		for i, row := range reverted {
+			ids[i] = row.id
+		}
+		if err := handOffIDsTx(tx, threadID, ids); err != nil {
+			return err
+		}
+		if err := hideForkRowsTx(tx, threadID, ids); err != nil {
+			return err
+		}
+	}
+	if lowered {
+		// The fork owns the row of the turn its cut falls in.
 		if _, err := tx.Exec(
 			`INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at,
 			    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id)
 			 SELECT ? || ':' || turn_index, ?, turn_index, started_at, completed_at,
 			    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id
-			 FROM turns
-			 WHERE thread_id = ?
-			   AND turn_index IN (SELECT DISTINCT turn_index FROM timeline_items WHERE thread_id = ?)`,
-			targetThreadID, targetThreadID, sourceThreadID, targetThreadID,
+			   FROM timeline_turns t
+			  WHERE t.thread_id = ? AND t.turn_index = ?
+			    AND NOT EXISTS (SELECT 1 FROM turns own WHERE own.thread_id = ? AND own.turn_index = t.turn_index)`,
+			threadID, threadID, threadID, newTurn, threadID,
 		); err != nil {
-			return nil, fmt.Errorf("store: clone turns before item into thread %s: %w", targetThreadID, err)
+			return fmt.Errorf("store: copy fork %s cut turn: %w", threadID, err)
 		}
+		if _, err := tx.Exec(
+			`UPDATE thread_fork_lineage SET cut_turn_index = ?, cut_item_index = ?
+			  WHERE thread_id = ? AND (cut_turn_index, cut_item_index) > (?, ?)`,
+			newTurn, newItem, threadID, newTurn, newItem,
+		); err != nil {
+			return fmt.Errorf("store: lower fork %s cut: %w", threadID, err)
+		}
+		if _, err := tx.Exec(
+			`UPDATE threads SET fork_cut_turn_index = ?, fork_cut_item_index = ? WHERE id = ?`,
+			newTurn, newItem, threadID,
+		); err != nil {
+			return fmt.Errorf("store: record fork %s cut: %w", threadID, err)
+		}
+	}
+	// The caller's delete takes the divider with it when the revert reaches
+	// the cut; it goes back at the (possibly lowered) cut, dated to the fork.
+	if lowered || !divider {
+		if err := placeForkDividerTx(tx, w, threadID, forkOrigin{SourceThreadID: source, SourceTitle: title}, newTurn, newItem, forkedAt); err != nil {
+			return err
+		}
+	}
+	return forkViewChangedTx(tx, w, threadID, copies)
+}
 
-		// Same content probe as DeleteConversationFromItem's, evaluated on the
-		// SOURCE rows the keep predicate excluded: content rows (anything but
-		// top-level user rows) after the anchor (plain) or past the echo
-		// boundary (promoted).
-		excludedContent := false
-		probeAfter := -1
-		switch {
-		case !promotion.Promoted:
-			probeAfter = itemIndex
-		case promotion.HasEchoBoundary:
-			probeAfter = promotion.EchoBoundary
+// forkViewChangedTx records a change to which inherited rows threadID
+// shows: its stamps move (bumpForkViewTx), its turn-error pair is
+// recomputed, which no item or turn trigger does for rows it reads through
+// its lineage, and w's finish recomputes the stamps of copies, the copied
+// anchors forkCopyStampsTx listed before the change.
+func forkViewChangedTx(tx *sql.Tx, w *cardWrite, threadID string, copies []string) error {
+	if err := bumpForkViewTx(tx, threadID); err != nil {
+		return err
+	}
+	if err := recomputeTurnErrorsTx(tx, threadID); err != nil {
+		return err
+	}
+	w.subtreesChanged(copies)
+	return nil
+}
+
+// forkCopyStampsSQL lists the stamped rows below a pointer fork's cut. Only
+// a copy of an inherited row sits there, and a copy is the only own row
+// whose subtree can hold inherited rows, so these are the stamps a change
+// to the inherited rows the fork shows can move.
+const forkCopyStampsSQL = `SELECT s.item_id FROM thread_fork_lineage l
+  CROSS JOIN subagent_aggregates s ON s.thread_id = l.thread_id
+  CROSS JOIN items i ON i.thread_id = s.thread_id AND i.id = s.item_id
+ WHERE l.thread_id = ? AND l.depth = 1
+   AND (i.turn_index, i.item_index) < (l.cut_turn_index, l.cut_item_index)`
+
+// forkCopyStampsTx runs forkCopyStampsSQL, before the change it serves
+// moves the cut.
+func forkCopyStampsTx(q sqlQueryer, threadID string) ([]string, error) {
+	ids, err := queryIDs(q, forkCopyStampsSQL, threadID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list copied anchors of fork %s: %w", threadID, err)
+	}
+	return ids, nil
+}
+
+// bumpForkViewTx records a change to which inherited rows a thread shows.
+// Rows left the timeline, so the epoch moves with the revision.
+func bumpForkViewTx(tx *sql.Tx, threadID string) error {
+	if _, err := tx.Exec(
+		`UPDATE threads SET history_rev = history_rev + 1, history_epoch = history_epoch + 1 WHERE id = ?`, threadID,
+	); err != nil {
+		return fmt.Errorf("store: stamp fork %s view: %w", threadID, err)
+	}
+	return nil
+}
+
+// hideInheritedItemTx removes one inherited row from threadID's timeline.
+// It reports false when threadID does not show itemID as inherited.
+func hideInheritedItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) (bool, error) {
+	rows, err := inheritedRowsByID(tx, threadID, []string{itemID}, allLevels)
+	if err != nil || len(rows) == 0 {
+		return false, err
+	}
+	copies, err := forkCopyStampsTx(tx, threadID)
+	if err != nil {
+		return false, err
+	}
+	if err := handOffIDsTx(tx, threadID, []string{itemID}); err != nil {
+		return false, err
+	}
+	if err := hideForkRowsTx(tx, threadID, []string{itemID}); err != nil {
+		return false, err
+	}
+	return true, forkViewChangedTx(tx, w, threadID, copies)
+}
+
+// detachForkDescendants runs detachForkDescendantsTx in its own
+// transaction.
+func (s *Store) detachForkDescendants(threadID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin detach forks of %s: %w", threadID, err)
+	}
+	defer tx.Rollback()
+	if err := s.detachForkDescendantsTx(tx, threadID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit detach forks of %s: %w", threadID, err)
+	}
+	return nil
+}
+
+// detachForkDescendantsTx runs before threadID's row is deleted. The history
+// belongs to threadID, so it goes with it: every fork that reads through
+// threadID stops at the level before it. The divider of each fork made from
+// threadID, including one that has since materialized and every copy of it,
+// records that the source is gone and its title, so rendering it never has
+// to look for the source. A fork that stops reading rows recomputes what
+// its copied anchors count and its turn-error pair (forkViewChangedTx).
+func (s *Store) detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
+	var title string
+	if err := tx.QueryRow(`SELECT title FROM threads WHERE id = ?`, threadID).Scan(&title); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
 		}
-		if probeAfter >= 0 {
-			if err := tx.QueryRow(
-				`SELECT EXISTS(SELECT 1 FROM timeline_items
-				  WHERE thread_id = ? AND turn_index = ? AND (role != 'user' OR parent_id != '') AND item_index > ?)`,
-				sourceThreadID, turnIndex, probeAfter,
-			).Scan(&excludedContent); err != nil {
-				return nil, fmt.Errorf("store: probe excluded turn content for fork %s: %w", targetThreadID, err)
-			}
+		return fmt.Errorf("store: read fork source %s: %w", threadID, err)
+	}
+	rows, err := tx.Query(
+		`SELECT DISTINCT thread_id FROM thread_fork_lineage WHERE ancestor_id = ?
+		 UNION
+		 SELECT id FROM threads WHERE fork_source_thread_id = ? AND fork_source_thread_id <> ''`,
+		threadID, threadID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: list forks of %s: %w", threadID, err)
+	}
+	var affected []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return errors.Join(fmt.Errorf("store: scan fork of %s: %w", threadID, err), rows.Close())
 		}
-		if excludedContent {
-			var lastKept sql.NullInt64
-			if err := tx.QueryRow(
-				`SELECT MAX(created_at) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`,
-				targetThreadID, turnIndex,
-			).Scan(&lastKept); err != nil {
-				return nil, fmt.Errorf("store: cloned turn survivors lookup for fork %s: %w", targetThreadID, err)
-			}
-			if lastKept.Valid {
-				if _, err := tx.Exec(
-					`UPDATE turns SET completed_at = MIN(completed_at, ?), assistant_message_id = ''
-					 WHERE thread_id = ? AND turn_index = ? AND completed_at IS NOT NULL`,
-					lastKept.Int64, targetThreadID, turnIndex,
-				); err != nil {
-					return nil, fmt.Errorf("store: trim cloned anchor turn settle for thread %s: %w", targetThreadID, err)
-				}
-			}
+		affected = append(affected, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return fmt.Errorf("store: iterate forks of %s: %w", threadID, err)
+	}
+	if len(affected) == 0 {
+		return nil
+	}
+	copies := make(map[string][]string, len(affected))
+	for _, id := range affected {
+		if copies[id], err = forkCopyStampsTx(tx, id); err != nil {
+			return err
 		}
-		return idMap, nil
-	})
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM thread_fork_lineage
+		  WHERE EXISTS (SELECT 1 FROM thread_fork_lineage gone
+		                 WHERE gone.ancestor_id = ? AND gone.thread_id = thread_fork_lineage.thread_id
+		                   AND thread_fork_lineage.depth >= gone.depth)`, threadID,
+	); err != nil {
+		return fmt.Errorf("store: detach forks of %s: %w", threadID, err)
+	}
+	if _, err := tx.Exec(
+		`UPDATE threads SET fork_source_title = ? WHERE fork_source_thread_id = ? AND fork_source_thread_id <> ''`,
+		title, threadID,
+	); err != nil {
+		return fmt.Errorf("store: record deleted fork source %s: %w", threadID, err)
+	}
+	// A fork's divider is also copied into the forks made from it when it
+	// is handed off or materialized, so each thread descended from a fork
+	// of threadID is checked for a copy, by primary key.
+	if _, err := tx.Exec(
+		`WITH RECURSIVE forks(id) AS (
+		   SELECT id FROM threads WHERE fork_source_thread_id = ?1 AND fork_source_thread_id <> ''
+		 ), holders(id) AS (
+		   SELECT id FROM forks
+		   UNION
+		   SELECT t.id FROM holders h JOIN threads t ON t.fork_source_thread_id = h.id AND t.fork_source_thread_id <> ''
+		 )
+		 UPDATE items
+		    SET meta = json_set(CASE WHEN json_valid(meta) THEN meta ELSE '{}' END,
+		                        '$.sourceDeleted', json('true'), '$.sourceTitle', ?2)
+		  WHERE (thread_id, id) IN (SELECT holders.id, 'fork-origin-' || forks.id FROM holders CROSS JOIN forks)
+		    AND tool_name = '`+forkDividerToolName+`'`,
+		threadID, title,
+	); err != nil {
+		return fmt.Errorf("store: mark fork dividers of %s: %w", threadID, err)
+	}
+	for _, id := range affected {
+		w := s.bulkItemWrites(tx, id, false)
+		if err := forkViewChangedTx(tx, w, id, copies[id]); err != nil {
+			return err
+		}
+		if err := w.finish(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// materializeForkBatch bounds how many inherited rows one materialization
+// transaction copies.
+const materializeForkBatch = 500
+
+// MaterializeForkHistory makes threadID own every row it reads from its
+// ancestors, then drops its lineage. The transfer export runs it, because
+// a conversation that leaves this database must carry its history.
+//
+// It copies in bounded transactions. Each batch replaces inherited rows
+// with identical own rows, so the timeline reads the same between batches
+// and nothing waits on the whole copy. The last transaction copies the
+// turn rows and drops the lineage. Every copied row brings the ownership
+// of the attachments it shows (copyInheritedRowsTx).
+func (s *Store) MaterializeForkHistory(ctx context.Context, threadID string) error {
+	depth, err := forkLineageDepth(s.reader(), threadID)
+	if err != nil || depth == 0 {
+		return err
+	}
+	pending, err := queryInheritedRows(s.reader(), threadID, allLevels, timelineSelection{})
+	if err != nil {
+		return err
+	}
+	for start := 0; start < len(pending); start += materializeForkBatch {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ids := make([]string, 0, materializeForkBatch)
+		for _, row := range pending[start:min(start+materializeForkBatch, len(pending))] {
+			ids = append(ids, row.id)
+		}
+		if err := s.materializeForkRows(threadID, ids); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.finishForkMaterialization(threadID)
+}
+
+func (s *Store) materializeForkRows(threadID string, ids []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin materialize %s: %w", threadID, err)
+	}
+	defer tx.Rollback()
+	rows, err := inheritedRowsByID(tx, threadID, ids, allLevels)
+	if err != nil {
+		return err
+	}
+	if err := copyInheritedRowsStampedTx(tx, threadID, rows); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit materialize %s: %w", threadID, err)
+	}
+	return nil
+}
+
+func (s *Store) finishForkMaterialization(threadID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin finish materialize %s: %w", threadID, err)
+	}
+	defer tx.Rollback()
+	// Batches only ever shrink what is left to copy: a write between them
+	// copies or hides rows, and nothing new appears below a cut. This read
+	// runs in the transaction that drops the lineage, so no inherited row
+	// is left behind whatever ran between batches.
+	rest, err := queryInheritedRows(tx, threadID, allLevels, timelineSelection{})
+	if err != nil {
+		return err
+	}
+	if err := copyInheritedRowsStampedTx(tx, threadID, rest); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO turns (turn_id, thread_id, turn_index, started_at, completed_at,
+		    stop_reason, assistant_message_id, token_usage_json, error_message, provider_turn_id)
+		 SELECT ? || ':' || t.turn_index, ?, t.turn_index, t.started_at, t.completed_at,
+		    t.stop_reason, t.assistant_message_id, t.token_usage_json, t.error_message, t.provider_turn_id
+		   FROM timeline_turns t
+		  WHERE t.thread_id = ?
+		    AND NOT EXISTS (SELECT 1 FROM turns own WHERE own.thread_id = ? AND own.turn_index = t.turn_index)`,
+		threadID, threadID, threadID, threadID,
+	); err != nil {
+		return fmt.Errorf("store: materialize %s turns: %w", threadID, err)
+	}
+	// The thread's hides stay: a thread forked from it reads its ancestors
+	// through the levels beyond it, filtered by those hides, including rows
+	// below a cut this thread lowered and therefore did not copy.
+	if _, err := tx.Exec(`DELETE FROM thread_fork_lineage WHERE thread_id = ?`, threadID); err != nil {
+		return fmt.Errorf("store: unlink materialized %s: %w", threadID, err)
+	}
+	if err := bumpHistoryRevTx(tx, threadID, "store: stamp materialized fork"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit finish materialize %s: %w", threadID, err)
+	}
+	return nil
 }

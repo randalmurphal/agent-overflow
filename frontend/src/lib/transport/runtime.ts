@@ -343,18 +343,19 @@ export const Create = {
 // backend attached afterwards. The handler receives `{name, data}` to
 // match Wails' real runtime contract — the events.ts store and other
 // consumers expect the wrapped shape — plus `origin`, the connection the
-// event arrived on.
+// event arrived on, and the frame's own `sequence` and `replayed` mark.
 //
 // The origin comes from the DELIVERING handle rather than from one
 // resolved at subscribe time, which is the whole difference between one
 // backend and several: the stamp used to be a property of the app and is
-// now a property of the delivery. Stamping stays free — each handle hands
-// back the same origin object until its identity moves, so this adds a
-// property to an envelope that was already being allocated per event.
+// now a property of the delivery. Stamping stays free: each handle hands
+// back the same origin object until its identity moves, and the frame's
+// facts are fields of the envelope that is allocated per event anyway,
+// so no frame mints an origin of its own.
 export const Events = {
   On(
     name: string,
-    handler: (ev: { name: string; data: unknown; origin?: EventOrigin }) => void,
+    handler: (ev: { name: string; data: unknown; origin?: EventOrigin; sequence?: number; replayed?: boolean }) => void,
   ): () => void {
     return subscribeEveryBackend(name, (data, transport, sequence, replayed) => {
       // threadId is the shared routing field on thread-scoped runtime events.
@@ -362,13 +363,7 @@ export const Events = {
       // newer owner can introduce itself before its runtime events arrive.
       const threadId = (data as { threadId?: unknown } | null)?.threadId;
       if (typeof threadId === 'string' && !currentThreadEvent(threadId, backendKeyForOrigin(transport.origin.backendId))) return;
-      // The handle's own origin object is reused whole while neither the
-      // sequence nor the replay mark has anything to add, which is the
-      // steady state: stamping stays allocation-free for every live frame.
-      const stamped = sequence === undefined && !replayed
-        ? transport.origin
-        : { ...transport.origin, ...(sequence === undefined ? {} : { sequence }), ...(replayed ? { replayed: true } : {}) };
-      handler({ name, data, origin: stamped });
+      handler({ name, data, origin: transport.origin, sequence, replayed });
     });
   },
   Emit(_event: { name: string; data: unknown }): void {

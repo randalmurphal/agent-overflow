@@ -21,6 +21,8 @@ import {
 } from '../../lib/stores/paneLayout.svelte';
 import type { Thread } from '../../lib/types/models';
 import type { PaneLayoutPersistedSettings } from '../../lib/types/settings';
+import { __setTransportStatusForTest } from '../../lib/stores/transportStatus.svelte';
+import { DisconnectedError, type TransportStatusSnapshot } from '../../lib/transport/wsClient';
 
 beforeAll(installAnimateShim);
 
@@ -149,6 +151,91 @@ describe('App integration - pane restoration', () => {
     window.dispatchEvent(new Event('pagehide'));
 
     expect(uiState.paneLayout).toEqual(savedLayout);
+  });
+
+  describe('while the computer is starting', () => {
+    const starting: TransportStatusSnapshot = {
+      status: 'starting',
+      nextAttemptAt: null,
+      startup: {
+        phase: 'store.migrate',
+        detail: 'Applying migration 3 of 7 add_index',
+        step: 3,
+        steps: 7,
+        elapsedMs: 72_000,
+        updatingTo: '',
+      },
+    };
+
+    function installStartingBackend(left: Thread): { answer: () => void; held: () => Promise<void> } {
+      let up = false;
+      let refusals = 0;
+      installAppDefaults();
+      // What the client rejects every call with until the backend is ready.
+      setBindingMock('ListThreads', async () => {
+        if (!up) {
+          refusals++;
+          throw new DisconnectedError('backend is starting');
+        }
+        return [left];
+      });
+      seedSidebarProject([left]);
+      installThreadViewDefaults();
+      installComposerDefaults(left.id);
+      installUIStateWithPaneLayout(savePaneLayout([
+        { paneId: 'left', threadId: left.id, widthPx: 840 },
+      ], 'left'));
+      return {
+        answer: () => { up = true; },
+        // The startup restore has read the catalog and settled on its refusal.
+        held: async () => {
+          await waitFor(() => expect(refusals).toBeGreaterThan(0));
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          await flush();
+        },
+      };
+    }
+
+    it('holds the startup screen with the boot phase, then restores saved panes on connect', async () => {
+      const left = makeThread({ id: 'left-thread', title: 'Left Thread' });
+      const backend = installStartingBackend(left);
+      __setTransportStatusForTest(starting);
+
+      const rendered = render(App);
+      await backend.held();
+      expect(rendered.getByTestId('startup-screen-phase')).toHaveTextContent('Applying migration 3 of 7 add_index');
+      expect(rendered.getByTestId('startup-screen-meta')).toHaveTextContent('Step 3 of 7 · 1:12 elapsed');
+      expect(rendered.queryByTestId('pane-host')).toBeNull();
+      expect(rendered.queryByTestId('pane-host-empty')).toBeNull();
+
+      // A later report does not release the hold.
+      __setTransportStatusForTest({ ...starting, startup: { ...starting.startup!, step: 4, elapsedMs: 80_000 } });
+      await flush();
+      expect(rendered.queryByTestId('pane-host')).toBeNull();
+      expect(rendered.queryByTestId('pane-host-empty')).toBeNull();
+
+      backend.answer();
+      __setTransportStatusForTest({ status: 'connected', nextAttemptAt: null });
+      await waitFor(() => expect(rendered.getByTestId('pane-host')).toBeInTheDocument());
+      expect(getPaneLayoutItems().map((item) => item.paneId)).toEqual(['left']);
+      expect(rendered.queryByTestId('startup-screen')).toBeNull();
+    });
+
+    it('releases the screen as offline when the computer stops starting without connecting', async () => {
+      const left = makeThread({ id: 'left-thread', title: 'Left Thread' });
+      const backend = installStartingBackend(left);
+      __setTransportStatusForTest(starting);
+
+      const rendered = render(App);
+      await backend.held();
+      expect(rendered.getByTestId('startup-screen-phase')).toBeInTheDocument();
+      expect(rendered.queryByTestId('pane-host')).toBeNull();
+      expect(rendered.queryByTestId('pane-host-empty')).toBeNull();
+
+      __setTransportStatusForTest({ status: 'reconnecting', nextAttemptAt: Date.now() + 1000 });
+      await waitFor(() => expect(rendered.queryByTestId('startup-screen')).toBeNull());
+      expect(rendered.queryByTestId('pane-host-empty') ?? rendered.queryByTestId('pane-host')).not.toBeNull();
+    });
   });
 
   it('does not rewrite pane layout on pagehide when there is no pending layout write', async () => {

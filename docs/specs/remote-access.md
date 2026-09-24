@@ -1637,8 +1637,9 @@ compatibility with the installed supervisor is checked *before*
 anything is touched; the store is **snapshotted while quiescent**
 before migrations; the new version boots fully as a trial — runs
 migrations, binds listeners, starts everything — but parks at an
-activation gate until it reports prepared within a hard time budget;
-only then does the supervisor durably commit. Failure or timeout
+activation gate until it reports prepared, judged by the progress it
+reports under a ceiling ([app update](app-update.md#progress-and-the-stall-rule));
+only then does the supervisor durably commit. Failure, a stall or the ceiling
 restores the snapshot and restarts the old version, with a durable
 restore marker so a supervisor crash mid-rollback resumes correctly.
 The update carries an id the client correlates through its reconnect,
@@ -2310,7 +2311,7 @@ Prerequisite sweep, valuable standalone:
   by tag, so it replaces itself) and NO CUE: a banner replayed after a
   reconnect is still true, while a cue names a moment that has already
   passed — the same argument that makes `notification:sound` ephemeral.
-  The transport marks it: `EventOrigin.replayed` is set for frames
+  The transport marks it: the `replayed` delivery argument is set for frames
   drained out of the reconnect replay window, deliberately including live
   frames that arrived during it, because "may have been missed" is the
   honest answer for those. Retractions are gated by neither preferences

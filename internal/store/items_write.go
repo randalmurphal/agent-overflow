@@ -70,11 +70,14 @@ func classifyStreamingUpdateMissTx(tx *sql.Tx, threadID string, id string, opera
 	// status='streaming', any existing row is settled; only absence means
 	// callers should fall back to creating the row.
 	var exists int
-	query, args := timelineArms(threadID, timelineSelection{
+	query, args, err := timelineArms(tx, threadID, timelineSelection{
 		Columns:  func(string, string) string { return "1" },
 		KeyFirst: true,
 		Where:    "items.id = ?", WhereArgs: []any{id},
 	})
+	if err != nil {
+		return err
+	}
 	probeErr := tx.QueryRow(query, args...).Scan(&exists)
 	if errors.Is(probeErr, sql.ErrNoRows) {
 		return sql.ErrNoRows
@@ -132,7 +135,7 @@ func (s *Store) InsertItem(item Item) error {
 //
 // Use this when the caller's intent is "add a new timeline entry" and any
 // monotonic index is acceptable. Use InsertItem when the caller must
-// control the exact index (e.g. CloneThreadItems preserving source
+// control the exact index (e.g. a transfer import preserving source
 // ordering, migrations replaying a fixed sequence).
 func (s *Store) AppendItem(item Item) (int, error) {
 	applyItemDefaults(&item)
@@ -402,22 +405,23 @@ var itemUpsertLookupSQL = `SELECT ` + subagentRowColumns("") + `, created_at FRO
 // runs inside the same transaction so concurrent upserts can't both see
 // "absent" and race to insert.
 func writeItemWithIndexFn(tx *sql.Tx, w *cardWrite, item *Item, indexFn func(*sql.Tx, string, int, string) (int, error)) error {
+	if err := handOffIDsTx(tx, item.ThreadID, []string{item.ID}); err != nil {
+		return fmt.Errorf("store: upsert item hand off %s/%s: %w", item.ThreadID, item.ID, err)
+	}
 	var createdAt int64
 	old, err := scanSubagentRow(tx.QueryRow(itemUpsertLookupSQL, item.ThreadID, item.ID), &createdAt)
-	switch {
-	case err == nil:
-	case errors.Is(err, sql.ErrNoRows):
-		localized, err := localizeImportedItemTx(tx, item.ThreadID, item.ID, "store: upsert item")
-		if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
+		// An imported or inherited row with this id is the same logical
+		// row: the thread takes its own copy and the upsert updates it.
+		switch err := ownShownItemTx(tx, item.ThreadID, item.ID, "store: upsert item"); {
+		case errors.Is(err, sql.ErrNoRows):
+			return insertNewItem(tx, w, item, indexFn)
+		case err != nil:
 			return err
 		}
-		if !localized {
-			return insertNewItem(tx, w, item, indexFn)
-		}
-		if old, err = scanSubagentRow(tx.QueryRow(itemUpsertLookupSQL, item.ThreadID, item.ID), &createdAt); err != nil {
-			return fmt.Errorf("store: read localized item %s: %w", item.ID, err)
-		}
-	default:
+		old, err = scanSubagentRow(tx.QueryRow(itemUpsertLookupSQL, item.ThreadID, item.ID), &createdAt)
+	}
+	if err != nil {
 		return fmt.Errorf("store: upsert item lookup %s: %w", item.ID, err)
 	}
 	item.ItemIndex = old.index
@@ -649,8 +653,16 @@ func updateItemMetaTx(tx *sql.Tx, w *cardWrite, old subagentRow, meta string, up
 // transaction: one chain read from its parent.
 func (s *Store) DeleteThreadItem(threadID, itemID string) error {
 	return s.writeItems(threadID, nil, "delete item "+threadID+"/"+itemID, func(tx *sql.Tx, w *cardWrite) error {
+		if err := handOffIDsTx(tx, threadID, []string{itemID}); err != nil {
+			return err
+		}
 		sharedDeleted, err := deleteSharedHistoryItemTx(tx, w, threadID, itemID)
 		if err != nil || sharedDeleted > 0 {
+			return err
+		}
+		// An inherited row belongs to the fork's source; the fork hides it.
+		hidden, err := hideInheritedItemTx(tx, w, threadID, itemID)
+		if err != nil || hidden {
 			return err
 		}
 		n, err := deleteItemRowsTx(tx, w, `id = ?`, []any{itemID}, fmt.Sprintf("store: delete item %s/%s", threadID, itemID))
@@ -709,6 +721,9 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 		if err := cutAsyncQuestionsTx(tx, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex}); err != nil {
 			return err
 		}
+		if err := handOffOwnRowsTx(tx, threadID, fromTurnIndex, ""); err != nil {
+			return err
+		}
 		sharedDeleted, err := deleteSharedHistoryFromTurnTx(tx, w, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex})
 		if err != nil {
 			return err
@@ -719,6 +734,9 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 			return err
 		}
 		deleted = int(n + sharedDeleted)
+		if err := retractInheritedTx(tx, w, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex}, fromTurnIndex-1); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(
 			`DELETE FROM turns WHERE thread_id = ? AND turn_index >= ?`,
 			threadID, fromTurnIndex,
@@ -801,11 +819,14 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, H
 func deleteConversationFromItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) ([]string, HistoryStamp, error) {
 	var turnIndex, itemIndex int
 	var meta string
-	anchorQuery, anchorArgs := timelineArms(threadID, timelineSelection{
+	anchorQuery, anchorArgs, err := timelineArms(tx, threadID, timelineSelection{
 		Columns:  func(string, string) string { return "items.turn_index, items.item_index, items.meta" },
 		KeyFirst: true,
 		Where:    "items.id = ?", WhereArgs: []any{itemID},
 	})
+	if err != nil {
+		return nil, HistoryStamp{}, err
+	}
 	if err := tx.QueryRow(anchorQuery, anchorArgs...).Scan(&turnIndex, &itemIndex, &meta); err != nil {
 		return nil, HistoryStamp{}, fmt.Errorf("store: delete conversation from item lookup %s/%s: %w", threadID, itemID, err)
 	}
@@ -848,13 +869,17 @@ func deleteConversationFromItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID str
 	}
 	deletedTurnContent := false
 	if contentPredicate != "" {
-		contentQuery, args := timelineArms(threadID, timelineSelection{
+		// A fork's divider is not turn content.
+		contentQuery, args, err := timelineArms(tx, threadID, timelineSelection{
 			Columns:   func(string, string) string { return "1" },
 			Turn:      "?",
 			TurnArgs:  []any{turnIndex},
-			Where:     `(items.role != 'user' OR items.parent_id != '') AND ` + contentPredicate,
-			WhereArgs: contentArgs,
+			Where:     `(items.role != 'user' OR items.parent_id != '') AND ` + contentPredicate + ` AND items.id <> ?`,
+			WhereArgs: append(contentArgs, forkDividerID(threadID)),
 		})
+		if err != nil {
+			return nil, HistoryStamp{}, err
+		}
 		if err := tx.QueryRow(`SELECT EXISTS(`+contentQuery+`)`, args...).Scan(&deletedTurnContent); err != nil {
 			return nil, HistoryStamp{}, fmt.Errorf("store: probe deleted turn content for thread %s: %w", threadID, err)
 		}
@@ -862,11 +887,19 @@ func deleteConversationFromItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID str
 	if err := cutAsyncQuestionsTx(tx, threadID, turnIndex, itemPredicate, itemArgs[1:]); err != nil {
 		return nil, HistoryStamp{}, err
 	}
+	if err := handOffOwnRowsTx(tx, threadID, turnIndex, itemPredicate, itemArgs[1:]...); err != nil {
+		return nil, HistoryStamp{}, err
+	}
 	if _, err := deleteSharedHistoryFromTurnTx(tx, w, threadID, turnIndex, itemPredicate, itemArgs[1:]); err != nil {
 		return nil, HistoryStamp{}, err
 	}
-	if _, err := deleteItemRowsTx(tx, w, itemPredicate, itemArgs[1:],
+	// Every reverted row sits at or after the anchor turn; the bound keeps
+	// the delete on the turn range of the thread's index.
+	if _, err := deleteItemRowsTx(tx, w, `turn_index >= ? AND (`+itemPredicate+`)`, append([]any{turnIndex}, itemArgs[1:]...),
 		fmt.Sprintf("store: delete items from item for thread %s", threadID)); err != nil {
+		return nil, HistoryStamp{}, err
+	}
+	if err := retractInheritedTx(tx, w, threadID, turnIndex, itemPredicate, itemArgs[1:], turnIndex); err != nil {
 		return nil, HistoryStamp{}, err
 	}
 
@@ -879,10 +912,13 @@ func deleteConversationFromItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID str
 
 	// The anchor turn keeps its turn row while any items survive in it:
 	// the remaining prefix still happened.
-	survivors, survivorArgs := timelineArms(threadID, timelineSelection{
+	survivors, survivorArgs, err := timelineArms(tx, threadID, timelineSelection{
 		Columns: func(string, string) string { return "1" },
 		Turn:    "turns.turn_index",
 	})
+	if err != nil {
+		return nil, HistoryStamp{}, err
+	}
 	if _, err := tx.Exec(
 		`DELETE FROM turns WHERE thread_id = ?
 		 AND turn_index >= ?
@@ -932,7 +968,10 @@ func (s *Store) ListTurnTimelineItemIDs(threadID string, turnIndex int) ([]strin
 }
 
 func listTurnTimelineItemIDs(q sqlQueryer, threadID string, turnIndex int) ([]string, error) {
-	query, args := timelineIDSelection(threadID, timelineSelection{Turn: "?", TurnArgs: []any{turnIndex}, OrderBy: "turn_index, item_index"})
+	query, args, err := timelineIDSelection(q, threadID, timelineSelection{Turn: "?", TurnArgs: []any{turnIndex}, OrderBy: "turn_index, item_index"})
+	if err != nil {
+		return nil, err
+	}
 	rows, err := q.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list turn %d items for thread %s: %w", turnIndex, threadID, err)
@@ -961,8 +1000,18 @@ func listTurnTimelineItemIDs(q sqlQueryer, threadID string, turnIndex int) ([]st
 // was never settled.
 func trimTurnSettleToSurvivorsTx(tx *sql.Tx, threadID string, turnIndex int) error {
 	var lastKept sql.NullInt64
-	query, args := turnAggregateQuery(threadID, turnIndex, "MAX", "created_at")
-	if err := tx.QueryRow(query, args...).Scan(&lastKept); err != nil {
+	// A fork's divider is not turn content.
+	query, args, err := timelineArms(tx, threadID, timelineSelection{
+		Columns:   func(string, string) string { return "items.created_at AS created_at" },
+		Turn:      "?",
+		TurnArgs:  []any{turnIndex},
+		Where:     "items.id <> ?",
+		WhereArgs: []any{forkDividerID(threadID)},
+	})
+	if err != nil {
+		return err
+	}
+	if err := tx.QueryRow("SELECT MAX(created_at) FROM (\n"+query+"\n)", args...).Scan(&lastKept); err != nil {
 		return fmt.Errorf("store: trim turn settle survivors lookup for thread %s: %w", threadID, err)
 	}
 	if !lastKept.Valid {
@@ -980,13 +1029,14 @@ func trimTurnSettleToSurvivorsTx(tx *sql.Tx, threadID string, turnIndex int) err
 
 // UpdateItemMeta rewrites only the `meta` column on a single item
 // row, scoped to the owning thread. Used by the fork-time UUID remap
-// in `app_thread_fork.go::remapClaudeProviderIDs` to refresh a
-// cloned `user_text` row's `provider_item_id` after the source
-// session JSONL is forked with fresh uuids. Distinct from
-// `UpsertItem` because the remap is a back-fill on cloned data, not
-// a wire event — it must not bump `updated_at`, must not run the
-// payload upsert path, and must not emit a frontend `item:upsert`
-// notification (no wire correlation occurred).
+// in `app_thread_fork.go::remapClaudeProviderIDs` to refresh a fork's
+// `user_text` row's `provider_item_id` after the source session JSONL
+// is forked with fresh uuids. An inherited row is copied into the fork
+// first, so the source keeps its own uuid. Distinct from `UpsertItem`
+// because the remap is a back-fill on the fork's data, not a wire
+// event: it must not bump `updated_at`, must not run the payload upsert
+// path, and must not emit a frontend `item:upsert` notification (no
+// wire correlation occurred).
 //
 // Returns sql.ErrNoRows-wrapped error when (threadID, id) does not
 // match any row so partial fork cleanups can detect drift before

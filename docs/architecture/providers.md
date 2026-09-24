@@ -33,9 +33,9 @@ the provider process owns turn state.
   rows already on disk, so the slice is exact.
 - Forking DURING an active turn is supported and is a snapshot "as if
   interrupted right now": the source is never interrupted and never
-  mutated, and only the fork's clone is settled (running/streaming rows
-  → errored with the " — interrupted" suffix, open turn rows closed with
-  `stop_reason='interrupted'`). Codex issues `thread/fork` with NO
+  mutated, and only the fork's copies of its running rows are settled
+  (running/streaming rows → errored with the " — interrupted" suffix,
+  open turn rows closed with `stop_reason='interrupted'`). Codex issues `thread/fork` with NO
   `lastTurnId`. With no boundary on a mid-turn source it copies
   persisted history and appends the same turn-aborted marker a real
   interrupt writes, onto the fork's copy only, and a `lastTurnId` naming

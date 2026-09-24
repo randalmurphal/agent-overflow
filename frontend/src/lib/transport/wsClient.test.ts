@@ -1537,6 +1537,37 @@ describe('WSClient', () => {
     client.close();
   });
 
+  // The server names the threads whose frames it dropped; anything but a
+  // well-formed list is reported and read as an unattributed gap, whose
+  // recovery covers every thread.
+  it('carries a gap marker\'s thread attribution and drops a malformed one', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const gaps: unknown[] = [];
+    client.subscribe(transportGapChannel, (data) => { gaps.push(data); });
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    ws.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 1, data: null, gap: true, gapThreads: ['t-a', 't-b'] });
+    ws.pushFrame({ type: 'batch', events: [{ channel: 'provider:item_event', seq: 2, data: {}, gap: true, gapThreads: ['t-c'] }] });
+    const malformed: unknown[] = ['t-a', [], [''], [7], Array.from({ length: 257 }, (_, i) => `t-${i}`), ['x'.repeat(257)]];
+    malformed.forEach((gapThreads, index) => {
+      ws.pushFrame({ type: 'event', channel: 'provider:item_event', seq: 3 + index, data: null, gap: true, gapThreads });
+    });
+
+    expect(gaps).toEqual([
+      { channel: 'provider:item_event', seq: 1, threads: ['t-a', 't-b'] },
+      { channel: 'provider:item_event', seq: 2, threads: ['t-c'] },
+      ...malformed.map((_, index) => ({ channel: 'provider:item_event', seq: 3 + index })),
+    ]);
+    for (const gap of gaps.slice(2)) expect(gap).not.toHaveProperty('threads');
+    expect(client.getUnknownInputStats().kinds['gap-threads']).toBe(malformed.length);
+    client.close();
+  });
+
   // The server emits a gap marker whose seq sits BELOW our cursor when
   // our cursor sits above its head — the backend restarted and re-seeded
   // every channel from 1. Dedup must not eat it, or the cursor stays

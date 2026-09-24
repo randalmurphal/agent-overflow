@@ -148,7 +148,7 @@ func nextOlderUnit(w *activityScanWalk) (pageUnit, bool, error) {
 				admit = true
 				break
 			}
-			if row.Kind != notificationKind {
+			if !row.isBell() {
 				break
 			}
 			bells++
@@ -193,7 +193,7 @@ func nextNewerUnit(w *activityScanWalk, prevIsMember bool) (pageUnit, bool, erro
 		return pageUnit{}, false, err
 	}
 	w.take(1)
-	if !first.isRailRow() && !(prevIsMember && first.Kind == notificationKind) {
+	if !first.isRailRow() && !(prevIsMember && first.isBell()) {
 		return pageUnit{rows: []activityScanRow{first}}, true, nil
 	}
 	unit := pageUnit{rows: []activityScanRow{first}, run: true}
@@ -215,7 +215,7 @@ func absorbNewerMembers(w *activityScanWalk, unit *pageUnit) error {
 		if !ok {
 			return nil
 		}
-		if !row.isRailRow() && row.Kind != notificationKind {
+		if !row.isRailRow() && !row.isBell() {
 			return nil
 		}
 		unit.rows = append(unit.rows, row)
@@ -273,7 +273,7 @@ func firstNewerUnit(
 	if err != nil || !ok {
 		return pageUnit{}, nil, false, err
 	}
-	if !first.isRailRow() && first.Kind != notificationKind {
+	if !first.isRailRow() && !first.isBell() {
 		newer.take(1)
 		return pageUnit{rows: []activityScanRow{first}}, newer, true, nil
 	}

@@ -40,6 +40,7 @@ import (
 	"agent-overflow/internal/backendproxy"
 	"agent-overflow/internal/deviceclient"
 	"agent-overflow/internal/keyedlock"
+	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/transport"
 )
 
@@ -583,6 +584,10 @@ func (c *carrier) Manifest(ctx context.Context) (transport.AttachedManifest, err
 			return transport.AttachedManifest{}, fmt.Errorf("%w: %w", transport.ErrAttachedSessionEnded, err)
 		}
 		return transport.AttachedManifest{}, err
+	}
+	if progress, ok := startupprogress.Parse(status, body); ok {
+		c.reached()
+		return transport.AttachedManifest{}, &transport.BackendStartingError{Progress: progress}
 	}
 	if status != http.StatusOK {
 		// Every other non-200 is one answer here: not reachable right

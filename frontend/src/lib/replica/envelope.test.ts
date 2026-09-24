@@ -40,7 +40,6 @@ function body(overrides: Partial<ReplicaBody> = {}): ReplicaBody {
     hasMoreOlder: true,
     hasMoreNewer: false,
     latestSettledTurn: null,
-    subagentFolds: null,
     runs: [],
     ...overrides,
   };
@@ -137,25 +136,6 @@ describe('replica envelope', () => {
     // never see it.
     expect(() => structuredClone(normalized)).not.toThrow();
     expect(normalized.items).not.toBe(proxied);
-  });
-
-  it('counts the fold against the same char budget as the rows', () => {
-    const withFold = body({
-      subagentFolds: {
-        anchors: [
-          {
-            anchorId: 'anchor',
-            evictedIds: ['abc', 'def'],
-            terminalPreview: '1234567890',
-            terminalTurnIndex: 0,
-            terminalItemIndex: 1,
-          },
-        ],
-      },
-    });
-    expect(estimateBodyChars(withFold)).toBe(
-      'hello'.length + 'abc'.length + 'def'.length + '1234567890'.length,
-    );
   });
 
   it('refuses a window past the per-envelope item cap', () => {

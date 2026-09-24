@@ -14,12 +14,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 	"unsafe"
 
 	appservice "agent-overflow/internal/app"
@@ -121,12 +123,11 @@ func runHarness(flags cliFlags) {
 	appservice.SetProviderExtraEnv(appService.App, providerEnv)
 	defer controlServer.Shutdown()
 	srv := bootTransport(appService, flags.listenAddr, bootTransportOptions{
-		RequireReadyForBootstrap: true,
-		IgnorePersistedNetwork:   true,
-		HarnessReceiver:          h,
-		HarnessPageMarker:        harnessrpc.PageMarker(h),
-		HarnessMethodsSink:       func(names []string) { harnessrpc.SetWireMethods(h, names) },
-		AllowDevServerAssets:     true,
+		IgnorePersistedNetwork: true,
+		HarnessReceiver:        h,
+		HarnessPageMarker:      harnessrpc.PageMarker(h),
+		HarnessMethodsSink:     func(names []string) { harnessrpc.SetWireMethods(h, names) },
+		AllowDevServerAssets:   true,
 	})
 	log.Printf("transport: harness mode (data dir %s)", paths.DataDir)
 
@@ -140,10 +141,26 @@ func runHarness(flags cliFlags) {
 
 	bootCtx, bootCancel := context.WithCancel(context.Background())
 	defer bootCancel()
+	identity := instanceIdentityFor(paths, instanceinfo.ModeHarness, flags.window, 0, "", "", "", "")
+	bootstrapWritten := false
+	if release := os.Getenv(diagenv.HarnessHoldStartup); release != "" {
+		// A held boot is driven while it reports starting, so its address
+		// is published before readiness instead of after.
+		if err := writeHarnessBootstrap(bootstrapOut, srv, paths, nil, identity); err != nil {
+			fatalf("harness: write bootstrap: %v", err)
+		}
+		bootstrapWritten = true
+		// A hold that cannot watch its release file boots now; the test
+		// that asked for it fails on its own assertions.
+		begin := func(phase, detail string) func() { return appservice.BeginBootPhase(appService.App, phase, detail) }
+		if err := holdHarnessStartup(bootCtx, begin, release, harnessHoldPoll); err != nil {
+			log.Printf("harness: %v", err)
+		}
+	}
 	if err := appService.Start(bootCtx); err != nil {
 		log.Printf("app: service startup: %v", err)
 		srv.MarkStartupFailed()
-		if err := writeHarnessBootstrap(bootstrapOut, srv, paths, err, instanceIdentityFor(paths, instanceinfo.ModeHarness, flags.window, 0, "", "", "", "")); err != nil {
+		if err := writeHarnessBootstrap(bootstrapOut, srv, paths, err, identity); err != nil {
 			log.Printf("harness: write bootstrap: %v", err)
 		}
 		waitForHeadlessShutdown(appService, srv, nil)
@@ -156,9 +173,11 @@ func runHarness(flags cliFlags) {
 	// instance can never lose a real sender to it (app_push_harness.go).
 	appservice.InstallHarnessPushSender(appService.App)
 
-	if err := writeHarnessBootstrap(bootstrapOut, srv, paths, nil, instanceIdentityFor(paths, instanceinfo.ModeHarness, flags.window, 0, "", "", "", "")); err != nil {
-		shutdownHeadless(appService, srv)
-		fatalf("harness: write bootstrap: %v", err)
+	if !bootstrapWritten {
+		if err := writeHarnessBootstrap(bootstrapOut, srv, paths, nil, identity); err != nil {
+			shutdownHeadless(appService, srv)
+			fatalf("harness: write bootstrap: %v", err)
+		}
 	}
 
 	// Discovery files last: they advertise an instance that is ready to
@@ -178,6 +197,34 @@ func runHarness(flags cliFlags) {
 		return
 	}
 	waitForHeadlessShutdown(appService, srv, nil)
+}
+
+// harnessHoldPoll is how often a held harness boot looks for its release
+// file.
+const harnessHoldPoll = 50 * time.Millisecond
+
+// holdHarnessStartup reports the harness.hold_startup boot phase through
+// begin until the release file exists (diagenv.HarnessHoldStartup) or ctx
+// ends.
+func holdHarnessStartup(ctx context.Context, begin func(phase, detail string) (end func()), release string, poll time.Duration) error {
+	end := begin("harness.hold_startup", "Holding startup for a test")
+	defer end()
+	ticker := time.NewTicker(poll)
+	defer ticker.Stop()
+	for {
+		_, err := os.Stat(release)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("hold startup: read release file: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("hold startup: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 // isolationOptions carries the ONE isolation decision a mocked boot mode

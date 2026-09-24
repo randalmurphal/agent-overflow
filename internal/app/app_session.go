@@ -189,7 +189,7 @@ func (a *App) startSessionNowWithClaudeResumeAt(threadID, claudeResumeAt string)
 	// A fork start resolves against the SOURCE session instead
 	// (opts.Resume IS the source ref while PendingForkRef is pending),
 	// and only when the fork stored a pin: a pinned lazy fork must cut
-	// where its timeline was cloned, so an unresolvable pin FAILS the
+	// where its timeline was cut, so an unresolvable pin FAILS the
 	// start rather than falling back to the source's current tail —
 	// spawning unpinned there silently snapshots whatever the source
 	// has streamed since the fork (the 2026-08-22 skew incident). An

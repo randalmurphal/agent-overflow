@@ -331,7 +331,11 @@ func TestListLiveBackgroundTasksSeedUsesPartialIndexes(t *testing.T) {
 		if target, ok := strings.CutPrefix(line, "SCAN "); ok && !ctes[strings.Fields(target)[0]] {
 			t.Errorf("the tray query scans %q:\n%s", target, plan.String())
 		}
-		if strings.Contains(line, "idx_items_parent") && !strings.Contains(line, "COVERING INDEX idx_items_parent (thread_id=? AND parent_id=?)") {
+		// The launch filter's probe: its local arm by the covering index,
+		// and a pointer fork's lineage arm bounded by the level's cut.
+		if strings.Contains(line, "idx_items_parent") &&
+			!strings.Contains(line, "COVERING INDEX idx_items_parent (thread_id=? AND parent_id=?)") &&
+			!strings.Contains(line, "INDEX idx_items_parent (thread_id=? AND parent_id=? AND turn_index<?)") {
 			t.Errorf("the tray query walks a parent's children: %q\n%s", line, plan.String())
 		}
 	}

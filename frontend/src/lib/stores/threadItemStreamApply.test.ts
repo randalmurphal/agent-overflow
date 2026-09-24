@@ -3,11 +3,16 @@
 // threadItemStreamApply.ts through the pane: the replace-pattern that lands
 // a streamed delta or a field patch on an existing row, the reveal settings
 // that make a delta arrive whole, and the drops (stale delta, unknown row,
-// wrong thread). How the revealed text is PACED is threadPaneRevealSmoothing;
-// the ordering gate over it is threadRevealSequencer.
+// wrong thread, another scope's row). How the revealed text is PACED is
+// threadPaneRevealSmoothing; the ordering gate over it is
+// threadRevealSequencer.
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { __setSmoothingClockForTest, createThreadPane } from './thread.svelte';
+import { createThreadItemStreamApply, type ThreadItemStreamApplyOptions } from './threadItemStreamApply';
+import type { ThreadStreamingReveal } from './threadStreamingReveal.svelte';
+import type { ItemPatchEvent } from '../types/events';
+import type { Item } from '../types/models';
 import { getSettings, resetSettingsForTest } from './settings.svelte';
 import { buildPane, makeItem, makeThread } from '../../test/helpers/chat';
 import {
@@ -666,5 +671,95 @@ describe('threadItemStreamApply', () => {
       expect(pane.items[0].status).toBe('completed');
       expect(pane.items[0].updatedAt).toBe(3);
     });
+  });
+});
+
+describe('threadItemStreamApply: rows of another scope', () => {
+  beforeEach(installThreadPaneTestEnv);
+
+  it('ignores another scope\'s delta silently and warns once about a missing row of its own', () => {
+    const pane = createThreadPane();
+    const memory = pane.debugMemoryStats();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (let i = 0; i < 2; i += 1) {
+        pane.applyItemDelta({
+          threadId: 'thread-1', itemId: 'child-text', parentId: 'agent',
+          kind: 'assistant_text', delta: 'x', updatedAt: 1 + i,
+        });
+      }
+      expect(warn).not.toHaveBeenCalled();
+      expect(pane.debugMemoryStats()).toEqual(memory);
+
+      // No parentId: a top-level row the main window should hold.
+      for (let i = 0; i < 2; i += 1) {
+        pane.applyItemDelta({
+          threadId: 'thread-1', itemId: 'top-text', kind: 'assistant_text', delta: 'x', updatedAt: 1 + i,
+        });
+      }
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith('[thread] applyItemDelta: no row for itemId', 'top-text');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // The collaborators are fakes: the point is which rows and events reach
+  // the window's reveal machinery at all, which the pane cannot observe.
+  function streamApply(scopeRootId?: string) {
+    const applyPatch = vi.fn(() => null);
+    const reconciled: string[][] = [];
+    const withReconciledItems = vi.fn((incoming: readonly Item[]) => {
+      reconciled.push(incoming.map((item) => item.id));
+      return null;
+    });
+    const apply = createThreadItemStreamApply({
+      getItems: () => [],
+      getItemById: () => undefined,
+      itemIndexById: new Map(),
+      getThread: () => null,
+      streamingReveal: { applyPatch, withReconciledItems } as unknown as ThreadStreamingReveal,
+      ...(scopeRootId === undefined ? {} : { scopeRootId }),
+    } as unknown as ThreadItemStreamApplyOptions);
+    return { apply, applyPatch, reconciled };
+  }
+
+  it('drops a batch\'s rows of another scope before any window work', () => {
+    const top = makeItem({ id: 'top' });
+    const child = makeItem({ id: 'child', parentId: 'agent' });
+    const grandchild = makeItem({ id: 'grandchild', parentId: 'nested' });
+
+    const main = streamApply();
+    expect(main.apply.upsertItemsBatch([child, grandchild])).toBeNull();
+    expect(main.reconciled).toEqual([]);
+    main.apply.upsertItemsBatch([child, top, grandchild]);
+    expect(main.reconciled).toEqual([['top']]);
+
+    const scoped = streamApply('agent');
+    expect(scoped.apply.upsertItemsBatch([top, grandchild])).toBeNull();
+    expect(scoped.reconciled).toEqual([]);
+    scoped.apply.upsertItemsBatch([top, child, grandchild]);
+    expect(scoped.reconciled).toEqual([['child']]);
+  });
+
+  it('hands a missing row\'s patch to the reveal only when the row is of its own scope', () => {
+    const patch = (parentId?: string): ItemPatchEvent => ({
+      threadId: 'thread-1', itemId: 'row', kind: 'tool_call',
+      ...(parentId === undefined ? {} : { parentId }),
+      patch: { rev: 1, status: 'completed' },
+    });
+
+    const main = streamApply();
+    main.apply.applyItemPatch(patch('agent'));
+    expect(main.applyPatch).not.toHaveBeenCalled();
+    main.apply.applyItemPatch(patch());
+    expect(main.applyPatch).toHaveBeenCalledOnce();
+
+    const scoped = streamApply('agent');
+    scoped.apply.applyItemPatch(patch());
+    scoped.apply.applyItemPatch(patch('nested'));
+    expect(scoped.applyPatch).not.toHaveBeenCalled();
+    scoped.apply.applyItemPatch(patch('agent'));
+    expect(scoped.applyPatch).toHaveBeenCalledOnce();
   });
 });

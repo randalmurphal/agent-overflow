@@ -73,6 +73,7 @@ func (r *Router) handleTextDelta(evt provider.ProviderEvent) error {
 	r.emitItemDelta(ItemDeltaEvent{
 		ThreadID:  evt.ThreadID,
 		ItemID:    itemID,
+		ParentID:  scope,
 		Kind:      itemKindAssistantText,
 		Delta:     evt.Content,
 		UpdatedAt: now,
@@ -152,6 +153,7 @@ func (r *Router) handleThinking(evt provider.ProviderEvent) error {
 	r.emitItemDelta(ItemDeltaEvent{
 		ThreadID:  evt.ThreadID,
 		ItemID:    itemID,
+		ParentID:  scope,
 		Kind:      itemKindThinking,
 		Delta:     evt.Content,
 		UpdatedAt: now,
@@ -226,6 +228,7 @@ func (r *Router) emitStreamingBlockStart(
 	r.emitItemDelta(ItemDeltaEvent{
 		ThreadID:  persisted.ThreadID,
 		ItemID:    persisted.ID,
+		ParentID:  persisted.ParentID,
 		Kind:      persisted.Kind,
 		Delta:     content,
 		UpdatedAt: now,
@@ -270,12 +273,13 @@ func (r *Router) persistCompletedBlockEmitStreaming(
 	r.emitItemDelta(ItemDeltaEvent{
 		ThreadID:  persisted.ThreadID,
 		ItemID:    persisted.ID,
+		ParentID:  persisted.ParentID,
 		Kind:      persisted.Kind,
 		Delta:     content,
 		UpdatedAt: persisted.UpdatedAt,
 	})
 	completed := statusCompleted
-	r.emitItemPatch(persisted.ThreadID, persisted.ID, persisted.Kind, persisted.Rev, ItemPatchFields{
+	r.emitItemPatch(persisted.ThreadID, persisted.ID, persisted.ParentID, persisted.Kind, persisted.Rev, ItemPatchFields{
 		Status:    &completed,
 		Summary:   &persisted.Summary,
 		UpdatedAt: &persisted.UpdatedAt,

@@ -76,13 +76,7 @@ func BenchmarkForkHistory(b *testing.B) {
 			for range b.N {
 				fork := BuildForkedThread(source)
 				fork.ForkPreparing = true
-				if err := s.CreateThread(fork); err != nil {
-					b.Fatal(err)
-				}
-				if _, err := s.CloneThreadHistoryThroughTurn(source.ID, fork.ID, nil); err != nil {
-					b.Fatal(err)
-				}
-				if err := s.SettleForkedThreadAsInterrupted(fork.ID, func(summary string) string { return summary + " interrupted" }, 3); err != nil {
+				if err := s.CreatePointerFork(fork, source.ID, ForkCut{}, func(summary string) string { return summary + " interrupted" }, 3); err != nil {
 					b.Fatal(err)
 				}
 				if _, err := s.FinishForkPreparation(fork.ID); err != nil {

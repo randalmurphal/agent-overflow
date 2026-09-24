@@ -255,13 +255,16 @@ func windowEdgeCursorTx(q sqlQueryer, threadID, itemID string, scope timelineSco
 	}
 	cursor := TimelineCursor{ItemID: itemID}
 	filter, filterArgs := scope.filter("items.")
-	query, args := timelineArms(threadID, timelineSelection{
+	query, args, err := timelineArms(q, threadID, timelineSelection{
 		Columns:   func(string, string) string { return "items.turn_index, items.item_index" },
 		KeyFirst:  true,
 		Where:     "items.id = ? AND " + filter,
 		WhereArgs: append([]any{itemID}, filterArgs...),
 	})
-	err := q.QueryRow(query, args...).Scan(&cursor.TurnIndex, &cursor.ItemIndex)
+	if err != nil {
+		return TimelineCursor{}, false, err
+	}
+	err = q.QueryRow(query, args...).Scan(&cursor.TurnIndex, &cursor.ItemIndex)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TimelineCursor{}, false, nil
 	}
@@ -298,7 +301,7 @@ func windowDigestRowsTx(
 			limit, threadID, MaxHeldWindowItems+1)
 	}
 	filter, filterArgs := scope.filter("items.")
-	selection, args := timelineArms(threadID, timelineSelection{
+	selection, args, err := timelineArms(q, threadID, timelineSelection{
 		Columns: func(_, revExpr string) string {
 			return `items.id AS id, ` + revExpr + ` AS rev,
 			        items.turn_index AS turn_index, items.item_index AS item_index`
@@ -313,6 +316,9 @@ func windowDigestRowsTx(
 		OrderBy: "turn_index ASC, item_index ASC",
 		Limit:   limit,
 	})
+	if err != nil {
+		return nil, err
+	}
 	rows, err := q.Query("SELECT id, rev FROM (\n"+selection+"\n)", args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: read held window rows for %s: %w", threadID, err)

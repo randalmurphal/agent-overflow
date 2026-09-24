@@ -163,8 +163,8 @@ func (r *Router) emitItemRemove(threadID, itemID, kind string) {
 // caller's own intent: it is what the WRITE produced, read inside the
 // write's transaction. Taking it here means a new patch emitter has to go
 // and get it (ItemPatch.Rev explains why a client needs it).
-func (r *Router) emitItemPatch(threadID, itemID, kind string, rev int64, patch ItemPatchFields) {
-	r.emit(eventchan.ProviderItemEvent, newItemStreamPatch(threadID, itemID, kind, rev, patch))
+func (r *Router) emitItemPatch(threadID, itemID, parentID, kind string, rev int64, patch ItemPatchFields) {
+	r.emit(eventchan.ProviderItemEvent, newItemStreamPatch(threadID, itemID, parentID, kind, rev, patch))
 	r.noteWireItemEmitted(threadID, itemID, rev)
 }
 
@@ -200,7 +200,7 @@ func (r *Router) persistItemFieldsAndPatch(item store.Item, update store.ItemPar
 	if update.Meta != nil {
 		patch.Meta = &stored.Meta
 	}
-	r.emitItemPatch(stored.ThreadID, stored.ID, stored.Kind, stored.Rev, patch)
+	r.emitItemPatch(stored.ThreadID, stored.ID, stored.ParentID, stored.Kind, stored.Rev, patch)
 	return nil
 }
 

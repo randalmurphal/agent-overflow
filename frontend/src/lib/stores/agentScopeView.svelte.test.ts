@@ -11,6 +11,7 @@ import { cursorFromItem } from './threadItems';
 import type { Item } from '../types/models';
 import { ActivityRunStub, type PagedItems } from '../../../bindings/agent-overflow/internal/store/models';
 import { registerPaneForTest, resetPanesForTest } from './panes.svelte';
+import { ACTIVE_TIMELINE_WINDOW_MAX_ITEMS, ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS } from './threadPaneShared';
 
 const threadId = 'scope-thread';
 const root = makeItem({ id: 'agent', threadId, kind: 'tool_call', toolName: 'Agent', status: 'running' });
@@ -45,6 +46,51 @@ beforeEach(() => {
   clearThreadScrollSnapshotsForTest();
 });
 afterEach(() => { for (const view of views.splice(0)) view.dispose(); resetPanesForTest(); });
+
+describe('live subagent children', () => {
+  it('reach the agent pane and an expanded card while the thread window keeps no state for them', async () => {
+    const pane = await setup([root]);
+    const agentView = await open(pane);
+    const card = createAgentScopeView(pane, root.id, { viewKey: 'card:agent', toolsOnly: true, openAgentPane: vi.fn() });
+    views.push(card); card.start();
+    await vi.waitFor(() => expect(card.pane.loading).toBe(false));
+    const hostItems = pane.items;
+    const hostRevision = pane.timelineRevision;
+    const hostMemory = pane.debugMemoryStats();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      push(row('live-tool', 1, { kind: 'tool_call', toolName: 'Bash', status: 'running', summary: 'go test' }));
+      push(row('live-text', 2, { kind: 'assistant_text', status: 'streaming', summary: 'thinking' }));
+      applyItemStreamEvent({
+        action: 'delta', threadId, itemId: 'live-text', parentId: root.id,
+        kind: 'assistant_text', delta: ' aloud', updatedAt: 3,
+      });
+      flushItemEventQueue();
+      agentView.pane.__flushItemSmoothersForTest();
+      expect(agentView.pane.getItemById('live-text')?.summary).toBe('thinking aloud');
+      applyItemStreamEvent({
+        action: 'patch', threadId, itemId: 'live-text', parentId: root.id, kind: 'assistant_text',
+        patch: { rev: 4, status: 'completed', updatedAt: 4 },
+      });
+      flushItemEventQueue();
+      push(row('live-tool', 1, { kind: 'tool_call', toolName: 'Bash', status: 'completed', summary: 'go test', updatedAt: 5 }));
+
+      expect(agentView.items.map(item => item.id)).toEqual(['live-tool', 'live-text']);
+      expect(agentView.pane.getItemById('live-tool')?.status).toBe('completed');
+      expect(agentView.pane.getItemById('live-text')?.status).toBe('completed');
+      expect(card.items.map(item => item.id)).toEqual(['live-tool']);
+      // The thread window holds no row, index entry, smoother, row UI state
+      // or cursor move for any of them, and warns about none.
+      expect(pane.items).toBe(hostItems);
+      expect(pane.timelineRevision).toBe(hostRevision);
+      expect(pane.debugMemoryStats()).toEqual(hostMemory);
+      expect(pane.getItemById('live-text')).toBeUndefined();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
 
 describe('independent agent timeline', () => {
   it('loads direct rows and completion siblings without borrowing host rows', async () => {
@@ -115,6 +161,52 @@ describe('independent agent timeline', () => {
     push(row('second', 2));
     applyItemStreamEvent({ action: 'remove', threadId, itemId: 'second' }); flushItemEventQueue();
     expect(view.pane.getItemById('second')).toBeUndefined();
+  });
+
+  it('prunes its window by the rows of its own scope', async () => {
+    const pane = await setup([root]);
+    const loaded = Array.from({ length: ACTIVE_TIMELINE_WINDOW_MAX_ITEMS }, (_, index) => row(`r${index}`, index + 1));
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page(loaded) }));
+    const view = await open(pane);
+    expect(view.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_MAX_ITEMS);
+    push(row('tail', ACTIVE_TIMELINE_WINDOW_MAX_ITEMS + 1));
+    expect(view.items).toHaveLength(ACTIVE_TIMELINE_WINDOW_TARGET_ITEMS);
+    expect(view.items.at(-1)?.id).toBe('tail');
+    expect(view.pane.hasMoreHistory).toBe(true);
+  });
+
+  it('does not walk its window for events of another scope', async () => {
+    let idReads = 0;
+    const counted = (item: Item): Item => {
+      const { id, ...rest } = item;
+      return Object.defineProperty(rest, 'id', { enumerable: true, get() { idReads += 1; return id; } }) as Item;
+    };
+    const pane = await setup([root]);
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page(Array.from({ length: 50 }, (_, i) => counted(row(`r${i}`, i + 1)))) }));
+    const view = await open(pane);
+    expect(view.items).toHaveLength(50);
+    idReads = 0;
+    for (let i = 0; i < 20; i += 1) {
+      push(makeItem({ id: `elsewhere${i}`, threadId, parentId: 'another-agent', itemIndex: i, kind: 'tool_call', toolName: 'Bash' }));
+      applyItemStreamEvent({ action: 'remove', threadId, itemId: `elsewhere${i}` });
+      flushItemEventQueue();
+    }
+    expect(idReads).toBe(0);
+    expect(view.items).toHaveLength(50);
+  });
+
+  it('presents each stored row through one lifted copy across structural revisions', async () => {
+    const pane = await setup([root]);
+    setBindingMock('SyncThreadWindow', async () => ({ status: 'stale', page: page([row('a', 1), row('b', 2)]) }));
+    const view = await open(pane);
+    const [a] = view.items;
+    expect(a.parentId).toBeUndefined();
+    push(row('b', 2, { status: 'completed', summary: 'settled', updatedAt: 5 }));
+    push(row('c', 3));
+    expect(view.items.map(item => item.id)).toEqual(['a', 'b', 'c']);
+    expect(view.items[0]).toBe(a);
+    expect(view.items[1]).toMatchObject({ summary: 'settled', parentId: undefined });
+    expect(view.pane.getItemById('b')?.parentId).toBe(root.id);
   });
 
   it('does not admit live history below its loaded floor and leaves it pageable', async () => {
@@ -519,7 +611,9 @@ describe('execution digest timeline', () => {
     push(answer);
     await vi.waitFor(() => expect(view.items.map(it => it.id)).toEqual(['next-answer']));
     expect(sync).toHaveBeenCalledTimes(2);
-    expect(pane.getItemById('next-answer')?.parentId).toBe(root.id);
+    expect(view.pane.getItemById('next-answer')?.parentId).toBe(root.id);
+    // The child lives in the scoped surface only, never the thread window.
+    expect(pane.getItemById('next-answer')).toBeUndefined();
   });
 
   it.each(['upsert', 'delta', 'move'] as const)('reconciles a newly selected answer overlapping a live %s', async (change) => {

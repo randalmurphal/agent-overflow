@@ -3622,6 +3622,28 @@ describe('setupEventListeners', () => {
     expect(paneB.items).toEqual([]);
   });
 
+  // The cut names the last item and turn frames it already reflects; the
+  // listeners fence a later-delivered frame by the sequence it arrived with.
+  it('fences pre-cut item and turn frames by the sequence each arrived with', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-a' }));
+    emitWailsEvent('user_message:reverted', {
+      threadId: 'thread-a', userItemId: 'u:1', turnIndex: 1,
+      itemEventSequence: 10, turnStartedSequence: 8,
+    });
+    const row = (id: string, itemIndex: number) =>
+      makeItem({ id, threadId: 'thread-a', turnIndex: 1, itemIndex, kind: 'assistant_text', role: 'assistant' });
+
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: 'thread-a', item: row('stale', 1) }, undefined, { sequence: 10 });
+    emitWailsEvent('provider:item_event', { action: 'upsert', threadId: 'thread-a', item: row('fresh', 2) }, undefined, { sequence: 11 });
+    emitWailsEvent('provider:turn_started', { threadId: 'thread-a', turnId: 'old', turnIndex: 1, startedAt: 1 }, undefined, { sequence: 8 });
+    await nextFrame();
+
+    expect(pane.items.map((it) => it.id)).toEqual(['fresh']);
+    expect(getActiveTurn('thread-a')).toBeNull();
+    emitWailsEvent('provider:turn_started', { threadId: 'thread-a', turnId: 'new', turnIndex: 1, startedAt: 2 }, undefined, { sequence: 9 });
+    expect(getActiveTurn('thread-a')?.turnId).toBe('new');
+  });
+
   // The strict `typeof payload.turnIndex !== 'number'` guard exists
   // because `payload.turnIndex` of 0 is a VALID revert target (first
   // turn of a fresh thread) and a truthy check would reject it. A

@@ -11,9 +11,16 @@ vi.mock('./bindings', async (importOriginal) => ({
   ListReleases: vi.fn(),
   DownloadUpdate: vi.fn(),
   RestartToUpdate: vi.fn(),
+  CancelRestartToUpdate: vi.fn(),
 }));
 
-import { CheckForUpdate, ListReleases, DownloadUpdate, RestartToUpdate } from './bindings';
+import {
+  CheckForUpdate,
+  ListReleases,
+  DownloadUpdate,
+  RestartToUpdate,
+  CancelRestartToUpdate,
+} from './bindings';
 import { TransportError } from '../transport/wsClient';
 import { __resetScopesForTest, setPageGrantsFromBootstrap } from '../transport/scopes';
 import {
@@ -24,6 +31,7 @@ import {
   runUpdateCheck,
   startUpdateDownload,
   restartForUpdate,
+  cancelRestartForUpdate,
   loadVersions,
   selectVersion,
   selectedVersion,
@@ -42,6 +50,7 @@ const mockCheck = vi.mocked(CheckForUpdate);
 const mockList = vi.mocked(ListReleases);
 const mockDownload = vi.mocked(DownloadUpdate);
 const mockRestart = vi.mocked(RestartToUpdate);
+const mockCancelRestart = vi.mocked(CancelRestartToUpdate);
 
 function release(tag: string, overrides: Partial<ReleaseSummary> = {}): ReleaseSummary {
   return {
@@ -70,6 +79,8 @@ interface Availability {
   releaseNotes?: string;
   lastApplyFailure?: string;
   checkError?: string;
+  restartWaitingFor?: string;
+  restartingTo?: string;
 }
 
 function availability(overrides: Partial<Availability> = {}): Availability {
@@ -108,6 +119,7 @@ describe('updates store', () => {
     mockList.mockReset().mockResolvedValue([]);
     mockDownload.mockReset().mockResolvedValue(undefined);
     mockRestart.mockReset().mockResolvedValue(undefined);
+    mockCancelRestart.mockReset().mockResolvedValue(undefined);
   });
 
   describe('isDownloadInFlight', () => {
@@ -126,7 +138,7 @@ describe('updates store', () => {
     it('covers every mid-action phase and leaves the resting ones actionable', () => {
       // The one predicate every action entry point gates on; a phase missing
       // from it re-opens the double-fire bugs the guards exist to prevent.
-      for (const busy of ['checking', 'downloading', 'verifying', 'installing', 'ready', 'restarting'] as const) {
+      for (const busy of ['checking', 'downloading', 'verifying', 'installing', 'ready', 'waiting', 'restarting'] as const) {
         expect(isUpdateFlowBusy(busy)).toBe(true);
       }
       for (const resting of ['idle', 'available', 'up-to-date', 'error'] as const) {
@@ -599,6 +611,111 @@ describe('updates store', () => {
     });
   });
 
+  describe('restart waiting for running work', () => {
+    const waitingFor = 'Waiting for provider turns to finish…';
+    let cleanup: () => void;
+
+    beforeEach(async () => {
+      mockCheck.mockResolvedValue(availability({ available: false }));
+      cleanup = initUpdates();
+      await tick();
+    });
+
+    afterEach(() => {
+      cleanup();
+    });
+
+    it('moves a requested restart to "waiting" with what it waits for', async () => {
+      getUpdateState().phase = 'ready';
+      await restartForUpdate();
+      emitWailsEvent('updater:restart', { phase: 'waiting', waitingFor });
+      const s = getUpdateState();
+      expect(s.phase).toBe('waiting');
+      expect(s.waitingFor).toBe(waitingFor);
+      expect(isUpdateFlowBusy(s.phase)).toBe(true);
+    });
+
+    it('follows the wait into the handoff', () => {
+      emitWailsEvent('updater:restart', { phase: 'waiting', waitingFor });
+      emitWailsEvent('updater:restart', { phase: 'restarting' });
+      expect(getUpdateState().phase).toBe('restarting');
+      expect(getUpdateState().waitingFor).toBe('');
+    });
+
+    it('returns to "ready" when the wait is canceled', async () => {
+      emitWailsEvent('updater:restart', { phase: 'waiting', waitingFor });
+      await cancelRestartForUpdate();
+      expect(mockCancelRestart).toHaveBeenCalledOnce();
+      expect(getUpdateState().phase).toBe('ready');
+      expect(getUpdateState().waitingFor).toBe('');
+      // The backend's frame for the same cancel changes nothing further.
+      emitWailsEvent('updater:restart', { phase: 'canceled' });
+      expect(getUpdateState().phase).toBe('ready');
+    });
+
+    it('a cancel from another window returns this one to "ready"', () => {
+      emitWailsEvent('updater:restart', { phase: 'waiting', waitingFor });
+      emitWailsEvent('updater:restart', { phase: 'canceled' });
+      expect(getUpdateState().phase).toBe('ready');
+    });
+
+    it('cancels only a waiting restart', async () => {
+      getUpdateState().phase = 'restarting';
+      await cancelRestartForUpdate();
+      expect(mockCancelRestart).not.toHaveBeenCalled();
+    });
+
+    it('keeps waiting and says why when the cancel is refused', async () => {
+      emitWailsEvent('updater:restart', { phase: 'waiting', waitingFor });
+      mockCancelRestart.mockRejectedValue(new Error('the update is already restarting'));
+      await cancelRestartForUpdate();
+      const s = getUpdateState();
+      expect(s.phase).toBe('waiting');
+      expect(s.cancelError).toBe('The update is already restarting.');
+      expect(s.canceling).toBe(false);
+    });
+
+    it('lands in "error" when the handoff after the wait fails', () => {
+      emitWailsEvent('updater:restart', { phase: 'waiting', waitingFor });
+      emitWailsEvent('updater:restart', { phase: 'failed', error: 'restart to update: the swap helper could not start' });
+      const s = getUpdateState();
+      expect(s.phase).toBe('error');
+      expect(s.error).toBe('The swap helper could not start.');
+    });
+
+    it('leaves an abandoned handoff to updater:error', () => {
+      emitWailsEvent('updater:restart', { phase: 'restarting' });
+      emitWailsEvent('updater:restart', { phase: 'idle' });
+      expect(getUpdateState().phase).toBe('restarting');
+      emitWailsEvent('updater:error', { stage: 'install', message: 'The Windows launcher could not install the update.' });
+      expect(getUpdateState().phase).toBe('error');
+    });
+
+    it('a reloaded page picks up a restart that is still waiting', async () => {
+      cleanup();
+      resetForTest();
+      mockCheck.mockResolvedValue(availability({ available: true, latestVersion: '2.0.0', restartWaitingFor: waitingFor }));
+      cleanup = initUpdates();
+      await tick();
+      const s = getUpdateState();
+      expect(s.phase).toBe('waiting');
+      expect(s.waitingFor).toBe(waitingFor);
+    });
+
+    it('a reloaded page shows a restart that already handed off', async () => {
+      cleanup();
+      resetForTest();
+      mockCheck.mockResolvedValue(availability({ available: true, latestVersion: '2.0.0', restartingTo: '2.0.0' }));
+      cleanup = initUpdates();
+      await tick();
+      const s = getUpdateState();
+      expect(s.phase).toBe('restarting');
+      expect(s.latestVersion).toBe('2.0.0');
+      await restartForUpdate();
+      expect(mockRestart).not.toHaveBeenCalled();
+    });
+  });
+
   describe('initUpdates event bridge', () => {
     let cleanup: () => void;
 
@@ -621,6 +738,7 @@ describe('updates store', () => {
         'updater:verifying',
         'updater:installing',
         'updater:ready',
+        'updater:restart',
         'updater:error',
       ]) {
         expect(wailsListenerCount(ch)).toBe(1);

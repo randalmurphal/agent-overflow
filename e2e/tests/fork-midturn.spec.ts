@@ -306,11 +306,13 @@ test('a tail fork taken mid-stream renders the interrupted snapshot beside a sti
   expect(fork.pendingForkResumeAt).toBeTruthy();
 
   // Only the fork's copy settled; the source's row is still streaming.
+  // The fork ends at its divider, the notification row it holds at its cut.
   expect(
     (await harness.rpc<Item[]>('ListItems', fork.id, true)).map((i) => [i.status, i.summary]),
   ).toEqual([
     ['completed', 'run the long one'],
     ['errored', 'Turn 1 first half. — interrupted'],
+    ['completed', 'Forked from Tail fork'],
   ]);
   expect(
     (await harness.rpc<Item[]>('ListItems', threadId, true)).map((i) => [i.status, i.summary]),
@@ -366,6 +368,7 @@ test('a Claude fork with no transcript on disk yet starts a fresh provider threa
   expect(forkItems.map((i) => [i.kind, i.status, i.summary])).toEqual([
     ['user_text', 'completed', 'answer before the file lands'],
     ['assistant_text', 'errored', 'Turn 1 first half. — interrupted'],
+    ['notification', 'completed', 'Forked from No transcript'],
   ]);
   // The source's own row is untouched — still streaming, not settled.
   expect(
@@ -423,6 +426,7 @@ test('a Codex fork mid-turn forks the live thread with no boundary', async ({ ha
   expect(forkItems.map((i) => [i.kind, i.status, i.summary])).toEqual([
     ['user_text', 'completed', 'run something slow'],
     ['tool_call', 'errored', 'Bash: sleep 30 — interrupted'],
+    ['notification', 'completed', 'Forked from Codex fork'],
   ]);
   // The source's command row is still running under its own thread.
   expect(

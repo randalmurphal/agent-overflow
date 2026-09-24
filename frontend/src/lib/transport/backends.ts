@@ -47,7 +47,7 @@ import { isNativeShell } from '../native/platform';
 import { isFrontendOnly } from './runMode';
 import { storedBackendEndpoint } from './homeEndpoint';
 import { pairedComputerId } from './deviceSession';
-import type { LeaseState } from './frames';
+import type { LeaseState, WatchScope } from './frames';
 import type { EventOrigin, TransportHandle } from './handle';
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import {
@@ -221,15 +221,18 @@ export function installDiagnosticsSinkEverywhere(sink: DiagnosticsSink | null): 
 // rather than at the next resume.
 let clientLease: LeaseState = 'active';
 
-// The whole watched-thread set, unsplit. Held for the third instance of the
-// same reason: which machines exist is this module's fact, and the composing
-// store (stores/watchedThreads.ts) must not have to learn it. Kept whole
-// rather than per backend because the split depends on ./entityIndex.ts,
-// which moves under it — a thread's owner becomes known after the set that
-// carried it was already sent.
+// The whole watched set, threads and subagent scopes, unsplit. Held for the
+// third instance of the same reason: which machines exist is this module's
+// fact, and the composing store (stores/watchedThreads.ts) must not have to
+// learn it. Kept whole rather than per backend because the split depends on
+// ./entityIndex.ts, which moves under it — a thread's owner becomes known
+// after the set that carried it was already sent.
 let watchedThreadIds: string[] = [];
+let watchedScopes: WatchScope[] = [];
 onThreadOwnershipChanged((id) => {
-  if (watchedThreadIds.includes(id)) for (const entry of entries) sendWatchedThreads(entry);
+  if (watchedThreadIds.includes(id) || watchedScopes.some(scope => scope.threadId === id)) {
+    for (const entry of entries) sendWatchedThreads(entry);
+  }
 });
 
 // What this screen last said it was doing, held for the fourth instance of
@@ -261,8 +264,8 @@ function createHandle(entry: () => Entry, id: string): TransportHandle {
     setLease(state: LeaseState): void {
       entry().client.setLease(state);
     },
-    setWatchedThreads(threadIds: readonly string[]): void {
-      entry().client.setWatchedThreads(threadIds);
+    setWatchedThreads(threadIds: readonly string[], scopes: readonly WatchScope[]): void {
+      entry().client.setWatchedThreads(threadIds, scopes);
     },
     setPresence(focused: boolean, threadIds: readonly string[]): void {
       entry().client.setPresence(focused, threadIds);
@@ -467,7 +470,7 @@ export function attachBackend(descriptor: BackendDescriptor): BackendEntry {
   // And the watched set, for the same reason: a machine attached while
   // panes are already open would otherwise push nothing for them until
   // the next composition change, which on a settled screen is never.
-  if (watchedThreadIds.length > 0) sendWatchedThreads(entry);
+  if (watchedThreadIds.length > 0 || watchedScopes.length > 0) sendWatchedThreads(entry);
   // And this screen's presence, which a backend attached mid-session would
   // otherwise read as unattended until the next focus change — on a settled
   // screen, never.
@@ -696,34 +699,35 @@ function sendScreenPresence(entry: Entry): void {
  * A single-backend client is unchanged by construction: nothing is
  * attached beyond home, and home is the only recipient either way.
  *
+ * `scopes` split by the same rule, on each scope's thread: a subagent's
+ * rows come from the machine that runs its thread.
+ *
  * The per-socket bound is each handle's own — `setWatchedThreads` refuses
- * a set past `MAX_WATCH_THREADS` and keeps the previous one — so a split
- * can only ever bring a connection further under it, never over.
+ * a thread set past `MAX_WATCH_THREADS` and keeps the previous one, and
+ * states no scope set past `MAX_WATCH_SCOPES` — so a split can only ever
+ * bring a connection further under them, never over.
  */
-export function setWatchedThreadsEverywhere(threadIds: readonly string[]): void {
+export function setWatchedThreadsEverywhere(threadIds: readonly string[], scopes: readonly WatchScope[]): void {
   watchedThreadIds = [...threadIds];
+  watchedScopes = [...scopes];
   for (const entry of entries) sendWatchedThreads(entry);
 }
 
 function sendWatchedThreads(entry: Entry): void {
-  entry.handle.setWatchedThreads(watchedThreadsFor(entry.id));
-}
-
-/**
- * The share of the watched set one backend is sent. Every caller goes
- * through `setWatchedThreadsEverywhere`, and the tests pin the split rule
- * above through it, on each fake client's `setWatchedThreads`.
- */
-function watchedThreadsFor(backendId: BackendKey): string[] {
-  // The common case is one backend, where the split is the whole set and
-  // walking it to prove that is pure cost.
-  if (entries.length <= 1) return [...watchedThreadIds];
-  const mine: string[] = [];
-  for (const id of watchedThreadIds) {
-    const owner = threadBackend(id);
-    if (owner === undefined || owner === backendId) mine.push(id);
+  if (entries.length <= 1) {
+    // The common case is one backend, where the split is the whole set and
+    // walking it to prove that is pure cost.
+    entry.handle.setWatchedThreads(watchedThreadIds, watchedScopes);
+    return;
   }
-  return mine;
+  const owns = (threadId: string) => {
+    const owner = threadBackend(threadId);
+    return owner === undefined || owner === entry.id;
+  };
+  entry.handle.setWatchedThreads(
+    watchedThreadIds.filter(owns),
+    watchedScopes.filter(scope => owns(scope.threadId)),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -998,6 +1002,7 @@ export function __resetBackendsForTest(): void {
   installedProver = null;
   clientLease = 'active';
   watchedThreadIds = [];
+  watchedScopes = [];
   screenPresence = null;
   __resetManifestBackendsForTest();
   syncAttachedBackends();

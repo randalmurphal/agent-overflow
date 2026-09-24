@@ -32,7 +32,7 @@ import (
 // assertion below is what catches a future caller that stops doing it:
 // `InsertTurn` stamps provider_turn_id at insert, so an OPEN turn row
 // really can carry an anchor codex would refuse, and the failure mode is
-// a fork whose provider history disagrees with its cloned items.
+// a fork whose provider history disagrees with the items it shows.
 func (a *App) forkCodexThread(ctx context.Context, source store.Thread, atTurnIndex *int) (string, error) {
 	const op = "fork codex thread"
 	lastTurnID := ""
@@ -83,7 +83,7 @@ func (a *App) forkCodexThread(ctx context.Context, source store.Thread, atTurnIn
 // turns at all; the caller starts a fresh provider thread. That answer
 // is only trusted when the ITEMS agree — a prefix that carries
 // provider-confirmed user messages but no provider turn ids is a
-// legacy-data hole (a fork cloned before turns rows were copied), and
+// legacy-data hole (a fork made before forks carried turn rows), and
 // silently discarding its provider history would be worse than failing.
 func (a *App) resolveCodexForkAnchor(threadID string, lastKeptTurnIndex int) (string, bool, error) {
 	return a.threadApplication().ResolveCodexForkAnchor(

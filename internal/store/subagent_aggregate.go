@@ -21,7 +21,7 @@ func forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootIDs []string
 	if len(rootIDs) == 0 {
 		return nil
 	}
-	resolvedSQL, resolvedArgs := timelineArms(threadID, timelineSelection{
+	resolvedSQL, resolvedArgs, err := timelineArms(q, threadID, timelineSelection{
 		Columns: func(string, string) string {
 			return `rel.root, items.id, items.kind,
 			        CASE WHEN ` + subagentPreviewKindPredicate + ` THEN items.summary ELSE '' END,
@@ -30,12 +30,14 @@ func forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootIDs []string
 		Source: "rel",
 		Where:  "items.id = rel.id",
 	})
-	roots, err := jsonList(rootIDs)
 	if err != nil {
 		return err
 	}
-	args := append(descendantsCTEArgs(threadID, roots), resolvedArgs...)
-	rows, err := q.Query(descendantsCTE+" SELECT * FROM ("+resolvedSQL+")", args...)
+	walk, walkArgs, err := descendantsWalk(q, threadID, rootIDs, visibleItemsFilterFor)
+	if err != nil {
+		return err
+	}
+	rows, err := q.Query(walk+" SELECT * FROM ("+resolvedSQL+")", append(walkArgs, resolvedArgs...)...)
 	if err != nil {
 		return fmt.Errorf("store: query subagent aggregates for %s: %w", threadID, err)
 	}

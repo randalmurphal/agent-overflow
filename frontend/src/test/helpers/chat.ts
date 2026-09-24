@@ -146,7 +146,9 @@ export function installPaneMocks(items: Item[] = [], runs: ActivityRunStub[] = [
     const selection = options.selection;
     const rootId = selection?.scopeRootId;
     const root = items.find(item => item.id === rootId);
-    const selected = !rootId ? items : items.filter(item => item.parentId === rootId
+    // Like the store, a thread page holds top-level rows only; a scoped
+    // page holds the scope root's direct children.
+    const selected = !rootId ? items.filter(item => !item.parentId) : items.filter(item => item.parentId === rootId
       && (!selection?.tools || ['tool_call', 'tool_completion', 'terminal_interaction'].includes(item.kind)));
     const lifecycle = rootId ? [...items].reverse().find(item => item.meta?.includes(`"transcript_root_id":"${rootId}"`)) ?? root : undefined;
     const scope = root && lifecycle ? { root, lifecycle, completion: [...items].reverse().find(item => item.completionOf === lifecycle.id) } : undefined;

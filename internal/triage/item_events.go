@@ -57,11 +57,19 @@ type ItemPatch struct {
 	Rev int64 `json:"rev"`
 }
 
+// ItemStreamEvent is one `provider:item_event` frame. ParentID rides
+// deltas, metas and patches, which carry no row: a client whose window does
+// not hold the row reads it to tell another scope's row from a missing one,
+// and the transport reads it (with Item.ParentID on an upsert) to withhold a
+// subagent's rows from connections not viewing that agent
+// (eventscope.ScopeRootIDFromEvent). A frame describes one row, so it has
+// exactly one scope.
 type ItemStreamEvent struct {
 	Action    string      `json:"action"`
 	ThreadID  string      `json:"threadId"`
 	Item      *store.Item `json:"item,omitempty"`
 	ItemID    string      `json:"itemId,omitempty"`
+	ParentID  string      `json:"parentId,omitempty"`
 	Kind      string      `json:"kind,omitempty"`
 	Delta     string      `json:"delta,omitempty"`
 	Meta      string      `json:"meta,omitempty"`
@@ -111,17 +119,19 @@ func newItemStreamDelta(evt ItemDeltaEvent) ItemStreamEvent {
 		Action:    itemStreamActionDelta,
 		ThreadID:  evt.ThreadID,
 		ItemID:    evt.ItemID,
+		ParentID:  evt.ParentID,
 		Kind:      evt.Kind,
 		Delta:     evt.Delta,
 		UpdatedAt: evt.UpdatedAt,
 	}
 }
 
-func newItemStreamMeta(threadID, itemID, kind, meta string, updatedAt int64) ItemStreamEvent {
+func newItemStreamMeta(threadID, itemID, parentID, kind, meta string, updatedAt int64) ItemStreamEvent {
 	return ItemStreamEvent{
 		Action:    itemStreamActionMeta,
 		ThreadID:  threadID,
 		ItemID:    itemID,
+		ParentID:  parentID,
 		Kind:      kind,
 		Meta:      meta,
 		UpdatedAt: updatedAt,
@@ -136,7 +146,7 @@ func newItemStreamMeta(threadID, itemID, kind, meta string, updatedAt int64) Ite
 // The `payloadMeta` context the command-retention rule wants is not on a
 // patch, so the rule reads as "no second copy", which is the safe
 // direction: the leaf is kept.
-func newItemStreamPatch(threadID, itemID, kind string, rev int64, patch ItemPatchFields) ItemStreamEvent {
+func newItemStreamPatch(threadID, itemID, parentID, kind string, rev int64, patch ItemPatchFields) ItemStreamEvent {
 	if patch.Meta != nil {
 		projected := itemwire.ProjectMeta(*patch.Meta, "")
 		patch.Meta = &projected
@@ -145,6 +155,7 @@ func newItemStreamPatch(threadID, itemID, kind string, rev int64, patch ItemPatc
 		Action:   itemStreamActionPatch,
 		ThreadID: threadID,
 		ItemID:   itemID,
+		ParentID: parentID,
 		Kind:     kind,
 		Patch:    &ItemPatch{ItemPatchFields: patch, Rev: rev},
 	}

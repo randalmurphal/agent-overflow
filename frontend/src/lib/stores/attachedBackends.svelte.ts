@@ -128,6 +128,15 @@ export function backendReachable(key: BackendKey): boolean {
 }
 
 /**
+ * Whether this backend has answered that it is still booting. It is not
+ * reachable yet, and it is not offline either: a surface that would call
+ * it unavailable waits instead, and the page connects once it is ready.
+ */
+export function backendStarting(key: BackendKey): boolean {
+  return getTransportStatusFor(key).status === 'starting';
+}
+
+/**
  * The one word for a down socket, with when it was last up if anything
  * knows. `lastReachedMs` is what a saved profile recorded (the desktop's
  * `ListBackends`); the transport's own `lastConnectedAt` is this page's

@@ -42,13 +42,16 @@ func (s *Store) ThreadTimelineBounds(threadID string) (oldest, newest TimelineCu
 }
 
 func (s *Store) threadTimelineEdge(threadID, orderBy string) (TimelineCursor, bool, error) {
-	query, args := timelineArms(threadID, timelineSelection{
+	query, args, err := timelineArms(s.reader(), threadID, timelineSelection{
 		Columns: timelineIDColumns,
 		OrderBy: orderBy,
 		Limit:   1,
 	})
+	if err != nil {
+		return TimelineCursor{}, false, err
+	}
 	var cursor TimelineCursor
-	err := s.reader().QueryRow(query, args...).Scan(&cursor.ItemID, &cursor.TurnIndex, &cursor.ItemIndex)
+	err = s.reader().QueryRow(query, args...).Scan(&cursor.ItemID, &cursor.TurnIndex, &cursor.ItemIndex)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TimelineCursor{}, false, nil
 	}
@@ -82,12 +85,15 @@ func (s *Store) ListItemsInRange(threadID string, from, to TimelineCursor, limit
 	if !includeChildren {
 		where += "\n		   AND " + topLevelItemsFilterFor("items.")
 	}
-	selectedSQL, selectedArgs := timelineIDSelection(threadID, timelineSelection{
+	selectedSQL, selectedArgs, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
 		Where:     where,
 		WhereArgs: []any{from.TurnIndex, from.ItemIndex, to.TurnIndex, to.ItemIndex},
 		OrderBy:   "turn_index ASC, item_index ASC",
 		Limit:     limit,
 	})
+	if err != nil {
+		return nil, err
+	}
 	items, err := queryHydratedTimelineItems(s.reader(), threadID, selectedSQL, selectedArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list items in range for %s: %w", threadID, err)

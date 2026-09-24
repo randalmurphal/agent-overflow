@@ -44,6 +44,9 @@ func (s *Store) RollbackImportedThread(threadID string) error {
 	if err := deleteThreadSearchThreadTx(tx, threadID); err != nil {
 		return err
 	}
+	if err := s.detachForkDescendantsTx(tx, threadID); err != nil {
+		return err
+	}
 	result, err := tx.Exec(`DELETE FROM threads WHERE id = ?`, threadID)
 	if err != nil {
 		return fmt.Errorf("store: delete rolled-back imported thread %s: %w", threadID, err)
@@ -201,7 +204,8 @@ func (s *Store) HasItemsAfterCursor(threadID string, turnIndex, itemIndex int) (
 	if threadID == "" {
 		return false, fmt.Errorf("store: has items after cursor: thread id is required")
 	}
-	probe, args := timelineArms(threadID, timelineSelection{
+	q := s.reader()
+	probe, args, err := timelineArms(q, threadID, timelineSelection{
 		Columns:   func(string, string) string { return "1" },
 		Turn:      "?",
 		TurnArgs:  []any{turnIndex},
@@ -209,8 +213,11 @@ func (s *Store) HasItemsAfterCursor(threadID string, turnIndex, itemIndex int) (
 		Where:     "(items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))",
 		WhereArgs: []any{turnIndex, turnIndex, itemIndex},
 	})
+	if err != nil {
+		return false, fmt.Errorf("store: has items after cursor for %s: %w", threadID, err)
+	}
 	var found int
-	err := s.reader().QueryRow(`SELECT EXISTS(`+probe+`)`, args...).Scan(&found)
+	err = q.QueryRow(`SELECT EXISTS(`+probe+`)`, args...).Scan(&found)
 	if err != nil {
 		return false, fmt.Errorf("store: has items after cursor for %s: %w", threadID, err)
 	}

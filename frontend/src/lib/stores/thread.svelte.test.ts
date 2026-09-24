@@ -4,7 +4,7 @@
 // switch loads and clears across every sub-store it composes, live-state
 // hydration, and the identity cutoff the $derived getters give consumers.
 // Each composed concern has its own sibling suite — draft placeholder,
-// item window, streamed apply, timeline window, subagent fold, switch
+// item window, streamed apply, timeline window, subagent children, switch
 // load, turns, reveal smoothing/sequencing, scroll, errors, companions —
 // named after the module it covers.
 

@@ -26,16 +26,26 @@ import (
 // (see internal/selfupdate/linuxgate.go), and on any provider/init failure
 // (logged): in-app updates simply stay unavailable while the app runs
 // normally. Failing to set up the updater must never block startup.
-func InitUpdater(appService *App, app *application.App) {
-	InitWindowUpdater(appService.updater, app, appService.version, nil)
+//
+// trial, when non-nil, applies this app's updates through a helper with a
+// database snapshot and a trial (appupdate.DesktopTrial); the app quits
+// through its ordinary shutdown once the helper has the update.
+func InitUpdater(appService *App, app *application.App, trial appupdate.DesktopTrial) {
+	if !InitWindowUpdater(appService.updater, app, appService.version, nil) || trial == nil {
+		return
+	}
+	if err := appService.updater.ConfigureDesktopTrial(trial, app.Quit); err != nil {
+		log.Printf("updater: the update trial is unavailable: %v", err)
+	}
 }
 
 // InitWindowUpdater shares the native update adapter with frontend-only windows.
 // Call before serving their page so handlers never observe partial configuration.
-func InitWindowUpdater(service *appupdate.Service, app *application.App, version string, relaunchArgs []string) {
+// It reports whether the updater is configured.
+func InitWindowUpdater(service *appupdate.Service, app *application.App, version string, relaunchArgs []string) bool {
 	if version == "dev" {
 		log.Printf("updater: disabled for dev build (version=%q)", version)
-		return
+		return false
 	}
 
 	// Native-Linux preflight: an AppImage's squashfs mount is read-only, and
@@ -46,7 +56,7 @@ func InitWindowUpdater(service *appupdate.Service, app *application.App, version
 	if runtime.GOOS == "linux" {
 		if reason := selfupdate.LinuxUpdaterBlocked(); reason != "" {
 			log.Printf("updater: %s — in-app updates disabled", reason)
-			return
+			return false
 		}
 	}
 
@@ -65,11 +75,12 @@ func InitWindowUpdater(service *appupdate.Service, app *application.App, version
 		HTTPClient:     &http.Client{},
 	}); err != nil {
 		log.Printf("updater: init failed: %v — in-app updates disabled", err)
-		return
+		return false
 	}
 
 	bridgeUpdaterEvents(service, app)
 	log.Printf("updater: configured (current version %s)", version)
+	return true
 }
 
 // bridgeUpdaterEvents forwards every updater lifecycle event selected by the

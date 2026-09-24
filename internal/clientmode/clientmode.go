@@ -18,6 +18,7 @@ import (
 	"agent-overflow/internal/backendproxy"
 	"agent-overflow/internal/loopback"
 	"agent-overflow/internal/pagehost"
+	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/transport"
 )
 
@@ -514,7 +515,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, _, err := s.carrier.FetchBootstrap(r.Context())
+	status, body, err := s.carrier.FetchBootstrap(r.Context())
 	if err != nil {
 		// A device that cannot present itself at all, or an upstream
 		// that could not be reached: indistinguishable from a mid-outage
@@ -528,7 +529,13 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The verdict is the status code. The upstream's own manifest body is
-	// deliberately unread: see the KNOWN LIMITATION on manifestJSON.
+	// deliberately unread (see the KNOWN LIMITATION on manifestJSON); a
+	// starting report is the one body passed on, so the page shows the
+	// upstream's boot progress.
+	if progress, ok := startupprogress.Parse(status, body); ok {
+		startupprogress.Write(w, progress)
+		return
+	}
 	switch status {
 	case http.StatusOK:
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:

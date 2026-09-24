@@ -374,6 +374,16 @@ func upsertAtTurnHeadCarded(s *Store, item Item) (written Item, err error) {
 	return written, err
 }
 
+// updateFieldsCarded is UpdateItemFields on a row under parentID, with
+// that parent's card.
+func updateFieldsCarded(s *Store, threadID, parentID, id string, update ItemPartialUpdate) error {
+	return s.WithSubagentCard(threadID, parentID, func(card *SubagentCard) error {
+		update.SubagentCard = card
+		_, err := s.UpdateItemFields(threadID, id, update)
+		return err
+	})
+}
+
 // cardSessionForTest is a live writer's cards: one open card per parent,
 // kept across writes as triage keeps them (internal/triage/subagent_cards.go).
 type cardSessionForTest struct {
@@ -1720,12 +1730,6 @@ func TestSubagentCardStopWritesWhatItsAgentKeptLive(t *testing.T) {
 			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
 				if flipped, err := s.ForceCloseRunningToolCallsInTurn(thread, 1, summarise, 9_000); err != nil || len(flipped) != 1 {
 					t.Fatalf("force-close: %d rows, %v", len(flipped), err)
-				}
-			}},
-		{name: "fork settle", rows: []stampFixtureRow{launch}, parent: "L",
-			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
-				if err := s.SettleForkedThreadAsInterrupted(thread, summarise, 9_000); err != nil {
-					t.Fatal(err)
 				}
 			}},
 		{name: "crash sweep", rows: []stampFixtureRow{launch}, parent: "L",

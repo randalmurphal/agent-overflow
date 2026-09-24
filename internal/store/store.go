@@ -2,6 +2,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -73,9 +74,34 @@ type Store struct {
 	cards subagentCards
 }
 
+// Options configures NewWithOptions.
+type Options struct {
+	// Context bounds the migrations. Cancelling it interrupts the running
+	// migration, whose transaction rolls back, and the open fails with
+	// the context's error. Nil means context.Background().
+	Context context.Context
+	// OnMigration, when set, is called before each pending migration runs.
+	OnMigration func(MigrationStep)
+	// RefusePendingMigrations fails the open of an existing database with
+	// pending migrations with a MigrationsPendingError, before anything
+	// writes. A database is migrated only by a trial that snapshots it
+	// first (docs/specs/app-update.md, the no-live-migration rule). A new
+	// database has nothing to protect and is created as usual.
+	RefusePendingMigrations bool
+}
+
 // New opens (or creates) the SQLite database at the given path and runs migrations.
 // Pass ":memory:" for tests.
 func New(dbPath string) (*Store, error) {
+	return NewWithOptions(dbPath, Options{})
+}
+
+// NewWithOptions is New with a migration context and progress hook.
+func NewWithOptions(dbPath string, opts Options) (*Store, error) {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := recoverInterruptedSwap(dbPath); err != nil {
 		return nil, err
 	}
@@ -86,7 +112,13 @@ func New(dbPath string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 
-	if err := runMigrations(db); err != nil {
+	if opts.RefusePendingMigrations {
+		if err := refusePendingMigrations(db); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	if err := runMigrationsContext(ctx, db, opts.OnMigration); err != nil {
 		db.Close()
 		// The refusal is already the sentence the boot failure shows.
 		if tooNew := (*SchemaTooNewError)(nil); errors.As(err, &tooNew) {
@@ -439,7 +471,7 @@ type Thread struct {
 	// the source-session leaf uuid captured when the fork was taken. The
 	// fork's first session start passes it (repaired against the CLI's
 	// resume filters) as --resume-session-at alongside --fork-session so
-	// the cut lands where the timeline was cloned, not wherever the source
+	// the cut lands where the timeline was cut, not wherever the source
 	// has grown to by first send. Empty on non-lazy forks and legacy
 	// unpinned forks. Cleared with PendingForkRef by both
 	// session-ref writers.

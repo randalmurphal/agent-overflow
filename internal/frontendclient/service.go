@@ -213,7 +213,7 @@ func (s *service) ListReleases() ([]appupdate.ReleaseSummary, error) {
 	return rows, err
 }
 func (s *service) DownloadUpdate(tag string) error { return s.updater.DownloadUpdate(tag) }
-func (s *service) RestartToUpdate() error          { return s.updater.RestartToUpdate() }
+func (s *service) RestartToUpdate() error          { return s.updater.RestartToUpdate(nil) }
 
 // No backend layout exists to migrate. Subsequent layout writes stay in this
 // frontend's storage, just as they do in the ordinary desktop and phone.

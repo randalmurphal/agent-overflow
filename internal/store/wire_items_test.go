@@ -166,8 +166,14 @@ func TestIDListReadsProbeEachIDByKey(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
 	ids := jsonListForTest(t, "loc-launch-2", "imp-launch-1")
-	wire, wireArgs := wireItemsSelection(timelineParityThreadID, ids)
-	launches, launchArgs := subagentLaunchRowsQuery(timelineParityThreadID, ids)
+	wire, wireArgs, err := wireItemsSelection(s.reader(), timelineParityThreadID, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launches, launchArgs, err := subagentLaunchRowsQuery(s.reader(), timelineParityThreadID, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
 	listed := boundedPlan{scans: map[string]bool{"json_each": true}}
 	for _, tc := range []struct {
 		name, query string
