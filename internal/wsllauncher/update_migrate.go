@@ -2,9 +2,7 @@ package wsllauncher
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"agent-overflow/internal/supervise"
@@ -35,18 +33,6 @@ type MigrationRequest struct {
 	// Retry runs the migration even when the failure memory holds the same
 	// build's failed trial over this schema version: the person asked for
 	// it from the failure page.
-	Retry bool
-}
-
-// MigrationEnd is what a launch does after a migration.
-type MigrationEnd struct {
-	// Launch is true once the migration committed: the backend starts on a
-	// database with nothing pending.
-	Launch bool
-	// Title and Detail are the failure page's copy when Launch is false.
-	Title, Detail string
-	// Retry is true when the failure memory stopped the migration: the
-	// page offers to run it again (MigrationRequest.Retry).
 	Retry bool
 }
 
@@ -85,12 +71,11 @@ func BeginLauncherMigration(recordPath, distro, payload, version string, schema 
 // through the same payload. The record exists only while the migration is
 // pending. Unless the request is a Retry, a remembered failed trial of the
 // same build over the same schema version stops it before anything runs.
-func (s UpdateSequence) Migrate(ctx context.Context, req MigrationRequest) MigrationEnd {
+func (s UpdateSequence) Migrate(ctx context.Context, req MigrationRequest) supervise.MigrationEnd {
+	run := s.run(&supervise.LauncherRecord{})
 	if !req.Retry {
-		if failed, ok := s.rememberedFailure(req.Version, req.Schema); ok {
-			s.logf("updater: the database upgrade of %s over schema v%d failed before (%s); it runs again on Retry",
-				req.Version, req.Schema, failed.Reason)
-			return rememberedMigrationEnd(failed)
+		if end, remembered := run.RememberedMigration(req.Version, req.Schema); remembered {
+			return end
 		}
 	}
 	s.step("update.migrate", "Preparing to upgrade the database")
@@ -100,100 +85,32 @@ func (s UpdateSequence) Migrate(ctx context.Context, req MigrationRequest) Migra
 	}
 	if err != nil {
 		s.logf("updater: open the database migration: %v", err)
-		return MigrationEnd{
-			Title:  "Agent Overflow could not start the database upgrade this version needs.",
-			Detail: "Nothing was started, so the data is left as it is. Details are in the launcher log.",
-		}
+		return run.MigrationNotStarted()
 	}
 	s.logf("updater: migration %s: the backend at %s refused to migrate its database live; migrating it through a trial", id, req.Payload)
 	end, err := s.Apply(ctx, id)
-	return s.finishMigration(id, end, err)
+	return run.FinishMigration(id, end, err)
 }
 
 // ResumeMigration continues a pending migration Reconcile found
 // (ReconcileResume), from its durable state.
-func (s UpdateSequence) ResumeMigration(ctx context.Context, record supervise.LauncherRecord) MigrationEnd {
+func (s UpdateSequence) ResumeMigration(ctx context.Context, record supervise.LauncherRecord) supervise.MigrationEnd {
 	s.step("update.migrate", "Resuming the database upgrade")
 	s.logf("updater: migration %s: resuming after %d attempts", record.Update.ID, record.Update.Attempts)
 	end, err := s.Apply(ctx, record.Update.ID)
-	return s.finishMigration(record.Update.ID, end, err)
+	return s.run(&record).FinishMigration(record.Update.ID, end, err)
 }
 
-// finishMigration removes a settled migration's record and says what the
-// launch does next. A record that cannot be read or written, or a restore
-// that did not finish, leaves the record for the next launch to recover.
-func (s UpdateSequence) finishMigration(id string, end UpdateEnd, err error) MigrationEnd {
-	switch {
-	case err != nil:
-		s.logf("updater: migration %s: %v", id, err)
-		return MigrationEnd{
-			Title:  "The database upgrade could not finish.",
-			Detail: "Nothing was started. Start Agent Overflow again to finish it. Details are in the launcher log.",
-		}
-	case !end.Settled():
-		s.logf("updater: migration %s: %s", id, end.Reason)
-		return MigrationEnd{
-			Title:  "The database upgrade did not finish, and the database backup could not be restored.",
-			Detail: "Nothing was started, so the data is left as it is. Start Agent Overflow again to retry the restore. Details are in the launcher log.",
-		}
-	}
-	s.logf("updater: migration %s ended %s: %s", id, end.State, end.Reason)
-	s.forgetMigration()
-	switch end.State {
-	case supervise.UpdateCommitted:
-		return MigrationEnd{Launch: true}
-	case supervise.UpdateRolledBack:
-		return MigrationEnd{
-			Title:  migrationFailedTitle,
-			Detail: "The backup was restored, so the data is as it was. " + reasonSentence(end.Reason),
-		}
-	default:
-		return MigrationEnd{
-			Title:  migrationFailedTitle,
-			Detail: "The upgrade did not run, so the data is as it was. " + reasonSentence(end.Reason),
-		}
-	}
-}
-
-// reconcileMigration is the recovery table for a migration record. A
-// settled one only has its snapshot and record left to remove; one
-// interrupted before its trial is settled and removed, and the gate starts
-// a fresh migration; one with attempts resumes in this launcher.
+// reconcileMigration is the recovery table for a migration record
+// (supervise.UpdateRun.RecoverMigration). One with attempts resumes in this
+// launcher.
 func (s UpdateSequence) reconcileMigration(ctx context.Context, record supervise.LauncherRecord) (ReconcileDecision, error) {
-	update := record.Update
-	switch {
-	case update.Settled():
-		s.discard(ctx, record, record.StablePayload)
-	case update.Attempts == 0:
-		if _, err := s.settleFailed(ctx, record, "the database upgrade was interrupted before its trial started"); err != nil {
-			return ReconcileDecision{}, err
-		}
-	default:
+	resume, err := s.run(&record).RecoverMigration(ctx, record.State)
+	if err != nil {
+		return ReconcileDecision{}, err
+	}
+	if resume {
 		return ReconcileDecision{Action: ReconcileResume, Record: record}, nil
 	}
-	s.forgetMigration()
 	return ReconcileDecision{Action: ReconcileLaunch}, nil
-}
-
-// forgetMigration removes a settled migration's record. A launcher that
-// predates migrations cannot read one, and the launch shows the outcome
-// itself, so nothing needs it. A record left behind is removed by the next
-// Reconcile.
-func (s UpdateSequence) forgetMigration() {
-	if err := os.Remove(s.RecordPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		s.logf("updater: remove the settled migration record: %v", err)
-	}
-}
-
-// migrationFailedTitle heads the page of a migration that settled without
-// committing.
-const migrationFailedTitle = "This version of Agent Overflow could not upgrade the database."
-
-// reasonSentence ends the page's detail with the recorded reason.
-func reasonSentence(reason string) string {
-	reason = boundedClause(reason)
-	if reason == "" {
-		return "Details are in the launcher log."
-	}
-	return "Reason: " + reason + ". Details are in the launcher log."
 }

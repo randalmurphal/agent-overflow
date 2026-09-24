@@ -299,7 +299,7 @@ func (a *launcherApp) updateSequence(dir, distro string) wsllauncher.UpdateSeque
 	return wsllauncher.UpdateSequence{
 		RecordPath: supervise.LauncherRecordPath(dir, launcherRuntimeMode(), distro),
 		Host:       launcherUpdateHost{UpdatePayloads: newUpdatePayloads(), configDir: dir},
-		Progress:   a.loading.setProgress,
+		Progress:   a.loading.SetProgress,
 		Logf:       log.Printf,
 	}
 }
@@ -325,7 +325,7 @@ func (a *launcherApp) runUpdateApply(id, distro string, transient bool) {
 		a.showUpdateFailure("The update could not start.", `%APPDATA% could not be resolved.`)
 		return
 	}
-	a.loading.begin(time.Now())
+	a.loading.Begin(time.Now())
 	sequence := a.updateSequence(dir, distro)
 	go wsllauncher.WatchJoiner(context.Background(), sequence.RecordPath, wsllauncher.UpdateJoinPoll, a.yieldToJoiner, log.Printf)
 	self, err := supervise.CurrentProcessRef()
@@ -437,7 +437,7 @@ func (a *launcherApp) reconcileUpdate(distro string, transient bool) bool {
 		}
 		decision, err = sequence.Join(context.Background(), decision.Record, fingerprint)
 		// The applier's last report is not this launch's.
-		a.loading.clearProgress()
+		a.loading.ClearProgress()
 	}
 	if err != nil {
 		log.Printf("updater: reconcile the update record: %v", err)
@@ -470,7 +470,7 @@ func (a *launcherApp) reconcileUpdate(distro string, transient bool) bool {
 			a.showUpdateFailure(end.Title, end.Detail)
 			return false
 		}
-		a.loading.clearProgress()
+		a.loading.ClearProgress()
 	case wsllauncher.ReconcileBlocked:
 		log.Printf("updater: update %s blocks this launch: %s", decision.Record.Update.ID, decision.Reason)
 		title, detail := "The update did not finish, and the database backup could not be restored.",
@@ -505,7 +505,7 @@ func (a *launcherApp) migrateBeforeLaunch(distro, payload string, pending *wslla
 		return false
 	}
 	// The refused boot's last report is not the upgrade's.
-	a.loading.clearProgress()
+	a.loading.ClearProgress()
 	end := a.updateSequence(dir, distro).Migrate(context.Background(), wsllauncher.MigrationRequest{
 		Distro: distro, Payload: payload, Version: payloadVersion, Schema: pending.Database, Retry: retry,
 	})
@@ -518,7 +518,7 @@ func (a *launcherApp) migrateBeforeLaunch(distro, payload string, pending *wslla
 		a.showUpdateFailure(end.Title, end.Detail)
 		return false
 	}
-	a.loading.clearProgress()
+	a.loading.ClearProgress()
 	return true
 }
 

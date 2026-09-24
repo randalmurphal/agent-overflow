@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/startupprogress"
 )
 
 // FailedTrial remembers a migration or update trial that settled without
@@ -81,4 +83,70 @@ func ForgetFailedTrial(path string) error {
 		return fmt.Errorf("supervise: remove the failed trial: %w", err)
 	}
 	return nil
+}
+
+// FailedTrialPath is the failure memory beside the record at recordPath.
+func FailedTrialPath(recordPath string) string {
+	return strings.TrimSuffix(recordPath, ".json") + ".failed-trial.json"
+}
+
+// trialTrace is what a failed trial is remembered by: the schema version the
+// database started from and the last progress the failing step reported.
+type trialTrace struct {
+	schema int
+	phase  string
+}
+
+// observe keeps the report's detail unless it is the step's recovery after
+// the failure.
+func (t *trialTrace) observe(p startupprogress.Progress) {
+	if p.Detail != "" && !RecoveryPhase(p.Phase) {
+		t.phase = p.Detail
+	}
+}
+
+// rememberFailedTrial records that build's trial settled without committing,
+// replacing any earlier memory. Without a schema version the failure cannot
+// be matched to a later launch, so it is not remembered.
+func (r UpdateRun) rememberFailedTrial(build string, trace trialTrace, reason string) {
+	if trace.schema <= 0 {
+		r.logf("updater: the failed trial of %s is not remembered: the database's schema version is unknown", build)
+		return
+	}
+	failed := FailedTrial{
+		Build: build, Schema: trace.schema, Reason: reason, Phase: trace.phase, AtMs: r.now().UnixMilli(),
+	}
+	if err := SaveFailedTrial(r.MemoryPath, failed); err != nil {
+		r.logf("updater: remember the failed trial of %s: %v", build, err)
+	}
+}
+
+// forgetFailedTrial removes the memory. A memory left behind names a build
+// or schema version the next migration gate no longer matches, and the gate
+// removes it then.
+func (r UpdateRun) forgetFailedTrial() {
+	if err := ForgetFailedTrial(r.MemoryPath); err != nil {
+		r.logf("updater: %v", err)
+	}
+}
+
+// rememberedFailure is the failure memory when it names build's trial over
+// schema. A memory of another build or schema version no longer applies and
+// is removed. One that cannot be read is logged and treated as none: the
+// migration runs, and its outcome replaces or removes the file.
+func (r UpdateRun) rememberedFailure(build string, schema int) (FailedTrial, bool) {
+	failed, found, err := LoadFailedTrial(r.MemoryPath)
+	switch {
+	case err != nil:
+		r.logf("updater: %v; running the database upgrade", err)
+		return FailedTrial{}, false
+	case !found:
+		return FailedTrial{}, false
+	case failed.Matches(build, schema):
+		return failed, true
+	}
+	r.logf("updater: forgetting the failed trial of %s over schema v%d: this launch runs %s over schema v%d",
+		failed.Build, failed.Schema, build, schema)
+	r.forgetFailedTrial()
+	return FailedTrial{}, false
 }

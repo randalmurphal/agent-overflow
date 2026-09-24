@@ -79,7 +79,7 @@ func TestMigrateCommitsThroughTheStablePayload(t *testing.T) {
 	var progress []string
 	f.sequence.Progress = func(p startupprogress.Progress) { progress = append(progress, p.Detail) }
 	end := f.sequence.Migrate(t.Context(), testMigration)
-	if end != (MigrationEnd{Launch: true}) {
+	if end != (supervise.MigrationEnd{Launch: true}) {
 		t.Fatalf("end = %+v", end)
 	}
 	f.wantMigrationCalls(
@@ -131,7 +131,7 @@ func TestMigrateShowsWhyItDidNotCommit(t *testing.T) {
 			f := newUpdateFixture(t)
 			c.setup(f.host)
 			end := f.sequence.Migrate(t.Context(), testMigration)
-			if end.Launch || end.Title != migrationFailedTitle || end.Detail != c.detail {
+			if end.Launch || end.Title != supervise.MigrationFailedTitle || end.Detail != c.detail {
 				t.Fatalf("end = %+v, want the page %q", end, c.detail)
 			}
 			f.wantMigrationCalls(c.calls...)
@@ -243,7 +243,7 @@ func TestResumeMigrationAtTheLimitRestores(t *testing.T) {
 	f := newUpdateFixture(t)
 	record := f.saveMigration(supervise.UpdatePending, supervise.TrialAttemptLimit)
 	end := f.sequence.ResumeMigration(t.Context(), record)
-	if end.Launch || end.Title != migrationFailedTitle ||
+	if end.Launch || end.Title != supervise.MigrationFailedTitle ||
 		end.Detail != "The backup was restored, so the data is as it was. Reason: the trial was interrupted 2 times without finishing. Details are in the launcher log." {
 		t.Fatalf("end = %+v", end)
 	}

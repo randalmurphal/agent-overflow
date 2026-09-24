@@ -92,7 +92,7 @@ func TestMigrationRetryPageCallsRetryMigration(t *testing.T) {
 		t.Fatalf("the Retry call is not Wails' CallBinding shape: %s", body)
 	}
 	for _, page := range [][]byte{failurePageHTML("t", "d", "a"), startupFailureHTML(errLaunchFailed)} {
-		if strings.Contains(string(page), "ao-retry") || strings.Contains(string(page), "<script") {
+		if strings.Contains(string(page), `id="ao-retry"`) || strings.Contains(string(page), "<script") {
 			t.Fatalf("a failure page without a remembered upgrade offers Retry: %s", page)
 		}
 	}

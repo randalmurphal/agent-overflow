@@ -77,12 +77,6 @@ func recordNamePart(s string) string {
 	return b.String()
 }
 
-// Migration reports whether the record migrates the database of the
-// version already installed (State.BeginMigration) instead of updating it.
-func (r LauncherRecord) Migration() bool {
-	return r.Update != nil && r.Update.From == r.Update.To
-}
-
 // TrialPayload is the payload whose commands snapshot the database and run
 // the trial: the staged target for an update, the stable payload for a
 // migration.

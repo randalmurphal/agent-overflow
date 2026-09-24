@@ -9,9 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
-	"agent-overflow/internal/startupprogress"
+	"agent-overflow/internal/startuppage"
 	"agent-overflow/internal/wsllauncher"
 )
 
@@ -132,7 +131,7 @@ func injectionExcerpt(body string) string {
 
 func TestPickerErrorRoutesServeTheCurrentFailure(t *testing.T) {
 	page := startupFailureHTML(errLaunchFailed)
-	handler := pickerAssetHandler(nil, func() []byte { return page }, func() loadingReport { return loadingReport{} })
+	handler := pickerAssetHandler(nil, func() []byte { return page }, func() startuppage.Report { return startuppage.Report{} })
 	for _, path := range []string{"/startup-error", "/connectivity-error"} {
 		page = startupFailureHTML(wsllauncher.BootstrapHTTPError{StatusCode: 404})
 		response := httptest.NewRecorder()
@@ -146,43 +145,12 @@ func TestPickerErrorRoutesServeTheCurrentFailure(t *testing.T) {
 	}
 }
 
-// TestLoadingReportFollowsTheLaunch: before a launch the report has no
-// clock; a launch starts the clock; the backend's reports supply the
-// status, step and the update being finished; a new launch forgets the
-// previous backend's report.
-func TestLoadingReportFollowsTheLaunch(t *testing.T) {
-	var status loadingStatus
-	t0 := time.Unix(1_700_000_000, 0)
-	if got := status.report(t0); got != (loadingReport{Title: "Starting Agent Overflow"}) {
-		t.Fatalf("report before a launch = %+v", got)
-	}
-
-	status.begin(t0)
-	if got := status.report(t0.Add(1500 * time.Millisecond)); got.ElapsedMs != 1500 || got.Phase != "" {
-		t.Fatalf("report while WSL boots = %+v", got)
-	}
-
-	status.setProgress(startupprogress.Progress{Phase: "store.migrate", Detail: "Applying migration 3 of 7 v101", Step: 3, Steps: 7, UpdatingTo: "1.2.3"})
-	want := loadingReport{
-		Title: "Updating Agent Overflow", Status: "Finishing update to v1.2.3: applying migration 3 of 7 v101",
-		Phase: "store.migrate", Step: 3, Steps: 7, ElapsedMs: 12_000,
-	}
-	if got := status.report(t0.Add(12 * time.Second)); got != want {
-		t.Fatalf("report = %+v, want %+v", got, want)
-	}
-
-	status.begin(t0.Add(time.Minute))
-	if got := status.report(t0.Add(time.Minute)); got.Phase != "" || got.Title != "Starting Agent Overflow" || got.ElapsedMs != 0 {
-		t.Fatalf("a new launch kept the old report: %+v", got)
-	}
-}
-
 // TestLoadingRoutesServeTheLiveReport: /loading polls /loading.json through
 // /loading.js, so the page updates without a reload, and none of it is
 // cacheable.
 func TestLoadingRoutesServeTheLiveReport(t *testing.T) {
-	report := loadingReport{Title: "Starting Agent Overflow", Status: "Applying migration 1 of 2 a", Phase: "store.migrate", Step: 1, Steps: 2, ElapsedMs: 42}
-	handler := pickerAssetHandler(nil, func() []byte { return nil }, func() loadingReport { return report })
+	report := startuppage.Report{Title: "Starting Agent Overflow", Status: "Applying migration 1 of 2 a", Phase: "store.migrate", Step: 1, Steps: 2, ElapsedMs: 42}
+	handler := pickerAssetHandler(nil, func() []byte { return nil }, func() startuppage.Report { return report })
 	get := func(path string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
@@ -213,7 +181,7 @@ func TestLoadingRoutesServeTheLiveReport(t *testing.T) {
 	}
 
 	rec := get("/loading.json")
-	var got loadingReport
+	var got startuppage.Report
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got != report {
 		t.Fatalf("/loading.json = %q (%v), want %+v", rec.Body.String(), err, report)
 	}

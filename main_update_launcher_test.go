@@ -306,7 +306,7 @@ func TestLauncherMigrationRunsTheRealCommands(t *testing.T) {
 			if len(calls) != 0 {
 				t.Errorf("launcher steps = %q; a migration publishes nothing", calls)
 			}
-			failed, remembered, err := supervise.LoadFailedTrial(wsllauncher.FailedTrialPath(recordPath))
+			failed, remembered, err := supervise.LoadFailedTrial(supervise.FailedTrialPath(recordPath))
 			if err != nil || remembered != !tc.launch {
 				t.Fatalf("failure memory = %+v, found %v, %v; want found %v", failed, remembered, err, !tc.launch)
 			}

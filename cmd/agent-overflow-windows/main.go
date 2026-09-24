@@ -68,6 +68,7 @@ import (
 	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/pagehost"
 	"agent-overflow/internal/serialqueue"
+	"agent-overflow/internal/startuppage"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
 	"agent-overflow/internal/webview2host"
@@ -584,7 +585,7 @@ type launcherApp struct {
 	backendURL     atomic.Pointer[string]
 	startupFailure atomic.Pointer[[]byte]
 	// loading is what /loading.json reports while the backend starts.
-	loading loadingStatus
+	loading startuppage.Status
 }
 
 // launchTarget is a launch launchAndShow can run again.
@@ -716,7 +717,7 @@ func (a *launcherApp) launchAndShow(distro string, transient, retryMigration boo
 
 	started := time.Now()
 	defer logBootPhase("launcher.launch_and_show.total", started)
-	a.loading.begin(started)
+	a.loading.Begin(started)
 
 	// The distro's update record is reconciled before anything runs in it.
 	// A launch it hands off or blocks owns the window from there.
@@ -1142,9 +1143,9 @@ func waitBackendGone(ctx context.Context, bs *wsllauncher.Bootstrap) error {
 // backend's startup progress to the loading page, and logs its verdict.
 func (a *launcherApp) probeLaunchedBackend(ctx context.Context, bs *wsllauncher.Bootstrap) error {
 	phaseStarted := time.Now()
-	a.loading.clearProgress()
+	a.loading.ClearProgress()
 	err := wsllauncher.ProbeBootstrap(ctx, bs.Port, bs.Token, wsllauncher.ProbeConfig{
-		OnProgress: a.loading.setProgress,
+		OnProgress: a.loading.SetProgress,
 	})
 	logBootPhase("launcher.probe_bootstrap", phaseStarted)
 	if err != nil {
@@ -1405,7 +1406,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 					return *page
 				}
 				return startupFailureHTML(nil)
-			}, func() loadingReport { return a.loading.report(time.Now()) }),
+			}, func() startuppage.Report { return a.loading.Report(time.Now()) }),
 		},
 		Windows: webviewBrowserOptions(mode, profileDir, diagnosticsDir, !applier),
 		// Cancel app shutdown until the user explicitly closes the

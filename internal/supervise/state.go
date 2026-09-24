@@ -99,6 +99,12 @@ func (r *UpdateRecord) Settled() bool {
 	return r != nil && r.State != UpdatePending
 }
 
+// Migration reports whether the state holds a migration of the database of
+// the version already installed (BeginMigration) instead of an update.
+func (s State) Migration() bool {
+	return s.Update != nil && s.Update.From == s.Update.To
+}
+
 // Selection is what a validated state says to run.
 type Selection struct {
 	// Version is the staged version to spawn.

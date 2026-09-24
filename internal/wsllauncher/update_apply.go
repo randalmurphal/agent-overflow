@@ -59,146 +59,35 @@ type UpdateSequence struct {
 	Logf     func(string, ...any)
 }
 
-// UpdateEnd is where an update rests after Apply or Reconcile.
-type UpdateEnd struct {
-	// State is the record's state: committed, rolled-back or failed once
-	// the update settled, pending when it could not be.
-	State supervise.UpdateState
-	// Reason is the settled reason, or what blocks a pending update.
-	Reason string
-}
-
-// Settled reports whether the update reached a terminal state.
-func (e UpdateEnd) Settled() bool { return e.State != supervise.UpdatePending }
-
 // ErrNoUpdateRecord is an --update-apply with no record to apply.
 var ErrNoUpdateRecord = errors.New("wsllauncher: there is no update record")
 
-// Apply runs the update id from its durable state: snapshot on the first
-// attempt, the trial, then commit or rollback. A committed record repeats
-// the commit, which is idempotent. It returns an error when the record
-// cannot be read or written, or when a commit step fails after the commit
-// became durable; the next launch resumes either. A migration record runs
-// the same steps through the stable payload and has nothing to publish.
-//
-// A trial that commits removes the failure memory; one that settles
-// rolled back or failed is remembered for its target and the schema
-// version its database started from (FailedTrialPath).
-func (s UpdateSequence) Apply(ctx context.Context, id string) (UpdateEnd, error) {
+// Apply runs the update id from its durable state (supervise.UpdateRun.
+// Apply). It returns an error when the record cannot be read or written, or
+// when a commit step fails after the commit became durable; the next launch
+// resumes either. A migration record runs the same steps through the stable
+// payload and has nothing to publish.
+func (s UpdateSequence) Apply(ctx context.Context, id string) (supervise.UpdateEnd, error) {
 	record, found, err := supervise.LoadLauncherRecord(s.RecordPath)
 	if err != nil {
-		return UpdateEnd{}, err
+		return supervise.UpdateEnd{}, err
 	}
 	if !found {
-		return UpdateEnd{}, ErrNoUpdateRecord
+		return supervise.UpdateEnd{}, ErrNoUpdateRecord
 	}
 	if record.Update.ID != id {
-		return UpdateEnd{}, fmt.Errorf("wsllauncher: the update record is for update %q, not %q", record.Update.ID, id)
+		return supervise.UpdateEnd{}, fmt.Errorf("wsllauncher: the update record is for update %q, not %q", record.Update.ID, id)
 	}
 	if applier := record.Applier; applier != nil && *applier != s.Self {
 		running, err := applier.Running()
 		if err != nil {
-			return UpdateEnd{}, fmt.Errorf("wsllauncher: check the launcher applying update %s: %w", id, err)
+			return supervise.UpdateEnd{}, fmt.Errorf("wsllauncher: check the launcher applying update %s: %w", id, err)
 		}
 		if running {
-			return UpdateEnd{}, fmt.Errorf("wsllauncher: update %s is being applied by another launcher (pid %d)", id, applier.PID)
+			return supervise.UpdateEnd{}, fmt.Errorf("wsllauncher: update %s is being applied by another launcher (pid %d)", id, applier.PID)
 		}
 	}
-	switch record.Update.State {
-	case supervise.UpdateCommitted:
-		return s.commit(ctx, record)
-	case supervise.UpdateRolledBack, supervise.UpdateFailed:
-		return UpdateEnd{State: record.Update.State, Reason: record.Update.Reason}, nil
-	}
-	trace := trialTrace{schema: record.Update.FromSchema}
-	end, err := s.runTrials(ctx, record, &trace)
-	if err == nil && (end.State == supervise.UpdateRolledBack || end.State == supervise.UpdateFailed) {
-		s.rememberFailedTrial(record.Update.To, trace, end.Reason)
-	}
-	return end, err
-}
-
-// runTrials is Apply for a pending record: the snapshot on the first
-// attempt, one trial, and the settlement it leads to. trace receives the
-// schema version the snapshot reports and the last progress of the
-// snapshot and trial commands.
-func (s UpdateSequence) runTrials(ctx context.Context, record supervise.LauncherRecord, trace *trialTrace) (UpdateEnd, error) {
-	if record.Update.Attempts >= supervise.TrialAttemptLimit {
-		return s.rollBack(ctx, record, fmt.Sprintf(
-			"the trial was interrupted %d times without finishing", record.Update.Attempts))
-	}
-
-	if record.Update.Attempts == 0 {
-		var args []string
-		if free, ok := s.Host.HostFreeBytes(record.Distro); ok {
-			args = append(args, "--host-free", strconv.FormatUint(free, 10))
-		}
-		result, err := s.runTraced(ctx, record, trace, supervise.UpdateSnapshotCommand, args...)
-		if result.Schema > 0 {
-			trace.schema = result.Schema
-			update := *record.Update
-			update.FromSchema = result.Schema
-			record.Update = &update
-		}
-		if err != nil {
-			return s.settleFailed(ctx, record, "the database could not be backed up: "+err.Error())
-		}
-		if result.Outcome != supervise.UpdateOutcomeOK {
-			return s.settleFailed(ctx, record, "the database could not be backed up: "+result.Reason)
-		}
-	}
-
-	// Count the attempt durably before it starts, so a trial that kills the
-	// machine is found counted by the next launch.
-	next, err := record.State.Retry()
-	if err != nil {
-		return UpdateEnd{}, err
-	}
-	record.State = next
-	if err := supervise.SaveLauncherRecord(s.RecordPath, record); err != nil {
-		return UpdateEnd{}, err
-	}
-	attempt := record.Update.Attempts
-	result, err := s.runTraced(ctx, record, trace, supervise.UpdateTrialRunCommand,
-		"--to", record.Update.To, "--attempt", strconv.Itoa(attempt))
-	if err != nil {
-		// A command stopped for stalling may still report a decided
-		// trial on its way out. Anything else it reports is the stop.
-		var stopped *UpdateCommandStoppedError
-		if !errors.As(err, &stopped) || stopped.Result == nil ||
-			(stopped.Result.Outcome != supervise.UpdateOutcomePrepared && stopped.Result.Outcome != supervise.UpdateOutcomeRolledBack) {
-			return s.rollBack(ctx, record, err.Error())
-		}
-		result = *stopped.Result
-	}
-	switch result.Outcome {
-	case supervise.UpdateOutcomePrepared:
-		next, err := record.State.Settle(supervise.UpdateCommitted, "", s.now())
-		if err != nil {
-			return UpdateEnd{}, err
-		}
-		record.State = next
-		if err := supervise.SaveLauncherRecord(s.RecordPath, record); err != nil {
-			return UpdateEnd{}, err
-		}
-		s.forgetFailedTrial()
-		return s.commit(ctx, record)
-	case supervise.UpdateOutcomeRolledBack:
-		return s.settleRolledBack(ctx, record, result.Reason)
-	case supervise.UpdateOutcomeChanged:
-		// Another backend used the database since the update last left
-		// it. A restore would discard that work, at any attempt.
-		return s.settleFailed(ctx, record, result.Reason)
-	case supervise.UpdateOutcomeRefused, supervise.UpdateOutcomeNoSnapshot:
-		// The command changed nothing. On the first attempt the database
-		// is the one the snapshot copied, so nothing of the target's ran.
-		if attempt <= 1 {
-			return s.settleFailed(ctx, record, result.Reason)
-		}
-		return s.rollBack(ctx, record, result.Reason)
-	default:
-		return s.rollBack(ctx, record, result.Reason)
-	}
+	return s.run(&record).Apply(ctx, record.State)
 }
 
 // ReconcileAction is what a launcher at the install path does after
@@ -278,6 +167,7 @@ func (s UpdateSequence) Reconcile(ctx context.Context, fingerprint string) (Reco
 		return s.reconcileMigration(ctx, record)
 	}
 	update := record.Update
+	run := s.run(&record)
 	isTarget := fingerprint == record.TargetFingerprint
 	switch update.State {
 	case supervise.UpdateCommitted:
@@ -292,8 +182,8 @@ func (s UpdateSequence) Reconcile(ctx context.Context, fingerprint string) (Reco
 			}
 			return ReconcileDecision{Action: ReconcileHandOff, Record: record}, nil
 		}
-		s.discard(ctx, record, record.StablePayload)
-		decision, err := s.markReported(record)
+		run.Discard(ctx, record.State)
+		decision, err := s.markReported(run, record)
 		if err != nil {
 			return ReconcileDecision{}, err
 		}
@@ -303,40 +193,24 @@ func (s UpdateSequence) Reconcile(ctx context.Context, fingerprint string) (Reco
 		if update.Reported {
 			return ReconcileDecision{Action: ReconcileLaunch, Record: record}, nil
 		}
-		s.discard(ctx, record, record.StablePayload)
-		s.removeStagedPayload(ctx, record)
-		return s.markReported(record)
+		run.Discard(ctx, record.State)
+		run.RemoveStaged(ctx, record.State)
+		return s.markReported(run, record)
 	}
 
-	switch {
-	case update.Attempts == 0:
-		end, err := s.settleFailed(ctx, record, "the update was interrupted before its trial started")
-		if err != nil {
-			return ReconcileDecision{}, err
-		}
-		return s.afterRecovery(end)
-	case update.Attempts < supervise.TrialAttemptLimit && fileExists(record.StagedLauncher):
-		return ReconcileDecision{Action: ReconcileHandOff, Record: record}, nil
-	default:
-		exhausted := update.Attempts >= supervise.TrialAttemptLimit
-		reason := fmt.Sprintf("the trial was interrupted %d times without finishing", update.Attempts)
-		if !exhausted {
-			reason = "the update was interrupted and its new launcher is missing"
-		}
-		end, err := s.rollBack(ctx, record, reason)
-		if err != nil {
-			return ReconcileDecision{}, err
-		}
-		if exhausted && end.State == supervise.UpdateRolledBack {
-			s.rememberFailedTrial(update.To, trialTrace{schema: update.FromSchema}, end.Reason)
-		}
-		return s.afterRecovery(end)
+	end, resume, err := run.RecoverPending(ctx, record.State, fileExists(record.StagedLauncher), "its new launcher")
+	if err != nil {
+		return ReconcileDecision{}, err
 	}
+	if resume {
+		return ReconcileDecision{Action: ReconcileHandOff, Record: record}, nil
+	}
+	return s.afterRecovery(end)
 }
 
 // afterRecovery launches once a recovery settled the update, and blocks
 // when it could not.
-func (s UpdateSequence) afterRecovery(end UpdateEnd) (ReconcileDecision, error) {
+func (s UpdateSequence) afterRecovery(end supervise.UpdateEnd) (ReconcileDecision, error) {
 	record, _, err := supervise.LoadLauncherRecord(s.RecordPath)
 	if err != nil {
 		return ReconcileDecision{}, err
@@ -344,135 +218,127 @@ func (s UpdateSequence) afterRecovery(end UpdateEnd) (ReconcileDecision, error) 
 	if !end.Settled() {
 		return ReconcileDecision{Action: ReconcileBlocked, Record: record, Reason: end.Reason}, nil
 	}
-	return s.markReported(record)
+	return s.markReported(s.run(&record), record)
 }
 
 // markReported records that a launch acted on the settled record and removes
 // the launcher's residue.
-func (s UpdateSequence) markReported(record supervise.LauncherRecord) (ReconcileDecision, error) {
+func (s UpdateSequence) markReported(run supervise.UpdateRun, record supervise.LauncherRecord) (ReconcileDecision, error) {
 	if err := s.Host.RemoveLauncherResidue(record); err != nil {
 		s.logf("updater: remove the update's launcher files: %v", err)
 	}
-	next, changed, err := record.State.MarkReported()
+	next, err := run.MarkReported(record.State)
 	if err != nil {
 		return ReconcileDecision{}, err
 	}
-	if changed {
-		record.State = next
-		if err := supervise.SaveLauncherRecord(s.RecordPath, record); err != nil {
-			return ReconcileDecision{}, err
-		}
-	}
+	record.State = next
 	return ReconcileDecision{Action: ReconcileLaunch, Record: record}, nil
 }
 
-// commit publishes a committed update. Every step is idempotent, so a commit
-// interrupted anywhere is finished by repeating it. A migration publishes
-// nothing: its payload is already the stable one.
-func (s UpdateSequence) commit(ctx context.Context, record supervise.LauncherRecord) (UpdateEnd, error) {
-	if record.Migration() {
-		s.discard(ctx, record, record.StablePayload)
-		return UpdateEnd{State: supervise.UpdateCommitted}, nil
+// run is the shared sequence over record, whose steps run as WSL commands
+// (launcherSteps).
+func (s UpdateSequence) run(record *supervise.LauncherRecord) supervise.UpdateRun {
+	return supervise.UpdateRun{
+		Steps:      &launcherSteps{s: s, record: record},
+		MemoryPath: supervise.FailedTrialPath(s.RecordPath),
+		LogName:    "launcher log",
+		Progress:   s.Progress,
+		Now:        s.Now,
+		Logf:       s.logf,
 	}
-	s.step("update.commit", "Installing "+startupprogress.DisplayVersion(record.Update.To))
-	s.discard(ctx, record, record.StagedPayload)
-	if err := s.Host.InvalidatePayloadRecord(record); err != nil {
-		return UpdateEnd{}, fmt.Errorf("invalidate the installed payload record: %w", err)
-	}
-	if err := s.Host.CommitPayload(ctx, record); err != nil {
-		return UpdateEnd{}, fmt.Errorf("install the new backend: %w", err)
-	}
-	if err := s.Host.RecordPayload(record); err != nil {
-		return UpdateEnd{}, fmt.Errorf("record the new backend: %w", err)
-	}
-	if err := s.Host.PublishLauncher(record); err != nil {
-		return UpdateEnd{}, fmt.Errorf("install the new launcher: %w", err)
-	}
-	return UpdateEnd{State: supervise.UpdateCommitted}, nil
 }
 
-// rollBack restores the database through the stable payload, the version
-// that runs next, and settles rolled-back. A restore that does not finish
-// leaves the record pending: nothing may start on a database in an unknown
-// state, and the next launch tries again.
-func (s UpdateSequence) rollBack(ctx context.Context, record supervise.LauncherRecord, reason string) (UpdateEnd, error) {
-	s.step("update.restore", "Restoring the previous version")
-	result, err := s.run(ctx, record, record.StablePayload, supervise.UpdateRestoreCommand, "--reason", reason)
-	if err == nil && result.Outcome == supervise.UpdateOutcomeOK {
-		return s.settleRolledBack(ctx, record, reason)
-	}
-	cause := result.Reason
-	if err != nil {
-		cause = err.Error()
-	}
-	s.logf("updater: update %s: restore failed: %s", record.Update.ID, cause)
-	return UpdateEnd{State: supervise.UpdatePending, Reason: fmt.Sprintf(
-		"The update to %s did not finish (%s), and the database backup could not be restored: %s. Start Agent Overflow again to retry.",
-		startupprogress.DisplayVersion(record.Update.To), reason, cause)}, nil
+// launcherSteps is supervise.UpdateSteps for the launcher's record: each
+// step is an update command of a backend in the record's distro. The
+// snapshot and the trial run through the record's trial payload, restore
+// and discard through the stable payload, the version that runs next.
+type launcherSteps struct {
+	s      UpdateSequence
+	record *supervise.LauncherRecord
 }
 
-func (s UpdateSequence) settleRolledBack(ctx context.Context, record supervise.LauncherRecord, reason string) (UpdateEnd, error) {
-	return s.settle(ctx, record, supervise.UpdateRolledBack, reason)
-}
-
-func (s UpdateSequence) settleFailed(ctx context.Context, record supervise.LauncherRecord, reason string) (UpdateEnd, error) {
-	return s.settle(ctx, record, supervise.UpdateFailed, reason)
-}
-
-// settle records an update that ends on the previous version, then removes
-// what it left behind.
-func (s UpdateSequence) settle(ctx context.Context, record supervise.LauncherRecord, state supervise.UpdateState, reason string) (UpdateEnd, error) {
-	next, err := record.State.Settle(state, reason, s.now())
-	if err != nil {
-		return UpdateEnd{}, err
+func (l *launcherSteps) Save(state supervise.State) error {
+	next := *l.record
+	next.State = state
+	if err := supervise.SaveLauncherRecord(l.s.RecordPath, next); err != nil {
+		return err
 	}
-	record.State = next
-	if err := supervise.SaveLauncherRecord(s.RecordPath, record); err != nil {
-		return UpdateEnd{}, err
-	}
-	s.logf("updater: update %s to %s %s: %s", record.Update.ID, record.Update.To, state, reason)
-	s.discard(ctx, record, record.StablePayload)
-	s.removeStagedPayload(ctx, record)
-	return UpdateEnd{State: state, Reason: reason}, nil
+	*l.record = next
+	return nil
 }
 
-// discard removes the snapshot. A failure costs disk until the next update
-// replaces the snapshot, so it is logged.
-func (s UpdateSequence) discard(ctx context.Context, record supervise.LauncherRecord, payload string) {
-	result, err := s.run(ctx, record, payload, supervise.UpdateDiscardCommand)
+func (l *launcherSteps) RemoveRecord() error {
+	if err := os.Remove(l.s.RecordPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (l *launcherSteps) Snapshot(ctx context.Context, progress func(startupprogress.Progress)) (supervise.UpdateEvent, error) {
+	var args []string
+	if free, ok := l.s.Host.HostFreeBytes(l.record.Distro); ok {
+		args = append(args, "--host-free", strconv.FormatUint(free, 10))
+	}
+	return l.command(ctx, l.record.TrialPayload(), supervise.UpdateSnapshotCommand, progress, args...)
+}
+
+// Trial runs the trial command. A command stopped for stalling may still
+// report a decided trial on its way out, which decides the trial; anything
+// else it reports is the stop.
+func (l *launcherSteps) Trial(ctx context.Context, to string, attempt int, progress func(startupprogress.Progress)) (supervise.UpdateEvent, error) {
+	result, err := l.command(ctx, l.record.TrialPayload(), supervise.UpdateTrialRunCommand, progress,
+		"--to", to, "--attempt", strconv.Itoa(attempt))
+	var stopped *UpdateCommandStoppedError
+	if err != nil && errors.As(err, &stopped) && stopped.Result != nil &&
+		(stopped.Result.Outcome == supervise.UpdateOutcomePrepared || stopped.Result.Outcome == supervise.UpdateOutcomeRolledBack) {
+		return *stopped.Result, nil
+	}
+	return result, err
+}
+
+func (l *launcherSteps) Restore(ctx context.Context, reason string, progress func(startupprogress.Progress)) (supervise.UpdateEvent, error) {
+	return l.command(ctx, l.record.StablePayload, supervise.UpdateRestoreCommand, progress, "--reason", reason)
+}
+
+func (l *launcherSteps) Discard(ctx context.Context, progress func(startupprogress.Progress)) (supervise.UpdateEvent, error) {
+	return l.command(ctx, l.record.StablePayload, supervise.UpdateDiscardCommand, progress)
+}
+
+func (l *launcherSteps) RemoveStaged(ctx context.Context) error {
+	return l.s.Host.RemoveStagedPayload(ctx, *l.record)
+}
+
+// Publish installs the committed update. The snapshot is discarded through
+// the staged payload, which is the one that knows the command while the
+// stable path still holds the previous backend. Every step is idempotent,
+// so a commit interrupted anywhere is finished by repeating it.
+func (l *launcherSteps) Publish(ctx context.Context) error {
+	record := *l.record
+	result, err := l.command(ctx, record.StagedPayload, supervise.UpdateDiscardCommand, l.s.Progress)
 	switch {
 	case err != nil:
-		s.logf("updater: update %s: discard the database backup: %v", record.Update.ID, err)
+		l.s.logf("updater: update %s: discard the database backup: %v", record.Update.ID, err)
 	case result.Outcome != supervise.UpdateOutcomeOK:
-		s.logf("updater: update %s: discard the database backup: %s: %s", record.Update.ID, result.Outcome, result.Reason)
+		l.s.logf("updater: update %s: discard the database backup: %s: %s", record.Update.ID, result.Outcome, result.Reason)
 	}
+	if err := l.s.Host.InvalidatePayloadRecord(record); err != nil {
+		return fmt.Errorf("invalidate the installed payload record: %w", err)
+	}
+	if err := l.s.Host.CommitPayload(ctx, record); err != nil {
+		return fmt.Errorf("install the new backend: %w", err)
+	}
+	if err := l.s.Host.RecordPayload(record); err != nil {
+		return fmt.Errorf("record the new backend: %w", err)
+	}
+	if err := l.s.Host.PublishLauncher(record); err != nil {
+		return fmt.Errorf("install the new launcher: %w", err)
+	}
+	return nil
 }
 
-func (s UpdateSequence) removeStagedPayload(ctx context.Context, record supervise.LauncherRecord) {
-	if record.Migration() {
-		return
-	}
-	if err := s.Host.RemoveStagedPayload(ctx, record); err != nil {
-		s.logf("updater: update %s: remove the staged backend: %v", record.Update.ID, err)
-	}
-}
-
-func (s UpdateSequence) run(ctx context.Context, record supervise.LauncherRecord, payload, command string, args ...string) (supervise.UpdateEvent, error) {
-	full := append([]string{"--id", record.Update.ID}, args...)
-	return s.Host.RunCommand(ctx, record.Distro, payload, command, full, s.Progress)
-}
-
-// runTraced runs a snapshot or trial command of the record's trial payload,
-// whose failure is remembered: trace keeps the last progress it reports.
-func (s UpdateSequence) runTraced(ctx context.Context, record supervise.LauncherRecord, trace *trialTrace, command string, args ...string) (supervise.UpdateEvent, error) {
-	trace.phase = ""
-	full := append([]string{"--id", record.Update.ID}, args...)
-	return s.Host.RunCommand(ctx, record.Distro, record.TrialPayload(), command, full, func(p startupprogress.Progress) {
-		trace.observe(p)
-		if s.Progress != nil {
-			s.Progress(p)
-		}
-	})
+func (l *launcherSteps) command(ctx context.Context, payload, command string, progress func(startupprogress.Progress), args ...string) (supervise.UpdateEvent, error) {
+	full := append([]string{"--id", l.record.Update.ID}, args...)
+	return l.s.Host.RunCommand(ctx, l.record.Distro, payload, command, full, progress)
 }
 
 func (s UpdateSequence) step(phase, detail string) {

@@ -13,7 +13,7 @@ import (
 // failedTrial is the fixture's failure memory, if any.
 func (f *updateFixture) failedTrial() (supervise.FailedTrial, bool) {
 	f.t.Helper()
-	failed, found, err := supervise.LoadFailedTrial(FailedTrialPath(f.sequence.RecordPath))
+	failed, found, err := supervise.LoadFailedTrial(supervise.FailedTrialPath(f.sequence.RecordPath))
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func (f *updateFixture) wantNoFailedTrial() {
 
 func (f *updateFixture) remember(failed supervise.FailedTrial) {
 	f.t.Helper()
-	if err := supervise.SaveFailedTrial(FailedTrialPath(f.sequence.RecordPath), failed); err != nil {
+	if err := supervise.SaveFailedTrial(supervise.FailedTrialPath(f.sequence.RecordPath), failed); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -69,7 +69,7 @@ func TestFailureMemoryStopsTheSameMigrationUntilRetry(t *testing.T) {
 	f.trialFailsAt("Applying migration 3 of 7 add_index", "migration v119 failed: disk I/O error")
 
 	first := f.sequence.Migrate(t.Context(), testMigration)
-	if first.Launch || first.Retry || first.Title != migrationFailedTitle {
+	if first.Launch || first.Retry || first.Title != supervise.MigrationFailedTitle {
 		t.Fatalf("first launch = %+v, want the failure without Retry", first)
 	}
 	f.wantMigrationCalls(migrationCallsOfOneTrial...)
@@ -80,8 +80,8 @@ func TestFailureMemoryStopsTheSameMigrationUntilRetry(t *testing.T) {
 
 	f.host.calls = nil
 	second := f.sequence.Migrate(t.Context(), testMigration)
-	want := MigrationEnd{
-		Title: migrationFailedTitle,
+	want := supervise.MigrationEnd{
+		Title: supervise.MigrationFailedTitle,
 		Detail: "The last attempt stopped at: Applying migration 3 of 7 add_index. It does not run again on its own, " +
 			"so the data is as it was. Reason: migration v119 failed: disk I/O error. Details are in the launcher log.",
 		Retry: true,
@@ -96,7 +96,7 @@ func TestFailureMemoryStopsTheSameMigrationUntilRetry(t *testing.T) {
 
 	retry := testMigration
 	retry.Retry = true
-	if end := f.sequence.Migrate(t.Context(), retry); end != (MigrationEnd{Launch: true}) {
+	if end := f.sequence.Migrate(t.Context(), retry); end != (supervise.MigrationEnd{Launch: true}) {
 		t.Fatalf("Retry = %+v, want a launch", end)
 	}
 	f.wantMigrationCalls(migrationCallsOfOneTrial...)
@@ -118,7 +118,7 @@ func TestFailureMemoryAppliesToOneBuildOverOneSchema(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newUpdateFixture(t)
 			f.remember(supervise.FailedTrial{Build: "2.0.0", Schema: 118, Reason: "earlier", AtMs: 1})
-			if end := f.sequence.Migrate(t.Context(), c.req); end != (MigrationEnd{Launch: true}) {
+			if end := f.sequence.Migrate(t.Context(), c.req); end != (supervise.MigrationEnd{Launch: true}) {
 				t.Fatalf("end = %+v, want a launch", end)
 			}
 			if len(f.host.calls) != 3 || !strings.HasPrefix(f.host.calls[1], "trial-run@stable") {
@@ -208,7 +208,7 @@ func TestAnUnreadableFailureMemoryRunsTheMigration(t *testing.T) {
 	if err := os.MkdirAll(strings.TrimSuffix(f.sequence.RecordPath, "/app-update-prod.ubuntu.json"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(FailedTrialPath(f.sequence.RecordPath), []byte("{"), 0o600); err != nil {
+	if err := os.WriteFile(supervise.FailedTrialPath(f.sequence.RecordPath), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	f.trialFailsAt("Applying migration 1 of 1", "failed")
