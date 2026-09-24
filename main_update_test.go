@@ -261,6 +261,23 @@ func TestUpdateCommandsRunThroughMain(t *testing.T) {
 		}
 	})
 
+	t.Run("the space check runs beside the running backend", func(t *testing.T) {
+		held, err := acquireBackendInstanceLock(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer held.file.Close()
+		run := runUpdateCommandProcess(t, "", supervise.UpdateSpaceCommand, "--id", "u1", "--data-dir", dataRoot)
+		if result := run.result(t); result.Outcome != supervise.UpdateOutcomeOK || run.code != 0 {
+			t.Fatalf("space = %+v exit %d\n%s", result, run.code, run.stderr)
+		}
+		run = runUpdateCommandProcess(t, "", supervise.UpdateSpaceCommand, "--id", "u1", "--data-dir", dataRoot, "--host-free", "1")
+		if result := run.result(t); result.Outcome != supervise.UpdateOutcomeRefused || run.code != 1 ||
+			!strings.Contains(result.Reason, "Free at least") {
+			t.Fatalf("space on a full host drive = %+v exit %d\n%s", result, run.code, run.stderr)
+		}
+	})
+
 	t.Run("bad argv", func(t *testing.T) {
 		run := runUpdateCommandProcess(t, "", supervise.UpdateSnapshotCommand, "--data-dir", dataRoot)
 		if run.code != 2 || len(run.events) != 0 {

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -191,6 +192,37 @@ func TestSnapshotCommandRefusesWithoutChangingAnything(t *testing.T) {
 	})
 }
 
+// The space command runs while the version being replaced still holds the
+// data root, so it must answer without the lock and change nothing.
+func TestSpaceCommandAnswersWithoutTheLock(t *testing.T) {
+	r := newCommandRig(t)
+	cmd := r.command("u1")
+	cmd.AcquireLock = func(context.Context, time.Duration) (*os.File, func(), error) {
+		t.Fatal("the space command took the lock")
+		return nil, nil, nil
+	}
+	if result := cmd.Space(nil); result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("no database = %+v, want the snapshot step to refuse it", result)
+	}
+	writeFile(t, r.db, strings.Repeat("x", 4000))
+	withFreeBytes(t, func(string) (uint64, error) { return SnapshotSpaceNeeded(4000) - 1, nil })
+	result := cmd.Space(nil)
+	if result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, "Free at least 1 MB") {
+		t.Fatalf("short disk = %+v", result)
+	}
+	withFreeBytes(t, func(string) (uint64, error) { return SnapshotSpaceNeeded(4000), nil })
+	host := uint64(1)
+	if result := cmd.Space(&host); result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, hostDiskDescription) {
+		t.Fatalf("short host drive = %+v", result)
+	}
+	if result := cmd.Space(nil); result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("enough room = %+v", result)
+	}
+	if present, _ := SnapshotPresent(r.layout); present {
+		t.Fatal("the space command wrote a snapshot")
+	}
+}
+
 func TestTrialRunCommandPreparesAndKeepsTheTrialsDatabase(t *testing.T) {
 	r := newCommandRig(t)
 	writeFile(t, r.db, "live")
@@ -236,7 +268,7 @@ func TestTrialRunCommandRestoresTheSnapshotWhenTheTrialFails(t *testing.T) {
 	}
 }
 
-func TestTrialRunCommandRefusesADatabaseChangedSinceTheSnapshot(t *testing.T) {
+func TestTrialRunCommandStopsOnADatabaseChangedSinceTheSnapshot(t *testing.T) {
 	r := newCommandRig(t)
 	writeFile(t, r.db, "live")
 	if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
@@ -244,9 +276,11 @@ func TestTrialRunCommandRefusesADatabaseChangedSinceTheSnapshot(t *testing.T) {
 	}
 	// A backend started by hand between the two commands wrote to it.
 	writeFile(t, r.db, "written in the gap")
-	result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 1))
-	if result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, "changed after it was backed up") {
-		t.Fatalf("result = %+v", result)
+	for _, attempt := range []int{1, 2} {
+		result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, attempt))
+		if result.Outcome != UpdateOutcomeChanged || !strings.Contains(result.Reason, "changed after it was backed up") {
+			t.Fatalf("attempt %d = %+v", attempt, result)
+		}
 	}
 	if got := r.database(t); got != "written in the gap" {
 		t.Fatalf("database = %q, want the gap's work kept", got)
@@ -254,13 +288,113 @@ func TestTrialRunCommandRefusesADatabaseChangedSinceTheSnapshot(t *testing.T) {
 	if r.read("activate") != "" {
 		t.Fatal("a trial ran on a database the snapshot does not match")
 	}
+}
 
-	// A retry runs on what an earlier attempt of this update left, so it
-	// does not compare.
-	result = r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 2))
-	if result.Outcome != UpdateOutcomePrepared {
-		t.Fatalf("retry = %+v", result)
+// interruptAttempt runs attempt 1 until its output closes mid-migration,
+// the way a launcher that dies takes its WSL command's pipe with it. The
+// trial leaves "half-migrated".
+func interruptAttempt(t *testing.T, r *commandRig) {
+	t.Helper()
+	r.out.failOn = "store.migrate"
+	opts := r.trialOptions(`printf 'half-migrated' > "$DB"
+progress store.migrate "Applying migration 1 of 9"
+serve_until_stopped`, 1)
+	opts.Rule = StallRule{Window: time.Minute, Ceiling: time.Minute}
+	if result := r.command("u1").TrialRun(context.Background(), opts); result.Outcome != UpdateOutcomeFailed {
+		t.Fatalf("interrupted attempt = %+v", result)
 	}
+	r.out = &lockedBuffer{}
+}
+
+func activations(r *commandRig) int {
+	return strings.Count(r.read("activate"), "\n")
+}
+
+// Every attempt compares the live database with what the update last left
+// it: a retry after an interrupted trial runs on that trial's database, and
+// anything else that wrote since is another backend's work.
+func TestTrialRunCommandChecksEachRetryAgainstWhatTheLastAttemptLeft(t *testing.T) {
+	snapshotted := func(t *testing.T) *commandRig {
+		r := newCommandRig(t)
+		writeFile(t, r.db, "live")
+		if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
+			t.Fatalf("snapshot = %+v", result)
+		}
+		return r
+	}
+	t.Run("unchanged since an interrupted attempt", func(t *testing.T) {
+		r := snapshotted(t)
+		interruptAttempt(t, r)
+		result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 2))
+		if result.Outcome != UpdateOutcomePrepared {
+			t.Fatalf("retry = %+v", result)
+		}
+	})
+	t.Run("written since an interrupted attempt", func(t *testing.T) {
+		r := snapshotted(t)
+		interruptAttempt(t, r)
+		before := activations(r)
+		writeFile(t, r.db, "another backend's work")
+		result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 2))
+		if result.Outcome != UpdateOutcomeChanged || !strings.Contains(result.Reason, "interrupted trial left it") {
+			t.Fatalf("retry = %+v", result)
+		}
+		if got := r.database(t); got != "another backend's work" {
+			t.Fatalf("database = %q, want the other backend's work kept", got)
+		}
+		if activations(r) != before {
+			t.Fatal("a trial ran on a database another backend changed")
+		}
+		if present, _ := SnapshotPresent(r.layout); !present {
+			t.Fatal("the snapshot is gone")
+		}
+	})
+	// A launcher that died before it recorded the commit retries a trial
+	// that prepared.
+	t.Run("written since a prepared attempt", func(t *testing.T) {
+		r := snapshotted(t)
+		if result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 1)); result.Outcome != UpdateOutcomePrepared {
+			t.Fatalf("attempt 1 = %+v", result)
+		}
+		r.out = &lockedBuffer{}
+		writeFile(t, r.db, "written after the trial prepared")
+		result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 2))
+		if result.Outcome != UpdateOutcomeChanged {
+			t.Fatalf("retry = %+v", result)
+		}
+	})
+	t.Run("written since a rolled-back attempt", func(t *testing.T) {
+		r := snapshotted(t)
+		if result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndCrashes, 1)); result.Outcome != UpdateOutcomeRolledBack {
+			t.Fatalf("attempt 1 = %+v", result)
+		}
+		r.out = &lockedBuffer{}
+		writeFile(t, r.db, "written after the restore")
+		result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 2))
+		if result.Outcome != UpdateOutcomeChanged {
+			t.Fatalf("retry = %+v", result)
+		}
+	})
+	t.Run("after an attempt that never recorded its end", func(t *testing.T) {
+		r := snapshotted(t)
+		interruptAttempt(t, r)
+		// The command died with its trial: nothing recorded the end, and
+		// the trial's own writes cannot be told from anyone else's.
+		if err := RecordAttempt(r.layout, r.dataDir, 1, false); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, r.db, "the dead trial's last write")
+		var logged []string
+		cmd := r.command("u1")
+		cmd.Log = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+		result := cmd.TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 2))
+		if result.Outcome != UpdateOutcomePrepared {
+			t.Fatalf("retry = %+v", result)
+		}
+		if !strings.Contains(strings.Join(logged, "\n"), "could not be checked") {
+			t.Fatalf("log %q does not say the attempt ran unchecked", logged)
+		}
+	})
 }
 
 func TestTrialRunCommandRequiresThisUpdatesSnapshot(t *testing.T) {

@@ -74,12 +74,12 @@ func TestSnapshotRecordsTheLiveIdentitiesAndUpdateID(t *testing.T) {
 	if shm := byName["agent-overflow.db-shm"]; shm.Present {
 		t.Fatalf("an absent file was recorded present: %+v", shm)
 	}
-	if err := VerifyLiveUnchanged(layout, dataDir); err != nil {
-		t.Fatalf("VerifyLiveUnchanged on an untouched database: %v", err)
+	if checked, err := CheckLiveBeforeAttempt(layout, dataDir); err != nil || !checked {
+		t.Fatalf("CheckLiveBeforeAttempt on an untouched database = %v, %v", checked, err)
 	}
 }
 
-func TestVerifyLiveUnchangedCatchesEveryKindOfChange(t *testing.T) {
+func TestCheckLiveBeforeAttemptCatchesEveryKindOfChange(t *testing.T) {
 	for _, c := range []struct {
 		name   string
 		change func(t *testing.T, dataDir string)
@@ -113,10 +113,10 @@ func TestVerifyLiveUnchangedCatchesEveryKindOfChange(t *testing.T) {
 				t.Fatalf("TakeSnapshot: %v", err)
 			}
 			c.change(t, dataDir)
-			err := VerifyLiveUnchanged(layout, dataDir)
+			_, err := CheckLiveBeforeAttempt(layout, dataDir)
 			var changed *LiveDatabaseChangedError
 			if !errors.As(err, &changed) {
-				t.Fatalf("VerifyLiveUnchanged = %v, want a LiveDatabaseChangedError", err)
+				t.Fatalf("CheckLiveBeforeAttempt = %v, want a LiveDatabaseChangedError", err)
 			}
 			if !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "another Agent Overflow backend") {
 				t.Fatalf("message %q does not say %q", err, c.want)
@@ -125,16 +125,52 @@ func TestVerifyLiveUnchangedCatchesEveryKindOfChange(t *testing.T) {
 	}
 }
 
-func TestVerifyLiveUnchangedFailsClosedWithoutIdentities(t *testing.T) {
+func TestCheckLiveBeforeAttemptFailsClosedWithoutIdentities(t *testing.T) {
 	dataDir := t.TempDir()
 	layout := appLayout(t, dataDir)
-	if err := VerifyLiveUnchanged(layout, dataDir); err == nil {
+	if _, err := CheckLiveBeforeAttempt(layout, dataDir); err == nil {
 		t.Fatal("no snapshot verified as unchanged")
 	}
 	// A manifest written before identities existed.
 	writeFile(t, filepath.Join(layout.SnapshotDir(), "snapshot.json"), `{"files":["agent-overflow.db"],"takenAtMs":1}`)
-	if err := VerifyLiveUnchanged(layout, dataDir); err == nil || !strings.Contains(err.Error(), "no file identities") {
-		t.Fatalf("VerifyLiveUnchanged = %v, want a refusal naming the missing identities", err)
+	if _, err := CheckLiveBeforeAttempt(layout, dataDir); err == nil || !strings.Contains(err.Error(), "no file identities") {
+		t.Fatalf("CheckLiveBeforeAttempt = %v, want a refusal naming the missing identities", err)
+	}
+}
+
+// Once an attempt records what it left, that replaces the snapshot as what
+// the next attempt compares against; an attempt that never recorded its end
+// cannot be compared at all.
+func TestCheckLiveBeforeAttemptFollowsTheLastRecordedAttempt(t *testing.T) {
+	dataDir := t.TempDir()
+	layout := appLayout(t, dataDir)
+	db := filepath.Join(dataDir, "agent-overflow.db")
+	writeFile(t, db, "database")
+	if _, err := TakeSnapshot(layout, dataDir, time.Now(), SnapshotOptions{}); err != nil {
+		t.Fatalf("TakeSnapshot: %v", err)
+	}
+	if err := RecordAttempt(layout, dataDir, 1, false); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, db, "the trial's database")
+	if checked, err := CheckLiveBeforeAttempt(layout, dataDir); err != nil || checked {
+		t.Fatalf("after an unended attempt = %v, %v; want unchecked", checked, err)
+	}
+	if err := RecordAttempt(layout, dataDir, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if checked, err := CheckLiveBeforeAttempt(layout, dataDir); err != nil || !checked {
+		t.Fatalf("after an ended attempt = %v, %v; want checked and unchanged", checked, err)
+	}
+	snapshot, _, err := ReadSnapshot(layout)
+	if err != nil || snapshot.Left == nil || snapshot.Left.Attempt != 1 || len(snapshot.Live) != 3 {
+		t.Fatalf("manifest = %+v, %v; want the attempt beside the snapshot's own identities", snapshot, err)
+	}
+	writeFile(t, db, "another backend's database")
+	_, err = CheckLiveBeforeAttempt(layout, dataDir)
+	var changed *LiveDatabaseChangedError
+	if !errors.As(err, &changed) || !changed.AfterTrial {
+		t.Fatalf("CheckLiveBeforeAttempt = %v, want a change after the trial", err)
 	}
 }
 
@@ -202,21 +238,50 @@ func TestSnapshotSpaceNeededKeepsAMarginOfATenthAtLeast512MiB(t *testing.T) {
 	}
 }
 
-func TestCheckDatabaseSnapshotSpaceMeasuresTheLiveTriple(t *testing.T) {
+func TestPlanSnapshotCountsWhatTheSnapshotWillCopy(t *testing.T) {
 	dataDir := t.TempDir()
-	if err := CheckDatabaseSnapshotSpace(dataDir); err == nil {
-		t.Fatal("no database passed the space check")
+	layout := appLayout(t, dataDir)
+	if _, found, err := PlanSnapshot(layout, dataDir); err != nil || found {
+		t.Fatalf("no database planned = %v, %v", found, err)
 	}
 	writeFile(t, filepath.Join(dataDir, "agent-overflow.db"), strings.Repeat("x", 3000))
 	writeFile(t, filepath.Join(dataDir, "agent-overflow.db-wal"), strings.Repeat("x", 1000))
+	plan, found, err := PlanSnapshot(layout, dataDir)
+	if err != nil || !found || plan != (SnapshotPlan{DatabaseBytes: 4000}) {
+		t.Fatalf("plan = %+v, %v, %v; want the live triple", plan, found, err)
+	}
 	need := SnapshotSpaceNeeded(4000)
 	withFreeBytes(t, func(string) (uint64, error) { return need - 1, nil })
-	if err := CheckDatabaseSnapshotSpace(dataDir); err == nil {
+	if err := plan.Check(dataDir, nil); err == nil {
 		t.Fatal("a short disk passed")
 	}
 	withFreeBytes(t, func(string) (uint64, error) { return need, nil })
-	if err := CheckDatabaseSnapshotSpace(dataDir); err != nil {
+	if err := plan.Check(dataDir, nil); err != nil {
 		t.Fatalf("an adequate disk failed: %v", err)
+	}
+
+	// A leftover snapshot is removed before the copy, so what it frees
+	// counts toward the need, on both disks.
+	writeFile(t, filepath.Join(layout.SnapshotDir(), "agent-overflow.db"), strings.Repeat("o", 2500))
+	writeFile(t, filepath.Join(layout.SnapshotDir(), "snapshot.json"), strings.Repeat("o", 500))
+	plan, _, err = PlanSnapshot(layout, dataDir)
+	if err != nil || plan.Reclaimable != 3000 {
+		t.Fatalf("plan = %+v, %v; want the leftover's 3000 bytes reclaimable", plan, err)
+	}
+	withFreeBytes(t, func(string) (uint64, error) { return need - 3000, nil })
+	host := need - 3000
+	if err := plan.Check(dataDir, &host); err != nil {
+		t.Fatalf("free space plus the leftover suffices, got %v", err)
+	}
+	withFreeBytes(t, func(string) (uint64, error) { return need - 3001, nil })
+	var space *InsufficientSpaceError
+	if err := plan.Check(dataDir, nil); !errors.As(err, &space) || space.Need != need-3000 || space.Available != need-3001 {
+		t.Fatalf("Check = %v, want a shortfall of one byte beyond the leftover", err)
+	}
+	withFreeBytes(t, func(string) (uint64, error) { return need, nil })
+	host = need - 3001
+	if err := plan.Check(dataDir, &host); !errors.As(err, &space) || space.Where != hostDiskDescription {
+		t.Fatalf("Check = %v, want the host drive's shortfall", err)
 	}
 }
 

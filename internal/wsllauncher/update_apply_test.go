@@ -3,6 +3,7 @@ package wsllauncher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -355,7 +356,7 @@ func TestApplyUpdateRefusalDependsOnTheAttempt(t *testing.T) {
 	t.Run("first attempt changed nothing", func(t *testing.T) {
 		f := newUpdateFixture(t)
 		f.save(supervise.UpdatePending, 0, false)
-		f.host.answer(supervise.UpdateTrialRunCommand, supervise.UpdateOutcomeRefused, "the database changed after it was backed up")
+		f.host.answer(supervise.UpdateTrialRunCommand, supervise.UpdateOutcomeRefused, "the database is still in use")
 		end, err := f.sequence.Apply(t.Context(), "u1")
 		if err != nil || end.State != supervise.UpdateFailed {
 			t.Fatalf("end = %+v, %v", end, err)
@@ -382,6 +383,25 @@ func TestApplyUpdateRefusalDependsOnTheAttempt(t *testing.T) {
 			"remove-staged",
 		)
 	})
+	// Another backend used the database: a restore would discard its work,
+	// whether or not a trial of this update ran before it.
+	for _, attempts := range []int{0, 1} {
+		t.Run(fmt.Sprintf("changed database after %d attempts", attempts), func(t *testing.T) {
+			f := newUpdateFixture(t)
+			f.save(supervise.UpdatePending, attempts, false)
+			f.host.answer(supervise.UpdateTrialRunCommand, supervise.UpdateOutcomeChanged, "the database changed")
+			end, err := f.sequence.Apply(t.Context(), "u1")
+			if err != nil || end.State != supervise.UpdateFailed || end.Reason != "the database changed" {
+				t.Fatalf("end = %+v, %v", end, err)
+			}
+			for _, call := range f.host.calls {
+				if strings.HasPrefix(call, "restore@") {
+					t.Fatalf("calls = %q, want no restore", f.host.calls)
+				}
+			}
+			f.wantRecord(supervise.UpdateFailed, attempts+1, "the database changed", false)
+		})
+	}
 }
 
 func TestApplyUpdateAtTheAttemptLimitRollsBack(t *testing.T) {

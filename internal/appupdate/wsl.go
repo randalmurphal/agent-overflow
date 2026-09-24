@@ -113,9 +113,6 @@ type wslUpdateMode struct {
 	// update did not apply. Dev and production launchers share its name;
 	// isolated profiles run the harness backend, which has no updater.
 	launcherRecord string
-	// snapshotSpace refuses a handoff whose database snapshot would not fit
-	// (supervise.CheckDatabaseSnapshotSpace in production).
-	snapshotSpace func(dataDir string) error
 	// ackTimeout and backstopTimeout are the two install deadlines
 	// (wslInstallACKTimeout / wslInstallBackstopTimeout in production; tests
 	// inject short ones so both paths are asserted rather than slept through).
@@ -160,7 +157,6 @@ func (a *Service) ConfigureWSL(config WSLConfig) error {
 		stagingDir:      filepath.Join(config.StagingRoot, selfupdate.StagingDirName),
 		markerDir:       config.MarkerDir,
 		launcherRecord:  supervise.LauncherRecordPath(config.StagingRoot, appidentity.ModeProd),
-		snapshotSpace:   supervise.CheckDatabaseSnapshotSpace,
 		ackTimeout:      config.ACKTimeout,
 		backstopTimeout: config.BackstopTimeout,
 	}
@@ -413,18 +409,12 @@ func (a *Service) wslRestartTargetLocked() (*updater.Release, error) {
 	if staged == nil {
 		return nil, ErrUpdateNotReady
 	}
-	_, version, _, err := releaseIdentity(staged)
-	if err != nil {
+	// The target launcher asks the target backend whether the snapshot its
+	// update takes fits, and the refusal comes back as the install's failure
+	// report: only the target knows whether it takes one, and how much it
+	// copies.
+	if _, _, _, err := releaseIdentity(staged); err != nil {
 		return nil, fmt.Errorf("restart to update: %w", err)
-	}
-	// The launcher runs the update's trial on a snapshot of the database, so
-	// a snapshot that would not fit refuses the handoff before the launcher
-	// is told anything. Running the same version again is a direct swap
-	// with no snapshot.
-	if version != a.updater.handle.CurrentVersion() {
-		if err := a.updater.wsl.snapshotSpace(a.updater.wsl.markerDir); err != nil {
-			return nil, err
-		}
 	}
 	return staged, nil
 }

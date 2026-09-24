@@ -1,6 +1,7 @@
 package wsllauncher
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -9,10 +10,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"agent-overflow/internal/atomicfile"
+	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/supervise"
 )
 
@@ -24,8 +27,12 @@ import (
 // predates the trial flow writes nothing, which is how the old launcher
 // knows to use the plain swap.
 type PreflightAnswer struct {
-	OK     bool   `json:"ok"`
-	Reason string `json:"reason,omitempty"`
+	OK bool `json:"ok"`
+	// Refused is a check of the new version's that refuses the update, such
+	// as a database snapshot that would not fit. Reason is then written for
+	// the user and is shown as it is.
+	Refused bool   `json:"refused,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 	// Version is the staged payload's own answer to __service-preflight.
 	Version string `json:"version,omitempty"`
 	// Fingerprint is the new launcher's embedded payload digest.
@@ -51,6 +58,91 @@ func ReadPreflightAnswer(path string) (PreflightAnswer, bool, error) {
 		return PreflightAnswer{}, true, errors.New("wsllauncher: the preflight answer is incomplete")
 	}
 	return answer, true, nil
+}
+
+// Err is the answer as the old launcher reports it: nil when the update can
+// proceed, the new version's own words when it refused, and otherwise why
+// the new backend could not be checked.
+func (a PreflightAnswer) Err() error {
+	switch {
+	case a.OK:
+		return nil
+	case a.Refused:
+		return errors.New(a.Reason)
+	}
+	return fmt.Errorf("the new version could not start inside WSL: %s", a.Reason)
+}
+
+// PreflightHost is what the new launcher's preflight does inside WSL.
+type PreflightHost interface {
+	// InstallEmbeddedPayload writes this launcher's payload to staged in
+	// distro.
+	InstallEmbeddedPayload(ctx context.Context, distro, staged string) error
+	// Preflight asks the backend at payload what it is.
+	Preflight(ctx context.Context, distro, payload string) (supervise.Preflight, error)
+	RunCommand(ctx context.Context, distro, payload, command string, args []string, onProgress func(startupprogress.Progress)) (supervise.UpdateEvent, error)
+	RemoveStagedPayload(ctx context.Context, record supervise.LauncherRecord) error
+	HostFreeBytes(distro string) (free uint64, ok bool)
+}
+
+// PreflightRequest is the old launcher's question to the new one.
+type PreflightRequest struct {
+	ID     string
+	Distro string
+	// Stable is the running backend's path inside the distro.
+	Stable string
+	// Version and Fingerprint are the new launcher's own: its version and
+	// its embedded payload's digest.
+	Version     string
+	Fingerprint string
+}
+
+// PreflightStagedPayload is the new launcher's --update-preflight: install
+// its payload beside the stable one, ask it what it is, and ask it whether
+// the snapshot its update would take fits. The target's own rule answers,
+// because the target takes the snapshot. A staged payload is removed again
+// unless the answer is OK.
+func PreflightStagedPayload(ctx context.Context, host PreflightHost, req PreflightRequest) PreflightAnswer {
+	fail := func(format string, args ...any) PreflightAnswer {
+		return PreflightAnswer{Reason: fmt.Sprintf(format, args...)}
+	}
+	if req.Distro == "" || !path.IsAbs(req.Stable) || !ValidUpdateID(req.ID) {
+		return fail("the preflight needs an update id, a distro and the stable backend's path")
+	}
+	staged := StagedPayloadPath(req.Stable, req.ID)
+	if err := host.InstallEmbeddedPayload(ctx, req.Distro, staged); err != nil {
+		return fail("install the new backend into %s: %v", req.Distro, err)
+	}
+	record := supervise.LauncherRecord{Distro: req.Distro, StagedPayload: staged}
+	answer := func() PreflightAnswer {
+		preflight, err := host.Preflight(ctx, req.Distro, staged)
+		if err == nil && preflight.Version != req.Version {
+			err = fmt.Errorf("the new backend reports version %s and its launcher %s", preflight.Version, req.Version)
+		}
+		if err != nil {
+			return fail("the new backend did not start: %v", err)
+		}
+		args := []string{"--id", req.ID}
+		if free, ok := host.HostFreeBytes(req.Distro); ok {
+			args = append(args, "--host-free", strconv.FormatUint(free, 10))
+		}
+		space, err := host.RunCommand(ctx, req.Distro, staged, supervise.UpdateSpaceCommand, args, nil)
+		switch {
+		case err != nil:
+			return fail("the new backend could not check the free space for the database backup: %v", err)
+		case space.Outcome == supervise.UpdateOutcomeRefused:
+			return PreflightAnswer{Refused: true, Reason: space.Reason}
+		case space.Outcome != supervise.UpdateOutcomeOK:
+			return fail("the new backend could not check the free space for the database backup: %s", space.Reason)
+		}
+		return PreflightAnswer{OK: true, Version: preflight.Version, Fingerprint: req.Fingerprint, StagedPayload: staged}
+	}()
+	if !answer.OK {
+		if err := host.RemoveStagedPayload(context.WithoutCancel(ctx), record); err != nil {
+			answer.Reason += fmt.Sprintf(" (and the staged backend could not be removed: %v)", err)
+		}
+	}
+	return answer
 }
 
 // NewUpdateID returns a fresh update id. It names files on both sides, so it

@@ -36,14 +36,29 @@ type Snapshot struct {
 	// snapshots leave it empty: its state file names the update.
 	UpdateID string `json:"updateId,omitempty"`
 	// Live is each live database file's identity as it was copied, absent
-	// ones included. VerifyLiveUnchanged compares against it, so a process
-	// that ran against the database between the snapshot and the trial is
-	// caught before the trial and its rollback could discard that work.
-	// Manifests written before this field existed have none.
+	// ones included. CheckLiveBeforeAttempt compares against it, so a
+	// process that ran against the database between the snapshot and the
+	// trial is caught before the trial and its rollback could discard that
+	// work. Manifests written before this field existed have none.
 	Live []FileIdentity `json:"live,omitempty"`
+	// Left is the live database as the update's last trial attempt left
+	// it, absent until an attempt starts. CheckLiveBeforeAttempt compares
+	// against it instead of Live once it is present.
+	Left *AttemptRecord `json:"left,omitempty"`
 }
 
-// FileIdentity is what VerifyLiveUnchanged compares: presence, size and
+// AttemptRecord is what one trial attempt of an update left behind.
+type AttemptRecord struct {
+	// Attempt is the attempt's number.
+	Attempt int `json:"attempt"`
+	// Ended is false from the moment the attempt's trial may write until
+	// its command records the database the trial left. A command that
+	// died in between (a killed VM, lost power) leaves it false.
+	Ended bool           `json:"ended"`
+	Files []FileIdentity `json:"files,omitempty"`
+}
+
+// FileIdentity is what CheckLiveBeforeAttempt compares: presence, size and
 // modification time. SQLite changes at least one of them on every commit
 // that reaches the file, and a checkpoint or WAL reset does too.
 type FileIdentity struct {
@@ -100,7 +115,7 @@ func TakeSnapshot(layout Layout, dataDir string, now time.Time, opts SnapshotOpt
 		// failed update rather than one it cannot undo.
 		return Snapshot{}, fmt.Errorf("%w in %s", errNoDatabase, dataDir)
 	}
-	if err := CheckSnapshotSpace(dataDir, total, opts.HostAvailable); err != nil {
+	if err := (SnapshotPlan{DatabaseBytes: total}).Check(dataDir, opts.HostAvailable); err != nil {
 		return Snapshot{}, err
 	}
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
@@ -183,14 +198,24 @@ func anyPresent(ids []FileIdentity) bool {
 }
 
 // LiveDatabaseChangedError reports that the live database is not the one the
-// snapshot copied. The trial must not run: its rollback would put back the
-// snapshot and discard whatever changed it.
+// update left: not the moment the snapshot copied, or not what the update's
+// previous trial attempt left. The trial must not run, and nothing may be
+// restored: a restore would put back the snapshot and discard whatever
+// changed the database.
 type LiveDatabaseChangedError struct {
 	Snapshot FileIdentity
 	Live     FileIdentity
+	// AfterTrial is set when the comparison was against what an earlier
+	// attempt's trial left rather than against the snapshot.
+	AfterTrial bool
 }
 
 func (e *LiveDatabaseChangedError) Error() string {
+	if e.AfterTrial {
+		return fmt.Sprintf("the database changed after the update's interrupted trial left it (%s: %s), "+
+			"so another Agent Overflow backend used it. The update stopped without restoring the backup so that work is kept",
+			e.Snapshot.Name, describeIdentityChange(e.Snapshot, e.Live))
+	}
 	return fmt.Sprintf("the database changed after it was backed up for the update (%s: %s), "+
 		"so another Agent Overflow backend used it. The update stopped so a rollback cannot lose that work",
 		e.Snapshot.Name, describeIdentityChange(e.Snapshot, e.Live))
@@ -211,32 +236,70 @@ func describeIdentityChange(before, after FileIdentity) string {
 	}
 }
 
-// VerifyLiveUnchanged checks that the live triple is still the moment the
-// snapshot copied, by presence, size and modification time.
+// CheckLiveBeforeAttempt checks, before a trial attempt, that the live
+// triple is what the update left, by presence, size and modification time:
+// the moment the snapshot copied before the first attempt, and what the
+// previous attempt's trial left before a retry.
 //
-// It exists for a process that snapshots and later runs the trial without
+// It exists for a process that runs the snapshot and each attempt without
 // holding the database lock in between (the Windows launcher's separate WSL
-// commands): anything that opened the database in that gap wrote work the
-// snapshot does not have. A manifest without identities fails closed.
-func VerifyLiveUnchanged(layout Layout, dataDir string) error {
+// commands): anything that opened the database in a gap wrote work the
+// update does not know about, and the next trial or a rollback would build
+// on it or discard it. A manifest without identities fails closed.
+//
+// checked is false, with a nil error, when the previous attempt never
+// recorded what its trial left: its command died while the trial could
+// write, and no identity can tell that trial's writes from another
+// process's. The attempt then runs on what is there.
+func CheckLiveBeforeAttempt(layout Layout, dataDir string) (checked bool, err error) {
+	snapshot, found, err := readSnapshotManifest(layout)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, fmt.Errorf("supervise: there is no database snapshot in %s to compare against", layout.SnapshotDir())
+	}
+	expected, afterTrial := snapshot.Live, false
+	if left := snapshot.Left; left != nil {
+		if !left.Ended {
+			return false, nil
+		}
+		expected, afterTrial = left.Files, true
+	}
+	if len(expected) == 0 {
+		return false, errors.New("supervise: the database snapshot records no file identities, so it cannot prove the database is unchanged")
+	}
+	for _, recorded := range expected {
+		live, err := identify(dataDir, recorded.Name)
+		if err != nil {
+			return false, err
+		}
+		if live != recorded {
+			return false, &LiveDatabaseChangedError{Snapshot: recorded, Live: live, AfterTrial: afterTrial}
+		}
+	}
+	return true, nil
+}
+
+// RecordAttempt records in the manifest what trial attempt attempt leaves
+// in the live database: ended false before the trial may write, true with
+// the files as they are once it has stopped. Called under the data root's
+// lock, which is what makes the identities the attempt's own.
+func RecordAttempt(layout Layout, dataDir string, attempt int, ended bool) error {
 	snapshot, found, err := readSnapshotManifest(layout)
 	if err != nil {
 		return err
 	}
 	if !found {
-		return fmt.Errorf("supervise: there is no database snapshot in %s to compare against", layout.SnapshotDir())
+		return fmt.Errorf("supervise: there is no database snapshot in %s to record attempt %d in", layout.SnapshotDir(), attempt)
 	}
-	if len(snapshot.Live) == 0 {
-		return errors.New("supervise: the database snapshot records no file identities, so it cannot prove the database is unchanged")
+	files, _, err := identifyDatabase(dataDir)
+	if err != nil {
+		return err
 	}
-	for _, recorded := range snapshot.Live {
-		live, err := identify(dataDir, recorded.Name)
-		if err != nil {
-			return err
-		}
-		if live != recorded {
-			return &LiveDatabaseChangedError{Snapshot: recorded, Live: live}
-		}
+	snapshot.Left = &AttemptRecord{Attempt: attempt, Ended: ended, Files: files}
+	if err := atomicfile.WriteJSON(filepath.Join(layout.SnapshotDir(), snapshotManifest), snapshot); err != nil {
+		return fmt.Errorf("supervise: record trial attempt %d: %w", attempt, err)
 	}
 	return nil
 }

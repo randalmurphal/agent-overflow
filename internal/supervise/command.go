@@ -20,6 +20,9 @@ import (
 // The update commands. Double-underscored like the other internal re-execs,
 // because nobody types them.
 const (
+	// UpdateSpaceCommand answers whether the snapshot would fit, without the
+	// lock, while the running version still serves.
+	UpdateSpaceCommand = "__update-space"
 	// UpdateSnapshotCommand waits for the data root's lock, finishes a marked
 	// restore, checks free space and snapshots the database.
 	UpdateSnapshotCommand = "__update-snapshot"
@@ -69,9 +72,13 @@ const (
 	// restored. Reason says why the trial failed.
 	UpdateOutcomeRolledBack UpdateOutcome = "rolled-back"
 	// UpdateOutcomeRefused is a command that changed nothing: the lock
-	// stayed held, the disk is too full, or the live database is not the one
-	// the snapshot copied.
+	// stayed held or the disk is too full.
 	UpdateOutcomeRefused UpdateOutcome = "refused"
+	// UpdateOutcomeChanged is a trial that did not start because the live
+	// database is not what the update left it: another backend used it. The
+	// snapshot must not be restored, because that would discard the other
+	// backend's work.
+	UpdateOutcomeChanged UpdateOutcome = "changed"
 	// UpdateOutcomeNoSnapshot is a trial or restore that found no snapshot of
 	// this update. Nothing was changed.
 	UpdateOutcomeNoSnapshot UpdateOutcome = "no-snapshot"

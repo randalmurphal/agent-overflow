@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -138,7 +137,6 @@ func newWSLTestApp(t *testing.T, srv *httptest.Server, current string, deadlines
 	mode := &wslUpdateMode{
 		stagingDir:      filepath.Join(t.TempDir(), selfupdate.StagingDirName),
 		markerDir:       t.TempDir(),
-		snapshotSpace:   func(string) error { return nil },
 		ackTimeout:      deadlines.ack,
 		backstopTimeout: deadlines.backstop,
 	}
@@ -232,9 +230,6 @@ func TestConfigureWSLTargetsLauncherArtifact(t *testing.T) {
 	wantRecord := filepath.Join(stagingRoot, "runtime", "app-update.json")
 	if a.updater.wsl.launcherRecord != wantRecord {
 		t.Fatalf("launcherRecord = %q, want %q", a.updater.wsl.launcherRecord, wantRecord)
-	}
-	if reflect.ValueOf(a.updater.wsl.snapshotSpace).Pointer() != reflect.ValueOf(supervise.CheckDatabaseSnapshotSpace).Pointer() {
-		t.Fatal("snapshotSpace is not supervise.CheckDatabaseSnapshotSpace")
 	}
 }
 
@@ -872,62 +867,6 @@ func TestRestartToUpdateWSLRequiresStagedArtifact(t *testing.T) {
 	if m := readMarker(t, mode.markerDir); m != nil {
 		t.Fatalf("a refused restart must write no marker, got %+v", m)
 	}
-}
-
-func TestRestartToUpdateWSLRefusesWithoutSnapshotSpace(t *testing.T) {
-	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
-	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", noDeadlines)
-	stageForTest(t, a, rec)
-	short := &supervise.InsufficientSpaceError{Need: 3 << 30, Available: 1 << 30, Where: "the disk that holds " + mode.markerDir}
-	var checked []string
-	mode.snapshotSpace = func(dir string) error {
-		checked = append(checked, dir)
-		return short
-	}
-
-	if err := a.RestartReady(); !errors.Is(err, short) {
-		t.Fatalf("RestartReady = %v, want the space refusal", err)
-	}
-	if err := a.RestartToUpdate(nil); !errors.Is(err, short) {
-		t.Fatalf("RestartToUpdate = %v, want the space refusal", err)
-	}
-	if len(checked) != 2 || checked[0] != mode.markerDir || checked[1] != mode.markerDir {
-		t.Fatalf("space checked for %q, want the data dir %q on each call", checked, mode.markerDir)
-	}
-	if m := readMarker(t, mode.markerDir); m != nil {
-		t.Fatalf("a refused restart must write no marker, got %+v", m)
-	}
-	if a.busySnapshot() {
-		t.Fatal("a refused restart must not hold the fence")
-	}
-	rec.refute(t, selfupdate.ChannelInstall, 50*time.Millisecond)
-
-	// Space freed: the same staged update hands off.
-	mode.snapshotSpace = func(string) error { return nil }
-	if err := a.RestartReady(); err != nil {
-		t.Fatalf("RestartReady after space is freed: %v", err)
-	}
-	if err := a.RestartToUpdate(nil); err != nil {
-		t.Fatalf("RestartToUpdate after space is freed: %v", err)
-	}
-	rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
-}
-
-func TestRestartToUpdateWSLSameVersionNeedsNoSnapshotSpace(t *testing.T) {
-	// Reinstalling the running version is the launcher's direct swap, which
-	// takes no snapshot, so it must not be refused for one.
-	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
-	a, rec, mode := newWSLTestApp(t, srv, "0.0.8", noDeadlines)
-	if err := a.DownloadUpdate("v0.0.8"); err != nil {
-		t.Fatalf("DownloadUpdate(v0.0.8): %v", err)
-	}
-	rec.await(t, "updater:ready", 20*time.Second)
-	mode.snapshotSpace = func(string) error { return errors.New("the space check must not run") }
-
-	if err := a.RestartToUpdate(nil); err != nil {
-		t.Fatalf("RestartToUpdate of the running version: %v", err)
-	}
-	rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
 }
 
 func TestWSLInstallUnwindRunsOnAbandoned(t *testing.T) {

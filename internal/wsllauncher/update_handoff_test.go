@@ -1,6 +1,7 @@
 package wsllauncher
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/supervise"
 )
 
@@ -195,6 +197,124 @@ func TestPublishLauncherFile(t *testing.T) {
 		}
 		if calls != 4 {
 			t.Fatalf("replace calls = %d, want replace, aside, replace, restore", calls)
+		}
+	})
+}
+
+// fakePreflightHost answers the new launcher's preflight steps and records
+// them in order.
+type fakePreflightHost struct {
+	installErr   error
+	preflight    supervise.Preflight
+	preflightErr error
+	space        supervise.UpdateEvent
+	spaceErr     error
+	hostFree     *uint64
+	calls        []string
+}
+
+func (h *fakePreflightHost) InstallEmbeddedPayload(_ context.Context, distro, staged string) error {
+	h.calls = append(h.calls, "install "+distro+" "+staged)
+	return h.installErr
+}
+
+func (h *fakePreflightHost) Preflight(_ context.Context, _, payload string) (supervise.Preflight, error) {
+	h.calls = append(h.calls, "preflight "+payload)
+	return h.preflight, h.preflightErr
+}
+
+func (h *fakePreflightHost) RunCommand(_ context.Context, _, payload, command string, args []string, _ func(startupprogress.Progress)) (supervise.UpdateEvent, error) {
+	h.calls = append(h.calls, command+"@"+payload+" "+strings.Join(args, " "))
+	return h.space, h.spaceErr
+}
+
+func (h *fakePreflightHost) RemoveStagedPayload(_ context.Context, record supervise.LauncherRecord) error {
+	h.calls = append(h.calls, "remove "+record.StagedPayload)
+	return nil
+}
+
+func (h *fakePreflightHost) HostFreeBytes(string) (uint64, bool) {
+	if h.hostFree == nil {
+		return 0, false
+	}
+	return *h.hostFree, true
+}
+
+func TestPreflightStagedPayloadAsksTheTargetWhetherItsSnapshotFits(t *testing.T) {
+	const id = "0123456789abcdef"
+	staged := StagedPayloadPath(testStable, id)
+	request := PreflightRequest{ID: id, Distro: "Ubuntu", Stable: testStable, Version: "2.0.0", Fingerprint: "fp"}
+	ok := supervise.UpdateEvent{Type: supervise.UpdateEventResult, Outcome: supervise.UpdateOutcomeOK}
+	short := "An update backs up the database first and needs 2.0 GB free. Free at least 1.0 GB and try again."
+
+	t.Run("fits", func(t *testing.T) {
+		free := uint64(5 << 30)
+		host := &fakePreflightHost{preflight: supervise.Preflight{Version: "2.0.0"}, space: ok, hostFree: &free}
+		answer := PreflightStagedPayload(t.Context(), host, request)
+		want := PreflightAnswer{OK: true, Version: "2.0.0", Fingerprint: "fp", StagedPayload: staged}
+		if answer != want || answer.Err() != nil {
+			t.Fatalf("answer = %+v, want %+v", answer, want)
+		}
+		wantCalls := []string{
+			"install Ubuntu " + staged,
+			"preflight " + staged,
+			supervise.UpdateSpaceCommand + "@" + staged + " --id " + id + " --host-free 5368709120",
+		}
+		if strings.Join(host.calls, "\n") != strings.Join(wantCalls, "\n") {
+			t.Fatalf("calls = %q, want %q", host.calls, wantCalls)
+		}
+	})
+	t.Run("does not fit", func(t *testing.T) {
+		host := &fakePreflightHost{preflight: supervise.Preflight{Version: "2.0.0"},
+			space: supervise.UpdateEvent{Type: supervise.UpdateEventResult, Outcome: supervise.UpdateOutcomeRefused, Reason: short}}
+		answer := PreflightStagedPayload(t.Context(), host, request)
+		if answer.OK || !answer.Refused || answer.Reason != short {
+			t.Fatalf("answer = %+v, want the target's refusal", answer)
+		}
+		// The old launcher reports the target's words as they are.
+		if err := answer.Err(); err == nil || err.Error() != short {
+			t.Fatalf("Err = %v, want %q", err, short)
+		}
+		if last := host.calls[len(host.calls)-1]; last != "remove "+staged {
+			t.Fatalf("calls = %q, want the staged payload removed", host.calls)
+		}
+		if strings.Contains(strings.Join(host.calls, "\n"), "--host-free") {
+			t.Fatalf("calls = %q, want no host bound when it is unknown", host.calls)
+		}
+	})
+	for _, c := range []struct {
+		name string
+		host *fakePreflightHost
+		want string
+	}{
+		{"install fails", &fakePreflightHost{installErr: errors.New("disk full")}, "install the new backend"},
+		{"preflight fails", &fakePreflightHost{preflightErr: errors.New("exec format error")}, "did not start"},
+		{"wrong version", &fakePreflightHost{preflight: supervise.Preflight{Version: "1.9.0"}}, "reports version 1.9.0"},
+		{"space check fails", &fakePreflightHost{preflight: supervise.Preflight{Version: "2.0.0"}, spaceErr: errors.New("wsl.exe exited 1")}, "could not check the free space"},
+		{"space check errs", &fakePreflightHost{preflight: supervise.Preflight{Version: "2.0.0"},
+			space: supervise.UpdateEvent{Type: supervise.UpdateEventResult, Outcome: supervise.UpdateOutcomeFailed, Reason: "statfs: EIO"}}, "statfs: EIO"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			answer := PreflightStagedPayload(t.Context(), c.host, request)
+			if answer.OK || answer.Refused || !strings.Contains(answer.Reason, c.want) {
+				t.Fatalf("answer = %+v, want a failure naming %q", answer, c.want)
+			}
+			if err := answer.Err(); err == nil || !strings.HasPrefix(err.Error(), "the new version could not start inside WSL: ") {
+				t.Fatalf("Err = %v", err)
+			}
+			installed := c.host.installErr == nil
+			removed := c.host.calls[len(c.host.calls)-1] == "remove "+staged
+			if installed != removed {
+				t.Fatalf("calls = %q: an installed payload must be removed, and only then", c.host.calls)
+			}
+		})
+	}
+	t.Run("bad request", func(t *testing.T) {
+		host := &fakePreflightHost{}
+		bad := request
+		bad.ID = "../x"
+		if answer := PreflightStagedPayload(t.Context(), host, bad); answer.OK || len(host.calls) != 0 {
+			t.Fatalf("answer = %+v, calls %q", answer, host.calls)
 		}
 	})
 }

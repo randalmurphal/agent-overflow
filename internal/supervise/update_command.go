@@ -43,9 +43,9 @@ type TrialRunOptions struct {
 	// Stdout and Stderr receive the trial's output. nil means stderr.
 	Stdout, Stderr *os.File
 	TargetVersion  string
-	// Attempt is the trial's durable attempt number, 1 on the first. Only
-	// the first compares the live database with the snapshot: a retry runs
-	// on a database an earlier attempt of this update changed.
+	// Attempt is the trial's durable attempt number, 1 on the first. It is
+	// recorded in the snapshot manifest with what the attempt's trial left
+	// (see CheckLiveBeforeAttempt).
 	Attempt int
 	// Rule and StopTimeout default as in TrialConfig.
 	Rule        StallRule
@@ -89,6 +89,33 @@ func (c UpdateCommand) Snapshot(ctx context.Context, hostAvailable *uint64) Upda
 	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeOK}
 }
 
+// Space answers whether the snapshot this update would take fits, by the
+// rule TakeSnapshot applies (SnapshotPlan). It takes no lock and changes
+// nothing: it runs while the version being replaced still serves the
+// database, so the refusal reaches the user before anything stops.
+// hostAvailable is as for Snapshot.
+func (c UpdateCommand) Space(hostAvailable *uint64) UpdateEvent {
+	layout, err := NewAppUpdateLayout(c.DataDir)
+	if err != nil {
+		return failedEvent(UpdateOutcomeRefused, err)
+	}
+	plan, found, err := PlanSnapshot(layout, c.DataDir)
+	if err != nil {
+		return failedEvent(UpdateOutcomeFailed, err)
+	}
+	// No database is the snapshot step's refusal to make, with its reason.
+	if found {
+		if err := plan.Check(c.DataDir, hostAvailable); err != nil {
+			var space *InsufficientSpaceError
+			if errors.As(err, &space) {
+				return failedEvent(UpdateOutcomeRefused, err)
+			}
+			return failedEvent(UpdateOutcomeFailed, err)
+		}
+	}
+	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeOK}
+}
+
 // TrialRun runs the trial against the snapshotted database and restores the
 // snapshot when the trial fails.
 //
@@ -110,9 +137,27 @@ func (c UpdateCommand) TrialRun(ctx context.Context, opts TrialRunOptions) Updat
 	if event, ok := c.requireSnapshot(layout); !ok {
 		return event
 	}
-	if opts.Attempt <= 1 {
-		if err := VerifyLiveUnchanged(layout, c.DataDir); err != nil {
-			return failedEvent(UpdateOutcomeRefused, err)
+	checked, err := CheckLiveBeforeAttempt(layout, c.DataDir)
+	if err != nil {
+		var changed *LiveDatabaseChangedError
+		if errors.As(err, &changed) {
+			return failedEvent(UpdateOutcomeChanged, err)
+		}
+		return failedEvent(UpdateOutcomeRefused, err)
+	}
+	if !checked {
+		c.log("supervise: update %s attempt %d runs on the database an interrupted attempt left, which could not be checked",
+			c.UpdateID, opts.Attempt)
+	}
+	if err := RecordAttempt(layout, c.DataDir, opts.Attempt, false); err != nil {
+		return failedEvent(UpdateOutcomeRefused, err)
+	}
+	// ended records what this attempt left once the database is settled:
+	// the trial's database, or the restored snapshot. A restore that did
+	// not finish leaves the attempt unended.
+	ended := func() {
+		if err := RecordAttempt(layout, c.DataDir, opts.Attempt, true); err != nil {
+			c.log("supervise: update %s attempt %d: %v; a retry runs without checking the database", c.UpdateID, opts.Attempt, err)
 		}
 	}
 
@@ -130,10 +175,12 @@ func (c UpdateCommand) TrialRun(ctx context.Context, opts TrialRunOptions) Updat
 		Log:           c.log,
 	})
 	if trialErr == nil {
+		ended()
 		return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomePrepared}
 	}
 	var failed *TrialFailedError
 	if !errors.As(trialErr, &failed) {
+		ended()
 		return failedEvent(UpdateOutcomeFailed, fmt.Errorf("the trial was interrupted: %w", trialErr))
 	}
 	c.log("supervise: trial of update %s failed: %s", c.UpdateID, failed.Reason)
@@ -143,6 +190,7 @@ func (c UpdateCommand) TrialRun(ctx context.Context, opts TrialRunOptions) Updat
 		return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeFailed,
 			Reason: fmt.Sprintf("%s, and the database backup could not be restored: %v", failed.Reason, err)}
 	}
+	ended()
 	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeRolledBack, Reason: failed.Reason}
 }
 

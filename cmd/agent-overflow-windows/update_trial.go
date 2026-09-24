@@ -15,7 +15,6 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -36,7 +35,8 @@ import (
 
 const (
 	// updatePreflightTimeout bounds the new launcher's preflight: writing
-	// and installing its payload into WSL, then asking it what it is.
+	// and installing its payload into WSL, then asking it what it is and
+	// whether the snapshot fits.
 	updatePreflightTimeout = 3 * time.Minute
 	// updateParentExitTimeout is how long a launcher waits for the one it
 	// replaces to exit, as the Wails swap helper does.
@@ -103,9 +103,9 @@ func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, st
 		discardLauncher()
 		return errLegacyTarget
 	}
-	if !answer.OK {
+	if err := answer.Err(); err != nil {
 		discardLauncher()
-		return fmt.Errorf("the new version could not start inside WSL: %s", answer.Reason)
+		return err
 	}
 	record := supervise.LauncherRecord{
 		Distro: distro, StablePayload: stable, StagedPayload: answer.StagedPayload,
@@ -162,8 +162,9 @@ func runLauncherPreflight(launcherPath, answerPath, id, distro, stable string) (
 }
 
 // runUpdatePreflightMode is `--update-preflight`: install this launcher's
-// payload beside the stable one and ask it what it is. The answer file is
-// the whole result.
+// payload beside the stable one and ask it what it is and whether the
+// update's database snapshot fits (wsllauncher.PreflightStagedPayload). The
+// answer file is the whole result.
 func runUpdatePreflightMode(flags launcherFlags) int {
 	answer := preflightStagedPayload(flags)
 	if !answer.OK {
@@ -177,39 +178,28 @@ func runUpdatePreflightMode(flags launcherFlags) int {
 }
 
 func preflightStagedPayload(flags launcherFlags) wsllauncher.PreflightAnswer {
-	fail := func(format string, args ...any) wsllauncher.PreflightAnswer {
-		return wsllauncher.PreflightAnswer{Reason: fmt.Sprintf(format, args...)}
-	}
-	if flags.Distro == "" || !path.IsAbs(flags.UpdateStable) {
-		return fail("the preflight needs a distro and the stable backend's path")
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), updatePreflightTimeout)
 	defer cancel()
-	staged := wsllauncher.StagedPayloadPath(flags.UpdateStable, flags.UpdateID)
+	return wsllauncher.PreflightStagedPayload(ctx, preflightHost{launcherUpdateHost{UpdatePayloads: newUpdatePayloads()}},
+		wsllauncher.PreflightRequest{
+			ID: flags.UpdateID, Distro: flags.Distro, Stable: flags.UpdateStable,
+			Version: payloadVersion, Fingerprint: embeddedPayloadFingerprint(),
+		})
+}
+
+// preflightHost is wsllauncher.PreflightHost on Windows.
+type preflightHost struct {
+	launcherUpdateHost
+}
+
+// InstallEmbeddedPayload writes this launcher's payload into the distro.
+func (preflightHost) InstallEmbeddedPayload(ctx context.Context, distro, staged string) error {
 	tmp, err := writeEmbeddedPayload()
 	if err != nil {
-		return fail("write the new backend: %v", err)
+		return fmt.Errorf("write the new backend: %w", err)
 	}
 	defer os.Remove(tmp)
-	if err := wsllauncher.InstallPayload(ctx, flags.Distro, tmp, staged); err != nil {
-		return fail("install the new backend into %s: %v", flags.Distro, err)
-	}
-	payloads := newUpdatePayloads()
-	record := supervise.LauncherRecord{Distro: flags.Distro, StagedPayload: staged}
-	answer, err := payloads.Preflight(ctx, flags.Distro, staged)
-	if err == nil && answer.Version != payloadVersion {
-		err = fmt.Errorf("the new backend reports version %s and its launcher %s", answer.Version, payloadVersion)
-	}
-	if err != nil {
-		if removeErr := payloads.RemoveStagedPayload(context.Background(), record); removeErr != nil {
-			log.Printf("updater: remove the staged backend: %v", removeErr)
-		}
-		return fail("the new backend did not start: %v", err)
-	}
-	return wsllauncher.PreflightAnswer{
-		OK: true, Version: answer.Version,
-		Fingerprint: embeddedPayloadFingerprint(), StagedPayload: staged,
-	}
+	return wsllauncher.InstallPayload(ctx, distro, tmp, staged)
 }
 
 // waitForParentLauncher waits for the launcher that started this one to

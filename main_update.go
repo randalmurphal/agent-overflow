@@ -28,7 +28,7 @@ import (
 
 func isUpdateCommand(name string) bool {
 	switch name {
-	case supervise.UpdateSnapshotCommand, supervise.UpdateTrialRunCommand,
+	case supervise.UpdateSpaceCommand, supervise.UpdateSnapshotCommand, supervise.UpdateTrialRunCommand,
 		supervise.UpdateRestoreCommand, supervise.UpdateDiscardCommand,
 		supervise.UpdateTrialCommand:
 		return true
@@ -132,6 +132,8 @@ func runUpdateStep(ctx context.Context, name string, flags updateCommandFlags, c
 			Reason: "cannot determine the data directory"}
 	}
 	switch name {
+	case supervise.UpdateSpaceCommand:
+		return command.Space(flags.hostFree)
 	case supervise.UpdateSnapshotCommand:
 		return command.Snapshot(ctx, flags.hostFree)
 	case supervise.UpdateTrialRunCommand:

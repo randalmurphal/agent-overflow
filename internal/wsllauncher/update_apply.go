@@ -145,6 +145,10 @@ func (s UpdateSequence) Apply(ctx context.Context, id string) (UpdateEnd, error)
 		return s.commit(ctx, record)
 	case supervise.UpdateOutcomeRolledBack:
 		return s.settleRolledBack(ctx, record, result.Reason)
+	case supervise.UpdateOutcomeChanged:
+		// Another backend used the database since the update last left
+		// it. A restore would discard that work, at any attempt.
+		return s.settleFailed(ctx, record, result.Reason)
 	case supervise.UpdateOutcomeRefused, supervise.UpdateOutcomeNoSnapshot:
 		// The command changed nothing. On the first attempt the database
 		// is the one the snapshot copied, so nothing of the target's ran.
