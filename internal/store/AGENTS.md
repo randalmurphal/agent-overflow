@@ -78,9 +78,10 @@ an atomic persistence decision; they must not become a business-logic layer.
 
 ## History and trigger contracts
 
-- Item triggers maintain history stamps, payload garbage collection, imported
-  history integrity, and background-launch settlement. Do not duplicate or
-  bypass those invariants in Go.
+- Item triggers maintain history stamps, subagent anchor cards, the thread
+  row's turn-error aggregate, payload garbage collection, imported history
+  integrity, and background-launch settlement. Do not duplicate or bypass
+  those invariants in Go.
 - A write to a payload or plan row an item renders calls
   `bumpHistoryRevForItemTx` / `bumpHistoryRevForPayloadTx` so the owning row's
   `rev` moves with the thread stamp; plain `bumpHistoryRevTx` is only for a
@@ -90,7 +91,8 @@ an atomic persistence decision; they must not become a business-logic layer.
 - `SyncThreadWindow` reads store identity, stamps, and rows in one read
   transaction so they describe one WAL snapshot.
 - `history_bulk_load` may suppress stamp triggers only in a transaction that
-  writes the exact aggregate revision before commit.
+  writes the exact aggregate revision before commit and recomputes the
+  subagent cards of every subtree it changed (`subagent_aggregate_stamps.go`).
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`.

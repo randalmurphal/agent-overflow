@@ -145,5 +145,11 @@ func replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, target Thread,
 	if err := readTransferHistoryTx(ctx, tx, target, history); err != nil {
 		return err
 	}
+	// The rows were loaded with the triggers' aggregate work suspended and
+	// carry whatever stamps the sending computer wrote; rebuild them from
+	// the rows this thread now holds.
+	if err := restampSubagentAggregatesTx(tx, target.ID); err != nil {
+		return err
+	}
 	return setHistoryBulkLoadTx(tx, target.ID, false, "returning transfer")
 }

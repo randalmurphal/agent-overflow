@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -25,10 +27,11 @@ const (
 	// hydration expectation; its absence means "one round, the count you
 	// already have".
 	metaKeySubagentTranscriptDescendantCount = "subagentTranscriptDescendantCount"
-	// metaKeySubagentLatestToolSummary is a read-time decoration for the
-	// background tray. It is deliberately not persisted on the launch: the
-	// timeline spawn row's presentation is a fixed launch event, while the tray
-	// is the live projection that may show the child's latest direct tool call.
+	// metaKeySubagentLatestToolSummary is the background tray's activity
+	// line: the launch's newest direct tool call. The history triggers keep
+	// it on a stamped Claude launch with the card keys; a Codex spawn row is
+	// immutable, so its tray reads it at read time
+	// (decorateLatestDirectSubagentTools).
 	metaKeySubagentLatestToolSummary = "subagentLatestToolSummary"
 	metaKeySubagentLatestToolTurn    = "subagentLatestToolTurnIndex"
 	metaKeySubagentLatestToolItem    = "subagentLatestToolItemIndex"
@@ -76,6 +79,9 @@ type subagentRound struct {
 	promptID  string
 	turnIndex int
 	itemIndex int
+	// imported marks a prompt read from the immutable history arm, which
+	// the write-time round probe does not see.
+	imported bool
 }
 
 // subagentRoundBounds is one anchor's slice of its root's transcript as a
@@ -165,36 +171,6 @@ func descendantsCTEArgs(threadID string, rootIDs []string) []any {
 	return append(args, threadID, threadID)
 }
 
-// descendantsCTE is the LOCAL-ONLY `rel(root, id) AS (...)` clause,
-// without the leading `WITH RECURSIVE`, so a caller that needs other
-// CTEs alongside it (ListLiveBackgroundTasks stacks a background-root
-// CTE under the same WITH) can compose one statement instead of forking
-// the walk. `table` is the row source and `rootSet` is whatever yields
-// the root ids: a `?` placeholder list or a subquery naming an earlier
-// CTE. The one caller passes plain `items` and a subquery — the tray
-// lists LIVE work, which is never imported history.
-//
-// Placeholder order: thread id for the base hop, then the rootSet's own
-// parameters (if any), then thread id again for the recursive hop.
-func descendantsCTE(table, rootSet string) string {
-	visible := visibleItemsFilterFor("i.")
-	return `rel(root, id) AS (
-		SELECT i.parent_id, i.id
-		  FROM ` + table + ` i
-		 WHERE i.thread_id = ?
-		   AND i.parent_id IN (` + rootSet + `)
-		   AND i.parent_id <> ''
-		   AND ` + visible + `
-		UNION
-		SELECT rel.root, i.id
-		  FROM rel
-		  CROSS JOIN ` + table + ` i ON i.parent_id = rel.id
-		 WHERE i.thread_id = ?
-		   AND i.parent_id <> ''
-		   AND ` + visible + `
-	)`
-}
-
 // subagentLaunchFilterFor is the provider-neutral "this tool_call row is
 // an agent launch" predicate, and the one place that answers the
 // question for SQL. It is STRUCTURAL, never a tool-name list: a launch
@@ -263,13 +239,18 @@ func (s *Store) IsSubagentLaunch(threadID, itemID string) (bool, error) {
 // rounds additionally carries the whole-transcript count the agent pane
 // hydrates against.
 //
-// Cost: the descendant walk plus ONE narrow probe for the resume-prompt
-// rows under the window's walk roots — direct children only, off the same
-// partial parent index the walk's base hops use. It runs whenever the
-// window holds any tool_call anchor, because a ROOT alone in the window can
-// have rounds whose carriers are outside it, and nothing on the root row
-// says so. When it finds nothing, the aggregate query and its cost are
-// exactly what they were before rounds existed.
+// A local anchor the history triggers keep stamped (subagent_aggregate_
+// stamps.go) is returned as stored: its stamp is this decoration, kept at
+// write time. A completion sibling copies its clean launch's stamp. Only
+// imported, dirty, readTime and unstamped carrier rows are walked, plus the
+// unstamped anchors of a thread whose backfill has not finished.
+//
+// Cost of a walk: the descendant walk plus ONE narrow probe for the
+// resume-prompt rows under the window's walk roots. It runs whenever the
+// window holds a walked anchor, because a ROOT alone in the window can have
+// rounds whose carriers are outside it, and nothing on the root row says
+// so. When it finds nothing, the aggregate query and its cost are exactly
+// what they were before rounds existed.
 func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []Item) ([]Item, error) {
 	if len(items) == 0 {
 		return items, nil
@@ -311,6 +292,10 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 		seenRoot[walkRoot] = struct{}{}
 		rootIDs = append(rootIDs, walkRoot)
 	}
+	walks := subagentWalkProbe(q, threadID)
+	// walked holds the rows this read decorates; every other row is
+	// returned byte for byte as stored.
+	walked := make(map[string]struct{}, len(items))
 	launchByID := make(map[string]Item, len(items))
 	var completionLaunchIDs []string
 	for _, item := range items {
@@ -320,7 +305,14 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 		switch item.Kind {
 		case "tool_call":
 			launchByID[item.ID] = item
-			addAnchor(item.ID, item.Meta)
+			walk, err := walks(item)
+			if err != nil {
+				return nil, err
+			}
+			if walk {
+				walked[item.ID] = struct{}{}
+				addAnchor(item.ID, item.Meta)
+			}
 		case "tool_completion":
 			// A Codex wait carrier's completion is a wait group, not an
 			// agent card; its launch is walked as a tool_call above if
@@ -334,6 +326,7 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 	// aggregate it carries; only completions whose launch resolved to a
 	// Claude tool_call are stamped.
 	var anchorByCompletion map[string]string
+	stampedByCompletion := make(map[string]subagentAnchorAggregate)
 	if len(completionLaunchIDs) > 0 {
 		missing := make([]string, 0, len(completionLaunchIDs))
 		for _, id := range completionLaunchIDs {
@@ -359,15 +352,31 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 			if !ok || launch.Kind != "tool_call" || launch.ToolName == "collab_agent" {
 				continue
 			}
+			walk, err := walks(launch)
+			if err != nil {
+				return nil, err
+			}
+			walked[item.ID] = struct{}{}
 			anchorByCompletion[item.ID] = launch.ID
-			addAnchor(launch.ID, launch.Meta)
+			if walk {
+				addAnchor(launch.ID, launch.Meta)
+				continue
+			}
+			if agg, stamped := storedSubagentAnchorAggregate(launch.Meta); stamped {
+				stampedByCompletion[item.ID] = agg
+			}
+		}
+	}
+	for i := range items {
+		if agg, ok := stampedByCompletion[items[i].ID]; ok {
+			items[i].Meta = mergeSubagentAnchorMeta(items[i].Meta, agg)
 		}
 	}
 	if len(rootIDs) == 0 {
 		return items, nil
 	}
 
-	rounds, err := s.subagentResumeRounds(q, threadID, rootIDs)
+	rounds, err := subagentResumeRounds(q, threadID, rootIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -376,9 +385,9 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 	if len(rounds) == 0 {
 		// No round ever opened under any of these roots: one aggregate
 		// per root, keyed by root, exactly as before.
-		aggregates, err = s.subagentAggregatesByRoot(q, threadID, rootIDs)
+		aggregates, err = subagentAggregatesByRoot(q, threadID, rootIDs)
 	} else {
-		aggregates, err = s.subagentAggregatesByRound(
+		aggregates, err = subagentAggregatesByRound(
 			q, threadID, rootIDs, subagentRoundBoundsFor(rootIDs, rounds, walkRootByAnchor))
 	}
 	if err != nil {
@@ -388,6 +397,12 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 		return items, nil
 	}
 	for i := range items {
+		if _, walk := walked[items[i].ID]; !walk {
+			continue
+		}
+		if _, stamped := stampedByCompletion[items[i].ID]; stamped {
+			continue
+		}
 		anchorID := items[i].ID
 		if launchID, isCompletion := anchorByCompletion[items[i].ID]; isCompletion {
 			anchorID = launchID
@@ -416,15 +431,62 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 	return items, nil
 }
 
+// subagentWalkProbe returns the read's decision for one anchorable row:
+// true when the read-time aggregator answers for it, false when the stored
+// row is the read. An unstamped local anchor is walked only while its
+// thread's backfill is pending; one probe per read answers that.
+func subagentWalkProbe(q sqlQueryer, threadID string) func(Item) (bool, error) {
+	var listed *bool
+	return func(item Item) (bool, error) {
+		if item.Rev < 0 {
+			return true, nil
+		}
+		switch subagentStampModeOf(item.Meta) {
+		case subagentStampClean:
+			return false, nil
+		case subagentStampWalk:
+			return true, nil
+		}
+		if root := transcriptRootFromMeta(item.Meta); root != "" && root != item.ID {
+			return true, nil
+		}
+		if listed == nil {
+			found, err := subagentBackfillListed(q, threadID)
+			if err != nil {
+				return false, err
+			}
+			listed = &found
+		}
+		return *listed, nil
+	}
+}
+
+// storedSubagentAnchorAggregate reads a clean stamp's card values back as
+// the aggregate a walk would produce. stamped is false for a row whose
+// stamp decorates nothing (no descendants, no rounds).
+func storedSubagentAnchorAggregate(meta string) (subagentAnchorAggregate, bool) {
+	values, ok := storedSubagentStampValues(meta)
+	if !ok || values.Count == nil {
+		return subagentAnchorAggregate{}, false
+	}
+	agg := subagentAnchorAggregate{descendantCount: *values.Count, latestChildSummary: values.Summary}
+	if values.TranscriptCount != nil {
+		agg.transcriptDescendantCount = *values.TranscriptCount
+		agg.hasTranscriptCount = true
+	}
+	return agg, true
+}
+
 // subagentResumeRounds finds every §E6 resume-prompt row parented to one
 // of `rootIDs`, in position order. It asks for ALL of them, not just the
 // ones whose carrier is in the window: a round-1 card in the window is
 // bounded by a round-2 carrier that may be anywhere.
 //
-// The predicate is a direct-child probe (`parent_id IN (...)`, which the
-// partial idx_items_parent serves, plus the non-empty `parent_id` term it
-// needs to be proven) narrowed by a substring pre-check on meta, so the
-// JSON decode below runs on the handful of rows that are really prompts.
+// The predicate is aggPromptSQL, the one the history triggers resolve
+// rounds with, so a row cuts a round at read time exactly when it cuts
+// one at write time. Its partial-index terms let the local arm probe
+// idx_items_subagent_resume_prompt; the imported arm probes the parent
+// lookup index.
 //
 // The ordering is done in Go, and that is a PLAN decision, not a style
 // one: an `ORDER BY turn_index, item_index` makes SQLite prefer
@@ -432,23 +494,8 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 // index instead of probing the parent index (measured on the arms parity
 // fixture). One agent has a handful of rounds, so the sort is free.
 // TestSubagentResumeRoundProbeProbesTheParentIndexes is the tripwire.
-func (s *Store) subagentResumeRounds(q sqlQueryer, threadID string, rootIDs []string) ([]subagentRound, error) {
-	rootArgs := make([]any, 0, len(rootIDs))
-	for _, id := range rootIDs {
-		rootArgs = append(rootArgs, id)
-	}
-	query, args := timelineArms(threadID, timelineSelection{
-		Columns: func(string, string) string {
-			return `items.parent_id AS root, items.id AS id, items.meta AS meta,
-			        items.turn_index AS turn_index, items.item_index AS item_index`
-		},
-		Where: `items.kind = 'user_text'
-			   AND items.parent_id IN (` + placeholders(len(rootIDs)) + `)
-			   AND items.parent_id <> ''
-			   AND items.meta LIKE '%` + metaKeySubagentResumePrompt + `%'`,
-		WhereArgs: rootArgs,
-	})
-
+func subagentResumeRounds(q sqlQueryer, threadID string, rootIDs []string) ([]subagentRound, error) {
+	query, args := subagentResumeRoundsQuery(threadID, rootIDs)
 	rows, err := q.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query subagent resume rounds for %s: %w", threadID, err)
@@ -457,29 +504,18 @@ func (s *Store) subagentResumeRounds(q sqlQueryer, threadID string, rootIDs []st
 
 	var out []subagentRound
 	for rows.Next() {
-		var root, id, meta string
-		var turnIndex, itemIndex int
-		if err := rows.Scan(&root, &id, &meta, &turnIndex, &itemIndex); err != nil {
+		var round subagentRound
+		if err := rows.Scan(&round.rootID, &round.promptID, &round.anchorID,
+			&round.turnIndex, &round.itemIndex, &round.imported); err != nil {
 			return nil, fmt.Errorf("store: scan subagent resume round: %w", err)
-		}
-		var decoded struct {
-			ResumePrompt bool   `json:"subagent_resume_prompt"`
-			CarrierID    string `json:"resume_carrier_id"`
-		}
-		if json.Unmarshal([]byte(meta), &decoded) != nil || !decoded.ResumePrompt {
-			continue // the LIKE matched some other string
 		}
 		// A prompt row that names no carrier still CUTS the transcript
 		// where it sits; it just has no card to be stamped onto. Keying
 		// the bound on the row's own id gives it a slot nothing matches.
-		anchorID := strings.TrimSpace(decoded.CarrierID)
-		if anchorID == "" {
-			anchorID = id
+		if round.anchorID == "" {
+			round.anchorID = round.promptID
 		}
-		out = append(out, subagentRound{
-			rootID: root, anchorID: anchorID, promptID: id,
-			turnIndex: turnIndex, itemIndex: itemIndex,
-		})
+		out = append(out, round)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate subagent resume rounds for %s: %w", threadID, err)
@@ -494,6 +530,27 @@ func (s *Store) subagentResumeRounds(q sqlQueryer, threadID string, rootIDs []st
 		return strings.Compare(a.promptID, b.promptID)
 	})
 	return out, nil
+}
+
+// subagentResumeRoundsQuery selects the resume prompts directly under the
+// roots over both timeline arms. The local arm is served by
+// idx_items_subagent_resume_prompt, whose predicate aggPromptSQL states.
+func subagentResumeRoundsQuery(threadID string, rootIDs []string) (string, []any) {
+	rootArgs := make([]any, 0, len(rootIDs))
+	for _, id := range rootIDs {
+		rootArgs = append(rootArgs, id)
+	}
+	return timelineArms(threadID, timelineSelection{
+		Columns: func(_, revExpr string) string {
+			return `items.parent_id AS root, items.id AS id,
+			        ` + aggPromptCarrierSQL("items.") + ` AS carrier,
+			        items.turn_index AS turn_index, items.item_index AS item_index,
+			        ` + revExpr + ` < 0 AS imported`
+		},
+		Where: `items.parent_id IN (` + placeholders(len(rootIDs)) + `)
+			   AND ` + aggPromptSQL("items."),
+		WhereArgs: rootArgs,
+	})
 }
 
 // subagentRoundBoundsFor turns the ordered prompt rows into the disjoint,
@@ -565,8 +622,8 @@ func (s *Store) subagentLaunchRowsByID(q sqlQueryer, threadID string, ids []stri
 		args = append(args, id)
 	}
 	source, queryArgs := timelineArms(threadID, timelineSelection{
-		Columns: func(string, string) string {
-			return "items.id AS id, items.kind AS kind, items.tool_name AS tool_name, items.meta AS meta"
+		Columns: func(_, revExpr string) string {
+			return "items.id AS id, items.kind AS kind, items.tool_name AS tool_name, items.meta AS meta, " + revExpr + " AS rev"
 		},
 		Where:     "items.id IN (" + placeholders + ")",
 		WhereArgs: args,
@@ -579,7 +636,7 @@ func (s *Store) subagentLaunchRowsByID(q sqlQueryer, threadID string, ids []stri
 	out := make(map[string]Item, len(ids))
 	for rows.Next() {
 		var item Item
-		if err := rows.Scan(&item.ID, &item.Kind, &item.ToolName, &item.Meta); err != nil {
+		if err := rows.Scan(&item.ID, &item.Kind, &item.ToolName, &item.Meta, &item.Rev); err != nil {
 			return nil, fmt.Errorf("store: scan subagent launch row: %w", err)
 		}
 		item.ThreadID = threadID
@@ -605,75 +662,39 @@ func transcriptRootFromMeta(meta string) string {
 	if json.Unmarshal([]byte(meta), &decoded) != nil {
 		return ""
 	}
-	return strings.TrimSpace(decoded.TranscriptRootID)
+	// The ASCII set aggTranscriptRootSQL trims, so Go and the triggers
+	// agree on which rows are carriers.
+	return strings.Trim(decoded.TranscriptRootID, subagentPreviewBlank)
 }
 
 // decorateLatestDirectSubagentTools merges the newest direct, non-launch tool
 // summary under each supplied launch into a read-time copy of that launch.
 // Direct ownership matters: a nested agent has its own tray row, so its tools
-// must not also appear as the parent's latest activity. The one query handles
-// every live launch in the thread and keeps tray refreshes free of N+1 reads.
+// must not also appear as the parent's latest activity. A clean stamped
+// launch already carries the keys (the history triggers keep them); the one
+// query handles every other launch in the thread and keeps tray refreshes
+// free of N+1 reads.
 func (s *Store) decorateLatestDirectSubagentTools(q sqlQueryer, threadID string, items []Item) ([]Item, error) {
 	rootIDs := make([]string, 0, len(items))
 	for _, item := range items {
-		if item.Kind == "tool_call" && strings.TrimSpace(item.ID) != "" {
-			rootIDs = append(rootIDs, item.ID)
+		if item.Kind != "tool_call" || strings.TrimSpace(item.ID) == "" {
+			continue
 		}
+		if item.Rev >= 0 && item.ToolName != "collab_agent" && subagentStampModeOf(item.Meta) == subagentStampClean {
+			continue
+		}
+		rootIDs = append(rootIDs, item.ID)
 	}
 	if len(rootIDs) == 0 {
 		return items, nil
 	}
-
-	args := make([]any, 0, len(rootIDs)+1)
-	args = append(args, threadID)
-	for _, id := range rootIDs {
-		args = append(args, id)
-	}
-	rows, err := q.Query(`
-		SELECT parent_id, summary, turn_index, item_index FROM (
-			SELECT parent_id,
-			       summary,
-			       turn_index,
-			       item_index,
-			       ROW_NUMBER() OVER (
-			           PARTITION BY parent_id
-			           ORDER BY turn_index DESC, item_index DESC, id
-			       ) AS rn
-			  FROM items
-			 WHERE thread_id = ?
-			   AND parent_id IN (`+placeholders(len(rootIDs))+`)
-			   AND parent_id <> ''
-			   AND kind = 'tool_call'
-			   AND tool_name <> 'collab_agent'
-			   AND TRIM(summary) <> ''
-		) WHERE rn = 1`, args...)
+	latestByRoot, err := latestDirectSubagentTools(q, threadID, rootIDs)
 	if err != nil {
-		return nil, fmt.Errorf("store: query latest direct subagent tools for %s: %w", threadID, err)
+		return nil, err
 	}
-	defer rows.Close()
-
-	type latestTool struct {
-		summary              string
-		turnIndex, itemIndex int
-	}
-	latestByRoot := make(map[string]latestTool, len(rootIDs))
-	for rows.Next() {
-		var rootID, summary string
-		var turnIndex, itemIndex int
-		if err := rows.Scan(&rootID, &summary, &turnIndex, &itemIndex); err != nil {
-			return nil, fmt.Errorf("store: scan latest direct subagent tool: %w", err)
-		}
-		latestByRoot[rootID] = latestTool{
-			summary: strings.TrimSpace(summary), turnIndex: turnIndex, itemIndex: itemIndex,
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate latest direct subagent tools for %s: %w", threadID, err)
-	}
-
 	for i := range items {
-		latest := latestByRoot[items[i].ID]
-		if latest.summary == "" {
+		latest, ok := latestByRoot[items[i].ID]
+		if !ok {
 			continue
 		}
 		decorated, err := mergeReadTimeMeta(items[i].Meta, map[string]any{
@@ -687,6 +708,42 @@ func (s *Store) decorateLatestDirectSubagentTools(q sqlQueryer, threadID string,
 		items[i].Meta = decorated
 	}
 	return items, nil
+}
+
+// latestDirectSubagentTool is a launch's tray activity: its newest direct
+// tool_call child that is not a Codex spawn and has a nonblank summary.
+// (turn_index, item_index) is unique within a thread, so the order has no
+// ties. The summary is trimmed with the ASCII set the triggers use, so a
+// stamp and this read agree byte for byte.
+type latestDirectSubagentTool struct {
+	id, summary          string
+	turnIndex, itemIndex int
+}
+
+// latestDirectSubagentToolSQL reads one launch's tray activity backwards
+// along idx_items_parent, stopping at the first qualifying child.
+var latestDirectSubagentToolSQL = `SELECT id, trim(summary, ` + aggBlankSQL + `), turn_index, item_index
+  FROM items
+ WHERE thread_id = ? AND parent_id = ? AND parent_id <> ''
+   AND ` + aggToolableSQL("") + `
+ ORDER BY turn_index DESC, item_index DESC
+ LIMIT 1`
+
+func latestDirectSubagentTools(q sqlQueryer, threadID string, rootIDs []string) (map[string]latestDirectSubagentTool, error) {
+	out := make(map[string]latestDirectSubagentTool, len(rootIDs))
+	for _, rootID := range rootIDs {
+		var latest latestDirectSubagentTool
+		err := q.QueryRow(latestDirectSubagentToolSQL, threadID, rootID).
+			Scan(&latest.id, &latest.summary, &latest.turnIndex, &latest.itemIndex)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("store: read latest direct subagent tool %s/%s: %w", threadID, rootID, err)
+		}
+		out[rootID] = latest
+	}
+	return out, nil
 }
 
 func mergeReadTimeMeta(itemMeta string, decoration map[string]any) (string, error) {
@@ -727,7 +784,7 @@ func (s *Store) SubagentCompletedChildIndex(threadID, launchID string) (int, err
 // execution. The caller persists the result on its new completion item only.
 // Child coordinates belong to the original spawn's AO turn.
 func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, itemMeta string, turnIndex, startIndex, endIndex int) (string, error) {
-	aggregates, err := s.subagentAggregatesByRound(s.reader(), threadID, []string{launchID}, []subagentRoundBounds{{
+	aggregates, err := subagentAggregatesByRound(s.reader(), threadID, []string{launchID}, []subagentRoundBounds{{
 		anchorID: launchID, rootID: launchID,
 		lo: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: startIndex + 1},
 		hi: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: endIndex + 1},

@@ -137,7 +137,7 @@ CREATE TABLE scratch_threads (
     request_token    TEXT
 );
 CREATE INDEX idx_scratch_threads_source ON scratch_threads(source_thread_id);
-` + historyRevTriggersSQL + `
+` + historyRevTriggersV100SQL + `
 
 CREATE TRIGGER trg_items_require_import_override
 BEFORE INSERT ON items

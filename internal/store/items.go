@@ -153,17 +153,65 @@ func itemInsertArgs(item Item) []any {
 // streaming is indexed later by the write that settles it. The index write
 // shares this transaction, so a rolled-back insert leaves nothing searchable.
 func insertItemTx(tx *sql.Tx, item Item, label string) error {
+	if err := shadowImportedParentTx(tx, item, label); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
 		return fmt.Errorf("%s: %w", label, err)
 	}
-	return indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary)
+	if err := indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary); err != nil {
+		return err
+	}
+	return settleSubagentAggregatesTx(tx, item.ThreadID)
 }
 
 func insertItemWithIDTx(tx *sql.Tx, item Item, label string) error {
+	if err := shadowImportedParentTx(tx, item, label); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
 		return fmt.Errorf("%s %s: %w", label, item.ID, err)
 	}
-	return indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary)
+	if err := indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary); err != nil {
+		return err
+	}
+	return settleSubagentAggregatesTx(tx, item.ThreadID)
+}
+
+// shadowImportedParentTx moves an imported anchor into the thread's local
+// overlay before a local child is written under it, the way
+// ensureLocalPayloadTx gives an imported payload a local copy before a
+// write. The history triggers keep stamps on local rows only; shadowed,
+// the anchor is stamped by the settle that follows the child's insert
+// (localizeImportedItemTx writes it dirty) and maintained from there.
+func shadowImportedParentTx(tx *sql.Tx, item Item, label string) error {
+	if item.ParentID == "" {
+		return nil
+	}
+	var local bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM items WHERE thread_id = ? AND id = ?)`,
+		item.ThreadID, item.ParentID).Scan(&local); err != nil {
+		return fmt.Errorf("%s: probe parent %s/%s: %w", label, item.ThreadID, item.ParentID, err)
+	}
+	if local {
+		return nil
+	}
+	var anchorable bool
+	err := tx.QueryRow(`SELECT `+aggAnchorableSQL("imported.")+`
+		   FROM thread_import_chunks refs
+		   JOIN import_history_items imported ON imported.chunk_id = refs.chunk_id
+		  WHERE refs.thread_id = ? AND imported.id = ?
+		    AND NOT EXISTS (SELECT 1 FROM thread_import_item_overrides o
+		      WHERE o.thread_id = refs.thread_id AND o.item_id = imported.id)`,
+		item.ThreadID, item.ParentID).Scan(&anchorable)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !anchorable) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%s: probe imported parent %s/%s: %w", label, item.ThreadID, item.ParentID, err)
+	}
+	_, err = localizeImportedItemTx(tx, item.ThreadID, item.ParentID, label)
+	return err
 }
 
 // itemColumnsSansPayload mirrors itemColumns but without the

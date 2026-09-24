@@ -74,6 +74,9 @@ func (s *Store) FoldUserTextRows(threadID, survivorID string, foldedIDs []string
 			return Item{}, err
 		}
 	}
+	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+		return Item{}, err
+	}
 
 	survivor, err := readBackItemTx(tx, threadID, survivorID)
 	if err != nil {

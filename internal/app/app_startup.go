@@ -231,6 +231,7 @@ func (a *App) startUnattendedWork() error {
 	// the next boot clears them. See app_store_maintenance.go.
 	a.startStoreMaintenance()
 	a.startHistoryPreparation()
+	a.startSubagentAggregateBackfill()
 
 	// Watch the provider binaries for an upgrade under a running app: a
 	// quiet tick is two stats, and a changed file re-reads the version,

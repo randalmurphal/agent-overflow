@@ -32,9 +32,10 @@ func TestItemReadIsDecorated(t *testing.T) {
 }
 
 // TestItemReadNeedsDecoration pins the gate the emitter's hot path
-// relies on: a childless tool call is left alone by the decorator, so
-// its write read-back may go out as the page read; every other admitted
-// row must be read.
+// relies on: a row the decorator leaves alone (a childless tool call, a
+// clean stamped anchor) may go out as its write read-back, because that
+// read-back is byte-identical to the page read; every other admitted row
+// must be read.
 func TestItemReadNeedsDecoration(t *testing.T) {
 	s := newTestStore(t)
 	seedAnchorThread(t, s)
@@ -50,34 +51,54 @@ func TestItemReadNeedsDecoration(t *testing.T) {
 		}
 		return item
 	}
-	cases := []struct {
-		id   string
-		want bool
-	}{
-		{"bash", false},
-		{"nested", true},
-		{"launch", true},
-		{"carrier", true},
-		{"completion", true},
-		{"text", false},
-	}
-	for _, tc := range cases {
-		got, err := s.ItemReadNeedsDecoration(rowOf(tc.id))
-		if err != nil {
-			t.Fatalf("%s: %v", tc.id, err)
+	check := func(stage string, cases map[string]bool) {
+		t.Helper()
+		for id, want := range cases {
+			got, err := s.ItemReadNeedsDecoration(rowOf(id))
+			if err != nil {
+				t.Fatalf("%s %s: %v", stage, id, err)
+			}
+			if got != want {
+				t.Errorf("%s %s: needs decoration = %v, want %v", stage, id, got, want)
+			}
+			if want {
+				continue
+			}
+			// The decorator agrees: the row comes back byte-identical.
+			rows, err := s.ListWireItems("t", []string{id})
+			if err != nil || len(rows) != 1 {
+				t.Fatalf("%s list %s: rows=%d err=%v", stage, id, len(rows), err)
+			}
+			if rows[0] != rowOf(id) {
+				t.Errorf("%s: decorator altered %s:\n got %+v\nwant %+v", stage, id, rows[0], rowOf(id))
+			}
 		}
-		if got != tc.want {
-			t.Errorf("%s: needs decoration = %v, want %v", tc.id, got, tc.want)
-		}
 	}
-	// The decorator agrees: the childless call comes back byte-identical.
-	rows, err := s.ListWireItems("t", []string{"bash"})
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("list bash: rows=%d err=%v", len(rows), err)
+	// The carrier's round was never opened by a prompt: it shows the
+	// whole transcript, which only the walk computes.
+	check("stamped", map[string]bool{
+		"bash": false, "nested": false, "launch": false,
+		"carrier": true, "completion": true, "text": false,
+	})
+
+	// A dirty or readTime stamp is walked.
+	for _, flag := range []string{"dirty", "readTime"} {
+		writeSubagentStampForTest(t, s, "t", "launch",
+			`json_set(meta, '$.subagentAggregateState.`+flag+`', json('true'))`)
+		check(flag, map[string]bool{"launch": true, "nested": false})
+		writeSubagentStampForTest(t, s, "t", "launch",
+			`json_remove(meta, '$.subagentAggregateState.`+flag+`')`)
 	}
-	if rows[0] != rowOf("bash") {
-		t.Fatalf("decorator altered a childless tool call:\n got %+v\nwant %+v", rows[0], rowOf("bash"))
+
+	// An unstamped anchor is walked only while its thread's stamps are
+	// still being backfilled: once the thread leaves the list, every
+	// anchor a read decorates carries a stamp.
+	stripSubagentStampsForTest(t, s, "t", "nested")
+	check("unlisted", map[string]bool{"bash": false})
+	if _, err := s.db.Exec(`INSERT INTO subagent_aggregate_backfill(thread_id) VALUES ('t')`); err != nil {
+		t.Fatalf("list thread: %v", err)
 	}
+	check("listed", map[string]bool{"nested": true, "bash": true, "launch": false})
 }
 
 // TestListWireItemsIsThePageRead pins that the emitter's read is the

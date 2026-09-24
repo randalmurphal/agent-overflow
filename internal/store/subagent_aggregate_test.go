@@ -15,7 +15,7 @@ func TestSubagentAggregatePreviewIsTheNewestSummary(t *testing.T) {
 		if betterSubagentPreview(row, tool) {
 			t.Fatalf("summary %q is blank and must not beat an older useful one", blank)
 		}
-		state := &subagentAggregateState{}
+		state := &subagentAggregateAccumulator{}
 		state.add(row)
 		if state.hasPick || state.aggregate.latestChildSummary != "" {
 			t.Fatalf("summary %q must not become the preview: %+v", blank, state.aggregate)
@@ -40,7 +40,7 @@ func TestSubagentAggregatePreviewIsTheNewestSummary(t *testing.T) {
 	// Rows arrive in walk order, not position order, and a newer blank
 	// row or a newer row of another kind leaves the newest summary in
 	// place. Every visible row counts.
-	state := &subagentAggregateState{}
+	state := &subagentAggregateAccumulator{}
 	blankNewest := tool
 	blankNewest.id, blankNewest.summary, blankNewest.turnIndex = "blank-newest", "  ", 10
 	for _, row := range []subagentAggregateRow{newer, later, tool, blankNewest, sameTurn} {

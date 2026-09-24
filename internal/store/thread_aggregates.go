@@ -118,14 +118,22 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 //     window (`idx_items_completion_created`), which is how a
 //     just-settled launch and its completion still leave together.
 //
-// The descendant walk then runs from that seed only, and the outer
-// SELECT is driven FROM the resulting id set (`CROSS JOIN items`, so
-// the planner cannot flip it back into a whole-thread scan) rather than
-// filtering the thread. Before v74 the seed was "every background
-// tool_call in the thread" and the walk covered every descendant they
-// ever had: 75k page reads / 309MB / 120-200ms on a 38k-item thread to
-// return between zero and eight rows, on every thread switch and after
-// every background tool completion.
+// Class 2 is found from the other end. Its candidates are the thread's
+// running foreground tool calls below the top level
+// (idx_items_running_nested_fg_tool_calls; a foreground call is
+// transient, so the index holds the calls in flight) and the launches
+// named by a completion inside the window. Each candidate walks up its
+// parent chain by primary key until it meets the seed. The walk costs
+// the candidates times their depth, never the size of a background
+// agent's subtree.
+//
+// The outer SELECT is driven FROM the resulting id set (`CROSS JOIN
+// items`, so the planner cannot flip it back into a whole-thread scan)
+// rather than filtering the thread. Before v74 the seed was "every
+// background tool_call in the thread" and the walk covered every
+// descendant they ever had: 75k page reads / 309MB / 120-200ms on a
+// 38k-item thread to return between zero and eight rows, on every thread
+// switch and after every background tool completion.
 //
 // This is the DISPLAY query only. The reaper and queue gates in
 // items_lifecycle.go (HasRunningTopLevelForegroundToolCall,
@@ -198,14 +206,45 @@ var liveBackgroundTasksSQL = `WITH RECURSIVE bg(id) AS (
 		            AND l.is_background = 1
 		       )
 		),
-		` + descendantsCTE("items", "SELECT id FROM bg") + `,
+		-- Class 2 candidates: nested foreground calls in flight, and the
+		-- launches recent completions name.
+		nested(id) AS (
+		    SELECT id FROM items INDEXED BY idx_items_running_nested_fg_tool_calls
+		     WHERE thread_id = ?
+		       AND kind = 'tool_call'
+		       AND status = 'running'
+		       AND is_background = 0
+		       AND parent_id <> ''
+		    UNION
+		    SELECT c.completion_of
+		      FROM items c INDEXED BY idx_items_completion_created
+		     WHERE c.thread_id = ?
+		       AND c.completion_of <> ''
+		       AND c.created_at >= ?
+		),
+		-- Each candidate's chain upward through visible rows, stopping at
+		-- the first seed row: the rows the old descendant walk would have
+		-- passed through to reach it.
+		up(start, id, parent_id) AS (
+		    SELECT i.id, i.id, i.parent_id
+		      FROM nested
+		      CROSS JOIN items i ON i.thread_id = ? AND i.id = nested.id
+		     WHERE i.parent_id <> '' AND ` + visibleItemsFilterFor("i.") + `
+		    UNION
+		    SELECT up.start, p.id, p.parent_id
+		      FROM up
+		      CROSS JOIN items p ON p.thread_id = ? AND p.id = up.parent_id
+		     WHERE up.parent_id NOT IN (SELECT id FROM bg)
+		       AND p.parent_id <> '' AND ` + visibleItemsFilterFor("p.") + `
+		),
 		anchors(id) AS (
 		    SELECT id FROM bg
 		    UNION
 		    SELECT i.id
-		      FROM rel
-		      CROSS JOIN items i ON i.thread_id = ? AND i.id = rel.id
-		     WHERE ` + subagentLaunchFilterFor("i.") + `
+		      FROM up
+		      CROSS JOIN items i ON i.thread_id = ? AND i.id = up.start
+		     WHERE up.parent_id IN (SELECT id FROM bg)
+		       AND ` + subagentLaunchFilterFor("i.") + `
 		),
 		cand(id) AS (
 		    SELECT id FROM anchors
@@ -251,9 +290,10 @@ func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis i
 		// bg seed: live launches (threadID), settled-in-window launches
 		// (threadID, cutoff).
 		threadID, threadID, retentionCutoffMillis,
-		// descendants base hop (threadID), recursive hop (threadID),
-		// anchor join (threadID).
-		threadID, threadID, threadID,
+		// nested candidates: in-flight calls (threadID), completion
+		// launches (threadID, cutoff); chain base and step (threadID,
+		// threadID); anchor join (threadID).
+		threadID, threadID, retentionCutoffMillis, threadID, threadID, threadID,
 		// candidate completion rows (threadID, cutoff).
 		threadID, retentionCutoffMillis,
 		// outer scope (threadID), launch completion window (cutoff),
@@ -276,5 +316,6 @@ func (s *Store) ListLiveBackgroundTasks(threadID string, retentionCutoffMillis i
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate background tasks for %s: %w", threadID, err)
 	}
-	return out, nil
+	// A clean stamped launch carries its tray activity; the rest read it.
+	return s.decorateLatestDirectSubagentTools(s.reader(), threadID, out)
 }

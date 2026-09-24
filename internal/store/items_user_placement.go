@@ -142,6 +142,11 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 			}
 		}
 	}
+	// Shifting a turn's suffix moves agent rows too; the anchors above
+	// them are recomputed before the rows are read back.
+	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+		return nil, err
+	}
 	result := make([]Item, 0, len(changedIDs))
 	for _, id := range changedIDs {
 		item, err := readBackItemTx(tx, threadID, id)

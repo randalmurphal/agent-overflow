@@ -131,10 +131,13 @@ native provider history. The final owner releases the metadata and bytes.
 
 ## Schema-owned invariants
 
-Four trigger families ride `items`:
+Five trigger families ride `items`:
 
-- History triggers maintain revision and epoch counters, and the per-row
-  `items.rev` stamp.
+- History triggers maintain revision and epoch counters, the per-row
+  `items.rev` stamp, and each subagent anchor's card on the anchor's own
+  row (`subagent_aggregate_stamps.go`). Under `history_bulk_load` the
+  triggers skip the card work, and a bulk load that changes a subtree
+  recomputes the cards before it commits.
 - Payload-GC triggers collect payloads after item deletion when no item in the
   thread references them. Repointing an item does not collect the old payload.
 - Imported-history triggers enforce the immutable-base and mutable-overlay
@@ -142,6 +145,10 @@ Four trigger families ride `items`:
 - Background-settlement triggers maintain
   `items.meta.live_background_active` as completion siblings arrive, disappear,
   or race with launch materialization.
+- Turn-error triggers, also on `turns`, `thread_import_chunks` and
+  `thread_import_item_overrides`, keep the thread row's Failed-pill aggregate
+  (`thread_turn_error_aggregate.go`). They do not consult
+  `history_bulk_load`: each arm is a keyed probe, so bulk paths keep them.
 
 A background `tool_call` remains `status = 'running'`; its terminal state is a
 sibling row whose `completion_of` names the launch. The stored liveness flag
@@ -172,8 +179,8 @@ whole-row value from clobbering a concurrent lifecycle transition.
 `RestoreFrom` replaces the history dataset. It refuses restore while a remote
 command or transfer phase makes replacement unsafe, and it rejects snapshots
 that predate current incoming ownership. During the copy it drops and recreates
-history, background-settlement, payload-snapshot, attachment-ownership and
-chunk-admission triggers. It restores the complete reference graph before
+history, background-settlement, payload-snapshot, attachment-ownership,
+chunk-admission and turn-error triggers. It restores the complete reference graph before
 reinstating them in the same transaction, preserving recorded counters and
 derived flags.
 

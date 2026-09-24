@@ -17,9 +17,7 @@ import (
 // revision could prove a window fresh whose card is behind (§3.1).
 //
 // The predicate is the decorators' own admission test, widened to every
-// row they would consider: a tool call with no children decorates to
-// itself, so the extra read for one is a handful of index probes that
-// return the row unchanged.
+// row they would consider; ItemReadNeedsDecoration narrows it.
 func ItemReadIsDecorated(item Item) bool {
 	switch item.Kind {
 	case "tool_call":
@@ -30,31 +28,59 @@ func ItemReadIsDecorated(item Item) bool {
 	return item.Role == "assistant" && item.PayloadKind == "proposed_plan"
 }
 
-// ItemReadNeedsDecoration is ItemReadIsDecorated narrowed by one index
-// probe for the hot case. decorateSubagentAnchors leaves a root with no
-// descendants and no rounds untouched, and both are reached through a
-// child row, so a tool call that is not a resume carrier and has no
-// child decorates to itself: the write's read-back is the page read.
-// Every other admitted row still needs ListWireItems. The probe is the
-// one subagentLaunchFilterFor makes, including prepared descendants in the
-// immutable history arm.
+// ItemReadNeedsDecoration is ItemReadIsDecorated narrowed for tool calls
+// by the row's own stamp (decorateSubagentAnchors' walk decision): a clean
+// stamped anchor and a plain unstamped tool call read as stored, so the
+// write's read-back is the page read. Imported, dirty and readTime rows,
+// unstamped carriers, and unstamped rows of a thread whose backfill is
+// pending still need ListWireItems. Completions and plans always do.
 func (s *Store) ItemReadNeedsDecoration(item Item) (bool, error) {
 	if !ItemReadIsDecorated(item) {
 		return false, nil
 	}
-	if item.Kind != "tool_call" || item.PayloadKind == "proposed_plan" || transcriptRootFromMeta(item.Meta) != "" {
+	if item.Kind != "tool_call" || item.PayloadKind == "proposed_plan" {
 		return true, nil
 	}
-	var hasChild int
-	if err := s.reader().QueryRow(
-		`SELECT EXISTS(
-		    SELECT 1 FROM timeline_items child
-		     WHERE child.thread_id = ? AND child.parent_id = ? AND child.parent_id <> ''
-		)`, item.ThreadID, item.ID,
-	).Scan(&hasChild); err != nil {
-		return false, fmt.Errorf("store: probe children of %s/%s: %w", item.ThreadID, item.ID, err)
+	walk, err := subagentWalkProbe(s.reader(), item.ThreadID)(item)
+	if err != nil {
+		return false, fmt.Errorf("store: decide decoration of %s/%s: %w", item.ThreadID, item.ID, err)
 	}
-	return hasChild != 0, nil
+	return walk, nil
+}
+
+// firstChildAnchorsSQL selects the clean stamped anchors whose round holds
+// exactly the written row: its parent, or the carrier a resume prompt
+// names. Two primary-key probes.
+var firstChildAnchorsSQL = `SELECT a.id FROM items a
+ WHERE a.thread_id = ?1
+   AND a.id IN (?2, COALESCE((SELECT ` + aggPromptCarrierSQL("p.") + ` FROM items p
+                               WHERE p.thread_id = ?1 AND p.id = ?3 AND ` + aggPromptSQL("p.") + `), ''))
+   AND ` + aggAnchorableSQL("a.") + ` AND ` + aggCleanSQL("a.meta") + `
+   AND ` + aggJX("a.meta", aggCountPath) + ` = 1
+   AND (` + aggJX("a.meta", aggNewestPath+"[0]") + `, ` + aggJX("a.meta", aggNewestPath+"[1]") + `) = (?4, ?5)`
+
+// ListFirstChildWireAnchors returns, as a page reads them, the anchors
+// whose card the written child just opened: a clean stamped parent (or,
+// for a resume prompt, the carrier it names) whose round now holds this
+// row alone. The emitter pushes them at once, so a new agent's card
+// appears with its first row; later changes to the card wait for the
+// quiet-point refresh. The child's identity and position decide; its rev
+// does not, so a streaming row pushed blanked is judged the same way.
+func (s *Store) ListFirstChildWireAnchors(child Item) ([]Item, error) {
+	if child.ParentID == "" {
+		return nil, nil
+	}
+	return readSnapshot(s.reader(), "first child anchors", func(q sqlQueryer) ([]Item, error) {
+		ids, err := subagentAnchorIDs(q, firstChildAnchorsSQL,
+			child.ThreadID, child.ParentID, child.ID, child.TurnIndex, child.ItemIndex)
+		if err != nil {
+			return nil, fmt.Errorf("store: select first child anchors of %s/%s: %w", child.ThreadID, child.ID, err)
+		}
+		if len(ids) == 0 {
+			return nil, nil
+		}
+		return s.listWireItemsTx(q, child.ThreadID, ids)
+	})
 }
 
 // ListWireItems reads the named rows exactly as a page would: hydrated

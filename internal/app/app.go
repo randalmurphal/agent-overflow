@@ -646,6 +646,9 @@ type App struct {
 	// scheduler's stop gate. See app_store_maintenance.go.
 	storeMaintenance   backgroundLoop
 	historyPreparation backgroundLoop
+	// subagentBackfill runs store migration v121's deferred phase. See
+	// app_subagent_aggregate_backfill.go.
+	subagentBackfill backgroundLoop
 	// codexThread owns provider-thread reconcile and cumulative-cost reads.
 	codexThreadOnce sync.Once
 	codexThread     *codexthread.Service

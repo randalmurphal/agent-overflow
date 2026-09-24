@@ -170,6 +170,24 @@ holds a window of carriers and completion siblings with the launch
 scrolled out of it and proves a child write under the launch, or under
 a launch nested inside it, still refuses the window.
 
+Between the thread bump and the row stamp, the same triggers keep each
+subagent anchor's card on the anchor's own row (migration v121; the
+contract is in `internal/store/subagent_aggregate_stamps.go`): the
+counts, the preview and tray keys, and a `subagentAggregateState` stamp,
+updated along the written row's parent chain with the same probes, so a
+child write costs a few JSON updates per nesting level and never a walk
+of the subtree. A write no incremental rule keeps exact marks the chain
+dirty, and the writer recomputes it (`RecomputeSubagentAggregates`)
+before it commits. `decorateSubagentAnchors` serves a clean stamped
+anchor as stored and walks only the rows the triggers do not keep:
+imported anchors, dirty and `readTime` rows, carriers whose round prompt
+has not arrived, and unstamped anchors of a thread still listed in
+`subagent_aggregate_backfill` for v121's deferred phase.
+`TestSubagentAggregateStampsMatchTheReadTimeAggregator` compares every
+served card with the walk after each kind of write;
+`TestSubagentAggregateTriggersDoNotScanASubtree` and
+`TestSubagentAggregateStatementPlans` pin the cost.
+
 The update trigger's `WHEN OLD.rev IS NEW.rev` guard is what stops the
 nested `UPDATE items` from re-entering the thread bump. `recursive_triggers`
 is OFF (pinned in `writerConnPragmas` with boot verification) so a trigger
@@ -276,18 +294,19 @@ because a client builds its held window out of the rows it was pushed:
   read back inside its write transaction; the caller's input struct
   carries a pre-trigger value;
 - an upsert of a row whose page read is decorated
-  (`store.ItemReadNeedsDecoration`: an anchor with a child row, a resume
-  carrier, a completion sibling, a proposed plan) sends the write's
-  read-back marked `store.UnstampedItemRev` and notes the row at that
-  revision, so the anchor refresh below pushes its page read. The
-  read-back is an altered row (the launch without its descendant count)
-  and must not claim the stored revision. The write never runs the
-  decorated read itself: it walks the anchor's descendants, and the
-  writes under a large agent arrive at tens per second on the provider
-  event path. The gate is one `idx_items_parent` probe, because the
-  decorator leaves a childless root untouched, so a plain tool call
-  (every tool start and result, every Codex command-output flush) goes
-  out stamped;
+  (`store.ItemReadNeedsDecoration`: a completion sibling, a proposed
+  plan, or an anchor the read walks: dirty, `readTime`, an unstamped
+  carrier, or an unstamped anchor of a thread whose backfill is pending)
+  sends the write's read-back marked `store.UnstampedItemRev` and notes
+  the row at that revision, so the anchor refresh below pushes its page
+  read. The read-back is an altered row (the launch without its
+  descendant count) and must not claim the stored revision. The write
+  never runs the decorated read itself: it walks the anchor's
+  descendants, and the writes under a large agent arrive at tens per
+  second on the provider event path. The gate reads the row's own stamp,
+  plus one backfill-list probe for an unstamped row, so a plain tool call
+  (every tool start and result, every Codex command-output flush) and a
+  clean stamped anchor go out stamped;
 - a `patch` carries `patch.rev`, the revision `UpdateItemFields` read
   inside the same transaction as the write. Without it every settled row
   would hold the revision its last upsert carried and no window
@@ -326,6 +345,15 @@ never a false `fresh`. `TestSubagentTurnLeavesEveryPushedRowProvable`
 drives a whole subagent turn and proves the window built from the last
 push of each top-level row verifies `fresh`.
 
+One anchor push does not wait for the quiet point: the row that opens an
+agent's card (`ListFirstChildWireAnchors`: a clean stamped parent, or the
+carrier a resume prompt names, whose round now holds that row alone)
+pushes the anchor with it, as stored, so the card appears with the
+agent's first activity. The emitter probes once per parent per session
+and always for a resume prompt, which can open a carrier under a parent
+it has seen; `TestAgentsFirstRowPushesItsCardAtOnce` and
+`TestSubagentToolEventReadsItsRowOnce` pin the push and its read cost.
+
 ### 3.2 Operation → contract map
 
 | Operation (store) | Trigger path | Contract effect |
@@ -339,7 +367,8 @@ push of each top-level row verifies `fresh`.
 | Fork clones (`CloneThreadItems`, `CloneThreadHistoryBeforeItem`) | items INSERT on the *target* thread | rev on target; source untouched |
 | Import rollback / `DeleteThread` / retention sweep | thread row deleted | tombstone: replica entry dropped by the deleting client directly, and by any other client on the `gone` answer (§5) |
 | `RestoreFrom` (harness snapshot) | whole-DB replace | **generation** re-mint (§3.3) |
-| `decorateSubagentAnchors` (read-time meta projection) | none: no write occurs | covered transitively: its inputs are descendant item rows, whose writes bump rev |
+| `decorateSubagentAnchors` (stamp read, or the walk for rows the triggers do not keep) | none: no write occurs | covered transitively: its inputs are the anchor's stamp and descendant item rows, whose writes bump rev |
+| `RecomputeSubagentAggregates` (dirty settle, bulk-load rebuild, v121 backfill) | items UPDATE of the anchor's meta | rev |
 | `EnsureProposedPlanState(WithParent)`, `MarkProposedPlanImplemented`, `CreateProposedPlanComment`, `UpdateProposedPlanComment`, `DeleteOrResolveProposedPlanComment`, `MarkProposedPlanCommentsSent` | explicit, on the thread id the mutator already carries | rev on the PLAN's thread |
 | `RestoreFrom`'s row copy | triggers DROPped for the copy, recreated after | none during the copy: the restored counters are the snapshot's, verbatim |
 

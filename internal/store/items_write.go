@@ -477,7 +477,10 @@ func updateExistingItem(tx *sql.Tx, item Item) error {
 	// state, so this is where its text enters the search index. A row that
 	// is still streaming indexes nothing; the streaming appends
 	// (AppendItemSummary and its siblings) never reach here at all.
-	return indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary)
+	if err := indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary); err != nil {
+		return err
+	}
+	return settleSubagentAggregatesTx(tx, item.ThreadID)
 }
 
 // insertNewItem allocates the row's index through indexFn within the
@@ -585,6 +588,9 @@ func (s *Store) BumpItemToTurnEnd(threadID, itemID string, transformMeta func(st
 	); err != nil {
 		return Item{}, fmt.Errorf("store: bump item index update %s: %w", itemID, err)
 	}
+	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+		return Item{}, err
+	}
 
 	item, err := readBackItemTx(tx, threadID, itemID)
 	if err != nil {
@@ -658,6 +664,9 @@ func (s *Store) DeleteThreadItem(threadID, itemID string) error {
 		return err
 	}
 	if sharedDeleted > 0 {
+		if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+			return err
+		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("store: commit delete shared item %s/%s: %w", threadID, itemID, err)
 		}
@@ -677,6 +686,9 @@ func (s *Store) DeleteThreadItem(threadID, itemID string) error {
 		return err
 	}
 	if err := deleteThreadSearchItemsTx(tx, threadID, []string{itemID}); err != nil {
+		return err
+	}
+	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -719,6 +731,12 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 		threadID, fromTurnIndex,
 	); err != nil {
 		return 0, HistoryStamp{}, fmt.Errorf("store: delete turns from turn for thread %s: %w", threadID, err)
+	}
+	// The cut can take an anchor's preview or newest row, or a resume
+	// prompt; the survivors it left dirty are recomputed here, so the cut
+	// commits with every stamp exact.
+	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+		return 0, HistoryStamp{}, err
 	}
 	// The post-cut stamps, read inside the deleting transaction so the
 	// pair the `user_message:reverted` event carries describes exactly
@@ -885,6 +903,11 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, H
 		}
 	}
 
+	// Survivors the cut left dirty, recomputed in the cut: see
+	// DeleteConversationFromTurn.
+	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+		return nil, HistoryStamp{}, err
+	}
 	// Post-cut stamps, read inside the deleting transaction — see
 	// DeleteConversationFromTurn.
 	stamp, _, err := readHistoryStampTx(tx, threadID)
@@ -1011,15 +1034,18 @@ type ItemPartialUpdate struct {
 // existing row identified by (threadID, id). Returns an error if the
 // row does not exist or no fields were specified.
 //
-// It returns the row's new `rev`, read inside the same transaction as the
-// write. The wire patch this feeds (triage emitItemPatch) describes exactly
-// the content this statement left behind, so its revision has to be read
-// under the same lock: a rev fetched afterwards could belong to a LATER
-// write, which would let a client pair newer-looking evidence with older
-// content and earn a false `fresh` from window verification. Returning it
-// is the enforcement — a patch emitter cannot reach the write without
-// receiving the revision that goes with it.
-func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) (int64, error) {
+// It returns the stored row with its new `rev`, read inside the same
+// transaction as the write. The wire patch this feeds (triage
+// emitItemPatch) describes exactly the content this statement left
+// behind, so its revision has to be read under the same lock: a rev
+// fetched afterwards could belong to a LATER write, which would let a
+// client pair newer-looking evidence with older content and earn a false
+// `fresh` from window verification. Returning it is the enforcement: a
+// patch emitter cannot reach the write without receiving the revision
+// that goes with it. The row, not only the revision, because the stored
+// meta can differ from the meta written: the history triggers keep an
+// anchor's subagent stamp against a meta written without it.
+func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) (Item, error) {
 	setClauses := make([]string, 0, 5)
 	args := make([]any, 0, 7)
 	if update.Status != nil {
@@ -1043,44 +1069,47 @@ func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) 
 		args = append(args, *update.UpdatedAt)
 	}
 	if len(setClauses) == 0 {
-		return 0, fmt.Errorf("store: update item fields %s/%s: no fields specified", threadID, id)
+		return Item{}, fmt.Errorf("store: update item fields %s/%s: no fields specified", threadID, id)
 	}
 	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, fmt.Errorf("store: begin update item fields %s/%s: %w", threadID, id, err)
+		return Item{}, fmt.Errorf("store: begin update item fields %s/%s: %w", threadID, id, err)
 	}
 	defer tx.Rollback()
 	if err := requireMutableItemTx(tx, threadID, id, "store: update item fields"); err != nil {
-		return 0, err
+		return Item{}, err
 	}
 	args = append(args, threadID, id)
 	query := "UPDATE items SET " + strings.Join(setClauses, ", ") + " WHERE thread_id = ? AND id = ?"
 	result, err := tx.Exec(query, args...)
 	if err != nil {
-		return 0, fmt.Errorf("store: update item fields %s/%s: %w", threadID, id, err)
+		return Item{}, fmt.Errorf("store: update item fields %s/%s: %w", threadID, id, err)
 	}
 	if err := requireRowsAffected(
 		result,
 		fmt.Sprintf("store: update item fields %s/%s", threadID, id),
 	); err != nil {
-		return 0, err
+		return Item{}, err
 	}
 	// A partial update can be the write that settles a row (the
 	// turn-complete flip, the force-close safety net), so the row's
 	// current status and text decide whether it is indexed now.
 	if update.Status != nil || update.Summary != nil {
 		if err := indexItemByIDTx(tx, threadID, id); err != nil {
-			return 0, err
+			return Item{}, err
 		}
 	}
-	rev, err := readItemRevTx(tx, threadID, id)
+	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+		return Item{}, err
+	}
+	item, err := readBackItemTx(tx, threadID, id)
 	if err != nil {
-		return 0, err
+		return Item{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("store: commit update item fields %s/%s: %w", threadID, id, err)
+		return Item{}, fmt.Errorf("store: commit update item fields %s/%s: %w", threadID, id, err)
 	}
-	return rev, nil
+	return item, nil
 }
 
 // AppendCompletionItem writes the second row of a backgrounded tool-call

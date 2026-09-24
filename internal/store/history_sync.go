@@ -73,12 +73,13 @@ type ThreadWindowSync struct {
 // historyRevTriggersSQL is the latest DDL for the three AFTER triggers on
 // `items` that maintain the contract (docs/architecture/thread-replica-sync.md
 // §3.1). It is a const rather than inline migration text because it has
-// two installers: migration v100 replays drop+create to add the per-row
-// stamp, and RestoreFrom recreates the triggers after dropping them for the
-// row copy. Earlier points in the chain install the generation that matches
+// two installers: migration v121 replays drop+create to add the subagent
+// aggregate stamps, and RestoreFrom recreates the triggers after dropping
+// them for the row copy. Earlier points in the chain install the generation that matches
 // the schema they run against — historyRevTriggersLegacySQL (v55, v58, before
-// threads.history_bulk_load exists) and historyRevTriggersBulkLoadSQL (v59,
-// v72, before items.rev exists). Two hand-kept latest copies would be
+// threads.history_bulk_load exists), historyRevTriggersBulkLoadSQL (v59,
+// v72, before items.rev exists) and historyRevTriggersV100SQL (v100, v101,
+// before the subagent aggregate stamps). Two hand-kept latest copies would be
 // free to drift, and the drifted
 // half would be the one running on a restored database — the state
 // nobody re-reads a migration to check.
@@ -190,7 +191,55 @@ func stampedRowIDsFor(threadExpr, idExpr, parentExpr string) string {
 
 const stampRowsSQL = `UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = items.thread_id)`
 
+// stampPendingSQL keeps a trigger's row stamp off rows the same trigger
+// already stamped: the aggregate statement writes `rev` on every row it
+// changes, and a second write of the same value would fire the update
+// trigger and bump the thread again.
+const stampPendingSQL = `rev IS NOT (SELECT history_rev FROM threads WHERE id = items.thread_id)`
+
+// Each trigger runs its subagent aggregate statement
+// (subagent_aggregate_stamps.go) between the thread bump and the row
+// stamp.
 var historyRevTriggersSQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
+  UPDATE threads SET history_rev = history_rev + 1
+   WHERE id = NEW.thread_id AND history_bulk_load = 0;
+  ` + subagentAggregateInsertStmt + `
+  ` + stampRowsSQL + `
+   WHERE thread_id = NEW.thread_id AND id IN (` + stampedRowIDsSQL("NEW") + `)
+     AND ` + stampPendingSQL + `;
+END;
+
+CREATE TRIGGER trg_items_rev_update AFTER UPDATE ON items
+WHEN OLD.rev IS NEW.rev
+BEGIN
+  UPDATE threads SET
+    history_rev   = history_rev + 1,
+    history_epoch = history_epoch
+      + (OLD.turn_index IS NOT NEW.turn_index OR
+         OLD.item_index IS NOT NEW.item_index OR
+         OLD.thread_id  IS NOT NEW.thread_id)
+  WHERE id IN (OLD.thread_id, NEW.thread_id) AND history_bulk_load = 0;
+  ` + subagentAggregateUpdateStmt + `
+  ` + stampRowsSQL + `
+   WHERE ((thread_id = NEW.thread_id AND id IN (` + stampedRowIDsSQL("NEW") + `))
+      OR (thread_id = OLD.thread_id AND id IN (` + stampedRowIDsSQL("OLD") + `)))
+     AND ` + stampPendingSQL + `;
+END;
+
+CREATE TRIGGER trg_items_rev_delete AFTER DELETE ON items BEGIN
+  UPDATE threads SET
+    history_rev   = history_rev + 1,
+    history_epoch = history_epoch + 1
+  WHERE id = OLD.thread_id AND history_bulk_load = 0;
+  ` + subagentAggregateDeleteStmt + `
+  ` + stampRowsSQL + `
+   WHERE thread_id = OLD.thread_id AND id IN (` + stampedRowIDsSQL("OLD") + `)
+     AND ` + stampPendingSQL + `;
+END;`
+
+// historyRevTriggersV100SQL is the generation migrations v100 and v101
+// install, frozen with their recorded SQL; v121 replaces it.
+var historyRevTriggersV100SQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
   UPDATE threads SET history_rev = history_rev + 1
    WHERE id = NEW.thread_id AND history_bulk_load = 0;
   ` + stampRowsSQL + `

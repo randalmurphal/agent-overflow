@@ -18,21 +18,25 @@ import (
 // prove (docs/architecture/thread-replica-sync.md §3.1):
 //
 //   - a row whose page read is decorated (store.ItemReadNeedsDecoration:
-//     an anchor with children, a carrier, a completion sibling, a plan)
-//     is pushed as written but marked unstamped, and noted so the next
-//     refresh pushes its page read. The write never reads the decorated
-//     row itself: that read walks the anchor's descendants, and the
-//     writes that land here arrive at tens per second on the provider
-//     event path. A field patch to such a row is pushed the same way,
-//     because a patch replaces the client's meta wholesale and the
-//     stored meta is not the decorated one;
+//     an anchor the history triggers do not keep stamped, a completion
+//     sibling, a plan) is pushed as written but marked unstamped, and
+//     noted so the next refresh pushes its page read. The write never
+//     reads the decorated row itself: that read can walk the anchor's
+//     descendants, and the writes that land here arrive at tens per
+//     second on the provider event path. A field patch to such a row is
+//     pushed the same way, because a patch replaces the client's meta
+//     wholesale and the stored meta is not the decorated one. A stamped
+//     anchor's stored row is its page read and goes out as written;
 //   - a write stamps rows it did not touch (the parent anchor, resume
 //     carriers, completion siblings), so after a burst of writes the
 //     rows whose revision moved without a push of their own are read as
 //     a page would and pushed again. That happens at quiet points, never
 //     per write: one second after the last push on the thread, at most
 //     wireRefreshMaxWait after the first, and synchronously at turn
-//     completion and session teardown.
+//     completion and session teardown. The one exception is an agent's
+//     first row: the anchor whose card it opens (store.
+//     ListFirstChildWireAnchors) is pushed with it, so the card appears
+//     with the agent's first activity.
 //
 // A wire row the emitter altered on purpose (blankedStreamingWireRow)
 // carries store.UnstampedItemRev and takes neither path: the settle patch
@@ -69,6 +73,7 @@ func (r *Router) emitItemUpserts(threadID string, items []store.Item) {
 	for _, item := range items {
 		if item.Rev == store.UnstampedItemRev {
 			r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
+			r.emitFirstChildAnchors(item)
 			continue
 		}
 		if r.itemReadNeedsDecoration(item) {
@@ -76,7 +81,55 @@ func (r *Router) emitItemUpserts(threadID string, items []store.Item) {
 		}
 		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
 		r.noteWireItemEmitted(threadID, item.ID, item.Rev)
+		r.emitFirstChildAnchors(item)
 	}
+}
+
+// emitFirstChildAnchors pushes the anchors whose card the written child
+// just opened. The probe runs once per parent in a session: once a
+// parent's first child has been pushed, no later child of it can open its
+// card, so later children cost no read. A prompt row is always probed,
+// because it can open a resumed round's carrier under a parent seen
+// before; there is one per round. A failed read leaves the anchors to the
+// quiet-point refresh.
+func (r *Router) emitFirstChildAnchors(child store.Item) {
+	if child.ParentID == "" {
+		return
+	}
+	if child.Kind != itemKindUserText && !r.claimFirstChildProbe(child.ThreadID, child.ParentID) {
+		return
+	}
+	anchors, err := r.store.ListFirstChildWireAnchors(child)
+	if err != nil {
+		log.Printf("triage: read first child anchors of %s/%s: %v", child.ThreadID, child.ID, err)
+		return
+	}
+	for _, anchor := range anchors {
+		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(anchor))
+		r.noteWireItemEmitted(anchor.ThreadID, anchor.ID, anchor.Rev)
+	}
+}
+
+// claimFirstChildProbe records that parentID's first-child probe ran in
+// this session and reports whether this call claimed it. The set is
+// bounded like the tool-call links: at the bound it starts over, which
+// costs one read per parent seen again. A stopped thread is not given
+// state back.
+func (r *Router) claimFirstChildProbe(threadID, parentID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if id := r.identityIfPresent(threadID); id != nil && id.stopped {
+		return false
+	}
+	st := r.state(threadID)
+	if _, probed := st.firstChildProbed[parentID]; probed {
+		return false
+	}
+	if st.firstChildProbed == nil || len(st.firstChildProbed) >= maxToolCallLinksPerThread {
+		st.firstChildProbed = make(map[string]struct{})
+	}
+	st.firstChildProbed[parentID] = struct{}{}
+	return true
 }
 
 // itemReadNeedsDecoration is the store's probe with a failed probe
@@ -116,36 +169,27 @@ func (r *Router) emitItemPatch(threadID, itemID, kind string, rev int64, patch I
 // streaming settle: status + meta + updatedAt). A row with a decorated
 // page read is pushed as an unstamped upsert instead of a patch (see the
 // file comment); item must therefore be the whole row.
+//
+// The push carries the stored row, not the caller's fields: a meta
+// written without an anchor's subagent stamp keeps the stamp
+// (subagent_aggregate_stamps.go), and the client must hold what a read
+// returns at that revision.
 func (r *Router) persistItemFieldsAndPatch(item store.Item, update store.ItemPartialUpdate) error {
-	rev, err := r.store.UpdateItemFields(item.ThreadID, item.ID, update)
+	stored, err := r.store.UpdateItemFields(item.ThreadID, item.ID, update)
 	if err != nil {
 		return err
 	}
-	// The written row: what the probe below judges, and the push when
-	// the row's page read is decorated.
-	if update.Status != nil {
-		item.Status = *update.Status
-	}
-	if update.Summary != nil {
-		item.Summary = *update.Summary
-	}
-	if update.Meta != nil {
-		item.Meta = *update.Meta
-	}
-	if update.Decision != nil {
-		item.Decision = *update.Decision
-	}
-	if update.UpdatedAt != nil {
-		item.UpdatedAt = *update.UpdatedAt
-	}
-	item.Rev = rev
-	if r.itemReadNeedsDecoration(item) {
-		item.Rev = store.UnstampedItemRev
-		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
-		r.noteWireItemEmitted(item.ThreadID, item.ID, item.Rev)
+	if r.itemReadNeedsDecoration(stored) {
+		stored.Rev = store.UnstampedItemRev
+		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(stored))
+		r.noteWireItemEmitted(stored.ThreadID, stored.ID, stored.Rev)
 		return nil
 	}
-	r.emitItemPatch(item.ThreadID, item.ID, item.Kind, rev, patchFromPartial(update))
+	patch := patchFromPartial(update)
+	if update.Meta != nil {
+		patch.Meta = &stored.Meta
+	}
+	r.emitItemPatch(stored.ThreadID, stored.ID, stored.Kind, stored.Rev, patch)
 	return nil
 }
 

@@ -399,7 +399,7 @@ func TestTimelineArmsMatchTheViewForSubagentReads(t *testing.T) {
 
 	t.Run("anchor aggregates", func(t *testing.T) {
 		roots := []string{"imp-launch-0", "loc-launch-2", "loc-child-2"}
-		got, err := s.subagentAggregatesByRoot(s.reader(), timelineParityThreadID, roots)
+		got, err := subagentAggregatesByRoot(s.reader(), timelineParityThreadID, roots)
 		if err != nil {
 			t.Fatalf("aggregates: %v", err)
 		}
@@ -676,7 +676,7 @@ func TestSubagentWalksDoNotMaterializeTheView(t *testing.T) {
 		// Exercised through the store method so the aggregate query the
 		// decorator actually runs is the one under test; the plan is
 		// asserted on the same statement shape below.
-		if _, err := s.subagentAggregatesByRoot(s.reader(), timelineParityThreadID, []string{"loc-launch-2"}); err != nil {
+		if _, err := subagentAggregatesByRoot(s.reader(), timelineParityThreadID, []string{"loc-launch-2"}); err != nil {
 			t.Fatalf("aggregates: %v", err)
 		}
 		resolvedSQL, resolvedArgs := timelineArms(timelineParityThreadID, timelineSelection{

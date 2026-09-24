@@ -327,6 +327,15 @@ func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep 
 		}
 	}
 
+	// The copied rows arrive without the source's stamps (the insert
+	// trigger strips them) and rebuild theirs from the rows inserted
+	// after them. An anchor whose children were attached as shared
+	// history, or inserted ahead of it, arrives dirty; it is recomputed
+	// here.
+	if err := settleSubagentAggregatesTx(tx, targetThreadID); err != nil {
+		return nil, err
+	}
+
 	if err := cloneAsyncQuestionsTx(tx, sourceThreadID, targetThreadID, idMap); err != nil {
 		return nil, err
 	}

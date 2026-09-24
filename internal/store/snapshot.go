@@ -184,6 +184,11 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	if _, err := tx.Exec(dropAttachmentOwnerTriggersSQL + dropSharedChunkAdmissionTriggersSQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: suspend attachment and chunk admission triggers: %w", err)
 	}
+	// The thread rows carry the snapshot's turn-error pairs; the triggers
+	// would recompute them against half-copied tables.
+	if _, err := tx.Exec(dropThreadTurnErrorTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: suspend turn-error triggers: %w", err)
+	}
 	for _, table := range tables {
 		if restoreSkipsTable(table) {
 			continue
@@ -232,6 +237,9 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 
 	if _, err := tx.Exec(attachmentOwnerTriggersSQL + sharedChunkAdmissionTriggersSQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: reinstall attachment and chunk admission triggers: %w", err)
+	}
+	if _, err := tx.Exec(threadTurnErrorTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: reinstall turn-error triggers: %w", err)
 	}
 
 	// The search index describes the history that was just replaced, and an

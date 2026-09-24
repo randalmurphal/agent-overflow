@@ -65,7 +65,7 @@ func TestImportedLookupProbesIdentityBeforeChunkMembership(t *testing.T) {
 	if len(scan) != 2 {
 		t.Fatalf("scanned %d rows", len(scan))
 	}
-	aggregates, err := s.subagentAggregatesByRoot(q, timelineParityThreadID, []string{"imp-launch-0", "loc-launch-2"})
+	aggregates, err := subagentAggregatesByRoot(q, timelineParityThreadID, []string{"imp-launch-0", "loc-launch-2"})
 	if err != nil {
 		t.Fatal(err)
 	}

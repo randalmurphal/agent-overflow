@@ -89,6 +89,12 @@ func (s *Store) ApplyImportBatch(threadID string, batch ImportBatch) error {
 	if err := finishImportItemHistoryTx(tx, threadID, len(rows)); err != nil {
 		return err
 	}
+	if err := markImportedSubtreesDirtyTx(tx, threadID, rows); err != nil {
+		return err
+	}
+	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+		return err
+	}
 	if err := appendUsageTx(tx, usage); err != nil {
 		return err
 	}
@@ -97,6 +103,34 @@ func (s *Store) ApplyImportBatch(threadID string, batch ImportBatch) error {
 		return fmt.Errorf("store: commit import batch tx for thread %s: %w", threadID, err)
 	}
 	return nil
+}
+
+// markImportedSubtreesDirtyTx marks dirty the local anchors an import
+// batch adds rows under. Imported rows are written to shared chunks, which
+// no item trigger sees; a row whose parent lies outside the batch may hang
+// under a local anchor whose stamp it changes.
+func markImportedSubtreesDirtyTx(tx *sql.Tx, threadID string, rows []ImportRow) error {
+	inBatch := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		inBatch[row.Item.ID] = struct{}{}
+	}
+	seen := make(map[string]struct{})
+	var parents []string
+	for _, row := range rows {
+		parent := row.Item.ParentID
+		if parent == "" {
+			continue
+		}
+		if _, internal := inBatch[parent]; internal {
+			continue
+		}
+		if _, dup := seen[parent]; dup {
+			continue
+		}
+		seen[parent] = struct{}{}
+		parents = append(parents, parent)
+	}
+	return markSubagentChainsDirtyTx(tx, threadID, parents)
 }
 
 // beginImportItemHistoryTx raises the thread's private bulk-load flag. The

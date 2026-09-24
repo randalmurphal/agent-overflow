@@ -62,6 +62,9 @@ func (s *Store) InsertThreadHistory(threadID string, batch ThreadHistoryBatch) e
 	if err := insertHistoryRowsTx(tx, threadID, rows); err != nil {
 		return err
 	}
+	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+		return err
+	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit thread history tx for thread %s: %w", threadID, err)

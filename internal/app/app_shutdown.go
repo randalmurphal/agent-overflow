@@ -255,6 +255,7 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// returns.
 	a.stopStoreMaintenance()
 	a.historyPreparation.halt()
+	a.subagentBackfill.halt()
 	record("stop store maintenance", nil)
 
 	// Step 3d: stop the background `git fetch` cadence. Each pass reads

@@ -339,6 +339,13 @@ type threadState struct {
 	// by ForgetToolCallLinks when a live cut deletes rows. See
 	// tool_call_links.go.
 	toolCalls toolCallLinks
+
+	// firstChildProbed holds the parents whose first-child probe ran in
+	// this session (emitFirstChildAnchors). Bounded by
+	// maxToolCallLinksPerThread; swept with the threadState and dropped
+	// with the links when a live cut deletes rows, since a cut can empty
+	// a card that a later child opens again.
+	firstChildProbed map[string]struct{}
 }
 
 // threadIdentity is per-thread state that must SURVIVE cleanupThread.

@@ -76,6 +76,16 @@ func deleteSharedHistoryWhereTx(tx *sql.Tx, threadID, predicate string, args []a
 	if _, err := tx.Exec(`UPDATE threads SET history_rev=history_rev+?,history_epoch=history_epoch+? WHERE id=?`, len(ids), len(ids), threadID); err != nil {
 		return 0, fmt.Errorf("store: stamp shared history cut: %w", err)
 	}
+	// The triggers never see imported rows leave, so the local anchors
+	// above them are marked dirty here; the caller settles them before it
+	// commits.
+	parentIDs := make([]string, 0, len(parents))
+	for parent := range parents {
+		parentIDs = append(parentIDs, parent)
+	}
+	if err := markSubagentChainsDirtyTx(tx, threadID, parentIDs); err != nil {
+		return 0, err
+	}
 	for parent := range parents {
 		if _, err := tx.Exec(stampRowsSQL+` WHERE thread_id=?1 AND rev<>(SELECT history_rev FROM threads WHERE id=?1)
  AND id IN (`+stampedRowIDsFor("?1", "?2", "?2")+`)`, threadID, parent); err != nil {

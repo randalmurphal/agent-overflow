@@ -1,14 +1,17 @@
 package triage
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 // itemUpserts returns the item upserts in an emission window, in order.
@@ -46,9 +49,10 @@ func seedAgentChain(t *testing.T, st *store.Store, threadID string) {
 // reads its own row once (the launch lookup, the completion's launch);
 // every other read is a fixed, cheap one named below. The parent chain
 // and the scope's turn come from the tool-call links after the first
-// event pays one read per ancestor the session had not seen, and no
-// event refreshes an anchor synchronously: each pushes exactly its own
-// row, and the anchors follow at the quiet point.
+// event pays one read per ancestor the session had not seen. Only the
+// agent's first row pushes an anchor synchronously, the one whose card
+// it opens, for one more read per parent per session; every later event
+// pushes exactly its own row, and the anchors follow at the quiet point.
 func TestSubagentToolEventReadsItsRowOnce(t *testing.T) {
 	for _, openTurn := range []bool{false, true} {
 		t.Run(fmt.Sprintf("openTurn=%v", openTurn), func(t *testing.T) {
@@ -76,16 +80,25 @@ func TestSubagentToolEventReadsItsRowOnce(t *testing.T) {
 				}
 				// The launch lookup and the decoration probe; the first
 				// event also reads agent-2 (its turn) and agent-1 (the
-				// parent chain) once each.
+				// parent chain) once each, and probes agent-2's card,
+				// which its row opens and which goes out with it.
 				wantStart := uint64(2)
+				wantPushed := []string{id}
 				if i == 0 {
-					wantStart += 2
+					wantStart += 3
+					wantPushed = append(wantPushed, "agent-2")
 				}
 				if got := st.ReadCount() - before; got != wantStart {
 					t.Errorf("%s start: %d store reads, want %d", id, got, wantStart)
 				}
-				if pushed := itemUpserts(emissions.snapshot()); len(pushed) != 1 || pushed[0].ID != id {
-					t.Errorf("%s start pushed %v, want only its own row", id, pushedIDs(pushed))
+				pushed := itemUpserts(emissions.snapshot())
+				if got := pushedIDs(pushed); strings.Join(got, ",") != strings.Join(wantPushed, ",") {
+					t.Errorf("%s start pushed %v, want %v", id, got, wantPushed)
+				}
+				if i == 0 && len(pushed) == 2 {
+					if anchor := pushed[1]; anchor.Rev == store.UnstampedItemRev || !strings.Contains(anchor.Meta, `"subagentDescendantCount":1`) {
+						t.Errorf("agent-2 pushed at rev %d meta %s, want its stored card counting one row", anchor.Rev, anchor.Meta)
+					}
 				}
 
 				emissions.reset()
@@ -101,7 +114,7 @@ func TestSubagentToolEventReadsItsRowOnce(t *testing.T) {
 				if got := st.ReadCount() - before; got != 3 {
 					t.Errorf("%s complete: %d store reads, want 3", id, got)
 				}
-				pushed := itemUpserts(emissions.snapshot())
+				pushed = itemUpserts(emissions.snapshot())
 				if len(pushed) != 1 || pushed[0].ID != id || pushed[0].Status != statusCompleted {
 					t.Errorf("%s complete pushed %+v, want only its own completed row", id, pushed)
 				}
@@ -288,15 +301,73 @@ func TestToolCallLinksNotMintedForStoppedThread(t *testing.T) {
 	}
 }
 
-// TestDecoratedRowPushedUnstampedThenRefreshed: a write to an anchor with
-// children goes out as written, marked unstamped, with no decorated read
-// on the write's path; the next refresh pushes the decorated page read at
-// the stored revision. The field-patch path does the same instead of
-// patching a decorated row.
-func TestDecoratedRowPushedUnstampedThenRefreshed(t *testing.T) {
+// TestStampedAnchorPushedAsStored: the history triggers keep a live
+// anchor's card on its row, so a write to it goes out at its stored
+// revision with the card, and a field write whose meta lacks the card
+// patches the stored meta (the trigger kept the card), never the caller's.
+func TestStampedAnchorPushedAsStored(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedAgentChain(t, st, "t1")
+
+	launch, found, err := st.GetThreadItem("t1", "agent-1")
+	if err != nil || !found {
+		t.Fatalf("read agent-1: found=%v err=%v", found, err)
+	}
+	launch.Summary = "Agent: outer (renamed)"
+	emissions.reset()
+	if err := router.persistItem(launch, nil); err != nil {
+		t.Fatalf("persist anchor: %v", err)
+	}
+	pushed := itemUpserts(emissions.snapshot())
+	stored, _, err := st.GetThreadItem("t1", "agent-1")
+	if err != nil {
+		t.Fatalf("reread agent-1: %v", err)
+	}
+	if len(pushed) != 1 || pushed[0].ID != "agent-1" || pushed[0].Rev != stored.Rev || pushed[0].Meta != stored.Meta ||
+		!strings.Contains(pushed[0].Meta, `"subagentDescendantCount":1`) {
+		t.Fatalf("write pushed %+v, want agent-1 as stored at rev %d with its card", pushed, stored.Rev)
+	}
+
+	meta := `{"marker":1}`
+	emissions.reset()
+	if err := router.persistItemFieldsAndPatch(stored, store.ItemPartialUpdate{Meta: &meta}); err != nil {
+		t.Fatalf("patch anchor: %v", err)
+	}
+	events := emissions.snapshot()
+	patches := filterItemEventPatches(events)
+	stored, _, err = st.GetThreadItem("t1", "agent-1")
+	if err != nil {
+		t.Fatalf("reread agent-1: %v", err)
+	}
+	if len(events) != 1 || len(patches) != 1 || patches[0].Patch == nil || patches[0].Patch.Meta == nil ||
+		*patches[0].Patch.Meta != stored.Meta || patches[0].Patch.Rev != stored.Rev {
+		t.Fatalf("field write emitted %+v, want one patch carrying the stored meta at rev %d", events, stored.Rev)
+	}
+	if !strings.Contains(stored.Meta, `"marker":1`) || !strings.Contains(stored.Meta, `"subagentDescendantCount":1`) {
+		t.Fatalf("stored meta %s, want the written marker and the kept card", stored.Meta)
+	}
+}
+
+// TestDecoratedRowPushedUnstampedThenRefreshed: a write to an anchor whose
+// card is not kept on its row (here one that predates the stamps, in a
+// thread still waiting for their backfill) goes out as written, marked
+// unstamped, with no decorated read on the write's path; the next refresh
+// pushes the decorated page read at the stored revision. The field-patch
+// path does the same instead of patching a decorated row.
+func TestDecoratedRowPushedUnstampedThenRefreshed(t *testing.T) {
+	dbPath := storetest.ClonePath(t)
+	st, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	emissions := &emissionLog{}
+	router := NewRouter(st, func(channel eventchan.Channel, data any) { emissions.add(emitted{channel.String(), data}) })
+	t.Cleanup(router.DrainWireItemRefresh)
+	createTestThread(t, st, "t1")
+	seedAgentChain(t, st, "t1")
+	stripSubagentStampsAndListBackfill(t, dbPath, "t1")
 
 	launch, found, err := st.GetThreadItem("t1", "agent-1")
 	if err != nil || !found {
@@ -350,7 +421,9 @@ func TestDecoratedRowPushedUnstampedThenRefreshed(t *testing.T) {
 
 // TestThreadWithoutLiveStateDefersItsRefresh: a thread with no live
 // state takes the debounced refresh too. The write pushes its own row and
-// nothing else, and the pending refresh is gone once it has run.
+// the card it opens (agent-2's first child) and nothing else; agent-1,
+// whose count it moved, follows at the refresh, and the pending refresh
+// is gone once it has run.
 func TestThreadWithoutLiveStateDefersItsRefresh(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -363,8 +436,8 @@ func TestThreadWithoutLiveStateDefersItsRefresh(t *testing.T) {
 	}, nil); err != nil {
 		t.Fatalf("persist child: %v", err)
 	}
-	if pushed := itemUpserts(emissions.snapshot()); len(pushed) != 1 || pushed[0].ID != "child-text" {
-		t.Fatalf("write pushed %v, want only its own row", pushedIDs(pushed))
+	if got := pushedIDs(itemUpserts(emissions.snapshot())); strings.Join(got, ",") != "child-text,agent-2" {
+		t.Fatalf("write pushed %v, want its own row and the card it opened", got)
 	}
 	router.mu.Lock()
 	pending := router.wireRefresh["t1"] != nil
@@ -376,13 +449,92 @@ func TestThreadWithoutLiveStateDefersItsRefresh(t *testing.T) {
 	emissions.reset()
 	router.DrainWireItemRefresh()
 	ids := pushedIDs(itemUpserts(emissions.snapshot()))
-	if !containsString(ids, "agent-1") || !containsString(ids, "agent-2") {
-		t.Fatalf("the refresh pushed %v, want both anchors the write stamped", ids)
+	if !containsString(ids, "agent-1") {
+		t.Fatalf("the refresh pushed %v, want agent-1, which the write stamped without a push", ids)
 	}
 	router.mu.Lock()
 	left := len(router.wireRefresh)
 	router.mu.Unlock()
 	if left != 0 {
 		t.Fatalf("%d pending refreshes remain after the drain", left)
+	}
+}
+
+// stripSubagentStampsAndListBackfill makes a thread's rows look as they
+// did before migration v121: no card on any row, and the thread listed for
+// the deferred backfill, so reads decorate its anchors at read time. It
+// goes through a second handle because no accessor can produce the state.
+func stripSubagentStampsAndListBackfill(t *testing.T, dbPath, threadID string) {
+	t.Helper()
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer rawDB.Close()
+	for _, stmt := range []string{
+		`UPDATE threads SET history_bulk_load = 1 WHERE id = ?`,
+		`UPDATE items SET meta = json_remove(meta, '$.subagentDescendantCount', '$.subagentLatestChildSummary',
+		    '$.subagentTranscriptDescendantCount', '$.subagentLatestToolSummary', '$.subagentLatestToolTurnIndex',
+		    '$.subagentLatestToolItemIndex', '$.subagentAggregateState') WHERE thread_id = ?`,
+		`UPDATE threads SET history_bulk_load = 0 WHERE id = ?`,
+		`INSERT INTO subagent_aggregate_backfill (thread_id) VALUES (?)`,
+	} {
+		if _, err := rawDB.Exec(stmt, threadID); err != nil {
+			t.Fatalf("strip stamps: %v", err)
+		}
+	}
+}
+
+// TestAgentsFirstRowPushesItsCardAtOnce: the row that opens an agent's
+// card pushes the card with it, including a streaming row that goes out
+// blanked, so the card appears with the agent's first activity. The next
+// row changes the card too, but that push waits for the quiet point.
+func TestAgentsFirstRowPushesItsCardAtOnce(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTurnStart, ThreadID: "t1", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("turn start: %v", err)
+	}
+	startAgentLaunch(t, router, "t1", "agent-1", "", "task-1")
+
+	emissions.reset()
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventTextDelta, ThreadID: "t1", Role: "assistant",
+		Content: "Looking", ParentToolUseID: "agent-1", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("first delta: %v", err)
+	}
+	pushed := itemUpserts(emissions.snapshot())
+	if len(pushed) != 2 || pushed[0].ParentID != "agent-1" || pushed[0].Rev != store.UnstampedItemRev || pushed[1].ID != "agent-1" {
+		t.Fatalf("the agent's first row pushed %v, want its blanked row and then agent-1", pushedIDs(pushed))
+	}
+	stored, _, err := st.GetThreadItem("t1", "agent-1")
+	if err != nil {
+		t.Fatalf("read agent-1: %v", err)
+	}
+	if card := pushed[1]; card.Rev != stored.Rev || card.Meta != stored.Meta || !strings.Contains(card.Meta, `"subagentDescendantCount":1`) {
+		t.Fatalf("agent-1 pushed at rev %d meta %s, want its stored card at rev %d counting one row", card.Rev, card.Meta, stored.Rev)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventContentBlockStop, ThreadID: "t1", ParentToolUseID: "agent-1",
+		Meta: json.RawMessage(`{"index":0,"blockType":"text"}`), Content: "Looking around.",
+		ContentPresent: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("block stop: %v", err)
+	}
+	router.WaitForPendingSettles()
+	emissions.reset()
+	bashStart, _ := json.Marshal(map[string]any{"toolName": "Bash", "input": map[string]any{"command": "ls"}})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bash-1", ItemType: "Bash",
+		Meta: bashStart, ParentToolUseID: "agent-1", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("second row: %v", err)
+	}
+	if got := pushedIDs(itemUpserts(emissions.snapshot())); len(got) != 1 || got[0] != "bash-1" {
+		t.Fatalf("the agent's second row pushed %v, want only its own row", got)
 	}
 }

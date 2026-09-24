@@ -151,6 +151,7 @@ func (r *Router) ForgetToolCallLinks(threadID string) {
 	defer r.mu.Unlock()
 	if st := r.threadStateIfPresent(threadID); st != nil {
 		st.toolCalls = toolCallLinks{}
+		st.firstChildProbed = nil
 	}
 }
 

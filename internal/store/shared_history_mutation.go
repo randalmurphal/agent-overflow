@@ -93,7 +93,7 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 		        imported.kind, imported.role, imported.status, imported.summary,
 		        imported.payload_id, imported.input_payload_id, imported.parent_id,
 		        imported.is_background, imported.completion_of, imported.tool_name,
-		        imported.decision, imported.meta, imported.created_at, imported.updated_at
+		        imported.decision, `+localizedMetaSQL+`, imported.created_at, imported.updated_at
 		   FROM thread_import_chunks refs
 		   JOIN import_history_items imported ON imported.chunk_id = refs.chunk_id
 		  WHERE refs.thread_id = ? AND imported.id = ?`,
@@ -118,6 +118,16 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 	}
 	return true, nil
 }
+
+// localizedMetaSQL is the meta a localized copy takes. An imported anchor
+// has no stamp (shared chunks cannot hold one); its local copy with
+// children arrives dirty, so reads keep walking it until a recompute
+// stamps it, and one without children arrives without stamp keys.
+var localizedMetaSQL = `CASE
+    WHEN ` + aggAnchorableSQL("imported.") + ` AND ` + aggHasChildSQL("refs.thread_id", "imported.id", "") + `
+      THEN ` + aggDirtyMetaSQL("imported.meta") + `
+    WHEN ` + aggHasKeysSQL("imported.meta") + ` THEN ` + aggStripMetaSQL("imported.meta") + `
+    ELSE imported.meta END`
 
 func setHistoryBulkLoadTx(tx *sql.Tx, threadID string, enabled bool, label string) error {
 	from, to := 0, 1

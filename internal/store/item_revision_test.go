@@ -212,19 +212,15 @@ func TestItemRevisionAdvancesForEveryItemWriter(t *testing.T) {
 			},
 		},
 		{
-			// UpdateItemFields returns the revision rather than the row,
-			// because the wire patch it feeds carries fields, not a row.
-			// Same rule: the value it hands back is the value the write
-			// left in SQLite.
 			name:   "UpdateItemFields",
 			itemID: "row",
 			run: func(t *testing.T, s *Store) *Item {
 				summary := "field write"
-				rev, err := s.UpdateItemFields("t", "row", ItemPartialUpdate{Summary: &summary})
+				item, err := s.UpdateItemFields("t", "row", ItemPartialUpdate{Summary: &summary})
 				if err != nil {
 					t.Fatalf("update item fields: %v", err)
 				}
-				return &Item{ID: "row", ThreadID: "t", Rev: rev}
+				return &item
 			},
 		},
 		{

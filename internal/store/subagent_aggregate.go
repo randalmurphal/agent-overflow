@@ -17,7 +17,7 @@ type subagentAggregateRow struct {
 	turnIndex, itemIndex    int
 }
 
-func (s *Store) forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootIDs []string, visit func(subagentAggregateRow)) error {
+func forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootIDs []string, visit func(subagentAggregateRow)) error {
 	if len(rootIDs) == 0 {
 		return nil
 	}
@@ -49,10 +49,15 @@ func (s *Store) forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootI
 	return nil
 }
 
-type subagentAggregateState struct {
+// subagentAggregateAccumulator folds one anchor's rows: the card values,
+// plus the preview row and the newest position the write-time stamp keeps
+// beside them (subagentAggregateState).
+type subagentAggregateAccumulator struct {
 	aggregate subagentAnchorAggregate
 	preview   subagentAggregateRow
 	hasPick   bool
+	newest    TimelineCursor
+	hasNewest bool
 }
 
 func previewKind(kind string) bool {
@@ -87,26 +92,34 @@ func betterSubagentPreview(a, b subagentAggregateRow) bool {
 	return a.id < b.id
 }
 
-func (state *subagentAggregateState) add(row subagentAggregateRow) {
-	state.aggregate.descendantCount++
+func (acc *subagentAggregateAccumulator) add(row subagentAggregateRow) {
+	acc.aggregate.descendantCount++
+	acc.noteNewest(TimelineCursor{TurnIndex: row.turnIndex, ItemIndex: row.itemIndex})
 	if !previewableSubagentRow(row.kind, row.summary) {
 		return
 	}
-	if !state.hasPick || betterSubagentPreview(row, state.preview) {
-		state.preview = row
-		state.hasPick = true
-		state.aggregate.latestChildSummary = row.summary
+	if !acc.hasPick || betterSubagentPreview(row, acc.preview) {
+		acc.preview = row
+		acc.hasPick = true
+		acc.aggregate.latestChildSummary = row.summary
+	}
+}
+
+func (acc *subagentAggregateAccumulator) noteNewest(position TimelineCursor) {
+	if !acc.hasNewest || cursorBefore(acc.newest, position) {
+		acc.newest = position
+		acc.hasNewest = true
 	}
 }
 
 // subagentAggregatesByRoot is the whole-transcript aggregate for roots
 // without resume rounds. Only counters and one winning preview are retained.
-func (s *Store) subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs []string) (map[string]subagentAnchorAggregate, error) {
-	states := make(map[string]*subagentAggregateState, len(rootIDs))
-	err := s.forEachSubagentAggregateRow(q, threadID, rootIDs, func(row subagentAggregateRow) {
+func subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs []string) (map[string]subagentAnchorAggregate, error) {
+	states := make(map[string]*subagentAggregateAccumulator, len(rootIDs))
+	err := forEachSubagentAggregateRow(q, threadID, rootIDs, func(row subagentAggregateRow) {
 		state := states[row.root]
 		if state == nil {
-			state = &subagentAggregateState{}
+			state = &subagentAggregateAccumulator{}
 			states[row.root] = state
 		}
 		state.add(row)
@@ -130,22 +143,46 @@ func subagentBoundContains(bound subagentRoundBounds, row subagentAggregateRow) 
 // subagentAggregatesByRound partitions the same walk by execution bounds.
 // A prompt-less carrier may intentionally overlap real rounds; each bound
 // receives its own count, while the transcript total sums real rounds only.
-func (s *Store) subagentAggregatesByRound(
+func subagentAggregatesByRound(
 	q sqlQueryer, threadID string, rootIDs []string, bounds []subagentRoundBounds,
 ) (map[string]subagentAnchorAggregate, error) {
-	if len(bounds) == 0 {
-		return nil, nil
+	accumulators, transcripts, err := subagentAccumulatorsByRound(q, threadID, rootIDs, bounds)
+	if err != nil || accumulators == nil {
+		return nil, err
 	}
-	states := make(map[string]*subagentAggregateState, len(bounds))
+	out := make(map[string]subagentAnchorAggregate, len(accumulators))
+	for anchor, acc := range accumulators {
+		out[anchor] = acc.aggregate
+	}
+	for root, transcript := range transcripts {
+		agg := out[root]
+		agg.transcriptDescendantCount = transcript.aggregate.descendantCount
+		agg.hasTranscriptCount = true
+		out[root] = agg
+	}
+	return out, nil
+}
+
+// subagentAccumulatorsByRound is subagentAggregatesByRound before it is
+// reduced to card values: one accumulator per bound, and one per root
+// whose transcript has rounds holding the whole-transcript count and
+// newest position.
+func subagentAccumulatorsByRound(
+	q sqlQueryer, threadID string, rootIDs []string, bounds []subagentRoundBounds,
+) (map[string]*subagentAggregateAccumulator, map[string]*subagentAggregateAccumulator, error) {
+	if len(bounds) == 0 {
+		return nil, nil, nil
+	}
+	states := make(map[string]*subagentAggregateAccumulator, len(bounds))
 	byRoot := make(map[string][]subagentRoundBounds, len(rootIDs))
 	for _, bound := range bounds {
 		if _, exists := states[bound.anchorID]; exists {
-			return nil, fmt.Errorf("store: duplicate subagent aggregate anchor %s", bound.anchorID)
+			return nil, nil, fmt.Errorf("store: duplicate subagent aggregate anchor %s", bound.anchorID)
 		}
-		states[bound.anchorID] = &subagentAggregateState{}
+		states[bound.anchorID] = &subagentAggregateAccumulator{}
 		byRoot[bound.rootID] = append(byRoot[bound.rootID], bound)
 	}
-	err := s.forEachSubagentAggregateRow(q, threadID, rootIDs, func(row subagentAggregateRow) {
+	err := forEachSubagentAggregateRow(q, threadID, rootIDs, func(row subagentAggregateRow) {
 		for _, bound := range byRoot[row.root] {
 			if subagentBoundContains(bound, row) {
 				states[bound.anchorID].add(row)
@@ -153,31 +190,32 @@ func (s *Store) subagentAggregatesByRound(
 		}
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := make(map[string]subagentAnchorAggregate, len(states))
-	for anchor, state := range states {
-		out[anchor] = state.aggregate
-	}
-	transcript := make(map[string]int, len(rootIDs))
+	transcripts := make(map[string]*subagentAggregateAccumulator, len(rootIDs))
 	hasRounds := make(map[string]bool, len(rootIDs))
 	for _, bound := range bounds {
 		if !bound.round {
 			continue
 		}
-		transcript[bound.rootID] += out[bound.anchorID].descendantCount
+		round := states[bound.anchorID]
+		transcript := transcripts[bound.rootID]
+		if transcript == nil {
+			transcript = &subagentAggregateAccumulator{}
+			transcripts[bound.rootID] = transcript
+		}
+		transcript.aggregate.descendantCount += round.aggregate.descendantCount
+		if round.hasNewest {
+			transcript.noteNewest(round.newest)
+		}
 		if bound.anchorID != bound.rootID {
 			hasRounds[bound.rootID] = true
 		}
 	}
-	for root, total := range transcript {
+	for root := range transcripts {
 		if !hasRounds[root] {
-			continue
+			delete(transcripts, root)
 		}
-		agg := out[root]
-		agg.transcriptDescendantCount = total
-		agg.hasTranscriptCount = true
-		out[root] = agg
 	}
-	return out, nil
+	return states, transcripts, nil
 }
