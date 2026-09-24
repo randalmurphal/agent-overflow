@@ -22,6 +22,9 @@ type threadSearchIndexBuild struct {
 // once when the index is complete, and resumes from its committed cursor
 // when it is not. Callers see the unfinished state through SearchIndexing,
 // which is what marks a result partial rather than wrong.
+//
+// An unfinished build walks the rest of the corpus, so it waits for the
+// first client's catalog reads (awaitFirstReadsSettled).
 func (a *App) startThreadSearchIndex() {
 	if a.store == nil {
 		return
@@ -31,6 +34,9 @@ func (a *App) startThreadSearchIndex() {
 		go func() {
 			defer a.threadSearchIndex.wg.Done()
 			ctx := a.lifeCtx()
+			if err := a.awaitFirstReadsSettled(ctx); err != nil {
+				return
+			}
 			if err := a.store.BuildSearchIndex(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("thread search: build index: %v", err)
 			}

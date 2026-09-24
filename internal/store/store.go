@@ -2,6 +2,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -70,9 +71,28 @@ type Store struct {
 	deferredMu sync.Mutex
 }
 
+// Options configures NewWithOptions.
+type Options struct {
+	// Context bounds the migrations. Cancelling it interrupts the running
+	// migration, whose transaction rolls back, and the open fails with
+	// the context's error. Nil means context.Background().
+	Context context.Context
+	// OnMigration, when set, is called before each pending migration runs.
+	OnMigration func(MigrationStep)
+}
+
 // New opens (or creates) the SQLite database at the given path and runs migrations.
 // Pass ":memory:" for tests.
 func New(dbPath string) (*Store, error) {
+	return NewWithOptions(dbPath, Options{})
+}
+
+// NewWithOptions is New with a migration context and progress hook.
+func NewWithOptions(dbPath string, opts Options) (*Store, error) {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := recoverInterruptedSwap(dbPath); err != nil {
 		return nil, err
 	}
@@ -83,7 +103,7 @@ func New(dbPath string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 
-	if err := runMigrations(db); err != nil {
+	if err := runMigrationsContext(ctx, db, opts.OnMigration); err != nil {
 		db.Close()
 		// The refusal is already the sentence the boot failure shows.
 		if tooNew := (*SchemaTooNewError)(nil); errors.As(err, &tooNew) {

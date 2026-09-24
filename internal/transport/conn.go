@@ -150,6 +150,9 @@ type connSettings struct {
 	// nothing can answer — in which case host presence is the only proof,
 	// which is the behavior before passkeys. See Config.StepUpProof.
 	stepUpProof func(sessionID, token string) bool
+	// rpcBeforeReady refuses a method the backend cannot serve before
+	// its App has started. Nil admits every method (unit tests).
+	rpcBeforeReady func(method string) *FrameError
 
 	// sessionRecheck and maxLifetime are Config.SessionRecheckInterval
 	// and Config.MaxRemoteConnLifetime, unresolved: zero takes the
@@ -202,6 +205,8 @@ type connHandler struct {
 	// stepUpProof spends a step-up token presented on one RPC. Nil leaves
 	// host presence as the only step-up proof.
 	stepUpProof func(sessionID, token string) bool
+	// rpcBeforeReady is connSettings.rpcBeforeReady.
+	rpcBeforeReady func(method string) *FrameError
 
 	// eventScopes is the grant half of this connection's event filter,
 	// resolved once at upgrade (see connEventScopes).
@@ -286,6 +291,7 @@ func runConnHandler(ctx context.Context, ws *websocket.Conn, d *Dispatcher, bus 
 		sessionRecheck:    settings.sessionRecheck,
 		maxLifetime:       settings.maxLifetime,
 		stepUpProof:       settings.stepUpProof,
+		rpcBeforeReady:    settings.rpcBeforeReady,
 		eventScopes:       eventScopes,
 		leaseWake:         make(chan struct{}, 1),
 	}
@@ -795,6 +801,13 @@ func (h *connHandler) handleRPC(ctx context.Context, frame ClientFrame) {
 	if fe != nil {
 		h.writeError(ctx, frame.ID, fe)
 		return
+	}
+	// Before the proof: a refused call must not spend a step-up token.
+	if h.rpcBeforeReady != nil {
+		if fe := h.rpcBeforeReady(method.Name); fe != nil {
+			h.writeError(ctx, frame.ID, fe)
+			return
+		}
 	}
 
 	// Resolved once, before either gate, and carried into the call. The

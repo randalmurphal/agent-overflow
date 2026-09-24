@@ -34,6 +34,13 @@ const (
 	// boot, ignored by every other one, and the only way an end-to-end
 	// test can stand up a destination that does not have the surface.
 	HarnessOldPeer = "AO_HARNESS_OLD_THREAD_TOOLS_PEER"
+
+	// HarnessHoldStartup holds a harness boot before App.Start until the
+	// file it names exists. Meanwhile the backend serves the page and
+	// answers its bootstrap with a starting report, which is how an
+	// end-to-end test stands up a backend that is slow to start. Test
+	// isolation only: honored solely by a harness boot.
+	HarnessHoldStartup = "AO_HARNESS_HOLD_STARTUP"
 )
 
 // Passthrough lists every variable the launchers forward across the WSL

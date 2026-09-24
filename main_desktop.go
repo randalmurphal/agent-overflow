@@ -294,6 +294,12 @@ func runDesktop(listenAddr string) {
 	// starts — so every later read (the reload keybinding on the UI
 	// thread, the shutdown below) sees the started server.
 	var srv *transport.Server
+	// startErr is App.Start's failure, which ends the process once the
+	// app loop and the transport have shut down.
+	var (
+		startErrMu sync.Mutex
+		startErr   error
+	)
 
 	shell := webviewShell{
 		title:          appidentity.AppTitle(nativeSingleInstanceMode()),
@@ -326,6 +332,24 @@ func runDesktop(listenAddr string) {
 			// failure, and a fatalf that skipped the transport shutdown
 			// the shell's error return runs.
 			srv = bootTransport(appService, listenAddr, bootTransportOptions{})
+			// ServiceStartup runs App.Start on its own goroutine so the
+			// window opens and shows the boot's progress. Success releases
+			// the readiness gate. A failure serves the terminal bootstrap
+			// answer and quits, and the process exits with the error as it
+			// did when Start ran inside Run. Quit on its own goroutine:
+			// it waits on ServiceShutdown, which waits for this Start.
+			appservice.SetStartDone(appService.App, func(err error) {
+				if err == nil {
+					srv.MarkReady()
+					return
+				}
+				log.Printf("app: service startup: %v", err)
+				srv.MarkStartupFailed()
+				startErrMu.Lock()
+				startErr = err
+				startErrMu.Unlock()
+				go app.Quit()
+			})
 		},
 		pageURL: func() string {
 			if srv == nil {
@@ -356,6 +380,12 @@ func runDesktop(listenAddr string) {
 	}
 	if runErr != nil {
 		fatalf("wails run: %v", runErr)
+	}
+	startErrMu.Lock()
+	err := startErr
+	startErrMu.Unlock()
+	if err != nil {
+		fatalf("app: service startup: %v", err)
 	}
 }
 

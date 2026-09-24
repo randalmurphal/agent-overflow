@@ -19,6 +19,7 @@ import (
 
 	"agent-overflow/internal/pagehost"
 	"agent-overflow/internal/relaysession"
+	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/transport"
 
 	"github.com/coder/websocket"
@@ -691,6 +692,58 @@ func TestHandleBootstrap_UnreachableUpstreamIsTransient(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("dead upstream: stub status = %d, want 503", resp.StatusCode)
+	}
+}
+
+// TestHandleBootstrap_PassesOnUpstreamStartingReport: an upstream that is
+// starting reports its progress through the stub, so a --connect page
+// shows what the backend is doing instead of an outage. A bare 503 stays
+// the plain transient answer.
+func TestHandleBootstrap_PassesOnUpstreamStartingReport(t *testing.T) {
+	var starting atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if starting.Load() {
+			startupprogress.Write(w, startupprogress.Progress{
+				Phase: "store.migrate", Detail: "Applying migration 2 of 3 x", Step: 2, Steps: 3,
+				StartedAt: 10, UpdatedAt: 20, UpdatingTo: "4.5.6",
+			})
+			return
+		}
+		http.Error(w, "backend not ready", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(upstream.Close)
+	srv := serveWithUpstream(t, upstream)
+
+	get := func() (*http.Response, []byte) {
+		t.Helper()
+		resp, err := http.Get(stubBootstrapURL(t, srv))
+		if err != nil {
+			t.Fatalf("GET /bootstrap.json: %v", err)
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		return resp, body
+	}
+
+	resp, body := get()
+	if _, ok := startupprogress.Parse(resp.StatusCode, body); ok || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("bare upstream 503 became %d %q, want the plain 503", resp.StatusCode, body)
+	}
+
+	starting.Store(true)
+	resp, body = get()
+	got, ok := startupprogress.Parse(resp.StatusCode, body)
+	if !ok {
+		t.Fatalf("starting upstream answered %d %q, want its starting report", resp.StatusCode, body)
+	}
+	if got.Phase != "store.migrate" || got.Step != 2 || got.Steps != 3 || got.UpdatedAt != 20 || got.UpdatingTo != "4.5.6" {
+		t.Fatalf("passed-on report = %+v", got)
+	}
+	if resp.Header.Get("Retry-After") != "1" || resp.Header.Get("Cache-Control") != "no-store, max-age=0" {
+		t.Errorf("headers = %v, want the readiness headers", resp.Header)
 	}
 }
 

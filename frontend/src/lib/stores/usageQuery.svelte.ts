@@ -16,7 +16,13 @@ import { onBackendRecovery, holdBackendRecovery } from './transportRecovery';
 
 export interface UsageStats {
   readonly buckets: UsageBucket[] | null;
+  /** Selected computers that are offline or whose read failed, by name. */
   readonly unavailable: readonly string[];
+  /**
+   * Selected computers still starting, by name. They are asked once they
+   * connect, so a surface shows them as loading, never as unavailable.
+   */
+  readonly pending: readonly string[];
   readonly loading: boolean;
   readonly error: string | null;
 }
@@ -24,6 +30,7 @@ export interface UsageStats {
 export function createUsageStats(getQuery: () => UsageQuery | null): UsageStats {
   let buckets = $state<UsageBucket[] | null>(null);
   let unavailable = $state<string[]>([]);
+  let pending = $state<string[]>([]);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reportedError = $state<string | null>(null);
@@ -69,12 +76,14 @@ export function createUsageStats(getQuery: () => UsageQuery | null): UsageStats 
       ? selectedTelemetryComputers('usage').filter((computer) => projectOwner === undefined || computer.key === projectOwner)
       : null;
     const online = computers?.filter((computer) => computer.connected);
-    const missing = computers?.filter((computer) => !computer.connected).map((computer) => computer.name) ?? [];
+    const starting = computers?.filter((computer) => computer.starting).map((computer) => computer.name) ?? [];
+    const missing = computers?.filter((computer) => !computer.connected && !computer.starting).map((computer) => computer.name) ?? [];
     if (computers && missingTelemetrySelection('usage') > 0) missing.push('Removed computer selection');
     const key = JSON.stringify([requested, owner, online?.map((computer) => computer.key)]);
     untrack(() => {
       query = requested;
       offline = missing;
+      pending = starting;
       targets = [];
       if (requested) {
         try {
@@ -111,6 +120,7 @@ export function createUsageStats(getQuery: () => UsageQuery | null): UsageStats 
 
   return {
     get unavailable() { return unavailable; },
+    get pending() { return pending; },
     get loading() { return loading; },
     get error() { return reportedError ?? error; },
     get buckets() { return buckets; },

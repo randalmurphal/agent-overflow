@@ -50,9 +50,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -168,39 +166,6 @@ const (
 	launcherPrivateDirPerm os.FileMode = 0o700
 	launcherLogFilePerm    os.FileMode = 0o600
 )
-
-// bootstrapProbeAttemptTimeout caps a single HTTP attempt against the
-// WSL-side /bootstrap.json. RST / connection-refused arrives in
-// milliseconds; a real timeout means the request reached the kernel
-// but the server didn't respond, which is rare and recoverable. 1 s
-// is long enough for either to surface and short enough that we burn
-// budget on retrying, not waiting.
-const bootstrapProbeAttemptTimeout = 1 * time.Second
-
-// bootstrapProbeDeadline is the total time we'll spend polling. WSL2
-// in NAT mode (the default — see %USERPROFILE%/.wslconfig with no
-// `networkingMode` line) installs a Windows-side forward rule for the
-// WSL listener AFTER the listener binds; the rule shows up sub-second,
-// but the launcher's first probe lands inside that window and gets
-// "actively refused" by Windows even though the backend is healthy.
-// Polling past the install bumps every cold boot through the race
-// without flapping. The probe covers both localhost-forwarding setup
-// and the backend's readiness-gated ServiceStartup window.
-const bootstrapProbeDeadline = 30 * time.Second
-
-// bootstrapProbePollInterval caps the gap between failed-probe retries.
-// 250 ms is slow enough that we don't melt the CPU when the backend
-// genuinely never comes up; the gap starts at
-// bootstrapProbeInitialPollInterval and doubles up to this cap.
-const bootstrapProbePollInterval = 250 * time.Millisecond
-
-// bootstrapProbeInitialPollInterval is the first retry gap. The backend
-// publishes its port before ServiceStartup releases readiness and is
-// usually ready ~100-150 ms later, and a failed attempt costs nothing
-// (an instant 503 or RST), so retrying early is free. With a flat 250 ms
-// gap both measured boots on 2026-09-01 hit "ok after 2 attempts", which
-// was ~250 ms of pure sleep after the backend was already ready.
-const bootstrapProbeInitialPollInterval = 25 * time.Millisecond
 
 func main() {
 	// FIRST, before flags, config, logging, or anything else. When this
@@ -591,6 +556,8 @@ type launcherApp struct {
 	// (goroutine) and the reader is the Wails event loop.
 	backendURL     atomic.Pointer[string]
 	startupFailure atomic.Pointer[[]byte]
+	// loading is what /loading.json reports while the backend starts.
+	loading loadingStatus
 }
 
 type launcherExit struct {
@@ -685,6 +652,7 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 
 	started := time.Now()
 	defer logBootPhase("launcher.launch_and_show.total", started)
+	a.loading.begin(started)
 
 	phaseStarted := time.Now()
 	binPath, cachedPath, err := a.ensurePayloadInstalled(ctx, distro)
@@ -717,7 +685,7 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	if err != nil {
 		page := startupFailureHTML(err)
 		a.startupFailure.Store(&page)
-		if errors.Is(err, errBackendUnreachable) {
+		if errors.Is(err, wsllauncher.ErrBackendUnreachable) {
 			w.SetURL("/connectivity-error")
 		} else {
 			w.SetURL("/startup-error")
@@ -812,7 +780,7 @@ func (a *launcherApp) launchAndProbe(ctx context.Context, distro, binPath string
 		return nil, nil, err
 	}
 
-	probeErr := probeLaunchedBackend(bs)
+	probeErr := a.probeLaunchedBackend(ctx, bs)
 	if probeErr == nil {
 		return l, bs, nil
 	}
@@ -835,8 +803,8 @@ func (a *launcherApp) launchAndProbe(ctx context.Context, distro, binPath string
 	if err != nil {
 		return nil, nil, err
 	}
-	if retryErr := probeLaunchedBackend(bs); retryErr != nil {
-		// Wrapped, so the caller's bootstrapHTTPError classification
+	if retryErr := a.probeLaunchedBackend(ctx, bs); retryErr != nil {
+		// Wrapped, so the caller's BootstrapHTTPError classification
 		// still reads the retry's own failure; the first attempt rides
 		// along as context for launcher.log.
 		return nil, nil, fmt.Errorf("%w (also unreachable on the previous port: %v)", retryErr, probeErr)
@@ -1064,11 +1032,11 @@ func waitBackendGone(ctx context.Context, bs *wsllauncher.Bootstrap) error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if err := probeBootstrapWithConfig(bs.Port, bs.Token, bootstrapProbeConfig{
+		if err := wsllauncher.ProbeBootstrap(ctx, bs.Port, bs.Token, wsllauncher.ProbeConfig{
 			AttemptTimeout: 200 * time.Millisecond,
 			Deadline:       300 * time.Millisecond,
 			PollInterval:   50 * time.Millisecond,
-		}); err != nil && errors.Is(err, errBackendUnreachable) {
+		}); err != nil && errors.Is(err, wsllauncher.ErrBackendUnreachable) {
 			return nil
 		}
 		select {
@@ -1079,10 +1047,14 @@ func waitBackendGone(ctx context.Context, bs *wsllauncher.Bootstrap) error {
 	}
 }
 
-// probeLaunchedBackend runs the connectivity probe and logs its verdict.
-func probeLaunchedBackend(bs *wsllauncher.Bootstrap) error {
+// probeLaunchedBackend runs the connectivity probe, publishing the
+// backend's startup progress to the loading page, and logs its verdict.
+func (a *launcherApp) probeLaunchedBackend(ctx context.Context, bs *wsllauncher.Bootstrap) error {
 	phaseStarted := time.Now()
-	err := probeBootstrap(bs.Port, bs.Token)
+	a.loading.clearProgress()
+	err := wsllauncher.ProbeBootstrap(ctx, bs.Port, bs.Token, wsllauncher.ProbeConfig{
+		OnProgress: a.loading.setProgress,
+	})
 	logBootPhase("launcher.probe_bootstrap", phaseStarted)
 	if err != nil {
 		log.Printf("connectivity probe failed: %v", err)
@@ -1168,7 +1140,7 @@ func fetchPageURL(port int, token string) (string, error) {
 // ever appears in the other's string.
 func fetchWebviewPageURL(port int, token string) (pagehost.Answer, error) {
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s%s", port, wsllauncher.PageURLPath, wsllauncher.PageURLWebviewQuery)
-	resp, err := getWithToken(&http.Client{Timeout: pageURLTimeout}, endpoint, token)
+	resp, err := wsllauncher.GetWithToken(context.Background(), &http.Client{Timeout: pageURLTimeout}, endpoint, token)
 	if err != nil {
 		return pagehost.Answer{}, err
 	}
@@ -1212,38 +1184,6 @@ func (t tolerantWriters) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// probeBootstrap performs a deadline-bounded HTTP GET against the WSL
-// backend's /bootstrap.json over localhost. A successful response
-// proves the WSL2 localhostForwarding path is functional; a timeout or
-// connection refused indicates the backend is reachable from inside
-// the distro but the Windows WebView won't be able to reach it.
-//
-// We probe /bootstrap.json rather than just opening a socket because a
-// stale TIME_WAIT socket from a prior boot can satisfy a TCP connect
-// while the new server isn't actually accepting requests. A successful
-// HTTP response with the expected status confirms the right server is
-// listening. Network errors (timeout / connection refused) are the
-// localhostForwarding signal; HTTP-level errors (4xx/5xx) mean the
-// path works but something else is wrong server-side, which we still
-// surface as failure so the user sees actionable feedback rather than
-// a blank WebView.
-func probeBootstrap(port int, token string) error {
-	return probeBootstrapWithConfig(port, token, bootstrapProbeConfig{
-		AttemptTimeout: bootstrapProbeAttemptTimeout,
-		Deadline:       bootstrapProbeDeadline,
-		PollInterval:   bootstrapProbePollInterval,
-	})
-}
-
-type bootstrapProbeConfig struct {
-	AttemptTimeout time.Duration
-	Deadline       time.Duration
-	// PollInterval caps the retry gap; InitialPollInterval is the first
-	// gap, doubling after every failed attempt up to the cap.
-	PollInterval        time.Duration
-	InitialPollInterval time.Duration
-}
-
 // retryWithFreshTransportPort decides whether a failed connectivity
 // probe is worth one relaunch on a fresh transport port. Only the
 // unreachable class qualifies — a startup failure, a refused
@@ -1251,160 +1191,7 @@ type bootstrapProbeConfig struct {
 // reachable, and moving it would cost the user their origin-scoped
 // browser state for nothing.
 func retryWithFreshTransportPort(err error) bool {
-	return errors.Is(err, errBackendUnreachable)
-}
-
-func probeBootstrapWithConfig(port int, token string, cfg bootstrapProbeConfig) error {
-	if cfg.AttemptTimeout <= 0 {
-		cfg.AttemptTimeout = bootstrapProbeAttemptTimeout
-	}
-	if cfg.Deadline <= 0 {
-		cfg.Deadline = bootstrapProbeDeadline
-	}
-	if cfg.PollInterval <= 0 {
-		cfg.PollInterval = bootstrapProbePollInterval
-	}
-	if cfg.InitialPollInterval <= 0 {
-		cfg.InitialPollInterval = bootstrapProbeInitialPollInterval
-	}
-	if cfg.InitialPollInterval > cfg.PollInterval {
-		cfg.InitialPollInterval = cfg.PollInterval
-	}
-
-	// 127.0.0.1, not "localhost": Windows resolves "localhost" to both
-	// ::1 and 127.0.0.1, and Go's dialer races them. WSL2's
-	// localhostForwarding only proxies IPv4, so a ::1 attempt hits
-	// Windows-loopback directly and is refused — surfacing a misleading
-	// connectivity-error page even though the backend is fine on
-	// 127.0.0.1. Pinning the IPv4 literal removes the race.
-	url := fmt.Sprintf("http://127.0.0.1:%d/bootstrap.json", port)
-	// The session token rides an Authorization header, not the query
-	// string: the query slot on this route belongs to the one-time page
-	// ticket a browser presents, and this probe is not a browser. The
-	// header also keeps the credential out of URLs that get logged.
-	log.Printf("probe: GET %s (token=%d bytes)", url, len(token))
-	redacted := url
-
-	// Poll, don't one-shot. WSL2 NAT mode installs the Windows-side
-	// forward rule for a fresh WSL listener AFTER the listener binds,
-	// and the launcher's first probe usually lands inside that race —
-	// Windows returns RST and we'd surface a misleading
-	// connectivity-error page even though the backend is healthy and
-	// the forwarder is about to catch up. The loop runs up to 30 s with a
-	// gap that starts at 25 ms and doubles to 250 ms, because the backend
-	// publishes its bootstrap port before ServiceStartup has released
-	// readiness and is usually ready within a couple of hundred ms.
-	//
-	// Transport errors (refused / timeout / DNS failure) are
-	// transient and trigger a retry. An HTTP-level response (any
-	// status code) means the request reached our handler and we
-	// decide right there: 200 = ready, 503 = backend still booting and
-	// worth retrying, anything else (token mismatch, host guard reject)
-	// is terminal.
-	client := &http.Client{Timeout: cfg.AttemptTimeout}
-	deadline := time.Now().Add(cfg.Deadline)
-	var lastErr error
-	attempt := 0
-	// Tracks whether the localhost path ever carried a response at all —
-	// the difference between "Windows cannot reach this port" and "the
-	// backend answered and we didn't like the answer". See
-	// errBackendUnreachable.
-	sawHTTPResponse := false
-	wait := cfg.InitialPollInterval
-	for {
-		attempt++
-		resp, err := getWithToken(client, url, token)
-		if err == nil {
-			sawHTTPResponse = true
-			// 64KB bounds the bootstrap response while leaving room
-			// for the real document: Bootstrap grew past 256 bytes once
-			// harness boots added pageMarker + store identity, and a cap
-			// below the document size truncates valid JSON — decode then
-			// fails on every boot (observed 2026-08-30, harness profile).
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-			_ = resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				if err := validateBootstrapResponse(body, port); err != nil {
-					log.Printf("probe: invalid bootstrap response: %v", err)
-					return fmt.Errorf("%w: %w", errInvalidBootstrap, err)
-				}
-				if attempt > 1 {
-					log.Printf("probe: ok after %d attempts", attempt)
-				}
-				return nil
-			}
-			if resp.StatusCode == http.StatusServiceUnavailable {
-				lastErr = fmt.Errorf("GET %s: status %d", redacted, resp.StatusCode)
-				if time.Now().After(deadline) {
-					break
-				}
-				time.Sleep(wait)
-				wait = min(wait*2, cfg.PollInterval)
-				continue
-			}
-			// Server is reachable but rejected. Surface the response
-			// shape (status + first bytes of body) so a future
-			// regression in handleBootstrap shows up clearly.
-			log.Printf("probe: status=%d host-resp=%q", resp.StatusCode, string(body[:min(len(body), 256)]))
-			return bootstrapHTTPError{StatusCode: resp.StatusCode, URL: redacted}
-		}
-		lastErr = err
-		if time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(wait)
-		wait = min(wait*2, cfg.PollInterval)
-	}
-	if !sawHTTPResponse {
-		return fmt.Errorf("GET %s: %w after %d attempts: %w", redacted, errBackendUnreachable, attempt, lastErr)
-	}
-	return fmt.Errorf("%w: GET %s timed out after %d attempts: %w", errBackendNotReady, redacted, attempt, lastErr)
-}
-
-// getWithToken issues one probe request carrying the session token in
-// an Authorization header. Shared by every launcher-side call so the
-// carrier stays in one place.
-func getWithToken(client *http.Client, url, token string) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	return client.Do(req)
-}
-
-// validateBootstrapResponse checks the manifest the backend answered
-// with is the one this launcher booted. The manifest no longer carries
-// a credential to compare — the page's credential is an HttpOnly cookie
-// the backend sets, and this probe authenticates with a header — so the
-// wsUrl's host and port carry the whole check: they prove the responder
-// is our backend on our port rather than some other server that
-// happened to answer on the forwarded loopback hop.
-func validateBootstrapResponse(body []byte, port int) error {
-	var bootstrap struct {
-		WSURL string `json:"wsUrl"`
-	}
-	if err := json.Unmarshal(body, &bootstrap); err != nil {
-		return fmt.Errorf("decode bootstrap response: %w", err)
-	}
-	parsed, err := url.Parse(bootstrap.WSURL)
-	if err != nil {
-		return fmt.Errorf("parse bootstrap wsUrl: %w", err)
-	}
-	if parsed.Scheme != "ws" || parsed.Path != "/ws" {
-		return fmt.Errorf("bootstrap wsUrl has unexpected shape: %q", bootstrap.WSURL)
-	}
-	host, portString, err := net.SplitHostPort(parsed.Host)
-	if err != nil {
-		return fmt.Errorf("split bootstrap wsUrl host: %w", err)
-	}
-	if host != "127.0.0.1" {
-		return fmt.Errorf("bootstrap wsUrl host = %q, want 127.0.0.1", host)
-	}
-	if portString != fmt.Sprintf("%d", port) {
-		return fmt.Errorf("bootstrap wsUrl port = %q, want %d", portString, port)
-	}
-	return nil
+	return errors.Is(err, wsllauncher.ErrBackendUnreachable)
 }
 
 // persistSuccessfulLaunch records the installed payload digest, path and version
@@ -1514,7 +1301,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 					return *page
 				}
 				return startupFailureHTML(nil)
-			}),
+			}, func() loadingReport { return a.loading.report(time.Now()) }),
 		},
 		Windows: webviewBrowserOptions(mode, webviewDataDir(mode), diagnosticsDir),
 		// Cancel app shutdown until the user explicitly closes the

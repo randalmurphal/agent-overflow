@@ -53,11 +53,12 @@ const deferredMigrationNoticeErrorRunes = 400
 // waiting out production intervals. A zero field means the production
 // constant.
 type maintenanceTuning struct {
-	settleUptime time.Duration
-	settlePoll   time.Duration
-	chunkPause   time.Duration
-	convertPoll  time.Duration
-	quietWindow  time.Duration
+	settleUptime       time.Duration
+	settlePoll         time.Duration
+	chunkPause         time.Duration
+	convertPoll        time.Duration
+	quietWindow        time.Duration
+	firstReadsFallback time.Duration
 }
 
 // orDuration returns override when it is set, otherwise fallback.

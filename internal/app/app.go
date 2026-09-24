@@ -186,9 +186,12 @@ type App struct {
 	threadRequestsWG sync.WaitGroup
 	// threadSearchIndex is the boot-time search index build.
 	threadSearchIndex threadSearchIndexBuild
-	remoteWatchWG     sync.WaitGroup
-	remoteStartsOnce  sync.Once
-	remoteStarts      *keyedlock.Registry
+	// firstReads holds heavy post-boot work until a client has read its
+	// catalogs. See app_first_reads.go.
+	firstReads       firstReadsGate
+	remoteWatchWG    sync.WaitGroup
+	remoteStartsOnce sync.Once
+	remoteStarts     *keyedlock.Registry
 	// providerTerminals is the per-connection take-control bookkeeping for
 	// claude-tui PTYs: which caller armed which attachment, so a dead socket
 	// releases exactly its own claim and its input lease. Zero value ready.
@@ -332,6 +335,21 @@ type App struct {
 	// refuse rather than half-tear-down an app whose shell is still up.
 	// Installed before Start by ConfigureBackendShutdown.
 	backendShutdown func() error
+	// bootProgress receives Start's phases for the readiness report. Nil
+	// reports nothing. A boot input installed before Start by
+	// SetBootProgress.
+	bootProgress BootProgress
+	// startDone receives the result of the desktop Start that
+	// ServiceStartup runs on its own goroutine. A boot input installed by
+	// SetStartDone before the Wails application runs.
+	startDone func(error)
+	// asyncStart is that desktop Start while it runs, so ServiceShutdown
+	// can cancel it and wait for it (app_start_async.go).
+	asyncStart atomic.Pointer[asyncStart]
+	// settingsAttached is set once the settings service and its tier store
+	// are in place during Start. A caller outside Start, the desktop
+	// window's geometry tracker, checks it before touching a.settings.
+	settingsAttached atomic.Bool
 	// appCtx is the App-lifetime context shared by every fire-and-forget
 	// goroutine that has no narrower scope (rate-limit probe loop, Claude
 	// OAuth-completion poller, MCP live-reconcile callbacks, etc).

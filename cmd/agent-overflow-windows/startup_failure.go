@@ -7,32 +7,28 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"strings"
+
+	"agent-overflow/internal/startupprogress"
+	"agent-overflow/internal/wsllauncher"
 )
 
-// These classes describe evidence from startup, not a guessed network cause.
-var (
-	errLaunchFailed       = errors.New("launch backend")
-	errBackendUnreachable = errors.New("no HTTP response from the WSL backend over Windows localhost")
-	errInvalidBootstrap   = errors.New("unexpected backend startup response")
-	errBackendNotReady    = errors.New("backend did not finish starting")
-)
+// errLaunchFailed joins the probe's classes (wsllauncher.ErrBackend*):
+// the backend process itself could not start.
+var errLaunchFailed = errors.New("launch backend")
 
-type bootstrapHTTPError struct {
-	StatusCode int
-	URL        string
-}
+// stalledPhaseLimit bounds the backend-reported text a stall page repeats.
+const stalledPhaseLimit = 160
 
-func (e bootstrapHTTPError) Error() string {
-	return fmt.Sprintf("GET %s: status %d", e.URL, e.StatusCode)
-}
-
-// Only fixed copy and an HTTP status enter the page. Wrapped errors can carry
-// credentials, paths, or arbitrary server content and belong in launcher.log.
+// Only fixed copy, an HTTP status and the stalled startup phase enter the
+// page. Wrapped errors can carry credentials, paths, or arbitrary server
+// content and belong in launcher.log.
 func startupFailureHTML(err error) []byte {
 	title := "Agent Overflow could not start."
 	detail := "The local backend could not be opened."
 	action := "Close and reopen Agent Overflow. If this continues, check the launcher log below."
-	var httpErr bootstrapHTTPError
+	var httpErr wsllauncher.BootstrapHTTPError
+	var stalled *wsllauncher.BackendStalledError
 	switch {
 	case errors.Is(err, errLaunchFailed):
 		detail = "The backend process could not start inside WSL."
@@ -43,13 +39,16 @@ func startupFailureHTML(err error) []byte {
 		if httpErr.StatusCode == http.StatusInternalServerError {
 			title = "Backend failed while starting."
 		}
-	case errors.Is(err, errInvalidBootstrap):
+	case errors.Is(err, wsllauncher.ErrInvalidBootstrap):
 		detail = "The local service answered, but its startup response was not valid for this app."
 		action = "Close and reopen Agent Overflow. If this continues, install the latest build and check the launcher log below."
-	case errors.Is(err, errBackendNotReady):
+	case errors.As(err, &stalled):
+		title, detail = stalledStartupCopy(stalled)
+		action = "Close and reopen Agent Overflow to try again. If it stalls in the same phase, check the launcher log below."
+	case errors.Is(err, wsllauncher.ErrBackendNotReady):
 		title = "Backend did not finish starting."
 		detail = "The local service returned HTTP 503 (not ready) and did not finish starting before the deadline."
-	case errors.Is(err, errBackendUnreachable):
+	case errors.Is(err, wsllauncher.ErrBackendUnreachable):
 		title = "Windows could not reach the backend."
 		detail = "No HTTP response arrived from the backend's local port."
 		action = "Close and reopen Agent Overflow. If this continues, check that localhostForwarding is enabled in %USERPROFILE%\\.wslconfig and that local connections are not blocked."
@@ -64,4 +63,37 @@ code{background:#1a1b26;color:#7dcfff;padding:1px 6px;border-radius:4px;overflow
 </style></head><body><main class="card"><h1>%s</h1><p>%s</p><p>%s</p>
 <p>Startup details: <code>%%APPDATA%%\agent-overflow\launcher.log</code></p></main></body></html>`,
 		template.HTMLEscapeString(title), template.HTMLEscapeString(detail), template.HTMLEscapeString(action)))
+}
+
+// stalledStartupCopy names the phase a starting backend stopped advancing
+// in, as the update being finished when the boot follows an update, and
+// whether the backend stopped responding altogether.
+func stalledStartupCopy(stalled *wsllauncher.BackendStalledError) (title, detail string) {
+	p := stalled.Progress
+	where := "phase " + truncateRunes(p.Phase, stalledPhaseLimit)
+	if d := truncateRunes(p.Detail, stalledPhaseLimit); d != "" {
+		where += " (" + d + ")"
+	}
+	quiet := fmt.Sprintf("%d seconds", int(stalled.Quiet.Seconds()))
+	update := ""
+	if p.UpdatingTo != "" {
+		update = "The update to " + startupprogress.DisplayVersion(truncateRunes(p.UpdatingTo, 40))
+	}
+	switch {
+	case stalled.Unresponsive && update != "":
+		return update + " stopped responding.", fmt.Sprintf("The backend stopped responding while finishing the update, in %s, for %s.", where, quiet)
+	case stalled.Unresponsive:
+		return "Backend stopped responding.", fmt.Sprintf("The backend stopped responding during startup, in %s, for %s.", where, quiet)
+	case update != "":
+		return update + " stalled.", fmt.Sprintf("Finishing the update stalled in %s and made no progress for %s.", where, quiet)
+	}
+	return "Backend stopped making progress.", fmt.Sprintf("Startup stalled in %s and made no progress for %s.", where, quiet)
+}
+
+func truncateRunes(s string, limit int) string {
+	s = strings.TrimSpace(s)
+	if r := []rune(s); len(r) > limit {
+		return string(r[:limit]) + "..."
+	}
+	return s
 }

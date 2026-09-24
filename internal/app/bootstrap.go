@@ -208,6 +208,17 @@ func SetProviderExtraEnv(a *App, env map[string]string) {
 // keep correct. Root owns process exit; this package only asks for it.
 func ConfigureBackendShutdown(a *App, request func() error) { a.backendShutdown = request }
 
+// SetBootProgress installs the sink App.Start reports its phases to. Call
+// before Start.
+func SetBootProgress(a *App, progress BootProgress) { a.bootProgress = progress }
+
+// SetStartDone installs what the desktop boot does when the App.Start that
+// ServiceStartup runs on its own goroutine returns: done(nil) after a
+// successful start, done(err) after a failed one. A Start that
+// ServiceShutdown canceled calls nothing. Call before the Wails
+// application runs.
+func SetStartDone(a *App, done func(error)) { a.startDone = done }
+
 // ConfigureTransportNotifications installs the headless launcher bridge.
 func ConfigureTransportNotifications(a *App) {
 	a.osNotifications = newTransportNotificationSender(a)

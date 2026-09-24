@@ -63,6 +63,13 @@ import { homeWsUrl } from './homeEndpoint';
 import { refreshGrantedScopes } from './scopes';
 import { randomId } from '../utils/randomId';
 import { ReplayBuffer } from './replayBuffer';
+import {
+  BackendStartingError,
+  sameTransportStartup,
+  transportStartup,
+  type StartupProgress,
+  type TransportStartup,
+} from './startupProgress';
 
 /**
  * Append this screen's identity to the upgrade URL. Kept as a function rather
@@ -168,6 +175,11 @@ export const DORMANT_PROBE_MS = 5 * 60_000;
 // dying takes every attached backend's ladder with it) so they do not all
 // dial on the same second.
 export const DORMANT_PROBE_JITTER_MS = 30_000;
+// How often a client asks a starting backend again. A starting report
+// proves the backend is up, so this is a flat poll rather than a rung of
+// the reconnect ladder: the first attempt after the backend becomes ready
+// connects within this interval.
+export const STARTING_POLL_MS = 500;
 // How long redialAfterPairing waits for the transport to become usable
 // before handing back anyway. The app mounts on the other side of that
 // call, so the wait has to be long enough to cover a manifest fetch, a
@@ -517,6 +529,10 @@ let fanoutScratchInUse = false;
 // in-flight after a previous close. nextAttemptAt is the wall-clock
 // millis when the next attempt is scheduled — null if the attempt is
 // already in flight.
+// 'starting' means the backend answered its manifest with a starting
+// report (internal/startupprogress): it is up and booting, not failing.
+// The snapshot's `startup` carries the report, and the client asks again
+// every STARTING_POLL_MS without climbing the reconnect ladder.
 // Two states are TERMINAL: the backend answered, the answer will not
 // change while this page sits there, and the automatic ladder stops
 // rather than burn a device's radio and battery on attempts that cannot
@@ -556,6 +572,7 @@ let fanoutScratchInUse = false;
 // not present itself as settled.
 export type TransportStatus =
   | 'connected'
+  | 'starting'
   | 'reconnecting'
   | 'unauthorized'
   | 'pairing-required'
@@ -651,6 +668,8 @@ export interface TransportStatusSnapshot {
    *  "last seen", never against a backend timestamp. null when this
    *  client has never connected. */
   lastConnectedAt?: number | null;
+  /** The backend's latest starting report. Present only on 'starting'. */
+  startup?: TransportStartup;
 }
 
 type StatusHandler = (snapshot: TransportStatusSnapshot) => void;
@@ -2040,6 +2059,12 @@ export class WSClient {
       ws = this.createSocket(url);
     } catch (err) {
       this.connectPromise = null;
+      if (err instanceof BackendStartingError) {
+        // The backend answered and is booting. Not a preparation failure
+        // and not an outage rung: publish its progress and ask again.
+        this.enterStarting(err.progress);
+        throw new DisconnectedError('backend is starting', { cause: err });
+      }
       // A refused credential is not a transient failure. For a session
       // that can't mint a new token it is terminal — latch it BEFORE
       // scheduleReconnect below, which is what reads the latch and
@@ -2719,12 +2744,22 @@ export class WSClient {
     const armed = !(dormant && this.lease === 'background');
     const nextAttemptAt = armed ? Date.now() + delay : null;
     this.setReconnecting(nextAttemptAt);
+    // Switch to "in-flight attempt" when it fires — clear nextAttemptAt so
+    // the UI stops counting down while the connect promise resolves.
+    this.queueAttempt(delay, demandFloorMs, () => this.setReconnecting(null));
+    // Queued either way, so demand still has something to fire and the
+    // promise still has an owner; only the TIMER is cancelled.
+    if (!armed) this.disarmQueuedAttempt();
+  }
+
+  // queueAttempt queues the next connect attempt `delay` from now and makes
+  // it `connectPromise`. The attempt body is shared between the timer and
+  // queuedAttempt.fire so early demand (an RPC, a page resume, the Retry
+  // button) runs THIS scheduled attempt — settling this same promise for
+  // anyone already awaiting connectPromise — rather than racing a second
+  // connect against it. `beforeAttempt` publishes the in-flight status.
+  private queueAttempt(delay: number, demandFloorMs: number, beforeAttempt: () => void): void {
     const promise = new Promise<void>((resolve, reject) => {
-      // The attempt body is shared between the backoff timer and
-      // queuedAttempt.fire so early demand (an RPC, a page resume, the
-      // Retry button) runs THIS scheduled attempt — settling this same
-      // promise for anyone already awaiting connectPromise — rather
-      // than racing a second connect against it.
       const fire = (): void => {
         if (this.queuedAttempt !== null) {
           clearTimeout(this.queuedAttempt.timer);
@@ -2734,19 +2769,35 @@ export class WSClient {
           reject(new DisconnectedError('client closed', { terminal: true }));
           return;
         }
-        // Switch to "in-flight attempt" — clear nextAttemptAt so the UI
-        // stops counting down while the connect promise resolves.
-        this.setReconnecting(null);
+        beforeAttempt();
         this.connect().then(resolve, reject);
       };
       this.queuedAttempt = { timer: setTimeout(fire, delay), fire, demandFloorMs };
     });
-    // Queued either way, so demand still has something to fire and the
-    // promise below still has an owner; only the TIMER is cancelled.
-    if (!armed) this.disarmQueuedAttempt();
     this.connectPromise = promise;
-    // Swallow rejections on this branch — see comment above.
+    // Swallow rejections on this branch — see scheduleReconnect.
     promise.catch(() => {});
+  }
+
+  // enterStarting publishes a starting backend's report and queues the next
+  // ask. The backend answered, so this is neither an outage rung nor a
+  // preparation failure: the ladder resets instead of climbing and never
+  // ages toward dormancy, and the status stays 'starting' while each ask is
+  // in flight. A boot that spends minutes migrating connects within
+  // STARTING_POLL_MS of becoming ready. The queued attempt is the ordinary
+  // one, so demand fires it early exactly as it would a backoff rung.
+  private enterStarting(progress: StartupProgress): void {
+    if (this.closed) return;
+    this.reconnectAttempt = 0;
+    this.ladderStartedAt = 0;
+    this.setStatus({
+      status: 'starting',
+      nextAttemptAt: null,
+      lastConnectedAt: this.lastConnectedAt === 0 ? null : this.lastConnectedAt,
+      startup: transportStartup(progress),
+    });
+    if (this.queuedAttempt !== null || this.connectPromise !== null) return;
+    this.queueAttempt(STARTING_POLL_MS, STARTING_POLL_MS, () => {});
   }
 
   // getBootstrap caches the manifest fetch so a reconnect doesn't re-hit
@@ -3279,6 +3330,7 @@ export class WSClient {
       // explicit one and republishing an identical snapshot.
       && (next.dormant ?? false) === (current.dormant ?? false)
       && (next.lastConnectedAt ?? null) === (current.lastConnectedAt ?? null)
+      && sameTransportStartup(next.startup, current.startup)
     ) return;
     this.statusSnapshot = next;
     if (this.statusHandlers.size === 0) return;

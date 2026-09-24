@@ -38,6 +38,7 @@ import { credentialsForUrl, homeOriginParts, homeUrl, originPartsOf } from './ho
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import { isNativeShell } from '../native/platform';
 import { hasHomeEndpoint } from './homeEndpoint';
+import { BackendStartingError, readStartupProgress } from './startupProgress';
 
 // BootstrapRejectedError marks the one bootstrap failure that retrying
 // cannot fix: the server answered, and refused our credential. The
@@ -225,6 +226,20 @@ export async function defaultBootstrap(): Promise<Bootstrap> {
   return fetchManifest(ticket);
 }
 
+// releaseRejectedManifest releases a non-OK manifest answer's body. A 503
+// with a JSON body is read first: a starting backend reports its progress
+// there (internal/startupprogress), and that answer is not a failure, so it
+// rejects as BackendStartingError. Every other answer contributes only its
+// status.
+async function releaseRejectedManifest(resp: Response): Promise<void> {
+  if (resp.status === 503 && (resp.headers.get('content-type') ?? '').toLowerCase().startsWith('application/json')) {
+    const progress = await readStartupProgress(resp);
+    if (progress !== null) throw new BackendStartingError(progress);
+    return;
+  }
+  await resp.body?.cancel();
+}
+
 // Home and attached backends share credential presentation and recovery.
 // Snapshot pairing before header generation: a missing device key can clear
 // storage, but the remedy is still pairing rather than a new page ticket.
@@ -247,9 +262,10 @@ async function fetchAuthenticatedManifest(
     // exactly what a same-origin one signs.
     headers: await pairedSessionHeaders('GET', path, backend),
   });
-  // Rejected manifests contribute only their status. Release their body before
-  // renewal or retry so native HTTP transfer slots cannot accumulate.
-  if (!resp.ok) await resp.body?.cancel();
+  // Rejected manifests contribute only their status, except a starting
+  // backend's report. Release their body before renewal or retry so native
+  // HTTP transfer slots cannot accumulate.
+  if (!resp.ok) await releaseRejectedManifest(resp);
   if (!resp.ok && CREDENTIAL_REFUSED_STATUSES.has(resp.status) && hasPairedSession(backend)) {
     // The stored access credential may simply have aged out between
     // visits; the refresh exchange decides whether the session is dead.
@@ -263,7 +279,7 @@ async function fetchAuthenticatedManifest(
         // attempt carried is spent.
         headers: await pairedSessionHeaders('GET', path, backend),
       });
-      if (!resp.ok) await resp.body?.cancel();
+      if (!resp.ok) await releaseRejectedManifest(resp);
     } else if (hasPairedSession(backend)) {
       // A network failure, throttling, or pending confirmation is not
       // evidence that the renewal credential is dead. Keep retrying.
@@ -273,9 +289,10 @@ async function fetchAuthenticatedManifest(
   if (!resp.ok) {
     if (!CREDENTIAL_REFUSED_STATUSES.has(resp.status)) {
       // Transient: the server is up but not serving the manifest yet
-      // (503 readiness gate, 500 startup failure) or something in
-      // between failed. The cookie the exchange already set is still
-      // the right one — the server issues it before those gates run.
+      // (a 503 readiness gate with no report, 500 startup failure) or
+      // something in between failed. A starting report rejected above.
+      // The cookie the exchange already set is still the right one — the
+      // server issues it before those gates run.
       throw new Error(`bootstrap fetch failed: HTTP ${resp.status}`);
     }
     throw new BootstrapRejectedError(resp.status, paired);
