@@ -186,6 +186,8 @@ type App struct {
 	threadRequestsWG sync.WaitGroup
 	// threadSearchIndex is the boot-time search index build.
 	threadSearchIndex threadSearchIndexBuild
+	// pendingThreadDeletes completes interrupted thread deletes at boot.
+	pendingThreadDeletes pendingThreadDeletes
 	// firstReads holds heavy post-boot work until a client has read its
 	// catalogs. See app_first_reads.go.
 	firstReads       firstReadsGate

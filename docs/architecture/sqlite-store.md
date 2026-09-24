@@ -304,15 +304,19 @@ cut costs the same for any number of forks. The rule and its write paths are in
 
 ### Source deletion
 
-Deleting a thread first detaches the forks that read through it
-(`detachForkDescendantsTx`). Each drops the lineage levels at and beyond the
-deleted thread and keeps its nearer levels, so the rows the deleted thread
-owned leave its timeline and its epoch advances. The divider of every fork made
-from the deleted thread, including the copies materialized forks and their
-forks hold, records `sourceDeleted` and the source title. From the start of
-the delete, `CreatePointerFork` refuses the thread as a source
-(`ErrForkSourceDeleted`), so that detach covers every fork it will have and no
-fork reads rows the paced drain is removing.
+Deleting a thread first marks it `deleting` and detaches the forks that read
+through it, in one transaction before any item is drained
+(`beginThreadDelete`, `detachForkDescendantsTx`). Each fork drops the lineage
+levels at and beyond the deleted thread and keeps its nearer levels, so the
+rows the deleted thread owned leave its timeline and its epoch advances. The
+divider of every fork made from the deleted thread, including the copies
+materialized forks and their forks hold, records `sourceDeleted` and the
+source title. From that commit `owned_threads` leaves the thread out, so
+`CreatePointerFork` refuses it as a source (`ErrForkSourceDeleted`), the
+detach covers every fork it will have, and no fork reads rows the paced drain
+is removing. The row goes in the delete's last transaction. A delete that a
+crash or an error stopped leaves the mark, and the app completes it at boot
+after the first catalog reads (`ListPendingThreadDeletes`).
 
 ### Attachments
 

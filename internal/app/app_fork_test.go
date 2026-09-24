@@ -1156,9 +1156,9 @@ func TestForkThread_ExcludesBackgroundRunningRows(t *testing.T) {
 // and a public sentence every origin shows, and leaves no thread behind.
 // The app's delete holds the source's action lock from start to finish, so
 // the fork waits and finds the source gone. A store delete that holds no
-// action lock (a rollback's) leaves the lock free, and the store refuses
-// the fork. A fork admitted before the delete began is detached by it
-// (TestPointerForkAdmittedAsTheDeleteBeginsIsDetached).
+// action lock (a rollback's) leaves the lock free, and the fork reads the
+// source's deleting mark and is refused. A fork admitted before the delete
+// began is detached by it (TestPointerForkAdmittedAsTheDeleteBeginsIsDetached).
 func TestForkDuringASourceDeleteIsRefused(t *testing.T) {
 	type refusal struct {
 		op  string

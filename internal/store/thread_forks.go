@@ -63,9 +63,9 @@ func BuildForkedThread(source Thread) Thread {
 var ErrForkChainTooDeep = errors.New("store: fork chain is too deep")
 
 // ErrForkSourceDeleted reports a fork whose source is gone or whose
-// delete has begun (DeleteThreadPaced). The delete detaches the forks the
-// source already has; a fork made after it began would read rows the
-// delete is removing.
+// delete has begun (threads.deleting, DeleteThreadPaced). The delete
+// detaches the forks the source already has; a fork made after it began
+// would read rows the delete is removing.
 var ErrForkSourceDeleted = errors.New("store: the thread was deleted and cannot be forked")
 
 // ForkCut says how much of the source a pointer fork inherits. The zero
@@ -149,16 +149,16 @@ func (s *Store) linkPointerForkTx(tx *sql.Tx, forkID, sourceID string, cut ForkC
 	var depth int
 	if err := tx.QueryRow(
 		`SELECT title, (SELECT COALESCE(MAX(depth), 0) FROM thread_fork_lineage WHERE thread_id = threads.id)
-		   FROM threads WHERE id = ?`, sourceID,
+		   FROM owned_threads AS threads WHERE id = ?`, sourceID,
 	).Scan(&title, &depth); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("store: fork %s: %w", sourceID, ErrForkSourceDeleted)
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("store: read fork source %s: %w", sourceID, err)
 		}
-		return fmt.Errorf("store: read fork source %s: %w", sourceID, err)
-	}
-	// Checked under the writer connection this transaction holds: a
-	// delete that begins now detaches this fork once it commits.
-	if s.threadDeletes.active(sourceID) {
+		// A source this computer gave away says so; one that is gone or
+		// whose delete has begun is refused as deleted.
+		if accessErr := checkThreadTransferAccess(tx, sourceID); accessErr != nil {
+			return accessErr
+		}
 		return fmt.Errorf("store: fork %s: %w", sourceID, ErrForkSourceDeleted)
 	}
 	plan, err := resolveForkCutTx(tx, sourceID, cut)
@@ -957,24 +957,6 @@ func hideInheritedItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) (boo
 		return false, err
 	}
 	return true, forkViewChangedTx(tx, w, threadID, copies)
-}
-
-// detachForkDescendants runs detachForkDescendantsTx in its own
-// transaction.
-func (s *Store) detachForkDescendants(threadID string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: begin detach forks of %s: %w", threadID, err)
-	}
-	defer tx.Rollback()
-	defer dropForkMovesTx(tx)
-	if err := s.detachForkDescendantsTx(tx, threadID); err != nil {
-		return err
-	}
-	if err := s.commitReportingForks(tx); err != nil {
-		return fmt.Errorf("store: commit detach forks of %s: %w", threadID, err)
-	}
-	return nil
 }
 
 // detachForkDescendantsTx runs before threadID's row is deleted. The history

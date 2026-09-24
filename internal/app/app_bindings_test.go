@@ -1100,6 +1100,13 @@ func newTestAppWithStorePath(t *testing.T) (*App, string) {
 	// store.New: this fixture runs ~600 times per suite and each of those
 	// would otherwise replay the whole migration chain.
 	dbPath := storetest.ClonePath(t)
+	return newTestAppAtStorePath(t, dbPath), dbPath
+}
+
+// newTestAppAtStorePath is newTestAppWithStore over the database at
+// dbPath, for a test that reopens a file the way a boot does.
+func newTestAppAtStorePath(t *testing.T, dbPath string) *App {
+	t.Helper()
 	st, err := store.New(dbPath)
 	if err != nil {
 		t.Fatalf("store.New() error = %v", err)
@@ -1130,7 +1137,7 @@ func newTestAppWithStorePath(t *testing.T) (*App, string) {
 	isolateE2EProviderSpawns(t, app)
 	t.Cleanup(app.appCancel)
 	ensureDefaultTestProject(t, app)
-	return app, dbPath
+	return app
 }
 
 // newTestProviderCredentials builds a credential store the way boot does —

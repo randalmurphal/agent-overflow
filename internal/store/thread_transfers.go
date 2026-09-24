@@ -117,6 +117,19 @@ func (s *Store) CreateThreadTransfer(request ThreadTransfer) (ThreadTransfer, er
 			return ThreadTransfer{}, accessErr
 		}
 	}
+	if request.Direction == "outgoing" && accessErr == nil {
+		// A conversation whose delete has begun is gone to a transfer too:
+		// with no transfer in the way, a row owned_threads leaves out is one
+		// being deleted.
+		var gone bool
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1)
+		    AND NOT EXISTS(SELECT 1 FROM owned_threads WHERE id = ?1)`, request.ThreadID).Scan(&gone); err != nil {
+			return ThreadTransfer{}, err
+		}
+		if gone {
+			return ThreadTransfer{}, fmt.Errorf("transfer: conversation %s: %w", request.ThreadID, sql.ErrNoRows)
+		}
+	}
 	if request.Direction == "incoming" && accessErr == nil {
 		var exists bool
 		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?)`, request.ThreadID).Scan(&exists); err != nil {

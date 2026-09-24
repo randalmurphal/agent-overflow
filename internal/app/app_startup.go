@@ -194,6 +194,7 @@ func (a *App) startUnattendedWork() error {
 	a.startOwnDeviceConnections()
 	a.startRemoteMCPRefresh()
 	a.startThreadSearchIndex()
+	a.startPendingThreadDeletes()
 	a.startRemoteWatches()
 	a.startThreadRequestSweeps()
 	if err := a.startThreadTransfers(); err != nil {

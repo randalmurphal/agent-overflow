@@ -260,6 +260,9 @@ func TestShutdownWalksDocumentedOrder(t *testing.T) {
 		// a.sessions via stopSession; running it concurrently with
 		// Step 4's snapshotAndClear would race the session map.
 		"stop retention cleanup",
+		// "stop pending thread deletes" joins the boot-time completion
+		// of interrupted deletes, which takes the sweep's delete path.
+		"stop pending thread deletes",
 		// "stop deferred migrations" MUST appear before "close store" —
 		// the run writes SQLite rows and its auto_vacuum conversion
 		// replaces the database file under both pools.

@@ -502,12 +502,12 @@ func (a *App) cleanupForkThread(threadID string) error {
 }
 
 // forkSource reads the thread a fork is taken from, under its action lock.
-// A delete holds that lock from start to finish, so a fork that waited on
-// it finds the thread gone and says so (store.ErrForkSourceDeleted); the
-// store refuses a fork of a thread whose delete has begun for a caller
-// that holds no lock.
+// A thread whose delete has begun reads as gone (GetOwnedThread), whether
+// the delete finished, failed or is waiting to be completed at boot, and
+// the fork says so (store.ErrForkSourceDeleted). The store refuses the
+// same fork for a caller that holds no lock.
 func (a *App) forkSource(op, sourceThreadID string) (store.Thread, error) {
-	source, err := a.store.GetThread(sourceThreadID)
+	source, err := a.store.GetOwnedThread(sourceThreadID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.Thread{}, forkRefusal(fmt.Errorf("%s %s: %w", op, sourceThreadID, store.ErrForkSourceDeleted))
 	}
