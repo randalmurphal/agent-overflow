@@ -259,11 +259,14 @@ stamped inside the batch, so no client can hold a rev a later read would
 reproduce for different bytes.
 
 Under the flag the insert trigger stamps only the inserted row. Every
-insert into `items` under the flag moves a row a read already showed from
-imported history (`localizeImportedItemTx`, `UnsealThreadHistory`) or
-rebuilds a thread whose rows the same transaction deleted (a returning
-transfer), so no other row's read changes; stamping the inserted row's
-anchors would rewrite each of them once per moved child. A writer that
+insert into `items` under the flag moves a row a read already showed, from
+imported history (`localizeImportedItemTx`, `UnsealThreadHistory`) or from a
+pointer fork's ancestor (`copyInheritedRowsTx`), or rebuilds a thread whose
+rows the same transaction deleted (a returning transfer). A moved row
+changes no other row's read: the subagent cards read every arm. The
+movers recompute the stamps a move changes, which only local rows hold
+(`recomputeLocalizedCardsTx`). Stamping the inserted row's anchors would
+rewrite each of them once per moved child. A writer that
 inserts a row no read showed must not hold the flag. The update and delete
 triggers stamp the full set under the flag, because thread deletion chunks
 delete under it and a delete changes its anchors' reads.
@@ -453,6 +456,7 @@ a touch it returns the same rows at a new revision.
 | `RestoreFrom` (harness snapshot) | whole-DB replace | **generation** re-mint (§3.3) |
 | `decorateSubagentAnchors` (stamp read, or the walk for rows the triggers do not keep) | none: no write occurs | covered transitively: its inputs are the anchor's stamp and descendant item rows, whose writes bump rev |
 | Card flush (`FlushSubagentCards`, a card's `Close`, `Store.Close`) | explicit thread bump, then one keyed `subagent_aggregates` write per changed card; its trigger stamps the anchor and completion siblings | rev |
+| Card flush inside an item write whose card no running agent covers, or that stops an agent a card relied on (`cardWrite.settle`, `subagentCardLiveSQL`) | none of its own: the item write already bumped; the keyed `subagent_aggregates` writes' trigger stamps the anchor and completion siblings | rev, once per write |
 | `RecomputeSubagentAggregates` (v121 backfill, standalone recompute) | explicit thread bump, then `subagent_aggregates` upsert; its trigger stamps the anchor and completion siblings | rev |
 | Recompute inside a write the card rules do not follow (`recomputeSubagentChainsTx`), bulk-load rebuild | none of its own: the transaction's item write already bumped (a bulk-loaded thread's loader writes the exact revision); the upsert's trigger stamps the anchor and completion siblings | rev, once per write |
 | `EnsureProposedPlanState(WithParent)`, `MarkProposedPlanImplemented`, `CreateProposedPlanComment`, `UpdateProposedPlanComment`, `DeleteOrResolveProposedPlanComment`, `MarkProposedPlanCommentsSent` | explicit, on the thread id the mutator already carries | rev on the PLAN's thread |

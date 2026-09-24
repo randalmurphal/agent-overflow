@@ -221,7 +221,7 @@ func (s *Store) linkPointerForkTx(tx *sql.Tx, forkID, sourceID string, cut ForkC
 			return fmt.Errorf("store: read fork row %s/%s: %w", forkID, row.id, err)
 		}
 		next := old
-		next.summary = summarise(old.summary)
+		next.status, next.summary = "errored", summarise(old.summary)
 		if err := w.updated(old, next); err != nil {
 			return err
 		}

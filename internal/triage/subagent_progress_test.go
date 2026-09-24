@@ -188,6 +188,11 @@ func TestSubagentBackgroundedStampsLaunchOnce(t *testing.T) {
 	if !persisted.IsBackground {
 		t.Fatal("launch must flip to background")
 	}
+	// The launch joined the background listings: the refetch nudge
+	// follows the write.
+	if n := len(h.emitsNamed("provider:background_tasks_changed")); n != 1 {
+		t.Fatalf("the backgrounding emitted %d background_tasks_changed, want 1", n)
+	}
 	var meta map[string]any
 	_ = json.Unmarshal([]byte(persisted.Meta), &meta)
 	if at, _ := meta[subagentBackgroundedAtMetaKey].(float64); int64(at) != 5_000 {
@@ -202,6 +207,9 @@ func TestSubagentBackgroundedStampsLaunchOnce(t *testing.T) {
 	_ = json.Unmarshal([]byte(persisted.Meta), &meta)
 	if at, _ := meta[subagentBackgroundedAtMetaKey].(float64); int64(at) != 5_000 {
 		t.Fatalf("stamp must be first-wins, got %v", meta[subagentBackgroundedAtMetaKey])
+	}
+	if n := len(h.emitsNamed("provider:background_tasks_changed")); n != 1 {
+		t.Fatalf("a repeated patch that writes nothing emitted a nudge: %d in all, want 1", n)
 	}
 }
 

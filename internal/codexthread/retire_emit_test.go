@@ -2,6 +2,7 @@ package codexthread
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"testing"
 	"time"
@@ -77,5 +78,86 @@ func TestRetireBackgroundRuntimePushesThePageRead(t *testing.T) {
 	}
 	if pushed[0].Rev != page[0].Rev || pushed[0].Rev <= 0 {
 		t.Fatalf("pushed rev %d, page rev %d", pushed[0].Rev, page[0].Rev)
+	}
+}
+
+// TestRecoverBackgroundRuntimeOnStartupPushesPastAFailedFlush pins that the
+// startup sweep pushes the rows it retired when the card flush before it
+// fails: the retirement commits either way, and a client holding the rows
+// must not keep showing them as running.
+func TestRecoverBackgroundRuntimeOnStartupPushesPastAFailedFlush(t *testing.T) {
+	path := storetest.ClonePath(t)
+	st, err := store.New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+	now := time.Now().UnixMilli()
+	if _, err := st.CreateProject(store.Project{
+		ID: costTestProjectID, Path: "/tmp/codexthread", Name: "Codex Thread Test",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	held := testCostThread("t-held")
+	held.Provider = "claude"
+	for _, thread := range []store.Thread{held, testCostThread("t-codex")} {
+		if err := st.CreateThread(thread); err != nil {
+			t.Fatalf("CreateThread %s: %v", thread.ID, err)
+		}
+	}
+	// A card holding a row its flush cannot write.
+	launch := store.Item{ID: "L", ThreadID: "t-held", Kind: "tool_call", Role: "assistant", Status: "running",
+		ToolName: "Agent", Summary: "Agent: l", CreatedAt: now, UpdatedAt: now}
+	if err := st.InsertItem(launch); err != nil {
+		t.Fatal(err)
+	}
+	card, err := st.OpenSubagentCard("t-held", "L")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertItem(store.Item{ID: "L-b1", ThreadID: "t-held", ItemIndex: 1, Kind: "tool_call", Role: "assistant",
+		Status: "completed", ToolName: "Bash", Summary: "Bash: one", ParentID: "L", SubagentCard: card,
+		CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.InsertItem(store.Item{ID: "B", ThreadID: "t-codex", Kind: "tool_call", Role: "assistant", Status: "running",
+		ToolName: "Bash", Summary: "Bash: b", IsBackground: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`CREATE TRIGGER fail_flush BEFORE INSERT ON subagent_aggregates BEGIN SELECT RAISE(ABORT, 'injected flush failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	var pushed []store.Item
+	svc := New(Deps{
+		Context: func() context.Context { return context.Background() },
+		Store:   st,
+		Emit: func(channel eventchan.Channel, data any) {
+			if evt, ok := data.(triage.ItemStreamEvent); ok && evt.Item != nil {
+				pushed = append(pushed, *evt.Item)
+			}
+		},
+		Session: func(string) (LiveSession, bool) { return LiveSession{}, false },
+	})
+	svc.RecoverBackgroundRuntimeOnStartup()
+	if len(pushed) != 1 || pushed[0].ID != "B" || pushed[0].Status != "errored" {
+		t.Fatalf("pushed %+v, want the retired B", pushed)
+	}
+
+	if _, err := raw.Exec(`DROP TRIGGER fail_flush`); err != nil {
+		t.Fatal(err)
+	}
+	if err := card.Close(); err != nil {
+		t.Fatalf("close the card once the flush can write: %v", err)
 	}
 }

@@ -47,6 +47,10 @@ const (
 	// what cuts one round from the next.
 	metaKeySubagentResumePrompt = "subagent_resume_prompt"
 	metaKeyResumeCarrierID      = "resume_carrier_id"
+	// metaKeyLiveBackgroundActive is false on a background launch a
+	// teardown or a completion sibling settled
+	// (backgroundSettleTriggersSQL).
+	metaKeyLiveBackgroundActive = "live_background_active"
 )
 
 // maxSubagentDescendants caps one expansion load, mirroring the
@@ -450,15 +454,8 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 		return nil, err
 	}
 
-	var aggregates map[string]subagentAnchorAggregate
-	if len(rounds) == 0 {
-		// No round ever opened under any of these roots: one aggregate
-		// per root, keyed by root, exactly as before.
-		aggregates, err = subagentAggregatesByRoot(q, threadID, rootIDs)
-	} else {
-		aggregates, err = subagentAggregatesByRound(
-			q, threadID, rootIDs, subagentRoundBoundsFor(rootIDs, rounds, walkRootByAnchor))
-	}
+	aggregates, err := subagentAggregatesByRound(
+		q, threadID, rootIDs, subagentRoundBoundsFor(rootIDs, rounds, walkRootByAnchor))
 	if err != nil {
 		return nil, err
 	}
@@ -475,15 +472,7 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 		}
 		agg, ok := aggregates[anchorID]
 		if !ok {
-			// A carrier with no bounds row of its own (the no-rounds
-			// path, where the map is keyed by root) borrows the root's.
-			root, isCarrier := walkRootByAnchor[anchorID]
-			if !isCarrier {
-				continue
-			}
-			if agg, ok = aggregates[root]; !ok {
-				continue
-			}
+			continue
 		}
 		// A root with no visible descendants is not an anchor at all, and
 		// the bounded query answers for it with a zero rather than by
@@ -580,11 +569,15 @@ func subagentStampReads(q sqlQueryer, threadID string, ids []string) (map[string
 	return out, nil
 }
 
-// walks reports whether the read-time aggregator answers for one
-// anchorable row: an imported row, a dirty or readTime stamp, an
-// unstamped carrier, or an unstamped anchor of a thread whose backfill is
-// pending.
+// walks reports whether the read-time aggregator answers for one row: an
+// anchorable row that is imported, has a dirty or readTime stamp, is an
+// unstamped carrier, or is an unstamped anchor of a thread whose backfill
+// is pending. A row that does not anchor, such as a Codex spawn row a
+// completion sibling names, is never walked.
 func (d *subagentWalkDecider) walks(item Item) (bool, error) {
+	if !SubagentAnchorable(item.Kind, item.ToolName) {
+		return false, nil
+	}
 	if item.Rev < 0 {
 		return true, nil
 	}
@@ -627,6 +620,14 @@ func (d *subagentWalkDecider) card(id string) (subagentAnchorAggregate, bool) {
 // idx_items_subagent_resume_prompt; the imported arm probes the parent
 // lookup index.
 //
+// A prompt's carrier counts only when the named row is anchorable and its
+// transcript root is the prompt's parent; otherwise the prompt cuts the
+// round with no card, as a prompt naming no carrier does, and a prompt
+// naming its root keeps that id. So a round's card depends on the root's
+// own rows, never on which other roots a read or a recompute holds: the
+// walk, the recompute, the card rules and the digest all read rounds
+// here. The named rows are read by key, once, when there are rounds.
+//
 // The ordering is done in Go, and that is a PLAN decision, not a style
 // one: an `ORDER BY turn_index, item_index` makes SQLite prefer
 // idx_items_thread_turn_item_unique and scan the thread's whole ordering
@@ -666,6 +667,9 @@ func subagentResumeRounds(q sqlQueryer, threadID string, rootIDs []string) ([]su
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate subagent resume rounds for %s: %w", threadID, err)
 	}
+	if err := keepRootCarriers(q, threadID, out); err != nil {
+		return nil, err
+	}
 	slices.SortFunc(out, func(a, b subagentRound) int {
 		if a.turnIndex != b.turnIndex {
 			return a.turnIndex - b.turnIndex
@@ -676,6 +680,67 @@ func subagentResumeRounds(q sqlQueryer, threadID string, rootIDs []string) ([]su
 		return strings.Compare(a.promptID, b.promptID)
 	})
 	return out, nil
+}
+
+// keepRootCarriers cuts, with no card, each round whose prompt names a row
+// that is not an anchorable carrier of the prompt's root.
+func keepRootCarriers(q sqlQueryer, threadID string, rounds []subagentRound) error {
+	var named []string
+	for _, round := range rounds {
+		if round.anchorID != round.promptID && round.anchorID != round.rootID {
+			named = append(named, round.anchorID)
+		}
+	}
+	if len(named) == 0 {
+		return nil
+	}
+	slices.Sort(named)
+	list, err := jsonList(slices.Compact(named))
+	if err != nil {
+		return err
+	}
+	query, args, err := subagentRoundCarriersQuery(q, threadID, list)
+	if err != nil {
+		return err
+	}
+	rows, err := q.Query(query, args...)
+	if err != nil {
+		return fmt.Errorf("store: read the carriers of resume rounds in %s: %w", threadID, err)
+	}
+	roots := make(map[string]string, len(named))
+	for rows.Next() {
+		var id, root string
+		if err := rows.Scan(&id, &root); err != nil {
+			return errors.Join(fmt.Errorf("store: scan a resume round carrier: %w", err), rows.Close())
+		}
+		roots[id] = root
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return fmt.Errorf("store: iterate the carriers of resume rounds in %s: %w", threadID, err)
+	}
+	for i := range rounds {
+		round := &rounds[i]
+		if round.anchorID == round.promptID || round.anchorID == round.rootID {
+			continue
+		}
+		if root, ok := roots[round.anchorID]; !ok || root != round.rootID {
+			round.anchorID = round.promptID
+		}
+	}
+	return nil
+}
+
+// subagentRoundCarriersQuery selects, by key over every timeline arm, the
+// anchorable rows among ids, a JSON array, with their transcript roots.
+func subagentRoundCarriersQuery(q sqlQueryer, threadID, ids string) (string, []any, error) {
+	return timelineArms(q, threadID, timelineSelection{
+		Columns: func(_, _ string) string {
+			return "items.id AS id, COALESCE(" + aggTranscriptRootSQL("items.") + ", '') AS root"
+		},
+		KeyFirst:  true,
+		Where:     "items.id IN (SELECT value FROM json_each(?)) AND " + aggAnchorableSQL("items."),
+		WhereArgs: []any{ids},
+	})
 }
 
 // subagentResumeRoundsQuery selects the resume prompts directly under the
@@ -706,11 +771,12 @@ func subagentResumeRoundsQuery(q sqlQueryer, threadID, roots string) (string, []
 // prompt row named gets one unbounded range — the whole-transcript
 // fallback — because there is nothing to cut its round at.
 //
-// A root that a prompt under another root names is that root's carrier,
-// walked as a root only because a round was resumed from it (a carrier
-// whose transcript_root_id names a carrier). Its card is its round under
-// the other root, whichever order the roots arrive in, so it gets no
-// bound of its own as a root, and no transcript.
+// A root that is a carrier, of the window or named by a prompt under
+// another root, is walked as a root only because a round was resumed from
+// it (a carrier whose transcript_root_id names a carrier). Its card is its
+// round under its own root, or that root's whole transcript, whichever
+// roots the read holds, so it gets no bound of its own as a root, and no
+// transcript. The carriers that name it get their own ranges.
 func subagentRoundBoundsFor(
 	rootIDs []string, rounds []subagentRound, carrierRoots map[string]string,
 ) []subagentRoundBounds {
@@ -738,7 +804,10 @@ func subagentRoundBoundsFor(
 
 	for _, root := range rootIDs {
 		rs := byRoot[root]
-		if !namedElsewhere[root] {
+		// An entry naming a root as its own carrier (the digest's launch
+		// when it is the root) makes it no carrier.
+		isCarrier := carrierRoots[root] != "" && carrierRoots[root] != root
+		if !namedElsewhere[root] && !isCarrier {
 			rootBound := subagentRoundBounds{anchorID: root, rootID: root, round: true}
 			if len(rs) > 0 {
 				rootBound.hi = &TimelineCursor{TurnIndex: rs[0].turnIndex, ItemIndex: rs[0].itemIndex}
@@ -757,11 +826,6 @@ func subagentRoundBoundsFor(
 		}
 	}
 	for carrier, root := range carrierRoots {
-		if _, walked := byRoot[root]; !walked {
-			// The root has no rounds; its own bound already covers the
-			// whole transcript, and the carrier borrows it by lookup.
-			continue
-		}
 		add(subagentRoundBounds{anchorID: carrier, rootID: root})
 	}
 	return out
@@ -887,29 +951,50 @@ func (s *Store) decorateLatestDirectSubagentTools(q sqlQueryer, threadID string,
 }
 
 // latestDirectSubagentTool is a launch's tray activity: its newest direct
-// tool_call child that is not a Codex spawn and has a nonblank summary.
-// (turn_index, item_index) is unique within a thread, so the order has no
-// ties. The summary is trimmed with the ASCII set the triggers use, so a
-// stamp and this read agree byte for byte.
+// tool_call child that is not a Codex spawn and has a nonblank summary,
+// wherever the thread's timeline stores it. (turn_index, item_index) is
+// unique within a thread, so the order has no ties. The summary is trimmed
+// with the ASCII set the triggers use, so a stamp and this read agree byte
+// for byte.
 type latestDirectSubagentTool struct {
 	id, summary          string
 	turnIndex, itemIndex int
 }
 
-// latestDirectSubagentToolSQL reads one launch's tray activity backwards
-// along idx_items_parent, stopping at the first qualifying child.
-var latestDirectSubagentToolSQL = `SELECT id, trim(summary, ` + aggBlankSQL + `), turn_index, item_index
-  FROM items
- WHERE thread_id = ? AND parent_id = ? AND parent_id <> ''
-   AND ` + aggToolableSQL("") + `
- ORDER BY turn_index DESC, item_index DESC
- LIMIT 1`
+// latestDirectSubagentToolSelection selects one launch's tray activity
+// over every timeline arm: its own rows, its imported history and the rows
+// a pointer fork inherits, as the descendant walk counts them. Each arm
+// reads the launch's children by key: a local arm backwards along
+// idx_items_parent, an imported arm through the parent lookup, sorting
+// that launch's imported children. The compound stops at the first
+// qualifying child.
+func latestDirectSubagentToolSelection(rootID string) timelineSelection {
+	return timelineSelection{
+		Columns: func(_, _ string) string {
+			return `items.id AS id, trim(items.summary, ` + aggBlankSQL + `) AS summary,
+			        items.turn_index AS turn_index, items.item_index AS item_index`
+		},
+		KeyFirst:  true,
+		Where:     "items.parent_id = ? AND items.parent_id <> '' AND " + aggToolableSQL("items."),
+		WhereArgs: []any{rootID},
+		OrderBy:   "turn_index DESC, item_index DESC",
+		Limit:     1,
+	}
+}
 
 func latestDirectSubagentTools(q sqlQueryer, threadID string, rootIDs []string) (map[string]latestDirectSubagentTool, error) {
 	out := make(map[string]latestDirectSubagentTool, len(rootIDs))
+	if len(rootIDs) == 0 {
+		return out, nil
+	}
+	depth, err := forkLineageDepth(q, threadID)
+	if err != nil {
+		return nil, err
+	}
 	for _, rootID := range rootIDs {
+		query, args := renderTimelineArms(threadID, depth, latestDirectSubagentToolSelection(rootID))
 		var latest latestDirectSubagentTool
-		err := q.QueryRow(latestDirectSubagentToolSQL, threadID, rootID).
+		err := q.QueryRow(query, args...).
 			Scan(&latest.id, &latest.summary, &latest.turnIndex, &latest.itemIndex)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue

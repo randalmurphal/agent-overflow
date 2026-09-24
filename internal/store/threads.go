@@ -834,32 +834,25 @@ func (s *Store) UpdateSessionRefAndRemapProviderIDs(
 	if threadID == "" {
 		return false, fmt.Errorf("store: update session ref with provider id remap: thread id is required")
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return false, fmt.Errorf("store: begin update session ref with provider id remap for %s: %w", threadID, err)
-	}
-	defer tx.Rollback()
-	defer dropForkMovesTx(tx)
-
 	var prev sql.NullString
-	if err := tx.QueryRow(`SELECT session_ref FROM threads WHERE id = ?`, threadID).Scan(&prev); err != nil {
-		return false, fmt.Errorf("store: read session ref for provider id remap %s: %w", threadID, err)
-	}
-	result, err := tx.Exec(
-		`UPDATE threads SET session_ref = ?, pending_fork_session_ref = NULL, pending_fork_resume_at = '' WHERE id = ?`,
-		ref, threadID,
-	)
+	err = s.bulkWriteItems(threadID, "update session ref with provider id remap "+threadID, func(tx *sql.Tx, w *cardWrite) error {
+		if err := tx.QueryRow(`SELECT session_ref FROM threads WHERE id = ?`, threadID).Scan(&prev); err != nil {
+			return fmt.Errorf("store: read session ref for provider id remap %s: %w", threadID, err)
+		}
+		result, err := tx.Exec(
+			`UPDATE threads SET session_ref = ?, pending_fork_session_ref = NULL, pending_fork_resume_at = '' WHERE id = ?`,
+			ref, threadID,
+		)
+		if err != nil {
+			return fmt.Errorf("store: update session ref for provider id remap %s: %w", threadID, err)
+		}
+		if err := requireRowsAffected(result, fmt.Sprintf("store: update session ref for provider id remap %s", threadID)); err != nil {
+			return err
+		}
+		return remapProviderIDsTx(tx, w, items, anchors)
+	})
 	if err != nil {
-		return false, fmt.Errorf("store: update session ref for provider id remap %s: %w", threadID, err)
-	}
-	if err := requireRowsAffected(result, fmt.Sprintf("store: update session ref for provider id remap %s", threadID)); err != nil {
 		return false, err
-	}
-	if err := s.remapProviderIDsTx(tx, threadID, items, anchors); err != nil {
-		return false, err
-	}
-	if err := s.commitReportingForks(tx); err != nil {
-		return false, fmt.Errorf("store: commit session ref with provider id remap for %s: %w", threadID, err)
 	}
 	return prev.String != ref, nil
 }
@@ -869,28 +862,18 @@ func (s *Store) RemapProviderIDs(threadID string, items []ItemMetaUpdate, anchor
 	if len(items) == 0 && len(anchors) == 0 {
 		return nil
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: begin provider id remap: %w", err)
-	}
-	defer tx.Rollback()
-	defer dropForkMovesTx(tx)
-	if err := s.remapProviderIDsTx(tx, threadID, items, anchors); err != nil {
-		return err
-	}
-	if err := s.commitReportingForks(tx); err != nil {
-		return fmt.Errorf("store: commit provider id remap: %w", err)
-	}
-	return nil
+	return s.bulkWriteItems(threadID, "provider id remap "+threadID, func(tx *sql.Tx, w *cardWrite) error {
+		return remapProviderIDsTx(tx, w, items, anchors)
+	})
 }
 
-func (s *Store) remapProviderIDsTx(
+func remapProviderIDsTx(
 	tx *sql.Tx,
-	threadID string,
+	w *cardWrite,
 	items []ItemMetaUpdate,
 	anchors []MessageAnchorProviderIDsUpdate,
 ) error {
-	w := s.bulkItemWrites(tx, threadID, false)
+	threadID := w.threadID
 	for _, item := range items {
 		label := fmt.Sprintf("store: remap item meta %s/%s", threadID, item.ItemID)
 		old, err := readMutableSubagentRowTx(tx, threadID, item.ItemID, label)

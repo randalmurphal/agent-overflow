@@ -15,15 +15,7 @@ import (
 // forkMoveReporters commit a transaction and report the fork moves it
 // recorded (fork_moves.go).
 var forkMoveReporters = map[string]bool{
-	"Store.commitReportingForks":     true,
-	"Store.writeItemsReportingForks": true,
-}
-
-// forkMoveReportingWrappers names, for a transaction helper that commits
-// without reporting, the one reporter allowed to hand it a callback that
-// records fork moves.
-var forkMoveReportingWrappers = map[string]string{
-	"Store.writeItems": "Store.writeItemsReportingForks",
+	"Store.commitReportingForks": true,
 }
 
 // TestForkMoveOwnersReport: every transaction that can record a fork move
@@ -75,7 +67,7 @@ func TestForkMoveOwnersReport(t *testing.T) {
 	unreported := g.unreportingCallbackRunners()
 	for _, fn := range g.funcs {
 		for _, call := range fn.callbackCalls {
-			if !unreported[call.callee] || !reaches(call.argRefs) || forkMoveReportingWrappers[call.callee] == fn.name {
+			if !unreported[call.callee] || !reaches(call.argRefs) {
 				continue
 			}
 			violations = append(violations, fn.name+" hands "+call.callee+" a callback that records fork moves; "+call.callee+" commits it without reporting them")
@@ -86,8 +78,15 @@ func TestForkMoveOwnersReport(t *testing.T) {
 			t.Fatalf("owners found %v, missing %s", owners, name)
 		}
 	}
-	if !unreported["Store.writeItems"] || !unreported["Store.cardTxLocked"] {
-		t.Fatalf("callback runners found %v, missing writeItems or cardTxLocked", unreported)
+	// A runner that commits directly does not report; the item writes,
+	// which commit in cardTxLocked through commitReportingForks, do.
+	if !unreported["commitRowWrite"] {
+		t.Fatalf("callback runners found %v, missing commitRowWrite", unreported)
+	}
+	for _, name := range []string{"Store.cardTxLocked", "Store.itemWriteTx", "Store.writeItems", "Store.bulkWriteItems"} {
+		if unreported[name] {
+			t.Fatalf("callback runners found %v, including %s", unreported, name)
+		}
 	}
 	slices.Sort(violations)
 	for _, v := range slices.Compact(violations) {
@@ -403,11 +402,14 @@ func (g *forkMoveGraph) recordingTxFuncs() map[string]bool {
 
 // unreportingCallbackRunners is every helper that runs a callback in a
 // transaction it opens or commits without reporting, directly or by
-// passing the callback on to such a helper. The reporters are not.
+// passing the callback on to such a helper. The reporters are not, nor is
+// a helper that commits its transaction through commitReportingForks and
+// defers dropForkMovesTx.
 func (g *forkMoveGraph) unreportingCallbackRunners() map[string]bool {
 	unreported := map[string]bool{}
 	for _, fn := range g.funcs {
-		if len(fn.funcParams) > 0 && (fn.commits || fn.begins) && !forkMoveReporters[fn.name] {
+		reports := fn.refs["Store.commitReportingForks"] && fn.defersDrop
+		if len(fn.funcParams) > 0 && (fn.commits || fn.begins && !reports) && !forkMoveReporters[fn.name] {
 			unreported[fn.name] = true
 		}
 	}

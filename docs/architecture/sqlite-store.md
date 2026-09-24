@@ -261,9 +261,13 @@ another thread can read runs the hand-off first;
 `TestPointerForkSourceRewritesHandOff` lists the writers.
 
 Copies are bulk writes: they carry no subagent card. An inherited anchor is
-read with revision -1 and walked at read time; its copy is served from a stamp,
-so a copied anchor with a visible child is stamped from its family
-(`stampCopiedAnchorsTx`). A card opened under an inherited anchor copies it
+read with revision -1 and walked at read time; its copy is served from a stamp.
+A copy changes no card a read serves, since the walk and the recompute read
+every arm, but only a local anchor holds a stamp and a round counts in a stamp
+only when its prompt is local. So a copy recomputes the stamps it changes, as a
+localized imported row does (`recomputeLocalizedCardsTx`): a copied anchor with
+a visible child, a copied carrier or root a local carrier names, and the root
+of a copied resume prompt. A card opened under an inherited anchor copies it
 first, so every anchor a card keeps is local.
 
 A fork's revert of inherited rows lowers its cut to the last surviving row and

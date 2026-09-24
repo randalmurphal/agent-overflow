@@ -32,10 +32,17 @@ func (r *Router) handleAsyncQuestions(evt provider.ProviderEvent) (bool, error) 
 		return true, err
 	}
 	now := eventTimestampMillis(evt)
-	item, err := r.store.RecordAsyncQuestions(store.Item{
+	row := store.Item{
 		ID: userquestion.ItemID(evt.ItemID), ThreadID: evt.ThreadID, TurnIndex: turnIndex,
 		Kind: itemKindAssistantText, Role: "assistant", Status: statusCompleted, Summary: userquestion.Summary(meta.Questions),
 		ParentID: eventParentID(evt), Meta: string(raw), CreatedAt: now, UpdatedAt: now,
+	}
+	var item store.Item
+	err = r.withSubagentCard(row.ThreadID, row.ParentID, func(card *store.SubagentCard) error {
+		row.SubagentCard = card
+		var err error
+		item, err = r.store.RecordAsyncQuestions(row)
+		return err
 	})
 	if err != nil {
 		return true, err

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
@@ -9,8 +10,29 @@ import (
 // RecoverCodexBackgroundRuntime retires every Codex-owned background runtime
 // left by a prior app instance. Spawn events are immutable and excluded. A running tool
 // call becomes errored/lost because its provider process no longer exists.
+// It runs before any provider session starts, and stops agents in threads
+// whose cards it does not lock (sweepItemWrites): any card left is
+// flushed first.
 func (s *Store) RecoverCodexBackgroundRuntime(summarise func(string) string, updatedAt int64) ([]Item, error) {
-	return s.retireCodexBackgroundRuntime("", summarise, updatedAt)
+	if summarise == nil {
+		return nil, errors.New("store: retire Codex background runtime: summariser required")
+	}
+	flushErr := s.FlushAllSubagentCards()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, errors.Join(flushErr, fmt.Errorf("store: begin Codex background runtime retirement: %w", err))
+	}
+	defer tx.Rollback()
+	retired, err := retireCodexBackgroundRuntimeTx(tx, "", summarise, updatedAt, func(threadID string) *cardWrite {
+		return s.sweepItemWrites(tx, threadID)
+	})
+	if err != nil {
+		return nil, errors.Join(flushErr, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, errors.Join(flushErr, fmt.Errorf("store: commit Codex background runtime retirement: %w", err))
+	}
+	return retired, flushErr
 }
 
 // RetireCodexBackgroundRuntime is the thread-scoped form used when AO replaces
@@ -19,19 +41,25 @@ func (s *Store) RetireCodexBackgroundRuntime(threadID string, summarise func(str
 	if threadID == "" {
 		return nil, errors.New("store: retire Codex background runtime: thread id required")
 	}
-	return s.retireCodexBackgroundRuntime(threadID, summarise, updatedAt)
-}
-
-func (s *Store) retireCodexBackgroundRuntime(threadID string, summarise func(string) string, updatedAt int64) ([]Item, error) {
 	if summarise == nil {
 		return nil, errors.New("store: retire Codex background runtime: summariser required")
 	}
-	tx, err := s.db.Begin()
+	var retired []Item
+	err := s.bulkWriteItems(threadID, "Codex background runtime retirement", func(tx *sql.Tx, w *cardWrite) error {
+		var err error
+		retired, err = retireCodexBackgroundRuntimeTx(tx, threadID, summarise, updatedAt, func(string) *cardWrite { return w })
+		return err
+	})
 	if err != nil {
-		return nil, fmt.Errorf("store: begin Codex background runtime retirement: %w", err)
+		return nil, err
 	}
-	defer tx.Rollback()
+	return retired, nil
+}
 
+// retireCodexBackgroundRuntimeTx retires the running Codex background
+// tool calls of threadID, or of every thread for "", recording each
+// thread's writes in writes(threadID).
+func retireCodexBackgroundRuntimeTx(tx *sql.Tx, threadID string, summarise func(string) string, updatedAt int64, writes func(threadID string) *cardWrite) ([]Item, error) {
 	var retired []Item
 	collect := func(query string, args ...any) error {
 		rows, err := tx.Query(query, args...)
@@ -94,7 +122,7 @@ func (s *Store) retireCodexBackgroundRuntime(threadID string, summarise func(str
 					return nil, err
 				}
 			}
-			w = s.bulkItemWrites(tx, item.ThreadID, false)
+			w = writes(item.ThreadID)
 		}
 		old := subagentRowOf(*item)
 		item.Status = "errored"
@@ -102,7 +130,7 @@ func (s *Store) retireCodexBackgroundRuntime(threadID string, summarise func(str
 		item.Decision = "lost"
 		item.UpdatedAt = updatedAt
 		row := old
-		row.summary = item.Summary
+		row.status, row.summary = item.Status, item.Summary
 		if err := w.updated(old, row); err != nil {
 			return nil, err
 		}
@@ -122,12 +150,10 @@ func (s *Store) retireCodexBackgroundRuntime(threadID string, summarise func(str
 		item := &retired[i]
 		// The rows were selected before the UPDATE, so their revision is
 		// the pre-write one. These structs are emitted to clients.
+		var err error
 		if item.Rev, err = readItemRevTx(tx, item.ThreadID, item.ID); err != nil {
 			return nil, err
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("store: commit Codex background runtime retirement: %w", err)
 	}
 	return retired, nil
 }

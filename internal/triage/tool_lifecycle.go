@@ -492,7 +492,15 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent, launch st
 		}
 		if changed {
 			launch.UpdatedAt = now
-			return r.persistItem(launch, nil)
+			if err := r.persistItem(launch, nil); err != nil {
+				return err
+			}
+			// The row now answers the background listings differently
+			// (joined the set, a watch marker, a task id). The provider's
+			// own level signal can land before this write, so the refetch
+			// nudge follows the persist.
+			r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+			return nil
 		}
 		// The background task terminal (task_updated / TaskOutput) will
 		// write the sibling completion row when it arrives.

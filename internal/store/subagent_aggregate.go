@@ -118,28 +118,6 @@ func (acc *subagentAggregateAccumulator) noteNewest(position TimelineCursor) {
 	}
 }
 
-// subagentAggregatesByRoot is the whole-transcript aggregate for roots
-// without resume rounds. Only counters and one winning preview are retained.
-func subagentAggregatesByRoot(q sqlQueryer, threadID string, rootIDs []string) (map[string]subagentAnchorAggregate, error) {
-	states := make(map[string]*subagentAggregateAccumulator, len(rootIDs))
-	err := forEachSubagentAggregateRow(q, threadID, rootIDs, func(row subagentAggregateRow) {
-		state := states[row.root]
-		if state == nil {
-			state = &subagentAggregateAccumulator{}
-			states[row.root] = state
-		}
-		state.add(row)
-	})
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]subagentAnchorAggregate, len(states))
-	for root, state := range states {
-		out[root] = state.aggregate
-	}
-	return out, nil
-}
-
 func subagentBoundContains(bound subagentRoundBounds, row subagentAggregateRow) bool {
 	position := TimelineCursor{TurnIndex: row.turnIndex, ItemIndex: row.itemIndex}
 	return (bound.lo == nil || !cursorBefore(position, *bound.lo)) &&

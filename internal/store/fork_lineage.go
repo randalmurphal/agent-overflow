@@ -192,9 +192,9 @@ func withHistoryBulkLoadTx(tx *sql.Tx, threadID string, body func() error) error
 // copyInheritedRowsTx gives threadID its own copy of rows it reads from an
 // ancestor: payloads first, because items reference them by foreign key,
 // then the hide that lets a copy sit below the fork's cut, then the rows,
-// their search index rows, the stamps of the copied subagent anchors and the
-// ownership of the attachments they show. The caller holds history_bulk_load
-// and accounts for the stamp.
+// their search index rows, the cards the copies change
+// (recomputeLocalizedCardsTx) and the ownership of the attachments they
+// show. The caller holds history_bulk_load and accounts for the stamp.
 func copyInheritedRowsTx(tx *sql.Tx, threadID string, rows []inheritedRow) error {
 	if len(rows) == 0 {
 		return nil
@@ -262,54 +262,10 @@ func copyInheritedRowsTx(tx *sql.Tx, threadID string, rows []inheritedRow) error
 			return err
 		}
 	}
-	if err := stampCopiedAnchorsTx(tx, threadID, ids); err != nil {
+	if err := recomputeLocalizedCardsTx(tx, threadID, ids, "store: copy inherited rows:"); err != nil {
 		return err
 	}
 	return ownCopiedAttachmentsTx(tx, threadID, rows)
-}
-
-// stampCopiedAnchorsTx stamps the copies among ids that anchor a subagent
-// card in threadID's view. A row read from an ancestor holds no stamp: its
-// revision -1 walks it at read time. Its local copy is served from a stamp,
-// so a copy with a visible child in any arm is recomputed with its family,
-// as localizeImportedItemTx stamps a localized anchor; the copy's view is
-// the one the reader walked, so the values are the ones already served. A
-// copy without a child stays unstamped, as a new anchor does.
-func stampCopiedAnchorsTx(tx *sql.Tx, threadID string, ids []string) error {
-	list, err := jsonList(ids)
-	if err != nil {
-		return err
-	}
-	anchors, err := queryIDs(tx, `SELECT id FROM items
-		 WHERE thread_id = ? AND id IN (SELECT value FROM json_each(?)) AND `+aggAnchorableSQL("items."),
-		threadID, list)
-	if err != nil {
-		return fmt.Errorf("store: find copied subagent anchors in %s: %w", threadID, err)
-	}
-	if len(anchors) == 0 {
-		return nil
-	}
-	if list, err = jsonList(anchors); err != nil {
-		return err
-	}
-	children, args, err := timelineArms(tx, threadID, timelineSelection{
-		Columns:   func(_, _ string) string { return "items.parent_id AS parent_id" },
-		KeyFirst:  true,
-		Where:     "items.parent_id IN (SELECT value FROM json_each(?)) AND items.parent_id <> '' AND " + visibleItemsFilterFor("items."),
-		WhereArgs: []any{list},
-	})
-	if err != nil {
-		return err
-	}
-	parents, err := queryIDs(tx, `SELECT DISTINCT parent_id FROM (`+children+`)`, args...)
-	if err != nil {
-		return fmt.Errorf("store: probe children of copied subagent anchors in %s: %w", threadID, err)
-	}
-	if len(parents) == 0 {
-		return nil
-	}
-	_, err = recomputeSubagentFamiliesTx(tx, threadID, parents, nil)
-	return err
 }
 
 // copyInheritedRowsStampedTx is copyInheritedRowsTx for a copy no mutation

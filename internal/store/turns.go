@@ -281,7 +281,15 @@ func (s *Store) RecoverCrashedTurns(summarise func(string) string, now int64) ([
 	return crashed, errors.Join(cardsErr, err)
 }
 
+// recoverCrashedTurns stops agents in threads whose cards it does not
+// lock (sweepItemWrites): any card left is flushed first.
 func (s *Store) recoverCrashedTurns(summarise func(string) string, now int64) ([]CrashedTurn, error) {
+	flushErr := s.FlushAllSubagentCards()
+	crashed, err := s.sweepCrashedTurns(summarise, now)
+	return crashed, errors.Join(flushErr, err)
+}
+
+func (s *Store) sweepCrashedTurns(summarise func(string) string, now int64) ([]CrashedTurn, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("store: begin crashed-turn recovery tx: %w", err)
@@ -353,7 +361,8 @@ func (s *Store) recoverCrashedTurns(summarise func(string) string, now int64) ([
 // its pending request in memory, so the status flip is the whole
 // settle for those rows too (a rebooted app has no triage state). A
 // flipped agent child's summary can move its launch's card; the settle
-// carries no card and recomputes those chains.
+// carries no card and recomputes those chains through the sweep's bulk
+// writes (sweepItemWrites).
 func (s *Store) flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func(string) string, now int64) error {
 	threadID := c.ThreadID
 	rows, err := tx.Query(
@@ -381,10 +390,10 @@ func (s *Store) flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func
 	}
 	rows.Close()
 
-	w := s.bulkItemWrites(tx, threadID, false)
+	w := s.sweepItemWrites(tx, threadID)
 	for _, f := range flips {
 		row := f
-		row.summary = summarise(f.summary)
+		row.status, row.summary = "errored", summarise(f.summary)
 		if err := w.updated(f, row); err != nil {
 			return err
 		}

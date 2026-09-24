@@ -545,6 +545,10 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	roundCarriers, roundCarrierArgs, err := subagentRoundCarriersQuery(s.reader(), thread, jsonListForTest(t, "L", "M"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	// The legacy selection reads the union of the thread's parent ids: its
 	// own derived table p, and the merge sort of the import arm's distinct
 	// parent ids, which span chunks.
@@ -560,13 +564,13 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 		{"dirty selection", subagentDirtyAnchorsSQL, "idx_subagent_aggregates_dirty", []any{thread, 16}, boundedPlan{}},
 		{"legacy selection", subagentLegacyAnchorsSQL, "COVERING INDEX idx_items_parent", []any{thread, 16}, legacy},
 		{"resume rounds", rounds, "idx_items_subagent_resume_prompt (thread_id=? AND parent_id=?)", roundArgs, listed},
+		{"carriers the rounds name", roundCarriers, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", roundCarrierArgs, listed},
 		{"first child anchors", firstChildAnchorsSQL, "SEARCH s USING PRIMARY KEY (thread_id=? AND item_id=?)",
 			[]any{thread, "L", "L-c3", 1, 3}, boundedPlan{}},
 		{"stamp reads", subagentStampReadsSQL, "USING PRIMARY KEY (thread_id=? AND item_id=?)", []any{thread, ids}, listed},
 		{"served row", `SELECT ` + itemColumns + ` FROM items LEFT JOIN payloads ON payloads.thread_id = items.thread_id
 		  AND payloads.id = items.payload_id` + servedItemJoin + ` WHERE items.thread_id = ? AND items.id = ?`,
 			"SEARCH agg_served USING PRIMARY KEY (thread_id=? AND item_id=?)", []any{thread, "L"}, boundedPlan{}},
-		{"latest direct tool", latestDirectSubagentToolSQL, "idx_items_parent", []any{thread, "L"}, boundedPlan{}},
 		{"carriers of roots", subagentCarriersSQL, "idx_items_transcript_root (thread_id=? AND <expr>=?)", []any{thread, ids}, listed},
 		{"stamp targets", subagentStampTargetsSQL, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", []any{thread, ids}, listed},
 		{"chain marked dirty", markSubagentAnchorsDirtySQL, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", []any{thread, ids}, listed},
@@ -582,14 +586,60 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 			append([]any{thread, "L", 1}, subagentStampValues{}.args()...), boundedPlan{}},
 		{"flush of a carrier's first stamp", flushSubagentCarrierInsertSQL, "idx_items_parent",
 			append(append([]any{thread, "L", 1}, subagentStampValues{}.args()...), "R"), boundedPlan{}},
-		{"restamp", restampSubagentStampSQL, "USING PRIMARY KEY (thread_id=? AND item_id=?)", []any{1, thread, "L"}, boundedPlan{}},
 		{"prompts naming a carrier", subagentPromptNamesSQL, "idx_items_subagent_resume_prompt (thread_id=? AND parent_id=?)",
 			[]any{thread, "R", "L"}, boundedPlan{}},
+		// A card's liveness: its anchor, and the agents resuming it.
+		{"card liveness of the anchor", subagentCardLiveSQL, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", []any{thread, "L"}, boundedPlan{}},
+		{"card liveness through a carrier", subagentCardLiveSQL, "idx_items_transcript_root (thread_id=? AND <expr>=?)", []any{thread, "L"}, boundedPlan{}},
 	} {
 		text := assertBoundedPlan(t, s, tc.name, tc.allowed, tc.query, tc.args...)
 		if !strings.Contains(text, tc.index) {
 			t.Errorf("%s does not use %s:\n%s", tc.name, tc.index, text)
 		}
+	}
+
+	// The tray reads one launch's children on every arm of the thread and
+	// of a pointer fork of it. Each local arm walks idx_items_parent
+	// backwards; each imported arm probes the parent lookup, as the
+	// descendant walk does, and sorts that launch's imported children, the
+	// only sorts the plan holds.
+	if err := s.CreatePointerFork(makeThread(thread+"-fork", "claude"), thread, ForkCut{}, testInterruptedSummary, 1); err != nil {
+		t.Fatal(err)
+	}
+	for depth, viewer := range []string{thread, thread + "-fork"} {
+		tray, trayArgs, err := timelineArms(s.reader(), viewer, latestDirectSubagentToolSelection("L"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := "latest direct tool in " + viewer
+		text := assertBoundedPlan(t, s, name, boundedPlan{sorts: true}, tray, trayArgs...)
+		assertLocalArmWalksAnIndex(t, s, name, tray, trayArgs...)
+		local := strings.Count(text, "SEARCH items USING INDEX idx_items_parent (thread_id=? AND parent_id=?")
+		imported := strings.Count(text, "SEARCH items USING INDEX idx_import_history_items_parent_lookup (parent_id=?)")
+		sorts := strings.Count(text, "USE TEMP B-TREE FOR ORDER BY")
+		if local != depth+1 || imported != depth+1 || sorts != imported {
+			t.Errorf("%s probes %d local and %d imported arms with %d sorts, want %d, %d and one sort per imported arm:\n%s",
+				name, local, imported, sorts, depth+1, depth+1, text)
+		}
+	}
+
+	// The child probe (seedCardStamp, the adopting insert, the legacy
+	// finder) reads the whole timeline by key: the thread's local and
+	// imported arms, and for a pointer fork each ancestor's, through the
+	// lineage.
+	probe := assertBoundedPlan(t, s, "child probe", boundedPlan{}, `SELECT `+aggHasChildSQL("?1", "?2", ""), thread+"-fork", "L")
+	for _, arm := range []struct{ what, line string }{
+		{"local arm", "SEARCH agg_hc USING INDEX idx_items_parent (thread_id=? AND parent_id=?)"},
+		{"imported arm", "SEARCH agg_hc USING INDEX idx_import_history_items_parent_lookup (parent_id=?)"},
+		{"lineage's local arm", "SEARCH items USING INDEX idx_items_parent (thread_id=? AND parent_id=?)"},
+		{"lineage's imported arm", "SEARCH items USING INDEX idx_import_history_items_parent_lookup (parent_id=?)"},
+	} {
+		if n := strings.Count(probe, arm.line); n != 1 {
+			t.Errorf("the child probe reads its %s %d times, want once:\n%s", arm.what, n, probe)
+		}
+	}
+	if n := strings.Count(probe, "SEARCH l USING PRIMARY KEY (thread_id=?)"); n != 2 {
+		t.Errorf("the child probe reads the lineage %d times, want once for each ancestor arm:\n%s", n, probe)
 	}
 
 	// The boot pass reads the running agents through the three partial

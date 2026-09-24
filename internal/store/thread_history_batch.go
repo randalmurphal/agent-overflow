@@ -47,31 +47,16 @@ func (s *Store) InsertThreadHistory(threadID string, batch ThreadHistoryBatch) e
 		return err
 	}
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: begin thread history tx for thread %s: %w", threadID, err)
-	}
-	defer tx.Rollback()
-
-	if err := insertHistoryTurnsTx(tx, threadID, turns); err != nil {
-		return err
-	}
-	if err := importTurnCompletionsTx(tx, threadID, batch.Completions); err != nil {
-		return err
-	}
 	// The block carries no card: it recomputes the chains its rows join.
-	w := s.bulkItemWrites(tx, threadID, false)
-	if err := insertHistoryRowsTx(tx, w, rows); err != nil {
-		return err
-	}
-	if err := w.finish(); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit thread history tx for thread %s: %w", threadID, err)
-	}
-	return nil
+	return s.bulkWriteItems(threadID, "thread history", func(tx *sql.Tx, w *cardWrite) error {
+		if err := insertHistoryTurnsTx(tx, threadID, turns); err != nil {
+			return err
+		}
+		if err := importTurnCompletionsTx(tx, threadID, batch.Completions); err != nil {
+			return err
+		}
+		return insertHistoryRowsTx(tx, w, rows)
+	})
 }
 
 // scopeThreadHistoryBatch stamps threadID onto every row that carries one

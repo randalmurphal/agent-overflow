@@ -124,17 +124,20 @@ type ThreadWindowSync struct {
 // write would leave a stamp a client may already hold on different bytes.
 //
 // An INSERT under the flag stamps only the inserted row. Every bulk-load
-// insert either moves a row that was already visible from imported history
-// into `items` (localizeImportedItemTx, UnsealThreadHistory), which changes
-// no other row's read, or rebuilds a thread whose rows the same transaction
-// deleted (a returning transfer), where every row it could stamp was
-// inserted at the same frozen revision. The anchor legs would rewrite each
-// anchor once per inserted child for no change in any read. A bulk-load
-// writer that inserts a row a read did not already show must not hold the
-// flag. Deletes under the flag (thread deletion chunks) do change their
-// anchors' reads, so the update and delete triggers stamp every changed
-// row. ApplyImportBatch writes shared import history and adds its row
-// count to history_rev before commit.
+// insert either moves a row that was already visible into `items`, from
+// imported history (localizeImportedItemTx, UnsealThreadHistory) or from a
+// pointer fork's ancestor (copyInheritedRowsTx), or rebuilds a thread whose
+// rows the same transaction deleted (a returning transfer), where every row
+// it could stamp was inserted at the same frozen revision. A moved row
+// changes no other row's read: the subagent cards read every arm. The
+// movers recompute the stamps a move changes, which only local rows hold
+// (recomputeLocalizedCardsTx). The anchor legs would rewrite each anchor
+// once per inserted child. A bulk-load writer that inserts a row a read
+// did not already show must not hold the flag. Deletes under the flag
+// (thread deletion chunks) do change their anchors' reads, so the update
+// and delete triggers stamp every changed row. ApplyImportBatch writes
+// shared import history and adds its row count to history_rev before
+// commit.
 
 // transcriptRootExpr is the SQL expression that reads a resume carrier's
 // `transcript_root_id` stamp. It is one string because the trigger
@@ -174,7 +177,7 @@ func stampedRowIDsSQL(ref string) string {
 //
 // The anchors are every row on the written row's parent chain, not only
 // its parent: a page's descendant aggregate is transitive
-// (subagentAggregatesByRoot), so a write under a nested launch changes
+// (forEachSubagentAggregateRow), so a write under a nested launch changes
 // the outer launch's read too. The chain is walked by primary key; the
 // depth guard only bounds a corrupt cycle, real chains are a few levels.
 //
