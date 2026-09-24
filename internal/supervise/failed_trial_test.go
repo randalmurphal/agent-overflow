@@ -1,13 +1,65 @@
 package supervise
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/startupprogress"
 )
+
+// stepSteps is UpdateSteps whose trial reports only the command's own step
+// and names where it failed on its result, as a trial whose last report was
+// coalesced away before delivery does.
+type stepSteps struct{ saved []State }
+
+func (s *stepSteps) Save(state State) error { s.saved = append(s.saved, state); return nil }
+func (s *stepSteps) RemoveRecord() error    { return nil }
+func (s *stepSteps) Snapshot(context.Context, func(startupprogress.Progress)) (UpdateEvent, error) {
+	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeOK, Schema: 7}, nil
+}
+func (s *stepSteps) Trial(_ context.Context, _ string, _ int, progress func(startupprogress.Progress)) (UpdateEvent, error) {
+	progress(startupprogress.Progress{Phase: "update.trial", Detail: "Starting v2.0.0"})
+	progress(startupprogress.Progress{Phase: phaseRestore, Detail: "Restoring the database"})
+	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeRolledBack,
+		Reason: "the new version exited before it finished starting: exit status 3", Step: "Applying migration 1 of 1"}, nil
+}
+func (s *stepSteps) Restore(context.Context, string, func(startupprogress.Progress)) (UpdateEvent, error) {
+	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeOK}, nil
+}
+func (s *stepSteps) Discard(context.Context, func(startupprogress.Progress)) (UpdateEvent, error) {
+	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeOK}, nil
+}
+func (s *stepSteps) RemoveStaged(context.Context) error { return nil }
+func (s *stepSteps) Publish(context.Context) error      { return nil }
+
+// TestTheFailureMemoryNamesTheStepTheTrialResultCarries: the step a failed
+// trial names on its result is the one remembered, whatever progress
+// reached the run before the restore's.
+func TestTheFailureMemoryNamesTheStepTheTrialResultCarries(t *testing.T) {
+	memory := filepath.Join(t.TempDir(), "service-state.failed-trial.json")
+	base, err := Adopt("1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := base.Begin("0123456789abcdef", "2.0.0", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := UpdateRun{Steps: &stepSteps{}, MemoryPath: memory, LogName: "update log", Logf: func(string, ...any) {}}
+	end, err := run.Apply(context.Background(), state)
+	if err != nil || end.State != UpdateRolledBack {
+		t.Fatalf("Apply = %+v, %v", end, err)
+	}
+	failed, found, err := LoadFailedTrial(memory)
+	if err != nil || !found || failed.Phase != "Applying migration 1 of 1" || failed.Schema != 7 {
+		t.Fatalf("remembered %+v (found %t, %v), want the result's step", failed, found, err)
+	}
+}
 
 // TestFailedTrialRoundTripsAndMatchesOneBuildOverOneSchema: the memory is
 // written durably, read back as written, matches only its own build over

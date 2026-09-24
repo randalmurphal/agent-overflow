@@ -305,7 +305,10 @@ func TestTrialRunCommandRestoresTheSnapshotWhenTheTrialFails(t *testing.T) {
 		t.Fatalf("snapshot = %+v", result)
 	}
 	result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndCrashes, 1))
-	if result.Outcome != UpdateOutcomeRolledBack || !strings.Contains(result.Reason, "exit status 3") {
+	// The result names the trial's last step, which the restore's report
+	// may have replaced before the trial's was delivered.
+	if result.Outcome != UpdateOutcomeRolledBack || !strings.Contains(result.Reason, "exit status 3") ||
+		result.Step != "Applying migration 1 of 1" {
 		t.Fatalf("result = %+v", result)
 	}
 	if got := r.database(t); got != "live" {

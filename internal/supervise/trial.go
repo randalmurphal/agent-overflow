@@ -154,8 +154,10 @@ type TrialConfig struct {
 }
 
 // TrialFailedError is a trial that did not reach prepared. Reason is the
-// sentence the update record keeps and the user reads.
-type TrialFailedError struct{ Reason string }
+// sentence the update record keeps and the user reads. Step is the last
+// step the trial reported (a progress report's Detail), empty when it
+// reported none.
+type TrialFailedError struct{ Reason, Step string }
 
 func (e *TrialFailedError) Error() string { return e.Reason }
 
@@ -227,6 +229,13 @@ type trialRun struct {
 	child  *child
 	watch  *StallWatch
 	legacy bool
+	// step is the last Detail the trial reported (TrialFailedError.Step).
+	step string
+}
+
+// fail is the trial's failure with reason, naming its last step.
+func (t *trialRun) fail(reason string) *TrialFailedError {
+	return &TrialFailedError{Reason: reason, Step: t.step}
 }
 
 func (t *trialRun) run(ctx context.Context) error {
@@ -243,7 +252,7 @@ func (t *trialRun) run(ctx context.Context) error {
 				return outcome
 			}
 			c.conn.Close()
-			return &TrialFailedError{Reason: exitReason(c.exitErr)}
+			return t.fail(exitReason(c.exitErr))
 
 		case <-t.watch.Stalled():
 			stall, silent := t.watch.Stall()
@@ -251,11 +260,11 @@ func (t *trialRun) run(ctx context.Context) error {
 				continue
 			}
 			t.stop()
-			return &TrialFailedError{Reason: t.stallReason(stall)}
+			return t.fail(t.stallReason(stall))
 
 		case <-t.watch.Expired():
 			t.stop()
-			return &TrialFailedError{Reason: t.ceilingReason()}
+			return t.fail(t.ceilingReason())
 
 		case msg, ok := <-c.messages:
 			if !ok {
@@ -288,6 +297,9 @@ func (t *trialRun) handle(msg Message) (outcome error, decided bool) {
 		if msg.Progress == nil {
 			return nil, false
 		}
+		if msg.Progress.Detail != "" {
+			t.step = msg.Progress.Detail
+		}
 		if t.cfg.OnProgress != nil {
 			t.cfg.OnProgress(*msg.Progress)
 		}
@@ -299,7 +311,7 @@ func (t *trialRun) handle(msg Message) (outcome error, decided bool) {
 		if reason == "" {
 			reason = "the new version failed to start"
 		}
-		return &TrialFailedError{Reason: reason}, true
+		return t.fail(reason), true
 	case MsgPrepared:
 		t.cfg.Log("supervise: trial of %s reported prepared", t.cfg.TargetVersion)
 		return nil, true

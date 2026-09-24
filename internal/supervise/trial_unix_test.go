@@ -284,6 +284,33 @@ func TestATrialThatExitsEarlyNamesTheExitStatus(t *testing.T) {
 	}
 }
 
+// TestATrialFailureNamesItsLastStep: every way a trial fails carries the
+// last step it reported, which the failure memory keeps; a report without a
+// detail does not replace it.
+func TestATrialFailureNamesItsLastStep(t *testing.T) {
+	const reported = `progress store.migrate "Applying migration 1 of 1"
+heartbeat store.migrate ""
+`
+	for _, tc := range []struct {
+		name, behavior, step string
+	}{
+		{"an exit", reported + `exit 3`, "Applying migration 1 of 1"},
+		{"a failed frame", reported + `printf '{"type":"failed","reason":"disk I/O error"}\n' >&4
+exit 1`, "Applying migration 1 of 1"},
+		{"a stall", reported + `serve_until_stopped`, "Applying migration 1 of 1"},
+		{"nothing reported", `exit 3`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTrialRig(t)
+			err := RunTrial(context.Background(), r.config(r.script(helloProgress, tc.behavior)))
+			var failed *TrialFailedError
+			if !errors.As(err, &failed) || failed.Step != tc.step {
+				t.Fatalf("RunTrial = %#v, want the step %q", err, tc.step)
+			}
+		})
+	}
+}
+
 func TestATrialThatCannotStartFails(t *testing.T) {
 	r := newTrialRig(t)
 	reason := trialFailure(t, RunTrial(context.Background(), r.config(filepath.Join(r.dir, "missing"))))

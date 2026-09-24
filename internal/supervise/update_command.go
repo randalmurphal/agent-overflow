@@ -208,10 +208,10 @@ func (c UpdateCommand) TrialRun(ctx context.Context, opts TrialRunOptions) Updat
 	relay.step(phaseRestore, "Restoring the database")
 	if err := RestoreSnapshot(layout, c.DataDir, c.UpdateID, failed.Reason, c.now(),
 		relay.copyProgress(phaseRestore, "Restoring the database")); err != nil {
-		return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeFailed,
+		return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeFailed, Step: failed.Step,
 			Reason: fmt.Sprintf("%s, and the database backup could not be restored: %v", failed.Reason, err)}
 	}
-	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeRolledBack, Reason: failed.Reason}
+	return UpdateEvent{Type: UpdateEventResult, Outcome: UpdateOutcomeRolledBack, Reason: failed.Reason, Step: failed.Step}
 }
 
 // checkBeforeAttempt runs CheckLiveBeforeAttempt. An attempt that never

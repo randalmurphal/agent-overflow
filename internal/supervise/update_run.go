@@ -166,6 +166,9 @@ func (r UpdateRun) runTrials(ctx context.Context, state State, trace *trialTrace
 	attempt := state.Update.Attempts
 	trace.phase = ""
 	result, err := r.Steps.Trial(ctx, state.Update.To, attempt, r.traced(trace))
+	if result.Step != "" {
+		trace.phase = result.Step
+	}
 	if err != nil {
 		return r.RollBack(ctx, state, err.Error())
 	}

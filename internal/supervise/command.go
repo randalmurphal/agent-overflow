@@ -97,6 +97,11 @@ type UpdateEvent struct {
 	// Schema is the database's migration version, reported by a snapshot
 	// that could read it before it copied (UpdateCommand.SchemaVersion).
 	Schema int `json:"schema,omitempty"`
+	// Step is the last step a trial that failed reported
+	// (TrialFailedError.Step), on the trial's result. Its progress report
+	// may have been coalesced away by the restore's before it was
+	// delivered, so the failure memory takes the step from here.
+	Step string `json:"step,omitempty"`
 }
 
 // The phases a command reports while it undoes or stops work after a
