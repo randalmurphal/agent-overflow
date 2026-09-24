@@ -835,7 +835,27 @@ months-old source mirror disagreed on the async case, the wire won):
   stop (`task_updated{completed}` + `task_notification` fire at EVERY
   stop). See §E6b for the wake, the stop-of-a-parked-agent behaviors,
   and AO's park model. Confirmed on 2.1.261 (2026-09-08).
-- Session close kills every remaining shell and, on a graceful stdin
+- A `control_request{interrupt}` aborts only the main turn's
+  `AbortController` (`src/cli/print.ts`, the `interrupt` branch of the
+  control loop). A FOREGROUND agent runs on that signal, so the
+  interrupt ends it and its exit kills its shells as above. An ASYNC
+  agent, launched async or moved through `background_tasks`, gets its
+  own controller (`registerAsyncAgent` without a parent controller,
+  `src/tools/AgentTool/AgentTool.tsx`: "background agents should
+  survive when the user presses ESC"; `registerAgentForeground` in
+  `src/tasks/LocalAgentTask/LocalAgentTask.tsx`), so it keeps running
+  or stays parked, and its shells keep running. It ends on `stop_task`
+  or session close. Unverified against a real CLI: this bullet and the
+  async-agent kill in the next one are read from the Claude Code source
+  mirror (paths under `src/`, see [claude.md](claude.md#reference-repos)),
+  not from a wire capture or a spike like the rest of this list.
+  AO's plain Stop sends only the interrupt (`interruptTurnAtIndex`
+  in `internal/app/app_session.go`); the Stop un-send stops the session
+  (`InterruptAndRevertIfClean`, `stopSession`), so it declines while
+  background work runs (`hasRunningBackgroundTasks`).
+- Session close kills every remaining shell and every async agent
+  (each registers `killAsyncAgent` as a process cleanup in
+  `LocalAgentTask.tsx`) and, on a graceful stdin
   close, emits their killed terminals before exit. AO tears the thread
   down first, so those frames are dropped by design; the app-side
   settle (`SettleBackgroundLaunchesForSessionEnd`) writes the
