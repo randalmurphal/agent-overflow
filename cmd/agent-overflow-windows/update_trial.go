@@ -402,6 +402,7 @@ func (a *launcherApp) reconcileUpdate() bool {
 		a.showUpdateFailure(title, detail)
 		return false
 	}
+	a.updatingTo.Store(&decision.UpdatingTo)
 	return true
 }
 

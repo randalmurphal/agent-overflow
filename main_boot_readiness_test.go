@@ -31,10 +31,24 @@ func TestBootTransportReportsProgressBeforeServing(t *testing.T) {
 	body := text[strings.Index(text, "func bootTransport("):]
 	readiness := strings.Index(body, "applyBootReadiness(&cfg)")
 	construct := strings.Index(body, "transport.New(cfg)")
-	progress := strings.Index(body, "appservice.SetBootProgress(appService.App, transport.NewStartupReporter(srv, ")
+	progress := strings.Index(body, "appservice.SetBootProgress(appService.App, transport.NewStartupReporter(srv, opts.UpdatingTo)")
 	serve := strings.Index(body, "srv.Start()")
 	if readiness < 0 || construct < 0 || progress < 0 || serve < 0 || !(readiness < construct && construct < progress && progress < serve) {
 		t.Fatalf("bootTransport: readiness=%d New=%d progress=%d Start=%d; want the gate and the reporter before the listener serves", readiness, construct, progress, serve)
+	}
+}
+
+// TestHeadlessBootReportsTheUpdateItFinishes: the version the launcher names
+// with --updating-to is the one the headless boot's startup report carries.
+func TestHeadlessBootReportsTheUpdateItFinishes(t *testing.T) {
+	text := readRootSource(t, "main.go")
+	for _, want := range []string{
+		"runHeadless(flags.listenAddr, flags.printURLFD, flags.updatingTo)",
+		"bootTransport(appService, listenAddr, bootTransportOptions{UpdatingTo: updatingTo})",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("main.go lacks %q", want)
+		}
 	}
 }
 

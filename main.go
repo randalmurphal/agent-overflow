@@ -263,7 +263,7 @@ func main() {
 		// needs its own isolated boot, not the ordinary one.
 		runSoak(flags)
 	case flags.headless:
-		runHeadless(flags.listenAddr, flags.printURLFD)
+		runHeadless(flags.listenAddr, flags.printURLFD, flags.updatingTo)
 	default:
 		runDesktop(flags.listenAddr)
 	}
@@ -322,6 +322,9 @@ type bootTransportOptions struct {
 	// heartbeat. Only an update's trial sets it, to forward progress to the
 	// process judging the trial.
 	BootProgressObserver func(p startupprogress.Progress, liveness bool)
+	// UpdatingTo is the version whose committed update this boot finishes,
+	// from the platform's update record; the startup report names it.
+	UpdatingTo string
 	// HarnessReceiver, when non-nil, is registered on the dispatcher as
 	// a second RPC receiver under "main.Harness.<Method>". Only harness
 	// mode sets this — in every other boot the harness surface does not
@@ -576,9 +579,8 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	}
 	appService.SetTransportServer(srv)
 	// Before the listener serves, so the first not-ready bootstrap already
-	// reports progress. An update the updater just saw apply makes the
-	// whole boot read as finishing it.
-	appservice.SetBootProgress(appService.App, transport.NewStartupReporter(srv, appservice.AppliedUpdateVersion(appService.App)).Observe(opts.BootProgressObserver))
+	// reports progress. A boot that finishes an update reads as finishing it.
+	appservice.SetBootProgress(appService.App, transport.NewStartupReporter(srv, opts.UpdatingTo).Observe(opts.BootProgressObserver))
 	// A settings-driven rebind moves the listener without going through
 	// the boot path, so the port cache would otherwise keep naming an
 	// address nothing is on. Installed only when there is a directory to
@@ -700,7 +702,7 @@ func applyServerCertificate(cfg *transport.Config, appService *App) {
 // bound, but /bootstrap.json returns 503 until ServiceStartup finishes
 // and MarkReady releases the WebView navigation. That separates "WSL
 // process has published a port" from "backend is ready to render."
-func runHeadless(listenAddr string, printURLFD int) {
+func runHeadless(listenAddr string, printURLFD int, updatingTo string) {
 	appService := newApp()
 	// Before the transport server starts, so the updater RPC handlers see a
 	// fully wired App.updater.handle / App.updater.wsl without a race. Gated at runtime
@@ -722,7 +724,7 @@ func runHeadless(listenAddr string, printURLFD int) {
 	// It shares ordinary desktop network preferences; the launcher does not
 	// inject a loopback --listen override that would undo saved LAN hosting.
 
-	srv := bootTransport(appService, listenAddr, bootTransportOptions{})
+	srv := bootTransport(appService, listenAddr, bootTransportOptions{UpdatingTo: updatingTo})
 	appservice.ConfigureTransportNotifications(appService.App)
 	// Now that the bus exists, the boot check above can say its piece. The
 	// notice itself was recorded before the server started, so a client that

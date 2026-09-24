@@ -206,9 +206,6 @@ func reconcileWSLUpdateMarker(a *Service, currentVersion string, mode *wslUpdate
 	}
 	if marker.ExpectedVersion == currentVersion {
 		log.Printf("updater: update to %s applied", currentVersion)
-		a.updater.mu.Lock()
-		a.updater.appliedUpdate = currentVersion
-		a.updater.mu.Unlock()
 		clearWSLUpdateResidue(mode)
 		return
 	}
@@ -262,17 +259,6 @@ func (a *Service) setUpdateApplyFailure(notice string) {
 	a.updater.mu.Lock()
 	a.updater.applyFailure = notice
 	a.updater.mu.Unlock()
-}
-
-// AppliedUpdate names the version this boot is finishing an in-app update
-// to, which the boot's readiness report carries. It is set only when the
-// install marker the previous run wrote names this build, so it is empty
-// on an ordinary boot, after a swap that did not apply, and after a manual
-// binary replacement, which writes no marker.
-func (a *Service) AppliedUpdate() string {
-	a.updater.mu.Lock()
-	defer a.updater.mu.Unlock()
-	return a.updater.appliedUpdate
 }
 
 // ApplyFailure returns the boot-detected notice that the root host may present

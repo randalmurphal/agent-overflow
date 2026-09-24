@@ -443,6 +443,7 @@ func TestReconcileUpdate(t *testing.T) {
 		setup       func(*fakeUpdateHost)
 		action      ReconcileAction
 		reason      string
+		updatingTo  string
 		calls       []string
 		after       func(*updateFixture)
 	}
@@ -455,9 +456,11 @@ func TestReconcileUpdate(t *testing.T) {
 			after: func(f *updateFixture) {
 				f.wantRecord(supervise.UpdateRolledBack, 1, "earlier reason", true)
 			}},
+		// The first launch of the target is the one that finishes the
+		// update, and only it: the record is reported from then on.
 		{name: "committed, the target runs", state: supervise.UpdateCommitted, attempts: 1, fingerprint: "target",
-			action: ReconcileLaunch,
-			calls:  []string{"discard@stable --id u1", "residue"},
+			action: ReconcileLaunch, updatingTo: "2.0.0",
+			calls: []string{"discard@stable --id u1", "residue"},
 			after: func(f *updateFixture) {
 				f.wantRecord(supervise.UpdateCommitted, 1, "earlier reason", true)
 			}},
@@ -467,6 +470,8 @@ func TestReconcileUpdate(t *testing.T) {
 			action: ReconcileBlocked, reason: "Install v2.0.0 from the releases page."},
 		{name: "committed and reported, replaced by hand", state: supervise.UpdateCommitted, attempts: 1, reported: true,
 			action: ReconcileLaunch},
+		{name: "committed and reported, the target runs again", state: supervise.UpdateCommitted, attempts: 1, reported: true,
+			fingerprint: "target", action: ReconcileLaunch},
 		{name: "pending, never trialled", state: supervise.UpdatePending,
 			action: ReconcileLaunch,
 			calls:  []string{"discard@stable --id u1", "remove-staged", "residue"},
@@ -518,6 +523,9 @@ func TestReconcileUpdate(t *testing.T) {
 			}
 			if decision.Action != tc.action || !strings.Contains(decision.Reason, tc.reason) {
 				t.Fatalf("decision = %+v, want action %d reason %q", decision, tc.action, tc.reason)
+			}
+			if decision.UpdatingTo != tc.updatingTo {
+				t.Fatalf("UpdatingTo = %q, want %q", decision.UpdatingTo, tc.updatingTo)
 			}
 			f.wantCalls(tc.calls...)
 			if tc.after != nil {

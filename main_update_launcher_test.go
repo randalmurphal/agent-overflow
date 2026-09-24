@@ -103,10 +103,16 @@ func TestLauncherUpdateSequenceRunsTheRealCommands(t *testing.T) {
 		database string
 		stable   string
 		calls    []string
+		// next is the fingerprint of the launcher that starts afterwards,
+		// and updatingTo what it tells its backend.
+		next       string
+		updatingTo string
 	}{
-		{"prepared commits", "prepare", supervise.UpdateCommitted, "", "trial", "new", []string{"invalidate", "record", "publish"}},
+		{"prepared commits", "prepare", supervise.UpdateCommitted, "", "trial", "new", []string{"invalidate", "record", "publish"},
+			"target", "2.0.0"},
 		{"failed rolls back", "fail", supervise.UpdateRolledBack,
-			"database schema 90 is newer than this build knows (88)", "live", "old", nil},
+			"database schema 90 is newer than this build knows (88)", "live", "old", nil,
+			"previous", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := &launcherE2E{t: t, dataRoot: t.TempDir(), stub: tc.stub, payloads: map[string][]string{}}
@@ -186,7 +192,6 @@ func TestLauncherUpdateSequenceRunsTheRealCommands(t *testing.T) {
 			}
 
 			e.mu.Lock()
-			defer e.mu.Unlock()
 			// The target's own commands run the snapshot and the trial; the
 			// discard after the outcome runs through the version that will
 			// keep running.
@@ -209,10 +214,27 @@ func TestLauncherUpdateSequenceRunsTheRealCommands(t *testing.T) {
 			if strings.Join(e.calls, ",") != strings.Join(tc.calls, ",") {
 				t.Errorf("launcher steps = %q, want %q", e.calls, tc.calls)
 			}
+			e.mu.Unlock()
 			mu.Lock()
-			defer mu.Unlock()
 			if !strings.Contains(strings.Join(details, "\n"), "Applying migration 1 of 1") {
 				t.Errorf("the trial's progress never reached the launcher: %q", details)
+			}
+			mu.Unlock()
+
+			// The launcher that starts next reads the record, and only the
+			// first launch of a committed target tells its backend it
+			// finishes the update; the backend accepts what it is told.
+			decision, err := sequence.Reconcile(t.Context(), tc.next)
+			if err != nil || decision.Action != wsllauncher.ReconcileLaunch {
+				t.Fatalf("Reconcile = %+v, %v", decision, err)
+			}
+			flags, err := parseFlags(append([]string{"--print-url-fd", "0"}, wsllauncher.UpdatingToArgs(decision.UpdatingTo)...))
+			if err != nil || flags.updatingTo != tc.updatingTo {
+				t.Fatalf("the backend was told it finishes %q (%v), want %q", flags.updatingTo, err, tc.updatingTo)
+			}
+			again, err := sequence.Reconcile(t.Context(), tc.next)
+			if err != nil || again.UpdatingTo != "" {
+				t.Fatalf("a later launch = %+v, %v, want it to finish nothing", again, err)
 			}
 		})
 	}

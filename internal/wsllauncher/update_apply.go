@@ -176,6 +176,10 @@ type ReconcileDecision struct {
 	Action ReconcileAction
 	Record supervise.LauncherRecord
 	Reason string
+	// UpdatingTo is the version whose update this launch finishes: set on
+	// the first launch of a committed target, whose backend's startup
+	// report names it (UpdatingToArgs).
+	UpdatingTo string
 }
 
 // Reconcile applies the recovery table for a launcher at the install path
@@ -205,7 +209,12 @@ func (s UpdateSequence) Reconcile(ctx context.Context, fingerprint string) (Reco
 			return ReconcileDecision{Action: ReconcileHandOff, Record: record}, nil
 		}
 		s.discard(ctx, record, record.StablePayload)
-		return s.markReported(record)
+		decision, err := s.markReported(record)
+		if err != nil {
+			return ReconcileDecision{}, err
+		}
+		decision.UpdatingTo = update.To
+		return decision, nil
 	case supervise.UpdateRolledBack, supervise.UpdateFailed:
 		if update.Reported {
 			return ReconcileDecision{Action: ReconcileLaunch, Record: record}, nil

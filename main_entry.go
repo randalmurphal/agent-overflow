@@ -197,6 +197,7 @@ type bootFlags struct {
 	window             *bool
 	mockProvider       *string
 	resetTransportPort *bool
+	updatingTo         *string
 }
 
 // newBootFlagSet declares every flag this binary's boot modes take. The flag
@@ -225,8 +226,14 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 		mockProvider:       flagSet.String("mock-provider", "", "harness/soak mode only: path to the ao-mockprovider binary (default: alongside this executable)."),
 		resetTransportPort: flagSet.Bool(resetTransportPortFlag, false,
 			"discard this install's pinned transport port before binding and adopt whatever the OS hands out. The Windows launcher passes it on its one retry when the pinned port turned out to be unreachable from the host (see main_transport_port.go)."),
+		updatingTo: flagSet.String(updatingToFlag, "",
+			"--print-url-fd only: the version whose committed in-app update this launch finishes, named in the startup report. Set by the Windows launcher from its update record."),
 	}
 }
+
+// updatingToFlag is the launcher's name for the update this launch
+// finishes, shared with it as resetTransportPortFlag is.
+const updatingToFlag = wsllauncher.UpdatingToFlag
 
 // resetTransportPortFlag is the flag name, taken from the package that
 // owns the launcher↔backend argv contract rather than re-spelled here:
@@ -291,6 +298,10 @@ type cliFlags struct {
 	// main_transport_port.go for the pin it clears and
 	// cmd/agent-overflow-windows for the retry that passes it.
 	resetTransportPort bool
+	// updatingTo is the version whose committed update this launch
+	// finishes, which the startup report names. Only the Windows launcher
+	// passes it, from its update record.
+	updatingTo string
 }
 
 // parseFlags pulls the command-line flags for a boot.
@@ -321,6 +332,7 @@ func parseFlags(args []string) (cliFlags, error) {
 		window:                 *values.window,
 		mockProvider:           *values.mockProvider,
 		resetTransportPort:     *values.resetTransportPort,
+		updatingTo:             strings.TrimSpace(*values.updatingTo),
 	}
 	if out.isolatedProfile != "" && out.isolatedProfile != string(instanceinfo.ModePerf) {
 		return cliFlags{}, fmt.Errorf("unknown --isolated-profile %q (valid: %q)", out.isolatedProfile, instanceinfo.ModePerf)
@@ -485,6 +497,11 @@ func parseFlags(args []string) (cliFlags, error) {
 		}
 		out.printURLFD = n
 		out.headless = true
+	}
+	if out.updatingTo != "" && (!out.headless || out.soak) {
+		// Only the launcher's ordinary backend finishes an in-app update;
+		// anywhere else the flag would label a boot that updates nothing.
+		return cliFlags{}, fmt.Errorf("--%s requires --print-url-fd without --soak (only the Windows launcher's backend finishes an update)", updatingToFlag)
 	}
 	return out, nil
 }

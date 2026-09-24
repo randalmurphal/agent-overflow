@@ -544,6 +544,10 @@ type launcherApp struct {
 	// reconciling refuses a picker launch while the update record's
 	// recovery runs.
 	reconciling atomic.Bool
+	// updatingTo is the version whose committed update this launcher
+	// process finishes, from the record's reconciliation; every backend it
+	// starts is told (wsllauncher.UpdatingToArgs).
+	updatingTo atomic.Pointer[string]
 
 	// backendURL holds the page URL launchAndShow pointed the WebView at.
 	// Read by the reload keybinding (uikeys.BrowserWithReload) so Ctrl+R
@@ -881,6 +885,9 @@ func (a *launcherApp) launchBackend(ctx context.Context, distro, binPath string,
 		return nil, nil, err
 	}
 	args := append(profileArgs, extraArgs...)
+	if version := a.updatingTo.Load(); version != nil {
+		args = append(args, wsllauncher.UpdatingToArgs(*version)...)
+	}
 	l, bs, err := wsllauncher.Launch(ctx, wsllauncher.LaunchOptions{
 		Distro:         distro,
 		BinaryPath:     binPath,

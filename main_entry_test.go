@@ -7,6 +7,7 @@ import (
 
 	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/serviceinstall"
+	"agent-overflow/internal/wsllauncher"
 )
 
 // noEnv and inSession are the two environments decideEntry distinguishes:
@@ -333,5 +334,34 @@ func TestParseFlagsResetTransportPort(t *testing.T) {
 
 	if _, err := parseFlags([]string{"--connect", "ws://host:1/", "--" + resetTransportPortFlag}); err == nil {
 		t.Error("parseFlags accepted --connect with --" + resetTransportPortFlag)
+	}
+}
+
+// TestParseFlagsUpdatingTo: the argv the launcher builds for a launch that
+// finishes an update reaches cliFlags, and the flag is refused on every boot
+// that is not the launcher's ordinary backend.
+func TestParseFlagsUpdatingTo(t *testing.T) {
+	if updatingToFlag != "updating-to" {
+		t.Fatalf("updatingToFlag = %q, want %q", updatingToFlag, "updating-to")
+	}
+	headless := []string{"--print-url-fd", "0"}
+	got, err := parseFlags(append(headless, wsllauncher.UpdatingToArgs("2.0.0")...))
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if got.updatingTo != "2.0.0" {
+		t.Fatalf("updatingTo = %q, want 2.0.0", got.updatingTo)
+	}
+	got, err = parseFlags(append(headless, wsllauncher.UpdatingToArgs("")...))
+	if err != nil || got.updatingTo != "" {
+		t.Fatalf("a launch that finishes no update = (%q, %v)", got.updatingTo, err)
+	}
+	for _, args := range [][]string{
+		{"--updating-to", "2.0.0"},
+		{"--soak", "--print-url-fd", "0", "--updating-to", "2.0.0"},
+	} {
+		if _, err := parseFlags(args); err == nil || !strings.Contains(err.Error(), "--"+updatingToFlag) {
+			t.Errorf("parseFlags(%q) = %v, want the flag refused", args, err)
+		}
 	}
 }

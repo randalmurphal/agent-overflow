@@ -37,6 +37,22 @@ const DefaultBootstrapPrefix = "__AO_BOOTSTRAP__:"
 // passing a flag the other rejects.
 const ResetTransportPortFlag = "reset-transport-port"
 
+// UpdatingToFlag is the backend boot flag (no dashes) naming the version
+// whose committed update this launch finishes, for the backend's startup
+// report. The launcher takes it from its update record
+// (UpdateSequence.Reconcile), the one source of that version. It is shared
+// for the reason ResetTransportPortFlag is.
+const UpdatingToFlag = "updating-to"
+
+// UpdatingToArgs is the backend argv naming version, or nothing when this
+// launch finishes no update.
+func UpdatingToArgs(version string) []string {
+	if version == "" {
+		return nil
+	}
+	return []string{"--" + UpdatingToFlag, version}
+}
+
 // PageURLPath is the backend transport route that answers a page URL.
 // The launcher asks it twice over a document's life: once for the bare
 // URL to navigate to (the reload keybinding, since the boot URL is a
