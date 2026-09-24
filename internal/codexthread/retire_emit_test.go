@@ -43,7 +43,7 @@ func TestRetireBackgroundRuntimePushesThePageRead(t *testing.T) {
 		Status: "completed", Summary: "child", ParentID: "spawn-1", CreatedAt: now, UpdatedAt: now,
 	}
 	for _, row := range []store.Item{spawn, child} {
-		if err := st.InsertItem(row); err != nil {
+		if err := storetest.WithParentCard(st, row, st.InsertItem); err != nil {
 			t.Fatalf("InsertItem %s: %v", row.ID, err)
 		}
 	}

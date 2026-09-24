@@ -83,11 +83,47 @@ func Clone(tb testing.TB) *store.Store {
 		tb.Fatalf("storetest: open clone: %v", err)
 	}
 	tb.Cleanup(func() {
-		if err := s.Close(); err != nil {
-			tb.Errorf("storetest: close clone: %v", err)
+		// No writer may store a meta it read back: a read serves the
+		// subagent cards in the meta, and a stored copy would freeze one.
+		rows, err := s.RowsStoringServedSubagentKeys(10)
+		if closeErr := s.Close(); closeErr != nil {
+			tb.Errorf("storetest: close clone: %v", closeErr)
+		}
+		if err != nil {
+			// The test closed the store: check the file.
+			rows, err = rowsStoringServedSubagentKeysAt(path)
+		}
+		if err != nil {
+			tb.Errorf("storetest: check stored served subagent keys: %v", err)
+		} else if len(rows) > 0 {
+			tb.Errorf("storetest: stored meta holds served subagent keys: %v", rows)
 		}
 	})
 	return s
+}
+
+// WithParentCard runs write with item carrying the card of its parent,
+// as the store requires of a visible row with a parent written outside a
+// bulk writer (store.OpenSubagentCard). A top-level row is written as it
+// is. The card is closed after write, which flushes it. For fixtures that
+// seed rows straight to the store.
+func WithParentCard(s *store.Store, item store.Item, write func(store.Item) error) error {
+	if item.ParentID == "" {
+		return write(item)
+	}
+	return s.WithSubagentCard(item.ThreadID, item.ParentID, func(card *store.SubagentCard) error {
+		item.SubagentCard = card
+		return write(item)
+	})
+}
+
+func rowsStoringServedSubagentKeysAt(path string) ([]string, error) {
+	s, err := store.New(path)
+	if err != nil {
+		return nil, fmt.Errorf("reopen clone: %w", err)
+	}
+	rows, err := s.RowsStoringServedSubagentKeys(10)
+	return rows, errors.Join(err, s.Close())
 }
 
 // ClonePath copies the migrated template into tb.TempDir and returns the path

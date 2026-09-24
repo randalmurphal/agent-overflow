@@ -295,10 +295,19 @@ func (s *Store) ForceCloseRunningToolCallsInTurn(
 		return nil, nil
 	}
 
+	// A flipped agent child's summary can move its launch's card; the
+	// force-close carries no card and recomputes those chains.
+	w := s.bulkItemWrites(tx, threadID, false)
 	for i := range flipped {
+		old := subagentRowOf(flipped[i])
 		flipped[i].Status = "errored"
 		flipped[i].Summary = summarise(flipped[i].Summary)
 		flipped[i].UpdatedAt = updatedAt
+		row := old
+		row.summary = flipped[i].Summary
+		if err := w.updated(old, row); err != nil {
+			return nil, err
+		}
 
 		if _, err := tx.Exec(
 			`UPDATE items
@@ -310,8 +319,7 @@ func (s *Store) ForceCloseRunningToolCallsInTurn(
 			return nil, fmt.Errorf("store: force-close update %s: %w", flipped[i].ID, err)
 		}
 	}
-	// A flipped agent child's summary can move its launch's card.
-	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+	if err := w.finish(); err != nil {
 		return nil, err
 	}
 	for i := range flipped {

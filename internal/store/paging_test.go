@@ -32,7 +32,7 @@ const testRunWindowRows = 200
 // focused on the ordering / parent / payload structure they care about.
 func seedItem(t *testing.T, s *Store, threadID, id string, turnIndex, itemIndex int, parentID string) {
 	t.Helper()
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID:        id,
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
@@ -51,7 +51,7 @@ func seedItem(t *testing.T, s *Store, threadID, id string, turnIndex, itemIndex 
 // anchor subagent children and receive decorateSubagentAnchors meta.
 func seedAnchorItem(t *testing.T, s *Store, threadID, id string, turnIndex, itemIndex int) {
 	t.Helper()
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID:        id,
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
@@ -68,7 +68,7 @@ func seedAnchorItem(t *testing.T, s *Store, threadID, id string, turnIndex, item
 
 func seedActivityItem(t *testing.T, s *Store, threadID, id string, turnIndex, itemIndex int, parentID string) {
 	t.Helper()
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID:        id,
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
@@ -109,7 +109,7 @@ func seedBackgroundItem(
 		CompletionOf: completionOf,
 		CreatedAt:    createdAt,
 	}
-	if err := s.InsertItem(item); err != nil {
+	if err := insertCarded(s, item); err != nil {
 		t.Fatalf("seed background item %s: %v", id, err)
 	}
 }
@@ -145,7 +145,7 @@ func seedPayloadItem(
 		PayloadID: payloadID,
 		CreatedAt: int64(turnIndex*10 + itemIndex),
 	}
-	if err := s.InsertItemWithPayload(item, payload); err != nil {
+	if err := insertWithPayloadCarded(s, item, payload); err != nil {
 		t.Fatalf("seed payload item %s: %v", id, err)
 	}
 }
@@ -628,7 +628,7 @@ func TestListThreadSliceAround_FiltersPlanUpdateNotifications(t *testing.T) {
 	// Seed plain items plus a plan_update notification mid-window.
 	seedItem(t, s, "t", "a", 0, 0, "")
 	seedItem(t, s, "t", "b", 1, 0, "")
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID:        "p",
 		ThreadID:  "t",
 		TurnIndex: 1,

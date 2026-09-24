@@ -599,7 +599,7 @@ func (r *Router) handleToolComplete(evt provider.ProviderEvent) error {
 	launchFound := false
 	if itemID != "" {
 		var err error
-		launch, launchFound, err = r.store.GetThreadItem(evt.ThreadID, itemID)
+		launch, launchFound, err = r.store.GetThreadItemForWrite(evt.ThreadID, itemID)
 		if err != nil {
 			return fmt.Errorf("tool completion lookup %s: %w", itemID, err)
 		}
@@ -1352,7 +1352,6 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 			item.ParentID = ""
 		}
 	}
-	item.SubagentAnchor = r.subagentAnchorFor(item.ThreadID, item.ID, item.ParentID)
 
 	// Codex spawn events and completed executions cannot acquire later data,
 	// including when duplicate completions arrive through the deferred queue.
@@ -1360,7 +1359,13 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 	if item.ToolName == "collab_agent" && (item.Kind == itemKindToolCall || item.Kind == itemKindBackgroundDone) {
 		write = r.store.UpsertUnsettledItem
 	}
-	persisted, err := write(item, payload, inputPayload)
+	var persisted store.Item
+	err := r.withSubagentCard(item.ThreadID, item.ParentID, func(card *store.SubagentCard) error {
+		item.SubagentCard = card
+		var err error
+		persisted, err = write(item, payload, inputPayload)
+		return err
+	})
 	if err != nil {
 		return store.Item{}, err
 	}
@@ -1405,9 +1410,14 @@ func (r *Router) persistItemWithPayloadAppend(item store.Item, payloadID string,
 			item.ParentID = ""
 		}
 	}
-	item.SubagentAnchor = r.subagentAnchorFor(item.ThreadID, item.ID, item.ParentID)
 
-	persisted, err := r.store.UpsertItemWithPayloadAppend(item, payloadID, delta, payloadMeta, item.UpdatedAt)
+	var persisted store.Item
+	err := r.withSubagentCard(item.ThreadID, item.ParentID, func(card *store.SubagentCard) error {
+		item.SubagentCard = card
+		var err error
+		persisted, err = r.store.UpsertItemWithPayloadAppend(item, payloadID, delta, payloadMeta, item.UpdatedAt)
+		return err
+	})
 	if err != nil {
 		return err
 	}

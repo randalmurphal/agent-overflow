@@ -31,7 +31,7 @@ func TestItemRevisionTriggerArithmetic(t *testing.T) {
 
 	base := historyStampOf(t, s, "t").Rev
 
-	if err := s.InsertItem(contractItem("t", "row", 0)); err != nil {
+	if err := insertCarded(s, contractItem("t", "row", 0)); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	if got := historyStampOf(t, s, "t").Rev; got != base+1 {
@@ -56,7 +56,7 @@ func TestItemRevisionTriggerArithmetic(t *testing.T) {
 	// result changed even though nothing wrote to its row.
 	child := contractItem("t", "child", 1)
 	child.ParentID = "row"
-	if err := s.InsertItem(child); err != nil {
+	if err := insertCarded(s, child); err != nil {
 		t.Fatalf("insert child: %v", err)
 	}
 	if got := historyStampOf(t, s, "t").Rev; got != base+3 {
@@ -162,7 +162,7 @@ func TestItemRevisionAdvancesForEveryItemWriter(t *testing.T) {
 			run: func(t *testing.T, s *Store) *Item {
 				item := contractItem("t", "row", 0)
 				item.Summary = "changed"
-				got, err := s.UpsertItem(item, nil)
+				got, err := upsertCarded(s, item, nil)
 				if err != nil {
 					t.Fatalf("upsert item: %v", err)
 				}
@@ -188,7 +188,7 @@ func TestItemRevisionAdvancesForEveryItemWriter(t *testing.T) {
 			name:   "UpsertItemAtTurnHead",
 			itemID: "head",
 			run: func(t *testing.T, s *Store) *Item {
-				got, err := s.UpsertItemAtTurnHead(contractItem("t", "head", 0))
+				got, err := upsertAtTurnHeadCarded(s, contractItem("t", "head", 0))
 				if err != nil {
 					t.Fatalf("upsert at head: %v", err)
 				}
@@ -201,7 +201,7 @@ func TestItemRevisionAdvancesForEveryItemWriter(t *testing.T) {
 			seed: func(t *testing.T, s *Store) {
 				item := contractItem("t", "row", 0)
 				item.Status = "streaming"
-				if err := s.InsertItem(item); err != nil {
+				if err := insertCarded(s, item); err != nil {
 					t.Fatalf("seed streaming row: %v", err)
 				}
 			},
@@ -219,7 +219,7 @@ func TestItemRevisionAdvancesForEveryItemWriter(t *testing.T) {
 			seed: func(t *testing.T, s *Store) {
 				item := contractItem("t", "row", 0)
 				item.Status = "streaming"
-				if err := s.InsertItem(item); err != nil {
+				if err := insertCarded(s, item); err != nil {
 					t.Fatalf("seed streaming row: %v", err)
 				}
 			},
@@ -270,10 +270,10 @@ func TestItemRevisionAdvancesForEveryItemWriter(t *testing.T) {
 			name:   "BumpItemToTurnEnd",
 			itemID: "row",
 			seed: func(t *testing.T, s *Store) {
-				if err := s.InsertItem(contractItem("t", "row", 0)); err != nil {
+				if err := insertCarded(s, contractItem("t", "row", 0)); err != nil {
 					t.Fatalf("seed row: %v", err)
 				}
-				if err := s.InsertItem(contractItem("t", "after", 1)); err != nil {
+				if err := insertCarded(s, contractItem("t", "after", 1)); err != nil {
 					t.Fatalf("seed trailing row: %v", err)
 				}
 			},
@@ -291,7 +291,7 @@ func TestItemRevisionAdvancesForEveryItemWriter(t *testing.T) {
 			seed: func(t *testing.T, s *Store) {
 				launch := runningToolCall("row", 0)
 				launch.IsBackground = true
-				if err := s.InsertItem(launch); err != nil {
+				if err := insertCarded(s, launch); err != nil {
 					t.Fatalf("seed launch: %v", err)
 				}
 			},
@@ -311,7 +311,7 @@ func TestItemRevisionAdvancesForEveryItemWriter(t *testing.T) {
 			name:   "ForceCloseRunningToolCallsInTurn",
 			itemID: "row",
 			seed: func(t *testing.T, s *Store) {
-				if err := s.InsertItem(runningToolCall("row", 0)); err != nil {
+				if err := insertCarded(s, runningToolCall("row", 0)); err != nil {
 					t.Fatalf("seed running tool call: %v", err)
 				}
 			},
@@ -332,7 +332,7 @@ func TestItemRevisionAdvancesForEveryItemWriter(t *testing.T) {
 			seed: func(t *testing.T, s *Store) {
 				launch := runningToolCall("row", 0)
 				launch.IsBackground = true
-				if err := s.InsertItem(launch); err != nil {
+				if err := insertCarded(s, launch); err != nil {
 					t.Fatalf("seed background launch: %v", err)
 				}
 			},
@@ -354,7 +354,7 @@ func TestItemRevisionAdvancesForEveryItemWriter(t *testing.T) {
 				item := contractItem("t", "row", 0)
 				item.Kind = "user_text"
 				item.Role = "user"
-				if err := s.InsertItem(item); err != nil {
+				if err := insertCarded(s, item); err != nil {
 					t.Fatalf("seed user row: %v", err)
 				}
 			},
@@ -382,7 +382,7 @@ func TestItemRevisionAdvancesForEveryItemWriter(t *testing.T) {
 				launch := runningToolCall("row", 0)
 				launch.ThreadID = "codex"
 				launch.IsBackground = true
-				if err := s.InsertItem(launch); err != nil {
+				if err := insertCarded(s, launch); err != nil {
 					t.Fatalf("seed codex launch: %v", err)
 				}
 			},
@@ -405,7 +405,7 @@ func TestItemRevisionAdvancesForEveryItemWriter(t *testing.T) {
 			seedContractThread(t, s, "t")
 			if tc.seed != nil {
 				tc.seed(t, s)
-			} else if err := s.InsertItem(contractItem("t", "row", 0)); err != nil {
+			} else if err := insertCarded(s, contractItem("t", "row", 0)); err != nil {
 				t.Fatalf("seed row: %v", err)
 			}
 
@@ -441,7 +441,7 @@ func TestPayloadWritersStampOwningItemRows(t *testing.T) {
 		seedContractThread(t, s, "t")
 		item := contractItem("t", "row", 0)
 		item.PayloadID = "pay"
-		if err := s.InsertItemWithPayload(item, Payload{
+		if err := insertWithPayloadCarded(s, item, Payload{
 			ID: "pay", Kind: "text", Meta: "{}", Data: []byte("base"), CreatedAt: 1000,
 		}); err != nil {
 			t.Fatalf("seed item with payload: %v", err)
@@ -450,7 +450,7 @@ func TestPayloadWritersStampOwningItemRows(t *testing.T) {
 		// projections are on the wire, so both rows must be stamped.
 		input := contractItem("t", "input-row", 1)
 		input.InputPayloadID = "pay"
-		if err := s.InsertItem(input); err != nil {
+		if err := insertCarded(s, input); err != nil {
 			t.Fatalf("seed input row: %v", err)
 		}
 	}
@@ -522,7 +522,7 @@ func TestPayloadTouchProbesPayloadIndexes(t *testing.T) {
 	seedContractThread(t, s, "t")
 	item := contractItem("t", "row", 0)
 	item.PayloadID = "pay"
-	if err := s.InsertItemWithPayload(item, Payload{
+	if err := insertWithPayloadCarded(s, item, Payload{
 		ID: "pay", Kind: "text", Meta: "{}", Data: []byte("base"), CreatedAt: 1000,
 	}); err != nil {
 		t.Fatalf("seed item with payload: %v", err)
@@ -555,7 +555,7 @@ func TestProposedPlanWritersStampPlanItemRow(t *testing.T) {
 		plan := contractItem("t", "plan", 0)
 		plan.Kind = "tool_call"
 		plan.ToolName = "ExitPlanMode"
-		if err := s.InsertItem(plan); err != nil {
+		if err := insertCarded(s, plan); err != nil {
 			t.Fatalf("seed plan row: %v", err)
 		}
 		return s

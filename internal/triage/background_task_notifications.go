@@ -163,6 +163,10 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		return r.drainTaskNotificationStash(evt, meta, launch)
 	}
 
+	// A stop, final or a pause, is a boundary the agent's card is exact
+	// at: the rows below read it.
+	r.settleSubagentCard(evt.ThreadID, launch.ID)
+
 	// Sibling first — see the ordering note in the function comment.
 	// Unless the stop is a PAUSE: a parked agent keeps its stash, and the
 	// wake that follows drops it (persistWakePromptRow).
@@ -424,7 +428,7 @@ func (r *Router) enrichExistingBackgroundCompletionFromNotification(
 	readError string,
 ) error {
 	completionID := ToolCompletionID(launch.ID)
-	completion, ok, err := r.store.GetThreadItem(evt.ThreadID, completionID)
+	completion, ok, err := r.store.GetThreadItemForWrite(evt.ThreadID, completionID)
 	if err != nil {
 		return fmt.Errorf("task notification completion lookup %s: %w", completionID, err)
 	}

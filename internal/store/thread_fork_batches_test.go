@@ -20,7 +20,7 @@ func TestForkBatchesRollbackTogetherAndKeepSearchAndParents(t *testing.T) {
 			parent = "row-0"
 		}
 		item := Item{ID: id, ThreadID: "source", TurnIndex: 0, ItemIndex: i, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "searchableforkhistory", ParentID: parent, PayloadID: id, Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
-		if err := s.InsertItemWithPayload(item, Payload{ID: id, Kind: "text", Data: []byte("history"), Meta: "{}", CreatedAt: 1}); err != nil {
+		if err := insertWithPayloadCarded(s, item, Payload{ID: id, Kind: "text", Data: []byte("history"), Meta: "{}", CreatedAt: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -95,7 +95,7 @@ func BuildForkedThread(source Thread) Thread {
 // alone for callers that want only the item half.
 func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughTurnIndex *int) (map[string]string, error) {
 	return s.inCloneTx(func(tx *sql.Tx) (map[string]string, error) {
-		return cloneThreadItemsTx(tx, sourceThreadID, targetThreadID, throughTurnKeep(throughTurnIndex))
+		return s.cloneThreadItemsTx(tx, sourceThreadID, targetThreadID, throughTurnKeep(throughTurnIndex))
 	})
 }
 
@@ -112,7 +112,7 @@ func (s *Store) CloneThreadItems(sourceThreadID, targetThreadID string, throughT
 // reads one snapshot.
 func (s *Store) CloneThreadHistoryThroughTurn(sourceThreadID, targetThreadID string, throughTurnIndex *int) (map[string]string, error) {
 	return s.inCloneTx(func(tx *sql.Tx) (map[string]string, error) {
-		idMap, err := cloneThreadItemsTx(tx, sourceThreadID, targetThreadID, throughTurnKeep(throughTurnIndex))
+		idMap, err := s.cloneThreadItemsTx(tx, sourceThreadID, targetThreadID, throughTurnKeep(throughTurnIndex))
 		if err != nil {
 			return nil, err
 		}
@@ -179,7 +179,7 @@ func (s *Store) inCloneTx(body func(*sql.Tx) (map[string]string, error)) (map[st
 // A reference to an id that is not in the source list at all is
 // pre-existing corruption in the SOURCE and copies verbatim — only ids
 // this pass deliberately dropped propagate.
-func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep func(Item) bool) (map[string]string, error) {
+func (s *Store) cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep func(Item) bool) (map[string]string, error) {
 	// Cloning needs item columns only. Hydrating payload metadata and preview
 	// spans here reads heavy values that the insert does not use.
 	query, args := timelineArms(sourceThreadID, timelineSelection{
@@ -328,11 +328,9 @@ func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep 
 	}
 
 	// The copied rows arrive without the source's stamps (the copy reads
-	// stored meta, and stamps are per thread) and rebuild theirs from the
-	// rows inserted after them. An anchor whose children were attached as shared
-	// history, or inserted ahead of it, arrives dirty; it is recomputed
-	// here.
-	if err := settleSubagentAggregatesTx(tx, targetThreadID); err != nil {
+	// stored meta, and stamps are per thread); the target's are rebuilt
+	// from its rows. The inserts above advanced its thread stamp.
+	if err := s.restampSubagentAggregatesTx(tx, targetThreadID); err != nil {
 		return nil, err
 	}
 
@@ -523,7 +521,7 @@ func (s *Store) SettleForkedThreadAsInterrupted(threadID string, summarise func(
 	}
 	defer tx.Rollback()
 
-	if err := settleStrandedItemsTx(tx, threadID, nil, summarise, now); err != nil {
+	if err := s.settleStrandedItemsTx(tx, threadID, nil, summarise, now); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(
@@ -587,7 +585,7 @@ func (s *Store) CloneThreadHistoryBeforeItem(sourceThreadID, targetThreadID, anc
 			return nil, fmt.Errorf("store: clone history anchor %s/%s: %w", sourceThreadID, anchorItemID, err)
 		}
 
-		idMap, err := cloneThreadItemsTx(tx, sourceThreadID, targetThreadID, func(item Item) bool {
+		idMap, err := s.cloneThreadItemsTx(tx, sourceThreadID, targetThreadID, func(item Item) bool {
 			if item.TurnIndex != turnIndex {
 				return item.TurnIndex < turnIndex
 			}

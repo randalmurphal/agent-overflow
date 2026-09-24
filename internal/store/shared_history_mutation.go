@@ -51,7 +51,10 @@ func ensureLocalPayloadTx(tx *sql.Tx, threadID, payloadID, label string) error {
 // mutable overlay. The explicit override is inserted first because the items
 // trigger rejects accidental shadowing. Item INSERT history accounting is
 // suppressed while the representation changes; the caller's subsequent
-// UPDATE or DELETE advances the public stamp exactly once.
+// UPDATE or DELETE advances the public stamp exactly once. An imported
+// anchor has no stamp (shared chunks cannot hold one); a copy with
+// children is stamped here, and one without stays unstamped, as a new
+// anchor does.
 func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, error) {
 	var payloadID, inputPayloadID string
 	err := tx.QueryRow(
@@ -107,8 +110,9 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 	if err := requireRowsAffected(result, fmt.Sprintf("%s copy imported item %s/%s", label, threadID, itemID)); err != nil {
 		return false, err
 	}
-	if _, err := tx.Exec(localizedAnchorDirtySQL, threadID, itemID); err != nil {
-		return false, fmt.Errorf("%s mark localized anchor %s/%s: %w", label, threadID, itemID, err)
+	var stamp bool
+	if err := tx.QueryRow(localizedAnchorHasChildSQL, threadID, itemID).Scan(&stamp); err != nil {
+		return false, fmt.Errorf("%s probe localized anchor %s/%s: %w", label, threadID, itemID, err)
 	}
 	// The override moves this item from the import arm to the item arm, so its
 	// index row moves with it. The caller's mutation re-indexes the new text.
@@ -121,19 +125,23 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 	if err := setHistoryBulkLoadTx(tx, threadID, false, label); err != nil {
 		return false, err
 	}
+	if stamp {
+		// The recompute stamps the copy and every stamp of its family
+		// (a carrier naming it as its root) at a new revision; the card
+		// accumulators of those stamps recompute at their next flush,
+		// their generation having moved.
+		if _, err := recomputeSubagentFamiliesTx(tx, threadID, []string{itemID}, nil); err != nil {
+			return false, err
+		}
+	}
 	return true, nil
 }
 
-// localizedAnchorDirtySQL marks a localized anchor with children dirty.
-// An imported anchor has no stamp (shared chunks cannot hold one), and
-// the copy is inserted under bulk load, where the triggers do no
-// aggregate work; dirty keeps reads walking it until a recompute stamps
-// it. A copy without children stays unstamped, as a new anchor does.
-var localizedAnchorDirtySQL = `INSERT INTO subagent_aggregates (thread_id, item_id, state)
-SELECT a.thread_id, a.id, ` + aggDirtyLiteral + ` FROM items a
+// localizedAnchorHasChildSQL reports a localized anchor with children to
+// count.
+var localizedAnchorHasChildSQL = `SELECT EXISTS (SELECT 1 FROM items a
  WHERE a.thread_id = ?1 AND a.id = ?2 AND ` + aggAnchorableSQL("a.") + `
-   AND ` + aggHasChildSQL("a.thread_id", "a.id", "") + `
-ON CONFLICT (thread_id, item_id) DO NOTHING`
+   AND ` + aggHasChildSQL("a.thread_id", "a.id", "") + `)`
 
 func setHistoryBulkLoadTx(tx *sql.Tx, threadID string, enabled bool, label string) error {
 	from, to := 0, 1

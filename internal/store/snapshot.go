@@ -288,6 +288,8 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	if err := writeDeferredWatermark(tx, watermark); err != nil {
 		return Identity{}, err
 	}
+	// The subagent card accumulators describe the rows being replaced.
+	s.cards.resetAll()
 
 	if err := tx.Commit(); err != nil {
 		return Identity{}, fmt.Errorf("store: commit restore: %w", err)

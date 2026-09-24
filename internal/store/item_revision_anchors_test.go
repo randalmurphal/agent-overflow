@@ -63,7 +63,7 @@ func seedAnchorThread(t *testing.T, s *Store) {
 		}(),
 	}
 	for _, row := range rows {
-		if err := s.InsertItem(row); err != nil {
+		if err := insertCarded(s, row); err != nil {
 			t.Fatalf("insert %s: %v", row.ID, err)
 		}
 	}
@@ -106,15 +106,20 @@ func syncStatusFor(t *testing.T, s *Store, held HeldWindow) SyncStatus {
 // is a window the server would verify while the cards inside it are
 // stale: a false `fresh`, the one failure the digest may never produce.
 func TestHeldWindowSeesThroughToAnchorsWalkedFromOutside(t *testing.T) {
+	// card names the parent whose card an insert writes with. The card is
+	// opened before the write is measured and closed after, since its
+	// flush is a write of its own.
 	cases := []struct {
-		name  string
-		write func(t *testing.T, s *Store)
+		name, card string
+		write      func(t *testing.T, s *Store, card *SubagentCard)
 	}{
 		{
 			name: "child inserted under the launch",
-			write: func(t *testing.T, s *Store) {
+			card: "launch",
+			write: func(t *testing.T, s *Store, card *SubagentCard) {
 				child := contractItem("t", "child", 9)
 				child.ParentID = "launch"
+				child.SubagentCard = card
 				if err := s.InsertItem(child); err != nil {
 					t.Fatalf("insert child: %v", err)
 				}
@@ -122,7 +127,7 @@ func TestHeldWindowSeesThroughToAnchorsWalkedFromOutside(t *testing.T) {
 		},
 		{
 			name: "child updated under the launch",
-			write: func(t *testing.T, s *Store) {
+			write: func(t *testing.T, s *Store, _ *SubagentCard) {
 				if err := s.UpdateItemMeta("t", "seed", `{"changed":true}`); err != nil {
 					t.Fatalf("update child: %v", err)
 				}
@@ -130,7 +135,7 @@ func TestHeldWindowSeesThroughToAnchorsWalkedFromOutside(t *testing.T) {
 		},
 		{
 			name: "child deleted under the launch",
-			write: func(t *testing.T, s *Store) {
+			write: func(t *testing.T, s *Store, _ *SubagentCard) {
 				if err := s.DeleteThreadItem("t", "seed"); err != nil {
 					t.Fatalf("delete child: %v", err)
 				}
@@ -138,9 +143,11 @@ func TestHeldWindowSeesThroughToAnchorsWalkedFromOutside(t *testing.T) {
 		},
 		{
 			name: "grandchild inserted under a nested launch",
-			write: func(t *testing.T, s *Store) {
+			card: "nested",
+			write: func(t *testing.T, s *Store, card *SubagentCard) {
 				row := contractItem("t", "grandchild-2", 8)
 				row.ParentID = "nested"
+				row.SubagentCard = card
 				if err := s.InsertItem(row); err != nil {
 					t.Fatalf("insert grandchild: %v", err)
 				}
@@ -148,7 +155,7 @@ func TestHeldWindowSeesThroughToAnchorsWalkedFromOutside(t *testing.T) {
 		},
 		{
 			name: "grandchild updated under a nested launch",
-			write: func(t *testing.T, s *Store) {
+			write: func(t *testing.T, s *Store, _ *SubagentCard) {
 				if err := s.UpdateItemMeta("t", "grandchild", `{"changed":true}`); err != nil {
 					t.Fatalf("update grandchild: %v", err)
 				}
@@ -156,7 +163,7 @@ func TestHeldWindowSeesThroughToAnchorsWalkedFromOutside(t *testing.T) {
 		},
 		{
 			name: "the launch row itself changed",
-			write: func(t *testing.T, s *Store) {
+			write: func(t *testing.T, s *Store, _ *SubagentCard) {
 				if err := s.UpdateItemMeta("t", "launch", `{"transcript_root_id":"elsewhere"}`); err != nil {
 					t.Fatalf("update launch: %v", err)
 				}
@@ -171,10 +178,22 @@ func TestHeldWindowSeesThroughToAnchorsWalkedFromOutside(t *testing.T) {
 			if got := syncStatusFor(t, s, held); got != SyncFresh {
 				t.Fatalf("clean window before the write: status = %q, want fresh", got)
 			}
+			var card *SubagentCard
+			if tc.card != "" {
+				var err error
+				if card, err = s.OpenSubagentCard("t", tc.card); err != nil {
+					t.Fatal(err)
+				}
+			}
 			before := historyStampOf(t, s, "t").Rev
-			tc.write(t, s)
+			tc.write(t, s, card)
 			if got := historyStampOf(t, s, "t").Rev; got != before+1 {
 				t.Fatalf("history_rev advanced by %d for one write, want 1: an overlapping stamp re-fired the thread bump", got-before)
+			}
+			if card != nil {
+				if err := card.Close(); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if got := syncStatusFor(t, s, held); got == SyncFresh {
 				t.Fatal("verified a window whose anchors are walked from a launch outside it")

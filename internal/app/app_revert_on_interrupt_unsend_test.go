@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/triage"
 )
 
@@ -26,7 +27,10 @@ func appendTurnRow(t *testing.T, st *store.Store, row store.Item) {
 	}
 	row.CreatedAt = now
 	row.UpdatedAt = now
-	if _, err := st.AppendItem(row); err != nil {
+	if err := storetest.WithParentCard(st, row, func(row store.Item) error {
+		_, err := st.AppendItem(row)
+		return err
+	}); err != nil {
 		t.Fatalf("append %s %s: %v", row.Kind, row.ID, err)
 	}
 }

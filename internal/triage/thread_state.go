@@ -346,6 +346,12 @@ type threadState struct {
 	// with the links when a live cut deletes rows, since a cut can empty
 	// a card that a later child opens again.
 	firstChildProbed map[string]struct{}
+
+	// subagentCards holds the open store card of each parent the session
+	// writes rows under. Bounded by maxSubagentCardsPerThread; a card is
+	// a store handle, so cleanupThread closes the thread's cards before
+	// the state is dropped. See subagent_cards.go.
+	subagentCards map[string]*subagentCardEntry
 }
 
 // threadIdentity is per-thread state that must SURVIVE cleanupThread.

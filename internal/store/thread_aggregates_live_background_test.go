@@ -164,7 +164,7 @@ func seedTrayFixture(t *testing.T, s *Store) int64 {
 
 	insert := func(item Item) {
 		t.Helper()
-		if err := s.InsertItem(item); err != nil {
+		if err := insertCarded(s, item); err != nil {
 			t.Fatalf("seed %s: %v", item.ID, err)
 		}
 	}

@@ -83,12 +83,19 @@ func TestLargeLiveForkWithStreamLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	const historyRows = 1536
+	card, err := app.store.OpenSubagentCard(source.ID, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := range historyRows {
 		id := fmt.Sprintf("history-%d", i)
-		item := store.Item{ID: id, ThreadID: source.ID, TurnIndex: 0, ItemIndex: 6 + i, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "historical answer", ParentID: root.ID, PayloadID: id, Meta: `{"provider_item_id":"historical"}`, CreatedAt: 1, UpdatedAt: 1}
+		item := store.Item{ID: id, ThreadID: source.ID, TurnIndex: 0, ItemIndex: 6 + i, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "historical answer", ParentID: root.ID, PayloadID: id, Meta: `{"provider_item_id":"historical"}`, CreatedAt: 1, UpdatedAt: 1, SubagentCard: card}
 		if err := app.store.InsertItemWithPayload(item, store.Payload{ID: id, Kind: "text", Data: []byte(strings.Repeat("history ", 1024)), Meta: "{}", CreatedAt: 1}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := card.Close(); err != nil {
+		t.Fatal(err)
 	}
 	other := store.BuildForkedThread(source)
 	other.ID = "other-stream"

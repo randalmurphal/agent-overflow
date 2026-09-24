@@ -86,24 +86,12 @@ func insertPayloadTx(exec sqlExecutor, threadID string, payload Payload, label s
 // not implicitly here.
 func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
 	applyItemDefaults(&item)
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: begin insert item+payload tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	if err := insertPayloadTx(tx, item.ThreadID, payload, "store: insert payload"); err != nil {
-		return err
-	}
-
-	if err := insertItemTx(tx, item, "store: insert item"); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit insert item+payload tx: %w", err)
-	}
-	return nil
+	return s.writeItems(item.ThreadID, item.SubagentCard, "insert item+payload", func(tx *sql.Tx, w *cardWrite) error {
+		if err := insertPayloadTx(tx, item.ThreadID, payload, "store: insert payload"); err != nil {
+			return err
+		}
+		return insertItemTx(tx, w, item, "store: insert item")
+	})
 }
 
 // AppendItemWithPayload is the append-at-next-index variant of
@@ -114,30 +102,21 @@ func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
 // when you don't need to force a specific index.
 func (s *Store) AppendItemWithPayload(item Item, payload Payload) (int, error) {
 	applyItemDefaults(&item)
-	tx, err := s.db.Begin()
+	err := s.writeItems(item.ThreadID, item.SubagentCard, "append item+payload", func(tx *sql.Tx, w *cardWrite) error {
+		next, err := nextItemIndexTx(tx, item.ThreadID, item.TurnIndex, "store: append item+payload next index")
+		if err != nil {
+			return err
+		}
+		item.ItemIndex = next
+		if err := insertPayloadTx(tx, item.ThreadID, payload, "store: append item+payload insert payload"); err != nil {
+			return err
+		}
+		return insertItemTx(tx, w, item, "store: append item+payload insert item")
+	})
 	if err != nil {
-		return 0, fmt.Errorf("store: begin append item+payload tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	next, err := nextItemIndexTx(tx, item.ThreadID, item.TurnIndex, "store: append item+payload next index")
-	if err != nil {
 		return 0, err
 	}
-	item.ItemIndex = next
-
-	if err := insertPayloadTx(tx, item.ThreadID, payload, "store: append item+payload insert payload"); err != nil {
-		return 0, err
-	}
-
-	if err := insertItemTx(tx, item, "store: append item+payload insert item"); err != nil {
-		return 0, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("store: commit append item+payload tx: %w", err)
-	}
-	return next, nil
+	return item.ItemIndex, nil
 }
 
 // payloadByIDQuery reads one logical payload of a thread through

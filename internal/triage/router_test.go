@@ -494,6 +494,23 @@ func (l *emissionLog) reset() {
 	l.mu.Unlock()
 }
 
+// appendSeed is st.AppendItem for a row seeded straight to the store,
+// written with its parent's card (storetest.WithParentCard).
+func appendSeed(st *store.Store, item store.Item) (int, error) {
+	var index int
+	err := storetest.WithParentCard(st, item, func(item store.Item) error {
+		var err error
+		index, err = st.AppendItem(item)
+		return err
+	})
+	return index, err
+}
+
+// insertSeed is st.InsertItem for a seeded row, like appendSeed.
+func insertSeed(st *store.Store, item store.Item) error {
+	return storetest.WithParentCard(st, item, st.InsertItem)
+}
+
 func newTestRouter(t *testing.T) (*Router, *store.Store, *emissionLog) {
 	t.Helper()
 	st := storetest.Clone(t)
@@ -3225,7 +3242,7 @@ func TestPersistDropsInvalidParentID(t *testing.T) {
 	}
 	// Seed a tool_call with a ParentID that points at itself. Used by
 	// the cycle test below.
-	if _, err := st.AppendItem(store.Item{
+	if _, err := appendSeed(st, store.Item{
 		ID:        "cycle-a",
 		ThreadID:  "t1",
 		TurnIndex: 0,

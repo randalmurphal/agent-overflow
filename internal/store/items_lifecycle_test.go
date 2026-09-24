@@ -110,7 +110,7 @@ func TestInsertItemRoundTripsLifecycleFields(t *testing.T) {
 		Status: "running", IsBackground: true,
 		CreatedAt: now,
 	}
-	if err := s.InsertItem(in); err != nil {
+	if err := insertCarded(s, in); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	got, ok, err := s.GetThreadItem("t", "i-running")
@@ -143,7 +143,7 @@ func TestInsertItemDefaultsStatusToCompleted(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "i", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: "assistant_text", Role: "assistant", Summary: "hi", CreatedAt: now,
 	}); err != nil {
@@ -175,13 +175,13 @@ func TestAppendCompletionItemPairsLaunchAndCompletion(t *testing.T) {
 		Kind: "tool_call", Role: "assistant", Summary: "pnpm build",
 		Status: "completed", IsBackground: true, CreatedAt: now,
 	}
-	if err := s.InsertItem(launch); err != nil {
+	if err := insertCarded(s, launch); err != nil {
 		t.Fatalf("insert launch: %v", err)
 	}
 
 	// A sibling text item lands in between so item_index assignment has
 	// something to bump past.
-	if _, err := s.AppendItem(Item{
+	if _, err := appendCarded(s, Item{
 		ID: "text", ThreadID: "t", TurnIndex: 2, Kind: "assistant_text",
 		Role: "assistant", Summary: "notes", CreatedAt: 1500,
 	}); err != nil {
@@ -246,7 +246,7 @@ func TestAppendCompletionItemForcesInvariants(t *testing.T) {
 		ID: "launch", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", IsBackground: true, CreatedAt: now,
 	}
-	if err := s.InsertItem(launch); err != nil {
+	if err := insertCarded(s, launch); err != nil {
 		t.Fatalf("insert launch: %v", err)
 	}
 
@@ -286,7 +286,7 @@ func TestAppendCompletionItemWithPayloadPersistsAtomically(t *testing.T) {
 		ID: "launch", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", IsBackground: true, CreatedAt: now,
 	}
-	if err := s.InsertItem(launch); err != nil {
+	if err := insertCarded(s, launch); err != nil {
 		t.Fatalf("insert launch: %v", err)
 	}
 
@@ -339,7 +339,7 @@ func TestConcurrentAppendCompletionItemAssignsUniqueIndex(t *testing.T) {
 		ID: "launch", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", IsBackground: true, CreatedAt: now,
 	}
-	if err := s.InsertItem(launch); err != nil {
+	if err := insertCarded(s, launch); err != nil {
 		t.Fatalf("insert launch: %v", err)
 	}
 
@@ -410,7 +410,7 @@ func TestListItemsIncludesLifecycleFields(t *testing.T) {
 		Kind: "tool_call", Role: "assistant", Summary: "pnpm build",
 		Status: "completed", IsBackground: true, CreatedAt: now,
 	}
-	if err := s.InsertItem(launch); err != nil {
+	if err := insertCarded(s, launch); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	if _, err := s.AppendCompletionItem(launch, Item{
@@ -472,7 +472,7 @@ func TestUpsertItemIdempotentPreservesItemIndex(t *testing.T) {
 	// first UpsertItem call should land at index 2, and the second call
 	// must NOT bump it to 3 or reset it to 0.
 	for i, id := range []string{"prior-0", "prior-1"} {
-		if err := s.InsertItem(Item{
+		if err := insertCarded(s, Item{
 			ID: id, ThreadID: "t", TurnIndex: 0, ItemIndex: i,
 			Kind: "assistant_text", Role: "assistant", Summary: "seed",
 			Status: "completed", CreatedAt: now,
@@ -487,7 +487,7 @@ func TestUpsertItemIdempotentPreservesItemIndex(t *testing.T) {
 		Status: "streaming", Summary: "first",
 		CreatedAt: 2000, UpdatedAt: 2000,
 	}
-	persistedFirst, err := s.UpsertItem(first, nil)
+	persistedFirst, err := upsertCarded(s, first, nil)
 	if err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
@@ -508,7 +508,7 @@ func TestUpsertItemIdempotentPreservesItemIndex(t *testing.T) {
 		Data:      []byte("first + second"),
 		CreatedAt: 3000,
 	}
-	persistedSecond, err := s.UpsertItem(second, payload)
+	persistedSecond, err := upsertCarded(s, second, payload)
 	if err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}
@@ -575,7 +575,7 @@ func TestAppendItemSummaryConcatenatesInPlace(t *testing.T) {
 		Status: "streaming", Summary: "hello ",
 		CreatedAt: 2000, UpdatedAt: 2000,
 	}
-	if err := s.InsertItem(first); err != nil {
+	if err := insertCarded(s, first); err != nil {
 		t.Fatalf("insert first: %v", err)
 	}
 
@@ -660,7 +660,7 @@ func TestAppendItemSummaryZeroRowSemantics(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("create thread: %v", err)
 			}
-			if err := s.InsertItem(Item{
+			if err := insertCarded(s, Item{
 				ID: "settled", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 				Kind: "assistant_text", Role: "assistant", Status: "completed",
 				Summary: "final", CreatedAt: 2000, UpdatedAt: 2000,
@@ -697,7 +697,7 @@ func TestAppendItemSummaryTailKeepsLatestRunes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "think", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: "thinking", Role: "assistant", Status: "streaming",
 		Summary: "abcd", CreatedAt: 2000, UpdatedAt: 2000,
@@ -746,7 +746,7 @@ func TestUpdateItemFieldsPartialUpdate(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "i1", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: "assistant_text", Role: "assistant", Status: "streaming",
 		Summary: "Hello world", Meta: `{"pathRefs":[]}`, Decision: "",
@@ -869,7 +869,7 @@ func BenchmarkTextDeltaGrowth(b *testing.B) {
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		id := "stream-" + b.Name() + "-" + strconvItoa(n)
-		if err := s.InsertItem(Item{
+		if err := insertCarded(s, Item{
 			ID: id, ThreadID: "t", TurnIndex: n, ItemIndex: 0,
 			Kind: "assistant_text", Role: "assistant",
 			Status: "streaming", Summary: delta, CreatedAt: 1,
@@ -1186,7 +1186,7 @@ func TestFindNotificationItemByTaskIDReturnsNewestNotification(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "note-old", ThreadID: "t-notify", TurnIndex: 0, ItemIndex: 0,
 		Kind: "notification", Role: "system", Summary: "older",
 		Meta:      `{"task_id":"task-1","output_file_state":"loading"}`,
@@ -1194,7 +1194,7 @@ func TestFindNotificationItemByTaskIDReturnsNewestNotification(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert old notification: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "note-new", ThreadID: "t-notify", TurnIndex: 0, ItemIndex: 1,
 		Kind: "notification", Role: "system", Summary: "newer",
 		Meta:      `{"task_id":"task-1","output_file_state":"loaded"}`,
@@ -1239,14 +1239,14 @@ func TestGetThreadItemByPayloadIDScopesLookupToOwnerThread(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert second thread payload: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "owner-a", ThreadID: "t-a", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", Summary: "owner a",
 		PayloadID: "shared-payload", CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert owner-a: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "owner-b", ThreadID: "t-b", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", Summary: "owner b",
 		PayloadID: "shared-payload", CreatedAt: now + 1, UpdatedAt: now + 1,
@@ -1303,14 +1303,14 @@ func TestGetThreadItemScopesLookupToOwnerThread(t *testing.T) {
 			t.Fatalf("create thread %s: %v", threadID, err)
 		}
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "shared-id", ThreadID: "t-a", TurnIndex: 0, ItemIndex: 0,
 		Kind: "assistant_text", Role: "assistant", Summary: "owner a",
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert owner-a row: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "shared-id", ThreadID: "t-b", TurnIndex: 0, ItemIndex: 0,
 		Kind: "assistant_text", Role: "assistant", Summary: "owner b",
 		CreatedAt: now + 1, UpdatedAt: now + 1,
@@ -1451,7 +1451,7 @@ func TestGetThreadItemByPayloadIDResolvesInputPayloadID(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert input payload: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "edit-1", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", Summary: "Edit",
 		ToolName: "Edit", InputPayloadID: "p-input-1",
@@ -1570,7 +1570,7 @@ func TestListRunningBackgroundToolCallsFiltersCorrectly(t *testing.T) {
 	}
 
 	// Seed (must match): running background tool_call
-	if _, err := s.AppendItem(Item{
+	if _, err := appendCarded(s, Item{
 		ID: "match-running-bg", ThreadID: "t-reconcile", TurnIndex: 1,
 		Kind: "tool_call", Role: "assistant", Status: "running",
 		IsBackground: true, Summary: "Bash: sleep 999", ToolName: "Bash",
@@ -1579,7 +1579,7 @@ func TestListRunningBackgroundToolCallsFiltersCorrectly(t *testing.T) {
 		t.Fatalf("seed match-running-bg: %v", err)
 	}
 	// Seed (should NOT match): completed background tool_call
-	if _, err := s.AppendItem(Item{
+	if _, err := appendCarded(s, Item{
 		ID: "skip-completed-bg", ThreadID: "t-reconcile", TurnIndex: 1,
 		Kind: "tool_call", Role: "assistant", Status: "completed",
 		IsBackground: true, Summary: "Bash: done", ToolName: "Bash",
@@ -1588,7 +1588,7 @@ func TestListRunningBackgroundToolCallsFiltersCorrectly(t *testing.T) {
 		t.Fatalf("seed skip-completed-bg: %v", err)
 	}
 	// Seed (should NOT match): running inline (non-background) tool_call
-	if _, err := s.AppendItem(Item{
+	if _, err := appendCarded(s, Item{
 		ID: "skip-running-inline", ThreadID: "t-reconcile", TurnIndex: 1,
 		Kind: "tool_call", Role: "assistant", Status: "running",
 		IsBackground: false, Summary: "Read: /tmp/x", ToolName: "Read",
@@ -1597,7 +1597,7 @@ func TestListRunningBackgroundToolCallsFiltersCorrectly(t *testing.T) {
 		t.Fatalf("seed skip-running-inline: %v", err)
 	}
 	// Seed (should NOT match): running background non-tool_call kind
-	if _, err := s.AppendItem(Item{
+	if _, err := appendCarded(s, Item{
 		ID: "skip-running-non-tool", ThreadID: "t-reconcile", TurnIndex: 1,
 		Kind: "assistant_text", Role: "assistant", Status: "running",
 		IsBackground: true, Summary: "streaming text",
@@ -1608,7 +1608,7 @@ func TestListRunningBackgroundToolCallsFiltersCorrectly(t *testing.T) {
 	// Seed (should NOT match): background launch that has a completion
 	// sibling. Background launches stay status=running by design, but the
 	// sibling is the settled-state marker.
-	if _, err := s.AppendItem(Item{
+	if _, err := appendCarded(s, Item{
 		ID: "skip-settled-bg", ThreadID: "t-reconcile", TurnIndex: 1,
 		Kind: "tool_call", Role: "assistant", Status: "running",
 		IsBackground: true, Summary: "Bash: settled", ToolName: "Bash",
@@ -1616,7 +1616,7 @@ func TestListRunningBackgroundToolCallsFiltersCorrectly(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed skip-settled-bg: %v", err)
 	}
-	if _, err := s.AppendItem(Item{
+	if _, err := appendCarded(s, Item{
 		ID: "skip-settled-bg-complete", ThreadID: "t-reconcile", TurnIndex: 2,
 		Kind: "tool_completion", Role: "assistant", Status: "completed",
 		IsBackground: true, CompletionOf: "skip-settled-bg",
@@ -1633,7 +1633,7 @@ func TestListRunningBackgroundToolCallsFiltersCorrectly(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create other thread: %v", err)
 	}
-	if _, err := s.AppendItem(Item{
+	if _, err := appendCarded(s, Item{
 		ID: "skip-other-thread", ThreadID: "t-other", TurnIndex: 1,
 		Kind: "tool_call", Role: "assistant", Status: "running",
 		IsBackground: true, Summary: "Bash: other", ToolName: "Bash",
@@ -1702,7 +1702,7 @@ func TestListRecoverableClaudeBackgroundLaunchesFiltersToRecoverableRows(t *test
 		}
 		item.CreatedAt = now
 		item.UpdatedAt = now
-		if _, err := s.AppendItem(item); err != nil {
+		if _, err := appendCarded(s, item); err != nil {
 			t.Fatalf("seed %s: %v", item.ID, err)
 		}
 	}
@@ -1723,7 +1723,7 @@ func TestListRecoverableClaudeBackgroundLaunchesFiltersToRecoverableRows(t *test
 	seed(Item{ID: "skip-codex", ThreadID: "t-codex", ToolName: "collab_agent", Meta: `{"task_id":"task-codex"}`})
 	seed(Item{ID: "skip-completed-sibling", ThreadID: "t-claudetui", Meta: `{}`})
 
-	if _, err := s.AppendItem(Item{
+	if _, err := appendCarded(s, Item{
 		ID: "skip-completed-sibling-done", ThreadID: "t-claudetui", TurnIndex: 2,
 		Kind: "tool_completion", Role: "assistant", Status: "completed",
 		IsBackground: true, CompletionOf: "skip-completed-sibling",
@@ -1741,7 +1741,7 @@ func TestListRecoverableClaudeBackgroundLaunchesFiltersToRecoverableRows(t *test
 		{ID: "skip-not-running", ThreadID: "t-claude", TurnIndex: 1, Kind: "tool_call", Role: "assistant", Status: "completed", IsBackground: true, ToolName: "Bash", Summary: "skip-not-running", Meta: `{"task_id":"task-done"}`, CreatedAt: now, UpdatedAt: now},
 		{ID: "skip-not-background", ThreadID: "t-claude", TurnIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: false, ToolName: "Bash", Summary: "skip-not-background", Meta: `{"task_id":"task-fg"}`, CreatedAt: now, UpdatedAt: now},
 	} {
-		if _, err := s.AppendItem(item); err != nil {
+		if _, err := appendCarded(s, item); err != nil {
 			t.Fatalf("seed %s: %v", item.ID, err)
 		}
 	}
@@ -1792,7 +1792,7 @@ func TestListTurnItemsSansPayloadSkipsPayloadJoin(t *testing.T) {
 	}
 
 	payload := Payload{ID: "pl-1", Kind: "tool_call_result", Meta: `{"exitCode":0}`, Data: []byte("done"), CreatedAt: now}
-	if _, err := s.UpsertItem(Item{
+	if _, err := upsertCarded(s, Item{
 		ID: "it-with-payload", ThreadID: "t-sp", TurnIndex: 0, Kind: "tool_call",
 		Role: "assistant", Status: "completed", Summary: "echo",
 		PayloadID: "pl-1", CreatedAt: now, UpdatedAt: now,
@@ -1841,7 +1841,7 @@ func TestHasMatchingSystemItemScopesExactErrorRow(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	if _, err := s.AppendItem(Item{
+	if _, err := appendCarded(s, Item{
 		ID: "error-1", ThreadID: "t-match", TurnIndex: 0, Kind: "error",
 		Role: "system", Status: "completed", Summary: "same failure",
 		CreatedAt: now, UpdatedAt: now,
@@ -1882,28 +1882,28 @@ func TestForceCloseRunningToolCallsInTurnFlipsOnlyOrphanInlineTools(t *testing.T
 		t.Fatalf("create thread: %v", err)
 	}
 
-	if _, err := s.UpsertItem(Item{
+	if _, err := upsertCarded(s, Item{
 		ID: "inline-orphan", ThreadID: "t-fc", TurnIndex: 0, Kind: "tool_call",
 		Role: "assistant", Status: "running", Summary: "Bash: sleep 10",
 		CreatedAt: now, UpdatedAt: now,
 	}, nil); err != nil {
 		t.Fatalf("upsert inline orphan: %v", err)
 	}
-	if _, err := s.UpsertItem(Item{
+	if _, err := upsertCarded(s, Item{
 		ID: "inline-complete", ThreadID: "t-fc", TurnIndex: 0, Kind: "tool_call",
 		Role: "assistant", Status: "completed", Summary: "Bash: true",
 		CreatedAt: now, UpdatedAt: now,
 	}, nil); err != nil {
 		t.Fatalf("upsert inline complete: %v", err)
 	}
-	if _, err := s.UpsertItem(Item{
+	if _, err := upsertCarded(s, Item{
 		ID: "bg-running", ThreadID: "t-fc", TurnIndex: 0, Kind: "tool_call",
 		Role: "assistant", Status: "running", Summary: "Bash: long-running",
 		IsBackground: true, CreatedAt: now, UpdatedAt: now,
 	}, nil); err != nil {
 		t.Fatalf("upsert bg running: %v", err)
 	}
-	if _, err := s.UpsertItem(Item{
+	if _, err := upsertCarded(s, Item{
 		ID: "text-streaming", ThreadID: "t-fc", TurnIndex: 0, Kind: "assistant_text",
 		Role: "assistant", Status: "streaming", Summary: "thinking...",
 		CreatedAt: now, UpdatedAt: now,
@@ -2007,7 +2007,7 @@ func TestRetireCodexBackgroundRuntimeFlipsOnlyRunningBackgroundToolCalls(t *test
 	}
 
 	// Running background tool_call — must flip.
-	if _, err := s.UpsertItem(Item{
+	if _, err := upsertCarded(s, Item{
 		ID: "ghost-match", ThreadID: "t-ghost", TurnIndex: 0, Kind: "tool_call",
 		Role: "assistant", Status: "running", Summary: "Bash: sleep 10",
 		IsBackground: true, CreatedAt: now, UpdatedAt: now,
@@ -2015,7 +2015,7 @@ func TestRetireCodexBackgroundRuntimeFlipsOnlyRunningBackgroundToolCalls(t *test
 		t.Fatalf("upsert ghost-match: %v", err)
 	}
 	// Completed background tool_call — must NOT flip.
-	if _, err := s.UpsertItem(Item{
+	if _, err := upsertCarded(s, Item{
 		ID: "ghost-done", ThreadID: "t-ghost", TurnIndex: 0, Kind: "tool_call",
 		Role: "assistant", Status: "completed", Summary: "Bash: echo hi",
 		IsBackground: true, CreatedAt: now, UpdatedAt: now,
@@ -2023,7 +2023,7 @@ func TestRetireCodexBackgroundRuntimeFlipsOnlyRunningBackgroundToolCalls(t *test
 		t.Fatalf("upsert ghost-done: %v", err)
 	}
 	// Running inline (non-background) tool_call — must NOT flip.
-	if _, err := s.UpsertItem(Item{
+	if _, err := upsertCarded(s, Item{
 		ID: "ghost-inline", ThreadID: "t-ghost", TurnIndex: 0, Kind: "tool_call",
 		Role: "assistant", Status: "running", Summary: "Read: /tmp/x",
 		IsBackground: false, CreatedAt: now, UpdatedAt: now,
@@ -2033,7 +2033,7 @@ func TestRetireCodexBackgroundRuntimeFlipsOnlyRunningBackgroundToolCalls(t *test
 	// Streaming (assistant_text, not tool_call) — must NOT flip even if
 	// someone set is_background=true (no production caller does this; the
 	// filter is intentionally defensive).
-	if _, err := s.UpsertItem(Item{
+	if _, err := upsertCarded(s, Item{
 		ID: "ghost-text", ThreadID: "t-ghost", TurnIndex: 0, Kind: "assistant_text",
 		Role: "assistant", Status: "running", Summary: "thinking...",
 		IsBackground: true, CreatedAt: now, UpdatedAt: now,
@@ -2146,7 +2146,7 @@ func TestRetireCodexBackgroundRuntimeScopedPerThread(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("create thread %s: %v", id, err)
 		}
-		if _, err := s.UpsertItem(Item{
+		if _, err := upsertCarded(s, Item{
 			ID: id + "-row", ThreadID: id, TurnIndex: 0, Kind: "tool_call",
 			Role: "assistant", Status: "running", Summary: "Bash: sleep",
 			IsBackground: true, CreatedAt: now, UpdatedAt: now,
@@ -2195,7 +2195,7 @@ func TestRecoverCodexBackgroundRuntimePreservesImmutableSpawnEvents(t *testing.T
 		{ID: "terminal", ThreadID: "codex-runtime", TurnIndex: 0, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "running", Summary: "Bash", IsBackground: true, ToolName: "command_execution", Meta: `{"process_id":"42"}`, CreatedAt: 1002},
 		{ID: "claude-task", ThreadID: "claude-runtime", TurnIndex: 0, ItemIndex: 0, Kind: "tool_call", Role: "assistant", Status: "running", Summary: "Claude task", IsBackground: true, ToolName: "task", Meta: `{}`, CreatedAt: 1003},
 	} {
-		if err := s.InsertItem(item); err != nil {
+		if err := insertCarded(s, item); err != nil {
 			t.Fatalf("seed %s: %v", item.ID, err)
 		}
 	}
@@ -2281,7 +2281,7 @@ func seedStreamingItemWithPayload(t *testing.T, s *Store, itemKind, payloadKind 
 	}); err != nil {
 		t.Fatalf("insert payload: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "stream", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: itemKind, Role: "assistant", Status: "streaming",
 		Summary: "head ", PayloadID: "pay",
@@ -2517,7 +2517,7 @@ func TestListIncompleteCodexSubagentOwnershipsIsCompactOrderedAndUnresolved(t *t
 		item.ToolName = "collab_agent"
 		item.CreatedAt = 1000
 		item.UpdatedAt = 1000
-		if err := s.InsertItem(item); err != nil {
+		if err := insertCarded(s, item); err != nil {
 			t.Fatalf("seed %s: %v", item.ID, err)
 		}
 	}
@@ -2534,7 +2534,7 @@ func TestListIncompleteCodexSubagentOwnershipsIsCompactOrderedAndUnresolved(t *t
 		Meta: `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-foreground"]}}`})
 	seed(Item{ID: "other-thread", ThreadID: "other", TurnIndex: 0, ItemIndex: 0, IsBackground: true,
 		Meta: `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-other"]}}`})
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID:           "settled-answer",
 		ThreadID:     "t",
 		TurnIndex:    0,
@@ -2770,7 +2770,7 @@ func TestListLiveBackgroundChildLaunchesListsOnlyLiveDirectChildren(t *testing.T
 		if it.Kind == "" {
 			it.Kind = "tool_call"
 		}
-		if _, err := s.AppendItem(it); err != nil {
+		if _, err := appendCarded(s, it); err != nil {
 			t.Fatalf("seed %s: %v", it.ID, err)
 		}
 	}

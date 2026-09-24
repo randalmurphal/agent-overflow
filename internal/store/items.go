@@ -159,78 +159,37 @@ func itemInsertArgs(item Item) []any {
 	}
 }
 
-// insertItemTx inserts one row and settles the subagent stamps it
-// changed (insertItemRowTx).
-func insertItemTx(tx *sql.Tx, item Item, label string) error {
-	if err := insertItemRowTx(tx, item, label); err != nil {
-		return err
-	}
-	return settleSubagentAggregatesTx(tx, item.ThreadID)
-}
+// itemInsertAdoptingSQL is itemInsertSQL that reports whether the new row
+// has a visible child already, in either arm: rows written before their
+// parent, which it adopts (cardWrite.inserted).
+var itemInsertAdoptingSQL = itemInsertSQL + ` RETURNING ` + aggHasChildSQL("?2", "?1", "")
 
-// insertItemRowTx inserts one row and indexes its text when the row arrives
-// settled (a user message, a cloned or transferred row). A row that arrives
-// streaming is indexed later by the write that settles it. The index write
-// shares this transaction, so a rolled-back insert leaves nothing searchable.
-// A claimed row (Item.SubagentAnchor) keeps its anchors' stamps here; any
-// other leaves them marked, and the caller settles before it commits.
-func insertItemRowTx(tx *sql.Tx, item Item, label string) error {
-	if err := shadowImportedParentTx(tx, item, label); err != nil {
+// insertItemTx inserts one row and indexes its text when the row arrives
+// settled (a user message, a cloned or transferred row). A row that
+// arrives streaming is indexed later by the write that settles it. The
+// index write shares this transaction, so a rolled-back insert leaves
+// nothing searchable. w records the row for the subagent cards; a row
+// that may anchor a card or count toward one reports its children in the
+// same statement.
+func insertItemTx(tx *sql.Tx, w *cardWrite, item Item, label string) error {
+	row := subagentRowOf(item)
+	if err := w.check(row); err != nil {
 		return err
 	}
-	query := itemInsertSQL
-	if item.SubagentAnchor != "" {
-		query = itemInsertClaimedSQL
-	}
-	if _, err := tx.Exec(query, itemInsertArgs(item)...); err != nil {
+	hasChild := false
+	if row.anchorable() || row.parentID != "" {
+		if err := tx.QueryRow(itemInsertAdoptingSQL, itemInsertArgs(item)...).Scan(&hasChild); err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+	} else if _, err := tx.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
 		return fmt.Errorf("%s: %w", label, err)
 	}
-	if item.SubagentAnchor != "" {
-		if err := claimSubagentInsertTx(tx, subagentClaimRowOf(item), item.SubagentAnchor); err != nil {
-			return err
-		}
-	}
+	w.inserted(row, hasChild)
 	return indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary)
 }
 
-func insertItemWithIDTx(tx *sql.Tx, item Item, label string) error {
-	return insertItemTx(tx, item, label+" "+item.ID)
-}
-
-// shadowImportedParentTx moves an imported anchor into the thread's local
-// overlay before a local child is written under it, the way
-// ensureLocalPayloadTx gives an imported payload a local copy before a
-// write. The history triggers keep stamps on local rows only; shadowed,
-// the anchor is stamped by the settle that follows the child's insert
-// (localizeImportedItemTx writes it dirty) and maintained from there.
-func shadowImportedParentTx(tx *sql.Tx, item Item, label string) error {
-	if item.ParentID == "" {
-		return nil
-	}
-	var local bool
-	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM items WHERE thread_id = ? AND id = ?)`,
-		item.ThreadID, item.ParentID).Scan(&local); err != nil {
-		return fmt.Errorf("%s: probe parent %s/%s: %w", label, item.ThreadID, item.ParentID, err)
-	}
-	if local {
-		return nil
-	}
-	var anchorable bool
-	err := tx.QueryRow(`SELECT `+aggAnchorableSQL("imported.")+`
-		   FROM import_history_items imported
-		   CROSS JOIN thread_import_chunks refs ON refs.chunk_id = imported.chunk_id
-		  WHERE refs.thread_id = ? AND imported.id = ?
-		    AND NOT EXISTS (SELECT 1 FROM thread_import_item_overrides o
-		      WHERE o.thread_id = refs.thread_id AND o.item_id = imported.id)`,
-		item.ThreadID, item.ParentID).Scan(&anchorable)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && !anchorable) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("%s: probe imported parent %s/%s: %w", label, item.ThreadID, item.ParentID, err)
-	}
-	_, err = localizeImportedItemTx(tx, item.ThreadID, item.ParentID, label)
-	return err
+func insertItemWithIDTx(tx *sql.Tx, w *cardWrite, item Item, label string) error {
+	return insertItemTx(tx, w, item, label+" "+item.ID)
 }
 
 // itemColumnsSansPayload mirrors itemColumns but without the

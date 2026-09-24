@@ -10,9 +10,8 @@ import (
 // decorateSubagentAnchors derives an anchor's card from a walk of its
 // descendants. subagent_aggregates keeps the same values, one narrow row
 // per anchor keyed (thread_id, item_id), so a read of a clean row skips
-// the walk, and a child write changes a few such rows per nesting level,
-// never the anchor's items row beyond the revision stamp every child
-// write already gives it:
+// the walk, and a child write changes no items row beyond the revision
+// stamps every child write already gives its anchors:
 //
 //   - the card: descendant_count, latest_child_summary and
 //     transcript_count, by the read-time rules: rounds cut by resume
@@ -21,60 +20,55 @@ import (
 //   - the tray: tool_summary, tool_turn and tool_item, the newest direct
 //     tool_call child with a nonblank summary
 //     (decorateLatestDirectSubagentTools);
-//   - what the keyed writes need: the round's preview row (pick_*), its
-//     newest descendant position (newest_*), a root's whole-transcript
-//     newest position (transcript_newest_*), the tray row (tool_id), and
-//     gen, which only a recompute moves.
+//   - what the card accumulators need: the round's preview row (pick_*),
+//     its newest descendant position (newest_*), a root's
+//     whole-transcript newest position (transcript_newest_*), the tray
+//     row (tool_id), and gen, the generation every write moves to a
+//     value no stamp has held (newSubagentGen).
 //
 // A local item read serves a clean row's public values merged into the
 // anchor's meta (subagentServedMetaSQL), and a Claude completion sibling
-// its launch's card. The internal columns never reach a client. The
-// stored meta never holds the public keys: the item triggers strip them
-// from a written meta (subagentStripServedKeysSQL), so a writer that
-// writes back the meta of a row it read stores nothing stale.
+// its launch's card. The internal columns never reach a client, and the
+// stored meta never holds the public keys: no writer stores a meta it
+// read back (TestSubagentServedKeysAreNeverStored).
 //
 // state is clean (0), dirty (1) or readTime (2). A clean row's values are
-// the read. dirty means a write changed what the values describe and no
-// keyed write kept them exact; idx_subagent_aggregates_dirty finds it
-// and the recompute rewrites it from the read-time aggregator. readTime
-// means the recompute found a shape the keyed writes do not maintain
-// (imported or duplicate round prompts, a carrier no prompt names, a
-// round resumed from a carrier) and the anchor stays on the read-time
-// path. An anchor without a row is unstamped: no child since its insert,
-// a carrier whose prompt has not arrived, or a legacy anchor in a thread
+// the read as of its last flush (subagent_card.go). dirty means no value
+// describes the rows: RecoverSubagentCards marked the stamps of the
+// agents a stopped process was running, and reads walk them until its
+// recompute rewrites them (idx_subagent_aggregates_dirty finds them).
+// readTime means
+// the recompute found a shape the card rules do not maintain (imported or
+// duplicate round prompts, a carrier no prompt names, a round resumed
+// from a carrier) and the anchor stays on the read-time path. An anchor
+// without a row is unstamped: no child flushed since its insert, a
+// carrier whose prompt has not arrived, or a legacy anchor in a thread
 // still listed in subagent_aggregate_backfill.
 //
 // Codex spawn rows (collab_agent) take none of this: their card values are
 // write-time snapshots on the completion row, and the spawn row itself is
 // immutable (docs/specs/agent-visibility.md#immutable-agent-history).
 //
-// Two paths write the values. A write that names its row's subagent
-// anchor (Item.SubagentAnchor, ItemPartialUpdate.SubagentAnchor) is
-// claimed: the store checks the anchor against the row's parent chain and
-// applies the write's effect with keyed reads and writes per nesting
-// level, in the write's transaction (subagent_aggregate_writes.go). Every
-// other write is left to the item triggers, which only mark the stamps it
-// may have changed dirty (subagentMarkInsertSQL and its siblings); the
-// writer settles them before it commits (settleSubagentAggregatesTx). A
-// claimed write that changes a row's place in a walk is marked the same
-// way. The recompute is the one general derivation: the settle, the
-// bulk-load rebuild, a shadowed imported parent and migration v121's
-// deferred phase all derive their values through it
-// (computeSubagentStamps) and write them with writeSubagentStampsTx.
+// Two paths write the values. A card's flush writes the accumulators the
+// rows written under it fed, one keyed statement per changed stamp
+// (subagent_card.go). The recompute is the one general derivation
+// (computeSubagentFamilies): a card seeding a dirty or legacy stamp, a
+// flush whose stamp moved, a write the card rules do not follow, a bulk
+// writer (recomputeSubagentChainsTx, restampSubagentAggregatesTx),
+// RecoverSubagentCards and migration v121's deferred phase all write
+// through it (writeSubagentStampsTx).
 //
 // A write to subagent_aggregates stamps its anchor and the anchor's
 // completion siblings with the thread's history_rev
-// (subagentAggregateTriggersSQL). A keyed write follows the item write
-// whose trigger bumped the thread and stamped the same rows, so it
-// changes no revision a second time; a recompute bumps the thread first.
-// A row follows its item through the foreign key: deleting the item
-// deletes it.
+// (subagentAggregateTriggersSQL). The writer advances the thread stamp
+// first, unless an item write in the same transaction already did. A row
+// follows its item through the foreign key: deleting the item deletes it.
 //
-// Under history_bulk_load neither path does aggregate work; every
-// bulk-load writer that changes a subtree recomputes the stamps before it
-// commits. Folding sealed history back (UnsealThreadHistory) moves rows
-// between the arms without changing any subtree, so the stamps stay as
-// they are. Sealing never took a tool call, so no anchor moves.
+// Under history_bulk_load the thread stamp is frozen; every bulk-load
+// writer that changes a subtree recomputes the stamps before it commits.
+// Folding sealed history back (UnsealThreadHistory) moves rows between
+// the arms without changing any subtree, so the stamps stay as they are.
+// Sealing never took a tool call, so no anchor moves.
 
 // Stamp states.
 const (
@@ -139,8 +133,7 @@ DROP TRIGGER IF EXISTS trg_subagent_aggregates_stamp_update;`
 
 // subagentAggregateStampSQL stamps the anchor a subagent_aggregates write
 // changed, and the completion siblings that borrow its card, with the
-// thread's history_rev. A row already at that revision is left alone: a
-// second write of the same value would fire the item update trigger. Two
+// thread's history_rev. A row already at that revision is left alone. Two
 // statements, so each reaches its rows by index: SQLite cannot serve an
 // OR of the two lookups under the shared thread_id term with an index.
 const subagentAggregateStampSQL = subagentAggregateStampAnchorSQL + "\n  " + subagentAggregateStampSiblingsSQL
@@ -250,37 +243,6 @@ func aggBorrowsCardSQL(a string) string {
 		a + "tool_name NOT IN ('wait_agent', 'collab_agent'))"
 }
 
-// subagentStripServedKeysSQL is the item triggers' guard on the stored
-// meta: the written meta of an anchor, or of a completion whose launch is
-// one, that carries a public key, as a writer holding a served row writes
-// it back or a copy carries it, has the keys removed again, so no read
-// can serve a stale value from the stored meta. The instr terms keep
-// every other write off a JSON parse. The write stamps the row, so it
-// does not fire the update trigger again.
-func subagentStripServedKeysSQL(ref string) string {
-	paths := make([]string, 0, len(subagentServedKeys))
-	present := make([]string, 0, len(subagentServedKeys))
-	for _, served := range subagentServedKeys {
-		paths = append(paths, "'$."+served.key+"'")
-		present = append(present, aggJT(ref+".meta", "$."+served.key)+" IS NOT NULL")
-	}
-	return `UPDATE items SET meta = json_remove(meta, ` + strings.Join(paths, ", ") + `), rev = ` + aggStampRevSQL + `
-	 WHERE thread_id = ` + ref + `.thread_id AND id = ` + ref + `.id
-	   AND (` + aggAnchorableSQL(ref+".") + ` OR ` + aggBorrowsCardSQL(ref+".") + `)
-	   AND (instr(` + ref + `.meta, '"subagentDescendantCount"') OR instr(` + ref + `.meta, '"subagentLatest')
-	        OR instr(` + ref + `.meta, '"subagentTranscriptDescendantCount"'))
-	   AND (` + aggAnchorableSQL(ref+".") + `
-	        OR EXISTS (SELECT 1 FROM items l WHERE l.thread_id = ` + ref + `.thread_id AND l.id = ` + ref + `.completion_of
-	                      AND ` + aggAnchorableSQL("l.") + `))
-	   AND (` + strings.Join(present, " OR ") + `);`
-}
-
-// subagentAggregateUnanchorSQL drops the stamp of a row that stops being
-// an anchor: no read decorates it any more.
-var subagentAggregateUnanchorSQL = `DELETE FROM subagent_aggregates
-	 WHERE ` + aggAnchorableSQL("OLD.") + ` AND NOT ` + aggAnchorableSQL("NEW.") + `
-	   AND thread_id = NEW.thread_id AND item_id = NEW.id;`
-
 // aggBlankSQL is subagentPreviewBlank spelled for SQL trim(): the same
 // ASCII set, so a summary is blank to the triggers exactly when it is
 // blank to betterSubagentPreview.
@@ -301,17 +263,6 @@ func aggTranscriptRootSQL(a string) string {
 	path := "$." + metaKeyTranscriptRootID
 	return "(CASE WHEN " + aggJT(a+"meta", path) + " = 'text' THEN trim(" +
 		aggJX(a+"meta", path) + ", " + aggBlankSQL + ") END)"
-}
-
-// aggKeyedTranscriptRootSQL is aggTranscriptRootSQL for a row read by
-// key. The row's meta, which a launch's input can make large, is parsed
-// only when idx_items_transcript_root lists the row; the probe reads the
-// thread's entries in that index, one per row naming a transcript root,
-// and no table row.
-func aggKeyedTranscriptRootSQL(a string) string {
-	return "(CASE WHEN EXISTS (SELECT 1 FROM items agg_tr INDEXED BY idx_items_transcript_root" +
-		" WHERE agg_tr.thread_id = " + a + "thread_id AND " + aggJX("agg_tr.meta", "$."+metaKeyTranscriptRootID) +
-		" IS NOT NULL AND agg_tr.rowid = " + a + "rowid) THEN " + aggTranscriptRootSQL(a) + " END)"
 }
 
 // aggCarrierSQL is a §E6 resume carrier: its transcript_root_id names
@@ -337,9 +288,6 @@ func aggPromptSQL(a string) string {
 		aggJT(a+"meta", "$."+metaKeySubagentResumePrompt) + " = 'true' AND COALESCE(" +
 		aggJT(a+"meta", "$."+metaKeyResumeCarrierID) + ", 'null') IN ('text', 'null'))"
 }
-
-// aggIsPromptSQL is aggPromptSQL as a value: 0 or 1, never NULL.
-func aggIsPromptSQL(a string) string { return "COALESCE(" + aggPromptSQL(a) + ", 0)" }
 
 // aggPromptCarrierSQL is the carrier a prompt row names, or the empty
 // string for none.
@@ -370,181 +318,3 @@ func aggHasLocalChildSQL(threadExpr, idExpr, exceptExpr string) string {
 	          WHERE agg_hc.thread_id = ` + threadExpr + ` AND agg_hc.parent_id = ` + idExpr + ` AND agg_hc.parent_id <> ''` + except + `
 	            AND ` + visibleItemsFilterFor("agg_hc.") + `)`
 }
-
-// aggBulkIdleSQL is "the thread is not bulk loading".
-func aggBulkIdleSQL(threadExpr string) string {
-	return "((SELECT history_bulk_load FROM threads WHERE id = " + threadExpr + ") = 0)"
-}
-
-const aggStampRevSQL = "(SELECT history_rev FROM threads WHERE id = items.thread_id)"
-
-// subagentClaimRev is the rev a claimed write stores: the write names its
-// row's subagent anchor, so the store applies its effect on the stamps
-// itself (subagent_aggregate_writes.go) and the item triggers leave that
-// effect's mark out. The trigger's row stamp replaces the value in the
-// same statement, so no row keeps it and no read sees it. It is the one
-// value Go writes to rev.
-const subagentClaimRev = -2
-
-// aggClaimedSQL is "the write stored subagentClaimRev".
-func aggClaimedSQL(ref string) string {
-	return "(" + ref + ".rev IS " + strconv.Itoa(subagentClaimRev) + ")"
-}
-
-// aggChainCTE walks ref's ancestors by primary key. walk is the row's
-// visibility: a walk from an ancestor reaches ref only through visible
-// rows, so the chain stops above a hidden one. gate is the statement's
-// condition on the trigger row; on the walk's start it keeps the chain
-// empty whenever the statement marks nothing through it.
-func aggChainCTE(name, ref, gate string) string {
-	return name + `(thread_id, id, parent_id, kind, tool_name, meta, depth, walk) AS (
-	    SELECT thread_id, id, parent_id, kind, tool_name, meta, 1, ` + visibleItemsFilterFor("") + `
-	      FROM items
-	     WHERE thread_id = ` + ref + `.thread_id AND id = ` + ref + `.parent_id
-	       AND ` + ref + `.parent_id <> '' AND ` + visibleItemsFilterFor(ref+".") + ` AND ` + gate + `
-	    UNION ALL
-	    SELECT items.thread_id, items.id, items.parent_id, items.kind, items.tool_name, items.meta,
-	           ` + name + `.depth + 1, ` + visibleItemsFilterFor("items.") + `
-	      FROM ` + name + ` CROSS JOIN items
-	     WHERE ` + name + `.walk AND ` + name + `.parent_id <> '' AND ` + name + `.depth < 64
-	       AND items.thread_id = ` + name + `.thread_id AND items.id = ` + name + `.parent_id
-	)`
-}
-
-// aggChainMarksSQL selects the stamps a write under a walked chain may
-// have changed: the chain's anchors that are clean, or unstamped and not
-// carriers (a carrier stays unstamped until its prompt arrives), and the
-// carriers the resume prompts under those anchors name, whose rounds the
-// same prompts cut. A readTime anchor on the chain is its family's
-// verdict and stays; a named carrier is marked whatever its state, so its
-// family is recomputed.
-func aggChainMarksSQL(chain string) string {
-	return `SELECT ch.thread_id AS thread_id, ch.id AS id
-	      FROM ` + chain + ` ch
-	      LEFT JOIN subagent_aggregates cs ON cs.thread_id = ch.thread_id AND cs.item_id = ch.id
-	     WHERE ` + aggAnchorableSQL("ch.") + `
-	       AND (cs.state IS ` + aggCleanLiteral + ` OR (cs.state IS NULL AND NOT ` + aggCarrierSQL("ch.") + `))
-	    UNION ALL
-	    SELECT ch.thread_id, ` + aggPromptCarrierSQL("p.") + `
-	      FROM ` + chain + ` ch CROSS JOIN items p
-	     WHERE ` + aggAnchorableSQL("ch.") + `
-	       AND p.thread_id = ch.thread_id AND p.parent_id = ch.id AND ` + aggPromptSQL("p.")
-}
-
-// aggMarkDirtySQL is an item trigger statement that marks dirty the
-// stamps rows selects: local anchorable rows only, whose stamp is not
-// already dirty or that have none. A dirty stamp loses its values, and
-// reads walk the anchor until the writer's settle recomputes it.
-//
-// gate is a condition on the trigger row alone. SQLite tests such a term
-// before the query's first row, so a write it rules out runs nothing;
-// each chain walk repeats it on its start (aggChainCTE).
-func aggMarkDirtySQL(gate, ctes, rows string) string {
-	with := ""
-	if ctes != "" {
-		with = "WITH RECURSIVE " + ctes + "\n\t    "
-	}
-	nulls := make([]string, 0, len(subagentAggregateValueColumns))
-	for _, column := range subagentAggregateValueColumns {
-		nulls = append(nulls, column+" = NULL")
-	}
-	return `INSERT INTO subagent_aggregates (thread_id, item_id, state)
-	SELECT m.thread_id, m.id, ` + aggDirtyLiteral + `
-	  FROM (
-	    ` + with + rows + `
-	  ) AS m
-	  CROSS JOIN items a ON a.thread_id = m.thread_id AND a.id = m.id
-	 WHERE ` + gate + ` AND m.id <> '' AND ` + aggAnchorableSQL("a.") + `
-	ON CONFLICT (thread_id, item_id) DO UPDATE SET state = ` + aggDirtyLiteral + `, ` + strings.Join(nulls, ", ") + `
-	 WHERE subagent_aggregates.state <> ` + aggDirtyLiteral + `;`
-}
-
-// The item triggers' marks. They cover every write the store does not
-// apply itself: each write that does not carry subagentClaimRev, and the
-// shapes a claimed write leaves to the recompute (a row inserted after
-// rows written under it, a change to a row's place in a walk, a row that
-// becomes an anchor). Under bulk load no mark runs; the loading writer
-// recomputes before it commits.
-
-// subagentMarkInsertSQL marks the chain of an unclaimed child: every stamp
-// the child counts toward. A row inserted after rows already written
-// under it adopts them: its chain is marked whether or not the write is
-// claimed, and so is the row itself when it is an anchor, whose card
-// holds them from its first read.
-func subagentMarkInsertSQL() string {
-	adopts := aggHasChildSQL("NEW.thread_id", "NEW.id", "")
-	gate := `(` + aggBulkIdleSQL("NEW.thread_id") + `
-	   AND ((NEW.parent_id <> '' AND ` + visibleItemsFilterFor("NEW.") + ` AND NOT ` + aggClaimedSQL("NEW") + `)
-	        OR ((NEW.parent_id <> '' OR ` + aggAnchorableSQL("NEW.") + `) AND ` + adopts + `)))`
-	return aggMarkDirtySQL(gate, aggChainCTE("agg_chain", "NEW", gate), aggChainMarksSQL("agg_chain")+`
-	    UNION ALL
-	    SELECT NEW.thread_id, NEW.id WHERE `+aggAnchorableSQL("NEW.")+` AND `+adopts)
-}
-
-// subagentMarkDeleteSQL marks OLD's chain, which loses OLD and its
-// subtree, and for a prompt the carrier whose round it opened.
-func subagentMarkDeleteSQL() string {
-	gate := `(` + aggBulkIdleSQL("OLD.thread_id") + ` AND OLD.parent_id <> '' AND ` + visibleItemsFilterFor("OLD.") + `)`
-	return aggMarkDirtySQL(gate, aggChainCTE("agg_chain", "OLD", gate), aggChainMarksSQL("agg_chain")+`
-	    UNION ALL
-	    SELECT OLD.thread_id, `+aggPromptCarrierSQL("OLD.")+` WHERE `+aggIsPromptSQL("OLD."))
-}
-
-// subagentMarkUpdateSQL marks what an update changed:
-//
-//   - a structural change, to the row's parent, position, thread,
-//     visibility or prompt identity, moves it between rounds or cards:
-//     both chains, and the carriers an old and a new prompt name, whether
-//     or not the write is claimed;
-//   - an unclaimed change to a preview-kind child's summary, kind or tool
-//     may move its rounds' previews or its parent's tray: NEW's chain;
-//   - a row that becomes an anchor, or whose transcript root changes,
-//     when it has a stamp or children to count: the row itself.
-//
-// Status, updated_at, payload and meta-only writes match none of these
-// and run nothing. A row that stops being an anchor loses its stamp
-// (subagentAggregateUnanchorSQL).
-func subagentMarkUpdateSQL() string {
-	visOld, visNew := visibleItemsFilterFor("OLD."), visibleItemsFilterFor("NEW.")
-	structural := `((` + visOld + ` OR ` + visNew + `) AND (OLD.parent_id <> '' OR NEW.parent_id <> '') AND (
-	      OLD.id IS NOT NEW.id OR OLD.thread_id IS NOT NEW.thread_id OR OLD.parent_id IS NOT NEW.parent_id
-	   OR OLD.turn_index IS NOT NEW.turn_index OR OLD.item_index IS NOT NEW.item_index
-	   OR (` + visOld + `) IS NOT (` + visNew + `)
-	   OR ` + aggIsPromptSQL("OLD.") + ` IS NOT ` + aggIsPromptSQL("NEW.") + `
-	   OR (` + aggIsPromptSQL("NEW.") + ` AND ` + aggPromptCarrierSQL("OLD.") + ` IS NOT ` + aggPromptCarrierSQL("NEW.") + `)))`
-	previewKind := func(a string) string {
-		return "(" + a + "kind IN ('" + strings.Join(subagentPreviewKinds, "', '") + "'))"
-	}
-	content := `(NOT ` + aggClaimedSQL("NEW") + ` AND NEW.parent_id <> '' AND ` + visNew + `
-	   AND (OLD.summary IS NOT NEW.summary OR OLD.kind IS NOT NEW.kind OR OLD.tool_name IS NOT NEW.tool_name)
-	   AND (` + previewKind("OLD.") + ` OR ` + previewKind("NEW.") + `))`
-	rootChanged := "(OLD.meta IS NOT NEW.meta AND " + aggJX("OLD.meta", "$."+metaKeyTranscriptRootID) +
-		" IS NOT " + aggJX("NEW.meta", "$."+metaKeyTranscriptRootID) + ")"
-	self := `(` + aggAnchorableSQL("NEW.") + ` AND (NOT ` + aggAnchorableSQL("OLD.") + ` OR ` + rootChanged + `)
-	   AND (NOT ` + aggAnchorableSQL("OLD.") + `
-	        OR EXISTS (SELECT 1 FROM subagent_aggregates ss WHERE ss.thread_id = NEW.thread_id AND ss.item_id = NEW.id)
-	        OR ` + aggHasChildSQL("NEW.thread_id", "NEW.id", "") + `))`
-	idle := aggBulkIdleSQL("NEW.thread_id")
-	gate := `(` + idle + ` AND (` + structural + ` OR ` + content + ` OR ` + self + `))`
-	return aggMarkDirtySQL(gate,
-		aggChainCTE("agg_chain_new", "NEW", `(`+idle+` AND (`+structural+` OR `+content+`))`)+`,
-	    `+aggChainCTE("agg_chain_old", "OLD", `(`+idle+` AND `+structural+`)`),
-		aggChainMarksSQL("agg_chain_new")+`
-	    UNION ALL
-	    `+aggChainMarksSQL("agg_chain_old")+`
-	    UNION ALL
-	    SELECT OLD.thread_id, `+aggPromptCarrierSQL("OLD.")+` WHERE `+aggIsPromptSQL("OLD.")+` AND `+structural+`
-	    UNION ALL
-	    SELECT NEW.thread_id, `+aggPromptCarrierSQL("NEW.")+` WHERE `+aggIsPromptSQL("NEW.")+` AND `+structural+`
-	    UNION ALL
-	    SELECT NEW.thread_id, NEW.id WHERE `+self)
-}
-
-// The statements are built once: the trigger DDL embeds them, and the
-// plan tests prepare the same text.
-var (
-	subagentMarkInsertStmt      = subagentMarkInsertSQL()
-	subagentMarkUpdateStmt      = subagentMarkUpdateSQL()
-	subagentMarkDeleteStmt      = subagentMarkDeleteSQL()
-	subagentStripServedKeysStmt = subagentStripServedKeysSQL("NEW")
-)

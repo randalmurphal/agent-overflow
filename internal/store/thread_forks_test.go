@@ -33,7 +33,7 @@ func TestCloneThreadItemsRespectsThroughTurnIndex(t *testing.T) {
 		{ID: "a2", ThreadID: "t-slice-src", TurnIndex: 2, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", Summary: "r2", Status: "completed", CreatedAt: now, UpdatedAt: now},
 	}
 	for _, it := range items {
-		if err := s.InsertItem(it); err != nil {
+		if err := insertCarded(s, it); err != nil {
 			t.Fatalf("InsertItem %s: %v", it.ID, err)
 		}
 	}
@@ -100,7 +100,7 @@ func TestCloneThreadItemsExcludesRunningBackgroundRows(t *testing.T) {
 		{ID: "inline-run", ThreadID: "t-fork-src", TurnIndex: 1, ItemIndex: 4, Kind: "tool_call", Role: "assistant", Status: "running", Summary: "Read: /tmp/x", ToolName: "Read", CreatedAt: now, UpdatedAt: now},
 	}
 	for _, it := range items {
-		if err := s.InsertItem(it); err != nil {
+		if err := insertCarded(s, it); err != nil {
 			t.Fatalf("InsertItem %s: %v", it.ID, err)
 		}
 	}
@@ -177,7 +177,7 @@ func TestCloneThreadItemsNoBackgroundRowsCopiesEverything(t *testing.T) {
 		{ID: "sibling", ThreadID: "t-fork-nobg-src", TurnIndex: 1, ItemIndex: 4, Kind: "tool_completion", Role: "assistant", Status: "completed", CompletionOf: "tool-done", Summary: "Read: bar.ts -> done", ToolName: "Read", CreatedAt: now, UpdatedAt: now},
 	}
 	for _, it := range items {
-		if err := s.InsertItem(it); err != nil {
+		if err := insertCarded(s, it); err != nil {
 			t.Fatalf("InsertItem %s: %v", it.ID, err)
 		}
 	}
@@ -244,7 +244,7 @@ func seedForkSource(t *testing.T, s *Store, src, dst string, rows []Item) {
 	for _, it := range rows {
 		it.ThreadID = src
 		it.CreatedAt, it.UpdatedAt = now, now
-		if err := s.InsertItem(it); err != nil {
+		if err := insertCarded(s, it); err != nil {
 			t.Fatalf("InsertItem %s: %v", it.ID, err)
 		}
 	}
@@ -501,7 +501,7 @@ func TestCloneThreadHistoryBeforeItemSkipsDescendantsOfExcludedRows(t *testing.T
 	cloneHistoryFixture(t, s, "t-hist-dsrc", "t-hist-ddst", true)
 	// A child of `queued2` — a top-level user row the promoted cut drops
 	// while keeping its own (later, assistant) position.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "queued2-child", ThreadID: "t-hist-dsrc", TurnIndex: 1, ItemIndex: 5,
 		Kind: "assistant_text", Role: "assistant", ParentID: "queued2", CreatedAt: 1_015,
 	}); err != nil {
@@ -598,7 +598,7 @@ func TestCloneThreadItemsPreservesInputPayloadID(t *testing.T) {
 	if err := s.PutEditFileSnapshot("t-input-src", "p-edit-input", "foo.go", "source at fork", now); err != nil {
 		t.Fatalf("put source snapshot: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "edit-src", ThreadID: "t-input-src", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", Summary: "Edit foo.go",
 		ToolName: "Edit", InputPayloadID: "p-edit-input",
@@ -865,7 +865,7 @@ func cloneHistoryFixture(t *testing.T, s *Store, src, dst string, promotedAnchor
 	}
 	for _, it := range rows {
 		it.ThreadID = src
-		if err := s.InsertItem(it); err != nil {
+		if err := insertCarded(s, it); err != nil {
 			t.Fatalf("insert %s: %v", it.ID, err)
 		}
 	}
@@ -1009,14 +1009,14 @@ func TestCloneThreadHistoryBeforeItemPromotedBoundaryCutsResponse(t *testing.T) 
 	}, 2_000); err != nil {
 		t.Fatalf("stamp boundary: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "subprompt", ThreadID: "t-hist-bsrc", TurnIndex: 1, ItemIndex: 5,
 		Kind: "user_text", Role: "user", ParentID: "pre", CreatedAt: 1_015,
 	}); err != nil {
 		t.Fatalf("insert subprompt: %v", err)
 	}
 	for i, id := range []string{"resp1", "resp2"} {
-		if err := s.InsertItem(Item{
+		if err := insertCarded(s, Item{
 			ID: id, ThreadID: "t-hist-bsrc", TurnIndex: 1, ItemIndex: 6 + i,
 			Kind: "assistant_text", Role: "assistant", CreatedAt: 1_016 + int64(i),
 		}); err != nil {

@@ -275,7 +275,7 @@ func TestDeleteConversationFromItemPromotedAnchorKeepsSameTurnTail(t *testing.T)
 		}
 	}
 	for _, r := range rows {
-		if err := s.InsertItem(Item{
+		if err := insertCarded(s, Item{
 			ID:        r.id,
 			ThreadID:  "t-promo",
 			TurnIndex: r.turn,
@@ -390,7 +390,7 @@ func TestDeleteConversationFromItemTrimsAnchorTurnSettle(t *testing.T) {
 		{3, "t-trim-response", "assistant", base + 20},
 	}
 	for _, r := range rows {
-		if err := s.InsertItem(Item{
+		if err := insertCarded(s, Item{
 			ID:        r.id,
 			ThreadID:  "t-trim",
 			TurnIndex: 0,
@@ -441,7 +441,7 @@ func TestDeleteConversationFromItemLeavesActiveAnchorTurnAlone(t *testing.T) {
 		t.Fatalf("insert turn: %v", err)
 	}
 	for i, id := range []string{"t-active-prompt", "t-active-anchor"} {
-		if err := s.InsertItem(Item{
+		if err := insertCarded(s, Item{
 			ID:        id,
 			ThreadID:  "t-active",
 			TurnIndex: 0,
@@ -504,7 +504,7 @@ func insertDeleteConversationRows(t *testing.T, s *Store, threadID string, turns
 			t.Fatalf("insert turn %s %d: %v", threadID, turn, err)
 		}
 		for i := 0; i < 2; i++ {
-			if _, err := s.AppendItem(Item{
+			if _, err := appendCarded(s, Item{
 				ID:        fmt.Sprintf("%s-item-%d-%d", threadID, turn, i),
 				ThreadID:  threadID,
 				TurnIndex: turn,
@@ -569,7 +569,7 @@ func TestDeleteConversationFromItemAtPickupAnchorKeepsSettle(t *testing.T) {
 		{1, 0, "t-pickup-response", "assistant", base + 120},
 	}
 	for _, r := range rows {
-		if err := s.InsertItem(Item{
+		if err := insertCarded(s, Item{
 			ID: r.id, ThreadID: "t-pickup", TurnIndex: r.turn, ItemIndex: r.idx,
 			Kind: "user_text", Role: r.role, CreatedAt: r.createdAt,
 		}); err != nil {
@@ -639,7 +639,7 @@ func TestDeleteConversationFromItemPromotedBoundaryCutsResponse(t *testing.T) {
 		{7, "t-bound-resp2", "assistant", "", "", base + 7},
 	}
 	for _, r := range rows {
-		if err := s.InsertItem(Item{
+		if err := insertCarded(s, Item{
 			ID: r.id, ThreadID: "t-bound", TurnIndex: 0, ItemIndex: r.idx,
 			Kind: "user_text", Role: r.role, Meta: r.meta, ParentID: r.parentID,
 			CreatedAt: r.createdAt,

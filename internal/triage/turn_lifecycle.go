@@ -1491,7 +1491,13 @@ func (r *Router) flipTurnItemsErrored(
 	}
 	for _, item := range items {
 		for (item.Status == statusRunning || item.Status == statusStreaming) && !(item.IsBackground && item.Kind == itemKindToolCall) {
-			persisted, changed, err := r.store.ErrorActiveItemIfRevision(threadID, item.ID, item.Rev, summaryFn(item.Summary), now)
+			var persisted store.Item
+			var changed bool
+			err := r.withSubagentCard(threadID, item.ParentID, func(card *store.SubagentCard) error {
+				var err error
+				persisted, changed, err = r.store.ErrorActiveItemIfRevision(threadID, item.ID, item.Rev, summaryFn(item.Summary), now, card)
+				return err
+			})
 			if err != nil {
 				return fmt.Errorf("error flip item %s: %w", item.ID, err)
 			}
@@ -1553,7 +1559,7 @@ func stoppedSummary(summary string) string {
 func (r *Router) RecoverCrashedTurns() (int, error) {
 	crashed, err := r.store.RecoverCrashedTurns(interruptedSummary, time.Now().UnixMilli())
 	if err != nil {
-		return 0, fmt.Errorf("triage: recover crashed turns: %w", err)
+		return len(crashed), fmt.Errorf("triage: recover crashed turns: %w", err)
 	}
 	return len(crashed), nil
 }
@@ -1778,8 +1784,12 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		hasPendingProgress     bool
 		closedCodexAgents      []closedCodexAgent
 		heldCodexCompletions   map[string]pendingCodexCompletion
+		idleSubagentCards      []*subagentCardEntry
 	)
 	if st != nil {
+		// The cards are store handles: closed below, once r.mu is
+		// released, or by the write still holding one.
+		idleSubagentCards = st.retireSubagentCardsLocked("")
 		if st.codexBackground != nil {
 			for _, item := range st.codexBackground.agents {
 				if codexRuntimeActive(item) {
@@ -1809,6 +1819,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 		effectiveModelRevision = r.nextEffectiveModelRevisionLocked(threadID)
 	}
 	r.mu.Unlock()
+	closeSubagentCards(threadID, idleSubagentCards)
 
 	if hadEffectiveModel {
 		r.emit(eventchan.ProviderModelFallback, ModelFallbackEvent{ThreadID: threadID, Revision: effectiveModelRevision})

@@ -300,12 +300,12 @@ func TestImportedDescendantsKeepWireDecorationAndAncestorRevisions(t *testing.T)
 	for _, thread := range []string{"source", "local"} {
 		row := launch
 		row.ThreadID = thread
-		if err := s.InsertItem(row); err != nil {
+		if err := insertCarded(s, row); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, child := range children("local") {
-		if err := s.InsertItem(child); err != nil {
+		if err := insertCarded(s, child); err != nil {
 			t.Fatal(err)
 		}
 	}

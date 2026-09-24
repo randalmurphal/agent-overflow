@@ -584,6 +584,11 @@ func (r *Router) persistToolCallCompletion(evt provider.ProviderEvent, launch st
 			payload = nil
 		}
 	}
+	// An awaited agent settles here: its card is flushed first, so the
+	// settled row reads the card it ends with.
+	if r.subagentCardOpen(evt.ThreadID, launch.ID) {
+		r.settleSubagentCard(evt.ThreadID, launch.ID)
+	}
 	persisted, err := r.persistItemWithEmit(launch, payload, inputPayload, true)
 	if err != nil {
 		return err
@@ -1300,6 +1305,8 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 		// tray state to refresh.
 		return nil
 	}
+	// The sibling reads the card its launch ends with.
+	r.settleSubagentCard(evt.ThreadID, launch.ID)
 
 	var notification store.Item
 	var notificationFound bool
@@ -1325,7 +1332,7 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 	// adding it would grow a mounted card, which the row contract
 	// forbids — same rule as the enrich path.
 	var existing *store.Item
-	if persisted, ok, err := r.store.GetThreadItem(evt.ThreadID, completionID); err != nil {
+	if persisted, ok, err := r.store.GetThreadItemForWrite(evt.ThreadID, completionID); err != nil {
 		return fmt.Errorf("bg task terminal existing lookup %s: %w", completionID, err)
 	} else if ok {
 		existing = &persisted

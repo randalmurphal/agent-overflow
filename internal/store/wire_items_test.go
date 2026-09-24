@@ -41,7 +41,7 @@ func TestItemReadNeedsDecoration(t *testing.T) {
 	seedAnchorThread(t, s)
 	bash := contractItem("t", "bash", 20)
 	bash.Kind, bash.ToolName = "tool_call", "Bash"
-	if err := s.InsertItem(bash); err != nil {
+	if err := insertCarded(s, bash); err != nil {
 		t.Fatalf("insert bash: %v", err)
 	}
 	rowOf := func(id string) Item {
