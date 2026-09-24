@@ -512,12 +512,6 @@ func subagentAnchorIDs(q sqlQueryer, query string, args ...any) ([]string, error
 // first write; nil bumps it once here. It returns every member, written
 // or not, for the card accumulators.
 func recomputeSubagentFamiliesTx(tx *sql.Tx, threadID string, seeds []string, bump func() error) ([]subagentFamilyMember, error) {
-	return rewriteSubagentFamiliesTx(tx, threadID, seeds, bump, false)
-}
-
-// rewriteSubagentFamiliesTx is recomputeSubagentFamiliesTx; all writes
-// every member at a new generation, its values changed or not.
-func rewriteSubagentFamiliesTx(tx *sql.Tx, threadID string, seeds []string, bump func() error, all bool) ([]subagentFamilyMember, error) {
 	members, err := computeSubagentFamilies(tx, threadID, seeds)
 	if err != nil {
 		return nil, err
@@ -525,7 +519,7 @@ func rewriteSubagentFamiliesTx(tx *sql.Tx, threadID string, seeds []string, bump
 	var writes []subagentStampWrite
 	var written []int
 	for i := range members {
-		if !all && !members[i].changed() {
+		if !members[i].changed() {
 			continue
 		}
 		members[i].gen = newSubagentGen()

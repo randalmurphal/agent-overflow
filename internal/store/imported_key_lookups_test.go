@@ -318,6 +318,9 @@ func keyedLookups(th string) []keyedLookup {
 			roots := []string{"launch-1"}
 			must[map[string]subagentAnchorAggregate](t, "aggregates")(subagentAggregatesByRound(q, th, roots, subagentRoundBoundsFor(roots, named, nil)))
 			must[int](t, "completed child index")(s.SubagentCompletedChildIndex(th, "launch-1"))
+			if tray, err := latestDirectSubagentTools(q, th, []string{"launch-1"}); err != nil || tray["launch-1"].id != "child-1" {
+				t.Errorf("tray of launch-1 = %+v, %v; want child-1", tray, err)
+			}
 		}},
 		{name: "ThreadTurnPreview", run: func(t *testing.T, s *Store) {
 			mustFind[TurnPreview](t, "preview")(s.ThreadTurnPreview(th, "user-2"))

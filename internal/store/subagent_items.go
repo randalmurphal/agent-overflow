@@ -569,11 +569,15 @@ func subagentStampReads(q sqlQueryer, threadID string, ids []string) (map[string
 	return out, nil
 }
 
-// walks reports whether the read-time aggregator answers for one
-// anchorable row: an imported row, a dirty or readTime stamp, an
-// unstamped carrier, or an unstamped anchor of a thread whose backfill is
-// pending.
+// walks reports whether the read-time aggregator answers for one row: an
+// anchorable row that is imported, has a dirty or readTime stamp, is an
+// unstamped carrier, or is an unstamped anchor of a thread whose backfill
+// is pending. A row that does not anchor, such as a Codex spawn row a
+// completion sibling names, is never walked.
 func (d *subagentWalkDecider) walks(item Item) (bool, error) {
+	if !SubagentAnchorable(item.Kind, item.ToolName) {
+		return false, nil
+	}
 	if item.Rev < 0 {
 		return true, nil
 	}
@@ -947,29 +951,50 @@ func (s *Store) decorateLatestDirectSubagentTools(q sqlQueryer, threadID string,
 }
 
 // latestDirectSubagentTool is a launch's tray activity: its newest direct
-// tool_call child that is not a Codex spawn and has a nonblank summary.
-// (turn_index, item_index) is unique within a thread, so the order has no
-// ties. The summary is trimmed with the ASCII set the triggers use, so a
-// stamp and this read agree byte for byte.
+// tool_call child that is not a Codex spawn and has a nonblank summary,
+// wherever the thread's timeline stores it. (turn_index, item_index) is
+// unique within a thread, so the order has no ties. The summary is trimmed
+// with the ASCII set the triggers use, so a stamp and this read agree byte
+// for byte.
 type latestDirectSubagentTool struct {
 	id, summary          string
 	turnIndex, itemIndex int
 }
 
-// latestDirectSubagentToolSQL reads one launch's tray activity backwards
-// along idx_items_parent, stopping at the first qualifying child.
-var latestDirectSubagentToolSQL = `SELECT id, trim(summary, ` + aggBlankSQL + `), turn_index, item_index
-  FROM items
- WHERE thread_id = ? AND parent_id = ? AND parent_id <> ''
-   AND ` + aggToolableSQL("") + `
- ORDER BY turn_index DESC, item_index DESC
- LIMIT 1`
+// latestDirectSubagentToolSelection selects one launch's tray activity
+// over every timeline arm: its own rows, its imported history and the rows
+// a pointer fork inherits, as the descendant walk counts them. Each arm
+// reads the launch's children by key: a local arm backwards along
+// idx_items_parent, an imported arm through the parent lookup, sorting
+// that launch's imported children. The compound stops at the first
+// qualifying child.
+func latestDirectSubagentToolSelection(rootID string) timelineSelection {
+	return timelineSelection{
+		Columns: func(_, _ string) string {
+			return `items.id AS id, trim(items.summary, ` + aggBlankSQL + `) AS summary,
+			        items.turn_index AS turn_index, items.item_index AS item_index`
+		},
+		KeyFirst:  true,
+		Where:     "items.parent_id = ? AND items.parent_id <> '' AND " + aggToolableSQL("items."),
+		WhereArgs: []any{rootID},
+		OrderBy:   "turn_index DESC, item_index DESC",
+		Limit:     1,
+	}
+}
 
 func latestDirectSubagentTools(q sqlQueryer, threadID string, rootIDs []string) (map[string]latestDirectSubagentTool, error) {
 	out := make(map[string]latestDirectSubagentTool, len(rootIDs))
+	if len(rootIDs) == 0 {
+		return out, nil
+	}
+	depth, err := forkLineageDepth(q, threadID)
+	if err != nil {
+		return nil, err
+	}
 	for _, rootID := range rootIDs {
+		query, args := renderTimelineArms(threadID, depth, latestDirectSubagentToolSelection(rootID))
 		var latest latestDirectSubagentTool
-		err := q.QueryRow(latestDirectSubagentToolSQL, threadID, rootID).
+		err := q.QueryRow(query, args...).
 			Scan(&latest.id, &latest.summary, &latest.turnIndex, &latest.itemIndex)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue

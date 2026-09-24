@@ -143,22 +143,18 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 	return true, nil
 }
 
-// recomputeLocalizedCardsTx recomputes, with their families, the cards
+// recomputeLocalizedCardsTx recomputes, with their families, the stamps
 // that moving ids from a read-only arm (imported history, an ancestor's
-// rows) into threadID's items changes. A read shows the same rows, but a
-// card reads its tray from local rows only (latestDirectSubagentToolSQL),
-// a round whose prompt is not local is readTime, and only a local anchor
-// holds a stamp. So the cards are: the parent of a moved tool call or
-// prompt, a moved carrier, a moved root a local carrier names, and a
-// moved anchor with a visible child in any arm; a moved anchor with none
-// stays unstamped, as a new anchor does. Every member of their families
-// is written at a new generation, its values changed or not, so each is
-// served anew: a walked member's read changes with its tray though its
-// stamp does not, and no write of its own follows a hand-off. The thread
-// stamp advances before the first stamp write, under history_bulk_load
-// too. An accumulator a card holds for a member recomputes once a note
-// reaches it (flushCardsTx checks the generation of every stamp a note
-// reached).
+// rows) into threadID's items changes. A read shows the same rows and the
+// same cards, since the walk and the recompute read every arm, but a
+// round whose prompt is not local is readTime, and only a local anchor
+// holds a stamp. So the stamps are: the parent of a moved prompt, a moved
+// carrier, a moved root a local carrier names, and a moved anchor with a
+// visible child in any arm; a moved anchor with none stays unstamped, as
+// a new anchor does. The thread stamp advances before the first stamp
+// write, under history_bulk_load too. An accumulator a card holds for a
+// member recomputes once a note reaches it (flushCardsTx checks the
+// generation of every stamp a note reached).
 func recomputeLocalizedCardsTx(tx *sql.Tx, threadID string, ids []string, label string) error {
 	if len(ids) == 0 {
 		return nil
@@ -200,24 +196,24 @@ func recomputeLocalizedCardsTx(tx *sql.Tx, threadID string, ids []string, label 
 		return nil
 	}
 	bumped := false
-	_, err = rewriteSubagentFamiliesTx(tx, threadID, seeds, func() error {
+	_, err = recomputeSubagentFamiliesTx(tx, threadID, seeds, func() error {
 		if bumped {
 			return nil
 		}
 		bumped = true
 		return bumpHistoryRevTx(tx, threadID, label+" serve localized cards")
-	}, true)
+	})
 	return err
 }
 
 // localizedCardsSQL selects, among the rows ?2 (a JSON array) moved into
-// ?1's items, the parents of tool calls and prompts, the carriers, and the
-// roots a local carrier names. Each moved row is read by key; the carrier
-// probe compares with `+m.id` so idx_items_transcript_root serves the
-// value, as in stampedRowIDsFor.
+// ?1's items, the parents of prompts, the carriers, and the roots a local
+// carrier names. Each moved row is read by key; the carrier probe
+// compares with `+m.id` so idx_items_transcript_root serves the value, as
+// in stampedRowIDsFor.
 var localizedCardsSQL = `SELECT m.parent_id FROM json_each(?2) AS moved
   CROSS JOIN items m ON m.thread_id = ?1 AND m.id = moved.value
- WHERE m.parent_id <> '' AND (` + aggToolableSQL("m.") + ` OR ` + aggPromptSQL("m.") + `)
+ WHERE m.parent_id <> '' AND ` + aggPromptSQL("m.") + `
 UNION
 SELECT m.id FROM json_each(?2) AS moved
   CROSS JOIN items m ON m.thread_id = ?1 AND m.id = moved.value

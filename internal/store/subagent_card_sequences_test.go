@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"maps"
@@ -23,7 +24,9 @@ import (
 // took, naming its carrier, another root's, one another prompt names, the
 // root itself, a row that is no carrier, or a carrier not stored yet;
 // completion siblings; summary changes of preview rows, tray rows
-// and other rows; status changes and interrupts; moves; position changes;
+// and other rows; a thread's own copy of a tool call it reads from its
+// imported history or an ancestor, which leaves its parent's tray line
+// as it was; status changes and interrupts; moves; position changes;
 // kind, tool and visibility changes; meta changes that settle a
 // background launch, make or re-root a carrier or change a prompt;
 // streaming appends; deletes of prompts, carriers and anchors; the bulk
@@ -117,6 +120,7 @@ func cardSequenceOps() []cardSequenceOpKind {
 		{"prompt", 6, true, (*cardSequence).opPrompt},
 		{"completion", 3, true, (*cardSequence).opCompletion},
 		{"summary", 10, true, (*cardSequence).opSummary},
+		{"localize", 4, true, (*cardSequence).opLocalize},
 		{"status", 7, true, (*cardSequence).opStatus},
 		{"interrupt", 2, true, (*cardSequence).opInterrupt},
 		{"move", 4, true, (*cardSequence).opMove},
@@ -434,7 +438,7 @@ func before(rows []seqRow, r seqRow) (int, int, bool) {
 
 // place is where a new row under parent goes: mostly the end of the open
 // turn, sometimes just before a row, one of parent's when it has any. A
-// fork's rows go after its cut, at the end of the open turn.
+// fork's rows go after its cut, at the end of its open turn (writeTurn).
 func (q *cardSequence) place(rows []seqRow, parent string) (turn, index int, explicit bool) {
 	if q.chance(20) && !q.inFork() {
 		candidates := where(rows, childOf(parent))
@@ -447,8 +451,32 @@ func (q *cardSequence) place(rows []seqRow, parent string) (turn, index int, exp
 			}
 		}
 	}
-	turn, index = appendAt(rows, q.turn)
+	turn, index = appendAt(rows, q.writeTurn())
 	return turn, index, false
+}
+
+// writeTurn is the turn a new row goes to: the open turn, or in a fork
+// whose cut the open turn precedes, after a revert of the thread it was
+// cut from, the turn after the cut. A fork of a thread with no rows has
+// no lineage.
+func (q *cardSequence) writeTurn() int {
+	q.t.Helper()
+	if !q.inFork() {
+		return q.turn
+	}
+	var cut int
+	err := q.s.reader().QueryRow(`SELECT cut_turn_index FROM thread_fork_lineage WHERE thread_id = ? AND depth = 1`,
+		q.thread).Scan(&cut)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return q.turn
+	case err != nil:
+		q.t.Fatalf("read the cut of %s: %v", q.thread, err)
+	}
+	if q.turn < cut {
+		return cut + 1
+	}
+	return q.turn
 }
 
 func describe(item Item) string {
@@ -725,7 +753,7 @@ func (q *cardSequence) opPrompt(rows []seqRow) (cardSequenceOp, bool) {
 		carrier, how = q.id("C"), "a carrier not stored yet"
 	}
 	item := Item{ID: q.id("P"), Kind: "user_text", Role: "user", Summary: "resume", ParentID: root.ID, Meta: resumePromptMeta(carrier)}
-	item.TurnIndex, item.ItemIndex = appendAt(rows, q.turn)
+	item.TurnIndex, item.ItemIndex = appendAt(rows, q.writeTurn())
 	explicit, at := false, "after"
 	if kid, ok := choose(q.rng, where(rows, childOf(root.ID))); ok && q.chance(35) && !q.inFork() {
 		if turn, index, ok := before(rows, kid); ok {
@@ -751,7 +779,7 @@ func (q *cardSequence) opCompletion(rows []seqRow) (cardSequenceOp, bool) {
 	item := Item{ID: "done-" + launch.ID, Kind: "tool_completion", ToolName: launch.ToolName, Status: "completed",
 		Summary: "done " + launch.ID, ParentID: launch.ParentID, CompletionOf: launch.ID, IsBackground: true}
 	if q.chance(30) {
-		item.ThreadID, item.TurnIndex, item.Role, item.Meta = q.thread, q.turn, "assistant", "{}"
+		item.ThreadID, item.TurnIndex, item.Role, item.Meta = q.thread, q.writeTurn(), "assistant", "{}"
 		item.CreatedAt, item.UpdatedAt = q.now(), q.now()
 		item.SubagentCard = q.card(item.ParentID)
 		return cardSequenceOp{"AppendCompletionItem " + describe(item), func() error {
@@ -759,7 +787,7 @@ func (q *cardSequence) opCompletion(rows []seqRow) (cardSequenceOp, bool) {
 			return err
 		}}, true
 	}
-	item.TurnIndex, item.ItemIndex = appendAt(rows, q.turn)
+	item.TurnIndex, item.ItemIndex = appendAt(rows, q.writeTurn())
 	return q.insert("completion sibling", item, false), true
 }
 
@@ -801,6 +829,40 @@ func (q *cardSequence) opSummary(rows []seqRow) (cardSequenceOp, bool) {
 		_, err := q.s.UpdateItemFields(q.thread, target.ID, ItemPartialUpdate{Summary: &summary, SubagentCard: card})
 		return err
 	}}, true
+}
+
+// opLocalize gives the thread its own copy of a tool call it reads from
+// its imported history or an ancestor, the row unchanged, with its
+// parent's card. The cards flush when the operation is built, so the
+// parent serves its settled tray line, and the copy must not change it:
+// the tray reads every arm.
+func (q *cardSequence) opLocalize(rows []seqRow) (cardSequenceOp, bool) {
+	target, ok := choose(q.rng, where(rows, func(r seqRow) bool { return !isLocal(r) && hasParent(r) && r.r.toolable() }))
+	if !ok {
+		return cardSequenceOp{}, false
+	}
+	q.refresh("")
+	card := q.card(target.ParentID)
+	status := target.Status
+	return cardSequenceOp{fmt.Sprintf("the cards flush, UpdateItemFields copies %s under %s unchanged", target.ID, target.ParentID), func() error {
+		before := q.trayLine(target.ParentID)
+		if _, err := q.s.UpdateItemFields(q.thread, target.ID, ItemPartialUpdate{Status: &status, SubagentCard: card}); err != nil {
+			return err
+		}
+		if after := q.trayLine(target.ParentID); after != before {
+			return fmt.Errorf("the copy of %s changed the tray line of %s from %s to %s", target.ID, target.ParentID, before, after)
+		}
+		return nil
+	}}, true
+}
+
+// trayLine is the tray line the thread serves for id: its latest tool's
+// summary and position.
+func (q *cardSequence) trayLine(id string) string {
+	q.t.Helper()
+	card := subagentCardsForTest(q.t, q.s, q.s.reader(), q.thread)[id]
+	return fmt.Sprintf("%q at %v.%v", card[metaKeySubagentLatestToolSummary],
+		card[metaKeySubagentLatestToolTurn], card[metaKeySubagentLatestToolItem])
 }
 
 func (q *cardSequence) opStatus(rows []seqRow) (cardSequenceOp, bool) {
@@ -1131,7 +1193,7 @@ func (q *cardSequence) opHistory(rows []seqRow) (cardSequenceOp, bool) {
 	if len(anchors) == 0 {
 		return cardSequenceOp{}, false
 	}
-	turn, index := appendAt(rows, q.turn)
+	turn, index := appendAt(rows, q.writeTurn())
 	var batch ThreadHistoryBatch
 	var ids []string
 	for range 1 + q.rng.Intn(3) {

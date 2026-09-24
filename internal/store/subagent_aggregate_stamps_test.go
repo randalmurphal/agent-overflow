@@ -1432,11 +1432,11 @@ func assertFamiliesAreSeedIndependent(t *testing.T, s *Store, thread, stage stri
 
 // TestSubagentLocalizedRowsServeTheirCards pins the cards a writer changes
 // when it moves rows into a thread's items: a write to an imported row,
-// and a fork's write to a row it inherits. A card reads its tray and its
-// rounds from local rows only, and only a local anchor holds a stamp.
-// After each write each row serves what the walk does, each stamp is the
-// recompute, and a local row whose served card changed is served anew. A
-// fork's open card goes on writing after its row was copied.
+// and a fork's write to a row it inherits. A round whose prompt is not
+// local is readTime, and only a local anchor holds a stamp. After each
+// write each row serves what the walk does, each stamp is the recompute,
+// and a local row whose served card changed is served anew. A fork's open
+// card goes on writing after its row was copied.
 func TestSubagentLocalizedRowsServeTheirCards(t *testing.T) {
 	status := func(value string) *string { return &value }
 	type write struct {
@@ -1564,50 +1564,217 @@ func TestSubagentLocalizedRowsServeTheirCards(t *testing.T) {
 		session.closeAll()
 		settled("after the session ends")
 	})
+}
 
-	// A source's write hands its old row off to the fork first. The copy
-	// changes the tray of the fork's own launch, which it walks: the launch
-	// is served anew with no write of its own.
-	t.Run("a hand-off under a fork's walked launch", func(t *testing.T) {
-		s := newTestStore(t)
-		const source, fork = "t-source", "t-source-fork"
-		mustCreateThread(t, s, source)
-		for _, r := range []stampFixtureRow{
-			{id: "L", kind: "tool_call", tool: "Agent", summary: "Agent: L", turn: 1},
-			{id: "c1", kind: "tool_call", tool: "Bash", summary: "Bash: c1", parent: "L", turn: 1, index: 1},
-			{id: "P", kind: "user_text", summary: "resume", parent: "L", meta: resumePromptMeta("L"), turn: 1, index: 2},
-		} {
-			insertWithCardForTest(t, s, r.item(source))
-		}
-		if err := s.CreatePointerFork(makeThread(fork, "claude"), source, ForkCut{}, testInterruptedSummary, 1); err != nil {
-			t.Fatal(err)
-		}
-		for _, w := range []struct {
-			desc, thread string
-			run          func() error
-		}{
-			{"the fork changes L", fork, func() error {
-				_, err := s.UpdateItemFields(fork, "L", ItemPartialUpdate{Status: status("errored")})
-				return err
-			}},
-			{"the source changes c1's summary", source, func() error {
-				return updateFieldsCarded(s, source, "L", "c1", ItemPartialUpdate{Summary: status("Bash: c1 again")})
-			}},
-		} {
-			cards, revs := subagentCardsForTest(t, s, s.reader(), fork), servedRevsForTest(t, s, fork)
-			if err := w.run(); err != nil {
-				t.Fatalf("%s: %v", w.desc, err)
+// TestSubagentTrayReadsEveryArm pins a launch's tray line wherever the
+// thread's timeline stores its tool calls: under an imported launch and an
+// inherited one, stamped and walked. The line is the newest direct tool
+// call on any arm; a copy of a row into the thread's items, localized or
+// handed off, the tray row or another, leaves it as it was, and a newer
+// local tool call takes it. After each step every row serves what the
+// walk does, each stamp is the recompute, and a local row whose served
+// card changed is served anew.
+func TestSubagentTrayReadsEveryArm(t *testing.T) {
+	status := func(value string) *string { return &value }
+	type step struct {
+		desc string
+		run  func(s *Store) error
+		// lines are the tray lines of L the step leaves, by thread.
+		lines map[string]string
+	}
+	run := func(t *testing.T, s *Store, steps []step) {
+		t.Helper()
+		for _, st := range steps {
+			cards := make(map[string]map[string]subagentCard, len(st.lines))
+			revs := make(map[string]map[string]int64, len(st.lines))
+			for thread := range st.lines {
+				cards[thread], revs[thread] = subagentCardsForTest(t, s, s.reader(), thread), servedRevsForTest(t, s, thread)
 			}
-			assertCardChangesServeAnew(t, s, fork, w.desc, cards, revs)
-			for _, thread := range []string{source, fork} {
-				assertSubagentStampParity(t, s, thread, "after "+w.desc+" in "+thread, true)
-				assertStampsAreTheRecompute(t, s, thread, "after "+w.desc+" in "+thread)
+			if st.run != nil {
+				if err := st.run(s); err != nil {
+					t.Fatalf("%s: %v", st.desc, err)
+				}
+			}
+			for _, thread := range slices.Sorted(maps.Keys(st.lines)) {
+				at := st.desc + " in " + thread
+				assertCardChangesServeAnew(t, s, thread, at, cards[thread], revs[thread])
+				assertSubagentStampParity(t, s, thread, "after "+at, true)
+				assertStampsAreTheRecompute(t, s, thread, "after "+at)
+				if got := subagentCardsForTest(t, s, s.reader(), thread)["L"][metaKeySubagentLatestToolSummary]; got != st.lines[thread] {
+					t.Errorf("after %s: L's tray line is %v, want %q", at, got, st.lines[thread])
+				}
 			}
 		}
-		if _, mode := subagentStampStateForTest(t, s, fork, "L"); mode != subagentStampWalk {
-			t.Errorf("the fork's L ends mode %d, want walked", mode)
+	}
+	// A resume prompt naming its own root leaves the family readTime, so
+	// L is walked wherever it is local.
+	endMode := func(walked bool) subagentStampMode {
+		if walked {
+			return subagentStampWalk
 		}
-	})
+		return subagentStampClean
+	}
+	for _, walked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("an imported launch, walked %v", walked), func(t *testing.T) {
+			s := newTestStore(t)
+			const thread = "t-tray"
+			newImportTargetThread(t, s, thread)
+			rows := []stampFixtureRow{
+				{id: "L", kind: "tool_call", tool: "Agent", summary: "Agent: L", meta: "{}", index: 10},
+				{id: "L-1", kind: "tool_call", tool: "Bash", summary: "Bash: one", parent: "L", meta: "{}", index: 20},
+				{id: "L-2", kind: "tool_call", tool: "Bash", summary: "Bash: two", parent: "L", meta: "{}", index: 30},
+				{id: "L-t", kind: "assistant_text", summary: "text", parent: "L", meta: "{}", index: 40},
+			}
+			if walked {
+				rows = append(rows, stampFixtureRow{id: "P", kind: "user_text", summary: "again", parent: "L", meta: resumePromptMeta("L"), index: 50})
+			}
+			batch := ImportBatch{Turns: []Turn{{TurnID: thread + ":imported", ThreadID: thread, StartedAt: 1_000}}}
+			for _, r := range rows {
+				batch.Rows = append(batch.Rows, ImportRow{Item: r.item(thread)})
+			}
+			if err := s.ApplyImportBatch(thread, batch); err != nil {
+				t.Fatalf("import: %v", err)
+			}
+			run(t, s, []step{
+				{"the thread imports L", nil, map[string]string{thread: "Bash: two"}},
+				{"localize L-1 under the imported L", func(s *Store) error {
+					return updateFieldsCarded(s, thread, "L", "L-1", ItemPartialUpdate{Status: status("completed")})
+				}, map[string]string{thread: "Bash: two"}},
+				{"localize L", func(s *Store) error {
+					_, err := s.UpdateItemFields(thread, "L", ItemPartialUpdate{Status: status("errored")})
+					return err
+				}, map[string]string{thread: "Bash: two"}},
+				{"localize L-2, the tray row, under the local L", func(s *Store) error {
+					return updateFieldsCarded(s, thread, "L", "L-2", ItemPartialUpdate{Status: status("completed")})
+				}, map[string]string{thread: "Bash: two"}},
+				{"a local tool call under L", func(s *Store) error {
+					return insertCarded(s, stampFixtureRow{id: "L-3", kind: "tool_call", tool: "Bash", summary: "Bash: three", parent: "L", turn: 1, index: 1}.item(thread))
+				}, map[string]string{thread: "Bash: three"}},
+			})
+			if _, mode := subagentStampStateForTest(t, s, thread, "L"); mode != endMode(walked) {
+				t.Errorf("L ends mode %d, want %d", mode, endMode(walked))
+			}
+		})
+
+		// A source's write hands its old row off to the fork first, with
+		// no write of the fork's own.
+		t.Run(fmt.Sprintf("an inherited launch, walked %v", walked), func(t *testing.T) {
+			s := newTestStore(t)
+			const source, fork = "t-source", "t-source-fork"
+			mustCreateThread(t, s, source)
+			rows := []stampFixtureRow{
+				{id: "L", kind: "tool_call", tool: "Agent", summary: "Agent: L", turn: 1},
+				{id: "L-1", kind: "tool_call", tool: "Bash", summary: "Bash: one", parent: "L", turn: 1, index: 1},
+				{id: "L-2", kind: "tool_call", tool: "Bash", summary: "Bash: two", parent: "L", turn: 1, index: 2},
+				{id: "L-t", kind: "assistant_text", summary: "text", parent: "L", turn: 1, index: 3},
+			}
+			if walked {
+				rows = append(rows, stampFixtureRow{id: "P", kind: "user_text", summary: "again", parent: "L", meta: resumePromptMeta("L"), turn: 1, index: 4})
+			}
+			for _, r := range rows {
+				insertWithCardForTest(t, s, r.item(source))
+			}
+			if err := s.CreatePointerFork(makeThread(fork, "claude"), source, ForkCut{}, testInterruptedSummary, 1); err != nil {
+				t.Fatal(err)
+			}
+			run(t, s, []step{
+				{"the fork reads L", nil, map[string]string{source: "Bash: two", fork: "Bash: two"}},
+				{"the source changes L-1, handing it off under the inherited L", func(s *Store) error {
+					return updateFieldsCarded(s, source, "L", "L-1", ItemPartialUpdate{Summary: status("Bash: one again")})
+				}, map[string]string{source: "Bash: two", fork: "Bash: two"}},
+				{"the fork changes L", func(s *Store) error {
+					_, err := s.UpdateItemFields(fork, "L", ItemPartialUpdate{Status: status("errored")})
+					return err
+				}, map[string]string{source: "Bash: two", fork: "Bash: two"}},
+				{"the source changes L-2, handing the tray row off under the fork's L", func(s *Store) error {
+					return updateFieldsCarded(s, source, "L", "L-2", ItemPartialUpdate{Summary: status("Bash: two again")})
+				}, map[string]string{source: "Bash: two again", fork: "Bash: two"}},
+				{"the fork writes a tool call under L", func(s *Store) error {
+					return insertCarded(s, stampFixtureRow{id: "L-3", kind: "tool_call", tool: "Bash", summary: "Bash: three", parent: "L", turn: 2, index: 1}.item(fork))
+				}, map[string]string{source: "Bash: two again", fork: "Bash: three"}},
+			})
+			if _, mode := subagentStampStateForTest(t, s, fork, "L"); mode != endMode(walked) {
+				t.Errorf("the fork's L ends mode %d, want %d", mode, endMode(walked))
+			}
+		})
+	}
+}
+
+// TestSubagentCompletionOfANonAnchorWalksNothing pins a completion
+// sibling whose launch does not anchor: a background launch rewritten as
+// a Codex spawn row. A read loads the launch to resolve the sibling, and
+// neither row takes a card, whether the thread's backfill is pending or
+// its anchors are stamped.
+func TestSubagentCompletionOfANonAnchorWalksNothing(t *testing.T) {
+	s := newTestStore(t)
+	const thread = "t-non-anchor"
+	mustCreateThread(t, s, thread)
+	for _, r := range []stampFixtureRow{
+		{id: "L", kind: "tool_call", tool: "collab_agent", summary: "Agent: L", background: true, turn: 1},
+		{id: "L-1", kind: "tool_call", tool: "Bash", summary: "Bash: one", parent: "L", turn: 1, index: 1},
+		{id: "L-done", kind: "tool_completion", tool: "Agent", summary: "done", background: true, completionOf: "L", turn: 1, index: 2},
+	} {
+		insertWithCardForTest(t, s, r.item(thread))
+	}
+	assertSubagentStampParity(t, s, thread, "a completion of a spawn row", true)
+	for _, id := range []string{"L", "L-done"} {
+		if card := subagentCardsForTest(t, s, s.reader(), thread)[id]; card[metaKeySubagentDescendantCount] != nil {
+			t.Errorf("%s serves the card %v", id, card)
+		}
+	}
+}
+
+// TestSubagentCardFlushRechecksARewrittenStamp pins the flush against a
+// stamp rewritten outside the cards while a card holds its accumulator,
+// as recomputeLocalizedCardsTx rewrites stamps: a note that leaves the
+// stale accumulator as it was makes the flush find the new generation and
+// recompute, rather than keep values the note changed.
+func TestSubagentCardFlushRechecksARewrittenStamp(t *testing.T) {
+	s := newTestStore(t)
+	const thread = "t-rewritten"
+	mustCreateThread(t, s, thread)
+	insertWithCardForTest(t, s, stampFixtureRow{id: "L", kind: "tool_call", tool: "Agent", summary: "Agent: L", status: "running", turn: 1}.item(thread))
+	session := newCardSessionForTest(t, s, thread)
+	for _, r := range []stampFixtureRow{
+		{id: "c1", kind: "tool_call", tool: "Bash", summary: "Bash: one", parent: "L", turn: 1, index: 1},
+		{id: "c2", kind: "tool_call", tool: "Bash", summary: "Bash: two", parent: "L", turn: 1, index: 2},
+	} {
+		item := r.item(thread)
+		item.SubagentCard = session.card("L")
+		if err := s.InsertItem(item); err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+	session.flush()
+
+	// Outside the cards, c2 stops qualifying and L's stamp is recomputed
+	// at a new generation, its tray back on c1.
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`UPDATE items SET summary = '  ' WHERE thread_id = ? AND id = 'c2'`, thread); err != nil {
+		t.Fatal(errors.Join(err, tx.Rollback()))
+	}
+	if _, err := recomputeSubagentFamiliesTx(tx, thread, []string{"L"}, nil); err != nil {
+		t.Fatal(errors.Join(err, tx.Rollback()))
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// c1's summary change reaches L's accumulator, whose tray row is still
+	// c2, and leaves it as it was.
+	summary := "Bash: one again"
+	if _, err := s.UpdateItemFields(thread, "c1", ItemPartialUpdate{Summary: &summary, SubagentCard: session.card("L")}); err != nil {
+		t.Fatal(err)
+	}
+	session.flush()
+	assertSubagentStampParity(t, s, thread, "after the flush", true)
+	if got := subagentCardsForTest(t, s, s.reader(), thread)["L"][metaKeySubagentLatestToolSummary]; got != summary {
+		t.Errorf("L's tray line is %v, want %q", got, summary)
+	}
+	session.closeAll()
 }
 
 // assertCardChangesServeAnew fails on a local row whose served card

@@ -571,7 +571,6 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 		{"served row", `SELECT ` + itemColumns + ` FROM items LEFT JOIN payloads ON payloads.thread_id = items.thread_id
 		  AND payloads.id = items.payload_id` + servedItemJoin + ` WHERE items.thread_id = ? AND items.id = ?`,
 			"SEARCH agg_served USING PRIMARY KEY (thread_id=? AND item_id=?)", []any{thread, "L"}, boundedPlan{}},
-		{"latest direct tool", latestDirectSubagentToolSQL, "idx_items_parent", []any{thread, "L"}, boundedPlan{}},
 		{"carriers of roots", subagentCarriersSQL, "idx_items_transcript_root (thread_id=? AND <expr>=?)", []any{thread, ids}, listed},
 		{"stamp targets", subagentStampTargetsSQL, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", []any{thread, ids}, listed},
 		{"chain marked dirty", markSubagentAnchorsDirtySQL, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", []any{thread, ids}, listed},
@@ -596,6 +595,31 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 		text := assertBoundedPlan(t, s, tc.name, tc.allowed, tc.query, tc.args...)
 		if !strings.Contains(text, tc.index) {
 			t.Errorf("%s does not use %s:\n%s", tc.name, tc.index, text)
+		}
+	}
+
+	// The tray reads one launch's children on every arm of the thread and
+	// of a pointer fork of it. Each local arm walks idx_items_parent
+	// backwards; each imported arm probes the parent lookup, as the
+	// descendant walk does, and sorts that launch's imported children, the
+	// only sorts the plan holds.
+	if err := s.CreatePointerFork(makeThread(thread+"-fork", "claude"), thread, ForkCut{}, testInterruptedSummary, 1); err != nil {
+		t.Fatal(err)
+	}
+	for depth, viewer := range []string{thread, thread + "-fork"} {
+		tray, trayArgs, err := timelineArms(s.reader(), viewer, latestDirectSubagentToolSelection("L"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := "latest direct tool in " + viewer
+		text := assertBoundedPlan(t, s, name, boundedPlan{sorts: true}, tray, trayArgs...)
+		assertLocalArmWalksAnIndex(t, s, name, tray, trayArgs...)
+		local := strings.Count(text, "SEARCH items USING INDEX idx_items_parent (thread_id=? AND parent_id=?")
+		imported := strings.Count(text, "SEARCH items USING INDEX idx_import_history_items_parent_lookup (parent_id=?)")
+		sorts := strings.Count(text, "USE TEMP B-TREE FOR ORDER BY")
+		if local != depth+1 || imported != depth+1 || sorts != imported {
+			t.Errorf("%s probes %d local and %d imported arms with %d sorts, want %d, %d and one sort per imported arm:\n%s",
+				name, local, imported, sorts, depth+1, depth+1, text)
 		}
 	}
 

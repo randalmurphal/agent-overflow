@@ -129,15 +129,15 @@ type ThreadWindowSync struct {
 // pointer fork's ancestor (copyInheritedRowsTx), or rebuilds a thread whose
 // rows the same transaction deleted (a returning transfer), where every row
 // it could stamp was inserted at the same frozen revision. A moved row
-// changes no other row's read but its parent's subagent tray, which reads
-// local rows only; the movers of rows that can be tool calls recompute the
-// cards they change and serve them anew (recomputeLocalizedCardsTx). The
-// anchor legs would rewrite each anchor once per inserted child. A bulk-load
-// writer that inserts a row a read did not already show must not hold the
-// flag. Deletes under the flag (thread deletion chunks) do change their
-// anchors' reads, so the update and delete triggers stamp every changed
-// row. ApplyImportBatch writes shared import history and adds its row
-// count to history_rev before commit.
+// changes no other row's read: the subagent cards read every arm. The
+// movers recompute the stamps a move changes, which only local rows hold
+// (recomputeLocalizedCardsTx). The anchor legs would rewrite each anchor
+// once per inserted child. A bulk-load writer that inserts a row a read
+// did not already show must not hold the flag. Deletes under the flag
+// (thread deletion chunks) do change their anchors' reads, so the update
+// and delete triggers stamp every changed row. ApplyImportBatch writes
+// shared import history and adds its row count to history_rev before
+// commit.
 
 // transcriptRootExpr is the SQL expression that reads a resume carrier's
 // `transcript_root_id` stamp. It is one string because the trigger
