@@ -238,6 +238,13 @@ export async function runUpdateCheck(): Promise<void> {
     }
     state.supported = true;
     state.lastApplyFailure = result.lastApplyFailure ?? '';
+    if (result.restartingTo) {
+      // A restart handed off before this page loaded: the process is about
+      // to be replaced, so nothing may be offered again.
+      state.latestVersion = result.restartingTo;
+      state.phase = 'restarting';
+      return;
+    }
     if (result.restartWaitingFor) {
       // A restart this page asked for before a reload is still waiting.
       state.phase = 'waiting';

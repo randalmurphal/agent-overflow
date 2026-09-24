@@ -246,6 +246,11 @@ type UpdateAvailability struct {
 	// RestartWaitingFor names the running work a requested restart to update
 	// is waiting for. The host sets it; it is empty unless a restart waits.
 	RestartWaitingFor string `json:"restartWaitingFor,omitempty"`
+	// RestartingTo is the version a restart to update handed this host to,
+	// read from the update's durable record, from the handoff until the
+	// process is replaced or the handoff is abandoned. A page loaded in
+	// between shows the restart underway rather than offering it again.
+	RestartingTo string `json:"restartingTo,omitempty"`
 }
 
 // CheckForUpdate asks the configured provider whether a newer release exists.
@@ -262,12 +267,13 @@ func (a *Service) CheckForUpdate() (UpdateAvailability, error) {
 	a.updater.mu.Lock()
 	defer a.updater.mu.Unlock()
 
-	// A download/install is in flight (only reachable from a second --connect
-	// client — the same client's UI blocks checks during a download). Running
-	// Check now would retarget the provider and overwrite the pending release
-	// the installer is about to use, so report the current state without
-	// probing the network. The busy client's next check, after the install
-	// settles, returns the authoritative answer.
+	// A download or install is in flight, including a restart that handed off
+	// (reachable from a second --connect client or a page loaded since; the
+	// client that started it blocks checks meanwhile). Running Check now would
+	// retarget the provider and overwrite the pending release the installer
+	// is about to use, so report the current state, RestartingTo included,
+	// without probing the network. The busy client's next check, after the
+	// install settles, returns the authoritative answer.
 	if a.updater.busy {
 		return a.availabilityLocked(), nil
 	}
@@ -332,6 +338,7 @@ func (a *Service) availabilityLocked() UpdateAvailability {
 		Supported:        true,
 		CurrentVersion:   a.updater.handle.CurrentVersion(),
 		LastApplyFailure: a.updater.applyFailure,
+		RestartingTo:     a.restartingToLocked(),
 	}
 }
 

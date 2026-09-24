@@ -205,7 +205,11 @@ turns, transfers, terminals and workflows. Added:
   transfers included. An idle host hands off within the call. A busy one
   returns at once and waits: `updater:restart` names what it waits for,
   `CheckForUpdate` reports it as `restartWaitingFor` to a reloaded page, and
-  `CancelRestartToUpdate` ends the wait until the handoff begins. A failed
+  `CancelRestartToUpdate` ends the wait until the handoff begins. From the
+  handoff until the process is replaced, `CheckForUpdate` reports
+  `restartingTo`, read from the update's durable record (on WSL the
+  selfupdate marker), so a reloaded page shows the restart underway and
+  offers nothing. A failed
   handoff, or a WSL handoff the launcher fails, refuses or goes silent on,
   reopens admission. Shutdown ends and joins a waiting restart (Decision 7).
 - **One update at a time.** In process, `busy` and `updateInstalling` as now.

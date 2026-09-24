@@ -80,6 +80,7 @@ interface Availability {
   lastApplyFailure?: string;
   checkError?: string;
   restartWaitingFor?: string;
+  restartingTo?: string;
 }
 
 function availability(overrides: Partial<Availability> = {}): Availability {
@@ -699,6 +700,19 @@ describe('updates store', () => {
       const s = getUpdateState();
       expect(s.phase).toBe('waiting');
       expect(s.waitingFor).toBe(waitingFor);
+    });
+
+    it('a reloaded page shows a restart that already handed off', async () => {
+      cleanup();
+      resetForTest();
+      mockCheck.mockResolvedValue(availability({ available: true, latestVersion: '2.0.0', restartingTo: '2.0.0' }));
+      cleanup = initUpdates();
+      await tick();
+      const s = getUpdateState();
+      expect(s.phase).toBe('restarting');
+      expect(s.latestVersion).toBe('2.0.0');
+      await restartForUpdate();
+      expect(mockRestart).not.toHaveBeenCalled();
     });
   });
 

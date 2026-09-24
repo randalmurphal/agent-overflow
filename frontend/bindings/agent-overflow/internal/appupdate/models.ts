@@ -128,6 +128,14 @@ export class UpdateAvailability {
      */
     "restartWaitingFor"?: string;
 
+    /**
+     * RestartingTo is the version a restart to update handed this host to,
+     * read from the update's durable record, from the handoff until the
+     * process is replaced or the handoff is abandoned. A page loaded in
+     * between shows the restart underway rather than offering it again.
+     */
+    "restartingTo"?: string;
+
     /** Creates a new UpdateAvailability instance. */
     constructor($$source: Partial<UpdateAvailability> = {}) {
         if (!("supported" in $$source)) {

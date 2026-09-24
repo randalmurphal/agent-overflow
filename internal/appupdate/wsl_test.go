@@ -420,6 +420,58 @@ func TestWSLInstallFailedReportUnwinds(t *testing.T) {
 	}
 }
 
+// TestCheckForUpdateReportsARestartThatHandedOff: a page loaded after the
+// handoff sees the restart underway, read from the marker, until the
+// handoff is abandoned. A marker this process did not hand off with names
+// no restart.
+func TestCheckForUpdateReportsARestartThatHandedOff(t *testing.T) {
+	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
+	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", noDeadlines)
+	check := func(want string) {
+		t.Helper()
+		got, err := a.CheckForUpdate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.RestartingTo != want {
+			t.Fatalf("CheckForUpdate().RestartingTo = %q, want %q", got.RestartingTo, want)
+		}
+		if got := a.Availability(); got.RestartingTo != want {
+			t.Fatalf("Availability().RestartingTo = %q, want %q", got.RestartingTo, want)
+		}
+	}
+	// A marker the boot could not clear is not this process's handoff.
+	if err := selfupdate.SaveMarker(mode.markerDir, selfupdate.Marker{ExpectedVersion: "0.0.8", PriorVersion: "0.0.1", StagedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	check("")
+	if err := selfupdate.ClearMarker(mode.markerDir); err != nil {
+		t.Fatal(err)
+	}
+
+	handOffForTest(t, a, rec)
+	check("0.0.8")
+	if err := a.ReportUpdateInstallStatus(selfupdate.StatusProceeding, "0.0.8", ""); err != nil {
+		t.Fatal(err)
+	}
+	check("0.0.8")
+
+	// The marker is the record the answer comes from.
+	if err := selfupdate.ClearMarker(mode.markerDir); err != nil {
+		t.Fatal(err)
+	}
+	check("")
+	if err := selfupdate.SaveMarker(mode.markerDir, selfupdate.Marker{ExpectedVersion: "0.0.8", PriorVersion: "0.0.1", StagedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	check("0.0.8")
+
+	if err := a.ReportUpdateInstallStatus(selfupdate.StatusFailed, "0.0.8", "swap denied"); err != nil {
+		t.Fatal(err)
+	}
+	check("")
+}
+
 func TestWSLInstallACKTimeoutUnwinds(t *testing.T) {
 	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
 	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", wslTestDeadlines{ack: 20 * time.Millisecond, backstop: time.Hour})

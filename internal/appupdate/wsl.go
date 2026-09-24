@@ -386,6 +386,26 @@ func (a *Service) restartToUpdateWSL(onAbandoned func()) error {
 	return nil
 }
 
+// restartingToLocked is RestartingTo: on WSL, the version the marker names
+// while this process's handoff is in flight. The marker is written before
+// the directive and dropped when the handoff is abandoned; one the boot
+// could not clear names no handoff of this process. Desktop reports none.
+// Caller holds a.updater.mu.
+func (a *Service) restartingToLocked() string {
+	if a.updater.wsl == nil || a.updater.install == nil {
+		return ""
+	}
+	marker, err := selfupdate.LoadMarker(a.updater.wsl.markerDir)
+	if err != nil {
+		log.Printf("updater: read the update-intent marker: %v", err)
+		return ""
+	}
+	if marker == nil {
+		return ""
+	}
+	return marker.ExpectedVersion
+}
+
 // wslRestartTargetLocked is the staged release a handoff would hand over, or
 // the reason there is none to hand over now. Caller holds a.updater.mu.
 func (a *Service) wslRestartTargetLocked() (*updater.Release, error) {
