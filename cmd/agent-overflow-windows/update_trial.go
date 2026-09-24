@@ -127,7 +127,7 @@ func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, st
 		}
 		return fmt.Errorf("record the update: %w", err)
 	}
-	if err := startLauncherAfterThis(launcherPath, "--update-apply", id, "--distro", distro); err != nil {
+	if err := startApplier(recordPath, launcherPath, id, distro); err != nil {
 		// Settled before the error is reported, so no later launch tries
 		// to resume an update whose new launcher never ran.
 		if settleErr := wsllauncher.SettleLauncherUpdate(recordPath, id, supervise.UpdateFailed,
@@ -229,21 +229,40 @@ func failUpdateBeforeApply(id, distro string, cause error) {
 // startLauncherAfterThis starts a launcher that waits for this one to exit
 // before it claims the single-instance identity.
 func startLauncherAfterThis(path string, args ...string) error {
-	self, err := supervise.CurrentProcessRef()
+	cmd, err := launcherAfterThis(path, args...)
 	if err != nil {
-		return fmt.Errorf("name this launcher: %w", err)
+		return err
 	}
-	return startLauncher(path, append(args, "--wait-pid", strconv.Itoa(self.PID), "--wait-start", self.Start)...)
-}
-
-// startLauncher starts a launcher that outlives this one.
-func startLauncher(path string, args ...string) error {
-	cmd := exec.Command(path, launcherArgs(args...)...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	return cmd.Process.Release()
+}
+
+// startApplier starts the launcher at path to apply update id once this one
+// exits, and names it in the record before this one can exit, so a launch
+// in between joins the update instead of settling it.
+func startApplier(recordPath, path, id, distro string) error {
+	cmd, err := launcherAfterThis(path, "--update-apply", id, "--distro", distro)
+	if err != nil {
+		return err
+	}
+	if err := wsllauncher.StartApplier(cmd, recordPath, id); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+
+// launcherAfterThis is the command for a launcher that outlives this one
+// and waits for it to exit.
+func launcherAfterThis(path string, args ...string) (*exec.Cmd, error) {
+	self, err := supervise.CurrentProcessRef()
+	if err != nil {
+		return nil, fmt.Errorf("name this launcher: %w", err)
+	}
+	cmd := exec.Command(path, launcherArgs(append(args, "--wait-pid", strconv.Itoa(self.PID), "--wait-start", self.Start)...)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
+	return cmd, nil
 }
 
 // launcherArgs carries this launcher's profile to one it starts.
@@ -286,8 +305,9 @@ func (a *launcherApp) updateSequence(dir, distro string) wsllauncher.UpdateSeque
 
 // runUpdateApply is --update-apply: run the update from its record with the
 // loading page showing progress, then start the install path and quit. The
-// window hides instead of closing while the update runs; a second launch
-// shows it again.
+// window hides instead of closing while the update runs. A launch while it
+// runs joins the update (wsllauncher.Join): this window hides for it, and
+// once the update ends this launcher quits and leaves the rest to it.
 func (a *launcherApp) runUpdateApply(id, distro string) {
 	w := a.win()
 	a.updateRunning.Store(true)
@@ -305,6 +325,21 @@ func (a *launcherApp) runUpdateApply(id, distro string) {
 	}
 	a.loading.begin(time.Now())
 	sequence := a.updateSequence(dir, distro)
+	go wsllauncher.WatchJoiner(context.Background(), sequence.RecordPath, wsllauncher.UpdateJoinPoll, a.yieldToJoiner, log.Printf)
+	self, err := supervise.CurrentProcessRef()
+	if err != nil {
+		a.updateRunning.Store(false)
+		log.Printf("updater: update %s: name this launcher: %v", id, err)
+		a.showUpdateFailure("The update could not start.", "Start Agent Overflow again to retry it. Details are in the launcher log.")
+		return
+	}
+	sequence.Self = self
+	publisher := wsllauncher.NewProgressPublisher(wsllauncher.UpdateProgressPath(sequence.RecordPath), wsllauncher.UpdateJoinPoll, log.Printf)
+	show := sequence.Progress
+	sequence.Progress = func(p startupprogress.Progress) {
+		show(p)
+		publisher.Report(p)
+	}
 	record, found, err := supervise.LoadLauncherRecord(sequence.RecordPath)
 	if err == nil && found {
 		target := record.Update.To
@@ -316,7 +351,17 @@ func (a *launcherApp) runUpdateApply(id, distro string) {
 		sequence.Progress(startupprogress.Progress{Phase: "update.start", Detail: "Preparing the update"})
 	}
 	end, err := sequence.Apply(context.Background(), id)
+	if closeErr := publisher.Close(); closeErr != nil {
+		log.Printf("updater: update %s: %v", id, closeErr)
+	}
 	a.updateRunning.Store(false)
+	if joined, joinedErr := wsllauncher.JoinerRunning(sequence.RecordPath); joinedErr != nil {
+		log.Printf("updater: look for a launch joined to update %s: %v", id, joinedErr)
+	} else if joined {
+		log.Printf("updater: update %s ended (%s, %v); the joined launch takes over", id, end.State, err)
+		a.wails.Quit()
+		return
+	}
 	switch {
 	case errors.Is(err, wsllauncher.ErrNoUpdateRecord):
 		log.Printf("updater: update %s has no record; starting the installed version", id)
@@ -334,6 +379,23 @@ func (a *launcherApp) runUpdateApply(id, distro string) {
 		log.Printf("updater: update %s ended %s", id, end.State)
 	}
 	a.relaunchInstallPath(sequence.RecordPath)
+}
+
+// yieldToJoiner is WatchJoiner's call while a launch that joined the update
+// runs: the window hides for it while the update runs, and once the update
+// ended, as when this window shows why it could not finish, this launcher
+// quits so the joined launch decides.
+func (a *launcherApp) yieldToJoiner() bool {
+	if a.updateRunning.Load() {
+		if w := a.win(); w != nil && a.yielded.CompareAndSwap(false, true) {
+			log.Printf("updater: a launch joined the update; hiding this window")
+			w.Hide()
+		}
+		return false
+	}
+	log.Printf("updater: a launch joined the ended update; leaving it to that launch")
+	a.wails.Quit()
+	return true
 }
 
 // relaunchInstallPath starts the launcher at the install path, which waits
@@ -354,15 +416,27 @@ func (a *launcherApp) relaunchInstallPath(recordPath string) {
 }
 
 // reconcileUpdate runs the recovery table for distro's record before its
-// backend starts. It returns false when this launch must not start the
-// backend: it handed off to the new launcher or shows why it cannot start.
-func (a *launcherApp) reconcileUpdate(distro string) bool {
+// backend starts, first waiting out an update another launcher is applying
+// while the window shows its progress. It returns false when this launch
+// must not start the backend: it handed off to the new launcher, left the
+// launch to the install path, or shows why it cannot start. transient is
+// launchAndShow's: a --distro override the install path is started with.
+func (a *launcherApp) reconcileUpdate(distro string, transient bool) bool {
 	dir, ok := wsldistro.WSLConfigDir()
 	if !ok {
 		return true
 	}
 	sequence := a.updateSequence(dir, distro)
-	decision, err := sequence.Reconcile(context.Background(), embeddedPayloadFingerprint())
+	fingerprint := embeddedPayloadFingerprint()
+	decision, err := sequence.Reconcile(context.Background(), fingerprint)
+	for err == nil && decision.Action == wsllauncher.ReconcileJoin {
+		if sequence.Self, err = supervise.CurrentProcessRef(); err != nil {
+			break
+		}
+		decision, err = sequence.Join(context.Background(), decision.Record, fingerprint)
+		// The applier's last report is not this launch's.
+		a.loading.clearProgress()
+	}
 	if err != nil {
 		log.Printf("updater: reconcile the update record: %v", err)
 		a.showUpdateFailure("Agent Overflow could not read its update record.",
@@ -372,9 +446,22 @@ func (a *launcherApp) reconcileUpdate(distro string) bool {
 	switch decision.Action {
 	case wsllauncher.ReconcileHandOff:
 		log.Printf("updater: resuming update %s with %s", decision.Record.Update.ID, decision.Record.StagedLauncher)
-		if err := startLauncherAfterThis(decision.Record.StagedLauncher, "--update-apply", decision.Record.Update.ID, "--distro", distro); err != nil {
+		if err := startApplier(sequence.RecordPath, decision.Record.StagedLauncher, decision.Record.Update.ID, distro); err != nil {
 			log.Printf("updater: start %s: %v", decision.Record.StagedLauncher, err)
 			a.showUpdateFailure("The update could not resume.", "Start Agent Overflow again. Details are in the launcher log.")
+			return false
+		}
+		a.wails.Quit()
+		return false
+	case wsllauncher.ReconcileRelaunch:
+		var args []string
+		if transient {
+			args = []string{"--distro", distro}
+		}
+		log.Printf("updater: update %s committed while this launch waited; starting %s", decision.Record.Update.ID, decision.Record.InstallPath)
+		if err := startLauncherAfterThis(decision.Record.InstallPath, args...); err != nil {
+			log.Printf("updater: start %s: %v", decision.Record.InstallPath, err)
+			a.showUpdateFailure("The update finished, but Agent Overflow could not be restarted.", "Start Agent Overflow again.")
 			return false
 		}
 		a.wails.Quit()

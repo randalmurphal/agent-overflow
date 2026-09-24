@@ -255,9 +255,9 @@ func TestOpenLogSoakProfileWritesItsOwnFile(t *testing.T) {
 //     Wails' list. Feature toggles go through browserDisabledFeatures,
 //     which Wails merges into its single switch.
 func TestBrowserArgs(t *testing.T) {
-	prod := browserArgs("prod")
+	prod := browserArgs("prod", true)
 	for _, mode := range []string{appidentity.ModeDev, appidentity.ModeHarness, appidentity.ModeSoak, appidentity.ModePerf} {
-		modeArgs := browserArgs(mode)
+		modeArgs := browserArgs(mode, true)
 		modeSet := make(map[string]struct{}, len(modeArgs))
 		for _, arg := range modeArgs {
 			modeSet[arg] = struct{}{}
@@ -274,9 +274,19 @@ func TestBrowserArgs(t *testing.T) {
 			t.Errorf("prod must not include %q — CDP port is unauthenticated", a)
 		}
 	}
+	// A launcher applying an update runs beside the launch that owns the
+	// mode's port.
+	if !slices.Contains(browserArgs(appidentity.ModeDev, true), fmt.Sprintf("--remote-debugging-port=%d", appidentity.DevToolsPort(appidentity.ModeDev))) {
+		t.Error("dev lacks its DevTools port")
+	}
+	for _, a := range browserArgs(appidentity.ModeDev, false) {
+		if strings.HasPrefix(a, "--remote-debugging-") {
+			t.Errorf("a window without DevTools includes %q", a)
+		}
+	}
 
 	for _, mode := range []string{appidentity.ModeProd, appidentity.ModeDev, appidentity.ModeHarness, appidentity.ModeSoak, appidentity.ModePerf} {
-		for _, arg := range browserArgs(mode) {
+		for _, arg := range browserArgs(mode, true) {
 			if strings.HasPrefix(arg, "--disable-features") || strings.HasPrefix(arg, "--enable-features") {
 				t.Errorf("%s raw feature switch %q would clobber Wails' merged feature configuration", mode, arg)
 			}
@@ -326,7 +336,7 @@ func TestBrowserFeatures(t *testing.T) {
 
 func TestWebviewBrowserOptionsLeaveTextAndScrollerCompositingAtChromiumDefaults(t *testing.T) {
 	for _, mode := range []string{appidentity.ModeProd, appidentity.ModeDev, appidentity.ModeHarness, appidentity.ModeSoak, appidentity.ModePerf} {
-		opts := webviewBrowserOptions(mode, "profile", "diagnostics")
+		opts := webviewBrowserOptions(mode, "profile", "diagnostics", true)
 		if len(opts.EnabledFeatures) != 0 {
 			t.Errorf("%s EnabledFeatures = %v, want none", mode, opts.EnabledFeatures)
 		}
@@ -543,6 +553,12 @@ func TestWebviewDataDir(t *testing.T) {
 	if got, want := webviewDataDir(appidentity.ModePerf), filepath.Join(base, "webview2-perf"); got != want {
 		t.Errorf("perf dir = %q, want %q", got, want)
 	}
+	if got, want := launcherWebviewDataDir("dev", false), filepath.Join(base, "webview2-dev"); got != want {
+		t.Errorf("dev launch dir = %q, want %q", got, want)
+	}
+	if got, want := launcherWebviewDataDir("dev", true), filepath.Join(base, "webview2-dev-update"); got != want {
+		t.Errorf("dev applier dir = %q, want %q", got, want)
+	}
 }
 
 // TestIsolatedProfilesFoldEveryPerInstanceName is the launcher half of
@@ -717,15 +733,15 @@ func TestBrowserArgsWebviewLogGate(t *testing.T) {
 	}
 
 	t.Setenv(webviewLogEnv, "")
-	if hasLogging(browserArgs("dev")) || hasLogging(browserArgs("prod")) {
+	if hasLogging(browserArgs("dev", true)) || hasLogging(browserArgs("prod", true)) {
 		t.Error("logging flags present without opt-in")
 	}
 
 	t.Setenv(webviewLogEnv, "1")
-	if !hasLogging(browserArgs("dev")) {
+	if !hasLogging(browserArgs("dev", true)) {
 		t.Error("dev: logging flags missing despite opt-in")
 	}
-	if !hasLogging(browserArgs("prod")) {
+	if !hasLogging(browserArgs("prod", true)) {
 		t.Error("prod: logging flags missing despite opt-in")
 	}
 }
@@ -745,15 +761,15 @@ func TestBrowserArgsWebviewSoftwareGate(t *testing.T) {
 	}
 
 	t.Setenv(webviewSoftwareEnv, "")
-	if hasDisableGpu(browserArgs("dev")) || hasDisableGpu(browserArgs("prod")) {
+	if hasDisableGpu(browserArgs("dev", true)) || hasDisableGpu(browserArgs("prod", true)) {
 		t.Error("--disable-gpu present without opt-in")
 	}
 
 	t.Setenv(webviewSoftwareEnv, "1")
-	if !hasDisableGpu(browserArgs("dev")) {
+	if !hasDisableGpu(browserArgs("dev", true)) {
 		t.Error("dev: --disable-gpu missing despite opt-in")
 	}
-	if !hasDisableGpu(browserArgs("prod")) {
+	if !hasDisableGpu(browserArgs("prod", true)) {
 		t.Error("prod: --disable-gpu missing despite opt-in")
 	}
 }
@@ -764,10 +780,10 @@ func TestBrowserArgsWebviewSoftwareGate(t *testing.T) {
 // keeps the final occurrence), and an unset/blank var adds nothing.
 func TestBrowserArgsExtraArgsGate(t *testing.T) {
 	t.Setenv(webviewExtraArgsEnv, "")
-	base := browserArgs("dev")
+	base := browserArgs("dev", true)
 
 	t.Setenv(webviewExtraArgsEnv, "  --force-gpu-mem-available-mb=256   --disk-cache-size=4096 ")
-	got := browserArgs("dev")
+	got := browserArgs("dev", true)
 	if len(got) != len(base)+2 {
 		t.Fatalf("expected %d args, got %d: %v", len(base)+2, len(got), got)
 	}

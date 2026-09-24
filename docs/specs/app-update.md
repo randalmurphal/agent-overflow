@@ -209,8 +209,12 @@ turns, transfers, terminals and workflows. Added:
   handoff, or a WSL handoff the launcher fails, refuses or goes silent on,
   reopens admission. Shutdown ends and joins a waiting restart (Decision 7).
 - **One update at a time.** In process, `busy` and `updateInstalling` as now.
-  Across processes, a pending record refuses `Begin`, and the process applying
-  the update holds the single-instance identity for its whole duration.
+  Across processes, a pending record refuses `Begin`. On macOS and Linux the
+  helper applying the update holds the single-instance identity for its whole
+  duration. On Windows the record names the launcher applying it, a launch
+  while that launcher runs joins the update instead of acting on the record,
+  and `UpdateSequence.Apply` refuses an update another running launcher
+  applies.
 - **Recoverable at every step.** See the recovery table for each platform.
 
 ## Windows: launcher and WSL payload
@@ -256,21 +260,22 @@ result and is known to start.
 |---|---|---|
 | 1 | B_old | `RestartToUpdate`: interlocks, the wait for running work, selfupdate marker, `updater:install` directive (as now). |
 | 2 | L_old | Directive checks and `proceeding` acknowledgement (as now). `StageCopy` copies L_new to `runtime\agent-overflow-update-<id>.exe` and verifies its digest. L_old checks that it can write beside S, then runs `L_new --update-preflight <answer> --update-id <id> --distro <d> --update-stable <path>` (3 min), which installs B_new beside the stable payload, runs its `__service-preflight` through `wsl.exe`, asks it with `__update-space` whether the snapshot its plan will copy fits (`supervise.PlanSnapshot`: the database files plus a margin, less a leftover snapshot the plan reclaims, against the data disk and the host drive), and writes the answer file. A launcher that predates this flow rejects the unknown flag and writes no answer; that target, and the running version again, take the existing swap. A failed or refused answer reports `failed` with its reason; nothing has changed. |
-| 3 | L_old | Writes the record `pending` (From L_old, To L_new) durably, starts `L_new --update-apply <id> --distro <d> --wait-pid <pid> --wait-start <start>` detached, and quits through its ordinary shutdown, which stops B_old. |
-| 4 | L_new | Waits for L_old to exit before it claims the single-instance identity (30 s, as the Wails helper does; otherwise settles `failed` and exits). It waits on a handle to the process with L_old's id whose creation time is `<start>` (`supervise.ProcessRef`), so a reused process id is never waited on. A launch of S during the update then focuses this window. Shows the loading page with `updatingTo`; closing the window hides it and the update continues. |
+| 3 | L_old | Writes the record `pending` (From L_old, To L_new) durably, starts `L_new --update-apply <id> --distro <d> --wait-pid <pid> --wait-start <start>` detached, names it in the record as the update's applier by process id and creation time (`wsllauncher.StartApplier`; a launcher it cannot name is killed and the update settles `failed`), and quits through its ordinary shutdown, which stops B_old. |
+| 4 | L_new | Waits for L_old to exit (30 s, as the Wails helper does; otherwise settles `failed` and exits). It waits on a handle to the process with L_old's id whose creation time is `<start>` (`supervise.ProcessRef`), so a reused process id is never waited on. L_new holds no single-instance identity, so a launch of S from L_old's exit to the end of the update claims it, finds L_new named and running in the record, and joins the update (`UpdateSequence.Join`): it names itself in `app-update-<mode>.<distro>.joiner.json`, shows the progress L_new publishes in `app-update-<mode>.<distro>.progress.json` (at most every 500 ms), and reconciles once L_new exits. A later launch focuses the joined one. L_new shows the loading page with `updatingTo`; closing the window hides it and the update continues. It hides the window while a joined launch runs, and exits without starting S once the update ends with one running, including while it shows an error page. L_new runs on its own WebView2 profile (`<profile>-update`) without the DevTools port or notifications, which the joined launch owns. |
 | 5 | L_new, B_new | On the first attempt, `__update-snapshot`, given the free space of the host drive that holds the distribution (`--host-free`): waits up to 30 s for B_old to release `backend.lock` (otherwise the update settles `failed` and S starts), finishes a marked restore, checks free space again, snapshots with progress. |
 | 6 | L_new | `Retry`, durably. |
 | 7 | L_new, B_new | `__update-trial-run`: takes the lock, requires the snapshot, and before every attempt compares the live database files' sizes and modification times with what the update last left: the snapshot before the first attempt, and after that what the previous attempt recorded when it ended. A mismatch reports `changed`. Runs the trial child with the stall rule and relays its progress. On `prepared` it stops the trial and exits 0. On failure it restores the snapshot marker-first and exits with the reason. If its stdout closes, it stops the trial and exits without restoring, leaving that to recovery. `changed`, or a refusal on the first attempt, settles `failed` without a restore, which would discard another backend's writes; any other end that is not `prepared` or `rolled-back` takes step 8b with a restore. |
-| 8a | L_new | Commit: `Settle(committed)` durably, then `__update-discard`. Invalidate `wsl.json`, rename the staged B_new over the stable path, and record its fingerprint; the trial was a successful boot of those bytes. Copy L_new to `S.new` beside S and replace S with it (`MoveFileEx`, `REPLACE_EXISTING` and `WRITE_THROUGH`). Start S and exit. |
-| 8b | L_new | Rollback: `__update-restore` through the stable payload unless the trial command restored, `Settle(rolled-back, reason)` durably, `__update-discard`, delete the staged payload, start S (still L_old) and exit. A restore that fails leaves the record `pending` and shows an error page; the next launch retries it. |
-| 9 | Launcher at S | Reconciles the chosen distribution's record after it claims the single-instance identity and before that distribution's backend starts, then launches. Marks a settled record reported and removes staging residue. The first launch of a committed target passes `--updating-to <To>` to its backend, whose startup report names the update it finishes; the record is the only source of that version. After a rollback or failure, the launcher passes `--update-failed-to <To> --update-failed-reason <reason>` to a backend of the update's starting version (`ReconcileDecision.BackendArgs`). B_old's boot quotes the reason when its selfupdate marker expected that version, "Update to X didn't apply: <reason>. Still running Y.", through `ApplyFailure` and `NotifyPendingUpdateApplyFailure`. The backend never reads the record. |
+| 8a | L_new | Commit: `Settle(committed)` durably, then `__update-discard`. Invalidate `wsl.json`, rename the staged B_new over the stable path, and record its fingerprint; the trial was a successful boot of those bytes. Copy L_new to `S.new` beside S and replace S with it (`MoveFileEx`, `REPLACE_EXISTING` and `WRITE_THROUGH`). Start S, unless a launch joined the update, and exit. |
+| 8b | L_new | Rollback: `__update-restore` through the stable payload unless the trial command restored, `Settle(rolled-back, reason)` durably, `__update-discard`, delete the staged payload, start S (still L_old) unless a launch joined the update, and exit. A restore that fails leaves the record `pending` and shows an error page; the next launch retries it. |
+| 9 | Launcher at S | Reconciles the chosen distribution's record after it claims the single-instance identity and before that distribution's backend starts, then launches. Marks a settled record reported and removes staging residue. The first launch of a committed target passes `--updating-to <To>` to its backend, whose startup report names the update it finishes; the record is the only source of that version. After a rollback or failure, the launcher passes `--update-failed-to <To> --update-failed-reason <reason>` to a backend of the update's starting version (`ReconcileDecision.BackendArgs`). B_old's boot quotes the reason when its selfupdate marker expected that version, "Update to X didn't apply: <reason>. Still running Y.", through `ApplyFailure` and `NotifyPendingUpdateApplyFailure`. The backend never reads the record. A launch that joined the update and is not the target of a committed one started before the commit replaced S: it starts S and exits instead (`ReconcileRelaunch`), so its older payload never runs. |
 
 Handing back to the previous launcher is step 8b: S still holds L_old because
 nothing is published before commit. After commit S holds L_new, and the
 previous launcher and payload are gone (rule 4).
 
-Between steps 5 and 7 no process holds `backend.lock`. The single-instance
-identity keeps other launchers out. A backend started by hand inside WSL in
+Between steps 5 and 7 no process holds `backend.lock`. The record's named
+applier keeps other launchers out: a launch joins instead of starting a
+backend. A backend started by hand inside WSL in
 that interval blocks step 7 until it exits, and step 7 then reports `changed`,
 so a rollback never loses its writes. Each attempt records the files it left
 when it ends, prepared, rolled back or interrupted, so a resumed attempt makes
@@ -287,6 +292,7 @@ A launcher at S reads the record before it starts WSL:
 
 | Record | Action |
 |---|---|
+| any, with its named applier running | join (step 4), then this table once the applier exits; after a commit, a launcher that is not the target starts S instead |
 | none, or settled and reported | ordinary launch |
 | settled, not reported | ordinary launch; the backend shows the outcome |
 | pending, 0 attempts | settle `failed` ("interrupted before it started"), `__update-discard` for a partial snapshot; ordinary launch |
@@ -425,6 +431,9 @@ Windows:
 - Copy throughput with a cold page cache.
 - L_new waiting on L_old's process handle, hiding its window on close while
   the update runs, and starting S detached after it.
+- L_new without the single-instance identity beside a joined launch: the
+  separate WebView2 profile, hiding for the joined launch, exiting for it
+  after the update, and the joined launch starting S after a commit.
 
 Linux: `FICLONE` on btrfs and XFS needs root for a loop mount here.
 
@@ -439,8 +448,9 @@ one place: 1 in the helper's window, 6 in `supervise.PlanSnapshot` and
    helper shows the boot progress page, claims the single-instance identity so
    a launch during the update focuses it, and closing it does not interrupt
    the update. The one-shot trial moves migration time out of the visible
-   boot, so without a window the user sees nothing for that time. The same
-   close behavior applies to L_new on Windows.
+   boot, so without a window the user sees nothing for that time. L_new on
+   Windows has the same close behavior; a launch during its update joins it
+   and shows its progress (Windows step 4).
 2. **One-shot trial.** Recommended: the trial stops after `prepared` and the
    published version boots again, costing one boot with no pending
    migrations. The alternative keeps the trial as the live backend, which

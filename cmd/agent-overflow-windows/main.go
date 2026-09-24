@@ -251,7 +251,8 @@ func main() {
 	if removed := webview2host.ScrubEnvOverrides(); len(removed) > 0 {
 		log.Printf("launcher: cleared inherited WebView2 env overrides: %s", webview2host.FormatScrub(removed))
 	}
-	if err := prepareWebviewStorage(launcherRuntimeMode()); err != nil {
+	applier := flags.UpdateApply != ""
+	if err := prepareWebviewStorage(launcherWebviewDataDir(launcherRuntimeMode(), applier), renderDiagnosticsDir(launcherRuntimeMode())); err != nil {
 		log.Fatalf("webview2 storage: %v", err)
 	}
 	if activeProfile != "" {
@@ -285,8 +286,8 @@ func main() {
 
 	// The new launcher of an in-app update shows the loading page with the
 	// update's progress and needs no distro list or picker.
-	if flags.UpdateApply != "" {
-		app := buildApp(nil, "/loading", "", false)
+	if applier {
+		app := buildApp(nil, "/loading", "", false, true)
 		app.updateApplyID, app.updateApplyDistro = flags.UpdateApply, flags.Distro
 		app.run()
 		return
@@ -327,7 +328,7 @@ func main() {
 	// buildApp creates the window (and, when chosen != "", kicks off the
 	// backend launch) on ApplicationStarted — see its doc for why creation is
 	// deferred into the running app loop.
-	app := buildApp(distros, initialURL, chosen, transient)
+	app := buildApp(distros, initialURL, chosen, transient, false)
 	logBootPhase("launcher.before_run", bootStarted)
 
 	app.run()
@@ -583,6 +584,9 @@ type launcherApp struct {
 	updateApplyID     string
 	updateApplyDistro string
 	updateRunning     atomic.Bool
+	// yielded is set once this applier hid its window for a launch that
+	// joined the update.
+	yielded atomic.Bool
 	// launching refuses a picker launch while another launch, including
 	// its update record's recovery, runs.
 	launching atomic.Bool
@@ -700,7 +704,7 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 
 	// The distro's update record is reconciled before anything runs in it.
 	// A launch it hands off or blocks owns the window from there.
-	if !a.reconcileUpdate(distro) {
+	if !a.reconcileUpdate(distro, transient) {
 		return nil
 	}
 
@@ -1311,7 +1315,13 @@ func (a *launcherApp) win() *application.WebviewWindow {
 // chosen/transient describe the resolved launch target: when chosen is
 // non-empty the handler also kicks off the backend launch (the picker is
 // skipped).
-func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient bool) *launcherApp {
+//
+// applier is the launcher running an --update-apply. It holds no
+// single-instance identity, so a launch can run beside it and join the
+// update (wsllauncher.Join); that launch owns the identity, the WebView2
+// profile with its DevTools port, and notifications. The applier gets its
+// own profile and neither of the others.
+func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient, applier bool) *launcherApp {
 	a := &launcherApp{
 		distros:                 distros,
 		notificationActivations: wsllauncher.NewNotificationActivationQueue(),
@@ -1326,7 +1336,8 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 
 	// Preserve the previous browser session's Chromium log before this
 	// session's WebView2 environment truncates it — see rotateChromeDebugLog.
-	rotateChromeDebugLog(webviewDataDir(mode))
+	profileDir := launcherWebviewDataDir(mode, applier)
+	rotateChromeDebugLog(profileDir)
 
 	diagnosticsDir := renderDiagnosticsDir(mode)
 	if diagnosticsDir == "" {
@@ -1337,9 +1348,18 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		log.Printf("webview2: render-hang diagnostics dir: %s", diagnosticsDir)
 	}
 
+	singleInstance := wslSingleInstanceOptions(a.win)
+	services := []application.Service{
+		application.NewService(notificationService),
+		application.NewService(a),
+	}
+	if applier {
+		singleInstance = nil
+		services = []application.Service{application.NewService(a)}
+	}
 	app := application.New(application.Options{
 		Name:           title,
-		SingleInstance: wslSingleInstanceOptions(a.win),
+		SingleInstance: singleInstance,
 		// Route Wails' internal slog into launcher.log. Its default logger
 		// writes to stderr, which a GUI subsystem exe discards — that hid
 		// the WebView2 process-failure/recovery lines ("webview2: process
@@ -1347,10 +1367,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		Logger: slog.New(slog.NewTextHandler(log.Writer(), &slog.HandlerOptions{
 			Level: wailsLogLevel(mode),
 		})),
-		Services: []application.Service{
-			application.NewService(notificationService),
-			application.NewService(a),
-		},
+		Services: services,
 		Assets: application.AssetOptions{
 			Handler: pickerAssetHandler(distros, func() []byte {
 				if page := a.startupFailure.Load(); page != nil {
@@ -1359,7 +1376,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 				return startupFailureHTML(nil)
 			}, func() loadingReport { return a.loading.report(time.Now()) }),
 		},
-		Windows: webviewBrowserOptions(mode, webviewDataDir(mode), diagnosticsDir),
+		Windows: webviewBrowserOptions(mode, profileDir, diagnosticsDir, !applier),
 		// Cancel app shutdown until the user explicitly closes the
 		// window. Without this, a transient WSL hiccup during launch
 		// would crash us silently.
@@ -1655,7 +1672,8 @@ func wslSingleInstanceMode() string {
 // Chrome DevTools / wsjson to the WebView2 from inside WSL, on a
 // per-mode port (appidentity.DevToolsPort, distinct for every diagnostic
 // profile so all can be attached at once). The protocol is unauthenticated, so
-// production gets no port at all.
+// production gets no port at all. devTools false omits it for a window that
+// runs beside the one that owns the mode's port.
 //
 // Memory experiments tried and pulled back: --single-process (~290 MB
 // savings, but couples all rendering work onto one thread pool and
@@ -1666,7 +1684,7 @@ func wslSingleInstanceMode() string {
 // single-process turns any future big-memory feature — large diffs,
 // terminal log dumps — into a whole-window crash). Revisit if memory
 // becomes a real constraint.
-func browserArgs(mode string) []string {
+func browserArgs(mode string, devTools bool) []string {
 	args := []string{
 		"--disable-background-networking",
 		"--disable-component-update",
@@ -1684,7 +1702,7 @@ func browserArgs(mode string) []string {
 		// service. 1 MiB is the practical floor (0 means "default").
 		"--disk-cache-size=1048576",
 	}
-	if port := appidentity.DevToolsPort(mode); port > 0 {
+	if port := appidentity.DevToolsPort(mode); devTools && port > 0 {
 		args = append(args,
 			fmt.Sprintf("--remote-debugging-port=%d", port),
 			"--remote-debugging-address=127.0.0.1",
@@ -1724,9 +1742,9 @@ func browserArgs(mode string) []string {
 //
 // Chromium defaults own text antialiasing and scroller placement. Paired
 // overrides can promote content-sized layers and increase raster memory.
-func webviewBrowserOptions(mode, userDataDir, diagnosticsDir string) application.WindowsOptions {
+func webviewBrowserOptions(mode, userDataDir, diagnosticsDir string, devTools bool) application.WindowsOptions {
 	return application.WindowsOptions{
-		AdditionalBrowserArgs: browserArgs(mode),
+		AdditionalBrowserArgs: browserArgs(mode, devTools),
 		DisabledFeatures:      browserDisabledFeatures(),
 		// Stable per-mode WebView2 profile. Without this the profile path
 		// defaults to %APPDATA%\<exe name>, and dev builds carry a unique
@@ -1828,6 +1846,18 @@ func webviewDataDir(mode string) string {
 		return ""
 	}
 	return filepath.Join(dir, appidentity.WebviewProfileDir(mode))
+}
+
+// launcherWebviewDataDir is webviewDataDir, or for a launcher applying an
+// update its own profile beside it: a launch that joins the update runs a
+// WebView2 environment on the mode's profile at the same time, and one
+// profile shared by two processes needs identical environment options.
+func launcherWebviewDataDir(mode string, applier bool) string {
+	dir := webviewDataDir(mode)
+	if !applier || dir == "" {
+		return dir
+	}
+	return dir + "-update"
 }
 
 // renderDiagnosticsDir is where the wails fork's render watchdog drops a

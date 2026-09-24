@@ -49,6 +49,12 @@ type UpdateSequence struct {
 	Host       UpdateHost
 	// Progress receives what the update is doing, for the loading page.
 	Progress func(startupprogress.Progress)
+	// Self is this launcher. Apply refuses an update another running
+	// launcher is applying, and Join names Self as the update's joiner.
+	Self supervise.ProcessRef
+	// JoinPoll is how often Join looks at the applier and its progress.
+	// Zero is UpdateJoinPoll.
+	JoinPoll time.Duration
 	Now      func() time.Time
 	Logf     func(string, ...any)
 }
@@ -83,6 +89,15 @@ func (s UpdateSequence) Apply(ctx context.Context, id string) (UpdateEnd, error)
 	}
 	if record.Update.ID != id {
 		return UpdateEnd{}, fmt.Errorf("wsllauncher: the update record is for update %q, not %q", record.Update.ID, id)
+	}
+	if applier := record.Applier; applier != nil && *applier != s.Self {
+		running, err := applier.Running()
+		if err != nil {
+			return UpdateEnd{}, fmt.Errorf("wsllauncher: check the launcher applying update %s: %w", id, err)
+		}
+		if running {
+			return UpdateEnd{}, fmt.Errorf("wsllauncher: update %s is being applied by another launcher (pid %d)", id, applier.PID)
+		}
 	}
 	switch record.Update.State {
 	case supervise.UpdateCommitted:
@@ -173,6 +188,12 @@ const (
 	ReconcileHandOff
 	// ReconcileBlocked starts nothing and shows the reason.
 	ReconcileBlocked
+	// ReconcileJoin waits for the launcher applying the update and decides
+	// again (Join).
+	ReconcileJoin
+	// ReconcileRelaunch starts the launcher at the install path, which
+	// waits for this one to exit, and exits. Only Join returns it.
+	ReconcileRelaunch
 )
 
 // ReconcileDecision is Reconcile's answer.
@@ -211,6 +232,18 @@ func (s UpdateSequence) Reconcile(ctx context.Context, fingerprint string) (Reco
 	}
 	if !found {
 		return ReconcileDecision{Action: ReconcileLaunch}, nil
+	}
+	// The launcher applying the update holds no single-instance identity,
+	// so this launch can start while it runs. The update is in flight, not
+	// interrupted, whatever the record says.
+	if applier := record.Applier; applier != nil {
+		running, err := applier.Running()
+		if err != nil {
+			return ReconcileDecision{}, fmt.Errorf("wsllauncher: check the launcher applying update %s: %w", record.Update.ID, err)
+		}
+		if running {
+			return ReconcileDecision{Action: ReconcileJoin, Record: record}, nil
+		}
 	}
 	update := record.Update
 	isTarget := fingerprint == record.TargetFingerprint

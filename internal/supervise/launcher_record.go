@@ -33,6 +33,10 @@ type LauncherRecord struct {
 	// TargetFingerprint is the target launcher's embedded payload digest. A
 	// launcher at InstallPath whose own digest matches is the target.
 	TargetFingerprint string `json:"targetFingerprint"`
+	// Applier is the launcher running this update's --update-apply,
+	// recorded by the launcher that started it before that one exits. While
+	// it runs, another launch joins the update instead of acting on it.
+	Applier *ProcessRef `json:"applier,omitempty"`
 }
 
 // LauncherRecordDir is the directory under the launcher's config directory

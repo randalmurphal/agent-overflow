@@ -12,14 +12,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// prepareWebviewStorage validates and creates every directory handed to
-// WebView2 before Wails constructs the application. A junction is a reparse
-// point even when os.Lstat does not report it as a symlink, so both checks are
-// required. Empty paths are fatal rather than allowing WebView2 to choose a
-// shared default profile.
-func prepareWebviewStorage(mode string) error {
-	profile := webviewDataDir(mode)
-	diagnostics := renderDiagnosticsDir(mode)
+// prepareWebviewStorage validates and creates the WebView2 profile and
+// diagnostics directories before Wails constructs the application. A
+// junction is a reparse point even when os.Lstat does not report it as a
+// symlink, so both checks are required. Empty paths are fatal rather than
+// allowing WebView2 to choose a shared default profile.
+func prepareWebviewStorage(profile, diagnostics string) error {
 	if strings.TrimSpace(profile) == "" || strings.TrimSpace(diagnostics) == "" {
 		return errors.New("AppData did not resolve to private WebView2 profile and diagnostics directories")
 	}
