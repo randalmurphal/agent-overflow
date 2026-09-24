@@ -1250,11 +1250,11 @@ func (r *Router) observeBackgroundTaskTerminal(evt provider.ProviderEvent, meta 
 			return err
 		}
 		if found && launch.Kind == itemKindToolCall && launch.IsBackground {
-			parkedOn, err := r.launchParkedOn(evt.ThreadID, launch)
+			park, err := r.launchParkedOn(evt.ThreadID, launch)
 			if err != nil {
 				return err
 			}
-			if parkedOn > 0 {
+			if park.waiting > 0 {
 				return nil
 			}
 		}

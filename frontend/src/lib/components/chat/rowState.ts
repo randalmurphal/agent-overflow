@@ -1,7 +1,10 @@
 import type { Item } from '../../types/models';
 import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
 
-export type IndicatorState = 'running' | 'backgrounded' | 'error' | 'declined' | null;
+// `parked` is never derived from a row: a parked background agent's launch
+// row stays `running` (claude-wire.md §E6b), and only the served run state
+// (stores/subagentRunState.svelte.ts) tells a host to show it.
+export type IndicatorState = 'running' | 'backgrounded' | 'parked' | 'error' | 'declined' | null;
 
 type ItemStatus = Item['status'];
 
@@ -31,6 +34,23 @@ export function indicatorStateForItem(
   if (item.status === 'errored' || item.status === 'killed') return 'error';
   return deriveCompletionStatus(item, { meta: options.meta }) === 'failure' ? 'error' : null;
 }
+
+/**
+ * A background agent's completion sibling that the session's death wrote
+ * (triage stamps `status_source: "session_died"`, tool_lifecycle.go): the
+ * agent was neither stopped by the user nor failed; the session ended under
+ * it. Read off the sibling's `meta`, never its payload meta.
+ */
+export function completionEndedBySessionDeath(
+  meta: Record<string, unknown> | null | undefined,
+): boolean {
+  return meta?.status_source === 'session_died';
+}
+
+export const SESSION_DIED_ROW_ERROR: RowErrorData = {
+  tone: 'error',
+  msg: 'Session ended before the agent finished',
+};
 
 export function rowErrorForStatus(status: ItemStatus, fallback: string): RowErrorData | null {
   if (status === 'declined') return { tone: 'declined', msg: 'Tool call declined' };

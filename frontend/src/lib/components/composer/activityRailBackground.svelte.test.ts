@@ -8,6 +8,7 @@ import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { noteThread } from '../../transport/entityIndex';
 import { __attachBackendForTest, detachBackend } from '../../transport/backends';
 import { applyItemStreamEvent, flushItemEventQueue, resetItemEventQueue } from '../../stores/eventsItemStream';
+import { liveSubagentRunState } from '../../stores/subagentRunState.svelte';
 import { wsClient } from '../../transport/wsClient';
 import type { Item, Project, Thread } from '../../types/models';
 
@@ -356,7 +357,7 @@ describe('tray refresh reasons', () => {
     expect(read.mock.calls.length - 1).toBeLessThanOrEqual(6);
   });
 
-  it('serves each listed agent\u2019s run state by launch id from the reads, and keeps it across re-pushes', async () => {
+  it('publishes each listed agent\u2019s run state by launch id from the reads, keeps it across re-pushes, and counts a parked agent as not running', async () => {
     const runState = (fields: Record<string, unknown>) => JSON.stringify({ ...JSON.parse(latestTool('Read: a.ts', 1)), ...fields });
     const parked = claudeAgent('parked', runState({
       subagentRunState: 'parked', subagentParkedCommands: 2,
@@ -366,21 +367,27 @@ describe('tray refresh reasons', () => {
     const shell = makeItem({ id: 'shell', kind: 'tool_call', toolName: 'Bash', status: 'running', isBackground: true });
     const listed = [parked, working, shell];
     const { pane, read, controller } = await mountTray(listed);
-    expect(controller.runStateOf('parked')).toEqual({ state: 'parked', waitingOn: 2, report: { id: 'report-1', preview: 'Found the race.' } });
-    expect(controller.runStateOf('working')).toEqual({ state: 'running', waitingOn: 0, report: null });
-    expect(controller.runStateOf('shell')).toBeNull();
-    expect(controller.runStateOf('unlisted')).toBeNull();
+    const threadId = pane.threadId!;
+    expect(liveSubagentRunState(threadId, 'parked')).toEqual({ state: 'parked', waitingOn: 2, report: { id: 'report-1', preview: 'Found the race.' } });
+    expect(liveSubagentRunState(threadId, 'working')).toEqual({ state: 'running', waitingOn: 0, report: null });
+    expect(liveSubagentRunState(threadId, 'shell')).toBeNull();
+    expect(liveSubagentRunState(threadId, 'unlisted')).toBeNull();
+    expect(controller.count).toBe(3);
+    expect(controller.runningCount).toBe(2);
 
     deliver(pane, [{ ...parked, rev: 2, meta: latestTool('Bash: ls', 4) }]);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(activity(controller, 'parked')).toBe('Bash: ls');
-    expect(controller.runStateOf('parked')?.state).toBe('parked');
+    expect(liveSubagentRunState(threadId, 'parked')?.state).toBe('parked');
     expect(read).toHaveBeenCalledTimes(1);
 
     listed[0] = { ...parked, meta: runState({ subagentRunState: 'running' }) };
-    emitWailsEvent('provider:background_tasks_changed', { threadId: pane.threadId }, '');
+    listed.splice(1, 1);
+    emitWailsEvent('provider:background_tasks_changed', { threadId }, '');
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(controller.runStateOf('parked')).toEqual({ state: 'running', waitingOn: 0, report: null });
+    expect(liveSubagentRunState(threadId, 'parked')).toEqual({ state: 'running', waitingOn: 0, report: null });
+    expect(liveSubagentRunState(threadId, 'working')).toBeNull();
+    expect(controller.runningCount).toBe(2);
   });
 
   // The scale this path exists for: every live agent's anchor is re-pushed

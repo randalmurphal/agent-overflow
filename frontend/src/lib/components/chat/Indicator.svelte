@@ -1,7 +1,7 @@
 <script lang="ts">
   /*
    * Text-free state dot for tool-call / think rows. Single source of
-   * truth for visual run-state on a row: callers pass one of five
+   * truth for visual run-state on a row: callers pass one of six
    * `state` values and the dot renders the matching visual (or
    * nothing for `null` — the absence of a dot is the positive
    * "idle / success" signal). No text labels, no exit-code chips,
@@ -16,21 +16,24 @@
    * running row at a glance.
    */
 
-  type State = 'running' | 'backgrounded' | 'error' | 'declined' | null;
+  type State = 'running' | 'backgrounded' | 'parked' | 'error' | 'declined' | null;
   type NonNullState = Exclude<State, null>;
 
   const ARIA_BY_STATE: Record<NonNullState, string> = {
     running: 'Running',
     backgrounded: 'Backgrounded',
+    parked: 'Parked',
     error: 'Errored',
     declined: 'Declined',
   };
 
-  // Single-dot states share geometry; only the bg color and the
-  // pulse flag differ. `backgrounded` renders separately because its
-  // visual is three smaller dots.
+  // Single-dot states share geometry; only the fill and the pulse flag
+  // differ. `parked` is the hollow, still ring: the agent is alive but
+  // doing nothing until its background command reports. `backgrounded`
+  // renders separately because its visual is three smaller dots.
   const SINGLE_DOT_BY_STATE: Record<Exclude<NonNullState, 'backgrounded'>, { bg: string; pulse: boolean }> = {
     running: { bg: 'bg-accent', pulse: true },
+    parked: { bg: 'border border-accent/70 bg-transparent', pulse: false },
     error: { bg: 'bg-error', pulse: false },
     declined: { bg: 'bg-warning', pulse: false },
   };
@@ -46,10 +49,11 @@
   interface Props {
     /**
      * Run state. `null` (or absent) renders nothing — that's the
-     * idle / success signal. The four non-null states each map to a
+     * idle / success signal. The five non-null states each map to a
      * specific visual:
      *   - `running`     pulsing accent dot
      *   - `backgrounded` three staggered pulsing accent dots
+     *   - `parked`      static hollow accent ring
      *   - `error`       static red dot
      *   - `declined`    static amber dot
      */

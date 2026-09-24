@@ -55,6 +55,16 @@ describe('<Indicator>', () => {
     expect(dots[2].className).toContain('ambient-pulse-s4');
   });
 
+  it('renders a still hollow accent ring when parked', () => {
+    const { container } = render(Indicator, { props: { state: 'parked' } });
+    const dot = container.querySelector('[data-testid="indicator"]')!;
+    expect(dot.getAttribute('data-state')).toBe('parked');
+    expect(dot.className).toContain('border-accent');
+    expect(dot.className).toContain('bg-transparent');
+    expect(dot.className).not.toContain('animate-pulse');
+    expect(dot.getAttribute('aria-label')).toBe('Parked');
+  });
+
   it('renders a static red dot when error', () => {
     const { container } = render(Indicator, { props: { state: 'error' } });
     const dot = container.querySelector('[data-testid="indicator"]')!;

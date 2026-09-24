@@ -171,6 +171,44 @@ export function taskStartedLine(
   return j(envelope);
 }
 
+/**
+ * The wake of a parked async agent (claude-wire.md §E6b): a `local_agent`
+ * `task_started` that names NO tool_use, carrying the owned shell's
+ * notification as the prompt. The parser writes it as the wake row under
+ * the agent's bound tool_use.
+ */
+export function agentWakeLine(
+  taskId: string,
+  description: string,
+  shell: { taskId: string; toolUseId: string; status: string; summary: string },
+): string {
+  const prompt =
+    `<task-notification>\n<task-id>${shell.taskId}</task-id>\n<tool-use-id>${shell.toolUseId}</tool-use-id>\n` +
+    `<status>${shell.status}</status>\n<summary>${shell.summary}</summary>\n</task-notification>`;
+  return j({
+    type: 'system',
+    subtype: 'task_started',
+    task_id: taskId,
+    description,
+    subagent_type: 'general-purpose',
+    is_backgrounded: true,
+    spawn_depth: 1,
+    task_type: 'local_agent',
+    prompt,
+  });
+}
+
+/** The Bash backgrounding ack a subagent's shell gets on the sidechain:
+ * text only (Claude omits `tool_use_result` there), naming the task id
+ * the later terminal carries. */
+export function shellBackgroundAckLine(toolUseId: string, taskId: string, parentToolUseId: string): string {
+  return toolResultLine(
+    toolUseId,
+    `Command running in background with ID: ${taskId}. Output is being written to: /tmp/tasks/${taskId}.output. You will be notified when it completes.`,
+    { parentToolUseId },
+  );
+}
+
 export function taskProgressLine(
   taskId: string,
   toolUseId: string,

@@ -206,3 +206,29 @@ func TestUserEchoClientIDKeyMatchesTheProviderConstant(t *testing.T) {
 		t.Fatalf("meta key drift: triage reads %q, %s writes %q", userEchoClientIDMetaKey, rel, provider)
 	}
 }
+
+// A parked stop's bell names the round's report in stored meta; the
+// timeline reads those keys back by name.
+func TestParkedAgentBellMetaKeysMatchFrontendMirror(t *testing.T) {
+	const backend = "internal/triage/agent_run_state.go"
+	const frontend = "frontend/src/lib/utils/parkedAgentBell.ts"
+	backendValues := goStringConstants(t, backend)
+	frontendSource, err := os.ReadFile(repoRelativePath(t, frontend))
+	if err != nil {
+		t.Fatalf("read %s: %v", frontend, err)
+	}
+	for _, name := range []string{
+		"notificationKindParkedAgent",
+		"metaKeyParkedCommands",
+		"metaKeyParkedReportItemID",
+		"metaKeyParkedReportPreview",
+	} {
+		value, ok := backendValues[name]
+		if !ok || value == "" {
+			t.Fatalf("%s no longer declares %s", backend, name)
+		}
+		if !strings.Contains(string(frontendSource), `'`+value+`'`) {
+			t.Errorf("%s does not mirror %s = %q", frontend, name, value)
+		}
+	}
+}

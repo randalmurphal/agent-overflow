@@ -75,7 +75,12 @@
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
-  import { indicatorStateForItem, rowErrorForStatus } from './rowState';
+  import {
+    completionEndedBySessionDeath,
+    indicatorStateForItem,
+    rowErrorForStatus,
+    SESSION_DIED_ROW_ERROR,
+  } from './rowState';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
   import Icon from '../primitives/Icon.svelte';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
@@ -349,8 +354,16 @@
   let indicatorState = $derived(
     indicatorStateForItem(statusItem, { meta: statusPayloadMeta }),
   );
+  let statusMeta = $derived(
+    completionItem ? parseJsonObject(completionItem.meta) : parentMeta,
+  );
   let rowError = $derived.by(() => {
     if (completionStatus !== 'failure') return null;
+    // A sibling the session's death wrote: the agent was neither stopped
+    // by the user nor failed, so "stopped" would misreport what happened.
+    if (statusItem.status === 'killed' && completionEndedBySessionDeath(statusMeta)) {
+      return SESSION_DIED_ROW_ERROR;
+    }
     return rowErrorForStatus(statusItem.status, 'Agent failed') ?? {
       tone: 'error' as const,
       msg: 'Agent failed',
@@ -361,9 +374,6 @@
   // on the completion sibling, output_file_state/error on older rows). A
   // silently incomplete card body reads exactly like a complete one, so
   // the failure renders inline.
-  let statusMeta = $derived(
-    completionItem ? parseJsonObject(completionItem.meta) : parentMeta,
-  );
   let outputBackfillError = $derived.by(() => {
     const state = statusMeta?.notification_output_state ?? statusMeta?.output_file_state;
     if (state !== 'error') return '';

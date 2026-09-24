@@ -204,7 +204,13 @@ subagent model and the user explicitly authorizes the corresponding change.
   in its body. Later answer deliveries remain separate timeline events. While
   the agent runs there is no card: the pane and the tray are its live
   surfaces, and the collapsed tray row shows tokens plus only the latest
-  direct tool call as its activity line. The bell is hidden on the strength of the completion
+  direct tool call as its activity line. A parked agent (claude-wire.md
+  §E6b) is not running and the tray says so: the `parked` indicator,
+  "Waiting on N background command(s)" in place of the activity line,
+  and the head of the report it sent; its parked bell carries the same
+  report head and opens the full report in place (`ParkedAgentBell`),
+  so what the agent told the main thread is on the timeline while no
+  card exists. The bell is hidden on the strength of the completion
   rendering (`utils/notificationFilter.ts`), which is why the card sits
   at the sibling rather than folding it onto a card at the launch (the
   fold-and-drop version left the transcript with no trace of the agent

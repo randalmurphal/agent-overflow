@@ -8,8 +8,9 @@
 // read: it watches no agent scope and reads no child row, open or closed, and
 // the backend nudges a read when an agent's served state or latest tool
 // changes. Exposes reactive `tasks` / `runningCount` for the rail's toggle
-// pill and expanded body, `hasPendingCompletion` for the host's clock gate,
-// and `runStateOf` for a Claude agent's served run state.
+// pill and expanded body and `hasPendingCompletion` for the host's clock
+// gate; a Claude agent's served run state goes to the shared registry
+// (`stores/subagentRunState.svelte.ts`), which the rows read per launch.
 //
 // Owned by `Composer.svelte`, not the rail: the composer's `railVisible`
 // predicate reads `count`, and the rail + height-reservation spacer must
@@ -37,6 +38,7 @@ import { deriveTrayTasks, type TrayTask } from '../../utils/backgroundTray';
 import { createRefreshScheduler } from '../../utils/refreshScheduler';
 import { createTrayLatestToolProjection } from '../../utils/codexTrayProjection';
 import { subagentRunStateFromMeta, type SubagentRunState } from '../../utils/subagentRunState';
+import { liveSubagentRunState, replaceSubagentRunStates } from '../../stores/subagentRunState.svelte';
 
 // Brief retention so a completion has time to flicker into view as the
 // terminal state but doesn't linger after the user has read it. Just
@@ -58,12 +60,6 @@ export interface BackgroundController {
   readonly hasPendingCompletion: boolean;
   readonly threadId: string | null;
   readonly provider: ProviderID | null;
-  /**
-   * The run state the last list read served for a listed Claude agent
-   * launch; null for any other id. An agent absent from the list with a
-   * completion sibling is done.
-   */
-  runStateOf(launchId: string): SubagentRunState | null;
   /** Subscribe to events; returns a disposer. Call once from onMount. */
   mount(): () => void;
 }
@@ -79,13 +75,13 @@ export function createBackgroundController(
   // Rebuilt with each wholesale write, never per event. A running row wins
   // over another row with its id, as in `deriveTrayTasks`.
   let listedLaunches = new Map<string, Item>();
-  // The listed launches' served run states. Only a list read serves them,
-  // so this is rebuilt with each wholesale write and a re-push, which
-  // carries a row's other keys over, leaves it alone.
-  let runStates: ReadonlyMap<string, SubagentRunState> = $state.raw(new Map());
   const latestTools = createTrayLatestToolProjection();
 
-  function replaceBackgroundItems(items: Item[]): void {
+  // The listed launches' served run states go to the shared registry
+  // (stores/subagentRunState.svelte.ts). Only a list read serves them, so
+  // each wholesale write replaces the thread's set; a re-push, which
+  // carries a row's other keys over, leaves it alone.
+  function replaceBackgroundItems(forThreadId: string | null, items: Item[]): void {
     backgroundItems = items;
     listedLaunches = new Map();
     for (const item of items) {
@@ -93,12 +89,14 @@ export function createBackgroundController(
         listedLaunches.set(item.id, item);
       }
     }
-    const states = new Map<string, SubagentRunState>();
-    for (const [id, launch] of listedLaunches) {
-      const state = subagentRunStateFromMeta(launch.meta);
-      if (state) states.set(id, state);
+    if (forThreadId) {
+      const states = new Map<string, SubagentRunState>();
+      for (const [id, launch] of listedLaunches) {
+        const state = subagentRunStateFromMeta(launch.meta);
+        if (state) states.set(id, state);
+      }
+      replaceSubagentRunStates(forThreadId, states);
     }
-    runStates = states;
     latestTools.reset(items);
   }
 
@@ -148,7 +146,7 @@ export function createBackgroundController(
     run: async (token) => {
       const id = threadId;
       if (!id) {
-        replaceBackgroundItems([]);
+        replaceBackgroundItems(null, []);
         return;
       }
       const owner = threadBackend(id);
@@ -156,7 +154,7 @@ export function createBackgroundController(
       try {
         const items = (await ListLiveBackgroundTasks(id)) as Item[] | null;
         if (!token.isCurrent() || id !== threadId) return;
-        replaceBackgroundItems((items ?? []).filter((item) => item.threadId === id));
+        replaceBackgroundItems(id, (items ?? []).filter((item) => item.threadId === id));
       } catch (err) {
         if (!token.isCurrent() || id !== threadId) return;
         console.error('ActivityRail: ListLiveBackgroundTasks failed:', err);
@@ -170,8 +168,7 @@ export function createBackgroundController(
   // refreshes, so the switch load cannot race one issued moments before it;
   // reset() is what makes the outgoing thread's in-flight answer stale.
   $effect(() => {
-    threadId;
-    replaceBackgroundItems([]);
+    replaceBackgroundItems(threadId, []);
     refresh.reset();
     refresh.request({ immediate: true });
   });
@@ -180,8 +177,12 @@ export function createBackgroundController(
     deriveTrayTasks(backgroundItems, getNow(), COMPLETION_RETENTION_MS),
   );
   const count = $derived(tasks.length);
+  // A parked agent (reported, waiting on its own background commands) is
+  // live but not running: the pill's pulse and the body's running count
+  // read only the rows doing work.
   const runningCount = $derived(
-    tasks.filter((t) => t.status === 'running').length,
+    tasks.filter((t) => t.status === 'running'
+      && liveSubagentRunState(threadId, t.launch?.id)?.state !== 'parked').length,
   );
   // A settled pair prunes only when `getNow()` advances past its retention
   // window, and the host runs the shared clock off this flag. Every depth
@@ -198,7 +199,6 @@ export function createBackgroundController(
     get hasPendingCompletion() { return hasPendingCompletion; },
     get threadId() { return threadId; },
     get provider() { return provider; },
-    runStateOf(launchId) { return runStates.get(launchId) ?? null; },
 
     mount(): () => void {
       const cancelItemUpsert = onItemUpsert((item) => {

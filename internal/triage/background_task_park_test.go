@@ -162,6 +162,18 @@ func TestParkedAgent_StopWithLiveShellKeepsStashAndWritesNoSibling(t *testing.T)
 	if want := `Agent "Spike agent" reported and is waiting on 1 background command`; bells[0].Summary != want {
 		t.Errorf("parked bell = %q, want %q", bells[0].Summary, want)
 	}
+	// No report row under the root yet: the bell is a parked bell on one
+	// command and names no report.
+	meta := decodeItemMetaMap(t, bells[0].Meta)
+	if meta["kind"] != notificationKindParkedAgent || meta[metaKeyParkedCommands] != float64(1) {
+		t.Errorf("parked bell meta = %v, want kind %q on 1 command", meta, notificationKindParkedAgent)
+	}
+	if _, has := meta[metaKeyParkedReportItemID]; has {
+		t.Errorf("parked bell meta = %v, want no report link before the agent wrote one", meta)
+	}
+	if _, has := meta[metaKeyParkedReportPreview]; has {
+		t.Errorf("parked bell meta = %v, want no report preview before the agent wrote one", meta)
+	}
 	running, err := st.ListRunningBackgroundToolCalls("t1")
 	if err != nil {
 		t.Fatalf("running: %v", err)
@@ -416,6 +428,10 @@ func TestParkedAgent_ParkedStopRingsOneLineAndTheFinalStopKeepsTheReport(t *test
 	parkLaunchShell(t, router, "t1", "shell", "task-shell", "agent")
 	parkLaunchShell(t, router, "t1", "shell-2", "task-shell-2", "agent")
 
+	// The round's report precedes the stop on the wire: the root's newest
+	// direct assistant_text is what the parked bell links.
+	seedAgentReport(t, st, "t1", "agent", "report-old", "First look: nothing yet.")
+	seedAgentReport(t, st, "t1", "agent", "report-1", "Waiting for the gate to finish.")
 	parkHandle(t, router, provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "agent",
 		Meta: parkMeta(t, map[string]any{"task_id": "task-agent", "tool_use_id": "agent", "status": "completed", "source": "task_updated"}),
@@ -430,8 +446,15 @@ func TestParkedAgent_ParkedStopRingsOneLineAndTheFinalStopKeepsTheReport(t *test
 	if parked.PayloadID != "" {
 		t.Errorf("parked bell payload = %q, want none: the report is the round's own row", parked.PayloadID)
 	}
-	if meta := decodeItemMetaMap(t, parked.Meta); meta["task_id"] != "task-agent" || meta["output_file_state"] != "ready" {
+	meta := decodeItemMetaMap(t, parked.Meta)
+	if meta["task_id"] != "task-agent" || meta["output_file_state"] != "ready" {
 		t.Errorf("parked bell meta = %v, want the task_id and a ready state", meta)
+	}
+	if meta["kind"] != notificationKindParkedAgent || meta[metaKeyParkedCommands] != float64(2) {
+		t.Errorf("parked bell meta = %v, want kind %q on 2 commands", meta, notificationKindParkedAgent)
+	}
+	if meta[metaKeyParkedReportItemID] != "report-1" || meta[metaKeyParkedReportPreview] != "Waiting for the gate to finish." {
+		t.Errorf("parked bell meta = %v, want the newest report row linked with its preview", meta)
 	}
 	if got := countEvents(emissions.snapshot(), eventchan.ProviderBackgroundTasksChanged.String()); got != 1 {
 		t.Errorf("parked notification nudged the tray %d times, want 1", got)

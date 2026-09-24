@@ -2255,6 +2255,16 @@ write, the parked bell and the wake each emit
 `task_updated` and its notification a read says `parked` on zero
 commands; the sibling write that follows nudges again.
 
+The parked bell's own `meta` carries the same report link, stamped once
+at write time (`parkedBellMeta`): `kind: "parked_agent"`,
+`parked_commands` (N as a number) and, when the agent has written a
+report, `parked_report_item_id` and `parked_report_preview` (the same
+row and 512-rune head). The timeline renders the bell with the preview
+and loads the full row by id (`GetThreadItem`) on demand; the keys are
+mirrored in `frontend/src/lib/utils/parkedAgentBell.ts` and pinned by
+`TestParkedAgentBellMetaKeysMatchFrontendMirror`. A parked bell written
+before this meta existed renders as its one line.
+
 ### E7: Monitor watch-task launch ack
 
 The harness's `Monitor` tool runs a Bash command as a **background

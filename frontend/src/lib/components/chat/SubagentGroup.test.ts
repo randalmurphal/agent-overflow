@@ -283,6 +283,34 @@ describe('<SubagentGroup>', () => {
     }
   });
 
+  it('says the session ended when the completion sibling was written by session death, not "stopped"', () => {
+    const launch = mkAgentParent('bg', {
+      status: 'running',
+      isBackground: true,
+      input: { description: 'Bg subagent', subagent_type: 'Explore' },
+    });
+    const completionFor = (statusSource: string) => mkItem({
+      id: 'complete:bg',
+      kind: 'tool_completion',
+      toolName: 'Agent',
+      status: 'killed',
+      completionOf: 'bg',
+      completionLaunch: launch,
+      meta: JSON.stringify({ task_id: 'task-bg', status_source: statusSource }),
+    });
+    const died = render(SubagentGroupTestHarness, {
+      props: { group: mkGroup({ parentId: 'bg', parentItem: launch, completion: completionFor('session_died') }) },
+    });
+    expect(died.getByTestId('subagent-group-status').querySelector('[data-testid="indicator"]')?.getAttribute('data-state')).toBe('error');
+    expect(died.getByTestId('subagent-group-error').textContent).toContain('Session ended before the agent finished');
+    died.unmount();
+
+    const stopped = render(SubagentGroupTestHarness, {
+      props: { group: mkGroup({ parentId: 'bg', parentItem: launch, completion: completionFor('host_exit') }) },
+    });
+    expect(stopped.getByTestId('subagent-group-error').textContent).toContain('Tool call stopped');
+  });
+
   it('keeps the status slot wrapper present in both running and completed states', () => {
     // Stability guard: running and terminal states share the same slot
     // wrapper so the transition does not shift adjacent chrome

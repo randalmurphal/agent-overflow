@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/svelte';
 import BackgroundTaskTrayRow from './BackgroundTaskTrayRow.svelte';
 import { makeItem } from '../../../test/helpers/chat';
@@ -6,7 +6,9 @@ import type { TrayTask } from '../../utils/backgroundTray';
 import type { Item } from '../../types/models';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import type { ProviderID } from '../../providers/catalog';
+import { tick } from 'svelte';
 import { applySubagentProgress, resetForTest } from '../../stores/subagentProgress.svelte';
+import { replaceSubagentRunStates, resetForTest as resetSubagentRunStates } from '../../stores/subagentRunState.svelte';
 
 function taskFor(anchor: Item, overrides: Partial<TrayTask> = {}): TrayTask {
   return {
@@ -385,5 +387,113 @@ describe('<BackgroundTaskTrayRow> doors (agent-visibility)', () => {
     } finally {
       resetForTest();
     }
+  });
+});
+
+describe('<BackgroundTaskTrayRow> agent run state', () => {
+  const agentLaunch = () => makeItem({
+    id: 'bg-agent',
+    threadId: 'thread-1',
+    kind: 'tool_call',
+    toolName: 'Agent',
+    summary: 'Agent: inspect tests',
+    status: 'running',
+    isBackground: true,
+    payloadMeta: JSON.stringify({
+      toolName: 'Agent',
+      input: { subagent_type: 'Explorer', description: 'Inspect tests' },
+    }),
+  });
+
+  afterEach(() => {
+    resetForTest();
+    resetSubagentRunStates();
+  });
+
+  it('shows a parked agent as parked: hollow indicator, the waiting line over the live activity, and the report head', () => {
+    applySubagentProgress({
+      threadId: 'thread-1',
+      itemId: 'bg-agent',
+      progress: { toolUses: 3, totalTokens: 1_200, activity: 'Reading fork_moves.go' },
+      updatedAt: 1,
+    });
+    replaceSubagentRunStates('thread-1', new Map([[
+      'bg-agent',
+      { state: 'parked', waitingOn: 2, report: { id: 'report-1', preview: 'Found the race in fork_moves.go.' } },
+    ]]));
+    const { getByTestId } = renderTrayRow(taskFor(agentLaunch()), 'claude');
+    expect(getByTestId('background-task-tray-row-status')).toHaveAttribute('data-run-state', 'parked');
+    const indicator = getByTestId('agent-row-status').querySelector('[data-testid="indicator"]');
+    expect(indicator?.getAttribute('data-state')).toBe('parked');
+    expect(indicator?.getAttribute('aria-label')).toBe('Parked');
+    expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Waiting on 2 background commands');
+    expect(getByTestId('background-task-tray-row-activity').textContent).not.toContain('Reading fork_moves.go');
+    expect(getByTestId('background-task-tray-row-report').textContent).toContain('Found the race in fork_moves.go.');
+    expect(getByTestId('background-task-tray-row-tools').textContent?.trim()).toBe('3 tools');
+  });
+
+  it('words a single parked command in the singular and omits the report line when the agent wrote none', () => {
+    replaceSubagentRunStates('thread-1', new Map([[
+      'bg-agent',
+      { state: 'parked', waitingOn: 1, report: null },
+    ]]));
+    const { getByTestId, queryByTestId } = renderTrayRow(taskFor(agentLaunch()), 'claude');
+    expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Waiting on 1 background command');
+    expect(getByTestId('background-task-tray-row-activity').textContent).not.toContain('commands');
+    expect(queryByTestId('background-task-tray-row-report')).toBeNull();
+  });
+
+  it('keeps a running agent on the backgrounded indicator and its live activity', () => {
+    applySubagentProgress({
+      threadId: 'thread-1',
+      itemId: 'bg-agent',
+      progress: { toolUses: 1, totalTokens: 100, activity: 'Reading fork_moves.go' },
+      updatedAt: 1,
+    });
+    replaceSubagentRunStates('thread-1', new Map([['bg-agent', { state: 'running', waitingOn: 0, report: null }]]));
+    const { getByTestId, queryByTestId } = renderTrayRow(taskFor(agentLaunch()), 'claude');
+    expect(getByTestId('background-task-tray-row-status')).toHaveAttribute('data-run-state', 'running');
+    expect(getByTestId('agent-row-status').querySelector('[data-testid="indicator"]')?.getAttribute('data-state')).toBe('backgrounded');
+    expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Reading fork_moves.go');
+    expect(queryByTestId('background-task-tray-row-report')).toBeNull();
+  });
+
+  it('drops the parked presentation once the served state flips back to running', async () => {
+    replaceSubagentRunStates('thread-1', new Map([[
+      'bg-agent',
+      { state: 'parked', waitingOn: 1, report: { id: 'report-1', preview: 'Found it.' } },
+    ]]));
+    const view = renderTrayRow(taskFor(agentLaunch()), 'claude');
+    expect(view.getByTestId('background-task-tray-row-status')).toHaveAttribute('data-run-state', 'parked');
+    replaceSubagentRunStates('thread-1', new Map([['bg-agent', { state: 'running', waitingOn: 0, report: null }]]));
+    await tick();
+    expect(view.getByTestId('background-task-tray-row-status')).toHaveAttribute('data-run-state', 'running');
+    expect(view.getByTestId('agent-row-status').querySelector('[data-testid="indicator"]')?.getAttribute('data-state')).toBe('backgrounded');
+    expect(view.queryByTestId('background-task-tray-row-report')).toBeNull();
+    // No live activity and no parked line: the activity slot is gone.
+    expect(view.queryByTestId('background-task-tray-row-activity')).toBeNull();
+  });
+
+  it('says the session ended when the completion sibling was written by session death, not "stopped"', () => {
+    const launch = agentLaunch();
+    const sessionDied = makeItem({
+      id: 'complete:bg-agent',
+      threadId: 'thread-1',
+      kind: 'tool_completion',
+      toolName: 'Agent',
+      status: 'killed',
+      completionOf: launch.id,
+      meta: JSON.stringify({ task_id: 'task-agent', status_source: 'session_died' }),
+    });
+    const died = renderTrayRow(taskFor(launch, { completion: sessionDied, status: 'completed' }), 'claude');
+    expect(died.getByTestId('agent-row-error').textContent).toContain('Session ended before the agent finished');
+    expect(died.getByTestId('background-task-tray-row-status')).not.toHaveAttribute('data-run-state');
+    died.unmount();
+
+    const stopped = renderTrayRow(taskFor(launch, {
+      completion: { ...sessionDied, meta: JSON.stringify({ task_id: 'task-agent', status_source: 'host_exit' }) },
+      status: 'completed',
+    }), 'claude');
+    expect(stopped.getByTestId('agent-row-error').textContent).toContain('Tool call stopped');
   });
 });

@@ -25,6 +25,16 @@ const (
 	subagentRunEnded   = "ended"
 )
 
+// A parked stop's bell (parkedBellMeta) is stored history that names the
+// round's report. The frontend mirrors these keys in
+// frontend/src/lib/utils/parkedAgentBell.ts (mirror_pins_test.go).
+const (
+	notificationKindParkedAgent = "parked_agent"
+	metaKeyParkedCommands       = "parked_commands"
+	metaKeyParkedReportItemID   = "parked_report_item_id"
+	metaKeyParkedReportPreview  = "parked_report_preview"
+)
+
 // DecorateAgentRunStates adds the run state to every background agent
 // launch (isSubagentTranscriptLaunch) in a Store.ListLiveBackgroundTasks
 // read. It is the park model's own state, one keyed lookup per launch:

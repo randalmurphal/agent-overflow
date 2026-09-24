@@ -14,6 +14,7 @@
     type TrayTask,
   } from '../../utils/backgroundTray';
   import { liveSubagentProgress } from '../../stores/subagentProgress.svelte';
+  import { liveSubagentRunState } from '../../stores/subagentRunState.svelte';
   import { formatToolUses, resolveSubagentProgress } from '../../utils/subagentProgress';
   import { formatTokens } from '../../utils/format';
   import { parseJsonObject } from '../../utils/parseJsonObject';
@@ -131,8 +132,26 @@
     const value = parseJsonObject(task.launch?.meta)?.[TRAY_LATEST_TOOL_META.summary];
     return typeof value === 'string' ? value.trim() : '';
   });
+  // The agent's served run state (claude-wire.md §E6b). A parked agent has
+  // reported and waits on background commands it started: its launch row
+  // still says `running` (immutable history), so this is the one surface
+  // that says it is not, with the report's head beside the wait.
+  let runState = $derived(
+    agentInfo !== null && task.status === 'running'
+      ? liveSubagentRunState(task.anchor.threadId, progressLaunchId)
+      : null,
+  );
+  let parked = $derived(runState?.state === 'parked');
+  let parkedLine = $derived.by(() => {
+    if (!parked || !runState) return '';
+    const n = runState.waitingOn;
+    return n > 0
+      ? `Waiting on ${n} background ${n === 1 ? 'command' : 'commands'}`
+      : 'Waiting on background commands';
+  });
+  let parkedReport = $derived(parked ? (runState?.report?.preview.trim() ?? '') : '');
   let activityLine = $derived(
-    task.status === 'running' ? (progress?.activity || latestToolSummary) : '',
+    task.status === 'running' ? (parkedLine || progress?.activity || latestToolSummary) : '',
   );
   let hasStopAction = $derived(
     stopTarget !== null || opensAgentPane,
@@ -170,6 +189,11 @@
     <span class="block truncate text-[0.6875rem] text-fg-hint/85" data-testid="background-task-tray-row-activity" title={activityLine}>
       {activityLine}
     </span>
+    {#if parkedReport}
+      <span class="block truncate text-[0.6875rem] text-fg-muted/85" data-testid="background-task-tray-row-report" title={parkedReport}>
+        {parkedReport}
+      </span>
+    {/if}
   {/snippet}
   {#snippet stopAction()}
     {#if onOpenPane && opensAgentPane}
@@ -199,7 +223,12 @@
     {/if}
   {/snippet}
 
-  <div data-testid="background-task-tray-row-status" data-status={task.status} class="contents">
+  <div
+    data-testid="background-task-tray-row-status"
+    data-status={task.status}
+    data-run-state={runState?.state}
+    class="contents"
+  >
     {#if presentation.kind === 'command'}
       <CommandOutput
         item={presentation.item}
@@ -222,6 +251,7 @@
         item={presentation.item}
         displayItem={presentation.displayItem}
         statusItem={presentation.statusItem}
+        indicatorOverride={parked ? 'parked' : undefined}
         {durationLabel}
         showTimestamp={false}
         hostActions={hasStopAction ? stopAction : undefined}

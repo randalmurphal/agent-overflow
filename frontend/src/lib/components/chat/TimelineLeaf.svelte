@@ -12,6 +12,7 @@
   import ForkDivider from './ForkDivider.svelte';
   import GeneratedImageMessage from './GeneratedImageMessage.svelte';
   import NotificationRow from './NotificationRow.svelte';
+  import ParkedAgentBell from './ParkedAgentBell.svelte';
   import SessionDiedNotification from './SessionDiedNotification.svelte';
   import TerminalInteractionRow from './TerminalInteractionRow.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
@@ -118,6 +119,8 @@
       <SessionDiedNotification item={displayItem} />
     {:else if notificationKind === 'fork_origin'}
       <ForkDivider {pane} item={displayItem} />
+    {:else if notificationKind === 'parked_agent'}
+      <ParkedAgentBell item={displayItem} />
     {:else}
       <NotificationRow item={displayItem} />
     {/if}

@@ -63,7 +63,13 @@
   import ToolHeaderMeta from './ToolHeaderMeta.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
-  import { indicatorStateForItem, rowErrorWithFallback } from './rowState';
+  import {
+    completionEndedBySessionDeath,
+    indicatorStateForItem,
+    rowErrorWithFallback,
+    SESSION_DIED_ROW_ERROR,
+    type IndicatorState,
+  } from './rowState';
   import { createRunningElapsed } from './useRunningElapsed.svelte';
 
   let {
@@ -79,6 +85,7 @@
     headerDetails,
     disclosure,
     onActivate,
+    indicatorOverride,
   }: {
     pane?: PaneDoors & PaneSession & RowUiRegistry & ScrollHost & TimelineSource;
     item: Item;
@@ -95,6 +102,12 @@
     disclosure?: HostDisclosure;
     /** Header click when the row has nothing to expand. */
     onActivate?: () => void;
+    /**
+     * The indicator a host that knows more than the rows do sets: the tray
+     * shows a parked agent (served run state) whose launch row still says
+     * `running`. Undefined keeps the status-derived indicator.
+     */
+    indicatorOverride?: IndicatorState;
   } = $props();
   let expandable = $derived(disclosure?.expandable === true);
 
@@ -163,9 +176,16 @@
     const error = itemMeta?.notification_output_error ?? itemMeta?.output_file_error;
     return typeof error === 'string' && error ? error : 'Task output could not be read.';
   });
-  let indicatorState = $derived(indicatorStateForItem(effectiveStatusItem, { meta: statusMeta }));
+  let indicatorState = $derived(
+    indicatorOverride ?? indicatorStateForItem(effectiveStatusItem, { meta: statusMeta }),
+  );
+  // A completion the session's death wrote is neither a failure nor a
+  // user's stop; its own line says what happened.
+  let statusItemMeta = $derived(parseJsonObject(effectiveStatusItem.meta));
   let rowError = $derived(
-    rowErrorWithFallback(effectiveStatusItem, { meta: statusMeta, fallback: 'Agent failed' }),
+    completionEndedBySessionDeath(statusItemMeta) && effectiveStatusItem.status === 'killed'
+      ? SESSION_DIED_ROW_ERROR
+      : rowErrorWithFallback(effectiveStatusItem, { meta: statusMeta, fallback: 'Agent failed' }),
   );
 
   // Same door the card uses: the PANE decides where opening routes (the
@@ -244,7 +264,7 @@
   </TranscriptDisclosureHeader>
 
   {#if rowError}
-    <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1">
+    <div class="ml-[5.25rem] compact:ml-5 px-3 pb-1" data-testid="agent-row-error">
       <RowError tone={rowError.tone} msg={rowError.msg} />
     </div>
   {/if}
