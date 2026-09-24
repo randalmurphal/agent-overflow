@@ -292,7 +292,7 @@ func TestStatementCacheCompilesOncePerConnection(t *testing.T) {
 	hot := map[string]string{
 		"item insert":       itemInsertSQL,
 		"history_rev bump":  `UPDATE threads SET history_rev = history_rev + 1 WHERE id = ?`,
-		"item touch":        `UPDATE items SET rev = rev WHERE thread_id = ? AND id = ?`,
+		"item touch":        touchItemRowSQL,
 		"payload insert":    payloadInsertSQL,
 		"summary append":    `UPDATE items SET summary = summary || ?, updated_at = ? WHERE thread_id = ? AND id = ? AND status = 'streaming'`,
 		"payload owner rev": touchPayloadOwnerRowsSQL,

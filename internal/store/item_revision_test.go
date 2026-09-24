@@ -1,6 +1,7 @@
 package store
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -86,6 +87,48 @@ func TestItemRevisionTriggerArithmetic(t *testing.T) {
 	}
 	if got := itemRevisionOf(t, s, "t", "row"); got != base+5 {
 		t.Fatalf("parent rev after child delete = %d, want %d", got, base+5)
+	}
+}
+
+// TestItemRevUpdateTriggerListsEveryColumnButRev is the tripwire on the
+// update trigger's column list. A column missing from it is a write that
+// changes a read and moves no stamp; rev in it would run the trigger for
+// every row a stamp writes.
+func TestItemRevUpdateTriggerListsEveryColumnButRev(t *testing.T) {
+	s := newTestStore(t)
+	var ddl string
+	if err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_items_rev_update'`,
+	).Scan(&ddl); err != nil {
+		t.Fatalf("read trigger: %v", err)
+	}
+	_, rest, ok := strings.Cut(ddl, "AFTER UPDATE OF ")
+	list, _, ok2 := strings.Cut(rest, " ON items")
+	if !ok || !ok2 {
+		t.Fatalf("trg_items_rev_update names no column list:\n%s", ddl)
+	}
+	var got []string
+	for _, column := range strings.Split(list, ",") {
+		got = append(got, strings.TrimSpace(column))
+	}
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info('items') WHERE name <> 'rev' ORDER BY cid`)
+	if err != nil {
+		t.Fatalf("read items columns: %v", err)
+	}
+	defer rows.Close()
+	var want []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("trg_items_rev_update fires on %v, want every items column but rev: %v", got, want)
 	}
 }
 

@@ -127,9 +127,11 @@ the per-row `items.rev` stamp (the thread revision as of the last write that
 changed the row's read result, plus the rows a page decorates from it: its
 completion sibling and the anchors walked from its parent chain, `stampedRowIDsSQL`).
 They depend on `recursive_triggers` being OFF, which `dsn.go` pins and boot
-verifies, and on the update trigger's `WHEN OLD.rev IS NEW.rev` guard, which
-excludes the stamping write itself from the thread bump. Go never names `rev`
-in a column list.
+verifies. The update trigger fires on every column but `rev`, so a stamping
+write, which writes `rev` alone, does not fire it, and its
+`WHEN OLD.rev IS NEW.rev` guard excludes the one stamp that also rewrites
+`meta`. Go never names `rev` in a column list; its touch writes `updated_at`
+to itself.
 
 A window-visible mutation outside `items`, such as payload content or a plan
 decoration projected onto `Item.Meta`, calls `bumpHistoryRevTx` in its own

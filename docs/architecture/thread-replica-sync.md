@@ -295,7 +295,7 @@ rows it changes, not only the thread's. Two helpers do that, and they are
 the only way those writers bump:
 
 - `bumpHistoryRevForPayloadTx` (`AppendPayloadData`, `ReplacePayloadData`,
-  `UpdatePayloadMeta`) issues `UPDATE items SET rev = rev` over the rows
+  `UpdatePayloadMeta`) issues `UPDATE items SET updated_at = updated_at` over the rows
   whose `payload_id` or `input_payload_id` is the payload, each matched
   through its own partial index. The statement changes no column; the
   update trigger does the stamping and the thread bump. When it matches no

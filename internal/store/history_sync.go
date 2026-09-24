@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // HistoryStamp is a thread's history invalidation contract
@@ -106,17 +107,18 @@ type ThreadWindowSync struct {
 // cross-thread move: it is a delete from one ordering and an insert into
 // another, so both threads take rev AND epoch.
 //
-// `WHEN OLD.rev IS NEW.rev` on the UPDATE trigger is what keeps the
-// stamping UPDATEs from being mistaken for content changes. SQLite's
-// `recursive_triggers` is OFF (pinned in writerConnPragmas), which stops
-// a trigger re-entering ITSELF but NOT another trigger on the same table:
-// without the guard, the INSERT trigger's stamping UPDATE would fire the
-// UPDATE trigger and bump the thread a second time for one insert. A
-// stamping UPDATE always writes a value the row did not have (the stamp
-// is read after a bump), so the guard excludes exactly those and nothing
-// else. Go's own `UPDATE items SET rev = rev` touch (bumpHistoryRevForItemTx)
-// leaves the column equal and therefore DOES fire, which is the point of
-// spelling it that way.
+// The UPDATE trigger fires on every column but `rev`
+// (itemRevUpdateColumns), so a stamping UPDATE, which writes `rev` alone,
+// does not fire it: no second thread bump for one write, and no trigger
+// program per stamped row. SQLite's `recursive_triggers` is OFF (pinned in
+// writerConnPragmas), which stops a trigger re-entering ITSELF but NOT
+// another trigger on the same table. `WHEN OLD.rev IS NEW.rev` excludes the
+// one stamp that also writes a listed column, the served-key strip
+// (subagentStripServedKeysSQL): it always writes a `rev` the row did not
+// have, because the stamp is read after a bump. Go's touch
+// (bumpHistoryRevForItemTx, touchPayloadOwnerRowsSQL) writes `updated_at`
+// to itself, a listed column left equal, so it DOES fire and the trigger
+// does the stamping.
 //
 // Under `history_bulk_load = 1` the thread stamp is frozen and the row
 // stamps take the thread's current history_rev. That is sound only while
@@ -221,6 +223,17 @@ func stampedRowIDsWithCarrierKey(threadExpr, idExpr, parentExpr, carrierKey stri
 
 const stampRowsSQL = `UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = items.thread_id)`
 
+// itemRevUpdateColumns are the columns whose write fires
+// trg_items_rev_update: every items column but rev, in table order.
+// Migration v121 installs the trigger with this list; a migration that
+// adds a column to items must reinstall the trigger with it
+// (TestItemRevUpdateTriggerListsEveryColumnButRev).
+var itemRevUpdateColumns = []string{
+	"id", "thread_id", "turn_index", "item_index", "kind", "role", "status", "summary",
+	"payload_id", "parent_id", "is_background", "completion_of", "tool_name", "decision", "meta",
+	"created_at", "updated_at", "input_payload_id",
+}
+
 // stampPendingSQL keeps a trigger's row stamp off rows the same trigger
 // already stamped: a subagent_aggregates write stamps its anchor, the
 // served-key strip stamps its row, and a second write of the same value
@@ -249,7 +262,7 @@ var historyRevTriggersSQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON
      AND ` + stampPendingSQL + `;
 END;
 
-CREATE TRIGGER trg_items_rev_update AFTER UPDATE ON items
+CREATE TRIGGER trg_items_rev_update AFTER UPDATE OF ` + strings.Join(itemRevUpdateColumns, ", ") + ` ON items
 WHEN OLD.rev IS NEW.rev
 BEGIN
   UPDATE threads SET
@@ -451,10 +464,10 @@ func bumpHistoryRevTx(exec sqlExecutor, threadID, label string) error {
 // It touches the row instead of bumping the thread directly, so the item
 // UPDATE trigger does the whole job: thread stamp AND the row's own `rev`.
 // A window whose plan row gained an Accepted badge must not verify as
-// unchanged, and only a re-stamped row says that. `SET rev = rev` is the
-// touch: it asserts the column is unchanged, which is exactly the trigger's
-// `WHEN OLD.rev IS NEW.rev` guard, and it keeps `rev` a value no Go
-// statement ever chooses.
+// unchanged, and only a re-stamped row says that. `SET updated_at =
+// updated_at` is the touch: a column the trigger fires on, left equal, so
+// no read changes but the stamp, and `rev` stays a value no Go statement
+// ever chooses.
 //
 // A thread whose row is still IMPORTED history has nothing local to touch.
 // That row cannot carry a per-row stamp at all (importedItemRevExpr), so the
@@ -467,10 +480,13 @@ func bumpHistoryRevForItemTx(exec sqlExecutor, threadID, itemID, label string) e
 	}
 	return touchItemRowsTx(
 		exec, threadID, label,
-		`UPDATE items SET rev = rev WHERE thread_id = ? AND id = ?`,
+		touchItemRowSQL,
 		threadID, itemID,
 	)
 }
+
+// touchItemRowSQL is bumpHistoryRevForItemTx's touch.
+const touchItemRowSQL = `UPDATE items SET updated_at = updated_at WHERE thread_id = ? AND id = ?`
 
 // bumpHistoryRevForPayloadTx is bumpHistoryRevForItemTx for the payload
 // mutators: payload content and meta ride the item rows that reference the
@@ -507,7 +523,7 @@ func bumpHistoryRevForPayloadTx(exec sqlExecutor, threadID, payloadID, label str
 // The bind order is thread id, payload id, thread id, payload id, thread
 // id. It is a const so TestPayloadTouchProbesPayloadIndexes pins the
 // production statement rather than a copy of it.
-const touchPayloadOwnerRowsSQL = `UPDATE items SET rev = rev
+const touchPayloadOwnerRowsSQL = `UPDATE items SET updated_at = updated_at
 		  WHERE thread_id = ? AND id IN (
 		        SELECT id FROM items WHERE payload_id = ? AND thread_id = ?
 		         UNION ALL
