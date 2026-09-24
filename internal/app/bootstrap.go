@@ -156,6 +156,13 @@ func SetBoundPortRecorder(a *App, record func(port int)) { a.boundPortRecorder =
 // SetDataDirOverride installs the executable's --data-dir boot input.
 func SetDataDirOverride(a *App, dataDir string) { a.dataDirOverride = dataDir }
 
+// RefusePendingMigrations makes Start fail with a store.MigrationsPendingError,
+// before anything writes the database, when an existing database has
+// migrations to apply. The Windows launcher's backend runs with it: a
+// database is migrated only by a trial that snapshots it first
+// (docs/specs/app-update.md, the no-live-migration rule). Call before Start.
+func RefusePendingMigrations(a *App) { a.refusePendingMigrations = true }
+
 // SetCertFingerprint installs the fingerprint of the TLS certificate the
 // transport terminates with, which every pairing link then carries. The
 // boot resolves the certificate and the listener from one value, so the

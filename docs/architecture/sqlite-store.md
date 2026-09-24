@@ -69,6 +69,13 @@ and the app's boot return it unwrapped, so the boot failure shows that
 sentence, and `RestoreFrom` refuses such a snapshot through the same check. The
 refusal leaves the file byte-for-byte as it was.
 
+An open with `Options.RefusePendingMigrations` also refuses an existing
+database with migrations to apply, with `MigrationsPendingError`, before
+anything writes it. A database without an applied migration is created as
+usual. The Windows launcher's backend opens this way, so a database is
+migrated only by an update trial that snapshots it first
+([no live migration](../specs/app-update.md#no-live-migration)).
+
 A rebuild must carry forward every column, index, trigger, and relationship
 added since the source definition. Rebuild migrations temporarily disable
 foreign keys on the dedicated writer connection so dropping a parent table does

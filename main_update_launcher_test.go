@@ -239,3 +239,74 @@ func TestLauncherUpdateSequenceRunsTheRealCommands(t *testing.T) {
 		})
 	}
 }
+
+// TestLauncherMigrationRunsTheRealCommands: the no-live-migration gate's
+// migration drives the real update commands through the payload that refused
+// to migrate live, and leaves no record either way.
+func TestLauncherMigrationRunsTheRealCommands(t *testing.T) {
+	kerneltest.IsolateSpawns(t)
+	for _, tc := range []struct {
+		name     string
+		stub     string
+		launch   bool
+		detail   string
+		database string
+	}{
+		{"prepared commits", "prepare", true, "", "trial"},
+		{"failed rolls back", "fail", false,
+			"The backup was restored, so the data is as it was. Reason: database schema 90 is newer than this build knows (88). Details are in the launcher log.",
+			"live"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &launcherE2E{t: t, dataRoot: t.TempDir(), stub: tc.stub, payloads: map[string][]string{}}
+			dir := filepath.Join(e.dataRoot, appdirs.DirName)
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			db := filepath.Join(dir, "agent-overflow.db")
+			if err := os.WriteFile(db, []byte("live"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stable := filepath.Join(t.TempDir(), "agent-overflow")
+			if err := os.WriteFile(stable, []byte("payload"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			recordPath := supervise.LauncherRecordPath(t.TempDir(), "prod", "Ubuntu")
+			sequence := wsllauncher.UpdateSequence{
+				RecordPath: recordPath,
+				Host: launcherE2EHost{
+					UpdatePayloads: wsllauncher.UpdatePayloads{Runner: wsllauncher.UpdateCommandRunner{Command: e.wsl, Logf: t.Logf}},
+					e:              e,
+				},
+				Now:  time.Now,
+				Logf: t.Logf,
+			}
+			end := sequence.Migrate(t.Context(), "Ubuntu", stable, "2.0.0")
+			if end.Launch != tc.launch || end.Detail != tc.detail {
+				t.Fatalf("Migrate = %+v, want launch=%v %q", end, tc.launch, tc.detail)
+			}
+			if got, err := os.ReadFile(db); err != nil || string(got) != tc.database {
+				t.Fatalf("database = %q (%v), want %q", got, err, tc.database)
+			}
+			if got, err := os.ReadFile(stable); err != nil || string(got) != "payload" {
+				t.Fatalf("the payload = %q (%v); a migration publishes nothing", got, err)
+			}
+			if _, found, err := supervise.LoadLauncherRecord(recordPath); found || err != nil {
+				t.Fatalf("the record survived the settled migration: found=%v err=%v", found, err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "runtime", "app-update", "snapshot")); !os.IsNotExist(err) {
+				t.Fatalf("the snapshot survived the settled migration: %v", err)
+			}
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			for _, command := range []string{supervise.UpdateSnapshotCommand, supervise.UpdateTrialRunCommand, supervise.UpdateDiscardCommand} {
+				if got := e.payloads[command]; strings.Join(got, ",") != stable {
+					t.Errorf("%s ran through %q, want the payload that refused", command, got)
+				}
+			}
+			if len(e.calls) != 0 {
+				t.Errorf("launcher steps = %q; a migration publishes nothing", e.calls)
+			}
+		})
+	}
+}

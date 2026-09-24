@@ -380,6 +380,28 @@ func TestParseFlagsUpdateFailure(t *testing.T) {
 	}
 }
 
+// TestParseFlagsRefusePendingMigrations: the launcher's gate flag reaches
+// cliFlags on its ordinary backend and is refused on every other boot.
+func TestParseFlagsRefusePendingMigrations(t *testing.T) {
+	flag := "--" + wsllauncher.RefusePendingMigrationsFlag
+	got, err := parseFlags([]string{"--print-url-fd", "0", flag})
+	if err != nil || !got.refusePendingMigrations {
+		t.Fatalf("parseFlags = (%+v, %v), want the refusal set", got.refusePendingMigrations, err)
+	}
+	if got, err := parseFlags([]string{"--print-url-fd", "0"}); err != nil || got.refusePendingMigrations {
+		t.Fatalf("an ordinary headless boot = (%v, %v), want no refusal", got.refusePendingMigrations, err)
+	}
+	for _, args := range [][]string{
+		{flag},
+		{"--soak", "--print-url-fd", "0", flag},
+		{"--harness", "--data-dir", "/tmp/x", flag},
+	} {
+		if _, err := parseFlags(args); err == nil || !strings.Contains(err.Error(), flag) {
+			t.Errorf("parseFlags(%q) = %v, want the flag refused", args, err)
+		}
+	}
+}
+
 // TestParseFlagsUpdatingTo: the argv the launcher builds for a launch that
 // finishes an update reaches cliFlags, and the flag is refused on every boot
 // that is not the launcher's ordinary backend.

@@ -44,6 +44,7 @@ import (
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellenv"
 	"agent-overflow/internal/startupprogress"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/wsllauncher"
@@ -264,7 +265,7 @@ func main() {
 		// needs its own isolated boot, not the ordinary one.
 		runSoak(flags)
 	case flags.headless:
-		runHeadless(flags.listenAddr, flags.printURLFD, flags.updatingTo, flags.updateFailure)
+		runHeadless(flags.listenAddr, flags.printURLFD, flags.updatingTo, flags.updateFailure, flags.refusePendingMigrations)
 	default:
 		runDesktop(flags.listenAddr)
 	}
@@ -703,8 +704,11 @@ func applyServerCertificate(cfg *transport.Config, appService *App) {
 // bound, but /bootstrap.json returns 503 until ServiceStartup finishes
 // and MarkReady releases the WebView navigation. That separates "WSL
 // process has published a port" from "backend is ready to render."
-func runHeadless(listenAddr string, printURLFD int, updatingTo string, updateFailure appupdate.LauncherFailure) {
+func runHeadless(listenAddr string, printURLFD int, updatingTo string, updateFailure appupdate.LauncherFailure, refusePendingMigrations bool) {
 	appService := newApp()
+	if refusePendingMigrations {
+		appservice.RefusePendingMigrations(appService.App)
+	}
 	// Before the transport server starts, so the updater RPC handlers see a
 	// fully wired App.updater.handle / App.updater.wsl without a race. Gated at runtime
 	// on the Windows launcher having spawned us; a no-op otherwise.
@@ -774,6 +778,16 @@ func runHeadless(listenAddr string, printURLFD int, updatingTo string, updateFai
 			return
 		}
 		log.Printf("app: service startup: %v", err)
+		if pending := (*store.MigrationsPendingError)(nil); errors.As(err, &pending) {
+			// The launcher that asked for the refusal stops this backend,
+			// migrates through a snapshot and a trial, and starts it again.
+			srv.MarkMigrationsPending(startupprogress.MigrationsPending{
+				Database: pending.Database, Build: pending.Build, Pending: pending.Pending,
+			})
+			log.Printf("headless: refused to migrate the database live; serving the refusal until shutdown")
+			waitForHeadlessShutdown(appService, srv, shutdownRequested)
+			return
+		}
 		srv.MarkStartupFailed()
 		log.Printf("headless: startup failed; serving terminal bootstrap failure until shutdown")
 		waitForHeadlessShutdown(appService, srv, shutdownRequested)

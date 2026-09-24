@@ -30,6 +30,32 @@ func TestWriteAndParseRoundTripOnlyAStartingReport(t *testing.T) {
 	}
 }
 
+func TestWriteAndParseRoundTripOnlyAMigrationsPendingRefusal(t *testing.T) {
+	rec := httptest.NewRecorder()
+	want := MigrationsPending{Database: 118, Build: 119, Pending: 1}
+	WriteMigrationsPending(rec, want)
+	if rec.Code != http.StatusConflict || rec.Header().Get("Cache-Control") != "no-store, max-age=0" {
+		t.Fatalf("response = %d %v, want the uncacheable 409", rec.Code, rec.Header())
+	}
+	got, ok := ParseMigrationsPending(rec.Code, rec.Body.Bytes())
+	if !ok || got != want {
+		t.Fatalf("round trip = %+v %v", got, ok)
+	}
+	for _, c := range []struct {
+		status int
+		body   string
+	}{
+		{http.StatusConflict, "conflict\n"},
+		{http.StatusConflict, `{"reason":"starting","database":118}`},
+		{http.StatusServiceUnavailable, rec.Body.String()},
+		{http.StatusInternalServerError, rec.Body.String()},
+	} {
+		if _, ok := ParseMigrationsPending(c.status, []byte(c.body)); ok {
+			t.Errorf("parsed %d %q as a migrations-pending refusal", c.status, c.body)
+		}
+	}
+}
+
 func TestStatusNamesTheUpdateBeingFinished(t *testing.T) {
 	for _, c := range []struct {
 		p    Progress

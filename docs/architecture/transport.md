@@ -130,7 +130,10 @@ Every executable boot binds its listener before `App.Start` and calls
   progress, the body is
   `{"reason":"starting","phase","detail","step","steps","startedAt","updatedAt","aliveAt","updatingTo"}`
   with Unix-millisecond times; before any report it is a bare text 503.
-  `MarkStartupFailed` answers 500.
+  `MarkStartupFailed` answers 500. `MarkMigrationsPending`, for a boot
+  started with `--refuse-pending-migrations` whose store refused, answers 409
+  with `{"reason":"migrations-pending","database","build","pending"}`
+  ([no live migration on Windows](../specs/app-update.md#no-live-migration-on-windows)).
 - `phase` is the `boot: phase=` log id and `detail` is display text.
   `step` and `steps` count sub-steps such as pending migrations.
   `updatingTo` names the version the boot is finishing an in-app update to.

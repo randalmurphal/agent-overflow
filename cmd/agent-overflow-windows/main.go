@@ -736,6 +736,14 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 			l, bs, err = a.launchAndProbe(ctx, distro, binPath)
 		}
 	}
+	// Only the refusal itself: one joined to a failed stop leaves a backend
+	// that may still hold the database, and takes the failure page below.
+	if pending, ok := err.(*wsllauncher.MigrationsPendingError); ok {
+		if !a.migrateBeforeLaunch(distro, binPath, pending) {
+			return nil
+		}
+		l, bs, err = a.launchAndProbe(ctx, distro, binPath)
+	}
 	if err != nil {
 		page := startupFailureHTML(err)
 		a.startupFailure.Store(&page)
@@ -938,6 +946,13 @@ func (a *launcherApp) launchBackend(ctx context.Context, distro, binPath string,
 	args := append(profileArgs, extraArgs...)
 	if update := a.backendUpdateArgs.Load(); update != nil {
 		args = append(args, *update...)
+	}
+	if activeProfile == "" {
+		// The ordinary backend never migrates its database live: it
+		// refuses, and launchAndShow migrates through a trial first. An
+		// isolated profile runs the harness backend on its own data root,
+		// which the update commands do not address.
+		args = append(args, wsllauncher.RefusePendingMigrationsArgs()...)
 	}
 	l, bs, err := wsllauncher.Launch(ctx, wsllauncher.LaunchOptions{
 		Distro:         distro,

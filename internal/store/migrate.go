@@ -1757,6 +1757,44 @@ func (e *SchemaTooNewError) Error() string {
 	return fmt.Sprintf("database is at schema v%d; this build knows v%d; install the newer version", e.Database, e.Build)
 }
 
+// MigrationsPendingError refuses to migrate an existing database outside a
+// trial (Options.RefusePendingMigrations). Error is the sentence the boot
+// failure shows.
+type MigrationsPendingError struct {
+	// Database is the database's migration version.
+	Database int
+	// Build is this build's latest migration.
+	Build int
+	// Pending counts the migrations an open would apply.
+	Pending int
+}
+
+func (e *MigrationsPendingError) Error() string {
+	return fmt.Sprintf("database is at schema v%d and this build migrates it to v%d (%d pending); it is migrated only after a backup", e.Database, e.Build, e.Pending)
+}
+
+// refusePendingMigrations returns a MigrationsPendingError when an existing
+// database has migrations to apply. It only reads. A database without an
+// applied migration is new: there is nothing in it to protect.
+func refusePendingMigrations(db *sql.DB) error {
+	var tables int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'migration_versions'`).Scan(&tables); err != nil {
+		return fmt.Errorf("store: probe migration_versions: %w", err)
+	}
+	if tables == 0 {
+		return nil
+	}
+	applied, err := currentMigrationVersion(db)
+	if err != nil || applied == 0 {
+		return err
+	}
+	pending := pendingMigrationCount(applied)
+	if pending == 0 {
+		return nil
+	}
+	return &MigrationsPendingError{Database: applied, Build: migrations[len(migrations)-1].Version, Pending: pending}
+}
+
 // refuseNewerSchema returns a SchemaTooNewError when the database is ahead
 // of this build. It only reads, and runs before anything writes: even
 // configureDatabase's PRAGMAs commit to the file header.
@@ -1877,13 +1915,20 @@ func tableColumns(db sqlQueryer, table string) (map[string]bool, error) {
 	return columns, nil
 }
 
-func applyPendingMigrations(ctx context.Context, db *sql.DB, applied int, onMigration func(MigrationStep)) error {
+// pendingMigrationCount is how many migrations an open of a database at
+// version applied runs.
+func pendingMigrationCount(applied int) int {
 	pending := 0
 	for _, m := range migrations {
 		if m.Version > applied {
 			pending++
 		}
 	}
+	return pending
+}
+
+func applyPendingMigrations(ctx context.Context, db *sql.DB, applied int, onMigration func(MigrationStep)) error {
+	pending := pendingMigrationCount(applied)
 	index := 0
 	for _, m := range migrations {
 		if m.Version <= applied {

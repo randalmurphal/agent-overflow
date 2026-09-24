@@ -515,6 +515,10 @@ type App struct {
 	// (it returns $HOME/Library/Application Support), which env overrides
 	// can't redirect.
 	dataDirOverride string
+	// refusePendingMigrations fails Start with a store.MigrationsPendingError
+	// instead of migrating the database (RefusePendingMigrations). A boot
+	// input like dataDirOverride.
+	refusePendingMigrations bool
 	// certFingerprint is the fingerprint of the TLS certificate the
 	// transport listener presents (internal/servercert), carried on every
 	// pairing link this backend mints so a client that owns its own TLS

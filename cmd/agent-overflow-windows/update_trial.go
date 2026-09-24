@@ -466,6 +466,13 @@ func (a *launcherApp) reconcileUpdate(distro string, transient bool) bool {
 		}
 		a.wails.Quit()
 		return false
+	case wsllauncher.ReconcileResume:
+		log.Printf("updater: resuming migration %s", decision.Record.Update.ID)
+		if end := sequence.ResumeMigration(context.Background(), decision.Record); !end.Launch {
+			a.showUpdateFailure(end.Title, end.Detail)
+			return false
+		}
+		a.loading.clearProgress()
 	case wsllauncher.ReconcileBlocked:
 		log.Printf("updater: update %s blocks this launch: %s", decision.Record.Update.ID, decision.Reason)
 		title, detail := "The update did not finish, and the database backup could not be restored.",
@@ -480,6 +487,30 @@ func (a *launcherApp) reconcileUpdate(distro string, transient bool) bool {
 	}
 	args := decision.BackendArgs(payloadVersion)
 	a.backendUpdateArgs.Store(&args)
+	return true
+}
+
+// migrateBeforeLaunch is the no-live-migration gate: the backend at payload
+// refused to migrate its database live and was stopped, so the database is
+// migrated through a snapshot and a trial of that payload before it starts
+// again (wsllauncher.UpdateSequence.Migrate). It returns false when the
+// launch must not continue; the window then shows why.
+func (a *launcherApp) migrateBeforeLaunch(distro, payload string, pending *wsllauncher.MigrationsPendingError) bool {
+	log.Printf("updater: %v; migrating the database through a trial", pending)
+	dir, ok := wsldistro.WSLConfigDir()
+	if !ok {
+		a.showUpdateFailure("Agent Overflow could not start the database upgrade this version needs.",
+			`%APPDATA% could not be resolved, so the upgrade has nowhere to record its progress. Nothing was started.`)
+		return false
+	}
+	// The refused boot's last report is not the upgrade's.
+	a.loading.clearProgress()
+	end := a.updateSequence(dir, distro).Migrate(context.Background(), distro, payload, payloadVersion)
+	if !end.Launch {
+		a.showUpdateFailure(end.Title, end.Detail)
+		return false
+	}
+	a.loading.clearProgress()
 	return true
 }
 

@@ -21,7 +21,23 @@ var (
 	ErrBackendUnreachable = errors.New("no HTTP response from the WSL backend over Windows localhost")
 	ErrInvalidBootstrap   = errors.New("unexpected backend startup response")
 	ErrBackendNotReady    = errors.New("backend did not finish starting")
+	// ErrMigrationsPending is a backend that refused to migrate its
+	// database live (MigrationsPendingError).
+	ErrMigrationsPending = errors.New("the backend's database has migrations pending")
 )
+
+// MigrationsPendingError is a backend started to refuse pending migrations
+// that found some. It matches ErrMigrationsPending. The backend stays up
+// answering the refusal until it is stopped.
+type MigrationsPendingError struct {
+	startupprogress.MigrationsPending
+}
+
+func (e *MigrationsPendingError) Error() string {
+	return fmt.Sprintf("%v: schema v%d, this build v%d (%d pending)", ErrMigrationsPending, e.Database, e.Build, e.Pending)
+}
+
+func (e *MigrationsPendingError) Unwrap() error { return ErrMigrationsPending }
 
 // BootstrapHTTPError is a bootstrap answer other than 200 or 503: the
 // backend is reachable and refused or failed.
@@ -143,9 +159,10 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // Deadline, or no report at all, means the backend stopped responding.
 // The failure is ErrBackendUnreachable when no HTTP response ever
 // arrived, a BackendStalledError after a starting report, and
-// ErrBackendNotReady for a backend that only answered the bare 503. Any
-// other status is terminal as a BootstrapHTTPError; an unexpected manifest
-// is ErrInvalidBootstrap.
+// ErrBackendNotReady for a backend that only answered the bare 503. A
+// refusal to migrate live is a MigrationsPendingError. Any other status is
+// terminal as a BootstrapHTTPError; an unexpected manifest is
+// ErrInvalidBootstrap.
 func ProbeBootstrap(ctx context.Context, port int, token string, cfg ProbeConfig) error {
 	cfg = cfg.withDefaults()
 	// 127.0.0.1, not "localhost": Windows resolves "localhost" to ::1 as
@@ -194,6 +211,13 @@ func ProbeBootstrap(ctx context.Context, port int, token string, cfg ProbeConfig
 					judge.Report(p, cfg.now())
 					cfg.OnProgress(p)
 				}
+			case http.StatusConflict:
+				if m, ok := startupprogress.ParseMigrationsPending(resp.StatusCode, body); ok {
+					log.Printf("probe: backend refused to migrate its database live: schema v%d, build v%d (%d pending)", m.Database, m.Build, m.Pending)
+					return &MigrationsPendingError{MigrationsPending: m}
+				}
+				log.Printf("probe: status=%d host-resp=%q", resp.StatusCode, string(body[:min(len(body), 256)]))
+				return BootstrapHTTPError{StatusCode: resp.StatusCode, URL: target}
 			default:
 				// Reachable but refused. The status and the first bytes of
 				// the body go to the log only.

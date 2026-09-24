@@ -44,13 +44,29 @@ func TestBootTransportReportsProgressBeforeServing(t *testing.T) {
 func TestHeadlessBootReportsTheUpdateItFinishes(t *testing.T) {
 	text := readRootSource(t, "main.go")
 	for _, want := range []string{
-		"runHeadless(flags.listenAddr, flags.printURLFD, flags.updatingTo, flags.updateFailure)",
+		"runHeadless(flags.listenAddr, flags.printURLFD, flags.updatingTo, flags.updateFailure, flags.refusePendingMigrations)",
 		"bootTransport(appService, listenAddr, bootTransportOptions{UpdatingTo: updatingTo})",
 		"appservice.InitWSLUpdater(appService.App, bootSettingsDir(), updateFailure)",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("main.go lacks %q", want)
 		}
+	}
+}
+
+// TestHeadlessBootRefusesPendingMigrationsWhenAsked: the headless boot the
+// launcher starts with --refuse-pending-migrations asks the store to refuse
+// before Start, and answers a refusal as the refusal, not as a startup
+// failure.
+func TestHeadlessBootRefusesPendingMigrationsWhenAsked(t *testing.T) {
+	text := readRootSource(t, "main.go")
+	body := text[strings.Index(text, "func runHeadless("):]
+	refuse := strings.Index(body, "appservice.RefusePendingMigrations(appService.App)")
+	start := strings.Index(body, "appService.Start(bootCtx)")
+	pending := strings.Index(body, "srv.MarkMigrationsPending(")
+	failed := strings.Index(body, "srv.MarkStartupFailed()")
+	if refuse < 0 || start < 0 || pending < 0 || failed < 0 || !(refuse < start && start < pending && pending < failed) {
+		t.Fatalf("runHeadless: refuse=%d Start=%d MarkMigrationsPending=%d MarkStartupFailed=%d; want the option before Start and the refusal answered before the failure", refuse, start, pending, failed)
 	}
 }
 

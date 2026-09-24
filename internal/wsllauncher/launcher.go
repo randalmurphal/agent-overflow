@@ -63,6 +63,14 @@ const (
 	UpdateFailedReasonFlag = "update-failed-reason"
 )
 
+// RefusePendingMigrationsFlag is the backend boot flag (no dashes) that
+// makes the backend refuse to migrate its database live: with migrations
+// pending it answers MigrationsPendingError on its bootstrap instead of
+// starting, and the launcher migrates the database through a snapshot and a
+// trial first (UpdateSequence.Migrate). It is shared for the reason
+// ResetTransportPortFlag is.
+const RefusePendingMigrationsFlag = "refuse-pending-migrations"
+
 // updateFailedReasonLimit bounds the reason on the backend's command line,
 // which Windows caps.
 const updateFailedReasonLimit = 512

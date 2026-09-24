@@ -1,8 +1,9 @@
 # In-app updates: trial and rollback
 
-Status: the Windows launcher and WSL payload are implemented. The macOS and
-Linux desktop helper and serve's trial budget are not. Decisions are listed at
-the end.
+Status: the Windows launcher and WSL payload are implemented, including
+the no-live-migration gate (rule 7). The macOS and Linux desktop helper, the
+gate on those platforms and serve's trial budget are not. Decisions are
+listed at the end.
 
 An in-app update on macOS, the Linux desktop or Windows (the launcher and its
 WSL payload) must leave the previous version and its database in place when
@@ -21,8 +22,8 @@ model stay in
 | Windows launcher and WSL payload | Trial and rollback (this spec) |
 | Supervised serve host | Existing cycle; the trial budget changes |
 | Desktop window attached to a running local service | Existing Wails swap; the service owns the database |
-| Replacing the app, binary or launcher by hand | Unchanged: an ordinary boot, no snapshot |
-| Update started by, or aimed at, a version that predates this flow | Existing Wails swap, no trial |
+| A database with pending migrations reached without an update trial: the app, binary or launcher replaced by hand, an update started by a version that predates this flow, another WSL distribution after an update | Snapshot and trial before the boot that would migrate (rule 7) |
+| Update aimed at a version that predates this flow | Existing Wails swap, no trial |
 
 ## Rules
 
@@ -43,6 +44,10 @@ model stay in
    whichever version the install path holds.
 6. Layout, snapshot, restore, state, the child channel and the stall rule come
    from `internal/supervise`. The platforms add sequencing and publishing.
+7. A database is never migrated live without a snapshot, however the binary
+   got there. Before a boot that would migrate, the snapshot and trial
+   sequence runs first, and the live boot finds the database already
+   migrated ([No live migration](#no-live-migration)).
 
 ## Shared mechanism
 
@@ -59,9 +64,8 @@ On Windows the WSL side uses only that layout's `snapshot/` and
 in the launcher's config directory (`wsldistro.WSLConfigDir`), one file per
 runtime profile (`supervise.LauncherRecord`). The launcher chooses an
 executable before WSL starts, and fsync and rename are native there. The WSL
-backend reads the record through `/mnt/c` only for the reason it shows after
-a rollback; it reads the file dev and production launchers share, because
-isolated profiles run the harness backend, which has no updater.
+backend never reads the record: the launcher passes it what the record
+settled (`ReconcileDecision.BackendArgs`).
 
 The record is `supervise.State` with one `UpdateRecord`. `Begin` refuses a
 second update while one is pending, `Retry` counts a trial attempt durably
@@ -181,6 +185,24 @@ holds the lock:
 Serve uses the same timer: its supervisor gains the stall rule and nothing
 else changes in its cycle.
 
+### No live migration
+
+A boot that would migrate an existing database runs it through a snapshot and
+a trial first (rule 7). The store owns the check: an open with
+`store.Options.RefusePendingMigrations` fails with
+`store.MigrationsPendingError` (the database's version, the build's and the
+count between) before anything writes the file. A database without an
+applied migration is new and is created as usual. The trial and the update
+commands open without the option, so the trial migrates and the next boot
+finds nothing pending. This covers every way a new version reaches a
+database outside an update: a replacement by hand, an update started by a
+version that predates this flow, and another WSL distribution's data root
+after an update. On Windows the launcher runs the gate
+([No live migration on Windows](#no-live-migration-on-windows)). On macOS and
+Linux the helper mode runs it (not implemented). A supervised serve host
+keeps its rule: its child only changes through `agent-overflow service
+update`, which runs the trial.
+
 ### Interlocks
 
 Existing checks:
@@ -290,6 +312,34 @@ B_old's install deadline after the acknowledgement is 5 minutes: the staged
 copy, the 3 minute preflight or the 2 minute direct swap, and the 25 s exit
 watchdog.
 
+### No live migration on Windows
+
+The launcher starts its ordinary backend with `--refuse-pending-migrations`
+(`wsllauncher.RefusePendingMigrationsArgs`, accepted only with
+`--print-url-fd` and without `--soak`). A backend whose store refuses serves
+`/bootstrap.json` as 409 with `{"reason":"migrations-pending","database",
+"build","pending"}` until it is stopped (`startupprogress.WriteMigrationsPending`).
+`ProbeBootstrap` returns it as `MigrationsPendingError`, and the launcher
+stops the backend. A refusal whose backend could not be stopped shows the
+startup failure page and starts nothing, because that backend may still hold
+the database.
+
+`UpdateSequence.Migrate` then writes a migration record
+(`State.BeginMigration`: `From` and `To` are the installed version, and the
+staged fields are empty), refused while an update is pending, and runs steps
+5 to 8 through the stable payload. Commit only discards the snapshot;
+rollback is step 8b without a staged payload. The launcher removes the
+record once it settles, so a launcher that predates migrations never reads
+one, and the backend is never told about one. On commit the launcher starts
+the backend again, which finds nothing pending. Otherwise it shows why on a
+failure page and starts nothing: the backup was restored, or the migration
+did not run, with the recorded reason. A restore that fails leaves the
+record pending for the next launch.
+
+Isolated profiles (harness, soak, perf) are not gated: their `--soak`
+backend resolves its own data root, which the update commands do not
+address.
+
 ### Recovery on the next launch
 
 A launcher at S reads the record before it starts WSL:
@@ -304,6 +354,9 @@ A launcher at S reads the record before it starts WSL:
 | pending, at the limit or staged launcher missing | `__update-restore` through the stable payload, settle `rolled-back`, `__update-discard`, ordinary launch; if the restore fails, an error page and nothing starts |
 | committed, S is not the target | hand off to the staged L_new, which repeats step 8a; if it is missing, show an error page naming the version to reinstall and start nothing |
 | committed, S is the target | `__update-discard` while the record is unreported; ordinary launch |
+| migration, settled | `__update-discard`, remove the record, ordinary launch |
+| migration, pending, 0 attempts | settle `failed`, `__update-discard`, remove the record, ordinary launch; the gate starts a new migration if the backend refuses |
+| migration, pending, with attempts | resume it in this launcher (`ReconcileResume`): step 7 below the limit, the restore at it; then as `Migrate` ends |
 
 Steps 8a and 8b are idempotent. A pending record with attempts and no snapshot
 fails closed, as serve's `snapshotForTrial` does. A command that stalls is
@@ -388,22 +441,18 @@ not cover the helper itself.
 | committed, install path is not the target | hand off to the staged binary to publish; if it is missing, refuse to start and name the version to reinstall |
 | committed, install path is the target | discard a remaining snapshot; ordinary boot |
 
-## Manual replacement and release notes
-
-Replacing the app, binary or launcher by hand stays an ordinary boot:
-migrations run under the boot progress page with no snapshot. On Windows the
-new launcher installs its payload because its fingerprint differs from
-`wsl.json`, as now. A supervised serve host keeps its rule: the replaced file
-supervises and `agent-overflow service update` selects it.
+## Release notes
 
 The first release with this flow says:
 
 - In-app updates back up the database, start the new version in a trial, and
   return to the previous version with its data if the trial fails. An update
   needs free disk space about the size of the database.
-- This release is installed the previous way. Trial and rollback apply from
-  the next update.
-- Installing a release by hand does not back up the database. Copy
+- This release is installed the previous way. On Windows it backs up the
+  database and upgrades it in a trial when it first starts; trial and
+  rollback of the update itself apply from the next update.
+- On Windows, a release installed by hand also backs up the database before
+  it upgrades it. On macOS and Linux it does not yet: copy
   `agent-overflow.db` from the data folder first, or use the in-app updater.
 
 ## Needs a Mac or Windows host
@@ -438,6 +487,11 @@ Windows:
 - L_new without the single-instance identity beside a joined launch: the
   separate WebView2 profile, hiding for the joined launch, exiting for it
   after the update, and the joined launch starting S after a commit.
+- The no-live-migration gate in the launcher: `--refuse-pending-migrations`
+  on the ordinary backend's argv through `wsl.exe`, stopping the refusing
+  backend through its shutdown call, the progress page during `Migrate`,
+  the failure page after one that did not commit, and `ReconcileResume` on
+  the next launch.
 
 Linux: `FICLONE` on btrfs and XFS needs root for a loop mount here.
 

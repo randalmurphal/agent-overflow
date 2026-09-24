@@ -203,6 +203,7 @@ type bootFlags struct {
 	updatingTo         *string
 	updateFailedTo     *string
 	updateFailedReason *string
+	refusePending      *bool
 }
 
 // newBootFlagSet declares every flag this binary's boot modes take. The flag
@@ -238,6 +239,8 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 			"--print-url-fd only: the version an in-app update from this version to did not reach. Set by the Windows launcher from its update record, with --"+wsllauncher.UpdateFailedReasonFlag+"."),
 		updateFailedReason: flagSet.String(wsllauncher.UpdateFailedReasonFlag, "",
 			"--print-url-fd only: why that update did not apply, for the notice that says so."),
+		refusePending: flagSet.Bool(wsllauncher.RefusePendingMigrationsFlag, false,
+			"--print-url-fd only: refuse to migrate an existing database live, answering the bootstrap with the pending migrations instead of starting. Set by the Windows launcher, which migrates the database through a snapshot and a trial first."),
 	}
 }
 
@@ -319,6 +322,9 @@ type cliFlags struct {
 	// updateFailure is an update from this version that the launcher's
 	// record settled as rolled back or failed, for the updater's notice.
 	updateFailure appupdate.LauncherFailure
+	// refusePendingMigrations stops the boot, instead of migrating, when the
+	// database has migrations pending. Only the Windows launcher passes it.
+	refusePendingMigrations bool
 }
 
 // parseFlags pulls the command-line flags for a boot.
@@ -355,6 +361,7 @@ func parseFlags(args []string) (cliFlags, error) {
 			To:     strings.TrimSpace(*values.updateFailedTo),
 			Reason: strings.TrimSpace(*values.updateFailedReason),
 		},
+		refusePendingMigrations: *values.refusePending,
 	}
 	if out.isolatedProfile != "" && out.isolatedProfile != string(instanceinfo.ModePerf) {
 		return cliFlags{}, fmt.Errorf("unknown --isolated-profile %q (valid: %q)", out.isolatedProfile, instanceinfo.ModePerf)
@@ -535,6 +542,11 @@ func parseFlags(args []string) (cliFlags, error) {
 		if !out.headless || out.soak {
 			return cliFlags{}, fmt.Errorf("--%s requires --print-url-fd without --soak (only the Windows launcher's backend reports its updates)", wsllauncher.UpdateFailedToFlag)
 		}
+	}
+	if out.refusePendingMigrations && (!out.headless || out.soak) {
+		// Only the launcher's ordinary backend has a launcher that migrates
+		// through a trial; any other boot would refuse and stay refused.
+		return cliFlags{}, fmt.Errorf("--%s requires --print-url-fd without --soak (only the Windows launcher migrates a database through a trial)", wsllauncher.RefusePendingMigrationsFlag)
 	}
 	return out, nil
 }

@@ -78,7 +78,8 @@ var ErrNoUpdateRecord = errors.New("wsllauncher: there is no update record")
 // attempt, the trial, then commit or rollback. A committed record repeats
 // the commit, which is idempotent. It returns an error when the record
 // cannot be read or written, or when a commit step fails after the commit
-// became durable; the next launch resumes either.
+// became durable; the next launch resumes either. A migration record runs
+// the same steps through the stable payload and has nothing to publish.
 func (s UpdateSequence) Apply(ctx context.Context, id string) (UpdateEnd, error) {
 	record, found, err := supervise.LoadLauncherRecord(s.RecordPath)
 	if err != nil {
@@ -115,7 +116,7 @@ func (s UpdateSequence) Apply(ctx context.Context, id string) (UpdateEnd, error)
 		if free, ok := s.Host.HostFreeBytes(record.Distro); ok {
 			args = append(args, "--host-free", strconv.FormatUint(free, 10))
 		}
-		result, err := s.run(ctx, record, record.StagedPayload, supervise.UpdateSnapshotCommand, args...)
+		result, err := s.run(ctx, record, record.TrialPayload(), supervise.UpdateSnapshotCommand, args...)
 		if err != nil {
 			return s.settleFailed(ctx, record, "the database could not be backed up: "+err.Error())
 		}
@@ -135,7 +136,7 @@ func (s UpdateSequence) Apply(ctx context.Context, id string) (UpdateEnd, error)
 		return UpdateEnd{}, err
 	}
 	attempt := record.Update.Attempts
-	result, err := s.run(ctx, record, record.StagedPayload, supervise.UpdateTrialRunCommand,
+	result, err := s.run(ctx, record, record.TrialPayload(), supervise.UpdateTrialRunCommand,
 		"--to", record.Update.To, "--attempt", strconv.Itoa(attempt))
 	if err != nil {
 		// A command stopped for stalling may still report a decided
@@ -194,6 +195,10 @@ const (
 	// ReconcileRelaunch starts the launcher at the install path, which
 	// waits for this one to exit, and exits. Only Join returns it.
 	ReconcileRelaunch
+	// ReconcileResume continues the record's pending migration in this
+	// launcher (ResumeMigration), which has no other launcher to hand it
+	// to, then launches if it committed.
+	ReconcileResume
 )
 
 // ReconcileDecision is Reconcile's answer.
@@ -244,6 +249,9 @@ func (s UpdateSequence) Reconcile(ctx context.Context, fingerprint string) (Reco
 		if running {
 			return ReconcileDecision{Action: ReconcileJoin, Record: record}, nil
 		}
+	}
+	if record.Migration() {
+		return s.reconcileMigration(ctx, record)
 	}
 	update := record.Update
 	isTarget := fingerprint == record.TargetFingerprint
@@ -331,8 +339,13 @@ func (s UpdateSequence) markReported(record supervise.LauncherRecord) (Reconcile
 }
 
 // commit publishes a committed update. Every step is idempotent, so a commit
-// interrupted anywhere is finished by repeating it.
+// interrupted anywhere is finished by repeating it. A migration publishes
+// nothing: its payload is already the stable one.
 func (s UpdateSequence) commit(ctx context.Context, record supervise.LauncherRecord) (UpdateEnd, error) {
+	if record.Migration() {
+		s.discard(ctx, record, record.StablePayload)
+		return UpdateEnd{State: supervise.UpdateCommitted}, nil
+	}
 	s.step("update.commit", "Installing "+startupprogress.DisplayVersion(record.Update.To))
 	s.discard(ctx, record, record.StagedPayload)
 	if err := s.Host.InvalidatePayloadRecord(record); err != nil {
@@ -408,6 +421,9 @@ func (s UpdateSequence) discard(ctx context.Context, record supervise.LauncherRe
 }
 
 func (s UpdateSequence) removeStagedPayload(ctx context.Context, record supervise.LauncherRecord) {
+	if record.Migration() {
+		return
+	}
 	if err := s.Host.RemoveStagedPayload(ctx, record); err != nil {
 		s.logf("updater: update %s: remove the staged backend: %v", record.Update.ID, err)
 	}

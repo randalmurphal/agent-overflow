@@ -353,6 +353,33 @@ func TestProbeBootstrapAnsweredFailuresAreTerminal(t *testing.T) {
 	}
 }
 
+// TestProbeBootstrapReportsARefusalToMigrateLive: a backend that refused its
+// pending migrations is reachable and final, and the launcher reads what it
+// refused. A 409 without the refusal's body is an ordinary answered failure.
+func TestProbeBootstrapReportsARefusalToMigrateLive(t *testing.T) {
+	want := startupprogress.MigrationsPending{Database: 118, Build: 119, Pending: 1}
+	port, requests := probeBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		startupprogress.WriteMigrationsPending(w, want)
+	})
+	err := ProbeBootstrap(context.Background(), port, probeTestToken, ProbeConfig{Deadline: time.Second, PollInterval: time.Millisecond})
+	var pending *MigrationsPendingError
+	if !errors.As(err, &pending) || pending.MigrationsPending != want || !errors.Is(err, ErrMigrationsPending) || errors.Is(err, ErrBackendUnreachable) {
+		t.Fatalf("error = %v, want the refusal %+v", err, want)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want 1", got)
+	}
+
+	port, _ = probeBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "conflict", http.StatusConflict)
+	})
+	err = ProbeBootstrap(context.Background(), port, probeTestToken, ProbeConfig{Deadline: time.Second, PollInterval: time.Millisecond})
+	var httpErr BootstrapHTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusConflict || errors.Is(err, ErrMigrationsPending) {
+		t.Fatalf("bare 409 = %v, want BootstrapHTTPError 409", err)
+	}
+}
+
 func TestProbeBootstrapRejectsInvalidSuccessBody(t *testing.T) {
 	port, requests := probeBackend(t, func(w http.ResponseWriter, r *http.Request) {
 		// wsUrl names a port this responder does not listen on, so the

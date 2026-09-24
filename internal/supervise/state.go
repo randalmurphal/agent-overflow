@@ -304,6 +304,37 @@ func (s State) Begin(id, target string, now time.Time) (State, error) {
 	return next, nil
 }
 
+// BeginMigration opens a pending record from the selected version to itself:
+// the version stays, and its trial migrates the database before it runs
+// live. The Windows launcher opens one when its backend refused to migrate
+// its database live (docs/specs/app-update.md, the no-live-migration rule).
+// Begin never opens such a record, so From equal to To is what marks one.
+func (s State) BeginMigration(id string, now time.Time) (State, error) {
+	selection, err := s.Select()
+	if err != nil {
+		return State{}, err
+	}
+	if selection.Trial {
+		return State{}, fmt.Errorf("supervise: update %q is already in flight", selection.UpdateID)
+	}
+	if strings.TrimSpace(id) == "" {
+		return State{}, errors.New("supervise: an update id is required")
+	}
+	next := State{
+		Schema:        StateSchema,
+		ActiveVersion: selection.Version,
+		Update: &UpdateRecord{
+			ID: id, State: UpdatePending,
+			From: selection.Version, To: selection.Version,
+			StartedAtMs: now.UnixMilli(),
+		},
+	}
+	if err := next.Validate(); err != nil {
+		return State{}, err
+	}
+	return next, nil
+}
+
 // Retry counts one more trial start against a pending record. Called by
 // Supervisor.Run immediately before every trial spawn, first one included, so
 // Attempts is what actually happened rather than what was intended — an

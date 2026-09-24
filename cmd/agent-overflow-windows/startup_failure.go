@@ -30,6 +30,12 @@ func startupFailureHTML(err error) []byte {
 	var httpErr wsllauncher.BootstrapHTTPError
 	var stalled *wsllauncher.BackendStalledError
 	switch {
+	case errors.Is(err, wsllauncher.ErrMigrationsPending):
+		// A refusal whose backend could not be stopped, so nothing migrates
+		// a database it may still hold, or one after a migration that
+		// committed (launchAndShow).
+		title = "Agent Overflow could not upgrade the database."
+		detail = "This version upgrades the database only after backing it up, and the backend refused to start on it before the upgrade could run."
 	case errors.Is(err, errLaunchFailed):
 		detail = "The backend process could not start inside WSL."
 	case errors.As(err, &httpErr):

@@ -27,6 +27,8 @@ func TestStartupFailurePageUsesObservedCauseWithoutLeakingErrorContent(t *testin
 		forwarding bool
 	}{
 		{"spawn", "process could not start inside WSL", errLaunchFailed, false},
+		{"migrations pending", "Agent Overflow could not upgrade the database.</h1><p>This version upgrades the database only after backing it up",
+			errors.Join(&wsllauncher.MigrationsPendingError{MigrationsPending: startupprogress.MigrationsPending{Database: 118, Build: 119, Pending: 1}}, errors.New(secret)), false},
 		{"unreachable", "No HTTP response arrived", wsllauncher.ErrBackendUnreachable, true},
 		{"invalid manifest", "startup response was not valid", wsllauncher.ErrInvalidBootstrap, false},
 		{"not ready", "HTTP 503", wsllauncher.ErrBackendNotReady, false},
