@@ -122,6 +122,11 @@ an atomic persistence decision; they must not become a business-logic layer.
   scope. Keep selection separate from wire page shape.
 - Put connection-scoped PRAGMAs in the DSN. A post-open `Exec` does not cover
   replacement pooled connections. Keep boot verification for required PRAGMAs.
+- Each pooled connection keeps its recent statements compiled
+  (`stmt_cache.go`). Give a statement that a hot or bulk path repeats one SQL
+  text: bind a variable-length list as a JSON array read with `json_each`
+  rather than building placeholders per length. See
+  [Connections](../../docs/architecture/sqlite-store.md#connections).
 - `TruncateCheckpoint` quiesces readers and reports contention through
   `CheckpointResult.Busy`; checking only the error is insufficient. Quiescing
   stalls every read, so it stays at boot and `Close`, never on a sweep.

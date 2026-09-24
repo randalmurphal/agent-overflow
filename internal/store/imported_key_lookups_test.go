@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
@@ -11,8 +10,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	sqlite "modernc.org/sqlite"
 )
 
 // A lookup pinned by id, by another key or by turn must cost the same
@@ -32,7 +29,12 @@ type statementRecorder struct {
 	stmts []recordedStatement
 }
 
-func (r *statementRecorder) record(query string, args []driver.NamedValue) {
+// observe records each statement run while capturing, with its arguments. A
+// statement the connection keeps compiled is recorded when it runs.
+func (r *statementRecorder) observe(_ *observedConn, use sqlUse, query string, args []driver.NamedValue) {
+	if use != sqlDirect && use != sqlStmtRun {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.on {
@@ -57,75 +59,19 @@ func (r *statementRecorder) capture(fn func()) []recordedStatement {
 	return r.stmts
 }
 
-type recordingConnector struct {
-	driver.Connector
-	rec *statementRecorder
-}
-
-func (c recordingConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	conn, err := c.Connector.Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return recordingConn{Conn: conn, rec: c.rec}, nil
-}
-
-// recordingConn records each statement and forwards it to the modernc
-// connection, which implements every interface forwarded here.
-type recordingConn struct {
-	driver.Conn
-	rec *statementRecorder
-}
-
-func (c recordingConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	c.rec.record(query, nil)
-	return c.Conn.(driver.ConnPrepareContext).PrepareContext(ctx, query)
-}
-
-func (c recordingConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	c.rec.record(query, args)
-	return c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
-}
-
-func (c recordingConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	c.rec.record(query, args)
-	return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
-}
-
-func (c recordingConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
-}
-
-func (c recordingConn) ResetSession(ctx context.Context) error {
-	return c.Conn.(driver.SessionResetter).ResetSession(ctx)
-}
-
-func (c recordingConn) IsValid() bool {
-	return c.Conn.(driver.Validator).IsValid()
-}
-
 // recordStatements reopens both of s's pools through a recorder.
 func recordStatements(t *testing.T, s *Store) *statementRecorder {
 	t.Helper()
 	rec := &statementRecorder{}
-	open := func(pragmas []connPragma, conns int) *sql.DB {
-		base, err := sqlite.NewConnector(poolDSN(s.path, pragmas))
-		if err != nil {
-			t.Fatal(err)
-		}
-		db := sql.OpenDB(recordingConnector{Connector: base, rec: rec})
-		db.SetMaxOpenConns(conns)
-		return db
-	}
 	if err := s.db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s.db = open(writerConnPragmas, 1)
+	s.db = openObservedPool(t, s.path, writerConnPragmas, 1, rec.observe)
 	if s.read != nil {
 		if err := s.read.Close(); err != nil {
 			t.Fatal(err)
 		}
-		s.read = open(readerConnPragmas, readPoolConns)
+		s.read = openObservedPool(t, s.path, readerConnPragmas, readPoolConns, rec.observe)
 	}
 	return rec
 }

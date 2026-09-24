@@ -20,6 +20,28 @@ Both pools open through `conngate.go`, which interposes on the driver's
 `Connect`. The conversion swap holds that gate so no replacement connection can
 attach to a file it is about to rename away.
 
+The writer pool holds one connection (`SetMaxOpenConns(1)`) and the read pool
+four (`readPoolConns`). `modernc.org/sqlite` compiles every `Exec` and `Query` that is
+not a prepared statement and finalizes it after the call, and SQLite compiles
+every trigger a write can fire and every view a read names into the
+statement. The gate therefore opens each connection behind a statement cache
+(`stmt_cache.go`): the connection keeps its `stmtCacheSize` most recently used
+statements that read or write rows compiled, keyed by SQL text, and runs them
+again with new bindings. DDL, PRAGMA and transaction control compile per call.
+SQLite recompiles a cached statement on its next run after a schema change
+from any connection, such as a migration, a deferred phase or a replaced view,
+and after a pragma that changes code generation, so a cached statement never
+runs against an old schema. A statement whose rows are still open is busy, and
+the same text run meanwhile on that connection compiles for the call.
+`Conn.Raw` callbacks receive the cache, not the modernc connection.
+
+A statement repeated with a different number of placeholders is a different
+cache entry. Where a hot or bulk path repeats one with lists of varying
+length, bind the list as one JSON array and read it with `json_each`, as the
+history repair's unseal statements do. A compiled `items` insert holds about
+165 KB because it carries the table's triggers; other statements hold 1 to
+65 KB.
+
 Reads that depend on connection-local state, including attached restore
 databases and PRAGMA probes, use `s.db`. Helpers that may run either directly or
 inside a caller transaction accept `sqlExecutor` or `sqlQueryer`.

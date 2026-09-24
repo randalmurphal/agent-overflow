@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -389,24 +390,30 @@ func moveSealedRowsTx(tx *sql.Tx, threadID, chunkID string, piece []sealedRow, l
 	for i, row := range piece {
 		ids[i] = row.id
 	}
-	clause, idArgs := inClause("i.id", ids)
+	// The ids bind as one JSON array, so each statement below has one text
+	// for every piece size and its connection keeps it compiled.
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return 0, fmt.Errorf("store: encode sealed row ids of %s: %w", chunkID, err)
+	}
+	idList := string(encoded)
 	if !last {
 		if _, err := tx.Exec(`INSERT INTO thread_import_item_overrides (thread_id, item_id)
- SELECT ?, i.id FROM import_history_items i WHERE i.chunk_id = ? AND `+clause,
-			append([]any{threadID, chunkID}, idArgs...)...); err != nil {
+ SELECT ?1, i.id FROM import_history_items i WHERE i.chunk_id = ?2 AND i.id IN (SELECT value FROM json_each(?3))`,
+			threadID, chunkID, idList); err != nil {
 			return 0, fmt.Errorf("store: override moved sealed rows of %s: %w", chunkID, err)
 		}
 	}
 	// Payloads first: items reference them by foreign key. A payload the
 	// thread already overlays locally keeps its local bytes.
 	result, err := tx.Exec(`INSERT INTO payloads (thread_id, id, kind, meta, data, created_at, preview_spans, spans)
- SELECT ?, p.id, p.kind, p.meta, p.data, p.created_at, p.preview_spans, p.spans
+ SELECT ?1, p.id, p.kind, p.meta, p.data, p.created_at, p.preview_spans, p.spans
    FROM import_history_payloads p
-  WHERE p.chunk_id = ?
-    AND NOT EXISTS (SELECT 1 FROM payloads local WHERE local.thread_id = ? AND local.id = p.id)
+  WHERE p.chunk_id = ?2
+    AND NOT EXISTS (SELECT 1 FROM payloads local WHERE local.thread_id = ?1 AND local.id = p.id)
     AND EXISTS (SELECT 1 FROM import_history_items i
                  WHERE i.chunk_id = p.chunk_id AND (i.payload_id = p.id OR i.input_payload_id = p.id)
-                   AND `+clause+`)`, append([]any{threadID, chunkID, threadID}, idArgs...)...)
+                   AND i.id IN (SELECT value FROM json_each(?3)))`, threadID, chunkID, idList)
 	if err != nil {
 		return 0, fmt.Errorf("store: restore sealed payloads of %s: %w", chunkID, err)
 	}
@@ -419,12 +426,12 @@ func moveSealedRowsTx(tx *sql.Tx, threadID, chunkID string, piece []sealedRow, l
     payload_id, input_payload_id, parent_id, is_background, completion_of,
     tool_name, decision, meta, created_at, updated_at
  )
- SELECT i.id, ?, i.turn_index, i.item_index, i.kind, i.role, i.status, i.summary,
+ SELECT i.id, ?1, i.turn_index, i.item_index, i.kind, i.role, i.status, i.summary,
         i.payload_id, i.input_payload_id, i.parent_id, i.is_background, i.completion_of,
         i.tool_name, i.decision, i.meta, i.created_at, i.updated_at
    FROM import_history_items i
-  WHERE i.chunk_id = ? AND `+clause+`
-  ORDER BY i.turn_index, i.item_index`, append([]any{threadID, chunkID}, idArgs...)...)
+  WHERE i.chunk_id = ?2 AND i.id IN (SELECT value FROM json_each(?3))
+  ORDER BY i.turn_index, i.item_index`, threadID, chunkID, idList)
 	if err != nil {
 		return 0, fmt.Errorf("store: restore sealed rows of %s: %w", chunkID, err)
 	}
@@ -439,13 +446,12 @@ func moveSealedRowsTx(tx *sql.Tx, threadID, chunkID string, piece []sealedRow, l
 	// A moved row keeps its search rowid and indexed text. Rows that had no
 	// mapping, such as rows a running index build had not reached, are
 	// indexed now.
-	searchClause, searchArgs := inClause("item_id", ids)
 	if _, err := tx.Exec(`UPDATE OR IGNORE thread_search_rows SET source = ?
- WHERE thread_id = ? AND source = ? AND `+searchClause,
-		append([]any{ThreadSearchSourceItem, threadID, ThreadSearchSourceImport}, searchArgs...)...); err != nil {
+ WHERE thread_id = ? AND source = ? AND item_id IN (SELECT value FROM json_each(?))`,
+		ThreadSearchSourceItem, threadID, ThreadSearchSourceImport, idList); err != nil {
 		return 0, fmt.Errorf("store: restore sealed search rows of %s: %w", chunkID, err)
 	}
-	if err := indexUnmappedItemsTx(tx, threadID, ids); err != nil {
+	if err := indexUnmappedItemsTx(tx, threadID, idList); err != nil {
 		return 0, err
 	}
 	return int(payloads), nil
@@ -474,17 +480,13 @@ func releaseSealedChunkTx(tx *sql.Tx, threadID, chunkID string) error {
 	return releaseDetachedChunkTx(tx, chunkID)
 }
 
-// indexUnmappedItemsTx indexes the named local rows that have no item-side
-// search mapping.
-func indexUnmappedItemsTx(tx *sql.Tx, threadID string, ids []string) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	clause, args := inClause("i.id", ids)
+// indexUnmappedItemsTx indexes the local rows idList names, a JSON array of
+// item ids, that have no item-side search mapping.
+func indexUnmappedItemsTx(tx *sql.Tx, threadID, idList string) error {
 	rows, err := tx.Query(`SELECT i.id, i.kind, i.status, i.summary FROM items i
- WHERE i.thread_id = ? AND `+clause+`
+ WHERE i.thread_id = ? AND i.id IN (SELECT value FROM json_each(?))
    AND NOT EXISTS (SELECT 1 FROM thread_search_rows r WHERE r.thread_id = i.thread_id AND r.item_id = i.id AND r.source = ?)`,
-		append(append([]any{threadID}, args...), ThreadSearchSourceItem)...)
+		threadID, idList, ThreadSearchSourceItem)
 	if err != nil {
 		return fmt.Errorf("store: read unindexed restored rows: %w", err)
 	}

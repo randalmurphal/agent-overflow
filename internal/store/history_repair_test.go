@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -552,10 +553,26 @@ func TestUnsealThreadHistoryBatchContinuesPastOverriddenChunks(t *testing.T) {
 
 // A chunk larger than a piece moves over several transactions. Between them
 // the moved rows are overridden, as a localized row is, and the thread reads
-// the same.
+// the same. Each piece moves the search mappings of its own rows only, and
+// indexes only its own rows that had none.
 func TestUnsealThreadHistoryMovesLargeChunksInPieces(t *testing.T) {
 	s := newTestStore(t)
 	ids := localHistoryFixture(t, s, "t", 40)
+	// A local row the search index build has not reached.
+	if err := s.InsertItem(Item{ID: "unindexed", ThreadID: "t", TurnIndex: 9, Kind: "assistant_text",
+		Role: "assistant", Status: "completed", Summary: "not indexed yet", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteThreadSearchWhereTx(tx, `thread_id = ? AND item_id = ?`, []any{"t", "unindexed"}); err != nil {
+		t.Fatal(errors.Join(err, tx.Rollback()))
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	before := readRepairView(t, s, "t")
 	sealItemsForTest(t, s, "t", ids...)
 	stamp := historyStamp(t, s, "t")
@@ -567,8 +584,18 @@ func TestUnsealThreadHistoryMovesLargeChunksInPieces(t *testing.T) {
 			t.Fatalf("piece: stats=%+v more=%v err=%v, want %d rows", stats, more, err, want)
 		}
 		moved += want
-		if n := countRows(t, s, `SELECT count(*) FROM items WHERE thread_id = 't'`); n != moved {
+		if n := countRows(t, s, `SELECT count(*) FROM items WHERE thread_id = 't' AND id <> 'unindexed'`); n != moved {
 			t.Fatalf("%d rows in items after moving %d", n, moved)
+		}
+		if n := countRows(t, s, `SELECT count(*) FROM thread_search_rows r WHERE r.thread_id = 't' AND r.source = 'item' AND r.item_id <> ''
+			AND NOT EXISTS (SELECT 1 FROM items i WHERE i.thread_id = r.thread_id AND i.id = r.item_id)`); n != 0 {
+			t.Fatalf("%d item-side search rows for rows still sealed after moving %d", n, moved)
+		}
+		if n := countRows(t, s, `SELECT count(*) FROM thread_search_rows WHERE thread_id = 't' AND source = 'import'`); n != 40-moved {
+			t.Fatalf("%d import-side search rows after moving %d of 40", n, moved)
+		}
+		if n := countRows(t, s, `SELECT count(*) FROM thread_search_rows WHERE thread_id = 't' AND item_id = 'unindexed'`); n != 0 {
+			t.Fatalf("moving a piece indexed a local row outside it")
 		}
 		if n := countRows(t, s, `SELECT count(*) FROM thread_import_item_overrides WHERE thread_id = 't'`); n != moved {
 			t.Fatalf("%d overrides after moving %d rows", n, moved)
