@@ -136,8 +136,7 @@ an atomic persistence decision; they must not become a business-logic layer.
   A transaction that can move a fork's stamps runs in
   `writeItemsReportingForks`, or commits with `commitReportingForks` and
   defers `dropForkMovesTx`, so the forks it moved are reported
-  (`fork_moves.go`); `TestMain` fails a run that leaves a recorded move
-  unreported.
+  (`fork_moves.go`, enforced from the source by `TestForkMoveOwnersReport`).
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by

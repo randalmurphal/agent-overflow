@@ -14,8 +14,9 @@
 //     agent's rows land past the fork's cut, so no spawn row, card or
 //     child row appears in it, its rows stay as they were, and it is
 //     pushed no resync.
-//   - The source is deleted. The rows the fork read from it leave the pane
-//     and the divider records the deletion.
+//   - The source is deleted. The fork is pushed one resync, the rows it
+//     read from the source leave the pane and the divider records the
+//     deletion.
 //
 // The store's report of the forks a write moved and the app's emit are
 // unit tested (fork_moves_test.go, app_fork_resync_test.go). This level
@@ -50,6 +51,11 @@ interface ItemEvent {
   action: string;
   threadId: string;
   item?: { completionOf?: string };
+}
+
+interface ThreadEvent {
+  action: string;
+  id?: string;
 }
 
 // A thread title appears in the sidebar and the pane header, and the
@@ -146,21 +152,24 @@ test('an open fork pane keeps its snapshot while the source’s agent writes and
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
   await expect(timeline.getByText('Ready.', { exact: true })).toBeVisible();
 
-  // Deleting the source, with the fork pane still open.
-  const pushed = harness.waitForEvent<ItemEvent>(
-    'provider:item_event',
-    (event) => event.action === 'resync' && event.threadId === fork.id,
+  // Deleting the source, with the fork pane still open. The source's
+  // `deleted` broadcast follows the delete's last write, so it is the
+  // barrier for the resyncs the delete's transactions pushed.
+  const sourceGone = harness.waitForEvent<ThreadEvent>(
+    'thread:updated',
+    (event) => event.action === 'deleted' && event.id === sourceId,
   );
   const received = page.waitForFunction(
     (id) =>
       (window as unknown as { __aoWire: WireLog }).__aoWire.received.some(
-        (event) => event.channel === 'provider:item_event' && event.action === 'resync' && event.threadId === id,
+        (event) => event.channel === 'thread:updated' && event.action === 'deleted' && event.threadId === id,
       ),
-    fork.id,
+    sourceId,
   );
   await harness.rpc('DeleteThread', sourceId);
-  await pushed;
+  await sourceGone;
   await received;
+  expect(resyncs(fork.id)).toBe(1);
 
   await expect(page.getByTestId('fork-divider')).toContainText(`Forked from ${SOURCE_TITLE}`);
   await expect(page.getByTestId('fork-divider-deleted')).toBeVisible();
@@ -173,10 +182,9 @@ test('an open fork pane keeps its snapshot while the source’s agent writes and
   const divider = detached.find((row) => row.toolName === 'fork_origin');
   expect(JSON.parse(divider?.meta ?? '{}')).toMatchObject({ sourceDeleted: true, sourceTitle: SOURCE_TITLE });
   expect(detached.map((row) => row.summary)).not.toContain('Ready.');
-  // The connection is narrowed to the fork's pane: every resync it was
-  // pushed names the fork.
+  // The connection is narrowed to the fork's pane: it was pushed the
+  // fork's one resync and no other.
   const wire = await readWire(page);
   const pushedTo = wire.received.filter((event) => event.channel === 'provider:item_event' && event.action === 'resync');
-  expect(pushedTo.length).toBeGreaterThan(0);
-  expect(new Set(pushedTo.map((event) => event.threadId))).toEqual(new Set([fork.id]));
+  expect(pushedTo.map((event) => event.threadId)).toEqual([fork.id]);
 });

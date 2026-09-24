@@ -27,7 +27,7 @@ func resyncedThreads(rec *emitRecorder) []string {
 // TestForkStampMovesPushResyncFrames: a write that moves a pointer fork's
 // stamps pushes that fork one resync frame on the item channel, and a
 // write that moves none, on a thread no fork reads or past every fork's
-// cut, pushes none. Deleting the source pushes the fork its resync, so a
+// cut, pushes none. Deleting the source pushes the fork one resync, so a
 // pane showing it drops the source's rows without being reopened.
 func TestForkStampMovesPushResyncFrames(t *testing.T) {
 	app := newTestAppWithStore(t)
@@ -71,14 +71,8 @@ func TestForkStampMovesPushResyncFrames(t *testing.T) {
 	if err := app.DeleteThread("fork-resync-source"); err != nil {
 		t.Fatal(err)
 	}
-	got := resyncedThreads(rec)
-	if len(got) == 0 {
-		t.Fatal("deleting the source pushed the fork no resync")
-	}
-	for _, id := range got {
-		if id != "fork-resync-fork" {
-			t.Fatalf("deleting the source pushed resyncs for %v, want the fork only", got)
-		}
+	if got := resyncedThreads(rec); !slices.Equal(got, []string{"fork-resync-fork"}) {
+		t.Fatalf("deleting the source pushed resyncs for %v, want the fork once", got)
 	}
 	// The fork keeps the copy the write below its cut gave it and its
 	// divider, which records the deletion; the row it still read from the

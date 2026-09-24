@@ -128,21 +128,9 @@ func (s *Store) writeItemsReportingForks(threadID string, card *SubagentCard, la
 
 // forkReadersOfRowSQL is a JSON array of the forks
 // trg_items_fork_reader_stamp advances for an in-place update of the
-// `items` row it is evaluated against: those whose cut follows the row and
-// that do not hide it at their own level or a nearer one. A touch returns
-// it, so the forks come from the statement that moves them.
-const forkReadersOfRowSQL = `(SELECT json_group_array(l.thread_id) FROM thread_fork_lineage l
-  WHERE l.ancestor_id = items.thread_id
-    AND (l.cut_turn_index, l.cut_item_index) > (items.turn_index, items.item_index)
-    AND NOT EXISTS (
-      SELECT 1 FROM thread_fork_hidden hidden
-       WHERE hidden.thread_id = l.thread_id AND hidden.item_id = items.id
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM thread_fork_lineage nearer
-        JOIN thread_fork_hidden hidden ON hidden.thread_id = nearer.ancestor_id AND hidden.item_id = items.id
-       WHERE nearer.thread_id = l.thread_id AND nearer.depth < l.depth
-    ))`
+// `items` row it is evaluated against (forkReaderLineageSQL). A touch
+// returns it, so the forks come from the statement that moves them.
+var forkReadersOfRowSQL = `(SELECT json_group_array(l.thread_id) ` + fmt.Sprintf(forkReaderLineageSQL, "items") + `)`
 
 // recordForkReadersTx records the forks a forkReadersOfRowSQL array names.
 func recordForkReadersTx(tx *sql.Tx, readers string) error {

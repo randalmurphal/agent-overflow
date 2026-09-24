@@ -499,7 +499,7 @@ func bumpHistoryRevForItemTx(tx *sql.Tx, threadID, itemID, label string) error {
 }
 
 // touchItemRowSQL is bumpHistoryRevForItemTx's touch.
-const touchItemRowSQL = `UPDATE items SET updated_at = updated_at WHERE thread_id = ? AND id = ?
+var touchItemRowSQL = `UPDATE items SET updated_at = updated_at WHERE thread_id = ? AND id = ?
 RETURNING ` + forkReadersOfRowSQL
 
 // bumpHistoryRevForPayloadTx is bumpHistoryRevForItemTx for the payload

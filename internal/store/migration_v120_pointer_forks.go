@@ -281,7 +281,7 @@ SELECT turns.turn_id, l.thread_id, turns.turn_index, turns.started_at, turns.com
 //     written row's anchors changes rev, not content, and the trigger skips
 //     it: an anchor's decoration reads the fork's own timeline, where a row
 //     after the cut or hidden by the fork does not appear.
-const forkTriggersSQL = `
+var forkTriggersSQL = `
 CREATE TRIGGER trg_threads_fork_source_delete BEFORE DELETE ON threads
 WHEN EXISTS (SELECT 1 FROM thread_fork_lineage WHERE ancestor_id = OLD.id)
 BEGIN
@@ -359,21 +359,29 @@ BEGIN
     history_epoch = history_epoch
       + (OLD.turn_index IS NOT NEW.turn_index OR OLD.item_index IS NOT NEW.item_index)
    WHERE id IN (
-     SELECT l.thread_id FROM thread_fork_lineage l
-      WHERE l.ancestor_id = OLD.thread_id
-        AND (l.cut_turn_index, l.cut_item_index) > (OLD.turn_index, OLD.item_index)
-        AND NOT EXISTS (
-          SELECT 1 FROM thread_fork_hidden hidden
-           WHERE hidden.thread_id = l.thread_id AND hidden.item_id = OLD.id
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM thread_fork_lineage nearer
-            JOIN thread_fork_hidden hidden ON hidden.thread_id = nearer.ancestor_id AND hidden.item_id = OLD.id
-           WHERE nearer.thread_id = l.thread_id AND nearer.depth < l.depth
-        )
+     SELECT l.thread_id ` + fmt.Sprintf(forkReaderLineageSQL, "OLD") + `
    );
 END;
 `
+
+// forkReaderLineageSQL selects the lineage rows `l` of the forks that show
+// the items row %[1]s in place: those whose cut follows the row and that do
+// not hide it at their own level or a nearer one. trg_items_fork_reader_stamp
+// advances their stamps with the row OLD, and forkReadersOfRowSQL returns
+// them to the writer that fires it with the row items, so both name the
+// same forks and v120's frozen hash covers the text.
+const forkReaderLineageSQL = `FROM thread_fork_lineage l
+      WHERE l.ancestor_id = %[1]s.thread_id
+        AND (l.cut_turn_index, l.cut_item_index) > (%[1]s.turn_index, %[1]s.item_index)
+        AND NOT EXISTS (
+          SELECT 1 FROM thread_fork_hidden hidden
+           WHERE hidden.thread_id = l.thread_id AND hidden.item_id = %[1]s.id
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM thread_fork_lineage nearer
+            JOIN thread_fork_hidden hidden ON hidden.thread_id = nearer.ancestor_id AND hidden.item_id = %[1]s.id
+           WHERE nearer.thread_id = l.thread_id AND nearer.depth < l.depth
+        )`
 
 const dropForkTriggersSQL = `DROP TRIGGER IF EXISTS trg_threads_fork_source_delete;
 DROP TRIGGER IF EXISTS trg_items_fork_position;
