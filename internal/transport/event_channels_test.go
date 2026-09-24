@@ -158,6 +158,15 @@ var (
 		"highlight:seed",
 		"provider:item_event",
 	}
+	// Membership narrows a watched thread's frames further, to the
+	// transcript scopes a connection names, so a row joining this list is a
+	// claim that every consumer of a scoped row either contributes that
+	// scope while it exists or reads anchor-level data instead. Read from
+	// the authored column, not the derived set, so a row that sets it
+	// without EntityFiltered is caught here too.
+	frozenTranscriptScopeFilteredChannels = []string{
+		"provider:item_event",
+	}
 )
 
 func TestChannelPolicyPreservesFrozenClassification(t *testing.T) {
@@ -190,6 +199,14 @@ func TestChannelPolicyPreservesFrozenClassification(t *testing.T) {
 			name:     "entityFiltered",
 			frozen:   frozenEntityFilteredChannels,
 			classify: channelEntityFiltered,
+		},
+		{
+			name:   "transcriptScopeFiltered",
+			frozen: frozenTranscriptScopeFilteredChannels,
+			classify: func(c string) bool {
+				policy, _ := policyForChannel(c)
+				return policy.TranscriptScopeFiltered
+			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

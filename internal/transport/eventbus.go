@@ -240,19 +240,28 @@ func (r *ring) replayAfter(lastSeq uint64) (events []Event, hadGap bool) {
 // one whose payload the extractor could not attribute. Empty means
 // "deliver": see event_entity.go for why that direction is the safe one.
 //
+// EntityScope is the frame's second attribution on a
+// TranscriptScopeFiltered channel: the transcript scope root (the row's
+// `parentId`) inside the EntityKey thread, derived once by the same
+// emitter. Empty means a root-scope row, or a payload the extractor could
+// not attribute; both take the thread rule (event_entity.go). Ignored on
+// every other channel.
+//
 // GapThreads, on a Gap frame that announces a subscriber-buffer drop, is
 // the sorted entity keys of the frames dropped. Nil means the loss is not
 // attributed and the client recovers everything: a dropped frame had no
 // key, the keys outnumbered MaxWatchThreads, or the frame is a replay
-// marker, whose lost frames the ring no longer holds.
+// marker, whose lost frames the ring no longer holds. It never names
+// scopes: a loss recovers every surface of the thread.
 type Event struct {
-	Channel    string
-	Seq        uint64
-	Data       json.RawMessage
-	Gap        bool
-	GapThreads []string
-	WireBytes  []byte
-	EntityKey  string
+	Channel     string
+	Seq         uint64
+	Data        json.RawMessage
+	Gap         bool
+	GapThreads  []string
+	WireBytes   []byte
+	EntityKey   string
+	EntityScope string
 }
 
 // NewEventBus returns a new bus with the given per-channel capacity.
@@ -292,7 +301,18 @@ func NewEventBus(capacity int) *EventBus {
 // channel. Live fanout runs before unlock so subscribers observe that same
 // order even when several goroutines emit onto one channel concurrently.
 func (b *EventBus) Emit(typedChannel eventchan.Channel, payload any) (Event, error) {
-	return b.EmitEntity(typedChannel, "", payload)
+	return b.EmitScoped(typedChannel, "", "", payload)
+}
+
+// ChannelSequence returns the last published sequence without creating a ring.
+// A destructive mutation can carry this boundary in both its event and RPC reply.
+func (b *EventBus) ChannelSequence(channel eventchan.Channel) uint64 {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if r := b.rings[string(channel)]; r != nil {
+		return r.seq
+	}
+	return 0
 }
 
 // EmitEntity is Emit for a caller that has already derived the frame's
@@ -305,18 +325,14 @@ func (b *EventBus) Emit(typedChannel eventchan.Channel, payload any) (Event, err
 // — paying it twice per emit to keep the signature shorter would be the
 // wrong trade on the transcript-stream hot path. internal/app's emit funnel
 // is where the single derivation lives.
-// ChannelSequence returns the last published sequence without creating a ring.
-// A destructive mutation can carry this boundary in both its event and RPC reply.
-func (b *EventBus) ChannelSequence(channel eventchan.Channel) uint64 {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	if r := b.rings[string(channel)]; r != nil {
-		return r.seq
-	}
-	return 0
+func (b *EventBus) EmitEntity(typedChannel eventchan.Channel, entityKey string, payload any) (Event, error) {
+	return b.EmitScoped(typedChannel, entityKey, "", payload)
 }
 
-func (b *EventBus) EmitEntity(typedChannel eventchan.Channel, entityKey string, payload any) (Event, error) {
+// EmitScoped is EmitEntity with the frame's scope attribution as well: the
+// transcript scope root inside entityKey's thread (Event.EntityScope). Same
+// reason for taking it as a parameter; internal/app derives both once.
+func (b *EventBus) EmitScoped(typedChannel eventchan.Channel, entityKey, entityScope string, payload any) (Event, error) {
 	if b.closed.Load() {
 		return Event{}, nil
 	}
@@ -375,18 +391,19 @@ func (b *EventBus) EmitEntity(typedChannel eventchan.Channel, entityKey string, 
 	// two, and the standalone marshal buffer is released immediately.
 	dataEnd := len(wire) - 1
 	evt := Event{
-		Channel:   channel,
-		Seq:       r.seq,
-		Data:      json.RawMessage(wire[dataEnd-len(data) : dataEnd : dataEnd]),
-		WireBytes: wire,
-		EntityKey: entityKey,
+		Channel:     channel,
+		Seq:         r.seq,
+		Data:        json.RawMessage(wire[dataEnd-len(data) : dataEnd : dataEnd]),
+		WireBytes:   wire,
+		EntityKey:   entityKey,
+		EntityScope: entityScope,
 	}
 	// The ring retains WireBytes only: replay splices it verbatim into
 	// its batch frames (or writes it through writeEventFrame's fast
 	// path when a chunk holds one event). Data is dropped to keep ring
-	// entries to the one WireBytes reference. EntityKey stays, because
-	// replay applies the same watch filter live delivery does and has
-	// nothing else to read the frame's address from.
+	// entries to the one WireBytes reference. EntityKey and EntityScope
+	// stay, because replay applies the same watch filter live delivery
+	// does and has nothing else to read the frame's address from.
 	ringEvt := evt
 	ringEvt.Data = nil
 	r.append(ringEvt)
@@ -792,10 +809,12 @@ func (s *Subscriber) SetChannels(channels []string) {
 	s.channels.Store(&filter)
 }
 
-// SetWatchedThreads narrows this subscriber's EntityFiltered channels to
-// the given entity ids. The set is ABSOLUTE — it replaces whatever was
-// there — and an EMPTY slice is a legal, meaningful value meaning "watching
-// nothing", which is what a client with no panes open has.
+// SetWatch narrows this subscriber's EntityFiltered channels to the given
+// entity ids, and its TranscriptScopeFiltered channels further to the given
+// transcript scopes (event_entity.go). Both sets are ABSOLUTE and replace
+// the previous ones together, and an EMPTY slice is a legal, meaningful
+// value meaning "watching nothing", which is what a client with no panes
+// open has.
 //
 // Like SetChannels this is a ONE-WAY LATCH out of wildcard: once a
 // subscriber has a set, every later call replaces it, and there is no call
@@ -803,16 +822,29 @@ func (s *Subscriber) SetChannels(channels []string) {
 // Deliberate — "" as a wildcard sentinel inside the set, or a nil slice
 // meaning "unset" while an empty one means "none", are both shapes where a
 // client bug reads as a silent full-stream subscription.
-func (s *Subscriber) SetWatchedThreads(entityIDs []string) {
-	filter := make(subscriberWatchFilter, len(entityIDs))
+//
+// scopes is the one place a nil slice and an empty one differ. Nil states
+// no scope set: every scope of a watched thread is admitted, which is what
+// a client built before scopes keeps receiving. The latch argument above
+// does not apply to it, because the widest reading it allows is the watched
+// threads' own rows; a client bug that drops the field costs wire bytes for
+// threads it named, never rows a surface needs.
+func (s *Subscriber) SetWatch(entityIDs []string, scopes []WatchScope) {
+	filter := subscriberWatchFilter{threads: make(map[string]struct{}, len(entityIDs))}
 	for _, id := range entityIDs {
-		filter[id] = struct{}{}
+		filter.threads[id] = struct{}{}
+	}
+	if scopes != nil {
+		filter.scopes = make(map[WatchScope]struct{}, len(scopes))
+		for _, scope := range scopes {
+			filter.scopes[scope] = struct{}{}
+		}
 	}
 	s.watched.Store(&filter)
 }
 
 // SetBackground records this subscriber's lease state (lease.go). Unlike
-// SetChannels and SetWatchedThreads this is NOT a latch: a client that
+// SetChannels and SetWatch this is NOT a latch: a client that
 // backgrounds and resumes says so both times, and `active` restores exactly
 // the delivery it had. Read on the fanout path, so it is stored as an
 // atomic and never read under a lock.
@@ -821,7 +853,7 @@ func (s *Subscriber) SetBackground(background bool) {
 }
 
 // SetPresence records what this connection's screen is showing (presence.go).
-// Like SetBackground and unlike SetChannels / SetWatchedThreads this is NOT a
+// Like SetBackground and unlike SetChannels / SetWatch this is NOT a
 // latch: each call replaces both halves at once, because they describe one
 // instant and a focus bit paired with a stale thread set is a fact that was
 // never true.
@@ -862,14 +894,16 @@ func (s *Subscriber) accepts(channel string) bool {
 }
 
 // watches reports whether this subscriber's watch set admits a frame on
-// channel addressed to entityKey. True for every subscriber that never sent
-// a watch frame, every channel the registry does not mark EntityFiltered,
-// and every frame with no entity key (event_entity.go argues that last one).
+// channel addressed to entityKey, in transcript scope entityScope. True for
+// every subscriber that never sent a watch frame, every channel the
+// registry does not mark EntityFiltered, and every frame with no entity key
+// (event_entity.go argues that last one). The scope applies only on a
+// TranscriptScopeFiltered channel (subscriberWatchFilter.admits).
 //
 // The check order is the hot path's: the empty-key test is free and answers
 // almost every frame in the process today, the atomic load is next, and the
 // registry probe runs only once a filter is actually armed.
-func (s *Subscriber) watches(channel, entityKey string) bool {
+func (s *Subscriber) watches(channel, entityKey, entityScope string) bool {
 	if entityKey == "" {
 		return true
 	}
@@ -880,8 +914,7 @@ func (s *Subscriber) watches(channel, entityKey string) bool {
 	if !channelEntityFiltered(channel) {
 		return true
 	}
-	_, ok := (*filter)[entityKey]
-	return ok
+	return filter.admits(channel, entityKey, entityScope)
 }
 
 func (s *Subscriber) explicitlySubscribes(channel string) bool {
@@ -916,8 +949,9 @@ func (s *Subscriber) deliver(e Event) {
 	// lost, so it must not mark the channel gapped and must not trigger the
 	// announce protocol. The client's own forward-skip detection is
 	// exempted for these channels for the same reason
-	// (frontend/src/lib/transport/entityFilteredChannels.ts).
-	if !s.watches(e.Channel, e.EntityKey) {
+	// (frontend/src/lib/transport/entityFilteredChannels.ts). A frame
+	// withheld by scope takes this branch too.
+	if !s.watches(e.Channel, e.EntityKey, e.EntityScope) {
 		return
 	}
 	// The last of the withholding filters, and ahead of gap accounting for
@@ -966,8 +1000,9 @@ func (s *Subscriber) deliver(e Event) {
 // name the threads that lost frames. A frame with no key cannot be
 // attributed, and neither can more keys than a watch set may hold, so
 // either leaves the channel's loss unattributed (a nil set) until it is
-// announced. An armed watch filter keeps the set within the watched
-// threads: deliver drops only frames it would have sent.
+// announced. An armed watch filter keeps the set within the threads it
+// names, directly or through a scope: deliver drops only frames it would
+// have sent. A scoped frame is recorded by its thread, never its scope.
 func (s *Subscriber) noteDrop(e Event) {
 	threads, gapped := s.gapped[e.Channel]
 	switch {

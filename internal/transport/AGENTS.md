@@ -99,15 +99,17 @@ next deliverable frame. Latest-only channels instead let the next value
 supersede the dropped one.
 
 Live frames and replay may interleave. Preserve per-channel ordering and the
-replay completion marker. Entity filters run before drop accounting: an event a
-client chose not to watch is not a transport gap. Unknown or empty entity keys
-fail open to delivery.
+replay completion marker. Entity and scope filters run before drop accounting:
+an event a client chose not to watch is not a transport gap, and gap
+attribution names threads, never scopes. Unknown or empty entity keys fail
+open to delivery; an empty scope reads as root scope.
 
-`watch` frames replace the connection's complete watched-thread set and must be
-re-sent before replay after reconnect. `lease` describes a platform-paused
-client, not page focus or visibility. New connections start active. Flush
-coalesced item deltas in sequence order before pass-through frames or return to
-active state.
+`watch` frames replace the connection's complete watched-thread set and its
+watched-scope set together and must be re-sent before replay after reconnect.
+An absent scope set admits every scope of a watched thread; `[]` admits only
+root-scope rows. `lease` describes a platform-paused client, not page focus or
+visibility. New connections start active. Flush coalesced item deltas in
+sequence order before pass-through frames or return to active state.
 
 All connections coalesce event frames to bound webview message overhead.
 Non-loopback connections may additionally use compression. Keep memory costs
