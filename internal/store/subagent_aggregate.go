@@ -30,8 +30,12 @@ func forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootIDs []string
 		Source: "rel",
 		Where:  "items.id = rel.id",
 	})
-	args := append(descendantsCTEArgs(threadID, rootIDs), resolvedArgs...)
-	rows, err := q.Query(descendantsCTEFromRoots(len(rootIDs))+" SELECT * FROM ("+resolvedSQL+")", args...)
+	roots, err := jsonList(rootIDs)
+	if err != nil {
+		return err
+	}
+	args := append(descendantsCTEArgs(threadID, roots), resolvedArgs...)
+	rows, err := q.Query(descendantsCTE+" SELECT * FROM ("+resolvedSQL+")", args...)
 	if err != nil {
 		return fmt.Errorf("store: query subagent aggregates for %s: %w", threadID, err)
 	}

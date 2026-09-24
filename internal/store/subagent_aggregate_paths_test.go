@@ -316,6 +316,15 @@ type boundedPlan struct {
 	sorts bool
 }
 
+func jsonListForTest(t *testing.T, values ...string) string {
+	t.Helper()
+	list, err := jsonList(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return list
+}
+
 // assertBoundedPlan fails on a SCAN of a stored table and on an ORDER BY
 // the index does not deliver (a sort would read the whole range).
 func assertBoundedPlan(t *testing.T, s *Store, name string, allowed boundedPlan, query string, args ...any) string {
@@ -377,11 +386,14 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 		}
 	}
 
-	rounds, roundArgs := subagentResumeRoundsQuery(thread, []string{"L"})
+	rounds, roundArgs := subagentResumeRoundsQuery(thread, jsonListForTest(t, "L"))
 	// The legacy selection reads the union of the thread's parent ids: its
 	// own derived table p, and the merge sort of the import arm's distinct
 	// parent ids, which span chunks.
 	legacy := boundedPlan{scans: map[string]bool{"p": true}, sorts: true}
+	// An id list bound as one JSON array is read by scanning json_each.
+	listed := boundedPlan{scans: map[string]bool{"json_each": true}}
+	ids := jsonListForTest(t, "L", "M")
 	for _, tc := range []struct {
 		name, query, index string
 		args               []any
@@ -389,11 +401,12 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 	}{
 		{"dirty selection", subagentDirtyAnchorsSQL, "idx_items_subagent_aggregate_dirty", []any{thread, 16}, boundedPlan{}},
 		{"legacy selection", subagentLegacyAnchorsSQL, "COVERING INDEX idx_items_parent", []any{thread, 16}, legacy},
-		{"resume rounds", rounds, "idx_items_subagent_resume_prompt", roundArgs, boundedPlan{}},
+		{"resume rounds", rounds, "idx_items_subagent_resume_prompt (thread_id=? AND parent_id=?)", roundArgs, listed},
 		{"first child anchors", firstChildAnchorsSQL, "sqlite_autoindex_items_1", []any{thread, "L", "L-c3", 1, 3}, boundedPlan{}},
 		{"latest direct tool", latestDirectSubagentToolSQL, "idx_items_parent", []any{thread, "L"}, boundedPlan{}},
-		{"carriers of a root (subagentCarriersOf)", `SELECT id, ` + transcriptRootExpr + ` FROM items WHERE thread_id = ? AND ` + transcriptRootExpr + ` IN (?, ?)`,
-			"idx_items_transcript_root", []any{thread, "L", "M"}, boundedPlan{}},
+		{"carriers of roots", subagentCarriersSQL, "idx_items_transcript_root (thread_id=? AND <expr>=?)", []any{thread, ids}, listed},
+		{"stamp targets", subagentStampTargetsSQL, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", []any{thread, ids}, listed},
+		{"chain marked dirty", markSubagentAnchorsDirtySQL, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", []any{thread, ids}, listed},
 		{"stamp write", writeSubagentStampSQL, "sqlite_autoindex_items_1", []any{"{}", thread, "L", 3}, boundedPlan{}},
 	} {
 		text := assertBoundedPlan(t, s, tc.name, tc.allowed, tc.query, tc.args...)

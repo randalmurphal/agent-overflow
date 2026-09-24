@@ -301,51 +301,66 @@ func normalizedSubagentStampValues(v subagentStampValues) subagentStampValues {
 	return out
 }
 
+// subagentStampTargetsSQL reads local rows by primary key; ?2 is a JSON
+// array of ids.
+const subagentStampTargetsSQL = `SELECT id, kind, tool_name, meta, rev FROM items
+ WHERE thread_id = ?1 AND id IN (SELECT value FROM json_each(?2))`
+
 // subagentStampTargets loads local rows by id.
 func subagentStampTargets(q sqlQueryer, threadID string, ids []string) (map[string]subagentStampTarget, error) {
 	out := make(map[string]subagentStampTarget, len(ids))
-	for start := 0; start < len(ids); start += 256 {
-		clause, args := inClause("id", ids[start:min(start+256, len(ids))])
-		rows, err := q.Query(`SELECT id, kind, tool_name, meta, rev FROM items WHERE thread_id = ? AND `+clause,
-			append([]any{threadID}, args...)...)
-		if err != nil {
-			return nil, fmt.Errorf("store: read subagent stamp targets for %s: %w", threadID, err)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	list, err := jsonList(ids)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(subagentStampTargetsSQL, threadID, list)
+	if err != nil {
+		return nil, fmt.Errorf("store: read subagent stamp targets for %s: %w", threadID, err)
+	}
+	for rows.Next() {
+		var row subagentStampTarget
+		if err := rows.Scan(&row.id, &row.kind, &row.toolName, &row.meta, &row.rev); err != nil {
+			return nil, errors.Join(fmt.Errorf("store: scan subagent stamp target: %w", err), rows.Close())
 		}
-		for rows.Next() {
-			var row subagentStampTarget
-			if err := rows.Scan(&row.id, &row.kind, &row.toolName, &row.meta, &row.rev); err != nil {
-				return nil, errors.Join(fmt.Errorf("store: scan subagent stamp target: %w", err), rows.Close())
-			}
-			out[row.id] = row
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return nil, fmt.Errorf("store: iterate subagent stamp targets for %s: %w", threadID, err)
-		}
+		out[row.id] = row
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: iterate subagent stamp targets for %s: %w", threadID, err)
 	}
 	return out, nil
 }
 
-// subagentCarriersOf lists the local carriers stamped with each root, by
-// idx_items_transcript_root.
+// subagentCarriersSQL reads the local carriers stamped with the roots in
+// the JSON array ?2 through idx_items_transcript_root.
+var subagentCarriersSQL = `SELECT id, ` + transcriptRootExpr + ` FROM items
+ WHERE thread_id = ?1 AND ` + transcriptRootExpr + ` IN (SELECT value FROM json_each(?2))`
+
+// subagentCarriersOf lists the local carriers stamped with each root.
 func subagentCarriersOf(q sqlQueryer, threadID string, roots []string) (map[string][]string, error) {
 	out := make(map[string][]string)
-	for start := 0; start < len(roots); start += 256 {
-		clause, args := inClause(transcriptRootExpr, roots[start:min(start+256, len(roots))])
-		rows, err := q.Query(`SELECT id, `+transcriptRootExpr+` FROM items WHERE thread_id = ? AND `+clause,
-			append([]any{threadID}, args...)...)
-		if err != nil {
-			return nil, fmt.Errorf("store: read subagent carriers for %s: %w", threadID, err)
+	if len(roots) == 0 {
+		return out, nil
+	}
+	list, err := jsonList(roots)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(subagentCarriersSQL, threadID, list)
+	if err != nil {
+		return nil, fmt.Errorf("store: read subagent carriers for %s: %w", threadID, err)
+	}
+	for rows.Next() {
+		var id, root string
+		if err := rows.Scan(&id, &root); err != nil {
+			return nil, errors.Join(fmt.Errorf("store: scan subagent carrier: %w", err), rows.Close())
 		}
-		for rows.Next() {
-			var id, root string
-			if err := rows.Scan(&id, &root); err != nil {
-				return nil, errors.Join(fmt.Errorf("store: scan subagent carrier: %w", err), rows.Close())
-			}
-			out[root] = append(out[root], id)
-		}
-		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-			return nil, fmt.Errorf("store: iterate subagent carriers for %s: %w", threadID, err)
-		}
+		out[root] = append(out[root], id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: iterate subagent carriers for %s: %w", threadID, err)
 	}
 	return out, nil
 }
@@ -679,19 +694,22 @@ func markSubagentChainsDirtyTx(tx *sql.Tx, threadID string, fromIDs []string) er
 	if len(chain) == 0 {
 		return nil
 	}
-	encoded, err := json.Marshal(chain)
+	list, err := jsonList(chain)
 	if err != nil {
-		return fmt.Errorf("store: encode subagent chain in %s: %w", threadID, err)
+		return err
 	}
-	if _, err := tx.Exec(`UPDATE items SET meta = json_set(json_remove(meta, `+aggQuotedPaths(aggKeyPaths...)+`),
-	       '`+aggStatePath+`', json_object('gen', COALESCE(`+aggJX("meta", aggGenPath)+`, 0) + 1, 'dirty', json('true')))
-	 WHERE thread_id = ? AND id IN (SELECT value FROM json_each(?)) AND `+aggAnchorableSQL("items.")+`
-	   AND `+aggJT("items.meta", aggDirtyPath)+` IS NULL AND `+aggJT("items.meta", aggReadTimePath)+` IS NULL`,
-		threadID, string(encoded)); err != nil {
+	if _, err := tx.Exec(markSubagentAnchorsDirtySQL, threadID, list); err != nil {
 		return fmt.Errorf("store: mark subagent anchors dirty in %s: %w", threadID, err)
 	}
 	return nil
 }
+
+// markSubagentAnchorsDirtySQL marks dirty the anchors among the local rows
+// the JSON array ?2 names, by primary key, that are clean or unstamped.
+var markSubagentAnchorsDirtySQL = `UPDATE items SET meta = json_set(json_remove(meta, ` + aggQuotedPaths(aggKeyPaths...) + `),
+       '` + aggStatePath + `', json_object('gen', COALESCE(` + aggJX("meta", aggGenPath) + `, 0) + 1, 'dirty', json('true')))
+ WHERE thread_id = ?1 AND id IN (SELECT value FROM json_each(?2)) AND ` + aggAnchorableSQL("items.") + `
+   AND ` + aggJT("items.meta", aggDirtyPath) + ` IS NULL AND ` + aggJT("items.meta", aggReadTimePath) + ` IS NULL`
 
 // restampSubagentAggregatesTx rebuilds every stamp in a thread whose rows
 // were loaded with the triggers' aggregate work suspended: stamps the rows

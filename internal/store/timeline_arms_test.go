@@ -663,11 +663,24 @@ func TestSubagentWalksDoNotMaterializeTheView(t *testing.T) {
 			OrderBy: "turn_index DESC, item_index DESC",
 			Limit:   maxSubagentDescendants,
 		})
-		query := descendantsCTEFromRoots(1) + "\n" + selectedSQL
-		args := append(descendantsCTEArgs(timelineParityThreadID, []string{"loc-launch-2"}), selectedArgs...)
-		for _, r := range explainPlan(t, s, query, args...) {
+		query := descendantsCTE + "\n" + selectedSQL
+		args := append(descendantsCTEArgs(timelineParityThreadID, jsonListForTest(t, "loc-launch-2")), selectedArgs...)
+		plan := explainPlan(t, s, query, args...)
+		for _, r := range plan {
 			if strings.Contains(r.detail, "timeline_items") {
 				t.Errorf("descendant walk touches the view: %q", r.detail)
+			}
+			// The roots arrive as one JSON array; each is still a probe.
+			if r.detail == "SCAN items" || r.detail == "SCAN import_history_items" {
+				t.Errorf("descendant walk scans a table: %q", r.detail)
+			}
+		}
+		// Each arm probes its parent index twice: the base hop from the
+		// roots and the recursive hop from rel.
+		text := planText(plan)
+		for _, index := range []string{"idx_items_parent (thread_id=? AND parent_id=?)", "idx_import_history_items_parent_lookup (parent_id=?)"} {
+			if n := strings.Count(text, index); n != 2 {
+				t.Errorf("descendant walk probes %s %d times, want 2:\n%s", index, n, text)
 			}
 		}
 	})
@@ -688,9 +701,9 @@ func TestSubagentWalksDoNotMaterializeTheView(t *testing.T) {
 			Source: "rel",
 			Where:  "items.id = rel.id",
 		})
-		query := descendantsCTEFromRoots(1) + `
+		query := descendantsCTE + `
 		SELECT root FROM (` + resolvedSQL + `)`
-		args := append(descendantsCTEArgs(timelineParityThreadID, []string{"loc-launch-2"}), resolvedArgs...)
+		args := append(descendantsCTEArgs(timelineParityThreadID, jsonListForTest(t, "loc-launch-2")), resolvedArgs...)
 		for _, r := range explainPlan(t, s, query, args...) {
 			if strings.Contains(r.detail, "timeline_items") {
 				t.Errorf("aggregate resolution touches the view: %q", r.detail)

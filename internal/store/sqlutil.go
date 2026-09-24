@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -31,6 +32,18 @@ func (q contextReadTx) Query(query string, args ...any) (*sql.Rows, error) {
 
 func (q contextReadTx) QueryRow(query string, args ...any) *sql.Row {
 	return q.Tx.QueryRowContext(q.ctx, query, args...)
+}
+
+// jsonList encodes values as one JSON array, bound once and read with
+// `IN (SELECT value FROM json_each(?))`. The statement keeps one SQL text
+// whatever the list's length, so it takes one slot in each connection's
+// statement cache (stmt_cache.go) instead of one per length.
+func jsonList(values []string) (string, error) {
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return "", fmt.Errorf("store: encode id list: %w", err)
+	}
+	return string(encoded), nil
 }
 
 // placeholders renders `?,?,?` for an `IN (...)` clause of count binds.

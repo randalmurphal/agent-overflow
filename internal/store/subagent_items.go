@@ -99,7 +99,7 @@ type subagentRoundBounds struct {
 	round    bool
 }
 
-// descendantsCTEFromRoots walks parent_id edges downward from an
+// descendantsCTE walks parent_id edges downward from an
 // explicit list of root item ids over the LOGICAL timeline — local rows
 // plus the thread's imported history — carrying the originating root
 // through the recursion so per-root aggregates fall out of a GROUP BY.
@@ -116,17 +116,17 @@ type subagentRoundBounds struct {
 // notifications never render, so they must not count against the
 // collapsed card's "N entries" badge either.
 //
-// Placeholder order: local base hop (thread id, roots...), imported base
-// hop (thread id, roots...), local recursive hop (thread id), imported
-// recursive hop (thread id).
-func descendantsCTEFromRoots(rootCount int) string {
-	roots := placeholders(rootCount)
+// The roots are one JSON array (jsonList), so the statement has one text
+// for any number of roots. Bind order: local base hop (thread id, roots),
+// imported base hop (thread id, roots), local recursive hop (thread id),
+// imported recursive hop (thread id).
+var descendantsCTE = func() string {
 	visible := visibleItemsFilterFor("items.")
 	return `WITH RECURSIVE rel(root, id) AS (
 		SELECT items.parent_id, items.id
 		  FROM items
 		 WHERE items.thread_id = ?
-		   AND items.parent_id IN (` + roots + `)
+		   AND items.parent_id IN (SELECT value FROM json_each(?))
 		   AND items.parent_id <> ''
 		   AND ` + visible + `
 		UNION
@@ -134,7 +134,7 @@ func descendantsCTEFromRoots(rootCount int) string {
 		  FROM import_history_items items
 		  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = items.chunk_id
 		 WHERE refs.thread_id = ?
-		   AND items.parent_id IN (` + roots + `)
+		   AND items.parent_id IN (SELECT value FROM json_each(?))
 		   AND items.parent_id <> ''
 		   AND ` + visible + `
 		   AND ` + importedNotOverridden + `
@@ -155,20 +155,13 @@ func descendantsCTEFromRoots(rootCount int) string {
 		   AND ` + visible + `
 		   AND ` + importedNotOverridden + `
 	)`
-}
+}()
 
-// descendantsCTEArgs renders descendantsCTEFromRoots' bind values in the
-// order its four arms consume them. One function, so the arm order and
-// the arg order cannot drift apart.
-func descendantsCTEArgs(threadID string, rootIDs []string) []any {
-	args := make([]any, 0, 2*len(rootIDs)+4)
-	for range 2 {
-		args = append(args, threadID)
-		for _, id := range rootIDs {
-			args = append(args, id)
-		}
-	}
-	return append(args, threadID, threadID)
+// descendantsCTEArgs renders descendantsCTE's bind values, roots a JSON
+// array of root ids, in the order its four arms consume them. One
+// function, so the arm order and the arg order cannot drift apart.
+func descendantsCTEArgs(threadID, roots string) []any {
+	return []any{threadID, roots, threadID, roots, threadID, threadID}
 }
 
 // subagentLaunchFilterFor is the provider-neutral "this tool_call row is
@@ -495,7 +488,11 @@ func storedSubagentAnchorAggregate(meta string) (subagentAnchorAggregate, bool) 
 // fixture). One agent has a handful of rounds, so the sort is free.
 // TestSubagentResumeRoundProbeProbesTheParentIndexes is the tripwire.
 func subagentResumeRounds(q sqlQueryer, threadID string, rootIDs []string) ([]subagentRound, error) {
-	query, args := subagentResumeRoundsQuery(threadID, rootIDs)
+	roots, err := jsonList(rootIDs)
+	if err != nil {
+		return nil, err
+	}
+	query, args := subagentResumeRoundsQuery(threadID, roots)
 	rows, err := q.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query subagent resume rounds for %s: %w", threadID, err)
@@ -533,13 +530,10 @@ func subagentResumeRounds(q sqlQueryer, threadID string, rootIDs []string) ([]su
 }
 
 // subagentResumeRoundsQuery selects the resume prompts directly under the
-// roots over both timeline arms. The local arm is served by
-// idx_items_subagent_resume_prompt, whose predicate aggPromptSQL states.
-func subagentResumeRoundsQuery(threadID string, rootIDs []string) (string, []any) {
-	rootArgs := make([]any, 0, len(rootIDs))
-	for _, id := range rootIDs {
-		rootArgs = append(rootArgs, id)
-	}
+// roots, a JSON array of ids, over both timeline arms. The local arm is
+// served by idx_items_subagent_resume_prompt, whose predicate aggPromptSQL
+// states.
+func subagentResumeRoundsQuery(threadID, roots string) (string, []any) {
 	return timelineArms(threadID, timelineSelection{
 		Columns: func(_, revExpr string) string {
 			return `items.parent_id AS root, items.id AS id,
@@ -548,9 +542,9 @@ func subagentResumeRoundsQuery(threadID string, rootIDs []string) (string, []any
 			        ` + revExpr + ` < 0 AS imported`
 		},
 		KeyFirst: true,
-		Where: `items.parent_id IN (` + placeholders(len(rootIDs)) + `)
+		Where: `items.parent_id IN (SELECT value FROM json_each(?))
 			   AND ` + aggPromptSQL("items."),
-		WhereArgs: rootArgs,
+		WhereArgs: []any{roots},
 	})
 }
 
@@ -617,19 +611,11 @@ func subagentRoundBoundsFor(
 // logical timeline (local and imported arms), projecting only what the
 // decorator needs. Ids that do not resolve are simply absent.
 func (s *Store) subagentLaunchRowsByID(q sqlQueryer, threadID string, ids []string) (map[string]Item, error) {
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
-	args := make([]any, 0, len(ids))
-	for _, id := range ids {
-		args = append(args, id)
+	list, err := jsonList(ids)
+	if err != nil {
+		return nil, err
 	}
-	source, queryArgs := timelineArms(threadID, timelineSelection{
-		Columns: func(_, revExpr string) string {
-			return "items.id AS id, items.kind AS kind, items.tool_name AS tool_name, items.meta AS meta, " + revExpr + " AS rev"
-		},
-		KeyFirst:  true,
-		Where:     "items.id IN (" + placeholders + ")",
-		WhereArgs: args,
-	})
+	source, queryArgs := subagentLaunchRowsQuery(threadID, list)
 	rows, err := q.Query(source, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve subagent launches for completions in %s: %w", threadID, err)
@@ -648,6 +634,19 @@ func (s *Store) subagentLaunchRowsByID(q sqlQueryer, threadID string, ids []stri
 		return nil, fmt.Errorf("store: iterate subagent launch rows for %s: %w", threadID, err)
 	}
 	return out, nil
+}
+
+// subagentLaunchRowsQuery reads the rows a JSON array of ids names, each
+// by key on both arms.
+func subagentLaunchRowsQuery(threadID, ids string) (string, []any) {
+	return timelineArms(threadID, timelineSelection{
+		Columns: func(_, revExpr string) string {
+			return "items.id AS id, items.kind AS kind, items.tool_name AS tool_name, items.meta AS meta, " + revExpr + " AS rev"
+		},
+		KeyFirst:  true,
+		Where:     "items.id IN (SELECT value FROM json_each(?))",
+		WhereArgs: []any{ids},
+	})
 }
 
 // transcriptRootFromMeta reads a resume carrier's `transcript_root_id`
@@ -877,10 +876,14 @@ func (s *Store) listSubagentDescendants(q sqlQueryer, threadID, rootItemID strin
 		OrderBy: "turn_index DESC, item_index DESC",
 		Limit:   maxSubagentDescendants,
 	})
+	roots, err := jsonList([]string{rootItemID})
+	if err != nil {
+		return nil, err
+	}
 	items, err := queryHydratedTimelineItems(
 		q, threadID,
-		descendantsCTEFromRoots(1)+"\n"+selectedSQL,
-		append(descendantsCTEArgs(threadID, []string{rootItemID}), selectedArgs...)...,
+		descendantsCTE+"\n"+selectedSQL,
+		append(descendantsCTEArgs(threadID, roots), selectedArgs...)...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list subagent descendants for %s/%s: %w", threadID, rootItemID, err)

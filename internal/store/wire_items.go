@@ -99,16 +99,22 @@ func (s *Store) ListWireItems(threadID string, ids []string) ([]Item, error) {
 }
 
 func (s *Store) listWireItemsTx(q sqlQueryer, threadID string, ids []string) ([]Item, error) {
-	args := make([]any, 0, len(ids))
-	for _, id := range ids {
-		args = append(args, id)
+	list, err := jsonList(ids)
+	if err != nil {
+		return nil, err
 	}
-	selectedSQL, selectedArgs := timelineIDSelection(threadID, timelineSelection{
-		KeyFirst:  true,
-		Where:     "items.id IN (" + placeholders(len(ids)) + ")",
-		WhereArgs: args,
-	})
+	selectedSQL, selectedArgs := wireItemsSelection(threadID, list)
 	return s.querySelectedPagedItems(q, threadID, selectedSQL, selectedArgs...)
+}
+
+// wireItemsSelection selects the rows a JSON array of ids names, each by
+// key on both arms.
+func wireItemsSelection(threadID, ids string) (string, []any) {
+	return timelineIDSelection(threadID, timelineSelection{
+		KeyFirst:  true,
+		Where:     "items.id IN (SELECT value FROM json_each(?))",
+		WhereArgs: []any{ids},
+	})
 }
 
 // ListWireItemsBehind returns, as a page would read them now, every row

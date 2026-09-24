@@ -896,7 +896,7 @@ func TestSubagentResumeRoundProbeProbesTheParentIndexes(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
 
-	sql, args := subagentResumeRoundsQuery(timelineParityThreadID, []string{"loc-launch-2"})
+	sql, args := subagentResumeRoundsQuery(timelineParityThreadID, jsonListForTest(t, "loc-launch-2"))
 
 	var local, imported bool
 	for _, r := range explainPlan(t, s, sql, args...) {

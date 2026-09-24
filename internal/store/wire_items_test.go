@@ -161,6 +161,32 @@ func hasID(items []Item, id string) bool {
 // TestListWireItemsBehind pins the refresh set: the rows a write
 // stamped without being written, the launch a completion settles, and a
 // written row only when a sibling write moved it past its own push.
+// TestIDListReadsProbeEachIDByKey pins the plans of the reads that take
+// an id list as one JSON array: each id is a primary-key probe on the local
+// arm and an id-index probe on the imported arm, never a scan.
+func TestIDListReadsProbeEachIDByKey(t *testing.T) {
+	s := newTestStore(t)
+	seedTimelineParityThread(t, s)
+	ids := jsonListForTest(t, "loc-launch-2", "imp-launch-1")
+	wire, wireArgs := wireItemsSelection(timelineParityThreadID, ids)
+	launches, launchArgs := subagentLaunchRowsQuery(timelineParityThreadID, ids)
+	listed := boundedPlan{scans: map[string]bool{"json_each": true}}
+	for _, tc := range []struct {
+		name, query string
+		args        []any
+	}{
+		{"wire items", wire, wireArgs},
+		{"subagent launch rows", launches, launchArgs},
+	} {
+		text := assertBoundedPlan(t, s, tc.name, listed, tc.query, tc.args...)
+		for _, index := range []string{"sqlite_autoindex_items_1 (thread_id=? AND id=?)", "idx_import_history_items_id (id=?)"} {
+			if !strings.Contains(text, index) {
+				t.Errorf("%s does not probe %s:\n%s", tc.name, index, text)
+			}
+		}
+	}
+}
+
 func TestListWireItemsBehind(t *testing.T) {
 	t.Run("child write returns every anchor walked from its launch", func(t *testing.T) {
 		s := newTestStore(t)
