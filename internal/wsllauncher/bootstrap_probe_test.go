@@ -93,8 +93,9 @@ func writeManifest(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintf(w, `{"wsUrl":"ws://127.0.0.1:%s/ws"}`, port)
 }
 
-// migratingReport is a backend in its migrations: one step every 10 s and
-// the heartbeat advancing updatedAt every second.
+// migratingReport is a backend in its migrations: one step every 10 s,
+// its database growing (updatedAt) and its heartbeat (aliveAt) every
+// second.
 func migratingReport(elapsed time.Duration) startupprogress.Progress {
 	step := int(elapsed/(10*time.Second)) + 1
 	return startupprogress.Progress{
@@ -103,8 +104,21 @@ func migratingReport(elapsed time.Duration) startupprogress.Progress {
 		Step:      step,
 		Steps:     12,
 		StartedAt: probeEpoch.UnixMilli(),
-		UpdatedAt: probeEpoch.Add(elapsed.Truncate(time.Second)).UnixMilli(),
+		UpdatedAt: atSecond(elapsed),
+		AliveAt:   atSecond(elapsed),
 	}
+}
+
+// atSecond is the backend clock's millis at elapsed, on a whole second.
+func atSecond(elapsed time.Duration) int64 {
+	return probeEpoch.Add(elapsed.Truncate(time.Second)).UnixMilli()
+}
+
+// reportAt is p with its last progress at progressed and its last
+// heartbeat at alive.
+func reportAt(p startupprogress.Progress, progressed, alive time.Duration) startupprogress.Progress {
+	p.UpdatedAt, p.AliveAt = atSecond(progressed), atSecond(alive)
+	return p
 }
 
 func TestProbeBootstrapKeepsWaitingWhileProgressAdvances(t *testing.T) {
@@ -134,11 +148,31 @@ func TestProbeBootstrapKeepsWaitingWhileProgressAdvances(t *testing.T) {
 	}
 }
 
-func TestProbeBootstrapFailsWhenProgressStalls(t *testing.T) {
+// TestProbeBootstrapKeepsWaitingWhileOnlyTheDatabaseGrows: one long step
+// whose statement keeps writing (the backend advances updatedAt when its
+// database or WAL changes size) is progress without a new step or detail.
+func TestProbeBootstrapKeepsWaitingWhileOnlyTheDatabaseGrows(t *testing.T) {
 	clock := newProbeClock()
 	port, _ := probeBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		// Advances for 10 s, then keeps answering an unchanged report.
-		startupprogress.Write(w, migratingReport(min(clock.elapsed(), 10*time.Second)))
+		if clock.elapsed() >= 90*time.Second {
+			writeManifest(w, r)
+			return
+		}
+		startupprogress.Write(w, reportAt(migratingReport(0), clock.elapsed(), clock.elapsed()))
+	})
+	if err := ProbeBootstrap(boundedContext(t), port, probeTestToken, clock.config()); err != nil {
+		t.Fatalf("a step whose database kept growing for 90 s failed at %s: %v", clock.elapsed(), err)
+	}
+}
+
+// TestProbeBootstrapFailsWhenOnlyTheHeartbeatAdvances: a backend that keeps
+// answering and heartbeating but writes nothing and advances nothing is
+// stalled. It fails 30 s after its last progress and names the phase.
+func TestProbeBootstrapFailsWhenOnlyTheHeartbeatAdvances(t *testing.T) {
+	clock := newProbeClock()
+	port, _ := probeBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		// Progresses for 10 s, then only heartbeats.
+		startupprogress.Write(w, reportAt(migratingReport(min(clock.elapsed(), 10*time.Second)), min(clock.elapsed(), 10*time.Second), clock.elapsed()))
 	})
 
 	err := ProbeBootstrap(boundedContext(t), port, probeTestToken, clock.config())
@@ -149,16 +183,41 @@ func TestProbeBootstrapFailsWhenProgressStalls(t *testing.T) {
 	if !errors.Is(err, ErrBackendNotReady) || errors.Is(err, ErrBackendUnreachable) {
 		t.Fatalf("error %v must read as not ready, never unreachable", err)
 	}
-	if stalled.Progress.Phase != "store.migrate" || stalled.Progress.Step != 2 || stalled.Quiet < bootstrapProbeDeadline {
-		t.Fatalf("stall = %+v, want the last report (store.migrate step 2) after the deadline", stalled)
+	if stalled.Unresponsive || stalled.Progress.Phase != "store.migrate" || stalled.Progress.Step != 2 || stalled.Quiet < bootstrapProbeDeadline {
+		t.Fatalf("stall = %+v, want no progress in the last report (store.migrate step 2) after the deadline, while responding", stalled)
 	}
-	if !strings.Contains(err.Error(), "store.migrate") {
-		t.Fatalf("error %q does not name the phase", err)
+	if msg := err.Error(); !strings.Contains(msg, "no progress") || !strings.Contains(msg, "store.migrate") {
+		t.Fatalf("error %q does not say no progress in the phase", msg)
 	}
-	// The last advance was at 10 s; the stall fails 30 s later, within one
+	// The last progress was at 10 s; the stall fails 30 s later, within one
 	// poll interval.
 	if got, want := clock.elapsed(), 40*time.Second; got < want || got > want+bootstrapProbePollInterval {
 		t.Fatalf("stalled probe failed at %s, want %s", got, want)
+	}
+}
+
+// TestProbeBootstrapFailsWhenTheHeartbeatStops: a backend that keeps
+// answering the same report, heartbeat included, stopped responding. It is
+// the same failure at the same deadline, with its own message.
+func TestProbeBootstrapFailsWhenTheHeartbeatStops(t *testing.T) {
+	clock := newProbeClock()
+	port, _ := probeBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		startupprogress.Write(w, migratingReport(min(clock.elapsed(), 10*time.Second)))
+	})
+
+	err := ProbeBootstrap(boundedContext(t), port, probeTestToken, clock.config())
+	var stalled *BackendStalledError
+	if !errors.As(err, &stalled) || !errors.Is(err, ErrBackendNotReady) {
+		t.Fatalf("error = %v, want BackendStalledError", err)
+	}
+	if !stalled.Unresponsive || stalled.Progress.Phase != "store.migrate" {
+		t.Fatalf("stall = %+v, want an unresponsive backend in store.migrate", stalled)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "backend stopped responding") || !strings.Contains(msg, "store.migrate") {
+		t.Fatalf("error %q does not say the backend stopped responding in the phase", msg)
+	}
+	if got, want := clock.elapsed(), 40*time.Second; got < want || got > want+bootstrapProbePollInterval {
+		t.Fatalf("unresponsive probe failed at %s, want %s", got, want)
 	}
 }
 
@@ -183,8 +242,8 @@ func TestProbeBootstrapBareServiceUnavailableKeepsItsDeadline(t *testing.T) {
 
 // TestProbeBootstrapBackendGoneAfterReportingIsStalled: a backend that
 // reported progress and then stopped answering was reachable, so the
-// failure is the stall in its last phase, not an unreachable port that a
-// fresh port could fix.
+// failure is that it stopped responding in its last phase, not an
+// unreachable port that a fresh port could fix.
 func TestProbeBootstrapBackendGoneAfterReportingIsStalled(t *testing.T) {
 	clock := newProbeClock()
 	var server *httptest.Server
@@ -202,8 +261,8 @@ func TestProbeBootstrapBackendGoneAfterReportingIsStalled(t *testing.T) {
 	if !errors.As(err, &stalled) || errors.Is(err, ErrBackendUnreachable) {
 		t.Fatalf("error = %v, want a stall", err)
 	}
-	if stalled.Progress.Phase != "store.migrate" || stalled.Last == nil {
-		t.Fatalf("stall = %+v, want the last phase and the transport error", stalled)
+	if !stalled.Unresponsive || stalled.Progress.Phase != "store.migrate" || stalled.Last == nil {
+		t.Fatalf("stall = %+v, want an unresponsive backend, its last phase and the transport error", stalled)
 	}
 }
 

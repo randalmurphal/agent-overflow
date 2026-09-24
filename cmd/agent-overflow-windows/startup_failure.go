@@ -75,7 +75,8 @@ code{background:#1a1b26;color:#7dcfff;padding:1px 6px;border-radius:4px;overflow
 }
 
 // stalledStartupCopy names the phase a starting backend stopped advancing
-// in, as the update being finished when the boot follows an update.
+// in, as the update being finished when the boot follows an update, and
+// whether the backend stopped responding altogether.
 func stalledStartupCopy(stalled *wsllauncher.BackendStalledError) (title, detail string) {
 	p := stalled.Progress
 	where := "phase " + truncateRunes(p.Phase, stalledPhaseLimit)
@@ -83,9 +84,17 @@ func stalledStartupCopy(stalled *wsllauncher.BackendStalledError) (title, detail
 		where += " (" + d + ")"
 	}
 	quiet := fmt.Sprintf("%d seconds", int(stalled.Quiet.Seconds()))
+	update := ""
 	if p.UpdatingTo != "" {
-		title = "The update to " + startupprogress.DisplayVersion(truncateRunes(p.UpdatingTo, 40)) + " stalled."
-		return title, fmt.Sprintf("Finishing the update stalled in %s and made no progress for %s.", where, quiet)
+		update = "The update to " + startupprogress.DisplayVersion(truncateRunes(p.UpdatingTo, 40))
+	}
+	switch {
+	case stalled.Unresponsive && update != "":
+		return update + " stopped responding.", fmt.Sprintf("The backend stopped responding while finishing the update, in %s, for %s.", where, quiet)
+	case stalled.Unresponsive:
+		return "Backend stopped responding.", fmt.Sprintf("The backend stopped responding during startup, in %s, for %s.", where, quiet)
+	case update != "":
+		return update + " stalled.", fmt.Sprintf("Finishing the update stalled in %s and made no progress for %s.", where, quiet)
 	}
 	return "Backend stopped making progress.", fmt.Sprintf("Startup stalled in %s and made no progress for %s.", where, quiet)
 }

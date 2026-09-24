@@ -18,6 +18,9 @@ func TestStartupFailurePageUsesObservedCauseWithoutLeakingErrorContent(t *testin
 	stall := func(p startupprogress.Progress) error {
 		return &wsllauncher.BackendStalledError{Progress: p, Quiet: 30 * time.Second, Last: errors.New(secret)}
 	}
+	silent := func(p startupprogress.Progress) error {
+		return &wsllauncher.BackendStalledError{Progress: p, Quiet: 30 * time.Second, Unresponsive: true, Last: errors.New(secret)}
+	}
 	for _, tc := range []struct {
 		name, want string
 		err        error
@@ -32,6 +35,10 @@ func TestStartupFailurePageUsesObservedCauseWithoutLeakingErrorContent(t *testin
 		{"stalled update", "The update to v1.2.3 stalled.</h1><p>Finishing the update stalled in phase store.migrate (Applying migration 3 of 7 v101)",
 			stall(startupprogress.Progress{Phase: "store.migrate", Detail: "Applying migration 3 of 7 v101", UpdatingTo: "1.2.3"}), false},
 		{"stalled phase is escaped", "phase &lt;b&gt;", stall(startupprogress.Progress{Phase: "<b>"}), false},
+		{"stopped responding", "Backend stopped responding.</h1><p>The backend stopped responding during startup, in phase store.migrate (Applying migration 3 of 7 v101), for 30 seconds.",
+			silent(startupprogress.Progress{Phase: "store.migrate", Detail: "Applying migration 3 of 7 v101"}), false},
+		{"stopped responding during an update", "The update to v1.2.3 stopped responding.</h1><p>The backend stopped responding while finishing the update, in phase store.migrate",
+			silent(startupprogress.Progress{Phase: "store.migrate", Detail: "Applying migration 3 of 7 v101", UpdatingTo: "1.2.3"}), false},
 		{"HTTP rejection", "HTTP 404", wsllauncher.BootstrapHTTPError{StatusCode: 404, URL: secret}, false},
 		{"HTTP startup failure", "HTTP 500", wsllauncher.BootstrapHTTPError{StatusCode: 500, URL: secret}, false},
 		{"invalid status", "local backend could not be opened", wsllauncher.BootstrapHTTPError{StatusCode: -1234, URL: secret}, false},

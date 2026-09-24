@@ -21,6 +21,7 @@ interface StartingReport {
   detail: string;
   startedAt: number;
   updatedAt: number;
+  aliveAt: number;
 }
 
 async function readBootstrap(harness: HarnessApp): Promise<{ status: number; headers: Headers; body: string }> {
@@ -58,14 +59,16 @@ test('a held boot shows its phase, never an empty sidebar, and loads once ready'
     await expect(page.getByTestId('startup-screen-phase')).toHaveText('Holding startup for a test');
     await expect(page.getByTestId('sidebar-catalog-loading')).toHaveAttribute('data-status', 'starting');
     await expect(page.getByTestId('sidebar-catalog-loading-label')).toHaveText('Holding startup for a test');
-    // The page keeps reading the report: the elapsed line advances.
+    // The page keeps reading the report: the elapsed line advances on the
+    // heartbeat while the held phase makes no progress.
     const meta = page.getByTestId('startup-screen-meta');
     await expect(meta).toHaveText(/^\d+:\d\d elapsed$/, { timeout: 10_000 });
     const shown = await meta.textContent();
     await expect(meta).not.toHaveText(shown ?? '', { timeout: 10_000 });
     const later = JSON.parse((await readBootstrap(harness)).body) as StartingReport;
     expect(later.startedAt).toBe(report.startedAt);
-    expect(later.updatedAt).toBeGreaterThan(report.updatedAt);
+    expect(later.aliveAt).toBeGreaterThan(report.aliveAt);
+    expect(later.updatedAt).toBe(report.updatedAt);
     // Loading is not empty, and a first boot is not a connection problem.
     await expect(page.getByTestId('sidebar-projects-empty')).toHaveCount(0);
     await expect(page.getByTestId('pane-host-empty')).toHaveCount(0);

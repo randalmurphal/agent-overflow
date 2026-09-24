@@ -128,14 +128,31 @@ Every executable boot binds its listener before `App.Start` and calls
 - `/bootstrap.json` runs its origin and credential checks, then answers 503
   with `Cache-Control: no-store` and `Retry-After: 1`. Once the boot reports
   progress, the body is
-  `{"reason":"starting","phase","detail","step","steps","startedAt","updatedAt","updatingTo"}`
+  `{"reason":"starting","phase","detail","step","steps","startedAt","updatedAt","aliveAt","updatingTo"}`
   with Unix-millisecond times; before any report it is a bare text 503.
   `MarkStartupFailed` answers 500.
 - `phase` is the `boot: phase=` log id and `detail` is display text.
-  `step` and `steps` count sub-steps such as pending migrations. `updatedAt`
-  advances with each report and once a second while a boot phase is open,
-  and stops when none is open, so clients judge a stall by it. `updatingTo`
-  names the version the boot is finishing an in-app update to.
+  `step` and `steps` count sub-steps such as pending migrations.
+  `updatingTo` names the version the boot is finishing an in-app update to.
+- `updatedAt` advances only on observed progress: a phase beginning or
+  ending, a new detail or step, or work seen by the once-a-second
+  heartbeat since the previous one. Work is the database file or its
+  `-wal` changing size, the process using at least a twentieth of a CPU
+  (user plus system time), or the process moving at least 64 KiB/s to or
+  from storage (`/proc/self/io` on Linux, `getrusage` elsewhere on Unix,
+  `GetProcessIoCounters` on Windows). A sort, a `PRAGMA foreign_key_check`,
+  a cold read and a rebuild all count. A table rebuild also reports a step
+  before each index build and before its foreign key check, so the detail
+  names what is running. `aliveAt` advances on every heartbeat and means
+  only that the backend is running. Both stop when no boot phase is open.
+  The Windows launcher fails a boot after 30 s without an `updatedAt`
+  change, naming the phase, and after 30 s without either changing reports
+  that the backend stopped responding.
+- Limit: a step blocked without working, such as a statement waiting inside
+  SQLite on a lock another process holds, reads as stalled after 30 s. That
+  is the intended outcome. `modernc.org/sqlite` offers no progress-handler
+  registration on its connections, so the work signals are process-wide
+  rather than per statement.
 - `/healthz`, `/pageurl` and the SPA assets are served. A loopback `/ws`
   upgrade is admitted; its hello omits routes, the browser capability and
   the backend name, and every RPC outside `Config.StartupMethods` (the
@@ -143,6 +160,15 @@ Every executable boot binds its listener before `App.Start` and calls
   route, and an off-host upgrade, closes without a response.
 - The attached-backend bootstrap hop and the `--connect` stub pass a far
   backend's starting report on unchanged.
+- Limit: a paired device on another machine cannot see the starting state
+  while the store opens. Its session credential and device proof are
+  verified against the identity store, which the boot opens after the
+  database and its migrations (`app.init_identity`). Until then its
+  `/bootstrap.json` gets the non-disclosing 404 of an unknown credential and
+  its session renewal gets no response, which the client treats as
+  inconclusive: it stays paired and retries on its ordinary reconnect
+  ladder instead of the starting poll. It sees the report for the phases
+  after `app.init_identity`.
 
 The body is `internal/startupprogress`, which the Windows launcher shares.
 `StartupReporter` (`startup_progress.go`) turns `App.Start`'s boot phases
@@ -152,9 +178,7 @@ The page reads the same report for its own backend and every attached one
 (`frontend/src/lib/transport/bootstrap.ts`). A starting report is not a
 connection failure: `WSClient` publishes status `starting` with the report,
 polls every 500 ms without backoff or dormancy, and connects on the first
-served manifest. The poll pauses while the document is hidden and asks at
-once when it is shown; demand still asks while hidden. The Windows
-launcher's `/loading.js` pauses its `/loading.json` poll the same way. Calls made meanwhile reject with a non-terminal
+served manifest. Calls made meanwhile reject with a non-terminal
 `DisconnectedError`, which passive reads treat as offline. A bare or
 malformed 503 stays an ordinary transient failure on the reconnect ladder.
 The harness can hold a boot before `App.Start` for tests

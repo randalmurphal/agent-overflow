@@ -70,9 +70,11 @@ Mechanism in
   that update. The launcher's loading page, the startup screen and the
   sidebar show the same sentence. The update record is the only source of
   that version, so a boot the record does not name shows an ordinary start.
-- The Windows launcher fails a boot only when its progress stalls for 30 s,
-  and names the stalled phase. A slow boot that keeps reporting is never torn
-  down.
+- The Windows launcher fails a boot only when it makes no observed progress
+  for 30 s, and names the stalled phase. A heartbeat alone is not progress;
+  a new step, a database or WAL size change, or the process doing CPU or
+  storage work is. A slow boot that keeps working is never torn down; one
+  blocked on a lock is.
 - Heavy post-boot scans, such as the search index build, wait for the first
   client's `ListThreads` and `ListProjects` answers, or 15 s after the backend
   starts answering when no page reads.

@@ -325,18 +325,14 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 		return "", nil, fmt.Errorf("failed to prepare database file %s: %w", dbPath, err)
 	}
 
-	// Each pending migration is a step of its own boot phase, which is
-	// what a launcher waiting on a long migration chain reads. ctx lets a
-	// shutdown interrupt the chain; the running migration rolls back.
+	// Inside a migration step, and in every later phase, the database and
+	// its WAL changing size is progress too. ctx lets a shutdown interrupt
+	// the chain; the running migration rolls back.
+	a.watchBootFiles(dbPath, dbPath+"-wal")
 	endMigrations := func() {}
 	st, err := store.NewWithOptions(dbPath, store.Options{
-		Context: ctx,
-		OnMigration: func(step store.MigrationStep) {
-			if step.Index == 1 {
-				endMigrations = a.bootPhase("store.migrate", "Applying migrations")
-			}
-			a.bootPhaseDetail(fmt.Sprintf("Applying migration %d of %d %s", step.Index, step.Pending, step.Name), step.Index, step.Pending)
-		},
+		Context:     ctx,
+		OnMigration: a.reportMigration(&endMigrations),
 	})
 	endMigrations()
 	if err != nil {

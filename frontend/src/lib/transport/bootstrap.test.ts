@@ -388,6 +388,7 @@ describe('defaultBootstrap', () => {
     steps: 7,
     startedAt: 1_000,
     updatedAt: 13_000,
+    aliveAt: 14_000,
     updatingTo: '1.2.3',
   };
   function jsonResponse(status: number, body: string): Response {
