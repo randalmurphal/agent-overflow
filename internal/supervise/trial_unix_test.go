@@ -39,9 +39,15 @@ serve_until_stopped() {
 		wait $! 2>/dev/null
 	done
 }
-progress() {
-	printf '{"type":"progress","progress":{"phase":"%s","detail":"%s","updatedAt":1}%s}\n' "$1" "$2" "$3" >&4
+# A reporter's clock: progress advances updatedAt and aliveAt, a heartbeat
+# only aliveAt, as the backend's startup reporter stamps them.
+N=0
+U=0
+report() {
+	printf '{"type":"progress","progress":{"phase":"%s","detail":"%s","updatedAt":%s,"aliveAt":%s}}\n' "$1" "$2" "$U" "$N" >&4
 }
+progress() { N=$((N+1)); U=$N; report "$1" "$2"; }
+heartbeat() { N=$((N+1)); report "$1" "$2"; }
 IFS= read -r ACTIVATE <&3
 printf '%s\n' "$ACTIVATE" >> "$OBS/activate"
 printf '%s\n' "${AO_BACKEND_LOCK_FD:-none}" >> "$OBS/lockenv"
@@ -135,7 +141,7 @@ func TestTrialReportsPreparedAndIsStopped(t *testing.T) {
 printf '{"type":"prepared","updateId":"u1"}\n' >&4
 serve_until_stopped`))
 	var got []startupprogress.Progress
-	cfg.OnProgress = func(p startupprogress.Progress, liveness bool) { got = append(got, p) }
+	cfg.OnProgress = func(p startupprogress.Progress) { got = append(got, p) }
 	stopping := 0
 	cfg.OnStopping = func() { stopping++ }
 	if err := RunTrial(context.Background(), cfg); err != nil {
@@ -178,25 +184,42 @@ func TestHeartbeatsAloneDoNotKeepATrialAlive(t *testing.T) {
 	r := newTrialRig(t)
 	cfg := r.config(r.script(helloProgress, `progress store.migrate "Applying migration 3 of 7 add_index"
 while :; do
-	progress store.migrate "Applying migration 3 of 7 add_index" ',"liveness":true'
+	heartbeat store.migrate "Applying migration 3 of 7 add_index"
 	sleep 0.1
 done`))
 	var heartbeats int
-	cfg.OnProgress = func(p startupprogress.Progress, liveness bool) {
-		if liveness {
+	var last startupprogress.Progress
+	cfg.OnProgress = func(p startupprogress.Progress) {
+		if p.UpdatedAt == last.UpdatedAt && p.AliveAt != last.AliveAt {
 			heartbeats++
 		}
+		last = p
 	}
 	started := time.Now()
 	reason := trialFailure(t, RunTrial(context.Background(), cfg))
-	if !strings.Contains(reason, "stopped making progress for 400ms") || !strings.Contains(reason, "Applying migration 3 of 7 add_index") {
-		t.Fatalf("reason = %q, want the stall naming the last step", reason)
+	if !strings.HasPrefix(reason, "the new version did not finish starting: no progress for ") ||
+		!strings.Contains(reason, "in phase store.migrate (Applying migration 3 of 7 add_index)") {
+		t.Fatalf("reason = %q, want no progress naming the phase and step", reason)
 	}
 	if elapsed := time.Since(started); elapsed > 3*time.Second {
 		t.Fatalf("the stall took %s to be noticed", elapsed)
 	}
 	if heartbeats == 0 {
 		t.Fatal("no heartbeat reached OnProgress, so the test proved nothing")
+	}
+}
+
+// A trial whose reports stop altogether, heartbeat included, stopped
+// responding, which says more than no progress.
+func TestATrialWhoseHeartbeatStopsStoppedResponding(t *testing.T) {
+	r := newTrialRig(t)
+	cfg := r.config(r.script(helloProgress, `progress store.migrate "Applying migration 3 of 7 add_index"
+heartbeat store.migrate "Applying migration 3 of 7 add_index"
+serve_until_stopped`))
+	reason := trialFailure(t, RunTrial(context.Background(), cfg))
+	if !strings.HasPrefix(reason, "the new version did not finish starting: backend stopped responding for ") ||
+		!strings.Contains(reason, "in phase store.migrate (Applying migration 3 of 7 add_index)") {
+		t.Fatalf("reason = %q, want the stopped heartbeat named", reason)
 	}
 }
 

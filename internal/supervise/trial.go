@@ -16,20 +16,19 @@ import (
 // prepared, and is stopped. It never becomes the live backend; the version
 // published after the commit boots once more with nothing left to migrate.
 
-// StallRule judges a trial by its progress rather than by one fixed budget.
+// StallRule judges a start by its progress rather than by one fixed budget.
 type StallRule struct {
-	// Window is how long the trial may go without a real progress report.
-	// Heartbeats do not count: they prove the process runs, not that the
-	// step it is in moves.
+	// Window is how long the start may go without observed progress, or
+	// without a sign of life (startupprogress.StallWatch).
 	Window time.Duration
-	// Ceiling bounds the whole trial, whatever it reports.
+	// Ceiling bounds the whole run, whatever it reports.
 	Ceiling time.Duration
 }
 
 const (
-	// TrialStallWindow is the limit the launcher's loading page applies to a
-	// starting backend, applied here to real progress only.
-	TrialStallWindow = 30 * time.Second
+	// TrialStallWindow is the window every judge of a starting backend
+	// applies.
+	TrialStallWindow = startupprogress.StallWindow
 	// TrialCeiling bounds a trial that keeps reporting progress, so a loop
 	// that reports forever still ends.
 	TrialCeiling = 30 * time.Minute
@@ -40,29 +39,34 @@ func DefaultTrialStallRule() StallRule {
 	return StallRule{Window: TrialStallWindow, Ceiling: TrialCeiling}
 }
 
-// StallWatch arms a StallRule's two timers. Progress restarts the window;
-// the ceiling runs from NewStallWatch. Both channels are nil once disarmed,
+// StallWatch arms a StallRule over a run's progress reports: a timer at the
+// earliest moment startupprogress.StallWatch could judge the run stalled,
+// and the ceiling from NewStallWatch. Both channels are nil once disarmed,
 // so a select naming them never fires on a disarmed timer.
 type StallWatch struct {
+	judge   *startupprogress.StallWatch
 	window  *time.Timer
 	ceiling *time.Timer
-	rule    StallRule
 }
 
 // NewStallWatch starts both timers.
 func NewStallWatch(rule StallRule) *StallWatch {
 	return &StallWatch{
+		judge:   startupprogress.NewStallWatch(rule.Window, time.Now()),
 		window:  time.NewTimer(rule.Window),
 		ceiling: time.NewTimer(rule.Ceiling),
-		rule:    rule,
 	}
 }
 
-// Progress records a real step: the window starts again.
-func (w *StallWatch) Progress() {
+// Report records a progress report and rearms the window at the next moment
+// the run could be judged stalled. It reports whether p was progress.
+func (w *StallWatch) Report(p startupprogress.Progress) bool {
+	now := time.Now()
+	progressed := w.judge.Report(p, now)
 	if w.window != nil {
-		w.window.Reset(w.rule.Window)
+		w.window.Reset(w.judge.Deadline().Sub(now))
 	}
+	return progressed
 }
 
 // Budget replaces the rule with one fixed budget from now, for a child that
@@ -75,13 +79,34 @@ func (w *StallWatch) Budget(d time.Duration) {
 	w.ceiling.Reset(d)
 }
 
-// Stalled fires when the window passes without progress.
+// Stalled fires when the window may have passed without progress. Stall
+// says whether it did.
 func (w *StallWatch) Stalled() <-chan time.Time {
 	if w.window == nil {
 		return nil
 	}
 	return w.window.C
 }
+
+// Stall judges the run now. silent is true when nothing was reported within
+// the window of the start; stall is the judgement once something was. Both
+// are empty when the run is not stalled, and the window is rearmed.
+func (w *StallWatch) Stall() (stall *startupprogress.Stall, silent bool) {
+	now := time.Now()
+	if w.judge.Silent(now) {
+		return nil, true
+	}
+	if stall := w.judge.Check(now); stall != nil {
+		return stall, false
+	}
+	if w.window != nil {
+		w.window.Reset(w.judge.Deadline().Sub(now))
+	}
+	return nil, false
+}
+
+// Last is the last report, if any.
+func (w *StallWatch) Last() (startupprogress.Progress, bool) { return w.judge.Last() }
 
 // Expired fires at the ceiling.
 func (w *StallWatch) Expired() <-chan time.Time { return w.ceiling.C }
@@ -119,8 +144,8 @@ type TrialConfig struct {
 	LegacyBudget time.Duration
 	// StopTimeout bounds each graceful stop. Zero takes DefaultStopTimeout.
 	StopTimeout time.Duration
-	// OnProgress receives every progress frame; liveness marks a heartbeat.
-	OnProgress func(p startupprogress.Progress, liveness bool)
+	// OnProgress receives every progress frame, heartbeats included.
+	OnProgress func(p startupprogress.Progress)
 	// OnStopping is called before the trial is asked to stop, which can take
 	// StopTimeout, so a caller judged by its own progress can report it.
 	OnStopping func()
@@ -201,7 +226,6 @@ type trialRun struct {
 	cfg    TrialConfig
 	child  *child
 	watch  *StallWatch
-	last   startupprogress.Progress
 	legacy bool
 }
 
@@ -222,8 +246,12 @@ func (t *trialRun) run(ctx context.Context) error {
 			return &TrialFailedError{Reason: exitReason(c.exitErr)}
 
 		case <-t.watch.Stalled():
+			stall, silent := t.watch.Stall()
+			if stall == nil && !silent {
+				continue
+			}
 			t.stop()
-			return &TrialFailedError{Reason: t.stallReason()}
+			return &TrialFailedError{Reason: t.stallReason(stall)}
 
 		case <-t.watch.Expired():
 			t.stop()
@@ -260,12 +288,11 @@ func (t *trialRun) handle(msg Message) (outcome error, decided bool) {
 		if msg.Progress == nil {
 			return nil, false
 		}
-		t.last = *msg.Progress
 		if t.cfg.OnProgress != nil {
-			t.cfg.OnProgress(*msg.Progress, msg.Liveness)
+			t.cfg.OnProgress(*msg.Progress)
 		}
-		if !msg.Liveness && !t.legacy {
-			t.watch.Progress()
+		if !t.legacy {
+			t.watch.Report(*msg.Progress)
 		}
 	case MsgFailed:
 		reason := strings.TrimSpace(msg.Reason)
@@ -317,17 +344,20 @@ func (t *trialRun) stop() {
 }
 
 func (t *trialRun) lastStep() string {
-	if t.last.Detail != "" {
-		return t.last.Detail
+	last, _ := t.watch.Last()
+	if last.Detail != "" {
+		return last.Detail
 	}
-	return t.last.Phase
+	return last.Phase
 }
 
-func (t *trialRun) stallReason() string {
-	if step := t.lastStep(); step != "" {
-		return fmt.Sprintf("the new version stopped making progress for %s (last step: %s)", t.cfg.Rule.Window, step)
+// stallReason words a stall as every judge of a starting backend does
+// (startupprogress.Stall), or silence from the start.
+func (t *trialRun) stallReason(stall *startupprogress.Stall) string {
+	if stall == nil {
+		return fmt.Sprintf("the new version reported no progress within %s of starting", t.cfg.Rule.Window)
 	}
-	return fmt.Sprintf("the new version reported no progress within %s of starting", t.cfg.Rule.Window)
+	return "the new version did not finish starting: " + stall.Error()
 }
 
 func (t *trialRun) ceilingReason() string {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"agent-overflow/internal/startupprogress"
@@ -170,7 +171,7 @@ func (c UpdateCommand) TrialRun(ctx context.Context, opts TrialRunOptions) Updat
 		TargetVersion: opts.TargetVersion,
 		Rule:          opts.Rule,
 		StopTimeout:   opts.StopTimeout,
-		OnProgress:    relay.Report,
+		OnProgress:    relay.forward,
 		OnStopping:    func() { relay.step("update.trial.stop", "Stopping the trial") },
 		Log:           c.log,
 	})
@@ -305,11 +306,28 @@ func failedEvent(outcome UpdateOutcome, err error) UpdateEvent {
 	return UpdateEvent{Type: UpdateEventResult, Outcome: outcome, Reason: err.Error()}
 }
 
-// commandRelay reports a command's progress on its output. A failed write
-// cancels the command's context.
+// commandHeartbeatInterval is how often a command's relay advances AliveAt
+// and samples the command's own work, as a starting backend's reporter does.
+const commandHeartbeatInterval = time.Second
+
+// commandRelay reports a command's progress on its output in the command's
+// own clock, so the launcher judges one reporter: the command's steps and
+// copies are progress; a trial's reports are forwarded with their advances
+// restamped; and a heartbeat advances AliveAt, and UpdatedAt when the
+// shared sampler finds the command working (a long fsync, say). A failed
+// write cancels the command's context.
 type commandRelay struct {
 	*ProgressRelay
-	started int64
+	sampler *startupprogress.Sampler
+	now     func() time.Time
+
+	mu      sync.Mutex
+	current startupprogress.Progress
+	// child is the last forwarded trial report, nil after a step of the
+	// command's own.
+	child   *startupprogress.Progress
+	stop    chan struct{}
+	stopped chan struct{}
 }
 
 func (c UpdateCommand) startRelay(ctx context.Context) (*commandRelay, context.Context, context.CancelFunc) {
@@ -318,12 +336,11 @@ func (c UpdateCommand) startRelay(ctx context.Context) (*commandRelay, context.C
 	if out == nil {
 		out = io.Discard
 	}
-	relay := &commandRelay{
-		ProgressRelay: NewProgressRelay(func(p startupprogress.Progress, liveness bool) error {
-			return WriteUpdateEvent(out, UpdateEvent{Type: UpdateEventProgress, Progress: &p, Liveness: liveness})
-		}),
-		started: c.now().UnixMilli(),
-	}
+	relay := newCommandRelay(func(p startupprogress.Progress) error {
+		return WriteUpdateEvent(out, UpdateEvent{Type: UpdateEventProgress, Progress: &p})
+	}, startupprogress.NewSampler(startupprogress.SamplerOptions{
+		Interval: commandHeartbeatInterval, Logf: c.log,
+	}), c.now, commandHeartbeatInterval)
 	go func() {
 		select {
 		case <-relay.Failed():
@@ -335,14 +352,99 @@ func (c UpdateCommand) startRelay(ctx context.Context) (*commandRelay, context.C
 	return relay, ctx, cancel
 }
 
+// newCommandRelay starts a relay that beats every interval, which should
+// be the sampler's interval.
+func newCommandRelay(deliver func(startupprogress.Progress) error, sampler *startupprogress.Sampler, now func() time.Time, interval time.Duration) *commandRelay {
+	r := &commandRelay{
+		ProgressRelay: NewProgressRelay(deliver),
+		sampler:       sampler,
+		now:           now,
+		stop:          make(chan struct{}),
+		stopped:       make(chan struct{}),
+	}
+	r.current.StartedAt = now().UnixMilli()
+	go r.heartbeat(interval)
+	return r
+}
+
+// close stops the heartbeat and delivers what is queued.
 func (r *commandRelay) close() {
+	close(r.stop)
+	<-r.stopped
 	_ = r.Close()
 }
 
-// step reports a real step of the command itself.
+// advance is a stamp that differs from prev, so a clock that stood still or
+// stepped back cannot hide an advance.
+func advance(prev, now int64) int64 {
+	if now > prev {
+		return now
+	}
+	return prev + 1
+}
+
+func (r *commandRelay) heartbeat(interval time.Duration) {
+	defer close(r.stopped)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.stop:
+			return
+		case <-ticker.C:
+			r.beat()
+		}
+	}
+}
+
+// beat advances AliveAt, and UpdatedAt when the sampler saw the command
+// working, once the command has reported a step.
+func (r *commandRelay) beat() {
+	progressed := r.sampler.Sample()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.current.Phase == "" {
+		return
+	}
+	now := r.now().UnixMilli()
+	if progressed {
+		r.current.UpdatedAt = advance(r.current.UpdatedAt, now)
+	}
+	r.current.AliveAt = advance(r.current.AliveAt, now)
+	r.Report(r.current)
+}
+
+// step reports a step of the command itself.
 func (r *commandRelay) step(phase, detail string) {
-	now := time.Now().UnixMilli()
-	r.Report(startupprogress.Progress{Phase: phase, Detail: detail, StartedAt: r.started, UpdatedAt: now}, false)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now().UnixMilli()
+	r.current.Phase, r.current.Detail = phase, detail
+	r.current.Step, r.current.Steps, r.current.UpdatingTo = 0, 0, ""
+	r.current.UpdatedAt = advance(r.current.UpdatedAt, now)
+	r.current.AliveAt = advance(r.current.AliveAt, now)
+	r.child = nil
+	r.Report(r.current)
+}
+
+// forward reports a trial's report as the command's: its phase and detail,
+// with progress where the trial's UpdatedAt changed and a sign of life
+// where its AliveAt did.
+func (r *commandRelay) forward(p startupprogress.Progress) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now().UnixMilli()
+	progressed := r.child == nil || p.UpdatedAt != r.child.UpdatedAt
+	if progressed {
+		r.current.UpdatedAt = advance(r.current.UpdatedAt, now)
+	}
+	if progressed || p.AliveAt != r.child.AliveAt {
+		r.current.AliveAt = advance(r.current.AliveAt, now)
+	}
+	r.current.Phase, r.current.Detail = p.Phase, p.Detail
+	r.current.Step, r.current.Steps, r.current.UpdatingTo = p.Step, p.Steps, p.UpdatingTo
+	r.child = &p
+	r.Report(r.current)
 }
 
 // copyProgress reports a copy's bytes as real progress.

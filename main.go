@@ -318,10 +318,10 @@ type bootTransportOptions struct {
 	// writes the persisted port: an update's trial must not move the port
 	// the published version later binds.
 	NoPortPin bool
-	// BootProgressObserver receives every startup report; liveness marks a
-	// heartbeat. Only an update's trial sets it, to forward progress to the
+	// BootProgressObserver receives every startup report, heartbeats
+	// included. Only an update's trial sets it, to forward progress to the
 	// process judging the trial.
-	BootProgressObserver func(p startupprogress.Progress, liveness bool)
+	BootProgressObserver func(p startupprogress.Progress)
 	// UpdatingTo is the version whose committed update this boot finishes,
 	// from the platform's update record; the startup report names it.
 	UpdatingTo string

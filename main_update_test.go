@@ -48,7 +48,7 @@ func runTrialStub(mode string, args []string) int {
 		return 2
 	}
 	root := filepath.Join(*dataDir, appdirs.DirName)
-	return runTrialProtocol(func(observe func(startupprogress.Progress, bool)) trialBackend {
+	return runTrialProtocol(func(observe func(startupprogress.Progress)) trialBackend {
 		return &stubTrialBackend{mode: mode, root: root, observe: observe}
 	})
 }
@@ -56,11 +56,11 @@ func runTrialStub(mode string, args []string) int {
 type stubTrialBackend struct {
 	mode    string
 	root    string
-	observe func(startupprogress.Progress, bool)
+	observe func(startupprogress.Progress)
 }
 
 func (b *stubTrialBackend) start(ctx context.Context) error {
-	b.observe(startupprogress.Progress{Phase: "store.migrate", Detail: "Applying migration 1 of 1"}, false)
+	b.observe(startupprogress.Progress{Phase: "store.migrate", Detail: "Applying migration 1 of 1", UpdatedAt: 1, AliveAt: 1})
 	// Progress relays keep only the newest report, so the step is held long
 	// enough to be delivered before the next report supersedes it.
 	time.Sleep(200 * time.Millisecond)

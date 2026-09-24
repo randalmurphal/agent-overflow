@@ -57,9 +57,9 @@ const (
 	// commit is durable.
 	MsgCommit = "commit"
 	// MsgProgress is a trial reporting its boot, from a child whose hello set
-	// ReportsProgress. Liveness marks a heartbeat, which proves the child is
-	// running; every other progress frame is a real step and is the only
-	// thing the stall rule counts.
+	// ReportsProgress: every report and heartbeat of its startup reporter.
+	// The report's UpdatedAt and AliveAt are what the stall rule reads
+	// (startupprogress.StallWatch).
 	MsgProgress = "progress"
 	// MsgFailed is a trial that knows why it cannot reach prepared, sent
 	// before it exits so the recorded reason is the cause rather than an
@@ -105,9 +105,8 @@ type Message struct {
 	// on protocol 1, because a supervisor that does not read it gives such a
 	// child its fixed budget, which is what that supervisor always did.
 	ReportsProgress bool `json:"reportsProgress,omitempty"`
-	// Progress and Liveness ride progress.
+	// Progress rides progress.
 	Progress *startupprogress.Progress `json:"progress,omitempty"`
-	Liveness bool                      `json:"liveness,omitempty"`
 }
 
 // EnvChannel names the environment variable that tells a child it has a

@@ -18,11 +18,14 @@ import (
 // on stdout with supervise.UpdateEventPrefix and ends with one result report.
 
 const (
-	// UpdateCommandStallWindow is how long a command may go without a real
-	// progress report. It is the trial's own window plus room for the two
-	// announced steps that then wait without reporting: waiting up to
-	// supervise.UpdateLockWait for the previous backend's lock, and stopping
-	// the trial within supervise.DefaultStopTimeout.
+	// UpdateCommandStallWindow is how long a command may go without
+	// observed progress, or without a sign of life, by the rule every judge
+	// of a start applies (startupprogress.StallWatch). It is the trial's own
+	// window plus room for the two announced steps that then wait without
+	// progressing: waiting up to supervise.UpdateLockWait for the previous
+	// backend's lock, and stopping the trial within
+	// supervise.DefaultStopTimeout. The command itself judges its trial by
+	// the trial's window, so it decides first and reports its decision.
 	UpdateCommandStallWindow = supervise.TrialStallWindow + 15*time.Second
 	// UpdateCommandCeiling bounds one command whatever it reports: the
 	// trial's ceiling plus a snapshot or restore of the same order.
@@ -63,8 +66,8 @@ type UpdateCommandStoppedError struct {
 func (e *UpdateCommandStoppedError) Error() string { return e.Reason }
 
 // Run starts payload's command in the distro and returns its result report.
-// onProgress receives every progress report, heartbeats included; only real
-// reports count against the stall rule. A command that exits without a
+// onProgress receives every progress report, heartbeats included; the stall
+// rule reads their UpdatedAt and AliveAt. A command that exits without a
 // result, or is stopped, is an error. Cancelling ctx stops the command and
 // returns ctx.Err().
 func (r UpdateCommandRunner) Run(ctx context.Context, payload, command string, args []string, onProgress func(startupprogress.Progress)) (supervise.UpdateEvent, error) {
@@ -165,12 +168,18 @@ func (u *updateCommandRun) watch(ctx context.Context) (supervise.UpdateEvent, er
 				u.waitErr, u.done = <-u.exited, true
 				return u.finish()
 			}
-			if u.handle(event) {
-				watch.Progress()
+			if event.Type == supervise.UpdateEventProgress {
+				watch.Report(*event.Progress)
 			}
+			u.handle(event)
 		case <-watch.Stalled():
-			return u.stopFor(fmt.Sprintf("the %s step stopped making progress for %s%s",
-				u.command, u.runner.rule().Window, u.lastStep()))
+			stall, silent := watch.Stall()
+			switch {
+			case silent:
+				return u.stopFor(fmt.Sprintf("the %s step reported nothing within %s", u.command, u.runner.rule().Window))
+			case stall != nil:
+				return u.stopFor(fmt.Sprintf("the %s step did not finish: %v", u.command, stall))
+			}
 		case <-watch.Expired():
 			return u.stopFor(fmt.Sprintf("the %s step did not finish within %s%s",
 				u.command, u.runner.rule().Ceiling, u.lastStep()))
@@ -181,26 +190,22 @@ func (u *updateCommandRun) watch(ctx context.Context) (supervise.UpdateEvent, er
 	}
 }
 
-// handle applies one report and says whether it was real progress.
-func (u *updateCommandRun) handle(event supervise.UpdateEvent) bool {
+// handle applies one report.
+func (u *updateCommandRun) handle(event supervise.UpdateEvent) {
 	switch event.Type {
 	case supervise.UpdateEventStarted:
 		if event.PID > 0 {
 			u.pid = event.PID
 		}
-		return true
 	case supervise.UpdateEventProgress:
 		u.last = event.Progress.Detail
 		if u.onProgress != nil {
 			u.onProgress(*event.Progress)
 		}
-		return !event.Liveness
 	case supervise.UpdateEventResult:
 		result := event
 		u.result = &result
-		return true
 	}
-	return false
 }
 
 func (u *updateCommandRun) finish() (supervise.UpdateEvent, error) {

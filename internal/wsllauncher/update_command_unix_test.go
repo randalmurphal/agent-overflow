@@ -54,7 +54,7 @@ func (f *fakeWSL) signals() []string {
 func commandScript(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "agent-overflow")
-	script := "#!/bin/sh\nev() { printf '" + supervise.UpdateEventPrefix + "%s\\n' \"$1\"; }\n" + body + "\n"
+	script := "#!/bin/sh\nN=0\nev() { printf '" + supervise.UpdateEventPrefix + "%s\\n' \"$1\"; }\n" + body + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -62,9 +62,11 @@ func commandScript(t *testing.T, body string) string {
 }
 
 const (
-	startedLine   = `ev "{\"type\":\"started\",\"pid\":$$}"`
-	heartbeatLine = `ev '{"type":"progress","liveness":true,"progress":{"phase":"store.open","detail":"Opening the database"}}'`
-	progressLine  = `ev '{"type":"progress","progress":{"phase":"update.snapshot","detail":"Backing up the database"}}'`
+	startedLine = `ev "{\"type\":\"started\",\"pid\":$$}"`
+	// N is the reporter's clock: a heartbeat advances only aliveAt, a
+	// progress report both.
+	heartbeatLine = `N=$((N+1)); ev "{\"type\":\"progress\",\"progress\":{\"phase\":\"store.open\",\"detail\":\"Opening the database\",\"updatedAt\":1,\"aliveAt\":$N}}"`
+	progressLine  = `N=$((N+1)); ev "{\"type\":\"progress\",\"progress\":{\"phase\":\"update.snapshot\",\"detail\":\"Backing up the database\",\"updatedAt\":$N,\"aliveAt\":$N}}"`
 	failOnTerm    = `trap 'ev "{\"type\":\"result\",\"outcome\":\"failed\",\"reason\":\"the trial was interrupted\"}"; exit 1' TERM`
 )
 
@@ -109,7 +111,8 @@ func TestUpdateCommandRunnerStopsACommandThatOnlyHeartbeats(t *testing.T) {
 	if !errors.As(err, &stopped) {
 		t.Fatalf("err = %v, want a stop", err)
 	}
-	if !strings.Contains(stopped.Reason, "stopped making progress for 400ms (last step: Opening the database)") {
+	if !strings.HasPrefix(stopped.Reason, "the "+supervise.UpdateTrialRunCommand+" step did not finish: no progress for ") ||
+		!strings.Contains(stopped.Reason, "in phase store.open (Opening the database)") {
 		t.Fatalf("reason = %q", stopped.Reason)
 	}
 	if stopped.Result == nil || stopped.Result.Outcome != supervise.UpdateOutcomeFailed {
@@ -120,6 +123,35 @@ func TestUpdateCommandRunnerStopsACommandThatOnlyHeartbeats(t *testing.T) {
 	}
 	if got := f.signals(); len(got) != 1 || got[0] != "-TERM" {
 		t.Fatalf("signals = %q, want one SIGTERM", got)
+	}
+}
+
+// TestUpdateCommandRunnerJudgesAQuietOrSilentCommand: a command whose
+// reports stop is stopped as having stopped responding, in its last phase;
+// one that never reports is stopped as silent.
+func TestUpdateCommandRunnerJudgesAQuietOrSilentCommand(t *testing.T) {
+	for _, c := range []struct {
+		name, body, reason, phase string
+	}{
+		{"quiet", startedLine + "\n" + progressLine + "\nwhile :; do sleep 0.05; done",
+			"the " + supervise.UpdateTrialRunCommand + " step did not finish: backend stopped responding for ",
+			"in phase update.snapshot (Backing up the database)"},
+		{"silent", startedLine + "\nwhile :; do sleep 0.05; done",
+			"the " + supervise.UpdateTrialRunCommand + " step reported nothing within 400ms", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := &fakeWSL{t: t}
+			payload := commandScript(t, failOnTerm+"\n"+c.body)
+			_, err := testRunner(f, supervise.StallRule{Window: 400 * time.Millisecond, Ceiling: 10 * time.Second}).Run(
+				t.Context(), payload, supervise.UpdateTrialRunCommand, nil, func(startupprogress.Progress) {})
+			var stopped *UpdateCommandStoppedError
+			if !errors.As(err, &stopped) {
+				t.Fatalf("err = %v, want a stop", err)
+			}
+			if !strings.HasPrefix(stopped.Reason, c.reason) || !strings.Contains(stopped.Reason, c.phase) {
+				t.Fatalf("reason = %q, want %q ... %q", stopped.Reason, c.reason, c.phase)
+			}
+		})
 	}
 }
 

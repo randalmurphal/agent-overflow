@@ -198,7 +198,7 @@ func runUpdateTrial() int {
 // runTrialProtocol speaks the trial's side of the channel around a boot. It
 // reports progress, then prepared or failed, and then waits for the
 // supervisor to stop it or go away.
-func runTrialProtocol(newBackend func(observe func(startupprogress.Progress, bool)) trialBackend) int {
+func runTrialProtocol(newBackend func(observe func(startupprogress.Progress)) trialBackend) int {
 	conn, err := supervise.OpenChildChannel(os.LookupEnv, os.Unsetenv)
 	if err != nil {
 		log.Printf("update trial: %v", err)
@@ -266,8 +266,8 @@ func runTrialProtocol(newBackend func(observe func(startupprogress.Progress, boo
 		close(stopRequested)
 	}()
 
-	progress := supervise.NewProgressRelay(func(p startupprogress.Progress, liveness bool) error {
-		return conn.Send(supervise.Message{Type: supervise.MsgProgress, Progress: &p, Liveness: liveness})
+	progress := supervise.NewProgressRelay(func(p startupprogress.Progress) error {
+		return conn.Send(supervise.Message{Type: supervise.MsgProgress, Progress: &p})
 	})
 	backend := newBackend(progress.Report)
 	bootCtx, bootCancel := context.WithCancel(context.Background())
@@ -304,7 +304,7 @@ type trialAppBackend struct {
 	srv *transport.Server
 }
 
-func newTrialAppBackend(observe func(startupprogress.Progress, bool)) trialBackend {
+func newTrialAppBackend(observe func(startupprogress.Progress)) trialBackend {
 	syncShellEnvForBoot()
 	appService := newApp()
 	appservice.ParkUnattendedWork(appService.App)

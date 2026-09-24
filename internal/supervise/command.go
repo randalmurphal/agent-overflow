@@ -52,8 +52,8 @@ const (
 	// UpdateEventStarted is the first report: the command's pid inside its
 	// host, which is what stops it when its own stall rule cannot.
 	UpdateEventStarted UpdateEventType = "started"
-	// UpdateEventProgress carries a progress report. Liveness marks a
-	// heartbeat, which the stall rule does not count.
+	// UpdateEventProgress carries a progress report, heartbeats included.
+	// Its UpdatedAt and AliveAt are what the stall rule reads.
 	UpdateEventProgress UpdateEventType = "progress"
 	// UpdateEventResult is the last report.
 	UpdateEventResult UpdateEventType = "result"
@@ -92,7 +92,6 @@ type UpdateEvent struct {
 	Type     UpdateEventType           `json:"type"`
 	PID      int                       `json:"pid,omitempty"`
 	Progress *startupprogress.Progress `json:"progress,omitempty"`
-	Liveness bool                      `json:"liveness,omitempty"`
 	Outcome  UpdateOutcome             `json:"outcome,omitempty"`
 	Reason   string                    `json:"reason,omitempty"`
 }
@@ -135,14 +134,14 @@ func ParseUpdateEvent(line string) (event UpdateEvent, ok bool, err error) {
 
 // ProgressRelay delivers progress reports on its own goroutine and keeps only
 // the latest undelivered one, so a slow or stalled reader never blocks the
-// process that reports. A heartbeat that replaces an undelivered real report
-// is delivered as a real report: coalescing may drop reports, never the fact
-// that progress happened.
+// process that reports. Coalescing may drop a report's detail, never the fact
+// that progress happened: a reporter's UpdatedAt and AliveAt only advance, so
+// the latest report carries every advance it replaced.
 type ProgressRelay struct {
-	deliver func(startupprogress.Progress, bool) error
+	deliver func(startupprogress.Progress) error
 
 	mu      sync.Mutex
-	pending *relayedProgress
+	pending *startupprogress.Progress
 	closed  bool
 	err     error
 
@@ -151,13 +150,8 @@ type ProgressRelay struct {
 	done   chan struct{}
 }
 
-type relayedProgress struct {
-	progress startupprogress.Progress
-	liveness bool
-}
-
 // NewProgressRelay starts the delivery goroutine. Close stops it.
-func NewProgressRelay(deliver func(p startupprogress.Progress, liveness bool) error) *ProgressRelay {
+func NewProgressRelay(deliver func(p startupprogress.Progress) error) *ProgressRelay {
 	r := &ProgressRelay{
 		deliver: deliver,
 		wake:    make(chan struct{}, 1),
@@ -169,16 +163,13 @@ func NewProgressRelay(deliver func(p startupprogress.Progress, liveness bool) er
 }
 
 // Report queues p. It never blocks on delivery.
-func (r *ProgressRelay) Report(p startupprogress.Progress, liveness bool) {
+func (r *ProgressRelay) Report(p startupprogress.Progress) {
 	r.mu.Lock()
 	if r.closed || r.err != nil {
 		r.mu.Unlock()
 		return
 	}
-	if r.pending != nil && !r.pending.liveness {
-		liveness = false
-	}
-	r.pending = &relayedProgress{progress: p, liveness: liveness}
+	r.pending = &p
 	r.mu.Unlock()
 	select {
 	case r.wake <- struct{}{}:
@@ -214,7 +205,7 @@ func (r *ProgressRelay) run() {
 		closed := r.closed
 		r.mu.Unlock()
 		if next != nil {
-			if err := r.deliver(next.progress, next.liveness); err != nil {
+			if err := r.deliver(*next); err != nil {
 				r.mu.Lock()
 				r.err = err
 				r.mu.Unlock()

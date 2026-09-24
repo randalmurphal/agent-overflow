@@ -143,30 +143,40 @@ holds the lock:
 ### Progress and the stall rule
 
 - A `progress` frame carries the boot progress report
-  (`startupprogress.Progress`: phase, detail, step, steps, `updatedAt`) and a
-  `liveness` flag. The child's startup reporter sends every report it
-  publishes. Its once-a-second heartbeat while a phase is open is liveness;
-  a phase or step it enters is progress.
+  (`startupprogress.Progress`). Its `updatedAt` and `aliveAt` mean what they
+  mean on `/bootstrap.json`
+  ([startup readiness](../architecture/transport.md#startup-readiness)):
+  `updatedAt` advances only on observed progress, `aliveAt` on every
+  heartbeat. The child's startup reporter sends every report it publishes,
+  heartbeats included.
 - `hello` gains a `progress` capability flag. It is additive, so
   `ProtocolVersion` stays 1 and existing supervisors keep accepting new
   children.
-- The parent's trial timer resets only on progress, never on liveness. The
-  trial fails after 30 s without progress (`TrialStallWindow`, the limit the
-  launcher's loading page uses) with the reason "the new version stopped
-  making progress for 30s (last step: <step>)", and after 30 minutes
-  (`TrialCeiling`) whatever it reports. It also fails when the child exits
-  before `prepared`.
+- The parent judges the trial by the rule the launcher's probe applies
+  (`startupprogress.StallWatch`, `TrialStallWindow`). After 30 s without an
+  `updatedAt` change the reason is "the new version did not finish
+  starting: no progress for 30s in phase <phase> (<status>)"; after 30 s
+  without either field changing it is "... backend stopped responding for
+  30s in phase <phase> (<status>)". The trial also fails after 30 minutes
+  (`TrialCeiling`) whatever it reports, and when the child exits before
+  `prepared`.
 - A child without the capability keeps the 120 s ceiling
   (`DefaultTrialBudget`), because there is no signal to judge a stall by. An
   older target chosen in the version picker is such a child.
-- The SQLite driver exposes no per-statement progress, so a migration step
-  is one report. A single migration statement that runs longer than 30 s
-  fails the trial and rolls back (Decision 4).
-- A process running the trial reports its own progress (snapshot bytes, trial,
-  restore bytes) the same way, relays the trial's reports, and announces each
-  wait as a step. The launcher judges each WSL command with a 45 s window
-  (the trial's 30 s plus 15 s for the two announced waits: the previous
-  backend's lock and the trial's stop) and a 60 minute ceiling.
+- The SQLite driver exposes no per-statement progress. A long migration
+  statement counts as progress while the heartbeat's work sampler sees the
+  process computing or moving data, or the database files changing size; a
+  statement blocked without working for 30 s fails the trial and rolls back
+  (Decision 4).
+- A process running the trial reports in its own clock. Its steps (snapshot
+  bytes, trial, restore bytes, each announced wait) are progress. A relayed
+  trial report is progress where the trial's `updatedAt` changed and a sign
+  of life where only its `aliveAt` did. A once-a-second heartbeat advances
+  `aliveAt`, and `updatedAt` when the shared work sampler
+  (`startupprogress.Sampler`) sees the command working. The launcher judges
+  each WSL command by the same rule and messages with a 45 s window (the
+  trial's 30 s plus 15 s, so the command judges its trial and reports before
+  the launcher stops it) and a 60 minute ceiling.
 
 Serve uses the same timer: its supervisor gains the stall rule and nothing
 else changes in its cycle.
@@ -432,10 +442,10 @@ one place: 1 in the helper's window, 6 in `CheckDatabaseSnapshotSpace` and
    relaunch, and the snapshot is deleted at commit. A failure after
    activation (provider resume, workflows) is not rolled back, as for serve.
 4. **Absolute trial ceiling.** Accepted: a 30 minute ceiling beside the 30 s
-   stall rule, which counts progress and never liveness. The driver exposes
-   no per-statement progress, so one migration statement longer than 30 s
-   fails the trial. Open: accept that, count liveness during migrations
-   within the ceiling, or report progress per migration batch from the store.
+   stall rule, which counts observed progress (`updatedAt`) and never the
+   bare heartbeat (`aliveAt`). Observed progress includes the process's own
+   CPU and storage work, so one long migration statement keeps the trial
+   alive while it works and fails it only when blocked for 30 s.
 5. **Deferred migration phases.** Recommended: outside the rollback boundary.
    They are idempotent and retried on each open by design, may still run
    inside the trial, and continue after commit. The alternative runs them to

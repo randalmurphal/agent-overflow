@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -243,7 +242,7 @@ func TestStartupReporter_PhasesNestAndHeartbeat(t *testing.T) {
 	r := newStartupReporter(srv, "2.0.0", 2*time.Millisecond, now)
 	// A process that does no work: this test's own CPU would clear a
 	// 2 ms tick's threshold.
-	r.sampleWork = func() (processWork, error) { return processWork{}, nil }
+	r.sampler = idleSampler(r.interval, nil)
 
 	initial := progressOf(srv)
 	if initial.Phase != "starting" || initial.UpdatingTo != "2.0.0" || initial.StartedAt == 0 || initial.AliveAt != initial.UpdatedAt {
@@ -325,12 +324,12 @@ func TestStartupReporter_WatchedFileSizeChangesAreProgress(t *testing.T) {
 	// error, which is neither a size nor absence.
 	var denied atomic.Bool
 	denied.Store(true)
-	r.stat = func(path string) (fs.FileInfo, error) {
+	r.sampler = idleSampler(r.interval, func(path string) (fs.FileInfo, error) {
 		if path == unreadable && denied.Load() {
 			return nil, &fs.PathError{Op: "stat", Path: path, Err: fs.ErrPermission}
 		}
 		return os.Stat(path)
-	}
+	})
 	r.WatchBootFiles(db, wal, unreadable)
 	end := r.BeginBootPhase("store.migrate", "Applying migration 1 of 1 rebuild")
 	defer end()
@@ -579,106 +578,55 @@ func TestStartupReporter_ProcessWorkIsProgress(t *testing.T) {
 	now := func() time.Time { return time.UnixMilli(clock.Add(1)) }
 	// The ticker never fires; the test drives each heartbeat.
 	r := newStartupReporter(srv, "", time.Hour, now)
-	sample := processWork{cpu: time.Second, io: 4096, ioSource: "first"}
+	sample := startupprogress.ProcessWork{CPU: time.Second, IO: 4096, IOSource: "first"}
 	var sampleErr error
-	r.sampleWork = func() (processWork, error) { return sample, sampleErr }
+	r.sampler = startupprogress.NewSampler(startupprogress.SamplerOptions{
+		Interval: r.interval,
+		ReadWork: func() (startupprogress.ProcessWork, error) { return sample, sampleErr },
+	})
 	end := r.BeginBootPhase("store.migrate", "Applying migration 1 of 1 rebuild")
 	defer end()
-	minCPU := time.Hour / startupCPUShare
-	minIO := int64(startupIOPerSecond * time.Hour.Seconds())
+	minCPU := time.Hour / startupprogress.WorkCPUShare
+	minIO := int64(startupprogress.WorkIOPerSecond * time.Hour.Seconds())
 
 	beatOnce(t, r, srv, "the first sample", false)
-	sample.cpu += minCPU - 1
+	sample.CPU += minCPU - 1
 	beatOnce(t, r, srv, "CPU under the threshold", false)
-	sample.cpu += minCPU
+	sample.CPU += minCPU
 	beatOnce(t, r, srv, "CPU at the threshold", true)
-	sample.io += minIO - 1
+	sample.IO += minIO - 1
 	beatOnce(t, r, srv, "I/O under the threshold", false)
-	sample.io += minIO
+	sample.IO += minIO
 	beatOnce(t, r, srv, "I/O at the threshold", true)
-	sample.io, sample.ioSource = sample.io+10*minIO, "second"
+	sample.IO, sample.IOSource = sample.IO+10*minIO, "second"
 	beatOnce(t, r, srv, "a count from another I/O counter", false)
-	sample.io += minIO
+	sample.IO += minIO
 	beatOnce(t, r, srv, "I/O on the new counter", true)
 	sampleErr = errors.New("unreadable")
-	sample.cpu += 10 * minCPU
+	sample.CPU += 10 * minCPU
 	beatOnce(t, r, srv, "a failed sample", false)
 	sampleErr = nil
 	beatOnce(t, r, srv, "the sample after a failure", false)
-	sample.cpu += minCPU
+	sample.CPU += minCPU
 	beatOnce(t, r, srv, "CPU after the failure", true)
 }
 
-// TestReadProcessWorkCountsCPUAndStorage: the platform sampler sees this
-// process's CPU time grow while it computes and its storage I/O grow by
-// what it writes to a file. On Linux the I/O comes from /proc/self/io.
-func TestReadProcessWorkCountsCPUAndStorage(t *testing.T) {
-	before, err := readProcessWork()
-	if err != nil {
-		t.Fatalf("sample: %v", err)
-	}
-	// 100 ms of CPU within 1 s of computing needs a tenth of a core; a
-	// sampler that counted only kernel or system time would take seconds.
-	var mid processWork
-	for giveUp := time.Now().Add(time.Second); ; {
-		spinCPU(20 * time.Millisecond)
-		if mid, err = readProcessWork(); err != nil {
-			t.Fatalf("sample: %v", err)
-		}
-		if mid.cpu-before.cpu >= 100*time.Millisecond {
-			break
-		}
-		if time.Now().After(giveUp) {
-			t.Fatalf("CPU time grew %s in 1 s of computing, want at least 100ms", mid.cpu-before.cpu)
-		}
-	}
-
-	f, err := os.Create(filepath.Join(t.TempDir(), "work"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.Write(make([]byte, 1<<20)); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Sync(); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
-	after, err := readProcessWork()
-	if err != nil {
-		t.Fatalf("sample: %v", err)
-	}
-	if runtime.GOOS == "linux" && after.ioSource != "/proc/self/io" {
-		t.Fatalf("I/O came from %q on Linux, want /proc/self/io", after.ioSource)
-	}
-	if after.ioSource != mid.ioSource || after.io-mid.io < 1<<20 {
-		t.Fatalf("I/O went from %d (%s) to %d (%s) across a 1 MiB write", mid.io, mid.ioSource, after.io, after.ioSource)
-	}
-}
-
-// TestStartupReporter_ObserveSeparatesHeartbeatsFromSteps: a trial is
-// judged only by real steps, so the observer must be able to tell a
-// heartbeat from a report.
-func TestStartupReporter_ObserveSeparatesHeartbeatsFromSteps(t *testing.T) {
+// TestStartupReporter_ObserverHearsEveryReportAndHeartbeat: a trial is
+// judged by the same UpdatedAt and AliveAt as the launcher's probe, so the
+// observer receives every report and every heartbeat as published.
+func TestStartupReporter_ObserverHearsEveryReportAndHeartbeat(t *testing.T) {
 	srv := &Server{}
 	var clock atomic.Int64
 	now := func() time.Time { return time.UnixMilli(clock.Add(1)) }
 	r := newStartupReporter(srv, "", 2*time.Millisecond, now)
-	// An idle process: a heartbeat that saw work would be progress.
-	r.sampleWork = func() (processWork, error) { return processWork{}, nil }
+	r.sampler = idleSampler(r.interval, nil)
 
-	type report struct {
-		detail   string
-		liveness bool
-	}
 	var mu sync.Mutex
-	var got []report
-	if r.Observe(func(p startupprogress.Progress, liveness bool) {
+	var got []startupprogress.Progress
+	if r.Observe(func(p startupprogress.Progress) {
 		mu.Lock()
 		defer mu.Unlock()
-		got = append(got, report{p.Detail, liveness})
+		got = append(got, p)
 	}) != r {
 		t.Fatal("Observe did not return its reporter")
 	}
@@ -688,8 +636,8 @@ func TestStartupReporter_ObserveSeparatesHeartbeatsFromSteps(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		n := 0
-		for _, g := range got {
-			if g.liveness {
+		for i := 1; i < len(got); i++ {
+			if got[i].UpdatedAt == got[i-1].UpdatedAt && got[i].AliveAt > got[i-1].AliveAt {
 				n++
 			}
 		}
@@ -703,22 +651,38 @@ func TestStartupReporter_ObserveSeparatesHeartbeatsFromSteps(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	var steps []string
-	for _, g := range got {
-		if !g.liveness {
-			steps = append(steps, g.detail)
-		} else if g.detail != "Opening the database" && g.detail != "Applying migration 1 of 1" {
-			t.Fatalf("heartbeat carried %q, want the open step", g.detail)
+	for i, p := range got {
+		if i > 0 && p.UpdatedAt == got[i-1].UpdatedAt {
+			if p.Detail != "Applying migration 1 of 1" {
+				t.Fatalf("heartbeat carried %q, want the open step", p.Detail)
+			}
+			continue
 		}
+		steps = append(steps, p.Detail)
 	}
 	want := []string{"Starting", "Opening the database", "Applying migration 1 of 1"}
 	if !slices.Equal(steps, want) {
 		t.Fatalf("steps = %q, want %q", steps, want)
 	}
+	if last := got[len(got)-1]; last != progressOf(srv) {
+		t.Fatalf("the observer's last report %+v is not the published %+v", last, progressOf(srv))
+	}
 
 	var nilReporter *StartupReporter
-	if nilReporter.Observe(func(startupprogress.Progress, bool) { t.Fatal("a nil reporter reported") }) != nil {
+	if nilReporter.Observe(func(startupprogress.Progress) { t.Fatal("a nil reporter reported") }) != nil {
 		t.Fatal("a nil reporter returned a reporter")
 	}
+}
+
+// idleSampler is the shared sampler over a process that does no work, with
+// stat when it is given: a test's own CPU would clear a short tick's
+// threshold.
+func idleSampler(interval time.Duration, stat func(string) (fs.FileInfo, error)) *startupprogress.Sampler {
+	return startupprogress.NewSampler(startupprogress.SamplerOptions{
+		Interval: interval,
+		Stat:     stat,
+		ReadWork: func() (startupprogress.ProcessWork, error) { return startupprogress.ProcessWork{}, nil },
+	})
 }
 
 // TestAttachedBootstrapPassesOnAStartingReport: a carried backend that is

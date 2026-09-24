@@ -1,6 +1,6 @@
 //go:build !windows
 
-package transport
+package startupprogress
 
 import (
 	"bufio"
@@ -16,24 +16,24 @@ import (
 	"time"
 )
 
-// readProcessWork samples this process's CPU time and storage I/O. I/O
+// ReadProcessWork samples this process's CPU time and storage I/O. I/O
 // comes from /proc/self/io where it can be read (Linux), in bytes, and
 // otherwise from getrusage's block counts, taken as 512-byte blocks.
-func readProcessWork() (processWork, error) {
+func ReadProcessWork() (ProcessWork, error) {
 	var ru syscall.Rusage
 	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
-		return processWork{}, fmt.Errorf("getrusage: %w", err)
+		return ProcessWork{}, fmt.Errorf("getrusage: %w", err)
 	}
-	w := processWork{cpu: time.Duration(ru.Utime.Nano() + ru.Stime.Nano())}
+	w := ProcessWork{CPU: time.Duration(ru.Utime.Nano() + ru.Stime.Nano())}
 	if n, err := readProcSelfIO(); err == nil {
-		w.io, w.ioSource = n, "/proc/self/io"
+		w.IO, w.IOSource = n, "/proc/self/io"
 		return w, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		procIOFailure.Do(func() {
 			log.Printf("startup progress: cannot read /proc/self/io, counting I/O from getrusage: %v", err)
 		})
 	}
-	w.io, w.ioSource = (int64(ru.Inblock)+int64(ru.Oublock))*512, "getrusage"
+	w.IO, w.IOSource = (int64(ru.Inblock)+int64(ru.Oublock))*512, "getrusage"
 	return w, nil
 }
 

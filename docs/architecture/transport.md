@@ -170,7 +170,8 @@ Every executable boot binds its listener before `App.Start` and calls
   ladder instead of the starting poll. It sees the report for the phases
   after `app.init_identity`.
 
-The body is `internal/startupprogress`, which the Windows launcher shares.
+The body is `internal/startupprogress`, which the Windows launcher shares,
+with the work sampler and the stall rule every judge of a start applies.
 `StartupReporter` (`startup_progress.go`) turns `App.Start`'s boot phases
 into these reports; boot wiring installs it through `app.SetBootProgress`.
 

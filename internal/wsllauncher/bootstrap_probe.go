@@ -48,11 +48,8 @@ type BackendStalledError struct {
 }
 
 func (e *BackendStalledError) Error() string {
-	what := "no progress"
-	if e.Unresponsive {
-		what = "backend stopped responding"
-	}
-	return fmt.Sprintf("%v: %s for %s in phase %s (%s): %v", ErrBackendNotReady, what, e.Quiet, e.Progress.Phase, e.Progress.Status(), e.Last)
+	stall := startupprogress.Stall{Progress: e.Progress, Quiet: e.Quiet, Unresponsive: e.Unresponsive}
+	return fmt.Sprintf("%v: %v: %v", ErrBackendNotReady, &stall, e.Last)
 }
 
 func (e *BackendStalledError) Unwrap() error { return ErrBackendNotReady }
@@ -157,15 +154,12 @@ func ProbeBootstrap(ctx context.Context, port int, token string, cfg ProbeConfig
 	log.Printf("probe: GET %s (token=%d bytes)", target, len(token))
 
 	client := &http.Client{Timeout: cfg.AttemptTimeout}
-	// lastProgress is when updatedAt last changed, lastAlive when aliveAt
-	// or updatedAt did. Both start with the probe.
-	lastProgress := cfg.now()
-	lastAlive := lastProgress
+	// The rule every judge of a start applies, from the probe's start.
+	judge := startupprogress.NewStallWatch(cfg.Deadline, cfg.now())
 	var (
 		lastErr         error
 		attempt         int
 		sawHTTPResponse bool
-		reported        *startupprogress.Progress
 	)
 	wait := cfg.InitialPollInterval
 	for {
@@ -194,16 +188,10 @@ func ProbeBootstrap(ctx context.Context, port int, token string, cfg ProbeConfig
 			case http.StatusServiceUnavailable:
 				lastErr = fmt.Errorf("GET %s: status %d", target, resp.StatusCode)
 				if p, ok := startupprogress.Parse(resp.StatusCode, body); ok {
-					if reported == nil || p.UpdatedAt != reported.UpdatedAt {
-						lastProgress = cfg.now()
-					}
-					if reported == nil || p.UpdatedAt != reported.UpdatedAt || p.AliveAt != reported.AliveAt {
-						lastAlive = cfg.now()
-					}
-					if reported == nil || p.Phase != reported.Phase || p.Step != reported.Step {
+					if prev, had := judge.Last(); !had || p.Phase != prev.Phase || p.Step != prev.Step {
 						log.Printf("probe: backend starting: phase=%s step=%d/%d updating_to=%q", p.Phase, p.Step, p.Steps, p.UpdatingTo)
 					}
-					reported = &p
+					judge.Report(p, cfg.now())
 					cfg.OnProgress(p)
 				}
 			default:
@@ -214,16 +202,10 @@ func ProbeBootstrap(ctx context.Context, port int, token string, cfg ProbeConfig
 			}
 		}
 		now := cfg.now()
-		if reported != nil {
-			// A stopped heartbeat takes precedence: it is the same failure
-			// and says more.
-			if quiet := now.Sub(lastAlive); quiet >= cfg.Deadline {
-				return &BackendStalledError{Progress: *reported, Quiet: quiet, Unresponsive: true, Last: lastErr}
-			}
-			if quiet := now.Sub(lastProgress); quiet >= cfg.Deadline {
-				return &BackendStalledError{Progress: *reported, Quiet: quiet, Last: lastErr}
-			}
-		} else if now.Sub(lastProgress) >= cfg.Deadline {
+		if stall := judge.Check(now); stall != nil {
+			return &BackendStalledError{Progress: stall.Progress, Quiet: stall.Quiet, Unresponsive: stall.Unresponsive, Last: lastErr}
+		}
+		if judge.Silent(now) {
 			if !sawHTTPResponse {
 				return fmt.Errorf("GET %s: %w after %d attempts: %w", target, ErrBackendUnreachable, attempt, lastErr)
 			}
