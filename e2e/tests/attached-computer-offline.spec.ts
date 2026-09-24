@@ -2,10 +2,12 @@
 // once per outage rather than once per attempt, subscriber or list refresh.
 // A "+ New" draft pane's synthetic thread id is never routed: with two
 // computers attached no entity index can resolve it, and the tray must not
-// ask. Covers wsClient's outage logging, computerRows' fan-out skip and the
-// ActivityRail draft guard against the real backend proxy, and the dial
-// cadence itself: the browser logs every refused request, so the ladder's
-// rungs are what bounds the console during an outage.
+// ask. Its checkout still belongs to its project's computer, so a draft in
+// the laptop's project shows the laptop's git status. Covers wsClient's
+// outage logging, computerRows' fan-out skip, the ActivityRail draft guard
+// and the draft's workspace key against the real backend proxy, and the
+// dial cadence itself: the browser logs every refused request, so the
+// ladder's rungs are what bounds the console during an outage.
 import { test, expect, type Page } from '@playwright/test';
 import { launchHarness, type HarnessApp } from '../src/harness.js';
 import { headlessPairing } from './headless-pairing-helpers.js';
@@ -55,7 +57,8 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     }] });
     const threadId = seed.projects[0].threadIds[0];
     await remote.rpc<SeedResult>('HarnessSeed', { projects: [{
-      name: 'laptop-project', repo: {}, threads: [{ title: 'Laptop conversation', provider: 'claude',
+      name: 'laptop-project',
+      repo: { commits: [{ files: { 'notes.txt': 'one\n' } }], dirty: { 'notes.txt': 'two\n' } }, threads: [{ title: 'Laptop conversation', provider: 'claude',
         turns: [{ userText: 'Remote hello', items: [{ kind: 'assistant_text', summary: 'Remote hi.' }] }] }],
     }] });
     const localRow = page.getByTestId('thread-row').filter({ hasText: 'Local conversation' }).first();
@@ -77,9 +80,16 @@ test('an offline paired computer logs once per outage and a draft pane is never 
     expect(drain()).toEqual({ preparationFailed: 0, ensureConnected: 0, ownerUnknown: 0, http503: 0, socketFailed: 0, errors: [] });
 
     // "+ New" with two computers attached: the placeholder id is asked of
-    // nobody, so nothing is refused.
-    await page.getByTestId('project-item-new-thread').first().click();
+    // nobody, so nothing is refused. The laptop's draft reads its dirty
+    // checkout from the laptop.
+    const newDraftIn = (project: string) => page.getByTestId('project-item')
+      .filter({ hasText: project }).getByTestId('project-item-new-thread').click();
+    await newDraftIn('local-project');
     await expect(page.getByLabel('Message Input')).toBeVisible();
+    await poke();
+    expect(drain()).toEqual({ preparationFailed: 0, ensureConnected: 0, ownerUnknown: 0, http503: 0, socketFailed: 0, errors: [] });
+    await newDraftIn('laptop-project');
+    await expect(page.getByTestId('workspace-diff-counts')).toHaveText(/^\+1\s*-1$/);
     await poke();
     expect(drain()).toEqual({ preparationFailed: 0, ensureConnected: 0, ownerUnknown: 0, http503: 0, socketFailed: 0, errors: [] });
     await openLocal();
