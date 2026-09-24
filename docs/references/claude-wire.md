@@ -835,27 +835,30 @@ months-old source mirror disagreed on the async case, the wire won):
   stop (`task_updated{completed}` + `task_notification` fire at EVERY
   stop). See §E6b for the wake, the stop-of-a-parked-agent behaviors,
   and AO's park model. Confirmed on 2.1.261 (2026-09-08).
-- A `control_request{interrupt}` aborts only the main turn's
-  `AbortController` (`src/cli/print.ts`, the `interrupt` branch of the
-  control loop). A FOREGROUND agent runs on that signal, so the
-  interrupt ends it and its exit kills its shells as above. An ASYNC
-  agent, launched async or moved through `background_tasks`, gets its
-  own controller (`registerAsyncAgent` without a parent controller,
-  `src/tools/AgentTool/AgentTool.tsx`: "background agents should
-  survive when the user presses ESC"; `registerAgentForeground` in
-  `src/tasks/LocalAgentTask/LocalAgentTask.tsx`), so it keeps running
-  or stays parked, and its shells keep running. It ends on `stop_task`
-  or session close. Unverified against a real CLI: this bullet and the
-  async-agent kill in the next one are read from the Claude Code source
-  mirror (paths under `src/`, see [claude.md](claude.md#reference-repos)),
-  not from a wire capture or a spike like the rest of this list.
-  AO's plain Stop sends only the interrupt (`interruptTurnAtIndex`
-  in `internal/app/app_session.go`); the Stop un-send stops the session
-  (`InterruptAndRevertIfClean`, `stopSession`), so it declines while
-  background work runs (`hasRunningBackgroundTasks`).
+- A `control_request{interrupt}` kills EVERY running async agent,
+  including one launched in an earlier turn whose turn already ended.
+  Each gets `task_updated{killed}` + `task_notification{stopped}`
+  within a few ms, BEFORE the interrupt's `control_response` (which
+  carries `{"still_queued":[]}`); the turn's `result` then reports
+  `subagent_stats.killed.system`. An agent's own background shells die
+  with it (`task_updated{killed}` + `task_notification{stopped}`). The
+  MAIN thread's own background Bash survives; when it finishes, the CLI
+  starts a turn on its own (`system/init`, then a `result` with
+  `origin.kind:"task-notification"`). A foreground Bash stopped by the
+  interrupt gets only `task_notification{stopped}` with
+  `output_file:""` and no `task_updated`. Verified on 2.1.280
+  (2026-09-24, stream-json spike captures A: agent plus its shell plus
+  a main-thread shell in the interrupted turn; B: agent from an earlier
+  turn, foreground Bash in the interrupted one). A parked agent's case
+  is not yet captured. The source mirror's "background agents should
+  survive ESC" (`registerAsyncAgent`) does not hold for this path.
+  AO's plain Stop and the Stop un-send both send this interrupt
+  (`interruptTurnAtIndex` in `internal/app/app_session.go`); the
+  un-send also stops the session (`InterruptAndRevertIfClean`,
+  `stopSession`) and declines while background work runs
+  (`hasRunningBackgroundTasks`).
 - Session close kills every remaining shell and every async agent
-  (each registers `killAsyncAgent` as a process cleanup in
-  `LocalAgentTask.tsx`) and, on a graceful stdin
+  and, on a graceful stdin
   close, emits their killed terminals before exit. AO tears the thread
   down first, so those frames are dropped by design; the app-side
   settle (`SettleBackgroundLaunchesForSessionEnd`) writes the
