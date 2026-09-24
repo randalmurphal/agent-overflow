@@ -10,10 +10,10 @@ import type { Attachment } from '../types/attachment';
 import type { TerminalChip } from '../types/draft';
 import type { Item, ItemKind } from '../types/models';
 import type { ComposerDraftSnapshot } from './composerDraftSnapshots';
-import type { ErrorSurface, ThreadPaneIngest } from './threadPaneRoles';
+import type { ErrorSurface, PaneSession, ThreadPaneIngest } from './threadPaneRoles';
 import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
 import { restoredDraftSnapshotFromUserItem } from '../utils/userMessageDraftSnapshot';
-import { getActiveTurn } from './threadStatuses.svelte';
+import { getActiveTurn, reviveActiveTurn } from './threadStatuses.svelte';
 import { getQueueForThread } from './sendQueue.svelte';
 import { reportNonBenignInterruptError } from './interruptErrors';
 import { applyUserMessageReverted } from './eventsMessageRevert';
@@ -26,9 +26,13 @@ import {
 } from './threadInterruptState.svelte';
 import {
   CountRunningBackgroundTasks,
+  GetThreadLiveState,
   InterruptAndRevertIfClean,
   InterruptTurn,
 } from './bindings';
+import { refusedBackgroundAgents, type BackgroundKillAgent } from '../transport/backgroundKillRefusal';
+import { confirmBackgroundKill } from './backgroundKillConfirmation.svelte';
+import { hasLiveSubagentRunStates } from './subagentRunState.svelte';
 
 /**
  * The only rows that may share a turn with the message an early Stop
@@ -73,7 +77,19 @@ export type RevertEligibility =
  * `ThreadPane`; the type names the slice actually used, so a new member
  * use here fails to compile until threadPaneRoles.ts lists it.
  */
-type InterruptPane = ThreadPaneIngest & Pick<ErrorSurface, 'setGeneralError'>;
+type InterruptPane = ThreadPaneIngest
+  & Pick<ErrorSurface, 'setGeneralError'>
+  & Pick<PaneSession, 'clearActiveTurn' | 'setSendInFlight'>;
+
+/**
+ * Whether a plain interrupt owns the pane's working presentation. 'clear'
+ * flips the spinner, Stop button and mid-turn input gate to idle in the
+ * same tick as the press (Claude Code's `resetLoadingState`, the Codex
+ * TUI's spinner clear on `TurnAborted`); the real `provider:turn_completed`
+ * re-runs the same path. 'keep' is the early un-send's fallback, whose
+ * restored presentation already shows the turn running until it ends.
+ */
+type InterruptPresentation = 'clear' | 'keep';
 
 interface DraftSnapshotInputs {
   content: string;
@@ -149,7 +165,7 @@ export function runInterruptOrRevert(
   const eligibility = canRevertEarlyInterrupt(pane, draft);
 
   if (!eligibility.canRevert) {
-    void runPlainInterrupt(pane, threadId, interruptToken);
+    void runPlainInterrupt(pane, threadId, interruptToken, 'clear');
     return false;
   }
 
@@ -163,17 +179,98 @@ export function runInterruptOrRevert(
   return true;
 }
 
+/**
+ * A person's Stop that keeps the sent message: the mid-turn cancel paths
+ * (an approval or user-input prompt declined by Esc) and any Stop the
+ * un-send predicate turns down. Owns the optimistic clear and the
+ * background-agent confirmation like runInterruptOrRevert's plain arm.
+ */
+export function runInterrupt(pane: InterruptPane): void {
+  const threadId = pane.threadId;
+  if (!threadId) return;
+  const interruptToken = beginThreadInterrupt(threadId);
+  if (interruptToken === null) return;
+  void runPlainInterrupt(pane, threadId, interruptToken, 'clear');
+}
+
+function clearWorkingPresentation(pane: InterruptPane): void {
+  pane.clearActiveTurn();
+  pane.setSendInFlight(false);
+}
+
+/**
+ * The idle presentation a Stop cleared before the backend refused it. The
+ * registry the pre-check read was stale (an agent launched between the
+ * tray's last read and the press), which is why the backend, not the
+ * registry, is the authority on the refusal. The turn it still runs comes
+ * from a fresh live-state read, which post-dates the refusal: a turn that
+ * ended meanwhile is not revived.
+ */
+async function restoreWorkingPresentation(pane: InterruptPane, threadId: string): Promise<void> {
+  try {
+    const live = await GetThreadLiveState(threadId);
+    const turn = live?.activeTurn;
+    if (turn && pane.threadId === threadId) {
+      reviveActiveTurn(threadId, { turnId: turn.turnId, turnIndex: turn.turnIndex, startedAt: turn.startedAt });
+    }
+  } catch (err) {
+    reportNonBenignInterruptError(pane, err);
+  }
+}
+
+/**
+ * A plain interrupt. A Claude interrupt kills every live async agent the
+ * session holds, so the backend refuses with `background_agents_running`
+ * and the agents until the caller confirms
+ * (transport/backgroundKillRefusal.ts); the person answers through the
+ * app-root dialog, and "keep them" leaves the turn running. The working
+ * presentation is cleared in the press's tick when no listed agent is live
+ * (the refusal would flash the thread idle and back), else after the
+ * confirmation.
+ */
 async function runPlainInterrupt(
   pane: InterruptPane,
   threadId: string,
   interruptToken: number,
+  presentation: InterruptPresentation,
 ): Promise<void> {
+  const clearedEarly = presentation === 'clear' && !hasLiveSubagentRunStates(threadId);
+  if (clearedEarly) clearWorkingPresentation(pane);
   try {
-    await InterruptTurn(threadId);
+    await InterruptTurn(threadId, false);
   } catch (err) {
-    reportNonBenignInterruptError(pane, err);
+    const agents = refusedBackgroundAgents(err);
+    if (agents === null) {
+      reportNonBenignInterruptError(pane, err);
+      return;
+    }
+    if (clearedEarly) await restoreWorkingPresentation(pane, threadId);
+    await interruptAfterConfirmation(pane, threadId, interruptToken, agents, presentation);
   } finally {
     finishThreadInterrupt(threadId, interruptToken);
+  }
+}
+
+/**
+ * The refused Stop's second half: ask, and on "stop everything" interrupt
+ * with the confirmation set. The interrupt transaction stays open while
+ * the question is on screen, so a second press meanwhile is the same Stop.
+ */
+async function interruptAfterConfirmation(
+  pane: InterruptPane,
+  threadId: string,
+  interruptToken: number,
+  agents: readonly BackgroundKillAgent[],
+  presentation: InterruptPresentation,
+): Promise<void> {
+  if (!isThreadInterruptCurrent(threadId, interruptToken)) return;
+  const stop = await confirmBackgroundKill(threadId, agents);
+  if (!stop || !isThreadInterruptCurrent(threadId, interruptToken)) return;
+  if (presentation === 'clear') clearWorkingPresentation(pane);
+  try {
+    await InterruptTurn(threadId, true);
+  } catch (err) {
+    reportNonBenignInterruptError(pane, err);
   }
 }
 
@@ -234,13 +331,16 @@ async function runEarlyInterrupt(
     if (!current()) return;
     const refreshNeeded = restore();
     reportNonBenignInterruptError(pane, err);
-    await runPlainInterrupt(pane, threadId, interruptToken);
+    await runPlainInterrupt(pane, threadId, interruptToken, 'keep');
     if (refreshNeeded && pane.threadId === threadId) await pane.refreshFromBackend();
     return;
   }
   if (backgroundCount > 0) {
+    // The un-send is not offered while background work runs (a Claude
+    // interrupt kills the agents; a plain Stop keeps the message). The
+    // plain interrupt asks about the agents itself.
     const refreshNeeded = restore();
-    await runPlainInterrupt(pane, threadId, interruptToken);
+    await runPlainInterrupt(pane, threadId, interruptToken, 'keep');
     if (refreshNeeded && pane.threadId === threadId) await pane.refreshFromBackend();
     return;
   }
@@ -255,10 +355,23 @@ async function runEarlyInterrupt(
         terminalChips: undo.snapshot.terminalChips,
         sourceProposedPlan: undo.snapshot.sourceProposedPlan,
       } : undefined,
-    });
+    }, false);
     if (!current()) return;
   } catch (err) {
     if (!current()) return;
+    const agents = refusedBackgroundAgents(err);
+    if (agents !== null) {
+      // An agent launched after the count above: the un-send is off the
+      // table (the message stays), and the Stop asks like a plain one.
+      const refreshNeeded = restore();
+      try {
+        await interruptAfterConfirmation(pane, threadId, interruptToken, agents, 'keep');
+      } finally {
+        finishThreadInterrupt(threadId, interruptToken);
+      }
+      if (refreshNeeded && pane.threadId === threadId) await pane.refreshFromBackend();
+      return;
+    }
     reportNonBenignInterruptError(pane, err);
     if (isTransportClassError(err)) {
       try {

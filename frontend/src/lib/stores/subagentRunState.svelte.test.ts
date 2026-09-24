@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   clearSubagentRunStatesForThread,
+  hasLiveSubagentRunStates,
   liveSubagentRunState,
   replaceSubagentRunStates,
   resetForTest,
@@ -54,5 +55,18 @@ describe('subagentRunState store', () => {
     expect(liveSubagentRunState('t1', undefined)).toBeNull();
     replaceSubagentRunStates('', new Map([['a', running]]));
     expect(liveSubagentRunState('', 'a')).toBeNull();
+  });
+
+  it('answers whether a Stop would kill an agent: running or parked, never done or ended', () => {
+    expect(hasLiveSubagentRunStates('t1')).toBe(false);
+    replaceSubagentRunStates('t1', new Map([['a', { state: 'done', waitingOn: 0, report: null }]]));
+    expect(hasLiveSubagentRunStates('t1')).toBe(false);
+    replaceSubagentRunStates('t1', new Map([['a', { state: 'ended', waitingOn: 0, report: null }], ['b', parked]]));
+    expect(hasLiveSubagentRunStates('t1')).toBe(true);
+    replaceSubagentRunStates('t1', new Map([['b', running]]));
+    expect(hasLiveSubagentRunStates('t1')).toBe(true);
+    clearSubagentRunStatesForThread('t1');
+    expect(hasLiveSubagentRunStates('t1')).toBe(false);
+    expect(hasLiveSubagentRunStates(null)).toBe(false);
   });
 });

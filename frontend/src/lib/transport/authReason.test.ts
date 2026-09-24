@@ -9,7 +9,7 @@ import {
   presentAuthReason,
 } from './authReason';
 
-const refusal = (reason?: string) => new TransportError('auth_failed', 'not authorized', reason);
+const refusal = (reason?: string) => new TransportError('auth_failed', 'not authorized', { reason });
 
 describe('presentAuthReason', () => {
   it('explains every code this build declares', () => {

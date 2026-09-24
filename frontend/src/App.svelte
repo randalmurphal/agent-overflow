@@ -83,6 +83,7 @@
   import ConversationTransferHost from './lib/components/transfers/ConversationTransferHost.svelte';
   import { initConversationTransfers } from './lib/stores/conversationTransfers.svelte';
   import UnsentMessageConfirmationHost from './lib/components/composer/UnsentMessageConfirmationHost.svelte';
+import BackgroundKillConfirmationHost from './lib/components/composer/BackgroundKillConfirmationHost.svelte';
   import type { Thread } from './lib/types/models';
   import { getPaletteTargetPaneId, isPaletteOpen } from './lib/stores/palette.svelte';
   import { closeCheatSheet, isCheatSheetOpen } from './lib/stores/cheatSheet.svelte';
@@ -684,6 +685,7 @@
 <ConversationTransferHost />
 
 <UnsentMessageConfirmationHost />
+<BackgroundKillConfirmationHost />
 <KeybindingsCheatSheet open={isCheatSheetOpen()} onClose={closeCheatSheet} />
 <MessageSearch open={isMessageSearchOpen()} pane={messageSearchPane} mode={getMessageSearchMode()} onClose={closeMessageSearch} />
 <UnifiedThreadPicker open={isThreadPickerOpen()} pane={threadPickerPane} onClose={closeThreadPicker} />

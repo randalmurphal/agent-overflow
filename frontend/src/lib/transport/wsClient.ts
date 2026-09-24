@@ -450,8 +450,13 @@ export class TransportError extends Error {
   // becomes a sentence.
   scope?: string;
   transfer?: { operationId: string; backendId: string };
-  constructor(code: string, message: string, reason?: string, scope?: string,
-    transfer?: { operationId: string; backendId: string }) {
+  // backgroundAgents is set only on code 'background_agents_running' (a
+  // refused Stop) and is the frame's payload as received: the element
+  // shape belongs to the method that refused, so ./backgroundKillRefusal.ts
+  // validates it before anything renders it.
+  backgroundAgents?: unknown;
+  constructor(code: string, message: string, fields: TransportErrorFields = {}) {
+    const { reason, scope, transfer, backgroundAgents } = fields;
     super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
     this.name = 'TransportError';
     this.code = code;
@@ -462,7 +467,18 @@ export class TransportError extends Error {
       typeof transfer.backendId === 'string' && transfer.backendId.length <= 128) {
       this.transfer = transfer;
     }
+    if (code === 'background_agents_running' && backgroundAgents !== undefined) {
+      this.backgroundAgents = backgroundAgents;
+    }
   }
+}
+
+/** The optional fields a FrameError carries beside its code and message. */
+export interface TransportErrorFields {
+  reason?: string;
+  scope?: string;
+  transfer?: { operationId: string; backendId: string };
+  backgroundAgents?: unknown;
 }
 
 // StepUpProver is the seam that turns a step-up refusal into a proof, and
@@ -2988,9 +3004,12 @@ export class WSClient {
           new TransportError(
             frame.error.code,
             clampString(frame.error.message ?? ''),
-            frame.error.reason,
-            frame.error.scope,
-            frame.error.transfer,
+            {
+              reason: frame.error.reason,
+              scope: frame.error.scope,
+              transfer: frame.error.transfer,
+              backgroundAgents: frame.error.backgroundAgents,
+            },
           ),
         );
         return;

@@ -13,7 +13,7 @@ import {
 import { SCOPES } from './scopes';
 
 function refusal(scope?: string): TransportError {
-  return new TransportError('scope_required', 'not authorized', undefined, scope);
+  return new TransportError('scope_required', 'not authorized', { scope });
 }
 
 describe('scopeRefusal', () => {
@@ -76,7 +76,7 @@ describe('scopeRefusal', () => {
     // The null is what keeps an ordinary method failure from being
     // reported to somebody as a permissions problem.
     expect(scopeRefusalPresentation(new TransportError('method_error', 'boom'))).toBeNull();
-    expect(scopeRefusalPresentation(new TransportError('auth_failed', 'nope', 'expired_session'))).toBeNull();
+    expect(scopeRefusalPresentation(new TransportError('auth_failed', 'nope', { reason: 'expired_session' }))).toBeNull();
     expect(scopeRefusalPresentation(new DisconnectedError('socket closed'))).toBeNull();
     expect(scopeRefusalPresentation(new Error('plain'))).toBeNull();
     expect(scopeRefusalPresentation(undefined)).toBeNull();

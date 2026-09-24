@@ -25,6 +25,7 @@ import {
   projectUserInputRequest,
   projectUserInputResolution,
   resetForTest,
+  reviveActiveTurn,
   sameActiveTurn,
 } from './threadStatuses.svelte';
 import {
@@ -56,6 +57,30 @@ function seedQueueItem(threadId: string, partial: Partial<QueueItem> & { message
   const current = getQueueForThread(threadId);
   replaceQueueForThread(threadId, [...current, item]);
 }
+
+describe('reviveActiveTurn', () => {
+  beforeEach(() => resetForTest());
+
+  it('brings back a turn an optimistic abort dropped, and a later real completion still ends it', () => {
+    projectTurnStarted('t1', 'turn-1', 0, 5);
+    projectTurnCompleted('t1', 'turn-1', { aborted: true });
+    expect(getActiveTurn('t1')).toBeNull();
+    expect(getThreadStatus('t1')).toBe('interrupted');
+    // A completed id never restarts through the ordinary path.
+    projectTurnStarted('t1', 'turn-1', 0, 5);
+    expect(getActiveTurn('t1')).toBeNull();
+
+    reviveActiveTurn('t1', { turnId: 'turn-1', turnIndex: 0, startedAt: 5 });
+    expect(getActiveTurn('t1')).toEqual({ turnId: 'turn-1', turnIndex: 0, startedAt: 5 });
+    expect(getThreadStatus('t1')).toBe('running');
+
+    projectTurnCompleted('t1', 'turn-1', { turnIndex: 0 });
+    expect(getActiveTurn('t1')).toBeNull();
+    expect(getThreadStatus('t1')).toBe('idle');
+    reviveActiveTurn('', { turnId: 'turn-1', turnIndex: 0, startedAt: 5 });
+    expect(getActiveTurn('t1')).toBeNull();
+  });
+});
 
 describe('threadStatuses store', () => {
   beforeEach(() => {

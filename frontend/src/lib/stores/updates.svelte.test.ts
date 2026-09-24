@@ -92,7 +92,7 @@ function availability(overrides: Partial<Availability> = {}): Availability {
 // (internal/transport/authorize.go). This is that rejection as the wsClient
 // surfaces it.
 function hostScopeRefused(): Error {
-  return new TransportError('scope_required', 'not authorized', undefined, 'host');
+  return new TransportError('scope_required', 'not authorized', { scope: 'host' });
 }
 
 // A backend older than this bundle refused the same call by NAME, with the

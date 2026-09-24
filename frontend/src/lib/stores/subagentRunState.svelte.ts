@@ -13,6 +13,7 @@
 // Entries die with the thread (teardown drops them); the next read after
 // a pane returns refills them.
 
+import { untrack } from 'svelte';
 import type { SubagentRunState } from '../utils/subagentRunState';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 
@@ -37,6 +38,27 @@ export function liveSubagentRunState(
 ): SubagentRunState | null {
   if (!threadId || !launchId) return null;
   return statesByKey.get(stateKey(threadId, launchId));
+}
+
+/**
+ * Untracked: whether any launch of the thread is served as running or
+ * parked, the states a Claude interrupt kills. Read by a Stop before it
+ * clears the working presentation, so a Stop the backend will refuse
+ * until the person confirms does not flash the thread idle first. The
+ * backend's refusal stays the authority; this only decides the optimistic
+ * presentation.
+ */
+export function hasLiveSubagentRunStates(threadId: string | null | undefined): boolean {
+  if (!threadId) return false;
+  const keys = keysByThread.get(threadId);
+  if (!keys) return false;
+  return untrack(() => {
+    for (const key of keys) {
+      const state = statesByKey.get(key);
+      if (state?.state === 'running' || state?.state === 'parked') return true;
+    }
+    return false;
+  });
 }
 
 /**

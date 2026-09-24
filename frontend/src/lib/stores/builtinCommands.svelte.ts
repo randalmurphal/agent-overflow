@@ -56,7 +56,6 @@ import {
   CloseTerminal,
   GitPull,
   GitPush,
-  InterruptTurn,
   OpenTerminal,
   RefreshTerminal,
   RespondToApproval,
@@ -67,7 +66,7 @@ import {
 } from './bindings';
 import { cycleMode } from '../utils/modeCycle';
 import { isScratchThreadMode } from '../utils/threadModes';
-import { runInterruptOrRevert } from './revertOnInterrupt.svelte';
+import { runInterrupt, runInterruptOrRevert } from './revertOnInterrupt.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { getSettings, updateSetting } from './settings.svelte';
 import { openReviewCompanion, reviewSubjectForPane } from './reviewPane.svelte';
@@ -513,20 +512,17 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
           answers: {},
         })).catch((err) => reportNonBenignInterruptError(pane, err));
         // Approval / user-input cancels are mid-turn responses, not the
-        // "stop before the agent answered" affordance — fall through to
-        // a plain InterruptTurn rather than the revert path.
-        void InterruptTurn(threadID).catch((err) =>
-          reportNonBenignInterruptError(pane, err),
-        );
+        // "stop before the agent answered" affordance — a plain interrupt
+        // rather than the revert path. It owns the optimistic clear and
+        // asks first when a background agent would die with the turn.
+        runInterrupt(pane);
       } else if (approval) {
         pane.removeApproval(approval.requestId);
         void RespondToApproval(threadID, new ApprovalResponse({
           requestId: approval.requestId,
           decision: 'cancel',
         })).catch((err) => reportNonBenignInterruptError(pane, err));
-        void InterruptTurn(threadID).catch((err) =>
-          reportNonBenignInterruptError(pane, err),
-        );
+        runInterrupt(pane);
       } else {
         const draft = getComposerDraftForPane(pane.paneId);
         const restored = runInterruptOrRevert(pane, draft ?? {
@@ -537,16 +533,8 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         if (restored) {
           pane.setSendInFlight(false);
           queueMicrotask(() => { if (pane.threadId === threadID) focusPaneComposer(pane.paneId); });
-          return;
         }
       }
-
-      // Optimistic clear — spinner / Stop button / mid-turn input
-      // gate all flip in this render tick. The real
-      // provider:turn_completed arrives shortly and is idempotent
-      // on null activeTurn (settleTurn just re-clears).
-      pane.clearActiveTurn();
-      pane.setSendInFlight(false);
     },
   });
 

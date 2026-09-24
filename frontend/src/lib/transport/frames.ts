@@ -19,9 +19,16 @@ export interface ServerRPCFrame {
   // `code` is one — a method error's TEXT does not survive the wire for a
   // non-loopback caller, and this is exactly what such a caller must
   // branch on to explain a disabled surface.
+  //
+  // `backgroundAgents` is present only alongside 'background_agents_running'
+  // (a refused Stop) and lists the live background agents the call would
+  // have killed. The transport carries it raw: the element shape belongs
+  // to the method that refused, and ./backgroundKillRefusal.ts validates
+  // it as untrusted input.
   error?: {
     code: string; message: string; reason?: string; scope?: string;
     transfer?: { operationId: string; backendId: string };
+    backgroundAgents?: unknown;
   };
 }
 

@@ -66,8 +66,7 @@ describe('userFacingError', () => {
     const refused = new TransportError(
       'scope_required',
       'RenameThread requires the threads:operate scope, which this session was not granted',
-      undefined,
-      'threads:operate',
+      { scope: 'threads:operate' },
     );
     const message = userFacingError(refused);
     // The exact sentence belongs to scopeRefusal.ts; what this pins is

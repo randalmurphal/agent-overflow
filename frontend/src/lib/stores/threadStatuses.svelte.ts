@@ -22,6 +22,10 @@ import {
   resetForTest as resetSubagentProgressForTest,
 } from './subagentProgress.svelte';
 import {
+  cancelBackgroundKillConfirmationForThread,
+  resetForTest as resetBackgroundKillConfirmationForTest,
+} from './backgroundKillConfirmation.svelte';
+import {
   clearSubagentRunStatesForThread,
   resetForTest as resetSubagentRunStatesForTest,
 } from './subagentRunState.svelte';
@@ -317,6 +321,7 @@ export function clearThreadStatus(threadId: string): void {
   clearCompactingForThread(threadId);
   clearSubagentProgressForThread(threadId);
   clearSubagentRunStatesForThread(threadId);
+  cancelBackgroundKillConfirmationForThread(threadId);
   clearProviderCommandsForThread(threadId);
   statuses.drop(threadId);
 }
@@ -609,6 +614,19 @@ function hasCompletedTurnID(threadId: string, turnId: string): boolean {
   return completedTurnIDsByThread.get(threadId)?.has(turnId) === true;
 }
 
+/**
+ * Undo an optimistic abort (ThreadPane.clearActiveTurn) the backend refused:
+ * the turn never stopped, so its id is live again and the Interrupted mark
+ * comes off. Only a fresh backend read may say so (a refused Stop reads
+ * GetThreadLiveState; revertOnInterrupt.svelte.ts): a completion that
+ * landed meanwhile would have left that read with no active turn.
+ */
+export function reviveActiveTurn(threadId: string, turn: ActiveTurn): void {
+  if (!threadId || !turn.turnId) return;
+  completedTurnIDsByThread.get(threadId)?.delete(turn.turnId);
+  projectTurnStarted(threadId, turn.turnId, turn.turnIndex, turn.startedAt);
+}
+
 /** Execution reconciliation must read through the temporary presentation overlay. */
 export function getCanonicalActiveTurn(threadId: string | null | undefined): ActiveTurn | null {
   return threadId ? activeTurns.get(threadId) : null;
@@ -775,6 +793,7 @@ export function resetForTest(): void {
   resetCompactingStateForTest();
   resetSubagentProgressForTest();
   resetSubagentRunStatesForTest();
+  resetBackgroundKillConfirmationForTest();
   resetProviderCommandsForTest();
   liveStateHydratingThreads.reset();
   statuses.reset();

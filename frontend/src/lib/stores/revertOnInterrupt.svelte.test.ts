@@ -8,8 +8,18 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { createThreadPane } from './thread.svelte';
 import {
   canRevertEarlyInterrupt,
+  runInterrupt,
   runInterruptOrRevert,
 } from './revertOnInterrupt.svelte';
+import { TransportError } from '../transport/wsClient';
+import { getActiveTurn } from './threadStatuses.svelte';
+import {
+  cancelBackgroundKillConfirmationForThread,
+  pendingBackgroundKillConfirmation,
+  resetForTest as resetBackgroundKillConfirmationForTest,
+  resolveBackgroundKillConfirmation,
+} from './backgroundKillConfirmation.svelte';
+import { replaceSubagentRunStates, resetForTest as resetSubagentRunStatesForTest } from './subagentRunState.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { replaceQueueForThread } from './sendQueue.svelte';
 import type { Item, Thread } from '../types/models';
@@ -734,4 +744,202 @@ describe('runInterruptOrRevert', () => {
     expect(pane.items.some((item) => item.threadId === 'thread-1')).toBe(false);
   });
 
+});
+
+// A Claude interrupt kills every live async agent, so the backend refuses a
+// Stop with `background_agents_running` until the person confirms
+// (transport/backgroundKillRefusal.ts). The flow owns the optimistic clear:
+// same tick when no listed agent is live, after the answer otherwise.
+describe('runInterruptOrRevert with live background agents', () => {
+  const agent = { launchItemId: 'tu-a', description: 'gate watcher', runState: 'parked', transcriptRootId: 'tu-a' };
+  const refusal = () => new TransportError('background_agents_running', 'Stopping now would also stop 1 background agent.', {
+    backgroundAgents: [agent],
+  });
+
+  beforeEach(() => {
+    replaceQueueForThread('thread-1', []);
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    resetThreadInterruptStateForTest();
+    resetResendRevertMarkersForTest();
+    resetBackgroundKillConfirmationForTest();
+    resetSubagentRunStatesForTest();
+    // The mounted pane hydrates live state; an unmocked read would land a
+    // banner these tests assert stays empty.
+    setBindingMock('GetThreadLiveState', async () => ({ threadId: 'thread-1', activeTurn: null }));
+  });
+
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+  }
+
+  function stoppablePane() {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.upsertItem(assistantItem('a:0', 0));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    return pane;
+  }
+
+  it('clears the working presentation in the same tick when no listed agent is live, and sends an unconfirmed interrupt', async () => {
+    const pane = stoppablePane();
+    const calls: unknown[][] = [];
+    setBindingMock('InterruptTurn', async (...args: unknown[]) => { calls.push(args); });
+
+    expect(runInterruptOrRevert(pane, EMPTY_DRAFT)).toBe(false);
+    expect(getActiveTurn('thread-1')).toBeNull();
+    await settle();
+    expect(calls).toEqual([['thread-1', false]]);
+    expect(pendingBackgroundKillConfirmation()).toBeNull();
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
+  });
+
+  it('keeps the turn running and asks when the backend refuses; "keep them" stops nothing', async () => {
+    const pane = stoppablePane();
+    replaceSubagentRunStates('thread-1', new Map([['tu-a', { state: 'parked', waitingOn: 1, report: null }]]));
+    const calls: unknown[][] = [];
+    setBindingMock('InterruptTurn', async (...args: unknown[]) => {
+      calls.push(args);
+      if (args[1] === false) throw refusal();
+    });
+
+    expect(runInterruptOrRevert(pane, EMPTY_DRAFT)).toBe(false);
+    // A listed live agent: no optimistic clear, the refusal is expected.
+    expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
+    await settle();
+    expect(calls).toEqual([['thread-1', false]]);
+    expect(pendingBackgroundKillConfirmation()).toMatchObject({ threadId: 'thread-1', agents: [agent] });
+    expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
+    // The interrupt transaction stays open while the question is on screen.
+    expect(isThreadInterruptPending('thread-1')).toBe(true);
+
+    resolveBackgroundKillConfirmation(false);
+    await settle();
+    expect(calls).toHaveLength(1);
+    expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
+    expect(pane.generalError ?? '').toBe('');
+  });
+
+  it('"stop everything" clears the presentation and interrupts with the confirmation set', async () => {
+    const pane = stoppablePane();
+    replaceSubagentRunStates('thread-1', new Map([['tu-a', { state: 'running', waitingOn: 0, report: null }]]));
+    const calls: unknown[][] = [];
+    setBindingMock('InterruptTurn', async (...args: unknown[]) => {
+      calls.push(args);
+      if (args[1] === false) throw refusal();
+    });
+
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await settle();
+    expect(pendingBackgroundKillConfirmation()).not.toBeNull();
+    resolveBackgroundKillConfirmation(true);
+    await settle();
+    expect(calls).toEqual([['thread-1', false], ['thread-1', true]]);
+    expect(getActiveTurn('thread-1')).toBeNull();
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
+    expect(pane.generalError ?? '').toBe('');
+  });
+
+  it('reads the turn back from the computer when a Stop cleared early on a stale registry and was refused', async () => {
+    const pane = stoppablePane();
+    const calls: unknown[][] = [];
+    setBindingMock('InterruptTurn', async (...args: unknown[]) => {
+      calls.push(args);
+      if (args[1] === false) throw refusal();
+    });
+    const liveRead = setBindingMock('GetThreadLiveState', async () => ({
+      threadId: 'thread-1',
+      activeTurn: { threadId: 'thread-1', turnId: 'turn-1', turnIndex: 0, startedAt: 1 },
+    }));
+
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    expect(getActiveTurn('thread-1')).toBeNull();
+    await settle();
+    expect(liveRead).toHaveBeenCalledTimes(1);
+    expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
+    expect(pendingBackgroundKillConfirmation()?.threadId).toBe('thread-1');
+    resolveBackgroundKillConfirmation(false);
+    await settle();
+    expect(calls).toEqual([['thread-1', false]]);
+    expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
+  });
+
+  it('does not revive a turn the backend no longer runs after a refused early clear', async () => {
+    const pane = stoppablePane();
+    setBindingMock('InterruptTurn', async (...args: unknown[]) => {
+      if (args[1] === false) throw refusal();
+    });
+    setBindingMock('GetThreadLiveState', async () => ({ threadId: 'thread-1', activeTurn: null }));
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await settle();
+    expect(getActiveTurn('thread-1')).toBeNull();
+    expect(pendingBackgroundKillConfirmation()?.threadId).toBe('thread-1');
+    resolveBackgroundKillConfirmation(false);
+    await settle();
+    expect(getActiveTurn('thread-1')).toBeNull();
+  });
+
+  it('turns an un-send into a plain, confirmed Stop when the revert is refused: the message stays', async () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    const revertCalls: unknown[][] = [];
+    setBindingMock('InterruptAndRevertIfClean', async (...args: unknown[]) => {
+      revertCalls.push(args);
+      throw refusal();
+    });
+    const interruptCalls: unknown[][] = [];
+    setBindingMock('InterruptTurn', async (...args: unknown[]) => { interruptCalls.push(args); });
+
+    expect(runInterruptOrRevert(pane, EMPTY_DRAFT)).toBe(true);
+    await Promise.resolve();
+    expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
+    await settle();
+    expect(revertCalls).toHaveLength(1);
+    expect(revertCalls[0][2]).toBe(false);
+    // The row is back and the person is asked; the un-send is off the table.
+    expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
+    expect(pendingBackgroundKillConfirmation()?.agents).toEqual([agent]);
+    resolveBackgroundKillConfirmation(true);
+    await settle();
+    expect(interruptCalls).toEqual([['thread-1', true]]);
+    expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
+    expect(pane.generalError ?? '').toBe('');
+  });
+
+  it('runInterrupt (the mid-turn cancel arms) gates the same way', async () => {
+    const pane = stoppablePane();
+    replaceSubagentRunStates('thread-1', new Map([['tu-a', { state: 'running', waitingOn: 0, report: null }]]));
+    const calls: unknown[][] = [];
+    setBindingMock('InterruptTurn', async (...args: unknown[]) => {
+      calls.push(args);
+      if (args[1] === false) throw refusal();
+    });
+    runInterrupt(pane);
+    expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
+    await settle();
+    expect(pendingBackgroundKillConfirmation()?.threadId).toBe('thread-1');
+    resolveBackgroundKillConfirmation(true);
+    await settle();
+    expect(calls).toEqual([['thread-1', false], ['thread-1', true]]);
+    expect(getActiveTurn('thread-1')).toBeNull();
+  });
+
+  it('a torn-down thread settles its open question as "keep them" and sends nothing more', async () => {
+    const pane = stoppablePane();
+    replaceSubagentRunStates('thread-1', new Map([['tu-a', { state: 'running', waitingOn: 0, report: null }]]));
+    const calls: unknown[][] = [];
+    setBindingMock('InterruptTurn', async (...args: unknown[]) => {
+      calls.push(args);
+      if (args[1] === false) throw refusal();
+    });
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await settle();
+    expect(pendingBackgroundKillConfirmation()).not.toBeNull();
+    cancelBackgroundKillConfirmationForThread('thread-1');
+    await settle();
+    expect(calls).toHaveLength(1);
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
+  });
 });

@@ -761,20 +761,17 @@
 
   function interrupt() {
     if (!pane.threadId) return;
+    // The flow owns the working presentation on both arms: the early
+    // un-send hides it now, and the plain Stop clears it in this tick or,
+    // when a background agent would die with the turn, after the person
+    // confirms (stores/revertOnInterrupt.svelte.ts).
     if (runInterruptOrRevert(pane, draft)) {
       pane.setSendInFlight(false);
       const restoredThreadId = pane.threadId;
       void tick().then(() => {
         if (pane.threadId === restoredThreadId) surface?.focusInputAtEnd();
       });
-      return;
     }
-    // Match the thread.interrupt builtin's optimistic clear so the
-    // spinner / Stop button / mid-turn input gate all flip in this
-    // render tick. The backend's `provider:turn_completed` arrives
-    // shortly and is idempotent on null activeTurn.
-    pane.clearActiveTurn();
-    pane.setSendInFlight(false);
   }
 
   function resetTextareaHeight() {
