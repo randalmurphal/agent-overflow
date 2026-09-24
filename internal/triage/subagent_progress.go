@@ -310,7 +310,9 @@ func persistedSubagentProgress(meta string) provider.SubagentProgressMeta {
 // mid-flight: IsBackground flips (the async-ack tool_result that follows
 // also does this, but the patch is the earlier and the only typed
 // statement) and the cut timestamp lands in meta as the durable fact that
-// this launch changed from foreground to detached execution.
+// this launch changed from foreground to detached execution. The launch
+// joins the background listings with this write, so the refetch nudge
+// follows it.
 func (r *Router) handleSubagentBackgrounded(evt provider.ProviderEvent) error {
 	itemID := strings.TrimSpace(evt.ItemID)
 	if itemID == "" {
@@ -340,7 +342,11 @@ func (r *Router) handleSubagentBackgrounded(evt provider.ProviderEvent) error {
 	launch.Meta = mergeItemMetaJSON(launch.Meta, encoded)
 	launch.IsBackground = true
 	launch.UpdatedAt = now
-	return r.persistItem(launch, nil)
+	if err := r.persistItem(launch, nil); err != nil {
+		return err
+	}
+	r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+	return nil
 }
 
 // handleBackgroundTasksChanged forwards the level set. The channel's

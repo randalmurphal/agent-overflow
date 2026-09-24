@@ -466,9 +466,11 @@ func TestToolCompleteOnBackgroundedKeepsLaunchRunning(t *testing.T) {
 // provider drift we haven't observed but the code has always
 // tolerated): the complete event carries is_background=true, so the
 // launch row must flip to is_background=true without touching its
-// status.
+// status. The flip changes the background listings, so the refetch
+// nudge follows the write; a repeated ack that changes nothing sends
+// none.
 func TestToolCompleteOnBackgroundedPromotesMissingFlag(t *testing.T) {
-	router, st, _ := newTestRouter(t)
+	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 
 	// Start without is_background — simulate a provider drift.
@@ -484,12 +486,17 @@ func TestToolCompleteOnBackgroundedPromotesMissingFlag(t *testing.T) {
 	}
 
 	completeMeta, _ := json.Marshal(map[string]any{"is_background": true})
-	if err := router.Handle(provider.ProviderEvent{
-		Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "promote-tool",
-		Meta: completeMeta, Timestamp: time.Now(),
-	}); err != nil {
-		t.Fatalf("complete: %v", err)
+	complete := func() {
+		t.Helper()
+		emissions.reset()
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "promote-tool",
+			Meta: completeMeta, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("complete: %v", err)
+		}
 	}
+	complete()
 
 	launches := findItemsByKind(t, st, "t1", itemKindToolCall)
 	if len(launches) != 1 {
@@ -500,6 +507,13 @@ func TestToolCompleteOnBackgroundedPromotesMissingFlag(t *testing.T) {
 	}
 	if launches[0].Status != statusRunning {
 		t.Errorf("launch status = %q, want still running after promotion", launches[0].Status)
+	}
+	if n := countEvents(emissions.snapshot(), "provider:background_tasks_changed"); n != 1 {
+		t.Fatalf("the promotion emitted %d background_tasks_changed, want 1 (%+v)", n, emissions.snapshot())
+	}
+	complete()
+	if n := countEvents(emissions.snapshot(), "provider:background_tasks_changed"); n != 0 {
+		t.Fatalf("a repeated ack emitted %d background_tasks_changed, want 0 (%+v)", n, emissions.snapshot())
 	}
 }
 
