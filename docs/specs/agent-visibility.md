@@ -114,7 +114,9 @@ subagent model and the user explicitly authorizes the corresponding change.
   under it. After a crash the boot pass recomputes the cards of the agents
   that were running. A row written under an agent that is no longer
   running, such as a detached agent's late row after its completion,
-  reaches its card in its own write, since no boot pass would recover it.
+  reaches its card in its own write, and the write that stops an agent
+  writes the rows its card still holds, since no boot pass would recover
+  them.
 - Pane = companion kind `agent` with a scope (launch item id), rendered by the
   thread renderer filtered to direct `parent_id == scope` rows. A direct child
   launch appears as a normal agent row without its descendants.

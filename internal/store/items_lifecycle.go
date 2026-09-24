@@ -195,28 +195,51 @@ func (s *Store) CountLiveRunningBackgroundToolCalls(threadID string) (int, error
 // makes "marked inactive, then acquires a completion" unreachable in the
 // app — see the predicate note on ListLiveBackgroundTasks.
 func (s *Store) MarkLiveBackgroundToolCallsInactive(threadID string, updatedAt int64) (int64, error) {
-	result, err := s.db.Exec(
-		`UPDATE items
-		    SET meta = json_set(
-		          CASE WHEN json_valid(meta) THEN meta ELSE '{}' END,
-		          '$.live_background_active',
-		          json('false')
-		        ),
-		        updated_at = ?
-		  WHERE thread_id = ?
-		    AND `+liveBackgroundLaunchSQL+`
-		    AND `+noCompletionSiblingSQL+``,
-		updatedAt,
-		threadID,
-	)
+	var count int64
+	err := s.bulkWriteItems(threadID, "mark live background tool calls inactive", func(tx *sql.Tx, w *cardWrite) error {
+		rows, err := tx.Query(
+			`UPDATE items
+			    SET meta = json_set(
+			          CASE WHEN json_valid(meta) THEN meta ELSE '{}' END,
+			          '$.live_background_active',
+			          json('false')
+			        ),
+			        updated_at = ?
+			  WHERE thread_id = ?
+			    AND `+liveBackgroundLaunchSQL+`
+			    AND `+noCompletionSiblingSQL+`
+			RETURNING `+subagentRowColumns(""),
+			updatedAt,
+			threadID,
+		)
+		if err != nil {
+			return fmt.Errorf("store: mark live background tool calls inactive for thread %s: %w", threadID, err)
+		}
+		var marked []subagentRow
+		for rows.Next() {
+			row, err := scanSubagentRow(rows)
+			if err != nil {
+				return errors.Join(fmt.Errorf("store: scan inactive background tool call in %s: %w", threadID, err), rows.Close())
+			}
+			marked = append(marked, row)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return fmt.Errorf("store: iterate inactive background tool calls for thread %s: %w", threadID, err)
+		}
+		// Each launch ran until this write: the cards it kept live read
+		// their chain again, and what they leave reaches its stamps now.
+		for _, row := range marked {
+			old := row
+			old.inactive = false
+			if err := w.updated(old, row); err != nil {
+				return err
+			}
+		}
+		count = int64(len(marked))
+		return w.finish()
+	})
 	if err != nil {
-		return 0, fmt.Errorf("store: mark live background tool calls inactive for thread %s: %w", threadID, err)
-	}
-	// The launches stopped running: a card they kept live resolves again.
-	s.cards.relive(threadID, nil)
-	count, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("store: count inactive background tool calls for thread %s: %w", threadID, err)
+		return 0, err
 	}
 	return count, nil
 }
@@ -250,12 +273,20 @@ func (s *Store) ForceCloseRunningToolCallsInTurn(
 	summarise func(string) string,
 	updatedAt int64,
 ) ([]Item, error) {
-	tx, err := s.db.Begin()
+	var flipped []Item
+	err := s.bulkWriteItems(threadID, "force-close", func(tx *sql.Tx, w *cardWrite) error {
+		var err error
+		flipped, err = forceCloseRunningToolCallsTx(tx, w, turnIndex, summarise, updatedAt)
+		return err
+	})
 	if err != nil {
-		return nil, fmt.Errorf("store: begin force-close tx: %w", err)
+		return nil, err
 	}
-	defer tx.Rollback()
+	return flipped, nil
+}
 
+func forceCloseRunningToolCallsTx(tx *sql.Tx, w *cardWrite, turnIndex int, summarise func(string) string, updatedAt int64) ([]Item, error) {
+	threadID := w.threadID
 	rows, err := tx.Query(
 		`SELECT `+itemColumnsSansPayload+`
 		   FROM items`+servedItemJoin+`
@@ -287,26 +318,18 @@ func (s *Store) ForceCloseRunningToolCallsInTurn(
 	rows.Close()
 
 	if len(flipped) == 0 {
-		// Commit the no-op TX — cheaper than holding it open and lets
-		// WAL recycle. The thread-touch below runs only when at least
-		// one row actually flipped, matching the pre-refactor
-		// persistItem-per-row behaviour.
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("store: commit force-close (no rows): %w", err)
-		}
 		return nil, nil
 	}
 
 	// A flipped agent child's summary can move its launch's card; the
 	// force-close carries no card and recomputes those chains.
-	w := s.bulkItemWrites(tx, threadID, false)
 	for i := range flipped {
 		old := subagentRowOf(flipped[i])
 		flipped[i].Status = "errored"
 		flipped[i].Summary = summarise(flipped[i].Summary)
 		flipped[i].UpdatedAt = updatedAt
 		row := old
-		row.summary = flipped[i].Summary
+		row.status, row.summary = flipped[i].Status, flipped[i].Summary
 		if err := w.updated(old, row); err != nil {
 			return nil, err
 		}
@@ -337,9 +360,6 @@ func (s *Store) ForceCloseRunningToolCallsInTurn(
 	// Thread activity is bumped at the turn-settle path (via
 	// MarkThreadActivity in triage), not here. Force-closing orphan
 	// tool_calls is part of that same boundary.
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("store: commit force-close tx: %w", err)
-	}
 	return flipped, nil
 }
 

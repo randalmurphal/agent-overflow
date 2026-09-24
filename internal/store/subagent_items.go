@@ -47,6 +47,10 @@ const (
 	// what cuts one round from the next.
 	metaKeySubagentResumePrompt = "subagent_resume_prompt"
 	metaKeyResumeCarrierID      = "resume_carrier_id"
+	// metaKeyLiveBackgroundActive is false on a background launch a
+	// teardown or a completion sibling settled
+	// (backgroundSettleTriggersSQL).
+	metaKeyLiveBackgroundActive = "live_background_active"
 )
 
 // maxSubagentDescendants caps one expansion load, mirroring the

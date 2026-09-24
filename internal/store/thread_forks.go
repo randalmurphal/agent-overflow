@@ -515,28 +515,20 @@ func (s *Store) SettleForkedThreadAsInterrupted(threadID string, summarise func(
 	if threadID == "" {
 		return fmt.Errorf("store: settle forked thread: thread id is required")
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: begin fork settle tx for %s: %w", threadID, err)
-	}
-	defer tx.Rollback()
-
-	if err := s.settleStrandedItemsTx(tx, threadID, nil, summarise, now); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(
-		`UPDATE turns
-		    SET completed_at = ?, stop_reason = 'interrupted'
-		  WHERE thread_id = ? AND completed_at IS NULL`,
-		now, threadID,
-	); err != nil {
-		return fmt.Errorf("store: fork settle turns for %s: %w", threadID, err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit fork settle tx for %s: %w", threadID, err)
-	}
-	return nil
+	return s.bulkWriteItems(threadID, "fork settle", func(tx *sql.Tx, w *cardWrite) error {
+		if err := settleStrandedItemsTx(tx, w, nil, summarise, now); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			`UPDATE turns
+			    SET completed_at = ?, stop_reason = 'interrupted'
+			  WHERE thread_id = ? AND completed_at IS NULL`,
+			now, threadID,
+		); err != nil {
+			return fmt.Errorf("store: fork settle turns for %s: %w", threadID, err)
+		}
+		return nil
+	})
 }
 
 // CloneThreadHistoryBeforeItem copies into targetThreadID everything that

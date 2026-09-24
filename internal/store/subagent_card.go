@@ -71,12 +71,15 @@ import (
 // of the last one. A crash loses the rows written since the last flush
 // from the stamps; the boot pass (RecoverSubagentCards, which
 // RecoverCrashedTurns runs first) recomputes the stamps of every agent
-// that was running. A card no running agent covers (live) would lose its
-// rows for good, so a write with it flushes the thread's cards in its own
+// that was running. What the cards hold must stay within its reach
+// (cardWrite.settle): a write with a card no running agent covers (live),
+// and a write that stops an agent while a card it kept live holds rows no
+// other live card reaches, flush the thread's cards in their own
 // transaction. Whether a card is live is read when it resolves its chain;
 // a write that can end or start an agent (a completion sibling, a change
 // to a tool call row, a teardown) makes the cards it concerns resolve
-// again (subagentCards.relive).
+// again (subagentCards.relive). A write that can stop an agent holds the
+// lock of the thread's cards (writeItems, bulkWriteItems).
 
 // ErrSubagentAnchor reports a write whose subagent card the store cannot
 // accept: a visible row with a parent written without a card outside a
@@ -97,19 +100,25 @@ type subagentRow struct {
 	root string
 	// completionOf is the launch a completion sibling settles, or "".
 	completionOf string
+	// status and background are the row's columns, and inactive reports
+	// a meta whose live_background_active is false or 0: what decides
+	// whether the row is a running agent (running).
+	status               string
+	background, inactive bool
 }
 
 func subagentRowOf(item Item) subagentRow {
 	row := subagentRow{
 		id: item.ID, parentID: item.ParentID, kind: item.Kind, toolName: item.ToolName,
 		summary: item.Summary, turn: item.TurnIndex, index: item.ItemIndex, completionOf: item.CompletionOf,
+		status: item.Status, background: item.IsBackground,
 	}
 	row.setMeta(item.Meta)
 	return row
 }
 
-// setMeta derives the row's prompt identity and transcript root from its
-// meta.
+// setMeta derives the row's prompt identity, transcript root and
+// background liveness from its meta.
 func (r *subagentRow) setMeta(meta string) {
 	r.prompt, r.carrier = subagentPromptFromMeta(r.kind, r.parentID, meta)
 	r.root = ""
@@ -118,6 +127,27 @@ func (r *subagentRow) setMeta(meta string) {
 			r.root = root
 		}
 	}
+	r.inactive = liveBackgroundInactive(meta)
+}
+
+// liveBackgroundInactive is COALESCE(json_extract(meta,
+// '$.live_background_active'), 1) = 0 on a valid meta: a teardown or a
+// completion sibling settled the background launch.
+func liveBackgroundInactive(meta string) bool {
+	if !strings.Contains(meta, metaKeyLiveBackgroundActive) {
+		return false
+	}
+	var decoded map[string]any
+	if json.Unmarshal([]byte(meta), &decoded) != nil {
+		return false
+	}
+	switch v := decoded[metaKeyLiveBackgroundActive].(type) {
+	case bool:
+		return !v
+	case float64:
+		return v == 0
+	}
+	return false
 }
 
 // subagentPromptFromMeta is aggPromptSQL and aggPromptCarrierSQL in Go:
@@ -148,21 +178,24 @@ func subagentPromptFromMeta(kind, parentID, meta string) (bool, string) {
 // subagentRowColumns projects a stored row as subagentRowOf reads an
 // Item, for scanSubagentRow. The meta is parsed only for a row that may
 // be a resume prompt, a user_text row with a parent, or a carrier, an
-// anchorable row whose meta names a transcript root. `a` is the row
-// reference with its trailing dot.
+// anchorable row whose meta names a transcript root, and for a meta that
+// names live_background_active. `a` is the row reference with its
+// trailing dot.
 func subagentRowColumns(a string) string {
 	return a + "id, " + a + "parent_id, " + a + "kind, " + a + "tool_name, " + a + "summary, " +
 		a + "turn_index, " + a + "item_index, COALESCE(" + aggPromptSQL(a) + ", 0), " +
 		"CASE WHEN " + aggPromptSQL(a) + " THEN " + aggPromptCarrierSQL(a) + " ELSE '' END, " +
 		"CASE WHEN " + aggAnchorableSQL(a) + " AND instr(" + a + "meta, '" + metaKeyTranscriptRootID + "') THEN COALESCE(" +
-		aggTranscriptRootSQL(a) + ", '') ELSE '' END, " + a + "completion_of"
+		aggTranscriptRootSQL(a) + ", '') ELSE '' END, " + a + "completion_of, " + a + "status, " + a + "is_background, " +
+		"CASE WHEN instr(" + a + "meta, '" + metaKeyLiveBackgroundActive + "') AND json_valid(" + a + "meta) THEN COALESCE(json_extract(" +
+		a + "meta, '$." + metaKeyLiveBackgroundActive + "'), 1) = 0 ELSE 0 END"
 }
 
 // scanSubagentRow scans subagentRowColumns, then dest.
 func scanSubagentRow(sc interface{ Scan(...any) error }, dest ...any) (subagentRow, error) {
 	var r subagentRow
 	err := sc.Scan(append([]any{&r.id, &r.parentID, &r.kind, &r.toolName, &r.summary,
-		&r.turn, &r.index, &r.prompt, &r.carrier, &r.root, &r.completionOf}, dest...)...)
+		&r.turn, &r.index, &r.prompt, &r.carrier, &r.root, &r.completionOf, &r.status, &r.background, &r.inactive}, dest...)...)
 	if r.root == r.id {
 		r.root = ""
 	}
@@ -204,6 +237,12 @@ func (r subagentRow) visible() bool {
 func (r subagentRow) counts() bool { return r.parentID != "" && r.visible() }
 
 func (r subagentRow) anchorable() bool { return SubagentAnchorable(r.kind, r.toolName) }
+
+// running is liveSubagentAgentSQL: a running tool call the boot pass
+// recovers the cards of, in the foreground or a live background launch.
+func (r subagentRow) running() bool {
+	return r.anchorable() && r.status == "running" && (!r.background || !r.inactive)
+}
 
 func (r subagentRow) position() TimelineCursor {
 	return TimelineCursor{TurnIndex: r.turn, ItemIndex: r.index}
@@ -389,8 +428,9 @@ type cardThread struct {
 	relive    map[string]struct{}
 	reliveAll bool
 
-	// mu serializes the thread's card writes, resolves and flushes. It is
-	// taken before the writer connection, never while holding it.
+	// mu serializes the thread's item writes that hold it, and the card
+	// resolves and flushes. It is taken before the writer connection,
+	// never while holding it.
 	mu      sync.Mutex
 	stamps  map[string]*cardStamp
 	handles map[*SubagentCard]struct{}
@@ -410,8 +450,9 @@ func (c *subagentCards) acquire(threadID string, create bool) *cardThread {
 		if c.threads == nil {
 			c.threads = make(map[string]*cardThread)
 		}
-		t = &cardThread{id: threadID, stamps: make(map[string]*cardStamp),
-			handles: make(map[*SubagentCard]struct{}), seeds: make(map[string]struct{})}
+		// The maps wait for the first card (OpenSubagentCard): an item
+		// write without one holds the entry only for its lock.
+		t = &cardThread{id: threadID}
 		c.threads[threadID] = t
 	}
 	t.refs++
@@ -464,6 +505,14 @@ func (c *subagentCards) invalidateThread(threadID string) {
 	if t := c.threads[threadID]; t != nil {
 		t.invalid, t.all = true, true
 	}
+}
+
+// holds reports whether the registry has an entry for the thread: open
+// cards, an operation in flight, or accumulators not flushed.
+func (c *subagentCards) holds(threadID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.threads[threadID] != nil
 }
 
 // relive records that the agents of anchors ids may have started or
@@ -580,25 +629,72 @@ func (t *cardThread) reresolve(ids map[string]struct{}, all bool) {
 	}
 }
 
-// snapshot records what applying a resolve and a write's notes can
-// change, for a transaction that applies them before it commits
-// (writeItems): the returned func puts them back. The caller holds t.mu.
+// snapshot records what applying a resolve, a write's notes and a flush
+// can change, for a transaction that applies them before it commits
+// (cardWrite.settle): the returned func puts them back. c is the write's
+// card, or nil. The caller holds t.mu.
 func (t *cardThread) snapshot(c *SubagentCard) func() {
 	stamps, seeds := maps.Clone(t.stamps), maps.Clone(t.seeds)
 	saved := make(map[*cardStamp]cardStamp, len(t.stamps))
 	for _, st := range t.stamps {
 		saved[st] = *st
 	}
-	levels, tray, orphan, resolved := slices.Clone(c.levels), c.tray, c.orphan, c.resolved
-	live, liveAnchor := c.live, c.liveAnchor
+	card := func() {}
+	if c != nil {
+		levels, tray, orphan, resolved := slices.Clone(c.levels), c.tray, c.orphan, c.resolved
+		live, liveAnchor := c.live, c.liveAnchor
+		card = func() {
+			c.levels, c.tray, c.orphan, c.resolved = levels, tray, orphan, resolved
+			c.live, c.liveAnchor = live, liveAnchor
+		}
+	}
 	return func() {
 		for st, was := range saved {
 			*st = was
 		}
 		t.stamps, t.seeds = stamps, seeds
-		c.levels, c.tray, c.orphan, c.resolved = levels, tray, orphan, resolved
-		c.live, c.liveAnchor = live, liveAnchor
+		card()
 	}
+}
+
+// uncovered reports an accumulator or seed holding changes no boot pass
+// would recover once the agents stops names have stopped: one no live
+// card reaches, the cards those agents kept live not counted. all
+// reports that any agent of the thread may have stopped. The caller
+// holds t.mu.
+func (t *cardThread) uncovered(stops []string, all bool) bool {
+	if !t.pending() {
+		return false
+	}
+	if all || len(t.seeds) > 0 {
+		return true
+	}
+	for _, st := range t.stamps {
+		if st.pending() && !t.covered(st, stops) {
+			return true
+		}
+	}
+	return false
+}
+
+// covered reports whether a live card whose agent is not in stops reaches
+// st: the boot pass recovers the stamps a live card reaches
+// (SubagentCard.live). The caller holds t.mu.
+func (t *cardThread) covered(st *cardStamp, stops []string) bool {
+	for h := range t.handles {
+		if !h.resolved || !h.live || h.orphan || slices.Contains(stops, h.liveAnchor) {
+			continue
+		}
+		if h.tray == st {
+			return true
+		}
+		for _, level := range h.levels {
+			if level == st || level.round == st {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // pending reports accumulators or seeds a flush would write. The caller
@@ -664,9 +760,12 @@ func (s *Store) OpenSubagentCard(threadID, parentID string) (*SubagentCard, erro
 	c := &SubagentCard{s: s, t: t, threadID: threadID, parentID: parentID}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.handles == nil {
+		t.stamps, t.handles, t.seeds = make(map[string]*cardStamp), make(map[*SubagentCard]struct{}), make(map[string]struct{})
+	}
 	t.handles[c] = struct{}{}
 	if err := s.cardTxLocked(t, "open subagent card", func(tx *sql.Tx) (func(), error) {
-		apply, _, err := s.resolveCardTx(tx, t, c)
+		apply, _, _, err := s.resolveCardTx(tx, t, c)
 		return apply, err
 	}); err != nil {
 		delete(t.handles, c)
@@ -849,17 +948,17 @@ func subagentChainTx(q sqlQueryer, threadID, fromID string, visibleOnly bool) ([
 // reaches that the thread does not hold yet, and reads whether the card
 // is live. It returns the change to the registry, applied once the
 // transaction commits, so a rollback leaves the registry as it was, and
-// the card's liveness.
-func (s *Store) resolveCardTx(tx *sql.Tx, t *cardThread, c *SubagentCard) (func(), bool, error) {
+// the card's liveness and the anchor that decides it.
+func (s *Store) resolveCardTx(tx *sql.Tx, t *cardThread, c *SubagentCard) (func(), bool, string, error) {
 	chain, err := subagentChainTx(tx, c.threadID, c.parentID, true)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	if len(chain) == 0 {
 		return func() {
 			c.levels, c.tray, c.orphan, c.resolved = nil, nil, true, true
 			c.live, c.liveAnchor = true, ""
-		}, true, nil
+		}, true, "", nil
 	}
 	var anchors []string
 	for _, row := range chain {
@@ -868,7 +967,7 @@ func (s *Store) resolveCardTx(tx *sql.Tx, t *cardThread, c *SubagentCard) (func(
 		}
 		if row.imported {
 			if _, err := localizeImportedItemTx(tx, c.threadID, row.id, "store: open subagent card"); err != nil {
-				return nil, false, err
+				return nil, false, "", err
 			}
 		}
 		anchors = append(anchors, row.id)
@@ -889,7 +988,7 @@ func (s *Store) resolveCardTx(tx *sql.Tx, t *cardThread, c *SubagentCard) (func(
 	}
 	targets, err := subagentStampTargets(tx, c.threadID, missing)
 	if err != nil {
-		return nil, false, err
+		return nil, false, "", err
 	}
 	var recompute, liveRoots []string
 	for _, id := range missing {
@@ -899,7 +998,7 @@ func (s *Store) resolveCardTx(tx *sql.Tx, t *cardThread, c *SubagentCard) (func(
 		}
 		st, err := seedCardStamp(tx, c.threadID, target)
 		if err != nil {
-			return nil, false, err
+			return nil, false, "", err
 		}
 		fresh[id] = st
 		switch {
@@ -914,7 +1013,7 @@ func (s *Store) resolveCardTx(tx *sql.Tx, t *cardThread, c *SubagentCard) (func(
 	if len(liveRoots) > 0 {
 		rounds, err := subagentResumeRounds(tx, c.threadID, liveRoots)
 		if err != nil {
-			return nil, false, err
+			return nil, false, "", err
 		}
 		last := make(map[string]subagentRound, len(liveRoots))
 		for _, round := range rounds {
@@ -932,11 +1031,11 @@ func (s *Store) resolveCardTx(tx *sql.Tx, t *cardThread, c *SubagentCard) (func(
 				if named == nil {
 					targets, err := subagentStampTargets(tx, c.threadID, []string{round.anchorID})
 					if err != nil {
-						return nil, false, err
+						return nil, false, "", err
 					}
 					if target, ok := targets[round.anchorID]; ok && target.root == id {
 						if named, err = seedCardStamp(tx, c.threadID, target); err != nil {
-							return nil, false, err
+							return nil, false, "", err
 						}
 						fresh[round.anchorID] = named
 					}
@@ -960,7 +1059,7 @@ func (s *Store) resolveCardTx(tx *sql.Tx, t *cardThread, c *SubagentCard) (func(
 	if len(recompute) > 0 {
 		members, err := recomputeSubagentFamiliesTx(tx, c.threadID, recompute, nil)
 		if err != nil {
-			return nil, false, err
+			return nil, false, "", err
 		}
 		for _, id := range recompute {
 			delete(fresh, id)
@@ -973,7 +1072,7 @@ func (s *Store) resolveCardTx(tx *sql.Tx, t *cardThread, c *SubagentCard) (func(
 	if len(anchors) > 0 {
 		liveAnchor = anchors[0]
 		if err := tx.QueryRow(subagentCardLiveSQL, c.threadID, liveAnchor).Scan(&live); err != nil {
-			return nil, false, fmt.Errorf("store: probe the agents under %s/%s: %w", c.threadID, liveAnchor, err)
+			return nil, false, "", fmt.Errorf("store: probe the agents under %s/%s: %w", c.threadID, liveAnchor, err)
 		}
 	}
 	return func() {
@@ -996,7 +1095,7 @@ func (s *Store) resolveCardTx(tx *sql.Tx, t *cardThread, c *SubagentCard) (func(
 		}
 		c.orphan, c.resolved = false, true
 		c.live, c.liveAnchor = live, liveAnchor
-	}, live, nil
+	}, live, liveAnchor, nil
 }
 
 // seedCardStamp turns a stored stamp into an accumulator: a clean stamp
@@ -1408,9 +1507,29 @@ type cardWrite struct {
 	// settles or revives its launch.
 	relive    []string
 	reliveAll bool
+	// stops name the agents the write stopped and the transcript roots
+	// they kept live; stopAll is any agent of the thread, for a
+	// completion sibling written, whose trigger settles its launch.
+	stops   []string
+	stopAll bool
 	// stale lists the stamps finish recomputed, once it has.
 	stale   []string
 	touched bool
+
+	// t is the thread's cards, when the writer holds their lock
+	// (writeItems, bulkWriteItems): finish then settles what the write
+	// leaves in memory. A write without it may stop an agent only in a
+	// thread whose cards hold nothing, or in a boot sweep (sweep), which
+	// runs before any card is opened.
+	t     *cardThread
+	sweep bool
+	// live and liveAnchor are the card's liveness as the transaction read
+	// it; resolved applies the chain it read.
+	live       bool
+	liveAnchor string
+	resolved   func()
+	// undo puts back what settle applied before the commit.
+	undo func()
 }
 
 // check refuses a row the card does not cover: one under another parent,
@@ -1429,7 +1548,7 @@ func (w *cardWrite) check(row subagentRow) error {
 // under it, which it adopts: its card and its chain's recompute.
 func (w *cardWrite) inserted(row subagentRow, hasChild bool) {
 	if row.completionOf != "" {
-		w.reliveAll = true
+		w.reliveAll, w.stopAll = true, true
 	}
 	if row.anchorable() {
 		w.relive = append(w.relive, row.root)
@@ -1470,6 +1589,9 @@ func (w *cardWrite) updated(old, row subagentRow) error {
 		// A tool call row's status, background flag or meta decides
 		// whether its agent runs, for it and for its transcript root.
 		w.relive = append(w.relive, row.id, old.root, row.root)
+	}
+	if old.running() && (!row.running() || old.root != row.root) {
+		w.stops = append(w.stops, old.id, old.root)
 	}
 	if old.completionOf != row.completionOf {
 		w.reliveAll = true
@@ -1514,6 +1636,9 @@ func (w *cardWrite) deleted(old subagentRow) {
 	if old.anchorable() {
 		w.relive = append(w.relive, old.id, old.root)
 	}
+	if old.running() {
+		w.stops = append(w.stops, old.id, old.root)
+	}
 	if old.counts() {
 		w.chains = append(w.chains, old.parentID)
 	}
@@ -1526,10 +1651,11 @@ func (w *cardWrite) deleted(old subagentRow) {
 	}
 }
 
-// finish recomputes what the write changed that the rules do not follow.
-// A write that recomputes anything recomputes its noted rows' chains with
-// it, and its card takes no note. Without a card, every accumulator of a
-// stamp it recomputed is retired at the next card operation.
+// finish recomputes what the write changed that the rules do not follow,
+// then settles what it leaves in memory (settle). A write that recomputes
+// anything recomputes its noted rows' chains with it, and its card takes
+// no note. A writer without the cards' lock has every accumulator of a
+// stamp it recomputed retired at the next card operation.
 func (w *cardWrite) finish() error {
 	switch {
 	case w.reliveAll:
@@ -1538,6 +1664,14 @@ func (w *cardWrite) finish() error {
 		w.s.cards.relive(w.threadID, w.relive)
 	}
 	w.relive, w.reliveAll = nil, false
+	if err := w.recompute(); err != nil {
+		return err
+	}
+	return w.settle()
+}
+
+// recompute is finish's recompute of what the rules do not follow.
+func (w *cardWrite) recompute() error {
 	// A carrier stored after the prompt that names it: the root's last
 	// round has had no card (linkRounds), so the family is recomputed.
 	for _, row := range w.carriers {
@@ -1577,98 +1711,146 @@ func (w *cardWrite) finish() error {
 	}
 	w.chains, w.seeds, w.unanchor, w.named = nil, nil, nil, nil
 	w.stale = append(w.stale, stale...)
-	if w.card == nil {
+	if w.t == nil {
 		w.s.cards.invalidate(w.threadID, stale)
 	}
 	return nil
 }
 
-// writeItems runs one item write transaction. card is the card the write
-// carries, or nil. fn records what it wrote through w; the transaction
-// recomputes what the rules do not follow before it commits, and the card
-// takes the rest once it has.
-func (s *Store) writeItems(threadID string, card *SubagentCard, label string, fn func(tx *sql.Tx, w *cardWrite) error) error {
-	if card == nil {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return fmt.Errorf("store: begin %s: %w", label, err)
-		}
-		defer tx.Rollback()
-		w := &cardWrite{s: s, tx: tx, threadID: threadID}
-		if err := fn(tx, w); err != nil {
-			return err
-		}
-		if err := w.finish(); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("store: commit %s: %w", label, err)
+// settle keeps what the write leaves in memory recoverable by the boot
+// pass. The notes of a card that is not live, or whose agent the write
+// stopped, and the accumulators the stopped agents kept recoverable that
+// no other live card reaches (uncovered), are written to their stamps in
+// this transaction: settle applies the notes before the commit, and undo
+// puts them back if it does not commit. The rows advanced the thread
+// stamp in it, so the flush adds no bump.
+func (w *cardWrite) settle() error {
+	stops := slices.DeleteFunc(w.stops, func(id string) bool { return id == "" })
+	all := w.stopAll
+	w.stops, w.stopAll = nil, false
+	t := w.t
+	if t == nil {
+		// Without the lock, only a thread whose cards hold nothing can
+		// lose no accumulator: a card changes them in a transaction of
+		// its own, and holds the thread's entry until it has applied them.
+		if (len(stops) > 0 || all) && !w.sweep && w.s.cards.holds(w.threadID) {
+			return fmt.Errorf("store: a write that stops an agent of %s holds no lock on its subagent cards", w.threadID)
 		}
 		return nil
 	}
-	if card.s != s || card.threadID != threadID {
-		return fmt.Errorf("%w: a card of %s/%s written in %s", ErrSubagentAnchor, card.threadID, card.parentID, threadID)
+	noted := len(w.inserts)+len(w.changes) > 0
+	// The notes of a card that stays live reach stamps its agent keeps
+	// recoverable; they are applied once the write commits.
+	kept := !noted || (w.live && !all && !slices.Contains(stops, w.liveAnchor))
+	if kept && (len(stops) == 0 && !all || !t.uncovered(stops, all)) {
+		return nil
 	}
-	t := card.t
+	if w.undo == nil {
+		w.undo = t.snapshot(w.card)
+	}
+	w.apply()
+	flushed, err := w.s.flushCardsTx(w.tx, t, nil, func() error { return nil })
+	if err != nil {
+		return err
+	}
+	flushed()
+	return nil
+}
+
+// apply feeds the cards what the write left them, once: the chain the
+// card's transaction read, then its notes, or after a recompute the
+// retire of the accumulators it rewrote. It runs when the write commits,
+// or before from settle, whose undo puts it back.
+func (w *cardWrite) apply() {
+	if w.resolved != nil {
+		w.resolved()
+		w.resolved = nil
+	}
+	if w.touched {
+		w.touched = false
+		w.t.retire(w.stale, true)
+		w.stale = nil
+		return
+	}
+	for _, row := range w.inserts {
+		w.card.noteInsert(row)
+	}
+	for _, row := range w.changes {
+		w.card.noteChange(row)
+	}
+	w.inserts, w.changes = nil, nil
+}
+
+// writeItems runs one item write transaction under the lock of the
+// thread's cards. card is the card the write carries, or nil. fn records
+// what it wrote through w; the transaction recomputes what the rules do
+// not follow and settles what no boot pass would recover before it
+// commits, and the cards take the rest once it has.
+func (s *Store) writeItems(threadID string, card *SubagentCard, label string, fn func(tx *sql.Tx, w *cardWrite) error) error {
+	return s.itemWriteTx(threadID, card, false, label, fn)
+}
+
+// bulkWriteItems is writeItems for a bulk writer of one thread: counted
+// rows need no card, and fn recomputes every chain it touched.
+func (s *Store) bulkWriteItems(threadID, label string, fn func(tx *sql.Tx, w *cardWrite) error) error {
+	return s.itemWriteTx(threadID, nil, true, label, fn)
+}
+
+func (s *Store) itemWriteTx(threadID string, card *SubagentCard, bulk bool, label string, fn func(tx *sql.Tx, w *cardWrite) error) error {
+	t := s.cards.acquire(threadID, true)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if card.closed {
-		return fmt.Errorf("%w: the card of %s/%s is closed", ErrSubagentAnchor, card.threadID, card.parentID)
+	defer s.cards.release(t)
+	if card != nil {
+		if card.s != s || card.threadID != threadID {
+			return fmt.Errorf("%w: a card of %s/%s written in %s", ErrSubagentAnchor, card.threadID, card.parentID, threadID)
+		}
+		// An open card keeps its thread's entry: another entry means the
+		// card was closed.
+		if card.t != t || card.closed {
+			return fmt.Errorf("%w: the card of %s/%s is closed", ErrSubagentAnchor, card.threadID, card.parentID)
+		}
 	}
-	var undo func()
+	w := &cardWrite{s: s, threadID: threadID, card: card, bulk: bulk, t: t, live: true}
 	err := s.cardTxLocked(t, label, func(tx *sql.Tx) (func(), error) {
-		var resolved func()
-		live := card.live
-		if !card.resolved || card.orphan {
-			var err error
-			if resolved, live, err = s.resolveCardTx(tx, t, card); err != nil {
-				return nil, err
+		w.tx = tx
+		if card != nil {
+			w.live, w.liveAnchor = card.live, card.liveAnchor
+			if !card.resolved || card.orphan {
+				var err error
+				if w.resolved, w.live, w.liveAnchor, err = s.resolveCardTx(tx, t, card); err != nil {
+					return nil, err
+				}
 			}
 		}
-		w := &cardWrite{s: s, tx: tx, threadID: threadID, card: card}
 		if err := fn(tx, w); err != nil {
 			return nil, err
 		}
 		if err := w.finish(); err != nil {
 			return nil, err
 		}
-		apply := func() {
-			if resolved != nil {
-				resolved()
-			}
-			if w.touched {
-				t.retire(w.stale, true)
-				return
-			}
-			for _, row := range w.inserts {
-				card.noteInsert(row)
-			}
-			for _, row := range w.changes {
-				card.noteChange(row)
-			}
-		}
-		if live || w.touched || len(w.inserts)+len(w.changes) == 0 {
-			return apply, nil
-		}
-		// No boot pass would recover what this card takes: the notes
-		// reach the stamps in this transaction, and are put back if it
-		// does not commit. The rows they come from advanced the thread
-		// stamp in it.
-		undo = t.snapshot(card)
-		apply()
-		return s.flushCardsTx(tx, t, nil, func() error { return nil })
+		return w.apply, nil
 	})
-	if err != nil && undo != nil {
-		undo()
+	if err != nil && w.undo != nil {
+		w.undo()
 	}
 	return err
 }
 
-// bulkItemWrites is the cardWrite of a bulk writer's transaction: counted
-// rows need no card, and the writer calls finish before it commits. bump
-// is for a writer whose own writes do not advance the thread stamp.
+// bulkItemWrites is the cardWrite of a bulk writer's transaction that
+// does not hold the lock of the thread's cards: counted rows need no
+// card, and the writer calls finish before it commits. It stops an agent
+// only in a thread whose cards hold nothing (settle). bump is for a
+// writer whose own writes do not advance the thread stamp.
 func (s *Store) bulkItemWrites(tx *sql.Tx, threadID string, bump bool) *cardWrite {
 	return &cardWrite{s: s, tx: tx, threadID: threadID, bulk: true, bump: bump}
+}
+
+// sweepItemWrites is bulkItemWrites for a boot sweep of every thread,
+// which stops agents: it runs before any card is opened, once
+// FlushAllSubagentCards has written any the store holds.
+func (s *Store) sweepItemWrites(tx *sql.Tx, threadID string) *cardWrite {
+	return &cardWrite{s: s, tx: tx, threadID: threadID, bulk: true, sweep: true}
 }
 
 // noteInsert feeds a committed counted row to the card's accumulators.

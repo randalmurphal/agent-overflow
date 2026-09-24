@@ -280,7 +280,15 @@ func (s *Store) RecoverCrashedTurns(summarise func(string) string, now int64) ([
 	return crashed, errors.Join(cardsErr, err)
 }
 
+// recoverCrashedTurns stops agents in threads whose cards it does not
+// lock (sweepItemWrites): any card left is flushed first.
 func (s *Store) recoverCrashedTurns(summarise func(string) string, now int64) ([]CrashedTurn, error) {
+	flushErr := s.FlushAllSubagentCards()
+	crashed, err := s.sweepCrashedTurns(summarise, now)
+	return crashed, errors.Join(flushErr, err)
+}
+
+func (s *Store) sweepCrashedTurns(summarise func(string) string, now int64) ([]CrashedTurn, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("store: begin crashed-turn recovery tx: %w", err)
@@ -342,7 +350,7 @@ func (s *Store) recoverCrashedTurns(summarise func(string) string, now int64) ([
 // items to errored inside the recovery transaction. Backgrounded
 // tool_call launches are exempt — see RecoverCrashedTurns.
 func (s *Store) flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func(string) string, now int64) error {
-	return s.settleStrandedItemsTx(tx, c.ThreadID, &c.TurnIndex, summarise, now)
+	return settleStrandedItemsTx(tx, s.sweepItemWrites(tx, c.ThreadID), &c.TurnIndex, summarise, now)
 }
 
 // settleStrandedItemsTx is the shared "no live process can ever finish
@@ -362,8 +370,9 @@ func (s *Store) flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func
 // settle for those rows too (a fork thread has no triage state at
 // all, and a rebooted app has none either). A flipped agent child's
 // summary can move its launch's card; the settle carries no card and
-// recomputes those chains.
-func (s *Store) settleStrandedItemsTx(tx *sql.Tx, threadID string, turnIndex *int, summarise func(string) string, now int64) error {
+// recomputes those chains through w, the thread's bulk writes.
+func settleStrandedItemsTx(tx *sql.Tx, w *cardWrite, turnIndex *int, summarise func(string) string, now int64) error {
+	threadID := w.threadID
 	scope := threadID
 	args := []any{threadID}
 	turnFilter := ""
@@ -398,10 +407,9 @@ func (s *Store) settleStrandedItemsTx(tx *sql.Tx, threadID string, turnIndex *in
 	}
 	rows.Close()
 
-	w := s.bulkItemWrites(tx, threadID, false)
 	for _, f := range flips {
 		row := f
-		row.summary = summarise(f.summary)
+		row.status, row.summary = "errored", summarise(f.summary)
 		if err := w.updated(f, row); err != nil {
 			return err
 		}

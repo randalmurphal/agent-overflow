@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"slices"
 )
@@ -36,59 +37,54 @@ func (s *Store) FoldUserTextRows(threadID, survivorID string, foldedIDs []string
 		return Item{}, fmt.Errorf("store: fold user text rows %s/%s: no rows to fold", threadID, survivorID)
 	}
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Item{}, fmt.Errorf("store: begin fold user text rows %s/%s: %w", threadID, survivorID, err)
-	}
-	defer tx.Rollback()
 	// The fold carries no card: it recomputes the chains of the rows it
 	// rewrites and deletes before it commits.
-	w := s.bulkItemWrites(tx, threadID, false)
-
-	// Localize any imported row this touches BEFORE mutating, so an overlay
-	// thread folds its own copies rather than the shared base.
-	old, err := readMutableSubagentRowTx(tx, threadID, survivorID, "store: fold user text rows")
-	if err != nil {
-		return Item{}, err
-	}
-	for _, id := range foldedIDs {
-		if err := requireMutableItemTx(tx, threadID, id, "store: fold user text rows"); err != nil {
-			return Item{}, err
-		}
-	}
-
-	row := old
-	row.summary = summary
-	row.setMeta(meta)
-	if err := w.updated(old, row); err != nil {
-		return Item{}, err
-	}
-	if _, err := tx.Exec(
-		`UPDATE items SET summary = ?, meta = ?, updated_at = ? WHERE thread_id = ? AND id = ?`,
-		summary, meta, updatedAt, threadID, survivorID,
-	); err != nil {
-		return Item{}, fmt.Errorf("store: fold survivor %s/%s: %w", threadID, survivorID, err)
-	}
-	for _, id := range foldedIDs {
-		deleted, err := scanSubagentRow(tx.QueryRow(
-			`DELETE FROM items WHERE thread_id = ? AND id = ? RETURNING `+subagentRowColumns(""),
-			threadID, id,
-		))
+	var survivor Item
+	err := s.bulkWriteItems(threadID, "fold user text rows "+threadID+"/"+survivorID, func(tx *sql.Tx, w *cardWrite) error {
+		// Localize any imported row this touches BEFORE mutating, so an
+		// overlay thread folds its own copies rather than the shared base.
+		old, err := readMutableSubagentRowTx(tx, threadID, survivorID, "store: fold user text rows")
 		if err != nil {
-			return Item{}, fmt.Errorf("store: fold delete %s/%s: %w", threadID, id, err)
+			return err
 		}
-		w.deleted(deleted)
-	}
-	if err := w.finish(); err != nil {
-		return Item{}, err
-	}
+		for _, id := range foldedIDs {
+			if err := requireMutableItemTx(tx, threadID, id, "store: fold user text rows"); err != nil {
+				return err
+			}
+		}
 
-	survivor, err := readBackItemTx(tx, threadID, survivorID)
+		row := old
+		row.summary = summary
+		row.setMeta(meta)
+		if err := w.updated(old, row); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			`UPDATE items SET summary = ?, meta = ?, updated_at = ? WHERE thread_id = ? AND id = ?`,
+			summary, meta, updatedAt, threadID, survivorID,
+		); err != nil {
+			return fmt.Errorf("store: fold survivor %s/%s: %w", threadID, survivorID, err)
+		}
+		for _, id := range foldedIDs {
+			deleted, err := scanSubagentRow(tx.QueryRow(
+				`DELETE FROM items WHERE thread_id = ? AND id = ? RETURNING `+subagentRowColumns(""),
+				threadID, id,
+			))
+			if err != nil {
+				return fmt.Errorf("store: fold delete %s/%s: %w", threadID, id, err)
+			}
+			w.deleted(deleted)
+		}
+		if err := w.finish(); err != nil {
+			return err
+		}
+		if survivor, err = readBackItemTx(tx, threadID, survivorID); err != nil {
+			return fmt.Errorf("store: fold re-read %s/%s: %w", threadID, survivorID, err)
+		}
+		return nil
+	})
 	if err != nil {
-		return Item{}, fmt.Errorf("store: fold re-read %s/%s: %w", threadID, survivorID, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Item{}, fmt.Errorf("store: commit fold user text rows %s/%s: %w", threadID, survivorID, err)
+		return Item{}, err
 	}
 	return survivor, nil
 }

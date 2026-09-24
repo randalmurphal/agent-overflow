@@ -84,10 +84,11 @@ func (a *Service) RecoverBackgroundRuntimeOnStartup() {
 	if a == nil || a.store == nil {
 		return
 	}
+	// A failure can follow a committed retirement (the card flush before
+	// it), so the retired rows are emitted either way.
 	retired, err := a.store.RecoverCodexBackgroundRuntime(codexghost.GhostSummary, time.Now().UnixMilli())
 	if err != nil {
 		log.Printf("app: recover Codex background runtime: %v", err)
-		return
 	}
 	if len(retired) > 0 {
 		log.Printf("app: retired %d Codex background items from the prior app instance", len(retired))

@@ -33,7 +33,7 @@ func (s *Store) ErrorActiveItemIfRevision(threadID, id string, revision int64, s
 		}
 		changed = true
 		row := old
-		row.summary = summary
+		row.status, row.summary = "errored", summary
 		if err := w.updated(old, row); err != nil {
 			return err
 		}

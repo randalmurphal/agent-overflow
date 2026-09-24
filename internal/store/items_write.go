@@ -1067,6 +1067,9 @@ func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) 
 				return err
 			}
 			row := old
+			if update.Status != nil {
+				row.status = *update.Status
+			}
 			if update.Summary != nil {
 				row.summary = *update.Summary
 			}

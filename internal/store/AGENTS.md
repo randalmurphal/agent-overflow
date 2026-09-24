@@ -128,10 +128,16 @@ an atomic persistence decision; they must not become a business-logic layer.
   anchor and its completion siblings are served at a new revision. After a
   crash, `RecoverSubagentCards` recomputes the anchors of the agents that
   were running. A write with a card no running agent covers
-  (`subagentCardLiveSQL`) flushes the thread's cards in its own
-  transaction, and a write that can start or stop an agent makes the cards
-  it concerns read their liveness again (`subagentCards.relive`), so no row
-  the boot pass would not recover waits for a flush.
+  (`subagentCardLiveSQL`), and a write that stops an agent a card relied
+  on, flush the thread's cards in their own transaction
+  (`cardWrite.settle`), so no row the boot pass would not recover waits
+  for a flush. A write that can stop an agent holds the lock of the
+  thread's cards (`writeItems`, `bulkWriteItems`); a bulk writer without
+  it (`bulkItemWrites`) fails if it stops one while the thread's cards
+  hold anything, and the boot sweeps over every thread flush every card
+  first (`sweepItemWrites`). The lock of a thread's cards is taken before
+  the writer connection: no caller holds the writer connection when it
+  opens, writes with, flushes or closes a card.
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by

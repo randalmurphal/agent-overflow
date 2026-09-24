@@ -1331,7 +1331,9 @@ func TestSubagentCardIsRequired(t *testing.T) {
 // the transcript root of one, across the columns that decide whether an
 // agent runs, in a thread beside another with its own agents. A root a
 // carrier names with padding is the one difference, on the side that
-// flushes: the boot pass marks it, the probe does not.
+// flushes: the boot pass marks it, the probe does not. The Go reading of
+// a row the writers stop agents by (subagentRow.running), from its stored
+// columns and from an Item, is the boot pass's per-row predicate.
 func TestSubagentCardLivenessIsTheBootPass(t *testing.T) {
 	s := newTestStore(t)
 	const thread = "t-card-live"
@@ -1356,7 +1358,7 @@ func TestSubagentCardLivenessIsTheBootPass(t *testing.T) {
 	for _, tool := range []string{"Agent", "collab_agent", "Bash"} {
 		for _, status := range []string{"running", "completed", "streaming", "errored"} {
 			for _, background := range []bool{false, true} {
-				for _, active := range []any{nil, true, false} {
+				for _, active := range []any{nil, true, false, 0, 1, "false"} {
 					for _, parent := range []string{"", "P"} {
 						n++
 						fields := map[string]any{}
@@ -1426,8 +1428,28 @@ func TestSubagentCardLivenessIsTheBootPass(t *testing.T) {
 	if err := errors.Join(query.Err(), query.Close()); err != nil {
 		t.Fatal(err)
 	}
-	var live, idle, throughCarrier int
+	var live, idle, throughCarrier, running int
 	for _, r := range rows[thread] {
+		var runs bool
+		if err := s.reader().QueryRow(`SELECT EXISTS (SELECT 1 FROM items WHERE thread_id = ? AND id = ? AND `+
+			liveSubagentAgentSQL("")+`)`, thread, r.id).Scan(&runs); err != nil {
+			t.Fatalf("run state of %s: %v", r.id, err)
+		}
+		stored, err := scanSubagentRow(s.reader().QueryRow(subagentRowSQL, thread, r.id))
+		if err != nil {
+			t.Fatalf("read %s: %v", r.id, err)
+		}
+		item, _, err := s.GetThreadItemForWrite(thread, r.id)
+		if err != nil {
+			t.Fatalf("read item %s: %v", r.id, err)
+		}
+		if stored.running() != runs || subagentRowOf(item).running() != runs {
+			t.Errorf("%s (%s %s background=%v meta=%s) runs=%v in SQL, the stored row reads %v, the item %v",
+				r.id, r.tool, r.status, r.background, item.Meta, runs, stored.running(), subagentRowOf(item).running())
+		}
+		if runs {
+			running++
+		}
 		var got bool
 		if err := s.reader().QueryRow(subagentCardLiveSQL, thread, r.id).Scan(&got); err != nil {
 			t.Fatalf("probe %s: %v", r.id, err)
@@ -1453,8 +1475,8 @@ func TestSubagentCardLivenessIsTheBootPass(t *testing.T) {
 	}
 	// The grid reaches both answers and the carrier leg; B stopped when
 	// its completion landed.
-	if live == 0 || idle == 0 || throughCarrier == 0 {
-		t.Errorf("live=%d idle=%d through a carrier=%d: the grid does not span the rule", live, idle, throughCarrier)
+	if live == 0 || idle == 0 || throughCarrier == 0 || running == 0 {
+		t.Errorf("live=%d idle=%d through a carrier=%d running=%d: the grid does not span the rule", live, idle, throughCarrier, running)
 	}
 	if marked["B"] {
 		t.Error("the boot pass marks B, whose completion settled it")
@@ -1617,4 +1639,319 @@ func TestSubagentCardInWriteFlushRollsBackWithItsWrite(t *testing.T) {
 	}
 	assertSubagentStampParity(t, s, thread, "after the failed flush", true)
 	assertStampsAreTheRecompute(t, s, thread, "after the failed flush")
+}
+
+// TestSubagentCardStopWritesWhatItsAgentKeptLive pins the stop rule: rows
+// a card took while its agent ran wait in memory, recoverable by the boot
+// pass while the agent runs. The write that stops the agent, whichever
+// writer it is, writes them to their stamps in its own transaction, so a
+// crash right after it loses nothing. A stop another live card still
+// covers leaves them for the next flush.
+func TestSubagentCardStopWritesWhatItsAgentKeptLive(t *testing.T) {
+	status := func(id, value string) func(*testing.T, *Store, string, func(string) *SubagentCard) {
+		return func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+			if _, err := s.UpdateItemFields(thread, id, ItemPartialUpdate{Status: &value}); err != nil {
+				t.Fatalf("status of %s: %v", id, err)
+			}
+		}
+	}
+	meta := func(write func(s *Store, thread, meta string) error) func(*testing.T, *Store, string, func(string) *SubagentCard) {
+		return func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+			if err := write(s, thread, `{"live_background_active":false}`); err != nil {
+				t.Fatalf("mark L inactive: %v", err)
+			}
+		}
+	}
+	summarise := func(string) string { return "stopped" }
+	launch := stampFixtureRow{id: "L", kind: "tool_call", tool: "Agent", summary: "Agent: l", status: "running", turn: 1}
+	background := launch
+	background.background = true
+	// A completed root R under a completed Q, resumed by the running
+	// carrier C: the rows under R count toward R and Q while C runs.
+	resumed := []stampFixtureRow{
+		{id: "Q", kind: "tool_call", tool: "Agent", summary: "Agent: q", turn: 1},
+		{id: "R", kind: "tool_call", tool: "Agent", summary: "Agent: root", parent: "Q", turn: 1, index: 1},
+		{id: "R-a1", kind: "assistant_text", summary: "round one", parent: "R", turn: 1, index: 2},
+		{id: "C", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", status: "running", meta: carrierMeta("R"), turn: 2},
+		{id: "P", kind: "user_text", summary: "again", parent: "R", meta: resumePromptMeta("C"), turn: 2, index: 1},
+	}
+	for _, tc := range []struct {
+		name     string
+		provider string
+		// rows are written in order, each under its parent's session card.
+		rows   []stampFixtureRow
+		parent string
+		stop   func(t *testing.T, s *Store, thread string, card func(string) *SubagentCard)
+		// keeps reports a stop a live card still covers: the rows stay
+		// in memory for the next flush.
+		keeps bool
+	}{
+		{name: "field update completes the launch", rows: []stampFixtureRow{launch}, parent: "L", stop: status("L", "completed")},
+		{name: "upsert completes the launch", rows: []stampFixtureRow{launch}, parent: "L",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				done := launch
+				done.status = "completed"
+				if _, err := s.UpsertItem(done.item(thread), nil); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		{name: "conditional update completes the launch", rows: []stampFixtureRow{launch}, parent: "L",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				row, _, err := s.GetThreadItemForWrite(thread, "L")
+				if err != nil {
+					t.Fatal(err)
+				}
+				row.Status = "completed"
+				if _, updated, err := s.UpdateItemIfRevision(row); err != nil || !updated {
+					t.Fatalf("update L: updated=%v err=%v", updated, err)
+				}
+			}},
+		{name: "interrupt", rows: []stampFixtureRow{launch}, parent: "L",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				row, _, err := s.GetThreadItemForWrite(thread, "L")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, changed, err := s.ErrorActiveItemIfRevision(thread, "L", row.Rev, "interrupted", 9_000, nil); err != nil || !changed {
+					t.Fatalf("interrupt L: changed=%v err=%v", changed, err)
+				}
+			}},
+		{name: "force-close", rows: []stampFixtureRow{launch}, parent: "L",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				if flipped, err := s.ForceCloseRunningToolCallsInTurn(thread, 1, summarise, 9_000); err != nil || len(flipped) != 1 {
+					t.Fatalf("force-close: %d rows, %v", len(flipped), err)
+				}
+			}},
+		{name: "fork settle", rows: []stampFixtureRow{launch}, parent: "L",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				if err := s.SettleForkedThreadAsInterrupted(thread, summarise, 9_000); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		{name: "crash sweep", rows: []stampFixtureRow{launch}, parent: "L",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				if err := s.InsertTurn(Turn{TurnID: thread + "-turn-1", ThreadID: thread, TurnIndex: 1, StartedAt: 1}); err != nil {
+					t.Fatal(err)
+				}
+				if crashed, err := s.recoverCrashedTurns(summarise, 9_000); err != nil || len(crashed) != 1 {
+					t.Fatalf("crash sweep: %v, %v", crashed, err)
+				}
+			}},
+		{name: "background launch gets its completion", rows: []stampFixtureRow{background}, parent: "L",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				if _, err := s.AppendCompletionItem(Item{ID: "L", ThreadID: thread},
+					stampFixtureRow{id: "L-done", kind: "tool_completion", tool: "Agent", summary: "done", turn: 3}.item(thread), nil); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		{name: "history block brings the completion", rows: []stampFixtureRow{background}, parent: "L",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				done := stampFixtureRow{id: "L-done", kind: "tool_completion", tool: "Agent", summary: "done",
+					background: true, completionOf: "L", turn: 3}.item(thread)
+				if err := s.InsertThreadHistory(thread, ThreadHistoryBatch{Rows: []HistoryRow{{Item: done}}}); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		{name: "background session torn down", rows: []stampFixtureRow{background}, parent: "L",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				if n, err := s.MarkLiveBackgroundToolCallsInactive(thread, 9_000); err != nil || n != 1 {
+					t.Fatalf("mark inactive: %d, %v", n, err)
+				}
+			}},
+		{name: "meta update settles the launch", rows: []stampFixtureRow{background}, parent: "L",
+			stop: meta(func(s *Store, thread, meta string) error { return s.UpdateItemMeta(thread, "L", meta) })},
+		{name: "provider id remap settles the launch", rows: []stampFixtureRow{background}, parent: "L",
+			stop: meta(func(s *Store, thread, meta string) error {
+				return s.RemapProviderIDs(thread, []ItemMetaUpdate{{ItemID: "L", Meta: meta}}, nil)
+			})},
+		{name: "session ref remap settles the launch", rows: []stampFixtureRow{background}, parent: "L",
+			stop: meta(func(s *Store, thread, meta string) error {
+				_, err := s.UpdateSessionRefAndRemapProviderIDs(thread, "ref-2", []ItemMetaUpdate{{ItemID: "L", Meta: meta}}, nil)
+				return err
+			})},
+		{name: "Codex runtime retired", provider: "codex", rows: []stampFixtureRow{background}, parent: "L",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				if retired, err := s.RetireCodexBackgroundRuntime(thread, summarise, 9_000); err != nil || len(retired) != 1 {
+					t.Fatalf("retire: %d rows, %v", len(retired), err)
+				}
+			}},
+		{name: "Codex runtime recovered at boot", provider: "codex", rows: []stampFixtureRow{background}, parent: "L",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				if retired, err := s.RecoverCodexBackgroundRuntime(summarise, 9_000); err != nil || len(retired) != 1 {
+					t.Fatalf("recover: %d rows, %v", len(retired), err)
+				}
+			}},
+		{name: "carrier completes", rows: resumed, parent: "R", stop: status("C", "completed")},
+		{name: "carrier resumes another root", rows: resumed, parent: "R",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				if err := s.UpdateItemMeta(thread, "C", carrierMeta("Q")); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		{name: "carrier deleted", rows: resumed, parent: "R",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				if err := s.DeleteThreadItem(thread, "C"); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		{name: "fold deletes the carrier", rows: append(slices.Clone(resumed),
+			stampFixtureRow{id: "U", kind: "user_text", summary: "hello", turn: 3}), parent: "R",
+			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
+				if _, err := s.FoldUserTextRows(thread, "U", []string{"C"}, "hello", "{}", 9_000); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		{name: "a tool under the running agent completes", rows: []stampFixtureRow{launch}, parent: "L", keeps: true,
+			stop: func(t *testing.T, s *Store, thread string, card func(string) *SubagentCard) {
+				tool := stampFixtureRow{id: "x-t", kind: "tool_call", tool: "Bash", summary: "Bash: t", status: "running", parent: "L", turn: 4, index: 5}.item(thread)
+				tool.SubagentCard = card("L")
+				if err := s.InsertItem(tool); err != nil {
+					t.Fatal(err)
+				}
+				completed := "completed"
+				if _, err := s.UpdateItemFields(thread, "x-t", ItemPartialUpdate{Status: &completed, SubagentCard: card("L")}); err != nil {
+					t.Fatal(err)
+				}
+			}},
+		{name: "another agent completes", rows: []stampFixtureRow{launch,
+			{id: "M", kind: "tool_call", tool: "Agent", summary: "Agent: m", status: "running", turn: 2}}, parent: "L", keeps: true,
+			stop: status("M", "completed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			const thread = "t-stop"
+			provider := tc.provider
+			if provider == "" {
+				provider = "claude"
+			}
+			if err := s.CreateThread(makeThread(thread, provider)); err != nil {
+				t.Fatal(err)
+			}
+			session := newCardSessionForTest(t, s, thread)
+			write := func(r stampFixtureRow) {
+				t.Helper()
+				item := r.item(thread)
+				item.SubagentCard = session.card(r.parent)
+				if err := s.InsertItem(item); err != nil {
+					t.Fatalf("insert %s: %v", r.id, err)
+				}
+			}
+			for _, r := range tc.rows {
+				write(r)
+			}
+			session.flush()
+			write(stampFixtureRow{id: "x-1", kind: "tool_call", tool: "Bash", summary: "Bash: one", parent: tc.parent, turn: 4, index: 1})
+			pending := pendingCardsForTest(s, thread)
+			if !slices.Contains(pending, tc.parent) {
+				t.Fatalf("the running agent's write left %v pending, want %s", pending, tc.parent)
+			}
+			stamps := subagentStampRowsForTest(t, s, thread)
+
+			tc.stop(t, s, thread, session.card)
+			if tc.keeps {
+				if got := pendingCardsForTest(s, thread); !reflect.DeepEqual(got, pending) {
+					t.Errorf("the stop left %v pending, want %v: a live card covers them", got, pending)
+				}
+				if got := subagentStampRowsForTest(t, s, thread); !reflect.DeepEqual(got, stamps) {
+					t.Error("a stop a live card covers wrote stamp rows")
+				}
+				session.flush()
+			} else if got := pendingCardsForTest(s, thread); len(got) > 0 {
+				t.Errorf("the stop left %v pending", got)
+			}
+			crashSubagentCardsForTest(s)
+			if _, err := s.RecoverSubagentCards(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			assertSubagentStampParity(t, s, thread, "a crash after the stop", true)
+			assertStampsAreTheRecompute(t, s, thread, "a crash after the stop")
+		})
+	}
+}
+
+// TestSubagentCardStopWithoutTheCardLock pins the guard on a bulk writer
+// that holds no lock on the thread's cards: it may stop an agent only
+// while the thread's cards hold nothing.
+func TestSubagentCardStopWithoutTheCardLock(t *testing.T) {
+	s := newTestStore(t)
+	const thread = "t-stop-unlocked"
+	mustCreateThread(t, s, thread)
+	insertWithCardForTest(t, s, stampFixtureRow{id: "L", kind: "tool_call", tool: "Agent", summary: "Agent: l", status: "running", background: true, turn: 1}.item(thread))
+	complete := func(id string) error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		w := s.bulkItemWrites(tx, thread, false)
+		item := stampFixtureRow{id: id, kind: "tool_completion", tool: "Agent", summary: "done", background: true, completionOf: "L", turn: 2}.item(thread)
+		applyItemDefaults(&item)
+		if err := insertItemTx(tx, w, item, "test completion"); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.finish(); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	card, err := s.OpenSubagentCard(thread, "L")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := complete("L-done"); err == nil || !strings.Contains(err.Error(), "holds no lock on its subagent cards") {
+		t.Fatalf("a completion without the lock beside an open card: %v, want the guard", err)
+	}
+	if err := card.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := complete("L-done"); err != nil {
+		t.Fatalf("a completion without the lock beside no card: %v", err)
+	}
+}
+
+// TestSubagentCardSweepsRunPastAFailedFlush pins the boot sweeps over
+// every thread against a failure of the flush before them: the sweep
+// still commits and returns what it settled, with the flush's error.
+func TestSubagentCardSweepsRunPastAFailedFlush(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "t-held")
+	if err := s.CreateThread(makeThread("t-codex", "codex")); err != nil {
+		t.Fatal(err)
+	}
+	session := newCardSessionForTest(t, s, "t-held")
+	for _, r := range []stampFixtureRow{
+		{id: "L", kind: "tool_call", tool: "Agent", summary: "Agent: l", status: "running", turn: 1},
+		{id: "L-b1", kind: "tool_call", tool: "Bash", summary: "Bash: one", parent: "L", turn: 1, index: 1},
+	} {
+		item := r.item("t-held")
+		item.SubagentCard = session.card(r.parent)
+		if err := s.InsertItem(item); err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+	insertWithCardForTest(t, s, stampFixtureRow{id: "B", kind: "tool_call", tool: "Bash", summary: "Bash: b", status: "running", background: true, turn: 1}.item("t-codex"))
+	insertWithCardForTest(t, s, stampFixtureRow{id: "F", kind: "tool_call", tool: "Bash", summary: "Bash: f", status: "running", turn: 1, index: 1}.item("t-codex"))
+	if err := s.InsertTurn(Turn{TurnID: "t-codex-turn-1", ThreadID: "t-codex", TurnIndex: 1, StartedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// L's first stamp is an insert.
+	mustExec(t, s.db, `CREATE TRIGGER fail_flush BEFORE INSERT ON subagent_aggregates BEGIN SELECT RAISE(ABORT, 'injected flush failure'); END`)
+	summarise := func(string) string { return "stopped" }
+	retired, err := s.RecoverCodexBackgroundRuntime(summarise, 9_000)
+	if err == nil || !strings.Contains(err.Error(), "injected flush failure") || len(retired) != 1 || retired[0].ID != "B" {
+		t.Errorf("Codex recovery past a failed flush: %d rows, %v; want B and the failure", len(retired), err)
+	}
+	crashed, err := s.recoverCrashedTurns(summarise, 9_000)
+	if err == nil || !strings.Contains(err.Error(), "injected flush failure") || len(crashed) != 1 {
+		t.Errorf("crash sweep past a failed flush: %v, %v; want the Codex turn and the failure", crashed, err)
+	}
+	for _, id := range []string{"B", "F"} {
+		row, _, err := s.GetThreadItemForWrite("t-codex", id)
+		if err != nil || row.Status != "errored" {
+			t.Errorf("%s after the sweeps: %q, %v; want errored", id, row.Status, err)
+		}
+	}
+	mustExec(t, s.db, `DROP TRIGGER fail_flush`)
+	session.flush()
+	assertSubagentStampParity(t, s, "t-held", "after the sweeps", true)
 }
