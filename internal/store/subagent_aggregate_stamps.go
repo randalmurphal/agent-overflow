@@ -489,7 +489,14 @@ func aggTargetsCTE(where string, flags ...string) string {
 // per target, upserted. values maps a value column to its expression over
 // agg_targets; a column it leaves out keeps its old value, and a dirty row
 // loses every value. gen is left as it is.
-func aggWriteSQL(ctes string, values map[string]string) string {
+//
+// gate is a condition on the trigger row alone that every target
+// requires. SQLite tests such a term before the query's first row, so a
+// write that cannot change a stamp never runs the CTEs. Each MATERIALIZED
+// CTE opens an ephemeral table on every execution, which made the
+// statement cost a top-level row's insert more than the rest of its
+// trigger.
+func aggWriteSQL(gate, ctes string, values map[string]string) string {
 	columns := make([]string, 0, len(subagentAggregateValueColumns))
 	for _, column := range subagentAggregateValueColumns {
 		value, ok := values[column]
@@ -509,7 +516,7 @@ func aggWriteSQL(ctes string, values map[string]string) string {
 	           ` + strings.Join(columns, ",\n\t           ") + `
 	      FROM agg_targets
 	  ) AS agg_values
-	 WHERE true
+	 WHERE ` + gate + `
 	` + subagentAggregateUpsertSQL("") + `;`
 }
 
@@ -619,7 +626,8 @@ func subagentAggregateInsertSQL() string {
 		return column("CASE WHEN "+toolable+" THEN "+value+" END", "NULL", "NULL",
 			"CASE WHEN tool THEN "+value+" ELSE "+old+" END")
 	}
-	return aggWriteSQL(aggChainCTE("agg_chain", "NEW", "")+`,
+	gate := aggBulkIdleSQL("NEW.thread_id") + " AND (NEW.parent_id <> '' OR " + aggAnchorableSQL("NEW.") + ")"
+	return aggWriteSQL(gate, aggChainCTE("agg_chain", "NEW", "")+`,
 	    `+aggRoundsCTE("agg_rounds", "agg_chain", "NEW")+`,
 	    agg_orphan(adopts) AS MATERIALIZED (
 	      SELECT `+aggBulkIdleSQL("NEW.thread_id")+` AND `+aggHasChildSQL("NEW.thread_id", "NEW.id", "")+`),
@@ -703,7 +711,8 @@ func subagentAggregateDeleteSQL() string {
 	      FROM agg_ops WHERE role IS NOT NULL AND id <> ''
 	     GROUP BY thread_id, id
 	  )`
-	return aggWriteSQL(aggChainCTE("agg_chain", "OLD", "")+`,
+	gate := aggBulkIdleSQL("OLD.thread_id") + " AND OLD.parent_id <> ''"
+	return aggWriteSQL(gate, aggChainCTE("agg_chain", "OLD", "")+`,
 	    `+aggRoundsCTE("agg_rounds", "agg_chain", "OLD")+`,
 	    agg_orphan(adopts) AS MATERIALIZED (SELECT `+aggHasChildSQL("OLD.thread_id", "OLD.id", "")+`),
 	    `+roles+`,
@@ -812,7 +821,8 @@ func subagentAggregateUpdateSQL() string {
 	  )`
 	pick := func(value, old string) string { return "CASE WHEN pick THEN " + value + " ELSE " + old + " END" }
 	tool := func(value, old string) string { return "CASE WHEN tool THEN " + value + " ELSE " + old + " END" }
-	return aggWriteSQL(change+`,
+	gate := "(OLD.parent_id <> '' OR NEW.parent_id <> '' OR " + selfTerms + ")"
+	return aggWriteSQL(gate, change+`,
 	    `+aggChainCTE("agg_chain_new", "NEW", " AND (SELECT structural OR content FROM agg_change)")+`,
 	    `+aggChainCTE("agg_chain_old", "OLD", " AND (SELECT structural FROM agg_change)")+`,
 	    `+aggRoundsCTE("agg_rounds", "agg_chain_new", "NEW")+`,

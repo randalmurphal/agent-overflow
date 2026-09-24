@@ -427,6 +427,21 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	}
 	step("second child under shadowed launch", []string{"imp-launch"}, add(stampFixtureRow{id: "imp-local-2", kind: "assistant_text", summary: "local text", parent: "imp-launch", turn: 8, index: 1}))
 
+	// Top-level rows no parent chain reaches: a launch inserted after its
+	// children adopts them, and a launch whose meta later names a
+	// transcript root becomes that root's carrier.
+	step("orphan child", nil, add(stampFixtureRow{id: "O-a1", kind: "assistant_text", summary: "early", parent: "O", turn: 9, index: 1}))
+	step("orphan tool", nil, add(stampFixtureRow{id: "O-b1", kind: "tool_call", tool: "Bash", summary: "Bash: early", parent: "O", turn: 9, index: 2}))
+	step("launch adopts its children", nil, add(stampFixtureRow{id: "O", kind: "tool_call", tool: "Agent", summary: "Agent: late", turn: 9}))
+	step("second root", nil, add(stampFixtureRow{id: "Q", kind: "tool_call", tool: "Agent", summary: "Agent: second root", turn: 10}))
+	step("launch becomes a carrier", nil, func() {
+		meta := carrierMeta("Q")
+		if _, err := s.UpdateItemFields(thread, "O", ItemPartialUpdate{Meta: &meta}); err != nil {
+			t.Fatalf("update meta O: %v", err)
+		}
+	})
+	step("top-level text", nil, add(stampFixtureRow{id: "T-top", kind: "assistant_text", summary: "top level", turn: 11}))
+
 	// Deletes that a trigger can apply, then ones that need a recompute.
 	step("delete an older child", []string{"L"}, remove("L-a1"))
 	step("delete the pick", nil, remove("N-b1"))
@@ -454,6 +469,24 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 		t.Fatalf("recompute: %v", err)
 	}
 	assertSubagentStampParity(t, s, thread, "re-parented, recomputed", true)
+
+	// Moves across the top level change the card of a launch on one side
+	// of the move only: a child leaving B, and a top-level row joining L.
+	for _, move := range [][2]string{{"B-a1", ""}, {"T-top", "L"}} {
+		if _, err := s.db.Exec(`UPDATE items SET parent_id = ? WHERE thread_id = ? AND id = ?`, move[1], thread, move[0]); err != nil {
+			t.Fatalf("move %s: %v", move[0], err)
+		}
+	}
+	for _, id := range []string{"B", "L"} {
+		if _, mode := subagentStampStateForTest(t, s, thread, id); mode != subagentStampWalk {
+			t.Errorf("move across the top level left %s mode %d, want dirty", id, mode)
+		}
+	}
+	assertSubagentStampParity(t, s, thread, "moved across the top level, unsettled", false)
+	if _, err := s.RecomputeSubagentAggregates(t.Context(), thread, 16); err != nil {
+		t.Fatalf("recompute: %v", err)
+	}
+	assertSubagentStampParity(t, s, thread, "moved across the top level, recomputed", true)
 
 	// Every anchor the fixture names ends on a stamp a page serves as
 	// stored: the parity above was not won by walking everything. C2 lost
