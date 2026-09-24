@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/closer"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
@@ -127,9 +128,9 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread: active turn check: %w", err)
 	}
-	source, err := a.store.GetThread(sourceThreadID)
+	source, err := a.forkSource("fork thread", sourceThreadID)
 	if err != nil {
-		return store.Thread{}, fmt.Errorf("fork thread: %w", err)
+		return store.Thread{}, err
 	}
 	// "Live" is deliberately WIDER than "has an open turn row". The
 	// Claude CLI closes a turn (end_turn) and then self-re-invokes when a
@@ -262,7 +263,7 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 
 	timing.next("create")
 	if err := a.threadApplication().CreatePointerFork(fork, source.ID, store.ForkCut{ThroughTurn: atTurnIndex}); err != nil {
-		return store.Thread{}, fmt.Errorf("fork thread: create fork thread: %w", err)
+		return store.Thread{}, forkRefusal(fmt.Errorf("fork thread: create fork thread: %w", err))
 	}
 	cleanups.Add(func() error { return a.cleanupForkThread(fork.ID) })
 	a.broadcastThreadRow(triage.ThreadActionListed, fork)
@@ -348,9 +349,9 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 	if err != nil {
 		return store.Thread{}, fmt.Errorf("fork thread from message: active turn check: %w", err)
 	}
-	source, err := a.store.GetThread(sourceThreadID)
+	source, err := a.forkSource("fork thread from message", sourceThreadID)
 	if err != nil {
-		return store.Thread{}, fmt.Errorf("fork thread from message: %w", err)
+		return store.Thread{}, err
 	}
 	// Same widened liveness as ForkThread: a registered session can
 	// stream (background-task re-invocations) with the turn row closed.
@@ -412,7 +413,7 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 	}
 	timing.next("create")
 	if err := a.threadApplication().CreatePointerFork(fork, source.ID, cut); err != nil {
-		return store.Thread{}, fmt.Errorf("fork thread from message: create fork thread: %w", err)
+		return store.Thread{}, forkRefusal(fmt.Errorf("fork thread from message: create fork thread: %w", err))
 	}
 	cleanups.Add(func() error { return a.cleanupForkThread(fork.ID) })
 	a.broadcastThreadRow(triage.ThreadActionListed, fork)
@@ -498,6 +499,31 @@ func (a *App) cleanupForkThread(threadID string) error {
 		a.broadcastThreadDeleted(threadID)
 	}
 	return errors.Join(errs...)
+}
+
+// forkSource reads the thread a fork is taken from, under its action lock.
+// A delete holds that lock from start to finish, so a fork that waited on
+// it finds the thread gone and says so (store.ErrForkSourceDeleted); the
+// store refuses a fork of a thread whose delete has begun for a caller
+// that holds no lock.
+func (a *App) forkSource(op, sourceThreadID string) (store.Thread, error) {
+	source, err := a.store.GetThread(sourceThreadID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.Thread{}, forkRefusal(fmt.Errorf("%s %s: %w", op, sourceThreadID, store.ErrForkSourceDeleted))
+	}
+	if err != nil {
+		return store.Thread{}, fmt.Errorf("%s: %w", op, err)
+	}
+	return source, nil
+}
+
+// forkRefusal gives a fork refused because its source was deleted the
+// sentence every client shows, on every origin; other errors pass through.
+func forkRefusal(err error) error {
+	if !errors.Is(err, store.ErrForkSourceDeleted) {
+		return err
+	}
+	return errorsx.Public("fork_source_deleted", "This thread was deleted, so it cannot be forked.", err)
 }
 
 // ensureThreadCanFork rejects forks against threads that have no

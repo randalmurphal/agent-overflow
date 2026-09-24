@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	attachmentstore "agent-overflow/internal/attachment"
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/codex"
 	"agent-overflow/internal/settings"
@@ -1147,4 +1149,118 @@ func TestForkThread_ExcludesBackgroundRunningRows(t *testing.T) {
 	if parentBgRunning.Status != "running" {
 		t.Errorf("parent bg-running row status = %q, want running", parentBgRunning.Status)
 	}
+}
+
+// TestForkDuringASourceDeleteIsRefused: a fork asked for while the
+// source's delete drains its rows is refused with store.ErrForkSourceDeleted
+// and a public sentence every origin shows, and leaves no thread behind.
+// The app's delete holds the source's action lock from start to finish, so
+// the fork waits and finds the source gone. A store delete that holds no
+// action lock (a rollback's) leaves the lock free, and the store refuses
+// the fork. A fork admitted before the delete began is detached by it
+// (TestPointerForkAdmittedAsTheDeleteBeginsIsDetached).
+func TestForkDuringASourceDeleteIsRefused(t *testing.T) {
+	type refusal struct {
+		op  string
+		err error
+	}
+	requireRefused := func(t *testing.T, got refusal) {
+		t.Helper()
+		if !errors.Is(got.err, store.ErrForkSourceDeleted) {
+			t.Fatalf("%s during the delete = %v, want store.ErrForkSourceDeleted", got.op, got.err)
+		}
+		code, message, public := errorsx.PublicDetails(got.err)
+		if !public || code != "fork_source_deleted" || message != "This thread was deleted, so it cannot be forked." {
+			t.Fatalf("%s error %q shows code=%q message=%q public=%v", got.op, got.err, code, message, public)
+		}
+	}
+	seed := func(t *testing.T) (*App, string) {
+		app := newTestAppWithStore(t)
+		source := testThread("fork-during-delete")
+		source.Provider = string(provider.Codex)
+		source.SessionRef = "codex-thread"
+		if err := app.store.CreateThread(source); err != nil {
+			t.Fatal(err)
+		}
+		for i := range 600 {
+			kind, role := "assistant_text", "assistant"
+			if i%10 == 0 {
+				kind, role = "user_text", "user"
+			}
+			if err := app.store.InsertItem(store.Item{
+				ID: fmt.Sprintf("r%d", i), ThreadID: source.ID, TurnIndex: i / 10, ItemIndex: i % 10,
+				Kind: kind, Role: role, Status: "completed", Summary: "row",
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return app, source.ID
+	}
+	requireNoThreads := func(t *testing.T, app *App) {
+		t.Helper()
+		threads, err := app.store.ListThreads()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(threads) != 0 {
+			t.Fatalf("threads after the refused forks = %+v, want none", threads)
+		}
+	}
+
+	t.Run("the app's delete", func(t *testing.T) {
+		app, sourceID := seed(t)
+		refusals := make(chan refusal, 2)
+		pauses := 0
+		unlock := app.threadLocks().Lock(sourceID)
+		err := app.deleteThreadTreePacedLocked(sourceID, func() {
+			pauses++
+			if pauses > 1 {
+				return
+			}
+			go func() {
+				_, err := app.ForkThread(context.Background(), sourceID, nil)
+				refusals <- refusal{"ForkThread", err}
+			}()
+			go func() {
+				_, err := app.ForkThreadFromMessage(context.Background(), sourceID, "r550")
+				refusals <- refusal{"ForkThreadFromMessage", err}
+			}()
+		})
+		unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pauses == 0 {
+			t.Fatal("the source drained in one chunk; the fixture must span several")
+		}
+		for range 2 {
+			requireRefused(t, <-refusals)
+		}
+		requireNoThreads(t, app)
+	})
+
+	t.Run("a store delete without the action lock", func(t *testing.T) {
+		app, sourceID := seed(t)
+		var got []refusal
+		pauses := 0
+		if err := app.store.DeleteThreadPaced(sourceID, func() {
+			pauses++
+			if pauses > 1 {
+				return
+			}
+			_, err := app.ForkThread(context.Background(), sourceID, nil)
+			got = append(got, refusal{"ForkThread", err})
+			_, err = app.ForkThreadFromMessage(context.Background(), sourceID, "r550")
+			got = append(got, refusal{"ForkThreadFromMessage", err})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if pauses == 0 {
+			t.Fatal("the source drained in one chunk; the fixture must span several")
+		}
+		for _, refused := range got {
+			requireRefused(t, refused)
+		}
+		requireNoThreads(t, app)
+	})
 }

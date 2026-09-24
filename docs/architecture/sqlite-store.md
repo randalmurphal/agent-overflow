@@ -309,7 +309,10 @@ Deleting a thread first detaches the forks that read through it
 deleted thread and keeps its nearer levels, so the rows the deleted thread
 owned leave its timeline and its epoch advances. The divider of every fork made
 from the deleted thread, including the copies materialized forks and their
-forks hold, records `sourceDeleted` and the source title.
+forks hold, records `sourceDeleted` and the source title. From the start of
+the delete, `CreatePointerFork` refuses the thread as a source
+(`ErrForkSourceDeleted`), so that detach covers every fork it will have and no
+fork reads rows the paced drain is removing.
 
 ### Attachments
 

@@ -187,12 +187,9 @@ func TestDetachReportsEveryThreadItsMarkMoves(t *testing.T) {
 }
 
 // TestPacedDeleteReportsEachForkOnce: a paced delete detaches the source's
-// forks before it drains the rows, and again in the transaction that
-// deletes the thread, for a fork made meanwhile. The second detach leaves
-// the forks the first one detached alone: it neither marks their dividers
-// nor moves their stamps, so each fork is reported once. F is a pointer
-// fork, G reads the source through F, H is materialized, and N is made
-// during the drain.
+// forks before it drains the rows, and nothing after that marks their
+// dividers or moves their stamps, so each fork is reported once. F is a
+// pointer fork, G reads the source through F and H is materialized.
 func TestPacedDeleteReportsEachForkOnce(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "S")
@@ -237,31 +234,75 @@ func TestPacedDeleteReportsEachForkOnce(t *testing.T) {
 			detached[id] = historyStampOf(t, s, id)
 		}
 		marked = dividers()
-		mustPointerFork(t, s, "S", "N", ForkCut{})
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if pauses == 0 {
 		t.Fatal("the source drained in one chunk; the fixture must span several")
 	}
-	if got, want := reports.take(), [][]string{{"N"}}; !slices.EqualFunc(got, want, slices.Equal) {
-		t.Fatalf("the delete's final detach reported %v, want %v", got, want)
+	if got := reports.take(); len(got) != 0 {
+		t.Fatalf("the delete reported %v after the drain began", got)
 	}
 	for id, was := range detached {
 		if now := historyStampOf(t, s, id); now != was {
-			t.Errorf("the final detach moved %s's stamp %+v -> %+v", id, was, now)
+			t.Errorf("the delete moved %s's stamp %+v -> %+v after the drain began", id, was, now)
 		}
 	}
 	for id, was := range dividers() {
 		if was != marked[id] {
-			t.Errorf("the final detach rewrote %s's divider %+v -> %+v", id, marked[id], was)
+			t.Errorf("the delete rewrote %s's divider %+v -> %+v after the drain began", id, marked[id], was)
 		}
 	}
-	if _, origin := forkDivider(t, s, "N"); !origin.SourceDeleted {
-		t.Fatalf("N divider = %+v", origin)
+}
+
+// TestRetriedDetachLeavesDetachedForksAlone: a delete that fails after its
+// detach leaves the thread, and the retry detaches again. The forks the
+// first detach handled read nothing through the thread and their dividers
+// are marked, so the retry neither marks nor stamps them and reports
+// nothing.
+func TestRetriedDetachLeavesDetachedForksAlone(t *testing.T) {
+	s := newTestStore(t)
+	seedLinearSource(t, s, "S", 2)
+	mustPointerFork(t, s, "S", "F", ForkCut{})
+	mustPointerFork(t, s, "F", "G", ForkCut{})
+	mustPointerFork(t, s, "S", "H", ForkCut{})
+	if err := s.MaterializeForkHistory(t.Context(), "H"); err != nil {
+		t.Fatal(err)
 	}
-	if rows := forkRows(t, s, "N"); len(rows) != 0 {
-		t.Fatalf("N reads %d rows of the deleted source", len(rows))
+	reports := watchForkMoves(s)
+	if err := s.detachForkDescendants("S"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := reports.take(), [][]string{{"F", "G", "H"}}; !slices.EqualFunc(got, want, slices.Equal) {
+		t.Fatalf("the first detach reported %v, want %v", got, want)
+	}
+	type state struct {
+		stamp HistoryStamp
+		rev   int64
+		meta  string
+	}
+	read := func() map[string]state {
+		out := map[string]state{}
+		for _, id := range []string{"F", "G", "H"} {
+			st := state{stamp: historyStampOf(t, s, id)}
+			if err := s.db.QueryRow(`SELECT rev, meta FROM items WHERE thread_id = ? AND id = ?`, id, forkDividerID(id)).Scan(&st.rev, &st.meta); err != nil {
+				t.Fatalf("divider of %s: %v", id, err)
+			}
+			out[id] = st
+		}
+		return out
+	}
+	before := read()
+	if err := s.DeleteThread("S"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reports.take(); len(got) != 0 {
+		t.Fatalf("the retried delete reported %v", got)
+	}
+	for id, now := range read() {
+		if now != before[id] {
+			t.Errorf("the retried delete changed %s: %+v -> %+v", id, before[id], now)
+		}
 	}
 }
 

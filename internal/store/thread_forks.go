@@ -62,6 +62,12 @@ func BuildForkedThread(source Thread) Thread {
 // forkLineageMaxDepth levels.
 var ErrForkChainTooDeep = errors.New("store: fork chain is too deep")
 
+// ErrForkSourceDeleted reports a fork whose source is gone or whose
+// delete has begun (DeleteThreadPaced). The delete detaches the forks the
+// source already has; a fork made after it began would read rows the
+// delete is removing.
+var ErrForkSourceDeleted = errors.New("store: the thread was deleted and cannot be forked")
+
 // ForkCut says how much of the source a pointer fork inherits. The zero
 // value is the whole timeline.
 type ForkCut struct {
@@ -145,7 +151,15 @@ func (s *Store) linkPointerForkTx(tx *sql.Tx, forkID, sourceID string, cut ForkC
 		`SELECT title, (SELECT COALESCE(MAX(depth), 0) FROM thread_fork_lineage WHERE thread_id = threads.id)
 		   FROM threads WHERE id = ?`, sourceID,
 	).Scan(&title, &depth); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("store: fork %s: %w", sourceID, ErrForkSourceDeleted)
+		}
 		return fmt.Errorf("store: read fork source %s: %w", sourceID, err)
+	}
+	// Checked under the writer connection this transaction holds: a
+	// delete that begins now detaches this fork once it commits.
+	if s.threadDeletes.active(sourceID) {
+		return fmt.Errorf("store: fork %s: %w", sourceID, ErrForkSourceDeleted)
 	}
 	plan, err := resolveForkCutTx(tx, sourceID, cut)
 	if err != nil || plan.empty {
@@ -975,8 +989,8 @@ func (s *Store) detachForkDescendants(threadID string) error {
 // the detached forks, each thread holding a divider it marks, and the forks
 // that show a marked divider in place. It is idempotent: a fork already
 // detached reads nothing through threadID and its dividers are marked, so
-// a later detach of threadID (DeleteThreadPaced's, for a fork made while
-// the items drained) neither marks nor stamps it again.
+// a later detach of threadID (a delete retried after one that failed
+// partway) neither marks nor stamps it again.
 func (s *Store) detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 	var title string
 	if err := tx.QueryRow(`SELECT title FROM threads WHERE id = ?`, threadID).Scan(&title); err != nil {
