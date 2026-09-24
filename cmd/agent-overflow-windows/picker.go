@@ -7,6 +7,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -46,37 +47,10 @@ const loadingPage = `<!doctype html>
 <script src="/loading.js"></script></body>
 </html>`
 
-// loadingScript polls /loading.json and writes the report into the
-// page's ao-loading-* elements. A page keeps its own status text until
-// the backend reports a phase.
-const loadingScript = `(function () {
-  "use strict";
-  var title = document.getElementById("ao-loading-title");
-  var status = document.getElementById("ao-loading-status");
-  var meta = document.getElementById("ao-loading-meta");
-  function clock(ms) {
-    var s = Math.floor(ms / 1000);
-    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
-  }
-  function render(r) {
-    if (title && r.title) title.textContent = r.title;
-    if (status && r.phase) status.textContent = r.status;
-    if (!meta) return;
-    var parts = [];
-    if (r.steps > 0) parts.push("Step " + r.step + " of " + r.steps);
-    if (r.elapsedMs >= 1000) parts.push(clock(r.elapsedMs) + " elapsed");
-    meta.textContent = parts.join(" \u00b7 ");
-  }
-  function poll() {
-    fetch("/loading.json", { cache: "no-store" })
-      .then(function (res) { return res.ok ? res.json() : null; })
-      .then(function (r) { if (r) render(r); })
-      .catch(function () {})
-      .then(function () { setTimeout(poll, 500); });
-  }
-  poll();
-})();
-`
+// loadingScript is served as /loading.js; loading.js states its contract.
+//
+//go:embed loading.js
+var loadingScript string
 
 // loadingStatus is what /loading.json reports: when the current launch
 // began and the backend's latest startup report. The launch writes it and

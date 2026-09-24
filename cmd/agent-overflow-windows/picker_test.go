@@ -206,7 +206,7 @@ func TestLoadingRoutesServeTheLiveReport(t *testing.T) {
 	if ct := script.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/javascript") {
 		t.Fatalf("/loading.js content type = %q", ct)
 	}
-	for _, want := range []string{`fetch("/loading.json"`, "setTimeout(poll, 500)", "r.status", "r.steps", "r.elapsedMs"} {
+	for _, want := range []string{`fetch("/loading.json"`, "setTimeout(poll, 500)", `"visibilitychange"`, "r.status", "r.steps", "r.elapsedMs"} {
 		if !strings.Contains(script.Body.String(), want) {
 			t.Fatalf("/loading.js lacks %s", want)
 		}
