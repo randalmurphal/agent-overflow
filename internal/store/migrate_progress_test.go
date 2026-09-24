@@ -61,15 +61,22 @@ func recordedVersion(t *testing.T, path string) int {
 	return version
 }
 
-// pendingTail is the last n migrations, which the fixtures below leave
-// pending. Six reaches back past a Rebuild migration.
-func pendingTail(t *testing.T, n int) (target int, pending []Migration) {
+// pendingTail is the chain from its last Rebuild migration on, which the
+// fixtures below leave pending: the rebuild is the migration whose parts
+// are reported, and the ordinary migrations after it come along whatever
+// the chain grows to. target is the version the fixture migrates through.
+func pendingTail(t *testing.T) (target int, pending []Migration) {
 	t.Helper()
-	if len(migrations) < n+1 {
-		t.Fatalf("chain has %d migrations, need %d", len(migrations), n+1)
+	last := -1
+	for i, m := range migrations {
+		if m.Rebuild {
+			last = i
+		}
 	}
-	pending = migrations[len(migrations)-n:]
-	return migrations[len(migrations)-n-1].Version, pending
+	if last < 1 {
+		t.Fatal("the chain has no rebuild migration after its first")
+	}
+	return migrations[last-1].Version, migrations[last:]
 }
 
 // TestNewWithOptionsReportsEachPendingMigrationBeforeItRuns pins the hook
@@ -78,7 +85,7 @@ func pendingTail(t *testing.T, n int) (target int, pending []Migration) {
 // migration commits. A rebuild also reports each index build and then its
 // foreign key check, under its own step and before it commits.
 func TestNewWithOptionsReportsEachPendingMigrationBeforeItRuns(t *testing.T) {
-	target, pending := pendingTail(t, 6)
+	target, pending := pendingTail(t)
 	path := fileDBThrough(t, target)
 
 	var steps, parts []MigrationStep
@@ -161,7 +168,7 @@ func TestNewWithOptionsReportsEachPendingMigrationBeforeItRuns(t *testing.T) {
 // migrations run fails the open with the context's error and leaves every
 // migration that had not committed pending for the next open.
 func TestNewWithOptionsCancelledMidChainRollsBack(t *testing.T) {
-	target, pending := pendingTail(t, 6)
+	target, pending := pendingTail(t)
 	path := fileDBThrough(t, target)
 
 	ctx, cancel := context.WithCancel(context.Background())
