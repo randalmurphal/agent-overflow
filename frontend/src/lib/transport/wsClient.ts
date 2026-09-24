@@ -450,8 +450,12 @@ export class TransportError extends Error {
   // becomes a sentence.
   scope?: string;
   transfer?: { operationId: string; backendId: string };
+  // backgroundAgents is set only on code 'background_agents_running': the
+  // unvalidated agent list a refused Stop names. Read it through
+  // backgroundKillRefusal (../stores/backgroundKillConfirmation.svelte.ts).
+  backgroundAgents?: unknown;
   constructor(code: string, message: string, reason?: string, scope?: string,
-    transfer?: { operationId: string; backendId: string }) {
+    transfer?: { operationId: string; backendId: string }, backgroundAgents?: unknown) {
     super(code === 'auth_failed' ? presentAuthReason(reason).title : message);
     this.name = 'TransportError';
     this.code = code;
@@ -462,6 +466,7 @@ export class TransportError extends Error {
       typeof transfer.backendId === 'string' && transfer.backendId.length <= 128) {
       this.transfer = transfer;
     }
+    if (code === 'background_agents_running') this.backgroundAgents = backgroundAgents;
   }
 }
 
@@ -2991,6 +2996,7 @@ export class WSClient {
             frame.error.reason,
             frame.error.scope,
             frame.error.transfer,
+            frame.error.backgroundAgents,
           ),
         );
         return;

@@ -116,16 +116,17 @@ func (s *Session) Send(ctx context.Context, content string, opts provider.SendOp
 // Interrupt aborts the current turn by sending a control_request with
 // subtype "interrupt" and waiting for the CLI's control_response. Per
 // claude-wire.md §control_request, the CLI's interrupt handler stops
-// the model and reaps in-flight foreground tool subprocesses;
-// backgrounded tasks (Bash run_in_background:true, Task subagents)
-// survive by design and are stopped individually via stop_task.
+// the model and reaps in-flight foreground tool subprocesses. It also
+// kills every running or parked async agent and the background shells
+// each agent owns; only a background shell the main thread owns
+// survives (claude-wire.md §Background task ownership).
 //
 // If the CLI never acks (timeout or caller-context cancellation), the
 // error surfaces to the caller — the failure is the CLI's to fix
 // (every Anthropic SDK uses the same control_request primitive). We
 // deliberately do NOT escalate to a process kill here: a kill would
-// take down backgrounded tasks too, inverting the documented
-// foreground-only behaviour and silently masking a Claude Code bug.
+// also take down the main thread's background shells and silently
+// mask a Claude Code bug.
 func (s *Session) Interrupt(ctx context.Context) error {
 	res, err := s.sendControlRequest(ctx, "interrupt", map[string]any{
 		"subtype": "interrupt",

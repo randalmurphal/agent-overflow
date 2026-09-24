@@ -1,5 +1,18 @@
-import { isThreadWorking, projectSendStarted } from './threadStatuses.svelte';
+import {
+  getActiveTurn,
+  getThreadStatus,
+  isThreadWorking,
+  projectSendStarted,
+  projectTurnCompleted,
+  resetForTest as resetThreadStatusesForTest,
+} from './threadStatuses.svelte';
 import { beginUndoableSend, retireUndoableSend } from './composerSendUndo';
+import { TransportError } from '../transport/wsClient';
+import {
+  backgroundKillRefusal,
+  dismissBackgroundKill,
+  pendingBackgroundKill,
+} from './backgroundKillConfirmation.svelte';
 // Tests for the Stop-button revert-on-interrupt flow. The predicate
 // is pure (in-memory state only); the helper drives the bindings
 // mock to assert dispatch + rollback behavior.
@@ -8,7 +21,9 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { createThreadPane } from './thread.svelte';
 import {
   canRevertEarlyInterrupt,
+  confirmBackgroundKill,
   runInterruptOrRevert,
+  stopTurn,
 } from './revertOnInterrupt.svelte';
 import { setBindingMock } from '../../test/mocks/bindings-app';
 import { replaceQueueForThread } from './sendQueue.svelte';
@@ -361,9 +376,9 @@ describe('runInterruptOrRevert', () => {
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
 
     let resolveRevert: (() => void) | undefined;
-    const revertCalls: string[] = [];
-    setBindingMock('InterruptAndRevertIfClean', (id: unknown) => {
-      revertCalls.push(id as string);
+    const revertCalls: unknown[][] = [];
+    setBindingMock('InterruptAndRevertIfClean', (id: unknown, _opts: unknown, confirm: unknown) => {
+      revertCalls.push([id, confirm]);
       return new Promise((resolve) => {
         resolveRevert = () => resolve(successfulRevert());
       });
@@ -380,7 +395,7 @@ describe('runInterruptOrRevert', () => {
     resolveRevert?.();
     await flushInterruptFlow();
 
-    expect(revertCalls).toEqual(['thread-1']);
+    expect(revertCalls).toEqual([['thread-1', false]]);
     // Row stays removed on Reverted=true (event handler refreshes draft).
     expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
     expect(isThreadInterruptPending('thread-1')).toBe(false);
@@ -522,9 +537,9 @@ describe('runInterruptOrRevert', () => {
     pane.upsertItem(assistantItem('a:0', 0));
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
 
-    const interruptCalls: string[] = [];
-    setBindingMock('InterruptTurn', async (id: unknown) => {
-      interruptCalls.push(id as string);
+    const interruptCalls: unknown[][] = [];
+    setBindingMock('InterruptTurn', async (id: unknown, confirm: unknown) => {
+      interruptCalls.push([id, confirm]);
     });
     setBindingMock('InterruptAndRevertIfClean', async () => {
       throw new Error('InterruptAndRevertIfClean should not be called when predicate is false');
@@ -533,7 +548,7 @@ describe('runInterruptOrRevert', () => {
     runInterruptOrRevert(pane, EMPTY_DRAFT);
     await flushInterruptFlow();
 
-    expect(interruptCalls).toEqual(['thread-1']);
+    expect(interruptCalls).toEqual([['thread-1', false]]);
     expect(isThreadInterruptPending('thread-1')).toBe(false);
     // The user_text + assistant_text rows are untouched on the
     // fallback path.
@@ -665,9 +680,9 @@ describe('runInterruptOrRevert', () => {
     pane.upsertItem(userItem('u:0', 0));
     pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
     setBindingMock('CountRunningBackgroundTasks', async () => 1);
-    const interruptCalls: string[] = [];
-    setBindingMock('InterruptTurn', async (id: unknown) => {
-      interruptCalls.push(id as string);
+    const interruptCalls: unknown[][] = [];
+    setBindingMock('InterruptTurn', async (id: unknown, confirm: unknown) => {
+      interruptCalls.push([id, confirm]);
     });
     const revert = setBindingMock('InterruptAndRevertIfClean', async () => ({
       reverted: true,
@@ -678,7 +693,7 @@ describe('runInterruptOrRevert', () => {
     runInterruptOrRevert(pane, EMPTY_DRAFT);
     await flushInterruptFlow();
 
-    expect(interruptCalls).toEqual(['thread-1']);
+    expect(interruptCalls).toEqual([['thread-1', false]]);
     expect(revert).not.toHaveBeenCalled();
     expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
     expect(isThreadInterruptPending('thread-1')).toBe(false);
@@ -734,4 +749,183 @@ describe('runInterruptOrRevert', () => {
     expect(pane.items.some((item) => item.threadId === 'thread-1')).toBe(false);
   });
 
+});
+
+describe('Stop refused for live background agents', () => {
+  const agent = { launchItemId: 'toolu-a', description: 'Scan the repo', runState: 'parked', transcriptRootId: 'toolu-a' };
+  const refusal = () => new TransportError(
+    'background_agents_running',
+    'Stopping now would also stop 1 background agent. Confirm to stop it.',
+    undefined, undefined, undefined,
+    [agent, { launchItemId: '', description: 'no id', runState: 'running', transcriptRootId: 'x' }],
+  );
+
+  beforeEach(() => {
+    resetThreadStatusesForTest();
+    replaceQueueForThread('thread-1', []);
+    setBindingMock('CountRunningBackgroundTasks', async () => 0);
+    resetThreadInterruptStateForTest();
+    resetResendRevertMarkersForTest();
+  });
+
+  async function flush(): Promise<void> {
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+  }
+
+  function busyTurnPane(): ReturnType<typeof createThreadPane> {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.upsertItem(assistantItem('a:0', 0));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    return pane;
+  }
+
+  it('a refused plain Stop puts the turn back and asks, then confirm stops with the kill confirmed', async () => {
+    const pane = busyTurnPane();
+    await flush();
+    pane.clearGeneralError();
+    const interrupt = setBindingMock('InterruptTurn', async () => { throw refusal(); });
+
+    expect(runInterruptOrRevert(pane, EMPTY_DRAFT)).toBe(false);
+    expect(getActiveTurn('thread-1')).toBeNull();
+    await flush();
+
+    expect(interrupt.mock.calls).toEqual([['thread-1', false]]);
+    expect(getActiveTurn('thread-1')).toEqual({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    expect(isThreadWorking('thread-1')).toBe(true);
+    expect(getThreadStatus('thread-1')).not.toBe('interrupted');
+    expect(pendingBackgroundKill('thread-1')).toEqual({
+      threadId: 'thread-1',
+      message: 'Stopping now would also stop 1 background agent. Confirm to stop it.',
+      agents: [agent],
+    });
+    expect(pane.generalError).toBeNull();
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
+
+    const confirmed = setBindingMock('InterruptTurn', async () => {});
+    expect(confirmBackgroundKill(pane, EMPTY_DRAFT)).toBe(false);
+    expect(pendingBackgroundKill('thread-1')).toBeNull();
+    expect(getActiveTurn('thread-1')).toBeNull();
+    await flush();
+    expect(confirmed.mock.calls).toEqual([['thread-1', true]]);
+    expect(getActiveTurn('thread-1')).toBeNull();
+    expect(getThreadStatus('thread-1')).toBe('interrupted');
+  });
+
+  it('a refused un-send restores the message and draft, then confirm re-runs the un-send with the kill confirmed', async () => {
+    const pane = readyPane();
+    pane.upsertItem(userItem('u:0', 0));
+    pane.setActiveTurn({ turnId: 'turn-1', turnIndex: 0, startedAt: 1 });
+    await flush();
+    pane.clearGeneralError();
+    const draft = optimisticDraftProbe();
+    const revert = setBindingMock('InterruptAndRevertIfClean', async () => { throw refusal(); });
+    setBindingMock('InterruptTurn', async () => {
+      throw new Error('InterruptTurn is not the un-send path');
+    });
+
+    expect(runInterruptOrRevert(pane, draft)).toBe(true);
+    await flush();
+
+    expect(revert.mock.calls.map((call) => call[2])).toEqual([false]);
+    expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
+    expect(draft.cleared).toEqual(draft.applied);
+    expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
+    expect(pendingBackgroundKill('thread-1')?.agents).toEqual([agent]);
+    expect(pane.generalError).toBeNull();
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
+
+    const confirmed = setBindingMock('InterruptAndRevertIfClean', async () => successfulRevert());
+    expect(confirmBackgroundKill(pane, EMPTY_DRAFT)).toBe(true);
+    await flush();
+    expect(confirmed.mock.calls.map((call) => [call[0], call[2]])).toEqual([['thread-1', true]]);
+    expect(pendingBackgroundKill('thread-1')).toBeNull();
+    expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
+  });
+
+  it('an approval cancel Stop is refused the same way', async () => {
+    const pane = busyTurnPane();
+    const interrupt = setBindingMock('InterruptTurn', async () => { throw refusal(); });
+
+    stopTurn(pane, 'thread-1');
+    expect(getActiveTurn('thread-1')).toBeNull();
+    await flush();
+
+    expect(interrupt.mock.calls).toEqual([['thread-1', false]]);
+    expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
+    expect(pendingBackgroundKill('thread-1')?.agents).toEqual([agent]);
+  });
+
+  it('asks nothing when the turn ended before the refusal arrived', async () => {
+    const pane = busyTurnPane();
+    let reject!: (err: unknown) => void;
+    setBindingMock('InterruptTurn', () => new Promise((_resolve, rejectRPC) => { reject = rejectRPC; }));
+
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    projectTurnCompleted('thread-1', 'turn-1', { turnIndex: 0 });
+    reject(refusal());
+    await flush();
+
+    expect(getActiveTurn('thread-1')).toBeNull();
+    expect(pendingBackgroundKill('thread-1')).toBeNull();
+  });
+
+  it('the question ends when the turn completes, when dismissed, and confirm without one sends nothing', async () => {
+    const pane = busyTurnPane();
+    setBindingMock('InterruptTurn', async () => { throw refusal(); });
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await flush();
+    expect(pendingBackgroundKill('thread-1')).not.toBeNull();
+    projectTurnCompleted('thread-1', 'turn-1', { turnIndex: 0 });
+    expect(pendingBackgroundKill('thread-1')).toBeNull();
+
+    pane.setActiveTurn({ turnId: 'turn-2', turnIndex: 1, startedAt: 2 });
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await flush();
+    expect(pendingBackgroundKill('thread-1')).not.toBeNull();
+    dismissBackgroundKill('thread-1');
+    expect(pendingBackgroundKill('thread-1')).toBeNull();
+
+    const interrupt = setBindingMock('InterruptTurn', async () => {});
+    expect(confirmBackgroundKill(pane, EMPTY_DRAFT)).toBe(false);
+    await flush();
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(getActiveTurn('thread-1')?.turnId).toBe('turn-2');
+  });
+
+  it('any other failure keeps the optimistic stop and reports', async () => {
+    const pane = busyTurnPane();
+    await flush();
+    pane.clearGeneralError();
+    setBindingMock('InterruptTurn', async () => { throw new Error('boom: provider crashed'); });
+
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await flush();
+
+    expect(getActiveTurn('thread-1')).toBeNull();
+    expect(pendingBackgroundKill('thread-1')).toBeNull();
+    expect(pane.generalError ?? '').not.toBe('');
+  });
+});
+
+describe('backgroundKillRefusal', () => {
+  it('reads only the background_agents_running code and drops malformed agents', () => {
+    expect(backgroundKillRefusal(new Error('background_agents_running'))).toBeNull();
+    expect(backgroundKillRefusal(new TransportError('method_error', 'x', undefined, undefined, undefined, []))).toBeNull();
+    const otherCode = new TransportError('already_handled', 'x', undefined, undefined, undefined, [{ launchItemId: 'a' }]);
+    expect(otherCode.backgroundAgents).toBeUndefined();
+
+    const valid = { launchItemId: 'a', description: 'x'.repeat(600), runState: 'running', transcriptRootId: 'root' };
+    const decoded = backgroundKillRefusal(new TransportError('background_agents_running', 'Confirm.', undefined, undefined, undefined, [
+      valid,
+      null,
+      'a',
+      { ...valid, runState: 'done' },
+      { ...valid, transcriptRootId: 7 },
+      { ...valid, description: undefined },
+    ]));
+    expect(decoded?.message).toBe('Confirm.');
+    expect(decoded?.agents).toEqual([{ ...valid, description: 'x'.repeat(512) }]);
+    expect(backgroundKillRefusal(new TransportError('background_agents_running', 'Confirm.'))?.agents).toEqual([]);
+  });
 });

@@ -284,7 +284,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	readErrorString := ""
 	switch {
 	case meta.OutputFile == "":
-	case !isSubagentTranscriptLaunch(launch):
+	case !IsSubagentTranscriptLaunch(launch):
 		// A command's or a watch task's output_file is read, so the bell
 		// and the sibling show it loading first.
 		if err := persistBell("loading", "", nil); err != nil {
@@ -336,7 +336,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 // caller's `IsBackground` gate already excludes; a background shell has
 // no children and is excluded before the store is asked.
 func (r *Router) launchParkedOn(threadID string, launch store.Item) (int, error) {
-	if !isSubagentTranscriptLaunch(launch) {
+	if !IsSubagentTranscriptLaunch(launch) {
 		return 0, nil
 	}
 	root, err := r.transcriptRootOrSelf(threadID, launch)
@@ -362,14 +362,20 @@ func (r *Router) commandsParkingAt(threadID, rootID string) (int, error) {
 	return waiting, nil
 }
 
-// parkedAgentBell is a parked stop's bell text. The agent is named the
-// way agentFinishedBell names it; a resume carrier's own input names the
-// recipient, not the agent, so its stamped description comes first.
-func parkedAgentBell(launch store.Item, waiting int) string {
-	description := DecodeToolStartMeta([]byte(launch.Meta)).Description
-	if description == "" {
-		description = launchInputIdentity(launch.Meta).Description
+// AgentLaunchDescription is the task line an agent launch names its agent
+// by, the launch input's description as agentFinishedBell reads it. A
+// resume carrier's own input names the recipient, not the agent, so its
+// stamped description comes first.
+func AgentLaunchDescription(launch store.Item) string {
+	if description := DecodeToolStartMeta([]byte(launch.Meta)).Description; description != "" {
+		return description
 	}
+	return launchInputIdentity(launch.Meta).Description
+}
+
+// parkedAgentBell is a parked stop's bell text.
+func parkedAgentBell(launch store.Item, waiting int) string {
+	description := AgentLaunchDescription(launch)
 	commands := "commands"
 	if waiting == 1 {
 		commands = "command"
@@ -378,7 +384,7 @@ func parkedAgentBell(launch store.Item, waiting int) string {
 		truncatePreview(description, 80), waiting, commands)
 }
 
-// isSubagentTranscriptLaunch reports whether a launch is an agent, whose
+// IsSubagentTranscriptLaunch reports whether a launch is an agent, whose
 // `output_file` is its sidechain transcript, rather than a task whose
 // `output_file` is captured stdout/stderr (a background Bash, a Monitor
 // watch). Claude names the same field for every task type and backgrounds
@@ -387,7 +393,7 @@ func parkedAgentBell(launch store.Item, waiting int) string {
 // set), or a §E6 resume carrier, the SendMessage row that runs a resumed
 // agent's round, which the parser stamps with the agent it resumes
 // (isResumeCarrierMeta). backgroundOutputPayload splits on the same test.
-func isSubagentTranscriptLaunch(launch store.Item) bool {
+func IsSubagentTranscriptLaunch(launch store.Item) bool {
 	if launch.Kind != itemKindToolCall {
 		return false
 	}
@@ -613,7 +619,7 @@ func notificationOutputState(raw string) (string, string) {
 // completion without a preview.
 func backgroundOutputPayload(launch store.Item, outputFile, report string, exitCode *int, now int64) (*store.Payload, error) {
 	payloadID := "tool-call-result:" + launch.ID
-	if !isSubagentTranscriptLaunch(launch) {
+	if !IsSubagentTranscriptLaunch(launch) {
 		data, _, err := readClaudeTaskOutputFile(outputFile, claudeCommandOutputFileMaxBytes)
 		if err != nil {
 			return nil, err

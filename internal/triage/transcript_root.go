@@ -46,6 +46,18 @@ const maxTranscriptRootHops = 16
 // entry per resume round; the cap only covers a pathological session.
 const maxCarrierRootsPerThread = 256
 
+// TranscriptRootID is the id of the row whose subtree holds a launch's
+// transcript: a resume carrier's original launch, else the launch itself.
+// It answers what the frontend's agentScopeRootId answers, resolved the
+// way every triage path resolves a root.
+func (r *Router) TranscriptRootID(threadID string, launch store.Item) (string, error) {
+	root, err := r.transcriptRootOrSelf(threadID, launch)
+	if err != nil {
+		return "", err
+	}
+	return root.ID, nil
+}
+
 // transcriptRootOrSelf resolves the row whose scope an agent's rows
 // belong to. A non-carrier is its own root and costs no store read.
 func (r *Router) transcriptRootOrSelf(threadID string, launch store.Item) (store.Item, error) {

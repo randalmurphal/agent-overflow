@@ -233,7 +233,7 @@ func TestInterruptRevertEventCarriesPostCutStamps(t *testing.T) {
 	insertUserItem(t, app.store, thread.ID, "u:0", 0, "the original prompt")
 	before := appHistoryStamp(t, app, thread.ID)
 
-	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{})
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, false)
 	if err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}

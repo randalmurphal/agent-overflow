@@ -351,7 +351,7 @@ func TestInterruptTurn_SerializesWithThreadLock(t *testing.T) {
 
 	unlock := app.threadLocks().Lock(thread.ID)
 	done := make(chan error, 1)
-	go func() { done <- app.InterruptTurn(thread.ID) }()
+	go func() { done <- app.InterruptTurn(thread.ID, false) }()
 
 	select {
 	case err := <-done:

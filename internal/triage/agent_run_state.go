@@ -25,8 +25,31 @@ const (
 	subagentRunEnded   = "ended"
 )
 
+// The served run states of an agent launch that has not settled.
+const (
+	AgentRunRunning = subagentRunRunning
+	AgentRunParked  = subagentRunParked
+)
+
+// AgentRunState reads the run state DecorateAgentRunStates served on a
+// launch row, or "" for a row it did not decorate.
+func AgentRunState(item store.Item) string {
+	if !strings.Contains(item.Meta, metaKeySubagentRunState) {
+		return ""
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal([]byte(item.Meta), &fields) != nil {
+		return ""
+	}
+	var state string
+	if json.Unmarshal(fields[metaKeySubagentRunState], &state) != nil {
+		return ""
+	}
+	return state
+}
+
 // DecorateAgentRunStates adds the run state to every background agent
-// launch (isSubagentTranscriptLaunch) in a Store.ListLiveBackgroundTasks
+// launch (IsSubagentTranscriptLaunch) in a Store.ListLiveBackgroundTasks
 // read. It is the park model's own state, one keyed lookup per launch:
 //
 //   - a completion sibling settles the launch: "ended" when a session
@@ -53,7 +76,7 @@ func (r *Router) DecorateAgentRunStates(threadID string, items []store.Item) ([]
 		}
 	}
 	for i, item := range items {
-		if item.CompletionOf != "" || !item.IsBackground || !isSubagentTranscriptLaunch(item) {
+		if item.CompletionOf != "" || !item.IsBackground || !IsSubagentTranscriptLaunch(item) {
 			continue
 		}
 		fields, err := r.agentRunState(threadID, item, siblings)

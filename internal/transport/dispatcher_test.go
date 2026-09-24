@@ -758,3 +758,49 @@ func TestDispatcherPublicErrorKeepsCodeAndHidesCauseOnEveryOrigin(t *testing.T) 
 		}
 	}
 }
+
+type agentRefusal struct {
+	public error
+	agents json.RawMessage
+}
+
+func (e *agentRefusal) Error() string                            { return e.public.Error() }
+func (e *agentRefusal) Unwrap() error                            { return e.public }
+func (e *agentRefusal) RefusedBackgroundAgents() json.RawMessage { return e.agents }
+
+// A refused stop's agents reach every origin as backgroundAgents, and only
+// under background_agents_running: another public code never carries them.
+func TestDispatcherBackgroundAgentRefusalCarriesTheAgentsOnEveryOrigin(t *testing.T) {
+	agents := json.RawMessage(`[{"launchItemId":"a1","description":"Scan","runState":"parked","transcriptRootId":"a1"}]`)
+	cases := []struct {
+		code string
+		want string
+	}{
+		{ErrCodeBackgroundAgentsRunning, string(agents)},
+		{"remote_capacity", ""},
+	}
+	for _, tc := range cases {
+		d := NewDispatcher()
+		refusal := &agentRefusal{public: errorsx.Public(tc.code, "Confirm to stop it.", nil), agents: agents}
+		if _, err := d.Register(&publicFailureApp{refusal}, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
+			t.Fatal(err)
+		}
+		method, _ := resolveLoopback(d, 0, "Fail")
+		for _, local := range []bool{false, true} {
+			_, frame := d.InvokeForOrigin(context.Background(), method, nil, local)
+			if frame == nil || frame.Code != tc.code || frame.Message != "Confirm to stop it." {
+				t.Fatalf("%s origin %v: %+v", tc.code, local, frame)
+			}
+			if string(frame.BackgroundAgents) != tc.want {
+				t.Fatalf("%s origin %v: backgroundAgents = %s, want %s", tc.code, local, frame.BackgroundAgents, tc.want)
+			}
+			wire, err := json.Marshal(frame)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if carried := strings.Contains(string(wire), `"backgroundAgents":`); carried != (tc.want != "") {
+				t.Fatalf("%s origin %v: wire %s", tc.code, local, wire)
+			}
+		}
+	}
+}

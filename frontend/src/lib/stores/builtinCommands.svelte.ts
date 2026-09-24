@@ -56,7 +56,6 @@ import {
   CloseTerminal,
   GitPull,
   GitPush,
-  InterruptTurn,
   OpenTerminal,
   RefreshTerminal,
   RespondToApproval,
@@ -67,7 +66,7 @@ import {
 } from './bindings';
 import { cycleMode } from '../utils/modeCycle';
 import { isScratchThreadMode } from '../utils/threadModes';
-import { runInterruptOrRevert } from './revertOnInterrupt.svelte';
+import { runInterruptOrRevert, stopTurn } from './revertOnInterrupt.svelte';
 import { getComposerDraftForPane } from './composerDraftRegistry.svelte';
 import { getSettings, updateSetting } from './settings.svelte';
 import { openReviewCompanion, reviewSubjectForPane } from './reviewPane.svelte';
@@ -515,18 +514,14 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         // Approval / user-input cancels are mid-turn responses, not the
         // "stop before the agent answered" affordance — fall through to
         // a plain InterruptTurn rather than the revert path.
-        void InterruptTurn(threadID).catch((err) =>
-          reportNonBenignInterruptError(pane, err),
-        );
+        stopTurn(pane, threadID);
       } else if (approval) {
         pane.removeApproval(approval.requestId);
         void RespondToApproval(threadID, new ApprovalResponse({
           requestId: approval.requestId,
           decision: 'cancel',
         })).catch((err) => reportNonBenignInterruptError(pane, err));
-        void InterruptTurn(threadID).catch((err) =>
-          reportNonBenignInterruptError(pane, err),
-        );
+        stopTurn(pane, threadID);
       } else {
         const draft = getComposerDraftForPane(pane.paneId);
         const restored = runInterruptOrRevert(pane, draft ?? {
@@ -541,11 +536,10 @@ export function registerBuiltinCommands(hooks: BuiltinCommandHooks): void {
         }
       }
 
-      // Optimistic clear — spinner / Stop button / mid-turn input
-      // gate all flip in this render tick. The real
-      // provider:turn_completed arrives shortly and is idempotent
-      // on null activeTurn (settleTurn just re-clears).
-      pane.clearActiveTurn();
+      // stopTurn and runInterruptOrRevert already cleared the turn
+      // optimistically: spinner / Stop button / mid-turn input gate all
+      // flip in this render tick. The real provider:turn_completed
+      // arrives shortly and is idempotent on null activeTurn.
       pane.setSendInFlight(false);
     },
   });

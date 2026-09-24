@@ -100,7 +100,7 @@ func (a *App) interruptDispatchedRequest(ctx context.Context, threadID, sendID s
 // interruptRequestTurn interrupts one thread only while the named turn is the
 // one it is running, and reports what happened in the cancel's vocabulary.
 func (a *App) interruptRequestTurn(ctx context.Context, threadID string, turnIndex int) (string, error) {
-	interrupted, err := a.interruptTurnAtIndex(ctx, threadID, turnIndex)
+	interrupted, err := a.interruptTurnAtIndex(ctx, threadID, turnIndex, false)
 	if err != nil {
 		return "", err
 	}

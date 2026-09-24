@@ -2307,7 +2307,7 @@ describe('<Composer>', () => {
     expect(queryByTestId('composer-send')).toBeNull();
     await fireEvent.click(getByTestId('composer-interrupt'));
 
-    expect(interrupt).toHaveBeenCalledWith('thread-1');
+    expect(interrupt).toHaveBeenCalledWith('thread-1', false);
   });
 
   it('keeps Send disabled with hover guidance until the revert cut is applied', async () => {
@@ -2380,7 +2380,7 @@ describe('<Composer>', () => {
     expect(queryByTestId('composer-send')).toBeNull();
     await fireEvent.click(getByTestId('composer-interrupt'));
 
-    expect(interrupt).toHaveBeenCalledWith('thread-1');
+    expect(interrupt).toHaveBeenCalledWith('thread-1', false);
   });
 
   it('renders the background tray inside the composer card before the input', async () => {

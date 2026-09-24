@@ -697,7 +697,7 @@ func TestE2E_InterruptDoesNotKillBackground(t *testing.T) {
 				Claude:   sess,
 			})
 
-			if err := app.InterruptTurn(thread.ID); err != nil {
+			if err := app.InterruptTurn(thread.ID, false); err != nil {
 				t.Fatalf("InterruptTurn: %v", err)
 			}
 

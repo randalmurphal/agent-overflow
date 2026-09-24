@@ -499,6 +499,61 @@ export const BackendAttachment = attachedbackends$0.Attachment;
 export type BackendAttachment = attachedbackends$0.Attachment;
 
 /**
+ * BackgroundKillAgent is one live background agent a provider interrupt on
+ * its thread would kill.
+ */
+export class BackgroundKillAgent {
+    /**
+     * LaunchItemID is the launch row the agent's run state is served on: the
+     * Agent call, or the resume carrier running a resumed round.
+     */
+    "launchItemId": string;
+
+    /**
+     * Description is the task line the agent is named by.
+     */
+    "description": string;
+
+    /**
+     * RunState is "running", or "parked" for an agent that reported and
+     * waits on background commands it started (claude-wire.md §E6b).
+     */
+    "runState": string;
+
+    /**
+     * TranscriptRootID is the row whose subtree holds the agent's
+     * transcript, the id that opens its agent pane (agentScopeRootId).
+     */
+    "transcriptRootId": string;
+
+    /** Creates a new BackgroundKillAgent instance. */
+    constructor($$source: Partial<BackgroundKillAgent> = {}) {
+        if (!("launchItemId" in $$source)) {
+            this["launchItemId"] = "";
+        }
+        if (!("description" in $$source)) {
+            this["description"] = "";
+        }
+        if (!("runState" in $$source)) {
+            this["runState"] = "";
+        }
+        if (!("transcriptRootId" in $$source)) {
+            this["transcriptRootId"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new BackgroundKillAgent instance from a string or object.
+     */
+    static createFrom($$source: any = {}): BackgroundKillAgent {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new BackgroundKillAgent($$parsedSource as Partial<BackgroundKillAgent>);
+    }
+}
+
+/**
  * BackgroundWorkInventory is ListRunningBackgroundWork's answer: the
  * running rows, oldest first, plus the ids of any live-session threads
  * whose rows could not be read.

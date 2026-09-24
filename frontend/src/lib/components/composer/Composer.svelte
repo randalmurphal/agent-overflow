@@ -769,11 +769,9 @@
       });
       return;
     }
-    // Match the thread.interrupt builtin's optimistic clear so the
-    // spinner / Stop button / mid-turn input gate all flip in this
-    // render tick. The backend's `provider:turn_completed` arrives
-    // shortly and is idempotent on null activeTurn.
-    pane.clearActiveTurn();
+    // runInterruptOrRevert already cleared the turn optimistically, as the
+    // thread.interrupt builtin does, so the spinner / Stop button /
+    // mid-turn input gate all flip in this render tick.
     pane.setSendInFlight(false);
   }
 

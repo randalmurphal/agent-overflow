@@ -1,5 +1,6 @@
 import { getUndoableSend, retireUndoableSend, resetUndoableSendsForTest } from './composerSendUndo';
 import { isThreadInterruptRestored } from './threadInterruptState.svelte';
+import { dismissBackgroundKill, resetBackgroundKillConfirmationsForTest } from './backgroundKillConfirmation.svelte';
 import type { ApprovalKind } from '../types/events';
 import type { Thread } from '../types/models';
 import { resolveEffectiveThreadStatus } from '../utils/threadStatusPill';
@@ -149,6 +150,10 @@ const completedTurnIDsByThread = new Map<string, Set<string>>();
 const errorThreads = new Set<string>();
 const interruptedThreads = new Set<string>();
 const liveStateHydrationTokenByThread = new Map<string, number>();
+// The turn a Stop optimistically cleared while its interrupt RPC is
+// unanswered, so a background-kill refusal can put it back. Any canonical
+// turn signal for the thread supersedes it.
+const refusableStops = new Map<string, ActiveTurn>();
 
 function trackedIDsFor(map: Map<string, Set<string>>, threadId: string): Set<string> {
   let ids = map.get(threadId);
@@ -287,6 +292,8 @@ export function setThreadStatus(threadId: string, status: ThreadLiveStatus): voi
 export function clearThreadStatus(threadId: string): void {
   activeTurns.drop(threadId);
   completedTurnIDsByThread.delete(threadId);
+  refusableStops.delete(threadId);
+  dismissBackgroundKill(threadId);
   retireUndoableSend(threadId);
   pendingSendThreads.drop(threadId);
   for (const requestIdSet of [
@@ -468,6 +475,7 @@ export function projectTurnStarted(
   // the durable hasActionableProposedPlan on the same event, which is
   // where the pill reads it from for panes and off-pane sidebars alike.
   pendingSendThreads.set(threadId, false);
+  refusableStops.delete(threadId);
   if (hasCompletedTurnID(threadId, turnId)) {
     recalculateThreadStatus(threadId);
     return;
@@ -502,6 +510,8 @@ export function projectTurnCompleted(
   opts: { turnIndex?: number; aborted?: boolean; errorMessage?: string; revertedUserMessage?: boolean } = {},
 ): void {
   if (!threadId || !turnId) return;
+  refusableStops.delete(threadId);
+  dismissBackgroundKill(threadId);
   markCompletedTurnID(threadId, turnId);
   if (opts.turnIndex !== undefined && getUndoableSend(threadId)?.turnIndex === opts.turnIndex) retireUndoableSend(threadId);
   if (activeTurns.get(threadId)?.turnId === turnId) {
@@ -525,6 +535,40 @@ export function projectTurnCompleted(
     }
   }
   recalculateThreadStatus(threadId);
+}
+
+/**
+ * A Stop's optimistic clear: the turn reads as interrupted at once, as
+ * projectTurnCompleted({aborted}) makes it. Returns the cleared turn, the
+ * handle that restoreRefusedTurnStop and settleTurnStopRequest take once
+ * the interrupt RPC answers; null when no turn was showing.
+ */
+export function projectTurnStopRequested(threadId: string): ActiveTurn | null {
+  const current = getActiveTurn(threadId);
+  if (!current) return null;
+  projectTurnCompleted(threadId, current.turnId, { aborted: true });
+  refusableStops.set(threadId, current);
+  return current;
+}
+
+/**
+ * The backend refused the Stop before it had any effect, so the cleared
+ * turn is still running: show it again. No-op once a canonical turn
+ * signal or a later Stop superseded this one.
+ */
+export function restoreRefusedTurnStop(threadId: string, stopped: ActiveTurn | null): void {
+  if (!stopped || refusableStops.get(threadId) !== stopped) return;
+  refusableStops.delete(threadId);
+  if (activeTurns.get(threadId) !== null) return;
+  completedTurnIDsByThread.get(threadId)?.delete(stopped.turnId);
+  interruptedThreads.delete(threadId);
+  activeTurns.set(threadId, stopped);
+  recalculateThreadStatus(threadId);
+}
+
+/** The Stop's interrupt RPC answered with anything but a refusal. */
+export function settleTurnStopRequest(threadId: string, stopped: ActiveTurn | null): void {
+  if (stopped && refusableStops.get(threadId) === stopped) refusableStops.delete(threadId);
 }
 
 /**
@@ -555,6 +599,8 @@ export function projectTurnCompleted(
  */
 export function projectThreadReverted(threadId: string): void {
   if (!threadId) return;
+  refusableStops.delete(threadId);
+  dismissBackgroundKill(threadId);
   const active = activeTurns.get(threadId);
   if (active) markCompletedTurnID(threadId, active.turnId);
   activeTurns.set(threadId, null);
@@ -757,6 +803,8 @@ export function resetForTest(): void {
   resetUndoableSendsForTest();
   activeTurns.reset();
   completedTurnIDsByThread.clear();
+  refusableStops.clear();
+  resetBackgroundKillConfirmationsForTest();
   pendingSendThreads.reset();
   approvalIDsByThread.clear();
   interactiveRevisions.clear();

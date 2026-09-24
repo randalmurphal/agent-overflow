@@ -353,7 +353,9 @@ func interruptBenchTurns(ctx context.Context, client *harnessclient.Client, thre
 	results := make(chan result, len(threadIDs))
 	for _, threadID := range threadIDs {
 		go func(id string) {
-			_, err := client.Call(ctx, "InterruptTurn", id)
+			// The bench ends its own workload; no person is asked to confirm
+			// stopping background agents.
+			_, err := client.Call(ctx, "InterruptTurn", id, true)
 			results <- result{threadID: id, err: err}
 		}(threadID)
 	}

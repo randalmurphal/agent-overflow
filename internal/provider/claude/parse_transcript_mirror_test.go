@@ -966,3 +966,41 @@ func TestTranscriptMirrorReleasesAKilledParkedAgent(t *testing.T) {
 		t.Fatal("a killed agent's projection and binding must be released at the kill")
 	}
 }
+
+// An interrupt on a later turn kills a parked agent and its shell in one
+// burst (claude-wire.md §Background task ownership, spike D on 2.1.280).
+// The agent's second terminal names no tool_use_id; it must still reach
+// triage keyed to the launch, as must the shell's.
+func TestInterruptKillOfAParkedAgentKeysBothTerminals(t *testing.T) {
+	a := startParkedMirrorAgent(t)
+	var events []provider.ProviderEvent
+	for _, line := range []string{
+		`{"type":"system","subtype":"task_updated","task_id":"` + parkedMirrorTask + `","patch":{"status":"killed","end_time":1790000002000}}`,
+		`{"type":"system","subtype":"background_tasks_changed","tasks":[]}`,
+		`{"type":"system","subtype":"task_updated","task_id":"shell-1","patch":{"status":"killed","end_time":1790000002001}}`,
+		`{"type":"system","subtype":"task_notification","task_id":"shell-1","tool_use_id":"` + parkedMirrorShell + `","status":"stopped","summary":"make gate"}`,
+		`{"type":"control_response","response":{"subtype":"success","request_id":"int-1","response":{"still_queued":[]}}}`,
+	} {
+		events = append(events, a.parse(line)...)
+	}
+	terminals := map[string]string{}
+	for _, evt := range events {
+		if evt.Kind != provider.EventBackgroundTaskTerminal {
+			continue
+		}
+		var meta struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(evt.Meta, &meta); err != nil {
+			t.Fatalf("terminal meta %s: %v", evt.Meta, err)
+		}
+		terminals[evt.ItemID] = meta.Status
+	}
+	want := map[string]string{parkedMirrorLaunch: "killed", parkedMirrorShell: "killed"}
+	if len(terminals) != len(want) || terminals[parkedMirrorLaunch] != "killed" || terminals[parkedMirrorShell] != "killed" {
+		t.Fatalf("terminals by item = %v, want %v", terminals, want)
+	}
+	if a.projected() || a.bound() {
+		t.Fatal("the killed agent's projection and binding must be released")
+	}
+}

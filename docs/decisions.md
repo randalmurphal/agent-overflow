@@ -178,6 +178,12 @@ Mechanism in
   `command_output` payload.
 - Monitor idle-wake: the CLI writes `<task-notification>` to the
   transcript only. A transcript-tail backfill was proposed and declined.
+- A Claude Stop kills every running or parked background agent, from any
+  turn, with the shells it owns. Stop and the Stop un-send therefore ask
+  for confirmation while such an agent is live, and the backend refuses
+  them until confirmed (ruling 2026-09-24). Agent thread requests, their
+  cancels and workflow takeovers are not gated. Wire facts:
+  [claude-wire.md §Background task ownership](references/claude-wire.md#background-task-ownership).
 - Pre-existing dangling Codex child rows in old fork threads are left inert
   on purpose (`internal/store/AGENTS.md`).
 

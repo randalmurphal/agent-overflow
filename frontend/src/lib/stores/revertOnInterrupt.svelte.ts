@@ -13,9 +13,22 @@ import type { ComposerDraftSnapshot } from './composerDraftSnapshots';
 import type { ErrorSurface, ThreadPaneIngest } from './threadPaneRoles';
 import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
 import { restoredDraftSnapshotFromUserItem } from '../utils/userMessageDraftSnapshot';
-import { getActiveTurn } from './threadStatuses.svelte';
+import {
+  getActiveTurn,
+  isThreadWorking,
+  projectTurnStopRequested,
+  restoreRefusedTurnStop,
+  settleTurnStopRequest,
+  type ActiveTurn,
+} from './threadStatuses.svelte';
 import { getQueueForThread } from './sendQueue.svelte';
 import { reportNonBenignInterruptError } from './interruptErrors';
+import {
+  backgroundKillRefusal,
+  dismissBackgroundKill,
+  offerBackgroundKillConfirmation,
+  pendingBackgroundKill,
+} from './backgroundKillConfirmation.svelte';
 import { applyUserMessageReverted } from './eventsMessageRevert';
 import {
   beginThreadInterrupt,
@@ -136,20 +149,32 @@ export function canRevertEarlyInterrupt(
   return { canRevert: true, userItem };
 }
 
-/** Returns true when the early un-send owns the local status projection. */
+/**
+ * The Stop. Returns true when the early un-send owns the local status
+ * projection. Otherwise the turn is already cleared optimistically and a
+ * plain interrupt is on its way.
+ *
+ * `confirmBackgroundKill` is the answer to a refused Stop: without it the
+ * backend refuses while the interrupt would kill live background agents,
+ * the cleared turn comes back and backgroundKillConfirmation.svelte.ts
+ * holds the question.
+ */
 export function runInterruptOrRevert(
   pane: InterruptPane,
   draft: DraftSnapshotInputs,
+  confirmBackgroundKill = false,
 ): boolean {
   const threadId = pane.threadId;
   if (!threadId) return false;
   const interruptToken = beginThreadInterrupt(threadId);
   if (interruptToken === null) return true;
+  dismissBackgroundKill(threadId);
 
   const eligibility = canRevertEarlyInterrupt(pane, draft);
 
   if (!eligibility.canRevert) {
-    void runPlainInterrupt(pane, threadId, interruptToken);
+    const stopped = projectTurnStopRequested(threadId);
+    void runPlainInterrupt(pane, threadId, interruptToken, confirmBackgroundKill, stopped);
     return false;
   }
 
@@ -159,22 +184,80 @@ export function runInterruptOrRevert(
     threadId,
     eligibility.userItem,
     interruptToken,
+    confirmBackgroundKill,
   );
   return true;
+}
+
+/**
+ * Answer the thread's pending background-kill question with "stop them":
+ * the Stop runs again as if pressed now, with the kill confirmed. The
+ * caller applies the same follow-up as after runInterruptOrRevert. False
+ * and nothing sent when no question is pending.
+ */
+export function confirmBackgroundKill(pane: InterruptPane, draft: DraftSnapshotInputs): boolean {
+  const threadId = pane.threadId;
+  if (!threadId || !pendingBackgroundKill(threadId)) return false;
+  dismissBackgroundKill(threadId);
+  return runInterruptOrRevert(pane, draft, true);
+}
+
+/**
+ * A plain Stop outside the un-send flow (approval and user-input cancels):
+ * clears the turn optimistically and sends the interrupt.
+ */
+export function stopTurn(pane: InterruptPane, threadId: string): void {
+  dismissBackgroundKill(threadId);
+  const stopped = projectTurnStopRequested(threadId);
+  void interruptTurnForStop(pane, threadId, false, stopped);
 }
 
 async function runPlainInterrupt(
   pane: InterruptPane,
   threadId: string,
   interruptToken: number,
+  confirmBackgroundKill: boolean,
+  stopped: ActiveTurn | null = null,
 ): Promise<void> {
   try {
-    await InterruptTurn(threadId);
-  } catch (err) {
-    reportNonBenignInterruptError(pane, err);
+    await interruptTurnForStop(pane, threadId, confirmBackgroundKill, stopped);
   } finally {
     finishThreadInterrupt(threadId, interruptToken);
   }
+}
+
+/**
+ * InterruptTurn for a Stop whose optimistic clear is `stopped`. A
+ * background-kill refusal undoes the clear and asks; any other failure
+ * keeps it and reports.
+ */
+async function interruptTurnForStop(
+  pane: InterruptPane,
+  threadId: string,
+  confirmBackgroundKill: boolean,
+  stopped: ActiveTurn | null,
+): Promise<void> {
+  try {
+    await InterruptTurn(threadId, confirmBackgroundKill);
+    settleTurnStopRequest(threadId, stopped);
+  } catch (err) {
+    if (askAfterRefusedStop(threadId, err, stopped)) return;
+    settleTurnStopRequest(threadId, stopped);
+    reportNonBenignInterruptError(pane, err);
+  }
+}
+
+/**
+ * Handle a background-kill refusal: the turn the Stop cleared is still
+ * running, so it comes back, and the question is recorded while the
+ * thread still has work to stop. False for any other error.
+ */
+function askAfterRefusedStop(threadId: string, err: unknown, stopped: ActiveTurn | null): boolean {
+  const refusal = backgroundKillRefusal(err);
+  if (!refusal) return false;
+  restoreRefusedTurnStop(threadId, stopped);
+  if (isThreadWorking(threadId)) offerBackgroundKillConfirmation(threadId, refusal);
+  return true;
 }
 
 async function runEarlyInterrupt(
@@ -183,6 +266,7 @@ async function runEarlyInterrupt(
   threadId: string,
   userItem: Item,
   interruptToken: number,
+  confirmBackgroundKill: boolean,
 ): Promise<void> {
   // Match the backend truncate: remove EVERY item on the active turn,
   // not just the user_text. Stranded thinking / api_retry / error rows
@@ -234,13 +318,13 @@ async function runEarlyInterrupt(
     if (!current()) return;
     const refreshNeeded = restore();
     reportNonBenignInterruptError(pane, err);
-    await runPlainInterrupt(pane, threadId, interruptToken);
+    await runPlainInterrupt(pane, threadId, interruptToken, confirmBackgroundKill);
     if (refreshNeeded && pane.threadId === threadId) await pane.refreshFromBackend();
     return;
   }
   if (backgroundCount > 0) {
     const refreshNeeded = restore();
-    await runPlainInterrupt(pane, threadId, interruptToken);
+    await runPlainInterrupt(pane, threadId, interruptToken, confirmBackgroundKill);
     if (refreshNeeded && pane.threadId === threadId) await pane.refreshFromBackend();
     return;
   }
@@ -255,10 +339,19 @@ async function runEarlyInterrupt(
         terminalChips: undo.snapshot.terminalChips,
         sourceProposedPlan: undo.snapshot.sourceProposedPlan,
       } : undefined,
-    });
+    }, confirmBackgroundKill);
     if (!current()) return;
   } catch (err) {
     if (!current()) return;
+    if (backgroundKillRefusal(err)) {
+      // Refused before anything was interrupted or reverted: the message
+      // and its turn are still live, so the un-send's presentation goes.
+      const refreshNeeded = restore();
+      finishThreadInterrupt(threadId, interruptToken);
+      askAfterRefusedStop(threadId, err, null);
+      if (refreshNeeded && pane.threadId === threadId) await pane.refreshFromBackend();
+      return;
+    }
     reportNonBenignInterruptError(pane, err);
     if (isTransportClassError(err)) {
       try {

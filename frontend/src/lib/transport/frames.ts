@@ -19,9 +19,14 @@ export interface ServerRPCFrame {
   // `code` is one — a method error's TEXT does not survive the wire for a
   // non-loopback caller, and this is exactly what such a caller must
   // branch on to explain a disabled surface.
+  //
+  // `backgroundAgents` is present only alongside 'background_agents_running'
+  // and lists the agents a refused Stop would have killed. It is untrusted
+  // input: ../stores/backgroundKillConfirmation.svelte.ts validates it.
   error?: {
     code: string; message: string; reason?: string; scope?: string;
     transfer?: { operationId: string; backendId: string };
+    backgroundAgents?: unknown;
   };
 }
 

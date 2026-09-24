@@ -671,6 +671,7 @@ export const SubscribePRUpdates = dispatch('SubscribePRUpdates');
 export const UnsubscribePRUpdates = dispatch('UnsubscribePRUpdates');
 export const SetPRUpdatesActive = dispatch('SetPRUpdatesActive');
 export const CountRunningBackgroundTasks = dispatch('CountRunningBackgroundTasks');
+export const RunningBackgroundAgents = dispatch('RunningBackgroundAgents');
 export const ListLiveBackgroundTasks = dispatch('ListLiveBackgroundTasks');
 export const CancelThreadRemoteCommand = dispatch('CancelThreadRemoteCommand');
 export const ReadThreadRemoteLog = dispatch('ReadThreadRemoteLog');
