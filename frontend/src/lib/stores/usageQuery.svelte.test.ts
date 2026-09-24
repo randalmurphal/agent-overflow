@@ -133,3 +133,21 @@ it('refreshes on its owner recovery and fences an older response', async () => {
   await flush();
   expect(stats.buckets?.[0].outputTokens).toBe(30);
 });
+
+it('shows a starting computer as pending, not unavailable, and asks it once it connects', async () => {
+  const gpu = stageBackend({ id: 'gpu', name: 'GPU', status: 'starting' });
+  setTelemetrySelection('usage', ['gpu']);
+  const asked: unknown[] = [];
+  setBindingMock('GetUsageStats', async () => { asked.push(takePinnedBackend()); return [new UsageBucket({ bucket: 'claude', outputTokens: 7 })]; });
+  let stats!: ReturnType<typeof createUsageStats>;
+  release = $effect.root(() => { stats = createUsageStats(() => new UsageQuery({ groupBy: 'provider' })); });
+  await flush();
+  expect(stats.pending).toEqual(['GPU']);
+  expect(stats.unavailable).toEqual([]);
+  expect(asked).toEqual([]);
+  gpu.setStatus('connected');
+  await flush();
+  expect(stats.pending).toEqual([]);
+  expect(asked).toEqual(['gpu']);
+  expect(stats.buckets?.[0].outputTokens).toBe(7);
+});

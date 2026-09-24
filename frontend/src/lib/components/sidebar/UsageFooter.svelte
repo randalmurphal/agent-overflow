@@ -97,7 +97,7 @@
         <span class="truncate text-fg-subtle" title={`Unavailable: ${stats.unavailable.join(', ')}`}>{rows.length > 0 ? 'Partial usage' : 'Usage unavailable'}</span>
       {/if}
       {#if rows.length === 0 && stats.unavailable.length === 0}
-        <span class="text-fg-subtle">{stats.loading ? 'Loading usage…' : 'No usage in this selection'}</span>
+        <span class="text-fg-subtle" data-testid="usage-footer-empty">{stats.loading || stats.pending.length > 0 ? 'Loading usage…' : 'No usage in this selection'}</span>
       {/if}
       {#each rows as row (row.provider)}
         <span class="grid grid-cols-[3.5rem_1fr] items-center gap-2" data-testid="usage-footer-row">

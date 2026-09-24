@@ -25,7 +25,7 @@
       <MenuItem label="A selected computer was removed" description="Choose the default to reset this selection." disabled />
     {/if}
     {#each computers as computer (computer.key)}
-      <MenuItem label={computer.name} title={computer.name} suffix={computer.connected ? undefined : 'offline'} checkbox checked={computer.selected} disabled={computer.selected && selectedCount === 1} onSelect={() => toggleTelemetryComputer(kind, computer.key)} />
+      <MenuItem label={computer.name} title={computer.name} suffix={computer.connected ? undefined : computer.starting ? 'starting' : 'offline'} checkbox checked={computer.selected} disabled={computer.selected && selectedCount === 1} onSelect={() => toggleTelemetryComputer(kind, computer.key)} />
     {/each}
   </Menu>
 </Popover>
