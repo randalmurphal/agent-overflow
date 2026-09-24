@@ -331,10 +331,10 @@ left the old payload row behind, and a Claude background agent's completion
 payload held a copy of the agent's whole transcript. v119's deferred phase,
 "History repair", runs three steps:
 
-1. `repairStoredHistory` (`history_repair.go`) folds the sealed rows back,
-   releases sealed chunks only payload snapshots keep, and prunes payload rows
-   nothing references. A thread whose fold fails keeps the rest of its sealed
-   rows, which read as imported history, until the next open retries it.
+1. `repairStoredHistory` (`history_repair.go`) folds the sealed rows back
+   and prunes payload rows nothing references. A thread whose fold fails keeps
+   the rest of its sealed rows, which read as imported history, until the next
+   open retries it.
 2. `blankLegacyTranscriptCopies` (`transcript_blank.go`) empties those
    transcript copies, as described below.
 3. `convertToIncrementalVacuumStep` converts a pre-incremental file
@@ -347,9 +347,11 @@ probes every sealed reference covering its turn, so chunks go latest turn
 first and smallest first within a turn, and rows move in pieces of at most
 16. A transaction stops taking pieces after 10 ms, 256 rows or 4 MiB. Between
 the transactions of a split chunk, each moved row has an override, the state
-`localizeImportedItemTx` leaves; the last piece releases the reference.
-`pruneOrphanPayloads` deletes payload rows that no logical timeline row names
-and no payload snapshot borrows, at most 256 rows and 4 MiB per transaction,
+`localizeImportedItemTx` leaves; the last piece releases the reference, and
+`trg_thread_import_chunks_gc` deletes the chunk with its last reference. The
+phase runs after the whole chain, where v120 has already deleted every chunk
+no thread references. `pruneOrphanPayloads` deletes payload rows that no
+logical timeline row names, at most 256 rows and 4 MiB per transaction,
 re-checking the references inside each one. Every repair transaction is
 followed by a passive checkpoint on a read-pool connection, which does not
 hold the writer. The writer keeps SQLite's default `wal_autocheckpoint` of

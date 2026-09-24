@@ -939,11 +939,11 @@ func TestUnsealThreadHistoryKeepsPointerForkViews(t *testing.T) {
 	}
 }
 
-// TestReleaseDetachedSealedChunks: payload snapshots are retired (v120), so
-// nothing keeps a sealed chunk after its last reference goes. A copy fork
-// that copied part of the chunk holds its own bytes, and deleting the source
-// leaves no chunk to release.
-func TestReleaseDetachedSealedChunks(t *testing.T) {
+// TestDeletingASealedSourceCollectsItsChunks: payload snapshots are retired
+// (v120), so nothing keeps a sealed chunk after its last reference goes, and
+// the repair has no detached chunk to release. A copy fork that copied part
+// of the chunk holds its own bytes.
+func TestDeletingASealedSourceCollectsItsChunks(t *testing.T) {
 	s := newTestStore(t)
 	ids := localHistoryFixture(t, s, "src", 20)
 	sealItemsForTest(t, s, "src", ids...)
@@ -953,58 +953,9 @@ func TestReleaseDetachedSealedChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireNoImportedHistory(t, s)
-
-	released, err := s.ReleaseDetachedSealedChunks(context.Background(), nil, failOnSkip(t))
-	if err != nil || released != 0 {
-		t.Fatalf("released = %d, %v", released, err)
-	}
 	requireSameRepairView(t, "cut", readRepairView(t, s, "cut"), before)
 	if data, err := s.GetPayloadData("cut", "p-row-003"); err != nil || string(data) != "payload row-003 appended" {
 		t.Fatalf("cut payload = %q, %v", data, err)
-	}
-	if released, err := s.ReleaseDetachedSealedChunks(context.Background(), nil, failOnSkip(t)); err != nil || released != 0 {
-		t.Fatalf("second release = %d, %v", released, err)
-	}
-}
-
-// A chunk whose release fails stays, is reported once, and does not stop the
-// release of the next chunk.
-func TestReleaseDetachedSealedChunksSkipsAFailingChunk(t *testing.T) {
-	s := newTestStore(t)
-	// Payload snapshots kept a chunk after its last reference before v120.
-	// v120 deletes such chunks and collects each chunk with its last
-	// reference, so the test drops that collection to leave two behind.
-	mustExec(t, s.db, `DROP TRIGGER trg_thread_import_chunks_gc`)
-	var chunks []string
-	for _, thread := range []string{"a", "b"} {
-		ids := localHistoryFixture(t, s, thread, 20)
-		chunks = append(chunks, sealItemsForTest(t, s, thread, ids...))
-		if err := s.DeleteThread(thread); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if n := countRows(t, s, `SELECT count(*) FROM import_history_chunks`); n != 2 {
-		t.Fatalf("%d detached chunks, want 2", n)
-	}
-	failing, other := chunks[0], chunks[1]
-	if other < failing {
-		failing, other = other, failing
-	}
-	mustExec(t, s.db, `CREATE TRIGGER fail_release BEFORE DELETE ON import_history_chunks WHEN OLD.id = '`+failing+`' BEGIN SELECT RAISE(ABORT, 'injected'); END`)
-
-	var skipped []error
-	released, err := s.ReleaseDetachedSealedChunks(context.Background(), nil, func(err error) { skipped = append(skipped, err) })
-	if err != nil || released != 1 {
-		t.Fatalf("released = %d, %v; want the other chunk", released, err)
-	}
-	if len(skipped) != 1 || !strings.Contains(skipped[0].Error(), failing) || !strings.Contains(skipped[0].Error(), "injected") {
-		t.Fatalf("skipped = %v; want the failing chunk once", skipped)
-	}
-	if n := countRows(t, s, `SELECT count(*) FROM import_history_chunks WHERE id = ?`, failing); n != 1 {
-		t.Fatal("the failing chunk was not left in place")
-	}
-	if n := countRows(t, s, `SELECT count(*) FROM import_history_chunks WHERE id = ?`, other); n != 0 {
-		t.Fatal("the failing chunk stopped the release of the next one")
 	}
 }
 
@@ -1245,9 +1196,9 @@ func TestPruneOrphanPayloadBatchRechecksReferences(t *testing.T) {
 	if _, err := upsertCarded(s, item, nil); err != nil {
 		t.Fatal(err)
 	}
-	stats, released, err := s.pruneOrphanPayloadBatch(scanned)
-	if err != nil || stats != (orphanPayloadStats{}) || len(released) != 0 {
-		t.Fatalf("prune of a re-referenced payload = %+v %v %v", stats, released, err)
+	stats, err := s.pruneOrphanPayloadBatch(scanned)
+	if err != nil || stats != (orphanPayloadStats{}) {
+		t.Fatalf("prune of a re-referenced payload = %+v %v", stats, err)
 	}
 	if data, err := s.GetPayloadData("t", "old"); err != nil || string(data) != "old" {
 		t.Fatalf("re-referenced payload = %q, %v", data, err)
