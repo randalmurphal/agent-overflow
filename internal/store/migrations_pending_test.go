@@ -31,8 +31,16 @@ func TestRefusePendingMigrationsLeavesTheDatabaseAsItWas(t *testing.T) {
 	if !errors.As(err, &pending) {
 		t.Fatalf("open = %v, want a MigrationsPendingError", err)
 	}
-	if pending.Database != 118 || pending.Build != latestMigrationVersionForTest() || pending.Pending != latestMigrationVersionForTest()-118 {
-		t.Fatalf("refusal = %+v", pending)
+	// The count is the chain's, not the version gap: versions need not be
+	// contiguous while lanes land.
+	after118 := 0
+	for _, m := range migrations {
+		if m.Version > 118 {
+			after118++
+		}
+	}
+	if pending.Database != 118 || pending.Build != latestMigrationVersionForTest() || pending.Pending != after118 {
+		t.Fatalf("refusal = %+v, want %d pending after v118", pending, after118)
 	}
 	if after := fileDigest(t, path); after != before {
 		t.Fatal("the refused open changed the database")

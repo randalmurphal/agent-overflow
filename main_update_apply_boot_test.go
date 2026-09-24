@@ -82,6 +82,12 @@ func TestDesktopBootWithoutItsHelperStillRefusesToMigrate(t *testing.T) {
 	if err := raw.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// The version the refused boot must leave in place: the chain's
+	// previous migration, whatever number it carries.
+	previous, err := store.ReadSchemaVersion(dbPath)
+	if err != nil || previous >= latest {
+		t.Fatalf("after dropping v%d the database reads v%d (%v)", latest, previous, err)
+	}
 	startErr := appService.Start(t.Context())
 	page := gate.startFailed(startErr)
 	if page == nil || page.Title != "Agent Overflow could not start the database upgrade this version needs." ||
@@ -89,7 +95,7 @@ func TestDesktopBootWithoutItsHelperStillRefusesToMigrate(t *testing.T) {
 		!strings.Contains(page.Detail, "Nothing was changed.") || page.Log != gate.logPath || gate.logPath == "" {
 		t.Fatalf("Start = %v; page = %+v", startErr, page)
 	}
-	if got, err := store.ReadSchemaVersion(dbPath); err != nil || got != latest-1 {
-		t.Fatalf("the database is at v%d (%v) after the boot, want v%d", got, err, latest-1)
+	if got, err := store.ReadSchemaVersion(dbPath); err != nil || got != previous {
+		t.Fatalf("the database is at v%d (%v) after the boot, want v%d", got, err, previous)
 	}
 }
