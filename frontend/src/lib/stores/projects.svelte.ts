@@ -1,7 +1,8 @@
 import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { invalidateReplicaCatalog } from '../replica/session';
 import { computerCatalogWriter } from './computerCatalogWriter';
-import { computerCatalog, readComputerRows, retainUnavailableComputerRows } from './computerRows';
+import { computerCatalog, readComputerRows, retainUnavailableComputerRows, type ComputerRows } from './computerRows';
+import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelte';
 // Sidebar-facing projects store. Mirrors the pattern of threads.svelte.ts:
 // a single reactive $state array driven by an explicit refresh, with
 // optimistic local mutations so the sidebar can reflect a create/rename/
@@ -187,20 +188,50 @@ export function isLoaded(): boolean {
  * Superseded reads neither publish an empty catalog nor mark initial load done. */
 export async function refreshProjects(): Promise<void> {
   try {
-    const result = await readComputerRows<ProjectWithCounts>(
-      () => ListProjects(), (row, backend) => noteProject(row.project.id, backend), computerCatalog('projects', () => projects, (row) => projectBackend(row.project.id), (late) => {
-        projects = retainUnavailableComputerRows(projects, late, (row) => projectBackend(row.project.id));
-        loaded = true;
-      }));
+    const result = await readComputerRows<ProjectWithCounts>(listProjectRows, noteProjectRow, projectCatalog());
     if (!result) return;
-    projects = retainUnavailableComputerRows(projects, result, (row) => projectBackend(row.project.id));
-    loaded = true;
+    commitProjectRows(result);
   } catch (err) {
     if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to load projects:', err);
     addToast('error', 'Failed to load projects');
   }
 }
+
+function listProjectRows(): Promise<ProjectWithCounts[]> {
+  return ListProjects();
+}
+
+function noteProjectRow(row: ProjectWithCounts, backend: BackendKey): void {
+  noteProject(row.project.id, backend);
+}
+
+function projectCatalog() {
+  return computerCatalog('projects', () => projects, (row) => projectBackend(row.project.id), commitProjectRows);
+}
+
+function commitProjectRows(result: ComputerRows<ProjectWithCounts>): void {
+  projects = retainUnavailableComputerRows(projects, result, (row) => projectBackend(row.project.id));
+  loaded = true;
+  settleCatalogAnswers('projects', result.answered);
+}
+
+// The catalog store's retry for a computer whose projects have not loaded:
+// its rows alone, waiting for the answer rather than the startup deadline.
+async function retryProjectCatalog(backend: BackendKey): Promise<void> {
+  let result: ComputerRows<ProjectWithCounts> | null;
+  try {
+    result = await readComputerRows<ProjectWithCounts>(
+      listProjectRows, noteProjectRow, projectCatalog(), undefined, undefined, { only: backend, deadlineMs: null });
+  } catch {
+    // readComputerRows settled this computer's failure into the catalog
+    // state, which is where it is shown and retried.
+    return;
+  }
+  if (result) commitProjectRows(result);
+}
+
+registerCatalogReader('projects', retryProjectCatalog);
 
 /**
  * Insert a freshly-created project at the head of the list. Accepts a

@@ -2836,7 +2836,8 @@ export function ListPendingInteractiveRequests(threadID: string): $CancellablePr
 
 /**
  * ListProjects returns projects with a lightweight thread count per
- * project for the sidebar.
+ * project for the sidebar. An answer is a client's catalog read, which
+ * releases heavy post-boot work.
  */
 export function ListProjects(): $CancellablePromise<store$0.ProjectWithCounts[]> {
     return $Call.ByID(2721360259).then(($result: any) => {
@@ -3064,7 +3065,8 @@ export function ListThreadSliceAround(threadID: string, anchorItemID: string, ta
  * "draft" threads (newly created but never sent) so the sidebar stays
  * clean: a thread only becomes visible once its first item lands.
  * Internal callers that need every thread (tests, fork inspection,
- * discussion runtime) go through a.store.ListThreads directly.
+ * discussion runtime) go through a.store.ListThreads directly: an answer
+ * here is a client's catalog read, which releases heavy post-boot work.
  */
 export function ListThreads(): $CancellablePromise<store$0.Thread[]> {
     return $Call.ByID(1090132042).then(($result: any) => {

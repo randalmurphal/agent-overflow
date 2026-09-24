@@ -230,6 +230,27 @@ func TestProbeBootstrapStopsWhenCanceled(t *testing.T) {
 	}
 }
 
+// A cancel that lands while the probe waits between polls ends the wait,
+// not the next poll.
+func TestProbeBootstrapStopsWhenCanceledDuringAWait(t *testing.T) {
+	port, _ := probeBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		startupprogress.Write(w, migratingReport(0))
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cfg := ProbeConfig{PollInterval: time.Hour, InitialPollInterval: time.Hour}
+	cfg.OnProgress = func(startupprogress.Progress) { cancel() }
+	done := make(chan error, 1)
+	go func() { done <- ProbeBootstrap(ctx, port, probeTestToken, cfg) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("probe kept waiting after cancellation")
+	}
+}
+
 func TestProbeBootstrapRetriesServiceUnavailable(t *testing.T) {
 	var attempts atomic.Int32
 	port, _ := probeBackend(t, func(w http.ResponseWriter, r *http.Request) {

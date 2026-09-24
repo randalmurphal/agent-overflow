@@ -126,6 +126,8 @@ the window opens during it, `SetStartDone` receives the result, and
 `ServiceShutdown` cancels and joins it. Code the window or shell reaches
 during that time must not assume `Start` finished; check the state it needs,
 as `persistWindowGeometry` does.
+Unattended work that scans the database waits for `awaitFirstReadsSettled`
+so it does not compete with the first client's catalog reads.
 
 The complete mocked-provider isolation configuration belongs in
 `ConfigureIsolation`. Every fixture capable of starting a session uses the

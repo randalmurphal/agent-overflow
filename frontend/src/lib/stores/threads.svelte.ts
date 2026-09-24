@@ -2,7 +2,7 @@ import { isPassiveConnectionFailure } from '../transport/passiveReadFailure';
 import { getAllPanes } from './panes.svelte';
 import { reconcileThreadRows } from './eventsThreadRows';
 import { computerCatalogWriter } from './computerCatalogWriter';
-import { computerCatalog, readComputerRows, retainUnavailableComputerRows } from './computerRows';
+import { computerCatalog, readComputerRows, retainUnavailableComputerRows, type ComputerRows } from './computerRows';
 import { currentThreadRow, noteThread, onThreadOwnershipChanged, threadBackend } from '../transport/entityIndex';
 import type { Thread } from '../types/models';
 import { clearPayloadCacheForThread } from '../utils/payloadDataCache';
@@ -22,7 +22,9 @@ import { addToast } from './toast.svelte';
 import { releaseThreadTerminalState } from '../components/terminal/terminalStore.svelte';
 import { createKeyedSignalRegistry } from './keyedSignalRegistry.svelte';
 import { onBackendDetached } from '../transport/backends';
+import type { BackendKey } from '../transport/backendKey';
 import { withLocalReadMarker } from './threadReadWrites';
+import { registerCatalogReader, settleCatalogAnswers } from './catalogLoad.svelte';
 
 type ThreadReadStatePatch = Partial<Pick<Thread, 'lastReadAt' | 'hasIncompleteTurn' | 'hasFailedTurn'>>;
 
@@ -53,31 +55,79 @@ export function getThreads(): Thread[] {
   return threads;
 }
 
+/** A thread catalog read: the rows to commit and the computers that answered. */
+export interface ThreadRowsRead {
+  rows: Thread[];
+  /** Settle these as loaded once `rows` are committed (settleCatalogAnswers). */
+  answered: ReadonlySet<BackendKey>;
+}
+
+const NO_ANSWERS: ReadonlySet<BackendKey> = new Set();
+
 // Only outstanding reads retain the latest promise; startup follows a newer
 // reconnect snapshot before validating saved pane IDs.
-let latestThreadRead: Promise<Thread[]> | null = null;
+let latestThreadRead: Promise<ThreadRowsRead> | null = null;
 let pendingThreadReads = 0;
 
-export async function readThreadRows(): Promise<Thread[]> {
+async function listThreadRows(): Promise<Thread[]> {
+  return await ListThreads() as Thread[];
+}
+
+function noteThreadRow(row: Thread, backend: BackendKey): void {
+  noteThread(row.id, backend, row.ownershipEpoch ?? 0);
+}
+
+function threadRowOwner(row: Thread): BackendKey | undefined {
+  return threadBackend(row.id);
+}
+
+function threadCatalog() {
+  return computerCatalog('threads', () => threads, threadRowOwner, (late) => {
+    reconcileThreadRows(currentRows(retainUnavailableComputerRows(threads, late, threadRowOwner)));
+    settleCatalogAnswers('threads', late.answered);
+  });
+}
+
+export async function readThreadRows(): Promise<ThreadRowsRead> {
   pendingThreadReads++;
   const request = readCurrentThreadRows();
   latestThreadRead = request;
   try { return await request; }
   finally { if (--pendingThreadReads === 0) latestThreadRead = null; }
 
-  async function readCurrentThreadRows(): Promise<Thread[]> {
-    const result = await readComputerRows<Thread>(
-      async () => await ListThreads() as Thread[], (row, backend) => { noteThread(row.id, backend, row.ownershipEpoch ?? 0); }, computerCatalog('threads', () => threads, (row) => threadBackend(row.id), (late) => {
-        reconcileThreadRows(currentRows(retainUnavailableComputerRows(threads, late, (row) => threadBackend(row.id))));
-      }), currentThreadRow);
+  async function readCurrentThreadRows(): Promise<ThreadRowsRead> {
+    const result = await readComputerRows<Thread>(listThreadRows, noteThreadRow, threadCatalog(), currentThreadRow);
     // Startup must validate saved panes against the winning snapshot, even
     // when a first hello superseded its read. A local mutation with no newer
     // read already lives in `threads`. Retain the latest promise only while
     // reads are outstanding; no second persistent catalog is needed.
-    if (!result) return latestThreadRead && latestThreadRead !== request ? latestThreadRead : currentRows(threads);
-    return currentRows(retainUnavailableComputerRows(threads, result, (row) => threadBackend(row.id)));
+    if (!result) {
+      return latestThreadRead && latestThreadRead !== request
+        ? latestThreadRead : { rows: currentRows(threads), answered: NO_ANSWERS };
+    }
+    return { rows: currentRows(retainUnavailableComputerRows(threads, result, threadRowOwner)), answered: result.answered };
   }
 }
+
+// The catalog store's retry for a computer whose threads have not loaded:
+// its rows alone, waiting for the answer rather than the startup deadline,
+// merged like a resync so live local state survives.
+async function retryThreadCatalog(backend: BackendKey): Promise<void> {
+  let result: ComputerRows<Thread> | null;
+  try {
+    result = await readComputerRows<Thread>(
+      listThreadRows, noteThreadRow, threadCatalog(), currentThreadRow, undefined, { only: backend, deadlineMs: null });
+  } catch {
+    // readComputerRows settled this computer's failure into the catalog
+    // state, which is where it is shown and retried.
+    return;
+  }
+  if (!result) return;
+  reconcileThreadRows(currentRows(retainUnavailableComputerRows(threads, result, threadRowOwner)));
+  settleCatalogAnswers('threads', result.answered);
+}
+
+registerCatalogReader('threads', retryThreadCatalog);
 
 function currentRows(rows: Thread[]): Thread[] {
   const seen = new Set<string>();
@@ -89,8 +139,10 @@ function currentRows(rows: Thread[]): Thread[] {
 }
 
 export async function loadThreads(): Promise<Thread[]> {
-  threads = await readThreadRows();
+  const read = await readThreadRows();
+  threads = read.rows;
   liveActivityAt.reset();
+  settleCatalogAnswers('threads', read.answered);
   return threads;
 }
 

@@ -239,11 +239,15 @@ func (a *App) GetThreadDefaults(opts CreateThreadOptions) (ThreadDefaults, error
 // "draft" threads (newly created but never sent) so the sidebar stays
 // clean: a thread only becomes visible once its first item lands.
 // Internal callers that need every thread (tests, fork inspection,
-// discussion runtime) go through a.store.ListThreads directly.
+// discussion runtime) go through a.store.ListThreads directly: an answer
+// here is a client's catalog read, which releases heavy post-boot work.
 //
 //ao:scope threads:read
 //ao:route all
-func (a *App) ListThreads() ([]store.Thread, error) { return a.threadApplication().List() }
+func (a *App) ListThreads() (rows []store.Thread, err error) {
+	defer a.firstReads.read(firstReadThreads)(&err)
+	return a.threadApplication().List()
+}
 
 // ListArchivedThreads returns every archived thread for the settings panel.
 //

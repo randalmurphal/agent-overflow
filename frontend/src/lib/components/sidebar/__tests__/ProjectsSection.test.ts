@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
@@ -31,6 +31,9 @@ import {
   resetThreadGroupsForTest,
 } from '../../../stores/threadGroups.svelte';
 import { createThreadGroupAction } from '../threadGroupActions';
+import { resetCatalogLoadForTest } from '../../../stores/catalogLoad.svelte';
+import { __setTransportStatusForTest } from '../../../stores/transportStatus.svelte';
+import { TransportError } from '../../../transport/wsClient';
 
 function mkProject(id: string, overrides: Partial<Project> = {}): Project {
   return {
@@ -71,8 +74,10 @@ describe('<ProjectsSection>', () => {
       workspacePath: '/tmp/ws',
     }));
     // Reset the threads store so threads seeded by one test don't leak
-    // into the next.
+    // into the next. Both reads also settle HOME's catalogs as loaded, so
+    // the list renders instead of its loading row.
     await refreshThreads();
+    await refreshProjects();
   });
 
   it('renders the PROJECTS header and control icons', async () => {
@@ -117,6 +122,88 @@ describe('<ProjectsSection>', () => {
     await tick();
     const hint = getByTestId('sidebar-projects-empty');
     expect(hint.textContent).toMatch(/No projects yet\..*Click \+ to add one\./);
+  });
+
+  describe('before the catalogs load', () => {
+    const report = {
+      phase: 'store.migrate',
+      detail: 'Applying migration 3 of 7 add_index',
+      step: 3,
+      steps: 7,
+      elapsedMs: 72_000,
+      updatingTo: '',
+    };
+
+    beforeEach(() => {
+      // Back to a computer that has not answered yet.
+      resetCatalogLoadForTest();
+    });
+
+    it('shows a loading row and never the empty hint until both catalogs load', async () => {
+      const { getByTestId, queryByTestId } = render(ProjectsSection, { props: { pane: null } });
+      await tick();
+      expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Loading projects…');
+      expect(queryByTestId('sidebar-projects-empty')).toBeNull();
+
+      await refreshProjects();
+      await tick();
+      // Threads have not answered: still incomplete, still not empty.
+      expect(getByTestId('sidebar-catalog-loading')).toBeInTheDocument();
+      expect(queryByTestId('sidebar-projects-empty')).toBeNull();
+
+      await refreshThreads();
+      await tick();
+      expect(queryByTestId('sidebar-catalog-status')).toBeNull();
+      expect(getByTestId('sidebar-projects-empty')).toBeInTheDocument();
+    });
+
+    it('keeps the rows it has visible beside the loading row', async () => {
+      await seedProjects([
+        { project: mkProject('p1', { name: 'Project One' }), threadCount: 0, lastActive: 0 },
+      ]);
+      resetCatalogLoadForTest();
+      const { getByTestId, getAllByTestId } = render(ProjectsSection, { props: { pane: null } });
+      await tick();
+      expect(getByTestId('sidebar-catalog-loading')).toBeInTheDocument();
+      expect(getAllByTestId('project-item').map((el) => el.getAttribute('data-project-id'))).toEqual(['p1']);
+    });
+
+    it('names the boot phase while the computer is starting', async () => {
+      __setTransportStatusForTest({ status: 'starting', nextAttemptAt: null, startup: report });
+      const { getByTestId, queryByTestId } = render(ProjectsSection, { props: { pane: null } });
+      await tick();
+      expect(getByTestId('sidebar-catalog-loading')).toHaveAttribute('data-status', 'starting');
+      expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Applying migration 3 of 7 add_index');
+      expect(getByTestId('sidebar-catalog-loading-meta')).toHaveTextContent('Step 3 of 7 · 1:12 elapsed');
+      expect(queryByTestId('sidebar-projects-empty')).toBeNull();
+
+      __setTransportStatusForTest({
+        status: 'starting', nextAttemptAt: null, startup: { ...report, updatingTo: '1.4.0' },
+      });
+      await tick();
+      expect(getByTestId('sidebar-catalog-loading-label'))
+        .toHaveTextContent('Finishing update to v1.4.0: applying migration 3 of 7 add_index');
+    });
+
+    it('shows a failed load with its error, and Retry loads it', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      setBindingMock('ListProjects', async () => {
+        throw new TransportError('method_error', 'list projects: database disk image is malformed');
+      });
+      await refreshProjects();
+      await refreshThreads();
+      const { getByTestId, queryByTestId, findByTestId } = render(ProjectsSection, { props: { pane: null } });
+      await tick();
+      expect(getByTestId('sidebar-catalog-failed')).toHaveTextContent(/database disk image is malformed/i);
+      expect(queryByTestId('sidebar-projects-empty')).toBeNull();
+
+      setBindingMock('ListProjects', async () => [
+        { project: mkProject('p1', { name: 'Project One' }), threadCount: 0, lastActive: 0 },
+      ]);
+      await fireEvent.click(getByTestId('sidebar-catalog-retry'));
+      expect(await findByTestId('project-item')).toHaveAttribute('data-project-id', 'p1');
+      expect(queryByTestId('sidebar-catalog-status')).toBeNull();
+    });
   });
 
   it('defaults to lastActivity sort mode', async () => {

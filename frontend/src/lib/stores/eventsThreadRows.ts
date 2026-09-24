@@ -12,7 +12,8 @@ import { closePanesShowingThread, findPaneShowingThread, iterPanes, syncThread }
 import { refreshProjects, touchProjectActivity } from './projects.svelte';
 import { refreshThreadGroups } from './threadGroups.svelte';
 import { addToast } from './toast.svelte';
-import { getThreadById, getThreadLiveActivityAt, getThreads, readThreadRows, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity } from './threads.svelte';
+import { getThreadById, getThreadLiveActivityAt, getThreads, readThreadRows, prependThread, removeThread, replaceAllThreads, replaceThread, touchThreadActivity, type ThreadRowsRead } from './threads.svelte';
+import { settleCatalogAnswers } from './catalogLoad.svelte';
 import { projectReaderMessageSent, projectThreadError } from './threadStatuses.svelte';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { pendingLocalReadMarker } from './threadReadWrites';
@@ -166,16 +167,17 @@ export function syncThreadActivity(threadId: string, updatedAt: number): void {
  * sidebar "Completed" pill stuck on a thread the user is viewing.
  */
 async function resyncThreadRows(): Promise<void> {
-  let rows: Thread[];
+  let read: ThreadRowsRead;
   try {
-    rows = await readThreadRows();
+    read = await readThreadRows();
   } catch (err) {
     if (isPassiveConnectionFailure(err)) return;
     console.error('Failed to resync threads after transport gap:', err);
     addToast('error', 'Failed to load threads');
     return;
   }
-  reconcileThreadRows(rows);
+  reconcileThreadRows(read.rows);
+  settleCatalogAnswers('threads', read.answered);
 }
 
 export function reconcileThreadRows(rows: Thread[]): void {
