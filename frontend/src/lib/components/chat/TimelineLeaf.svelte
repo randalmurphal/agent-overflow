@@ -9,6 +9,7 @@
   import CompactionDivider from './CompactionDivider.svelte';
   import CompactionReasoning from './CompactionReasoning.svelte';
   import CommandResultRow from './CommandResultRow.svelte';
+  import ForkDivider from './ForkDivider.svelte';
   import GeneratedImageMessage from './GeneratedImageMessage.svelte';
   import NotificationRow from './NotificationRow.svelte';
   import SessionDiedNotification from './SessionDiedNotification.svelte';
@@ -115,6 +116,8 @@
   {:else if displayItem.kind === 'notification'}
     {#if notificationKind === 'session_died'}
       <SessionDiedNotification item={displayItem} />
+    {:else if notificationKind === 'fork_origin'}
+      <ForkDivider {pane} item={displayItem} />
     {:else}
       <NotificationRow item={displayItem} />
     {/if}
