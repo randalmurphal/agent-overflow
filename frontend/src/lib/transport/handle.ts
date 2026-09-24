@@ -21,7 +21,7 @@
 
 import { HOME_BACKEND, type BackendKey } from './backendKey';
 import { backendById } from './backends';
-import type { LeaseState } from './frames';
+import type { LeaseState, WatchScope } from './frames';
 import type { StepUpProver } from './wsClient';
 
 /**
@@ -60,7 +60,8 @@ export interface TransportHandle {
    */
   setLease(state: LeaseState): void;
   /**
-   * Narrow this connection's entity-filtered channels to `threadIds`.
+   * Narrow this connection's entity-filtered channels to `threadIds`, and
+   * its subagent transcript rows to `scopes`.
    *
    * Per connection because that is what the frame does: a machine can
    * only push frames about threads it holds. ./backends.ts owns the SPLIT
@@ -68,7 +69,7 @@ export interface TransportHandle {
    * the composition; a per-handle call is the mechanism, not the
    * interface a caller reaches for.
    */
-  setWatchedThreads(threadIds: readonly string[]): void;
+  setWatchedThreads(threadIds: readonly string[], scopes: readonly WatchScope[]): void;
   /**
    * State whether the screen behind this connection is being looked at,
    * and which threads it shows.

@@ -151,6 +151,14 @@ export interface ClientReplayFrame {
  * has never sent one receives everything, which is the default every client
  * that does not speak this frame keeps.
  *
+ * `scopes` narrows `provider:item_event` one level further, to the subagent
+ * transcripts this connection is viewing: a row whose `parentId` is set
+ * arrives only when its `{threadId, scopeRootId}` pair is named here, while
+ * root rows follow `threads`. Replaced together with `threads`. `[]` means
+ * no agent is being viewed; an ABSENT field means every scope of a watched
+ * thread, which is what a client sends when it cannot state its set
+ * (internal/transport/frame.go ClientFrame.Scopes).
+ *
  * Its own frame type rather than a field on a subscribe frame: the SPA must
  * never send a channel `subscribe`, because the backend counts those to
  * decide whether a dedicated launcher bridge is attached.
@@ -158,6 +166,17 @@ export interface ClientReplayFrame {
 export interface ClientWatchFrame {
   type: 'watch';
   threads: string[];
+  scopes?: WatchScope[];
+}
+
+/**
+ * One subagent transcript a connection is viewing: the rows of `threadId`
+ * whose `parentId` is `scopeRootId` (internal/transport/frame.go
+ * WatchScope).
+ */
+export interface WatchScope {
+  threadId: string;
+  scopeRootId: string;
 }
 
 /**

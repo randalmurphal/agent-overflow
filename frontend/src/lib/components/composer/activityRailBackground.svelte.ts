@@ -16,8 +16,10 @@
 // `onMount`) and the returned `dispose` function (call from
 // `onDestroy`). No global state — one controller per Composer mount.
 
+import { untrack } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { ListLiveBackgroundTasks } from '../../stores/bindings';
+import { refreshWatchedThreads, registerWatchedScopeSource } from '../../stores/watchedThreads';
 import { onItemUpsert } from '../../stores/eventsItemStream';
 import { wailsEventOn } from '../../stores/wailsEvents';
 import { getTransportStatusFor, onBackendStatusChange } from '../../stores/transportStatus.svelte';
@@ -156,6 +158,37 @@ export function createBackgroundController(
     refresh.request({ immediate: true });
   });
 
+  // The open tray body shows each running agent's latest-tool line, fed
+  // between list reads by child rows: a Codex agent's direct tool calls
+  // (scope: the agent's row) and a nested launch's re-pushes (scope: its
+  // parent). The backend sends those only to a connection watching the
+  // scope, so the scopes are watched while the body is open. A closed tray
+  // reads only the list, which every membership change nudges. Rows that
+  // were withheld before a scope was watched are recovered by re-reading
+  // the list once the watch naming it has been sent.
+  const trayScopeRoots = $derived.by((): string[] => {
+    const id = threadId;
+    if (!id || !getPane().activityRailBackgroundOpen) return [];
+    const roots = new Set<string>();
+    for (const item of backgroundItems) {
+      if (item.threadId !== id || item.completionOf || item.status !== 'running') continue;
+      if (item.parentId) roots.add(item.parentId);
+      if (provider === 'codex' && item.toolName === 'collab_agent') roots.add(item.id);
+    }
+    return [...roots].sort();
+  });
+  const trayScopeKey = $derived(trayScopeRoots.join('\u0000'));
+  let watchedTrayScopeKey = '';
+  $effect(() => {
+    const key = trayScopeKey;
+    untrack(() => {
+      const previous = new Set(watchedTrayScopeKey ? watchedTrayScopeKey.split('\u0000') : []);
+      watchedTrayScopeKey = key;
+      refreshWatchedThreads();
+      if (trayScopeRoots.some(root => !previous.has(root))) refresh.request({ immediate: true });
+    });
+  });
+
   const tasks = $derived<TrayTask[]>(
     deriveTrayTasks(backgroundItems, getNow(), COMPLETION_RETENTION_MS),
   );
@@ -180,6 +213,12 @@ export function createBackgroundController(
     get provider() { return provider; },
 
     mount(): () => void {
+      // Untracked: the composition runs inside whichever reaction changed
+      // another source, which must not come to depend on this tray.
+      const releaseScopes = registerWatchedScopeSource(() => untrack(() => {
+        const id = threadId;
+        return id ? trayScopeRoots.map(scopeRootId => ({ threadId: id, scopeRootId })) : [];
+      }));
       const cancelItemUpsert = onItemUpsert((item) => {
         if (item.threadId !== threadId) return;
         if (provider === 'codex' && item.parentId && item.kind === 'tool_call' && item.toolName !== 'collab_agent') {
@@ -224,6 +263,7 @@ export function createBackgroundController(
         refresh.request({ immediate: true });
       });
       return () => {
+        releaseScopes();
         cancelStatus();
         cancelGap();
         cancelItemUpsert();

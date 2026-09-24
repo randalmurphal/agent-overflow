@@ -1,6 +1,9 @@
-// Composes the set of threads this client is looking at and pushes it to
-// the transport, which narrows the entity-filtered channels to it
-// (lib/transport/entityFilteredChannels.ts).
+// Composes the set of threads this client is looking at, and the subagent
+// transcripts (scopes) it is reading, and pushes both to the transport. The
+// backend narrows the entity-filtered channels to the threads
+// (lib/transport/entityFilteredChannels.ts) and a thread's child rows on
+// `provider:item_event` to the scopes: a watched thread's root rows always
+// arrive, a subagent's rows only while a source names its scope.
 //
 // EXISTENCE, NEVER VISIBILITY. A thread is watched because a surface for it
 // exists, not because that surface is on screen, focused, or in a visible
@@ -11,11 +14,18 @@
 // `IntersectionObserver`, or which pane has focus.
 //
 // Deliberately rune-free and source-registered rather than importing the
-// stores it reads. Two surfaces contribute threads today and they sit at
-// different levels (the pane registry, and the discussion live-tail routing
-// table that participant CHILD threads have no pane in), so this module
-// stays a leaf that only knows how to union what it is handed — the same
-// one-way shape panes.svelte.ts uses for its destroyed/mounted observers.
+// stores it reads. Several surfaces contribute and they sit at different
+// levels (the pane registry, the timeline surface registry whose scoped
+// timelines name their agent's scope, the discussion live-tail routing
+// table that participant CHILD threads have no pane in, and the open
+// background tray), so this module stays a leaf that only knows how to
+// union what it is handed — the same one-way shape panes.svelte.ts uses for
+// its destroyed/mounted observers.
+//
+// A scope source follows the thread rule read from the other side: a
+// surface that reads a subagent's rows (`parentId` set) names that scope
+// for as long as it exists, or reads the agent's launch row instead. A
+// surface that does neither stops receiving the rows and renders stale.
 //
 // The set is composed here and SPLIT in transport/backends.ts: a watch
 // frame narrows one connection, and once a client is attached to several
@@ -24,10 +34,13 @@
 // what — sending to the home socket alone is what it used to do, and it
 // left every pane on an attached machine receiving nothing.
 import { setWatchedThreadsEverywhere } from '../transport/backends';
+import type { WatchScope } from '../transport/frames';
 
 type WatchedThreadSource = () => Iterable<string>;
+type WatchedScopeSource = () => Iterable<WatchScope>;
 
 const sources = new Set<WatchedThreadSource>();
+const scopeSources = new Set<WatchedScopeSource>();
 
 /**
  * Register a contributor of watched thread ids. Every registered source is
@@ -49,6 +62,20 @@ export function registerWatchedThreadSource(source: WatchedThreadSource): () => 
   };
 }
 
+/**
+ * Register a contributor of watched subagent scopes: `(thread, scope root)`
+ * pairs whose child rows a surface reads. Recomputed with the threads; a
+ * source that changes what it returns calls `refreshWatchedThreads`.
+ */
+export function registerWatchedScopeSource(source: WatchedScopeSource): () => void {
+  scopeSources.add(source);
+  refreshWatchedThreads();
+  return () => {
+    scopeSources.delete(source);
+    refreshWatchedThreads();
+  };
+}
+
 function composeWatchedThreads(): string[] {
   const ids: string[] = [];
   for (const source of sources) {
@@ -59,6 +86,16 @@ function composeWatchedThreads(): string[] {
   return ids;
 }
 
+function composeWatchedScopes(): WatchScope[] {
+  const scopes: WatchScope[] = [];
+  for (const source of scopeSources) {
+    for (const scope of source()) {
+      if (scope.threadId && scope.scopeRootId) scopes.push(scope);
+    }
+  }
+  return scopes;
+}
+
 /**
  * Recompute the watched set from every registered source and push it. The
  * transport dedups, so calling this after any composition change is cheap
@@ -66,7 +103,7 @@ function composeWatchedThreads(): string[] {
  * wire.
  */
 export function refreshWatchedThreads(): void {
-  setWatchedThreadsEverywhere(composeWatchedThreads());
+  setWatchedThreadsEverywhere(composeWatchedThreads(), composeWatchedScopes());
 }
 
 /**
@@ -88,10 +125,11 @@ export function refreshWatchedThreads(): void {
  */
 export function watchThreadsBeforeMount(threadIds: readonly string[]): void {
   if (threadIds.length === 0) return;
-  setWatchedThreadsEverywhere([...composeWatchedThreads(), ...threadIds]);
+  setWatchedThreadsEverywhere([...composeWatchedThreads(), ...threadIds], composeWatchedScopes());
 }
 
 /** Test seam: drops every registered source and the composed set with it. */
 export function resetWatchedThreadSourcesForTest(): void {
   sources.clear();
+  scopeSources.clear();
 }

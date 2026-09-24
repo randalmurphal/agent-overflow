@@ -250,13 +250,18 @@ function providerUpsertAdvancesLiveContent(existing: Item | undefined, incoming:
  * without this side-channel their streaming text never reaches anyone.
  * `lookupDiscussionLiveTail` returns `undefined` for every ordinary chat
  * thread, so this is a single Map miss per thread on the common path.
+ *
+ * Root rows only: the tail previews the participant's own reply, and the
+ * participant thread is watched without scopes, so a subagent's text
+ * (`parentId` set) reaches this client only when some other surface
+ * watches that scope. Accepting it would make the tail depend on that.
  */
 function feedDiscussionLiveTailUpserts(itemsByThread: Map<string, Item[]>): void {
   for (const [threadId, threadItems] of itemsByThread) {
     const handlers = lookupDiscussionLiveTail(threadId);
     if (!handlers || handlers.size === 0) continue;
     for (const item of threadItems) {
-      if (item.kind !== 'assistant_text') continue;
+      if (item.kind !== 'assistant_text' || item.parentId) continue;
       for (const handler of handlers) {
         handler.applyTailUpsert(threadId, item.id, item.summary);
       }
@@ -395,9 +400,9 @@ function applyItemDelta(evt: ItemDeltaEvent): void {
   if (!isFiniteNumber(evt.updatedAt)) return;
 
   // Same discussion live-tail side-channel as feedDiscussionLiveTailUpserts
-  // above, for the delta half of the wire. A no-op Map lookup for every
-  // ordinary chat thread.
-  if (evt.kind === 'assistant_text') {
+  // above, for the delta half of the wire, root rows only for the same
+  // reason. A no-op Map lookup for every ordinary chat thread.
+  if (evt.kind === 'assistant_text' && !evt.parentId) {
     const handlers = lookupDiscussionLiveTail(evt.threadId);
     if (handlers) {
       for (const handler of handlers) {
@@ -439,6 +444,7 @@ export function applyItemStreamEvent(evt: ItemStreamEvent, sequence?: number): v
   } else if (evt.action === 'meta') {
     if (!isBoundedString(evt.threadId, 512)) return;
     if (!isBoundedString(evt.itemId, 512) || evt.itemId.trim() === '') return;
+    if (evt.parentId !== undefined && !isBoundedString(evt.parentId, 512)) return;
     if (!isBoundedString(evt.kind, 128)) return;
     if (!isBoundedString(evt.meta)) return;
     if (!isFiniteNumber(evt.updatedAt)) return;

@@ -48,7 +48,9 @@ import {
   type ClientFrame,
   MAX_REPLAY_CHANNELS,
   type ClientRPCFrame,
+  type ClientWatchFrame,
   type LeaseState,
+  type WatchScope,
   type ServerEventFrame,
   type ServerHelloFrame,
   type ServerFrame,
@@ -199,6 +201,8 @@ export const MAX_WATCH_THREADS = 256;
 // Mirrors internal/transport/frame.go MaxWatchThreadIDBytes, which bounds
 // every id a watch set, and so a gap's thread list, can hold.
 const MAX_WATCH_THREAD_ID_LENGTH = 256;
+// Mirrors internal/transport/frame.go MaxWatchScopes.
+export const MAX_WATCH_SCOPES = 256;
 
 // sameStringList compares two already-sorted lists elementwise. The watch
 // set is small (panes on a screen), so a loop beats building a Set per
@@ -209,6 +213,47 @@ function sameStringList(a: readonly string[], b: readonly string[]): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+
+const utf8 = new TextEncoder();
+
+// The backend bounds an id in BYTES; only an id long enough to exceed the
+// bound in some encoding pays for measuring.
+function withinWatchIdBound(id: string): boolean {
+  if (id.length > MAX_WATCH_THREAD_ID_LENGTH) return false;
+  return id.length * 3 <= MAX_WATCH_THREAD_ID_LENGTH
+    || utf8.encode(id).byteLength <= MAX_WATCH_THREAD_ID_LENGTH;
+}
+
+// The scope half of a watch: sorted and deduped like the thread half, so the
+// dedup compare is a sequence equality. `null` is a set this client cannot
+// state within the backend's bounds; the frame then omits the field, which
+// the backend reads as "every scope of a watched thread". An empty id names
+// no transcript and is dropped rather than sent: the backend refuses the
+// whole frame for one.
+type WatchScopeSet = { scopes: WatchScope[]; keys: string[] } | null;
+
+function composeWatchScopes(scopes: readonly WatchScope[]): WatchScopeSet {
+  const byKey = new Map<string, WatchScope>();
+  for (const scope of scopes) {
+    if (!scope.threadId || !scope.scopeRootId) continue;
+    if (!withinWatchIdBound(scope.threadId) || !withinWatchIdBound(scope.scopeRootId)) return null;
+    byKey.set(`${scope.threadId}\u0000${scope.scopeRootId}`, { threadId: scope.threadId, scopeRootId: scope.scopeRootId });
+  }
+  if (byKey.size > MAX_WATCH_SCOPES) return null;
+  const keys = [...byKey.keys()].sort();
+  return { scopes: keys.map(key => byKey.get(key)!), keys };
+}
+
+function sameWatchScopes(a: WatchScopeSet, b: WatchScopeSet): boolean {
+  if (a === null || b === null) return a === b;
+  return sameStringList(a.keys, b.keys);
+}
+
+function watchFrame(watch: { threads: string[]; scopes: WatchScopeSet }): ClientWatchFrame {
+  return watch.scopes === null
+    ? { type: 'watch', threads: watch.threads }
+    : { type: 'watch', threads: watch.threads, scopes: watch.scopes.scopes };
 }
 // Native notification activation can arrive before the SPA makes its first
 // WS connection (notably a cold launch from a Windows toast). Seed this
@@ -1014,10 +1059,11 @@ export class WSClient {
   // noise for a moment the person already lived through.
   private drainingReplay = false;
   private notificationCheckpointScope: string | null = null;
-  // The watched-thread set this client is DESIRING, sorted. `null` means
-  // no set has ever been composed, which is the wildcard state the backend
-  // starts every connection in, so a client that never composes one
-  // behaves exactly as it did before the frame existed.
+  // The watched set this client is DESIRING: its threads, sorted, and its
+  // subagent scopes (`WatchScopeSet`). `null` means no set has ever been
+  // composed, which is the wildcard state the backend starts every
+  // connection in, so a client that never composes one behaves exactly as
+  // it did before the frame existed.
   //
   // The desired set, not the set last written to a socket: it is recorded
   // before the frame is sent, and a send that fails (a closed or
@@ -1030,7 +1076,7 @@ export class WSClient {
   // the same restatement one arbitrary delay later.
   //
   // It is also the dedup key, so an unchanged composition writes nothing.
-  private watchedThreads: string[] | null = null;
+  private watch: { threads: string[]; scopes: WatchScopeSet } | null = null;
   // This connection's lease state (./frames.ts). `'active'` is BOTH the
   // never-set value and the resting one, deliberately: the backend starts
   // every connection active, so the two are the same fact on the wire and a
@@ -1042,7 +1088,7 @@ export class WSClient {
   // the reason a client that never composes one is unaffected by it.
   //
   // The desired state, not the state last written to a socket, on exactly the
-  // terms `watchedThreads` is: it is restated after every hello, so a send
+  // terms `watch` is: it is restated after every hello, so a send
   // that lost a closing socket costs nothing past that connection.
   //
   // It is also the dedup key. A window focus event fires on every alt-tab and
@@ -1201,13 +1247,22 @@ export class WSClient {
 
   /**
    * Name the threads this connection is looking at, narrowing the
-   * entity-filtered channels (./entityFilteredChannels.ts) server-side.
+   * entity-filtered channels (./entityFilteredChannels.ts) server-side,
+   * and the subagent transcripts it is viewing, which narrow
+   * `provider:item_event` further: a child row arrives only for a scope
+   * named here (./frames.ts ClientWatchFrame).
    *
-   * The set is ABSOLUTE and idempotent: an identical set sends nothing, and
-   * an EMPTY one is a legal value meaning "no panes open". Composed from
-   * pane EXISTENCE and never from visibility — an off-screen pane, a hidden
-   * document and a background tab all keep watching, because a pane that
-   * stopped receiving would render wrongly the moment it is looked at.
+   * Both sets are ABSOLUTE and idempotent: an identical pair sends nothing,
+   * and EMPTY ones are legal values meaning "no panes open" and "no agent
+   * open". Composed from surface EXISTENCE and never from visibility — an
+   * off-screen pane, a hidden document and a background tab all keep
+   * watching, because a surface that stopped receiving would render
+   * wrongly the moment it is looked at.
+   *
+   * A scope set past MAX_WATCH_SCOPES, or holding an id past the wire
+   * bound, is not truncated: the frame omits `scopes`, which admits every
+   * scope of the watched threads. Wider delivery costs bytes; a truncated
+   * set would silently stop an open agent view.
    *
    * Nothing here is authorization. It reduces what this client asks to be
    * sent; what it is ALLOWED to be sent is the per-connection origin and
@@ -1216,7 +1271,7 @@ export class WSClient {
    * Returns silently when disconnected: the set is retained and restated on
    * the next open, ahead of the replay frame.
    */
-  setWatchedThreads(threadIds: readonly string[]): void {
+  setWatchedThreads(threadIds: readonly string[], scopes: readonly WatchScope[]): void {
     // Sorted + deduped so the dedup compare is a plain sequence equality
     // and the wire bytes are stable for an unchanged composition — pane
     // registries iterate in insertion order, which reshuffles on a reorder
@@ -1237,9 +1292,18 @@ export class WSClient {
       );
       return;
     }
-    if (this.watchedThreads !== null && sameStringList(this.watchedThreads, next)) return;
-    this.watchedThreads = next;
-    this.sendFrame({ type: 'watch', threads: next });
+    const nextScopes = composeWatchScopes(scopes);
+    if (this.watch !== null && sameStringList(this.watch.threads, next)
+      && sameWatchScopes(this.watch.scopes, nextScopes)) return;
+    if (nextScopes === null) {
+      console.warn(`wsClient: watch scope set of ${scopes.length} cannot be stated; admitting every scope`);
+      this.diagnosticsSink?.(
+        'transport: watched-scope set exceeded the wire bound',
+        `${scopes.length} scopes`,
+      );
+    }
+    this.watch = { threads: next, scopes: nextScopes };
+    this.sendFrame(watchFrame(this.watch));
   }
 
   /**
@@ -2154,10 +2218,11 @@ export class WSClient {
     // socket. The backend handles inbound frames in order on one read loop,
     // so a watch written first is applied before the replay it precedes —
     // which is what stops a reconnect replaying every watched channel's
-    // whole ring for threads this client stopped looking at. A connection
-    // that has composed no set skips this and stays wildcard.
-    if (this.watchedThreads !== null) {
-      this.sendFrame({ type: 'watch', threads: this.watchedThreads });
+    // whole ring for threads this client stopped looking at, and every
+    // subagent's rows for agents it is not viewing. A connection that has
+    // composed no set skips this and stays wildcard.
+    if (this.watch !== null) {
+      this.sendFrame(watchFrame(this.watch));
     }
     // And restate the lease, for the same reason and on the same terms: the
     // backend starts every connection ACTIVE, so a phone that went to sleep
@@ -3183,7 +3248,8 @@ export class WSClient {
       && cursor.epoch === this.connectionEpoch
       && evt.seq > cursor.seq + 1
       // …unless the server is deliberately withholding this channel's
-      // frames for threads we did not name. A withheld frame still spent
+      // frames for threads, or subagent scopes, we did not name. A
+      // withheld frame still spent
       // its channel's seq, so on a narrowed channel a forward skip is the
       // NORMAL case and means nothing was lost — reading it as a drop would
       // fire a full resync for every frame addressed to another thread.
@@ -3191,7 +3257,7 @@ export class WSClient {
       // channels the backend actually narrows, and only once this
       // connection has armed a filter. Explicit `gap:true` markers are
       // untouched; they are handled above, before this heuristic runs.
-      && !(this.watchedThreads !== null && isEntityFilteredChannel(evt.channel))
+      && !(this.watch !== null && isEntityFilteredChannel(evt.channel))
     ) {
       // Forward skip inside one connection: the events between the two
       // seqs existed and never reached us, because the server's fanout

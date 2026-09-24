@@ -1,3 +1,4 @@
+import { untrack } from 'svelte';
 import type { Item, Thread } from '../types/models';
 import type { TimelineSelection, TimelineScopeContext } from '../../../bindings/agent-overflow/internal/store/models';
 import { createThreadItemWindow } from './threadItemWindow.svelte';
@@ -11,6 +12,7 @@ import { activityRunDefaultCollapsed, activityRunWindowRows } from './activityRu
 import { timelinePageShape, nowForLiveContent } from './threadPaneShared';
 import { attachTimelineWindow, type WindowObservation } from './timelineWindowResource.svelte';
 import { registerTimelineSurface, type TimelineMutation } from './timelineSurfaces';
+import { refreshWatchedThreads } from './watchedThreads';
 import { readTimelineWindow } from './readTimelineWindow';
 import { awaitBackendReplay } from './transportRecovery';
 import { threadBackend } from '../transport/entityIndex';
@@ -208,6 +210,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     if (context && (!scope || observation.contextVersion === contextVersion)) {
       scope = context;
       selection = { ...selection, scopeRootId: context.root.id };
+      syncWatchedScopes();
     }
     const page = observation.page;
     if (!page) return;
@@ -284,12 +287,47 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     return { kind: 'snapshot', page: response.page, scope: response.scope, gone: response.status === 'gone', touched, unheldItems: unheldRows, contextVersion: contextAtRead };
   }
   async function refresh() { await attachment?.refresh(); }
+  // The scopes this surface reads rows from: its own transcript, and the
+  // scopes its launch, lifecycle and completion rows live in. For a
+  // top-level agent those are the root scope, which the thread watch
+  // already delivers; for a nested agent they are the outer agent's
+  // transcript, which nothing else names. The backend sends a child row
+  // only to a connection naming its scope (./timelineSurfaces.ts).
+  let watchedScopeKey = '';
+  function watchedScopeRoots(): string[] {
+    const roots = new Set<string>();
+    if (selection.scopeRootId) roots.add(selection.scopeRootId);
+    for (const row of [scope?.root, scope?.lifecycle, scope?.completion]) {
+      if (row?.parentId) roots.add(row.parentId);
+    }
+    return [...roots].sort();
+  }
+  // Restate the watch when resolution moved the scopes. A row written under
+  // a newly named scope before the backend applied the watch never reached
+  // this client, so the move also re-reads: the watch frame precedes that
+  // read on the socket, and the read's snapshot holds the row.
+  function syncWatchedScopes() {
+    if (!releaseSurface || disposed) return;
+    const roots = watchedScopeRoots();
+    const key = roots.join('\u0000');
+    if (key === watchedScopeKey) return;
+    const previous = new Set(watchedScopeKey ? watchedScopeKey.split('\u0000') : []);
+    watchedScopeKey = key;
+    refreshWatchedThreads();
+    if (roots.some(root => !previous.has(root)) && !gone) contextRefresh.request();
+  }
   let releaseSurface: (() => void) | undefined;
   let releaseIdentity: (() => void) | undefined;
   function start() {
     if (attachment || disposed) return;
+    // Registered BEFORE the window attaches: registration states this
+    // surface's scopes on the socket, so the first read already goes out
+    // behind a watch that admits the rows it is about to render.
+    watchedScopeKey = watchedScopeRoots().join('\u0000');
     releaseSurface = registerTimelineSurface({ threadId: thread.id, backend: () => threadBackend(thread.id),
-      apply: mutation => attachment?.apply(mutation), refresh });
+      // Untracked: the composition runs inside whatever reaction changed
+      // some other source, which must not come to depend on this scope.
+      scopeRootIds: () => untrack(watchedScopeRoots), apply: mutation => attachment?.apply(mutation), refresh });
     attachment = attachTimelineWindow(key, {
       backend: () => threadBackend(thread.id), read, apply,
       endRead: (signal, completed) => {
@@ -308,6 +346,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
       generation++;
       reveal.disposeAll(); runs.clear(); installTimelineItems([], { disposeDropped: true });
       window.resetForFreshThread(); scope = null;
+      syncWatchedScopes();
       void refresh().catch(error => reportFrontendDiagnostic('scoped timeline ownership refresh failed', errString(error)));
     });
   }

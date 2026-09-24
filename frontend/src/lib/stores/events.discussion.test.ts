@@ -305,6 +305,52 @@ describe('provider:item_event live-tail seam for discussion child threads', () =
     expect(pane.channelLiveTail).toBeNull();
   });
 
+  it('ignores a participant subagent\'s assistant_text, whose delivery depends on scope watches', async () => {
+    const pane = await buildPane(discussionThread(), [], 'a');
+    emitWailsEvent('discussion:state', makeStatePayload());
+
+    emitWailsEvent('provider:item_event', {
+      action: 'upsert',
+      threadId: 'advocate-thread',
+      item: {
+        id: 'child-1',
+        threadId: 'advocate-thread',
+        parentId: 'agent-1',
+        turnIndex: 0,
+        itemIndex: 1,
+        kind: 'assistant_text',
+        role: 'assistant',
+        status: 'streaming',
+        summary: 'subagent text',
+        createdAt: 0,
+        updatedAt: 0,
+        rev: 0,
+      },
+    });
+    emitWailsEvent('provider:item_event', {
+      action: 'delta',
+      threadId: 'advocate-thread',
+      itemId: 'child-1',
+      parentId: 'agent-1',
+      kind: 'assistant_text',
+      delta: ' more',
+      updatedAt: 1,
+    });
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    expect(pane.channelLiveTail).toBeNull();
+
+    emitWailsEvent('provider:item_event', {
+      action: 'delta',
+      threadId: 'advocate-thread',
+      itemId: 'item-1',
+      kind: 'assistant_text',
+      delta: 'own reply',
+      updatedAt: 2,
+    });
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    expect(pane.channelLiveTail).toEqual({ threadId: 'advocate-thread', itemId: 'item-1', text: 'own reply' });
+  });
+
   it('ignores non-assistant_text kinds even for a registered child thread', async () => {
     const pane = await buildPane(discussionThread(), [], 'a');
     emitWailsEvent('discussion:state', makeStatePayload());
