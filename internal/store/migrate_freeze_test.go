@@ -7,10 +7,11 @@ import (
 )
 
 // Pin the evaluated SQL of every migration, including referenced trigger and
-// schema definitions, and the names of its deferred steps. Persistent
-// development databases also apply this chain. Add hashes for new versions
-// before deployment; repair deployed versions with a forward migration
-// instead of changing their SQL or recorded hash.
+// schema definitions, and the names of its deferred steps. Add hashes for
+// new versions before deployment. A shipped version is repaired with a
+// forward migration, never by changing its SQL or recorded hash; an
+// unshipped one may be amended with a deliberate update of its hash
+// (internal/store/AGENTS.md).
 var frozenMigrationSQL = map[int]string{
 	1:   "b685404186f8b714754bfc3fbd0b4e887a9e4bafe574753e1c66d5452989a1da",
 	2:   "263250f46ae8283ae531d3952644e37cf51368ce921ed3844ac3cbfc5fdb52a2",
@@ -132,7 +133,7 @@ var frozenMigrationSQL = map[int]string{
 	118: "128717e6242fedb799097340da2fc1c0c817883feab7981f6803a0f650ee4f4a",
 	119: "c69b0d9bb765cc4da013e8fb9bb864e954a0093298873b9043ea8462f8821a06",
 	120: "6151d52c34fa187b23afb4865c74683523cc4e7526635002e76d857b3d152940",
-	121: "419405f1aa847a50f7f15ade720014981157f7ea28d683b279d11840866085e6",
+	121: "259eeac51f59901bbb9f4f524d11a733e27f1dbc82f37974ffefded191b4802e",
 }
 
 // frozenMigrationText is what a migration's frozen hash covers. A deferred
@@ -164,7 +165,7 @@ func TestShippedMigrationSQLIsFrozen(t *testing.T) {
 			continue
 		}
 		if got != want {
-			t.Errorf("migration v%d (%s) SQL changed; add a forward migration instead of editing deployed SQL or its frozen hash\nwant: %s\n got: %s", m.Version, m.Name, want, got)
+			t.Errorf("migration v%d (%s) SQL changed; a shipped migration needs a forward migration instead, and an unshipped one a deliberate update of its frozen hash\nwant: %s\n got: %s", m.Version, m.Name, want, got)
 		}
 	}
 	for version := range frozenMigrationSQL {

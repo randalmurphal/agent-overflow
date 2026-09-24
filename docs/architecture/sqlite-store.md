@@ -49,9 +49,10 @@ inside a caller transaction accept `sqlExecutor` or `sqlQueryer`.
 ## Migration model
 
 `schema_v1.go` is a squashed baseline. `migrate.go` and `migration_v*.go` append
-changes in version order. A migration applied to persistent data is immutable,
-including application by a development build before the code is committed.
-Changing its SQL would give two databases the same version with different schemas.
+changes in version order. A shipped migration is immutable: changing its SQL
+would give two databases the same version with different schemas. An unshipped
+migration may be amended only with a deliberate update of its frozen hash; a
+development database that already applied it keeps the earlier SQL.
 
 New rebuild migrations state their complete SQL directly. The remaining
 `mustReplaceOnce`, `mustReplaceEvery`, and `mustCutFrom` derivations are frozen
@@ -270,11 +271,13 @@ hides any reverted row still below the new cut (`retractInheritedTx`). The
 ancestor's rows stay, and a fork made from this one keeps reading them through
 its own lineage.
 
-A write that changes which inherited rows a fork shows recomputes the fork's
-turn-error pair with the lineage arms (`recomputeTurnErrorsTx`): its creation,
-and through `forkViewChangedTx` a revert, a delete of an inherited row and a
-source deletion, which also recompute the stamps of the fork's copied anchors,
-whose subtrees can hold the rows that leave.
+The turn-error triggers' recompute reads a fork's inherited rows through the
+lineage arms, so a write to the fork's own rows or turns keeps the errors it
+inherits. A write that changes which inherited rows a fork shows writes no row
+those triggers count and recomputes the pair itself (`recomputeTurnErrorsTx`):
+its creation, and through `forkViewChangedTx` a revert, a delete of an
+inherited row and a source deletion, which also recompute the stamps of the
+fork's copied anchors, whose subtrees can hold the rows that leave.
 
 ### Triggers and stamps
 

@@ -880,8 +880,8 @@ func retractInheritedTx(tx *sql.Tx, w *cardWrite, threadID string, fromTurn int,
 
 // forkViewChangedTx records a change to which inherited rows threadID
 // shows: its stamps move (bumpForkViewTx), its turn-error pair is
-// recomputed, which no item or turn trigger does for rows it reads through
-// its lineage, and w's finish recomputes the stamps of copies, the copied
+// recomputed, because the change writes no row or turn whose trigger
+// would, and w's finish recomputes the stamps of copies, the copied
 // anchors forkCopyStampsTx listed before the change.
 func forkViewChangedTx(tx *sql.Tx, w *cardWrite, threadID string, copies []string) error {
 	if err := bumpForkViewTx(tx, threadID); err != nil {

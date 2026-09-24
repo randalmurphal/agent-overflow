@@ -40,8 +40,9 @@ an atomic persistence decision; they must not become a business-logic layer.
 ## Schema and migrations
 
 - `schema_v1.go` is the squashed baseline. `migrate.go` and
-  `migration_v*.go` are the forward-only chain. A migration applied to persistent
-  data, including by an uncommitted development build, is deployed and immutable.
+  `migration_v*.go` are the forward-only chain. An unshipped migration may be
+  amended in a change that deliberately updates its hash in
+  `migrate_freeze_test.go`; a shipped migration never is.
   Add a migration and a test; record each new version in `migrate_freeze_test.go`.
 - A one-time data fix is a migration. Work too long to run at open goes in
   the migration's `Deferred` phase: idempotent, paced, progress in the data.

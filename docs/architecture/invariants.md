@@ -64,7 +64,7 @@ Identity and access state, accepted queued messages, transfer ownership, remote
 job acceptance, and remote-watch notification ownership are authoritative app
 state. Schema behavior comes from
 `internal/store/schema_v1.go` and the ordered migration chain in
-`internal/store/migrate.go`. Existing migrations are immutable; schema changes
+`internal/store/migrate.go`. Shipped migrations are immutable; schema changes
 append a new migration. Connection pragmas are part of the DSN and their
 required values are verified at startup.
 
