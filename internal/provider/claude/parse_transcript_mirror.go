@@ -269,7 +269,9 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 		return events, fmt.Errorf("parse transcript_mirror %q: %w", envelope.FilePath, err)
 	}
 	projection.remember(unseenFacts)
-	events = append(events, state.providerEvents(threadID, result, projectionKey)...)
+	projected := state.providerEvents(threadID, result, projectionKey)
+	p.rememberProjectedToolParents(projected)
+	events = append(events, projected...)
 	state.observeBindings(rows, projection.scope, projectionKey)
 	if binding := state.taskScopes[projection.agentID]; binding.terminal && binding.projectionKey == projectionKey {
 		closed := projection.projector.Close()
@@ -397,7 +399,16 @@ func transcriptMirrorDegradedEvent(threadID, commandUUID, launchID string, now t
 	}
 }
 
-func (p *Parser) finishMirroredTask(threadID, taskID string) []provider.ProviderEvent {
+// finishMirroredTask runs at a task's stop (its task_notification) and at
+// its kill (final). An agent that stops while a background task it owns is
+// still running is PARKED, not done: the CLI wakes it when the task
+// reports (claude-wire.md §E6b), and a projected agent's woken rounds
+// arrive only through its projection. So a stop keeps a projection and its
+// binding while the agent owns a live background task, and releases them
+// at the first stop that finds none. A kill releases them regardless: a
+// killed agent never wakes. Session end releases whatever is left
+// (closeTranscriptMirrors).
+func (p *Parser) finishMirroredTask(threadID, taskID string, final bool) []provider.ProviderEvent {
 	if p == nil || p.transcriptMirror == nil {
 		return nil
 	}
@@ -415,6 +426,9 @@ func (p *Parser) finishMirroredTask(threadID, taskID string) []provider.Provider
 		delete(state.taskScopes, taskID)
 		return events
 	}
+	if !final && p.ownsLiveBackgroundTask(binding.scope) {
+		return events
+	}
 	key := binding.projectionKey
 	projection := state.projections[key]
 	if projection == nil || projection.agentID != taskID {
@@ -427,6 +441,18 @@ func (p *Parser) finishMirroredTask(threadID, taskID string) []provider.Provider
 	events = append(events, state.providerEvents(threadID, result, key)...)
 	state.removeProjection(key)
 	return events
+}
+
+// rememberProjectedToolParents records the scope of each tool call a
+// projection emitted, as the stdout path records a forwarded tool_use's
+// parent, so a background task a projected call starts resolves to the
+// agent that owns it (ownsLiveBackgroundTask).
+func (p *Parser) rememberProjectedToolParents(events []provider.ProviderEvent) {
+	for _, event := range events {
+		if event.Kind == provider.EventToolStart && event.ItemID != "" && event.ParentToolUseID != "" {
+			p.rememberToolUseParent(event.ItemID, event.ParentToolUseID)
+		}
+	}
 }
 
 func (s *transcriptMirrorState) removeProjection(key string) {

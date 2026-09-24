@@ -6,10 +6,13 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/store"
 )
 
 // repoRelativePath resolves a repo-relative path from this source file's own
@@ -137,6 +140,51 @@ func TestCodexLatestToolTrayMetaKeysMatchFrontendMirror(t *testing.T) {
 		if !strings.Contains(string(frontendSource), `'`+value+`'`) {
 			t.Errorf("%s does not mirror %s = %q", frontend, name, value)
 		}
+	}
+}
+
+func TestAgentRunStateMetaKeysMatchFrontendMirror(t *testing.T) {
+	const backend = "internal/triage/agent_run_state.go"
+	const frontend = "frontend/src/lib/utils/subagentRunState.ts"
+	backendValues := goStringConstants(t, backend)
+	frontendSource, err := os.ReadFile(repoRelativePath(t, frontend))
+	if err != nil {
+		t.Fatalf("read %s: %v", frontend, err)
+	}
+	for _, name := range []string{
+		"metaKeySubagentRunState",
+		"metaKeySubagentParkedCommands",
+		"metaKeySubagentParkedReportID",
+		"metaKeySubagentParkedReportPreview",
+		"subagentRunRunning",
+		"subagentRunParked",
+		"subagentRunDone",
+		"subagentRunEnded",
+	} {
+		value, ok := backendValues[name]
+		if !ok || value == "" {
+			t.Fatalf("%s no longer declares %s", backend, name)
+		}
+		if !strings.Contains(string(frontendSource), `'`+value+`'`) {
+			t.Errorf("%s does not mirror %s = %q", frontend, name, value)
+		}
+	}
+}
+
+// A parked agent's served report preview is the head the card's preview
+// rule scans, so the card renders it as it would the full row.
+func TestSubagentReportPreviewMatchesTheCardScanWindow(t *testing.T) {
+	const frontend = "frontend/src/lib/utils/subagentGrouping.ts"
+	source, err := os.ReadFile(repoRelativePath(t, frontend))
+	if err != nil {
+		t.Fatalf("read %s: %v", frontend, err)
+	}
+	match := regexp.MustCompile(`(?m)^export const PREVIEW_SCAN_CHARS = (\d+);$`).FindSubmatch(source)
+	if match == nil {
+		t.Fatalf("%s no longer declares export const PREVIEW_SCAN_CHARS", frontend)
+	}
+	if got, want := string(match[1]), strconv.Itoa(store.SubagentReportPreviewRunes); got != want {
+		t.Errorf("%s PREVIEW_SCAN_CHARS = %s, store.SubagentReportPreviewRunes = %s", frontend, got, want)
 	}
 }
 

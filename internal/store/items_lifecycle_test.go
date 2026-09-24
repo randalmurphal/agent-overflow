@@ -2750,7 +2750,7 @@ func TestCompletionSiblingProbesAreNotSpelledInline(t *testing.T) {
 }
 
 // TestListLiveBackgroundChildLaunchesListsOnlyLiveDirectChildren pins the
-// park predicate's input (triage launchIsParked): the backgrounded
+// park predicate's input (triage launchParkedOn): the backgrounded
 // tool_call rows still running DIRECTLY under one launch with no
 // completion sibling. A settled child, a foreground child, a grandchild
 // and another launch's child are all out; the plan probes the parent

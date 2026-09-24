@@ -837,11 +837,16 @@ func (p *Parser) parseTaskStartedEvent(
 	//     non-launch tool is a resume whose original launch
 	//     predates this parser instance.
 	var resumesToolUseID string
-	var isResume bool
+	var isResume, reannounced bool
 	if taskType == "local_agent" {
 		existingRef := p.taskToolUseRef(taskID)
 		switch {
-		case existingRef.ToolUseID != "" && existingRef.ToolUseID != toolUseID:
+		case existingRef.ToolUseID == toolUseID:
+			// The task is already bound to this tool_use: no new
+			// binding, so nothing here names a transcript root. The
+			// bound call may be a carrier.
+			reannounced = true
+		case existingRef.ToolUseID != "":
 			resumesToolUseID = existingRef.ToolUseID
 			isResume = true
 		case existingRef.ToolUseID == "" && !p.isAgentLaunchTool(toolUseID):
@@ -876,13 +881,18 @@ func (p *Parser) parseTaskStartedEvent(
 	if taskType == "local_agent" {
 		// Write-once: the FIRST tool_use a local_agent task binds to is
 		// the agent's transcript root, and a resume rebind must never
-		// move it. On the resume path this call is a no-op when the
-		// root is already known, and records nothing when it is not
-		// (the reconnect edge) — never the carrier.
-		if !isResume {
+		// move it. Neither a resume nor a re-announced binding records
+		// one: when the root is not known (the reconnect edge) the
+		// bound call is a carrier, never a root.
+		if !isResume && !reannounced {
 			p.rememberTaskTranscriptRoot(taskID, toolUseID)
 		}
+		if reannounced {
+			traceReannouncedAgentTask(threadID, taskID, toolUseID, readRawString(raw["prompt"]))
+		}
 		p.noteMirrorTaskScope(taskID, toolUseID, true)
+	} else if ownedBackgroundTaskStarted(raw) {
+		p.rememberOwnedBackgroundTask(taskID, toolUseID)
 	}
 	taskRef := p.taskToolUseRef(taskID)
 
@@ -1074,6 +1084,42 @@ func (p *Parser) parseTaskWakeEvent(threadID, taskID string, raw map[string]json
 		ParentToolUseID: bound.ToolUseID,
 		Timestamp:       now,
 	}}
+}
+
+// ownedBackgroundTaskStarted reports whether a task_started starts a
+// background task a subagent owns: `owned_by_subagent`, and not stated to
+// run in the foreground (older CLIs omit `is_backgrounded`).
+func ownedBackgroundTaskStarted(raw map[string]json.RawMessage) bool {
+	var owned bool
+	if json.Unmarshal(raw["owned_by_subagent"], &owned) != nil || !owned {
+		return false
+	}
+	backgrounded := true
+	if value, ok := raw["is_backgrounded"]; ok {
+		if json.Unmarshal(value, &backgrounded) != nil {
+			backgrounded = true
+		}
+	}
+	return backgrounded
+}
+
+// traceReannouncedAgentTask logs a local_agent task_started that names the
+// tool_use its task is already bound to while carrying a
+// `<task-notification>` prompt. That is the payload of a wake
+// (claude-wire.md §E6b), but every captured wake names no tool_use, so
+// this shape is unmodeled: it writes no wake row and drops no parked
+// terminal. The line names what a capture of it needs.
+func traceReannouncedAgentTask(threadID, taskID, toolUseID, prompt string) {
+	blocks := ExtractAllTaskNotificationFields(prompt)
+	if len(blocks) == 0 {
+		return
+	}
+	waking := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		waking = append(waking, firstNonEmpty(block.ToolUseID, block.TaskID))
+	}
+	log.Printf("claude: unmodeled wake shape: local_agent task_started re-announces bound tool_use %s for task %s on thread %s with a task-notification prompt for %s; no wake row written",
+		toolUseID, taskID, threadID, strings.Join(waking, ","))
 }
 
 // resumePromptEvent builds the row that says WHAT the model asked a
@@ -1307,6 +1353,13 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	// result, which always follows its terminal) completes the row in
 	// place instead of reading as a background ack.
 	p.clearLiveAgentTask(toolUseID)
+	p.releaseOwnedBackgroundTask(taskID)
+	// A killed agent never wakes and gets no task_notification (§E6b),
+	// so its mirror projection closes here, parked or not.
+	var events []provider.ProviderEvent
+	if status == "killed" {
+		events = p.finishMirroredTask(threadID, taskID, true)
+	}
 
 	metaFields := map[string]any{
 		"task_id": taskID,
@@ -1327,7 +1380,7 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 	}
 	meta, _ := json.Marshal(metaFields)
 
-	return []provider.ProviderEvent{{
+	return append(events, provider.ProviderEvent{
 		Kind:            provider.EventBackgroundTaskTerminal,
 		ThreadID:        threadID,
 		ItemID:          toolUseID,
@@ -1335,7 +1388,7 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 		Meta:            meta,
 		ParentToolUseID: parentToolUseID,
 		Timestamp:       now,
-	}}, nil
+	}), nil
 }
 
 // parseTaskBackgroundedPatch emits `EventSubagentBackgrounded` for a
@@ -1437,7 +1490,7 @@ func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json
 		UUID:            readRawString(raw["uuid"]),
 	}
 	fields.Usage, fields.UsageSet = readTaskUsage(raw["usage"])
-	events := p.finishMirroredTask(threadID, taskID)
+	events := p.finishMirroredTask(threadID, taskID, false)
 	return append(events, p.buildBackgroundTaskNotificationEvent(threadID, fields, now)), nil
 }
 

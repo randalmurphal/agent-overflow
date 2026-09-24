@@ -19,20 +19,20 @@ interface LatestTool {
 }
 
 /**
- * Keeps the tray rows' latest-tool decoration current between tray reads,
- * so an agent row's activity line follows the agent without a
- * `ListLiveBackgroundTasks` round trip per event.
+ * Keeps a listed launch's latest-tool decoration current between tray
+ * reads from the launch's own re-pushes, so its activity line follows the
+ * agent without a `ListLiveBackgroundTasks` round trip per push. The tray
+ * reads no child rows: a Codex agent's line comes from the list read its
+ * tool calls nudge.
  *
- * Both methods take `items`, which must be the last snapshot passed to
- * `reset` or returned by either method, and return it unchanged when the
- * event moves nothing. They read only the target row and copy the
- * snapshot only when that row changes.
+ * `applyPushedLaunch` takes `items`, which must be the last snapshot passed
+ * to `reset` or returned by it, and returns it unchanged when the push
+ * moves nothing. It reads only the target row and copies the snapshot only
+ * when that row changes.
  */
 export interface TrayLatestToolProjection {
   /** Index a tray snapshot. Call with every wholesale snapshot write. */
   reset(items: readonly Item[]): void;
-  /** A Codex agent's direct child tool call, projected onto the agent's row. */
-  applyChildTool(items: Item[], tool: Item): Item[];
   /**
    * A re-pushed launch's own decoration, carried onto its row. A push
    * without the decoration keeps the row's current value.
@@ -95,16 +95,6 @@ export function createTrayLatestToolProjection(): TrayLatestToolProjection {
       items.forEach((item, index) => {
         if (item.status === 'running' && !item.completionOf) rows.set(item.id, index);
       });
-    },
-    applyChildTool(items, tool) {
-      const parentId = tool.parentId?.trim();
-      if (!parentId || tool.toolName === 'collab_agent') return items;
-      const index = rows.get(parentId);
-      const summary = tool.summary.trim();
-      if (index === undefined || !summary) return items;
-      const row = items[index];
-      if (row.toolName !== 'collab_agent') return items;
-      return project(items, index, row, { summary, turnIndex: tool.turnIndex, itemIndex: tool.itemIndex });
     },
     applyPushedLaunch(items, launch) {
       const index = rows.get(launch.id);

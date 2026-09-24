@@ -4,9 +4,12 @@
 // `provider:background_tasks_changed`, `provider:background_task_state`),
 // and the rate-bounded refresh they drive (`utils/refreshScheduler` — a plain
 // trailing debounce here starved forever under a live stream and left the pill
-// showing a count nothing had refuted). Exposes reactive `tasks` / `runningCount`
-// for the rail's toggle pill and expanded body, and `hasPendingCompletion`
-// for the host's clock gate.
+// showing a count nothing had refuted). Every row it shows comes from the list
+// read: it watches no agent scope and reads no child row, open or closed, and
+// the backend nudges a read when an agent's served state or latest tool
+// changes. Exposes reactive `tasks` / `runningCount` for the rail's toggle
+// pill and expanded body, `hasPendingCompletion` for the host's clock gate,
+// and `runStateOf` for a Claude agent's served run state.
 //
 // Owned by `Composer.svelte`, not the rail: the composer's `railVisible`
 // predicate reads `count`, and the rail + height-reservation spacer must
@@ -16,17 +19,14 @@
 // `onMount`) and the returned `dispose` function (call from
 // `onDestroy`). No global state — one controller per Composer mount.
 
-import { untrack } from 'svelte';
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { ListLiveBackgroundTasks } from '../../stores/bindings';
-import { refreshWatchedThreads, registerWatchedScopeSource } from '../../stores/watchedThreads';
 import { onItemUpsert } from '../../stores/eventsItemStream';
 import { wailsEventOn } from '../../stores/wailsEvents';
 import { getTransportStatusFor, onBackendStatusChange } from '../../stores/transportStatus.svelte';
 import { threadBackend } from '../../transport/entityIndex';
 import { backendKeyForOrigin } from '../../transport/backends';
 import { transportGapChannel, type TransportGap } from '../../transport/wsClient';
-import type { WatchScope } from '../../transport/frames';
 import type {
   BackgroundTaskStateEvent,
   BackgroundTasksChangedEvent,
@@ -36,6 +36,7 @@ import { asProviderID, type ProviderID } from '../../types/providers';
 import { deriveTrayTasks, type TrayTask } from '../../utils/backgroundTray';
 import { createRefreshScheduler } from '../../utils/refreshScheduler';
 import { createTrayLatestToolProjection } from '../../utils/codexTrayProjection';
+import { subagentRunStateFromMeta, type SubagentRunState } from '../../utils/subagentRunState';
 
 // Brief retention so a completion has time to flicker into view as the
 // terminal state but doesn't linger after the user has read it. Just
@@ -57,6 +58,12 @@ export interface BackgroundController {
   readonly hasPendingCompletion: boolean;
   readonly threadId: string | null;
   readonly provider: ProviderID | null;
+  /**
+   * The run state the last list read served for a listed Claude agent
+   * launch; null for any other id. An agent absent from the list with a
+   * completion sibling is done.
+   */
+  runStateOf(launchId: string): SubagentRunState | null;
   /** Subscribe to events; returns a disposer. Call once from onMount. */
   mount(): () => void;
 }
@@ -72,6 +79,10 @@ export function createBackgroundController(
   // Rebuilt with each wholesale write, never per event. A running row wins
   // over another row with its id, as in `deriveTrayTasks`.
   let listedLaunches = new Map<string, Item>();
+  // The listed launches' served run states. Only a list read serves them,
+  // so this is rebuilt with each wholesale write and a re-push, which
+  // carries a row's other keys over, leaves it alone.
+  let runStates: ReadonlyMap<string, SubagentRunState> = $state.raw(new Map());
   const latestTools = createTrayLatestToolProjection();
 
   function replaceBackgroundItems(items: Item[]): void {
@@ -82,6 +93,12 @@ export function createBackgroundController(
         listedLaunches.set(item.id, item);
       }
     }
+    const states = new Map<string, SubagentRunState>();
+    for (const [id, launch] of listedLaunches) {
+      const state = subagentRunStateFromMeta(launch.meta);
+      if (state) states.set(id, state);
+    }
+    runStates = states;
     latestTools.reset(items);
   }
 
@@ -159,44 +176,6 @@ export function createBackgroundController(
     refresh.request({ immediate: true });
   });
 
-  // The open tray body shows each running agent's latest-tool line, fed
-  // between list reads by child rows: a Codex agent's direct tool calls
-  // (scope: the agent's row) and a nested launch's re-pushes (scope: its
-  // parent). The backend sends those only to a connection watching the
-  // scope, so the scopes are watched while the body is open. A closed tray
-  // reads only the list, which every membership change nudges. Rows that
-  // were withheld before a scope was watched are recovered by re-reading
-  // the list once the watch naming it has been sent.
-  const trayScopeRoots = $derived.by((): string[] => {
-    const id = threadId;
-    if (!id || !getPane().activityRailBackgroundOpen) return [];
-    const roots = new Set<string>();
-    for (const item of backgroundItems) {
-      if (item.threadId !== id || item.completionOf || item.status !== 'running') continue;
-      if (item.parentId) roots.add(item.parentId);
-      if (provider === 'codex' && item.toolName === 'collab_agent') roots.add(item.id);
-    }
-    return [...roots].sort();
-  });
-  const trayScopeKey = $derived(trayScopeRoots.join('\u0000'));
-  let watchedTrayScopeKey = '';
-  // The scopes the watch source hands the composition. The source runs
-  // inside whichever reaction recomputes the set, which includes a close
-  // after the pane has left the registry and before this controller
-  // unmounts, so it reads this copy and never the pane.
-  let watchedTrayScopes: WatchScope[] = [];
-  $effect(() => {
-    const id = threadId;
-    const key = trayScopeKey;
-    untrack(() => {
-      const previous = new Set(watchedTrayScopeKey ? watchedTrayScopeKey.split('\u0000') : []);
-      watchedTrayScopeKey = key;
-      watchedTrayScopes = id ? trayScopeRoots.map(scopeRootId => ({ threadId: id, scopeRootId })) : [];
-      refreshWatchedThreads();
-      if (trayScopeRoots.some(root => !previous.has(root))) refresh.request({ immediate: true });
-    });
-  });
-
   const tasks = $derived<TrayTask[]>(
     deriveTrayTasks(backgroundItems, getNow(), COMPLETION_RETENTION_MS),
   );
@@ -219,19 +198,11 @@ export function createBackgroundController(
     get hasPendingCompletion() { return hasPendingCompletion; },
     get threadId() { return threadId; },
     get provider() { return provider; },
+    runStateOf(launchId) { return runStates.get(launchId) ?? null; },
 
     mount(): () => void {
-      // A plain array, so the reaction that runs the composition does not
-      // come to depend on this tray.
-      const releaseScopes = registerWatchedScopeSource(() => watchedTrayScopes);
       const cancelItemUpsert = onItemUpsert((item) => {
         if (item.threadId !== threadId) return;
-        if (provider === 'codex' && item.parentId && item.kind === 'tool_call' && item.toolName !== 'collab_agent') {
-          // A Codex agent's direct tool call updates the agent's row in
-          // place; reconnect hydration still comes from the store.
-          backgroundItems = latestTools.applyChildTool(backgroundItems, item);
-          return;
-        }
         applyUpsert(item);
       });
       const cancelBackgroundTasksChanged = wailsEventOn<BackgroundTasksChangedEvent>(
@@ -268,7 +239,6 @@ export function createBackgroundController(
         refresh.request({ immediate: true });
       });
       return () => {
-        releaseScopes();
         cancelStatus();
         cancelGap();
         cancelItemUpsert();

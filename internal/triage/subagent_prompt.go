@@ -97,22 +97,9 @@ func (r *Router) persistResumePromptRow(evt provider.ProviderEvent, meta userTex
 	// carrier row having been persisted yet. Falling back to resolving
 	// through the carrier covers a rebind whose original launch the
 	// parser never saw (a reconnect), where the persisted task_id is.
-	parentID := strings.TrimSpace(meta.text(provider.MetaTranscriptRootIDKey))
-	if parentID == "" {
-		parentID = carrierID
-		carrier, found, err := r.store.GetThreadItem(evt.ThreadID, carrierID)
-		if err != nil {
-			return fmt.Errorf("triage: resume prompt carrier lookup %s/%s: %w", evt.ThreadID, carrierID, err)
-		}
-		if found {
-			root, resolved, rootErr := r.transcriptRoot(evt.ThreadID, carrier)
-			if rootErr != nil {
-				return rootErr
-			}
-			if resolved {
-				parentID = root.ID
-			}
-		}
+	parentID, err := r.promptScopeRoot(evt.ThreadID, strings.TrimSpace(meta.text(provider.MetaTranscriptRootIDKey)), carrierID)
+	if err != nil {
+		return err
 	}
 
 	turnIndex, err := r.turnIndexForScope(evt.ThreadID, parentID)
@@ -157,8 +144,8 @@ func (r *Router) persistResumePromptRow(evt provider.ProviderEvent, meta userTex
 //  2. The prompt lands as a user-role row under the transcript ROOT, the
 //     way the §E6 resume message does, so the woken round opens with what
 //     the agent was told rather than with its answer. Placement resolves
-//     like persistResumePromptRow: the parser's `transcript_root_id`
-//     stamp first, else the parent row through transcriptRoot. Nothing
+//     like persistResumePromptRow (promptScopeRoot): the parser's
+//     `transcript_root_id` stamp first, else the bound row. Nothing
 //     ever binds a provider uuid onto this row (the sidechain records the
 //     wake as an `isMeta` row the converter drops), so it is not
 //     provisional, and it carries the wake marker rather than the resume
@@ -191,20 +178,9 @@ func (r *Router) persistWakePromptRow(evt provider.ProviderEvent, meta userTextM
 		return nil
 	}
 
-	rootID := strings.TrimSpace(meta.text(provider.MetaTranscriptRootIDKey))
-	if rootID == "" {
-		rootID = parentID
-		bound, found, err := r.store.GetThreadItem(evt.ThreadID, parentID)
-		if err != nil {
-			return fmt.Errorf("triage: wake prompt bound row lookup %s/%s: %w", evt.ThreadID, parentID, err)
-		}
-		if found {
-			root, err := r.transcriptRootOrSelf(evt.ThreadID, bound)
-			if err != nil {
-				return err
-			}
-			rootID = root.ID
-		}
+	rootID, err := r.promptScopeRoot(evt.ThreadID, strings.TrimSpace(meta.text(provider.MetaTranscriptRootIDKey)), parentID)
+	if err != nil {
+		return err
 	}
 	turnIndex, err := r.turnIndexForScope(evt.ThreadID, rootID)
 	if err != nil {

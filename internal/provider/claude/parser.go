@@ -129,6 +129,15 @@ type Parser struct {
 	// Entries are marked on task_started and released on the terminal
 	// task_updated; a resume re-marks the new carrier tool_use.
 	liveAgentTaskToolUses map[string]bool
+	// ownedBackgroundTasks holds, per task_id, the tool_use that started
+	// each background task a subagent owns (`owned_by_subagent` on its
+	// task_started, an agent excepted) until its terminal task_updated.
+	// A projected agent that stops while one of them runs under its
+	// launch is parked, and its mirror projection stays open for the
+	// woken rounds (finishMirroredTask). Bounded by parserTaskMapCap with
+	// wholesale reset; an entry lost that way closes a parked agent's
+	// projection at its stop, as before parking was modeled.
+	ownedBackgroundTasks map[string]string
 	// subagentModelStamped dedupes per-parent_tool_use_id meta-update
 	// emissions of `subagent_model`. Subagent assistant messages all
 	// carry the same `message.model`, so we only emit the meta merge
@@ -388,6 +397,7 @@ func (p *Parser) Close() {
 	p.agentLaunchToolUses = nil
 	p.taskTranscriptRoots = nil
 	p.liveAgentTaskToolUses = nil
+	p.ownedBackgroundTasks = nil
 	p.subagentModelStamped = nil
 	p.streamBlockTypes = nil
 	p.streamedMessageIDs = nil
@@ -792,6 +802,43 @@ func (p *Parser) clearLiveAgentTask(toolUseID string) {
 		return
 	}
 	delete(p.liveAgentTaskToolUses, toolUseID)
+}
+
+// rememberOwnedBackgroundTask records a subagent-owned background task
+// until its terminal. See the ownedBackgroundTasks field doc.
+func (p *Parser) rememberOwnedBackgroundTask(taskID, toolUseID string) {
+	if p == nil || taskID == "" || toolUseID == "" {
+		return
+	}
+	if p.ownedBackgroundTasks == nil {
+		p.ownedBackgroundTasks = make(map[string]string)
+	}
+	if len(p.ownedBackgroundTasks) >= parserTaskMapCap {
+		p.ownedBackgroundTasks = make(map[string]string)
+	}
+	p.ownedBackgroundTasks[taskID] = toolUseID
+}
+
+func (p *Parser) releaseOwnedBackgroundTask(taskID string) {
+	if p == nil || p.ownedBackgroundTasks == nil {
+		return
+	}
+	delete(p.ownedBackgroundTasks, taskID)
+}
+
+// ownsLiveBackgroundTask reports whether a subagent-owned background task
+// with no terminal yet was started by a tool call directly under scope,
+// the launch every round of a projected agent's rows is parented to.
+func (p *Parser) ownsLiveBackgroundTask(scope string) bool {
+	if p == nil || scope == "" {
+		return false
+	}
+	for _, toolUseID := range p.ownedBackgroundTasks {
+		if p.toolUseParent(toolUseID) == scope {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Parser) hasLiveAgentTask(toolUseID string) bool {

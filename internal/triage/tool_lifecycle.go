@@ -126,7 +126,11 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 	// refreshed so the UI can render the new metadata immediately.
 	metaUpdateOnly := meta.isMetaUpdateOnly()
 
-	existing, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
+	// Every branch below that writes writes this row back, so it is read
+	// with its stored meta: an agent's launch or carrier is an anchor, and
+	// a read serves its card in the meta (a same-binding re-announce's
+	// meta update lands on a carrier that already has one).
+	existing, found, err := r.store.GetThreadItemForWrite(evt.ThreadID, itemID)
 	if err != nil {
 		return store.Item{}, false, fmt.Errorf("tool launch lookup %s: %w", itemID, err)
 	}
@@ -140,7 +144,12 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 		}
 		// The whole update feeds the live projection; only the child's
 		// identity lands on the settled spawn row (codex_spawn_identity.go).
-		current := r.codexAgentRuntimeOrLaunch(existing)
+		// The live copy starts from the row as a read serves it.
+		served, _, err := r.store.GetThreadItem(evt.ThreadID, itemID)
+		if err != nil {
+			return store.Item{}, false, fmt.Errorf("tool launch lookup %s: %w", itemID, err)
+		}
+		current := r.codexAgentRuntimeOrLaunch(served)
 		current.Meta = mergeItemMetaJSON(current.Meta, evt.Meta)
 		if err := r.setCodexAgentRuntime(current); err != nil {
 			return store.Item{}, false, err
@@ -151,7 +160,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 
 	if metaUpdateOnly {
 		// A §E6 rebind is the end of the PREVIOUS binding's last round:
-		// a parked agent (launchIsParked) settles onto the row it was
+		// a parked agent (launchParkedOn) settles onto the row it was
 		// bound to before the carrier takes over. Before the row work,
 		// and regardless of whether the carrier row exists yet.
 		if meta.TaskID != "" && isResumeCarrierMeta(meta) {
@@ -300,6 +309,13 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 	persisted, err := r.persistItemWithEmit(item, nil, inputPayload, true)
 	if err != nil {
 		return store.Item{}, false, err
+	}
+	// A live Codex agent's tray row reads its latest-tool line (and a
+	// nested agent's membership) from the live list, and this row's push
+	// reaches only a connection watching the agent's scope, which the tray
+	// does not: the list's own channel announces it.
+	if r.codexAgentIsLive(evt.ThreadID, strings.TrimSpace(persisted.ParentID)) {
+		r.emitBackgroundTasksChangedNudge(evt.ThreadID)
 	}
 
 	// A held task_id may belong to a shell that ALREADY exited: its
@@ -1227,18 +1243,18 @@ func (r *Router) observeBackgroundTaskTerminal(evt provider.ProviderEvent, meta 
 	// An agent OBSERVATION (TaskOutput) of a parked agent reads a pause,
 	// not the end: the agent still wakes when its shell reports. Keep the
 	// stash for the wake and write nothing, as the notification path does
-	// (launchIsParked). A kill is never a pause.
+	// (launchParkedOn). A kill is never a pause.
 	if meta.Source != "task_updated" && meta.Status != statusKilled {
 		launch, found, err := r.resolveBackgroundTaskLaunch(evt.ThreadID, evt.ItemID, meta.ToolUseID, meta.TaskID)
 		if err != nil {
 			return err
 		}
 		if found && launch.Kind == itemKindToolCall && launch.IsBackground {
-			parked, err := r.launchIsParked(evt.ThreadID, launch)
+			parkedOn, err := r.launchParkedOn(evt.ThreadID, launch)
 			if err != nil {
 				return err
 			}
-			if parked {
+			if parkedOn > 0 {
 				return nil
 			}
 		}
@@ -2331,7 +2347,7 @@ func (r *Router) settleStashedTerminalForLateLaunch(evt provider.ProviderEvent, 
 
 // settleParkedLaunchForRebind closes a PARKED agent's round when a §E6
 // rebind moves its lifecycle onto a new carrier. A parked agent
-// (launchIsParked) still holds the completed terminal of its last stop in
+// (launchParkedOn) still holds the completed terminal of its last stop in
 // the stash, because that stop was read as a pause. The rebind says the
 // next round belongs to the carrier, so for the row the stash names the
 // pause WAS the end: settle it now, the way a late launch settles against

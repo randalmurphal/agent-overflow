@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/provider/claude"
 	"agent-overflow/internal/store"
 )
 
@@ -377,9 +378,9 @@ func TestResumePromptRowLandsUnderTheTranscriptRoot(t *testing.T) {
 	}
 }
 
-// The parser's stamp places the row without any store read, which is
-// what makes the placement independent of whether the carrier's own row
-// has been written yet.
+// The parser's stamp places the row without the carrier's own row, which
+// is what makes the placement independent of whether the carrier has been
+// written yet.
 func TestResumePromptUsesTheParserRootStampWithoutReadingTheCarrier(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -541,4 +542,111 @@ func TestResumeTerminalOnTheCarrierLeavesTheRootsRowsAlone(t *testing.T) {
 	if siblings != 1 {
 		t.Fatalf("expected exactly 1 completion sibling under the carrier, got %d", siblings)
 	}
+}
+
+// A parser stamp can name a CARRIER: a parser that read a same-binding
+// re-announce as a first binding recorded the round-2 carrier as the
+// task's root, and stamped it on every later round (thread fc78be87,
+// 2026-09-24). The keep-running flip corrects the carrier's stamp to the
+// root the stamp resolves to, and the resume and wake prompts resolve the
+// stamped row the same way instead of parenting to it.
+func TestAStampThatNamesACarrierResolvesToTheRoot(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startAgentLaunch(t, router, "t1", "agent-1", "", "task-1")
+	resumeAgent(t, router, "t1", "carrier-2", map[string]any{
+		"task_id": "task-1", "task_type": "local_agent", "description": "review the file",
+		"resumes_tool_use_id": "agent-1", provider.MetaTranscriptRootIDKey: "agent-1",
+	})
+	// Round 3 as the defective parser stamped it: the root is carrier-2.
+	resumeAgent(t, router, "t1", "carrier-3", map[string]any{
+		"task_id": "task-1", "task_type": "local_agent", "description": "review the file",
+		"resumes_tool_use_id": "carrier-2", provider.MetaTranscriptRootIDKey: "carrier-2",
+	})
+	deliverResumePrompt(t, router, "t1", "carrier-3", "carrier-2", "round three")
+	parkWake(t, router, "t1", "carrier-3", "task-1", "shell", "task-shell", map[string]any{provider.MetaTranscriptRootIDKey: "carrier-2"})
+
+	if got := itemMetaField(t, mustGetItem(t, st, "t1", "carrier-3"), provider.MetaTranscriptRootIDKey); got != "agent-1" {
+		t.Errorf("round-3 carrier transcript_root_id = %v, want agent-1 (corrected by the flip)", got)
+	}
+	if prompt := mustGetItem(t, st, "t1", provider.SubagentOpeningPromptItemID("carrier-3")); prompt.ParentID != "agent-1" {
+		t.Errorf("resume prompt parent = %q, want agent-1", prompt.ParentID)
+	}
+	if wake := mustGetItem(t, st, "t1", provider.SubagentWakePromptItemID("shell")); wake.ParentID != "agent-1" {
+		t.Errorf("wake prompt parent = %q, want agent-1", wake.ParentID)
+	}
+	assertNothingIsParentedToACarrier(t, st, "t1", 0)
+}
+
+// The real sequence of thread fc78be87 (task aeb391c5ca059d78f), replayed
+// through the parser into the router. The original launch was settled by
+// a session death; a fresh process resumed it through a carrier the
+// parser could not tie to a launch (HSTnk), resumed it again (011HU),
+// re-announced 011HU's binding with a wake prompt, and resumed it a third
+// time (01Gv4d9h). Every carrier names the original launch as its root,
+// and every resume prompt lands under it.
+func TestReplayedReannounceSequenceKeepsEveryRoundUnderTheOriginalLaunch(t *testing.T) {
+	const (
+		task     = "aeb391c5ca059d78f"
+		launch   = "toolu_0189mHNQFmMCHVisk9vZ7rxp"
+		recovery = "toolu_01HSTnkfWfX3M54n5e4Bje3K"
+		round2   = "toolu_011HUFrpGE5W7yVa9L6XoFzE"
+		round3   = "toolu_01Gv4d9hMYaVLopAXfd26Vvm"
+	)
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	startAgentLaunch(t, router, "t1", launch, "", task)
+	if _, err := router.SettleBackgroundLaunchesForSessionEnd("t1"); err != nil {
+		t.Fatalf("session-end settle: %v", err)
+	}
+	seedOpenTurn(t, router, st, "t1", 1)
+
+	parser := claude.NewParser()
+	defer parser.Close()
+	feed := func(line string) {
+		t.Helper()
+		events, err := parser.ParseLine("t1", []byte(line))
+		if err != nil {
+			t.Fatalf("ParseLine: %v\n%s", err, line)
+		}
+		for _, evt := range events {
+			if evt.Timestamp.IsZero() {
+				evt.Timestamp = time.Now()
+			}
+			if err := router.Handle(evt); err != nil {
+				t.Fatalf("handle %s %s: %v", evt.Kind, evt.ItemID, err)
+			}
+		}
+	}
+	resume := func(carrier, prompt string) {
+		t.Helper()
+		feed(`{"type":"assistant","message":{"id":"msg-` + carrier + `","role":"assistant","content":[{"type":"tool_use","id":"` + carrier + `","name":"SendMessage","input":{"to":"` + task + `","message":"` + prompt + `"}}]}}`)
+		feed(`{"type":"system","subtype":"task_started","task_id":"` + task + `","tool_use_id":"` + carrier + `","description":"L3 fail-closed tenant session routing","subagent_type":"general-purpose","task_type":"local_agent","prompt":"` + prompt + `"}`)
+		feed(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"` + carrier + `","type":"tool_result","content":[{"type":"text","text":"{\"success\":true,\"message\":\"resumed from transcript in the background with your message.\",\"resumedAgentId\":\"` + task + `\"}"}]}]},"parent_tool_use_id":null}`)
+	}
+	stop := func(bound, summary string) {
+		t.Helper()
+		feed(`{"type":"system","subtype":"task_updated","task_id":"` + task + `","patch":{"status":"completed","end_time":1790114536078}}`)
+		feed(`{"type":"system","subtype":"task_notification","task_id":"` + task + `","tool_use_id":"` + bound + `","status":"completed","summary":"` + summary + `"}`)
+	}
+
+	resume(recovery, "Recovery: the app crashed and killed you mid-task.")
+	stop(recovery, "Round 1 report")
+	resume(round2, "L3 lead review of C5.")
+	feed(`{"type":"system","subtype":"task_started","task_id":"` + task + `","tool_use_id":"` + round2 + `","description":"L3 fail-closed tenant session routing","subagent_type":"general-purpose","task_type":"local_agent","is_backgrounded":true,"prompt":"<task-notification>\n<task-id>bflfd5w3i</task-id>\n<tool-use-id>toolu_01PCRUekAgYhLs7cCSLKdHga</tool-use-id>\n<status>completed</status>\n<summary>Background command \"gate\" completed (exit code 0)</summary>\n</task-notification>"}`)
+	stop(round2, "Round 2 report")
+	resume(round3, "L3 round 3.")
+
+	for _, carrier := range []string{recovery, round2, round3} {
+		if got := itemMetaField(t, mustGetItem(t, st, "t1", carrier), provider.MetaTranscriptRootIDKey); got != launch {
+			t.Errorf("%s transcript_root_id = %v, want the original launch", carrier, got)
+		}
+		if prompt := mustGetItem(t, st, "t1", provider.SubagentOpeningPromptItemID(carrier)); prompt.ParentID != launch {
+			t.Errorf("%s resume prompt parent = %q, want the original launch", carrier, prompt.ParentID)
+		}
+	}
+	assertNothingIsParentedToACarrier(t, st, "t1", 1)
 }

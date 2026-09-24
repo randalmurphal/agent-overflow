@@ -23,9 +23,6 @@ function agent(id: string, overrides: Partial<Item> = {}): Item {
   return item({ id, toolName: 'collab_agent', summary: `spawn ${id}`, ...overrides });
 }
 
-function tool(parentId: string, itemIndex: number, summary: string, overrides: Partial<Item> = {}): Item {
-  return item({ id: `${parentId}:${itemIndex}`, parentId, itemIndex, toolName: 'Bash', summary, ...overrides });
-}
 
 function latest(row: Item): unknown {
   return JSON.parse(row.meta ?? '{}')[TRAY_LATEST_TOOL_META.summary];
@@ -40,48 +37,14 @@ function decorated(summary: unknown, turnIndex: unknown, itemIndex: unknown, ext
   });
 }
 
-describe('createTrayLatestToolProjection: Codex child tools', () => {
-  it('moves the latest tool forward and ignores an older or unchanged one', () => {
-    const projection = createTrayLatestToolProjection();
-    const snapshot = [agent('a', { meta: JSON.stringify({ input: { tool: 'spawn_agent' } }) })];
-    projection.reset(snapshot);
-
-    const first = projection.applyChildTool(snapshot, tool('a', 1, ' Bash: pnpm test '));
-    expect(latest(first[0])).toBe('Bash: pnpm test');
-    expect(JSON.parse(first[0].meta!).input).toEqual({ tool: 'spawn_agent' });
-
-    const newer = projection.applyChildTool(first, tool('a', 2, 'Read: newest.ts'));
-    expect(latest(newer[0])).toBe('Read: newest.ts');
-
-    expect(projection.applyChildTool(newer, tool('a', 1, 'Bash: pnpm test (done)'))).toBe(newer);
-    expect(projection.applyChildTool(newer, tool('a', 2, 'Read: newest.ts'))).toBe(newer);
-    const grown = projection.applyChildTool(newer, tool('a', 2, 'Read: newest.ts (2 files)'));
-    expect(latest(grown[0])).toBe('Read: newest.ts (2 files)');
-  });
-
-  it('ignores tools that do not belong to a running agent row of the snapshot', () => {
-    const projection = createTrayLatestToolProjection();
-    const snapshot = [
-      agent('done', { status: 'completed' }),
-      item({ id: 'bash', toolName: 'Bash' }),
-      agent('a'),
-    ];
-    projection.reset(snapshot);
-    expect(projection.applyChildTool(snapshot, tool('done', 1, 'x'))).toBe(snapshot);
-    // A running row, but not an agent: plain rows have no child tools.
-    expect(projection.applyChildTool(snapshot, tool('bash', 1, 'x'))).toBe(snapshot);
-    expect(projection.applyChildTool(snapshot, tool('missing', 1, 'x'))).toBe(snapshot);
-    expect(projection.applyChildTool(snapshot, tool('a', 1, '   '))).toBe(snapshot);
-    expect(projection.applyChildTool(snapshot, tool('a', 1, 'spawn nested', { toolName: 'collab_agent' }))).toBe(snapshot);
-  });
-
-  it('logs malformed agent meta and leaves the row alone', () => {
+describe('createTrayLatestToolProjection: the snapshot index', () => {
+  it('logs malformed row meta and leaves the row alone', () => {
     const projection = createTrayLatestToolProjection();
     const snapshot = [agent('a', { meta: '{not json' })];
     projection.reset(snapshot);
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      expect(projection.applyChildTool(snapshot, tool('a', 1, 'Bash: ls'))).toBe(snapshot);
+      expect(projection.applyPushedLaunch(snapshot, { ...snapshot[0], meta: decorated('Bash: ls', 0, 1) })).toBe(snapshot);
       expect(log).toHaveBeenCalledWith('ActivityRail: malformed tray row meta for a');
     } finally {
       log.mockRestore();
@@ -93,17 +56,17 @@ describe('createTrayLatestToolProjection: Codex child tools', () => {
     projection.reset([agent('a'), agent('b')]);
     const reordered = [agent('b'), item({ id: 'x', toolName: 'Bash' }), agent('a')];
     projection.reset(reordered);
-    const next = projection.applyChildTool(reordered, tool('a', 1, 'Read: a.ts'));
+    const next = projection.applyPushedLaunch(reordered, { ...reordered[2], meta: decorated('Read: a.ts', 0, 1) });
     expect(latest(next[2])).toBe('Read: a.ts');
     expect(next[0]).toBe(reordered[0]);
     expect(next[1]).toBe(reordered[1]);
   });
 
-  // The projection runs once per streamed child tool call of every Codex
-  // agent, so its cost must not grow with the tray. A scan reads every row
-  // per call; the index reads the parent's row and, on a change, copies the
+  // The projection runs once per re-push of every listed launch, so its
+  // cost must not grow with the tray. A scan reads every row per push; the
+  // index reads the pushed launch's row and, on a change, copies the
   // snapshot once.
-  it('reads only the parent row per tool call, whatever the tray size', () => {
+  it('reads only the pushed launch\u2019s row per push, whatever the tray size', () => {
     const projection = createTrayLatestToolProjection();
     const rows = Array.from({ length: 1_000 }, (_, i) => agent(`a${i}`));
     projection.reset(rows);
@@ -115,12 +78,12 @@ describe('createTrayLatestToolProjection: Codex child tools', () => {
       },
     });
     for (let i = 0; i < 1_000; i += 1) {
-      expect(projection.applyChildTool(counted, tool('elsewhere', i, 'Bash: ls'))).toBe(counted);
-      expect(projection.applyChildTool(counted, tool(`a${i}`, 0, '   '))).toBe(counted);
+      expect(projection.applyPushedLaunch(counted, agent(`elsewhere-${i}`, { meta: decorated('Bash: ls', 0, i) }))).toBe(counted);
+      expect(projection.applyPushedLaunch(counted, agent(`a${i}`))).toBe(counted);
     }
     expect(reads).toBe(0);
 
-    const next = projection.applyChildTool(counted, tool('a500', 1, 'Read: a.ts'));
+    const next = projection.applyPushedLaunch(counted, agent('a500', { meta: decorated('Read: a.ts', 0, 1) }));
     expect(latest(next[500])).toBe('Read: a.ts');
     reads = 0;
     const current = new Proxy(next, {
@@ -129,7 +92,7 @@ describe('createTrayLatestToolProjection: Codex child tools', () => {
         return Reflect.get(target, key, receiver);
       },
     });
-    expect(projection.applyChildTool(current, tool('a500', 0, 'Bash: older'))).toBe(current);
+    expect(projection.applyPushedLaunch(current, agent('a500', { meta: decorated('Bash: older', 0, 0) }))).toBe(current);
     expect(reads).toBe(1);
   });
 });

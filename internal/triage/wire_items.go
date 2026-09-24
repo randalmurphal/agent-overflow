@@ -1,7 +1,9 @@
 package triage
 
 import (
+	"encoding/json"
 	"log"
+	"strings"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -109,9 +111,16 @@ func (r *Router) emitFirstChildAnchors(child store.Item) {
 		log.Printf("triage: read first child anchors of %s/%s: %v", child.ThreadID, child.ID, err)
 		return
 	}
+	nudge := false
 	for _, anchor := range anchors {
 		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(anchor))
 		r.noteWireItemEmitted(anchor.ThreadID, anchor.ID, anchor.Rev)
+		nudge = nudge || isNestedLiveBackgroundLaunch(anchor)
+	}
+	// As in refreshWireItems: the tray reads a nested launch's stamp from
+	// the live list.
+	if nudge {
+		r.emitBackgroundTasksChangedNudge(child.ThreadID)
 	}
 }
 
@@ -332,7 +341,37 @@ func (r *Router) refreshWireItems(threadID string, emitted map[string]int64) {
 		log.Printf("triage: refresh wire rows for %s: %v", threadID, err)
 		return
 	}
+	nudge := false
 	for _, row := range rows {
 		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(row))
+		nudge = nudge || isNestedLiveBackgroundLaunch(row)
 	}
+	// Every row read here changed after its last push, most often an
+	// anchor its children's writes restamped. A nested launch's push
+	// reaches only a connection watching its parent's scope, and the
+	// background tray watches none: it reads the launch's stamp (its
+	// latest-tool line) from the live list, so the change is announced on
+	// the list's own channel. One nudge per refresh, however many
+	// launches it pushed.
+	if nudge {
+		r.emitBackgroundTasksChangedNudge(threadID)
+	}
+}
+
+// isNestedLiveBackgroundLaunch reports whether a row is a running
+// background launch below the top level that the live list serves: the
+// rows whose pushes the tray does not receive.
+func isNestedLiveBackgroundLaunch(it store.Item) bool {
+	if it.Kind != itemKindToolCall || it.Status != statusRunning || !it.IsBackground || strings.TrimSpace(it.ParentID) == "" {
+		return false
+	}
+	var meta struct {
+		Active *bool `json:"live_background_active"`
+	}
+	if strings.TrimSpace(it.Meta) != "" {
+		if err := json.Unmarshal([]byte(it.Meta), &meta); err != nil {
+			return false
+		}
+	}
+	return meta.Active == nil || *meta.Active
 }

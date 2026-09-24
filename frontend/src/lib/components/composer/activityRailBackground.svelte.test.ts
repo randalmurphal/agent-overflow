@@ -9,8 +9,6 @@ import { noteThread } from '../../transport/entityIndex';
 import { __attachBackendForTest, detachBackend } from '../../transport/backends';
 import { applyItemStreamEvent, flushItemEventQueue, resetItemEventQueue } from '../../stores/eventsItemStream';
 import { wsClient } from '../../transport/wsClient';
-import { refreshWatchedThreads } from '../../stores/watchedThreads';
-import type { ThreadPane } from '../../stores/thread.svelte';
 import type { Item, Project, Thread } from '../../types/models';
 
 const remote = 'tray-owner';
@@ -166,6 +164,7 @@ describe('tray refresh reasons', () => {
     release = () => {};
     resetItemEventQueue();
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   async function mountTray(listed: Item[], thread?: Thread) {
@@ -312,6 +311,78 @@ describe('tray refresh reasons', () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
+  // The tray shows anchor-level data only: it watches no agent scope and
+  // takes no child row, open or closed. A Codex agent's latest tool comes
+  // from the list read its tool calls nudge.
+  it('watches no agent scope with its body open and takes a Codex agent\u2019s latest tool from the nudged read', async () => {
+    const scopes: string[] = [];
+    vi.spyOn(wsClient, 'setWatchedThreads').mockImplementation((_threads, watched) => {
+      scopes.push(...watched.map((scope) => scope.scopeRootId));
+    });
+    const runtime = makeItem({
+      id: 'spawn', kind: 'tool_call', toolName: 'collab_agent', status: 'running', isBackground: true,
+      meta: latestTool('Bash: ls', 2),
+    });
+    const nested = makeItem({ id: 'nested', kind: 'tool_call', toolName: 'Bash', status: 'running', isBackground: true, parentId: 'outer' });
+    const listed = [runtime, nested];
+    const { pane, read, controller } = await mountTray(listed, makeThread({ provider: 'codex' }));
+    pane.toggleActivityRailBackground();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    deliver(pane, [makeItem({ id: 'spawn:3', kind: 'tool_call', toolName: 'Read', status: 'running', parentId: 'spawn', summary: 'Read: child.ts', itemIndex: 3 })]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(activity(controller, 'spawn')).toBe('Bash: ls');
+    expect(read).toHaveBeenCalledTimes(1);
+
+    listed[0] = { ...runtime, meta: latestTool('Read: child.ts', 3) };
+    emitWailsEvent('provider:background_tasks_changed', { threadId: pane.threadId }, '');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(activity(controller, 'spawn')).toBe('Read: child.ts');
+    expect(scopes).toEqual([]);
+  });
+
+  // The backend nudges once per stamp refresh while agents work; the
+  // scheduler holds a steady stream to one read per 400 ms.
+  it('reads at most once per 400 ms under a steady nudge stream', async () => {
+    const agents = Array.from({ length: 100 }, (_, i) => claudeAgent(`agent-${i}`, latestTool('start', 0)));
+    const { pane, read } = await mountTray(agents);
+    for (let elapsed = 0; elapsed < 2_000; elapsed += 50) {
+      emitWailsEvent('provider:background_tasks_changed', { threadId: pane.threadId }, '');
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(read.mock.calls.length - 1).toBeGreaterThanOrEqual(4);
+    expect(read.mock.calls.length - 1).toBeLessThanOrEqual(6);
+  });
+
+  it('serves each listed agent\u2019s run state by launch id from the reads, and keeps it across re-pushes', async () => {
+    const runState = (fields: Record<string, unknown>) => JSON.stringify({ ...JSON.parse(latestTool('Read: a.ts', 1)), ...fields });
+    const parked = claudeAgent('parked', runState({
+      subagentRunState: 'parked', subagentParkedCommands: 2,
+      subagentParkedReportId: 'report-1', subagentParkedReportPreview: 'Found the race.',
+    }));
+    const working = claudeAgent('working', runState({ subagentRunState: 'running' }));
+    const shell = makeItem({ id: 'shell', kind: 'tool_call', toolName: 'Bash', status: 'running', isBackground: true });
+    const listed = [parked, working, shell];
+    const { pane, read, controller } = await mountTray(listed);
+    expect(controller.runStateOf('parked')).toEqual({ state: 'parked', waitingOn: 2, report: { id: 'report-1', preview: 'Found the race.' } });
+    expect(controller.runStateOf('working')).toEqual({ state: 'running', waitingOn: 0, report: null });
+    expect(controller.runStateOf('shell')).toBeNull();
+    expect(controller.runStateOf('unlisted')).toBeNull();
+
+    deliver(pane, [{ ...parked, rev: 2, meta: latestTool('Bash: ls', 4) }]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(activity(controller, 'parked')).toBe('Bash: ls');
+    expect(controller.runStateOf('parked')?.state).toBe('parked');
+    expect(read).toHaveBeenCalledTimes(1);
+
+    listed[0] = { ...parked, meta: runState({ subagentRunState: 'running' }) };
+    emitWailsEvent('provider:background_tasks_changed', { threadId: pane.threadId }, '');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(controller.runStateOf('parked')).toEqual({ state: 'running', waitingOn: 0, report: null });
+  });
+
   // The scale this path exists for: every live agent's anchor is re-pushed
   // as its children are written. None of those pushes changes membership.
   it('reads nothing while 100 listed launches are re-pushed once a second for 10 s', async () => {
@@ -323,70 +394,6 @@ describe('tray refresh reasons', () => {
     }
     expect(read).toHaveBeenCalledTimes(1);
     expect(activity(controller, 'agent-42')).toBe('step 10');
-  });
-});
-
-describe('tray scope watches', () => {
-  let release = () => {};
-  afterEach(() => { release(); release = () => {}; vi.restoreAllMocks(); });
-
-  it('watches running agents’ scopes only while its body is open, and re-reads behind the watch', async () => {
-    const log: string[] = [];
-    vi.spyOn(wsClient, 'setWatchedThreads').mockImplementation((_threads, scopes) => {
-      log.push(`watch ${scopes.map((scope) => scope.scopeRootId).sort().join(',')}`);
-    });
-    const pane = await buildPane(makeThread({ provider: 'codex' }));
-    const listed = [
-      // A running Codex agent: its direct tool calls are its own scope.
-      makeItem({ id: 'spawn', kind: 'tool_call', toolName: 'collab_agent', status: 'running', isBackground: true }),
-      // A nested running launch: its re-pushes live in its parent's scope.
-      makeItem({ id: 'nested', kind: 'tool_call', toolName: 'Bash', status: 'running', isBackground: true, parentId: 'outer' }),
-      // Settled rows feed nothing live.
-      makeItem({ id: 'settled', kind: 'tool_call', toolName: 'collab_agent', status: 'completed', parentId: 'gone' }),
-    ];
-    setBindingMock('ListLiveBackgroundTasks', async () => { log.push('read'); return listed; });
-    release = $effect.root(() => createBackgroundController(() => pane, Date.now).mount());
-    await flush();
-    expect(log).toContain('read');
-    expect(log.some((entry) => entry.startsWith('watch ') && entry !== 'watch ')).toBe(false);
-
-    log.length = 0;
-    pane.toggleActivityRailBackground();
-    await flush();
-    const read = log.indexOf('read');
-    expect(read).toBeGreaterThan(0);
-    expect(log.slice(0, read).filter((entry) => entry.startsWith('watch')).at(-1)).toBe('watch outer,spawn');
-
-    log.length = 0;
-    pane.toggleActivityRailBackground();
-    await flush();
-    expect(log.filter((entry) => entry.startsWith('watch')).at(-1)).toBe('watch ');
-    expect(log).not.toContain('read');
-  });
-
-  it('answers a recompute that runs after its pane left the registry and before it unmounts', async () => {
-    const log: string[] = [];
-    vi.spyOn(wsClient, 'setWatchedThreads').mockImplementation((_threads, scopes) => {
-      log.push(`watch ${scopes.map((scope) => scope.scopeRootId).sort().join(',')}`);
-    });
-    const pane = await buildPane(makeThread({ provider: 'codex' }));
-    setBindingMock('ListLiveBackgroundTasks', async () => [
-      makeItem({ id: 'spawn', kind: 'tool_call', toolName: 'collab_agent', status: 'running', isBackground: true }),
-    ]);
-    // The pane host reads the pane from the registry, so the composer's
-    // prop is undefined from the registry removal until the unmount, and a
-    // close recomputes the watched set in between (destroyPane).
-    const host = $state<{ pane: ThreadPane | undefined }>({ pane });
-    release = $effect.root(() => createBackgroundController(() => host.pane!, Date.now).mount());
-    pane.toggleActivityRailBackground();
-    await flush();
-    expect(log.at(-1)).toBe('watch spawn');
-
-    host.pane = undefined;
-    expect(() => refreshWatchedThreads()).not.toThrow();
-    release();
-    release = () => {};
-    expect(log.at(-1)).toBe('watch ');
   });
 });
 

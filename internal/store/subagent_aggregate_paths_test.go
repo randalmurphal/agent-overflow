@@ -599,27 +599,33 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 	}
 
 	// The tray reads one launch's children on every arm of the thread and
-	// of a pointer fork of it. Each local arm walks idx_items_parent
-	// backwards; each imported arm probes the parent lookup, as the
-	// descendant walk does, and sorts that launch's imported children, the
-	// only sorts the plan holds.
+	// of a pointer fork of it, for its latest tool and for a parked
+	// agent's report. Each local arm walks idx_items_parent backwards;
+	// each imported arm probes the parent lookup, as the descendant walk
+	// does, and sorts that launch's imported children, the only sorts the
+	// plan holds.
 	if err := s.CreatePointerFork(makeThread(thread+"-fork", "claude"), thread, ForkCut{}, testInterruptedSummary, 1); err != nil {
 		t.Fatal(err)
 	}
 	for depth, viewer := range []string{thread, thread + "-fork"} {
-		tray, trayArgs, err := timelineArms(s.reader(), viewer, latestDirectSubagentToolSelection("L"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		name := "latest direct tool in " + viewer
-		text := assertBoundedPlan(t, s, name, boundedPlan{sorts: true}, tray, trayArgs...)
-		assertLocalArmWalksAnIndex(t, s, name, tray, trayArgs...)
-		local := strings.Count(text, "SEARCH items USING INDEX idx_items_parent (thread_id=? AND parent_id=?")
-		imported := strings.Count(text, "SEARCH items USING INDEX idx_import_history_items_parent_lookup (parent_id=?)")
-		sorts := strings.Count(text, "USE TEMP B-TREE FOR ORDER BY")
-		if local != depth+1 || imported != depth+1 || sorts != imported {
-			t.Errorf("%s probes %d local and %d imported arms with %d sorts, want %d, %d and one sort per imported arm:\n%s",
-				name, local, imported, sorts, depth+1, depth+1, text)
+		for what, selection := range map[string]timelineSelection{
+			"latest direct tool":     latestDirectSubagentToolSelection("L"),
+			"latest subagent report": latestSubagentReportSelection("L"),
+		} {
+			tray, trayArgs, err := timelineArms(s.reader(), viewer, selection)
+			if err != nil {
+				t.Fatal(err)
+			}
+			name := what + " in " + viewer
+			text := assertBoundedPlan(t, s, name, boundedPlan{sorts: true}, tray, trayArgs...)
+			assertLocalArmWalksAnIndex(t, s, name, tray, trayArgs...)
+			local := strings.Count(text, "SEARCH items USING INDEX idx_items_parent (thread_id=? AND parent_id=?")
+			imported := strings.Count(text, "SEARCH items USING INDEX idx_import_history_items_parent_lookup (parent_id=?)")
+			sorts := strings.Count(text, "USE TEMP B-TREE FOR ORDER BY")
+			if local != depth+1 || imported != depth+1 || sorts != imported {
+				t.Errorf("%s probes %d local and %d imported arms with %d sorts, want %d, %d and one sort per imported arm:\n%s",
+					name, local, imported, sorts, depth+1, depth+1, text)
+			}
 		}
 	}
 

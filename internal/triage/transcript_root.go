@@ -167,10 +167,36 @@ func (r *Router) carrierRootRewrite(threadID, parentToolUseID string) string {
 // stampTranscriptRootOnCarrier records the resolved root on the carrier's
 // own meta patch when the parser could not (the reconnect edge). One
 // stamp makes every later reader — this process, a restarted one, and the
-// frontend — answer "is this a carrier" from the row alone.
+// frontend — answer "is this a carrier" from the row alone. A stamp that
+// names another row is corrected: rootID was resolved through the stamp,
+// so it differs only when the stamp named a carrier rather than the root
+// (a parser that recorded a same-binding re-announce as a root).
 func stampTranscriptRootOnCarrier(patch map[string]string, carrierMeta ToolStartMeta, rootID string) {
-	if rootID == "" || carrierMeta.TranscriptRootID != "" {
+	if rootID == "" || carrierMeta.TranscriptRootID == rootID {
 		return
 	}
 	patch[provider.MetaTranscriptRootIDKey] = rootID
+}
+
+// promptScopeRoot resolves the row a resumed or woken round's prompt is
+// parented to: the parser's `transcript_root_id` stamp when it has one,
+// else the row the round is bound to, resolved through transcriptRoot
+// either way. A stamp can name a carrier (a parser that recorded a
+// same-binding re-announce as a root), and a prompt parented to a carrier
+// is the defect transcript_root.go exists to prevent. A named row that is
+// not persisted yet is used as named.
+func (r *Router) promptScopeRoot(threadID, stampedRootID, boundID string) (string, error) {
+	id := firstNonEmptyString(stampedRootID, boundID)
+	row, found, err := r.store.GetThreadItem(threadID, id)
+	if err != nil {
+		return "", fmt.Errorf("triage: prompt scope lookup %s/%s: %w", threadID, id, err)
+	}
+	if !found {
+		return id, nil
+	}
+	root, err := r.transcriptRootOrSelf(threadID, row)
+	if err != nil {
+		return "", err
+	}
+	return root.ID, nil
 }

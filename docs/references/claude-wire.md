@@ -701,6 +701,13 @@ XML. Nothing rebinds; the lifecycle stays on whichever tool_use it was
 last bound to (the launch, or a §E6 carrier). Captured on 2.1.261
 (2026-09-08).
 
+A `local_agent` `task_started` that names the tool_use its task is
+already bound to while carrying a `<task-notification>` prompt is
+unmodeled: no capture shows it as a wake, so the parser writes no wake
+row for it, records no transcript root from it, and logs
+`claude: unmodeled wake shape` with the bound tool_use, the task and the
+tool_uses the prompt names (`traceReannouncedAgentTask`).
+
 ### Parser action
 The adapter emits a meta-update `EventToolStart` carrying
 `task_id` in meta so triage can persist the
@@ -2187,12 +2194,15 @@ ever binds the wake prompt.
 
 **AO's park model (triage).** A background agent launch is PARKED when
 its transcript root has a live backgrounded direct child that is a
-shell or a watch task (`launchIsParked`, over
+shell or a watch task (`launchParkedOn` counts them, over
 `Store.ListLiveBackgroundChildLaunches`). A parked agent's stop keeps
 the stash (`pending_background_task_terminals`), writes NO
-`tool_completion` sibling, still writes the `notification` row (the
-bell; the frontend hides every bell for the task once the completed
-sibling lands), and still persists usage. The wake drops the stash and persists the parser's wake row
+`tool_completion` sibling, still persists usage, and writes a one-line
+`notification` row with no payload: `<agent> reported and is waiting on
+N background commands` (the report is already the round's last
+`assistant_text` under the root). The final stop's bell carries the
+report as before; the frontend hides every bell for the task once the
+completed sibling lands. The wake drops the stash and persists the parser's wake row
 under the ROOT on the launch's turn, opening the woken round. The
 launch settles (sibling written) on the first stop with no live owned
 shell, on `task_updated{killed}`, on a §E6 rebind (the parked bound
@@ -2205,6 +2215,22 @@ still open. Before this (2026-09-08), the first stop settled the
 launch and the wake `task_started` was dropped at the parser's
 `tool_use_id` guard, so each woken round's tools, bells and progress
 piled onto a card that read "completed".
+
+**Served run state.** `ListLiveBackgroundTasks` decorates each
+background agent launch it returns (`DecorateAgentRunStates`) with
+`subagentRunState`: `done` or `ended` (a completion sibling exists;
+`ended` when its `status_source` is `session_died`), else `parked` when
+the task's terminal is stashed, else `running`. A parked launch also
+carries `subagentParkedCommands` (N above) and, once the agent has
+written one, `subagentParkedReportId` and `subagentParkedReportPreview`:
+the id and the first 512 characters (`SubagentReportPreviewRunes`) of
+the root's newest direct `assistant_text` row, the newest report
+across wakes. These keys are never stored and never pushed on the
+launch row, so a park or a wake does not move its `rev`; the stash
+write, the parked bell and the wake each emit
+`provider:background_tasks_changed` instead. Between a final stop's
+`task_updated` and its notification a read says `parked` on zero
+commands; the sibling write that follows nudges again.
 
 ### E7: Monitor watch-task launch ack
 
@@ -3679,6 +3705,12 @@ mirrored scope. Ownerless `agent_metadata` plus `isSidechain:true` and
 the buffer and leaves the command unprojected. If the file, entry, or byte bound
 drops any prefix data, AO persists a warning beneath the command row instead of
 leaving the gap silent.
+
+No capture yet shows a moved agent that parks (§E6b) and later wakes.
+The code assumes its woken rounds continue in the same mirrored file:
+a parked stop keeps the projection while the agent's scope owns a live
+background shell or watch task, and a final or `killed` terminal
+closes it (`finishMirroredTask`).
 
 ### Local command envelope sequence
 

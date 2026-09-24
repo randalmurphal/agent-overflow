@@ -297,11 +297,13 @@ channels after it has sent a watch set.
 
 The frontend composes the scope set from the surfaces that read child rows:
 scoped timelines name their own scope and the scopes their launch, lifecycle
-and completion rows live in, and the open background tray names its running
-agents' scopes. A scoped surface registers before its first history read, and
-re-reads when resolution adds a scope, so rows written before the watch
-applied are recovered from the snapshot. Collapsed subagent cards read anchor
-metadata and `provider:subagent_progress`, which are not scope-filtered.
+and completion rows live in. A scoped surface registers before its first
+history read, and re-reads when resolution adds a scope, so rows written
+before the watch applied are recovered from the snapshot. Collapsed subagent
+cards read anchor metadata and `provider:subagent_progress`, which are not
+scope-filtered. The background tray, open or closed, names no scope: it
+reads `ListLiveBackgroundTasks`, which `provider:background_tasks_changed`
+nudges when a running agent's served state or latest tool changes.
 
 A `lease` frame reports whether the platform has paused the client. It is not
 page visibility, focus, or pane selection. New connections start active.

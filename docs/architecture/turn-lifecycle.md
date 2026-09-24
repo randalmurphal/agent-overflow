@@ -343,14 +343,17 @@ shell reports the CLI wakes it with a `task_started` carrying the SAME
 The wire cannot tell a pause from a final stop; AO decides from what it
 already knows.
 
-- `launchIsParked` (`background_task_notifications.go`): the launch is
+- `launchParkedOn` (`background_task_notifications.go`): the launch is
   a background agent launch (not a watch task) whose transcript ROOT
   has a live backgrounded direct child that is a shell or a watch task
   (`Store.ListLiveBackgroundChildLaunches`). A nested async AGENT does
   not park its parent; the CLI never wakes for one.
-- A parked stop keeps the stash and writes no sibling. The bell row is
-  still written (one per stop; the frontend hides them all once the
-  completed sibling lands) and usage still folds onto the launch.
+- A parked stop keeps the stash and writes no sibling. It writes a
+  one-line bell with no payload naming the commands the agent waits on;
+  the final stop's bell carries the report, and the frontend hides every
+  bell for the task once the completed sibling lands. Usage still folds
+  onto the launch. The live list serves the launch's run state
+  ([claude-wire.md §E6b](../references/claude-wire.md#e6b-waking-a-parked-async-agent-task_started-without-tool_use_id)).
 - The wake is one `EventUserText` from the parser
   (`user:subagent-wake:<shell tool_use_id>`, meta
   `subagent_wake_prompt`). `persistWakePromptRow` drops the stash and

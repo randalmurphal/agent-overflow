@@ -227,10 +227,10 @@ subagent model and the user explicitly authorizes the corresponding change.
   `tool_use_result.status:"forked"` + `agentId` closes it. No skill-name
   list (claude-wire.md §E9).
 - A subagent's rows (`parentId` set) reach a client only while one of its
-  surfaces reads that agent's scope: the agent pane, an expanded card or tray
-  row digest, or the open tray body for its running agents. A parent pane
-  receives root rows only, so collapsed cards and the collapsed tray read
-  launch-row metadata and `provider:subagent_progress`, never child rows. The
+  surfaces reads that agent's scope: the agent pane, or an expanded card or
+  tray row digest. A parent pane receives root rows only, so collapsed cards
+  read launch-row metadata and `provider:subagent_progress`, and the tray
+  reads the live background list, never child rows. The
   watch contract is in
   [transport.md](../architecture/transport.md#watched-entities-and-paused-clients).
 

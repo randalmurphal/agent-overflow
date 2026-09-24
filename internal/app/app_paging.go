@@ -188,7 +188,9 @@ func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 // leg lists by BACKGROUNDED ANCESTRY, not top-level-ness (invariant 24):
 // nested background launches and the agent launches between them and a
 // background root are included, so the tray can indent by walking
-// parentId within the result. SQLite rows cover persisted Claude launches.
+// parentId within the result. SQLite rows cover persisted Claude launches;
+// triage serves each Claude background agent's run state on its row
+// (DecorateAgentRunStates), and this list is the only place it is served.
 // The triage router supplies current Codex agent executions and unified-exec
 // tasks independently of immutable chat history.
 // Pending Codex unifiedExec launches surface here before they are known
@@ -207,6 +209,12 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 	}
 
 	if a.triage != nil {
+		// A Claude agent's run state is the park model's, which triage
+		// owns; a Codex agent's runtime copy below carries its own.
+		items, err = a.triage.DecorateAgentRunStates(threadID, items)
+		if err != nil {
+			return nil, fmt.Errorf("decorate background agent run states: %w", err)
+		}
 		items = append(items, a.triage.ListLiveCodexBackgroundTasks(threadID, now, cutoff)...)
 		agents, err := a.store.DecorateCodexAgentTasksForTray(threadID, a.triage.ListLiveCodexAgentTasks(threadID))
 		if err != nil {

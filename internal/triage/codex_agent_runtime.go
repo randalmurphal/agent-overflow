@@ -85,6 +85,22 @@ func (r *Router) ListLiveCodexAgentTasks(threadID string) []store.Item {
 	return items
 }
 
+// codexAgentIsLive reports whether id names a Codex agent whose runtime
+// copy ListLiveCodexAgentTasks serves.
+func (r *Router) codexAgentIsLive(threadID, id string) bool {
+	if id == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.codexBackgroundIfPresent(threadID)
+	if state == nil {
+		return false
+	}
+	item, ok := state.agents[id]
+	return ok && codexRuntimeActive(item)
+}
+
 func codexRuntimeActive(item store.Item) bool {
 	var meta struct {
 		Active bool `json:"live_background_active"`

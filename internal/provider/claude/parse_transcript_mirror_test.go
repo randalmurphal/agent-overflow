@@ -201,7 +201,7 @@ func TestTranscriptMirrorAgentMetadataWinsRaceWithTaskStarted(t *testing.T) {
 	if binding := parser.transcriptMirror.taskScopes["child-agent"]; binding.needsProjection {
 		t.Fatalf("later task_started promoted duplicate mirror: %+v", binding)
 	}
-	parser.finishMirroredTask(testThread, "child-agent")
+	parser.finishMirroredTask(testThread, "child-agent", false)
 	if _, exists := parser.transcriptMirror.taskScopes["child-agent"]; exists {
 		t.Fatal("terminal ordinary task retained mirror classification")
 	}
@@ -390,7 +390,7 @@ func TestTranscriptMirrorProjectsNestedBatchThatArrivesAfterTaskTerminal(t *test
 	state.scopeOwners["toolu-child"] = "/tmp/agent-root.jsonl"
 	state.taskScopes["child-agent"] = mirrorTaskScope{scope: "toolu-child", needsProjection: true}
 
-	if events := parser.finishMirroredTask(testThread, "child-agent"); len(events) != 0 {
+	if events := parser.finishMirroredTask(testThread, "child-agent", false); len(events) != 0 {
 		t.Fatalf("terminal before projection emitted events: %+v", events)
 	}
 	if !state.taskScopes["child-agent"].terminal {
@@ -840,5 +840,129 @@ func TestTranscriptMirrorTapSkipsUnresolvableAgent(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatalf("unscoped compaction emitted events: %+v", events)
+	}
+}
+
+// A foreground agent moved to the background streams through its mirror
+// projection, and a background agent parks (claude-wire.md §E6b). This is
+// a synthetic capture of that combination, which no real capture shows
+// yet: the moved agent starts a background shell, stops while it runs,
+// is woken when it reports, and stops for good.
+type parkedMirrorAgent struct {
+	t      *testing.T
+	parser *Parser
+}
+
+const (
+	parkedMirrorLaunch = "toolu-fg-agent"
+	parkedMirrorTask   = "agent-moved"
+	parkedMirrorShell  = "toolu-bg-shell"
+	parkedMirrorFile   = "/tmp/agent-agent-moved.jsonl"
+)
+
+func (a parkedMirrorAgent) parse(line string) []provider.ProviderEvent {
+	a.t.Helper()
+	events, err := a.parser.ParseLine(testThread, []byte(line))
+	if err != nil {
+		a.t.Fatalf("ParseLine: %v\n%s", err, line)
+	}
+	return events
+}
+
+func (a parkedMirrorAgent) mirror(entries string) []provider.ProviderEvent {
+	a.t.Helper()
+	return a.parse(`{"type":"transcript_mirror","filePath":"` + parkedMirrorFile + `","entries":[` + entries + `]}`)
+}
+
+func (a parkedMirrorAgent) mirrorText(uuid, text string) []provider.ProviderEvent {
+	a.t.Helper()
+	return a.mirror(`{"type":"assistant","uuid":"` + uuid + `","agentId":"` + parkedMirrorTask + `","isSidechain":true,"timestamp":"2026-09-24T12:00:05Z","message":{"id":"msg-` + uuid + `","role":"assistant","model":"claude-opus-4-1","content":[{"type":"text","text":"` + text + `"}]}}`)
+}
+
+func (a parkedMirrorAgent) agentStop(summary string) {
+	a.t.Helper()
+	a.parse(`{"type":"system","subtype":"task_updated","task_id":"` + parkedMirrorTask + `","patch":{"status":"completed","end_time":1790000000000}}`)
+	a.parse(`{"type":"system","subtype":"task_notification","task_id":"` + parkedMirrorTask + `","tool_use_id":"` + parkedMirrorLaunch + `","status":"completed","summary":"` + summary + `"}`)
+}
+
+func (a parkedMirrorAgent) projected() bool {
+	state := a.parser.transcriptMirror
+	return state != nil && state.projections[parkedMirrorFile] != nil
+}
+
+func (a parkedMirrorAgent) bound() bool {
+	state := a.parser.transcriptMirror
+	if state == nil {
+		return false
+	}
+	_, ok := state.taskScopes[parkedMirrorTask]
+	return ok
+}
+
+// startParkedMirrorAgent drives the moved agent to its first stop with its
+// shell still running.
+func startParkedMirrorAgent(t *testing.T) parkedMirrorAgent {
+	t.Helper()
+	a := parkedMirrorAgent{t: t, parser: NewParser()}
+	a.parse(`{"type":"assistant","message":{"id":"m-parent","role":"assistant","content":[{"type":"tool_use","id":"` + parkedMirrorLaunch + `","name":"Agent","input":{"description":"gate","subagent_type":"general-purpose","prompt":"run the gate","run_in_background":false}}]}}`)
+	a.parse(`{"type":"system","subtype":"task_started","task_id":"` + parkedMirrorTask + `","task_type":"local_agent","tool_use_id":"` + parkedMirrorLaunch + `"}`)
+	a.parse(`{"type":"system","subtype":"task_updated","task_id":"` + parkedMirrorTask + `","patch":{"is_backgrounded":true}}`)
+	a.mirror(`{"type":"assistant","uuid":"a-shell","agentId":"` + parkedMirrorTask + `","isSidechain":true,"timestamp":"2026-09-24T12:00:01Z","message":{"id":"msg-shell","role":"assistant","model":"claude-opus-4-1","content":[{"type":"tool_use","id":"` + parkedMirrorShell + `","name":"Bash","input":{"command":"make gate","run_in_background":true}}]}}`)
+	a.parse(`{"type":"system","subtype":"task_started","task_id":"shell-1","owned_by_subagent":true,"tool_use_id":"` + parkedMirrorShell + `","description":"make gate","is_backgrounded":true,"task_type":"local_bash"}`)
+	a.mirror(`{"type":"user","uuid":"u-shell","agentId":"` + parkedMirrorTask + `","isSidechain":true,"timestamp":"2026-09-24T12:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + parkedMirrorShell + `","content":"Command running in background with ID: shell-1."}]}}`)
+	a.mirrorText("a-wait", "WAITING")
+	a.agentStop("WAITING")
+	return a
+}
+
+func TestTranscriptMirrorKeepsAParkedBackgroundedAgentProjected(t *testing.T) {
+	a := startParkedMirrorAgent(t)
+	if !a.projected() || !a.bound() {
+		t.Fatal("a stop with the agent's shell still running is a pause: the projection and its binding must stay")
+	}
+
+	a.parse(`{"type":"system","subtype":"task_updated","task_id":"shell-1","patch":{"status":"completed","end_time":1790000001000}}`)
+	a.parse(`{"type":"system","subtype":"task_notification","task_id":"shell-1","tool_use_id":"` + parkedMirrorShell + `","status":"completed","summary":"Background command \"make gate\" completed (exit code 0)"}`)
+	a.parse(`{"type":"system","subtype":"task_started","task_id":"` + parkedMirrorTask + `","description":"gate","subagent_type":"general-purpose","is_backgrounded":true,"spawn_depth":1,"task_type":"local_agent","prompt":"<task-notification>\n<task-id>shell-1</task-id>\n<tool-use-id>` + parkedMirrorShell + `</tool-use-id>\n<status>completed</status>\n<summary>Background command \"make gate\" completed (exit code 0)</summary>\n</task-notification>"}`)
+
+	woken := a.mirrorText("a-woke", "WOKE")
+	var sawText bool
+	for _, evt := range woken {
+		if evt.ParentToolUseID != parkedMirrorLaunch {
+			t.Fatalf("a woken round's row escaped the root: %+v", evt)
+		}
+		sawText = sawText || evt.Kind == provider.EventTextDelta
+	}
+	if len(woken) == 0 {
+		t.Fatal("the woken round's mirrored row was dropped (FAILS pre-fix: the parked stop closed the projection)")
+	}
+	if !sawText {
+		t.Fatalf("the woken round's text did not project: %+v", woken)
+	}
+
+	a.agentStop("WOKE")
+	if a.projected() || a.bound() {
+		t.Fatal("the first stop with no live owned shell is final: the projection and its binding must be released")
+	}
+}
+
+func TestTranscriptMirrorReleasesAParkedProjectionAtSessionEnd(t *testing.T) {
+	a := startParkedMirrorAgent(t)
+	if !a.projected() {
+		t.Fatal("precondition: the parked agent's projection is open")
+	}
+	a.parser.Close()
+	if a.parser.transcriptMirror != nil || a.parser.ownedBackgroundTasks != nil {
+		t.Fatal("session end must release a parked agent's projection and the owned-task record")
+	}
+}
+
+// A kill is final even with the shell still running (§E6b fixture E: the
+// killed agent gets no notification and never wakes).
+func TestTranscriptMirrorReleasesAKilledParkedAgent(t *testing.T) {
+	a := startParkedMirrorAgent(t)
+	a.parse(`{"type":"system","subtype":"task_updated","task_id":"` + parkedMirrorTask + `","patch":{"status":"killed","end_time":1790000002000}}`)
+	if a.projected() || a.bound() {
+		t.Fatal("a killed agent's projection and binding must be released at the kill")
 	}
 }

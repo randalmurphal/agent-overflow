@@ -3,6 +3,7 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -216,5 +217,113 @@ func TestTaskTranscriptRootsAreBoundedAndReleased(t *testing.T) {
 	parser.Close()
 	if parser.taskTranscriptRoots != nil {
 		t.Fatal("Close must release taskTranscriptRoots")
+	}
+}
+
+// The reconnect edge, from a live thread (2026-09-22). The original launch
+// toolu_0189m ran in a process that died, so this parser never saw it. The
+// recovery carrier toolu_01HSTnk rebinds the task with no prior binding,
+// toolu_011HU resumes it, the CLI then announces toolu_011HU again while
+// the task is bound to it (the round parked and was woken; the envelope
+// carried the waking shell's notification), and toolu_01Gv4d9h resumes
+// it once more. The parser never learned the root, so no carrier may name
+// one: FAILS pre-fix, where the re-announce recorded toolu_011HU as the
+// task's root and toolu_01Gv4d9h and its resume prompt named that
+// carrier.
+func TestParseTaskStarted_ReannouncedCarrierBindingNamesNoRoot(t *testing.T) {
+	const (
+		task     = "aeb391c5ca059d78f"
+		recovery = "toolu_01HSTnkfWfX3M54n5e4Bje3K"
+		round2   = "toolu_011HUFrpGE5W7yVa9L6XoFzE"
+		round3   = "toolu_01Gv4d9hMYaVLopAXfd26Vvm"
+	)
+	parser := NewParser()
+	parse := func(line string) []provider.ProviderEvent {
+		t.Helper()
+		events, err := parser.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("ParseLine: %v\n%s", err, line)
+		}
+		return events
+	}
+	resume := func(carrier, prompt string) []provider.ProviderEvent {
+		t.Helper()
+		parse(`{"type":"assistant","message":{"id":"msg-` + carrier + `","role":"assistant","content":[{"type":"tool_use","id":"` + carrier + `","name":"SendMessage","input":{"to":"` + task + `","message":"` + prompt + `"}}]}}`)
+		events := parse(`{"type":"system","subtype":"task_started","task_id":"` + task + `","tool_use_id":"` + carrier + `","description":"L3 fail-closed tenant session routing","subagent_type":"general-purpose","task_type":"local_agent","prompt":"` + prompt + `"}`)
+		parse(`{"type":"user","message":{"role":"user","content":[{"tool_use_id":"` + carrier + `","type":"tool_result","content":[{"type":"text","text":"{\"success\":true,\"message\":\"resumed from transcript in the background with your message.\",\"resumedAgentId\":\"` + task + `\"}"}]}]},"parent_tool_use_id":null}`)
+		return events
+	}
+	stop := func(bound, summary string) {
+		t.Helper()
+		parse(`{"type":"system","subtype":"task_updated","task_id":"` + task + `","patch":{"status":"completed","end_time":1790114536078}}`)
+		parse(`{"type":"system","subtype":"task_notification","task_id":"` + task + `","tool_use_id":"` + bound + `","status":"completed","summary":"` + summary + `"}`)
+	}
+
+	resume(recovery, "Recovery: the app crashed and killed you mid-task.")
+	stop(recovery, "Round 1 report")
+	resume(round2, "L3 lead review of C5.")
+
+	var reannounced []provider.ProviderEvent
+	out := captureLog(t, func() {
+		reannounced = parse(`{"type":"system","subtype":"task_started","task_id":"` + task + `","tool_use_id":"` + round2 + `","description":"L3 fail-closed tenant session routing","subagent_type":"general-purpose","task_type":"local_agent","is_backgrounded":true,"prompt":"<task-notification>\n<task-id>bflfd5w3i</task-id>\n<tool-use-id>toolu_01PCRUekAgYhLs7cCSLKdHga</tool-use-id>\n<status>completed</status>\n<summary>Background command \"gate\" completed (exit code 0)</summary>\n</task-notification>"}`)
+	})
+	if got := parser.taskTranscriptRoot(task); got != "" {
+		t.Fatalf("taskTranscriptRoot after the re-announce = %q, want none (the bound call is a carrier)", got)
+	}
+	for _, evt := range reannounced {
+		if evt.Kind == provider.EventUserText {
+			t.Fatalf("the re-announce is unmodeled and writes no wake row, got %+v", evt)
+		}
+	}
+	for _, want := range []string{"unmodeled wake shape", round2, task, testThread, "toolu_01PCRUekAgYhLs7cCSLKdHga"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("re-announce diagnostic %q does not name %q", out, want)
+		}
+	}
+	stop(round2, "Round 2 report")
+
+	events := resume(round3, "L3 round 3.")
+	meta := findRebindStart(t, events, round3)
+	if meta["resumes_tool_use_id"] != round2 {
+		t.Fatalf("round-3 meta.resumes_tool_use_id = %v, want %s", meta["resumes_tool_use_id"], round2)
+	}
+	if v, ok := meta["transcript_root_id"]; ok {
+		t.Fatalf("round-3 meta.transcript_root_id = %v, want none: the parser never saw the launch", v)
+	}
+	for _, evt := range events {
+		if evt.Kind != provider.EventUserText {
+			continue
+		}
+		var promptMeta map[string]any
+		if err := json.Unmarshal(evt.Meta, &promptMeta); err != nil {
+			t.Fatalf("resume prompt meta: %v", err)
+		}
+		if v, ok := promptMeta["transcript_root_id"]; ok {
+			t.Fatalf("round-3 resume prompt names transcript_root_id = %v, want none", v)
+		}
+	}
+}
+
+// A re-announce without a notification prompt is not a wake candidate and
+// logs nothing.
+func TestParseTaskStarted_ReannounceWithoutNotificationIsSilent(t *testing.T) {
+	parser := NewParser()
+	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"launch-1","name":"Agent","input":{"description":"review"}}]}}`)); err != nil {
+		t.Fatalf("assistant tool_use: %v", err)
+	}
+	line := []byte(`{"type":"system","subtype":"task_started","task_id":"agent-1","tool_use_id":"launch-1","task_type":"local_agent","prompt":"review"}`)
+	if _, err := parser.ParseLine(testThread, line); err != nil {
+		t.Fatalf("task_started: %v", err)
+	}
+	out := captureLog(t, func() {
+		if _, err := parser.ParseLine(testThread, line); err != nil {
+			t.Fatalf("repeated task_started: %v", err)
+		}
+	})
+	if strings.Contains(out, "unmodeled wake shape") {
+		t.Fatalf("a re-announce without a notification logged %q", out)
+	}
+	if got := parser.taskTranscriptRoot("agent-1"); got != "launch-1" {
+		t.Fatalf("taskTranscriptRoot = %q, want launch-1 (the first binding)", got)
 	}
 }

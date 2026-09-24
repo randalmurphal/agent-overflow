@@ -96,6 +96,24 @@ describe('filterRedundantNotifications', () => {
     expect(ids(filterRedundantNotifications(items))).toEqual(['launch', 'completion']);
   });
 
+  // A two-round parked agent rings a one-line bell at its parked stop and
+  // the report bell at its final stop, both under the launch's task_id
+  // (claude-wire.md §E6b). The parked bell shows while the agent waits;
+  // the completion sibling the final stop writes hides both.
+  it('keeps a parked agent\u2019s bell until its completion sibling lands, then hides both bells', () => {
+    const launch = mkItem({ id: 'launch', kind: 'tool_call', toolName: 'Agent', status: 'running', meta: withTaskId('A1') });
+    const parked = mkItem({
+      id: 'parked', itemIndex: 1, kind: 'notification',
+      summary: 'Agent "Spike agent" reported and is waiting on 2 background commands', meta: withTaskId('A1'),
+    });
+    const wake = mkItem({ id: 'wake', itemIndex: 2, kind: 'user_text', role: 'user', parentId: 'launch' });
+    const final = mkItem({ id: 'final', itemIndex: 3, kind: 'notification', summary: 'Round 2 report', meta: withTaskId('A1') });
+    const waiting = [launch, parked, wake];
+    expect(filterRedundantNotifications(waiting)).toBe(waiting);
+    const completion = mkItem({ id: 'completion', itemIndex: 4, kind: 'tool_completion', meta: withCaption('A1', 'Round 2 report') });
+    expect(ids(filterRedundantNotifications([launch, parked, wake, final, completion]))).toEqual(['launch', 'wake', 'completion']);
+  });
+
   it('hides a notification whose text equals the completion row summary', () => {
     const items = [
       mkItem({
