@@ -41,6 +41,7 @@ func (s *Store) FoldUserTextRows(threadID, survivorID string, foldedIDs []string
 		return Item{}, fmt.Errorf("store: begin fold user text rows %s/%s: %w", threadID, survivorID, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 	// The fold carries no card: it recomputes the chains of the rows it
 	// rewrites and deletes before it commits.
 	w := s.bulkItemWrites(tx, threadID, false)
@@ -87,7 +88,7 @@ func (s *Store) FoldUserTextRows(threadID, survivorID string, foldedIDs []string
 	if err != nil {
 		return Item{}, fmt.Errorf("store: fold re-read %s/%s: %w", threadID, survivorID, err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return Item{}, fmt.Errorf("store: commit fold user text rows %s/%s: %w", threadID, survivorID, err)
 	}
 	return survivor, nil

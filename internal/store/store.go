@@ -72,6 +72,8 @@ type Store struct {
 	// cards holds the subagent card accumulators between flushes
 	// (subagent_card.go).
 	cards subagentCards
+	// forkStampsMoved is the function OnForkStampsMoved set, or nil.
+	forkStampsMoved atomic.Pointer[func([]string)]
 }
 
 // Options configures NewWithOptions.

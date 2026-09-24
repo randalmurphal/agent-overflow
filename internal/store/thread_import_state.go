@@ -25,6 +25,7 @@ func (s *Store) RollbackImportedThread(threadID string) error {
 		return fmt.Errorf("store: begin rollback imported thread %s: %w", threadID, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 
 	var importSource string
 	if err := tx.QueryRow(
@@ -54,7 +55,7 @@ func (s *Store) RollbackImportedThread(threadID string) error {
 	if err := requireRowsAffected(result, fmt.Sprintf("store: rollback imported thread %s", threadID)); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return fmt.Errorf("store: commit rollback imported thread %s: %w", threadID, err)
 	}
 	return nil

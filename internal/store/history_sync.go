@@ -476,19 +476,31 @@ func bumpHistoryRevTx(exec sqlExecutor, threadID, label string) error {
 // fallback is the plain thread bump — the same answer as before this column
 // existed. Window verification refuses any window containing an imported row,
 // so the thread stamp is the only signal such a client can use, and it moves.
-func bumpHistoryRevForItemTx(exec sqlExecutor, threadID, itemID, label string) error {
+//
+// The touch returns the pointer forks trg_items_fork_reader_stamp advances
+// for it, the forks that show the row, and records them against tx
+// (fork_moves.go) in the same statement.
+func bumpHistoryRevForItemTx(tx *sql.Tx, threadID, itemID, label string) error {
 	if itemID == "" {
 		return fmt.Errorf("%s: item id is required to stamp an item revision", label)
 	}
-	return touchItemRowsTx(
-		exec, threadID, label,
-		touchItemRowSQL,
-		threadID, itemID,
-	)
+	if threadID == "" {
+		return fmt.Errorf("%s: thread id is required to advance history_rev", label)
+	}
+	var readers string
+	err := tx.QueryRow(touchItemRowSQL, threadID, itemID).Scan(&readers)
+	if errors.Is(err, sql.ErrNoRows) {
+		return bumpHistoryRevTx(tx, threadID, label)
+	}
+	if err != nil {
+		return fmt.Errorf("%s: stamp item revision: %w", label, err)
+	}
+	return recordForkReadersTx(tx, readers)
 }
 
 // touchItemRowSQL is bumpHistoryRevForItemTx's touch.
-const touchItemRowSQL = `UPDATE items SET updated_at = updated_at WHERE thread_id = ? AND id = ?`
+const touchItemRowSQL = `UPDATE items SET updated_at = updated_at WHERE thread_id = ? AND id = ?
+RETURNING ` + forkReadersOfRowSQL
 
 // bumpHistoryRevForPayloadTx is bumpHistoryRevForItemTx for the payload
 // mutators: payload content and meta ride the item rows that reference the

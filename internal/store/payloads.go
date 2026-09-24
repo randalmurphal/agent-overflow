@@ -83,7 +83,7 @@ func insertPayloadTx(exec sqlExecutor, threadID string, payload Payload, label s
 // not implicitly here.
 func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
 	applyItemDefaults(&item)
-	return s.writeItems(item.ThreadID, item.SubagentCard, "insert item+payload", func(tx *sql.Tx, w *cardWrite) error {
+	return s.writeItemsReportingForks(item.ThreadID, item.SubagentCard, "insert item+payload", func(tx *sql.Tx, w *cardWrite) error {
 		if err := insertPayloadTx(tx, item.ThreadID, payload, "store: insert payload"); err != nil {
 			return err
 		}
@@ -99,7 +99,7 @@ func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
 // when you don't need to force a specific index.
 func (s *Store) AppendItemWithPayload(item Item, payload Payload) (int, error) {
 	applyItemDefaults(&item)
-	err := s.writeItems(item.ThreadID, item.SubagentCard, "append item+payload", func(tx *sql.Tx, w *cardWrite) error {
+	err := s.writeItemsReportingForks(item.ThreadID, item.SubagentCard, "append item+payload", func(tx *sql.Tx, w *cardWrite) error {
 		next, err := nextItemIndexTx(tx, item.ThreadID, item.TurnIndex, "store: append item+payload next index")
 		if err != nil {
 			return err
@@ -322,6 +322,7 @@ func (s *Store) AppendPayloadData(threadID, id string, delta []byte, meta string
 		return fmt.Errorf("store: begin append payload data %s: %w", id, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 
 	if err := appendPayloadDataTx(tx, threadID, id, delta, meta, createdAt); err != nil {
 		return err
@@ -329,7 +330,7 @@ func (s *Store) AppendPayloadData(threadID, id string, delta []byte, meta string
 	if err := bumpHistoryRevForPayloadTx(tx, threadID, id, fmt.Sprintf("store: append payload data %s", id)); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return fmt.Errorf("store: commit append payload data %s: %w", id, err)
 	}
 	return nil
@@ -394,6 +395,7 @@ func (s *Store) ReplacePayloadData(threadID, id string, data []byte, meta string
 		return fmt.Errorf("store: begin replace payload data %s: %w", id, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 	label := fmt.Sprintf("store: replace payload data %s", id)
 	if err := requireMutablePayloadTx(tx, threadID, id, label); err != nil {
 		return err
@@ -423,7 +425,7 @@ func (s *Store) ReplacePayloadData(threadID, id string, data []byte, meta string
 	if err := bumpHistoryRevForPayloadTx(tx, threadID, id, fmt.Sprintf("store: replace payload data %s", id)); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return fmt.Errorf("store: commit replace payload data %s: %w", id, err)
 	}
 	return nil
@@ -447,6 +449,7 @@ func (s *Store) UpdatePayloadMeta(threadID, id, meta string) error {
 		return fmt.Errorf("store: begin update payload meta %s: %w", id, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 	if err := requireMutablePayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
@@ -464,7 +467,7 @@ func (s *Store) UpdatePayloadMeta(threadID, id, meta string) error {
 	if err := bumpHistoryRevForPayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return fmt.Errorf("store: commit update payload meta %s: %w", id, err)
 	}
 	return nil
@@ -498,6 +501,7 @@ func (s *Store) UpdatePayloadSpans(threadID, id, previewSpans, spans string) err
 		return fmt.Errorf("store: begin update payload spans %s: %w", id, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 	// Spans are a cache of the payload's content, so they are written where
 	// the content lives: a pointer fork's inherited payload gets its spans
 	// on the ancestor's row, and every fork that reads it sees them.
@@ -525,7 +529,7 @@ func (s *Store) UpdatePayloadSpans(threadID, id, previewSpans, spans string) err
 	if err := bumpPayloadReadersTx(tx, holder, id, label); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return fmt.Errorf("store: commit update payload spans %s: %w", id, err)
 	}
 	return nil

@@ -953,10 +953,11 @@ func (s *Store) detachForkDescendants(threadID string) error {
 		return fmt.Errorf("store: begin detach forks of %s: %w", threadID, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 	if err := s.detachForkDescendantsTx(tx, threadID); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return fmt.Errorf("store: commit detach forks of %s: %w", threadID, err)
 	}
 	return nil
@@ -969,6 +970,10 @@ func (s *Store) detachForkDescendants(threadID string) error {
 // records that the source is gone and its title, so rendering it never has
 // to look for the source. A fork that stops reading rows recomputes what
 // its copied anchors count and its turn-error pair (forkViewChangedTx).
+//
+// It records against tx (fork_moves.go) every thread whose stamps it moves:
+// the detached forks, each thread holding a marked divider, and the forks
+// that show a marked divider in place.
 func (s *Store) detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 	var title string
 	if err := tx.QueryRow(`SELECT title FROM threads WHERE id = ?`, threadID).Scan(&title); err != nil {
@@ -1022,8 +1027,10 @@ func (s *Store) detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 	}
 	// A fork's divider is also copied into the forks made from it when it
 	// is handed off or materialized, so each thread descended from a fork
-	// of threadID is checked for a copy, by primary key.
-	if _, err := tx.Exec(
+	// of threadID is checked for a copy, by primary key. The mark stamps
+	// the holder, and trg_items_fork_reader_stamp the forks that show the
+	// holder's divider, which the mark returns.
+	marked, err := tx.Query(
 		`WITH RECURSIVE forks(id) AS (
 		   SELECT id FROM threads WHERE fork_source_thread_id = ?1 AND fork_source_thread_id <> ''
 		 ), holders(id) AS (
@@ -1035,11 +1042,31 @@ func (s *Store) detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 		    SET meta = json_set(CASE WHEN json_valid(meta) THEN meta ELSE '{}' END,
 		                        '$.sourceDeleted', json('true'), '$.sourceTitle', ?2)
 		  WHERE (thread_id, id) IN (SELECT holders.id, 'fork-origin-' || forks.id FROM holders CROSS JOIN forks)
-		    AND tool_name = '`+forkDividerToolName+`'`,
+		    AND tool_name = '`+forkDividerToolName+`'
+		 RETURNING thread_id, `+forkReadersOfRowSQL,
 		threadID, title,
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("store: mark fork dividers of %s: %w", threadID, err)
 	}
+	var readers []string
+	for marked.Next() {
+		var holder, shown string
+		if err := marked.Scan(&holder, &shown); err != nil {
+			return errors.Join(fmt.Errorf("store: scan a marked fork divider of %s: %w", threadID, err), marked.Close())
+		}
+		recordForkMovesTx(tx, holder)
+		readers = append(readers, shown)
+	}
+	if err := errors.Join(marked.Err(), marked.Close()); err != nil {
+		return fmt.Errorf("store: mark fork dividers of %s: %w", threadID, err)
+	}
+	for _, shown := range readers {
+		if err := recordForkReadersTx(tx, shown); err != nil {
+			return err
+		}
+	}
+	recordForkMovesTx(tx, affected...)
 	for _, id := range affected {
 		w := s.bulkItemWrites(tx, id, false)
 		if err := forkViewChangedTx(tx, w, id, copies[id]); err != nil {

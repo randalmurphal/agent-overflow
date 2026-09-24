@@ -65,6 +65,7 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 		return nil, fmt.Errorf("store: begin user placement: %w", err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 	// Shifting a turn's suffix moves agent rows too; the anchors above
 	// them are recomputed before the rows are read back.
 	w := s.bulkItemWrites(tx, threadID, false)
@@ -171,7 +172,7 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 		}
 		result = append(result, item)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return nil, fmt.Errorf("store: commit user placement: %w", err)
 	}
 	return result, nil
@@ -181,7 +182,7 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 // resolving the separate consumption boundary in the metadata transaction.
 func (s *Store) UpdateItemMetaAtBoundary(threadID, itemID, boundaryID string, transform func(string, int) (string, error), updatedAt int64) (Item, error) {
 	var item Item
-	err := s.writeItems(threadID, nil, "confirm user metadata", func(tx *sql.Tx, w *cardWrite) error {
+	err := s.writeItemsReportingForks(threadID, nil, "confirm user metadata", func(tx *sql.Tx, w *cardWrite) error {
 		old, err := readMutableSubagentRowTx(tx, threadID, itemID, "store: confirm user metadata")
 		if err != nil {
 			return err

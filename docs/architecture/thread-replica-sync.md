@@ -419,6 +419,20 @@ write past every cut writes no fork row
 (`TestSourceWritesCostTheSameForAnyForkCount`).
 `TestForkStampIgnoresSourceWritesPastTheCut` pins both sides of the rule.
 
+A client showing a fork is told when its stamps move. Each path above
+records the forks it moved against its write transaction, from the rows
+it already reads or the statement that moves them, and the transaction's
+owner reports them after the commit (`fork_moves.go`). The app pushes each
+reported fork one `provider:item_event` with action `resync`
+(`app_fork_resync.go`). The client applies the item frames queued ahead
+of it, then re-syncs every window and surface it holds of the fork, as
+for a transport gap that names the thread (`threadWindowRecovery.ts`). A
+write that moves no fork records nothing and runs no extra statement
+(`TestForkMovesCostNoStatement`). Because a fork is a snapshot, the
+re-sync changes what it renders only when its content changed: the detach
+of a deleted source and spans on a payload it shows. After a hand-off or
+a touch it returns the same rows at a new revision.
+
 ### 3.2 Operation → contract map
 
 | Operation (store) | Trigger path | Contract effect |
@@ -434,6 +448,7 @@ write past every cut writes no fork row
 | Revision touch or divider mark of a row forks show | items UPDATE, `trg_items_fork_reader_stamp` | rev on each fork that shows the row |
 | Fork deletes or reverts inherited rows; source deletion detaches forks | `bumpForkViewTx` | **epoch** on the fork |
 | Source write past every fork's cut | none on forks | fork stamps unchanged |
+| Any of the fork rows above, once committed | the writer records the forks it moved; its owner reports them | one `provider:item_event` `resync` per moved fork per transaction |
 | Import rollback / `DeleteThread` / retention sweep | thread row deleted | tombstone: replica entry dropped by the deleting client directly, and by any other client on the `gone` answer (§5) |
 | `RestoreFrom` (harness snapshot) | whole-DB replace | **generation** re-mint (§3.3) |
 | `decorateSubagentAnchors` (stamp read, or the walk for rows the triggers do not keep) | none: no write occurs | covered transitively: its inputs are the anchor's stamp and descendant item rows, whose writes bump rev |
@@ -632,7 +647,9 @@ deletion learns about it from the `gone` answer its next
 `SyncThreadWindow` gets (§5), which drops the same set. Adding a
 deletion event purely to reach the replica would buy nothing: the entry
 it would clear is unpaintable the moment the thread is opened anyway,
-and the cost of the miss is one cold open.
+and the cost of the miss is one cold open. A pointer fork of the deleted
+thread is a different thread whose history changed: the detach moves its
+stamps, so it is pushed a `resync` ([Pointer-fork stamps](#pointer-fork-stamps)).
 
 Ordinary `provider:item_event` frames stay unstamped. The streaming
 path gains nothing per the remote-access budget rule
