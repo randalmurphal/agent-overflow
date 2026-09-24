@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -238,6 +240,9 @@ func TestStartupReporter_PhasesNestAndHeartbeat(t *testing.T) {
 	clock.Store(1_000)
 	now := func() time.Time { return time.UnixMilli(clock.Add(1)) }
 	r := newStartupReporter(srv, "2.0.0", 2*time.Millisecond, now)
+	// A process that does no work: this test's own CPU would clear a
+	// 2 ms tick's threshold.
+	r.sampleWork = func() (processWork, error) { return processWork{}, nil }
 
 	initial := progressOf(srv)
 	if initial.Phase != "starting" || initial.UpdatingTo != "2.0.0" || initial.StartedAt == 0 || initial.AliveAt != initial.UpdatedAt {
@@ -305,14 +310,8 @@ func TestStartupReporter_WatchedFileSizeChangesAreProgress(t *testing.T) {
 	dir := t.TempDir()
 	db := filepath.Join(dir, "app.db")
 	wal := db + "-wal"
-	blocked := filepath.Join(dir, "blocked")
-	unreadable := filepath.Join(blocked, "app.db-wal")
+	unreadable := filepath.Join(dir, "guarded.db-wal")
 	if err := os.WriteFile(db, []byte("header"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// A regular file where a directory is expected: stat of a path under
-	// it fails with ENOTDIR, which is neither a size nor absence.
-	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	srv := &Server{}
@@ -321,6 +320,16 @@ func TestStartupReporter_WatchedFileSizeChangesAreProgress(t *testing.T) {
 	now := func() time.Time { return time.UnixMilli(clock.Add(1)) }
 	// The ticker never fires; the test drives each heartbeat.
 	r := newStartupReporter(srv, "", time.Hour, now)
+	// While denied, stat of the guarded file fails with a permission
+	// error, which is neither a size nor absence.
+	var denied atomic.Bool
+	denied.Store(true)
+	r.stat = func(path string) (fs.FileInfo, error) {
+		if path == unreadable && denied.Load() {
+			return nil, &fs.PathError{Op: "stat", Path: path, Err: fs.ErrPermission}
+		}
+		return os.Stat(path)
+	}
 	r.WatchBootFiles(db, wal, unreadable)
 	end := r.BeginBootPhase("store.migrate", "Applying migration 1 of 1 rebuild")
 	defer end()
@@ -369,15 +378,11 @@ func TestStartupReporter_WatchedFileSizeChangesAreProgress(t *testing.T) {
 	}
 	beat("the WAL was removed", true)
 
-	// The unreadable path becomes readable. Its first readable size is
+	// The unreadable file becomes readable. Its first readable size is
 	// the baseline, not progress; a later change is.
-	if err := os.Remove(blocked); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(blocked, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	appendTo(unreadable, "frame")
+	beat("a file written while unreadable", false)
+	denied.Store(false)
 	beat("the unreadable file became readable", false)
 	appendTo(unreadable, "frame")
 	beat("the once-unreadable file grew", true)
@@ -385,32 +390,24 @@ func TestStartupReporter_WatchedFileSizeChangesAreProgress(t *testing.T) {
 	// A readable file that becomes unreadable keeps its last known size:
 	// losing sight of it is not progress, and neither is finding it again
 	// at that size.
-	if err := os.RemoveAll(blocked); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	denied.Store(true)
 	beat("a readable file became unreadable", false)
-	if err := os.Remove(blocked); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(blocked, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	appendTo(unreadable, "frameframe")
+	denied.Store(false)
 	beat("it became readable at its last known size", false)
 }
 
 // TestStartupReporter_LauncherProbeJudgesProgressNotHeartbeat drives the
-// Windows launcher's probe against this reporter through a real server.
-// A boot phase that heartbeats but writes nothing fails at the deadline,
-// naming the phase; one whose statement only grows the WAL never fails and
+// Windows launcher's probe against this reporter, with its real process
+// sampler, through a real server. A step blocked on a channel heartbeats
+// but does no work, and fails at the deadline naming the phase. A step
+// that only grows the WAL, or only spins the CPU, never fails and
 // connects once the boot finishes.
 func TestStartupReporter_LauncherProbeJudgesProgressNotHeartbeat(t *testing.T) {
 	const (
-		heartbeat = 20 * time.Millisecond
-		deadline  = 500 * time.Millisecond
+		// Long enough that the test process's own idle CPU (the probe and
+		// the server answering it) stays far under a twentieth of a tick.
+		heartbeat = 100 * time.Millisecond
+		deadline  = 800 * time.Millisecond
 	)
 	probe := func(srv *Server) (time.Duration, error) {
 		_, portText, err := net.SplitHostPort(srv.Addr())
@@ -424,15 +421,15 @@ func TestStartupReporter_LauncherProbeJudgesProgressNotHeartbeat(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		started := time.Now()
-		// 25 ms polls stay inside the bootstrap route's per-peer burst for
+		// 50 ms polls stay inside the bootstrap route's per-peer burst for
 		// the longest case.
 		err = wsllauncher.ProbeBootstrap(ctx, port, "test-token", wsllauncher.ProbeConfig{
-			Deadline: deadline, PollInterval: 25 * time.Millisecond, AttemptTimeout: time.Second,
+			Deadline: deadline, PollInterval: 50 * time.Millisecond, AttemptTimeout: time.Second,
 		})
 		return time.Since(started), err
 	}
 
-	t.Run("heartbeat only", func(t *testing.T) {
+	t.Run("blocked on a channel", func(t *testing.T) {
 		srv := newGatedServer(t)
 		dir := t.TempDir()
 		db := filepath.Join(dir, "app.db")
@@ -440,6 +437,15 @@ func TestStartupReporter_LauncherProbeJudgesProgressNotHeartbeat(t *testing.T) {
 		r.WatchBootFiles(db, db+"-wal")
 		end := r.BeginBootPhase("store.migrate", "Applying migration 1 of 1 rebuild")
 		defer end()
+		// The step waits on a lock that is never released.
+		release := make(chan struct{})
+		defer close(release)
+		blocked := make(chan struct{})
+		go func() {
+			close(blocked)
+			<-release
+		}()
+		<-blocked
 
 		took, err := probe(srv)
 		var stalled *wsllauncher.BackendStalledError
@@ -504,6 +510,151 @@ func TestStartupReporter_LauncherProbeJudgesProgressNotHeartbeat(t *testing.T) {
 			t.Fatalf("probe returned after %s, before the boot finished at %s", took, writing)
 		}
 	})
+
+	t.Run("CPU only", func(t *testing.T) {
+		srv := newGatedServer(t)
+		dir := t.TempDir()
+		db := filepath.Join(dir, "app.db")
+		r := newStartupReporter(srv, "", heartbeat, time.Now)
+		r.WatchBootFiles(db, db+"-wal")
+		end := r.BeginBootPhase("store.migrate", "Applying migration 1 of 1 rebuild")
+
+		// One statement sorting in memory for four deadlines, writing
+		// nothing, then the boot ends.
+		working := 4 * deadline
+		go func() {
+			spinCPU(working)
+			end()
+			srv.MarkReady()
+		}()
+
+		took, err := probe(srv)
+		if err != nil {
+			t.Fatalf("a boot whose step kept a CPU busy failed after %s: %v", took, err)
+		}
+		if took < working {
+			t.Fatalf("probe returned after %s, before the boot finished at %s", took, working)
+		}
+	})
+}
+
+// spinCPU keeps one goroutine computing for d without touching storage.
+func spinCPU(d time.Duration) {
+	x := uint64(1)
+	for stop := time.Now().Add(d); time.Now().Before(stop); {
+		for range 10_000 {
+			x = x*6364136223846793005 + 1442695040888963407
+		}
+	}
+	spinSink.Store(x)
+}
+
+var spinSink atomic.Uint64
+
+// beatOnce drives one heartbeat and checks that it advanced AliveAt, and
+// UpdatedAt exactly when progressed.
+func beatOnce(t *testing.T, r *StartupReporter, srv *Server, what string, progressed bool) {
+	t.Helper()
+	before := progressOf(srv)
+	r.beat()
+	after := progressOf(srv)
+	if after.AliveAt <= before.AliveAt {
+		t.Fatalf("%s: AliveAt did not advance: %+v", what, after)
+	}
+	if moved := after.UpdatedAt != before.UpdatedAt; moved != progressed {
+		t.Fatalf("%s: UpdatedAt moved = %v, want %v (%d -> %d)", what, moved, progressed, before.UpdatedAt, after.UpdatedAt)
+	}
+}
+
+// TestStartupReporter_ProcessWorkIsProgress: a heartbeat that finds the
+// process used a twentieth of a CPU, or moved 64 KiB/s to or from
+// storage, since the last one advances UpdatedAt; less advances only
+// AliveAt. The first sample, a sample from a different I/O counter and
+// the sample after a failed one are baselines, not progress.
+func TestStartupReporter_ProcessWorkIsProgress(t *testing.T) {
+	srv := &Server{}
+	var clock atomic.Int64
+	clock.Store(1_000)
+	now := func() time.Time { return time.UnixMilli(clock.Add(1)) }
+	// The ticker never fires; the test drives each heartbeat.
+	r := newStartupReporter(srv, "", time.Hour, now)
+	sample := processWork{cpu: time.Second, io: 4096, ioSource: "first"}
+	var sampleErr error
+	r.sampleWork = func() (processWork, error) { return sample, sampleErr }
+	end := r.BeginBootPhase("store.migrate", "Applying migration 1 of 1 rebuild")
+	defer end()
+	minCPU := time.Hour / startupCPUShare
+	minIO := int64(startupIOPerSecond * time.Hour.Seconds())
+
+	beatOnce(t, r, srv, "the first sample", false)
+	sample.cpu += minCPU - 1
+	beatOnce(t, r, srv, "CPU under the threshold", false)
+	sample.cpu += minCPU
+	beatOnce(t, r, srv, "CPU at the threshold", true)
+	sample.io += minIO - 1
+	beatOnce(t, r, srv, "I/O under the threshold", false)
+	sample.io += minIO
+	beatOnce(t, r, srv, "I/O at the threshold", true)
+	sample.io, sample.ioSource = sample.io+10*minIO, "second"
+	beatOnce(t, r, srv, "a count from another I/O counter", false)
+	sample.io += minIO
+	beatOnce(t, r, srv, "I/O on the new counter", true)
+	sampleErr = errors.New("unreadable")
+	sample.cpu += 10 * minCPU
+	beatOnce(t, r, srv, "a failed sample", false)
+	sampleErr = nil
+	beatOnce(t, r, srv, "the sample after a failure", false)
+	sample.cpu += minCPU
+	beatOnce(t, r, srv, "CPU after the failure", true)
+}
+
+// TestReadProcessWorkCountsCPUAndStorage: the platform sampler sees this
+// process's CPU time grow while it computes and its storage I/O grow by
+// what it writes to a file. On Linux the I/O comes from /proc/self/io.
+func TestReadProcessWorkCountsCPUAndStorage(t *testing.T) {
+	before, err := readProcessWork()
+	if err != nil {
+		t.Fatalf("sample: %v", err)
+	}
+	// 100 ms of CPU within 1 s of computing needs a tenth of a core; a
+	// sampler that counted only kernel or system time would take seconds.
+	var mid processWork
+	for giveUp := time.Now().Add(time.Second); ; {
+		spinCPU(20 * time.Millisecond)
+		if mid, err = readProcessWork(); err != nil {
+			t.Fatalf("sample: %v", err)
+		}
+		if mid.cpu-before.cpu >= 100*time.Millisecond {
+			break
+		}
+		if time.Now().After(giveUp) {
+			t.Fatalf("CPU time grew %s in 1 s of computing, want at least 100ms", mid.cpu-before.cpu)
+		}
+	}
+
+	f, err := os.Create(filepath.Join(t.TempDir(), "work"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(make([]byte, 1<<20)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := readProcessWork()
+	if err != nil {
+		t.Fatalf("sample: %v", err)
+	}
+	if runtime.GOOS == "linux" && after.ioSource != "/proc/self/io" {
+		t.Fatalf("I/O came from %q on Linux, want /proc/self/io", after.ioSource)
+	}
+	if after.ioSource != mid.ioSource || after.io-mid.io < 1<<20 {
+		t.Fatalf("I/O went from %d (%s) to %d (%s) across a 1 MiB write", mid.io, mid.ioSource, after.io, after.ioSource)
+	}
 }
 
 // TestAttachedBootstrapPassesOnAStartingReport: a carried backend that is

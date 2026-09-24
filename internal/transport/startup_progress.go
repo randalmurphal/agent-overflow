@@ -13,8 +13,8 @@ import (
 )
 
 // startupHeartbeatInterval is how often an open boot phase advances
-// AliveAt and looks for watched files changing size. Clients judge a
-// stall against both (the Windows launcher fails after 30 s without an
+// AliveAt and looks for evidence of progress. Clients judge a stall
+// against both (the Windows launcher fails after 30 s without an
 // advance), so it must stay well under that.
 const startupHeartbeatInterval = time.Second
 
@@ -52,12 +52,14 @@ func (e *BackendStartingError) Error() string {
 // Phases nest: ending an inner phase restores its parent's report.
 //
 // UpdatedAt advances only on observed progress: a phase beginning or
-// ending, a new detail or step, or a watched file (WatchBootFiles)
-// changing size since the previous heartbeat. A long CREATE INDEX or table
-// rebuild grows the WAL and counts; a statement that hangs does not.
-// AliveAt advances on every heartbeat. The heartbeat runs every interval
-// while any phase is open and stops when the outermost phase ends, so a
-// backend wedged between phases stops advancing both.
+// ending, a new detail or step, or, between two heartbeats, a watched
+// file (WatchBootFiles) changing size or this process doing work: CPU
+// time or storage I/O over the thresholds in startup_work.go. A sort, a
+// foreign key check, a cold read or a rebuild counts; a statement blocked
+// on a lock does not. AliveAt advances on every heartbeat. The heartbeat
+// runs every interval while any phase is open and stops when the
+// outermost phase ends, so a backend wedged between phases stops
+// advancing both.
 //
 // All methods are safe for concurrent use and on a nil receiver, which
 // reports nothing.
@@ -74,8 +76,17 @@ type StartupReporter struct {
 	// watched maps each WatchBootFiles path to its size at the last look:
 	// -1 while it does not exist, statUnknown until a look could read it.
 	watched map[string]int64
-	// statFailed holds paths whose stat failure was already logged.
+	// stat reads a watched file; statFailed holds paths whose stat failure
+	// was already logged.
+	stat       func(string) (fs.FileInfo, error)
 	statFailed map[string]bool
+	// sampleWork reads the process's work so far; work is the last
+	// sample, valid when haveWork. workFailed is set once a failed sample
+	// has been logged.
+	sampleWork func() (processWork, error)
+	work       processWork
+	haveWork   bool
+	workFailed bool
 }
 
 type startupPhase struct {
@@ -91,7 +102,11 @@ func NewStartupReporter(srv *Server, updatingTo string) *StartupReporter {
 }
 
 func newStartupReporter(srv *Server, updatingTo string, interval time.Duration, now func() time.Time) *StartupReporter {
-	r := &StartupReporter{srv: srv, now: now, interval: interval, watched: map[string]int64{}, statFailed: map[string]bool{}}
+	r := &StartupReporter{
+		srv: srv, now: now, interval: interval,
+		watched: map[string]int64{}, stat: os.Stat, statFailed: map[string]bool{},
+		sampleWork: readProcessWork,
+	}
 	started := now().UnixMilli()
 	r.current = startupprogress.Progress{
 		Phase:      "starting",
@@ -195,8 +210,9 @@ func (r *StartupReporter) heartbeat(stop <-chan struct{}, stopped chan<- struct{
 }
 
 // beat stamps the heartbeat, and progress when a watched file changed
-// size since the last look. Files are read outside the lock so a slow
-// filesystem cannot hold up a report.
+// size or the process did enough work since the last look. Files and
+// counters are read outside the lock so a slow read cannot hold up a
+// report.
 func (r *StartupReporter) beat() {
 	r.mu.Lock()
 	paths := make([]string, 0, len(r.watched))
@@ -208,9 +224,9 @@ func (r *StartupReporter) beat() {
 	for i, path := range paths {
 		sizes[i] = r.fileSize(path)
 	}
+	work, workErr := r.sampleWork()
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	now := r.now().UnixMilli()
 	for i, path := range paths {
 		if sizes[i] == statUnknown {
@@ -223,8 +239,25 @@ func (r *StartupReporter) beat() {
 			}
 		}
 	}
+	logWorkErr := false
+	if workErr != nil {
+		// No evidence either way. The next sample is a fresh baseline so
+		// it is not measured across the gap.
+		r.haveWork = false
+		logWorkErr = !r.workFailed
+		r.workFailed = true
+	} else {
+		if r.haveWork && workProgressed(r.work, work, r.interval) {
+			r.current.UpdatedAt = now
+		}
+		r.work, r.haveWork = work, true
+	}
 	r.current.AliveAt = now
 	r.srv.SetStartupProgress(r.current)
+	r.mu.Unlock()
+	if logWorkErr {
+		log.Printf("startup progress: cannot read this process's CPU and I/O, so only reports and file sizes count as progress: %v", workErr)
+	}
 }
 
 // statUnknown is a size fileSize could not read. It is no evidence either
@@ -234,7 +267,7 @@ const statUnknown = -2
 // fileSize is path's size, -1 when it does not exist, or statUnknown when
 // it cannot be read. A read failure is logged once per path.
 func (r *StartupReporter) fileSize(path string) int64 {
-	info, err := os.Stat(path)
+	info, err := r.stat(path)
 	switch {
 	case err == nil:
 		return info.Size()

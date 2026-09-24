@@ -41,7 +41,10 @@ A rebuild must carry forward every column, index, trigger, and relationship
 added since the source definition. Rebuild migrations temporarily disable
 foreign keys on the dedicated writer connection so dropping a parent table does
 not cascade into retained children. They restore and verify the connection
-policy before the connection returns to ordinary use.
+policy before the connection returns to ordinary use. A rebuild runs its
+statements one at a time in its transaction, split where `sqlite3_complete`
+ends a statement, and reports each index build and the closing foreign key
+check to the boot's migration step.
 
 Each schema change has a migration test. Tests should prove constraints and
 query behavior, not only that a column or index name exists. A new table also

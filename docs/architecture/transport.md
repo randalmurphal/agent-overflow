@@ -135,21 +135,24 @@ Every executable boot binds its listener before `App.Start` and calls
   `step` and `steps` count sub-steps such as pending migrations.
   `updatingTo` names the version the boot is finishing an in-app update to.
 - `updatedAt` advances only on observed progress: a phase beginning or
-  ending, a new detail or step such as the next migration, or the database
-  file or its `-wal` changing size since the last heartbeat. The heartbeat
-  stats both once a second, so a long `CREATE INDEX` or table rebuild
-  counts once its pages spill from the page cache into the WAL, and a hung
-  statement does not count. `aliveAt` advances on every heartbeat and means
+  ending, a new detail or step, or work seen by the once-a-second
+  heartbeat since the previous one. Work is the database file or its
+  `-wal` changing size, the process using at least a twentieth of a CPU
+  (user plus system time), or the process moving at least 64 KiB/s to or
+  from storage (`/proc/self/io` on Linux, `getrusage` elsewhere on Unix,
+  `GetProcessIoCounters` on Windows). A sort, a `PRAGMA foreign_key_check`,
+  a cold read and a rebuild all count. A table rebuild also reports a step
+  before each index build and before its foreign key check, so the detail
+  names what is running. `aliveAt` advances on every heartbeat and means
   only that the backend is running. Both stop when no boot phase is open.
   The Windows launcher fails a boot after 30 s without an `updatedAt`
   change, naming the phase, and after 30 s without either changing reports
   that the backend stopped responding.
-- Limit: a statement that runs 30 s without writing the database or WAL
-  reads as stalled. Examples are a long read, the `PRAGMA foreign_key_check`
-  that ends a table rebuild, and the sort before a `CREATE INDEX` writes its
-  pages (sorter temporary files are not watched).
-  `modernc.org/sqlite` offers no progress-handler registration on its
-  connections, so no VM-step progress is available.
+- Limit: a step blocked without working, such as a statement waiting inside
+  SQLite on a lock another process holds, reads as stalled after 30 s. That
+  is the intended outcome. `modernc.org/sqlite` offers no progress-handler
+  registration on its connections, so the work signals are process-wide
+  rather than per statement.
 - `/healthz`, `/pageurl` and the SPA assets are served. A loopback `/ws`
   upgrade is admitted; its hello omits routes, the browser capability and
   the backend name, and every RPC outside `Config.StartupMethods` (the

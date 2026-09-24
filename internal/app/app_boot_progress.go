@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"agent-overflow/internal/store"
 )
 
 // BootProgress receives App.Start's phases for the readiness report that a
@@ -41,6 +43,24 @@ func BeginBootPhase(a *App, phase, detail string) (end func()) {
 func (a *App) bootPhaseDetail(detail string, step, steps int) {
 	if a.bootProgress != nil {
 		a.bootProgress.BootPhaseDetail(detail, step, steps)
+	}
+}
+
+// reportMigration turns the store's migration steps into the
+// store.migrate boot phase, which is what a launcher waiting on a long
+// migration chain reads. The first pending migration begins the phase and
+// stores its end in end. Each migration is a step, and a rebuild's index
+// builds and foreign key check are details of their migration's step.
+func (a *App) reportMigration(end *func()) func(store.MigrationStep) {
+	return func(step store.MigrationStep) {
+		if step.Index == 1 && step.Activity == "" {
+			*end = a.bootPhase("store.migrate", "Applying migrations")
+		}
+		detail := fmt.Sprintf("Applying migration %d of %d %s", step.Index, step.Pending, step.Name)
+		if step.Activity != "" {
+			detail += ": " + step.Activity
+		}
+		a.bootPhaseDetail(detail, step.Index, step.Pending)
 	}
 }
 

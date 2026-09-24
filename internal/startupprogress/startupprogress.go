@@ -33,7 +33,8 @@ type Progress struct {
 	// StartedAt is when this backend began starting.
 	StartedAt int64 `json:"startedAt"`
 	// UpdatedAt is the last observed progress: a new phase, detail or
-	// step, or the database file or its WAL changing size.
+	// step, the database file or its WAL changing size, or the process
+	// doing CPU or storage work.
 	UpdatedAt int64 `json:"updatedAt"`
 	// AliveAt is the last heartbeat. It advances every second while a boot
 	// phase is open, whether or not anything progressed.

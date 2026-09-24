@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"testing"
 	"time"
 )
@@ -73,14 +75,22 @@ func pendingTail(t *testing.T, n int) (target int, pending []Migration) {
 // TestNewWithOptionsReportsEachPendingMigrationBeforeItRuns pins the hook
 // the boot turns into "Applying migration k of n": one call per pending
 // migration, in chain order, counted from 1, and each before its
-// migration commits.
+// migration commits. A rebuild also reports each index build and then its
+// foreign key check, under its own step and before it commits.
 func TestNewWithOptionsReportsEachPendingMigrationBeforeItRuns(t *testing.T) {
 	target, pending := pendingTail(t, 6)
 	path := fileDBThrough(t, target)
 
-	var steps []MigrationStep
+	var steps, parts []MigrationStep
 	var recordedAtHook []int
 	st, err := NewWithOptions(path, Options{OnMigration: func(step MigrationStep) {
+		if step.Activity != "" {
+			parts = append(parts, step)
+			if got := recordedVersion(t, path); got >= step.Version {
+				t.Errorf("v%d %q reported after the migration committed", step.Version, step.Activity)
+			}
+			return
+		}
 		steps = append(steps, step)
 		recordedAtHook = append(recordedAtHook, recordedVersion(t, path))
 	}})
@@ -88,6 +98,34 @@ func TestNewWithOptionsReportsEachPendingMigrationBeforeItRuns(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+
+	indexName := regexp.MustCompile(`(?i)CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)\s+ON`)
+	rebuilds := 0
+	for i, m := range pending {
+		var want, got []string
+		if m.Rebuild {
+			rebuilds++
+			for _, match := range indexName.FindAllStringSubmatch(m.SQL, -1) {
+				want = append(want, "building index "+match[1])
+			}
+			want = append(want, "checking foreign keys")
+		}
+		for _, part := range parts {
+			if part.Version != m.Version {
+				continue
+			}
+			if part.Name != m.Name || part.Index != i+1 || part.Pending != len(pending) {
+				t.Errorf("v%d part %+v does not carry its migration's step", m.Version, part)
+			}
+			got = append(got, part.Activity)
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("v%d (%s) reported %q, want %q", m.Version, m.Name, got, want)
+		}
+	}
+	if rebuilds == 0 {
+		t.Fatal("the pending tail holds no rebuild migration")
+	}
 
 	if len(steps) != len(pending) {
 		t.Fatalf("reported %d steps, want %d: %+v", len(steps), len(pending), steps)
@@ -106,7 +144,9 @@ func TestNewWithOptionsReportsEachPendingMigrationBeforeItRuns(t *testing.T) {
 
 	var reopened []MigrationStep
 	again, err := NewWithOptions(filepath.Join(t.TempDir(), "fresh.db"), Options{OnMigration: func(step MigrationStep) {
-		reopened = append(reopened, step)
+		if step.Activity == "" {
+			reopened = append(reopened, step)
+		}
 	}})
 	if err != nil {
 		t.Fatalf("fresh open: %v", err)

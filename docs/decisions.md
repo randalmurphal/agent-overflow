@@ -61,8 +61,9 @@ qualifies costs nothing.
   marker shows an ordinary start.
 - The Windows launcher fails a boot only when it makes no observed progress
   for 30 s, and names the stalled phase. A heartbeat alone is not progress;
-  a new step or a database or WAL size change is. A slow boot that keeps
-  progressing is never torn down.
+  a new step, a database or WAL size change, or the process doing CPU or
+  storage work is. A slow boot that keeps working is never torn down; one
+  blocked on a lock is.
 - Heavy post-boot scans, such as the search index build, wait for the first
   client's `ListThreads` and `ListProjects` answers, or 15 s after the backend
   starts answering when no page reads.

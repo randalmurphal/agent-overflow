@@ -189,6 +189,72 @@ func TestAsyncStartCanceledMidMigrationStopsWithoutReporting(t *testing.T) {
 	a.stopAsyncStart()
 }
 
+// TestBootNamesTheRunningPartOfARebuild: a fresh boot's migration phase
+// begins once, and a rebuild's details name each index build and the
+// foreign key check under the migration's own step.
+func TestBootNamesTheRunningPartOfARebuild(t *testing.T) {
+	a := newBootTestApp(t)
+	progress := newRecordingBootProgress("app.init_identity")
+	SetBootProgress(a, progress)
+	a.startAsync(context.Background())
+	select {
+	case <-progress.reached:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Start never finished opening the database")
+	}
+	begun, _, details := progress.snapshot()
+	close(progress.release)
+	a.stopAsyncStart()
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	if strings.Join(begun, ",") != "app.init_stores,store.migrate,app.init_identity" {
+		t.Fatalf("phases begun = %v, want the migration phase once", begun)
+	}
+	var local []string
+	for _, detail := range details {
+		if _, part, ok := strings.Cut(detail, " local_sessions"); ok && strings.HasPrefix(detail, "Applying migration ") {
+			local = append(local, part)
+		}
+	}
+	want := []string{"", ": building index idx_sessions_device", ": building index idx_sessions_user",
+		": building index idx_sessions_local", ": building index idx_sessions_live", ": checking foreign keys"}
+	if strings.Join(local, "|") != strings.Join(want, "|") {
+		t.Fatalf("local_sessions details = %q, want %q", local, want)
+	}
+}
+
+// TestReportMigrationBeginsThePhaseOnce: when the first pending migration
+// is a rebuild, its index builds and foreign key check are details of its
+// step and do not begin the phase again.
+func TestReportMigrationBeginsThePhaseOnce(t *testing.T) {
+	a := NewApp()
+	progress := newRecordingBootProgress("")
+	SetBootProgress(a, progress)
+	end := func() {}
+	report := a.reportMigration(&end)
+	report(store.MigrationStep{Version: 110, Name: "local_sessions", Index: 1, Pending: 2})
+	report(store.MigrationStep{Version: 110, Name: "local_sessions", Index: 1, Pending: 2, Activity: "building index idx_sessions_device"})
+	report(store.MigrationStep{Version: 110, Name: "local_sessions", Index: 1, Pending: 2, Activity: "checking foreign keys"})
+	report(store.MigrationStep{Version: 111, Name: "scoped_timeline_indexes", Index: 2, Pending: 2})
+	end()
+
+	begun, ended, details := progress.snapshot()
+	if strings.Join(begun, ",") != "store.migrate" || strings.Join(ended, ",") != "store.migrate" {
+		t.Fatalf("phases begun %v and ended %v, want store.migrate once", begun, ended)
+	}
+	want := []string{
+		"Applying migration 1 of 2 local_sessions",
+		"Applying migration 1 of 2 local_sessions: building index idx_sessions_device",
+		"Applying migration 1 of 2 local_sessions: checking foreign keys",
+		"Applying migration 2 of 2 scoped_timeline_indexes",
+	}
+	if strings.Join(details, "|") != strings.Join(want, "|") {
+		t.Fatalf("details = %q, want %q", details, want)
+	}
+}
+
 // TestAsyncStartReportsFailureToStartDone: a Start that fails on its own
 // hands the error to the hook, which is how the desktop boot marks the
 // bootstrap failed and exits with the cause.

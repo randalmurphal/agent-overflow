@@ -1670,13 +1670,18 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 115, Name: "imported_parent_lookup", SQL: importedParentLookupV115SQL},
 }
 
-// MigrationStep describes one pending migration as it begins.
+// MigrationStep describes one pending migration as it begins, or a
+// long-running part of it as that begins.
 type MigrationStep struct {
 	Version int
 	Name    string
 	// Index counts this open's pending migrations from 1; Pending is how
 	// many there are.
 	Index, Pending int
+	// Activity is empty when the migration begins. Inside a rebuild it
+	// names what is starting: "building index <name>" before each index
+	// build and "checking foreign keys" before the integrity check.
+	Activity string
 }
 
 // runMigrations sets PRAGMAs, creates the version tracking table, and applies
@@ -1686,7 +1691,8 @@ func runMigrations(db *sql.DB) error {
 }
 
 // runMigrationsContext is runMigrations bounded by ctx, reporting each
-// pending migration to onMigration (which may be nil) before it runs.
+// pending migration, and each long-running part of a rebuild, to
+// onMigration (which may be nil) before it runs.
 // Cancelling ctx interrupts the running migration; its transaction rolls
 // back and it runs again on the next open.
 func runMigrationsContext(ctx context.Context, db *sql.DB, onMigration func(MigrationStep)) error {
@@ -1811,14 +1817,23 @@ func applyPendingMigrations(ctx context.Context, db *sql.DB, applied int, onMigr
 			continue
 		}
 		index++
+		step := MigrationStep{Version: m.Version, Name: m.Name, Index: index, Pending: pending}
+		var activity func(string)
 		if onMigration != nil {
-			onMigration(MigrationStep{Version: m.Version, Name: m.Name, Index: index, Pending: pending})
+			onMigration(step)
+			activity = func(what string) {
+				part := step
+				part.Activity = what
+				onMigration(part)
+			}
 		}
-		apply := applyMigrationContext
+		var err error
 		if m.Rebuild {
-			apply = applyRebuildMigrationContext
+			err = applyRebuildMigrationSteps(ctx, db, m, activity)
+		} else {
+			err = applyMigrationContext(ctx, db, m)
 		}
-		if err := apply(ctx, db, m); err != nil {
+		if err != nil {
 			return err
 		}
 	}
@@ -1896,9 +1911,16 @@ func applyRebuildMigration(db *sql.DB, m Migration) error {
 }
 
 // applyRebuildMigrationContext is applyRebuildMigration bounded by ctx.
-// Restoring foreign_keys ignores ctx so a cancelled rebuild still hands
-// its connection back with enforcement on.
 func applyRebuildMigrationContext(ctx context.Context, db *sql.DB, m Migration) error {
+	return applyRebuildMigrationSteps(ctx, db, m, nil)
+}
+
+// applyRebuildMigrationSteps runs the rebuild's statements one at a time,
+// telling activity (which may be nil) before each index build and before
+// the foreign key check, so a boot waiting on a long rebuild names what
+// is running. Restoring foreign_keys ignores ctx so a cancelled rebuild
+// still hands its connection back with enforcement on.
+func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, activity func(string)) error {
 	// Refuse rather than run the Fix: this path used to ignore it
 	// silently, so a rebuild that also needed a Go-side data pass would
 	// record itself as applied with half its work never done — a forward-
@@ -1935,9 +1957,17 @@ func applyRebuildMigrationContext(ctx context.Context, db *sql.DB, m Migration) 
 	if err != nil {
 		return fmt.Errorf("begin rebuild v%d: %w", m.Version, err)
 	}
-	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("rebuild v%d (%s) failed: %w", m.Version, m.Name, err)
+	for _, stmt := range sqlStatements(m.SQL) {
+		if index, ok := createIndexName(stmt); ok && activity != nil {
+			activity("building index " + index)
+		}
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("rebuild v%d (%s) failed: %w", m.Version, m.Name, err)
+		}
+	}
+	if activity != nil {
+		activity("checking foreign keys")
 	}
 	if err := assertForeignKeysIntact(ctx, tx); err != nil {
 		_ = tx.Rollback()
