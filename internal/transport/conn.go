@@ -668,18 +668,41 @@ func (h *connHandler) handleSubscribe(ctx context.Context, frame ClientFrame) {
 // restores the unfiltered state, and a client that wants it back reconnects.
 // The alternative (a sentinel meaning "everything") would put a wildcard
 // spelling on the wire that a client could send by accident.
+//
+// The scope set rides the same frame and the same rules: bounded by
+// MaxWatchScopes, each id bounded like a thread id, and any bad member
+// refuses the whole frame with both previous sets left standing. An absent
+// scope set is the one exception to "absent equals empty" (frame.go
+// ClientFrame.Scopes).
 func (h *connHandler) handleWatch(ctx context.Context, frame ClientFrame) {
-	if len(frame.Threads) > MaxWatchThreads {
+	if !validWatch(frame.Threads, frame.Scopes) {
 		h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid entity watch"})
 		return
 	}
-	for _, entityID := range frame.Threads {
-		if entityID == "" || len(entityID) > MaxWatchThreadIDBytes {
-			h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid entity watch"})
-			return
+	h.sub.SetWatch(frame.Threads, frame.Scopes)
+}
+
+// validWatch applies the watch frame's bounds: set sizes, and every id
+// non-empty and at most MaxWatchThreadIDBytes.
+func validWatch(threads []string, scopes []WatchScope) bool {
+	if len(threads) > MaxWatchThreads || len(scopes) > MaxWatchScopes {
+		return false
+	}
+	for _, entityID := range threads {
+		if !validWatchID(entityID) {
+			return false
 		}
 	}
-	h.sub.SetWatchedThreads(frame.Threads)
+	for _, scope := range scopes {
+		if !validWatchID(scope.ThreadID) || !validWatchID(scope.ScopeRootID) {
+			return false
+		}
+	}
+	return true
+}
+
+func validWatchID(id string) bool {
+	return id != "" && len(id) <= MaxWatchThreadIDBytes
 }
 
 // handleLease records whether this connection's CLIENT is in the foreground
@@ -921,8 +944,9 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 		// caught up, not for the entities it stopped watching. Filtered here
 		// rather than inside EventBus.Replay so the subscriber stays the one
 		// place the connection's filters live — and, like the two above it,
-		// a frame this filter drops produces no event and no gap marker.
-		if !h.sub.watches(e.Channel, e.EntityKey) {
+		// a frame this filter drops produces no event and no gap marker. The
+		// scope rule applies here exactly as it does live.
+		if !h.sub.watches(e.Channel, e.EntityKey, e.EntityScope) {
 			continue
 		}
 		chunk = append(chunk, e)

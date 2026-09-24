@@ -1371,7 +1371,7 @@ func TestEventBus_DropAnnouncementNamesDroppedThreads(t *testing.T) {
 	bus.subBuf = 1
 	sub := bus.Subscribe()
 	defer sub.Close()
-	sub.SetWatchedThreads([]string{"thread-A", "thread-B", "thread-C"})
+	sub.SetWatch([]string{"thread-A", "thread-B", "thread-C"}, nil)
 
 	emitItem(t, bus, "thread-A", 1) // fills the buffer
 	emitItem(t, bus, "thread-C", 2) // dropped

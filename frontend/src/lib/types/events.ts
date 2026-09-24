@@ -193,6 +193,8 @@ export interface ItemDeltaEvent {
 export interface ItemMetaEvent {
   threadId: string;
   itemId: string;
+  /** The row's parent, absent for a top-level row (see `ItemDeltaEvent`). */
+  parentId?: string;
   kind: string;
   meta: string;
   updatedAt: number;

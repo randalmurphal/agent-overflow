@@ -58,8 +58,12 @@ type ItemPatch struct {
 }
 
 // ItemStreamEvent is one `provider:item_event` frame. ParentID rides
-// deltas and patches, which carry no row: a client whose window does not
-// hold the row reads it to tell another scope's row from a missing one.
+// deltas, metas and patches, which carry no row: a client whose window does
+// not hold the row reads it to tell another scope's row from a missing one,
+// and the transport reads it (with Item.ParentID on an upsert) to withhold a
+// subagent's rows from connections not viewing that agent
+// (eventscope.ScopeRootIDFromEvent). A frame describes one row, so it has
+// exactly one scope.
 type ItemStreamEvent struct {
 	Action    string      `json:"action"`
 	ThreadID  string      `json:"threadId"`
@@ -122,11 +126,12 @@ func newItemStreamDelta(evt ItemDeltaEvent) ItemStreamEvent {
 	}
 }
 
-func newItemStreamMeta(threadID, itemID, kind, meta string, updatedAt int64) ItemStreamEvent {
+func newItemStreamMeta(threadID, itemID, parentID, kind, meta string, updatedAt int64) ItemStreamEvent {
 	return ItemStreamEvent{
 		Action:    itemStreamActionMeta,
 		ThreadID:  threadID,
 		ItemID:    itemID,
+		ParentID:  parentID,
 		Kind:      kind,
 		Meta:      meta,
 		UpdatedAt: updatedAt,

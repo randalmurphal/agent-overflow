@@ -82,10 +82,15 @@ edge and after a gap on one of those channels; a pane additionally reads
 flight wins over the snapshot.
 
 `watchedThreads.ts` unions registered sources for every thread whose surface
-exists, including child threads with no pane. Watches never depend on focus,
-visibility, or `document.hidden`. Registering a consumer of an entity-filtered
-channel also requires contributing its thread IDs. Push the opening watch set
-before history loads, and restate it whenever a pane adopts or clears a thread.
+exists, including child threads with no pane, and for every subagent scope a
+surface reads. Watches never depend on focus, visibility, or `document.hidden`.
+Registering a consumer of an entity-filtered channel also requires contributing
+its thread IDs. A watched thread delivers only root rows on
+`provider:item_event`: a consumer of rows with `parentId` set contributes
+their scope while it exists, or reads anchor-level data instead. Push the
+opening watch set before history loads, including a scoped surface's scopes
+before its first read, and restate it whenever a pane adopts or clears a
+thread or a surface's scopes change.
 
 `screenPresence.ts` reports focus and visible panes only so the backend can
 suppress redundant OS notifications, and `currentScreenPresence` answers the

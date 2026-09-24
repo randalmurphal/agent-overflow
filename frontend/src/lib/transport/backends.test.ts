@@ -224,8 +224,8 @@ describe('the registry', () => {
   });
 
   it('sends the whole watched set while home is the only backend', () => {
-    setWatchedThreadsEverywhere(['thread-a', 'thread-b']);
-    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith(['thread-a', 'thread-b']);
+    setWatchedThreadsEverywhere(['thread-a', 'thread-b'], []);
+    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith(['thread-a', 'thread-b'], []);
   });
 
   it('sends each backend the threads it owns', () => {
@@ -233,19 +233,19 @@ describe('the registry', () => {
     noteThread('thread-laptop', 'laptop');
     const { client } = attachFake();
 
-    setWatchedThreadsEverywhere(['thread-home', 'thread-laptop']);
+    setWatchedThreadsEverywhere(['thread-home', 'thread-laptop'], []);
 
-    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith(['thread-home']);
-    expect(client.setWatchedThreads).toHaveBeenLastCalledWith(['thread-laptop']);
+    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith(['thread-home'], []);
+    expect(client.setWatchedThreads).toHaveBeenLastCalledWith(['thread-laptop'], []);
   });
 
   it('moves an already watched conversation to its new owner without reopening the pane', () => {
     noteThread('moving', '', 0);
     const { client } = attachFake();
-    setWatchedThreadsEverywhere(['moving']);
+    setWatchedThreadsEverywhere(['moving'], []);
     noteThread('moving', 'laptop', 1);
-    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith([]);
-    expect(client.setWatchedThreads).toHaveBeenLastCalledWith(['moving']);
+    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith([], []);
+    expect(client.setWatchedThreads).toHaveBeenLastCalledWith(['moving'], []);
   });
 
   it('sends a thread of unknown origin to every backend', () => {
@@ -255,29 +255,65 @@ describe('the registry', () => {
     // silently receives nothing, and nothing later corrects that.
     const { client } = attachFake();
 
-    setWatchedThreadsEverywhere(['thread-unplaced']);
+    setWatchedThreadsEverywhere(['thread-unplaced'], []);
 
-    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith(['thread-unplaced']);
-    expect(client.setWatchedThreads).toHaveBeenLastCalledWith(['thread-unplaced']);
+    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith(['thread-unplaced'], []);
+    expect(client.setWatchedThreads).toHaveBeenLastCalledWith(['thread-unplaced'], []);
   });
 
   it('states the watched set on a backend attached afterwards', () => {
     noteThread('thread-laptop', 'laptop');
-    setWatchedThreadsEverywhere(['thread-laptop']);
+    setWatchedThreadsEverywhere(['thread-laptop'], []);
     const { client } = attachFake();
-    expect(client.setWatchedThreads).toHaveBeenCalledWith(['thread-laptop']);
+    expect(client.setWatchedThreads).toHaveBeenCalledWith(['thread-laptop'], []);
   });
 
   it('tells a backend that owns none of the watched threads so', () => {
     noteThread('thread-home', '');
     const { client } = attachFake();
 
-    setWatchedThreadsEverywhere(['thread-home']);
+    setWatchedThreadsEverywhere(['thread-home'], []);
 
     // An empty set is a legal value meaning "nothing here is being
     // looked at", and saying it is what stops this machine pushing
     // entity-filtered frames nobody reads.
-    expect(client.setWatchedThreads).toHaveBeenLastCalledWith([]);
+    expect(client.setWatchedThreads).toHaveBeenLastCalledWith([], []);
+  });
+
+  it('sends each backend the scopes of the threads it owns, and unknown owners to all', () => {
+    noteThread('thread-home', '');
+    noteThread('thread-laptop', 'laptop');
+    const { client } = attachFake();
+    const home = { threadId: 'thread-home', scopeRootId: 'agent-h' };
+    const laptop = { threadId: 'thread-laptop', scopeRootId: 'agent-l' };
+    const unplaced = { threadId: 'thread-unplaced', scopeRootId: 'agent-u' };
+
+    setWatchedThreadsEverywhere(['thread-home', 'thread-laptop'], [home, laptop, unplaced]);
+
+    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith(['thread-home'], [home, unplaced]);
+    expect(client.setWatchedThreads).toHaveBeenLastCalledWith(['thread-laptop'], [laptop, unplaced]);
+  });
+
+  it('moves a watched scope to its thread’s new owner', () => {
+    // A scope whose thread no source names is still watched state: the
+    // ownership move must restate it even with no thread to match.
+    noteThread('moving', '', 0);
+    const { client } = attachFake();
+    const scope = { threadId: 'moving', scopeRootId: 'agent-1' };
+    setWatchedThreadsEverywhere([], [scope]);
+    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith([], [scope]);
+
+    noteThread('moving', 'laptop', 1);
+    expect(homeClient.setWatchedThreads).toHaveBeenLastCalledWith([], []);
+    expect(client.setWatchedThreads).toHaveBeenLastCalledWith([], [scope]);
+  });
+
+  it('states a scope-only watched set on a backend attached afterwards', () => {
+    noteThread('thread-laptop', 'laptop');
+    const scope = { threadId: 'thread-laptop', scopeRootId: 'agent-1' };
+    setWatchedThreadsEverywhere([], [scope]);
+    const { client } = attachFake();
+    expect(client.setWatchedThreads).toHaveBeenCalledWith([], [scope]);
   });
 
   it('publishes an attached backend’s clock and drops it on detach', () => {

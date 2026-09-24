@@ -46,6 +46,18 @@ var entityFilteredChannels = func() map[string]bool {
 	return set
 }()
 
+// transcriptScopeFilteredChannels is transport's TranscriptScopeFiltered
+// column, built the same way: the channels whose frames also carry a
+// transcript scope attribution.
+var transcriptScopeFilteredChannels = func() map[string]bool {
+	names := transport.TranscriptScopeFilteredChannels()
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		set[name] = true
+	}
+	return set
+}()
+
 // emitKeyed is emit plus the entity key it derived, returned so the one
 // caller that needs the same value (emitWithReplay) does not derive it a
 // second time.
@@ -70,6 +82,13 @@ func (a *App) emitKeyed(name eventchan.Channel, data any) string {
 	if entityFilteredChannels[string(name)] || (a.replay != nil && a.replay.Enabled()) {
 		entityKey = eventscope.ThreadIDFromEvent(data)
 	}
+	// The scope attribution is the bus's alone, so it is derived only where
+	// the bus narrows by it, and only for a frame that has a thread to be
+	// scoped within.
+	entityScope := ""
+	if entityKey != "" && transcriptScopeFilteredChannels[string(name)] {
+		entityScope = eventscope.ScopeRootIDFromEvent(data)
+	}
 	// Snapshot the bus pointer once so a concurrent SetEventBus cannot
 	// flip nil/non-nil between the guard and the Emit call. Deliberately
 	// AFTER the derivation: the replay log is written by a caller of this
@@ -80,7 +99,7 @@ func (a *App) emitKeyed(name eventchan.Channel, data any) string {
 		return entityKey
 	}
 	if bus != nil {
-		if _, err := bus.EmitEntity(name, entityKey, data); err != nil {
+		if _, err := bus.EmitScoped(name, entityKey, entityScope, data); err != nil {
 			// json.Marshal failure on a payload we own — log and drop.
 			// The bus is best-effort by design (drops on full subscriber
 			// channels) so we don't propagate an error to callers.

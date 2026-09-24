@@ -197,6 +197,32 @@ func TestDeltaCoalescerKeepsTheRowParent(t *testing.T) {
 	}
 }
 
+// TestDeltaCoalescerKeepsTheRowScope: a merged delta keeps the transport
+// address of the frames it replaces, thread and scope both, so it is the
+// same frame to every reader of Event as the ones merged away.
+func TestDeltaCoalescerKeepsTheRowScope(t *testing.T) {
+	var out []Event
+	c := deltaCoalescer{window: time.Hour, emit: func(e Event) { out = append(out, e) }}
+	scoped := func(seq uint64, itemID, scope, text string) Event {
+		e := itemEvent(seq, "thread-A", deltaPayload(t, "thread-A", itemID, text, int64(seq)))
+		e.EntityScope = scope
+		return e
+	}
+	c.intercept(scoped(1, "child-1", "agent-1", "par"))
+	c.intercept(scoped(2, "top", "", "top"))
+	c.intercept(scoped(3, "child-1", "agent-1", "ent"))
+	c.flushAll()
+	if len(out) != 2 {
+		t.Fatalf("merged frames = %d, want one per row", len(out))
+	}
+	if top := out[0]; top.EntityKey != "thread-A" || top.EntityScope != "" {
+		t.Fatalf("top-level merge addressed %q/%q, want thread-A at root scope", top.EntityKey, top.EntityScope)
+	}
+	if child := out[1]; child.EntityKey != "thread-A" || child.EntityScope != "agent-1" {
+		t.Fatalf("child merge addressed %q/%q, want thread-A scoped to agent-1", child.EntityKey, child.EntityScope)
+	}
+}
+
 // TestDeltaCoalescerFlushesBeforeMeta: a meta lands AFTER the text it
 // re-validates. The frontend relies on it (triage item_events.go), and the
 // flush is of every pending row, not just this one, so no lower-seq merge is

@@ -269,16 +269,39 @@ connection.
 
 ### Watched entities and paused clients
 
-A `watch` frame replaces the connection's complete watched-thread set.
-Connections that never send one receive all events. On reconnect the client
-re-sends its set before asking for replay. Entity-filtered channels withhold
-events outside the set; other channels continue to support navigation,
-notifications, and summary state. Empty or unrecognized entity attribution
-fails open to delivery.
+A `watch` frame replaces the connection's complete watched-thread set and its
+watched-scope set together. Connections that never send one receive all
+events. On reconnect the client re-sends both before asking for replay.
+Entity-filtered channels withhold events outside the thread set; other
+channels continue to support navigation, notifications, and summary state.
+Empty or unrecognized entity attribution fails open to delivery.
 
-Withheld frames are not transport loss and do not produce gap markers. The
-frontend therefore disables inferred forward-gap handling only for registered
-entity-filtered channels after it has sent a watch set.
+`scopes` narrows `provider:item_event` further, to the subagent transcripts
+the client is viewing. Each entry is a `{threadId, scopeRootId}` pair, at most
+`MaxWatchScopes` of them, each id bounded like a thread id. The emit funnel
+attributes every item event with its thread and the row's `parentId`, which
+every frame on that channel carries, one row per frame. A frame with an empty
+scope is a root row and follows the thread set. A frame with a scope is
+delivered only when its pair is named, whether or not its thread is. An absent
+`scopes` field admits every scope of a watched thread, which is what a client
+sends when it cannot state its set within the bound; `[]` admits root rows
+only. An oversized, empty or malformed entry refuses the whole frame with
+`bad_params` and leaves the previous sets in place. No other channel carries a
+scope.
+
+Withheld frames are not transport loss and do not produce gap markers. Scope
+filtering runs before drop accounting, in live delivery and in replay alike,
+and gap attribution names threads, never scopes. The frontend therefore
+disables inferred forward-gap handling only for registered entity-filtered
+channels after it has sent a watch set.
+
+The frontend composes the scope set from the surfaces that read child rows:
+scoped timelines name their own scope and the scopes their launch, lifecycle
+and completion rows live in, and the open background tray names its running
+agents' scopes. A scoped surface registers before its first history read, and
+re-reads when resolution adds a scope, so rows written before the watch
+applied are recovered from the snapshot. Collapsed subagent cards read anchor
+metadata and `provider:subagent_progress`, which are not scope-filtered.
 
 A `lease` frame reports whether the platform has paused the client. It is not
 page visibility, focus, or pane selection. New connections start active.

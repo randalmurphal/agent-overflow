@@ -12,6 +12,12 @@
 // heuristic is exempted for exactly these channels, and only while a watch
 // filter is actually armed on the connection.
 //
+// The scope filter (`TranscriptScopeFiltered` in that table, only
+// `provider:item_event`) withholds a watched thread's subagent rows by the
+// same sequence rule, so it needs no list of its own: every channel it
+// narrows is already here, and TestTranscriptScopeFilteredChannelsAreEntityFiltered
+// keeps it that way.
+//
 // The exemption is narrow on purpose. Explicit `gap:true` markers keep
 // working on these channels unchanged — those are a server statement about
 // a real loss, honoured before the heuristic ever runs — and every other

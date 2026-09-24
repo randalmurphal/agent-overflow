@@ -160,8 +160,12 @@ type pendingDelta struct {
 	// gapThreads is the announcement's attribution (mergeGap).
 	gap        bool
 	gapThreads []string
-	entityKey  string
-	channel    string
+	// entityKey and entityScope are the row's address (event_entity.go),
+	// the same on every frame merged for it, so the merged frame is
+	// addressed exactly as its parts were.
+	entityKey   string
+	entityScope string
+	channel     string
 }
 
 // deltaCoalescer merges a backgrounded connection's transcript deltas.
@@ -237,7 +241,7 @@ func (c *deltaCoalescer) append(key deltaKey, frame *leaseItemFrame, e Event) {
 		if c.pending == nil {
 			c.pending = make(map[deltaKey]*pendingDelta)
 		}
-		p = &pendingDelta{kind: frame.Kind, parentID: frame.ParentID, channel: e.Channel, entityKey: e.EntityKey}
+		p = &pendingDelta{kind: frame.Kind, parentID: frame.ParentID, channel: e.Channel, entityKey: e.EntityKey, entityScope: e.EntityScope}
 		c.pending[key] = p
 		c.order = append(c.order, key)
 	} else {
@@ -341,12 +345,13 @@ func mergedDeltaEvent(key deltaKey, p *pendingDelta) (Event, bool) {
 		return Event{}, false
 	}
 	merged := Event{
-		Channel:    p.channel,
-		Seq:        p.seq,
-		Data:       payload,
-		Gap:        p.gap,
-		GapThreads: p.gapThreads,
-		EntityKey:  p.entityKey,
+		Channel:     p.channel,
+		Seq:         p.seq,
+		Data:        payload,
+		Gap:         p.gap,
+		GapThreads:  p.gapThreads,
+		EntityKey:   p.entityKey,
+		EntityScope: p.entityScope,
 	}
 	wire, err := encodeEventFrame(merged)
 	if err != nil {

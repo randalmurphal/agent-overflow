@@ -8,6 +8,7 @@ import { __setBackendStatusForTest } from '../../stores/transportStatus.svelte';
 import { noteThread } from '../../transport/entityIndex';
 import { __attachBackendForTest, detachBackend } from '../../transport/backends';
 import { applyItemStreamEvent, flushItemEventQueue, resetItemEventQueue } from '../../stores/eventsItemStream';
+import { wsClient } from '../../transport/wsClient';
 import type { Item, Project, Thread } from '../../types/models';
 
 const remote = 'tray-owner';
@@ -320,6 +321,45 @@ describe('tray refresh reasons', () => {
     }
     expect(read).toHaveBeenCalledTimes(1);
     expect(activity(controller, 'agent-42')).toBe('step 10');
+  });
+});
+
+describe('tray scope watches', () => {
+  let release = () => {};
+  afterEach(() => { release(); release = () => {}; vi.restoreAllMocks(); });
+
+  it('watches running agents’ scopes only while its body is open, and re-reads behind the watch', async () => {
+    const log: string[] = [];
+    vi.spyOn(wsClient, 'setWatchedThreads').mockImplementation((_threads, scopes) => {
+      log.push(`watch ${scopes.map((scope) => scope.scopeRootId).sort().join(',')}`);
+    });
+    const pane = await buildPane(makeThread({ provider: 'codex' }));
+    const listed = [
+      // A running Codex agent: its direct tool calls are its own scope.
+      makeItem({ id: 'spawn', kind: 'tool_call', toolName: 'collab_agent', status: 'running', isBackground: true }),
+      // A nested running launch: its re-pushes live in its parent's scope.
+      makeItem({ id: 'nested', kind: 'tool_call', toolName: 'Bash', status: 'running', isBackground: true, parentId: 'outer' }),
+      // Settled rows feed nothing live.
+      makeItem({ id: 'settled', kind: 'tool_call', toolName: 'collab_agent', status: 'completed', parentId: 'gone' }),
+    ];
+    setBindingMock('ListLiveBackgroundTasks', async () => { log.push('read'); return listed; });
+    release = $effect.root(() => createBackgroundController(() => pane, Date.now).mount());
+    await flush();
+    expect(log).toContain('read');
+    expect(log.some((entry) => entry.startsWith('watch ') && entry !== 'watch ')).toBe(false);
+
+    log.length = 0;
+    pane.toggleActivityRailBackground();
+    await flush();
+    const read = log.indexOf('read');
+    expect(read).toBeGreaterThan(0);
+    expect(log.slice(0, read).filter((entry) => entry.startsWith('watch')).at(-1)).toBe('watch outer,spawn');
+
+    log.length = 0;
+    pane.toggleActivityRailBackground();
+    await flush();
+    expect(log.filter((entry) => entry.startsWith('watch')).at(-1)).toBe('watch ');
+    expect(log).not.toContain('read');
   });
 });
 

@@ -7,15 +7,17 @@
 //     duplicates do not count as a change)
 //   - an EMPTY set is a real value, distinct from never having sent one
 //   - a set composed while disconnected is retained and restated on open
-//   - on reconnect the watch frame precedes the replay frame, on the same
-//     socket — which is what makes the backend apply the filter before the
-//     replay it answers
+//   - on reconnect the watch frame, scopes included, precedes the replay
+//     frame on the same socket, which is what makes the backend apply the
+//     filter before the replay it answers
+//   - the scope set is absolute, sorted and deduped; `[]` is stated, and a
+//     set past the wire bound is omitted (every scope) rather than truncated
 //   - the forward-skip loss heuristic is exempted on entity-filtered
 //     channels while a filter is armed, and on nothing else: not before a
 //     filter exists, not on an unfiltered channel, and never for an
 //     explicit gap:true marker
 import { describe, expect, it, vi } from 'vitest';
-import { createWSClient, transportGapChannel } from './wsClient';
+import { createWSClient, MAX_WATCH_SCOPES, transportGapChannel } from './wsClient';
 import { ENTITY_FILTERED_CHANNELS } from './entityFilteredChannels';
 import { FakeCtor, flushMicrotasks, MockWebSocket } from '../../test/helpers/mockWebSocket';
 
@@ -46,14 +48,14 @@ describe('watch frame', () => {
   it('sends the set once and dedups an identical one', async () => {
     const { client, ws } = await connectedClient();
 
-    client.setWatchedThreads(['t1', 't2']);
-    client.setWatchedThreads(['t1', 't2']);
+    client.setWatchedThreads(['t1', 't2'], []);
+    client.setWatchedThreads(['t1', 't2'], []);
     // Same membership, different order and a duplicate: still not a change.
-    client.setWatchedThreads(['t2', 't1', 't1']);
+    client.setWatchedThreads(['t2', 't1', 't1'], []);
 
-    expect(watchFrames(ws)).toEqual([{ type: 'watch', threads: ['t1', 't2'] }]);
+    expect(watchFrames(ws)).toEqual([{ type: 'watch', threads: ['t1', 't2'], scopes: [] }]);
 
-    client.setWatchedThreads(['t1']);
+    client.setWatchedThreads(['t1'], []);
     expect(watchFrames(ws)).toHaveLength(2);
 
     client.close();
@@ -66,8 +68,8 @@ describe('watch frame', () => {
     // client that does not speak this frame stays on.
     expect(watchFrames(ws)).toHaveLength(0);
 
-    client.setWatchedThreads([]);
-    expect(watchFrames(ws)).toEqual([{ type: 'watch', threads: [] }]);
+    client.setWatchedThreads([], []);
+    expect(watchFrames(ws)).toEqual([{ type: 'watch', threads: [], scopes: [] }]);
 
     client.close();
   });
@@ -77,7 +79,7 @@ describe('watch frame', () => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
 
     // No socket yet — the send is dropped, the set is kept.
-    client.setWatchedThreads(['t1']);
+    client.setWatchedThreads(['t1'], []);
 
     client.subscribe(UNFILTERED, () => {});
     await flushMicrotasks();
@@ -85,7 +87,7 @@ describe('watch frame', () => {
     ws.acceptOpen();
     await flushMicrotasks();
 
-    expect(watchFrames(ws)).toEqual([{ type: 'watch', threads: ['t1'] }]);
+    expect(watchFrames(ws)).toEqual([{ type: 'watch', threads: ['t1'], scopes: [] }]);
 
     client.close();
   });
@@ -101,7 +103,7 @@ describe('watch frame', () => {
       const first = MockWebSocket.instances[0]!;
       first.acceptOpen();
       await vi.advanceTimersByTimeAsync(0);
-      client.setWatchedThreads(['t1']);
+      client.setWatchedThreads(['t1'], [{ threadId: 't1', scopeRootId: 'agent-1' }]);
 
       first.triggerClose();
       await vi.advanceTimersByTimeAsync(125);
@@ -112,13 +114,81 @@ describe('watch frame', () => {
       // Ordering is the whole contract: the backend reads frames in order
       // on one loop, so a replay ahead of the watch would answer for every
       // thread this client stopped looking at.
-      expect(second.sent[0]).toEqual({ type: 'watch', threads: ['t1'] });
+      expect(second.sent[0]).toEqual({ type: 'watch', threads: ['t1'], scopes: [{ threadId: 't1', scopeRootId: 'agent-1' }] });
       expect(second.sent[1]).toMatchObject({ type: 'replay' });
 
       client.close();
     } finally {
       vi.useRealTimers();
       vi.restoreAllMocks();
+    }
+  });
+});
+
+describe('watch scopes', () => {
+  const scope = (threadId: string, scopeRootId: string) => ({ threadId, scopeRootId });
+
+  it('sends the scope set sorted and deduped, and a scope change alone as a new frame', async () => {
+    const { client, ws } = await connectedClient();
+
+    client.setWatchedThreads(['t1'], [scope('t1', 'b'), scope('t1', 'a'), scope('t1', 'b')]);
+    expect(watchFrames(ws)).toEqual([
+      { type: 'watch', threads: ['t1'], scopes: [scope('t1', 'a'), scope('t1', 'b')] },
+    ]);
+
+    // Same pairs in another order: no frame.
+    client.setWatchedThreads(['t1'], [scope('t1', 'a'), scope('t1', 'b')]);
+    expect(watchFrames(ws)).toHaveLength(1);
+
+    // Same threads, one scope closed: the absolute set is restated.
+    client.setWatchedThreads(['t1'], [scope('t1', 'a')]);
+    expect(watchFrames(ws)[1]).toEqual({ type: 'watch', threads: ['t1'], scopes: [scope('t1', 'a')] });
+
+    client.setWatchedThreads(['t1'], []);
+    expect(watchFrames(ws)[2]).toEqual({ type: 'watch', threads: ['t1'], scopes: [] });
+
+    client.close();
+  });
+
+  it('drops a pair with an empty id rather than sending a frame the backend refuses', async () => {
+    const { client, ws } = await connectedClient();
+
+    client.setWatchedThreads(['t1'], [scope('t1', ''), scope('', 'a'), scope('t1', 'a')]);
+    expect(watchFrames(ws)).toEqual([{ type: 'watch', threads: ['t1'], scopes: [scope('t1', 'a')] }]);
+
+    client.close();
+  });
+
+  it('omits the scope set it cannot state, admitting every scope instead of truncating', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { client, ws } = await connectedClient();
+      const diagnostics: string[] = [];
+      client.setDiagnosticsSink((message) => { diagnostics.push(message); });
+
+      const over = Array.from({ length: MAX_WATCH_SCOPES + 1 }, (_, i) => scope('t1', `agent-${i}`));
+      client.setWatchedThreads(['t1'], over);
+      expect(watchFrames(ws)).toEqual([{ type: 'watch', threads: ['t1'] }]);
+      expect(diagnostics).toEqual(['transport: watched-scope set exceeded the wire bound']);
+
+      // Still unstatable: deduped, and reported once.
+      client.setWatchedThreads(['t1'], over);
+      expect(watchFrames(ws)).toHaveLength(1);
+      expect(diagnostics).toHaveLength(1);
+
+      // Exactly at the bound is stated.
+      client.setWatchedThreads(['t1'], over.slice(0, MAX_WATCH_SCOPES));
+      expect(watchFrames(ws)[1]?.scopes).toHaveLength(MAX_WATCH_SCOPES);
+
+      // An id past the backend's byte bound: multi-byte characters count.
+      client.setWatchedThreads(['t1'], [scope('t1', 'é'.repeat(129))]);
+      expect(watchFrames(ws)[2]).toEqual({ type: 'watch', threads: ['t1'] });
+      client.setWatchedThreads(['t1'], [scope('t1', 'é'.repeat(128))]);
+      expect(watchFrames(ws)[3]).toEqual({ type: 'watch', threads: ['t1'], scopes: [scope('t1', 'é'.repeat(128))] });
+
+      client.close();
+    } finally {
+      warn.mockRestore();
     }
   });
 });
@@ -132,7 +202,7 @@ describe('forward-skip exemption', () => {
     const delivered: unknown[] = [];
     client.subscribe(channel, (data) => { delivered.push(data); });
     await flushMicrotasks();
-    if (arm) client.setWatchedThreads(['t1']);
+    if (arm) client.setWatchedThreads(['t1'], []);
 
     ws.pushFrame({ type: 'event', channel, seq: 1, data: { v: 1 } });
     ws.pushFrame({ type: 'event', channel, seq: 9, data: { v: 9 } });
@@ -170,7 +240,7 @@ describe('forward-skip exemption', () => {
     client.subscribe(transportGapChannel, (data) => { gaps.push(data); });
     client.subscribe(FILTERED, () => {});
     await flushMicrotasks();
-    client.setWatchedThreads(['t1']);
+    client.setWatchedThreads(['t1'], []);
 
     // A server statement about a real loss, not a heuristic — the
     // exemption must not touch it.
