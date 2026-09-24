@@ -643,9 +643,9 @@ func (r *Router) persistCompletedTextItem(threadID string, turnIndex int, scope,
 		// retry delivered the reply snapshot-only). Subagent-scoped
 		// blocks keep the single completed upsert: recovery is their
 		// NORMAL delivery path (the CLI emits no partial stream events
-		// for subagent messages), they render inside cards, and the
-		// settle patch would race the fold eviction in the frontend's
-		// applyItemPatch before the reveal wrote any text.
+		// for subagent messages), the scoped surfaces that show them
+		// read one settled upsert, and the main window ignores another
+		// scope's deltas and patches by parentId.
 		log.Printf("triage: recovered never-streamed text block %s on thread %s (%d bytes)", itemID, threadID, len(content))
 		return r.persistCompletedBlockEmitStreaming(item, &payload, content)
 	}
@@ -827,7 +827,7 @@ func (r *Router) enrichStreamingPathRefsAndEmit(item store.Item, updatedAt int64
 	state.lastMerged = merged
 	state.lastRefs = refs
 	state.lastMetaBase = item.Meta
-	r.emit(eventchan.ProviderItemEvent, newItemStreamMeta(item.ThreadID, item.ID, item.Kind, merged, updatedAt))
+	r.emit(eventchan.ProviderItemEvent, newItemStreamMeta(item.ThreadID, item.ID, item.ParentID, item.Kind, merged, updatedAt))
 }
 
 // workspacePathFor returns the WorkspacePath for threadID, using a

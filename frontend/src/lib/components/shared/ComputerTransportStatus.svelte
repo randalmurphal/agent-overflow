@@ -52,6 +52,7 @@
   import { signInWithPasskey, unpairHome } from '../../transport/deviceSession';
   import { hasHomeEndpoint } from '../../transport/homeEndpoint';
   import { errString } from '../../utils/errors';
+  import { startupMetaText, startupStatusText } from '../../transport/startupProgress';
   import { relativeTime } from '../../utils/format';
   import {
     getTransportStatus,
@@ -127,8 +128,14 @@
   // A connection problem outranks a bundle notice: one is happening now
   // and the other is about the next launch. The notice keeps the strip
   // up on its own once the transport is healthy again.
+  //
+  // A backend that is starting is not a problem, and before this page
+  // first connects its boot is shown by the startup screen and the
+  // sidebar's catalog rows. The strip reports it only for a backend this
+  // page was already using, which is a restart.
+  let starting = $derived(snapshot.status === 'starting');
   let visible = $derived(
-    (snapshot.status !== 'connected' && (hasEverConnected || bootGraceExpired))
+    (snapshot.status !== 'connected' && (starting ? hasEverConnected : hasEverConnected || bootGraceExpired))
       || checking || syncing || bundleNotice !== '',
   );
 
@@ -199,7 +206,7 @@
   });
 
   let bannerClasses = $derived.by(() => {
-    if (snapshot.status === 'connected') {
+    if (snapshot.status === 'connected' || starting) {
       return 'bg-fg/10 border-fg/20 text-fg-muted';
     }
     if (snapshot.status === 'reconnecting') {
@@ -242,6 +249,12 @@
     if (checking) return 'Checking connection…';
     if (syncing) return 'Syncing…';
     if (snapshot.status === 'connected') return bundleNotice;
+    if (snapshot.status === 'starting') {
+      const startup = snapshot.startup;
+      if (!startup) return 'Starting…';
+      const meta = startupMetaText(startup);
+      return meta ? `${startupStatusText(startup)} (${meta})` : startupStatusText(startup);
+    }
     if (snapshot.status === 'reconnecting') {
       if (dormant) {
         return lastSeen === null
@@ -377,7 +390,8 @@
         Choose computer
       </button>
     {/if}
-    {#if (snapshot.status !== 'connected' || checking) && !removed}
+    <!-- No Retry while starting: the client already asks every half second. -->
+    {#if (snapshot.status !== 'connected' || checking) && !removed && !starting}
       <button
         type="button"
         onclick={handleRetry}

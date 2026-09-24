@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/loopback"
+	"agent-overflow/internal/startupprogress"
 )
 
 // The attached-backend routes: how one page reaches machines that are not
@@ -312,6 +313,13 @@ func (s *Server) handleAttachedBootstrap(w http.ResponseWriter, r *http.Request)
 		// unfingerprintable 404 a removed profile gets, which the SPA
 		// latches on instead of retrying.
 		http.NotFound(w, r)
+		return
+	}
+	var starting *BackendStartingError
+	if errors.As(err, &starting) {
+		// That machine is starting: pass its report on, so the page shows
+		// the far backend's progress rather than an outage.
+		startupprogress.Write(w, starting.Progress)
 		return
 	}
 	if err != nil {

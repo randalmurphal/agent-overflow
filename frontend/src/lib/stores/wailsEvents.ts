@@ -36,6 +36,8 @@ const UNKNOWN_EVENT_ORIGIN: EventOrigin = { backendId: '' };
 interface DeliveredEvent {
   data: unknown;
   origin?: EventOrigin;
+  sequence?: number;
+  replayed?: boolean;
 }
 
 /**
@@ -59,7 +61,12 @@ interface DeliveredEvent {
  * argument rather than folded into the payload so no channel's shape
  * changes and nothing has to be unwrapped.
  *
- * `origin.replayed` marks a frame the transport delivered out of its
+ * The third argument is the frame's transport sequence on its channel,
+ * absent for a delivery the transport did not sequence. A subscriber that
+ * fences frames against a cut taken over RPC reads it
+ * (`stores/eventsItemStream.ts`).
+ *
+ * The fourth, `replayed`, marks a frame the transport delivered out of its
  * RECONNECT REPLAY window rather than as it happened. A subscriber that
  * converges state must ignore it — applying a replayed row is exactly what
  * replay is for — and only a subscriber that INTERRUPTS a person has any
@@ -67,15 +74,15 @@ interface DeliveredEvent {
  * things. `stores/browserNotificationPresenter.svelte.ts` is the one such
  * consumer today: it re-raises a replayed banner (the tag replaces it, so a
  * duplicate costs nothing) and plays no cue for one, because a cue names a
- * moment and a replayed moment has already passed. Absent means live, which
- * is the answer a transport that never buffered gives.
+ * moment and a replayed moment has already passed. False means live, which
+ * is also the answer a transport that never buffered gives.
  */
 export function wailsEventOn<T = unknown>(
   name: string,
-  handler: (data: T, origin: EventOrigin) => void,
+  handler: (data: T, origin: EventOrigin, sequence: number | undefined, replayed: boolean) => void,
 ): () => void {
   return Events.On(name, (ev) => {
     const delivered = ev as DeliveredEvent;
-    handler(delivered.data as T, delivered.origin ?? UNKNOWN_EVENT_ORIGIN);
+    handler(delivered.data as T, delivered.origin ?? UNKNOWN_EVENT_ORIGIN, delivered.sequence, delivered.replayed === true);
   });
 }

@@ -159,6 +159,14 @@ export function getTransportStatusFor(
 }
 
 /**
+ * Whether any attached backend is reporting that it is starting
+ * (status 'starting', with its report in the snapshot's `startup`).
+ */
+export function anyBackendStarting(): boolean {
+  return attachedBackends().some((entry) => statusByBackend.get(entry.id).status === 'starting');
+}
+
+/**
  * One backend's hello, or null before it has sent one. Reactive on that
  * backend's box alone.
  *

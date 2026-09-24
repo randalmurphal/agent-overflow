@@ -35,7 +35,7 @@ func (a *App) restoreUnconfirmedQueueOnSessionDeath(threadID string) []triage.Un
 }
 
 // restoreUnconfirmedQueueOnSessionDeathIf is the guarded form used by the
-// provider read loop. The guard runs after the thread action lock is held and
+// provider event handler. The guard runs after the thread action lock is held and
 // before any queue state is drained. That makes a session token plus triage
 // epoch check atomic with respect to a replacement start or send on the same
 // thread.

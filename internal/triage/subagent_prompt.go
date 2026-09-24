@@ -12,8 +12,8 @@ import (
 
 // persistProvisionalSubagentPrompt writes the launch input as the first row in
 // an agent's scoped transcript. Claude does not echo an async agent's opening
-// user row on ordinary stdout, so waiting for terminal transcript recovery
-// would append the prompt after the work it caused.
+// user row on ordinary stdout, so waiting for the session mirror would
+// append the prompt after the work it caused.
 //
 // The launch scope is the row identity. The real transcript row later updates
 // this item with its provider uuid, and session import uses the same identity.
@@ -72,8 +72,8 @@ func (r *Router) persistProvisionalSubagentPrompt(launch store.Item, meta ToolSt
 // from the event, because on the live sequence this row arrives BEFORE
 // the keep-running flip that fills Handle's carrier map.
 //
-// Provisional like the launch-input prompt: the terminal transcript
-// replay later delivers the same text with its provider uuid, and
+// Provisional like the launch-input prompt: the session mirror later
+// delivers the same text with its provider uuid, and
 // persistWireOnlySubagentPrompt binds it onto this row in place.
 func (r *Router) persistResumePromptRow(evt provider.ProviderEvent, meta userTextMeta) error {
 	prompt := strings.TrimSpace(evt.Content)

@@ -272,3 +272,11 @@ func TestDeliverPageTicketToleratesAnAbsentWindow(t *testing.T) {
 	}
 	stop()
 }
+
+// A window without a sink shows the saved placement without owning it: it
+// subscribes to none of the window's events and its flush writes nothing.
+func TestTrackWithoutASinkOwnsNothing(t *testing.T) {
+	flush := Track(nil, windowgeom.Geometry{X: 10, Y: 10, Width: 900, Height: 700, Valid: true}, nil)
+	flush()
+	flush()
+}

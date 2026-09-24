@@ -586,7 +586,12 @@ func (a *App) serviceUpdateFlow(ctx context.Context, deps ServiceUpdateDeps, tag
 		return err
 	}
 	finishPreparation()
-	if err := a.waitForUpdateIdle(ctx); err != nil {
+	if err := a.waitForUpdateIdle(ctx, func(reason string) {
+		a.publishServiceUpdate(func(status *ServiceUpdateStatus) {
+			status.Phase = serviceUpdatePhaseWaiting
+			status.WaitingFor = reason
+		})
+	}); err != nil {
 		return err
 	}
 

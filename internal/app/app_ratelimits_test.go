@@ -286,6 +286,7 @@ func TestSessionEventHandlerTurnCompleteRecordsActivityWithoutProbing(t *testing
 		ThreadID:  "thread-claude",
 		Timestamp: time.Now(),
 	})
+	waitProviderEvents(t, app, "thread-claude")
 
 	if !app.providerLifecycleService().TurnCompletedSince(string(provider.Claude), mark) {
 		t.Fatalf("Claude turn-complete did not record turn activity")

@@ -48,7 +48,9 @@ import {
   type ClientFrame,
   MAX_REPLAY_CHANNELS,
   type ClientRPCFrame,
+  type ClientWatchFrame,
   type LeaseState,
+  type WatchScope,
   type ServerEventFrame,
   type ServerHelloFrame,
   type ServerFrame,
@@ -63,6 +65,13 @@ import { homeWsUrl } from './homeEndpoint';
 import { refreshGrantedScopes } from './scopes';
 import { randomId } from '../utils/randomId';
 import { ReplayBuffer } from './replayBuffer';
+import {
+  BackendStartingError,
+  sameTransportStartup,
+  transportStartup,
+  type StartupProgress,
+  type TransportStartup,
+} from './startupProgress';
 
 /**
  * Append this screen's identity to the upgrade URL. Kept as a function rather
@@ -168,6 +177,11 @@ export const DORMANT_PROBE_MS = 5 * 60_000;
 // dying takes every attached backend's ladder with it) so they do not all
 // dial on the same second.
 export const DORMANT_PROBE_JITTER_MS = 30_000;
+// How often a client asks a starting backend again. A starting report
+// proves the backend is up, so this is a flat poll rather than a rung of
+// the reconnect ladder: the first attempt after the backend becomes ready
+// connects within this interval.
+export const STARTING_POLL_MS = 500;
 // How long redialAfterPairing waits for the transport to become usable
 // before handing back anyway. The app mounts on the other side of that
 // call, so the wait has to be long enough to cover a manifest fetch, a
@@ -184,6 +198,11 @@ export { MAX_REPLAY_CHANNELS } from './frames';
 // Mirrors internal/transport/frame.go MaxWatchThreads. A set past this is
 // refused by the backend, so the client checks it rather than sending one.
 export const MAX_WATCH_THREADS = 256;
+// Mirrors internal/transport/frame.go MaxWatchThreadIDBytes, which bounds
+// every id a watch set, and so a gap's thread list, can hold.
+const MAX_WATCH_THREAD_ID_LENGTH = 256;
+// Mirrors internal/transport/frame.go MaxWatchScopes.
+export const MAX_WATCH_SCOPES = 256;
 
 // sameStringList compares two already-sorted lists elementwise. The watch
 // set is small (panes on a screen), so a loop beats building a Set per
@@ -194,6 +213,47 @@ function sameStringList(a: readonly string[], b: readonly string[]): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+
+const utf8 = new TextEncoder();
+
+// The backend bounds an id in BYTES; only an id long enough to exceed the
+// bound in some encoding pays for measuring.
+function withinWatchIdBound(id: string): boolean {
+  if (id.length > MAX_WATCH_THREAD_ID_LENGTH) return false;
+  return id.length * 3 <= MAX_WATCH_THREAD_ID_LENGTH
+    || utf8.encode(id).byteLength <= MAX_WATCH_THREAD_ID_LENGTH;
+}
+
+// The scope half of a watch: sorted and deduped like the thread half, so the
+// dedup compare is a sequence equality. `null` is a set this client cannot
+// state within the backend's bounds; the frame then omits the field, which
+// the backend reads as "every scope of a watched thread". An empty id names
+// no transcript and is dropped rather than sent: the backend refuses the
+// whole frame for one.
+type WatchScopeSet = { scopes: WatchScope[]; keys: string[] } | null;
+
+function composeWatchScopes(scopes: readonly WatchScope[]): WatchScopeSet {
+  const byKey = new Map<string, WatchScope>();
+  for (const scope of scopes) {
+    if (!scope.threadId || !scope.scopeRootId) continue;
+    if (!withinWatchIdBound(scope.threadId) || !withinWatchIdBound(scope.scopeRootId)) return null;
+    byKey.set(`${scope.threadId}\u0000${scope.scopeRootId}`, { threadId: scope.threadId, scopeRootId: scope.scopeRootId });
+  }
+  if (byKey.size > MAX_WATCH_SCOPES) return null;
+  const keys = [...byKey.keys()].sort();
+  return { scopes: keys.map(key => byKey.get(key)!), keys };
+}
+
+function sameWatchScopes(a: WatchScopeSet, b: WatchScopeSet): boolean {
+  if (a === null || b === null) return a === b;
+  return sameStringList(a.keys, b.keys);
+}
+
+function watchFrame(watch: { threads: string[]; scopes: WatchScopeSet }): ClientWatchFrame {
+  return watch.scopes === null
+    ? { type: 'watch', threads: watch.threads }
+    : { type: 'watch', threads: watch.threads, scopes: watch.scopes.scopes };
 }
 // Native notification activation can arrive before the SPA makes its first
 // WS connection (notably a cold launch from a Windows toast). Seed this
@@ -514,6 +574,10 @@ let fanoutScratchInUse = false;
 // in-flight after a previous close. nextAttemptAt is the wall-clock
 // millis when the next attempt is scheduled — null if the attempt is
 // already in flight.
+// 'starting' means the backend answered its manifest with a starting
+// report (internal/startupprogress): it is up and booting, not failing.
+// The snapshot's `startup` carries the report, and the client asks again
+// every STARTING_POLL_MS without climbing the reconnect ladder.
 // Two states are TERMINAL: the backend answered, the answer will not
 // change while this page sits there, and the automatic ladder stops
 // rather than burn a device's radio and battery on attempts that cannot
@@ -553,6 +617,7 @@ let fanoutScratchInUse = false;
 // not present itself as settled.
 export type TransportStatus =
   | 'connected'
+  | 'starting'
   | 'reconnecting'
   | 'unauthorized'
   | 'pairing-required'
@@ -648,6 +713,8 @@ export interface TransportStatusSnapshot {
    *  "last seen", never against a backend timestamp. null when this
    *  client has never connected. */
   lastConnectedAt?: number | null;
+  /** The backend's latest starting report. Present only on 'starting'. */
+  startup?: TransportStartup;
 }
 
 type StatusHandler = (snapshot: TransportStatusSnapshot) => void;
@@ -992,10 +1059,11 @@ export class WSClient {
   // noise for a moment the person already lived through.
   private drainingReplay = false;
   private notificationCheckpointScope: string | null = null;
-  // The watched-thread set this client is DESIRING, sorted. `null` means
-  // no set has ever been composed, which is the wildcard state the backend
-  // starts every connection in, so a client that never composes one
-  // behaves exactly as it did before the frame existed.
+  // The watched set this client is DESIRING: its threads, sorted, and its
+  // subagent scopes (`WatchScopeSet`). `null` means no set has ever been
+  // composed, which is the wildcard state the backend starts every
+  // connection in, so a client that never composes one behaves exactly as
+  // it did before the frame existed.
   //
   // The desired set, not the set last written to a socket: it is recorded
   // before the frame is sent, and a send that fails (a closed or
@@ -1008,7 +1076,7 @@ export class WSClient {
   // the same restatement one arbitrary delay later.
   //
   // It is also the dedup key, so an unchanged composition writes nothing.
-  private watchedThreads: string[] | null = null;
+  private watch: { threads: string[]; scopes: WatchScopeSet } | null = null;
   // This connection's lease state (./frames.ts). `'active'` is BOTH the
   // never-set value and the resting one, deliberately: the backend starts
   // every connection active, so the two are the same fact on the wire and a
@@ -1020,7 +1088,7 @@ export class WSClient {
   // the reason a client that never composes one is unaffected by it.
   //
   // The desired state, not the state last written to a socket, on exactly the
-  // terms `watchedThreads` is: it is restated after every hello, so a send
+  // terms `watch` is: it is restated after every hello, so a send
   // that lost a closing socket costs nothing past that connection.
   //
   // It is also the dedup key. A window focus event fires on every alt-tab and
@@ -1179,13 +1247,22 @@ export class WSClient {
 
   /**
    * Name the threads this connection is looking at, narrowing the
-   * entity-filtered channels (./entityFilteredChannels.ts) server-side.
+   * entity-filtered channels (./entityFilteredChannels.ts) server-side,
+   * and the subagent transcripts it is viewing, which narrow
+   * `provider:item_event` further: a child row arrives only for a scope
+   * named here (./frames.ts ClientWatchFrame).
    *
-   * The set is ABSOLUTE and idempotent: an identical set sends nothing, and
-   * an EMPTY one is a legal value meaning "no panes open". Composed from
-   * pane EXISTENCE and never from visibility — an off-screen pane, a hidden
-   * document and a background tab all keep watching, because a pane that
-   * stopped receiving would render wrongly the moment it is looked at.
+   * Both sets are ABSOLUTE and idempotent: an identical pair sends nothing,
+   * and EMPTY ones are legal values meaning "no panes open" and "no agent
+   * open". Composed from surface EXISTENCE and never from visibility — an
+   * off-screen pane, a hidden document and a background tab all keep
+   * watching, because a surface that stopped receiving would render
+   * wrongly the moment it is looked at.
+   *
+   * A scope set past MAX_WATCH_SCOPES, or holding an id past the wire
+   * bound, is not truncated: the frame omits `scopes`, which admits every
+   * scope of the watched threads. Wider delivery costs bytes; a truncated
+   * set would silently stop an open agent view.
    *
    * Nothing here is authorization. It reduces what this client asks to be
    * sent; what it is ALLOWED to be sent is the per-connection origin and
@@ -1194,7 +1271,7 @@ export class WSClient {
    * Returns silently when disconnected: the set is retained and restated on
    * the next open, ahead of the replay frame.
    */
-  setWatchedThreads(threadIds: readonly string[]): void {
+  setWatchedThreads(threadIds: readonly string[], scopes: readonly WatchScope[]): void {
     // Sorted + deduped so the dedup compare is a plain sequence equality
     // and the wire bytes are stable for an unchanged composition — pane
     // registries iterate in insertion order, which reshuffles on a reorder
@@ -1215,9 +1292,18 @@ export class WSClient {
       );
       return;
     }
-    if (this.watchedThreads !== null && sameStringList(this.watchedThreads, next)) return;
-    this.watchedThreads = next;
-    this.sendFrame({ type: 'watch', threads: next });
+    const nextScopes = composeWatchScopes(scopes);
+    if (this.watch !== null && sameStringList(this.watch.threads, next)
+      && sameWatchScopes(this.watch.scopes, nextScopes)) return;
+    if (nextScopes === null) {
+      console.warn(`wsClient: watch scope set of ${scopes.length} cannot be stated; admitting every scope`);
+      this.diagnosticsSink?.(
+        'transport: watched-scope set exceeded the wire bound',
+        `${scopes.length} scopes`,
+      );
+    }
+    this.watch = { threads: next, scopes: nextScopes };
+    this.sendFrame(watchFrame(this.watch));
   }
 
   /**
@@ -2037,6 +2123,12 @@ export class WSClient {
       ws = this.createSocket(url);
     } catch (err) {
       this.connectPromise = null;
+      if (err instanceof BackendStartingError) {
+        // The backend answered and is booting. Not a preparation failure
+        // and not an outage rung: publish its progress and ask again.
+        this.enterStarting(err.progress);
+        throw new DisconnectedError('backend is starting', { cause: err });
+      }
       // A refused credential is not a transient failure. For a session
       // that can't mint a new token it is terminal — latch it BEFORE
       // scheduleReconnect below, which is what reads the latch and
@@ -2126,10 +2218,11 @@ export class WSClient {
     // socket. The backend handles inbound frames in order on one read loop,
     // so a watch written first is applied before the replay it precedes —
     // which is what stops a reconnect replaying every watched channel's
-    // whole ring for threads this client stopped looking at. A connection
-    // that has composed no set skips this and stays wildcard.
-    if (this.watchedThreads !== null) {
-      this.sendFrame({ type: 'watch', threads: this.watchedThreads });
+    // whole ring for threads this client stopped looking at, and every
+    // subagent's rows for agents it is not viewing. A connection that has
+    // composed no set skips this and stays wildcard.
+    if (this.watch !== null) {
+      this.sendFrame(watchFrame(this.watch));
     }
     // And restate the lease, for the same reason and on the same terms: the
     // backend starts every connection ACTIVE, so a phone that went to sleep
@@ -2716,12 +2809,22 @@ export class WSClient {
     const armed = !(dormant && this.lease === 'background');
     const nextAttemptAt = armed ? Date.now() + delay : null;
     this.setReconnecting(nextAttemptAt);
+    // Switch to "in-flight attempt" when it fires — clear nextAttemptAt so
+    // the UI stops counting down while the connect promise resolves.
+    this.queueAttempt(delay, demandFloorMs, () => this.setReconnecting(null));
+    // Queued either way, so demand still has something to fire and the
+    // promise still has an owner; only the TIMER is cancelled.
+    if (!armed) this.disarmQueuedAttempt();
+  }
+
+  // queueAttempt queues the next connect attempt `delay` from now and makes
+  // it `connectPromise`. The attempt body is shared between the timer and
+  // queuedAttempt.fire so early demand (an RPC, a page resume, the Retry
+  // button) runs THIS scheduled attempt — settling this same promise for
+  // anyone already awaiting connectPromise — rather than racing a second
+  // connect against it. `beforeAttempt` publishes the in-flight status.
+  private queueAttempt(delay: number, demandFloorMs: number, beforeAttempt: () => void): void {
     const promise = new Promise<void>((resolve, reject) => {
-      // The attempt body is shared between the backoff timer and
-      // queuedAttempt.fire so early demand (an RPC, a page resume, the
-      // Retry button) runs THIS scheduled attempt — settling this same
-      // promise for anyone already awaiting connectPromise — rather
-      // than racing a second connect against it.
       const fire = (): void => {
         if (this.queuedAttempt !== null) {
           clearTimeout(this.queuedAttempt.timer);
@@ -2731,19 +2834,35 @@ export class WSClient {
           reject(new DisconnectedError('client closed', { terminal: true }));
           return;
         }
-        // Switch to "in-flight attempt" — clear nextAttemptAt so the UI
-        // stops counting down while the connect promise resolves.
-        this.setReconnecting(null);
+        beforeAttempt();
         this.connect().then(resolve, reject);
       };
       this.queuedAttempt = { timer: setTimeout(fire, delay), fire, demandFloorMs };
     });
-    // Queued either way, so demand still has something to fire and the
-    // promise below still has an owner; only the TIMER is cancelled.
-    if (!armed) this.disarmQueuedAttempt();
     this.connectPromise = promise;
-    // Swallow rejections on this branch — see comment above.
+    // Swallow rejections on this branch — see scheduleReconnect.
     promise.catch(() => {});
+  }
+
+  // enterStarting publishes a starting backend's report and queues the next
+  // ask. The backend answered, so this is neither an outage rung nor a
+  // preparation failure: the ladder resets instead of climbing and never
+  // ages toward dormancy, and the status stays 'starting' while each ask is
+  // in flight. A boot that spends minutes migrating connects within
+  // STARTING_POLL_MS of becoming ready. The queued attempt is the ordinary
+  // one, so demand fires it early exactly as it would a backoff rung.
+  private enterStarting(progress: StartupProgress): void {
+    if (this.closed) return;
+    this.reconnectAttempt = 0;
+    this.ladderStartedAt = 0;
+    this.setStatus({
+      status: 'starting',
+      nextAttemptAt: null,
+      lastConnectedAt: this.lastConnectedAt === 0 ? null : this.lastConnectedAt,
+      startup: transportStartup(progress),
+    });
+    if (this.queuedAttempt !== null || this.connectPromise !== null) return;
+    this.queueAttempt(STARTING_POLL_MS, STARTING_POLL_MS, () => {});
   }
 
   // getBootstrap caches the manifest fetch so a reconnect doesn't re-hit
@@ -3099,6 +3218,7 @@ export class WSClient {
     seq: number;
     data: unknown;
     gap?: boolean;
+    gapThreads?: string[];
   }): void {
     if (evt.gap === true) {
       // A gap marker is a resync instruction, not a data event, so it
@@ -3117,10 +3237,7 @@ export class WSClient {
         'transport: event gap marker received',
         `${clampString(evt.channel)} seq ${evt.seq}`,
       );
-      this.dispatchToSubscribers(TRANSPORT_GAP_CHANNEL, {
-        channel: evt.channel,
-        seq: evt.seq,
-      });
+      this.dispatchToSubscribers(TRANSPORT_GAP_CHANNEL, this.gapEvent(evt));
       this.dispatchToSubscribers(evt.channel, evt.data, evt.seq);
       return;
     }
@@ -3131,7 +3248,8 @@ export class WSClient {
       && cursor.epoch === this.connectionEpoch
       && evt.seq > cursor.seq + 1
       // …unless the server is deliberately withholding this channel's
-      // frames for threads we did not name. A withheld frame still spent
+      // frames for threads, or subagent scopes, we did not name. A
+      // withheld frame still spent
       // its channel's seq, so on a narrowed channel a forward skip is the
       // NORMAL case and means nothing was lost — reading it as a drop would
       // fire a full resync for every frame addressed to another thread.
@@ -3139,7 +3257,7 @@ export class WSClient {
       // channels the backend actually narrows, and only once this
       // connection has armed a filter. Explicit `gap:true` markers are
       // untouched; they are handled above, before this heuristic runs.
-      && !(this.watchedThreads !== null && isEntityFilteredChannel(evt.channel))
+      && !(this.watch !== null && isEntityFilteredChannel(evt.channel))
     ) {
       // Forward skip inside one connection: the events between the two
       // seqs existed and never reached us, because the server's fanout
@@ -3167,6 +3285,20 @@ export class WSClient {
     }
     this.recordChannelSeq(evt.channel, evt.seq);
     this.dispatchToSubscribers(evt.channel, evt.data, evt.seq);
+  }
+
+  // The gap event a server marker becomes. The marker's thread list is
+  // kept only when well formed; a malformed one is reported and dropped,
+  // which leaves an unattributed gap whose recovery covers every thread.
+  private gapEvent(evt: { channel: string; seq: number; gapThreads?: unknown }): TransportGap {
+    const threads = evt.gapThreads;
+    if (threads === undefined) return { channel: evt.channel, seq: evt.seq };
+    if (!Array.isArray(threads) || threads.length === 0 || threads.length > MAX_WATCH_THREADS
+      || !threads.every((id) => typeof id === 'string' && id !== '' && id.length <= MAX_WATCH_THREAD_ID_LENGTH)) {
+      this.noteUnknownInput('gap-threads');
+      return { channel: evt.channel, seq: evt.seq };
+    }
+    return { channel: evt.channel, seq: evt.seq, threads };
   }
 
   // recordChannelSeq updates the per-channel last-seen seq and evicts
@@ -3264,6 +3396,7 @@ export class WSClient {
       // explicit one and republishing an identical snapshot.
       && (next.dormant ?? false) === (current.dormant ?? false)
       && (next.lastConnectedAt ?? null) === (current.lastConnectedAt ?? null)
+      && sameTransportStartup(next.startup, current.startup)
     ) return;
     this.statusSnapshot = next;
     if (this.statusHandlers.size === 0) return;
@@ -3416,6 +3549,15 @@ export const wsClient = new WSClient();
 // Channel name for the synthetic gap event. Exported so subscribers
 // don't have to hard-code the literal.
 export const transportGapChannel = TRANSPORT_GAP_CHANNEL;
+
+/** The synthetic event on `transportGapChannel`: frames on `channel` were
+ *  lost. `threads`, when present, names every thread whose frames the
+ *  server dropped; absent, the loss may have touched any thread. */
+export interface TransportGap {
+  channel: string;
+  seq: number;
+  threads?: readonly string[];
+}
 
 // Vite HMR re-evaluates this module on edit; without disposing, stale
 // clients accumulate with surviving subscribers. dispose() is a no-op

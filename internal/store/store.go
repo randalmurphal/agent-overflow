@@ -2,6 +2,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -19,8 +20,8 @@ import (
 // Store wraps SQLite and provides all persistence operations.
 //
 // Two pools back it. db is the single-connection writer: every write,
-// migration, snapshot restore, checkpoint and space reclamation runs
-// there, which is what lets RestoreFrom's temporary foreign_keys toggle
+// migration, snapshot restore, truncating checkpoint and space reclamation
+// runs there, which is what lets RestoreFrom's temporary foreign_keys toggle
 // behave as if it were global. The connection-scoped PRAGMAs both pools
 // depend on (foreign_keys, busy_timeout, synchronous, query_only) ride
 // the DSN so they survive connection recycling — see dsn.go.
@@ -68,11 +69,39 @@ type Store struct {
 	// deferredMu serializes the runs that advance the deferred migration
 	// watermark. See DeferredMigration.
 	deferredMu sync.Mutex
+	// cards holds the subagent card accumulators between flushes
+	// (subagent_card.go).
+	cards subagentCards
+}
+
+// Options configures NewWithOptions.
+type Options struct {
+	// Context bounds the migrations. Cancelling it interrupts the running
+	// migration, whose transaction rolls back, and the open fails with
+	// the context's error. Nil means context.Background().
+	Context context.Context
+	// OnMigration, when set, is called before each pending migration runs.
+	OnMigration func(MigrationStep)
+	// RefusePendingMigrations fails the open of an existing database with
+	// pending migrations with a MigrationsPendingError, before anything
+	// writes. A database is migrated only by a trial that snapshots it
+	// first (docs/specs/app-update.md, the no-live-migration rule). A new
+	// database has nothing to protect and is created as usual.
+	RefusePendingMigrations bool
 }
 
 // New opens (or creates) the SQLite database at the given path and runs migrations.
 // Pass ":memory:" for tests.
 func New(dbPath string) (*Store, error) {
+	return NewWithOptions(dbPath, Options{})
+}
+
+// NewWithOptions is New with a migration context and progress hook.
+func NewWithOptions(dbPath string, opts Options) (*Store, error) {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := recoverInterruptedSwap(dbPath); err != nil {
 		return nil, err
 	}
@@ -83,8 +112,18 @@ func New(dbPath string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 
-	if err := runMigrations(db); err != nil {
+	if opts.RefusePendingMigrations {
+		if err := refusePendingMigrations(db); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	if err := runMigrationsContext(ctx, db, opts.OnMigration); err != nil {
 		db.Close()
+		// The refusal is already the sentence the boot failure shows.
+		if tooNew := (*SchemaTooNewError)(nil); errors.As(err, &tooNew) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("store: run migrations: %w", err)
 	}
 	if err := ensureStoreIdentity(db); err != nil {
@@ -253,6 +292,11 @@ func (s *Store) quiesceReads(fn func() error) error {
 // checkpoint picks up whatever this one left behind.
 func (s *Store) Close() error {
 	var errs []error
+	// A clean shutdown leaves every subagent card in its stamps, so the
+	// boot pass (RecoverSubagentCards) recomputes the values they hold.
+	if err := s.FlushAllSubagentCards(); err != nil {
+		errs = append(errs, fmt.Errorf("store: flush subagent cards: %w", err))
+	}
 	if s.read != nil {
 		if err := s.read.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("store: close read pool: %w", err))
@@ -273,17 +317,36 @@ func (s *Store) Close() error {
 // callers typically log and continue (the checkpoint is opportunistic;
 // the autocheckpoint and the next idle-boundary call will retry).
 //
-// Why we need this on top of wal_autocheckpoint: the default autocheckpoint
-// fires when the WAL crosses ~1000 pages (~4MB), but it runs synchronously
-// on the next write transaction and bails when any reader transaction is
-// open. In a streaming workload the writer is continuously busy and
-// readers (the dashboard + active thread paging) overlap with bursts —
-// the autocheckpoint window rarely opens. Calling PassiveCheckpoint
-// from turn-completion (when streaming is known to be idle for the
-// thread) gives the WAL a deterministic opportunity to recycle.
+// Why we need this on top of wal_autocheckpoint: the writer keeps SQLite's
+// default of 1000 pages, and the automatic checkpoint runs inside the commit
+// that grows the WAL past it, on the writer, so that commit pays for copying
+// whatever the WAL holds. Calling PassiveCheckpoint at idle boundaries (turn
+// completion, retention sweeps, after each history repair transaction) copies
+// frames before a commit has to.
+//
+// It runs on a read-pool connection. A WAL checkpoint takes the
+// checkpointer lock, not the write lock, so a writer commits while it
+// copies; issued on the single writer connection it would hold every write
+// for the length of the copy. With no read pool, or while reads are
+// quiesced for an operation that needs the database to itself, it runs on
+// the writer.
 func (s *Store) PassiveCheckpoint() error {
-	_, err := s.db.Exec("PRAGMA wal_checkpoint(PASSIVE)")
+	_, err := s.passiveCheckpoint()
 	return err
+}
+
+func (s *Store) passiveCheckpoint() (CheckpointResult, error) {
+	db := s.db
+	if s.read != nil && !s.readsQuiesced.Load() {
+		db = s.read
+	}
+	var res CheckpointResult
+	var busy int64
+	if err := db.QueryRow("PRAGMA wal_checkpoint(PASSIVE)").Scan(&busy, &res.WALFrames, &res.Checkpointed); err != nil {
+		return CheckpointResult{}, fmt.Errorf("store: passive checkpoint: %w", err)
+	}
+	res.Busy = busy != 0
+	return res, nil
 }
 
 // CheckpointResult is the three-column answer PRAGMA wal_checkpoint
@@ -618,6 +681,11 @@ type Item struct {
 	// UnstampedItemRev, which is the same refusal for a wire row an
 	// emitter altered on purpose).
 	Rev int64 `json:"rev"`
+	// SubagentCard is the card of the row's parent (OpenSubagentCard),
+	// never read back. A write of a visible row with a parent needs it,
+	// outside a bulk writer (ErrSubagentAnchor): the store feeds the row
+	// to the card's accumulators once the write commits.
+	SubagentCard *SubagentCard `json:"-"`
 }
 
 // Payload represents heavy content stored for on-demand loading.

@@ -157,7 +157,7 @@ func goldenPayloadFor(t *testing.T, st *store.Store, threadID, payloadID string)
 		t.Fatalf("payload meta %s: %v", payloadID, err)
 	}
 	return &goldenPayload{
-		ID:   maskUUIDs(meta.ID),
+		ID:   meta.ID,
 		Kind: meta.Kind,
 		Meta: normalizeMeta(t, meta.Meta),
 	}

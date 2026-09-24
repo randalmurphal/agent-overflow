@@ -26,7 +26,7 @@ func TestFindToolCallItemByTaskIDResolvesIndexedMeta(t *testing.T) {
 	}
 
 	// Plain text item with no task_id — must not match.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "text-1", ThreadID: "t-ft", TurnIndex: 0, ItemIndex: 0,
 		Kind: "assistant_text", Role: "assistant",
 		Summary: "hello", CreatedAt: now, UpdatedAt: now,
@@ -35,7 +35,7 @@ func TestFindToolCallItemByTaskIDResolvesIndexedMeta(t *testing.T) {
 	}
 
 	// Tool call with a different task_id — must not match.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "tool-a", ThreadID: "t-ft", TurnIndex: 0, ItemIndex: 1,
 		Kind: "tool_call", Role: "assistant", Summary: "other",
 		Meta:      `{"task_id":"task-other"}`,
@@ -45,7 +45,7 @@ func TestFindToolCallItemByTaskIDResolvesIndexedMeta(t *testing.T) {
 	}
 
 	// Tool call with the matching task_id — must match.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "tool-b", ThreadID: "t-ft", TurnIndex: 0, ItemIndex: 2,
 		Kind: "tool_call", Role: "assistant", Summary: "match",
 		Meta:      `{"task_id":"task-target","other":"value"}`,
@@ -121,7 +121,7 @@ func TestFindOriginalAgentLaunchByTaskID(t *testing.T) {
 	// The original launch: oldest row with the task_id. Its updated_at
 	// is NEWEST (round-2 Subn stamps touch the launch row), which is
 	// exactly why the pick orders by created_at, not updated_at.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "agent-launch", ThreadID: "t-orig", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "Agent",
 		Summary: "Agent: original", Meta: `{"task_id":"task-r","subagent_model":"claude-opus-4-7"}`,
@@ -130,7 +130,7 @@ func TestFindOriginalAgentLaunchByTaskID(t *testing.T) {
 		t.Fatalf("insert launch: %v", err)
 	}
 	// A first-resume carrier, younger, same task_id.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "carrier-1", ThreadID: "t-orig", TurnIndex: 1, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "SendMessage",
 		Summary: "Agent: original", Meta: `{"task_id":"task-r"}`,
@@ -139,7 +139,7 @@ func TestFindOriginalAgentLaunchByTaskID(t *testing.T) {
 		t.Fatalf("insert carrier-1: %v", err)
 	}
 	// The second-resume carrier doing the lookup.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "carrier-2", ThreadID: "t-orig", TurnIndex: 2, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "SendMessage",
 		Summary: "Agent: original", Meta: `{"task_id":"task-r"}`,
@@ -180,7 +180,7 @@ func TestFindOriginalAgentLaunchByTaskID(t *testing.T) {
 // TestFindProvisionalSubagentPrompt pins the §E6 resume-prompt
 // reconciliation lookup: the row minted from the rebind
 // `system/task_started` (which has no provider uuid to give) is found by
-// (parent, exact summary) so the terminal transcript can bind its uuid
+// (parent, exact summary) so the mirrored transcript row can bind its uuid
 // onto it in place. A row that is already bound, one under another
 // parent, and one with different text are all misses — each would bind
 // the transcript's copy onto the wrong row.
@@ -197,7 +197,7 @@ func TestFindProvisionalSubagentPrompt(t *testing.T) {
 
 	seed := func(id, parentID, summary, meta string, itemIndex int) {
 		t.Helper()
-		if err := s.InsertItem(Item{
+		if err := insertCarded(s, Item{
 			ID: id, ThreadID: "t-p", TurnIndex: 0, ItemIndex: itemIndex,
 			Kind: "user_text", Role: "user", Status: "completed",
 			Summary: summary, ParentID: parentID, Meta: meta,

@@ -84,7 +84,7 @@ func TestEmptyPayloadRoundTripsThroughSealingAndTheV119Phase(t *testing.T) {
 	s = reopenStore(t, s)
 	logged := captureLog(t)
 
-	if err := s.RunDeferredMigrations(context.Background(), nil); err != nil {
+	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
 		t.Fatal(err)
 	}
 	if deferredPending(t, s) {

@@ -15,8 +15,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/stringsx"
-
-	"github.com/google/uuid"
 )
 
 const usageEmitMinInterval = 500 * time.Millisecond
@@ -110,11 +108,9 @@ func (r *Router) handleCompaction(evt provider.ProviderEvent) error {
 // compacts its OWN context, which is private to it — the same reason
 // handleTokenUsage drops scoped usage — so the thread's compacting
 // window, its usage-emit throttle and its context meter, all of which
-// describe the main agent, stay exactly where they are. Two deliverers,
-// one rule: the live mirror compaction tap (claude
-// parse_transcript_mirror.go) lands the boundary at its real position,
-// and the terminal transcript backfill (subagent_transcript.go)
-// reconciles by the same provider uuid, so both resolve to one row.
+// describe the main agent, stay exactly where they are. The live mirror
+// (claude parse_transcript_mirror.go) delivers the boundary at its real
+// position, keyed by the transcript row's provider uuid.
 func (r *Router) persistSubagentCompaction(evt provider.ProviderEvent, scope string) error {
 	turnIndex, err := r.turnIndexForScope(evt.ThreadID, scope)
 	if err != nil {
@@ -157,7 +153,7 @@ func (r *Router) compactionRow(evt provider.ProviderEvent, turnIndex int, scope 
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	payload := BuildCompactionPayload(summary, now)
+	payload := BuildCompactionPayload(itemID, summary, now)
 	if payload != nil {
 		item.PayloadID = payload.ID
 	}
@@ -213,10 +209,11 @@ func ExtractCompactionSummary(meta json.RawMessage) (summary string, rest json.R
 
 // BuildCompactionPayload builds the on-demand payload for a committed
 // compaction summary: preview/size in meta, the raw summary text in data
-// (same shape as a thinking payload — raw text, not a JSON wrapper). Returns
-// nil for an empty summary, so headless/Codex boundaries persist with no
-// payload exactly as before.
-func BuildCompactionPayload(summary string, now int64) *store.Payload {
+// (same shape as a thinking payload: raw text, not a JSON wrapper). Its
+// id derives from the row's (CompactionPayloadID). Returns nil for an
+// empty summary, so headless/Codex boundaries persist with no payload
+// exactly as before.
+func BuildCompactionPayload(itemID, summary string, now int64) *store.Payload {
 	if summary == "" {
 		return nil
 	}
@@ -226,7 +223,7 @@ func BuildCompactionPayload(summary string, now int64) *store.Payload {
 		metaJSON = []byte("{}")
 	}
 	return &store.Payload{
-		ID:        uuid.NewString(),
+		ID:        CompactionPayloadID(itemID),
 		Kind:      "compaction",
 		Meta:      string(metaJSON),
 		Data:      []byte(summary),

@@ -24,11 +24,10 @@
   // pseudo-transcript (ClaudeSubagentTranscript) is DELETED
   // (docs/specs/agent-visibility.md migration table, "ack-text
   // rendering"): the agent's transcript exists as real rows under the
-  // launch — streamed live or backfilled from the task_notification's
-  // output_file — and renders in the card body and the agent pane. A
-  // failed output-file read/backfill still surfaces here as an inline
-  // error line, because a silently incomplete transcript reads exactly
-  // like a complete one.
+  // launch, streamed live or delivered by the session mirror, and renders
+  // in the card body and the agent pane. A stamped output-file `error`
+  // state still surfaces here as an inline error line, because a silently
+  // incomplete transcript reads exactly like a complete one.
 
   import type { Snippet } from 'svelte';
   import type { HostDisclosure } from './hostDisclosure';
@@ -155,7 +154,7 @@
     const d = summaryMeta?.durationMs;
     return typeof d === 'number' && d >= 0 ? d : null;
   });
-  // The output-file / transcript-backfill state triage stamped on this row.
+  // The output-file state triage stamped on this row.
   // Only the ERROR is rendered — 'loading' and 'loaded' describe payload
   // availability the card and pane own now.
   let deferredOutputError = $derived.by(() => {

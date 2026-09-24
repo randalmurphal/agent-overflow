@@ -72,6 +72,7 @@ var GeneratedMethods = []MethodMeta{
 	{Name: "BrowserHostReport", ID: 2848608143, Scope: "host", Route: "home"},                                        // main.App.BrowserHostReport
 	{Name: "CancelDevicePairing", ID: 2608316491, Scope: "access:admin", Route: "home"},                              // main.App.CancelDevicePairing
 	{Name: "CancelProviderLogin", ID: 341374423, Scope: "access:admin", Route: "home"},                               // main.App.CancelProviderLogin
+	{Name: "CancelRestartToUpdate", ID: 73679326, Scope: "host", Route: "home"},                                      // main.App.CancelRestartToUpdate
 	{Name: "CancelSSHConnection", ID: 812773075, Scope: "host", Route: "home"},                                       // main.App.CancelSSHConnection
 	{Name: "CancelServiceUpdate", ID: 3773103567, Scope: "access:admin", Route: "selected"},                          // main.App.CancelServiceUpdate
 	{Name: "CancelSessionImport", ID: 2562316972, Scope: "threads:operate", Route: "selected"},                       // main.App.CancelSessionImport

@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"agent-overflow/internal/aocli"
+	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/harness/instanceinfo"
+	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/wsllauncher"
 )
 
@@ -199,6 +201,12 @@ type bootFlags struct {
 	mockProvider       *string
 	mockForge          *string
 	resetTransportPort *bool
+	updatingTo         *string
+	updateFailedTo     *string
+	updateFailedReason *string
+	refusePending      *bool
+	waitPID            *int
+	waitStart          *string
 }
 
 // newBootFlagSet declares every flag this binary's boot modes take. The flag
@@ -228,8 +236,24 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 		mockForge:          flagSet.String("mock-forge", "", "harness/soak mode only: path to the ao-mockforge binary run in place of gh and glab (default: alongside this executable; absent, every gh/glab call fails)."),
 		resetTransportPort: flagSet.Bool(resetTransportPortFlag, false,
 			"discard this install's pinned transport port before binding and adopt whatever the OS hands out. The Windows launcher passes it on its one retry when the pinned port turned out to be unreachable from the host (see main_transport_port.go)."),
+		updatingTo: flagSet.String(updatingToFlag, "",
+			"--print-url-fd only: the version whose committed in-app update this launch finishes, named in the startup report. Set by the Windows launcher from its update record."),
+		updateFailedTo: flagSet.String(wsllauncher.UpdateFailedToFlag, "",
+			"--print-url-fd only: the version an in-app update from this version to did not reach. Set by the Windows launcher from its update record, with --"+wsllauncher.UpdateFailedReasonFlag+"."),
+		updateFailedReason: flagSet.String(wsllauncher.UpdateFailedReasonFlag, "",
+			"--print-url-fd only: why that update did not apply, for the notice that says so."),
+		refusePending: flagSet.Bool(wsllauncher.RefusePendingMigrationsFlag, false,
+			"--print-url-fd only: refuse to migrate an existing database live, answering the bootstrap with the pending migrations instead of starting. Set by the Windows launcher, which migrates the database through a snapshot and a trial first."),
+		waitPID: flagSet.Int(supervise.DesktopWaitPIDFlag, 0,
+			"desktop boot only: the update helper that started this launch, which it waits for before it starts. Set by the helper, with --"+supervise.DesktopWaitStartFlag+"."),
+		waitStart: flagSet.String(supervise.DesktopWaitStartFlag, "",
+			"desktop boot only: the start time of that helper, so a reused process id is never waited on."),
 	}
 }
+
+// updatingToFlag is the launcher's name for the update this launch
+// finishes, shared with it as resetTransportPortFlag is.
+const updatingToFlag = wsllauncher.UpdatingToFlag
 
 // resetTransportPortFlag is the flag name, taken from the package that
 // owns the launcher↔backend argv contract rather than re-spelled here:
@@ -298,6 +322,19 @@ type cliFlags struct {
 	// main_transport_port.go for the pin it clears and
 	// cmd/agent-overflow-windows for the retry that passes it.
 	resetTransportPort bool
+	// updatingTo is the version whose committed update this launch
+	// finishes, which the startup report names. Only the Windows launcher
+	// passes it, from its update record.
+	updatingTo string
+	// updateFailure is an update from this version that the launcher's
+	// record settled as rolled back or failed, for the updater's notice.
+	updateFailure appupdate.LauncherFailure
+	// refusePendingMigrations stops the boot, instead of migrating, when the
+	// database has migrations pending. Only the Windows launcher passes it.
+	refusePendingMigrations bool
+	// waitFor is the desktop update helper that started this launch, zero
+	// when none did. The desktop boot waits for it to exit.
+	waitFor supervise.ProcessRef
 }
 
 // parseFlags pulls the command-line flags for a boot.
@@ -329,6 +366,13 @@ func parseFlags(args []string) (cliFlags, error) {
 		mockProvider:           *values.mockProvider,
 		mockForge:              *values.mockForge,
 		resetTransportPort:     *values.resetTransportPort,
+		updatingTo:             strings.TrimSpace(*values.updatingTo),
+		updateFailure: appupdate.LauncherFailure{
+			To:     strings.TrimSpace(*values.updateFailedTo),
+			Reason: strings.TrimSpace(*values.updateFailedReason),
+		},
+		refusePendingMigrations: *values.refusePending,
+		waitFor:                 supervise.ProcessRef{PID: *values.waitPID, Start: strings.TrimSpace(*values.waitStart)},
 	}
 	if out.isolatedProfile != "" && out.isolatedProfile != string(instanceinfo.ModePerf) {
 		return cliFlags{}, fmt.Errorf("unknown --isolated-profile %q (valid: %q)", out.isolatedProfile, instanceinfo.ModePerf)
@@ -496,6 +540,34 @@ func parseFlags(args []string) (cliFlags, error) {
 		}
 		out.printURLFD = n
 		out.headless = true
+	}
+	if out.updatingTo != "" && (!out.headless || out.soak) {
+		// Only the launcher's ordinary backend finishes an in-app update;
+		// anywhere else the flag would label a boot that updates nothing.
+		return cliFlags{}, fmt.Errorf("--%s requires --print-url-fd without --soak (only the Windows launcher's backend finishes an update)", updatingToFlag)
+	}
+	if failure := out.updateFailure; failure != (appupdate.LauncherFailure{}) {
+		if failure.To == "" || failure.Reason == "" {
+			return cliFlags{}, fmt.Errorf("--%s and --%s go together", wsllauncher.UpdateFailedToFlag, wsllauncher.UpdateFailedReasonFlag)
+		}
+		if !out.headless || out.soak {
+			return cliFlags{}, fmt.Errorf("--%s requires --print-url-fd without --soak (only the Windows launcher's backend reports its updates)", wsllauncher.UpdateFailedToFlag)
+		}
+	}
+	if out.refusePendingMigrations && (!out.headless || out.soak) {
+		// Only the launcher's ordinary backend has a launcher that migrates
+		// through a trial; any other boot would refuse and stay refused.
+		return cliFlags{}, fmt.Errorf("--%s requires --print-url-fd without --soak (only the Windows launcher migrates a database through a trial)", wsllauncher.RefusePendingMigrationsFlag)
+	}
+	if out.waitFor != (supervise.ProcessRef{}) {
+		// The desktop update helper starts the ordinary desktop boot with
+		// both, and no other mode is started by it.
+		if out.waitFor.PID <= 0 || out.waitFor.Start == "" {
+			return cliFlags{}, fmt.Errorf("--%s and --%s go together, with a process id", supervise.DesktopWaitPIDFlag, supervise.DesktopWaitStartFlag)
+		}
+		if out.headless || out.harness || out.soak || out.frontend || out.connect != "" {
+			return cliFlags{}, fmt.Errorf("--%s is for the desktop boot the update helper starts", supervise.DesktopWaitPIDFlag)
+		}
 	}
 	return out, nil
 }

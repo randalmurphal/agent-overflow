@@ -93,7 +93,6 @@ import {
   type TurnRow,
 } from './threadTurnProjection';
 import type { ThreadTimelineWindow } from './threadTimelineWindow.svelte';
-import type { ThreadSubagentMemory } from './threadSubagentMemory';
 import type {
   LiveStateFetchResult,
   ThreadLiveStateHydration,
@@ -176,7 +175,6 @@ export interface ThreadSwitchLoadOptions {
   /** Placeholder terminal ids this pane has already torn down or migrated. */
   invalidatedDraftTerminalIds: Set<string>;
   timelineWindow: ThreadTimelineWindow;
-  subagentMemory: ThreadSubagentMemory;
   rowUiState: ThreadRowUiState;
   activityRuns: ThreadActivityRuns;
   streamingReveal: ThreadStreamingReveal;
@@ -573,7 +571,6 @@ export function createThreadSwitchLoad(
       hasMoreNewer: options.timelineWindow.hasMoreNewer,
       runs,
       latestSettledTurn: options.getLatestSettledTurn(),
-      subagentFolds: options.subagentMemory.snapshotFolds(),
     });
   }
 
@@ -602,8 +599,6 @@ export function createThreadSwitchLoad(
       },
       threadId,
     );
-    options.subagentMemory.restoreFolds(body.subagentFolds ?? null);
-    options.subagentMemory.clearWindowDerivedState();
     // Only when the envelope has one: the ListRecentTurns leg may
     // already have landed with the authoritative row.
     if (body.latestSettledTurn) {
@@ -668,14 +663,9 @@ export function createThreadSwitchLoad(
         hasMoreHistory: options.timelineWindow.hasMoreHistory,
         hasMoreNewer: options.timelineWindow.hasMoreNewer,
         latestSettledTurn: options.getLatestSettledTurn(),
-        // Folded subagent children travel with the snapshot: the cached
-        // items deliberately exclude evicted rows, so without the fold a
-        // warm re-entry would render collapsed cards with zeroed counts
-        // until the next live event or hydration.
-        subagentFolds: options.subagentMemory.snapshotFolds(),
-        // Same reason as the folds: the cached items hold only part of
-        // each activity run, and the stubs are the only account of the
-        // rest (docs/architecture/timeline-window-pages.md §6).
+        // The cached items hold only part of each activity run, and the
+        // stubs are the only account of the rest
+        // (docs/architecture/timeline-window-pages.md §6).
         runs: runStubs,
         // Paired, not looked up on the next open: the stamp is only
         // usable as `haveEpoch`/`haveRev` for the rows it described when
@@ -847,8 +837,6 @@ export function createThreadSwitchLoad(
         () => commitIncomingThread(newThread),
         ...(cached
           ? [
-              () => options.subagentMemory.restoreFolds(cached.subagentFolds),
-              () => options.subagentMemory.clearWindowDerivedState(),
               () => options.timelineWindow.installFromSnapshot(cached),
               () => options.setLatestSettledTurn(cached.latestSettledTurn),
               () => {
@@ -861,7 +849,6 @@ export function createThreadSwitchLoad(
               },
             ]
           : [
-              () => options.subagentMemory.resetForFreshThread(),
               () => options.timelineWindow.resetForFreshThread(),
             ]),
         () => options.rowUiState.clear(),
@@ -995,11 +982,7 @@ export function createThreadSwitchLoad(
         liveTouchedDuringSync ?? EMPTY_ID_SET,
         liveRemovedDuringSync ?? EMPTY_ID_SET,
       );
-      // Live children whose anchor survived nowhere are swallowed, not
-      // installed — their later deltas stay silent, and hydration
-      // renders them when the anchor pages back in.
-      options.subagentMemory.recordAdmission([], next.orphanedLiveChildren);
-      options.installTimelineItems(next.items, {
+      options.installTimelineItems(next, {
         disposeDropped: true,
         afterCommit: () => {
           runWindowCommitEffects('synced thread window metadata', [
@@ -1664,8 +1647,7 @@ export function createThreadSwitchLoad(
         refreshMutations.ids,
         refreshMutations.removedIds,
       );
-      options.subagentMemory.recordAdmission([], next.orphanedLiveChildren);
-      options.installTimelineItems(next.items, {
+      options.installTimelineItems(next, {
         disposeDropped: true,
         afterCommit: () => {
           runWindowCommitEffects('refreshed thread window metadata', [
@@ -1675,7 +1657,7 @@ export function createThreadSwitchLoad(
             },
             () => {
               if (changedDuringFetch) {
-                options.timelineWindow.refreshCursorsAfterUpserts(next.items, true, snapshot);
+                options.timelineWindow.refreshCursorsAfterUpserts(next, true, snapshot);
               }
             },
           ]);

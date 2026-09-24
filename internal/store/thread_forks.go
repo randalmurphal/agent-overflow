@@ -129,7 +129,7 @@ func (s *Store) CreatePointerFork(fork Thread, sourceID string, cut ForkCut, sum
 	if err := insertThread(tx, prepared, lastReadAtArg); err != nil {
 		return fmt.Errorf("store: create fork thread: %w", err)
 	}
-	if err := linkPointerForkTx(tx, prepared.ID, sourceID, cut, summarise, now); err != nil {
+	if err := s.linkPointerForkTx(tx, prepared.ID, sourceID, cut, summarise, now); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -138,7 +138,7 @@ func (s *Store) CreatePointerFork(fork Thread, sourceID string, cut ForkCut, sum
 	return nil
 }
 
-func linkPointerForkTx(tx *sql.Tx, forkID, sourceID string, cut ForkCut, summarise func(string) string, now int64) error {
+func (s *Store) linkPointerForkTx(tx *sql.Tx, forkID, sourceID string, cut ForkCut, summarise func(string) string, now int64) error {
 	var title string
 	var depth int
 	if err := tx.QueryRow(
@@ -189,6 +189,8 @@ func linkPointerForkTx(tx *sql.Tx, forkID, sourceID string, cut ForkCut, summari
 	// Rows still running in the source are the source's live work. The
 	// fork owns a copy and settles it exactly as the crash sweep and a user
 	// interrupt do: the fork is a snapshot "as if interrupted right now".
+	// A settled summary can move an agent's card; the fork's writes carry
+	// no card and recompute those chains before it commits.
 	settled, err := inheritedRowsByID(tx, forkID, settle, allLevels)
 	if err != nil {
 		return err
@@ -198,14 +200,20 @@ func linkPointerForkTx(tx *sql.Tx, forkID, sourceID string, cut ForkCut, summari
 	}); err != nil {
 		return err
 	}
+	w := s.bulkItemWrites(tx, forkID, false)
 	for _, row := range settled {
-		var summary string
-		if err := tx.QueryRow(`SELECT summary FROM items WHERE thread_id = ? AND id = ?`, forkID, row.id).Scan(&summary); err != nil {
+		old, err := scanSubagentRow(tx.QueryRow(subagentRowSQL, forkID, row.id))
+		if err != nil {
 			return fmt.Errorf("store: read fork row %s/%s: %w", forkID, row.id, err)
+		}
+		next := old
+		next.summary = summarise(old.summary)
+		if err := w.updated(old, next); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(
 			`UPDATE items SET status = 'errored', summary = ?, updated_at = ? WHERE thread_id = ? AND id = ?`,
-			summarise(summary), now, forkID, row.id,
+			next.summary, now, forkID, row.id,
 		); err != nil {
 			return fmt.Errorf("store: settle fork row %s/%s: %w", forkID, row.id, err)
 		}
@@ -231,7 +239,13 @@ func linkPointerForkTx(tx *sql.Tx, forkID, sourceID string, cut ForkCut, summari
 	if err := copyForkQuestionsTx(tx, sourceID, forkID); err != nil {
 		return err
 	}
-	return placeForkDividerTx(tx, forkID, forkOrigin{SourceThreadID: sourceID, SourceTitle: title}, plan.turn, plan.item, now)
+	if err := placeForkDividerTx(tx, w, forkID, forkOrigin{SourceThreadID: sourceID, SourceTitle: title}, plan.turn, plan.item, now); err != nil {
+		return err
+	}
+	if err := recomputeTurnErrorsTx(tx, forkID); err != nil {
+		return err
+	}
+	return w.finish()
 }
 
 // resolveForkCutTx reads the cut from the source's timeline. Every cut is
@@ -715,8 +729,9 @@ func copyForkQuestionsTx(tx *sql.Tx, sourceID, forkID string) error {
 
 // placeForkDividerTx writes the fork's divider at its cut, replacing one a
 // revert moved. It links to the last top-level row the fork inherits, which
-// is where "view in source" lands.
-func placeForkDividerTx(tx *sql.Tx, forkID string, origin forkOrigin, turn, item int, now int64) error {
+// is where "view in source" lands. The divider has no parent, so it counts
+// toward no card; w records it with the rest of the write.
+func placeForkDividerTx(tx *sql.Tx, w *cardWrite, forkID string, origin forkOrigin, turn, item int, now int64) error {
 	target, _, err := lastRowThroughTurnTx(tx, forkID, turn,
 		"items.parent_id = '' AND (items.turn_index, items.item_index) < (?, ?)", turn, item)
 	if err != nil {
@@ -732,7 +747,7 @@ func placeForkDividerTx(tx *sql.Tx, forkID string, origin forkOrigin, turn, item
 	if _, err := tx.Exec(`DELETE FROM items WHERE thread_id = ? AND id = ?`, forkID, id); err != nil {
 		return fmt.Errorf("store: clear fork %s divider: %w", forkID, err)
 	}
-	return insertItemTx(tx, Item{
+	return insertItemTx(tx, w, Item{
 		ID:        id,
 		ThreadID:  forkID,
 		TurnIndex: turn,
@@ -756,8 +771,10 @@ func placeForkDividerTx(tx *sql.Tx, forkID string, origin forkOrigin, turn, item
 // that forked from this one keeps reading them through its own lineage.
 // predicate selects the reverted rows with unqualified item columns, all at
 // or after fromTurn; every surviving row sits at or below maxTurn. The
-// caller deletes its own reverted rows first, after handing them off.
-func retractInheritedTx(tx *sql.Tx, threadID string, fromTurn int, predicate string, args []any, maxTurn int) error {
+// caller deletes its own reverted rows first, after handing them off. The
+// stamps of the fork's copied anchors, whose subtrees can hold the rows
+// that leave, are recomputed by w's finish (forkCopyStampsTx).
+func retractInheritedTx(tx *sql.Tx, w *cardWrite, threadID string, fromTurn int, predicate string, args []any, maxTurn int) error {
 	var cutTurn, cutItem int
 	var source, title string
 	var forkedAt int64
@@ -774,6 +791,10 @@ func retractInheritedTx(tx *sql.Tx, threadID string, fromTurn int, predicate str
 	if err != nil {
 		return fmt.Errorf("store: read fork cut of %s: %w", threadID, err)
 	}
+	copies, err := forkCopyStampsTx(tx, threadID)
+	if err != nil {
+		return err
+	}
 	survivor, survives, err := lastRowThroughTurnTx(tx, threadID, maxTurn,
 		"NOT ("+predicate+") AND items.id <> ?", append(append([]any{}, args...), forkDividerID(threadID))...)
 	if err != nil {
@@ -788,7 +809,7 @@ func retractInheritedTx(tx *sql.Tx, threadID string, fromTurn int, predicate str
 		if _, err := tx.Exec(`DELETE FROM items WHERE thread_id = ? AND id = ?`, threadID, forkDividerID(threadID)); err != nil {
 			return fmt.Errorf("store: clear fork %s divider: %w", threadID, err)
 		}
-		return bumpForkViewTx(tx, threadID)
+		return forkViewChangedTx(tx, w, threadID, copies)
 	}
 	// The cut sits just after the survivor.
 	lowered := survivor.turn < cutTurn || (survivor.turn == cutTurn && survivor.item+1 < cutItem)
@@ -850,11 +871,47 @@ func retractInheritedTx(tx *sql.Tx, threadID string, fromTurn int, predicate str
 	// The caller's delete takes the divider with it when the revert reaches
 	// the cut; it goes back at the (possibly lowered) cut, dated to the fork.
 	if lowered || !divider {
-		if err := placeForkDividerTx(tx, threadID, forkOrigin{SourceThreadID: source, SourceTitle: title}, newTurn, newItem, forkedAt); err != nil {
+		if err := placeForkDividerTx(tx, w, threadID, forkOrigin{SourceThreadID: source, SourceTitle: title}, newTurn, newItem, forkedAt); err != nil {
 			return err
 		}
 	}
-	return bumpForkViewTx(tx, threadID)
+	return forkViewChangedTx(tx, w, threadID, copies)
+}
+
+// forkViewChangedTx records a change to which inherited rows threadID
+// shows: its stamps move (bumpForkViewTx), its turn-error pair is
+// recomputed, which no item or turn trigger does for rows it reads through
+// its lineage, and w's finish recomputes the stamps of copies, the copied
+// anchors forkCopyStampsTx listed before the change.
+func forkViewChangedTx(tx *sql.Tx, w *cardWrite, threadID string, copies []string) error {
+	if err := bumpForkViewTx(tx, threadID); err != nil {
+		return err
+	}
+	if err := recomputeTurnErrorsTx(tx, threadID); err != nil {
+		return err
+	}
+	w.subtreesChanged(copies)
+	return nil
+}
+
+// forkCopyStampsSQL lists the stamped rows below a pointer fork's cut. Only
+// a copy of an inherited row sits there, and a copy is the only own row
+// whose subtree can hold inherited rows, so these are the stamps a change
+// to the inherited rows the fork shows can move.
+const forkCopyStampsSQL = `SELECT s.item_id FROM thread_fork_lineage l
+  CROSS JOIN subagent_aggregates s ON s.thread_id = l.thread_id
+  CROSS JOIN items i ON i.thread_id = s.thread_id AND i.id = s.item_id
+ WHERE l.thread_id = ? AND l.depth = 1
+   AND (i.turn_index, i.item_index) < (l.cut_turn_index, l.cut_item_index)`
+
+// forkCopyStampsTx runs forkCopyStampsSQL, before the change it serves
+// moves the cut.
+func forkCopyStampsTx(q sqlQueryer, threadID string) ([]string, error) {
+	ids, err := queryIDs(q, forkCopyStampsSQL, threadID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list copied anchors of fork %s: %w", threadID, err)
+	}
+	return ids, nil
 }
 
 // bumpForkViewTx records a change to which inherited rows a thread shows.
@@ -870,9 +927,13 @@ func bumpForkViewTx(tx *sql.Tx, threadID string) error {
 
 // hideInheritedItemTx removes one inherited row from threadID's timeline.
 // It reports false when threadID does not show itemID as inherited.
-func hideInheritedItemTx(tx *sql.Tx, threadID, itemID string) (bool, error) {
+func hideInheritedItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) (bool, error) {
 	rows, err := inheritedRowsByID(tx, threadID, []string{itemID}, allLevels)
 	if err != nil || len(rows) == 0 {
+		return false, err
+	}
+	copies, err := forkCopyStampsTx(tx, threadID)
+	if err != nil {
 		return false, err
 	}
 	if err := handOffIDsTx(tx, threadID, []string{itemID}); err != nil {
@@ -881,7 +942,7 @@ func hideInheritedItemTx(tx *sql.Tx, threadID, itemID string) (bool, error) {
 	if err := hideForkRowsTx(tx, threadID, []string{itemID}); err != nil {
 		return false, err
 	}
-	return true, bumpForkViewTx(tx, threadID)
+	return true, forkViewChangedTx(tx, w, threadID, copies)
 }
 
 // detachForkDescendants runs detachForkDescendantsTx in its own
@@ -892,7 +953,7 @@ func (s *Store) detachForkDescendants(threadID string) error {
 		return fmt.Errorf("store: begin detach forks of %s: %w", threadID, err)
 	}
 	defer tx.Rollback()
-	if err := detachForkDescendantsTx(tx, threadID); err != nil {
+	if err := s.detachForkDescendantsTx(tx, threadID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -906,8 +967,9 @@ func (s *Store) detachForkDescendants(threadID string) error {
 // threadID stops at the level before it. The divider of each fork made from
 // threadID, including one that has since materialized and every copy of it,
 // records that the source is gone and its title, so rendering it never has
-// to look for the source.
-func detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
+// to look for the source. A fork that stops reading rows recomputes what
+// its copied anchors count and its turn-error pair (forkViewChangedTx).
+func (s *Store) detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 	var title string
 	if err := tx.QueryRow(`SELECT title FROM threads WHERE id = ?`, threadID).Scan(&title); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -937,6 +999,12 @@ func detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 	}
 	if len(affected) == 0 {
 		return nil
+	}
+	copies := make(map[string][]string, len(affected))
+	for _, id := range affected {
+		if copies[id], err = forkCopyStampsTx(tx, id); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(
 		`DELETE FROM thread_fork_lineage
@@ -973,7 +1041,11 @@ func detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 		return fmt.Errorf("store: mark fork dividers of %s: %w", threadID, err)
 	}
 	for _, id := range affected {
-		if err := bumpForkViewTx(tx, id); err != nil {
+		w := s.bulkItemWrites(tx, id, false)
+		if err := forkViewChangedTx(tx, w, id, copies[id]); err != nil {
+			return err
+		}
+		if err := w.finish(); err != nil {
 			return err
 		}
 	}

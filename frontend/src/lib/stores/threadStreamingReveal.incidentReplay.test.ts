@@ -83,8 +83,7 @@ interface ChildChurn {
  * Continuous subagent child stream: each agent runs a repeating
  * upsert(streaming thinking child) → 3 deltas → settle-patch cycle,
  * offset from each other, exactly the shape that kept recomputeReveal
- * and evictSettledChildren firing every few hundred ms through the
- * incident window.
+ * firing every few hundred ms through the incident window.
  */
 interface ChurnFlags {
   upserts?: boolean;
@@ -426,17 +425,14 @@ describe('incident 2026-08-29 replay: fat-burst final text + instant settle', ()
     });
   });
 
-  // The distilled root cause: a subagent child settling during the
-  // post-terminal drain evicts its row into the fold, and the eviction's
-  // wholesale commit passes every KEPT row back through
-  // prepareItemReplacements — including the draining text row, whose
-  // status is already terminal while its summary is still the smoother's
-  // partial prefix. Disposing there strands the row at the partial text
-  // forever (the completion patch's summary write was already skipped in
-  // favor of the smoother). Delta-free churn isolates the eviction as
-  // the killer: with child deltas the same replay also fails, but this
-  // variant proves no child smoother is required.
-  it('a fold eviction during the post-terminal drain keeps the drain alive', () => {
+  // Subagent children settling during the post-terminal drain must not
+  // disturb the draining text row, whose status is already terminal while
+  // its summary is still the smoother's partial prefix. A wholesale window
+  // commit would pass that row back through prepareItemReplacements and
+  // could strand it at the partial text; children never enter the window,
+  // so their churn commits nothing. Delta-free churn shows no child
+  // smoother is involved.
+  it('child churn during the post-terminal drain keeps the drain alive', () => {
     withClock((clock) => {
       const pane = createThreadPane();
       seedTurnWindow(pane);

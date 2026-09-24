@@ -263,7 +263,7 @@ type threadState struct {
 	// transcript ROOT it is a lifecycle row for, so Handle can rewrite a
 	// carrier-parented live event onto the root before any handler sees
 	// it. Populated wherever transcriptRoot resolves (the keep-running
-	// flip, the terminal replay, the resume prompt row). Session-scoped:
+	// flip, the parked-children check, the resume prompt row). Session-scoped:
 	// the durable answer is the carrier row's own `transcript_root_id`
 	// stamp, so losing this map costs a lookup, never correctness.
 	// Bounded by maxCarrierRootsPerThread; swept with the threadState.
@@ -332,9 +332,26 @@ type threadState struct {
 	// with the pending maps at the turn boundary. See interactive_claim.go.
 	answeredRequests map[string]struct{}
 
-	// wireRefresh is the rows pushed since the last anchor refresh and
-	// the timer that will flush them (wire_items.go).
-	wireRefresh wireItemRefresh
+	// toolCalls caches the placement (parent, turn) of tool_call rows the
+	// session persisted or asked about, so parent validation and scope
+	// placement do not re-read them per event. Bounded by
+	// maxToolCallLinksPerThread; swept with the threadState and dropped
+	// by ForgetToolCallLinks when a live cut deletes rows. See
+	// tool_call_links.go.
+	toolCalls toolCallLinks
+
+	// firstChildProbed holds the parents whose first-child probe ran in
+	// this session (emitFirstChildAnchors). Bounded by
+	// maxToolCallLinksPerThread; swept with the threadState and dropped
+	// with the links when a live cut deletes rows, since a cut can empty
+	// a card that a later child opens again.
+	firstChildProbed map[string]struct{}
+
+	// subagentCards holds the open store card of each parent the session
+	// writes rows under. Bounded by maxSubagentCardsPerThread; a card is
+	// a store handle, so cleanupThread closes the thread's cards before
+	// the state is dropped. See subagent_cards.go.
+	subagentCards map[string]*subagentCardEntry
 }
 
 // threadIdentity is per-thread state that must SURVIVE cleanupThread.

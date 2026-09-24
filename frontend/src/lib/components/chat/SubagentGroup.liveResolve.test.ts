@@ -57,13 +57,20 @@ function agentLaunch(overrides: Partial<Item> = {}): Item {
 }
 
 /**
- * Builds the pane and captures the group node ONCE. The node keeps the
- * item objects it was built from, so every later store write leaves it
- * stale — which is precisely the production condition being tested.
+ * Builds the pane the way production does: the main window holds top-level
+ * rows only (the mocks serve child rows to scoped surfaces alone), so a
+ * card's count and preview come from its anchor's decoration. Captures the
+ * group node ONCE. The node keeps the item objects it was built from, so
+ * every later store write leaves it stale, which is precisely the
+ * production condition being tested.
  */
 async function setup(items: Item[]): Promise<{ pane: ThreadPane; group: SubagentGroupNode }> {
   const pane = await buildPane(undefined, items);
   return { pane, group: findGroup(groupItemsBySubagent([...pane.items])) };
+}
+
+function decorated(count: number, summary: string): string {
+  return JSON.stringify({ subagentDescendantCount: count, subagentLatestChildSummary: summary });
 }
 
 function indicatorState(container: HTMLElement): string | null {
@@ -96,57 +103,68 @@ describe('<SubagentGroup> live resolution against the pane', () => {
     expect(indicatorState(container)).toBe('error');
   });
 
-  it('tracks the latest-action preview as a child streams', async () => {
-    const { pane, group } = await setup([
-      agentLaunch(),
-      makeItem({
-        id: 'child:1', itemIndex: 1, parentId: 'agent:1',
-        kind: 'tool_call', toolName: 'Read',
-        status: 'streaming', summary: 'reading alpha.ts',
-      }),
-    ]);
-    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
-    expect(getByTestId('subagent-group-preview').textContent).toContain('alpha.ts');
+  it('shows the count and preview each anchor re-upsert decorates, never a streamed child', async () => {
+    const launch = agentLaunch();
+    const { pane, group } = await setup([launch]);
+    const { queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(queryByTestId('subagent-group-count')).toBeNull();
+    expect(queryByTestId('subagent-group-preview')).toBeNull();
 
+    // A streamed child is another scope's row: the main window drops it
+    // and the collapsed card has nothing to count or preview from it.
     pane.upsertItem(makeItem({
       id: 'child:1', itemIndex: 1, parentId: 'agent:1',
-      kind: 'tool_call', toolName: 'Read',
-      status: 'streaming', summary: 'reading beta.ts', updatedAt: 6,
+      kind: 'tool_call', toolName: 'Read', status: 'running', summary: 'reading alpha.ts',
     }));
     await tick();
+    expect(pane.getItemById('child:1')).toBeUndefined();
+    expect(queryByTestId('subagent-group-count')).toBeNull();
+    expect(queryByTestId('subagent-group-preview')).toBeNull();
 
-    expect(getByTestId('subagent-group-preview').textContent).toContain('beta.ts');
+    // Triage re-pushes the anchor once the child is written.
+    pane.upsertItem({ ...launch, meta: decorated(1, 'reading alpha.ts'), rev: 2, updatedAt: 6 });
+    await tick();
+    expect(queryByTestId('subagent-group-count')?.textContent).toContain('1 entry');
+    expect(queryByTestId('subagent-group-preview')?.textContent).toContain('reading alpha.ts');
+
+    pane.upsertItem({ ...launch, meta: decorated(3, 'read beta.ts'), rev: 3, updatedAt: 7 });
+    await tick();
+    expect(group.parent.meta, 'node must stay stale for this to prove anything').toBeUndefined();
+    expect(group.descendantCount).toBe(0);
+    expect(queryByTestId('subagent-group-count')?.textContent).toContain('3 entries');
+    expect(queryByTestId('subagent-group-preview')?.textContent).toContain('read beta.ts');
+    expect(queryByTestId('subagent-group-preview')?.textContent).not.toContain('alpha');
   });
 
-  it('falls back to the node snapshot when a settled child is evicted', async () => {
-    // The other half of the resolver contract. A collapsed card's settled
-    // descendants are evicted from the window, so `getItemById` starts
-    // answering undefined for a row the node still lists. The preview must
-    // land on the snapshot, not blank out.
+  it('reads the preview off the decoration alone, falling back to the node only without one', async () => {
     const { pane, group } = await setup([
-      agentLaunch(),
-      makeItem({
-        id: 'child:1', itemIndex: 1, parentId: 'agent:1',
-        kind: 'tool_call', toolName: 'Read',
-        status: 'running', summary: 'reading alpha.ts',
-      }),
+      agentLaunch({ status: 'completed', meta: decorated(2, 'reading alpha.ts') }),
     ]);
-    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    const { queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(group.latestChildSummary).toBe('reading alpha.ts');
+    expect(queryByTestId('subagent-group-preview')?.textContent).toContain('reading alpha.ts');
 
-    pane.upsertItem(makeItem({
-      id: 'child:1', itemIndex: 1, parentId: 'agent:1',
-      kind: 'tool_call', toolName: 'Read',
-      status: 'completed', summary: 'read alpha.ts', updatedAt: 7,
-    }));
+    // Decorated with no preview (the store drops an empty summary key):
+    // the card shows none rather than the node's older one.
+    pane.applyItemMeta({
+      threadId: 'thread-1', itemId: 'agent:1', kind: 'tool_call',
+      meta: JSON.stringify({ subagentDescendantCount: 3 }), updatedAt: 8,
+    });
     await tick();
+    expect(queryByTestId('subagent-group-count')?.textContent).toContain('3 entries');
+    expect(queryByTestId('subagent-group-preview')).toBeNull();
 
-    expect(pane.getItemById('child:1'), 'settled child must be evicted here').toBeUndefined();
-    expect(getByTestId('subagent-group-preview').textContent).toContain('reading alpha.ts');
+    // A write that carries no decoration at all falls back to the node's.
+    pane.applyItemMeta({
+      threadId: 'thread-1', itemId: 'agent:1', kind: 'tool_call', meta: '', updatedAt: 9,
+    });
+    await tick();
+    expect(queryByTestId('subagent-group-preview')?.textContent).toContain('reading alpha.ts');
   });
 
   it('picks up an entry-count decoration that lands without a structural rebuild', async () => {
     const { pane, group } = await setup([
-      agentLaunch(),
+      agentLaunch({ meta: JSON.stringify({ subagentDescendantCount: 1 }) }),
       makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'one' }),
     ]);
     const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
@@ -166,8 +184,8 @@ describe('<SubagentGroup> live resolution against the pane', () => {
     // Transition coverage for the card's `Math.max`: decoration present →
     // absent must land on the node's own count, never on zero. Here the
     // node was itself built while the decoration existed, so it already
-    // carries 7 — the assertion is that the card does not regress to the
-    // one loaded child, and does not blank the label.
+    // carries 7; the assertion is that the card does not regress to zero
+    // and does not blank the label.
     const { pane, group } = await setup([
       agentLaunch({ meta: JSON.stringify({ subagentDescendantCount: 7 }) }),
       makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'one' }),
@@ -278,6 +296,7 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
         role: 'assistant',
         status: 'running',
         summary: 'Skill: code-review',
+        meta: JSON.stringify({ subagentDescendantCount: 1 }),
         payloadMeta: JSON.stringify({ toolName: 'Skill', input: { skill: 'code-review' } }),
       }),
       makeItem({ id: 'child:1', itemIndex: 1, parentId: 'skill:1', status: 'running', summary: 'w' }),
@@ -366,7 +385,7 @@ describe('<SubagentGroup> card affordances (agent-visibility)', () => {
     expect(opened).toEqual([['agent:1', 'Explore']]);
   });
 
-  it('surfaces a failed transcript backfill as an inline error on the card', async () => {
+  it('surfaces a failed output-file read as an inline error on the card', async () => {
     // triage stamps notification_output_state/error when the
     // task_notification's output_file could not be read. A silently
     // incomplete body reads exactly like a complete one, so the card says

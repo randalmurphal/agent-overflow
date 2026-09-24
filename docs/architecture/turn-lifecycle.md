@@ -297,17 +297,14 @@ round's **background carrier**.
   the agent's whole conversation tree stays under the original launch.
   Nothing is ever parented to a carrier. `Router.Handle` rewrites a live
   event naming a known carrier as its parent onto the root before
-  dispatch, and every scope-resolving path — the terminal transcript
-  replay (`backfillSubagentTranscript`), the identity flip, the resume
-  prompt row, the mirror compaction tap — resolves through
-  `transcriptRoot`. Reading the carrier as a scope reparented 474
-  already-delivered round-1 rows onto it and duplicated 220 more
-  (2026-09-03); see claude-wire.md §E6.
+  dispatch, and every scope-resolving path (the identity flip, the
+  parked-children check, the resume prompt row, the mirror compaction
+  tap) resolves through `transcriptRoot`. See claude-wire.md §E6.
 - The rebind `task_started` is the ONLY envelope carrying the message
   that opened the resumed round (`prompt`), so the parser emits one
   `EventUserText` for it: identity in the CARRIER's scope (distinct from
   the agent's round-1 opening prompt, which is the ROOT's), placement
-  under the root, provisional until the terminal transcript delivers the
+  under the root, provisional until the session mirror delivers the
   same text with its provider uuid and
   `persistWireOnlySubagentPrompt` binds it in place.
 - Round 2's `task_updated`/`task_notification` then write a NEW
@@ -353,9 +350,7 @@ already knows.
   not park its parent; the CLI never wakes for one.
 - A parked stop keeps the stash and writes no sibling. The bell row is
   still written (one per stop; the frontend hides them all once the
-  completed sibling lands), usage still folds onto the launch, and the
-  output_file backfill still runs, so the woken round starts from a
-  transcript that is already current.
+  completed sibling lands) and usage still folds onto the launch.
 - The wake is one `EventUserText` from the parser
   (`user:subagent-wake:<shell tool_use_id>`, meta
   `subagent_wake_prompt`). `persistWakePromptRow` drops the stash and

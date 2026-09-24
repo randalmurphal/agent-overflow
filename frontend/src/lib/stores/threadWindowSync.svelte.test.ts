@@ -138,7 +138,6 @@ function replicaBody(items: Item[], epoch: number, rev: number) {
     hasMoreOlder: false,
     hasMoreNewer: false,
     latestSettledTurn: null,
-    subagentFolds: null,
     runs: [],
   };
 }
@@ -333,7 +332,12 @@ describe('cold-open window sync', () => {
     expect(pane.generalErrorKind).toBe('history-load');
     expect(pane.generalError).toBe('Thread history took too long to load.');
 
-    await Promise.all([pane.retryHistoryLoad(), pane.retryHistoryLoad()]);
+    expect(pane.loading).toBe(false);
+    const retries = Promise.all([pane.retryHistoryLoad(), pane.retryHistoryLoad()]);
+    // The retry is a load: the pane shows its loading state until it lands.
+    expect(pane.loading).toBe(true);
+    await retries;
+    expect(pane.loading).toBe(false);
     expect(attempts).toBe(2);
     expect(pane.items.map((item) => item.id)).toEqual(['i0']);
     expect(pane.generalError).toBeNull();

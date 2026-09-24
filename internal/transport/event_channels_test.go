@@ -84,6 +84,7 @@ var (
 		"updater:installing", // 2026-08-25 pass
 		"updater:progress",   // 2026-08-25 pass
 		"updater:ready",      // 2026-08-25 pass
+		"updater:restart",    // the restart-to-update wait; RestartToUpdate is host-scoped
 		"updater:verifying",  // 2026-08-25 pass
 		"webview:trim",       // 2026-08-25: launcher GC directive, same posture as updater:install
 	}
@@ -134,6 +135,10 @@ var (
 		"system:stats",
 		"theme:changed",
 		"updater:progress", // 2026-08-25 pass
+		// One restart at a time (RestartToUpdate refuses a second) and each
+		// frame is the whole state, the same membership as
+		// service:update-status.
+		"updater:restart",
 		"workflow:definitions-changed",
 		"workflow:engine-state", // 2026-08-25 pass
 		// 2026-09-03 (the convergence wave): each an UNKEYED whole-answer or
@@ -156,6 +161,15 @@ var (
 	frozenEntityFilteredChannels = []string{
 		"highlight:diff_seed",
 		"highlight:seed",
+		"provider:item_event",
+	}
+	// Membership narrows a watched thread's frames further, to the
+	// transcript scopes a connection names, so a row joining this list is a
+	// claim that every consumer of a scoped row either contributes that
+	// scope while it exists or reads anchor-level data instead. Read from
+	// the authored column, not the derived set, so a row that sets it
+	// without EntityFiltered is caught here too.
+	frozenTranscriptScopeFilteredChannels = []string{
 		"provider:item_event",
 	}
 )
@@ -190,6 +204,14 @@ func TestChannelPolicyPreservesFrozenClassification(t *testing.T) {
 			name:     "entityFiltered",
 			frozen:   frozenEntityFilteredChannels,
 			classify: channelEntityFiltered,
+		},
+		{
+			name:   "transcriptScopeFiltered",
+			frozen: frozenTranscriptScopeFilteredChannels,
+			classify: func(c string) bool {
+				policy, _ := policyForChannel(c)
+				return policy.TranscriptScopeFiltered
+			},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

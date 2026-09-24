@@ -29,19 +29,19 @@ func (a *App) emitEvent(eventName eventchan.Channel, data any) {
 // through HandleSynthetic because several callers fire exactly while
 // the thread is stopped — reconnect failures most of all — and the
 // stopped-thread gate would eat the one error the user needs to see.
-// Errors that originate ON a provider read loop must use
+// Errors that a provider wire event triggers must use
 // emitWireErrorToThread instead.
 func (a *App) emitErrorToThread(threadID, content string) {
 	a.routeErrorToThread(threadID, content, true)
 }
 
 // emitWireErrorToThread is emitErrorToThread for errors triggered by a
-// wire event on the provider read loop (e.g. the discussion-sync
-// failure in sessionEventHandler). These must respect the
-// stopped-thread gate exactly like the frame that triggered them: a
-// torn-down session's read loop keeps draining after CleanupThread
-// runs, and bypassing the gate would let its tail persist items under
-// the stopped thread (Bug B5 / invariant 29).
+// provider wire event (e.g. the discussion-sync failure in
+// sessionEventHandler). These must respect the stopped-thread gate
+// exactly like the frame that triggered them: a torn-down session's
+// events keep draining after CleanupThread runs, and bypassing the gate
+// would let its tail persist items under the stopped thread (Bug B5 /
+// invariant 29).
 func (a *App) emitWireErrorToThread(threadID, content string) {
 	a.routeErrorToThread(threadID, content, false)
 }

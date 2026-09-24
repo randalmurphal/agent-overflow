@@ -115,18 +115,20 @@ func forkLookups(fork string) []keyedLookup {
 		case "DeleteConversationFromItem":
 			lookups = append(lookups,
 				keyedLookup{name: "fork AppendItem", turn: true, run: func(t *testing.T, s *Store) {
-					must[int](t, "append")(s.AppendItem(Item{ID: "fork-appended", ThreadID: fork, TurnIndex: 4, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "late"}))
+					must[int](t, "append")(appendCarded(s, Item{ID: "fork-appended", ThreadID: fork, TurnIndex: 4, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "late"}))
 				}},
 				keyedLookup{name: forkChildRowWrite, run: func(t *testing.T, s *Store) {
 					launch := Item{ID: "fork-launch", ThreadID: fork, TurnIndex: 4, ItemIndex: 10, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "Task", Summary: "Task", Meta: "{}"}
 					child := Item{ID: "fork-child", ThreadID: fork, TurnIndex: 4, ItemIndex: 11, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Bash", ParentID: launch.ID, Summary: "Bash", Meta: "{}"}
 					for _, item := range []Item{launch, child} {
-						if err := s.InsertItem(item); err != nil {
+						if err := insertCarded(s, item); err != nil {
 							t.Error(err)
 						}
 					}
 					summary := "Bash done"
-					must[int64](t, "child rev bump")(s.UpdateItemFields(fork, child.ID, ItemPartialUpdate{Summary: &summary}))
+					if err := updateFieldsCarded(s, fork, launch.ID, child.ID, ItemPartialUpdate{Summary: &summary}); err != nil {
+						t.Errorf("child rev bump: %v", err)
+					}
 				}},
 			)
 		}
@@ -214,10 +216,10 @@ func TestForkCopyTriggersSkipRevisionOnlyWrites(t *testing.T) {
 	seedLinearSource(t, s, "S", 2)
 	sealItemsForTest(t, s, "S", "u0", "a0")
 	launch := Item{ID: "launch", ThreadID: "S", TurnIndex: 1, ItemIndex: 5, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "Task", Summary: "Task", Meta: "{}"}
-	if err := s.InsertItem(launch); err != nil {
+	if err := insertCarded(s, launch); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.InsertItemWithPayload(
+	if err := insertWithPayloadCarded(s,
 		Item{ID: "tool", ThreadID: "S", TurnIndex: 1, ItemIndex: 6, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "Bash", ParentID: launch.ID, PayloadID: "pt", Meta: "{}"},
 		Payload{ID: "pt", Kind: "text", Meta: "{}", Data: []byte("out")},
 	); err != nil {
@@ -242,12 +244,12 @@ func TestForkCopyTriggersSkipRevisionOnlyWrites(t *testing.T) {
 		run  func()
 	}{
 		{"child insert", func() {
-			if err := s.InsertItem(Item{ID: "child", ThreadID: "S", TurnIndex: 1, ItemIndex: 7, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Read", ParentID: launch.ID, Summary: "Read", Meta: "{}"}); err != nil {
+			if err := insertCarded(s, Item{ID: "child", ThreadID: "S", TurnIndex: 1, ItemIndex: 7, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Read", ParentID: launch.ID, Summary: "Read", Meta: "{}"}); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"child content update", func() {
-			if _, err := s.UpdateItemFields("S", "child", ItemPartialUpdate{Summary: &summary}); err != nil {
+			if err := updateFieldsCarded(s, "S", launch.ID, "child", ItemPartialUpdate{Summary: &summary}); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -270,7 +272,7 @@ func TestForkCopyTriggersSkipRevisionOnlyWrites(t *testing.T) {
 		for _, stmt := range stmts {
 			query := strings.TrimSpace(stmt.query)
 			insert := strings.HasPrefix(query, "INSERT INTO items")
-			if strings.Contains(query, "SET rev = rev") {
+			if strings.Contains(query, "SET updated_at = updated_at") {
 				revisionTouches++
 			}
 			if strings.HasPrefix(query, "UPDATE threads SET history_bulk_load") {
@@ -329,19 +331,19 @@ func TestSourceWritesCostTheSameForAnyForkCount(t *testing.T) {
 		run         func(*testing.T, *Store)
 	}{
 		{"child insert", 0, func(t *testing.T, s *Store) {
-			if err := s.InsertItem(Item{ID: "child", ThreadID: "S", TurnIndex: 3, ItemIndex: 7, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "Read", ParentID: "launch", Summary: "Read", Meta: "{}"}); err != nil {
+			if err := insertCarded(s, Item{ID: "child", ThreadID: "S", TurnIndex: 3, ItemIndex: 7, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "Read", ParentID: "launch", Summary: "Read", Meta: "{}"}); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"child content update", 0, func(t *testing.T, s *Store) {
 			summary := "Read done"
-			if _, err := s.UpdateItemFields("S", "child", ItemPartialUpdate{Summary: &summary}); err != nil {
+			if err := updateFieldsCarded(s, "S", "launch", "child", ItemPartialUpdate{Summary: &summary}); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"running row content update", 1, func(t *testing.T, s *Store) {
 			summary := "Bash still running"
-			if _, err := s.UpdateItemFields("S", "tool", ItemPartialUpdate{Summary: &summary}); err != nil {
+			if err := updateFieldsCarded(s, "S", "launch", "tool", ItemPartialUpdate{Summary: &summary}); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -355,10 +357,10 @@ func TestSourceWritesCostTheSameForAnyForkCount(t *testing.T) {
 	for _, forks := range []int{0, 1, 10} {
 		s := newTestStore(t)
 		seedLinearSource(t, s, "S", 3)
-		if err := s.InsertItem(Item{ID: "launch", ThreadID: "S", TurnIndex: 3, ItemIndex: 5, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "Task", Summary: "Task", Meta: "{}"}); err != nil {
+		if err := insertCarded(s, Item{ID: "launch", ThreadID: "S", TurnIndex: 3, ItemIndex: 5, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "Task", Summary: "Task", Meta: "{}"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.InsertItemWithPayload(
+		if err := insertWithPayloadCarded(s,
 			Item{ID: "tool", ThreadID: "S", TurnIndex: 3, ItemIndex: 6, Kind: "tool_call", Role: "assistant", Status: "running", ToolName: "Bash", ParentID: "launch", PayloadID: "pt", Meta: "{}"},
 			Payload{ID: "pt", Kind: "text", Meta: "{}", Data: []byte("out")},
 		); err != nil {

@@ -44,7 +44,7 @@ func (s *Store) RollbackImportedThread(threadID string) error {
 	if err := deleteThreadSearchThreadTx(tx, threadID); err != nil {
 		return err
 	}
-	if err := detachForkDescendantsTx(tx, threadID); err != nil {
+	if err := s.detachForkDescendantsTx(tx, threadID); err != nil {
 		return err
 	}
 	result, err := tx.Exec(`DELETE FROM threads WHERE id = ?`, threadID)

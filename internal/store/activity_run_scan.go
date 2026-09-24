@@ -159,7 +159,7 @@ func queryActivityScanRows(
 	selectedSQL string,
 	selectedArgs ...any,
 ) ([]activityScanRow, error) {
-	branches, branchArgs, err := resolveSelectedTimelineSQL(q, threadID, localActivityScanColumns, importedActivityScanColumns, "2, 3")
+	branches, branchArgs, err := resolveSelectedTimelineSQL(q, threadID, localActivityScanColumns, importedActivityScanColumns, "", "2, 3")
 	if err != nil {
 		return nil, fmt.Errorf("store: query activity scan rows for %s: %w", threadID, err)
 	}

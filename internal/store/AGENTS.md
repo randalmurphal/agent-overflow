@@ -44,8 +44,9 @@ an atomic persistence decision; they must not become a business-logic layer.
   data, including by an uncommitted development build, is deployed and immutable.
   Add a migration and a test; record each new version in `migrate_freeze_test.go`.
 - A one-time data fix is a migration. Work too long to run at open goes in
-  the migration's `Deferred` phase: idempotent, paced, progress in the data,
-  and a failing row logged once and left. Never fix a one-time state from a
+  the migration's `Deferred` phase: idempotent, paced, progress in the data.
+  A failing item is skipped for the run, recorded, and retried by the next
+  open; the watermark does not pass it. Never fix a one-time state from a
   sweep, timer or standing job
   ([deferred phases](../../docs/architecture/sqlite-store.md#deferred-phases)).
 - New rebuild migrations contain their final SQL directly. The old
@@ -83,9 +84,11 @@ an atomic persistence decision; they must not become a business-logic layer.
 
 ## History and trigger contracts
 
-- Item triggers maintain history stamps, payload garbage collection, imported
-  history integrity, and background-launch settlement. Do not duplicate or
-  bypass those invariants in Go.
+- Item triggers maintain history stamps, the thread row's turn-error
+  aggregate, payload garbage collection, imported history integrity, and
+  background-launch settlement. Do not duplicate or bypass those invariants
+  in Go. The item triggers do no subagent card work: the cards are kept in
+  Go (`subagent_card.go`).
 - A write to a payload or plan row an item renders calls
   `bumpHistoryRevForItemTx` / `bumpHistoryRevForPayloadTx` so the owning row's
   `rev` moves with the thread stamp; plain `bumpHistoryRevTx` is only for a
@@ -96,9 +99,34 @@ an atomic persistence decision; they must not become a business-logic layer.
 - `SyncThreadWindow` reads store identity, stamps, and rows in one read
   transaction so they describe one WAL snapshot.
 - `history_bulk_load` may suppress stamp triggers only in a transaction that
-  writes the exact aggregate revision before commit. An item it inserts must
-  be one a read already showed, or the thread must be rebuilt in the same
-  transaction: under the flag the insert trigger stamps only the new row.
+  writes the exact aggregate revision before commit and recomputes the
+  subagent cards of every subtree it changed (`subagent_aggregate_stamps.go`).
+  An item it inserts must be one a read already showed, or the thread must be
+  rebuilt in the same transaction: under the flag the insert trigger stamps
+  only the new row.
+- Subagent cards live in `subagent_aggregates`, one row per anchor keyed
+  `(thread_id, item_id)`; a local item read merges a clean row's public keys
+  into the served meta, and stored meta never holds them: a writer that
+  writes a row back reads it with `GetThreadItemForWrite`. A visible row
+  with a parent is written with its parent's card (`OpenSubagentCard`,
+  `Item.SubagentCard`, `ItemPartialUpdate.SubagentCard`), and a counted
+  preview-kind row changes its summary only with it; outside a bulk writer
+  either write fails with `ErrSubagentAnchor`. The store feeds the card from
+  the committed row in memory and writes it to the stamps at a flush
+  (`FlushSubagentCards`, the card's `Close`, `Store.Close`). A write the card
+  rules do not follow recomputes the chains it changed in its own
+  transaction. Every bulk writer (import, materialize, pointer-fork copy
+  and hand-off, fork creation) writes without cards: it never copies
+  `subagent_aggregates` rows or card keys between threads, and before it
+  commits it recomputes every local anchor whose subtree it changed, through
+  `bulkItemWrites` or with `restampSubagentAggregatesTx` for a thread it
+  rebuilt. A pointer-fork writer that changes which rows a fork reads
+  (revert, hide, detach) recomputes the fork's stamped copies. A stamp write
+  follows a `threads.history_rev` advance in its transaction (the item
+  write's trigger, or the writer's own bump), so the anchor and its
+  completion siblings are served at a new revision. After a crash,
+  `RecoverSubagentCards` recomputes the anchors of the agents that were
+  running.
 - A pointer fork reads its ancestors' rows in place. A writer that updates,
   moves, deletes or hides a row another thread can read hands it off to the
   forks that show it first (`handOffIDsTx`, `handOffPayloadTx`); add the
@@ -127,6 +155,11 @@ an atomic persistence decision; they must not become a business-logic layer.
   scope. Keep selection separate from wire page shape.
 - Put connection-scoped PRAGMAs in the DSN. A post-open `Exec` does not cover
   replacement pooled connections. Keep boot verification for required PRAGMAs.
+- Each pooled connection keeps its recent statements compiled
+  (`stmt_cache.go`). Give a statement that a hot or bulk path repeats one SQL
+  text: bind a variable-length list as a JSON array read with `json_each`
+  rather than building placeholders per length. See
+  [Connections](../../docs/architecture/sqlite-store.md#connections).
 - `TruncateCheckpoint` quiesces readers and reports contention through
   `CheckpointResult.Busy`; checking only the error is insufficient. Quiescing
   stalls every read, so it stays at boot and `Close`, never on a sweep.
@@ -134,7 +167,8 @@ an atomic persistence decision; they must not become a business-logic layer.
   `SnapshotTo` uses, is online-safe. Free space is reclaimed by
   `ReclaimFreeSpace` in paced
   `incremental_vacuum` chunks, and an existing database is converted to
-  incremental auto-vacuum by `ConvertToIncrementalVacuum`. Read
+  incremental auto-vacuum by `ConvertToIncrementalVacuum`, the last step of
+  v119's deferred phase. Read
   [sqlite-store.md](../../docs/architecture/sqlite-store.md#free-space) before
   changing either, or before adding an operation that replaces or reopens the
   database file.

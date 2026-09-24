@@ -72,7 +72,7 @@ subagent model and the user explicitly authorizes the corresponding change.
   resend actions and stays out of every reader-authored read (nav rail,
   title regeneration). Claude creates it from the Agent/Task launch input
   before child output as `user:subagent-prompt:<launchID>`. The inline echo
-  or sidechain transcript later stamps the transcript uuid onto that row in
+  or the session mirror later stamps the transcript uuid onto that row in
   place. Codex V2 records observed incoming NEW_TASK and MESSAGE deliveries as
   sender-attributed user rows in the recipient scope. Encrypted bodies show an
   explicit placeholder; readable text remains available. Message delivery does
@@ -86,9 +86,10 @@ subagent model and the user explicitly authorizes the corresponding change.
   that turn is written answerless at turn end, and an answer sampled in a
   later turn stays a delivery activity. A Claude background completion
   carries a preview of the agent's final assistant text as the notification
-  `summary` reports it (the sidechain transcript is the fallback). The
-  transcript is reconciled into paged child rows, not copied into the
-  completion payload. The answer itself is a NORMAL
+  `summary` reports it. Completion never reads the sidechain transcript
+  (ruling 2026-09-23); a summary without a report leaves the preview empty.
+  The agent's rows are the paged child rows the live stream and the session
+  mirror wrote, not a copy in the completion payload. The answer itself is a NORMAL
   message, not a special block (ruling 2026-08-23): a Codex child's
   transcript streams to the parent parented to the launch, so the answer
   already renders in the card body and the pane as its own assistant
@@ -102,6 +103,16 @@ subagent model and the user explicitly authorizes the corresponding change.
   compaction, retries, and child launches live in the pane. The digest is a
   capped virtualized inner timeline with the normal bottom-follow spring and
   reader escape. It never recursively embeds child agents in the main thread.
+- A card's count, preview and tray line are kept in memory while the agent
+  writes and reach the stored card at a flush (`internal/store/subagent_card.go`).
+  The router flushes a thread's cards on its refresh timer, at most
+  `wireRefreshMaxWait` (5 s, `internal/triage/wire_items.go`) after the
+  first row of a burst and `wireRefreshQuiet` (1 s) after the last, and
+  synchronously at an agent's first row, its completion or stop, turn end,
+  session close and shutdown. The anchor push follows the flush, so a
+  served card is at most `wireRefreshMaxWait` behind the rows written
+  under it. After a crash the boot pass recomputes the cards of the agents
+  that were running.
 - Pane = companion kind `agent` with a scope (launch item id), rendered by the
   thread renderer filtered to direct `parent_id == scope` rows. A direct child
   launch appears as a normal agent row without its descendants.
@@ -128,8 +139,7 @@ subagent model and the user explicitly authorizes the corresponding change.
   (Claude only: `background_tasks` control_request by `tool_use_id`);
   no keyboard shortcut (Q9). Claude stops forwarding the node through the
   ordinary sidechain stream, but AO's always-on session mirror continues its
-  pane live. Sessions started before mirror support fall back to terminal
-  transcript recovery.
+  pane live.
 - Kill only where the wire can: Claude nodes with a task id
   (`stop_task`) and owned Codex child turns (`turn/interrupt`); never forks.
   A reusable Codex agent reads current execution metadata for its spinner,
@@ -212,6 +222,13 @@ subagent model and the user explicitly authorizes the corresponding change.
   marks the fork; the completion's
   `tool_use_result.status:"forked"` + `agentId` closes it. No skill-name
   list (claude-wire.md §E9).
+- A subagent's rows (`parentId` set) reach a client only while one of its
+  surfaces reads that agent's scope: the agent pane, an expanded card or tray
+  row digest, or the open tray body for its running agents. A parent pane
+  receives root rows only, so collapsed cards and the collapsed tray read
+  launch-row metadata and `provider:subagent_progress`, never child rows. The
+  watch contract is in
+  [transport.md](../architecture/transport.md#watched-entities-and-paused-clients).
 
 ## Non-goals
 

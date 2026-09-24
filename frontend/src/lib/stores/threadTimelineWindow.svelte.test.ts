@@ -565,7 +565,7 @@ describe('threadTimelineWindow', () => {
       const added = getToasts().slice(toastsBefore);
       expect(added.map((t) => t.type)).toEqual(['error']);
       expect(consoleError).toHaveBeenCalledWith(
-        expect.stringContaining('window loaded around dropped does not contain dropped'),
+        expect.stringContaining('window loaded around dropped does not contain it'),
       );
       consoleError.mockRestore();
     });
@@ -720,98 +720,36 @@ describe('threadTimelineWindow', () => {
       expect(paged).toBe(0);
     });
 
-    it('loadUntilItem resolves a subagent child by loading only its ancestry and the root window', async () => {
-      // History windows exclude child rows, so a scroll-to-item target
-      // inside a subagent transcript must (1) walk the parent chain to
-      // the top-level launch root, (2) slice the window around the
-      // root, and (3) hydrate the root's descendants so the containing
-      // group card can resolve the scroll.
+    it('loadUntilItem reports a subagent child as missing without touching the window', async () => {
+      // History windows hold top-level rows only; a child target opens in
+      // its agent's scoped surface (`navigateToThreadItem`), never here.
       const pane = createThreadPane();
+      setBindingMock('GetThreadItem', async () => makeItem({
+        id: 'deep-child',
+        threadId: 't',
+        turnIndex: 4,
+        itemIndex: 3,
+        parentId: 'mid-launch',
+      }));
       const sliceAnchors: string[] = [];
-      setBindingMock(
-        'GetThreadItem',
-        async (_threadId: string, itemId: string) => {
-          if (itemId === 'deep-child') {
-            return makeItem({
-              id: 'deep-child',
-              threadId: 't',
-              turnIndex: 4,
-              itemIndex: 3,
-              parentId: 'mid-launch',
-            });
-          }
-          if (itemId === 'mid-launch') {
-            return makeItem({
-              id: 'mid-launch',
-              threadId: 't',
-              turnIndex: 4,
-              itemIndex: 1,
-              parentId: 'root-launch',
-              kind: 'tool_call',
-              toolName: 'Task',
-            });
-          }
-          if (itemId === 'root-launch') {
-            return makeItem({
-              id: 'root-launch',
-              threadId: 't',
-              turnIndex: 4,
-              itemIndex: 0,
-              kind: 'tool_call',
-              toolName: 'Task',
-            });
-          }
-          return makeItem({ id: '' });
-        },
-      );
-      setBindingMock(
-        'ListThreadSliceAround',
-        async (_threadId: string, anchorItemId: string) => {
-          sliceAnchors.push(anchorItemId);
-          if (anchorItemId === 'root-launch') {
-            return {
-              items: [
-                makeItem({
-                  id: 'root-launch',
-                  threadId: 't',
-                  turnIndex: 4,
-                  itemIndex: 0,
-                  kind: 'tool_call',
-                  toolName: 'Task',
-                }),
-                makeItem({ id: 'after', threadId: 't', turnIndex: 5 }),
-              ],
-              oldestTurnIndex: 4,
-              newestTurnIndex: 5,
-              hasMore: true,
-              hasMoreOlder: true,
-              hasMoreNewer: false,
-            };
-          }
-          return {
-            items: [makeItem({ id: 'tail', threadId: 't', turnIndex: 9 })],
-            oldestTurnIndex: 9,
-            newestTurnIndex: 9,
-            hasMore: true,
-            hasMoreOlder: true,
-            hasMoreNewer: false,
-          };
-        },
-      );
-      const bulk = setBindingMock('ListSubagentDescendants', async () => { throw new Error('Bulk fetch forbidden'); });
+      setBindingMock('ListThreadSliceAround', async (_threadId: string, anchorItemId: string) => {
+        sliceAnchors.push(anchorItemId);
+        return {
+          items: [makeItem({ id: 'tail', threadId: 't', turnIndex: 9 })],
+          oldestTurnIndex: 9,
+          newestTurnIndex: 9,
+          hasMore: true,
+          hasMoreOlder: true,
+          hasMoreNewer: false,
+        };
+      });
       await pane.switchThread(makeThread({ id: 't' }));
+      const before = pane.items;
+      const opened = sliceAnchors.length;
 
-      const ok = await pane.loadUntilItem('deep-child');
-
-      expect(ok).toBe('loaded');
-      expect(sliceAnchors.at(-1)).toBe('root-launch');
-      expect(bulk).not.toHaveBeenCalled();
-      expect(pane.items.map((it) => it.id)).toEqual([
-        'root-launch',
-        'mid-launch',
-        'deep-child',
-        'after',
-      ]);
+      expect(await pane.loadUntilItem('deep-child')).toBe('missing');
+      expect(sliceAnchors).toHaveLength(opened);
+      expect(pane.items).toBe(before);
     });
 
     it('loadOlder takes hasMoreHistory from the page, empty or not', async () => {
@@ -2037,6 +1975,44 @@ describe('threadTimelineWindow', () => {
       expect(pane.oldestLoadedTurnIndex).toBe(max + 1 - target);
       expect(pane.hasMoreHistory).toBe(true);
       expect(pane.hasMoreNewer).toBe(false);
+    });
+
+    it('counts only windowed rows toward the active window cap', async () => {
+      const pane = createThreadPane();
+      const max = ACTIVE_TIMELINE_WINDOW_MAX_ITEMS;
+      const conversation = Array.from({ length: max - 1 }, (_, index) =>
+        makeItem({ id: `t${index}`, threadId: 't', turnIndex: index, itemIndex: 0 }),
+      );
+      const planUpdates = Array.from({ length: 5 }, (_, index) =>
+        makeItem({ id: `plan${index}`, threadId: 't', turnIndex: index, itemIndex: 1, kind: 'notification', toolName: 'plan_update' }),
+      );
+      const initial = [...conversation, ...planUpdates]
+        .sort((a, b) => a.turnIndex - b.turnIndex || a.itemIndex - b.itemIndex);
+      setBindingMock('ListThreadSliceAround', async () => ({
+        items: initial,
+        oldestTurnIndex: 0,
+        newestTurnIndex: max - 2,
+        hasMore: false,
+        hasMoreOlder: false,
+        hasMoreNewer: false,
+      }));
+      await pane.switchThread(makeThread({ id: 't' }));
+
+      // Reaches the cap exactly: the plan updates are not rows the window
+      // pages, so nothing is pruned.
+      pane.upsertItem(makeItem({ id: `t${max - 1}`, threadId: 't', turnIndex: max - 1, itemIndex: 0 }));
+      expect(pane.items).toHaveLength(max + 5);
+      expect(pane.hasMoreHistory).toBe(false);
+
+      // A kind change in place moves a row out of the count too.
+      pane.upsertItem({ ...conversation[10], kind: 'notification', toolName: 'plan_update', updatedAt: conversation[10].updatedAt + 1 });
+      pane.upsertItem(makeItem({ id: `t${max}`, threadId: 't', turnIndex: max, itemIndex: 0 }));
+      expect(pane.items).toHaveLength(max + 6);
+      expect(pane.hasMoreHistory).toBe(false);
+
+      pane.upsertItem(makeItem({ id: `t${max + 1}`, threadId: 't', turnIndex: max + 1, itemIndex: 0 }));
+      expect(pane.items.length).toBeLessThan(max);
+      expect(pane.hasMoreHistory).toBe(true);
     });
 
     // Incident 2026-08-31: a busy subagent with an open companion pane held

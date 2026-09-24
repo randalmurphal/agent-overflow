@@ -167,10 +167,9 @@ func runSoak(flags cliFlags) {
 	// has — HarnessInfo for evidence paths, HarnessListMocks, replay
 	// capture — without a second control surface.
 	srv := bootTransport(appService, flags.listenAddr, bootTransportOptions{
-		RequireReadyForBootstrap: true,
-		HarnessReceiver:          h,
-		HarnessPageMarker:        harnessrpc.PageMarker(h),
-		HarnessMethodsSink:       func(names []string) { harnessrpc.SetWireMethods(h, names) },
+		HarnessReceiver:    h,
+		HarnessPageMarker:  harnessrpc.PageMarker(h),
+		HarnessMethodsSink: func(names []string) { harnessrpc.SetWireMethods(h, names) },
 		// Same opt-in as --harness: booting this shell is already an
 		// explicit operator act on an isolated data root, so
 		// FRONTEND_DEVSERVER_URL is honoured here even in a
@@ -191,7 +190,13 @@ func runSoak(flags cliFlags) {
 
 	bootCtx, bootCancel := context.WithCancel(context.Background())
 	defer bootCancel()
+	cancelBootOnShutdownRequest(bootCtx, bootCancel, shutdownRequested)
 	if err := appService.Start(bootCtx); err != nil {
+		if bootCtx.Err() != nil {
+			log.Printf("%s: startup stopped by a shutdown request: %v", label, err)
+			waitForHeadlessShutdown(appService, srv, shutdownRequested)
+			return
+		}
 		log.Printf("app: service startup: %v", err)
 		srv.MarkStartupFailed()
 		log.Printf("%s: startup failed; serving terminal bootstrap failure until shutdown", label)

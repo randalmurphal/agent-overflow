@@ -16,7 +16,7 @@ import (
 // thread ever had" versus two index reads — plus the one predicate that
 // had to move with the trigger (see ListLiveBackgroundTasks' doc
 // comment).
-const preSettlementLiveBackgroundTasksSQL = `WITH RECURSIVE bg(id) AS (
+var preSettlementLiveBackgroundTasksSQL = `WITH RECURSIVE bg(id) AS (
 		    SELECT id FROM items
 		     WHERE thread_id = ?
 		       AND kind = 'tool_call'
@@ -39,7 +39,7 @@ const preSettlementLiveBackgroundTasksSQL = `WITH RECURSIVE bg(id) AS (
 		)
 		SELECT ` + itemColumns + `
 		   FROM items
-		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id` + servedItemJoin + `
 		  WHERE items.thread_id = ?
 		    AND (
 		      (
@@ -164,7 +164,7 @@ func seedTrayFixture(t *testing.T, s *Store) int64 {
 
 	insert := func(item Item) {
 		t.Helper()
-		if err := s.InsertItem(item); err != nil {
+		if err := insertCarded(s, item); err != nil {
 			t.Fatalf("seed %s: %v", item.ID, err)
 		}
 	}
@@ -226,6 +226,25 @@ func seedTrayFixture(t *testing.T, s *Store) int64 {
 	// row that would leak in without its existence guard.
 	completion("complete:ghost", "ghost", 11, 6000)
 
+	// 12-13: an agent launch two levels under the background root, which
+	// the tray finds by walking up from it through nested-agent.
+	launch("deep-agent", 12, false, "nested-agent", `{}`)
+	insert(Item{
+		ID: "deep-agent-child", ThreadID: "t", TurnIndex: 0, ItemIndex: 13,
+		Kind: "assistant_text", Role: "assistant", Summary: "child",
+		ParentID: "deep-agent", CreatedAt: 1000,
+	})
+
+	// 14-16: a running agent launch under a FOREGROUND root. It is in
+	// flight but descends from no background launch, so it stays out.
+	launch("fg-root", 14, false, "", `{}`)
+	launch("fg-nested", 15, false, "fg-root", `{}`)
+	insert(Item{
+		ID: "fg-nested-child", ThreadID: "t", TurnIndex: 0, ItemIndex: 16,
+		Kind: "assistant_text", Role: "assistant", Summary: "child",
+		ParentID: "fg-nested", CreatedAt: 1000,
+	})
+
 	return cutoff
 }
 
@@ -244,7 +263,7 @@ func TestListLiveBackgroundTasksMatchesThePreSettlementQuery(t *testing.T) {
 
 	want := preSettlementLiveBackgroundTasks(t, s, "t", cutoff)
 	if ids := collectIDs(want); !equalStringSlice(ids,
-		[]string{"live", "recent", "complete:recent", "bg-root", "nested-bg", "nested-agent"}) {
+		[]string{"live", "recent", "complete:recent", "bg-root", "nested-bg", "nested-agent", "deep-agent"}) {
 		t.Fatalf("pre-settlement rows = %v, fixture no longer covers the shapes it names", ids)
 	}
 
@@ -266,7 +285,9 @@ func TestListLiveBackgroundTasksMatchesThePreSettlementQuery(t *testing.T) {
 // The seed is the point of the rewrite, so its plan is a test. Both
 // halves must ride their partial index, and nothing in the statement may
 // fall back to walking the thread through the timeline index — the 75k
-// page reads this change exists to remove.
+// page reads this change exists to remove. The nested launches come from
+// their own partial index and a primary-key walk up: no statement reads a
+// parent's children except the launch filter's one-row probe.
 func TestListLiveBackgroundTasksSeedUsesPartialIndexes(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
@@ -275,7 +296,7 @@ func TestListLiveBackgroundTasksSeedUsesPartialIndexes(t *testing.T) {
 	seedTrayFixture(t, s)
 
 	rows, err := s.db.Query("EXPLAIN QUERY PLAN "+liveBackgroundTasksSQL,
-		"t", "t", int64(5000), "t", "t", "t", "t", int64(5000), "t", int64(5000), int64(5000))
+		"t", "t", int64(5000), "t", "t", int64(5000), "t", "t", "t", "t", int64(5000), "t", int64(5000), int64(5000))
 	if err != nil {
 		t.Fatalf("explain: %v", err)
 	}
@@ -296,6 +317,7 @@ func TestListLiveBackgroundTasksSeedUsesPartialIndexes(t *testing.T) {
 	for _, want := range []string{
 		"idx_items_running_bg_tool_calls",
 		"idx_items_completion_created",
+		"idx_items_running_nested_fg_tool_calls",
 	} {
 		if !strings.Contains(plan.String(), want) {
 			t.Errorf("seed no longer uses %s:\n%s", want, plan.String())
@@ -303,6 +325,19 @@ func TestListLiveBackgroundTasksSeedUsesPartialIndexes(t *testing.T) {
 	}
 	if strings.Contains(plan.String(), "idx_items_thread_turn_item_unique") {
 		t.Errorf("the tray query walks the thread's timeline again:\n%s", plan.String())
+	}
+	ctes := map[string]bool{"bg": true, "nested": true, "up": true, "anchors": true, "cand": true}
+	for _, line := range strings.Split(plan.String(), "\n") {
+		if target, ok := strings.CutPrefix(line, "SCAN "); ok && !ctes[strings.Fields(target)[0]] {
+			t.Errorf("the tray query scans %q:\n%s", target, plan.String())
+		}
+		// The launch filter's probe: its local arm by the covering index,
+		// and a pointer fork's lineage arm bounded by the level's cut.
+		if strings.Contains(line, "idx_items_parent") &&
+			!strings.Contains(line, "COVERING INDEX idx_items_parent (thread_id=? AND parent_id=?)") &&
+			!strings.Contains(line, "INDEX idx_items_parent (thread_id=? AND parent_id=? AND turn_index<?)") {
+			t.Errorf("the tray query walks a parent's children: %q\n%s", line, plan.String())
+		}
 	}
 }
 

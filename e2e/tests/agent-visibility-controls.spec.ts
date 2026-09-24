@@ -5,8 +5,8 @@
 //      its card; the card shows the approval pill while the prompt is
 //      pending.
 //   5. The background button on a running inline agent returns the main
-//      turn, the card flips to background, the pane shows the paused
-//      marker, and the transcript completes on the task notification.
+//      turn, the card flips to background, the session mirror continues
+//      the agent's transcript, and the task notification settles its card.
 //
 // Both scenarios replay a checked-in 2026-08-22 capture line for line:
 // `can_use_tool_agent_id_20260822.ndjson` for the first (async launch →
@@ -25,7 +25,6 @@ import {
   listItems,
   permissionDeniedLine,
   seedAgentThread,
-  sidechainTranscript,
   startMock,
   taskNotificationLine,
   taskStartedLine,
@@ -33,12 +32,13 @@ import {
   textLines,
   toolResultLine,
   toolUseLine,
+  transcriptMirrorLine,
   waitForGate,
 } from './agent-visibility-helpers.js';
 
 const WRITE_PATH = 'spike3.txt';
 const DENY_REASON = 'Bash(rm:*) is denied by a project rule';
-const BACKFILL_TEXT = 'Backfilled: the corpus sweep found two drifts.';
+const MIRROR_TEXT = 'Mirrored: the corpus sweep found two drifts.';
 
 // The approval itself shows ONLY in the composer's approval UI (user
 // ruling 2026-08-23): the card carries no pill, awaited or background.
@@ -167,7 +167,7 @@ test('a subagent’s approval and denial rows nest under its card; the composer 
   await expect(body.getByTestId('tool-decision-chip')).toHaveCount(1);
 });
 
-test('backgrounding a running inline agent returns the turn and the transcript completes on the notification', async ({
+test('backgrounding a running inline agent returns the turn and the mirror continues its transcript', async ({
   harness,
   page,
 }) => {
@@ -199,20 +199,17 @@ test('backgrounding a running inline agent returns the turn and the transcript c
         RESULT_LINE,
       ]),
       { waitSignal: { name: 'finish' } },
-      // The sidechain the agent produced while it streamed nothing. This
-      // file IS the transcript for a mid-flight backgrounded agent.
-      {
-        writeFile: {
-          path: 'sweep-output.jsonl',
-          content: sidechainTranscript([
-            { text: BACKFILL_TEXT },
-            { tool: { id: 'tu-backfill-read', name: 'Read', result: '# fixture' } },
-          ]),
-        },
-      },
       emit([
+        // The rows the agent produced after the cut. Ordinary stdout
+        // forwarding stopped at the ack; the session mirror carries them.
+        transcriptMirrorLine('task-sweep', [
+          { text: MIRROR_TEXT },
+          { tool: { id: 'tu-mirror-read', name: 'Read', result: '# fixture' } },
+        ]),
         taskUpdatedLine('task-sweep', { status: 'completed', end_time: 1787419835322 }),
-        taskNotificationLine('task-sweep', 'tu-agent', BACKFILL_TEXT, {
+        // Completion never reads this file, so it is never written: a
+        // read attempt would surface as an output error on the card.
+        taskNotificationLine('task-sweep', 'tu-agent', MIRROR_TEXT, {
           outputFile: '${CWD}/sweep-output.jsonl',
           usage: { total_tokens: 24110, tool_uses: 2, duration_ms: 9312 },
         }),
@@ -258,35 +255,35 @@ test('backgrounding a running inline agent returns the turn and the transcript c
   const pane = page.getByTestId('companion-pane-agent-body');
   await expect(pane.getByTestId('agent-pane-working')).toBeVisible();
   // No paused marker: the session mirror continues a backgrounded pane
-  // live, so the "streaming paused" note was removed (ed6d2b40). This
-  // mock has no mirror, so the pane simply holds what streamed pre-cut.
+  // live, so the "streaming paused" note was removed (ed6d2b40). Until
+  // the mock's mirror frame, the pane holds what streamed pre-cut.
   await expect(pane.getByTestId('agent-pane-streaming-paused')).toHaveCount(0);
   const paneTimeline = pane.getByTestId('agent-pane-timeline');
   await expect(paneTimeline.getByText('Reading the first shard.')).toBeVisible();
-  // Nothing streamed after the cut — that is what "paused" means.
-  await expect(paneTimeline.getByText(BACKFILL_TEXT)).toHaveCount(0);
+  // Nothing arrived after the cut yet.
+  await expect(paneTimeline.getByText(MIRROR_TEXT)).toHaveCount(0);
 
-  // --- The task notification completes the transcript ---------------
+  // --- The mirror continues the transcript; the notification settles --
   await waitForGate(harness, 'finish');
   await advance(harness, mockId, 'finish');
-  await expect(paneTimeline.getByText(BACKFILL_TEXT)).toBeVisible();
+  await expect(paneTimeline.getByText(MIRROR_TEXT)).toBeVisible();
   // ...tool rows included, not just the text.
   await expect(paneTimeline.getByRole('link', { name: 'Open README.md in editor' })).toBeVisible();
-  // The card is back, at the completion point, settled. A file the
-  // backfill could not read would say so on it.
+  // The card is back, at the completion point, settled, with no output
+  // error: completion did not try to read the missing output file.
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
   const settledCard = timeline.getByTestId('subagent-group').first();
   await expect(settledCard).toHaveAttribute('data-background', 'true');
   await expect(settledCard.getByTestId('subagent-group-output-error')).toHaveCount(0);
-  // Its collapsed line is the agent's final report from the transcript,
-  // not the JSONL file's first envelope.
-  await expect(settledCard.getByTestId('subagent-group-preview')).toContainText(BACKFILL_TEXT);
+  // Its collapsed line is the agent's final report from the
+  // notification summary.
+  await expect(settledCard.getByTestId('subagent-group-preview')).toContainText(MIRROR_TEXT);
   await expect(pane.getByTestId('agent-pane-working')).toHaveCount(0);
   // The notification's `usage` is the whole run's, and it persists onto
   // the launch row — a backgrounded agent's live ticks are gone by then.
   await expect(pane.getByTestId('workspace-strip-usage')).toHaveText('24.1k');
 
-  // The backfilled rows belong to the agent, not the main thread. The
+  // The mirrored rows belong to the agent, not the main thread. The
   // notification row carries the same text as its summary (the wire's
   // local_agent summary is the report) and is the thread's bell, not a
   // transcript row.
@@ -294,7 +291,7 @@ test('backgrounding a running inline agent returns the turn and the transcript c
     .poll(async () => {
       const items = await listItems(harness, threadId);
       return items
-        .filter((i) => i.kind !== 'notification' && i.summary?.includes('Backfilled:'))
+        .filter((i) => i.kind !== 'notification' && i.summary?.includes('Mirrored:'))
         .map((i) => i.parentId ?? '');
     })
     .toEqual(['tu-agent']);

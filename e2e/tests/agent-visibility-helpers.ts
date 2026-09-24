@@ -399,81 +399,70 @@ export function itemMeta(item: Item | undefined): Record<string, unknown> {
 }
 
 /**
- * A subagent's sidechain transcript, in the JSONL shape
- * `task_notification.output_file` names and
- * `claudeimport.ConvertSubagentTranscript` reads. Rows are `isSidechain`
- * and chained by `parentUuid`, exactly like `~/.claude/projects/**.jsonl`.
+ * One `--session-mirror` frame carrying an agent's sidechain rows, as the
+ * CLI writes them to `subagents/agent-<agentId>.jsonl`. Rows are
+ * `isSidechain`, carry `agentId`, and chain by `parentUuid`. They carry no
+ * timestamp, so the parser stamps each with its arrival time. The mirror
+ * binds them to the launch the parser armed for `agentId` (the task id)
+ * on `task_updated{is_backgrounded:true}`.
  */
-export function sidechainTranscript(rows: Array<{ text?: string; tool?: { id: string; name: string; result: string } }>): string {
-  const out: string[] = [];
-  let prev = 's0';
-  let seconds = 0;
-  const stamp = () => `2026-08-22T00:00:${String(++seconds).padStart(2, '0')}.000Z`;
-  out.push(
-    JSON.stringify({
-      type: 'user',
-      uuid: 's0',
-      parentUuid: null,
-      isSidechain: true,
-      timestamp: stamp(),
-      message: { role: 'user', content: 'the task prompt' },
-    }),
-  );
+export function transcriptMirrorLine(
+  agentId: string,
+  rows: Array<{ text?: string; tool?: { id: string; name: string; result: string } }>,
+): string {
+  const entries: Json[] = [];
+  let prev: string | null = null;
+  const sidechain = { isSidechain: true, agentId };
   let n = 0;
   for (const row of rows) {
     n += 1;
     if (row.text !== undefined) {
-      const uuid = `s-text-${n}`;
-      out.push(
-        JSON.stringify({
-          type: 'assistant',
-          uuid,
-          parentUuid: prev,
-          isSidechain: true,
-          timestamp: stamp(),
-          message: {
-            role: 'assistant',
-            id: `msg-backfill-${n}`,
-            model: 'claude-mock-1',
-            content: [{ type: 'text', text: row.text }],
-          },
-        }),
-      );
+      const uuid = `m-text-${n}`;
+      entries.push({
+        type: 'assistant',
+        uuid,
+        parentUuid: prev,
+        ...sidechain,
+        message: {
+          role: 'assistant',
+          id: `msg-mirror-${n}`,
+          model: 'claude-mock-1',
+          content: [{ type: 'text', text: row.text }],
+        },
+      });
       prev = uuid;
     }
     if (row.tool) {
-      const useUuid = `s-tool-${n}`;
-      out.push(
-        JSON.stringify({
-          type: 'assistant',
-          uuid: useUuid,
-          parentUuid: prev,
-          isSidechain: true,
-          timestamp: stamp(),
-          message: {
-            role: 'assistant',
-            id: `msg-backfill-tool-${n}`,
-            model: 'claude-mock-1',
-            content: [{ type: 'tool_use', id: row.tool.id, name: row.tool.name, input: { file_path: 'README.md' } }],
-          },
-        }),
-      );
-      const resUuid = `s-tool-res-${n}`;
-      out.push(
-        JSON.stringify({
-          type: 'user',
-          uuid: resUuid,
-          parentUuid: useUuid,
-          isSidechain: true,
-          timestamp: stamp(),
-          message: {
-            role: 'user',
-            content: [{ type: 'tool_result', tool_use_id: row.tool.id, content: row.tool.result }],
-          },
-        }),
-      );
+      const useUuid = `m-tool-${n}`;
+      entries.push({
+        type: 'assistant',
+        uuid: useUuid,
+        parentUuid: prev,
+        ...sidechain,
+        message: {
+          role: 'assistant',
+          id: `msg-mirror-tool-${n}`,
+          model: 'claude-mock-1',
+          content: [{ type: 'tool_use', id: row.tool.id, name: row.tool.name, input: { file_path: 'README.md' } }],
+        },
+      });
+      const resUuid = `m-tool-res-${n}`;
+      entries.push({
+        type: 'user',
+        uuid: resUuid,
+        parentUuid: useUuid,
+        ...sidechain,
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: row.tool.id, content: row.tool.result }],
+        },
+      });
       prev = resUuid;
     }
   }
-  return out.join('\n') + '\n';
+  return j({
+    type: 'transcript_mirror',
+    filePath: `/mock/.claude/projects/mock/session/subagents/agent-${agentId}.jsonl`,
+    entries,
+  });
 }

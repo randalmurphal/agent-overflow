@@ -1347,8 +1347,7 @@ func (p *Parser) parseTaskLifecycleEvent(threadID string, raw map[string]json.Ra
 //
 // It is the earliest typed statement that ordinary sidechain forwarding
 // stopped here. The parser uses it to bind later transcript_mirror rows to
-// this launch; sessions without mirror support still recover from the
-// task_notification output_file.
+// this launch.
 //
 // An agent launched async (§E5) was never in the foreground and never
 // produces this patch. A patch we cannot attribute to a launch tool_use
@@ -1421,8 +1420,8 @@ func readTaskUsage(usage json.RawMessage) (provider.SubagentProgressMeta, bool) 
 // parseTaskNotificationEvent surfaces Claude's non-lifecycle
 // `system/task_notification` attention signal. This event must never be
 // interpreted as task completion; triage persists it as a lightweight
-// notification row and may read the referenced output_file into SQLite
-// for later expansion on an already-terminal sibling row.
+// notification row and, for a command, reads the referenced output_file
+// into SQLite for later expansion on an already-terminal sibling row.
 func (p *Parser) parseTaskNotificationEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
 	taskID := readRawString(raw["task_id"])
 	if taskID == "" {

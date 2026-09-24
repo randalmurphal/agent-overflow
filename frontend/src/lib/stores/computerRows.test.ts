@@ -156,6 +156,6 @@ describe('unavailable computer catalogs', () => {
     old.resolve([]);
     if (!winnerFirst) next.resolve(current);
     expect(await startup).toEqual(current);
-    expect(await reconnect).toEqual(current);
+    expect((await reconnect).rows).toEqual(current);
   });
 });

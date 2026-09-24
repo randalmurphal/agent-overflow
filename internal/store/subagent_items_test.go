@@ -10,7 +10,7 @@ import (
 
 // seedChildItem persists a subagent child row with an explicit summary
 // and status so the aggregate-preview tests can stage the exact shapes
-// pickLatestChildSummary distinguishes (active vs terminal, empty vs
+// the preview rule distinguishes (preview kind or not, empty vs
 // non-empty summary).
 func seedChildItem(
 	t *testing.T,
@@ -20,7 +20,7 @@ func seedChildItem(
 	parentID, summary, status string,
 ) {
 	t.Helper()
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID:        id,
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
@@ -44,7 +44,7 @@ func seedToolChildItem(
 	parentID, summary, status string,
 ) {
 	t.Helper()
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: id, ThreadID: threadID, TurnIndex: turnIndex, ItemIndex: itemIndex,
 		Kind: "tool_call", Role: "assistant", ToolName: "Bash", Status: status,
 		Summary: summary, ParentID: parentID, CreatedAt: int64(turnIndex*10 + itemIndex),
@@ -92,7 +92,7 @@ func TestListSubagentDescendants_MultiLevelOrderedAndExcludedFromWindows(t *test
 	// intermediate "parent" row is itself a launch (tool_call) but
 	// still a child of grand. Unrelated top-level noise sits between.
 	seedAnchorItem(t, s, "t", "grand", 0, 0)
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "parent", ThreadID: "t", TurnIndex: 1, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "Task",
 		Summary: "parent", ParentID: "grand", CreatedAt: 10,
@@ -234,7 +234,7 @@ func TestListSubagentDescendants_FiltersPlanUpdateChildren(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 	seedAnchorItem(t, s, "t", "anchor", 0, 0)
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "c-plan", ThreadID: "t", TurnIndex: 0, ItemIndex: 1,
 		Kind: "notification", Role: "system", ToolName: "plan_update",
 		Summary: "plan", ParentID: "anchor", CreatedAt: 1,
@@ -274,7 +274,7 @@ func TestListSubagentDescendants_HydratesPayloadMeta(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 	seedAnchorItem(t, s, "t", "anchor", 0, 0)
-	if err := s.InsertItemWithPayload(Item{
+	if err := insertWithPayloadCarded(s, Item{
 		ID: "c-cmd", ThreadID: "t", TurnIndex: 0, ItemIndex: 1,
 		Kind: "tool_call", Role: "assistant", ToolName: "Bash",
 		Summary: "go test ./...", ParentID: "anchor",
@@ -302,20 +302,20 @@ func TestListSubagentDescendants_HydratesPayloadMeta(t *testing.T) {
 	}
 }
 
-func TestDecorateSubagentAnchors_PreviewPrefersActiveThenLatest(t *testing.T) {
+func TestDecorateSubagentAnchors_PreviewIsTheNewestToolSummary(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	// Anchor A: a running child with a summary beats a later-coordinate
-	// terminal child — mirrors the frontend's pickLatestChildSummary.
+	// Anchor A: the newest tool summary wins over an older one that is
+	// still running; the card shows the agent's latest tool activity.
 	seedAnchorItem(t, s, "t", "anchor-a", 0, 0)
 	seedToolChildItem(t, s, "t", "a-run", 0, 1, "anchor-a", "working on auth", "running")
 	seedToolChildItem(t, s, "t", "a-done", 0, 2, "anchor-a", "finished tests", "completed")
 
-	// Anchor B: an active child with an EMPTY summary loses to a
-	// terminal child that actually has text.
+	// Anchor B: a newer child with an EMPTY summary leaves the newest
+	// child that has text in place.
 	seedAnchorItem(t, s, "t", "anchor-b", 1, 0)
 	seedToolChildItem(t, s, "t", "b-done", 1, 1, "anchor-b", "did the thing", "completed")
 	seedToolChildItem(t, s, "t", "b-run-empty", 1, 2, "anchor-b", "", "running")
@@ -333,8 +333,8 @@ func TestDecorateSubagentAnchors_PreviewPrefersActiveThenLatest(t *testing.T) {
 	if countA != 2 {
 		t.Errorf("anchor-a count: got %v, want 2", countA)
 	}
-	if summaryA != "working on auth" {
-		t.Errorf("anchor-a summary: got %q, want running child's summary", summaryA)
+	if summaryA != "finished tests" {
+		t.Errorf("anchor-a summary: got %q, want the newest child's summary", summaryA)
 	}
 
 	anchorB, ok := itemByID(paged.Items, "anchor-b")
@@ -346,7 +346,7 @@ func TestDecorateSubagentAnchors_PreviewPrefersActiveThenLatest(t *testing.T) {
 		t.Errorf("anchor-b count: got %v, want 2", countB)
 	}
 	if summaryB != "did the thing" {
-		t.Errorf("anchor-b summary: got %q, want non-empty terminal summary", summaryB)
+		t.Errorf("anchor-b summary: got %q, want the newest non-empty summary", summaryB)
 	}
 }
 
@@ -455,7 +455,7 @@ func TestDecorateSubagentAnchors_StaleStoredSummaryKeyDropped(t *testing.T) {
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "anchor", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "Task",
 		Summary: "launch", CreatedAt: 0,
@@ -497,7 +497,7 @@ func TestDecorateSubagentAnchors_LeavesChildlessRowsUntouched(t *testing.T) {
 
 	// A tool_call with no children keeps its meta byte-identical — no
 	// decoration keys, no JSON re-marshal churn.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "plain-tool", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "Read",
 		Summary: "read a file", Meta: `{"filePath":"/tmp/x"}`, CreatedAt: 0,
@@ -545,7 +545,7 @@ func TestIsSubagentLaunch_StructuralNotToolName(t *testing.T) {
 	seedAnchorItem(t, s, "t", "mcp__thing", 0, 0)
 	seedChildItem(t, s, "t", "child", 0, 1, "mcp__thing", "child work", "completed")
 	// A row NAMED Agent with nothing attributed is NOT.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "toolu_bare_agent", ThreadID: "t", TurnIndex: 0, ItemIndex: 2,
 		Kind: "tool_call", Role: "assistant", Status: "running",
 		Summary: "Agent: review", ToolName: "Agent", CreatedAt: 2,
@@ -614,7 +614,7 @@ func TestSubagentReadsResolveAResumeCarrierToItsTranscriptRoot(t *testing.T) {
 	seedChildItem(t, s, "t", "child-1", 0, 1, "agent-1", "round one", "completed")
 	seedToolChildItem(t, s, "t", "child-2", 0, 2, "agent-1", "round two", "completed")
 	// The carrier is a top-level tool_call with no children of its own.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "carrier-1", ThreadID: "t", TurnIndex: 0, ItemIndex: 3,
 		Kind: "tool_call", Role: "assistant", ToolName: "SendMessage",
 		Summary: "Agent: review", Status: "running", CreatedAt: 3,
@@ -669,7 +669,7 @@ func seedResumePromptItem(
 		`{"wire_only":true,%q:true,%q:%q}`,
 		metaKeySubagentResumePrompt, metaKeyResumeCarrierID, carrierID,
 	)
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "user:subagent-prompt:" + carrierID, ThreadID: threadID,
 		TurnIndex: turnIndex, ItemIndex: itemIndex,
 		Kind: "user_text", Role: "user", Status: "completed",
@@ -684,7 +684,7 @@ func seedResumeCarrierItem(
 	t *testing.T, s *Store, threadID, carrierID string, turnIndex, itemIndex int, rootID string,
 ) {
 	t.Helper()
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: carrierID, ThreadID: threadID, TurnIndex: turnIndex, ItemIndex: itemIndex,
 		Kind: "tool_call", Role: "assistant", ToolName: "SendMessage",
 		Summary: "Agent: continue", Status: "running",
@@ -746,7 +746,7 @@ func TestSubagentAnchorsAreDecoratedPerResumeRound(t *testing.T) {
 	// A childless tool call shares the bounded query's bind list (every
 	// windowed tool_call is a walk root) and must still come back
 	// undecorated: the query answers for it with a zero, not by omission.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "plain-bash", ThreadID: "t", TurnIndex: 1, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "Bash",
 		Summary: "ls", Status: "completed", CreatedAt: 10,
@@ -852,7 +852,7 @@ func TestSubagentLaunchWithoutRoundsIsUnchanged(t *testing.T) {
 	seedChildItem(t, s, "t", "child-1", 0, 1, "agent-1", "thinking", "completed")
 	seedToolChildItem(t, s, "t", "child-2", 0, 2, "agent-1", "ran a thing", "completed")
 	// A childless tool call is not an anchor and must stay undecorated.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "plain", ThreadID: "t", TurnIndex: 1, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "Bash",
 		Summary: "ls", Status: "completed", CreatedAt: 10,
@@ -896,7 +896,7 @@ func TestSubagentResumeRoundProbeProbesTheParentIndexes(t *testing.T) {
 	s := newTestStore(t)
 	seedTimelineParityThread(t, s)
 
-	sql, args, err := subagentResumeRoundsQuery(s.db, timelineParityThreadID, []string{"loc-launch-2"})
+	sql, args, err := subagentResumeRoundsQuery(s.db, timelineParityThreadID, jsonListForTest(t, "loc-launch-2"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -906,7 +906,7 @@ func TestSubagentResumeRoundProbeProbesTheParentIndexes(t *testing.T) {
 		if strings.Contains(r.detail, "timeline_items") {
 			t.Errorf("resume-round probe touches the view: %q", r.detail)
 		}
-		if strings.Contains(r.detail, "idx_items_parent") {
+		if strings.Contains(r.detail, "idx_items_subagent_resume_prompt") {
 			local = true
 		}
 		if strings.Contains(r.detail, "idx_import_history_items_parent") {
@@ -927,7 +927,7 @@ func TestCodexExecutionSnapshotExcludesOtherRunsAndLeavesSpawnUndecorated(t *tes
 		t.Fatal(err)
 	}
 	spawn := Item{ID: "spawn", ThreadID: "t", Kind: "tool_call", Role: "assistant", ToolName: "collab_agent", Status: "completed", CreatedAt: 1, Meta: `{}`}
-	if err := s.InsertItem(spawn); err != nil {
+	if err := insertCarded(s, spawn); err != nil {
 		t.Fatal(err)
 	}
 	seedToolChildItem(t, s, "t", "first", 0, 1, "spawn", "first task", "completed")
@@ -959,7 +959,7 @@ func TestDecorateSubagentAnchors_CompletionSiblingCarriesTheLaunchAggregate(t *t
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "bg-agent", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "Agent", Status: "running",
 		Summary: "Agent: review", IsBackground: true, CreatedAt: 1,
@@ -984,23 +984,35 @@ func TestDecorateSubagentAnchors_CompletionSiblingCarriesTheLaunchAggregate(t *t
 		t.Fatalf("completion decoration: count=%v summary=%q", count, summary)
 	}
 
-	// Completion alone in the window: the launch resolves by lookup.
-	decorated, err := s.decorateSubagentAnchors(s.reader(), "t", []Item{{
-		ID: "complete:bg-agent", ThreadID: "t", Kind: "tool_completion",
-		ToolName: "Agent", CompletionOf: "bg-agent", Meta: `{"status_source":"task_updated"}`,
-	}})
-	if err != nil {
-		t.Fatalf("decorate completion-only window: %v", err)
+	// Completion alone in the window: the launch resolves by lookup, from
+	// the launch's stamp in the row's projection, or by a walk from the
+	// launch while the thread's stamps are still being backfilled.
+	if err := s.UpdateItemMeta("t", "complete:bg-agent", `{"status_source":"task_updated"}`); err != nil {
+		t.Fatalf("write completion meta: %v", err)
 	}
-	count, summary, _, _ = decodedSubagentMeta(t, decorated[0])
-	if count != 2 || summary != "go test ./..." {
-		t.Fatalf("completion-only decoration: count=%v summary=%q meta=%s", count, summary, decorated[0].Meta)
-	}
-	var kept struct {
-		StatusSource string `json:"status_source"`
-	}
-	if err := json.Unmarshal([]byte(decorated[0].Meta), &kept); err != nil || kept.StatusSource != "task_updated" {
-		t.Fatalf("decoration dropped the completion's own meta: %s", decorated[0].Meta)
+	for _, stage := range []string{"stamped", "walked"} {
+		if stage == "walked" {
+			stripSubagentStampsForTest(t, s, "t")
+			mustExec(t, s.db, `INSERT INTO subagent_aggregate_backfill(thread_id) VALUES ('t')`)
+		}
+		read, found, err := s.GetThreadItem("t", "complete:bg-agent")
+		if err != nil || !found {
+			t.Fatalf("%s: read completion: found=%v err=%v", stage, found, err)
+		}
+		decorated, err := s.decorateSubagentAnchors(s.reader(), "t", []Item{read})
+		if err != nil {
+			t.Fatalf("%s: decorate completion-only window: %v", stage, err)
+		}
+		count, summary, _, _ = decodedSubagentMeta(t, decorated[0])
+		if count != 2 || summary != "go test ./..." {
+			t.Fatalf("%s: completion-only decoration: count=%v summary=%q meta=%s", stage, count, summary, decorated[0].Meta)
+		}
+		var kept struct {
+			StatusSource string `json:"status_source"`
+		}
+		if err := json.Unmarshal([]byte(decorated[0].Meta), &kept); err != nil || kept.StatusSource != "task_updated" {
+			t.Fatalf("%s: decoration dropped the completion's own meta: %s", stage, decorated[0].Meta)
+		}
 	}
 
 	// A completion whose launch has no descendants (background Bash) is

@@ -41,10 +41,14 @@ func (s *Store) FoldUserTextRows(threadID, survivorID string, foldedIDs []string
 		return Item{}, fmt.Errorf("store: begin fold user text rows %s/%s: %w", threadID, survivorID, err)
 	}
 	defer tx.Rollback()
+	// The fold carries no card: it recomputes the chains of the rows it
+	// rewrites and deletes before it commits.
+	w := s.bulkItemWrites(tx, threadID, false)
 
 	// Localize any imported row this touches BEFORE mutating, so an overlay
 	// thread folds its own copies rather than the shared base.
-	if err := requireMutableItemTx(tx, threadID, survivorID, "store: fold user text rows"); err != nil {
+	old, err := readMutableSubagentRowTx(tx, threadID, survivorID, "store: fold user text rows")
+	if err != nil {
 		return Item{}, err
 	}
 	for _, id := range foldedIDs {
@@ -53,6 +57,12 @@ func (s *Store) FoldUserTextRows(threadID, survivorID string, foldedIDs []string
 		}
 	}
 
+	row := old
+	row.summary = summary
+	row.setMeta(meta)
+	if err := w.updated(old, row); err != nil {
+		return Item{}, err
+	}
 	if _, err := tx.Exec(
 		`UPDATE items SET summary = ?, meta = ?, updated_at = ? WHERE thread_id = ? AND id = ?`,
 		summary, meta, updatedAt, threadID, survivorID,
@@ -60,19 +70,17 @@ func (s *Store) FoldUserTextRows(threadID, survivorID string, foldedIDs []string
 		return Item{}, fmt.Errorf("store: fold survivor %s/%s: %w", threadID, survivorID, err)
 	}
 	for _, id := range foldedIDs {
-		result, err := tx.Exec(
-			`DELETE FROM items WHERE thread_id = ? AND id = ?`,
+		deleted, err := scanSubagentRow(tx.QueryRow(
+			`DELETE FROM items WHERE thread_id = ? AND id = ? RETURNING `+subagentRowColumns(""),
 			threadID, id,
-		)
+		))
 		if err != nil {
 			return Item{}, fmt.Errorf("store: fold delete %s/%s: %w", threadID, id, err)
 		}
-		if err := requireRowsAffected(
-			result,
-			fmt.Sprintf("store: fold delete %s/%s", threadID, id),
-		); err != nil {
-			return Item{}, err
-		}
+		w.deleted(deleted)
+	}
+	if err := w.finish(); err != nil {
+		return Item{}, err
 	}
 
 	survivor, err := readBackItemTx(tx, threadID, survivorID)

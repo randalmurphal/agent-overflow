@@ -1,6 +1,8 @@
 package sessionimport
 
 import (
+	"database/sql"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -35,7 +37,7 @@ import (
 //     deltas, a shell tool, a proposed plan, and a wait_agent whose
 //     completion splits into a `tool_completion` sibling.
 //
-// Normalization is deliberately narrow. Exactly four things are allowed
+// Normalization is deliberately narrow. Exactly three things are allowed
 // to differ, each for a reason that is a property of importing, not a
 // shortcut:
 //
@@ -50,11 +52,7 @@ import (
 //     and usage timestamps are NOT normalized — those are compared
 //     exactly, because the sidebar's ordering and every usage surface
 //     bucket on them.
-//  3. Payload ids that are random uuids on BOTH sides (the promoted
-//     `tool_call_input` blob, the `compaction` summary blob, the
-//     `proposed_plan` blob). Replaced with a `<uuid>` placeholder; the
-//     deterministic payload ids are compared verbatim.
-//  4. `items.meta` and `payloads.meta` compare as decoded JSON rather
+//  3. `items.meta` and `payloads.meta` compare as decoded JSON rather
 //     than bytes: the import re-marshals the provider's meta object
 //     (stripping its own control keys) where the live path stores the
 //     wire bytes, so key ORDER can differ where the values cannot.
@@ -266,4 +264,80 @@ func findEvent(t *testing.T, events []provider.ProviderEvent, kind provider.Even
 	}
 	t.Fatalf("fixture has no %s event", kind)
 	return provider.ProviderEvent{}
+}
+
+// TestImportBuildIsDeterministic imports one session into two fresh
+// stores. The builds must be equal row for row, payload ids included, and
+// so must the content-addressed chunk ids they apply as: an import run
+// that minted ids would store the same history under a new hash.
+func TestImportBuildIsDeterministic(t *testing.T) {
+	for _, tc := range []parityCase{claudeParityCase(), codexParityCase()} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			importOnce := func() (store.ImportBatch, []string) {
+				t.Helper()
+				path := filepath.Join(t.TempDir(), "history.db")
+				st, err := store.New(path)
+				if err != nil {
+					t.Fatalf("new store: %v", err)
+				}
+				t.Cleanup(func() { _ = st.Close() })
+				thread := seedThread(t, st, testThreadID, tc.providerName, workspace)
+				batch, _, err := NewWriter(st, thread).Build(importEvents(tc.events(testThreadID, workspace)))
+				if err != nil {
+					t.Fatalf("build: %v", err)
+				}
+				if err := st.ApplyImportBatch(thread.ID, batch); err != nil {
+					t.Fatalf("apply: %v", err)
+				}
+				raw, err := sql.Open("sqlite", path)
+				if err != nil {
+					t.Fatalf("open second handle: %v", err)
+				}
+				defer raw.Close()
+				rows, err := raw.Query(`SELECT chunk_id FROM thread_import_chunks WHERE thread_id = ? ORDER BY chunk_order`, thread.ID)
+				if err != nil {
+					t.Fatalf("read chunk ids: %v", err)
+				}
+				defer rows.Close()
+				var chunks []string
+				for rows.Next() {
+					var id string
+					if err := rows.Scan(&id); err != nil {
+						t.Fatalf("scan chunk id: %v", err)
+					}
+					chunks = append(chunks, id)
+				}
+				if err := rows.Err(); err != nil {
+					t.Fatalf("iterate chunk ids: %v", err)
+				}
+				return batch, chunks
+			}
+			first, firstChunks := importOnce()
+			second, secondChunks := importOnce()
+			if !reflect.DeepEqual(first, second) {
+				for i := range min(len(first.Rows), len(second.Rows)) {
+					if !reflect.DeepEqual(first.Rows[i], second.Rows[i]) {
+						t.Errorf("row %d differs between builds:\n first = %s\n second= %s",
+							i, formatAny(first.Rows[i]), formatAny(second.Rows[i]))
+					}
+				}
+				t.Fatalf("two builds of one session differ")
+			}
+			if len(firstChunks) == 0 || !reflect.DeepEqual(firstChunks, secondChunks) {
+				t.Fatalf("chunk ids %v then %v, want the same nonempty list", firstChunks, secondChunks)
+			}
+			payloads := 0
+			for _, row := range first.Rows {
+				for _, payload := range []*store.Payload{row.Payload, row.InputPayload} {
+					if payload != nil {
+						payloads++
+					}
+				}
+			}
+			if payloads == 0 {
+				t.Fatal("fixture builds no payloads; the comparison proves nothing about payload ids")
+			}
+		})
+	}
 }

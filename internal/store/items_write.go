@@ -48,6 +48,12 @@ func (s *Store) appendStreamingItemSummaryAndPayload(
 	if err != nil {
 		return Item{}, fmt.Errorf("store: %s %s/%s: %w", rereadOperation, threadID, id, err)
 	}
+	// A streaming append carries no card: it is for text a card does not
+	// preview (assistant text, thinking).
+	if row := subagentRowOf(updated); row.counts() && previewKind(row.kind) {
+		return Item{}, fmt.Errorf("%w: %s/%s under %s: a streaming append would change a previewed summary without its card",
+			ErrSubagentAnchor, threadID, id, row.parentID)
+	}
 	if payloadID != "" {
 		if err := appendPayloadDataTx(tx, threadID, payloadID, payloadDelta, updated.PayloadMeta, payloadCreatedAt); err != nil {
 			return Item{}, err
@@ -102,7 +108,7 @@ func readBackItemTx(tx *sql.Tx, threadID string, id string) (Item, error) {
 	row := tx.QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
-		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id`+servedItemJoin+`
 		  WHERE items.thread_id = ? AND items.id = ?`,
 		threadID, id,
 	)
@@ -111,23 +117,13 @@ func readBackItemTx(tx *sql.Tx, threadID string, id string) (Item, error) {
 
 func (s *Store) InsertItem(item Item) error {
 	applyItemDefaults(&item)
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: begin insert item tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	if err := insertItemTx(tx, item, "store: insert item"); err != nil {
-		return err
-	}
 	// Thread activity is bumped explicitly via Store.MarkThreadActivity by
 	// the triage paths that count as a meaningful interaction (user_text
 	// persist, turn settle, approval / user-input request creation). Item
 	// inserts on their own do not advance the sidebar timestamp.
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit insert item tx: %w", err)
-	}
-	return nil
+	return s.writeItems(item.ThreadID, item.SubagentCard, "insert item", func(tx *sql.Tx, w *cardWrite) error {
+		return insertItemTx(tx, w, item, "store: insert item")
+	})
 }
 
 // AppendItem inserts an item at the next available item_index for
@@ -143,27 +139,20 @@ func (s *Store) InsertItem(item Item) error {
 // ordering, migrations replaying a fixed sequence).
 func (s *Store) AppendItem(item Item) (int, error) {
 	applyItemDefaults(&item)
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, fmt.Errorf("store: begin append item tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	next, err := nextItemIndexTx(tx, item.ThreadID, item.TurnIndex, "store: append item next index")
-	if err != nil {
-		return 0, err
-	}
-	item.ItemIndex = next
-
-	if err := insertItemTx(tx, item, "store: append item insert"); err != nil {
-		return 0, err
-	}
 	// Thread activity is bumped explicitly by triage interaction paths,
 	// not on every appended item. See InsertItem and MarkThreadActivity.
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("store: commit append item tx: %w", err)
+	err := s.writeItems(item.ThreadID, item.SubagentCard, "append item", func(tx *sql.Tx, w *cardWrite) error {
+		next, err := nextItemIndexTx(tx, item.ThreadID, item.TurnIndex, "store: append item next index")
+		if err != nil {
+			return err
+		}
+		item.ItemIndex = next
+		return insertItemTx(tx, w, item, "store: append item insert")
+	})
+	if err != nil {
+		return 0, err
 	}
-	return next, nil
+	return item.ItemIndex, nil
 }
 
 // AppendItemSummary appends delta to the item's summary column in-place
@@ -308,38 +297,30 @@ func (s *Store) UpsertUnsettledItem(item Item, resultPayload, inputPayload *Payl
 
 func (s *Store) upsertItemWithInputPayload(item Item, resultPayload, inputPayload *Payload, preserveTerminal bool) (Item, error) {
 	applyItemDefaults(&item)
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Item{}, fmt.Errorf("store: begin upsert item tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	if preserveTerminal {
-		existing, found, err := s.getThreadItem(tx, item.ThreadID, item.ID)
-		if err != nil {
-			return Item{}, err
+	var persisted Item
+	err := s.writeItems(item.ThreadID, item.SubagentCard, "upsert item", func(tx *sql.Tx, w *cardWrite) error {
+		if preserveTerminal {
+			existing, found, err := s.getThreadItem(tx, item.ThreadID, item.ID)
+			if err != nil {
+				return err
+			}
+			if found && existing.Status != "running" && existing.Status != "streaming" {
+				persisted = existing
+				return nil
+			}
 		}
-		if found && existing.Status != "running" && existing.Status != "streaming" {
-			return existing, nil
+		if err := upsertPayload(tx, resultPayload, &item); err != nil {
+			return err
 		}
-	}
-
-	if err := upsertPayload(tx, resultPayload, &item); err != nil {
-		return Item{}, err
-	}
-	if err := upsertInputPayload(tx, inputPayload, &item); err != nil {
-		return Item{}, err
-	}
-	if err := writeItem(tx, &item); err != nil {
-		return Item{}, err
-	}
-
-	persisted, err := readBackUpsertedItem(tx, item.ThreadID, item.ID)
+		if err := upsertInputPayload(tx, inputPayload, &item); err != nil {
+			return err
+		}
+		var err error
+		persisted, err = writeItemAndReadBack(tx, w, &item, nextItemIndexTx)
+		return err
+	})
 	if err != nil {
 		return Item{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Item{}, fmt.Errorf("store: commit upsert item tx: %w", err)
 	}
 	return persisted, nil
 }
@@ -353,24 +334,17 @@ func (s *Store) upsertItemWithInputPayload(item Item, resultPayload, inputPayloa
 // byte-identical to running the pair back to back.
 func (s *Store) UpsertItemWithPayloadAppend(item Item, payloadID string, delta []byte, payloadMeta string, createdAt int64) (Item, error) {
 	applyItemDefaults(&item)
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Item{}, fmt.Errorf("store: begin upsert item with payload append tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	if err := appendPayloadDataTx(tx, item.ThreadID, payloadID, delta, payloadMeta, createdAt); err != nil {
-		return Item{}, err
-	}
-	if err := writeItem(tx, &item); err != nil {
-		return Item{}, err
-	}
-	persisted, err := readBackUpsertedItem(tx, item.ThreadID, item.ID)
+	var persisted Item
+	err := s.writeItems(item.ThreadID, item.SubagentCard, "upsert item with payload append", func(tx *sql.Tx, w *cardWrite) error {
+		if err := appendPayloadDataTx(tx, item.ThreadID, payloadID, delta, payloadMeta, createdAt); err != nil {
+			return err
+		}
+		var err error
+		persisted, err = writeItemAndReadBack(tx, w, &item, nextItemIndexTx)
+		return err
+	})
 	if err != nil {
 		return Item{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Item{}, fmt.Errorf("store: commit upsert item with payload append tx: %w", err)
 	}
 	return persisted, nil
 }
@@ -407,60 +381,79 @@ func upsertInputPayload(tx *sql.Tx, payload *Payload, item *Item) error {
 	return nil
 }
 
-// writeItem resolves whether `item` already exists on its thread and
-// dispatches to the matching update/insert helper. The lookup query runs
-// inside the same transaction so concurrent upserts can't both see
-// "absent" and race to insert.
-func writeItem(tx *sql.Tx, item *Item) error {
-	return writeItemWithIndexFn(tx, item, nextItemIndexTx)
+// writeItemAndReadBack is writeItemWithIndexFn followed by the read-back
+// of the written row, once the write's card recompute has run.
+func writeItemAndReadBack(tx *sql.Tx, w *cardWrite, item *Item, indexFn func(*sql.Tx, string, int, string) (int, error)) (Item, error) {
+	if err := writeItemWithIndexFn(tx, w, item, indexFn); err != nil {
+		return Item{}, err
+	}
+	if err := w.finish(); err != nil {
+		return Item{}, err
+	}
+	return readBackUpsertedItem(tx, item.ThreadID, item.ID)
 }
 
-// writeItemWithIndexFn is writeItem with the new-row index allocator
-// injected: nextItemIndexTx appends (the default), headItemIndexTx
-// prepends (UpsertItemAtTurnHead). Existing rows update in place either
-// way — placement only applies to the insert.
-func writeItemWithIndexFn(tx *sql.Tx, item *Item, indexFn func(*sql.Tx, string, int, string) (int, error)) error {
-	var existingTurnIndex, existingItemIndex int
-	var existingCreatedAt int64
-	lookup := func() error {
-		return tx.QueryRow(
-			`SELECT turn_index, item_index, created_at FROM items WHERE thread_id = ? AND id = ?`,
-			item.ThreadID, item.ID,
-		).Scan(&existingTurnIndex, &existingItemIndex, &existingCreatedAt)
+// itemUpsertLookupSQL reads the row an upsert may update, as the card
+// rules read it.
+var itemUpsertLookupSQL = `SELECT ` + subagentRowColumns("") + `, created_at FROM items WHERE thread_id = ? AND id = ?`
+
+// writeItemWithIndexFn resolves whether `item` already exists on its
+// thread and dispatches to the matching update/insert helper, with the
+// new-row index allocator injected: nextItemIndexTx appends,
+// headItemIndexTx prepends (UpsertItemAtTurnHead). Existing rows update
+// in place either way; placement only applies to the insert. The lookup
+// runs inside the same transaction so concurrent upserts can't both see
+// "absent" and race to insert.
+func writeItemWithIndexFn(tx *sql.Tx, w *cardWrite, item *Item, indexFn func(*sql.Tx, string, int, string) (int, error)) error {
+	if err := handOffIDsTx(tx, item.ThreadID, []string{item.ID}); err != nil {
+		return fmt.Errorf("store: upsert item hand off %s/%s: %w", item.ThreadID, item.ID, err)
 	}
-	// An imported or inherited row with this id is the same logical row: the
-	// thread takes its own copy and the upsert updates it.
-	if err := requireMutableItemTx(tx, item.ThreadID, item.ID, "store: upsert item"); errors.Is(err, sql.ErrNoRows) {
-		return insertNewItem(tx, item, indexFn)
-	} else if err != nil {
-		return err
+	var createdAt int64
+	old, err := scanSubagentRow(tx.QueryRow(itemUpsertLookupSQL, item.ThreadID, item.ID), &createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// An imported or inherited row with this id is the same logical
+		// row: the thread takes its own copy and the upsert updates it.
+		switch err := ownShownItemTx(tx, item.ThreadID, item.ID, "store: upsert item"); {
+		case errors.Is(err, sql.ErrNoRows):
+			return insertNewItem(tx, w, item, indexFn)
+		case err != nil:
+			return err
+		}
+		old, err = scanSubagentRow(tx.QueryRow(itemUpsertLookupSQL, item.ThreadID, item.ID), &createdAt)
 	}
-	if err := lookup(); err != nil {
+	if err != nil {
 		return fmt.Errorf("store: upsert item lookup %s: %w", item.ID, err)
 	}
-	item.ItemIndex = existingItemIndex
-	item.CreatedAt = existingCreatedAt
-	return updateExistingItem(tx, *item)
+	item.ItemIndex = old.index
+	item.CreatedAt = createdAt
+	return updateExistingItem(tx, w, *item, old)
 }
 
-// updateExistingItem writes every mutable column on the existing row.
-// item_index / created_at are preserved (the caller already copied them
-// from the lookup) so the upsert is logically "update-in-place".
+const itemUpdateSQL = `UPDATE items
+		 SET turn_index = ?, kind = ?, role = ?, status = ?, summary = ?,
+		     payload_id = ?,
+		     input_payload_id = COALESCE(NULLIF(?, ''), input_payload_id),
+		     parent_id = ?, is_background = ?, completion_of = ?,
+		     tool_name = ?, decision = ?, meta = ?, updated_at = ?
+		 WHERE thread_id = ? AND id = ?`
+
+// updateExistingItem writes every mutable column on the existing row,
+// old as the card rules read it. item_index / created_at are preserved
+// (the caller already copied them from the lookup) so the upsert is
+// logically "update-in-place".
 //
 // input_payload_id is preserved when the caller passes an empty value:
 // completion-merge upserts (tool_lifecycle.go) reuse the launch row's
 // input payload and would otherwise null it out. The COALESCE+NULLIF
 // pair "use the new value if non-empty, else keep the existing column"
 // keeps that contract in a single UPDATE.
-func updateExistingItem(tx *sql.Tx, item Item) error {
-	if _, err := tx.Exec(
-		`UPDATE items
-		 SET turn_index = ?, kind = ?, role = ?, status = ?, summary = ?,
-		     payload_id = ?,
-		     input_payload_id = COALESCE(NULLIF(?, ''), input_payload_id),
-		     parent_id = ?, is_background = ?, completion_of = ?,
-		     tool_name = ?, decision = ?, meta = ?, updated_at = ?
-		 WHERE thread_id = ? AND id = ?`,
+func updateExistingItem(tx *sql.Tx, w *cardWrite, item Item, old subagentRow) error {
+	row := subagentRowOf(item)
+	row.index = old.index
+	if err := w.updated(old, row); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(itemUpdateSQL,
 		item.TurnIndex, item.Kind, item.Role, item.Status, item.Summary,
 		nilIfEmpty(item.PayloadID), item.InputPayloadID,
 		item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
@@ -480,16 +473,13 @@ func updateExistingItem(tx *sql.Tx, item Item) error {
 // slot, then inserts the row. The computed ItemIndex is written back
 // onto `item` so the re-read step (readBackUpsertedItem) returns the
 // persisted value.
-func insertNewItem(tx *sql.Tx, item *Item, indexFn func(*sql.Tx, string, int, string) (int, error)) error {
+func insertNewItem(tx *sql.Tx, w *cardWrite, item *Item, indexFn func(*sql.Tx, string, int, string) (int, error)) error {
 	next, err := indexFn(tx, item.ThreadID, item.TurnIndex, "store: upsert item next index")
 	if err != nil {
 		return err
 	}
 	item.ItemIndex = next
-	if err := insertItemWithIDTx(tx, *item, "store: insert item"); err != nil {
-		return err
-	}
-	return nil
+	return insertItemWithIDTx(tx, w, *item, "store: insert item")
 }
 
 // UpsertItemAtTurnHead is UpsertItem with HEAD placement for a new row:
@@ -505,21 +495,14 @@ func insertNewItem(tx *sql.Tx, item *Item, indexFn func(*sql.Tx, string, int, st
 // payload variant: the deferred-prompt path persists bare user rows.
 func (s *Store) UpsertItemAtTurnHead(item Item) (Item, error) {
 	applyItemDefaults(&item)
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Item{}, fmt.Errorf("store: begin upsert item at head tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	if err := writeItemWithIndexFn(tx, &item, headItemIndexTx); err != nil {
-		return Item{}, err
-	}
-	persisted, err := readBackUpsertedItem(tx, item.ThreadID, item.ID)
+	var persisted Item
+	err := s.writeItems(item.ThreadID, item.SubagentCard, "upsert item at head", func(tx *sql.Tx, w *cardWrite) error {
+		var err error
+		persisted, err = writeItemAndReadBack(tx, w, &item, headItemIndexTx)
+		return err
+	})
 	if err != nil {
 		return Item{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Item{}, fmt.Errorf("store: commit upsert item at head tx: %w", err)
 	}
 	return persisted, nil
 }
@@ -547,46 +530,50 @@ func readBackUpsertedItem(tx *sql.Tx, threadID, id string) (Item, error) {
 // its meta would leave truncation predicates reading a repositioned row
 // with stale ordering metadata. updatedAt stamps the mutation time.
 func (s *Store) BumpItemToTurnEnd(threadID, itemID string, transformMeta func(string) (string, error), updatedAt int64) (Item, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Item{}, fmt.Errorf("store: begin bump item index tx: %w", err)
-	}
-	defer tx.Rollback()
-	if err := requireMutableItemTx(tx, threadID, itemID, "store: bump item index"); err != nil {
-		return Item{}, err
-	}
-
-	var turnIndex int
-	var meta string
-	if err := tx.QueryRow(
-		`SELECT turn_index, meta FROM items WHERE thread_id = ? AND id = ?`,
-		threadID, itemID,
-	).Scan(&turnIndex, &meta); err != nil {
-		return Item{}, fmt.Errorf("store: bump item index lookup %s: %w", itemID, err)
-	}
-
-	next, err := nextItemIndexTx(tx, threadID, turnIndex, "store: bump item index")
-	if err != nil {
-		return Item{}, err
-	}
-	if transformMeta != nil {
-		if meta, err = transformMeta(meta); err != nil {
-			return Item{}, fmt.Errorf("store: bump item index transform meta %s: %w", itemID, err)
+	var item Item
+	err := s.writeItems(threadID, nil, "bump item index", func(tx *sql.Tx, w *cardWrite) error {
+		old, err := readMutableSubagentRowTx(tx, threadID, itemID, "store: bump item index")
+		if err != nil {
+			return err
 		}
-	}
-	if _, err := tx.Exec(
-		`UPDATE items SET item_index = ?, meta = ?, updated_at = ? WHERE thread_id = ? AND id = ?`,
-		next, meta, updatedAt, threadID, itemID,
-	); err != nil {
-		return Item{}, fmt.Errorf("store: bump item index update %s: %w", itemID, err)
-	}
-
-	item, err := readBackItemTx(tx, threadID, itemID)
+		var meta string
+		if err := tx.QueryRow(
+			`SELECT meta FROM items WHERE thread_id = ? AND id = ?`,
+			threadID, itemID,
+		).Scan(&meta); err != nil {
+			return fmt.Errorf("store: bump item index lookup %s: %w", itemID, err)
+		}
+		next, err := nextItemIndexTx(tx, threadID, old.turn, "store: bump item index")
+		if err != nil {
+			return err
+		}
+		row := old
+		row.index = next
+		if transformMeta != nil {
+			if meta, err = transformMeta(meta); err != nil {
+				return fmt.Errorf("store: bump item index transform meta %s: %w", itemID, err)
+			}
+			row.setMeta(meta)
+		}
+		if err := w.updated(old, row); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			`UPDATE items SET item_index = ?, meta = ?, updated_at = ? WHERE thread_id = ? AND id = ?`,
+			next, meta, updatedAt, threadID, itemID,
+		); err != nil {
+			return fmt.Errorf("store: bump item index update %s: %w", itemID, err)
+		}
+		if err := w.finish(); err != nil {
+			return err
+		}
+		if item, err = readBackItemTx(tx, threadID, itemID); err != nil {
+			return fmt.Errorf("store: bump item index re-read %s: %w", itemID, err)
+		}
+		return nil
+	})
 	if err != nil {
-		return Item{}, fmt.Errorf("store: bump item index re-read %s: %w", itemID, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Item{}, fmt.Errorf("store: commit bump item index tx: %w", err)
+		return Item{}, err
 	}
 	return item, nil
 }
@@ -600,98 +587,124 @@ func (s *Store) BumpItemToTurnEnd(threadID, itemID string, transformMeta func(st
 // flag to skip redundant frontend emissions on duplicate echoes.
 // updated_at is stamped only when the meta changed.
 func (s *Store) UpdateItemMetaMerge(threadID, id string, transform func(string) (string, error), updatedAt int64) (Item, bool, error) {
-	tx, err := s.db.Begin()
+	var item Item
+	var changed bool
+	err := s.writeItems(threadID, nil, "meta merge", func(tx *sql.Tx, w *cardWrite) error {
+		old, err := readMutableSubagentRowTx(tx, threadID, id, "store: meta merge")
+		if err != nil {
+			return err
+		}
+		var meta string
+		if err := tx.QueryRow(
+			`SELECT meta FROM items WHERE thread_id = ? AND id = ?`,
+			threadID, id,
+		).Scan(&meta); err != nil {
+			return fmt.Errorf("store: meta merge lookup %s/%s: %w", threadID, id, err)
+		}
+		merged, err := transform(meta)
+		if err != nil {
+			return fmt.Errorf("store: meta merge transform %s/%s: %w", threadID, id, err)
+		}
+		changed = merged != meta
+		if changed {
+			if err := updateItemMetaTx(tx, w, old, merged, &updatedAt); err != nil {
+				return err
+			}
+		}
+		if item, err = readBackItemTx(tx, threadID, id); err != nil {
+			return fmt.Errorf("store: meta merge re-read %s/%s: %w", threadID, id, err)
+		}
+		return nil
+	})
 	if err != nil {
-		return Item{}, false, fmt.Errorf("store: begin meta merge tx: %w", err)
-	}
-	defer tx.Rollback()
-	if err := requireMutableItemTx(tx, threadID, id, "store: meta merge"); err != nil {
 		return Item{}, false, err
 	}
-
-	var meta string
-	if err := tx.QueryRow(
-		`SELECT meta FROM items WHERE thread_id = ? AND id = ?`,
-		threadID, id,
-	).Scan(&meta); err != nil {
-		return Item{}, false, fmt.Errorf("store: meta merge lookup %s/%s: %w", threadID, id, err)
-	}
-	merged, err := transform(meta)
-	if err != nil {
-		return Item{}, false, fmt.Errorf("store: meta merge transform %s/%s: %w", threadID, id, err)
-	}
-	changed := merged != meta
-	if changed {
-		if _, err := tx.Exec(
-			`UPDATE items SET meta = ?, updated_at = ? WHERE thread_id = ? AND id = ?`,
-			merged, updatedAt, threadID, id,
-		); err != nil {
-			return Item{}, false, fmt.Errorf("store: meta merge update %s/%s: %w", threadID, id, err)
-		}
-	}
-	item, err := readBackItemTx(tx, threadID, id)
-	if err != nil {
-		return Item{}, false, fmt.Errorf("store: meta merge re-read %s/%s: %w", threadID, id, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return Item{}, false, fmt.Errorf("store: commit meta merge tx: %w", err)
-	}
 	return item, changed, nil
+}
+
+// updateItemMetaTx writes a row's meta, and updated_at when given. A meta
+// can make a row a resume prompt or a carrier, or change the carrier or
+// root it names, which recomputes the stamps it moves between.
+func updateItemMetaTx(tx *sql.Tx, w *cardWrite, old subagentRow, meta string, updatedAt *int64) error {
+	row := old
+	row.setMeta(meta)
+	if err := w.updated(old, row); err != nil {
+		return err
+	}
+	query, args := `UPDATE items SET meta = ? WHERE thread_id = ? AND id = ?`, []any{meta, w.threadID, old.id}
+	if updatedAt != nil {
+		query, args = `UPDATE items SET meta = ?, updated_at = ? WHERE thread_id = ? AND id = ?`, []any{meta, *updatedAt, w.threadID, old.id}
+	}
+	result, err := tx.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("store: update item meta %s/%s: %w", w.threadID, old.id, err)
+	}
+	if err := requireRowsAffected(result, fmt.Sprintf("store: update item meta %s/%s", w.threadID, old.id)); err != nil {
+		return err
+	}
+	return w.finish()
 }
 
 // DeleteThreadItem removes one item scoped by thread and id. Intended for
 // rows that were reserved internally but never became visible history, such as
 // quietly-persisted queued flush rows whose provider session died before echo.
+//
+// A deleted row with a parent recomputes the anchors above it in the same
+// transaction: one chain read from its parent.
 func (s *Store) DeleteThreadItem(threadID, itemID string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: begin delete item %s/%s: %w", threadID, itemID, err)
-	}
-	defer tx.Rollback()
-	if err := handOffIDsTx(tx, threadID, []string{itemID}); err != nil {
-		return err
-	}
-	sharedDeleted, err := deleteSharedHistoryItemTx(tx, threadID, itemID)
-	if err != nil {
-		return err
-	}
-	if sharedDeleted > 0 {
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("store: commit delete shared item %s/%s: %w", threadID, itemID, err)
+	return s.writeItems(threadID, nil, "delete item "+threadID+"/"+itemID, func(tx *sql.Tx, w *cardWrite) error {
+		if err := handOffIDsTx(tx, threadID, []string{itemID}); err != nil {
+			return err
+		}
+		sharedDeleted, err := deleteSharedHistoryItemTx(tx, w, threadID, itemID)
+		if err != nil || sharedDeleted > 0 {
+			return err
+		}
+		// An inherited row belongs to the fork's source; the fork hides it.
+		hidden, err := hideInheritedItemTx(tx, w, threadID, itemID)
+		if err != nil || hidden {
+			return err
+		}
+		n, err := deleteItemRowsTx(tx, w, `id = ?`, []any{itemID}, fmt.Sprintf("store: delete item %s/%s", threadID, itemID))
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("store: delete item %s/%s: %w", threadID, itemID, sql.ErrNoRows)
 		}
 		return nil
-	}
-	// An inherited row belongs to the fork's source; the fork hides it.
-	hidden, err := hideInheritedItemTx(tx, threadID, itemID)
+	})
+}
+
+// deleteItemRowsTx deletes the thread's local rows the predicate selects
+// with their search rows, and records each for the subagent cards: its
+// chain loses it (cardWrite.deleted). It returns how many it deleted.
+func deleteItemRowsTx(tx *sql.Tx, w *cardWrite, predicate string, args []any, action string) (int64, error) {
+	rows, err := tx.Query(`DELETE FROM items WHERE thread_id = ? AND (`+predicate+`) RETURNING `+subagentRowColumns(""),
+		append([]any{w.threadID}, args...)...)
 	if err != nil {
-		return err
+		return 0, fmt.Errorf("%s: %w", action, err)
 	}
-	if hidden {
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("store: commit hide inherited item %s/%s: %w", threadID, itemID, err)
+	var deleted []subagentRow
+	for rows.Next() {
+		row, err := scanSubagentRow(rows)
+		if err != nil {
+			return 0, errors.Join(fmt.Errorf("%s: scan deleted row: %w", action, err), rows.Close())
 		}
-		return nil
+		deleted = append(deleted, row)
 	}
-	result, err := tx.Exec(
-		`DELETE FROM items WHERE thread_id = ? AND id = ?`,
-		threadID, itemID,
-	)
-	if err != nil {
-		return fmt.Errorf("store: delete item %s/%s: %w", threadID, itemID, err)
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return 0, fmt.Errorf("%s: iterate deleted rows: %w", action, err)
 	}
-	if err := requireRowsAffected(
-		result,
-		fmt.Sprintf("store: delete item %s/%s", threadID, itemID),
-	); err != nil {
-		return err
+	ids := make([]string, len(deleted))
+	for i, row := range deleted {
+		ids[i] = row.id
+		w.deleted(row)
 	}
-	if err := deleteThreadSearchItemsTx(tx, threadID, []string{itemID}); err != nil {
-		return err
+	if err := deleteThreadSearchItemsTx(tx, w.threadID, ids); err != nil {
+		return 0, err
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit delete item %s/%s: %w", threadID, itemID, err)
-	}
-	return nil
+	return int64(len(deleted)), nil
 }
 
 // DeleteConversationFromTurn removes items and turn rows with
@@ -702,54 +715,54 @@ func (s *Store) DeleteThreadItem(threadID, itemID string) error {
 // Everything runs in ONE transaction so a failure rolls back the whole
 // truncation.
 func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (int, HistoryStamp, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, HistoryStamp{}, fmt.Errorf("store: begin delete conversation from turn tx: %w", err)
-	}
-	defer tx.Rollback()
-	if err := cutAsyncQuestionsTx(tx, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex}); err != nil {
-		return 0, HistoryStamp{}, err
-	}
-	if err := handOffOwnRowsTx(tx, threadID, fromTurnIndex, ""); err != nil {
-		return 0, HistoryStamp{}, err
-	}
-	sharedDeleted, err := deleteSharedHistoryFromTurnTx(tx, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex})
-	if err != nil {
-		return 0, HistoryStamp{}, err
-	}
-
-	n, err := deleteItemsAndSearchRowsTx(tx, threadID,
-		`DELETE FROM items WHERE thread_id = ? AND turn_index >= ? RETURNING id`,
-		[]any{threadID, fromTurnIndex},
-		fmt.Sprintf("store: delete items from turn for thread %s", threadID),
-	)
-	if err != nil {
-		return 0, HistoryStamp{}, err
-	}
-	if err := retractInheritedTx(tx, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex}, fromTurnIndex-1); err != nil {
-		return 0, HistoryStamp{}, err
-	}
-	if _, err := tx.Exec(
-		`DELETE FROM turns WHERE thread_id = ? AND turn_index >= ?`,
-		threadID, fromTurnIndex,
-	); err != nil {
-		return 0, HistoryStamp{}, fmt.Errorf("store: delete turns from turn for thread %s: %w", threadID, err)
-	}
-	// The post-cut stamps, read inside the deleting transaction so the
-	// pair the `user_message:reverted` event carries describes exactly
-	// this cut and not a later write. A thread deleted underneath the cut
-	// reports the zero stamp; the caller's event is moot by then.
-	stamp, _, err := readHistoryStampTx(tx, threadID)
-	if err != nil {
-		return 0, HistoryStamp{}, err
-	}
+	var deleted int
+	var stamp HistoryStamp
+	err := s.writeItems(threadID, nil, "delete conversation from turn", func(tx *sql.Tx, w *cardWrite) error {
+		if err := cutAsyncQuestionsTx(tx, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex}); err != nil {
+			return err
+		}
+		if err := handOffOwnRowsTx(tx, threadID, fromTurnIndex, ""); err != nil {
+			return err
+		}
+		sharedDeleted, err := deleteSharedHistoryFromTurnTx(tx, w, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex})
+		if err != nil {
+			return err
+		}
+		n, err := deleteItemRowsTx(tx, w, `turn_index >= ?`, []any{fromTurnIndex},
+			fmt.Sprintf("store: delete items from turn for thread %s", threadID))
+		if err != nil {
+			return err
+		}
+		deleted = int(n + sharedDeleted)
+		if err := retractInheritedTx(tx, w, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex}, fromTurnIndex-1); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			`DELETE FROM turns WHERE thread_id = ? AND turn_index >= ?`,
+			threadID, fromTurnIndex,
+		); err != nil {
+			return fmt.Errorf("store: delete turns from turn for thread %s: %w", threadID, err)
+		}
+		// The cut can take an anchor's preview or newest row, or a resume
+		// prompt; the surviving anchors above what it deleted are
+		// recomputed here, so the cut commits with every stamp exact.
+		if err := w.finish(); err != nil {
+			return err
+		}
+		// The post-cut stamps, read inside the deleting transaction so the
+		// pair the `user_message:reverted` event carries describes exactly
+		// this cut and not a later write. A thread deleted underneath the
+		// cut reports the zero stamp; the caller's event is moot by then.
+		stamp, _, err = readHistoryStampTx(tx, threadID)
+		return err
+	})
 	// Truncating the conversation is a structural change, not a fresh
 	// interaction. The next user_text persist (or a turn settle that
 	// follows the resume) bumps activity through MarkThreadActivity.
-	if err := tx.Commit(); err != nil {
-		return 0, HistoryStamp{}, fmt.Errorf("store: commit delete conversation from turn tx: %w", err)
+	if err != nil {
+		return 0, HistoryStamp{}, err
 	}
-	return int(n + sharedDeleted), stamp, nil
+	return deleted, stamp, nil
 }
 
 // DeleteConversationFromItem removes the anchor item and everything after it
@@ -790,12 +803,20 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 // removal instruction even for pane-only rows SQLite never saw. Empty
 // when the anchor opened its turn (the common case: whole turn gone).
 func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, HistoryStamp, error) {
-	tx, err := s.db.Begin()
+	var kept []string
+	var stamp HistoryStamp
+	err := s.writeItems(threadID, nil, "delete conversation from item", func(tx *sql.Tx, w *cardWrite) error {
+		var err error
+		kept, stamp, err = deleteConversationFromItemTx(tx, w, threadID, itemID)
+		return err
+	})
 	if err != nil {
-		return nil, HistoryStamp{}, fmt.Errorf("store: begin delete conversation from item tx: %w", err)
+		return nil, HistoryStamp{}, err
 	}
-	defer tx.Rollback()
+	return kept, stamp, nil
+}
 
+func deleteConversationFromItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) ([]string, HistoryStamp, error) {
 	var turnIndex, itemIndex int
 	var meta string
 	anchorQuery, anchorArgs, err := timelineArms(tx, threadID, timelineSelection{
@@ -869,19 +890,16 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, H
 	if err := handOffOwnRowsTx(tx, threadID, turnIndex, itemPredicate, itemArgs[1:]...); err != nil {
 		return nil, HistoryStamp{}, err
 	}
-	if _, err := deleteSharedHistoryFromTurnTx(tx, threadID, turnIndex, itemPredicate, itemArgs[1:]); err != nil {
+	if _, err := deleteSharedHistoryFromTurnTx(tx, w, threadID, turnIndex, itemPredicate, itemArgs[1:]); err != nil {
 		return nil, HistoryStamp{}, err
 	}
 	// Every reverted row sits at or after the anchor turn; the bound keeps
 	// the delete on the turn range of the thread's index.
-	if _, err := deleteItemsAndSearchRowsTx(tx, threadID,
-		`DELETE FROM items WHERE thread_id = ? AND turn_index >= ? AND (`+itemPredicate+`) RETURNING id`,
-		append([]any{threadID, turnIndex}, itemArgs[1:]...),
-		fmt.Sprintf("store: delete items from item for thread %s", threadID),
-	); err != nil {
+	if _, err := deleteItemRowsTx(tx, w, `turn_index >= ? AND (`+itemPredicate+`)`, append([]any{turnIndex}, itemArgs[1:]...),
+		fmt.Sprintf("store: delete items from item for thread %s", threadID)); err != nil {
 		return nil, HistoryStamp{}, err
 	}
-	if err := retractInheritedTx(tx, threadID, turnIndex, itemPredicate, itemArgs[1:], turnIndex); err != nil {
+	if err := retractInheritedTx(tx, w, threadID, turnIndex, itemPredicate, itemArgs[1:], turnIndex); err != nil {
 		return nil, HistoryStamp{}, err
 	}
 
@@ -926,18 +944,19 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, H
 		}
 	}
 
+	// The surviving anchors above what the cut deleted, recomputed in the
+	// cut: see DeleteConversationFromTurn.
+	if err := w.finish(); err != nil {
+		return nil, HistoryStamp{}, err
+	}
 	// Post-cut stamps, read inside the deleting transaction — see
 	// DeleteConversationFromTurn.
 	stamp, _, err := readHistoryStampTx(tx, threadID)
 	if err != nil {
 		return nil, HistoryStamp{}, err
 	}
-
 	// Like DeleteConversationFromTurn: truncation is a structural change,
 	// not a fresh interaction — no MarkThreadActivity bump.
-	if err := tx.Commit(); err != nil {
-		return nil, HistoryStamp{}, fmt.Errorf("store: commit delete conversation from item tx: %w", err)
-	}
 	return keptAnchorTurnItemIDs, stamp, nil
 }
 
@@ -1023,31 +1042,13 @@ func trimTurnSettleToSurvivorsTx(tx *sql.Tx, threadID string, turnIndex int) err
 // match any row so partial fork cleanups can detect drift before
 // committing.
 func (s *Store) UpdateItemMeta(threadID, id, meta string) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("store: begin update item meta %s/%s: %w", threadID, id, err)
-	}
-	defer tx.Rollback()
-	if err := requireMutableItemTx(tx, threadID, id, "store: update item meta"); err != nil {
-		return err
-	}
-	result, err := tx.Exec(
-		`UPDATE items SET meta = ? WHERE thread_id = ? AND id = ?`,
-		meta, threadID, id,
-	)
-	if err != nil {
-		return fmt.Errorf("store: update item meta %s/%s: %w", threadID, id, err)
-	}
-	if err := requireRowsAffected(
-		result,
-		fmt.Sprintf("store: update item meta %s/%s", threadID, id),
-	); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("store: commit update item meta %s/%s: %w", threadID, id, err)
-	}
-	return nil
+	return s.writeItems(threadID, nil, "update item meta "+threadID+"/"+id, func(tx *sql.Tx, w *cardWrite) error {
+		old, err := readMutableSubagentRowTx(tx, threadID, id, "store: update item meta")
+		if err != nil {
+			return err
+		}
+		return updateItemMetaTx(tx, w, old, meta, nil)
+	})
 }
 
 // ItemPartialUpdate describes a subset of mutable Item fields for a targeted
@@ -1058,21 +1059,27 @@ type ItemPartialUpdate struct {
 	Meta      *string
 	Decision  *string
 	UpdatedAt *int64
+	// SubagentCard is the card of the row's parent, as Item.SubagentCard:
+	// a changed summary of a row a card previews needs it.
+	SubagentCard *SubagentCard
 }
 
 // UpdateItemFields writes only the non-nil fields from update onto the
 // existing row identified by (threadID, id). Returns an error if the
 // row does not exist or no fields were specified.
 //
-// It returns the row's new `rev`, read inside the same transaction as the
-// write. The wire patch this feeds (triage emitItemPatch) describes exactly
-// the content this statement left behind, so its revision has to be read
-// under the same lock: a rev fetched afterwards could belong to a LATER
-// write, which would let a client pair newer-looking evidence with older
-// content and earn a false `fresh` from window verification. Returning it
-// is the enforcement — a patch emitter cannot reach the write without
-// receiving the revision that goes with it.
-func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) (int64, error) {
+// It returns the stored row with its new `rev`, read inside the same
+// transaction as the write. The wire patch this feeds (triage
+// emitItemPatch) describes exactly the content this statement left
+// behind, so its revision has to be read under the same lock: a rev
+// fetched afterwards could belong to a LATER write, which would let a
+// client pair newer-looking evidence with older content and earn a false
+// `fresh` from window verification. Returning it is the enforcement: a
+// patch emitter cannot reach the write without receiving the revision
+// that goes with it. The row, not only the revision, because the served
+// meta can differ from the meta written: an anchor's is merged with its
+// subagent stamp.
+func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) (Item, error) {
 	setClauses := make([]string, 0, 5)
 	args := make([]any, 0, 7)
 	if update.Status != nil {
@@ -1096,44 +1103,59 @@ func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) 
 		args = append(args, *update.UpdatedAt)
 	}
 	if len(setClauses) == 0 {
-		return 0, fmt.Errorf("store: update item fields %s/%s: no fields specified", threadID, id)
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, fmt.Errorf("store: begin update item fields %s/%s: %w", threadID, id, err)
-	}
-	defer tx.Rollback()
-	if err := requireMutableItemTx(tx, threadID, id, "store: update item fields"); err != nil {
-		return 0, err
+		return Item{}, fmt.Errorf("store: update item fields %s/%s: no fields specified", threadID, id)
 	}
 	args = append(args, threadID, id)
 	query := "UPDATE items SET " + strings.Join(setClauses, ", ") + " WHERE thread_id = ? AND id = ?"
-	result, err := tx.Exec(query, args...)
-	if err != nil {
-		return 0, fmt.Errorf("store: update item fields %s/%s: %w", threadID, id, err)
-	}
-	if err := requireRowsAffected(
-		result,
-		fmt.Sprintf("store: update item fields %s/%s", threadID, id),
-	); err != nil {
-		return 0, err
-	}
-	// A partial update can be the write that settles a row (the
-	// turn-complete flip, the force-close safety net), so the row's
-	// current status and text decide whether it is indexed now.
-	if update.Status != nil || update.Summary != nil {
-		if err := indexItemByIDTx(tx, threadID, id); err != nil {
-			return 0, err
+	var item Item
+	err := s.writeItems(threadID, update.SubagentCard, "update item fields "+threadID+"/"+id, func(tx *sql.Tx, w *cardWrite) error {
+		// Only a summary or a meta can change what the cards read.
+		if update.Summary != nil || update.Meta != nil {
+			old, err := readMutableSubagentRowTx(tx, threadID, id, "store: update item fields")
+			if err != nil {
+				return err
+			}
+			row := old
+			if update.Summary != nil {
+				row.summary = *update.Summary
+			}
+			if update.Meta != nil {
+				row.setMeta(*update.Meta)
+			}
+			if err := w.updated(old, row); err != nil {
+				return err
+			}
+		} else if err := requireMutableItemTx(tx, threadID, id, "store: update item fields"); err != nil {
+			return err
 		}
-	}
-	rev, err := readItemRevTx(tx, threadID, id)
+		result, err := tx.Exec(query, args...)
+		if err != nil {
+			return fmt.Errorf("store: update item fields %s/%s: %w", threadID, id, err)
+		}
+		if err := requireRowsAffected(
+			result,
+			fmt.Sprintf("store: update item fields %s/%s", threadID, id),
+		); err != nil {
+			return err
+		}
+		// A partial update can be the write that settles a row (the
+		// turn-complete flip, the force-close safety net), so the row's
+		// current status and text decide whether it is indexed now.
+		if update.Status != nil || update.Summary != nil {
+			if err := indexItemByIDTx(tx, threadID, id); err != nil {
+				return err
+			}
+		}
+		if err := w.finish(); err != nil {
+			return err
+		}
+		item, err = readBackItemTx(tx, threadID, id)
+		return err
+	})
 	if err != nil {
-		return 0, err
+		return Item{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("store: commit update item fields %s/%s: %w", threadID, id, err)
-	}
-	return rev, nil
+	return item, nil
 }
 
 // AppendCompletionItem writes the second row of a backgrounded tool-call
@@ -1157,38 +1179,28 @@ func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) 
 // Returns the assigned item_index.
 func (s *Store) AppendCompletionItem(launch Item, completion Item, completionPayload *Payload) (int, error) {
 	applyItemDefaults(&completion)
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, fmt.Errorf("store: begin append completion item tx: %w", err)
-	}
-	defer tx.Rollback()
-
 	completion.CompletionOf = launch.ID
 	completion.IsBackground = true
 	completion.ThreadID = launch.ThreadID
-
-	next, err := nextItemIndexTx(tx, completion.ThreadID, completion.TurnIndex, "store: append completion next index")
-	if err != nil {
-		return 0, err
-	}
-	completion.ItemIndex = next
-
-	if completionPayload != nil {
-		if err := insertPayloadTx(tx, completion.ThreadID, *completionPayload, "store: append completion payload"); err != nil {
-			return 0, err
-		}
-		completion.PayloadID = completionPayload.ID
-	}
-
-	if err := insertItemTx(tx, completion, "store: append completion item insert"); err != nil {
-		return 0, err
-	}
-
 	// Background-task completion rows are siblings to a running tool_call;
 	// they do not represent a fresh interaction. Activity is bumped by
 	// the turn-settle path through MarkThreadActivity.
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("store: commit append completion item tx: %w", err)
+	err := s.writeItems(completion.ThreadID, completion.SubagentCard, "append completion item", func(tx *sql.Tx, w *cardWrite) error {
+		next, err := nextItemIndexTx(tx, completion.ThreadID, completion.TurnIndex, "store: append completion next index")
+		if err != nil {
+			return err
+		}
+		completion.ItemIndex = next
+		if completionPayload != nil {
+			if err := insertPayloadTx(tx, completion.ThreadID, *completionPayload, "store: append completion payload"); err != nil {
+				return err
+			}
+			completion.PayloadID = completionPayload.ID
+		}
+		return insertItemTx(tx, w, completion, "store: append completion item insert")
+	})
+	if err != nil {
+		return 0, err
 	}
-	return next, nil
+	return completion.ItemIndex, nil
 }

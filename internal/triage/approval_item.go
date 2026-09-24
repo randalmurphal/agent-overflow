@@ -33,7 +33,14 @@ func (r *Router) updateApprovalItem(item store.Item, request provider.ApprovalRe
 		}
 		item.UpdatedAt = now
 
-		persisted, changed, err := r.store.UpdateItemIfRevision(item)
+		var persisted store.Item
+		var changed bool
+		err := r.withSubagentCard(item.ThreadID, item.ParentID, func(card *store.SubagentCard) error {
+			item.SubagentCard = card
+			var err error
+			persisted, changed, err = r.store.UpdateItemIfRevision(item)
+			return err
+		})
 		if err != nil {
 			return fmt.Errorf("approval item update: %w", err)
 		}

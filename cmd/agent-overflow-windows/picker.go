@@ -1,8 +1,9 @@
 //go:build windows
 
 // picker.go owns the static HTML the WebView2 renders before / during
-// backend boot — the distro picker, the post-pick loading spinner, and
-// the startup/connectivity-error guidance for failed WSL boots.
+// backend boot: the distro picker, the WSL-not-installed page, and the
+// routes that serve the shared loading and failure pages
+// (internal/startuppage).
 package main
 
 import (
@@ -14,29 +15,13 @@ import (
 	"reflect"
 	"strings"
 
+	"agent-overflow/internal/startuppage"
 	"agent-overflow/internal/wsllauncher"
 )
 
-// loadingPage is the brief interstitial shown when we have a saved
-// distro and skip straight to Launch. Inlined as a Go string rather
-// than a separate //go:embed because it's small and a separate file
-// would be more friction than it's worth.
-const loadingPage = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <title>Agent Overflow</title>
-  <style>
-    html, body { margin: 0; padding: 0; height: 100%; background: #16161e; color: #fff; }
-    body { display: flex; align-items: center; justify-content: center; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    .card { display: flex; flex-direction: column; align-items: center; gap: 16px; }
-    .spinner { width: 32px; height: 32px; border: 3px solid #7aa2f7; border-top-color: transparent; border-radius: 50%; animation: spin 800ms linear infinite; }
-    .label { font-size: 14px; color: #8b8ba0; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-  </style>
-</head>
-<body><div class="card"><div class="spinner"></div><div class="label">Booting backend in WSL...</div></div></body>
-</html>`
+// loadingStatus is the line the loading page shows while WSL boots the
+// backend, before the backend reports a phase.
+const loadingStatus = "Booting backend in WSL..."
 
 // wslNotInstalledPage is shown when ListDistros returns an empty
 // slice — either wsl.exe isn't on PATH (WSL not installed at all) or
@@ -83,12 +68,13 @@ const wslNotInstalledPage = `<!doctype html>
 </html>`
 
 // pickerAssetHandler serves the static picker HTML for /picker, the
-// loading HTML for /loading, the WSL-not-installed page for
-// /wsl-not-installed, and the startup/connectivity error pages. Anything
-// else falls back to the picker so a stale URL doesn't blank-screen the
-// WebView. The distro list is template-injected into a global JS variable
-// so the page renders without an RPC round-trip.
-func pickerAssetHandler(distros []wsllauncher.Distro, failurePage func() []byte) http.Handler {
+// loading page with its script and report and the startup error page
+// (startuppage.Serve), the WSL-not-installed page for /wsl-not-installed,
+// and the connectivity error page. Anything else falls back to the picker
+// so a stale URL doesn't blank-screen the WebView. The distro list is
+// template-injected into a global JS variable so the page renders without
+// an RPC round-trip.
+func pickerAssetHandler(distros []wsllauncher.Distro, failurePage func() []byte, loading func() startuppage.Report) http.Handler {
 	rendered, err := renderPicker(distros)
 	if err != nil {
 		log.Printf("render picker: %v", err)
@@ -97,16 +83,17 @@ func pickerAssetHandler(distros []wsllauncher.Distro, failurePage func() []byte)
 			template.HTMLEscapeString(err.Error()),
 		))
 	}
-	loadingHTML := []byte(loadingPage)
+	loadingHTML := startuppage.Loading(loadingStatus)
 	wslMissingHTML := []byte(wslNotInstalledPage)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if startuppage.Serve(w, r, loadingHTML, loading, failurePage) {
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		switch r.URL.Path {
-		case "/loading":
-			_, _ = w.Write(loadingHTML)
-		case "/connectivity-error", "/startup-error":
+		case "/connectivity-error":
 			_, _ = w.Write(failurePage())
 		case "/wsl-not-installed":
 			_, _ = w.Write(wslMissingHTML)
@@ -114,6 +101,16 @@ func pickerAssetHandler(distros []wsllauncher.Distro, failurePage func() []byte)
 			_, _ = w.Write(rendered)
 		}
 	})
+}
+
+// boundMethodFQN is the name Wails v3 registers launcherApp's method under:
+// `<pkgPath>.<TypeName>.<MethodName>` (see Bindings.Add in
+// pkg/application/bindings.go). A page that calls the method needs that
+// exact string; it is derived from reflect so a rename of launcherApp
+// does not silently break the page's call.
+func boundMethodFQN(method string) string {
+	t := reflect.TypeOf((*launcherApp)(nil)).Elem()
+	return fmt.Sprintf("%s.%s.%s", t.PkgPath(), t.Name(), method)
 }
 
 // renderPicker injects the distro list into picker.html via a script
@@ -139,15 +136,7 @@ func renderPicker(distros []wsllauncher.Distro) ([]byte, error) {
 		return nil, err
 	}
 
-	// Wails v3 registers bound methods under the FQN
-	// `<pkgPath>.<TypeName>.<MethodName>` (see Bindings.Add in
-	// pkg/application/bindings.go). The picker JS needs that exact
-	// string to reach PickDistro via wails.Call.ByName — derive it from
-	// reflect so a rename of launcherApp doesn't silently break the
-	// picker click handler.
-	t := reflect.TypeOf((*launcherApp)(nil)).Elem()
-	fqn := fmt.Sprintf("%s.%s.PickDistro", t.PkgPath(), t.Name())
-	fqnJSON, err := json.Marshal(fqn)
+	fqnJSON, err := json.Marshal(boundMethodFQN("PickDistro"))
 	if err != nil {
 		return nil, err
 	}

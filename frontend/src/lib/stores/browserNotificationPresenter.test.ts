@@ -142,7 +142,7 @@ function send(overrides: Record<string, unknown> = {}): Record<string, unknown> 
 }
 
 function emit(payload: Record<string, unknown>, replayed = false): void {
-  emitWailsEvent('notification:send', payload, undefined, replayed);
+  emitWailsEvent('notification:send', payload, undefined, { replayed });
 }
 
 describe('the remote browser notification presenter', () => {

@@ -243,8 +243,7 @@ func claudeWriteToFileChange(payload map[string]json.RawMessage, fallbackFilePat
 // go-difflib.GetUnifiedDiffString. The underlying SequenceMatcher is
 // O(N²) expected, O(N³) worst case — a multi-MB notebook on the
 // triage hot path would stall the per-thread router. Above this cap
-// we fall through to the summary-only path (the per-turn EventDiff
-// upgrade can still attach a real diff from git later). 256 KiB
+// we fall through to the summary-only path. 256 KiB
 // keeps worst-case latency comfortably under ~50ms on typical
 // hardware. Tunable.
 const notebookEditDiffInputCap = 256 * 1024
@@ -271,7 +270,7 @@ func claudeNotebookEditToFileChange(payload map[string]json.RawMessage, fallback
 
 	// Cap input before invoking difflib (see notebookEditDiffInputCap).
 	// Identical-content fallback also lands here — the row still
-	// appears with the path; the per-turn diff upgrade can fill it.
+	// appears with the path.
 	if len(original)+len(updated) > notebookEditDiffInputCap {
 		return claudeNotebookSummaryOnly(normalizedPath)
 	}
@@ -292,8 +291,7 @@ func claudeNotebookEditToFileChange(payload map[string]json.RawMessage, fallback
 		return ToolResultMeta{}, nil, false
 	}
 	if strings.TrimSpace(patch) == "" {
-		// Identical content. The row still appears with the path; a
-		// later EventDiff can upgrade it from git.
+		// Identical content. The row still appears with the path.
 		return claudeNotebookSummaryOnly(normalizedPath)
 	}
 

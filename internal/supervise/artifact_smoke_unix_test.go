@@ -12,17 +12,22 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/kerneltest"
+	"agent-overflow/internal/localcontrol"
+	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/testutil"
+	"agent-overflow/internal/transport"
 
 	_ "modernc.org/sqlite"
 )
@@ -113,7 +118,9 @@ func TestProductionServiceArtifact(t *testing.T) {
 	}
 	config := supervise.Config{DataDir: data, SelfExecutable: oldBinary, SelfVersion: oldVersion,
 		ChildArgs: []string{"serve", "--data-dir", dataRoot, "--listen", address}, Env: env,
-		Stdout: log, Stderr: log, TrialBudget: 30 * time.Second, StopTimeout: 10 * time.Second}
+		Stdout: log, Stderr: log, LegacyTrialBudget: 30 * time.Second, StopTimeout: 10 * time.Second,
+		// The transitions, including which judge each trial had.
+		Log: t.Logf}
 	start := func(wantVersion string) (string, func()) {
 		t.Helper()
 		supervisor, err := supervise.New(config)
@@ -141,22 +148,10 @@ func TestProductionServiceArtifact(t *testing.T) {
 			}
 		}
 		t.Cleanup(stop)
-		client := &http.Client{Timeout: time.Second, Transport: &http.Transport{Proxy: nil}}
-		defer client.CloseIdleConnections()
-		var identity string
-		productionArtifactEventually(t, func() bool {
-			response, err := client.Get("http://" + address + "/healthz")
-			if err != nil {
-				return false
-			}
-			defer response.Body.Close()
-			var health struct{ Version, BackendID string }
-			if response.StatusCode != http.StatusOK || json.NewDecoder(response.Body).Decode(&health) != nil {
-				return false
-			}
-			identity = health.BackendID
-			return health.Version == wantVersion && identity != ""
-		}, "healthy production backend "+wantVersion)
+		identity, err := awaitProductionBackend(address, data, wantVersion, time.Now().Add(productionArtifactWait))
+		if err != nil {
+			t.Fatal(err)
+		}
 		return identity, stop
 	}
 	identity, stop := start(oldVersion)
@@ -253,14 +248,179 @@ func stageProductionArtifact(t *testing.T, layout supervise.Layout, source strin
 	return answer.Version
 }
 
+const (
+	productionArtifactWait = 40 * time.Second
+	productionArtifactPoll = 50 * time.Millisecond
+)
+
 func productionArtifactEventually(t *testing.T, predicate func() bool, description string) {
 	t.Helper()
-	deadline := time.Now().Add(40 * time.Second)
+	deadline := time.Now().Add(productionArtifactWait)
 	for time.Now().Before(deadline) {
 		if predicate() {
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(productionArtifactPoll)
 	}
 	t.Fatal("timed out waiting for " + description)
+}
+
+// awaitProductionBackend waits until the backend at address runs
+// wantVersion and is ready, and returns its identity. /healthz is liveness:
+// it answers, with the identity, while the backend migrates. Readiness is
+// /bootstrap.json answering 200, which it does once its start finishes and
+// answers 503 with the startup progress before. The request presents the
+// launch credential the backend publishes in its control file.
+func awaitProductionBackend(address, data, wantVersion string, deadline time.Time) (string, error) {
+	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{Proxy: nil}}
+	defer client.CloseIdleConnections()
+	last := errors.New("no answer yet")
+	for time.Now().Before(deadline) {
+		identity, err := productionBackendReady(client, address, data, wantVersion)
+		if err == nil {
+			return identity, nil
+		}
+		last = err
+		time.Sleep(productionArtifactPoll)
+	}
+	return "", errors.New("timed out waiting for a ready production backend " + wantVersion + ": " + last.Error())
+}
+
+func productionBackendReady(client *http.Client, address, data, wantVersion string) (string, error) {
+	var health transport.Health
+	if err := productionGet(client, "http://"+address+transport.HealthPath, "", &health); err != nil {
+		return "", err
+	}
+	if health.Version != wantVersion {
+		return "", errors.New("/healthz names version " + health.Version)
+	}
+	// The control file of a launch that has finished its start. An earlier
+	// launch's file holds a token this backend refuses.
+	endpoint, err := localcontrol.Read(data)
+	if err != nil {
+		return "", err
+	}
+	var manifest transport.Bootstrap
+	if err := productionGet(client, "http://"+address+transport.BootstrapPath, endpoint.Token, &manifest); err != nil {
+		return "", err
+	}
+	if manifest.BackendID == "" {
+		return "", errors.New("/bootstrap.json names no backend")
+	}
+	return manifest.BackendID, nil
+}
+
+func productionGet(client *http.Client, url, token string, into any) error {
+	request, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return errors.New(url + " answered " + response.Status)
+	}
+	return json.NewDecoder(response.Body).Decode(into)
+}
+
+// TestAwaitProductionBackendWaitsForReadiness: the smoke stops each backend
+// once it counts as up, so one that has not finished starting must not
+// count. /healthz answers throughout, as liveness does: first without an
+// identity, while the migrations run, then with one once the store opens.
+// /bootstrap.json meanwhile refuses the previous launch's token, then
+// answers 503 with the startup progress, then 200.
+func TestAwaitProductionBackendWaitsForReadiness(t *testing.T) {
+	data := t.TempDir()
+	const version, identity = "0.0.900", "backend-1"
+	const (
+		migrating = iota
+		storeOpen
+		ready
+	)
+	var (
+		phase       atomic.Int32
+		held        atomic.Int32
+		heldEnough  = make(chan struct{})
+		stale, live = "previous-launch", "this-launch"
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case transport.HealthPath:
+			health := transport.Health{Version: version}
+			if phase.Load() != migrating {
+				health.BackendID = identity
+			}
+			_ = json.NewEncoder(w).Encode(health)
+		case transport.BootstrapPath:
+			if r.Header.Get("Authorization") != "Bearer "+live {
+				http.NotFound(w, r)
+				return
+			}
+			if phase.Load() != ready {
+				if held.Add(1) == 3 {
+					close(heldEnough)
+				}
+				startupprogress.Write(w, startupprogress.Progress{Phase: "app.init_subsystems", Detail: "Starting"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(transport.Bootstrap{BackendID: identity})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	address := server.Listener.Addr().String()
+	if err := localcontrol.Publish(data, address, stale); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		identity string
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		id, err := awaitProductionBackend(address, data, version, time.Now().Add(30*time.Second))
+		done <- result{id, err}
+	}()
+	// Migrating, with the previous launch's control file.
+	select {
+	case got := <-done:
+		t.Fatalf("the wait ended while the migrations run: %q, %v", got.identity, got.err)
+	case <-time.After(10 * productionArtifactPoll):
+	}
+	// The store is open and /healthz names the identity; this launch's token
+	// gets 503 while the start continues.
+	phase.Store(storeOpen)
+	if err := localcontrol.Publish(data, address, live); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		t.Fatalf("the wait ended before the backend was ready: %q, %v", got.identity, got.err)
+	case <-heldEnough:
+	}
+	select {
+	case got := <-done:
+		t.Fatalf("the wait ended before the backend was ready: %q, %v", got.identity, got.err)
+	default:
+	}
+	phase.Store(ready)
+	select {
+	case got := <-done:
+		if got.err != nil || got.identity != identity {
+			t.Fatalf("a ready backend: %q, %v", got.identity, got.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the smoke did not count a ready backend up")
+	}
+	// Ready, but not the version the smoke waits for.
+	if id, err := awaitProductionBackend(address, data, "0.0.901", time.Now().Add(5*productionArtifactPoll)); err == nil {
+		t.Fatalf("the smoke counted another version up: %q", id)
+	}
 }

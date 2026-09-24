@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/transport"
 )
 
@@ -16,7 +17,7 @@ func TestTimelinePagingPreservesLegacyWireAndSelectsScopedRows(t *testing.T) {
 		{ID: "agent", ThreadID: thread.ID, TurnIndex: 2, ItemIndex: 0, Kind: "tool_call", ToolName: "Agent", Status: "completed", Role: "assistant"},
 		{ID: "child", ThreadID: thread.ID, TurnIndex: 2, ItemIndex: 1, ParentID: "agent", Kind: "assistant_text", Summary: "child transcript", Status: "completed", Role: "assistant"},
 	} {
-		if err := app.store.InsertItem(row); err != nil {
+		if err := storetest.WithParentCard(app.store, row, app.store.InsertItem); err != nil {
 			t.Fatal(err)
 		}
 	}

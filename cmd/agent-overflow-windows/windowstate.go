@@ -53,6 +53,18 @@ func loadWindowGeometry() windowgeom.Geometry {
 	return g
 }
 
+// windowPlacementSink is where this launcher saves its window placement.
+// An update's applier opens where the app was but saves nothing: a launch
+// that joins the update, or the launch after it, owns window.json, and the
+// applier's placement from before the join would overwrite theirs when it
+// closes.
+func windowPlacementSink(applier bool) func(windowgeom.Geometry) {
+	if applier {
+		return nil
+	}
+	return saveWindowGeometry
+}
+
 // saveWindowGeometry persists the launcher window placement. Best-effort: a
 // failed write only costs the remembered position, so it is logged and
 // swallowed rather than surfaced. It is the sink for the debounced geometry

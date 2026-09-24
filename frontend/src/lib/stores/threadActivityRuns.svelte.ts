@@ -351,10 +351,12 @@ export interface ThreadActivityRuns extends ActivityRunIdentity {
    * Re-derive every held run's loaded span from the pane's window, and
    * fold a page's stubs into the records.
    *
-   * Called after every wholesale change to the window — a page, a replica
-   * paint, a cut, a members mount. `stubs` is the page's `runs`, or
-   * omitted when the change carried no server description: a record whose
-   * span moved without one goes dirty and refreshes.
+   * Called after every wholesale change to the window (a page, a replica
+   * paint, a cut, a members mount) and after a live append. `stubs` is
+   * the page's `runs`, or omitted when the change carried no server
+   * description: a record whose span moved without one goes dirty and
+   * refreshes. The revisions move only when a record, its bounds or the
+   * member index changed.
    */
   syncRunSpans(items: readonly Item[], stubs?: readonly ActivityRunStub[], bounds?: RunWindowBounds): void;
   /**
@@ -651,6 +653,7 @@ function rowIndexOfMember(
  */
 /** No rows leave the window: an append-only members mount. */
 const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
+const NO_RUN_SPANS: ReadonlyMap<string, ActivityRunSpan> = new Map();
 
 const reportedAnchorRuns = new Set<string>();
 const MAX_REPORTED_ANCHOR_RUNS = 100;
@@ -819,15 +822,35 @@ export function createThreadActivityRuns(
    * Records whose run left the window are dropped with their shed rows —
    * the run is no longer in the held window at all, and the has-more flag
    * on that edge covers it.
+   *
+   * Both revisions move only when this changed a record, its bounds or
+   * the member index: every run header reads `revision`, and a live
+   * append that extends no held run changes nothing they show.
    */
   function syncRunSpans(
     items: readonly Item[],
     stubs?: readonly ActivityRunStub[],
     bounds = options.windowBounds(),
   ): ReadonlyMap<string, ActivityRunSpan> {
+    if (!stubs?.length && records.size === 0) {
+      // No record to re-point and no stub to fold; the indexes derived
+      // from records only need emptying.
+      if (runKeyByMemberId.size === 0 && recordBounds.size === 0) return NO_RUN_SPANS;
+      runKeyByMemberId.clear();
+      recordBounds.clear();
+      windowRevision += 1;
+      revision += 1;
+      return NO_RUN_SPANS;
+    }
     const { windowed, spansById } = projectRunSpans(items, bounds, stubs);
     const positionById = new Map<string, number>();
     for (let index = 0; index < windowed.length; index += 1) positionById.set(windowed[index].id, index);
+    let changed = false;
+    const dropRecord = (key: string) => {
+      records.delete(key);
+      recordBounds.delete(key);
+      changed = true;
+    };
 
     // Claimed so two records cannot describe one span: a run whose first
     // member changed identity would otherwise be counted twice in the held
@@ -844,6 +867,7 @@ export function createThreadActivityRuns(
           : null);
       foldPageStub(records, stub, span);
       resolvedSpans.set(stub.firstItemId, span);
+      changed = true;
     }
 
     for (const [key, record] of [...records]) {
@@ -851,39 +875,56 @@ export function createThreadActivityRuns(
         ? resolvedSpans.get(key)!
         : spanOfRecord(spansById, record);
       if (!span) {
-        records.delete(key);
-        recordBounds.delete(key);
+        dropRecord(key);
         continue;
       }
       const owner = claimed.get(span.firstItemId);
       if (owner !== undefined && owner !== key) {
-        records.delete(key);
-        recordBounds.delete(key);
+        dropRecord(key);
         continue;
       }
       claimed.set(span.firstItemId, key);
-      noteSpanMoved(record, span);
+      if (noteSpanMoved(record, span)) changed = true;
       const first = positionById.get(span.firstItemId);
       const last = positionById.get(span.lastItemId);
       if (first === undefined || last === undefined) {
         // Only reachable if a span named a row the filter excluded, which
         // `groupActivityRunSpans` cannot produce. Drop rather than store
         // bounds nothing can be compared against.
-        records.delete(key);
-        recordBounds.delete(key);
+        dropRecord(key);
         continue;
       }
-      recordBounds.set(key, {
+      const next = {
         first: coordinateOf(windowed[first]),
         last: coordinateOf(windowed[last]),
-      });
+      };
+      const previous = recordBounds.get(key);
+      if (!previous
+        || compareCoordinates(previous.first, next.first) !== 0
+        || compareCoordinates(previous.last, next.last) !== 0) {
+        recordBounds.set(key, next);
+        changed = true;
+      }
     }
 
-    runKeyByMemberId.clear();
+    const memberKeys = new Map<string, string>();
     for (const [key, record] of records) {
       const span = spanOfRecord(spansById, record);
       if (!span) continue;
-      for (const item of span.items) runKeyByMemberId.set(item.id, key);
+      for (const item of span.items) memberKeys.set(item.id, key);
+    }
+    let membersChanged = memberKeys.size !== runKeyByMemberId.size;
+    if (!membersChanged) {
+      for (const [id, key] of memberKeys) {
+        if (runKeyByMemberId.get(id) === key) continue;
+        membersChanged = true;
+        break;
+      }
+    }
+    if (membersChanged) {
+      runKeyByMemberId.clear();
+      for (const [id, key] of memberKeys) runKeyByMemberId.set(id, key);
+      changed = true;
     }
     for (const record of records.values()) {
       if (record.dirty) {
@@ -891,8 +932,10 @@ export function createThreadActivityRuns(
         break;
       }
     }
-    windowRevision += 1;
-    revision += 1;
+    if (changed) {
+      windowRevision += 1;
+      revision += 1;
+    }
     return spansById;
   }
 
@@ -922,8 +965,10 @@ export function createThreadActivityRuns(
     nextItems: readonly Item[],
     bounds = options.windowBounds(),
   ): void {
+    if (records.size === 0) return;
     const previousSpans = projectRunSpans(previousItems, bounds).spansById;
     const nextSpans = projectRunSpans(nextItems, bounds).spansById;
+    let changed = false;
     for (const [key, record] of [...records]) {
       const before = spanOfRecord(previousSpans, record);
       const after = spanOfRecord(nextSpans, record);
@@ -934,11 +979,13 @@ export function createThreadActivityRuns(
         for (const item of before.items) {
           if (runKeyByMemberId.get(item.id) === key) runKeyByMemberId.delete(item.id);
         }
+        changed = true;
         continue;
       }
       if (before.firstItemId === after.firstItemId
         && before.lastItemId === after.lastItemId) continue;
       record.cutVersion += 1;
+      changed = true;
       if (before.lastItemId !== after.lastItemId) {
         // The cut took members off the run's NEWER end, which only
         // happens for a run bigger than the whole retention target
@@ -958,6 +1005,8 @@ export function createThreadActivityRuns(
       const dropped = before.items.filter((item) => !keptIds.has(item.id));
       shedOlderMembers(record, dropped, after.firstItemId, after.lastItemId);
     }
+    if (!changed) return;
+    windowRevision += 1;
     revision += 1;
   }
 
@@ -1017,12 +1066,13 @@ export function createThreadActivityRuns(
   // because a jump can target an item the current window already holds and
   // would otherwise change nothing the row could notice. So does a change
   // to what a run's record says about the members the pane does not hold
-  // (a page's stubs folded, a members answer, a cut's shed rows): the
-  // node's counts and the header's facts derive from it and no row moves
-  // for a `limit: 0` refresh. Each moves on a deliberate user action
-  // (toggle the run, mount a chunk, jump to a hit) or a debounced refresh,
-  // so the rebuild is rare. Scroll snapshots are excluded on purpose — they
-  // move every inner scroll frame and nothing on the node reads them.
+  // (a page's stubs folded, a members answer, a cut's shed rows, a live
+  // append that re-points a held run): the node's counts and the header's
+  // facts derive from it and no row moves for a `limit: 0` refresh. A live
+  // rail row reaching the verified tail bumps it once (`noteLiveAppend`).
+  // Every run header reads it, so a sync or cut that changes no record
+  // leaves it alone. Scroll snapshots are excluded on purpose: they move
+  // every inner scroll frame and nothing on the node reads them.
   let revision = $state(0);
 
   // Creation lives here and nowhere else. A run comes into existence by being

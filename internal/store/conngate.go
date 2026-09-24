@@ -74,7 +74,8 @@ func (g *connGate) wait(ctx context.Context) error {
 }
 
 // gatedConnector is the driver connector both pools open through. It
-// adds the gate wait to the driver's own Connect and nothing else.
+// waits on the gate, then opens the driver's connection behind a statement
+// cache.
 type gatedConnector struct {
 	driver.Connector
 	gate *connGate
@@ -86,7 +87,15 @@ func (c gatedConnector) Connect(ctx context.Context) (driver.Conn, error) {
 			return nil, err
 		}
 	}
-	return c.Connector.Connect(ctx)
+	conn, err := c.Connector.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	cached, err := newStmtCacheConn(conn)
+	if err != nil {
+		return nil, err
+	}
+	return cached, nil
 }
 
 // openPool opens one pool against dbPath with the given connection

@@ -94,6 +94,12 @@ type timelineSelection struct {
 	// temp b-tree this helper exists to avoid.
 	Columns func(threadIDExpr, revExpr string) string
 
+	// LocalJoin, when non-empty, is a join the own local arm's projection
+	// reads, rendered after its items row: servedItemJoin for a
+	// projection that serves meta. The imported and lineage arms have no
+	// stamps: their rows read revision -1, which serves stored meta.
+	LocalJoin string
+
 	// Source, when non-empty, is a row source CROSS JOINed AHEAD of the
 	// timeline table in every arm (`rel` for the subagent descendant
 	// walk). CROSS JOIN is a planner directive: it pins the caller's
@@ -290,7 +296,7 @@ func newArmRenderer(threadID string, sel timelineSelection) *armRenderer {
 func (r *armRenderer) ownArms() {
 	sel := r.sel
 	r.b.arm(`SELECT `+sel.Columns("items.thread_id", "items.rev")+`
-		  FROM `+r.source+`items
+		  FROM `+r.source+`items`+sel.LocalJoin+`
 		 WHERE items.thread_id = `+r.thread+r.localTurn+r.where,
 		r.threadArgs, repeatArgs(r.localTurnRenders, r.turnArgs), sel.WhereArgs)
 	r.b.arm(`SELECT `+sel.Columns("refs.thread_id", importedItemRevExpr)+`

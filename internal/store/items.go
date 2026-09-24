@@ -24,14 +24,29 @@ var ErrItemSettled = errors.New("store: item is no longer streaming")
 // supply from its own row (imported history reads as -1); keeping it at the
 // tail means a hand-written arm projection appends one expression instead of
 // splicing one into the middle of a positional scan order.
-const itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index,
+//
+// The meta column is the row's meta as a read serves it: a local
+// projection merges the row's subagent stamp (servedItemMetaFor), which
+// it reads through servedItemJoin.
+var itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''), COALESCE(payloads.kind, ''), COALESCE(payloads.meta, ''),
     COALESCE(payloads.preview_spans, ''),
     COALESCE(items.input_payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
-    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at,
+    items.tool_name, items.decision, ` + servedItemMetaFor("items.rev") + `, items.created_at, items.updated_at,
     items.rev`
+
+// servedItemMetaFor is the meta column of an item projection on the arm
+// whose revision expression is revExpr: a local row's meta as a read
+// serves it (subagentServedMetaSQL, read through servedItemJoin).
+// Imported rows carry no stamps.
+func servedItemMetaFor(revExpr string) string {
+	if revExpr == importedItemRevExpr {
+		return "items.meta"
+	}
+	return subagentServedMetaSQL("items.")
+}
 
 const itemInsertPrefix = `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
 		payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
@@ -150,22 +165,37 @@ func itemInsertArgs(item Item) []any {
 	}
 }
 
+// itemInsertAdoptingSQL is itemInsertSQL that reports whether the new row
+// has a visible child already, in either arm: rows written before their
+// parent, which it adopts (cardWrite.inserted).
+var itemInsertAdoptingSQL = itemInsertSQL + ` RETURNING ` + aggHasChildSQL("?2", "?1", "")
+
 // insertItemTx inserts one row and indexes its text when the row arrives
-// settled (a user message, a fork's copy or a transferred row). A row that arrives
-// streaming is indexed later by the write that settles it. The index write
-// shares this transaction, so a rolled-back insert leaves nothing searchable.
-func insertItemTx(tx *sql.Tx, item Item, label string) error {
-	if _, err := tx.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
+// settled (a user message, a fork's copy or a transferred row). A row that
+// arrives streaming is indexed later by the write that settles it. The
+// index write shares this transaction, so a rolled-back insert leaves
+// nothing searchable. w records the row for the subagent cards; a row
+// that may anchor a card or count toward one reports its children in the
+// same statement.
+func insertItemTx(tx *sql.Tx, w *cardWrite, item Item, label string) error {
+	row := subagentRowOf(item)
+	if err := w.check(row); err != nil {
+		return err
+	}
+	hasChild := false
+	if row.anchorable() || row.parentID != "" {
+		if err := tx.QueryRow(itemInsertAdoptingSQL, itemInsertArgs(item)...).Scan(&hasChild); err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+	} else if _, err := tx.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
 		return fmt.Errorf("%s: %w", label, err)
 	}
+	w.inserted(row, hasChild)
 	return indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary)
 }
 
-func insertItemWithIDTx(tx *sql.Tx, item Item, label string) error {
-	if _, err := tx.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
-		return fmt.Errorf("%s %s: %w", label, item.ID, err)
-	}
-	return indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary)
+func insertItemWithIDTx(tx *sql.Tx, w *cardWrite, item Item, label string) error {
+	return insertItemTx(tx, w, item, label+" "+item.ID)
 }
 
 // itemColumnsSansPayload mirrors itemColumns but without the
@@ -183,7 +213,7 @@ func itemColumnsSansPayloadFor(threadIDExpr, revExpr string) string {
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
-    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at,
+    items.tool_name, items.decision, ` + servedItemMetaFor(revExpr) + `, items.created_at, items.updated_at,
     ` + revExpr
 }
 

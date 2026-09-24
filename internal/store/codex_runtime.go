@@ -60,7 +60,7 @@ func (s *Store) retireCodexBackgroundRuntime(threadID string, summarise func(str
 	if err := collect(
 		`SELECT `+itemColumnsSansPayload+`
 		   FROM items INDEXED BY idx_items_running_bg_tool_calls
-		   JOIN threads ON threads.id = items.thread_id
+		   JOIN threads ON threads.id = items.thread_id`+servedItemJoin+`
 		  WHERE threads.provider = 'codex'
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'
@@ -82,18 +82,44 @@ func (s *Store) retireCodexBackgroundRuntime(threadID string, summarise func(str
 		return retired[i].ItemIndex < retired[j].ItemIndex
 	})
 
+	// A retired child's summary can move its launch's card; the retirement
+	// carries no card and recomputes those chains, one thread at a time
+	// (retired is sorted by thread).
+	var w *cardWrite
 	for i := range retired {
 		item := &retired[i]
+		if w == nil || w.threadID != item.ThreadID {
+			if w != nil {
+				if err := w.finish(); err != nil {
+					return nil, err
+				}
+			}
+			w = s.bulkItemWrites(tx, item.ThreadID, false)
+		}
+		old := subagentRowOf(*item)
 		item.Status = "errored"
 		item.Summary = summarise(item.Summary)
 		item.Decision = "lost"
 		item.UpdatedAt = updatedAt
+		row := old
+		row.summary = item.Summary
+		if err := w.updated(old, row); err != nil {
+			return nil, err
+		}
 		if _, err := tx.Exec(
-			`UPDATE items SET status = ?, summary = ?, decision = ?, meta = ?, updated_at = ? WHERE thread_id = ? AND id = ?`,
-			item.Status, item.Summary, item.Decision, item.Meta, item.UpdatedAt, item.ThreadID, item.ID,
+			`UPDATE items SET status = ?, summary = ?, decision = ?, updated_at = ? WHERE thread_id = ? AND id = ?`,
+			item.Status, item.Summary, item.Decision, item.UpdatedAt, item.ThreadID, item.ID,
 		); err != nil {
 			return nil, fmt.Errorf("store: retire Codex background item %s: %w", item.ID, err)
 		}
+	}
+	if w != nil {
+		if err := w.finish(); err != nil {
+			return nil, err
+		}
+	}
+	for i := range retired {
+		item := &retired[i]
 		// The rows were selected before the UPDATE, so their revision is
 		// the pre-write one. These structs are emitted to clients.
 		if item.Rev, err = readItemRevTx(tx, item.ThreadID, item.ID); err != nil {

@@ -146,7 +146,7 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function present(send: NotificationSend, origin: EventOrigin): void {
+function present(send: NotificationSend, origin: EventOrigin, _sequence: number | undefined, replayed: boolean): void {
   const id = text(send.id);
   if (id === '') return;
   // Namespaced by backend, exactly as the phone's tray tag is: notification
@@ -195,7 +195,7 @@ function present(send: NotificationSend, origin: EventOrigin): void {
   // NOT FOR A REPLAYED FRAME. A banner re-raised after a reconnect replaces
   // itself by tag and still describes something true; a cue names a MOMENT,
   // and one replayed minutes later is a noise with nothing behind it.
-  if (cue !== null && cue !== 'system' && origin.replayed !== true) {
+  if (cue !== null && cue !== 'system' && !replayed) {
     // The event travels so a `custom:<id>` this screen's listing has lost
     // falls back to that event's default rather than to silence — the same
     // substitution a host-sent frame gets, and the reason that frame carries

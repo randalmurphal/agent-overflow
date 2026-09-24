@@ -71,6 +71,7 @@ const (
 //wails:ignore
 func (a *App) Shutdown(ctx context.Context) error {
 	a.workAdmission.stopWaiting()
+	a.stopRestartUpdate()
 	a.closeComputerPairing()
 	// Step 0 (pre-shutdown): drain the transport server while every
 	// subsystem is still alive. Without this, a webview WS client that
@@ -249,17 +250,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	a.stopRetentionCleanup()
 	record("stop retention cleanup", nil)
 
-	// Step 3c2: stop the auto_vacuum conversion scheduler. It replaces
-	// the database file under both pools, so it must be joined before
-	// Step 9's store close. Idempotent and blocks until the goroutine
-	// returns.
-	a.stopStoreMaintenance()
-	record("stop store maintenance", nil)
-
-	// Step 3c3: stop the deferred migration run. It writes to SQLite, so
-	// it must be joined before Step 9's store close. The run stops at the
-	// next transaction boundary and the next launch resumes it.
-	// Idempotent and blocks until the goroutine returns.
+	// Step 3c2: stop the deferred migration run. It writes to SQLite and
+	// its auto_vacuum conversion replaces the database file under both
+	// pools, so it must be joined before Step 9's store close. The run
+	// stops at the next transaction boundary, or interrupts the
+	// conversion's snapshot, and the next launch resumes it. Idempotent
+	// and blocks until the goroutine returns.
 	a.stopDeferredMigrations()
 	record("stop deferred migrations", nil)
 
@@ -316,6 +312,12 @@ func (a *App) Shutdown(ctx context.Context) error {
 	sessions := a.sessionManager().snapshotAndClear()
 	sessionErrs := closeSessionsParallel(a, sessions, sessionShutdownTimeout)
 	record("close provider sessions", errors.Join(sessionErrs...))
+
+	// Step 4a: every provider event already read is handled before the
+	// store closes. Each close above drained its own thread; this covers a
+	// session that exited on its own and whose final events are still
+	// queued (app_provider_event_queue.go).
+	record("drain provider events", a.providerEvents.drainAll())
 
 	// Step 4b: stop the orphan-reaper sidecar (macOS). Sessions that closed
 	// cleanly above each released their group; any whose Close was abandoned
@@ -508,8 +510,10 @@ func (a *App) ShutdownBackend() error {
 
 // ServiceShutdown is the Wails v3 lifecycle hook. We keep it as a thin
 // wrapper around Shutdown so the Wails runtime drives the same code path
-// tests exercise directly.
+// tests exercise directly. A desktop Start still running is canceled and
+// joined first, so Shutdown never tears down beside it.
 func (a *App) ServiceShutdown() error {
+	a.stopAsyncStart()
 	return a.Shutdown(context.Background())
 }
 

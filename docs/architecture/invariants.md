@@ -47,8 +47,9 @@ changing parser or triage completion behavior.
 
 The provider process and its session files are the source of truth while a turn
 is running. One thread action runs at a time. Session start and teardown
-coordinate with that action lock and provider read-loop shutdown so stale
-events cannot enter a replacement session.
+coordinate with that action lock, provider read-loop shutdown and the drain
+of the thread's provider event queue so stale events cannot enter a
+replacement session.
 
 Fork, resume, queued-send, stop, and recovery behavior is specified in
 [`turn-lifecycle.md`](turn-lifecycle.md),

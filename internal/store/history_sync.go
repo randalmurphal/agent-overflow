@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // HistoryStamp is a thread's history invalidation contract
@@ -73,14 +74,15 @@ type ThreadWindowSync struct {
 // historyRevTriggersSQL is the latest DDL for the three AFTER triggers on
 // `items` that maintain the contract (docs/architecture/thread-replica-sync.md
 // §3.1). It is shared rather than inline migration text because it has
-// two installers: migration v119 replays drop+create of the insert
-// trigger, and RestoreFrom recreates all three after dropping them for the
-// row copy. Earlier points in the chain install the generation that
-// matches the schema they run against — historyRevTriggersLegacySQL (v55,
-// v58, before threads.history_bulk_load exists),
-// historyRevTriggersBulkLoadSQL (v59, v72, before items.rev exists),
-// historyRevTriggersV100SQL (v100, v101) and historyRevTriggersV118SQL
-// (v118).
+// two installers: migration v121 replays drop+create of all three to add
+// the subagent aggregate stamps, and RestoreFrom recreates them after
+// dropping them for the row copy. Earlier points in the chain install the
+// generation that matches the schema they run against:
+// historyRevTriggersLegacySQL (v55, v58, before threads.history_bulk_load
+// exists), historyRevTriggersBulkLoadSQL (v59, v72, before items.rev
+// exists), historyRevTriggersV100SQL (v100, v101), historyRevTriggersV118SQL
+// (v118) and historyRevInsertTriggerV119SQL (v119, before the subagent
+// aggregate stamps).
 // Two hand-kept latest copies would be free to drift, and the drifted
 // half would be the one running on a restored database — the state
 // nobody re-reads a migration to check.
@@ -89,7 +91,8 @@ type ThreadWindowSync struct {
 // ROWS whose read result the write changed with the thread's new
 // history_rev. The row stamp is `items.rev`, and it is what lets a client
 // describe a held window as (id, rev) pairs (§5). Rows are stamped only
-// here; Go never assigns the column a value.
+// here and by the subagent_aggregates stamp triggers; Go never writes the
+// column.
 //
 // Which rows a write changes is stampedRowIDsSQL: the row, the rows a
 // page decorates FROM it, and the anchors a page decorates from its
@@ -105,17 +108,15 @@ type ThreadWindowSync struct {
 // cross-thread move: it is a delete from one ordering and an insert into
 // another, so both threads take rev AND epoch.
 //
-// `WHEN OLD.rev IS NEW.rev` on the UPDATE trigger is what keeps the
-// stamping UPDATEs from being mistaken for content changes. SQLite's
-// `recursive_triggers` is OFF (pinned in writerConnPragmas), which stops
-// a trigger re-entering ITSELF but NOT another trigger on the same table:
-// without the guard, the INSERT trigger's stamping UPDATE would fire the
-// UPDATE trigger and bump the thread a second time for one insert. A
-// stamping UPDATE always writes a value the row did not have (the stamp
-// is read after a bump), so the guard excludes exactly those and nothing
-// else. Go's own `UPDATE items SET rev = rev` touch (bumpHistoryRevForItemTx)
-// leaves the column equal and therefore DOES fire, which is the point of
-// spelling it that way.
+// The UPDATE trigger fires on every column but `rev`
+// (itemRevUpdateColumns), so a stamping UPDATE, which writes `rev` alone,
+// does not fire it: no second thread bump for one write, and no trigger
+// program per stamped row. SQLite's `recursive_triggers` is OFF (pinned in
+// writerConnPragmas), which stops a trigger re-entering ITSELF but NOT
+// another trigger on the same table; no stamp writes a listed column. Go's
+// touch (bumpHistoryRevForItemTx, touchPayloadOwnerRowsSQL) writes
+// `updated_at` to itself, a listed column left equal, so it DOES fire and
+// the trigger does the stamping.
 //
 // Under `history_bulk_load = 1` the thread stamp is frozen and the row
 // stamps take the thread's current history_rev. That is sound only while
@@ -220,20 +221,77 @@ func stampedRowIDsWithCarrierKey(threadExpr, idExpr, parentExpr, carrierKey stri
 
 const stampRowsSQL = `UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = items.thread_id)`
 
-var historyRevTriggersSQL = historyRevInsertTriggerSQL + "\n\n" + historyRevUpdateDeleteTriggersFrom(stampedRowIDsSQL)
+// itemRevUpdateColumns are the columns whose write fires
+// trg_items_rev_update: every items column but rev, in table order.
+// Migration v121 installs the trigger with this list; a migration that
+// adds a column to items must reinstall the trigger with it
+// (TestItemRevUpdateTriggerListsEveryColumnButRev).
+var itemRevUpdateColumns = []string{
+	"id", "thread_id", "turn_index", "item_index", "kind", "role", "status", "summary",
+	"payload_id", "parent_id", "is_background", "completion_of", "tool_name", "decision", "meta",
+	"created_at", "updated_at", "input_payload_id",
+}
 
-// historyRevInsertTriggerSQL is the latest insert trigger. Its two stamping
-// statements are gated on the thread's bulk-load flag, a constant for the
-// statement, so only one of them reads anything.
-var historyRevInsertTriggerSQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
+// threadRevSQL is the history_rev of the thread a trigger's
+// NEW.thread_id or OLD.thread_id names. It is a constant of the statement,
+// read once, where a subquery on items.thread_id would read the threads
+// row again for every row the statement stamps.
+func threadRevSQL(threadExpr string) string {
+	return `(SELECT history_rev FROM threads WHERE id = ` + threadExpr + `)`
+}
+
+// stampRowsInSQL is a trigger's row stamp to revision rev.
+// stampPendingInSQL keeps it off rows already at that revision, which it
+// would rewrite for nothing.
+func stampRowsInSQL(rev string) string { return `UPDATE items SET rev = ` + rev }
+
+func stampPendingInSQL(rev string) string { return `rev IS NOT ` + rev }
+
+// updatedRowRevSQL is the revision of a row the update trigger stamps: a
+// write that moves a row between threads stamps rows in both.
+var updatedRowRevSQL = `(CASE WHEN thread_id = NEW.thread_id THEN ` + threadRevSQL("NEW.thread_id") +
+	` ELSE ` + threadRevSQL("OLD.thread_id") + ` END)`
+
+// The triggers do no subagent card work: the store keeps the cards in Go
+// (subagent_card.go). The insert trigger's two stamping statements are
+// gated on the thread's bulk-load flag, a constant for the statement, so
+// only one of them reads anything.
+var historyRevTriggersSQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
   UPDATE threads SET history_rev = history_rev + 1
    WHERE id = NEW.thread_id AND history_bulk_load = 0;
-  ` + stampRowsSQL + `
+  ` + stampRowsInSQL(threadRevSQL("NEW.thread_id")) + `
    WHERE thread_id = NEW.thread_id AND id = NEW.id
-     AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 1;
-  ` + stampRowsSQL + `
+     AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 1
+     AND ` + stampPendingInSQL(threadRevSQL("NEW.thread_id")) + `;
+  ` + stampRowsInSQL(threadRevSQL("NEW.thread_id")) + `
    WHERE thread_id = NEW.thread_id AND id IN (` + stampedRowIDsSQL("NEW") + `)
-     AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 0;
+     AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 0
+     AND ` + stampPendingInSQL(threadRevSQL("NEW.thread_id")) + `;
+END;
+
+CREATE TRIGGER trg_items_rev_update AFTER UPDATE OF ` + strings.Join(itemRevUpdateColumns, ", ") + ` ON items
+BEGIN
+  UPDATE threads SET
+    history_rev   = history_rev + 1,
+    history_epoch = history_epoch
+      + (OLD.turn_index IS NOT NEW.turn_index OR
+         OLD.item_index IS NOT NEW.item_index OR
+         OLD.thread_id  IS NOT NEW.thread_id)
+  WHERE id IN (OLD.thread_id, NEW.thread_id) AND history_bulk_load = 0;
+  ` + stampRowsInSQL(updatedRowRevSQL) + `
+   WHERE ((thread_id = NEW.thread_id AND id IN (` + stampedRowIDsSQL("NEW") + `))
+      OR (thread_id = OLD.thread_id AND id IN (` + stampedRowIDsSQL("OLD") + `)))
+     AND ` + stampPendingInSQL(updatedRowRevSQL) + `;
+END;
+
+CREATE TRIGGER trg_items_rev_delete AFTER DELETE ON items BEGIN
+  UPDATE threads SET
+    history_rev   = history_rev + 1,
+    history_epoch = history_epoch + 1
+  WHERE id = OLD.thread_id AND history_bulk_load = 0;
+  ` + stampRowsInSQL(threadRevSQL("OLD.thread_id")) + `
+   WHERE thread_id = OLD.thread_id AND id IN (` + stampedRowIDsSQL("OLD") + `)
+     AND ` + stampPendingInSQL(threadRevSQL("OLD.thread_id")) + `;
 END;`
 
 // historyRevTriggersV100SQL is the generation migrations v100 and v101
@@ -243,6 +301,20 @@ var historyRevTriggersV100SQL = historyRevTriggersFrom(stampedRowIDsV100SQL)
 // historyRevTriggersV118SQL is the generation migration v118 installs,
 // frozen with its recorded SQL; v119 replaces its insert trigger.
 var historyRevTriggersV118SQL = historyRevTriggersFrom(stampedRowIDsSQL)
+
+// historyRevInsertTriggerV119SQL is the insert trigger migration v119
+// installs, frozen with its recorded SQL; v121 replaces it. Its two
+// stamping statements are gated on the thread's bulk-load flag.
+var historyRevInsertTriggerV119SQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
+  UPDATE threads SET history_rev = history_rev + 1
+   WHERE id = NEW.thread_id AND history_bulk_load = 0;
+  ` + stampRowsSQL + `
+   WHERE thread_id = NEW.thread_id AND id = NEW.id
+     AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 1;
+  ` + stampRowsSQL + `
+   WHERE thread_id = NEW.thread_id AND id IN (` + stampedRowIDsSQL("NEW") + `)
+     AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 0;
+END;`
 
 // historyRevTriggersFrom builds the three row-stamping triggers of the
 // v100 and v118 generations over one definition of the rows a write
@@ -259,7 +331,8 @@ END;
 }
 
 // historyRevUpdateDeleteTriggersFrom builds the update and delete
-// triggers over one definition of the rows a write changed.
+// triggers of the v100 and v118 generations over one definition of the
+// rows a write changed.
 func historyRevUpdateDeleteTriggersFrom(stampedRowIDsSQL func(ref string) string) string {
 	return `CREATE TRIGGER trg_items_rev_update AFTER UPDATE ON items
 WHEN OLD.rev IS NEW.rev
@@ -393,10 +466,10 @@ func bumpHistoryRevTx(exec sqlExecutor, threadID, label string) error {
 // It touches the row instead of bumping the thread directly, so the item
 // UPDATE trigger does the whole job: thread stamp AND the row's own `rev`.
 // A window whose plan row gained an Accepted badge must not verify as
-// unchanged, and only a re-stamped row says that. `SET rev = rev` is the
-// touch: it asserts the column is unchanged, which is exactly the trigger's
-// `WHEN OLD.rev IS NEW.rev` guard, and it keeps `rev` a value no Go
-// statement ever chooses.
+// unchanged, and only a re-stamped row says that. `SET updated_at =
+// updated_at` is the touch: a column the trigger fires on, left equal, so
+// no read changes but the stamp, and `rev` stays a value no Go statement
+// ever chooses.
 //
 // A thread whose row is still IMPORTED history has nothing local to touch.
 // That row cannot carry a per-row stamp at all (importedItemRevExpr), so the
@@ -409,10 +482,13 @@ func bumpHistoryRevForItemTx(exec sqlExecutor, threadID, itemID, label string) e
 	}
 	return touchItemRowsTx(
 		exec, threadID, label,
-		`UPDATE items SET rev = rev WHERE thread_id = ? AND id = ?`,
+		touchItemRowSQL,
 		threadID, itemID,
 	)
 }
+
+// touchItemRowSQL is bumpHistoryRevForItemTx's touch.
+const touchItemRowSQL = `UPDATE items SET updated_at = updated_at WHERE thread_id = ? AND id = ?`
 
 // bumpHistoryRevForPayloadTx is bumpHistoryRevForItemTx for the payload
 // mutators: payload content and meta ride the item rows that reference the
@@ -449,7 +525,7 @@ func bumpHistoryRevForPayloadTx(exec sqlExecutor, threadID, payloadID, label str
 // The bind order is thread id, payload id, thread id, payload id, thread
 // id. It is a const so TestPayloadTouchProbesPayloadIndexes pins the
 // production statement rather than a copy of it.
-const touchPayloadOwnerRowsSQL = `UPDATE items SET rev = rev
+const touchPayloadOwnerRowsSQL = `UPDATE items SET updated_at = updated_at
 		  WHERE thread_id = ? AND id IN (
 		        SELECT id FROM items WHERE payload_id = ? AND thread_id = ?
 		         UNION ALL

@@ -9,10 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/store/storetest"
+	"agent-overflow/internal/triage"
 )
 
 // newTestApp is the light App fixture for the rollback / fork / revert
@@ -177,6 +180,39 @@ func insertUserItemWithMeta(t *testing.T, st *store.Store, threadID, id string, 
 		UpdatedAt: now,
 	}); err != nil {
 		t.Fatalf("append user item: %v", err)
+	}
+}
+
+// primeCutToolCallLinks writes a tool call in turnIndex and routes a
+// child event under it, so the router (wired here when the fixture has
+// none) caches both rows' links the way a live subagent does. Returns
+// the check that a cut dropping that turn forgot them.
+func primeCutToolCallLinks(t *testing.T, app *App, threadID string, turnIndex int) func() {
+	t.Helper()
+	if app.triage == nil {
+		app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
+	}
+	now := time.Now().UnixMilli()
+	if _, err := app.store.AppendItem(store.Item{
+		ID: "tool:cut", ThreadID: threadID, TurnIndex: turnIndex, Kind: "tool_call",
+		Role: "assistant", Status: "completed", ToolName: "Task", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("append tool call: %v", err)
+	}
+	if err := app.triage.Handle(provider.ProviderEvent{
+		Kind: provider.EventToolStart, ThreadID: threadID, ItemID: "tool:cut-child",
+		ItemType: "Bash", ParentToolUseID: "tool:cut", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("child tool start: %v", err)
+	}
+	if got := app.triage.ToolCallLinkCountForTest(threadID); got != 2 {
+		t.Fatalf("cached links before the cut = %d, want 2", got)
+	}
+	return func() {
+		t.Helper()
+		if got := app.triage.ToolCallLinkCountForTest(threadID); got != 0 {
+			t.Fatalf("cached links after the cut = %d, want 0", got)
+		}
 	}
 }
 

@@ -4,27 +4,33 @@ import "fmt"
 
 // itemHydrationColumns is the canonical frontend-bound Item projection with
 // caller-supplied expressions for the logical thread id, the three payload
-// fields carried alongside a timeline row, and the row revision. Keeping the
-// variable expressions here lets local and imported physical branches share
-// one scanner contract without routing either branch through the compound
-// timeline_payloads view.
-func itemHydrationColumns(threadID, payloadKind, payloadMeta, previewSpans, rev string) string {
+// fields carried alongside a timeline row, the row meta and the row
+// revision. Keeping the variable expressions here lets local and imported
+// physical branches share one scanner contract without routing either
+// branch through the compound timeline_payloads view. A read passes
+// servedItemMetaFor(rev); a copy of the stored rows passes items.meta.
+func itemHydrationColumns(threadID, payloadKind, payloadMeta, previewSpans, meta, rev string) string {
 	return fmt.Sprintf(`items.id, %s, items.turn_index, items.item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''), %s, %s, %s,
     COALESCE(items.input_payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
-    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at,
+    items.tool_name, items.decision, %s, items.created_at, items.updated_at,
     %s`,
-		threadID, payloadKind, payloadMeta, previewSpans, rev)
+		threadID, payloadKind, payloadMeta, previewSpans, meta, rev)
 }
 
+// localItemHydrationColumns is the projection of a local row, own or a
+// fork's inherited one. An own row serves its merged meta over the join
+// resolveSelectedTimelineSQL renders when the caller passes servedItemJoin;
+// an inherited row reads revision -1 and serves its stored meta.
 func localItemHydrationColumns(thread, rev string) string {
 	return itemHydrationColumns(
 		thread,
 		"COALESCE(payloads.kind, '')",
 		"COALESCE(payloads.meta, '')",
 		"COALESCE(payloads.preview_spans, '')",
+		servedItemMetaFor(rev),
 		rev,
 	)
 }
@@ -35,6 +41,7 @@ func importedItemHydrationColumns(thread, rev string) string {
 		"COALESCE(local_payloads.kind, imported_payloads.kind, '')",
 		"COALESCE(local_payloads.meta, imported_payloads.meta, '')",
 		"COALESCE(local_payloads.preview_spans, imported_payloads.preview_spans, '')",
+		servedItemMetaFor(rev),
 		rev,
 	)
 }
@@ -56,9 +63,11 @@ func importedItemHydrationColumns(thread, rev string) string {
 //     each read's statement several times as costly to prepare.
 //
 // local and imported render a branch's projection from its logical thread
-// id and row revision expressions. It returns the branches and their bind
-// values, which follow the selection's.
-func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported func(thread, rev string) string, orderBy string) (string, []any, error) {
+// id and row revision expressions. localJoin is a join the own local
+// branch's projection reads (servedItemJoin for served meta), or "". It
+// returns the branches and their bind values, which follow the
+// selection's.
+func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported func(thread, rev string) string, localJoin, orderBy string) (string, []any, error) {
 	depth, err := forkLineageDepth(q, threadID)
 	if err != nil {
 		return "", nil, err
@@ -69,7 +78,7 @@ func resolveSelectedTimelineSQL(q sqlQueryer, threadID string, local, imported f
 		  CROSS JOIN items AS items
 		    ON items.thread_id = ? AND items.id = selected.id
 		  LEFT JOIN payloads AS payloads
-		    ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+		    ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id` + localJoin + `
 		UNION ALL
 		SELECT ` + imported("refs.thread_id", importedItemRevExpr) + `
 		  FROM selected
@@ -134,7 +143,7 @@ func queryHydratedTimelineItems(
 	selectedSQL string,
 	selectedArgs ...any,
 ) ([]Item, error) {
-	branches, branchArgs, err := resolveSelectedTimelineSQL(q, threadID, localItemHydrationColumns, importedItemHydrationColumns, "3, 4")
+	branches, branchArgs, err := resolveSelectedTimelineSQL(q, threadID, localItemHydrationColumns, importedItemHydrationColumns, servedItemJoin, "3, 4")
 	if err != nil {
 		return nil, fmt.Errorf("store: query hydrated timeline items for %s: %w", threadID, err)
 	}

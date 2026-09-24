@@ -44,23 +44,29 @@ func (r *Router) capturePendingCommandInlineDiff(evt provider.ProviderEvent) err
 	return nil
 }
 
-func (r *Router) persistCommandInlineDiffToolResult(evt provider.ProviderEvent) error {
+// persistCommandInlineDiffToolResult attaches a captured command inline
+// diff to the command's row: row/found as the handler carries them, and
+// the row is returned as this leaves it.
+func (r *Router) persistCommandInlineDiffToolResult(evt provider.ProviderEvent, row store.Item, found bool) (store.Item, bool, error) {
 	if evt.ItemType != "command_execution" || evt.ItemID == "" {
-		return nil
+		return row, found, nil
 	}
 
 	pending, ok := r.takePendingCommandInlineDiff(evt.ThreadID, evt.ItemID)
 	if !ok || extractRuntimeCommandExitCode(evt.Meta) != 0 {
-		return nil
+		return row, found, nil
 	}
 
-	return r.persistToolResult(evt, pending.Meta, pending.DiffData)
+	return r.persistToolResult(evt, pending.Meta, pending.DiffData, row, found)
 }
 
-func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMeta, diffData []byte) error {
+// persistToolResult links a tool result payload onto the tool's row, or
+// creates the row when none exists (found=false). row is the tool's row
+// as the handler carries it; the persisted row is returned.
+func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMeta, diffData []byte, row store.Item, found bool) (store.Item, bool, error) {
 	itemID := eventItemID(evt)
 	if itemID == "" {
-		return nil
+		return row, found, nil
 	}
 
 	now := eventTimestampMillis(evt)
@@ -69,7 +75,7 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 	meta, diffData = r.mergeToolResultPayload(evt.ThreadID, payloadID, meta, diffData)
 	metaJSON, err := json.Marshal(meta)
 	if err != nil {
-		return fmt.Errorf("marshal tool result meta: %w", err)
+		return row, found, fmt.Errorf("marshal tool result meta: %w", err)
 	}
 
 	payload := store.Payload{
@@ -79,20 +85,18 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 		Data:      diffData,
 		CreatedAt: now,
 	}
-	item, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
-	if err != nil {
-		return fmt.Errorf("lookup tool result item: %w", err)
-	}
 	summary := SummarizeToolResult(meta)
 	if found {
+		item := row
 		item.PayloadID = payloadID
 		item.Summary = summary
 		item.UpdatedAt = now
-		if err := r.persistItem(item, &payload); err != nil {
-			return err
+		persisted, err := r.persistItemWithEmit(item, &payload, nil, true)
+		if err != nil {
+			return row, found, err
 		}
 		r.notifyDiffPayloadPersisted(evt.ThreadID, payloadID, meta, string(diffData))
-		return nil
+		return persisted, true, nil
 	}
 	status := statusCompleted
 	if evt.Kind == provider.EventToolComplete {
@@ -101,7 +105,7 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 
 	turnIndex, err := r.turnIndexForEvent(evt)
 	if err != nil {
-		return fmt.Errorf("tool result turn index: %w", err)
+		return row, found, fmt.Errorf("tool result turn index: %w", err)
 	}
 	newItem := store.Item{
 		ID:        itemID,
@@ -118,11 +122,12 @@ func (r *Router) persistToolResult(evt provider.ProviderEvent, meta ToolResultMe
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if err := r.persistItem(newItem, &payload); err != nil {
-		return err
+	persisted, err := r.persistItemWithEmit(newItem, &payload, nil, true)
+	if err != nil {
+		return row, found, err
 	}
 	r.notifyDiffPayloadPersisted(evt.ThreadID, payloadID, meta, string(diffData))
-	return nil
+	return persisted, true, nil
 }
 
 func captureCommandExecutionToolResult(raw json.RawMessage, workspaceRoot string) (ToolResultMeta, []byte, bool) {

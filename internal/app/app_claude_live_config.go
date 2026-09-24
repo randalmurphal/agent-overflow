@@ -251,8 +251,8 @@ func (a *App) sweepUnconfirmedClaudeLiveApply(commandUUID string) {
 // outlive the evidence for it, and the deferred restart converges the row
 // the honest way.
 //
-// Never runs on the read loop: the watchdog owns its own goroutine, which
-// is what makes the get_settings round trip legal here.
+// Never runs on the event worker: the watchdog owns its own goroutine, so
+// the get_settings round trip holds up no event handling.
 func (a *App) settleUnconfirmedClaudeLiveApply(pending claudeLiveConfigApply) {
 	if pending.Axis == claudeLiveApplyAxisEffort && a.claudeSessionMaySupportGetSettings(pending) {
 		applied, err := a.readClaudeAppliedSettingsStep(pending.ThreadID, pending.SessionToken)
@@ -596,10 +596,11 @@ const fastModeSDKUnavailableText = "Fast mode is not available in the Agent SDK"
 // resolveClaudeLiveConfigApply settles one pending apply against the CLI's
 // answer.
 //
-// Runs on the provider read loop. The effort axis has a structured verdict
+// Runs on the thread's event worker. The effort axis has a structured verdict
 // available (`get_settings.applied.effort`), but reading it is a control
-// round-trip whose response arrives on THIS goroutine — so it is handed to a
-// goroutine, which then settles through the same tail as the text path.
+// round-trip, and every later event of the thread would wait behind it, so it
+// is handed to a goroutine, which then settles through the same tail as the
+// text path.
 func (a *App) resolveClaudeLiveConfigApply(pending claudeLiveConfigApply, text string) {
 	if pending.Axis == claudeLiveApplyAxisEffort && a.claudeSessionMaySupportGetSettings(pending) {
 		go a.settleClaudeEffortApplyFromSettings(pending, text)
@@ -615,7 +616,7 @@ func (a *App) resolveClaudeLiveConfigApply(pending claudeLiveConfigApply, text s
 // subtype (recorded once per session, so the wire is not asked twice), or a
 // round-trip that failed or raced the session's teardown.
 //
-// Never runs on the read loop; see resolveClaudeLiveConfigApply.
+// Never runs on the event worker; see resolveClaudeLiveConfigApply.
 func (a *App) settleClaudeEffortApplyFromSettings(pending claudeLiveConfigApply, text string) {
 	applied, err := a.readClaudeAppliedSettingsStep(pending.ThreadID, pending.SessionToken)
 	if a.claudeLiveApplySuperseded(pending) {
@@ -738,7 +739,7 @@ func (a *App) declineClaudeLiveConfigApply(pending claudeLiveConfigApply, messag
 	}
 	a.markClaudeLiveApplyDegraded(pending.SessionToken, pending.Axis)
 	// Wire-route, not synthetic: this answers command output from the
-	// provider read loop, and the error must respect the stopped-thread
+	// provider's event stream, and the error must respect the stopped-thread
 	// gate exactly like the output that triggered it (invariant 29).
 	a.emitWireErrorToThread(pending.ThreadID, message)
 	a.schedulePendingConfigReconnect(pending.ThreadID)
@@ -769,7 +770,7 @@ func (a *App) revertClaudeLiveApplyAxis(pending claudeLiveConfigApply) bool {
 // remembered effort; provider observations do not change defaults. The launchOpts
 // write doubles as the liveness gate — if the session this output came from
 // is gone or replaced, nothing persistent may change (a torn-down session's
-// read loop drains its tail after teardown, and a stale echo must not
+// events drain after teardown, and a stale echo must not
 // rewrite the row the user's next session spawns from).
 func (a *App) syncThreadEffortFromWire(threadID, sessionToken string, tier provider.ReasoningEffort, userInitiated bool) {
 	if a.store == nil {
@@ -907,7 +908,7 @@ func (a *App) readClaudeAppliedSettings(threadID, sessionToken string) (*claude.
 // would only produce the same step-down. The applied value is stamped on the
 // session's live state (claude.Session.AppliedSettingsSnapshot) and logged.
 //
-// Fire-and-forget from a goroutine — never from the read loop.
+// Fire-and-forget from a goroutine — never from the event worker.
 func (a *App) readBackClaudeAppliedModel(threadID, sessionToken, requested string) {
 	if requested == "" {
 		return

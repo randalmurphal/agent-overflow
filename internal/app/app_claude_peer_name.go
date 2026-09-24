@@ -165,9 +165,10 @@ func (a *App) syncPeerSessionName(threadID string) {
 }
 
 // syncPeerSessionNameAsync runs syncPeerSessionName off the caller's
-// goroutine. Used from the provider event fan-out, which is the session's
-// own read loop: the rename writes to that session's stdin, and a write
-// that blocks would stall the loop that drains its output.
+// goroutine. Used from the provider event fan-out, which runs on the
+// thread's event worker: the rename writes to that session's stdin, and a
+// write that blocks would stall the worker and, once its queue fills, the
+// loop that drains the session's output.
 func (a *App) syncPeerSessionNameAsync(threadID string) {
 	go a.syncPeerSessionName(threadID)
 }

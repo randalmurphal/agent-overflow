@@ -265,12 +265,12 @@ func TestImportedDescendantsKeepWireDecorationAndAncestorRevisions(t *testing.T)
 	for _, thread := range []string{"source", "local"} {
 		row := launch
 		row.ThreadID = thread
-		if err := s.InsertItem(row); err != nil {
+		if err := insertCarded(s, row); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, child := range children("local") {
-		if err := s.InsertItem(child); err != nil {
+		if err := insertCarded(s, child); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -292,9 +292,10 @@ func TestImportedDescendantsKeepWireDecorationAndAncestorRevisions(t *testing.T)
 	if len(local) != 1 || len(imported) != 1 {
 		t.Fatalf("launch reads: local=%+v imported=%+v", local, imported)
 	}
+	// The bulk load stamped the launch, so its stored row is its read.
 	needs, err := s.ItemReadNeedsDecoration(imported[0])
-	if err != nil || !needs {
-		t.Fatalf("imported descendants need decoration=%v err=%v", needs, err)
+	if err != nil || needs {
+		t.Fatalf("stamped launch over imported descendants needs decoration=%v err=%v", needs, err)
 	}
 	local[0].ThreadID, local[0].Rev = "", 0
 	before := imported[0]

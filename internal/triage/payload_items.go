@@ -10,8 +10,6 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
-
-	"github.com/google/uuid"
 )
 
 func (r *Router) handleDiff(evt provider.ProviderEvent) error {
@@ -24,47 +22,22 @@ func (r *Router) handleDiff(evt provider.ProviderEvent) error {
 		return err
 	}
 
-	if itemID := eventItemID(evt); itemID != "" {
-		item, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
-		if err != nil {
-			return fmt.Errorf("diff get item %s: %w", itemID, err)
-		}
-		if !found {
-			item, err = r.newToolCallItem(evt.ThreadID, itemID, "file_change", buildSummary("diff", BuildPayloadMeta("diff", evt)), statusCompleted, eventTimestampMillis(evt))
-			if err != nil {
-				return fmt.Errorf("diff create tool_call %s: %w", itemID, err)
-			}
-		}
-		return r.attachPayloadToItem(item, evt, "diff", item.Summary, evt.Replace)
-	}
-
-	turnIndex, err := r.currentTurnIndex(evt.ThreadID)
-	if err != nil {
-		return fmt.Errorf("diff turn index: %w", err)
-	}
-	upgraded, err := r.upgradeSummaryOnlyToolResults(evt.ThreadID, turnIndex, evt.Content)
-	if err != nil {
-		return err
-	}
-	if upgraded {
+	// A diff names the row it belongs to. A turn-level diff arrives as
+	// upgrade-only above; one with neither has no row it may replace,
+	// because the latest file change's exact patch is not the turn's.
+	itemID := eventItemID(evt)
+	if itemID == "" {
+		log.Printf("triage: dropping diff event without an item id on thread %s", evt.ThreadID)
 		return nil
 	}
-
-	item, found, err := r.findLatestToolCall(evt.ThreadID, "file_change", "edit", "write", "multiedit", "multi_edit")
+	item, found, err := r.store.GetThreadItem(evt.ThreadID, itemID)
 	if err != nil {
-		return fmt.Errorf("diff resolve target: %w", err)
+		return fmt.Errorf("diff get item %s: %w", itemID, err)
 	}
 	if !found {
-		item, err = r.newToolCallItem(
-			evt.ThreadID,
-			fmt.Sprintf("diff:%d", turnIndex),
-			"file_change",
-			buildSummary("diff", BuildPayloadMeta("diff", evt)),
-			statusCompleted,
-			eventTimestampMillis(evt),
-		)
+		item, err = r.newToolCallItem(evt.ThreadID, itemID, "file_change", buildSummary("diff", BuildPayloadMeta("diff", evt)), statusCompleted, eventTimestampMillis(evt))
 		if err != nil {
-			return fmt.Errorf("diff fallback tool_call: %w", err)
+			return fmt.Errorf("diff create tool_call %s: %w", itemID, err)
 		}
 	}
 	return r.attachPayloadToItem(item, evt, "diff", item.Summary, evt.Replace)
@@ -85,41 +58,26 @@ func (r *Router) handleCommandOutput(evt provider.ProviderEvent) error {
 	if r.observeCodexCommandOutput(evt) {
 		return nil
 	}
+	// Output names the command it belongs to. Without an item id it has
+	// no row it may be attached to: the latest command's output is not
+	// this output.
 	itemID := eventItemID(evt)
-	if itemID != "" {
-		if evt.Replace {
-			return r.replaceCommandOutput(evt, itemID)
-		}
-		return r.bufferCommandOutputDelta(evt, itemID)
+	if itemID == "" {
+		log.Printf("triage: dropping command output without an item id on thread %s", evt.ThreadID)
+		return nil
 	}
-
-	item, found, err := r.findLatestToolCall(evt.ThreadID, "command_execution", "bash")
-	if err != nil {
-		return fmt.Errorf("command output resolve target: %w", err)
+	if evt.Replace {
+		return r.replaceCommandOutput(evt, itemID)
 	}
-	if !found {
-		turnIndex, terr := r.currentTurnIndex(evt.ThreadID)
-		if terr != nil {
-			return fmt.Errorf("command output turn index: %w", terr)
-		}
-		item, err = r.newCommandOutputToolCall(
-			evt.ThreadID,
-			fmt.Sprintf("command-output:%d", turnIndex),
-			evt,
-		)
-		if err != nil {
-			return fmt.Errorf("command output fallback tool_call: %w", err)
-		}
-	}
-	return r.attachPayloadToItem(item, evt, payloadKindCommandOutput, item.Summary, evt.Replace)
+	return r.bufferCommandOutputDelta(evt, itemID)
 }
 
 // newCommandOutputToolCall builds the command_execution row that backs a
 // command-output payload when no prior row exists for it. Centralizes the
-// summary/meta construction (payloadKindCommandOutput) the three not-found
-// fallbacks share; each caller keeps its own policy around it — the legacy
-// bash fallback's computed id, attach-and-return on a buffered first delta,
-// or create-then-replace on the authoritative snapshot.
+// summary/meta construction (payloadKindCommandOutput) the two not-found
+// paths share; each caller keeps its own policy around it: attach-and-return
+// on a buffered first delta, or create-then-replace on the authoritative
+// snapshot.
 func (r *Router) newCommandOutputToolCall(
 	threadID, itemID string,
 	evt provider.ProviderEvent,
@@ -313,8 +271,8 @@ func (r *Router) findMatchingProposedPlanItemInCurrentTurn(evt provider.Provider
 }
 
 // rowClockMillis is the row clock for a persisted item: the provider's own
-// event time, so a row written late (a transcript backfill, a recovered
-// block) sits where it happened rather than when it was written. Only an
+// event time, so a row written late (a mirrored transcript row, a
+// recovered block) sits where it happened rather than when it was written. Only an
 // event with no timestamp falls back to the wall clock.
 func rowClockMillis(at time.Time) int64 {
 	if at.IsZero() {
@@ -390,27 +348,6 @@ func (r *Router) newToolCallItem(
 	return item, nil
 }
 
-// findLatestToolCall returns the most-recent tool_call row in the
-// current turn whose tool_name matches one of toolNames
-// (case-insensitive). Delegates to store.LatestToolCallByName so the
-// filter runs in SQLite — previous implementations pulled every turn
-// item into Go and scanned in reverse, which was O(turn_items) on
-// a path called once per fallback diff/command-output event.
-func (r *Router) findLatestToolCall(threadID string, toolNames ...string) (store.Item, bool, error) {
-	turnIndex, err := r.currentTurnIndex(threadID)
-	if err != nil {
-		return store.Item{}, false, err
-	}
-	normalized := make([]string, 0, len(toolNames))
-	for _, name := range toolNames {
-		trimmed := strings.TrimSpace(strings.ToLower(name))
-		if trimmed != "" {
-			normalized = append(normalized, trimmed)
-		}
-	}
-	return r.store.LatestToolCallByName(threadID, turnIndex, normalized)
-}
-
 func (r *Router) attachPayloadToItem(
 	item store.Item,
 	evt provider.ProviderEvent,
@@ -477,7 +414,7 @@ func (r *Router) attachPayloadToItemWithEmit(
 	}
 
 	if !linked {
-		payloadID = uuid.New().String()
+		payloadID = AttachedPayloadID(payloadKind, item.ID)
 	}
 
 	metaEvt := evt

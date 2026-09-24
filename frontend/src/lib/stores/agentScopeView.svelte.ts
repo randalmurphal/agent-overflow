@@ -66,10 +66,22 @@ export function createAgentScopeView(
   const scrollKey = `${sourcePane.paneId}:${sourcePane.threadId}~${options.viewKey}:${scopeItemId}`;
   const owner = createScopedTimeline(sourcePane.thread, { scopeRootId: scopeItemId, tools: options.toolsOnly, digestItemId: options.digestItemId }, scrollKey);
   const { itemWindow, window, rows, reveal, runs, scroll } = owner;
-  // Only presentation lifts direct children to roots; stored rows retain their identity.
+  // Only presentation lifts direct children to roots; stored rows retain
+  // their identity. One lifted copy per stored row, so a structural revision
+  // allocates the array, not a copy of every row, and unchanged rows keep
+  // their presented identity.
+  const lifted = new WeakMap<Item, Item>();
+  const lift = (item: Item): Item => {
+    let row = lifted.get(item);
+    if (!row) {
+      row = { ...item, parentId: undefined };
+      lifted.set(item, row);
+    }
+    return row;
+  };
   let scopedItems = $derived.by(() => {
     void itemWindow.timelineRevision;
-    return itemWindow.getItems().map(item => ({ ...item, parentId: undefined }));
+    return itemWindow.getItems().map(lift);
   });
   let root = $derived((owner.scope?.root as Item | undefined) ?? sourcePane.getItemById(scopeItemId));
   let lifecycle = $derived((!options.digestItemId && root ? liveCodexAgent(root.threadId, root.id) : undefined)
@@ -176,7 +188,6 @@ export function createAgentScopeView(
     get draftPlaceholder() { return sourcePane.draftPlaceholder; },
     get hasDraftPlaceholder() { return sourcePane.hasDraftPlaceholder; },
     get canCompose() { return sourcePane.canCompose; },
-    get subscribeLiveContent() { return sourcePane.subscribeLiveContent; },
     get markLiveContentAdvanced() { return sourcePane.markLiveContentAdvanced; },
     get setDraftPlaceholderMode() { return sourcePane.setDraftPlaceholderMode; },
     get applyDraftPlaceholderDefaults() { return sourcePane.applyDraftPlaceholderDefaults; },
@@ -231,7 +242,6 @@ export function createAgentScopeView(
     get applyItemDelta() { return sourcePane.applyItemDelta; },
     get applyItemMeta() { return sourcePane.applyItemMeta; },
     get applyItemPatch() { return sourcePane.applyItemPatch; },
-    get subagentLiveAggregate() { return sourcePane.subagentLiveAggregate; },
     get setPaneError() { return sourcePane.setPaneError; },
     get clearPaneError() { return sourcePane.clearPaneError; },
     get setGeneralError() { return sourcePane.setGeneralError; },

@@ -226,7 +226,7 @@ func (r *Router) persistSubagentFinalProgress(launch store.Item, final provider.
 			r.mergeLiveSubagentProgress(launch.ThreadID, launch.ID, final)
 		}
 		completionID := ToolCompletionID(launch.ID)
-		completion, found, err := r.store.GetThreadItem(launch.ThreadID, completionID)
+		completion, found, err := r.store.GetThreadItemForWrite(launch.ThreadID, completionID)
 		if err != nil {
 			return fmt.Errorf("triage: final subagent progress completion lookup %s: %w", completionID, err)
 		}
@@ -255,8 +255,17 @@ func (r *Router) persistSubagentFinalProgress(launch store.Item, final provider.
 	if err != nil {
 		return fmt.Errorf("triage: marshal final subagent progress for %s: %w", launch.ID, err)
 	}
-	meta := mergeItemMetaJSON(launch.Meta, encoded)
-	return r.persistItemFieldsAndPatch(launch, store.ItemPartialUpdate{Meta: &meta})
+	// The merge base is the stored meta: the launch a caller holds was
+	// read with its card served in it.
+	stored, found, err := r.store.GetThreadItemForWrite(launch.ThreadID, launch.ID)
+	if err != nil {
+		return fmt.Errorf("triage: final subagent progress launch lookup %s: %w", launch.ID, err)
+	}
+	if !found {
+		return nil
+	}
+	meta := mergeItemMetaJSON(stored.Meta, encoded)
+	return r.persistItemFieldsAndPatch(stored, store.ItemPartialUpdate{Meta: &meta})
 }
 
 // completionMetaWithFinalProgress folds a detached launch's live entry

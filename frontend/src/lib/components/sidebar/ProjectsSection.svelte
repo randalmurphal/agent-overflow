@@ -41,7 +41,14 @@
   import SidebarDeviceFilter from './SidebarDeviceFilter.svelte';
   import { sidebarBackendVisible, sidebarDeviceFilterActive } from '../../stores/sidebarDevices.svelte';
   import { projectBackend } from '../../transport/entityIndex';
-  import { threadMachine } from '../../stores/attachedBackends.svelte';
+  import {
+    backendDisplayName,
+    getAttachedBackends,
+    hasMultipleBackends,
+    threadMachine,
+  } from '../../stores/attachedBackends.svelte';
+  import { catalogLoadState } from '../../stores/catalogLoad.svelte';
+  import CatalogStatusRow from './CatalogStatusRow.svelte';
   import ProjectList from './ProjectList.svelte';
   import { threadGroupMatchesQuery, threadMatchesQuery } from './threadSearch';
   import type {
@@ -132,6 +139,22 @@
 
   let threadsByProject = $derived(searchBuckets.threadsByProject);
   let groupsByProject = $derived(searchBuckets.groupsByProject);
+
+  // Visible computers whose threads or projects have not loaded, each with
+  // a status row. While any remains, what the list shows is incomplete, so
+  // it is never presented as empty.
+  let pendingCatalogs = $derived.by(() => getAttachedBackends().flatMap((entry) => {
+    if (!sidebarBackendVisible(entry.id)) return [];
+    const projects = catalogLoadState(entry.id, 'projects');
+    const threads = catalogLoadState(entry.id, 'threads');
+    if (projects.phase === 'loaded' && threads.phase === 'loaded') return [];
+    const failed = projects.phase === 'failed' ? projects : threads.phase === 'failed' ? threads : null;
+    return [{
+      backend: entry.id,
+      name: hasMultipleBackends() ? backendDisplayName(entry) : '',
+      error: failed === null ? null : failed.error,
+    }];
+  }));
 
   // Visible projects: respect search (name match OR thread match) and
   // the current sort mode. Three modes:
@@ -366,16 +389,25 @@
     class="flex-1 min-h-0 overflow-y-auto"
     data-flashing-project={flashProjectId}
   >
-    <ProjectList
-      projects={visibleProjects}
-      emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected computers.' : undefined}
-      {threadsByProject}
-      {groupsByProject}
-      {pane}
-      onNewThread={handleNewThread}
-      onNewTerminal={handleNewTerminal}
-      onReorder={handleReorder}
-    />
+    {#if pendingCatalogs.length > 0}
+      <div class="px-2 pt-1" data-testid="sidebar-catalog-status">
+        {#each pendingCatalogs as pending (pending.backend)}
+          <CatalogStatusRow backend={pending.backend} name={pending.name} error={pending.error} />
+        {/each}
+      </div>
+    {/if}
+    {#if visibleProjects.length > 0 || pendingCatalogs.length === 0}
+      <ProjectList
+        projects={visibleProjects}
+        emptyMessage={sidebarDeviceFilterActive() ? 'No projects on the selected computers.' : undefined}
+        {threadsByProject}
+        {groupsByProject}
+        {pane}
+        onNewThread={handleNewThread}
+        onNewTerminal={handleNewTerminal}
+        onReorder={handleReorder}
+      />
+    {/if}
   </div>
 </section>
 

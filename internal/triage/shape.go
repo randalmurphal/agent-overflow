@@ -442,6 +442,29 @@ func ThinkingPayloadID(itemID string) string {
 	return "thinking:" + itemID
 }
 
+// CompactionPayloadID is the deterministic payload id for a compaction
+// row's summary blob. Re-persisting the row, live or by a repeated
+// import, writes the same payload instead of repointing the row at a new
+// one.
+func CompactionPayloadID(itemID string) string {
+	return "compaction:" + itemID
+}
+
+// ToolCallInputPayloadID is the deterministic payload id for a tool
+// call's promoted input blob (ShapeToolItemMeta), so the live and import
+// writers name it alike and a repeated import hashes the same.
+func ToolCallInputPayloadID(itemID string) string {
+	return "tool-input:" + itemID
+}
+
+// AttachedPayloadID is the deterministic payload id for a blob attached
+// to a row by kind (diff, command output, proposed plan). The import
+// writer names these blobs the same way, so both writers agree and a
+// repeated import hashes the same.
+func AttachedPayloadID(payloadKind, itemID string) string {
+	return payloadKind + ":" + itemID
+}
+
 // ShouldSplitCodexToolCompletion reports whether a Codex tool's completion
 // gets its own `tool_completion` sibling row instead of settling the launch
 // row in place.

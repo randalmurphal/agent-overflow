@@ -249,6 +249,39 @@ describe('createEntityStore — apply chokepoint', () => {
     ]);
   });
 
+  it('delivers an event observation to onApply without rewriting the held value', async () => {
+    const { source, calls } = makeSource<{ n: number }>();
+    const seen: Array<[{ n: number }, { n: number } | null]> = [];
+    const store = createEntityStore<{ n: number }, { tag: string }>({
+      backendForKey: () => '', name: 'test', rawValue: true, source,
+      onApply: (_key, value, prev) => seen.push([value, prev]),
+    });
+    const a = store.attach('k', { tag: 'a' });
+    await flush();
+    const held = { n: 1 };
+    calls[0].apply(held);
+    calls[0].resolve();
+    await flush();
+    let reads = 0;
+    const stop = $effect.root(() => {
+      $effect(() => { void a.current; reads += 1; });
+    });
+    flushSync();
+    store.applyError('k', new Error('read failed'));
+
+    const event = { n: 2 };
+    store.apply('k', event, { preserveError: true, keepValue: true });
+    flushSync();
+
+    expect(seen.at(-1)?.[0]).toBe(event);
+    expect(seen.at(-1)?.[1]).toBe(held);
+    expect(a.current).toBe(held);
+    expect(reads).toBe(1);
+    expect(a.error).toBe('read failed');
+    stop();
+    a.release();
+  });
+
   it('apply on a key nobody holds is a no-op, not a resurrection', async () => {
     const { source } = makeSource();
     const onApply = vi.fn();

@@ -1,7 +1,6 @@
 import { retainedItemChars, snapshotItem } from '../utils/itemMemory';
 import type { ActivityRunStub } from '../../../bindings/agent-overflow/internal/store/models';
 import type { Item } from '../types/models';
-import type { SubagentFoldSnapshot } from '../utils/subagentFold';
 import type { TimelineCursorLike } from './threadItems';
 import type { SettledTurn } from './threadTurnProjection';
 import type { ThreadHistoryStamp } from './threadHistoryStamps';
@@ -37,18 +36,11 @@ export interface ThreadItemSnapshot {
   hasMoreNewer: boolean;
   latestSettledTurn: SettledTurn | null;
   /**
-   * Folded (evicted) subagent children keyed by launch anchor. The
-   * snapshot's `items` deliberately exclude these rows, so the fold must
-   * travel with them or a warm re-entry renders collapsed cards with
-   * zeroed counts until the next live event or hydration.
-   */
-  subagentFolds?: SubagentFoldSnapshot | null;
-  /**
    * The activity-run stubs describing the members `items` does not hold
    * (docs/architecture/timeline-window-pages.md §2). Travels with the
-   * window for the same reason the folds do: a warm re-entry that painted
-   * the rows without them would render every run as complete and describe
-   * a held window missing every unshipped member.
+   * window because a warm re-entry that painted the rows without them
+   * would render every run as complete and describe a held window missing
+   * every unshipped member.
    */
   runs?: ActivityRunStub[] | null;
   /**
@@ -114,9 +106,10 @@ export interface ThreadItemCache {
    * rows a sync actually returned, and any mutation since then advanced
    * the backend's rev past it, so the same `fresh` is impossible.
    * Dropping the whole cache would work but would also throw away every
-   * warm paint the gap did not endanger.
+   * warm paint the gap did not endanger. A gap that names the threads it
+   * lost frames for passes them, and only their snapshots lose stamps.
    */
-  dropUnattestedStamps(): void;
+  dropUnattestedStamps(threads?: ReadonlySet<string>): void;
   /** Test/diagnostic only — exposes current entry count without
    *  unfreezing the LRU contract. */
   readonly size: number;
@@ -171,12 +164,8 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
         hasMoreHistory: snapshot.hasMoreHistory,
         hasMoreNewer: snapshot.hasMoreNewer,
         latestSettledTurn: snapshot.latestSettledTurn,
-        // Reference-shared, not cloned: `snapshot()` allocates fresh
-        // plain data each call and `restore()` copies out of it, so no
-        // caller can mutate a stored fold after set().
-        subagentFolds: snapshot.subagentFolds ?? null,
-        // Reference-shared for the same reason the folds are: every
-        // producer hands over freshly built plain stubs.
+        // Reference-shared, not cloned: every producer hands over freshly
+        // built plain stubs.
         runs: snapshot.runs ?? null,
         historyStamp: snapshot.historyStamp ? { ...snapshot.historyStamp } : null,
       };
@@ -205,11 +194,12 @@ export function createThreadItemCache(cap: number = THREAD_ITEM_CACHE_CAP): Thre
       cachedChars = 0;
     },
 
-    dropUnattestedStamps() {
+    dropUnattestedStamps(threads) {
       // Safe to mutate in place: `set` stores a private clone of the
       // stamp, and `get` hands out the stored snapshot only for the
       // pane to read.
-      for (const entry of byThread.values()) {
+      for (const [threadId, entry] of byThread) {
+        if (threads && !threads.has(threadId)) continue;
         if (entry.snapshot.historyStamp && !entry.snapshot.historyStamp.attested) {
           entry.snapshot.historyStamp = null;
         }
@@ -232,13 +222,6 @@ function estimateSnapshotChars(snapshot: ThreadItemSnapshot): number {
   let chars = 0;
   for (const item of snapshot.items) {
     chars += retainedItemChars(item);
-  }
-  // Folded subagent children ride the snapshot as one id string per
-  // evicted row; a subagent-heavy turn can make the fold outweigh the
-  // visible rows, so it must count against the same budgets.
-  for (const anchor of snapshot.subagentFolds?.anchors ?? []) {
-    chars += anchor.terminalPreview.length;
-    for (const id of anchor.evictedIds) chars += id.length;
   }
   // Same terms the replica's `estimateBodyChars` counts for a stub, so
   // the two tiers stay on one scale.

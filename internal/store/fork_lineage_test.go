@@ -178,7 +178,7 @@ func TestPointerForkOfAFork(t *testing.T) {
 	s := newTestStore(t)
 	seedLinearSource(t, s, "S", 4)
 	mustPointerFork(t, s, "S", "F", throughTurn(2))
-	if _, err := s.AppendItem(Item{ID: "f3", ThreadID: "F", TurnIndex: 3, Kind: "user_text", Role: "user", Status: "completed", Summary: "fork 3"}); err != nil {
+	if _, err := appendCarded(s, Item{ID: "f3", ThreadID: "F", TurnIndex: 3, Kind: "user_text", Role: "user", Status: "completed", Summary: "fork 3"}); err != nil {
 		t.Fatal(err)
 	}
 	mustPointerFork(t, s, "F", "G", ForkCut{})
@@ -199,7 +199,7 @@ func TestPointerForkOfAFork(t *testing.T) {
 
 	// A late row the source writes below both cuts (a background child, a
 	// completion) and a row it moves there are hidden from both forks.
-	if err := s.InsertItem(Item{ID: "late", ThreadID: "S", TurnIndex: 1, ItemIndex: 5, Kind: "assistant_text", Role: "assistant", Status: "completed"}); err != nil {
+	if err := insertCarded(s, Item{ID: "late", ThreadID: "S", TurnIndex: 1, ItemIndex: 5, Kind: "assistant_text", Role: "assistant", Status: "completed"}); err != nil {
 		t.Fatal(err)
 	}
 	mustExec(t, s.db, `UPDATE items SET turn_index = 1, item_index = 6 WHERE thread_id = 'S' AND id = 'u3'`)
@@ -245,7 +245,7 @@ func TestPointerForkSourceDeletion(t *testing.T) {
 	s := newTestStore(t)
 	seedLinearSource(t, s, "S", 2)
 	mustPointerFork(t, s, "S", "F", ForkCut{})
-	if _, err := s.AppendItem(Item{ID: "f2", ThreadID: "F", TurnIndex: 2, Kind: "user_text", Role: "user", Status: "completed", Summary: "fork 2"}); err != nil {
+	if _, err := appendCarded(s, Item{ID: "f2", ThreadID: "F", TurnIndex: 2, Kind: "user_text", Role: "user", Status: "completed", Summary: "fork 2"}); err != nil {
 		t.Fatal(err)
 	}
 	mustPointerFork(t, s, "F", "G", ForkCut{})
@@ -472,7 +472,7 @@ func TestPointerForkCopiesEmptyPayloads(t *testing.T) {
 				s := newTestStore(t)
 				seedLinearSource(t, s, "S", 2)
 				if imported {
-					if err := s.InsertItemWithPayload(
+					if err := insertWithPayloadCarded(s,
 						Item{ID: "empty-tool", ThreadID: "S", TurnIndex: 0, ItemIndex: 5, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Bash", PayloadID: "pe", Meta: "{}"},
 						Payload{ID: "pe", Kind: "text", Meta: "{}", Data: []byte("x")},
 					); err != nil {
@@ -482,7 +482,7 @@ func TestPointerForkCopiesEmptyPayloads(t *testing.T) {
 					mustExec(t, s.db, `UPDATE import_history_payloads SET data = x'' WHERE id = 'pe'`)
 				} else {
 					mustExec(t, s.db, `INSERT INTO payloads(thread_id,id,kind,meta,data,created_at) VALUES('S','pe','text','{}',x'',1)`)
-					if err := s.InsertItem(Item{ID: "empty-tool", ThreadID: "S", TurnIndex: 0, ItemIndex: 5, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Bash", PayloadID: "pe", Meta: "{}"}); err != nil {
+					if err := insertCarded(s, Item{ID: "empty-tool", ThreadID: "S", TurnIndex: 0, ItemIndex: 5, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Bash", PayloadID: "pe", Meta: "{}"}); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -512,14 +512,14 @@ func TestPointerForkCopiesEmptyPayloads(t *testing.T) {
 func TestPointerForkMaterializes(t *testing.T) {
 	s := newTestStore(t)
 	seedLinearSource(t, s, "S", 3)
-	if err := s.InsertItemWithPayload(
+	if err := insertWithPayloadCarded(s,
 		Item{ID: "tool", ThreadID: "S", TurnIndex: 1, ItemIndex: 5, Kind: "tool_call", Role: "assistant", Status: "completed", PayloadID: "p", Meta: "{}"},
 		Payload{ID: "p", Kind: "text", Meta: "{}", Data: []byte("output")},
 	); err != nil {
 		t.Fatal(err)
 	}
 	mustPointerFork(t, s, "S", "F", throughTurn(1))
-	if _, err := s.AppendItem(Item{ID: "f2", ThreadID: "F", TurnIndex: 2, Kind: "user_text", Role: "user", Status: "completed", Summary: "fork 2"}); err != nil {
+	if _, err := appendCarded(s, Item{ID: "f2", ThreadID: "F", TurnIndex: 2, Kind: "user_text", Role: "user", Status: "completed", Summary: "fork 2"}); err != nil {
 		t.Fatal(err)
 	}
 	mustPointerFork(t, s, "F", "G", ForkCut{})
@@ -598,7 +598,7 @@ func forkHandOffFixture(t *testing.T) *Store {
 	t.Helper()
 	s := newTestStore(t)
 	seedLinearSource(t, s, "S", 2)
-	if err := s.InsertItemWithPayload(
+	if err := insertWithPayloadCarded(s,
 		Item{ID: "tool", ThreadID: "S", TurnIndex: 1, ItemIndex: 5, Kind: "tool_call", Role: "assistant", Status: "completed", PayloadID: "p", Meta: "{}"},
 		Payload{ID: "p", Kind: "text", Meta: "{}", Data: []byte("output")},
 	); err != nil {
@@ -691,11 +691,11 @@ func TestPointerForkPositionsStayOnTheirSideOfTheCut(t *testing.T) {
 	s := newTestStore(t)
 	seedLinearSource(t, s, "S", 3)
 	mustPointerFork(t, s, "S", "F", throughTurn(1))
-	err := s.InsertItem(Item{ID: "early", ThreadID: "F", TurnIndex: 0, ItemIndex: 7, Kind: "user_text", Role: "user", Status: "completed"})
+	err := insertCarded(s, Item{ID: "early", ThreadID: "F", TurnIndex: 0, ItemIndex: 7, Kind: "user_text", Role: "user", Status: "completed"})
 	if err == nil || !strings.Contains(err.Error(), "precedes the fork cut") {
 		t.Fatalf("insert below the cut: %v", err)
 	}
-	if _, err := s.AppendItem(Item{ID: "f2", ThreadID: "F", TurnIndex: 2, Kind: "user_text", Role: "user", Status: "completed"}); err != nil {
+	if _, err := appendCarded(s, Item{ID: "f2", ThreadID: "F", TurnIndex: 2, Kind: "user_text", Role: "user", Status: "completed"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.Exec(`UPDATE items SET turn_index = 0, item_index = 9 WHERE thread_id = 'F' AND id = 'f2'`); err == nil || !strings.Contains(err.Error(), "precedes the fork cut") {
@@ -720,7 +720,7 @@ func TestPointerForkStampsAndHeldWindows(t *testing.T) {
 	seedLinearSource(t, s, "S", 2)
 	mustPointerFork(t, s, "S", "F", ForkCut{})
 	for _, id := range []string{"f1", "f2"} {
-		if _, err := s.AppendItem(Item{ID: id, ThreadID: "F", TurnIndex: 2, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: id}); err != nil {
+		if _, err := appendCarded(s, Item{ID: id, ThreadID: "F", TurnIndex: 2, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: id}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -751,7 +751,7 @@ func TestPointerForkStampsAndHeldWindows(t *testing.T) {
 		t.Fatalf("unchanged fork = %s", got)
 	}
 
-	if _, err := s.AppendItem(Item{ID: "late", ThreadID: "S", TurnIndex: 2, Kind: "user_text", Role: "user", Status: "completed"}); err != nil {
+	if _, err := appendCarded(s, Item{ID: "late", ThreadID: "S", TurnIndex: 2, Kind: "user_text", Role: "user", Status: "completed"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := sync(&whole); got != SyncFresh {
@@ -824,11 +824,11 @@ func TestForkStampIgnoresSourceWritesPastTheCut(t *testing.T) {
 		{ID: "root", ThreadID: "S", TurnIndex: 1, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Task", Summary: "Task", Meta: "{}"},
 		{ID: "c1", ThreadID: "S", TurnIndex: 1, ItemIndex: 3, ParentID: "root", Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "child 1", Meta: "{}"},
 	} {
-		if err := s.InsertItem(it); err != nil {
+		if err := insertCarded(s, it); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.InsertItemWithPayload(
+	if err := insertWithPayloadCarded(s,
 		Item{ID: "tl", ThreadID: "S", TurnIndex: 1, ItemIndex: 4, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Bash", PayloadID: "pt", Meta: "{}"},
 		Payload{ID: "pt", Kind: "text", Meta: "{}", Data: []byte("out")},
 	); err != nil {
@@ -883,7 +883,7 @@ func TestForkStampIgnoresSourceWritesPastTheCut(t *testing.T) {
 		run  func()
 	}{
 		{"a source append", func() {
-			if _, err := s.AppendItem(Item{ID: "late", ThreadID: "S", TurnIndex: 3, Kind: "user_text", Role: "user", Status: "completed", Summary: "late", Meta: "{}"}); err != nil {
+			if _, err := appendCarded(s, Item{ID: "late", ThreadID: "S", TurnIndex: 3, Kind: "user_text", Role: "user", Status: "completed", Summary: "late", Meta: "{}"}); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -899,7 +899,7 @@ func TestForkStampIgnoresSourceWritesPastTheCut(t *testing.T) {
 		}},
 		{"a child past the cut under a root below it", func() {
 			was := rootRev()
-			if err := s.InsertItem(Item{ID: "c2", ThreadID: "S", TurnIndex: 3, ItemIndex: 1, ParentID: "root", Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "child 2", Meta: "{}"}); err != nil {
+			if err := insertCarded(s, Item{ID: "c2", ThreadID: "S", TurnIndex: 3, ItemIndex: 1, ParentID: "root", Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "child 2", Meta: "{}"}); err != nil {
 				t.Fatal(err)
 			}
 			if rootRev() == was {
@@ -907,7 +907,7 @@ func TestForkStampIgnoresSourceWritesPastTheCut(t *testing.T) {
 			}
 		}},
 		{"spans on a source payload past the cut", func() {
-			if err := s.InsertItemWithPayload(
+			if err := insertWithPayloadCarded(s,
 				Item{ID: "tl2", ThreadID: "S", TurnIndex: 3, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "completed", ToolName: "Bash", PayloadID: "pl", Meta: "{}"},
 				Payload{ID: "pl", Kind: "text", Meta: "{}", Data: []byte("late out")},
 			); err != nil {
@@ -1007,10 +1007,10 @@ func TestDeletingAPointerForkLeavesNothing(t *testing.T) {
 	if err := s.InsertAttachment(Attachment{ID: "att", ThreadID: "S", Kind: AttachmentKindImage, Filename: "a.png", MimeType: "image/png", RelativePath: "S/att.png"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.InsertItem(Item{ID: "prompt", ThreadID: "S", TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed", Summary: "look", Meta: `{"attachments":["att"]}`}); err != nil {
+	if err := insertCarded(s, Item{ID: "prompt", ThreadID: "S", TurnIndex: 1, Kind: "user_text", Role: "user", Status: "completed", Summary: "look", Meta: `{"attachments":["att"]}`}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.InsertItemWithPayload(
+	if err := insertWithPayloadCarded(s,
 		Item{ID: "tool", ThreadID: "S", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", PayloadID: "p", Meta: "{}"},
 		Payload{ID: "p", Kind: "text", Meta: "{}", Data: []byte("output")},
 	); err != nil {
@@ -1026,7 +1026,7 @@ func TestDeletingAPointerForkLeavesNothing(t *testing.T) {
 	if err := s.DeleteThreadItem("F", "question"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AppendItemWithPayload(Item{ID: "answer", ThreadID: "F", TurnIndex: 2, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "fork answer", PayloadID: "fp", Meta: "{}"},
+	if _, err := appendWithPayloadCarded(s, Item{ID: "answer", ThreadID: "F", TurnIndex: 2, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "fork answer", PayloadID: "fp", Meta: "{}"},
 		Payload{ID: "fp", Kind: "text", Meta: "{}", Data: []byte("fork")}); err != nil {
 		t.Fatal(err)
 	}

@@ -727,6 +727,7 @@ export const GetQueueState = dispatch('GetQueueState');
 export const CheckForUpdate = dispatch('CheckForUpdate');
 export const DownloadUpdate = dispatch('DownloadUpdate');
 export const RestartToUpdate = dispatch('RestartToUpdate');
+export const CancelRestartToUpdate = dispatch('CancelRestartToUpdate');
 export const ListReleases = dispatch('ListReleases');
 export const ReconfigureObservability = dispatch('ReconfigureObservability');
 export const ProbeCodexAccount = dispatch('ProbeCodexAccount');

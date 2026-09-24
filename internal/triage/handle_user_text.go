@@ -590,12 +590,11 @@ func (r *Router) recordEchoBoundaryAnchor(threadID string, pending *pendingSend)
 // Later user-role deliveries keep their provider-keyed `user:wire:<id>` rows.
 //
 // The turn is the LAUNCH's turn, never the thread's current one
-// (invariant 10). A backgrounded agent's prompt can arrive from the
-// transcript backfill long after the launching turn closed, and filing
-// it under whatever turn happens to be open would put the agent's own
-// opening line in a different turn from the card it belongs to — the
-// pane reads a scope's rows within the launch's turn, so it would simply
-// vanish. turnIndexForEvent resolves the launch row and only falls back
+// (invariant 10). A backgrounded agent's prompt can arrive through the
+// session mirror after the launching turn closed, and filing it under
+// whatever turn happens to be open would put the agent's own opening
+// line in a different turn from the card it belongs to. The pane reads a
+// scope's rows within the launch's turn, so it would simply vanish. turnIndexForEvent resolves the launch row and only falls back
 // to the current turn when there is no launch to read.
 //
 // This is the PARENTED wire-only branch only. A top-level wire-only echo

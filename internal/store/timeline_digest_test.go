@@ -35,7 +35,7 @@ func TestTimelineDigestExecutionBoundaries(t *testing.T) {
 				row.ThreadID, row.ItemIndex, row.CreatedAt, row.Status, row.Role = thread, i, int64(i+1), "completed", "assistant"
 				if imported {
 					batch.Rows = append(batch.Rows, ImportRow{Item: row})
-				} else if err := s.InsertItem(row); err != nil {
+				} else if err := insertCarded(s, row); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -92,7 +92,7 @@ func TestTimelineDigestCodexCompletionDoesNotGrow(t *testing.T) {
 		{"done", `{"codex_execution_child_start_index":0,"codex_execution_child_end_index":3}`, 9, []string{"1", "2", "3"}},
 		{"done2", `{"codex_execution_child_start_index":3,"codex_execution_child_end_index":6}`, 10, []string{"4", "5", "6"}},
 	} {
-		if err := s.InsertItem(Item{ID: tc.id, ThreadID: "digest", Kind: "tool_completion", Role: "assistant", Status: "completed", TurnIndex: 3, ItemIndex: tc.index, CompletionOf: "root", Meta: tc.meta}); err != nil {
+		if err := insertCarded(s, Item{ID: tc.id, ThreadID: "digest", Kind: "tool_completion", Role: "assistant", Status: "completed", TurnIndex: 3, ItemIndex: tc.index, CompletionOf: "root", Meta: tc.meta}); err != nil {
 			t.Fatal(err)
 		}
 		page, err := s.ListThreadSliceAround(context.Background(), "digest", "", 40, 10, TimelineSelection{ScopeRootID: "root", DigestItemID: tc.id})

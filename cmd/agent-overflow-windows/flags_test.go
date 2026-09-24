@@ -8,6 +8,9 @@ import (
 	"testing"
 
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/supervise"
+	"agent-overflow/internal/wsldistro"
+	"agent-overflow/internal/wsllauncher"
 )
 
 func TestParseLauncherFlags_Empty(t *testing.T) {
@@ -41,6 +44,25 @@ func TestParseLauncherFlags_Distro(t *testing.T) {
 				t.Fatalf("Distro = %q, want %q", got.Distro, tc.want)
 			}
 		})
+	}
+}
+
+// A relaunch carries the launch's choice of distro: the new launcher
+// chooses the same distro and saves it exactly when the old one would have.
+func TestParseLauncherFlags_CarriesTheDistroChoice(t *testing.T) {
+	distros := []wsllauncher.Distro{{Name: "Ubuntu-24.04"}, {Name: "Debian"}}
+	for _, transient := range []bool{false, true} {
+		got, err := parseLauncherFlags(wsllauncher.DistroArgs("Debian", transient))
+		if err != nil {
+			t.Fatalf("transient=%v: %v", transient, err)
+		}
+		chosen, gotTransient := resolveChosenDistro(got, &wsldistro.Config{Distro: "Ubuntu-24.04"}, distros)
+		if chosen != "Debian" || gotTransient != transient {
+			t.Fatalf("transient=%v: chose %q, transient %v", transient, chosen, gotTransient)
+		}
+	}
+	if _, err := parseLauncherFlags([]string{"--" + wsllauncher.RememberDistroFlag}); err == nil {
+		t.Fatal("--remember-distro without --distro was accepted")
 	}
 }
 
@@ -112,5 +134,40 @@ func TestParseLauncherFlags_UnknownProfileErrors(t *testing.T) {
 	t.Setenv(profileEnv, "sokk")
 	if _, err := parseLauncherFlags(nil); err == nil {
 		t.Fatal("expected error for an unknown profile from the environment")
+	}
+}
+
+func TestParseLauncherFlags_UpdateModes(t *testing.T) {
+	const id = "0123456789abcdef"
+	got, err := parseLauncherFlags([]string{"--update-apply", id, "--distro", "Ubuntu", "--wait-pid", "4242", "--wait-start", "133000000000000000"})
+	if err != nil {
+		t.Fatalf("parse --update-apply: %v", err)
+	}
+	if got.UpdateApply != id || got.Distro != "Ubuntu" || got.Wait != (supervise.ProcessRef{PID: 4242, Start: "133000000000000000"}) {
+		t.Fatalf("apply flags = %+v", got)
+	}
+	got, err = parseLauncherFlags([]string{
+		"--update-preflight", `C:\cfg\runtime\preflight-` + id + ".json", "--update-id", id,
+		"--distro", "Ubuntu", "--update-stable", "/home/u/.local/bin/agent-overflow",
+	})
+	if err != nil {
+		t.Fatalf("parse --update-preflight: %v", err)
+	}
+	if got.UpdateID != id || got.Distro != "Ubuntu" || got.UpdateStable != "/home/u/.local/bin/agent-overflow" {
+		t.Fatalf("preflight flags = %+v", got)
+	}
+	for _, bad := range [][]string{
+		{"--update-apply", "../x", "--distro", "Ubuntu"},
+		{"--update-apply", id},
+		{"--update-apply", "0123456789ABCDEF", "--distro", "Ubuntu"},
+		{"--update-preflight", "answer.json"},
+		{"--update-preflight", "answer.json", "--update-id", "short"},
+		{"--wait-pid", "-1"},
+		{"--wait-pid", "4242"},
+		{"--wait-start", "133000000000000000"},
+	} {
+		if _, err := parseLauncherFlags(bad); err == nil {
+			t.Errorf("parseLauncherFlags(%q) accepted it", bad)
+		}
 	}
 }

@@ -191,12 +191,18 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		}
 		if a.triage != nil {
 			a.triage.ClearPendingSendsFromTurn(args.thread.ID, args.userItem.TurnIndex)
+			// thread/revert keeps the session live across the cut.
+			a.triage.ForgetToolCallLinks(args.thread.ID)
 		}
 		return revertedConversationCut{Stamp: stamp}, nil
 	}
 	keptAnchorTurnItemIDs, stamp, err := a.store.DeleteConversationFromItem(args.thread.ID, args.userItem.ID)
 	if err != nil {
 		return revertedConversationCut{}, fmt.Errorf("%s: truncate conversation: %w", args.errorPrefix, err)
+	}
+	if a.triage != nil {
+		// The claude-tui native revert keeps the session live across the cut.
+		a.triage.ForgetToolCallLinks(args.thread.ID)
 	}
 	if args.thread.Provider == string(provider.Claude) && a.triage != nil {
 		// Deleting a completion sibling whose launch sits before the cut makes

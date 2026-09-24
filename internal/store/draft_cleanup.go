@@ -61,7 +61,7 @@ func (s *Store) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	// A thread whose history was reverted away can still be a fork source.
 	// The detach rolls back with the transaction when the guard below
 	// keeps the thread.
-	if err := detachForkDescendantsTx(tx, threadID); err != nil {
+	if err := s.detachForkDescendantsTx(tx, threadID); err != nil {
 		return false, err
 	}
 	result, err := tx.Exec(

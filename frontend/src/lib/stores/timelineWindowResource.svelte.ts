@@ -45,7 +45,9 @@ export function attachTimelineWindow(key: string, owner: WindowResource) {
   let refreshing: Promise<void> | null = null;
   return {
     get error() { return attachment.error; },
-    apply(value: TimelineMutation) { resources.apply(key, value, { preserveError: true }); },
+    // A live mutation changes the owner's window, not the observation the
+    // entry holds: it neither clears a read failure nor rewrites the value.
+    apply(value: TimelineMutation) { resources.apply(key, value, { preserveError: true, keepValue: true }); },
     refresh(): Promise<void> {
       if (released) return Promise.resolve();
       requested = true;

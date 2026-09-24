@@ -19,10 +19,10 @@ func TestErrorActiveItemIfRevisionGuardsLifecycleAndPreservesFields(t *testing.T
 			if err != nil || !found {
 				t.Fatalf("read: %v", err)
 			}
-			if _, changed, err := s.ErrorActiveItemIfRevision("thread", state, before.Rev-1, "stale", 20); err != nil || changed {
+			if _, changed, err := s.ErrorActiveItemIfRevision("thread", state, before.Rev-1, "stale", 20, nil); err != nil || changed {
 				t.Fatalf("stale write: changed=%v err=%v", changed, err)
 			}
-			got, changed, err := s.ErrorActiveItemIfRevision("thread", state, before.Rev, "stopped", 21)
+			got, changed, err := s.ErrorActiveItemIfRevision("thread", state, before.Rev, "stopped", 21, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -38,7 +38,7 @@ func TestErrorActiveItemIfRevisionGuardsLifecycleAndPreservesFields(t *testing.T
 				if got.Status != "errored" || got.Summary != "stopped" || got.Rev <= before.Rev || got.Rev != after.Rev {
 					t.Fatalf("settled snapshot: %+v", got)
 				}
-				if _, changed, err := s.ErrorActiveItemIfRevision("thread", state, got.Rev, "twice", 22); err != nil || changed {
+				if _, changed, err := s.ErrorActiveItemIfRevision("thread", state, got.Rev, "twice", 22, nil); err != nil || changed {
 					t.Fatalf("repeat write: changed=%v err=%v", changed, err)
 				}
 			} else if after.Rev != before.Rev || after.Status != before.Status || after.Summary != before.Summary {

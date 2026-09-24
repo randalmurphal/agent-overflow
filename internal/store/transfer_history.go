@@ -284,13 +284,13 @@ func (s *Store) ImportThreadHistory(ctx context.Context, target Thread, input io
 		return err
 	}
 	defer tx.Rollback()
-	if err := importThreadHistoryTx(ctx, tx, target, input); err != nil {
+	if err := s.importThreadHistoryTx(ctx, tx, target, input); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func importThreadHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, input io.Reader) error {
+func (s *Store) importThreadHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, input io.Reader) error {
 	prepared, lastReadAt, err := prepareThreadForCreate(target)
 	if err != nil {
 		return err
@@ -298,7 +298,12 @@ func importThreadHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, input
 	if err := insertThread(tx, prepared, lastReadAt); err != nil {
 		return err
 	}
-	return readTransferHistoryTx(ctx, tx, target, input)
+	if err := readTransferHistoryTx(ctx, tx, target, input); err != nil {
+		return err
+	}
+	// The rows carry no subagent card; the thread's stamps are built once,
+	// from the whole copy.
+	return s.restampSubagentAggregatesTx(tx, target.ID)
 }
 
 func readTransferHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, input io.Reader) error {
@@ -408,7 +413,12 @@ func readTransferHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, input
 					return err
 				}
 			}
-			if err := insertItemTx(tx, item, "transfer item"); err != nil {
+			// The caller rebuilds the thread's subagent stamps from the whole
+			// copy (restampSubagentAggregatesTx).
+			if _, err := tx.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
+				return fmt.Errorf("transfer item %s: %w", item.ID, err)
+			}
+			if err := indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary); err != nil {
 				return err
 			}
 		case "turn":

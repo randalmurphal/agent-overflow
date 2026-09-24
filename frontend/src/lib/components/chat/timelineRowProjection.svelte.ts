@@ -85,10 +85,6 @@ export function createTimelineRowProjection(
   // reads it existed for into the card removed the need, not just the
   // cost — the card is also where the walk is bounded by what is
   // actually mounted.
-  // Stable identity on purpose: the grouping pass re-reads fold state via
-  // the pane on each run (fold mutations always ride a timelineRevision
-  // bump, so no extra reactivity is needed).
-  const subagentAggregates = (anchorId: string) => options.getPane().subagentLiveAggregate(anchorId);
   let pendingFlushIDs = $derived(JSON.stringify(
     getFlushedForThread(options.getPane().threadId).map((entry) => entry.userItemId),
   ));
@@ -117,7 +113,7 @@ export function createTimelineRowProjection(
       // positional roots are constrained by the history window.
       const graph = groupItemsBySubagent(filterRedundantNotifications(
         pane.items, item => !!item.parentId || loadedIds.has(item.id),
-      ), subagentAggregates);
+      ));
       return groupConsecutiveReads(graph.filter(node => loadedIds.has(timelineNodeItemId(node))));
     });
   });

@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	"agent-overflow/internal/provider"
-	claudeimport "agent-overflow/internal/provider/claude/sessionimport"
 	"agent-overflow/internal/store"
 )
 
@@ -78,8 +77,9 @@ func decodeBackgroundTaskNotificationMeta(raw json.RawMessage) backgroundTaskNot
 //     output_file=""): notification row only. Per invariant 21,
 //     task_notification is not a lifecycle source.
 //
-// The notification row write itself is unconditional and matches the
-// previous flow (loading → loaded / error transitions on output_file).
+// The notification row write itself is unconditional. A command's row
+// moves loading → loaded / error as its output_file is read; an agent's
+// row is written loaded, because its file is never read.
 //
 // The stash drain runs BEFORE the notification row persists, and the
 // order is user-visible: the frontend hides this notification row (the
@@ -162,6 +162,10 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	if !launch.IsBackground {
 		return r.drainTaskNotificationStash(evt, meta, launch)
 	}
+
+	// A stop, final or a pause, is a boundary the agent's card is exact
+	// at: the rows below read it.
+	r.settleSubagentCard(evt.ThreadID, launch.ID)
 
 	// Sibling first — see the ordering note in the function comment.
 	// Unless the stop is a PAUSE: a parked agent keeps its stash, and the
@@ -259,15 +263,18 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	var notificationPayload *store.Payload
 	outputState := "ready"
 	readErrorString := ""
-	if meta.OutputFile != "" {
+	switch {
+	case meta.OutputFile == "":
+	case !isSubagentTranscriptLaunch(launch):
+		// A command's or a watch task's output_file is read, so the bell
+		// and the sibling show it loading first.
 		if err := persistBell("loading", "", nil); err != nil {
 			return err
 		}
 		if err := r.enrichExistingBackgroundCompletionFromNotification(evt, launch, meta, nil, "loading", ""); err != nil {
 			return err
 		}
-
-		payload, transcript, readErr := r.readBackgroundOutputFile(evt.ThreadID, launch, meta.OutputFile, agentReportFromNotification(launch, evt.Content), nil, now)
+		payload, readErr := backgroundOutputPayload(launch, meta.OutputFile, "", nil, now)
 		if readErr != nil {
 			outputState = "error"
 			readErrorString = readErr.Error()
@@ -275,25 +282,19 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		} else {
 			outputState = "loaded"
 			notificationPayload = payload
-			// The transcript reconciliation runs only once the file has proved
-			// readable and reuses the projection the payload read already
-			// built. A read failure has already been reported. A
-			// reconciliation failure is its OWN report: the file was
-			// readable but could not be projected, which is the one
-			// condition under which the payload loaded and the rows are
-			// still missing.
-			if backfillErr := r.maybeBackfillSubagentTranscript(evt.ThreadID, launch, meta, payload, transcript); backfillErr != nil {
-				outputState = "error"
-				readErrorString = backfillErr.Error()
-			}
 		}
-		if err := persistBell(outputState, readErrorString, notificationPayload); err != nil {
+	default:
+		// An agent's output_file is never read (backgroundOutputPayload).
+		payload, err := backgroundOutputPayload(launch, meta.OutputFile, agentReportFromNotification(launch, evt.Content), nil, now)
+		if err != nil {
 			return err
 		}
-	} else if err := persistBell(outputState, "", nil); err != nil {
+		outputState = "loaded"
+		notificationPayload = payload
+	}
+	if err := persistBell(outputState, readErrorString, notificationPayload); err != nil {
 		return err
 	}
-
 	return r.enrichExistingBackgroundCompletionFromNotification(evt, launch, meta, notificationPayload, outputState, readErrorString)
 }
 
@@ -315,7 +316,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 // caller's `IsBackground` gate already excludes; a background shell has
 // no children and is excluded before the store is asked.
 func (r *Router) launchIsParked(threadID string, launch store.Item) (bool, error) {
-	if !isSubagentTranscriptLaunch(launch) || launchIsWatchTask(launch) {
+	if !isSubagentTranscriptLaunch(launch) {
 		return false, nil
 	}
 	root, err := r.transcriptRootOrSelf(threadID, launch)
@@ -334,30 +335,24 @@ func (r *Router) launchIsParked(threadID string, launch store.Item) (bool, error
 	return false, nil
 }
 
-// maybeBackfillSubagentTranscript completes an agent's transcript from
-// the notification's `output_file` (subagent_transcript.go). A no-op for
-// anything whose output file is not a sidechain JSONL — a background
-// Bash's output_file is captured command output, and the command_output
-// payload path already owns it.
-func (r *Router) maybeBackfillSubagentTranscript(threadID string, launch store.Item, meta backgroundTaskNotificationMeta, payload *store.Payload, transcript *claudeimport.ConvertResult) error {
-	if !isSubagentTranscriptLaunch(launch) {
-		return nil
+// isSubagentTranscriptLaunch reports whether a launch is an agent, whose
+// `output_file` is its sidechain transcript, rather than a task whose
+// `output_file` is captured stdout/stderr (a background Bash, a Monitor
+// watch). Claude names the same field for every task type and backgrounds
+// both kinds, so only the agent's identity tells them apart: the agent
+// tool, "Agent" or "Task" on older CLIs (the parser's isAgentLaunchToolName
+// set), or a §E6 resume carrier, the SendMessage row that runs a resumed
+// agent's round, which the parser stamps with the agent it resumes
+// (isResumeCarrierMeta). backgroundOutputPayload splits on the same test.
+func isSubagentTranscriptLaunch(launch store.Item) bool {
+	if launch.Kind != itemKindToolCall {
+		return false
 	}
-	if payload == nil {
-		return fmt.Errorf("subagent transcript payload is missing after a successful output_file read")
+	switch strings.TrimSpace(launch.ToolName) {
+	case "Agent", "Task":
+		return true
 	}
-	if transcript == nil {
-		return fmt.Errorf("subagent transcript projection is missing after a successful output_file read")
-	}
-	written, err := r.backfillSubagentTranscript(threadID, launch, *transcript)
-	if err != nil {
-		log.Printf("triage: backfill subagent transcript for %s from %q: %v", launch.ID, meta.OutputFile, err)
-		return err
-	}
-	if written > 0 {
-		log.Printf("triage: backfilled %d row(s) of subagent %s from its task_notification transcript", written, launch.ID)
-	}
-	return nil
+	return isResumeCarrierMeta(DecodeToolStartMeta([]byte(launch.Meta)))
 }
 
 // drainTaskNotificationStash drains the pending-background-terminal
@@ -433,7 +428,7 @@ func (r *Router) enrichExistingBackgroundCompletionFromNotification(
 	readError string,
 ) error {
 	completionID := ToolCompletionID(launch.ID)
-	completion, ok, err := r.store.GetThreadItem(evt.ThreadID, completionID)
+	completion, ok, err := r.store.GetThreadItemForWrite(evt.ThreadID, completionID)
 	if err != nil {
 		return fmt.Errorf("task notification completion lookup %s: %w", completionID, err)
 	}
@@ -558,42 +553,27 @@ func notificationOutputState(raw string) (string, string) {
 	return state, readError
 }
 
-// readBackgroundOutputFile builds the payload for a task's `output_file`
-// and, for an agent, the projection of its sidechain transcript. The
-// transcript is scoped to the launch's transcript ROOT (a resume
-// carrier's rows live under the original launch), which is the scope
-// the backfill replays against. A command returns no transcript.
-func (r *Router) readBackgroundOutputFile(threadID string, launch store.Item, outputFile, report string, exitCode *int, now int64) (*store.Payload, *claudeimport.ConvertResult, error) {
-	scope := ""
-	if isSubagentTranscriptLaunch(launch) {
-		root, err := r.transcriptRootOrSelf(threadID, launch)
-		if err != nil {
-			return nil, nil, err
-		}
-		scope = root.ID
-	}
-	return buildBackgroundOutputFilePayload("tool-call-result:"+launch.ID, launch, scope, outputFile, report, exitCode, now)
-}
-
-// buildBackgroundOutputFilePayload reads a command's captured output into
-// a bounded payload. An agent's output_file is a sidechain transcript, not
-// display content: project its rows and keep only the small answer preview
-// on the completion payload. The transcript itself remains in provider
-// history and its projected rows are paged from the item store.
+// backgroundOutputPayload builds the payload for a task's `output_file`.
+//
+// An agent's file is its sidechain transcript, which completion never
+// reads or replays (docs/decisions.md, ruling 2026-09-23): the agent's
+// rows are the ones the live stream and the session mirror delivered, and
+// transcript_mirror_degraded is the only degraded outcome. The agent's
+// payload carries only the answer preview. Any other task's file (a
+// command, a Monitor watch) is its captured output, read into a bounded
+// command_output payload.
 //
 // The payload's `preview` is the agent's final report, the same 240-char
 // collapsed line a Codex completion carries for its FINAL_ANSWER
 // (`completionPayload`). `report` is the notification's own copy of it
-// (agentReportFromNotification) and wins: the CLI emits the notification
-// before it appends the report row to the JSONL, so the file's last
-// assistant text at read time can be the agent's previous message. The
-// file is the fallback when the envelope carried no report. The raw file
-// head is never the preview: it is a JSON envelope, not prose.
-func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, transcriptScope, outputFile, report string, exitCode *int, now int64) (*store.Payload, *claudeimport.ConvertResult, error) {
-	if isCommandOutputLaunch(launch) {
+// (agentReportFromNotification); a notification without one leaves the
+// completion without a preview.
+func backgroundOutputPayload(launch store.Item, outputFile, report string, exitCode *int, now int64) (*store.Payload, error) {
+	payloadID := "tool-call-result:" + launch.ID
+	if !isSubagentTranscriptLaunch(launch) {
 		data, _, err := readClaudeTaskOutputFile(outputFile, claudeCommandOutputFileMaxBytes)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		code := 0
 		if exitCode != nil {
@@ -603,7 +583,7 @@ func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, trans
 		commandMeta.OutputState = "loaded"
 		commandMetaJSON, err := json.Marshal(commandMeta)
 		if err != nil {
-			return nil, nil, fmt.Errorf("marshal command output payload meta: %w", err)
+			return nil, fmt.Errorf("marshal command output payload meta: %w", err)
 		}
 		return &store.Payload{
 			ID:        payloadID,
@@ -611,27 +591,16 @@ func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, trans
 			Meta:      string(commandMetaJSON),
 			Data:      data,
 			CreatedAt: now,
-		}, nil, nil
+		}, nil
 	}
 
-	resolvedPath, _, err := resolveClaudeTaskOutputPath(outputFile)
-	if err != nil {
-		return nil, nil, err
-	}
-	converted, err := claudeimport.ConvertSubagentTranscript(resolvedPath, transcriptScope)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read subagent transcript: %w", err)
-	}
-	if report == "" {
-		report = converted.FinalAssistantText()
-	}
 	meta := map[string]any{"outputFile": outputFile, "outputFileState": "loaded"}
 	if preview := truncatePreview(report, 240); preview != "" {
 		meta["preview"] = preview
 	}
 	metaJSON, err := json.Marshal(meta)
 	if err != nil {
-		return nil, nil, fmt.Errorf("marshal output_file payload meta: %w", err)
+		return nil, fmt.Errorf("marshal output_file payload meta: %w", err)
 	}
 	return &store.Payload{
 		ID:        payloadID,
@@ -639,7 +608,7 @@ func buildBackgroundOutputFilePayload(payloadID string, launch store.Item, trans
 		Meta:      string(metaJSON),
 		Data:      []byte{},
 		CreatedAt: now,
-	}, &converted, nil
+	}, nil
 }
 
 func isCommandOutputLaunch(launch store.Item) bool {
@@ -667,11 +636,7 @@ func CommandFromLaunch(launch store.Item) string {
 
 // resolveClaudeTaskOutputPath canonicalises an `output_file` path and
 // enforces the containment guard, returning the resolved path and its
-// stat. Two readers share it: the payload read below, and the subagent
-// transcript backfill (subagent_transcript.go), which needs a vetted
-// PATH rather than bytes because it streams the file through the
-// importer's own reader. Splitting it is what keeps one containment
-// rule instead of two.
+// stat.
 func resolveClaudeTaskOutputPath(path string) (string, os.FileInfo, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {

@@ -510,6 +510,7 @@ harness-build: mockprovider mockforge $(FRONTEND_DEPS)
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/ao-harness ./cmd/ao-harness
 	go build -o bin/ao-harness-e2e ./cmd/ao-harness-e2e
 	go test -c -o bin/ao-frontendclient-test ./internal/frontendclient
+	go test -c -o bin/ao-store-test ./internal/store
 
 harness: harness-build
 	bin/agent-overflow --harness --data-dir "$(HARNESS_DATA_DIR)"

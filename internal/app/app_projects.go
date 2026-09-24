@@ -55,11 +55,13 @@ func (a *App) backfillProjectIdentity() {
 }
 
 // ListProjects returns projects with a lightweight thread count per
-// project for the sidebar.
+// project for the sidebar. An answer is a client's catalog read, which
+// releases heavy post-boot work.
 //
 //ao:scope threads:read
 //ao:route all
-func (a *App) ListProjects() ([]store.ProjectWithCounts, error) {
+func (a *App) ListProjects() (rows []store.ProjectWithCounts, err error) {
+	defer a.firstReads.read(firstReadProjects)(&err)
 	return a.projectApplication().List()
 }
 

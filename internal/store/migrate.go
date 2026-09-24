@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 )
@@ -1675,17 +1676,62 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 117, Name: "drop_history_preparation_index", SQL: dropHistoryPreparationIndexV117SQL},
 	{Version: 118, Name: "rev_trigger_carrier_probe", SQL: revTriggerCarrierProbeV118SQL},
 	{
-		Version:  119,
-		Name:     "history_repair",
-		SQL:      historyRepairV119SQL,
-		Deferred: &DeferredMigration{Name: "fold_sealed_history_and_prune_orphan_payloads", Run: repairStoredHistory},
+		Version: 119,
+		Name:    "history_repair",
+		SQL:     historyRepairV119SQL,
+		Deferred: &DeferredMigration{
+			Title: "History repair",
+			Steps: []DeferredStep{
+				{Name: "fold_sealed_history_and_prune_orphan_payloads", Run: repairStoredHistory},
+				{Name: "blank_legacy_transcript_copies", Run: blankLegacyTranscriptCopies},
+				{Name: "auto_vacuum_conversion", Run: convertToIncrementalVacuumStep},
+			},
+		},
 	},
 	{Version: 120, Name: "pointer_forks", SQL: pointerForksV120SQL},
+	{
+		Version: 121,
+		Name:    "write_time_aggregates",
+		SQL:     writeTimeAggregatesV121SQL,
+		Deferred: &DeferredMigration{
+			Title: "Agent card update",
+			Steps: []DeferredStep{
+				{Name: "stamp_subagent_anchors", Run: stampLegacySubagentAnchors},
+			},
+		},
+	},
 }
 
-// runMigrations sets PRAGMAs, creates the version tracking table, and applies
-// any unapplied migrations in order.
+// MigrationStep describes one pending migration as it begins, or a
+// long-running part of it as that begins.
+type MigrationStep struct {
+	Version int
+	Name    string
+	// Index counts this open's pending migrations from 1; Pending is how
+	// many there are.
+	Index, Pending int
+	// Activity is empty when the migration begins. Inside a rebuild it
+	// names what is starting: "building index <name>" before each index
+	// build and "checking foreign keys" before the integrity check.
+	Activity string
+}
+
+// runMigrations refuses a database a newer build migrated, then sets
+// PRAGMAs, creates the version tracking table, and applies any unapplied
+// migrations in order.
 func runMigrations(db *sql.DB) error {
+	return runMigrationsContext(context.Background(), db, nil)
+}
+
+// runMigrationsContext is runMigrations bounded by ctx, reporting each
+// pending migration, and each long-running part of a rebuild, to
+// onMigration (which may be nil) before it runs.
+// Cancelling ctx interrupts the running migration; its transaction rolls
+// back and it runs again on the next open.
+func runMigrationsContext(ctx context.Context, db *sql.DB, onMigration func(MigrationStep)) error {
+	if err := refuseNewerSchema(db); err != nil {
+		return err
+	}
 	if err := configureDatabase(db); err != nil {
 		return err
 	}
@@ -1698,12 +1744,97 @@ func runMigrations(db *sql.DB) error {
 		return err
 	}
 
-	if err := applyPendingMigrations(db, applied); err != nil {
+	if err := applyPendingMigrations(ctx, db, applied, onMigration); err != nil {
 		return err
 	}
 	if applied == 0 {
 		// A new database has nothing for a deferred phase to fix.
 		return writeDeferredWatermark(db, latestDeferredVersion)
+	}
+	return nil
+}
+
+// SchemaTooNewError refuses a database a newer build has migrated: its
+// recorded migration version or deferred-phase watermark is above every
+// migration this build knows, so this build would run on a schema it does
+// not understand. Error is the sentence the user reads at boot.
+type SchemaTooNewError struct {
+	// Database is the newer of the database's migration version and its
+	// deferred-phase watermark.
+	Database int
+	// Build is this build's latest migration.
+	Build int
+}
+
+func (e *SchemaTooNewError) Error() string {
+	return fmt.Sprintf("database is at schema v%d; this build knows v%d; install the newer version", e.Database, e.Build)
+}
+
+// MigrationsPendingError refuses to migrate an existing database outside a
+// trial (Options.RefusePendingMigrations). Error is the sentence the boot
+// failure shows.
+type MigrationsPendingError struct {
+	// Database is the database's migration version.
+	Database int
+	// Build is this build's latest migration.
+	Build int
+	// Pending counts the migrations an open would apply.
+	Pending int
+}
+
+func (e *MigrationsPendingError) Error() string {
+	return fmt.Sprintf("database is at schema v%d and this build migrates it to v%d (%d pending); it is migrated only after a backup", e.Database, e.Build, e.Pending)
+}
+
+// refusePendingMigrations returns a MigrationsPendingError when an existing
+// database has migrations to apply (PendingMigrations). It only reads.
+func refusePendingMigrations(db *sql.DB) error {
+	applied, err := schemaVersion(db)
+	if err != nil {
+		return err
+	}
+	return PendingMigrations(applied)
+}
+
+// PendingMigrations returns a MigrationsPendingError when this build has
+// migrations to apply to a database at migration version applied, as
+// ReadSchemaVersion reads it, and nil otherwise. 0 is a database without an
+// applied migration, as is one without the migration_versions table or
+// without a file: it is new, and there is nothing in it to protect. A
+// version newer than this build's is SchemaTooNewError's, not this.
+func PendingMigrations(applied int) error {
+	if applied == 0 {
+		return nil
+	}
+	pending := pendingMigrationCount(applied)
+	if pending == 0 {
+		return nil
+	}
+	return &MigrationsPendingError{Database: applied, Build: migrations[len(migrations)-1].Version, Pending: pending}
+}
+
+// refuseNewerSchema returns a SchemaTooNewError when the database is ahead
+// of this build. It only reads, and runs before anything writes: even
+// configureDatabase's PRAGMAs commit to the file header.
+func refuseNewerSchema(db *sql.DB) error {
+	var tables int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'migration_versions'`).Scan(&tables); err != nil {
+		return fmt.Errorf("store: probe migration_versions: %w", err)
+	}
+	applied := 0
+	if tables > 0 {
+		var err error
+		if applied, err = currentMigrationVersion(db); err != nil {
+			return err
+		}
+	}
+	watermark, err := readDeferredWatermark(db)
+	if err != nil {
+		return err
+	}
+	known := migrations[len(migrations)-1].Version
+	if version := max(applied, watermark); version > known {
+		return &SchemaTooNewError{Database: version, Build: known}
 	}
 	return nil
 }
@@ -1714,7 +1845,8 @@ func configureDatabase(db *sql.DB) error {
 	// created, and after that a plain PRAGMA cannot change it: on a
 	// database that already has tables this statement is a silent no-op,
 	// which is exactly what existing databases should get. They keep
-	// auto_vacuum=none until ConvertToIncrementalVacuum rebuilds them.
+	// auto_vacuum=none until v119's deferred phase rebuilds them
+	// (convertToIncrementalVacuumStep).
 	//
 	// Incremental is what lets ReclaimFreeSpace hand freed pages back to
 	// the filesystem in 128-page steps instead of rewriting the whole
@@ -1752,6 +1884,48 @@ func ensureMigrationTable(db *sql.DB) error {
 		return fmt.Errorf("create migration_versions table: %w", err)
 	}
 	return nil
+}
+
+// ReadSchemaVersion returns the migration version of the existing database
+// at dbPath, 0 when no migration was applied. It is the version
+// MigrationsPendingError reports as Database, read the way that refusal
+// reads it: the one connection writes nothing (query_only), and as the last
+// to close it removes the WAL and shared-memory files the open created, so
+// a database closed cleanly keeps its bytes and its file set. A WAL a
+// stopped backend left is checkpointed into the database on close, as by
+// any open, which keeps its content. The in-app update's snapshot reads it
+// under the data root's lock to name the schema a trial starts from
+// (supervise.FailedTrial), and the desktop boot to ask PendingMigrations
+// before it opens a window. A missing file is an error that wraps
+// os.ErrNotExist.
+func ReadSchemaVersion(dbPath string) (version int, err error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		return 0, fmt.Errorf("store: read the schema version: %w", err)
+	}
+	db, err := sql.Open("sqlite", poolDSN(dbPath, readerConnPragmas))
+	if err != nil {
+		return 0, fmt.Errorf("store: open %s to read its schema version: %w", dbPath, err)
+	}
+	db.SetMaxOpenConns(1)
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("store: close %s after reading its schema version: %w", dbPath, closeErr)
+		}
+	}()
+	return schemaVersion(db)
+}
+
+// schemaVersion is the database's migration version, 0 without the
+// migration_versions table.
+func schemaVersion(db *sql.DB) (int, error) {
+	var tables int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'migration_versions'`).Scan(&tables); err != nil {
+		return 0, fmt.Errorf("store: probe migration_versions: %w", err)
+	}
+	if tables == 0 {
+		return 0, nil
+	}
+	return currentMigrationVersion(db)
 }
 
 func currentMigrationVersion(db *sql.DB) (int, error) {
@@ -1801,16 +1975,43 @@ func tableColumns(db sqlQueryer, table string) (map[string]bool, error) {
 	return columns, nil
 }
 
-func applyPendingMigrations(db *sql.DB, applied int) error {
+// pendingMigrationCount is how many migrations an open of a database at
+// version applied runs.
+func pendingMigrationCount(applied int) int {
+	pending := 0
+	for _, m := range migrations {
+		if m.Version > applied {
+			pending++
+		}
+	}
+	return pending
+}
+
+func applyPendingMigrations(ctx context.Context, db *sql.DB, applied int, onMigration func(MigrationStep)) error {
+	pending := pendingMigrationCount(applied)
+	index := 0
 	for _, m := range migrations {
 		if m.Version <= applied {
 			continue
 		}
-		apply := applyMigration
-		if m.Rebuild {
-			apply = applyRebuildMigration
+		index++
+		step := MigrationStep{Version: m.Version, Name: m.Name, Index: index, Pending: pending}
+		var activity func(string)
+		if onMigration != nil {
+			onMigration(step)
+			activity = func(what string) {
+				part := step
+				part.Activity = what
+				onMigration(part)
+			}
 		}
-		if err := apply(db, m); err != nil {
+		var err error
+		if m.Rebuild {
+			err = applyRebuildMigrationSteps(ctx, db, m, activity)
+		} else {
+			err = applyMigrationContext(ctx, db, m)
+		}
+		if err != nil {
 			return err
 		}
 	}
@@ -1818,17 +2019,24 @@ func applyPendingMigrations(db *sql.DB, applied int) error {
 }
 
 func applyMigration(db *sql.DB, m Migration) error {
+	return applyMigrationContext(context.Background(), db, m)
+}
+
+// applyMigrationContext runs m in one transaction bound to ctx. A Fix
+// runs its statements without ctx, so cancellation takes effect at the
+// next statement that carries it.
+func applyMigrationContext(ctx context.Context, db *sql.DB, m Migration) error {
 	log.Printf("store: applying migration v%d: %s", m.Version, m.Name)
 	if strings.TrimSpace(m.SQL) == "" && m.Fix == nil {
 		return fmt.Errorf("migration v%d (%s) has neither SQL nor Fix", m.Version, m.Name)
 	}
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin migration v%d: %w", m.Version, err)
 	}
 
 	if strings.TrimSpace(m.SQL) != "" {
-		if _, err := tx.Exec(m.SQL); err != nil {
+		if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("migration v%d (%s) failed: %w", m.Version, m.Name, err)
 		}
@@ -1839,7 +2047,7 @@ func applyMigration(db *sql.DB, m Migration) error {
 			return fmt.Errorf("migration v%d (%s) fixup failed: %w", m.Version, m.Name, err)
 		}
 	}
-	if _, err := tx.Exec(
+	if _, err := tx.ExecContext(ctx,
 		"INSERT INTO migration_versions (version, name) VALUES (?, ?)",
 		m.Version,
 		m.Name,
@@ -1877,6 +2085,20 @@ func addThreadPRRefColumn(tx *sql.Tx) error {
 // connection. Sequence: disable FK, run the rebuild + version bump in one
 // transaction, verify integrity with foreign_key_check, commit, re-enable FK.
 func applyRebuildMigration(db *sql.DB, m Migration) error {
+	return applyRebuildMigrationContext(context.Background(), db, m)
+}
+
+// applyRebuildMigrationContext is applyRebuildMigration bounded by ctx.
+func applyRebuildMigrationContext(ctx context.Context, db *sql.DB, m Migration) error {
+	return applyRebuildMigrationSteps(ctx, db, m, nil)
+}
+
+// applyRebuildMigrationSteps runs the rebuild's statements one at a time,
+// telling activity (which may be nil) before each index build and before
+// the foreign key check, so a boot waiting on a long rebuild names what
+// is running. Restoring foreign_keys ignores ctx so a cancelled rebuild
+// still hands its connection back with enforcement on.
+func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, activity func(string)) error {
 	// Refuse rather than run the Fix: this path used to ignore it
 	// silently, so a rebuild that also needed a Go-side data pass would
 	// record itself as applied with half its work never done — a forward-
@@ -1890,7 +2112,6 @@ func applyRebuildMigration(db *sql.DB, m Migration) error {
 		return fmt.Errorf("migration v%d (%s): a Rebuild migration cannot carry a Fix; split the data fixup into its own migration", m.Version, m.Name)
 	}
 	log.Printf("store: applying rebuild migration v%d: %s", m.Version, m.Name)
-	ctx := context.Background()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("pin connection for rebuild v%d: %w", m.Version, err)
@@ -1905,7 +2126,7 @@ func applyRebuildMigration(db *sql.DB, m Migration) error {
 	// cascade integrity for the rest of the process. Deferred after
 	// conn.Close so it runs first (LIFO).
 	defer func() {
-		if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		if _, err := conn.ExecContext(context.Background(), "PRAGMA foreign_keys=ON"); err != nil {
 			log.Printf("store: WARNING failed to re-enable foreign_keys after rebuild v%d: %v", m.Version, err)
 		}
 	}()
@@ -1914,9 +2135,17 @@ func applyRebuildMigration(db *sql.DB, m Migration) error {
 	if err != nil {
 		return fmt.Errorf("begin rebuild v%d: %w", m.Version, err)
 	}
-	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("rebuild v%d (%s) failed: %w", m.Version, m.Name, err)
+	for _, stmt := range sqlStatements(m.SQL) {
+		if index, ok := createIndexName(stmt); ok && activity != nil {
+			activity("building index " + index)
+		}
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("rebuild v%d (%s) failed: %w", m.Version, m.Name, err)
+		}
+	}
+	if activity != nil {
+		activity("checking foreign keys")
 	}
 	if err := assertForeignKeysIntact(ctx, tx); err != nil {
 		_ = tx.Rollback()

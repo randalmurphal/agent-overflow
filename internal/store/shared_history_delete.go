@@ -10,8 +10,8 @@ import (
 
 // deleteSharedHistoryItemTx cuts one imported row, found through its id
 // index rather than by probing every chunk the thread references.
-func deleteSharedHistoryItemTx(tx *sql.Tx, threadID, itemID string) (int64, error) {
-	return deleteSharedHistoryTx(tx, threadID,
+func deleteSharedHistoryItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) (int64, error) {
+	return deleteSharedHistoryTx(tx, w, threadID,
 		"import_history_items items\n CROSS JOIN thread_import_chunks refs ON refs.chunk_id=items.chunk_id",
 		"items.id = ?", []any{itemID})
 }
@@ -19,8 +19,8 @@ func deleteSharedHistoryItemTx(tx *sql.Tx, threadID, itemID string) (int64, erro
 // deleteSharedHistoryFromTurnTx applies a cut whose predicate only removes
 // rows at or after fromTurn. Chunk references whose turn range ends before
 // it are not read.
-func deleteSharedHistoryFromTurnTx(tx *sql.Tx, threadID string, fromTurn int, predicate string, args []any) (int64, error) {
-	return deleteSharedHistoryTx(tx, threadID,
+func deleteSharedHistoryFromTurnTx(tx *sql.Tx, w *cardWrite, threadID string, fromTurn int, predicate string, args []any) (int64, error) {
+	return deleteSharedHistoryTx(tx, w, threadID,
 		"thread_import_chunks refs\n CROSS JOIN import_history_items items ON items.chunk_id=refs.chunk_id",
 		"refs.max_turn_index >= ? AND ("+predicate+")", append([]any{fromTurn}, args...))
 }
@@ -29,8 +29,9 @@ func deleteSharedHistoryFromTurnTx(tx *sql.Tx, threadID string, fromTurn int, pr
 // Kept history remains shared. Partial chunks get deletion overrides; empty
 // chunks detach and follow the existing last-reference garbage collection.
 // Only the chunks the cut touched can become empty, and only their rows'
-// overrides can be left without an attached row.
-func deleteSharedHistoryTx(tx *sql.Tx, threadID, source, predicate string, args []any) (int64, error) {
+// overrides can be left without an attached row. The chains above the cut
+// rows go to w, which the caller finishes before it commits.
+func deleteSharedHistoryTx(tx *sql.Tx, w *cardWrite, threadID, source, predicate string, args []any) (int64, error) {
 	rows, err := tx.Query(`SELECT items.id,items.chunk_id,items.parent_id,COALESCE(items.payload_id,''),COALESCE(items.input_payload_id,'') FROM `+source+`
  WHERE refs.thread_id=? AND `+importedNotOverridden+` AND (`+predicate+`)`, append([]any{threadID}, args...)...)
 	if err != nil {
@@ -87,6 +88,11 @@ func deleteSharedHistoryTx(tx *sql.Tx, threadID, source, predicate string, args 
 	}
 	if _, err := tx.Exec(`UPDATE threads SET history_rev=history_rev+?,history_epoch=history_epoch+? WHERE id=?`, len(ids), len(ids), threadID); err != nil {
 		return 0, fmt.Errorf("store: stamp shared history cut: %w", err)
+	}
+	// No trigger sees imported rows leave: the local anchors above them
+	// are recomputed by w.
+	for parent := range parents {
+		w.chains = append(w.chains, parent)
 	}
 	for parent := range parents {
 		if _, err := tx.Exec(stampRowsSQL+` WHERE thread_id=?1 AND rev<>(SELECT history_rev FROM threads WHERE id=?1)

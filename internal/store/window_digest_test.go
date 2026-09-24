@@ -182,7 +182,7 @@ func TestSyncThreadWindowVerifiesHeldWindow(t *testing.T) {
 	notification.Kind = "notification"
 	notification.Role = "system"
 	notification.ToolName = "plan_update"
-	if err := s.InsertItem(notification); err != nil {
+	if err := insertCarded(s, notification); err != nil {
 		t.Fatalf("insert plan_update notification: %v", err)
 	}
 	if now := historyStampOf(t, s, "t"); now == stale {
@@ -277,7 +277,7 @@ func TestSyncThreadWindowRejectsWrongHeldWindows(t *testing.T) {
 			mutate: func(t *testing.T, s *Store, held *HeldWindow) {
 				child := contractItem("t", "child-edge", 9)
 				child.ParentID = "t-i0"
-				if err := s.InsertItem(child); err != nil {
+				if err := insertCarded(s, child); err != nil {
 					t.Fatalf("insert child: %v", err)
 				}
 				held.NewestItemID = "child-edge"
@@ -307,7 +307,7 @@ func TestSyncThreadWindowRejectsWrongHeldWindows(t *testing.T) {
 				); err != nil {
 					t.Fatalf("make room: %v", err)
 				}
-				if err := s.InsertItem(inserted); err != nil {
+				if err := insertCarded(s, inserted); err != nil {
 					t.Fatalf("insert wedged row: %v", err)
 				}
 			},
@@ -385,7 +385,7 @@ func TestSyncThreadWindowRejectsWrongHeldWindows(t *testing.T) {
 			// to change; it rides every case so the fixtures stay one shape.
 			item := contractItem("t", "t-i1", 1)
 			item.PayloadID = "pay"
-			if _, err := s.UpsertItem(item, &Payload{
+			if _, err := upsertCarded(s, item, &Payload{
 				ID: "pay", Kind: "text", Meta: "{}", Data: []byte("base"), CreatedAt: 1000,
 			}); err != nil {
 				t.Fatalf("attach payload: %v", err)
@@ -401,7 +401,7 @@ func TestSyncThreadWindowRejectsWrongHeldWindows(t *testing.T) {
 			notification.Kind = "notification"
 			notification.Role = "system"
 			notification.ToolName = "plan_update"
-			if err := s.InsertItem(notification); err != nil {
+			if err := insertCarded(s, notification); err != nil {
 				t.Fatalf("insert plan_update notification: %v", err)
 			}
 			tc.mutate(t, s, &held)
@@ -524,7 +524,7 @@ func TestHeldWindowIgnoresRowsAPageWouldNotReturn(t *testing.T) {
 
 	child := contractItem("t", "child", 10)
 	child.ParentID = "t-i1"
-	if err := s.InsertItem(child); err != nil {
+	if err := insertCarded(s, child); err != nil {
 		t.Fatalf("insert child: %v", err)
 	}
 
@@ -539,7 +539,7 @@ func TestHeldWindowIgnoresRowsAPageWouldNotReturn(t *testing.T) {
 	notification.Kind = "notification"
 	notification.Role = "system"
 	notification.ToolName = "plan_update"
-	if err := s.InsertItem(notification); err != nil {
+	if err := insertCarded(s, notification); err != nil {
 		t.Fatalf("insert plan_update notification: %v", err)
 	}
 
@@ -565,7 +565,7 @@ func TestHeldWindowSeesThroughToChildWrites(t *testing.T) {
 
 	child := contractItem("t", "child", 10)
 	child.ParentID = "t-i1"
-	if err := s.InsertItem(child); err != nil {
+	if err := insertCarded(s, child); err != nil {
 		t.Fatalf("insert child: %v", err)
 	}
 
@@ -601,7 +601,7 @@ func TestHeldWindowRefusesImportedRows(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("apply import batch: %v", err)
 	}
-	if _, err := s.AppendItem(contractItem("t", "local", 0)); err != nil {
+	if _, err := appendCarded(s, contractItem("t", "local", 0)); err != nil {
 		t.Fatalf("append local row: %v", err)
 	}
 
@@ -637,7 +637,7 @@ func TestHeldWindowVerifiesLocalTailOfImportedThread(t *testing.T) {
 	for _, id := range []string{"local-1", "local-2"} {
 		row := contractItem("t", id, 0)
 		row.TurnIndex = 2
-		if _, err := s.AppendItem(row); err != nil {
+		if _, err := appendCarded(s, row); err != nil {
 			t.Fatalf("append %s: %v", id, err)
 		}
 	}

@@ -120,8 +120,7 @@ CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
      AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 0;
 END;
 
-CREATE TRIGGER trg_items_rev_update AFTER UPDATE ON items
-WHEN OLD.rev IS NEW.rev
+CREATE TRIGGER trg_items_rev_update AFTER UPDATE OF <every column but rev> ON items
 BEGIN
   UPDATE threads SET
     history_rev   = history_rev + 1,
@@ -171,20 +170,47 @@ CTE column's TEXT affinity would otherwise apply to the indexed
 expression and limit the probe to the thread's whole carrier set.
 `TestItemRevisionStampProbesIndexes` pins the plan of the query and
 `TestItemRevisionTriggersProbeCarriersByValue` the installed triggers. The set is one
-`id IN (...)` so an overlapping leg stamps a row once: a second stamp
-that left `rev` unchanged would pass the update trigger's guard below and
-bump the thread twice. `TestHeldWindowSeesThroughToAnchorsWalkedFromOutside`
+`id IN (...)` so an overlapping leg stamps a row once.
+`TestHeldWindowSeesThroughToAnchorsWalkedFromOutside`
 holds a window of carriers and completion siblings with the launch
 scrolled out of it and proves a child write under the launch, or under
 a launch nested inside it, still refuses the window.
 
-The update trigger's `WHEN OLD.rev IS NEW.rev` guard is what stops the
-nested `UPDATE items` from re-entering the thread bump. `recursive_triggers`
-is OFF (pinned in `writerConnPragmas` with boot verification) so a trigger
-does not re-fire *itself*, but the insert trigger's stamp is an UPDATE and
+Each subagent anchor's card lives in its `subagent_aggregates` row
+(migration v121; the contract is in
+`internal/store/subagent_aggregate_stamps.go`): the counts, the preview
+and tray values, and the positions the incremental rules need. A live
+write carries its parent's card (`Item.SubagentCard`,
+`internal/store/subagent_card.go`). The store feeds the card from the
+committed row in Go, with no statement, and a flush writes each changed
+card with one keyed statement, so a child write never rewrites the
+anchor's `meta` and never walks the subtree. The router flushes before it
+pushes the anchors, on its refresh timer and at the boundaries
+`docs/specs/agent-visibility.md` lists; between flushes a read serves the
+card as of the last one. A write the card rules do not follow, and every
+bulk writer, recompute the chains they changed before they commit. A
+local item projection merges a clean row's public values into the served
+`meta` with `json_patch`; a write to the row stamps the anchor and its
+completion siblings, so a changed card is always served at a new
+revision. `decorateSubagentAnchors` serves a clean stamped
+anchor as the projection read it and walks only the rows no clean stamp
+keeps:
+imported anchors, dirty and `readTime` rows, carriers whose round prompt
+has not arrived, and unstamped anchors of a thread still listed in
+`subagent_aggregate_backfill` for v121's deferred phase.
+`TestSubagentAggregateStampsMatchTheReadTimeAggregator` compares every
+served card with the walk at each flush boundary, and the stamps the
+cards keep with the ones the recompute derives;
+`TestSubagentAggregateTriggersDoNotScanASubtree` and
+`TestSubagentAggregateStatementPlans` pin the cost.
+
+The update trigger's column list is what stops the nested stamping
+`UPDATE items` from re-entering the thread bump: it fires on every column
+but `rev`, and a stamp writes `rev` alone. `recursive_triggers` is OFF
+(pinned in `writerConnPragmas` with boot verification) so a trigger does
+not re-fire *itself*, but the insert trigger's stamp is an UPDATE and
 would otherwise fire the update trigger, bumping `history_rev` a second
-time per insert. The guard is the stamping write's signature: it is the
-only item write that leaves every other column alone. Exact arithmetic for
+time per insert. Exact arithmetic for
 insert, update, delete and child writes is pinned by
 `TestItemRevisionTriggerArithmetic`.
 
@@ -272,7 +298,7 @@ rows it changes, not only the thread's. Two helpers do that, and they are
 the only way those writers bump:
 
 - `bumpHistoryRevForPayloadTx` (`AppendPayloadData`, `ReplacePayloadData`,
-  `UpdatePayloadMeta`) issues `UPDATE items SET rev = rev` over the rows
+  `UpdatePayloadMeta`) issues `UPDATE items SET updated_at = updated_at` over the rows
   whose `payload_id` or `input_payload_id` is the payload, each matched
   through its own partial index. The statement changes no column; the
   update trigger does the stamping and the thread bump. When it matches no
@@ -291,30 +317,32 @@ version-checked against payload content on the client
 correct window.
 
 Every pushed `ItemStreamEvent` is the row a page reads, at the revision
-it reads it (`TestEmittedItemEventsCarryStoredItemRev`), because a client
-builds its held window out of the rows it was pushed:
+it reads it, or claims no revision (`TestEmittedItemEventsCarryStoredItemRev`),
+because a client builds its held window out of the rows it was pushed:
 
 - an upsert of a row whose page read is the stored row sends the row
   read back inside its write transaction; the caller's input struct
   carries a pre-trigger value;
 - an upsert of a row whose page read is decorated
-  (`store.ItemReadNeedsDecoration`: an anchor with a child row, a resume
-  carrier, a completion sibling, a proposed plan) sends `ListWireItems`,
-  the page's hydrate-and-decorate read in one read transaction, so the
-  pushed content and its `rev` are one snapshot. The write's own
-  read-back would be an altered row at the stored revision: the launch
-  without its descendant count. The gate is one `idx_items_parent`
-  probe, because the decorator leaves a childless root untouched;
-  measured on a file-backed store, the full page read is 0.66 ms
-  against 0.21 ms for the plain row read, and a plain tool call (every
-  tool start and result, every Codex command-output flush) is the
-  common case;
+  (`store.ItemReadNeedsDecoration`: a completion sibling, a proposed
+  plan, or an anchor the read walks: dirty, `readTime`, an unstamped
+  carrier, or an unstamped anchor of a thread whose backfill is pending)
+  sends the write's read-back marked `store.UnstampedItemRev` and notes
+  the row at that revision, so the anchor refresh below pushes its page
+  read. The read-back is an altered row (the launch without its
+  descendant count) and must not claim the stored revision. The write
+  never runs the decorated read itself: it walks the anchor's
+  descendants, and the writes under a large agent arrive at tens per
+  second on the provider event path. The gate reads the row's own stamp,
+  plus one backfill-list probe for an unstamped row, so a plain tool call
+  (every tool start and result, every Codex command-output flush) and a
+  clean stamped anchor go out stamped;
 - a `patch` carries `patch.rev`, the revision `UpdateItemFields` read
   inside the same transaction as the write. Without it every settled row
   would hold the revision its last upsert carried and no window
   containing one could verify. A patch replaces the client's `meta`
   wholesale, so a decorated row is never patched: `persistItemFieldsAndPatch`
-  pushes its page read instead;
+  pushes it as an unstamped upsert instead;
 - an upsert whose row the emitter altered on purpose carries
   `store.UnstampedItemRev` (-1). The streaming reveal blanks the summary
   so the text can arrive as deltas, and that wire row is not the stored
@@ -332,7 +360,8 @@ those. Left there, a client that watched a subagent run would hold every
 anchor at a revision behind the store's and pay a page on each reopen,
 the cost §1 exists to remove. The router's anchor refresh
 (`internal/triage/wire_items.go`) closes it: every upsert and patch notes
-its row and pushed revision on the thread; at a quiet point the rows
+its row and pushed revision on the thread, whether or not the thread has
+a live session; at a quiet point the rows
 those writes stamped (`ListWireItemsBehind`, the trigger's own candidate
 select as a query, plus the launch a completion sibling settles) are
 read as a page would and pushed again, skipping a written row whose
@@ -345,6 +374,15 @@ refresh that fails leaves the client's copies behind, which costs a page,
 never a false `fresh`. `TestSubagentTurnLeavesEveryPushedRowProvable`
 drives a whole subagent turn and proves the window built from the last
 push of each top-level row verifies `fresh`.
+
+One anchor push does not wait for the quiet point: the row that opens an
+agent's card (`ListFirstChildWireAnchors`: a clean stamped parent, or the
+carrier a resume prompt names, whose round now holds that row alone)
+pushes the anchor with it, as stored, so the card appears with the
+agent's first activity. The emitter probes once per parent per session
+and always for a resume prompt, which can open a carrier under a parent
+it has seen; `TestAgentsFirstRowPushesItsCardAtOnce` and
+`TestSubagentToolEventReadsItsRowOnce` pin the push and its read cost.
 
 #### Pointer-fork stamps
 
@@ -363,9 +401,9 @@ them only when it changes a row the fork shows:
   (`bumpHistoryRevForItemTx`) or the divider's `sourceDeleted` mark.
   `trg_items_fork_reader_stamp` advances the stamps of the forks whose cut
   follows the row and that do not hide it. It skips an update that changes
-  only `rev`, which is the stamping cascade to a written row's anchors: a
-  fork decorates anchors from its own timeline, where a row past its cut
-  or hidden by it does not appear.
+  only `rev`, which is a subagent stamp serving an anchor at a new
+  revision: a fork walks an inherited anchor over its own timeline, where
+  a row past its cut or hidden by it does not appear.
 - `UpdatePayloadSpans` on a payload a fork shows (`bumpPayloadReadersTx`).
 - A change to which inherited rows the fork shows: its own delete or
   revert of an inherited row, or the detach of a deleted source
@@ -398,7 +436,10 @@ write past every cut writes no fork row
 | Source write past every fork's cut | none on forks | fork stamps unchanged |
 | Import rollback / `DeleteThread` / retention sweep | thread row deleted | tombstone: replica entry dropped by the deleting client directly, and by any other client on the `gone` answer (§5) |
 | `RestoreFrom` (harness snapshot) | whole-DB replace | **generation** re-mint (§3.3) |
-| `decorateSubagentAnchors` (read-time meta projection) | none: no write occurs | covered transitively: its inputs are descendant item rows, whose writes bump rev |
+| `decorateSubagentAnchors` (stamp read, or the walk for rows the triggers do not keep) | none: no write occurs | covered transitively: its inputs are the anchor's stamp and descendant item rows, whose writes bump rev |
+| Card flush (`FlushSubagentCards`, a card's `Close`, `Store.Close`) | explicit thread bump, then one keyed `subagent_aggregates` write per changed card; its trigger stamps the anchor and completion siblings | rev |
+| `RecomputeSubagentAggregates` (v121 backfill, standalone recompute) | explicit thread bump, then `subagent_aggregates` upsert; its trigger stamps the anchor and completion siblings | rev |
+| Recompute inside a write the card rules do not follow (`recomputeSubagentChainsTx`), bulk-load rebuild | none of its own: the transaction's item write already bumped (a bulk-loaded thread's loader writes the exact revision); the upsert's trigger stamps the anchor and completion siblings | rev, once per write |
 | `EnsureProposedPlanState(WithParent)`, `MarkProposedPlanImplemented`, `CreateProposedPlanComment`, `UpdateProposedPlanComment`, `DeleteOrResolveProposedPlanComment`, `MarkProposedPlanCommentsSent` | explicit, on the thread id the mutator already carries | rev on the PLAN's thread |
 | `RestoreFrom`'s row copy | triggers DROPped for the copy, recreated after | none during the copy: the restored counters are the snapshot's, verbatim |
 
@@ -558,8 +599,9 @@ graded by durability:
   History validation uses the stamp paired with its actual rows.
 - **When unsure (transport gap, replay gap on any stamped or
   content-bearing channel), the client keeps the older stamp or drops
-  to unknown.** The drop must reach every cache: an L1 snapshot carries a
-  copy paired with its rows, and
+  to unknown.** The drop must reach every cache of every thread the gap
+  may have touched (the threads a `gapThreads` list names, else all): an
+  L1 snapshot carries a copy paired with its rows, and
   an unattested copy can name a rev whose frames the gap ate. It would
   spring a false `fresh` on the next warm re-entry and stay wrong for
   the session. Attested copies survive the gap, and that asymmetry is
@@ -760,7 +802,7 @@ port; temporary token attachment does not create a durable pairing.
       newestCursor,
       hasMoreOlder, hasMoreNewer,
       latestSettledTurn,       // paint-only; ListRecentTurns re-fetches
-      subagentFolds,
+      runs,
     },
   }
   ```

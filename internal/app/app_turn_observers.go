@@ -60,7 +60,7 @@ func (a *App) subscribeTurnObserver(scope string, observer turnObserver) func() 
 // dispatchTurnObservers snapshots matching callbacks while holding the
 // registry lock, then invokes them synchronously after releasing it. A
 // callback may therefore subscribe or unsubscribe without deadlocking or
-// changing the current snapshot. Separate session read loops can dispatch
+// changing the current snapshot. Separate threads' event workers dispatch
 // concurrently, so callbacks must still be safe to run concurrently and a
 // concurrent dispatch may observe a registry change immediately.
 func (a *App) dispatchTurnObservers(threadID string, evt provider.ProviderEvent) {
@@ -102,7 +102,7 @@ func (a *App) installDiscussionTurnObserver() {
 				// Emit an error event so the UI knows the discussion sync
 				// failed. The turn-complete event still propagates (we can't
 				// block it), but the error should be visible. Wire variant:
-				// this fires on the read loop in response to a wire frame,
+				// this fires on the event worker in response to a wire frame,
 				// so it must drop with the rest of a stopped thread's tail.
 				a.emitWireErrorToThread(threadID, fmt.Sprintf("discussion sync failed: %v", err))
 			}

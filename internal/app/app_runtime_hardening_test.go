@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -62,7 +63,7 @@ func TestInitStoresRepairsAppOwnedPermissions(t *testing.T) {
 	// os.UserConfigDir() ignores XDG on macOS, so an env override wouldn't
 	// redirect it there.
 	app.dataDirOverride = configRoot
-	gotDir, st, err := app.initStores()
+	gotDir, st, err := app.initStores(context.Background())
 	if err != nil {
 		t.Fatalf("initStores: %v", err)
 	}
@@ -131,7 +132,7 @@ func TestInitStoresKeepsCredentialSlotsWhenMetadataIsEmpty(t *testing.T) {
 
 	app := NewApp()
 	app.dataDirOverride = t.TempDir()
-	_, st, err := app.initStores()
+	_, st, err := app.initStores(context.Background())
 	if err != nil {
 		t.Fatalf("initStores: %v", err)
 	}
@@ -221,7 +222,7 @@ func TestInitStoresSkipsPruneWhenMetadataBelongsToAnotherHome(t *testing.T) {
 
 	app := NewApp()
 	app.dataDirOverride = dataRoot
-	_, st, err := app.initStores()
+	_, st, err := app.initStores(context.Background())
 	if err != nil {
 		t.Fatalf("initStores: %v", err)
 	}

@@ -532,6 +532,7 @@ func TestNotebookEditSummaryOnlyUpgradesFromTurnDiff(t *testing.T) {
 		Kind:      provider.EventDiff,
 		ThreadID:  "t-nb",
 		Content:   turnDiff,
+		Meta:      json.RawMessage(`{"upgrade_only":true,"source":"turn/diff/updated"}`),
 		Replace:   true,
 		Timestamp: time.Now(),
 	}); err != nil {

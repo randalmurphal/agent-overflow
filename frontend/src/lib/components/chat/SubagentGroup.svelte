@@ -50,7 +50,6 @@
   import type { ThreadPane } from '../../stores/thread.svelte';
   import {
     decoratedSubagentAggregates,
-    pickLatestChildSummary,
     type SubagentGroupNode,
     type TimelineNode,
   } from '../../utils/subagentGrouping';
@@ -175,24 +174,20 @@
   // The finished agent's answer line, read off the completion record this
   // card sits at (Codex FINAL_ANSWER, Claude output-file report).
   let completionAnswer = $derived(completionAnswerPreview(parent, completionItem));
+  // The main timeline holds no child rows, so a collapsed card's count and
+  // preview come from the backend decoration on the live anchor, which
+  // triage re-pushes as the children are written.
   let decorated = $derived(decoratedSubagentAggregates(parent, completionItem));
-  // Max, not replace — the same reconciliation `subagentGroupNode` does,
-  // re-run against the live anchor. The node's count already folds in
-  // loaded children, the eviction fold, and whatever decoration existed
-  // when it was built; only the decoration can move without a structural
-  // bump. Taking the max picks up a decoration that lands mid-turn and
-  // falls back to the structural count (never to zero) if a later upsert
-  // arrives without one.
+  // Max, not replace: the same reconciliation `subagentGroupNode` does,
+  // re-run against the live anchor. The node's count covers the children a
+  // scoped window loads and whatever decoration existed when it was built;
+  // only the decoration can move without a structural bump. Taking the max
+  // picks up a decoration that lands mid-turn and falls back to the
+  // structural count (never to zero) if a later upsert arrives without one.
   let descendantCount = $derived(Math.max(group.descendantCount, decorated.count));
-  let latestChildSummary = $derived(
-    pickLatestChildSummary(
-      group.children,
-      completionItem ? undefined : pane?.subagentLiveAggregate(parent.id),
-      (id) => pane?.getItemById(id),
-    )
-      || decorated.summary
-      || group.latestChildSummary,
-  );
+  // The backend ranks a card's children; the node's build-time preview
+  // stands in only for a write that carries no decoration at all.
+  let latestChildSummary = $derived(decorated.present ? decorated.summary : group.latestChildSummary);
   // One derived id for both halves of the disclosure (utils/chatDomIds.ts):
   // the header's `controls` and the body's `id` must be one string.
   let groupDomId = $derived(chatRowDomId(pane, 'subagent-group', group.anchor.id));
@@ -205,14 +200,14 @@
   let parentToolName = $derived((parent.toolName ?? '').trim());
 
   // The provider-neutral launch identity: kind chip, display name,
-  // async-ness. The context answers "does this launch have loaded
-  // children?" from the node itself — the group was BUILT from the rows
-  // the window holds, so no second index is needed. A group node whose
-  // row somehow stops answering the predicate (cannot happen for the
-  // kinds the grouping mints, but the type allows it) falls back to a
-  // plain foreground agent presentation rather than a blank header.
+  // async-ness. The context answers "does this launch have children?"
+  // from the node (built from the rows the window holds) and the live
+  // anchor's decoration. A group node whose row somehow stops answering
+  // the predicate (cannot happen for the kinds the grouping mints, but the
+  // type allows it) falls back to a plain foreground agent presentation
+  // rather than a blank header.
   const launchCtx: SubagentLaunchContext = {
-    hasChildren: () => group.children.length > 0 || group.descendantCount > 0,
+    hasChildren: () => group.children.length > 0 || descendantCount > 0,
   };
   let identityItem = $derived(parent.toolName === 'collab_agent' && completionItem
     ? { ...parent, meta: completionItem.meta } : parent);
@@ -312,8 +307,8 @@
 
   let previewText = $derived.by<string>(() => {
     // The live activity line is the freshest statement of what the agent
-    // is doing right now (`task_progress.description`); child summaries
-    // and the Initializing placeholder are the fallbacks.
+    // is doing right now (`task_progress.description`); the decorated
+    // child summary and the Initializing placeholder are the fallbacks.
     if (isRunning && progress.activity) return progress.activity;
     // A finished agent's answer is its collapsed line (Codex FINAL_ANSWER,
     // Claude output-file report); the last progress message is not what a
@@ -362,9 +357,8 @@
     };
   });
 
-  // A failed transcript backfill (the task_notification's output_file
-  // could not be read — triage stamps notification_output_state/error on
-  // the completion sibling, output_file_state/error on older rows). A
+  // A failed output-file read (triage stamps notification_output_state/error
+  // on the completion sibling, output_file_state/error on older rows). A
   // silently incomplete card body reads exactly like a complete one, so
   // the failure renders inline.
   let statusMeta = $derived(

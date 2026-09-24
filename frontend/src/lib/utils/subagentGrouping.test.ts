@@ -16,13 +16,11 @@ import {
   timelineNodeKey,
   visibleTimelineItemIdForItem,
   type SubagentGroupNode,
-  type SubagentLiveAggregates,
   type TimelineLeaf,
   type WaitGroupNode,
   type TimelineNode,
 } from './subagentGrouping';
 import { groupConsecutiveReads } from './readGrouping';
-import type { SubagentFoldAggregate } from './subagentFold';
 import type { Item } from '../types/models';
 import { installDiagnosticsCapture } from '../../test/helpers/diagnostics';
 
@@ -174,7 +172,9 @@ describe('groupItemsBySubagent', () => {
     const group = expectGroup(nodes[0]);
     expect(group.children.map((node) => expectLeaf(node).item.id)).toEqual(['child']);
     expect(group.descendantCount).toBe(1);
-    expect(group.latestChildSummary).toBe('Read: file.ts');
+    // Loaded children never rank the preview; only the anchor's backend
+    // decoration supplies it, and this anchor carries none.
+    expect(group.latestChildSummary).toBe('');
   });
 
   it('does not use generic parentId nesting for non-agent rows', () => {
@@ -305,10 +305,8 @@ describe('groupItemsBySubagent', () => {
     expect(nodeContainsItem(group, 'bg-agent')).toBe(false);
     expect(findTimelineNodeIndex(nodes, 'complete:bg-agent')).toBe(3);
     expect(findTimelineNodeIndex(nodes, 'bg-agent')).toBe(1);
-    // The fold is the header, not a transcript entry: not counted, and
-    // never the collapsed preview.
+    // The fold is the header, not a transcript entry: not counted.
     expect(group.descendantCount).toBe(3);
-    expect(group.latestChildSummary).toBe('Bash: ls');
     for (const childId of ['child-bash', 'child-bash-done', 'child-text']) {
       expect(nodes.some((node) => nodeContainsItem(node, childId))).toBe(true);
     }
@@ -1585,7 +1583,6 @@ describe('groupItemsBySubagent — launch kinds', () => {
       'fork-text',
     ]);
     expect(group.descendantCount).toBe(2);
-    expect(group.latestChildSummary).toBe('Read: thing.ts');
   });
 
   it('detects a fork from an attributed row alone, with no meta stamp', () => {
@@ -1630,6 +1627,33 @@ describe('groupItemsBySubagent — launch kinds', () => {
     ]);
 
     expect(nodes.map((node) => expectLeaf(node).item.id)).toEqual(['skill-1', 'after']);
+  });
+
+  it('groups a Skill row as a card once its re-upsert carries a decorated count', () => {
+    // The main window holds no child rows, so a live fork shows through the
+    // decoration triage re-pushes on the launch row once children exist.
+    const input = { toolName: 'Skill', input: { skill: 'brainstorm' } };
+    const skill = mkItem({
+      id: 'skill-1',
+      itemIndex: 0,
+      kind: 'tool_call',
+      toolName: 'Skill',
+      status: 'running',
+      summary: 'Skill: brainstorm',
+      meta: toolMeta(input),
+    });
+    expect(expectLeaf(groupItemsBySubagent([skill])[0]).item.id).toBe('skill-1');
+
+    const decorated = {
+      ...skill,
+      rev: 2,
+      meta: toolMeta({ ...input, subagentDescendantCount: 2, subagentLatestChildSummary: 'option A' }),
+    };
+    const group = expectGroup(groupItemsBySubagent([decorated])[0]);
+    expect(group.parent.id).toBe('skill-1');
+    expect(group.children).toEqual([]);
+    expect(group.descendantCount).toBe(2);
+    expect(group.latestChildSummary).toBe('option A');
   });
 
   it('renders a SendMessage resume carrier as a group and folds its round-2 completion', () => {
@@ -2344,203 +2368,11 @@ describe('sliceRevealedNodes', () => {
   });
 });
 
-describe('live fold aggregates (evicted subagent children)', () => {
-  // The pane evicts settled subagent child rows from memory and tracks
-  // them per launch anchor in a fold registry (utils/subagentFold.ts).
-  // The grouping pipeline receives the registry as a lookup so collapsed
-  // cards keep honest counts and previews for rows that are not loaded.
-  function foldLookup(
-    byAnchor: Record<string, SubagentFoldAggregate>,
-  ): SubagentLiveAggregates {
-    return (anchorId) => byAnchor[anchorId];
-  }
-
-  it('adds evicted rows to the count and uses the fold preview when nothing is loaded', () => {
-    const nodes = groupItemsBySubagent(
-      [agentLaunch('agent-1', 0)],
-      foldLookup({
-        'agent-1': {
-          evictedCount: 3,
-          terminalPreview: 'evicted preview',
-          terminalTurnIndex: 0,
-          terminalItemIndex: 4,
-        },
-      }),
-    );
-
-    const group = expectGroup(nodes[0]);
-    expect(group.descendantCount).toBe(3);
-    expect(group.loadedDescendantCount).toBe(0);
-    expect(group.latestChildSummary).toBe('evicted preview');
-  });
-
-  it('composes loaded children with the fold and resolves the preview by position', () => {
-    const fold = foldLookup({
-      'agent-1': {
-        evictedCount: 2,
-        terminalPreview: 'evicted at 5',
-        terminalTurnIndex: 0,
-        terminalItemIndex: 5,
-      },
-    });
-
-    // Loaded terminal earlier than the fold → fold preview wins.
-    const foldWins = expectGroup(groupItemsBySubagent([
-      agentLaunch('agent-1', 0),
-      mkItem({ id: 'c1', itemIndex: 2, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'loaded at 2' }),
-    ], fold)[0]);
-    expect(foldWins.descendantCount).toBe(3);
-    expect(foldWins.loadedDescendantCount).toBe(1);
-    expect(foldWins.latestChildSummary).toBe('evicted at 5');
-
-    // Loaded terminal later than the fold → loaded preview wins.
-    const loadedWins = expectGroup(groupItemsBySubagent([
-      agentLaunch('agent-1', 0),
-      mkItem({ id: 'c2', itemIndex: 9, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'loaded at 9' }),
-    ], fold)[0]);
-    expect(loadedWins.latestChildSummary).toBe('loaded at 9');
-  });
-
-  it('always prefers an active loaded child over the fold preview', () => {
-    const nodes = groupItemsBySubagent(
-      [
-        agentLaunch('agent-1', 0),
-        mkItem({
-          id: 'c1',
-          itemIndex: 1,
-          parentId: 'agent-1',
-          kind: 'tool_call',
-          toolName: 'Bash',
-          status: 'streaming',
-          summary: 'streaming now',
-        }),
-      ],
-      foldLookup({
-        'agent-1': {
-          // Evicted rows are terminal by definition — even a later
-          // position must not outrank live work.
-          evictedCount: 1,
-          terminalPreview: 'evicted later',
-          terminalTurnIndex: 5,
-          terminalItemIndex: 0,
-        },
-      }),
-    );
-
-    expect(expectGroup(nodes[0]).latestChildSummary).toBe('streaming now');
-  });
-
-  it('keeps the decorated count as the ratchet floor over the live total', () => {
-    const nodes = groupItemsBySubagent(
-      [
-        mkItem({
-          id: 'agent-1',
-          itemIndex: 0,
-          kind: 'tool_call',
-          toolName: 'Agent',
-          meta: toolMeta({ subagentDescendantCount: 10 }),
-        }),
-        mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', summary: 'loaded' }),
-      ],
-      foldLookup({
-        'agent-1': {
-          evictedCount: 2,
-          terminalPreview: '',
-          terminalTurnIndex: 0,
-          terminalItemIndex: 2,
-        },
-      }),
-    );
-
-    const group = expectGroup(nodes[0]);
-    expect(group.descendantCount).toBe(10);
-    expect(group.loadedDescendantCount).toBe(1);
-  });
-
-  it('composes a nested launch fold into the outer count via the nested descendantCount', () => {
-    const nodes = groupItemsBySubagent(
-      [
-        agentLaunch('root', 0),
-        mkItem({
-          id: 'nested',
-          itemIndex: 1,
-          parentId: 'root',
-          kind: 'tool_call',
-          toolName: 'Task',
-          summary: 'Task: inner',
-        }),
-        mkItem({ id: 'c1', itemIndex: 2, parentId: 'nested', summary: 'inner work' }),
-      ],
-      foldLookup({
-        nested: {
-          evictedCount: 3,
-          terminalPreview: 'evicted last',
-          terminalTurnIndex: 0,
-          terminalItemIndex: 5,
-        },
-      }),
-    );
-
-    const root = expectGroup(nodes[0]);
-    const nested = expectGroup(root.children[0]);
-    expect(nested.descendantCount).toBe(4);
-    expect(nested.loadedDescendantCount).toBe(1);
-    expect(nested.latestChildSummary).toBe('evicted last');
-    // Outer total = nested anchor itself + nested's composed total.
-    expect(root.descendantCount).toBe(5);
-  });
-
-  it('counts folds of depth-cap flattened launches without inflating loaded rows', () => {
-    function nestedLaunch(id: string, itemIndex: number, parentId: string): Item {
-      return mkItem({
-        id,
-        itemIndex,
-        parentId,
-        kind: 'tool_call',
-        toolName: 'Task',
-        summary: `Task: ${id}`,
-      });
-    }
-    const nodes = groupItemsBySubagent(
-      [
-        agentLaunch('root', 0),
-        nestedLaunch('a', 1, 'root'),
-        nestedLaunch('b', 2, 'a'),
-        nestedLaunch('c', 3, 'b'),
-        mkItem({ id: 'd', itemIndex: 4, parentId: 'c', summary: 'flattened row' }),
-        nestedLaunch('f', 5, 'c'),
-      ],
-      foldLookup({
-        f: {
-          evictedCount: 2,
-          terminalPreview: 'f evicted',
-          terminalTurnIndex: 0,
-          terminalItemIndex: 7,
-        },
-      }),
-    );
-
-    const root = expectGroup(nodes[0]);
-    const a = expectGroup(root.children[0]);
-    const b = expectGroup(a.children[0]);
-    // `c` sits at MAX_DEPTH: its subtree renders as flat leaves, so the
-    // launch `f` inside it is a leaf, not a fold-aware group node. Its
-    // evicted rows still count toward `c`'s total — but NOT toward
-    // loadedDescendantCount, or the card would never hydrate on expand.
-    const c = expectGroup(b.children[0]);
-    expect(c.children.every((child) => child.kind === 'leaf')).toBe(true);
-    expect(c.loadedDescendantCount).toBe(2);
-    expect(c.descendantCount).toBe(4);
-    expect(b.descendantCount).toBe(5);
-    expect(root.descendantCount).toBe(7);
-  });
-});
-
-describe('subagent anchor decoration fallback', () => {
-  // History windows load launch anchors without their child rows; the
-  // store stamps `subagentDescendantCount` / `subagentLatestChildSummary`
-  // on the anchor's meta (internal/store/subagent_items.go) so the
-  // collapsed card renders identically before the transcript hydrates.
+describe('subagent anchor decoration', () => {
+  // No window holds a launch with its children; the store stamps
+  // `subagentDescendantCount` / `subagentLatestChildSummary` on the
+  // anchor's meta (internal/store/subagent_items.go) and that decoration
+  // is the card's only preview source.
   function decoratedLaunch(
     id: string,
     itemIndex: number,
@@ -2572,11 +2404,10 @@ describe('subagent anchor decoration fallback', () => {
     expect(group.children).toHaveLength(0);
     expect(group.descendantCount).toBe(7);
     expect(group.loadedDescendantCount).toBe(0);
-    // Decorated summaries normalize exactly like loaded-child previews.
     expect(group.latestChildSummary).toBe('running go test ./...');
   });
 
-  it('prefers loaded children for the preview and keeps the count monotonic', () => {
+  it('keeps the decorated preview over loaded children and the count monotonic', () => {
     const nodes = groupItemsBySubagent([
       decoratedLaunch('agent-1', 0, {
         subagentDescendantCount: 2,
@@ -2590,37 +2421,7 @@ describe('subagent anchor decoration fallback', () => {
     const group = expectGroup(nodes[0]);
     expect(group.descendantCount).toBe(3);
     expect(group.loadedDescendantCount).toBe(3);
-    expect(group.latestChildSummary).toBe('third step');
-  });
-
-  it('keeps prose and thinking out of the collapsed activity preview', () => {
-    const nodes = groupItemsBySubagent([
-      decoratedLaunch('agent-1', 0, { subagentDescendantCount: 3 }),
-      mkItem({
-        id: 'read',
-        itemIndex: 1,
-        parentId: 'agent-1',
-        kind: 'tool_call',
-        toolName: 'Read',
-        summary: 'Read parse_system.go',
-      }),
-      mkItem({
-        id: 'thinking',
-        itemIndex: 2,
-        parentId: 'agent-1',
-        kind: 'thinking',
-        summary: 'I should inspect one more path',
-      }),
-      mkItem({
-        id: 'prose',
-        itemIndex: 3,
-        parentId: 'agent-1',
-        kind: 'assistant_text',
-        summary: 'The review is complete',
-      }),
-    ]);
-
-    expect(expectGroup(nodes[0]).latestChildSummary).toBe('Read parse_system.go');
+    expect(group.latestChildSummary).toBe('stale decorated preview');
   });
 
   it('keeps the decorated count when loaded children trail it', () => {
@@ -2632,65 +2433,12 @@ describe('subagent anchor decoration fallback', () => {
     const group = expectGroup(nodes[0]);
     expect(group.descendantCount).toBe(5);
     expect(group.loadedDescendantCount).toBe(1);
-    expect(group.latestChildSummary).toBe('only loaded row');
+    // Decorated with no summary: the card shows no child preview rather
+    // than ranking the loaded row.
+    expect(group.latestChildSummary).toBe('');
   });
 
-  it('falls back to the decorated preview when loaded children carry no text', () => {
-    const nodes = groupItemsBySubagent([
-      decoratedLaunch('agent-1', 0, {
-        subagentDescendantCount: 1,
-        subagentLatestChildSummary: 'decorated preview',
-      }),
-      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', summary: '' }),
-    ]);
-
-    const group = expectGroup(nodes[0]);
-    expect(group.latestChildSummary).toBe('decorated preview');
-  });
-
-  // The candidate walk decides "does this row contribute text?" without
-  // building the preview, and normalizes only the winner. These two pin
-  // the halves of that split: the gate must reject exactly what
-  // normalization would have emptied, and the winner must still come out
-  // normalized rather than raw.
-  it('skips a whitespace-only child summary as a preview candidate', () => {
-    const nodes = groupItemsBySubagent([
-      decoratedLaunch('agent-1', 0, { subagentDescendantCount: 2 }),
-      mkItem({ id: 'c1', itemIndex: 1, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: 'real text' }),
-      mkItem({ id: 'c2', itemIndex: 2, parentId: 'agent-1', kind: 'tool_call', toolName: 'Bash', summary: '  \n\t ' }),
-    ]);
-
-    // c2 is the later row, so a gate that let it through would win and
-    // render an empty preview.
-    expect(expectGroup(nodes[0]).latestChildSummary).toBe('real text');
-  });
-
-  // Both winner branches, because they are separate returns: an active
-  // descendant and a terminal one must come out of the walk equally
-  // normalized.
-  for (const status of ['completed', 'streaming'] as const) {
-    it(`normalizes the winning ${status} child summary, not only the decoration`, () => {
-      const nodes = groupItemsBySubagent([
-        decoratedLaunch('agent-1', 0, { subagentDescendantCount: 1 }),
-        mkItem({
-          id: 'c1',
-          itemIndex: 1,
-          parentId: 'agent-1',
-          kind: 'tool_call',
-          toolName: 'Bash',
-          status,
-          summary: `\n  ran\n\n  tests ${'x'.repeat(400)}`,
-        }),
-      ]);
-
-      const summary = expectGroup(nodes[0]).latestChildSummary;
-      expect(summary.startsWith('ran tests ')).toBe(true);
-      expect(summary.endsWith('...')).toBe(true);
-      expect(summary.length).toBeLessThanOrEqual(163);
-    });
-  }
-
-  it('truncates an oversized decorated preview like child previews', () => {
+  it('truncates an oversized decorated preview', () => {
     const nodes = groupItemsBySubagent([
       decoratedLaunch('agent-1', 0, {
         subagentDescendantCount: 1,
@@ -2958,29 +2706,6 @@ describe('groupItemsBySubagent — card reuse across passes', () => {
     expect(
       expectLeaf(expectGroup(second.children[0]).children[0]).item.summary,
     ).toBe('grew');
-  });
-
-  it('reuses per fold reference and rebuilds when the aggregate changes', () => {
-    const items = awaitedCardItems();
-    const fold: SubagentFoldAggregate = {
-      evictedCount: 2,
-      terminalPreview: 'folded work',
-      terminalTurnIndex: 0,
-      terminalItemIndex: 9,
-    };
-    let current: SubagentFoldAggregate | undefined = fold;
-    const aggregates: SubagentLiveAggregates = () => current;
-    const first = expectGroup(groupItemsBySubagent(items, aggregates)[0]);
-    expect(first.descendantCount).toBe(4);
-    // Same aggregate object (the registry memoizes until the fold
-    // mutates) → same card.
-    const second = expectGroup(groupItemsBySubagent(items, aggregates)[0]);
-    expect(second).toBe(first);
-    // A mutated fold hands out a fresh aggregate → rebuild.
-    current = { ...fold, evictedCount: 3 };
-    const third = expectGroup(groupItemsBySubagent(items, aggregates)[0]);
-    expect(third).not.toBe(first);
-    expect(third.descendantCount).toBe(5);
   });
 
   it('reuses a detached card and rebuilds when its completion sibling is replaced', () => {
@@ -3470,6 +3195,19 @@ describe('decoratedSubagentAggregates', () => {
     expect(agg.summary).toBe('go test ./...');
   });
 
+  // `present` separates "decorated with no preview" (the store always
+  // writes the count key, possibly 0, and drops an empty summary) from a
+  // write that carries no decoration, which a mounted card answers with
+  // the node's build-time preview.
+  it('reports whether the record carries the decoration at all', () => {
+    expect(decoratedSubagentAggregates(anchor({})))
+      .toEqual({ present: false, count: 0, transcriptCount: 0, summary: '' });
+    expect(decoratedSubagentAggregates(anchor({ subagentDescendantCount: 0 })))
+      .toEqual({ present: true, count: 0, transcriptCount: 0, summary: '' });
+    expect(decoratedSubagentAggregates(anchor({ subagentDescendantCount: '3', subagentLatestChildSummary: 'x' })).present)
+      .toBe(false);
+  });
+
   it('falls back to the round count when the anchor has no rounds', () => {
     expect(decoratedSubagentAggregates(anchor({ subagentDescendantCount: 4 })).transcriptCount).toBe(4);
   });
@@ -3486,7 +3224,9 @@ describe('decoratedSubagentAggregates', () => {
     const agg = decoratedSubagentAggregates(anchor({ subagentDescendantCount: 3, subagentLatestChildSummary: 'stale' }), completion);
     expect(agg.count).toBe(14);
     expect(agg.summary).toBe('go test ./...');
-    expect(decoratedSubagentAggregates(anchor({ subagentDescendantCount: 3 }), { ...completion, meta: '' }).count).toBe(0);
+    const bare = decoratedSubagentAggregates(anchor({ subagentDescendantCount: 3 }), { ...completion, meta: '' });
+    expect(bare.count).toBe(0);
+    expect(bare.present).toBe(false);
   });
 
   it('never lets the transcript count drop below the round count', () => {
@@ -3502,19 +3242,14 @@ describe('decoratedSubagentAggregates', () => {
 });
 
 describe('a detached launch’s card reads its counts off the completion sibling', () => {
-  // While a background agent runs collapsed, the pane folds its settled
-  // rows out of memory under the LAUNCH id. When the completion sibling
-  // lands the card moves onto it and, being a completed card, reads its
-  // saved aggregates instead of the live fold. Those aggregates are the
+  // While a background agent runs, the main window holds none of its
+  // streamed rows. When the completion sibling lands the card moves onto
+  // it and reads the sibling's saved aggregates. Those aggregates are the
   // `subagentDescendantCount` triage stamps on the sibling at write time
   // (internal/triage completionMetaWithSubagentAggregates); a bare
   // sibling would count zero here and the expanded body would say "No
   // child entries captured" for a transcript that exists.
-  it('counts the stamped total with nothing loaded and the fold keyed on the launch', () => {
-    const fold: SubagentLiveAggregates = (anchorId) =>
-      anchorId === 'bg-agent'
-        ? { evictedCount: 3, terminalPreview: 'evicted preview', terminalTurnIndex: 0, terminalItemIndex: 3 }
-        : undefined;
+  it('counts the stamped total with nothing loaded', () => {
     const nodes = groupItemsBySubagent(
       [
         mkItem({
@@ -3536,7 +3271,6 @@ describe('a detached launch’s card reads its counts off the completion sibling
           meta: JSON.stringify({ subagentDescendantCount: 3, subagentLatestChildSummary: 'go test ./...' }),
         }),
       ],
-      fold,
     );
 
     const card = expectGroup(nodes[1]);

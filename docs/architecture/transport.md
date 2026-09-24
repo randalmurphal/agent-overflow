@@ -120,6 +120,74 @@ other route, including credential rotation, tickets, transfers, bundles, and
 WebSocket upgrades. A disconnected request stops waiting through its context.
 Activation failure is HTTP 503, distinct from credential refusal.
 
+### Startup readiness
+
+Every executable boot binds its listener before `App.Start` and calls
+`MarkReady` after it (`Config.RequireReadyForBootstrap`). Until then:
+
+- `/bootstrap.json` runs its origin and credential checks, then answers 503
+  with `Cache-Control: no-store` and `Retry-After: 1`. Once the boot reports
+  progress, the body is
+  `{"reason":"starting","phase","detail","step","steps","startedAt","updatedAt","aliveAt","updatingTo"}`
+  with Unix-millisecond times; before any report it is a bare text 503.
+  `MarkStartupFailed` answers 500. `MarkMigrationsPending`, for a boot
+  started with `--refuse-pending-migrations` whose store refused, answers 409
+  with `{"reason":"migrations-pending","database","build","pending"}`
+  ([no live migration on Windows](../specs/app-update.md#no-live-migration-on-windows)).
+- `phase` is the `boot: phase=` log id and `detail` is display text.
+  `step` and `steps` count sub-steps such as pending migrations.
+  `updatingTo` names the version the boot is finishing an in-app update to.
+- `updatedAt` advances only on observed progress: a phase beginning or
+  ending, a new detail or step, or work seen by the once-a-second
+  heartbeat since the previous one. Work is the database file or its
+  `-wal` changing size, the process using at least a twentieth of a CPU
+  (user plus system time), or the process moving at least 64 KiB/s to or
+  from storage (`/proc/self/io` on Linux, `getrusage` elsewhere on Unix,
+  `GetProcessIoCounters` on Windows). A sort, a `PRAGMA foreign_key_check`,
+  a cold read and a rebuild all count. A table rebuild also reports a step
+  before each index build and before its foreign key check, so the detail
+  names what is running. `aliveAt` advances on every heartbeat and means
+  only that the backend is running. Both stop when no boot phase is open.
+  The Windows launcher fails a boot after 30 s without an `updatedAt`
+  change, naming the phase, and after 30 s without either changing reports
+  that the backend stopped responding.
+- Limit: a step blocked without working, such as a statement waiting inside
+  SQLite on a lock another process holds, reads as stalled after 30 s. That
+  is the intended outcome. `modernc.org/sqlite` offers no progress-handler
+  registration on its connections, so the work signals are process-wide
+  rather than per statement.
+- `/healthz`, `/pageurl` and the SPA assets are served. A loopback `/ws`
+  upgrade is admitted; its hello omits routes, the browser capability and
+  the backend name, and every RPC outside `Config.StartupMethods` (the
+  launcher's `ShutdownBackend`) returns `temporarily_unavailable`. Every other
+  route, and an off-host upgrade, closes without a response.
+- The attached-backend bootstrap hop and the `--connect` stub pass a far
+  backend's starting report on unchanged.
+- Limit: a paired device on another machine cannot see the starting state
+  while the store opens. Its session credential and device proof are
+  verified against the identity store, which the boot opens after the
+  database and its migrations (`app.init_identity`). Until then its
+  `/bootstrap.json` gets the non-disclosing 404 of an unknown credential and
+  its session renewal gets no response, which the client treats as
+  inconclusive: it stays paired and retries on its ordinary reconnect
+  ladder instead of the starting poll. It sees the report for the phases
+  after `app.init_identity`.
+
+The body is `internal/startupprogress`, which the Windows launcher shares,
+with the work sampler and the stall rule every judge of a start applies.
+`StartupReporter` (`startup_progress.go`) turns `App.Start`'s boot phases
+into these reports; boot wiring installs it through `app.SetBootProgress`.
+
+The page reads the same report for its own backend and every attached one
+(`frontend/src/lib/transport/bootstrap.ts`). A starting report is not a
+connection failure: `WSClient` publishes status `starting` with the report,
+polls every 500 ms without backoff or dormancy, and connects on the first
+served manifest. Calls made meanwhile reject with a non-terminal
+`DisconnectedError`, which passive reads treat as offline. A bare or
+malformed 503 stays an ordinary transient failure on the reconnect ladder.
+The harness can hold a boot before `App.Start` for tests
+(`diagenv.HarnessHoldStartup`).
+
 ## HTTP RPC and additional receivers
 
 `POST /rpc` is the bounded one-shot RPC surface for the `ao` CLI. It accepts a
@@ -192,21 +260,48 @@ When a subscriber buffer is full, the server records the affected channel. The
 next deliverable event for that channel carries `gap:true`; other affected
 channels receive standalone gap markers before later delivery. Latest-only
 channels do not need a marker because their next frame supersedes the loss.
+The announcement lists the entity keys of the dropped frames in `gapThreads`
+when every dropped frame had one and they number at most `MaxWatchThreads`;
+the frontend then recovers only those threads. Without the list, as on every
+replay marker, recovery covers every thread.
 Client-side forward-sequence detection remains a second loss signal within one
 connection.
 
 ### Watched entities and paused clients
 
-A `watch` frame replaces the connection's complete watched-thread set.
-Connections that never send one receive all events. On reconnect the client
-re-sends its set before asking for replay. Entity-filtered channels withhold
-events outside the set; other channels continue to support navigation,
-notifications, and summary state. Empty or unrecognized entity attribution
-fails open to delivery.
+A `watch` frame replaces the connection's complete watched-thread set and its
+watched-scope set together. Connections that never send one receive all
+events. On reconnect the client re-sends both before asking for replay.
+Entity-filtered channels withhold events outside the thread set; other
+channels continue to support navigation, notifications, and summary state.
+Empty or unrecognized entity attribution fails open to delivery.
 
-Withheld frames are not transport loss and do not produce gap markers. The
-frontend therefore disables inferred forward-gap handling only for registered
-entity-filtered channels after it has sent a watch set.
+`scopes` narrows `provider:item_event` further, to the subagent transcripts
+the client is viewing. Each entry is a `{threadId, scopeRootId}` pair, at most
+`MaxWatchScopes` of them, each id bounded like a thread id. The emit funnel
+attributes every item event with its thread and the row's `parentId`, which
+every frame on that channel carries, one row per frame. A frame with an empty
+scope is a root row and follows the thread set. A frame with a scope is
+delivered only when its pair is named, whether or not its thread is. An absent
+`scopes` field admits every scope of a watched thread, which is what a client
+sends when it cannot state its set within the bound; `[]` admits root rows
+only. An oversized, empty or malformed entry refuses the whole frame with
+`bad_params` and leaves the previous sets in place. No other channel carries a
+scope.
+
+Withheld frames are not transport loss and do not produce gap markers. Scope
+filtering runs before drop accounting, in live delivery and in replay alike,
+and gap attribution names threads, never scopes. The frontend therefore
+disables inferred forward-gap handling only for registered entity-filtered
+channels after it has sent a watch set.
+
+The frontend composes the scope set from the surfaces that read child rows:
+scoped timelines name their own scope and the scopes their launch, lifecycle
+and completion rows live in, and the open background tray names its running
+agents' scopes. A scoped surface registers before its first history read, and
+re-reads when resolution adds a scope, so rows written before the watch
+applied are recovered from the snapshot. Collapsed subagent cards read anchor
+metadata and `provider:subagent_progress`, which are not scope-filtered.
 
 A `lease` frame reports whether the platform has paused the client. It is not
 page visibility, focus, or pane selection. New connections start active.

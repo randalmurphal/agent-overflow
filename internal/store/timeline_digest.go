@@ -69,7 +69,7 @@ func (s *Store) resolveTimelineDigest(q sqlQueryer, threadID string, scope *time
 		return fmt.Errorf("digest item does not belong to the selected agent")
 	}
 	d := &TimelineDigestContext{}
-	rounds, err := s.subagentResumeRounds(q, threadID, []string{root})
+	rounds, err := subagentResumeRounds(q, threadID, []string{root})
 	if err != nil {
 		return err
 	}

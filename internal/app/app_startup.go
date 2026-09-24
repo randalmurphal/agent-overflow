@@ -57,18 +57,24 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	// instead of context.Background.
 	a.appCtx, a.appCancel = context.WithCancel(context.Background())
 
-	phaseStarted := time.Now()
-	dbDir, st, err := a.initStores()
-	logBootPhase("app.init_stores", phaseStarted)
+	endPhase := a.bootPhase("app.init_stores", "Opening the database")
+	dbDir, st, err := a.initStores(ctx)
+	endPhase()
 	if err != nil {
+		return err
+	}
+	if err := bootCanceled(ctx, "app.init_identity"); err != nil {
 		return err
 	}
 	// The session core, and the local page channel's own session. After
 	// the store because every row it touches lives there, and before the
 	// subsystems because the transport's hooks read it the moment a page
 	// connects. Identity failure prevents publishing a ready backend.
+	endPhase = a.bootPhase("app.init_identity", "Loading sign-in state")
 	backendID, _ := a.backendIdentity()
-	if err := a.initIdentity(backendID); err != nil {
+	err = a.initIdentity(backendID)
+	endPhase()
+	if err != nil {
 		return err
 	}
 
@@ -78,18 +84,26 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	// returns "", which sessionProcessEnv reads as "nothing to prepend".
 	a.cliBinDir = a.ensureCLIBinDir(dbDir)
 
-	phaseStarted = time.Now()
-	if err := a.initObservability(ctx, dbDir); err != nil {
-		logBootPhase("app.init_observability", phaseStarted)
+	endPhase = a.bootPhase("app.init_observability", "Starting diagnostics")
+	err = a.initObservability(ctx, dbDir)
+	endPhase()
+	if err != nil {
 		return err
 	}
-	logBootPhase("app.init_observability", phaseStarted)
-	phaseStarted = time.Now()
-	if err := a.initSubsystems(dbDir, st); err != nil {
-		logBootPhase("app.init_subsystems", phaseStarted)
+	if err := bootCanceled(ctx, "app.init_subsystems"); err != nil {
 		return err
 	}
-	logBootPhase("app.init_subsystems", phaseStarted)
+	endPhase = a.bootPhase("app.init_subsystems", "Starting services")
+	err = a.initSubsystems(dbDir, st)
+	endPhase()
+	if err != nil {
+		return err
+	}
+	if err := bootCanceled(ctx, "app.start_background_work"); err != nil {
+		return err
+	}
+	endPhase = a.bootPhase("app.start_background_work", "Starting background work")
+	defer endPhase()
 
 	// Guard against provider subprocesses outliving an ungraceful app
 	// death (macOS only — Linux has Pdeathsig, Windows a Job Object).
@@ -137,8 +151,12 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	// paced write transactions that run once per database, after which
 	// this starts nothing. See store.DeferredMigration.
 	//
-	// NOT behind the activation gate. Its whole effect is SQLite rows,
-	// which restoring the database undoes.
+	// NOT behind the activation gate. Its row work is SQLite rows, which
+	// restoring the database undoes. The one step that is not, the
+	// auto_vacuum conversion, writes a snapshot beside the database and
+	// renames the old file aside, outside the snapshot triple; its wait
+	// (storeFileSwapWait) parks on the activation gate itself. See
+	// app_store_maintenance.go.
 	a.startDeferredMigrations()
 
 	// Assert the persisted keep-awake state. Synchronous and cheap (one
@@ -227,18 +245,6 @@ func (a *App) startUnattendedWork() error {
 	// the gate is in awaitRetentionSettled.
 	a.startRetentionCleanup()
 
-	// Start the one-time auto_vacuum conversion scheduler. It watches
-	// for an idle moment to rebuild a pre-incremental database file so
-	// retention can hand freed pages back to the filesystem, then exits
-	// for good. Databases already on incremental auto-vacuum, which is
-	// every database this build creates, stop it on its first check.
-	//
-	// Behind the activation gate because the rebuild writes a snapshot
-	// beside the database and renames the old file aside: both sit
-	// outside the snapshot triple, so a rollback would leave them until
-	// the next boot clears them. See app_store_maintenance.go.
-	a.startStoreMaintenance()
-
 	// Watch the provider binaries for an upgrade under a running app: a
 	// quiet tick is two stats, and a changed file re-reads the version,
 	// refreshes the model catalog, and flags live sessions still running
@@ -292,7 +298,7 @@ func (a *App) startUnattendedWork() error {
 // A logger init failure closes the store before returning so we don't
 // leak an open DB file on startup error; the close error is joined onto
 // the logger error so tests see both causes.
-func (a *App) initStores() (string, *store.Store, error) {
+func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	dataDir := a.dataDirOverride
 	if dataDir == "" {
 		var err error
@@ -319,8 +325,23 @@ func (a *App) initStores() (string, *store.Store, error) {
 		return "", nil, fmt.Errorf("failed to prepare database file %s: %w", dbPath, err)
 	}
 
-	st, err := store.New(dbPath)
+	// Inside a migration step, and in every later phase, the database and
+	// its WAL changing size is progress too. ctx lets a shutdown interrupt
+	// the chain; the running migration rolls back.
+	a.watchBootFiles(dbPath, dbPath+"-wal")
+	endMigrations := func() {}
+	st, err := store.NewWithOptions(dbPath, store.Options{
+		Context:                 ctx,
+		OnMigration:             a.reportMigration(&endMigrations),
+		RefusePendingMigrations: a.refusePendingMigrations,
+	})
+	endMigrations()
 	if err != nil {
+		// A database a newer build migrated is refused with the sentence
+		// the boot failure shows; it goes out as it is.
+		if tooNew := (*store.SchemaTooNewError)(nil); errors.As(err, &tooNew) {
+			return "", nil, err
+		}
 		return "", nil, fmt.Errorf("failed to open database: %w", err)
 	}
 	if err := repairSQLiteSidecarPermissions(dbPath); err != nil {
@@ -360,6 +381,7 @@ func (a *App) initStores() (string, *store.Store, error) {
 	// keeps it clear of initThemeDirectory's one-shot read of the retired
 	// `theme` key further down the boot.
 	a.settings.AttachTierStore(st, "client:"+EnsureClientIDIn(dbDir))
+	a.settingsAttached.Store(true)
 	// The phone-push sender, if this backend has one (docs/specs/
 	// remote-access.md §9). Absent is the resting state and costs nothing;
 	// it is read here because the fan-out's own no-credential branch must
@@ -649,55 +671,54 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	// leaving the turn's streaming items stuck forever. Runs before any
 	// provider session can spawn, so every NULL row is provably crash
 	// residue. See docs/architecture/turn-lifecycle.md §Crash recovery.
-	sweepStarted := time.Now()
+	endPhase := a.bootPhase("app.recover_crashed_turns", "Settling interrupted turns")
 	if settled, err := a.triage.RecoverCrashedTurns(); err != nil {
 		log.Printf("app: recover crashed turns: %v", err)
 	} else if settled > 0 {
 		log.Printf("app: settled %d crashed in-flight turns as interrupted", settled)
 	}
-	logBootPhase("app.recover_crashed_turns", sweepStarted)
+	endPhase()
 	// Codex child identities are resumable, but live turns and background PTYs
 	// belong to the app-server process. Retire that runtime state before any
 	// provider session can start so the tray never presents prior-process work
 	// as still running.
-	codexRuntimeSweepStarted := time.Now()
+	endPhase = a.bootPhase("app.recover_codex_background_runtime", "Settling background agents")
 	a.recoverCodexBackgroundRuntimeOnStartup()
-	logBootPhase("app.recover_codex_background_runtime", codexRuntimeSweepStarted)
+	endPhase()
 	// Synthesize session_died terminals for backgrounded launches whose
 	// owning Claude session did not survive the previous app instance.
 	// Without this sweep the launches would render as "running" forever
 	// in the chat and the tray, since no live agent will ever observe
 	// their completion. See docs/architecture/turn-lifecycle.md
 	// §Crash recovery.
-	recoverStarted := time.Now()
-	if recovered, err := a.triage.RecoverOrphanedBackgroundTasks(); err != nil {
-		logBootPhase("app.recover_orphaned_background_tasks", recoverStarted)
+	endPhase = a.bootPhase("app.recover_orphaned_background_tasks", "Settling background tasks")
+	recovered, err := a.triage.RecoverOrphanedBackgroundTasks()
+	endPhase()
+	if err != nil {
 		log.Printf("app: recover Claude background launches: %v", err)
 	} else if recovered > 0 {
-		logBootPhase("app.recover_orphaned_background_tasks", recoverStarted)
 		log.Printf("app: recovered %d Claude background launches as session_died", recovered)
-	} else {
-		logBootPhase("app.recover_orphaned_background_tasks", recoverStarted)
 	}
 	// Settle worktree setups the previous instance left mid-recipe. A run
 	// lives only inside a live process, so every 'running' row here is crash
 	// (or shutdown) residue over a worktree whose provisioning state nobody
 	// can vouch for — which is what 'failed' means, and what puts the retry
 	// affordance back in reach.
-	worktreeSetupSweepStarted := time.Now()
+	endPhase = a.bootPhase("app.sweep_crashed_worktree_setups", "Settling worktree setups")
 	a.sweepCrashedWorktreeSetups()
-	logBootPhase("app.sweep_crashed_worktree_setups", worktreeSetupSweepStarted)
+	endPhase()
 	// Put back into the composer every message the previous process had
 	// queued and never delivered. Here, beside the other crash sweeps and
 	// before any session can start, so a row cannot belong to something still
 	// running — and it never re-dispatches. See
 	// restoreDurableFlushQueueAtBoot.
-	flushQueueSweepStarted := time.Now()
+	endPhase = a.bootPhase("app.restore_durable_flush_queue", "Restoring queued messages")
 	if err := a.restoreReplacementDraftsAtBoot(); err != nil {
+		endPhase()
 		return fmt.Errorf("restore replacement drafts: %w", err)
 	}
 	a.restoreDurableFlushQueueAtBoot()
-	logBootPhase("app.restore_durable_flush_queue", flushQueueSweepStarted)
+	endPhase()
 	browserSettings := a.currentSettings()
 	a.refreshBrowserAccelerators()
 	a.browser.manager = appbrowser.NewManager(

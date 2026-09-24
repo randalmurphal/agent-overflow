@@ -670,6 +670,47 @@ func TestTranscriptMirrorContinuesManuallyBackgroundedAgent(t *testing.T) {
 	}
 }
 
+// A mirrored API error happened inside the backgrounded agent. The main
+// turn's outcome is stdout's to report, so the error is the agent's own
+// row and never a fatal turn error.
+func TestTranscriptMirrorAgentErrorIsNeverFatal(t *testing.T) {
+	parser := NewParser()
+	parse := func(line string) []provider.ProviderEvent {
+		t.Helper()
+		events, err := parser.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("ParseLine: %v\n%s", err, line)
+		}
+		return events
+	}
+
+	parse(`{"type":"assistant","message":{"id":"m-parent","role":"assistant","content":[{"type":"tool_use","id":"toolu-agent","name":"Agent","input":{"description":"review","subagent_type":"Explore","prompt":"inspect"}}]}}`)
+	parse(`{"type":"system","subtype":"task_started","task_id":"agent-bg","task_type":"local_agent","tool_use_id":"toolu-agent"}`)
+	parse(`{"type":"system","subtype":"task_updated","task_id":"agent-bg","patch":{"is_backgrounded":true}}`)
+
+	events := parse(`{"type":"transcript_mirror","filePath":"/tmp/agent-agent-bg.jsonl","entries":[{"type":"assistant","uuid":"a-err","agentId":"agent-bg","isSidechain":true,"isApiErrorMessage":true,"timestamp":"2026-08-24T12:00:01Z","message":{"id":"msg-err","role":"assistant","model":"claude-opus-4-1","error":"rate_limit","content":[{"type":"text","text":"API Error: rate_limit"}]}}]}`)
+	var found bool
+	for _, event := range events {
+		if event.Kind != provider.EventError {
+			continue
+		}
+		found = true
+		if event.ParentToolUseID != "toolu-agent" {
+			t.Fatalf("mirrored error escaped the launch scope: %+v", event)
+		}
+		var meta map[string]any
+		if err := json.Unmarshal(event.Meta, &meta); err != nil {
+			t.Fatalf("decode error meta %s: %v", event.Meta, err)
+		}
+		if meta["fatal"] != false {
+			t.Fatalf("mirrored error meta = %s, want fatal false", event.Meta)
+		}
+	}
+	if !found {
+		t.Fatalf("mirrored API error row emitted no error event: %+v", events)
+	}
+}
+
 // An ordinary async agent streams on stdout, so its mirror batches are
 // dropped — except compaction rows, which stdout never carries. The tap
 // forwards exactly those, scoped to the launch, paired with their summary,

@@ -156,6 +156,13 @@ func SetBoundPortRecorder(a *App, record func(port int)) { a.boundPortRecorder =
 // SetDataDirOverride installs the executable's --data-dir boot input.
 func SetDataDirOverride(a *App, dataDir string) { a.dataDirOverride = dataDir }
 
+// RefusePendingMigrations makes Start fail with a store.MigrationsPendingError,
+// before anything writes the database, when an existing database has
+// migrations to apply. The Windows launcher's backend runs with it: a
+// database is migrated only by a trial that snapshots it first
+// (docs/specs/app-update.md, the no-live-migration rule). Call before Start.
+func RefusePendingMigrations(a *App) { a.refusePendingMigrations = true }
+
 // SetCertFingerprint installs the fingerprint of the TLS certificate the
 // transport terminates with, which every pairing link then carries. The
 // boot resolves the certificate and the listener from one value, so the
@@ -207,6 +214,17 @@ func SetProviderExtraEnv(a *App, env map[string]string) {
 // that wait, and a second path into it would be a second teardown order to
 // keep correct. Root owns process exit; this package only asks for it.
 func ConfigureBackendShutdown(a *App, request func() error) { a.backendShutdown = request }
+
+// SetBootProgress installs the sink App.Start reports its phases to. Call
+// before Start.
+func SetBootProgress(a *App, progress BootProgress) { a.bootProgress = progress }
+
+// SetStartDone installs what the desktop boot does when the App.Start that
+// ServiceStartup runs on its own goroutine returns: done(nil) after a
+// successful start, done(err) after a failed one. A Start that
+// ServiceShutdown canceled calls nothing. Call before the Wails
+// application runs.
+func SetStartDone(a *App, done func(error)) { a.startDone = done }
 
 // ConfigureTransportNotifications installs the headless launcher bridge.
 func ConfigureTransportNotifications(a *App) {

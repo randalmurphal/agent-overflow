@@ -15,7 +15,7 @@ func newBootUpdaterTestApp(currentVersion string) *App {
 func TestInitWSLUpdaterSkipsDevBuild(t *testing.T) {
 	t.Setenv(wsldistro.AppDataEnv, t.TempDir())
 	a := newBootUpdaterTestApp("dev")
-	initWSLUpdaterIn(a, "dev", t.TempDir())
+	initWSLUpdaterIn(a, "dev", t.TempDir(), appupdate.LauncherFailure{})
 
 	availability, err := a.CheckForUpdate()
 	if err != nil {
@@ -29,7 +29,7 @@ func TestInitWSLUpdaterSkipsDevBuild(t *testing.T) {
 func TestInitWSLUpdaterRequiresLauncherEnv(t *testing.T) {
 	t.Setenv(wsldistro.AppDataEnv, "")
 	a := newBootUpdaterTestApp("0.0.10")
-	initWSLUpdaterIn(a, "0.0.10", t.TempDir())
+	initWSLUpdaterIn(a, "0.0.10", t.TempDir(), appupdate.LauncherFailure{})
 
 	availability, err := a.CheckForUpdate()
 	if err != nil {
@@ -43,7 +43,7 @@ func TestInitWSLUpdaterRequiresLauncherEnv(t *testing.T) {
 func TestInitWSLUpdaterRequiresMarkerDir(t *testing.T) {
 	t.Setenv(wsldistro.AppDataEnv, t.TempDir())
 	a := newBootUpdaterTestApp("0.0.10")
-	initWSLUpdaterIn(a, "0.0.10", "")
+	initWSLUpdaterIn(a, "0.0.10", "", appupdate.LauncherFailure{})
 
 	availability, err := a.CheckForUpdate()
 	if err != nil {
@@ -57,7 +57,7 @@ func TestInitWSLUpdaterRequiresMarkerDir(t *testing.T) {
 func TestInitWSLUpdaterConfiguresService(t *testing.T) {
 	t.Setenv(wsldistro.AppDataEnv, t.TempDir())
 	a := newBootUpdaterTestApp("0.0.10")
-	initWSLUpdaterIn(a, "0.0.10", t.TempDir())
+	initWSLUpdaterIn(a, "0.0.10", t.TempDir(), appupdate.LauncherFailure{})
 
 	if err := a.RestartToUpdate(); !errors.Is(err, ErrUpdateNotReady) {
 		t.Fatalf("RestartToUpdate error = %v, want ErrUpdateNotReady from configured service", err)

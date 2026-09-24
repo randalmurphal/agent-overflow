@@ -82,10 +82,15 @@ edge and after a gap on one of those channels; a pane additionally reads
 flight wins over the snapshot.
 
 `watchedThreads.ts` unions registered sources for every thread whose surface
-exists, including child threads with no pane. Watches never depend on focus,
-visibility, or `document.hidden`. Registering a consumer of an entity-filtered
-channel also requires contributing its thread IDs. Push the opening watch set
-before history loads, and restate it whenever a pane adopts or clears a thread.
+exists, including child threads with no pane, and for every subagent scope a
+surface reads. Watches never depend on focus, visibility, or `document.hidden`.
+Registering a consumer of an entity-filtered channel also requires contributing
+its thread IDs. A watched thread delivers only root rows on
+`provider:item_event`: a consumer of rows with `parentId` set contributes
+their scope while it exists, or reads anchor-level data instead. Push the
+opening watch set before history loads, including a scoped surface's scopes
+before its first read, and restate it whenever a pane adopts or clears a
+thread or a surface's scopes change.
 
 `screenPresence.ts` reports focus and visible panes only so the backend can
 suppress redundant OS notifications, and `currentScreenPresence` answers the
@@ -97,9 +102,9 @@ Every screen presents its own notifications. A page that is not loopback-served
 and not the native shell runs `notifications/gate.ts` against its own settings
 and its own focus and raises a Web Notification; the host presents for the
 backend machine's own screen, and `notification:sound` stays loopback-only
-because the decision behind it is that screen's. `origin.replayed` marks a
-frame drained out of the reconnect replay window: only a subscriber that
-interrupts a person may read it.
+because the decision behind it is that screen's. The `replayed` argument
+`wailsEventOn` passes marks a frame drained out of the reconnect replay
+window: only a subscriber that interrupts a person may read it.
 
 Transport replay, watch splitting, and gap rules are documented in
 [transport.md](../../../../docs/architecture/transport.md#event-replay-and-filtering).
@@ -114,6 +119,12 @@ a detach removes that computer's state. Late replies must prove their backend,
 request generation, and relevant catalog or mutation revision before applying.
 Ownership moves invalidate thread history stamps, item caches, interrupt state,
 pending reads, and watched-thread routing for the old owner.
+
+`catalogLoad.svelte.ts` holds whether each computer's thread and project
+catalogs have loaded, and owns their retries until they do. A catalog that
+has not loaded is never presented as empty. Every read settles there: a
+failure inside `readComputerRows`, an answer in the same synchronous block
+that commits its rows.
 
 Frontend preferences and appearance libraries remain local to the frontend and
 survive host removal. Mirror only generated `FRONTEND_DEVICE_SETTINGS_KEYS` to

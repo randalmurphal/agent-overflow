@@ -115,6 +115,7 @@ obsolete planning material. Update incoming links when moving or retiring a doc.
 | [`connected-computers.md`](specs/connected-computers.md) | Approved multi-computer product contract, ownership, portability, and acceptance matrix; implementation in progress. |
 | [`conversation-transfer.md`](specs/conversation-transfer.md) | Move/copy ownership protocol, native portability evidence, archive boundaries, and required failure tests; implementation in progress. |
 | [`remote-access-boundaries.md`](specs/remote-access-boundaries.md) | The boundaries and guarantees companion to the remote-access spec. |
+| [`app-update.md`](specs/app-update.md) | In-app updates on macOS, Linux and Windows: database snapshot, trial boot, commit or rollback, recovery after a crash, and no live migration. Implemented. |
 | [`testing-harness.md`](specs/testing-harness.md) | The harness contract and design rationale. `architecture/agent-harness.md` describes the built surface. |
 | [`prompt-tool-overrides.md`](specs/prompt-tool-overrides.md) | Settings-level system-prompt overrides and per-provider tool toggles. |
 | [`workflows-system-ui/UI-SPEC.md`](specs/workflows-system-ui/UI-SPEC.md) | The binding workflows-overlay UI spec (rev 2). Cited as `UI-SPEC §N` across the frontend. |

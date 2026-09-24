@@ -191,11 +191,9 @@ func (s *Session) StopTask(ctx context.Context, taskID string) error {
 // a row that kept streaming. A false/absent flag is a descriptive error
 // the UI can show.
 //
-// The ordinary --forward-subagent-text stream stops after the ack. New AO
-// sessions also run --session-mirror, which continues those transcript rows
-// live; the task_notification output_file remains compatibility recovery for
-// a process started before mirror support. See claude-wire.md
-// §control_request `background_tasks`.
+// The ordinary --forward-subagent-text stream stops after the ack. AO runs
+// every session with --session-mirror, which continues those transcript rows
+// live. See claude-wire.md §control_request `background_tasks`.
 //
 // Returns a timeout error after controlRequestTimeout (or ctx.Done) if
 // the CLI never answers.

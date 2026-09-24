@@ -3,6 +3,7 @@ package triage
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -493,6 +494,23 @@ func (l *emissionLog) reset() {
 	l.mu.Unlock()
 }
 
+// appendSeed is st.AppendItem for a row seeded straight to the store,
+// written with its parent's card (storetest.WithParentCard).
+func appendSeed(st *store.Store, item store.Item) (int, error) {
+	var index int
+	err := storetest.WithParentCard(st, item, func(item store.Item) error {
+		var err error
+		index, err = st.AppendItem(item)
+		return err
+	})
+	return index, err
+}
+
+// insertSeed is st.InsertItem for a seeded row, like appendSeed.
+func insertSeed(st *store.Store, item store.Item) error {
+	return storetest.WithParentCard(st, item, st.InsertItem)
+}
+
 func newTestRouter(t *testing.T) (*Router, *store.Store, *emissionLog) {
 	t.Helper()
 	st := storetest.Clone(t)
@@ -862,20 +880,20 @@ func TestExtractCompactionSummary(t *testing.T) {
 }
 
 func TestBuildCompactionPayload(t *testing.T) {
-	if p := BuildCompactionPayload("", 100); p != nil {
+	if p := BuildCompactionPayload("compact:1:0", "", 100); p != nil {
 		t.Fatalf("empty summary must not build a payload, got %+v", p)
 	}
 
 	const summary = "The committed compaction summary."
-	p := BuildCompactionPayload(summary, 100)
+	p := BuildCompactionPayload("compact:1:0", summary, 100)
 	if p == nil {
 		t.Fatal("summary built no payload")
 	}
 	if p.Kind != "compaction" {
 		t.Errorf("payload kind = %q, want compaction", p.Kind)
 	}
-	if p.ID == "" {
-		t.Error("payload missing id")
+	if p.ID != CompactionPayloadID("compact:1:0") {
+		t.Errorf("payload id = %q, want %q", p.ID, CompactionPayloadID("compact:1:0"))
 	}
 	if p.CreatedAt != 100 {
 		t.Errorf("payload createdAt = %d, want 100", p.CreatedAt)
@@ -3224,7 +3242,7 @@ func TestPersistDropsInvalidParentID(t *testing.T) {
 	}
 	// Seed a tool_call with a ParentID that points at itself. Used by
 	// the cycle test below.
-	if _, err := st.AppendItem(store.Item{
+	if _, err := appendSeed(st, store.Item{
 		ID:        "cycle-a",
 		ThreadID:  "t1",
 		TurnIndex: 0,
@@ -4454,5 +4472,58 @@ func TestStoppedDisconnectIsQuietButUnexpectedEventsRemainVisible(t *testing.T) 
 	items, err := st.ListItems("t1")
 	if err != nil || len(items) != 0 {
 		t.Fatalf("late status changed history: %v %v", items, err)
+	}
+}
+
+// Re-persisting a compaction writes the same payload: the row keeps its
+// payload id and the thread holds one compaction payload, not an orphan
+// per write.
+func TestCompactBoundaryPersistedTwiceKeepsOnePayload(t *testing.T) {
+	dbPath := storetest.ClonePath(t)
+	st, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	router := NewRouter(st, func(eventchan.Channel, any) {})
+	createTestThread(t, st, "t1")
+
+	boundary := provider.ProviderEvent{
+		Kind:     provider.EventCompactBoundary,
+		ThreadID: "t1",
+		ItemID:   "compact-a",
+		Meta:     json.RawMessage(`{"trigger":"auto","summary":"The committed summary."}`),
+	}
+	var payloadIDs []string
+	for range 2 {
+		boundary.Timestamp = time.Now()
+		if err := router.Handle(boundary); err != nil {
+			t.Fatalf("handle compact: %v", err)
+		}
+		items, err := st.ListItems("t1")
+		if err != nil {
+			t.Fatalf("list items: %v", err)
+		}
+		compactions := compactionItems(items)
+		if len(compactions) != 1 {
+			t.Fatalf("stored compactions = %d, want 1", len(compactions))
+		}
+		payloadIDs = append(payloadIDs, compactions[0].PayloadID)
+	}
+	if want := CompactionPayloadID("compact:0:provider:compact-a"); payloadIDs[0] != want || payloadIDs[1] != want {
+		t.Fatalf("compaction payload ids across two persists = %v, want %q both times", payloadIDs, want)
+	}
+
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer rawDB.Close()
+	var payloads int
+	if err := rawDB.QueryRow(`SELECT count(*) FROM payloads WHERE thread_id = 't1' AND kind = 'compaction'`).Scan(&payloads); err != nil {
+		t.Fatalf("count payloads: %v", err)
+	}
+	if payloads != 1 {
+		t.Fatalf("compaction payloads after two persists = %d, want 1", payloads)
 	}
 }

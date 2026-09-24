@@ -6,9 +6,10 @@
 // transport would be production code that exists for one spec family, and
 // the property under test is precisely what goes over the wire.
 //
-// Shared by transport-watch-narrowing.spec.ts (the frame the client sends)
-// and transport-watch-badge-carriers.spec.ts (the frames it is answered
-// with), because both need the SAME recorder on more than one page.
+// Shared by transport-watch-narrowing.spec.ts (the frame the client sends),
+// transport-watch-badge-carriers.spec.ts (the frames it is answered with)
+// and transport-watch-scopes.spec.ts (the subagent rows a scope admits),
+// because they need the SAME recorder, some on more than one page.
 import type { Page } from '@playwright/test';
 
 /** One frame the page sent, in send order. */
@@ -16,6 +17,8 @@ export interface SentFrame {
   type: string;
   /** Present on watch frames. */
   threads?: string[];
+  /** Present on watch frames that state a scope set. */
+  scopes?: Array<{ threadId: string; scopeRootId: string }>;
   /** The raw JSON, for "does this frame name that thread" questions. */
   text: string;
 }
@@ -30,11 +33,23 @@ export interface ReceivedEvent {
    * distinguish one item_event from another; every other spec ignores it.
    */
   action?: string;
+  /** `provider:item_event` only: the row, and its parent (empty for a root row). */
+  itemId?: string;
+  parentId?: string;
+  /** The event's JSON length, the share of the wire it cost. */
+  bytes: number;
 }
 
 export interface WireLog {
   sent: SentFrame[];
   received: ReceivedEvent[];
+  /** `sent.length` when each socket was constructed, one per connection. */
+  sockets: number[];
+  /** Ids of the reply frames the page received, in arrival order. */
+  replies: string[];
+  /** Text bytes and messages received, over every socket. */
+  receivedBytes: number;
+  receivedMessages: number;
 }
 
 /**
@@ -48,7 +63,7 @@ export async function recordWire(page: Page): Promise<void> {
       __aoWireSocket?: WebSocket;
       WebSocket: typeof WebSocket;
     };
-    const log: WireLog = { sent: [], received: [] };
+    const log: WireLog = { sent: [], received: [], sockets: [], replies: [], receivedBytes: 0, receivedMessages: 0 };
     scope.__aoWire = log;
 
     const note = (frame: Record<string, unknown>) => {
@@ -64,11 +79,21 @@ export async function recordWire(page: Page): Promise<void> {
         const entry: ReceivedEvent = {
           channel: String(frame.channel ?? ''),
           threadId: String(data.threadId ?? data.id ?? thread.id ?? ''),
+          bytes: JSON.stringify(frame).length,
         };
         if (typeof data.action === 'string') entry.action = data.action;
+        if (entry.channel === 'provider:item_event') {
+          // Every item event names its row's parent: deltas, metas and
+          // patches at the top level, upserts on the row.
+          const item = (data.item ?? {}) as Record<string, unknown>;
+          entry.itemId = String(data.itemId ?? item.id ?? '');
+          entry.parentId = String(data.parentId ?? item.parentId ?? '');
+        }
         log.received.push(entry);
       } else if (frame.type === 'batch' && Array.isArray(frame.events)) {
         for (const entry of frame.events as Array<Record<string, unknown>>) note(entry);
+      } else if (typeof frame.id === 'string' && frame.id !== '') {
+        log.replies.push(frame.id);
       }
     };
 
@@ -76,6 +101,7 @@ export async function recordWire(page: Page): Promise<void> {
     class RecordingWebSocket extends Base {
       constructor(url: string | URL, protocols?: string | string[]) {
         super(url, protocols);
+        log.sockets.push(log.sent.length);
         // The page's live socket, so a spec can put a frame on the wire the
         // SPA has no caller for yet. The lease spec is the one user: the
         // frame's producer is a native shell that does not exist in a
@@ -83,6 +109,8 @@ export async function recordWire(page: Page): Promise<void> {
         scope.__aoWireSocket = this as unknown as WebSocket;
         this.addEventListener('message', (event: MessageEvent) => {
           if (typeof event.data !== 'string') return;
+          log.receivedBytes += event.data.length;
+          log.receivedMessages += 1;
           try {
             note(JSON.parse(event.data) as Record<string, unknown>);
           } catch {
@@ -98,6 +126,9 @@ export async function recordWire(page: Page): Promise<void> {
             log.sent.push({
               type: String(frame.type ?? ''),
               threads: Array.isArray(frame.threads) ? (frame.threads as string[]) : undefined,
+              scopes: Array.isArray(frame.scopes)
+                ? (frame.scopes as Array<{ threadId: string; scopeRootId: string }>)
+                : undefined,
               text: data,
             });
           } catch {
@@ -137,6 +168,32 @@ export function watchedNow(wire: WireLog): string[] | null {
   const frames = wire.sent.filter((frame) => frame.type === 'watch');
   const last = frames.at(-1);
   return last ? [...(last.threads ?? [])].sort() : null;
+}
+
+/**
+ * The `thread/scopeRoot` pairs named by the most recent watch frame, sorted;
+ * null if no watch was sent or the last one stated no scope set.
+ */
+export function watchedScopesNow(wire: WireLog): string[] | null {
+  const last = wire.sent.filter((frame) => frame.type === 'watch').at(-1);
+  if (!last?.scopes) return null;
+  return last.scopes.map((scope) => `${scope.threadId}/${scope.scopeRootId}`).sort();
+}
+
+/**
+ * Wait until the backend has handled every frame this page sent so far.
+ *
+ * The backend reads one connection's frames in order on one loop, and a
+ * watch is applied before the next frame is read, so the reply to a call
+ * sent now proves every earlier watch is in force. The call names no
+ * method, which the backend answers with an error and the page ignores.
+ */
+export async function fenceSocket(page: Page, id: string): Promise<void> {
+  await sendClientFrame(page, { type: 'rpc', id, method: 'TransportWatchFence', params: [] });
+  await page.waitForFunction(
+    (fence) => (window as unknown as { __aoWire: WireLog }).__aoWire.replies.includes(fence),
+    id,
+  );
 }
 
 /** Every thread id this page was pushed a frame for on `channel`, in arrival order. */

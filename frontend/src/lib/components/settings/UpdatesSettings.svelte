@@ -16,6 +16,7 @@
     runUpdateCheck,
     startUpdateDownload,
     restartForUpdate,
+    cancelRestartForUpdate,
     loadVersions,
     selectVersion,
     canInstallSelected,
@@ -28,7 +29,9 @@
   // The progress / restart block renders for ANY install in flight — the latest
   // flow and a by-tag rollback alike — so it can't hang off the latestVersion
   // card (a rollback while up-to-date has no latestVersion).
-  const showActive = $derived(downloading || s.phase === 'ready' || s.phase === 'restarting');
+  const showActive = $derived(
+    downloading || s.phase === 'ready' || s.phase === 'waiting' || s.phase === 'restarting',
+  );
   const canInstallPicked = $derived(canInstallSelected());
   const progressPercent = $derived(
     s.total > 0 ? Math.min(100, Math.round((s.written / s.total) * 100)) : 0,
@@ -159,6 +162,27 @@
               Restart to update
             </button>
           </div>
+        {/if}
+
+        {#if s.phase === 'waiting'}
+          <!-- A restart never stops running work: the backend holds it until
+               this host is idle and names what it is waiting for. -->
+          <div class="flex items-center justify-between gap-3" data-testid="update-restart-waiting">
+            <div class="flex flex-col gap-0.5">
+              <p class="text-[0.6875rem] text-fg">{s.waitingFor || 'Waiting for running work to finish…'}</p>
+              <p class="text-[0.6875rem] text-fg-muted">Agent Overflow restarts to update once it is done.</p>
+            </div>
+            <button
+              class={SECONDARY_BUTTON_CLASS}
+              disabled={s.canceling}
+              onclick={() => void cancelRestartForUpdate()}
+            >
+              {s.canceling ? 'Canceling…' : 'Cancel restart'}
+            </button>
+          </div>
+          {#if s.cancelError}
+            <SettingsCallout tone="error">{s.cancelError}</SettingsCallout>
+          {/if}
         {/if}
 
         {#if s.phase === 'restarting'}

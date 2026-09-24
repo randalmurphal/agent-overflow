@@ -37,17 +37,17 @@ func (a *App) installThreadRequestObserver() {
 			if evt.Kind != provider.EventTurnComplete || strings.TrimSpace(evt.ParentToolUseID) != "" {
 				return
 			}
-			// The gate is read here, on the read loop, because that is what
+			// The gate is read here, on the event worker, because that is what
 			// keeps a turn end on a thread with no requests to one map read
 			// and no goroutine.
 			if _, ok := a.runningReceiptTokens(threadID); !ok {
 				return
 			}
-			// Settling runs OFF the read loop. It deletes the scratch thread
+			// Settling runs OFF the event worker. It deletes the scratch thread
 			// an ask ran in and can start the caller's session to deliver a
-			// wake, and both stop or start a provider session: doing that on
-			// the session's own read loop deadlocks on the goroutine being
-			// waited for. Shutdown joins these through threadRequestsWG.
+			// wake, and both stop or start a provider session: a stop drains
+			// the thread's event queue, so doing that on the worker waits for
+			// itself. Shutdown joins these through threadRequestsWG.
 			if a.lifeCtx().Err() != nil {
 				return
 			}

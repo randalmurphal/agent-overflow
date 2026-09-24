@@ -558,18 +558,17 @@ func TestSubagentLaunchPromptKeepsItsOpeningPositionWhenTranscriptIdentityArrive
 	}
 	deliverSubagentBlock(t, router, "t1", "spawn-1", "child-text#0", "text", "I found the parser")
 
-	launch, found, err := st.GetThreadItem("t1", "spawn-1")
-	if err != nil || !found {
-		t.Fatalf("load launch: found=%v err=%v", found, err)
-	}
-	if wrote, err := router.replaySubagentEvent("t1", launch, provider.ProviderEvent{
+	// The transcript row as the session mirror delivers it
+	// (transcript_mirror_state.go providerEvents).
+	if err := router.Handle(provider.ProviderEvent{
 		Kind:            provider.EventUserText,
+		ThreadID:        "t1",
 		ItemID:          "prompt-uuid",
 		Content:         "Inspect the parser",
 		ParentToolUseID: "spawn-1",
-		Meta:            json.RawMessage(`{"subagent_opening_prompt":true}`),
+		Meta:            json.RawMessage(`{"subagent_opening_prompt":true,"provider_item_id":"prompt-uuid","transcript_snapshot":true}`),
 		Timestamp:       time.UnixMilli(1_700_000_000_100),
-	}); err != nil || !wrote {
+	}); err != nil {
 		t.Fatalf("reconcile transcript prompt: %v", err)
 	}
 
@@ -605,10 +604,10 @@ func TestSubagentLaunchPromptKeepsItsOpeningPositionWhenTranscriptIdentityArrive
 }
 
 // A subagent prompt lands on the LAUNCH's turn, not the thread's current
-// one. A backgrounded agent's prompt can arrive from the transcript
-// backfill long after the launching turn closed, and the pane reads a
-// scope's rows within the launch's turn — a row filed under a later turn
-// simply vanishes from the card it belongs to.
+// one. A backgrounded agent's prompt can arrive through the session
+// mirror after the launching turn closed, and the pane reads a scope's
+// rows within the launch's turn: a row filed under a later turn simply
+// vanishes from the card it belongs to.
 func TestHandleUserText_SubagentPromptLandsOnTheLaunchTurnNotTheOpenOne(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")

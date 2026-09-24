@@ -99,17 +99,20 @@ describe('Call', () => {
 });
 
 describe('Events.On', () => {
-  function captureSubscription(): { deliver: (data: unknown) => void; unsubscribe: () => void } {
-    let captured: ((data: unknown) => void) | null = null;
+  function captureSubscription(): {
+    deliver: (data: unknown, sequence?: number, replayed?: boolean) => void;
+    unsubscribe: () => void;
+  } {
+    let captured: ((data: unknown, sequence?: number, replayed?: boolean) => void) | null = null;
     const unsubscribe = vi.fn();
     mockClient.subscribe.mockImplementation((_channel, handler) => {
       captured = handler;
       return unsubscribe;
     });
     return {
-      deliver: (data: unknown) => {
+      deliver: (data, sequence, replayed) => {
         if (!captured) throw new Error('nothing subscribed');
-        captured(data);
+        captured(data, sequence, replayed);
       },
       unsubscribe,
     };
@@ -161,18 +164,25 @@ describe('Events.On', () => {
     });
   });
 
-  it('hands every event of one connection the same origin object', () => {
+  it('hands every frame of one connection the same origin object, sequenced or not', () => {
     setBackendIdentityFromBootstrap('62c8a1de-0a3f-4f4b-9d0a-2b6b1a5b0f11', 'gen-1');
     const subscription = captureSubscription();
 
-    const handler = vi.fn<(ev: { origin?: { backendId: string } }) => void>();
+    const handler = vi.fn<(ev: { origin?: { backendId: string }; sequence?: number; replayed?: boolean }) => void>();
     Events.On('thread:updated', handler);
-    subscription.deliver({ id: 'a' });
-    subscription.deliver({ id: 'b' });
+    // Every wire frame carries a sequence, so these are the steady state.
+    subscription.deliver({ id: 'a' }, 1, false);
+    subscription.deliver({ id: 'b' }, 2, true);
+    subscription.deliver({ id: 'c' });
 
-    // Stamping is a property write, not an allocation: a streaming
-    // channel must not mint an origin object per frame.
-    expect(handler.mock.calls[0]?.[0].origin).toBe(handler.mock.calls[1]?.[0].origin);
+    // The frame's own facts are envelope fields: a streaming channel must
+    // not mint an origin object per frame.
+    const [first, second, third] = handler.mock.calls.map(([ev]) => ev);
+    expect(second?.origin).toBe(first?.origin);
+    expect(third?.origin).toBe(first?.origin);
+    expect(first).toMatchObject({ sequence: 1, replayed: false });
+    expect(second).toMatchObject({ sequence: 2, replayed: true });
+    expect(third?.sequence).toBeUndefined();
   });
 });
 

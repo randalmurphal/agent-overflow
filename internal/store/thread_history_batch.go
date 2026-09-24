@@ -59,7 +59,12 @@ func (s *Store) InsertThreadHistory(threadID string, batch ThreadHistoryBatch) e
 	if err := importTurnCompletionsTx(tx, threadID, batch.Completions); err != nil {
 		return err
 	}
-	if err := insertHistoryRowsTx(tx, threadID, rows); err != nil {
+	// The block carries no card: it recomputes the chains its rows join.
+	w := s.bulkItemWrites(tx, threadID, false)
+	if err := insertHistoryRowsTx(tx, w, rows); err != nil {
+		return err
+	}
+	if err := w.finish(); err != nil {
 		return err
 	}
 
@@ -138,11 +143,12 @@ func insertHistoryTurnsTx(tx *sql.Tx, threadID string, turns []Turn) error {
 
 // insertHistoryRowsTx writes each row's payload before the item that
 // references it, and runs the settle-time search index hook per row, which
-// is what insertItemTx does for a single row.
-func insertHistoryRowsTx(tx *sql.Tx, threadID string, rows []HistoryRow) error {
+// is what insertItemTx does for a single row, as it records each row in w.
+func insertHistoryRowsTx(tx *sql.Tx, w *cardWrite, rows []HistoryRow) error {
 	if len(rows) == 0 {
 		return nil
 	}
+	threadID := w.threadID
 	payloadStmt, err := tx.Prepare(payloadInsertSQL)
 	if err != nil {
 		return fmt.Errorf("store: prepare thread history payload insert for thread %s: %w", threadID, err)
@@ -153,6 +159,11 @@ func insertHistoryRowsTx(tx *sql.Tx, threadID string, rows []HistoryRow) error {
 		return fmt.Errorf("store: prepare thread history item insert for thread %s: %w", threadID, err)
 	}
 	defer itemStmt.Close()
+	adoptingStmt, err := tx.Prepare(itemInsertAdoptingSQL)
+	if err != nil {
+		return fmt.Errorf("store: prepare thread history adopting item insert for thread %s: %w", threadID, err)
+	}
+	defer adoptingStmt.Close()
 
 	indexBatch := make([]Item, 0, 128)
 	for i, row := range rows {
@@ -161,9 +172,19 @@ func insertHistoryRowsTx(tx *sql.Tx, threadID string, rows []HistoryRow) error {
 				return fmt.Errorf("store: insert thread history payload %s: %w", row.Payload.ID, err)
 			}
 		}
-		if _, err := itemStmt.Exec(itemInsertArgs(row.Item)...); err != nil {
+		card := subagentRowOf(row.Item)
+		if err := w.check(card); err != nil {
+			return err
+		}
+		hasChild := false
+		if card.anchorable() || card.parentID != "" {
+			if err := adoptingStmt.QueryRow(itemInsertArgs(row.Item)...).Scan(&hasChild); err != nil {
+				return fmt.Errorf("store: insert thread history item %s: %w", row.Item.ID, err)
+			}
+		} else if _, err := itemStmt.Exec(itemInsertArgs(row.Item)...); err != nil {
 			return fmt.Errorf("store: insert thread history item %s: %w", row.Item.ID, err)
 		}
+		w.inserted(card, hasChild)
 		indexBatch = append(indexBatch, row.Item)
 		if len(indexBatch) == cap(indexBatch) || i == len(rows)-1 {
 			if err := indexSettledItemsTx(tx, indexBatch, ThreadSearchSourceItem); err != nil {

@@ -16,7 +16,7 @@ import type { GitStatus, WorkspaceRef } from '../types/git';
 import type { Thread } from '../types/models';
 import { composeWorkspaceKey, workspaceKeyForThread } from '../utils/workspaceKey';
 import { HOME_BACKEND } from '../transport/backendKey';
-import { __resetEntityIndexForTest } from '../transport/entityIndex';
+import { __resetEntityIndexForTest, noteProject, noteThread } from '../transport/entityIndex';
 import { __attachBackendForTest, detachBackend } from '../transport/backends';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
 import { setBindingMock } from '../../test/mocks/bindings-app';
@@ -133,6 +133,18 @@ describe('gitStatusStore — workspace keying', () => {
     expect(workspaceKeyForThread(makeThread())).toBe(WORKSPACE);
     expect(workspaceKeyForThread(makeThread({ workspacePath: '  ' }))).toBeNull();
     expect(workspaceKeyForThread(null)).toBeNull();
+  });
+
+  it('keys a thread the index has not seen on its project\'s backend', () => {
+    // A draft placeholder's synthetic id is never indexed, but its checkout
+    // lives on the computer that holds its project.
+    noteProject(PROJECT, 'laptop');
+    const draft = makeThread({ id: `draft:pane-1:${PROJECT}:chat:x` });
+    expect(workspaceKeyForThread(draft)).toBe(composeWorkspaceKey('laptop', WORKSPACE_PATH));
+    // A row the index knows keeps its own backend.
+    noteThread('thread-1', 'desktop');
+    expect(workspaceKeyForThread(makeThread())).toBe(composeWorkspaceKey('desktop', WORKSPACE_PATH));
+    expect(workspaceKeyForThread(makeThread({ id: 'unseen', projectId: 'unlisted' }))).toBe(WORKSPACE);
   });
 
   it('shares ONE subscription between two attachers on the same workspace', async () => {

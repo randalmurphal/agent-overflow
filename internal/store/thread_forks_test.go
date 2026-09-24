@@ -69,7 +69,7 @@ func seedForkSource(t *testing.T, s *Store, src string, rows []Item) {
 	for _, it := range rows {
 		it.ThreadID = src
 		it.CreatedAt, it.UpdatedAt = 1, 1
-		if err := s.InsertItem(it); err != nil {
+		if err := insertCarded(s, it); err != nil {
 			t.Fatalf("InsertItem %s: %v", it.ID, err)
 		}
 	}
@@ -409,7 +409,7 @@ func TestPointerForkHidesWhatHangsOffHiddenRowsInAnyOrder(t *testing.T) {
 func TestPointerForkPayloadsStayWithTheirRows(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "src")
-	if err := s.InsertItemWithPayload(Item{
+	if err := insertWithPayloadCarded(s, Item{
 		ID: "edit", ThreadID: "src", TurnIndex: 0, ItemIndex: 0, Kind: "tool_call", Role: "assistant",
 		Status: "completed", Summary: "Edit foo.go", ToolName: "Edit", PayloadID: "p-out", CreatedAt: 1, UpdatedAt: 1,
 	}, Payload{ID: "p-out", Kind: "tool_result", Meta: "{}", Data: []byte("result"), CreatedAt: 1}); err != nil {
@@ -553,7 +553,7 @@ func TestPointerForkTurnRows(t *testing.T) {
 		if err := s.UpdateTurnCompleted(wireID, int64(i+2), "end_turn", "", "", ""); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.InsertItem(Item{ID: fmt.Sprintf("u%d", i), ThreadID: "src", TurnIndex: i, Kind: "user_text", Role: "user", Status: "completed", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		if err := insertCarded(s, Item{ID: fmt.Sprintf("u%d", i), ThreadID: "src", TurnIndex: i, Kind: "user_text", Role: "user", Status: "completed", CreatedAt: 1, UpdatedAt: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -610,7 +610,7 @@ func forkHistoryFixture(t *testing.T, s *Store, src string, promotedAnchors bool
 	}
 	for _, it := range rows {
 		it.ThreadID = src
-		if err := s.InsertItem(it); err != nil {
+		if err := insertCarded(s, it); err != nil {
 			t.Fatalf("insert %s: %v", it.ID, err)
 		}
 	}
@@ -695,7 +695,7 @@ func TestPointerForkBeforePromotedAnchorKeepsTail(t *testing.T) {
 func TestPointerForkBeforePromotedAnchorHidesDescendantsOfExcludedRows(t *testing.T) {
 	s := newTestStore(t)
 	forkHistoryFixture(t, s, "src", true)
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "queued2-child", ThreadID: "src", TurnIndex: 1, ItemIndex: 5,
 		Kind: "assistant_text", Role: "assistant", ParentID: "queued2", CreatedAt: 1_015,
 	}); err != nil {
@@ -722,14 +722,14 @@ func TestPointerForkBeforePromotedBoundaryCutsResponse(t *testing.T) {
 	}, 2_000); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "subprompt", ThreadID: "src", TurnIndex: 1, ItemIndex: 5,
 		Kind: "user_text", Role: "user", ParentID: "pre", CreatedAt: 1_015,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	for i, id := range []string{"resp1", "resp2"} {
-		if err := s.InsertItem(Item{
+		if err := insertCarded(s, Item{
 			ID: id, ThreadID: "src", TurnIndex: 1, ItemIndex: 6 + i,
 			Kind: "assistant_text", Role: "assistant", CreatedAt: 1_016 + int64(i),
 		}); err != nil {

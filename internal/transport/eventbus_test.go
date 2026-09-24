@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -1336,6 +1337,167 @@ func TestEventBus_LatestOnlyDropIsNotAnnounced(t *testing.T) {
 	got := drainEvents(t, sub, 1, time.Second)
 	if len(got) != 1 || got[0].Gap || got[0].Channel != channel {
 		t.Fatalf("expected clean superseding frame, got %+v", got)
+	}
+}
+
+// emitItem publishes one transcript frame addressed to thread.
+func emitItem(t *testing.T, bus *EventBus, thread string, payload any) {
+	t.Helper()
+	if _, err := bus.EmitEntity(eventchan.ProviderItemEvent, thread, payload); err != nil {
+		t.Fatalf("emit for %q: %v", thread, err)
+	}
+}
+
+// decodedGapThreads reads an announcement's attribution back off the wire.
+func decodedGapThreads(t *testing.T, e Event) []string {
+	t.Helper()
+	var frame ServerFrame
+	if err := json.Unmarshal(e.WireBytes, &frame); err != nil {
+		t.Fatalf("decode WireBytes: %v", err)
+	}
+	if !frame.Gap {
+		t.Fatalf("frame carries no gap: %s", e.WireBytes)
+	}
+	return frame.GapThreads
+}
+
+// TestEventBus_DropAnnouncementNamesDroppedThreads: the loss announcement
+// names the threads whose frames were dropped, sorted, and only them. A
+// frame the watch filter withheld is not a loss and is not named, and the
+// set starts empty again once announced.
+func TestEventBus_DropAnnouncementNamesDroppedThreads(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+	bus.subBuf = 1
+	sub := bus.Subscribe()
+	defer sub.Close()
+	sub.SetWatch([]string{"thread-A", "thread-B", "thread-C"}, nil)
+
+	emitItem(t, bus, "thread-A", 1) // fills the buffer
+	emitItem(t, bus, "thread-C", 2) // dropped
+	emitItem(t, bus, "thread-X", 3) // withheld: not watched
+	emitItem(t, bus, "thread-B", 4) // dropped
+	emitItem(t, bus, "thread-C", 5) // dropped
+	if got := drainEvents(t, sub, 1, time.Second); len(got) != 1 || got[0].Gap {
+		t.Fatalf("expected the clean first frame, got %+v", got)
+	}
+
+	emitItem(t, bus, "thread-A", 6)
+	got := drainEvents(t, sub, 1, time.Second)
+	if len(got) != 1 || !got[0].Gap {
+		t.Fatalf("expected the stamped frame, got %+v", got)
+	}
+	if want := []string{"thread-B", "thread-C"}; !slices.Equal(got[0].GapThreads, want) {
+		t.Fatalf("GapThreads = %v, want %v", got[0].GapThreads, want)
+	}
+	if wire := decodedGapThreads(t, got[0]); !slices.Equal(wire, []string{"thread-B", "thread-C"}) {
+		t.Fatalf("wire gapThreads = %v", wire)
+	}
+	// Spelled out: the client (frontend/src/lib/transport/wsClient.ts
+	// gapEvent) reads this name, not this package's struct tag.
+	if !bytes.Contains(got[0].WireBytes, []byte(`"gapThreads":["thread-B","thread-C"]`)) {
+		t.Fatalf("attribution is not on the wire under the name the client reads: %s", got[0].WireBytes)
+	}
+
+	emitItem(t, bus, "thread-A", 7) // fills the buffer
+	emitItem(t, bus, "thread-A", 8) // dropped
+	drainEvents(t, sub, 1, time.Second)
+	emitItem(t, bus, "thread-B", 9)
+	got = drainEvents(t, sub, 1, time.Second)
+	if len(got) != 1 || !slices.Equal(got[0].GapThreads, []string{"thread-A"}) {
+		t.Fatalf("second announcement = %+v, want only thread-A", got)
+	}
+}
+
+// TestEventBus_UnattributedDropAnnouncesNoThreads: one dropped frame with
+// no entity key, before or after keyed drops, makes the announcement name
+// nothing, so the client recovers everything. So do more keys than a watch
+// set may hold. The wire then omits the field.
+func TestEventBus_UnattributedDropAnnouncesNoThreads(t *testing.T) {
+	cases := map[string]func(t *testing.T, bus *EventBus){
+		"keyless after keyed": func(t *testing.T, bus *EventBus) {
+			emitItem(t, bus, "thread-B", 2)
+			emitItem(t, bus, "", 3)
+		},
+		"keyed after keyless": func(t *testing.T, bus *EventBus) {
+			emitItem(t, bus, "", 2)
+			emitItem(t, bus, "thread-B", 3)
+		},
+		"more keys than a watch set": func(t *testing.T, bus *EventBus) {
+			for i := 0; i <= MaxWatchThreads; i++ {
+				emitItem(t, bus, fmt.Sprintf("thread-%d", i), i)
+			}
+		},
+	}
+	for name, drop := range cases {
+		t.Run(name, func(t *testing.T) {
+			bus := NewEventBus(10)
+			defer bus.Close()
+			bus.subBuf = 1
+			sub := bus.Subscribe()
+			defer sub.Close()
+
+			emitItem(t, bus, "thread-A", 1) // fills the buffer
+			drop(t, bus)
+			drainEvents(t, sub, 1, time.Second)
+			emitItem(t, bus, "thread-A", 1)
+			got := drainEvents(t, sub, 1, time.Second)
+			if len(got) != 1 || !got[0].Gap || got[0].GapThreads != nil {
+				t.Fatalf("expected an unattributed announcement, got %+v", got)
+			}
+			if bytes.Contains(got[0].WireBytes, []byte("gapThreads")) {
+				t.Fatalf("unattributed frame carries gapThreads: %s", got[0].WireBytes)
+			}
+		})
+	}
+}
+
+// TestEventBus_AtWatchSetBoundDropStillNamesThreads: exactly as many keys
+// as a watch set may hold is still an attributed loss.
+func TestEventBus_AtWatchSetBoundDropStillNamesThreads(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+	bus.subBuf = 1
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	emitItem(t, bus, "fill", 0)
+	for i := 0; i < MaxWatchThreads; i++ {
+		emitItem(t, bus, fmt.Sprintf("thread-%03d", i), i)
+	}
+	drainEvents(t, sub, 1, time.Second)
+	emitItem(t, bus, "fill", 1)
+	got := drainEvents(t, sub, 1, time.Second)
+	if len(got) != 1 || len(got[0].GapThreads) != MaxWatchThreads {
+		t.Fatalf("expected %d named threads, got %+v", MaxWatchThreads, got)
+	}
+}
+
+// TestEventBus_StandaloneMarkerNamesDroppedThreads: a loss announced by a
+// standalone marker, ahead of another channel's delivery, carries the same
+// attribution as one riding a frame.
+func TestEventBus_StandaloneMarkerNamesDroppedThreads(t *testing.T) {
+	bus := NewEventBus(10)
+	defer bus.Close()
+	bus.subBuf = 1
+	sub := bus.Subscribe()
+	defer sub.Close()
+
+	if _, err := bus.Emit("test:chA", 1); err != nil { // fills the buffer
+		t.Fatalf("emit a1: %v", err)
+	}
+	emitItem(t, bus, "thread-B", 1) // dropped
+	drainEvents(t, sub, 1, time.Second)
+
+	if _, err := bus.Emit("test:chA", 2); err != nil {
+		t.Fatalf("emit a2: %v", err)
+	}
+	got := drainEvents(t, sub, 1, time.Second)
+	if len(got) != 1 || got[0].Channel != string(eventchan.ProviderItemEvent) {
+		t.Fatalf("expected the item_event marker first, got %+v", got)
+	}
+	if wire := decodedGapThreads(t, got[0]); !slices.Equal(wire, []string{"thread-B"}) {
+		t.Fatalf("marker gapThreads = %v, want [thread-B]", wire)
 	}
 }
 

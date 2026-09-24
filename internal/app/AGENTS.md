@@ -96,8 +96,9 @@ apply is a lost race rather than an error. A settlement takes the token's
 settle lock before it writes, releases it before queue or provider work, and
 is handed to the caller by the same door
 (`app_thread_tools_settle.go`). A wake (`app_thread_tools_wake.go`) writes its durable queue row and its
-delivery mark in one store transaction. Settling runs off the provider read
-loop because it can stop or start a session.
+delivery mark in one store transaction. Settling runs off the provider event
+worker because it can stop or start a session, and a stop drains that
+worker's queue.
 
 Project and thread service writes return the current row plus whether durable
 state changed. Emit updates only for changes, while still returning the row to
@@ -115,6 +116,19 @@ its path.
 Shutdown cancels producers and joins package-owned goroutines before closing
 their transports or SQLite dependencies. A service that owns mutable process
 state owns its stop gate and join.
+
+Every boot binds the transport before `Start` and marks it ready after, so no
+bound method runs before `Start` returns (see
+[Startup readiness](../../docs/architecture/transport.md#startup-readiness)).
+`Start` reports each phase through `bootPhase`, whose ids are the
+`boot: phase=` log names, and honors its context between phases and inside
+migrations. The desktop `ServiceStartup` runs `Start` on its own goroutine:
+the window opens during it, `SetStartDone` receives the result, and
+`ServiceShutdown` cancels and joins it. Code the window or shell reaches
+during that time must not assume `Start` finished; check the state it needs,
+as `persistWindowGeometry` does.
+Unattended work that scans the database waits for `awaitFirstReadsSettled`
+so it does not compete with the first client's catalog reads.
 
 The complete mocked-provider isolation configuration belongs in
 `ConfigureIsolation`. Every fixture capable of starting a session uses the

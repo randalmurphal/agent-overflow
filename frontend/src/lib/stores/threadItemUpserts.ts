@@ -38,13 +38,34 @@ export interface ApplyItemUpsertsToWindowOptions {
   runCoveringUnshipped?: (item: Item) => string | null;
 }
 
+/** The batch's last write to a row the window already held. */
+export interface ItemRowWrite {
+  /** The row's index in `current`. */
+  index: number;
+  /** The row `current` holds at `index`. */
+  previous: Item;
+  item: Item;
+}
+
 export interface ApplyItemUpsertsToWindowResult {
+  /**
+   * The window after the merge. `current` itself when the batch only
+   * rewrote rows in their places: the commit applies `rowWrites` in place
+   * and the window keeps its identity. A batch that admits a row, moves
+   * one or confirms a provisional send yields a new array.
+   */
   items: Item[];
   appendedItems: readonly Item[];
   changedItems: readonly Item[];
   /** Provisional records replaced by the same send's authoritative record. */
   replacedItems: readonly Item[];
-  indexesNeedRebuild: boolean;
+  /** One entry per held row the batch wrote, with its last value. */
+  rowWrites: readonly ItemRowWrite[];
+  /**
+   * First index of `items` whose id→index entry moved or is new; the
+   * commit rewrites the map from here. `items.length` when no entry moved.
+   */
+  reindexFrom: number;
   structureChanged: boolean;
   droppedNewerItems: boolean;
   droppedOlderItems?: boolean;
@@ -67,18 +88,6 @@ export interface ApplyItemUpsertsToWindowResult {
    */
   summaryFieldsChangedIds: readonly string[];
   /**
-   * NEW parented rows refused because their anchor is not loadable in
-   * this window — neither already loaded nor landed earlier in the same
-   * batch. Deciding this inside the merge, after the floor/ceiling
-   * filters, is what makes the no-orphan contract airtight: a pre-filter
-   * that vouched for a same-batch anchor could disagree with the filter
-   * that then strips that anchor (below the floor after a prune),
-   * landing the child as an unreachable orphan row. The caller swallows
-   * these (`threadSubagentMemory.recordAdmission`) — SQLite holds the
-   * canonical rows, and hydration renders them once the anchor is back.
-   */
-  rejectedParentedItems: readonly Item[];
-  /**
    * Run record keys of rows refused because they fell inside a held run's
    * unshipped region. The caller marks each dirty
    * (`threadActivityRuns.markRunDirty`), which schedules the stub
@@ -89,8 +98,52 @@ export interface ApplyItemUpsertsToWindowResult {
 
 /** Shared empty list, so the overwhelmingly common "nothing moved" batch allocates none. */
 const NO_CHANGED_IDS: readonly string[] = Object.freeze([]);
-/** Shared empty list, so batches with no refused parented rows allocate none. */
-const NO_REJECTED_ITEMS: readonly Item[] = Object.freeze([]);
+const NO_ITEMS: readonly Item[] = Object.freeze([]);
+const NO_ROW_WRITES: readonly ItemRowWrite[] = Object.freeze([]);
+
+/** First index whose row sorts after `item`; rows at its position stay ahead of it. */
+function positionUpperBound(rows: readonly Item[], item: Item): number {
+  let lo = 0;
+  let hi = rows.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (compareItemsByTimelinePosition(rows[mid], item) <= 0) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * Place admitted rows into the sorted `rows`, in place. Rows sharing a
+ * position keep held rows first, then arrival order, which is what a
+ * stable sort of the appended array produced. Returns the first index
+ * whose row changed.
+ */
+function placeAdmittedRows(rows: Item[], admitted: readonly Item[]): number {
+  let sorted = admitted;
+  for (let index = 1; index < admitted.length; index += 1) {
+    if (compareItemsByTimelinePosition(admitted[index - 1], admitted[index]) > 0) {
+      sorted = [...admitted].sort(compareItemsByTimelinePosition);
+      break;
+    }
+  }
+  const from = positionUpperBound(rows, sorted[0]);
+  if (from === rows.length) {
+    for (const item of sorted) rows.push(item);
+    return from;
+  }
+  const held = rows.slice(from);
+  rows.length = from;
+  let h = 0;
+  let a = 0;
+  while (h < held.length && a < sorted.length) {
+    if (compareItemsByTimelinePosition(held[h], sorted[a]) <= 0) rows.push(held[h++]);
+    else rows.push(sorted[a++]);
+  }
+  while (h < held.length) rows.push(held[h++]);
+  while (a < sorted.length) rows.push(sorted[a++]);
+  return from;
+}
 
 /**
  * Apply streamed/upserted items to the currently loaded timeline window.
@@ -115,9 +168,12 @@ export function applyItemUpsertsToWindow({
 }: ApplyItemUpsertsToWindowOptions): ApplyItemUpsertsToWindowResult | null {
   if (incoming.length === 0) return null;
 
-  let next: Item[] | null = null;
+  // Nothing is copied while the batch is read: a held row's last write is
+  // kept by index, and admitted rows by arrival. Rows admitted in this
+  // batch are addressed at `current.length + offset`.
+  const writes = new Map<number, Item>();
+  const admitted: Item[] = [];
   const batchIndexById = new Map<string, number>();
-  const appendedItems: Item[] = [];
   const changedItems: Item[] = [];
   const replacedItems: Item[] = [];
   const optimisticIndexByIdentity = new Map<string, number>();
@@ -132,13 +188,13 @@ export function applyItemUpsertsToWindow({
     optimisticIndexByIdentity.set(identity, index);
   }
   let changed = false;
-  let needsSort = false;
+  let heldRowMoved = false;
+  let firstConfirmedIndex = current.length;
   let structureChanged = false;
   let droppedNewerItems = false;
   let droppedOlderItems = false;
   let retentionChanged = false;
   let summaryFieldsChangedIds: string[] | null = null;
-  let rejectedParentedItems: Item[] | null = null;
   let dirtiedRunKeys: Set<string> | null = null;
   // MIN_SAFE_INTEGER, not 0: head-healed prompts sit at NEGATIVE item
   // indexes, so 0 is not the start of a turn — a fallback floor at 0
@@ -160,30 +216,31 @@ export function applyItemUpsertsToWindow({
       ? null
       : { turnIndex: newestLoadedTurnIndex, itemIndex: Number.MAX_SAFE_INTEGER });
 
-  const workingItems = (): Item[] => {
-    if (next === null) next = current.slice();
-    return next;
-  };
+  const rowAt = (index: number): Item | undefined => (index < current.length
+    ? writes.get(index) ?? current[index]
+    : admitted[index - current.length]);
 
   for (const item of incoming) {
     if (currentThreadId !== null && item.threadId !== currentThreadId) continue;
-    if (scopeRootId !== undefined && (item.parentId ?? '') !== scopeRootId) continue;
+    // Only rows of this window's scope are admitted; the caller routes
+    // subagent children elsewhere before calling.
+    if ((item.parentId ?? '') !== (scopeRootId ?? '')) continue;
 
     const identity = optimisticIndexByIdentity.size > 0 ? userMessageIdentity(item) : null;
     const existingIndex = batchIndexById.get(item.id) ?? itemIndexById.get(item.id)
       ?? (identity === null ? undefined : optimisticIndexByIdentity.get(identity));
     if (existingIndex !== undefined) {
-      const previous = (next ?? current)[existingIndex];
+      const previous = rowAt(existingIndex);
       if (!previous || isItemStatusRegression(previous, item)) continue;
       // No-op dedupe: if the backend re-emits an upsert with identical
-      // content, skip the array replace. Otherwise every redundant
-      // upsert produces a new `pane.items` reference, which cascades
-      // through `groupedNodes`, the Virtualizer's `data` prop, and the
-      // mounted row components — observed as a 103 px row oscillation
-      // every ~115 ms in plan-ready threads. See `itemsAreEqual` for
-      // the fields compared. The skip MUTATES the held row's `rev` in
-      // place to the incoming one: "identical content" means identical
-      // to a reader, and the revision has no reader.
+      // content, skip the write. Otherwise every redundant upsert
+      // produces a new row reference, which cascades through
+      // `groupedNodes`, the Virtualizer's `data` prop, and the mounted
+      // row components, which showed as a 103 px row oscillation every
+      // ~115 ms in plan-ready threads. See `itemsAreEqual` for the fields
+      // compared. The skip MUTATES the held row's `rev` in place to the
+      // incoming one: "identical content" means identical to a reader,
+      // and the revision has no reader.
       if (adoptRevIfEqual(previous, item)) continue;
       if (previous.id !== item.id) {
         if (!optimisticItemIds?.has(previous.id) || userMessageIdentity(previous) !== identity) {
@@ -191,8 +248,14 @@ export function applyItemUpsertsToWindow({
         }
         replacedItems.push(previous);
         batchIndexById.set(item.id, existingIndex);
+        firstConfirmedIndex = Math.min(firstConfirmedIndex, existingIndex);
       }
-      workingItems()[existingIndex] = item;
+      if (existingIndex < current.length) {
+        writes.set(existingIndex, item);
+        if (compareItemsByTimelinePosition(previous, item) !== 0) heldRowMoved = true;
+      } else {
+        admitted[existingIndex - current.length] = item;
+      }
       changed = true;
       if (itemTimelineStructureChanged(previous, item)) {
         structureChanged = true;
@@ -204,13 +267,6 @@ export function applyItemUpsertsToWindow({
         (summaryFieldsChangedIds ??= []).push(item.id);
       }
       changedItems.push(item);
-      if (batchIndexById.has(item.id) && existingIndex >= current.length) {
-        const appendedOffset = existingIndex - current.length;
-        appendedItems[appendedOffset] = item;
-      }
-      if (compareItemsByTimelinePosition(previous, item) !== 0) {
-        needsSort = true;
-      }
       continue;
     }
 
@@ -232,13 +288,12 @@ export function applyItemUpsertsToWindow({
       continue;
     }
 
-    // A new TOP-LEVEL row inside a held run's unshipped region is not a
-    // row this window can hold: see `runCoveringUnshipped`. Checked after
-    // the floor/ceiling filters, so a row those already refused costs no
-    // lookup, and before the parent admission, which only concerns
-    // children. Rows at or past the newest edge are outside every run's
+    // A new row inside a held run's unshipped region is not a row this
+    // window can hold: see `runCoveringUnshipped`. Checked after the
+    // floor/ceiling filters, so a row those already refused costs no
+    // lookup. Rows at or past the newest edge are outside every run's
     // range and append exactly as before.
-    if ((item.parentId ?? '') === (scopeRootId ?? '') && runCoveringUnshipped) {
+    if (runCoveringUnshipped) {
       const runKey = runCoveringUnshipped(item);
       if (runKey !== null) {
         (dirtiedRunKeys ??= new Set()).add(runKey);
@@ -246,36 +301,13 @@ export function applyItemUpsertsToWindow({
       }
     }
 
-    // Admission for new subagent children, checked against what actually
-    // landed (batchIndexById excludes floor/ceiling-refused rows, and
-    // a rejected anchor never enters it, so grandchildren are refused
-    // transitively). Wire order puts a parent's upsert before its
-    // children's, so a same-batch anchor is always decided first.
-    const parentId = item.parentId ?? '';
-    if (
-      parentId !== (scopeRootId ?? '')
-      && parentId
-      && itemIndexById.get(parentId) === undefined
-      && !batchIndexById.has(parentId)
-    ) {
-      (rejectedParentedItems ??= []).push(item);
-      continue;
-    }
-
-    const source = next ?? current;
-    const previousTail = source.at(-1);
-    if (previousTail && compareItemsByTimelinePosition(previousTail, item) > 0) {
-      needsSort = true;
-    }
-    const target = workingItems();
-    batchIndexById.set(item.id, target.length);
-    target.push(item);
+    batchIndexById.set(item.id, current.length + admitted.length);
+    admitted.push(item);
     changed = true;
     structureChanged = true;
     if (rowUiRetentionChanged(undefined, item)) {
       retentionChanged = true;
     }
-    appendedItems.push(item);
     changedItems.push(item);
   }
 
@@ -283,44 +315,42 @@ export function applyItemUpsertsToWindow({
     !changed
     && !droppedNewerItems
     && !droppedOlderItems
-    && rejectedParentedItems === null
     && dirtiedRunKeys === null
   ) {
     return null;
   }
-  if (!changed) {
-    return {
-      items: current as Item[],
-      appendedItems,
-      changedItems,
-      replacedItems,
-      indexesNeedRebuild: false,
-      structureChanged: false,
-      droppedNewerItems,
-      droppedOlderItems,
-      rowUiRetentionChanged: false,
-      summaryFieldsChangedIds: NO_CHANGED_IDS,
-      rejectedParentedItems: rejectedParentedItems ?? NO_REJECTED_ITEMS,
-      dirtiedRunKeys: dirtiedRunKeys ? [...dirtiedRunKeys] : NO_CHANGED_IDS,
-    };
-  }
-  const result = next ?? current.slice();
-
-  if (needsSort) {
-    result.sort(compareItemsByTimelinePosition);
+  const rowWrites: ItemRowWrite[] = [];
+  for (const [index, item] of writes) rowWrites.push({ index, previous: current[index], item });
+  // Rows rewritten where they stand keep the window's identity; the commit
+  // writes them in place.
+  let items = current as Item[];
+  let reindexFrom = current.length;
+  if (admitted.length > 0 || heldRowMoved || replacedItems.length > 0) {
+    items = current.slice();
+    for (const [index, item] of writes) items[index] = item;
+    reindexFrom = firstConfirmedIndex;
+    if (heldRowMoved) {
+      // A held row changed position, which only corrections do: re-sort
+      // the whole window rather than track the move.
+      for (const item of admitted) items.push(item);
+      items.sort(compareItemsByTimelinePosition);
+      reindexFrom = 0;
+    } else if (admitted.length > 0) {
+      reindexFrom = Math.min(reindexFrom, placeAdmittedRows(items, admitted));
+    }
   }
   return {
-    items: result,
-    appendedItems,
+    items,
+    appendedItems: admitted.length > 0 ? admitted : NO_ITEMS,
     changedItems,
     replacedItems,
-    indexesNeedRebuild: needsSort || replacedItems.length > 0,
+    rowWrites: rowWrites.length > 0 ? rowWrites : NO_ROW_WRITES,
+    reindexFrom,
     structureChanged,
     droppedNewerItems,
     droppedOlderItems,
     rowUiRetentionChanged: retentionChanged,
     summaryFieldsChangedIds: summaryFieldsChangedIds ?? NO_CHANGED_IDS,
-    rejectedParentedItems: rejectedParentedItems ?? NO_REJECTED_ITEMS,
     dirtiedRunKeys: dirtiedRunKeys ? [...dirtiedRunKeys] : NO_CHANGED_IDS,
   };
 }

@@ -271,8 +271,8 @@ func joinedSendIdentityQuery(q sqlQueryer, threadID, sendID string) (string, []a
 //
 // It is the reconciliation half of the §E6 resume prompt: that row is
 // minted from the rebind `system/task_started` (which has no provider
-// uuid to give) and the agent's terminal transcript later delivers the
-// same text WITH a uuid. Without this lookup the transcript row lands as
+// uuid to give) and the session mirror later delivers the agent's copy of
+// the same text WITH a uuid. Without this lookup the transcript row lands as
 // a second `user:wire:<uuid>` duplicate below the answer it asked for.
 //
 // The non-empty `parent_id` term is load-bearing: it is the predicate of the partial
@@ -579,8 +579,9 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 // keep ListTurnItems, which hydrates them.
 func (s *Store) ListTurnItemsSansPayload(threadID string, turnIndex int) ([]Item, error) {
 	query, args, err := timelineArms(s.reader(), threadID, timelineSelection{
-		Columns: itemColumnsSansPayloadFor,
-		Turn:    "?", TurnArgs: []any{turnIndex},
+		Columns:   itemColumnsSansPayloadFor,
+		LocalJoin: servedItemJoin,
+		Turn:      "?", TurnArgs: []any{turnIndex},
 		OrderBy: "item_index",
 	})
 	if err != nil {
@@ -795,45 +796,6 @@ func (s *Store) HasMatchingSystemItem(threadID string, turnIndex int, kind, pare
 		return false, fmt.Errorf("store: matching system item for thread %s turn %d: %w", threadID, turnIndex, err)
 	}
 	return exists != 0, nil
-}
-
-// LatestToolCallByName returns the most-recently-inserted tool_call row
-// in (threadID, turnIndex) whose lower(tool_name) equals any of
-// toolNames. Matches the iteration pattern in triage.findLatestToolCall
-// but pushes the filter into SQLite so we don't deserialize every item
-// in turns with a lot of tool calls. Returns (zero Item, false, nil)
-// when no match exists.
-//
-// toolNames must be non-empty and are matched case-insensitively; the
-// names are lowercased by the caller (to keep the SQL string short).
-func (s *Store) LatestToolCallByName(threadID string, turnIndex int, toolNames []string) (Item, bool, error) {
-	if len(toolNames) == 0 {
-		return Item{}, false, nil
-	}
-
-	// Build a parametrized IN clause. SQLite has no native array type; we
-	// use ? placeholders. Performance-wise we rely on the thread + turn
-	// index of each arm — the LIMIT 1 makes the scan minimal.
-	names := make([]any, 0, len(toolNames))
-	for _, name := range toolNames {
-		names = append(names, name)
-	}
-	query, args, err := timelineIDSelection(s.reader(), threadID, timelineSelection{
-		Turn: "?", TurnArgs: []any{turnIndex},
-		Where:     `items.kind = 'tool_call' AND lower(items.tool_name) IN (` + placeholders(len(names)) + `)`,
-		WhereArgs: names,
-		OrderBy:   "item_index DESC",
-		Limit:     1,
-	})
-	if err != nil {
-		return Item{}, false, err
-	}
-
-	it, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, query, args...)
-	if err != nil {
-		return Item{}, false, fmt.Errorf("store: latest tool_call thread %s turn %d: %w", threadID, turnIndex, err)
-	}
-	return it, found, nil
 }
 
 // MaxItemIndexForTurn returns the highest item_index currently persisted

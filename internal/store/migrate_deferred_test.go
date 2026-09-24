@@ -29,6 +29,15 @@ func deferredPending(t *testing.T, s *Store) bool {
 	return pending
 }
 
+func deferredFailureOf(t *testing.T, s *Store) *DeferredFailure {
+	t.Helper()
+	failure, err := s.DeferredMigrationFailure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return failure
+}
+
 // reopenStore closes s and opens its file again.
 func reopenStore(t *testing.T, s *Store) *Store {
 	t.Helper()
@@ -115,6 +124,9 @@ func TestNewDatabaseHasNoPendingDeferredMigrations(t *testing.T) {
 	if got := deferredWatermarkOf(t, s); got != latestDeferredVersion {
 		t.Fatalf("new database watermark = %d, want %d", got, latestDeferredVersion)
 	}
+	if failure := deferredFailureOf(t, s); failure != nil {
+		t.Fatalf("new database has a recorded failure: %+v", failure)
+	}
 }
 
 // The v119 phase runs once: a quit leaves it pending and the next run
@@ -136,7 +148,7 @@ func TestDeferredMigrationResumesAndRunsOnce(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := s.RunDeferredMigrations(ctx, ChunkPause(cancel)); err != nil {
+	if err := s.RunDeferredMigrations(ctx, DeferredHost{Pause: ChunkPause(cancel)}); err != nil {
 		t.Fatal(err)
 	}
 	moved := countRows(t, s, `SELECT count(*) FROM items WHERE thread_id='t'`)
@@ -147,10 +159,10 @@ func TestDeferredMigrationResumesAndRunsOnce(t *testing.T) {
 		t.Fatalf("interrupted phase recorded the watermark: %d", deferredWatermarkOf(t, s))
 	}
 
-	if err := s.RunDeferredMigrations(context.Background(), nil); err != nil {
+	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
 		t.Fatal(err)
 	}
-	if deferredPending(t, s) || deferredWatermarkOf(t, s) != 119 {
+	if deferredPending(t, s) || deferredWatermarkOf(t, s) != latestDeferredVersion {
 		t.Fatalf("finished phase left watermark %d", deferredWatermarkOf(t, s))
 	}
 	requireSameRepairView(t, "folded", readRepairView(t, s, "t"), before)
@@ -164,7 +176,7 @@ func TestDeferredMigrationResumesAndRunsOnce(t *testing.T) {
 		t.Fatal("the watermark did not persist")
 	}
 	mustExec(t, s.db, `INSERT INTO payloads(thread_id,id,kind,meta,data,created_at) VALUES('t','later','text','{}',CAST('later' AS BLOB),1)`)
-	if err := s.RunDeferredMigrations(context.Background(), nil); err != nil {
+	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
 		t.Fatal(err)
 	}
 	if n := countRows(t, s, `SELECT count(*) FROM payloads WHERE id='later'`); n != 1 {
@@ -172,48 +184,78 @@ func TestDeferredMigrationResumesAndRunsOnce(t *testing.T) {
 	}
 }
 
-// A thread whose fold fails is reported once and left sealed, the other
-// threads are folded, and the phase finishes, so no later run repeats the
-// failure.
-func TestHistoryRepairLeavesAFailingThreadOnce(t *testing.T) {
+// A chunk whose fold fails is reported with its thread and left sealed, and
+// the rest of the run goes on. The run leaves the watermark and records the
+// failure, which survives a restart. The next run retries the chunk; once
+// the fault is gone it finishes, advances the watermark and clears the
+// record.
+func TestHistoryRepairRetriesAFailingChunkOnTheNextRun(t *testing.T) {
 	s := sealedStoreBelowV119(t, 20, "a", "b")
-	mustExec(t, s.db, `CREATE TRIGGER fail_repair BEFORE INSERT ON items WHEN NEW.thread_id = 'a' BEGIN SELECT RAISE(ABORT, 'injected'); END`)
-	logged := captureLog(t)
-
-	if err := s.RunDeferredMigrations(context.Background(), nil); err != nil {
+	var chunk string
+	if err := s.db.QueryRow(`SELECT chunk_id FROM thread_import_chunks WHERE thread_id = 'a'`).Scan(&chunk); err != nil {
 		t.Fatal(err)
 	}
-	if deferredPending(t, s) {
-		t.Fatal("a failing thread kept the phase pending")
+	mustExec(t, s.db, `CREATE TRIGGER fail_chunk BEFORE DELETE ON import_history_chunks WHEN OLD.id = '`+chunk+`' BEGIN SELECT RAISE(ABORT, 'injected'); END`)
+	logged := captureLog(t)
+	requireRecorded := func(label string) {
+		t.Helper()
+		if !deferredPending(t, s) || deferredWatermarkOf(t, s) != 118 {
+			t.Fatalf("%s: a run with a failed chunk moved the watermark to %d", label, deferredWatermarkOf(t, s))
+		}
+		failure := deferredFailureOf(t, s)
+		if failure == nil || failure.Version != 119 || failure.Title != "History repair" || failure.Failures != 1 ||
+			!strings.Contains(failure.FirstError, "thread a") || !strings.Contains(failure.FirstError, "injected") {
+			t.Fatalf("%s: recorded failure = %+v", label, failure)
+		}
 	}
+
+	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
+		t.Fatal(err)
+	}
+	requireRecorded("first run")
 	if n := countRows(t, s, `SELECT count(*) FROM thread_import_chunks WHERE thread_id='b'`); n != 0 {
-		t.Fatal("the failing thread stopped the fold of another thread")
+		t.Fatal("the failing chunk stopped the fold of another thread")
 	}
-	if n := countRows(t, s, `SELECT count(*) FROM thread_import_chunks WHERE thread_id='a'`); n == 0 {
-		t.Fatal("the failing thread lost its sealed history")
+	if n := countRows(t, s, `SELECT count(*) FROM thread_import_chunks WHERE thread_id='a'`); n != 1 {
+		t.Fatal("the failing chunk lost its reference")
 	}
 	if n := countRows(t, s, `SELECT count(*) FROM timeline_items WHERE thread_id='a'`); n != 20 {
 		t.Fatalf("the failing thread reads %d rows, want 20", n)
 	}
-
-	if err := s.RunDeferredMigrations(context.Background(), nil); err != nil {
-		t.Fatal(err)
-	}
-	s = reopenStore(t, s)
-	if err := s.RunDeferredMigrations(context.Background(), nil); err != nil {
-		t.Fatal(err)
-	}
 	if n := strings.Count(logged(), "thread a keeps the rest of its sealed history"); n != 1 {
-		t.Fatalf("the failing thread was reported %d times, want once:\n%s", n, logged())
+		t.Fatalf("the failing chunk was reported %d times in one run, want once:\n%s", n, logged())
 	}
-	if !strings.Contains(logged(), "injected") {
-		t.Fatalf("the report does not carry the failure:\n%s", logged())
+
+	s = reopenStore(t, s)
+	requireRecorded("after a restart")
+	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
+		t.Fatal(err)
 	}
+	requireRecorded("second run")
+	if n := strings.Count(logged(), "thread a keeps the rest of its sealed history"); n != 2 {
+		t.Fatalf("the second run did not retry the chunk once:\n%s", logged())
+	}
+
+	mustExec(t, s.db, `DROP TRIGGER fail_chunk`)
+	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
+		t.Fatal(err)
+	}
+	if deferredPending(t, s) || deferredWatermarkOf(t, s) != latestDeferredVersion {
+		t.Fatalf("the run after the fault left watermark %d", deferredWatermarkOf(t, s))
+	}
+	if failure := deferredFailureOf(t, s); failure != nil {
+		t.Fatalf("a finished run kept the failure record: %+v", failure)
+	}
+	if n := countRows(t, s, `SELECT count(*) FROM deferred_migration_failures`); n != 0 {
+		t.Fatalf("a finished run left %d failure rows", n)
+	}
+	requireNoImportedHistory(t, s)
 }
 
-// A phase that returns an error keeps the watermark and the error reaches
-// the caller; the next run resumes it.
-func TestDeferredMigrationErrorKeepsWatermark(t *testing.T) {
+// A step that returns an error counts as one failed item: the next step
+// still runs, the watermark stays and the error is recorded. The next run
+// retries the phase.
+func TestDeferredStepErrorIsRecordedAndRetried(t *testing.T) {
 	s := openStoreAt(t)
 	t.Cleanup(func() {
 		if err := s.Close(); err != nil {
@@ -222,30 +264,69 @@ func TestDeferredMigrationErrorKeepsWatermark(t *testing.T) {
 	})
 	mustExec(t, s.db, `PRAGMA user_version = 118`)
 	injected := errors.New("injected")
-	runs := 0
-	chain := []Migration{{Version: 119, Deferred: &DeferredMigration{Name: "probe", Run: func(context.Context, *Store, ChunkPause) error {
-		runs++
-		if runs == 1 {
-			return injected
-		}
-		return nil
+	first, second := 0, 0
+	chain := []Migration{{Version: 119, Deferred: &DeferredMigration{Title: "Probe", Steps: []DeferredStep{
+		{Name: "first", Run: func(context.Context, *Store, *deferredRun) error {
+			first++
+			if first == 1 {
+				return injected
+			}
+			return nil
+		}},
+		{Name: "second", Run: func(context.Context, *Store, *deferredRun) error {
+			second++
+			return nil
+		}},
 	}}}}
 
-	err := s.runDeferredMigrations(context.Background(), nil, chain)
-	if !errors.Is(err, injected) || !strings.Contains(err.Error(), "v119 (probe)") {
-		t.Fatalf("failing phase error = %v", err)
+	if err := s.runDeferredMigrations(context.Background(), DeferredHost{}, chain); err != nil {
+		t.Fatal(err)
+	}
+	if second != 1 {
+		t.Fatal("a failing step stopped the next step")
 	}
 	if deferredWatermarkOf(t, s) != 118 {
-		t.Fatal("a failed phase recorded the watermark")
+		t.Fatal("a run with a failed step recorded the watermark")
 	}
-	if err := s.runDeferredMigrations(context.Background(), nil, chain); err != nil {
+	failure, err := s.deferredMigrationFailure(chain)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.runDeferredMigrations(context.Background(), nil, chain); err != nil {
+	if failure == nil || failure.Title != "Probe" || failure.Failures != 1 || failure.FirstError != "v119 first: injected" {
+		t.Fatalf("recorded failure = %+v", failure)
+	}
+
+	if err := s.runDeferredMigrations(context.Background(), DeferredHost{}, chain); err != nil {
 		t.Fatal(err)
 	}
-	if runs != 2 || deferredWatermarkOf(t, s) != 119 {
-		t.Fatalf("runs = %d, watermark = %d; want the retry recorded once", runs, deferredWatermarkOf(t, s))
+	if err := s.runDeferredMigrations(context.Background(), DeferredHost{}, chain); err != nil {
+		t.Fatal(err)
+	}
+	if first != 2 || second != 2 || deferredWatermarkOf(t, s) != 119 {
+		t.Fatalf("runs = %d/%d, watermark = %d; want the retry recorded once", first, second, deferredWatermarkOf(t, s))
+	}
+	if failure, err := s.deferredMigrationFailure(chain); err != nil || failure != nil {
+		t.Fatalf("the finished retry kept the failure record: %+v, %v", failure, err)
+	}
+}
+
+// A quit records nothing, not even the items that failed before it.
+func TestDeferredMigrationQuitRecordsNothing(t *testing.T) {
+	s := sealedStoreBelowV119(t, 20, "a", "b")
+	mustExec(t, s.db, `CREATE TRIGGER fail_repair BEFORE INSERT ON items WHEN NEW.thread_id = 'a' BEGIN SELECT RAISE(ABORT, 'injected'); END`)
+	ctx, cancel := context.WithCancel(context.Background())
+	// Thread a fails first; the pause before thread b is the quit.
+	if err := s.RunDeferredMigrations(ctx, DeferredHost{Pause: ChunkPause(cancel)}); err != nil {
+		t.Fatal(err)
+	}
+	if deferredWatermarkOf(t, s) != 118 {
+		t.Fatal("a quit moved the watermark")
+	}
+	if failure := deferredFailureOf(t, s); failure != nil {
+		t.Fatalf("a quit recorded a failure: %+v", failure)
+	}
+	if n := countRows(t, s, `SELECT count(*) FROM thread_import_chunks WHERE thread_id='b'`); n == 0 {
+		t.Fatal("the run went on after the quit")
 	}
 }
 
@@ -269,7 +350,7 @@ func TestDeferredMigrationRerunsAfterRestore(t *testing.T) {
 			t.Fatalf("restore: %v", err)
 		}
 	}
-	if err := s.RunDeferredMigrations(context.Background(), pause); err != nil {
+	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{Pause: pause}); err != nil {
 		t.Fatal(err)
 	}
 	if !restored {
@@ -284,15 +365,18 @@ func TestDeferredMigrationRerunsAfterRestore(t *testing.T) {
 	}
 }
 
-// A restore replaces the rows, so the watermark comes from the snapshot.
+// A restore replaces the rows, so the watermark and the failure record come
+// from the snapshot.
 func TestRestoreCarriesDeferredWatermark(t *testing.T) {
 	live := newTestStore(t)
+	mustExec(t, live.db, `INSERT INTO deferred_migration_failures(version,failures,first_error,failed_at) VALUES(200,3,'live',1)`)
 	snapshot := newTestStorePath(t)
 	raw, err := sql.Open("sqlite", "file:"+snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustExec(t, raw, `PRAGMA user_version = 118`)
+	mustExec(t, raw, `INSERT INTO deferred_migration_failures(version,failures,first_error,failed_at) VALUES(119,2,'snapshot',1)`)
 	if err := raw.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -301,5 +385,12 @@ func TestRestoreCarriesDeferredWatermark(t *testing.T) {
 	}
 	if !deferredPending(t, live) || deferredWatermarkOf(t, live) != 118 {
 		t.Fatalf("restored watermark = %d", deferredWatermarkOf(t, live))
+	}
+	failure := deferredFailureOf(t, live)
+	if failure == nil || failure.Version != 119 || failure.Failures != 2 || failure.FirstError != "snapshot" {
+		t.Fatalf("restored failure record = %+v", failure)
+	}
+	if n := countRows(t, live, `SELECT count(*) FROM deferred_migration_failures`); n != 1 {
+		t.Fatalf("the restore kept the live failure record beside the snapshot's: %d rows", n)
 	}
 }

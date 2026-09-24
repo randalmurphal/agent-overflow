@@ -462,7 +462,7 @@
       <SettingsField
         id="notifications.app-update"
         label="App update notices"
-        hint="When an update did not apply and the app needs a hand."
+        hint="When an update did not apply, or database maintenance could not finish and will retry."
       >
         <ToggleSwitch
           checked={settings.notifyAppUpdate}

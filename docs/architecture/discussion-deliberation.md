@@ -139,7 +139,7 @@ post and the new speaker), and `recordDiscussionPost` emits directly
 only when no claim happened (single-participant roster, or a
 conclusion). The claim then dispatches `promptDiscussionSpeaker` on a
 background goroutine (`promptDiscussionSpeakerAsync`) so the hot path
-(a wire RPC call, or the provider event read loop) never blocks on a
+(a wire RPC call, or the thread's provider event worker) never blocks on a
 provider round-trip. `promptDiscussionSpeaker` itself:
 
 1. Reads the speaker's own last-posted sequence

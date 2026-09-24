@@ -36,7 +36,7 @@ func TestListTurnUserSummariesSkipsSubagentPrompts(t *testing.T) {
 	}
 	for _, it := range rows {
 		it.CreatedAt, it.UpdatedAt = now, now
-		if err := s.InsertItem(it); err != nil {
+		if err := insertCarded(s, it); err != nil {
 			t.Fatalf("insert %s: %v", it.ID, err)
 		}
 	}

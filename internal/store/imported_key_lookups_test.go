@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
@@ -11,8 +10,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	sqlite "modernc.org/sqlite"
 )
 
 // A lookup pinned by id, by another key or by turn must cost the same
@@ -32,7 +29,12 @@ type statementRecorder struct {
 	stmts []recordedStatement
 }
 
-func (r *statementRecorder) record(query string, args []driver.NamedValue) {
+// observe records each statement run while capturing, with its arguments. A
+// statement the connection keeps compiled is recorded when it runs.
+func (r *statementRecorder) observe(_ *observedConn, use sqlUse, query string, args []driver.NamedValue) {
+	if use != sqlDirect && use != sqlStmtRun {
+		return
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.on {
@@ -57,75 +59,19 @@ func (r *statementRecorder) capture(fn func()) []recordedStatement {
 	return r.stmts
 }
 
-type recordingConnector struct {
-	driver.Connector
-	rec *statementRecorder
-}
-
-func (c recordingConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	conn, err := c.Connector.Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return recordingConn{Conn: conn, rec: c.rec}, nil
-}
-
-// recordingConn records each statement and forwards it to the modernc
-// connection, which implements every interface forwarded here.
-type recordingConn struct {
-	driver.Conn
-	rec *statementRecorder
-}
-
-func (c recordingConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
-	c.rec.record(query, nil)
-	return c.Conn.(driver.ConnPrepareContext).PrepareContext(ctx, query)
-}
-
-func (c recordingConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
-	c.rec.record(query, args)
-	return c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
-}
-
-func (c recordingConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	c.rec.record(query, args)
-	return c.Conn.(driver.QueryerContext).QueryContext(ctx, query, args)
-}
-
-func (c recordingConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
-	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
-}
-
-func (c recordingConn) ResetSession(ctx context.Context) error {
-	return c.Conn.(driver.SessionResetter).ResetSession(ctx)
-}
-
-func (c recordingConn) IsValid() bool {
-	return c.Conn.(driver.Validator).IsValid()
-}
-
 // recordStatements reopens both of s's pools through a recorder.
 func recordStatements(t *testing.T, s *Store) *statementRecorder {
 	t.Helper()
 	rec := &statementRecorder{}
-	open := func(pragmas []connPragma, conns int) *sql.DB {
-		base, err := sqlite.NewConnector(poolDSN(s.path, pragmas))
-		if err != nil {
-			t.Fatal(err)
-		}
-		db := sql.OpenDB(recordingConnector{Connector: base, rec: rec})
-		db.SetMaxOpenConns(conns)
-		return db
-	}
 	if err := s.db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	s.db = open(writerConnPragmas, 1)
+	s.db = openObservedPool(t, s.path, writerConnPragmas, 1, rec.observe)
 	if s.read != nil {
 		if err := s.read.Close(); err != nil {
 			t.Fatal(err)
 		}
-		s.read = open(readerConnPragmas, readPoolConns)
+		s.read = openObservedPool(t, s.path, readerConnPragmas, readPoolConns, rec.observe)
 	}
 	return rec
 }
@@ -345,9 +291,6 @@ func keyedLookups(th string) []keyedLookup {
 				t.Errorf("system item: found=%v err=%v", found, err)
 			}
 		}},
-		{name: "LatestToolCallByName", turn: true, run: func(t *testing.T, s *Store) {
-			mustFind[Item](t, "tool call")(s.LatestToolCallByName(th, 1, []string{"task"}))
-		}},
 		{name: "MaxItemIndexForTurn", turn: true, run: func(t *testing.T, s *Store) {
 			mustFind[int](t, "max index")(s.MaxItemIndexForTurn(th, 1))
 		}},
@@ -366,9 +309,9 @@ func keyedLookups(th string) []keyedLookup {
 		}},
 		{name: "subagent reads", run: func(t *testing.T, s *Store) {
 			q := s.reader()
-			must[[]subagentRound](t, "resume rounds")(s.subagentResumeRounds(q, th, []string{"launch-1"}))
+			must[[]subagentRound](t, "resume rounds")(subagentResumeRounds(q, th, []string{"launch-1"}))
 			must[map[string]Item](t, "launch rows")(s.subagentLaunchRowsByID(q, th, []string{"launch-1"}))
-			must[map[string]subagentAnchorAggregate](t, "aggregates")(s.subagentAggregatesByRoot(q, th, []string{"launch-1"}))
+			must[map[string]subagentAnchorAggregate](t, "aggregates")(subagentAggregatesByRoot(q, th, []string{"launch-1"}))
 			must[int](t, "completed child index")(s.SubagentCompletedChildIndex(th, "launch-1"))
 		}},
 		{name: "ThreadTurnPreview", run: func(t *testing.T, s *Store) {
@@ -408,20 +351,13 @@ func keyedLookups(th string) []keyedLookup {
 				t.Errorf("latest snapshot: %v", err)
 			}
 		}},
-		{name: "thread projection probes", turn: true, run: func(t *testing.T, s *Store) {
-			var failed, planned bool
-			if err := s.reader().QueryRow(`SELECT EXISTS(`+hasUnreadNewestTurnErrorSQL()+`) FROM threads WHERE id = ?`, th).Scan(&failed); err != nil {
-				t.Error(err)
-			}
+		{name: "thread projection probes", run: func(t *testing.T, s *Store) {
+			var planned bool
 			if err := s.reader().QueryRow(`SELECT EXISTS(SELECT 1 FROM proposed_plans WHERE proposed_plans.thread_id = ? AND EXISTS(`+proposedPlanItemSQL()+`))`, th).Scan(&planned); err != nil {
 				t.Error(err)
 			}
-			query, args, err := threadReadStateQuery(s.reader(), th)
-			if err != nil {
-				t.Fatal(err)
-			}
 			var completed, started, errorAt, readAt sql.NullInt64
-			if err := s.reader().QueryRow(query, args...).Scan(&completed, &started, &errorAt, &readAt); err != nil {
+			if err := s.reader().QueryRow(threadReadStateQuery, th).Scan(&completed, &started, &errorAt, &readAt); err != nil {
 				t.Error(err)
 			}
 		}},
@@ -450,7 +386,7 @@ func keyedLookups(th string) []keyedLookup {
 		}},
 		{name: "UpdateItemFields imported", run: func(t *testing.T, s *Store) {
 			summary := "localized"
-			must[int64](t, "localize")(s.UpdateItemFields(th, "answer-0", ItemPartialUpdate{Summary: &summary}))
+			must[Item](t, "localize")(s.UpdateItemFields(th, "answer-0", ItemPartialUpdate{Summary: &summary}))
 		}},
 		{name: "imported payload writes", run: func(t *testing.T, s *Store) {
 			if err := s.AppendPayloadData(th, "answer-payload-3", []byte(" more"), "{}", 1); err != nil {
@@ -665,18 +601,43 @@ func TestByIDReadCostIsIndependentOfChunkCount(t *testing.T) {
 		t.Fatalf("chunk references = %d, %v; want %d", refs, err, chunks)
 	}
 
-	start := time.Now()
-	for i := range 1000 {
-		id := fmt.Sprintf("row-%d", i*7919%chunks)
-		item, found, err := s.GetThreadItem(thread, id)
-		if err != nil || !found || item.ID != id {
-			t.Fatalf("GetThreadItem(%s) = %s, %v, %v", id, item.ID, found, err)
-		}
+	// The claim is independence of chunk count, so the reads are timed
+	// against the same reads over the same rows in one chunk, not against
+	// a wall-clock figure the race detector or a slow host would miss. The
+	// plan check below pins the mechanism.
+	const single = "one-chunk"
+	newImportTargetThread(t, s, single)
+	var batch ImportBatch
+	for turn := range chunks {
+		batch.Turns = append(batch.Turns, Turn{TurnID: fmt.Sprintf("%s:%d", single, turn), ThreadID: single, TurnIndex: turn, StartedAt: int64(turn) + 1})
+		batch.Rows = append(batch.Rows, ImportRow{Item: Item{
+			ID: fmt.Sprintf("row-%d", turn), TurnIndex: turn, Kind: "assistant_text", Role: "assistant",
+			Status: "completed", Summary: "tiny", CreatedAt: int64(turn) + 1, UpdatedAt: int64(turn) + 1,
+		}})
 	}
-	elapsed := time.Since(start)
-	t.Logf("1,000 by-id reads over %d chunks took %v", chunks, elapsed)
-	if elapsed > 250*time.Millisecond {
-		t.Errorf("1,000 by-id reads over %d chunks took %v", chunks, elapsed)
+	if err := s.ApplyImportBatch(single, batch); err != nil {
+		t.Fatalf("import one chunk: %v", err)
+	}
+	readAll := func(thread string) time.Duration {
+		start := time.Now()
+		for i := range 1000 {
+			id := fmt.Sprintf("row-%d", i*7919%chunks)
+			item, found, err := s.GetThreadItem(thread, id)
+			if err != nil || !found || item.ID != id {
+				t.Fatalf("GetThreadItem(%s, %s) = %s, %v, %v", thread, id, item.ID, found, err)
+			}
+		}
+		return time.Since(start)
+	}
+	// One warm pass each, so neither leg pays its statement compiles or
+	// first page reads inside the timed loop.
+	readAll(single)
+	readAll(thread)
+	one := readAll(single)
+	many := readAll(thread)
+	t.Logf("1,000 by-id reads took %v over %d chunks, %v over one", many, chunks, one)
+	if many > 3*one && many > one+100*time.Millisecond {
+		t.Errorf("1,000 by-id reads took %v over %d chunks, %v over one: the cost follows the chunk count", many, chunks, one)
 	}
 
 	rec := recordStatements(t, s)

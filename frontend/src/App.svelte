@@ -2,7 +2,7 @@
   import { installDeviceNameSync } from './lib/stores/deviceNames';
   import { installComputerRouteUpdates } from './lib/stores/computerRouteUpdates';
   import { installOwnDeviceSync } from './lib/stores/ownDevices.svelte';
-  import { onBackendStatusChange } from './lib/stores/transportStatus.svelte';
+  import { anyBackendStarting, onBackendStatusChange } from './lib/stores/transportStatus.svelte';
   import { isPassiveConnectionFailure } from './lib/transport/passiveReadFailure';
   import { onMount, onDestroy } from 'svelte';
   import { documentHidden } from './lib/utils/pageVisibility';
@@ -69,6 +69,7 @@
   import { applyFontScale, installZoomKeybindings } from './lib/utils/zoom';
   import Sidebar from './lib/components/sidebar/Sidebar.svelte';
   import PaneHost from './lib/components/panes/PaneHost.svelte';
+  import StartupScreen from './lib/components/shared/StartupScreen.svelte';
   import { redirectTypingToFocusedComposer } from './lib/components/panes/typeToFocusComposer';
   import LazyOverlay from './lib/components/primitives/LazyOverlay.svelte';
   import Toast from './lib/components/shared/Toast.svelte';
@@ -442,10 +443,16 @@
     let restoringLayout = false;
     let retryLayout = false;
     let layoutSettled = false;
+    // Set when the catalog read failed only because a computer is still
+    // starting. The startup screen, which shows that computer's phase,
+    // stays up until it connects or stops starting, rather than releasing
+    // an empty pane strip that the saved layout would replace moments later.
+    let heldForStartingBackend = false;
     async function restoreStartupLayout(): Promise<void> {
       if (disposed || layoutSettled) return;
       if (restoringLayout) { retryLayout = true; return; }
       restoringLayout = true;
+      heldForStartingBackend = false;
       try {
         const threads = await loadThreads();
         if (disposed) return;
@@ -472,7 +479,10 @@
         layoutSettled = true;
       } catch (err) {
         if (disposed) return;
-        if (isPassiveConnectionFailure(err)) return;
+        if (isPassiveConnectionFailure(err)) {
+          heldForStartingBackend = anyBackendStarting();
+          return;
+        }
         layoutSettled = true;
         console.error('Failed to restore pane layout:', err);
         if (paneLayoutMutationRevision() === restoreRevision) {
@@ -485,9 +495,12 @@
         // Release the startup screen even when offline. Saved-pane restore
         // can retry on connection; notification resolution independently
         // fetches its thread and must not wait forever on this initial read.
-        paneLayoutRestored = true;
-        appReady = true;
-        void markNotificationHydrated();
+        // A starting computer is not offline: hold for it (above).
+        if (!heldForStartingBackend) {
+          paneLayoutRestored = true;
+          appReady = true;
+          void markNotificationHydrated();
+        }
         restoringLayout = false;
         const retry = retryLayout;
         retryLayout = false;
@@ -498,7 +511,11 @@
     // Retry restore when a computer returns; the original mutation revision
     // prevents delayed startup from replacing panes the user has since opened.
     const cancelLayoutRetry = onBackendStatusChange((_, status) => {
-      if (status.status === 'connected') void restoreStartupLayout();
+      // A held startup also re-runs when its computer stops starting
+      // without connecting, which releases the screen as offline.
+      if (status.status === 'connected' || (heldForStartingBackend && !anyBackendStarting())) {
+        void restoreStartupLayout();
+      }
     });
     void restoreStartupLayout();
     // Footer attention badge (§6/§7): authoritative on app open, so a missed
@@ -631,6 +648,8 @@
     />
     {#if appReady}
       <PaneHost />
+    {:else}
+      <StartupScreen />
     {/if}
     <!--
       Settings and the workflows overlay (UI-SPEC §2.1) are SIBLINGS of

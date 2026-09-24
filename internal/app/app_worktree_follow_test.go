@@ -108,6 +108,7 @@ func (f followFixture) send(t *testing.T, token string, change provider.Workspac
 		Meta:      meta,
 		Timestamp: time.Now(),
 	})
+	waitProviderEvents(t, f.app, f.thread.ID)
 }
 
 func (f followFixture) waitRow(t *testing.T, threadID string, want func(store.Thread) bool) store.Thread {

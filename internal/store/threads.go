@@ -11,47 +11,6 @@ import (
 	"agent-overflow/internal/threadmode"
 )
 
-// threadColumns lists every column in the order scanThread expects. The
-// COALESCE-ing of nullable text columns returns "" instead of NULL so the
-// Go struct has a clean empty-string value for unset optional fields.
-// project_id is coalesced because v5 made it nullable: a standalone "home"
-// terminal thread has no project, and scanThread reads it into a plain
-// string. last_read_at, pinned_at, and pin_group are deliberately NOT coalesced —
-// scanThread keeps the NULL / non-NULL distinction via *int64 pointers so
-// the frontend can tell "never tracked" / "unpinned" apart from a zero
-// timestamp and distinguish migrated front-burner pins from explicit groups.
-// The two boolean tail columns are derived sidebar state:
-// they are cheap scalar probes over indexed tables, not threads columns.
-// newestTurnErrors selects the rows behind a thread's Failed pill: kind
-// `error` at or after the newest turn (an orphan error has no turn row of
-// its own). threadColumns derives hasFailedTurn from it and
-// threadReadStateQuery advances the read stamp past it, so the pill and the
-// read that clears it cannot disagree about which rows count.
-//
-// `thread` is the expression naming the thread: the correlated
-// `threads.id` inside a threads projection, or "?" bound to threadArgs in
-// the standalone read. The newest turn is a lower turn bound, so the
-// imported arm reads only chunks that reach it.
-func newestTurnErrors(thread string, threadArgs []any) timelineSelection {
-	return timelineSelection{
-		Where:    "items.kind = 'error'",
-		Turn:     `COALESCE((SELECT MAX(turns.turn_index) FROM turns WHERE turns.thread_id = ` + thread + `), 0)`,
-		TurnArgs: threadArgs,
-		FromTurn: true,
-	}
-}
-
-// hasUnreadNewestTurnErrorSQL is threadColumns' Failed-pill probe: an
-// error of the newest turn created after the thread was last read.
-func hasUnreadNewestTurnErrorSQL() string {
-	sel := newestTurnErrors("threads.id", nil)
-	sel.Thread = "threads.id"
-	sel.Columns = func(string, string) string { return "1" }
-	sel.Where += " AND (threads.last_read_at IS NULL OR threads.last_read_at < items.created_at)"
-	sql, _ := correlatedTimelineArms(sel)
-	return sql
-}
-
 // proposedPlanItemSQL is the row behind a thread's pending-plan flag: the
 // latest plan's completed assistant row, whose payload (local overlay
 // first, as timeline_payloads resolves it) is a proposed plan. Both the
@@ -81,6 +40,20 @@ func proposedPlanItemSQL() string {
 	return sql
 }
 
+// threadColumns lists every column in the order scanThread expects. The
+// COALESCE-ing of nullable text columns returns "" instead of NULL so the
+// Go struct has a clean empty-string value for unset optional fields.
+// project_id is coalesced because v5 made it nullable: a standalone "home"
+// terminal thread has no project, and scanThread reads it into a plain
+// string. last_read_at, pinned_at, and pin_group are deliberately NOT coalesced —
+// scanThread keeps the NULL / non-NULL distinction via *int64 pointers so
+// the frontend can tell "never tracked" / "unpinned" apart from a zero
+// timestamp and distinguish migrated front-burner pins from explicit groups.
+// The boolean tail columns are derived sidebar state: keyed probes whose
+// cost does not grow with the thread's rows. hasFailedTurn's turn-error
+// half reads the write-time pair thread_turn_error_aggregate.go maintains,
+// and the pending-plan flag finds its row and payload by id
+// (proposedPlanItemSQL).
 var threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
     title, provider, model,
@@ -131,7 +104,10 @@ var threadColumns = `id, COALESCE(project_id, ''),
        WHERE turns.thread_id = threads.id
        ORDER BY turns.turn_index DESC
        LIMIT 1
-    ), 0) OR EXISTS (` + hasUnreadNewestTurnErrorSQL() + `),
+    ), 0) OR (
+      threads.newest_turn_error_at IS NOT NULL
+      AND (threads.last_read_at IS NULL OR threads.last_read_at < threads.newest_turn_error_at)
+    ),
     NOT EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id),
     (SELECT COALESCE(MAX(ownership_epoch),0) FROM thread_transfers
       WHERE thread_id = threads.id AND direction = 'incoming' AND phase = 'complete')`
@@ -878,7 +854,7 @@ func (s *Store) UpdateSessionRefAndRemapProviderIDs(
 	if err := requireRowsAffected(result, fmt.Sprintf("store: update session ref for provider id remap %s", threadID)); err != nil {
 		return false, err
 	}
-	if err := remapProviderIDsTx(tx, threadID, items, anchors); err != nil {
+	if err := s.remapProviderIDsTx(tx, threadID, items, anchors); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -897,7 +873,7 @@ func (s *Store) RemapProviderIDs(threadID string, items []ItemMetaUpdate, anchor
 		return fmt.Errorf("store: begin provider id remap: %w", err)
 	}
 	defer tx.Rollback()
-	if err := remapProviderIDsTx(tx, threadID, items, anchors); err != nil {
+	if err := s.remapProviderIDsTx(tx, threadID, items, anchors); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -906,25 +882,20 @@ func (s *Store) RemapProviderIDs(threadID string, items []ItemMetaUpdate, anchor
 	return nil
 }
 
-func remapProviderIDsTx(
+func (s *Store) remapProviderIDsTx(
 	tx *sql.Tx,
 	threadID string,
 	items []ItemMetaUpdate,
 	anchors []MessageAnchorProviderIDsUpdate,
 ) error {
+	w := s.bulkItemWrites(tx, threadID, false)
 	for _, item := range items {
 		label := fmt.Sprintf("store: remap item meta %s/%s", threadID, item.ItemID)
-		if err := requireMutableItemTx(tx, threadID, item.ItemID, label); err != nil {
+		old, err := readMutableSubagentRowTx(tx, threadID, item.ItemID, label)
+		if err != nil {
 			return err
 		}
-		result, err := tx.Exec(
-			`UPDATE items SET meta = ? WHERE thread_id = ? AND id = ?`,
-			item.Meta, threadID, item.ItemID,
-		)
-		if err != nil {
-			return fmt.Errorf("%s: %w", label, err)
-		}
-		if err := requireRowsAffected(result, label); err != nil {
+		if err := updateItemMetaTx(tx, w, old, item.Meta, nil); err != nil {
 			return err
 		}
 	}
@@ -1064,7 +1035,7 @@ func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 		return err
 	}
 	// A fork made while the items drained.
-	if err := detachForkDescendantsTx(tx, id); err != nil {
+	if err := s.detachForkDescendantsTx(tx, id); err != nil {
 		return err
 	}
 	result, err := tx.Exec(`DELETE FROM threads WHERE id = ?`, id)
@@ -1201,40 +1172,22 @@ func (s *Store) MarkThreadActivity(threadID string, at int64) error {
 }
 
 // threadReadStateQuery reads the three timestamps MarkThreadReadNow clamps
-// its stamp to — the newest completed turn, an interrupted newest turn's
-// start, the newest Failed-pill error row — plus the marker already stored.
-//
-// The error timestamp goes through timelineArms rather than through the
-// `timeline_items` view, for the reason timeline_arms.go states: an
-// aggregate (or an ordered, limited read) over the compound view cannot be
-// flattened, so SQLite runs both arms whole and SCANs `items`. On the
-// author's 4.7 GB store the view form took 1.1 s warm for one thread and
-// the arms form 3 ms.
-func threadReadStateQuery(q sqlQueryer, id string) (string, []any, error) {
-	sel := newestTurnErrors("?", []any{id})
-	sel.Columns = func(string, string) string { return `items.created_at AS created_at` }
-	// Same answer as MAX(created_at): descending order puts NULLs last,
-	// so the first row is the newest non-null stamp and an empty arm
-	// pair yields NULL either way.
-	sel.OrderBy = `created_at DESC`
-	sel.Limit = 1
-	newestErrorAt, args, err := timelineArms(q, id, sel)
-	if err != nil {
-		return "", nil, err
-	}
-	return `SELECT
-		    (SELECT MAX(completed_at) FROM turns
-		      WHERE thread_id = threads.id AND completed_at IS NOT NULL),
-		    (SELECT CASE WHEN completed_at IS NULL THEN started_at END
-		       FROM turns
-		      WHERE thread_id = threads.id
-		      ORDER BY turns.turn_index DESC
-		      LIMIT 1),
-		    (` + newestErrorAt + `),
-		    last_read_at
-		   FROM threads
-		  WHERE id = ?`, append(args, id), nil
-}
+// its stamp to (the newest completed turn, an interrupted newest turn's
+// start, the newest turn error that lights the Failed pill) plus the marker
+// already stored. The error stamp is the column hasFailedTurn compares, so
+// the pill and the read that clears it cannot disagree.
+const threadReadStateQuery = `SELECT
+    (SELECT MAX(completed_at) FROM turns
+      WHERE thread_id = threads.id AND completed_at IS NOT NULL),
+    (SELECT CASE WHEN completed_at IS NULL THEN started_at END
+       FROM turns
+      WHERE thread_id = threads.id
+      ORDER BY turns.turn_index DESC
+      LIMIT 1),
+    newest_turn_error_at,
+    last_read_at
+   FROM threads
+  WHERE id = ?`
 
 // MarkThreadReadNow stamps last_read_at with the current unix-ms, clamped to
 // the latest sidebar read target. Completed turns key off completed_at; an
@@ -1267,11 +1220,7 @@ func (s *Store) MarkThreadReadNow(ctx context.Context, id string) (Thread, bool,
 	defer tx.Rollback()
 
 	var latestTurnCompletedAt, latestIncompleteStartedAt, latestErrorAt, lastReadAt sql.NullInt64
-	query, args, err := threadReadStateQuery(tx, id)
-	if err != nil {
-		return Thread{}, false, err
-	}
-	err = tx.QueryRowContext(ctx, query, args...).
+	err = tx.QueryRowContext(ctx, threadReadStateQuery, id).
 		Scan(&latestTurnCompletedAt, &latestIncompleteStartedAt, &latestErrorAt, &lastReadAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

@@ -55,7 +55,7 @@ func seedRunThread(t *testing.T, s *Store, threadID, spec string) []string {
 			t.Fatalf("unknown seed letter %q", letter)
 		}
 		item.Summary = item.ID
-		if err := s.InsertItem(item); err != nil {
+		if err := insertCarded(s, item); err != nil {
 			t.Fatalf("insert %s: %v", item.ID, err)
 		}
 		ids = append(ids, item.ID)
@@ -624,7 +624,7 @@ func TestAnchoredPageCentersOnTheRowAChildAnchorRendersInside(t *testing.T) {
 			Kind: "tool_call", ToolName: "Bash", Role: "assistant", Status: "completed",
 			Summary: "t" + strconv.Itoa(i), CreatedAt: int64(i + 1),
 		}
-		if err := s.InsertItem(item); err != nil {
+		if err := insertCarded(s, item); err != nil {
 			t.Fatalf("insert %s: %v", item.ID, err)
 		}
 		ids = append(ids, item.ID)
@@ -634,7 +634,7 @@ func TestAnchoredPageCentersOnTheRowAChildAnchorRendersInside(t *testing.T) {
 		Kind: "tool_call", ToolName: "Read", Role: "assistant", Status: "completed",
 		Summary: "child", CreatedAt: 100,
 	}
-	if err := s.InsertItem(child); err != nil {
+	if err := insertCarded(s, child); err != nil {
 		t.Fatalf("insert child: %v", err)
 	}
 

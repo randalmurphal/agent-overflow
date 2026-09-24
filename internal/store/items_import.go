@@ -89,6 +89,13 @@ func (s *Store) ApplyImportBatch(threadID string, batch ImportBatch) error {
 	if err := finishImportItemHistoryTx(tx, threadID, len(rows)); err != nil {
 		return err
 	}
+	// finishImportItemHistoryTx advanced the thread stamp; the recompute
+	// adds no bump of its own.
+	w := s.bulkItemWrites(tx, threadID, false)
+	touchImportedSubtrees(w, rows)
+	if err := w.finish(); err != nil {
+		return err
+	}
 	if err := appendUsageTx(tx, usage); err != nil {
 		return err
 	}
@@ -97,6 +104,31 @@ func (s *Store) ApplyImportBatch(threadID string, batch ImportBatch) error {
 		return fmt.Errorf("store: commit import batch tx for thread %s: %w", threadID, err)
 	}
 	return nil
+}
+
+// touchImportedSubtrees records the chains an import batch adds rows
+// under, for w to recompute. A row whose parent lies outside the batch may
+// hang under a local anchor whose stamp it changes.
+func touchImportedSubtrees(w *cardWrite, rows []ImportRow) {
+	inBatch := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		inBatch[row.Item.ID] = struct{}{}
+	}
+	seen := make(map[string]struct{})
+	for _, row := range rows {
+		parent := row.Item.ParentID
+		if parent == "" {
+			continue
+		}
+		if _, internal := inBatch[parent]; internal {
+			continue
+		}
+		if _, dup := seen[parent]; dup {
+			continue
+		}
+		seen[parent] = struct{}{}
+		w.chains = append(w.chains, parent)
+	}
 }
 
 // beginImportItemHistoryTx raises the thread's private bulk-load flag. The

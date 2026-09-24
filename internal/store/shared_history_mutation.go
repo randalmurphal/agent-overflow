@@ -69,7 +69,10 @@ func ensureLocalPayloadTx(tx *sql.Tx, threadID, payloadID, label string) error {
 // mutable overlay. The explicit override is inserted first because the items
 // trigger rejects accidental shadowing. Item INSERT history accounting is
 // suppressed while the representation changes; the caller's subsequent
-// UPDATE or DELETE advances the public stamp exactly once.
+// UPDATE or DELETE advances the public stamp exactly once. An imported
+// anchor has no stamp (shared chunks cannot hold one); a copy with
+// children is stamped here, and one without stays unstamped, as a new
+// anchor does.
 func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, error) {
 	var payloadID, inputPayloadID string
 	err := tx.QueryRow(
@@ -125,6 +128,10 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 	if err := requireRowsAffected(result, fmt.Sprintf("%s copy imported item %s/%s", label, threadID, itemID)); err != nil {
 		return false, err
 	}
+	var stamp bool
+	if err := tx.QueryRow(localizedAnchorHasChildSQL, threadID, itemID).Scan(&stamp); err != nil {
+		return false, fmt.Errorf("%s probe localized anchor %s/%s: %w", label, threadID, itemID, err)
+	}
 	// The override moves this item from the import arm to the item arm, so its
 	// index row moves with it. The caller's mutation re-indexes the new text.
 	if err := deleteThreadSearchItemsTx(tx, threadID, []string{itemID}); err != nil {
@@ -136,8 +143,23 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 	if err := setHistoryBulkLoadTx(tx, threadID, false, label); err != nil {
 		return false, err
 	}
+	if stamp {
+		// The recompute stamps the copy and every stamp of its family
+		// (a carrier naming it as its root) at a new revision; the card
+		// accumulators of those stamps recompute at their next flush,
+		// their generation having moved.
+		if _, err := recomputeSubagentFamiliesTx(tx, threadID, []string{itemID}, nil); err != nil {
+			return false, err
+		}
+	}
 	return true, nil
 }
+
+// localizedAnchorHasChildSQL reports a localized anchor with children to
+// count.
+var localizedAnchorHasChildSQL = `SELECT EXISTS (SELECT 1 FROM items a
+ WHERE a.thread_id = ?1 AND a.id = ?2 AND ` + aggAnchorableSQL("a.") + `
+   AND ` + aggHasChildSQL("a.thread_id", "a.id", "") + `)`
 
 func setHistoryBulkLoadTx(tx *sql.Tx, threadID string, enabled bool, label string) error {
 	from, to := 0, 1
@@ -160,20 +182,15 @@ func setHistoryBulkLoadTx(tx *sql.Tx, threadID string, enabled bool, label strin
 // or copied from an ancestor when it does not own one. It returns a wrapped
 // sql.ErrNoRows when threadID does not show the row.
 func requireMutableItemTx(tx *sql.Tx, threadID, itemID, label string) error {
-	if err := handOffIDsTx(tx, threadID, []string{itemID}); err != nil {
-		return fmt.Errorf("%s hand off item %s/%s: %w", label, threadID, itemID, err)
-	}
-	var exists int
-	err := tx.QueryRow(
-		`SELECT 1 FROM items WHERE thread_id = ? AND id = ?`,
-		threadID, itemID,
-	).Scan(&exists)
-	if err == nil {
-		return nil
-	}
-	if err != sql.ErrNoRows {
-		return fmt.Errorf("%s inspect local item %s/%s: %w", label, threadID, itemID, err)
-	}
+	_, err := readMutableSubagentRowTx(tx, threadID, itemID, label)
+	return err
+}
+
+// ownShownItemTx gives threadID its own copy of a row it shows but does not
+// own: localized from its imported history, or copied from the ancestor a
+// pointer fork reads it from. It returns a wrapped sql.ErrNoRows when
+// threadID shows no such row.
+func ownShownItemTx(tx *sql.Tx, threadID, itemID, label string) error {
 	localized, err := localizeImportedItemTx(tx, threadID, itemID, label)
 	if err != nil || localized {
 		return err

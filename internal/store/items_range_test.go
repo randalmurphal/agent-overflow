@@ -52,7 +52,7 @@ func TestThreadTimelineBoundsOnThreadsWithNoRows(t *testing.T) {
 	if err := s.InsertTurn(Turn{TurnID: "bt-0", ThreadID: "bounds-open-turn", TurnIndex: 0, StartedAt: 10}); err != nil {
 		t.Fatalf("insert turn 0: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "bt-item", ThreadID: "bounds-open-turn", TurnIndex: 0, ItemIndex: 0,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "ask", CreatedAt: 10, UpdatedAt: 10,
 	}); err != nil {
@@ -80,13 +80,13 @@ func TestThreadTimelineBoundsCountsNegativeItemIndexes(t *testing.T) {
 	if err := s.InsertTurn(Turn{TurnID: "bh-0", ThreadID: "bounds-head", TurnIndex: 0, StartedAt: 10}); err != nil {
 		t.Fatalf("insert turn: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "bh-answer", ThreadID: "bounds-head", TurnIndex: 0, ItemIndex: 0,
 		Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "answer", CreatedAt: 10, UpdatedAt: 10,
 	}); err != nil {
 		t.Fatalf("insert item: %v", err)
 	}
-	if _, err := s.UpsertItemAtTurnHead(Item{
+	if _, err := upsertAtTurnHeadCarded(s, Item{
 		ID: "bh-prompt", ThreadID: "bounds-head", TurnIndex: 0,
 		Kind: "user_text", Role: "user", Status: "completed", Summary: "healed ask", CreatedAt: 9, UpdatedAt: 9,
 	}); err != nil {
@@ -217,7 +217,7 @@ func TestListItemsInRangeCarriesPayloadFields(t *testing.T) {
 	if err := s.InsertTurn(Turn{TurnID: "rp-0", ThreadID: "range-payload", TurnIndex: 0, StartedAt: 10}); err != nil {
 		t.Fatalf("insert turn: %v", err)
 	}
-	if _, err := s.UpsertItem(Item{
+	if _, err := upsertCarded(s, Item{
 		ID: "rp-tool", ThreadID: "range-payload", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", Status: "completed", Summary: "Bash",
 		ToolName: "Bash", PayloadID: "rp-payload", CreatedAt: 10, UpdatedAt: 10,
@@ -294,7 +294,7 @@ func TestLatestHumanUserTextSkipsWhatAgentsWrote(t *testing.T) {
 		{id: "u2", index: 2, summary: "Agent request from thread", meta: `{"origin":"agent-thread","originThread":{"threadId":"t-other"}}`},
 	}
 	for _, row := range rows {
-		if _, err := s.AppendItem(Item{
+		if _, err := appendCarded(s, Item{
 			ID: row.id, ThreadID: "t-quote", TurnIndex: row.index, Kind: "user_text", Role: "user",
 			Status: "completed", Summary: row.summary, Meta: row.meta, CreatedAt: 100, UpdatedAt: 100,
 		}); err != nil {

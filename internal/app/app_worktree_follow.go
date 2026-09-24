@@ -33,9 +33,9 @@ import (
 //     safety net for a row and a transcript that disagree.
 
 // followProviderWorkspaceChange is the session event handler's entry point.
-// It runs off the provider read loop: the thread action lock is taken on a
-// goroutine because lock holders (a switch waiting on a session restart)
-// can themselves be waiting on this very read loop.
+// It runs off the thread's event worker: the thread action lock is taken on
+// a goroutine because lock holders (a switch waiting on a session restart)
+// can themselves be waiting on this very worker, whose queue a stop drains.
 func (a *App) followProviderWorkspaceChange(threadID, sessionToken string, evt provider.ProviderEvent) {
 	var change provider.WorkspaceChangeMeta
 	if err := json.Unmarshal(evt.Meta, &change); err != nil || strings.TrimSpace(change.Cwd) == "" {

@@ -1066,8 +1066,9 @@ export class Settings {
     "notifyWorkflowAttention": boolean;
 
     /**
-     * NotifyAppUpdate covers the WSL launcher's "update didn't apply"
-     * notice. Same reasoning as NotifyWorkflowAttention.
+     * NotifyAppUpdate covers notify.KindAppUpdate: the WSL launcher's
+     * "update didn't apply" notice and an unfinished deferred store
+     * migration. Same reasoning as NotifyWorkflowAttention.
      */
     "notifyAppUpdate": boolean;
 

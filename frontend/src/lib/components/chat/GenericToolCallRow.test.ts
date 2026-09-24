@@ -510,7 +510,7 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     expect(queryByTestId('agent-row-open-pane')).toBeNull();
   });
 
-  it('surfaces a failed transcript backfill as an inline error line', () => {
+  it('surfaces a failed output-file read as an inline error line', () => {
     // triage stamps notification_output_state/error on the launch row when
     // the task_notification's output_file could not be read; a silently
     // incomplete transcript reads exactly like a complete one, so the row

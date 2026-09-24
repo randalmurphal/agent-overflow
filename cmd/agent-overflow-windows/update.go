@@ -136,6 +136,13 @@ func (a *launcherApp) installStagedUpdate(directive selfupdate.InstallDirective)
 		log.Printf("updater: acknowledgement of %s went unanswered (%v); installing anyway", directive.Version, ackErr)
 	}
 
+	// A target that runs the trial takes over from here. One that predates
+	// it, or the running version again, is swapped in as before.
+	if err := a.beginTrialUpdate(directive, staged, digest); !errors.Is(err, errLegacyTarget) {
+		return err
+	}
+	log.Printf("updater: %s predates trial updates; replacing the launcher directly", directive.Version)
+
 	// A fresh Updater per attempt: Init is one-shot (ErrAlreadyConfigured), and
 	// directives arrive at runtime and repeat after a failure, so the
 	// application's app.Updater singleton cannot serve them. Each attempt gets

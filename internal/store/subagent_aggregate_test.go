@@ -2,49 +2,52 @@ package store
 
 import "testing"
 
-func TestSubagentAggregatePreviewRank(t *testing.T) {
-	base := subagentAggregateRow{id: "later", kind: "thinking", status: "running", summary: "thinking prose", turnIndex: 8, itemIndex: 5}
-	qualified := subagentAggregateRow{id: "earlier", kind: "tool_call", status: "completed", summary: "useful", turnIndex: 1}
-	if !betterSubagentPreview(qualified, base) {
-		t.Fatal("a useful tool summary must beat later active thinking")
+func TestSubagentAggregatePreviewIsTheNewestSummary(t *testing.T) {
+	later := subagentAggregateRow{id: "later", kind: "thinking", summary: "thinking prose", turnIndex: 8, itemIndex: 5}
+	tool := subagentAggregateRow{id: "tool", kind: "tool_call", summary: "useful", turnIndex: 1}
+	if !betterSubagentPreview(tool, later) {
+		t.Fatal("a tool summary must beat a later row of a kind that never previews")
 	}
-	blank := qualified
-	blank.summary = "  "
-	if betterSubagentPreview(blank, base) {
-		t.Fatal("whitespace is not a useful summary")
+	for _, blank := range []string{"", "  ", "\t", " \n\r\v\f "} {
+		row := tool
+		row.summary = blank
+		row.turnIndex = 9
+		if betterSubagentPreview(row, tool) {
+			t.Fatalf("summary %q is blank and must not beat an older useful one", blank)
+		}
+		state := &subagentAggregateAccumulator{}
+		state.add(row)
+		if state.hasPick || state.aggregate.latestChildSummary != "" {
+			t.Fatalf("summary %q must not become the preview: %+v", blank, state.aggregate)
+		}
 	}
-	tab := qualified
-	tab.summary = "\t"
-	if !betterSubagentPreview(tab, base) {
-		t.Fatal("the rank must match SQLite TRIM's ASCII-space rule")
+	newer := tool
+	newer.id, newer.turnIndex = "newer", 2
+	if !betterSubagentPreview(newer, tool) {
+		t.Fatal("the newer coordinate must win")
 	}
-	onlyTab := &subagentAggregateState{}
-	onlyTab.add(tab)
-	if onlyTab.aggregate.latestChildSummary != "" {
-		t.Fatal("the selected preview must still normalize blank output")
+	sameTurn := tool
+	sameTurn.id, sameTurn.itemIndex = "same-turn", 1
+	if !betterSubagentPreview(sameTurn, tool) {
+		t.Fatal("a later item in the same turn must win")
 	}
-	active := qualified
-	active.status = "streaming"
-	active.turnIndex = 0
-	if !betterSubagentPreview(active, qualified) {
-		t.Fatal("active summary must beat a newer terminal summary")
-	}
-	newer := qualified
-	newer.turnIndex = 2
-	if !betterSubagentPreview(newer, qualified) {
-		t.Fatal("newer coordinate must win within the same rank")
-	}
-	samePosition := qualified
+	samePosition := tool
 	samePosition.id = "a"
-	if !betterSubagentPreview(samePosition, qualified) {
-		t.Fatal("id must break coordinate ties deterministically")
+	if !betterSubagentPreview(samePosition, tool) || betterSubagentPreview(tool, samePosition) {
+		t.Fatal("the smaller id must break a coordinate tie")
 	}
-	state := &subagentAggregateState{}
-	for _, row := range []subagentAggregateRow{base, qualified, blank, active} {
+
+	// Rows arrive in walk order, not position order, and a newer blank
+	// row or a newer row of another kind leaves the newest summary in
+	// place. Every visible row counts.
+	state := &subagentAggregateAccumulator{}
+	blankNewest := tool
+	blankNewest.id, blankNewest.summary, blankNewest.turnIndex = "blank-newest", "  ", 10
+	for _, row := range []subagentAggregateRow{newer, later, tool, blankNewest, sameTurn} {
 		state.add(row)
 	}
-	if state.aggregate.descendantCount != 4 || state.aggregate.latestChildSummary != "useful" {
-		t.Fatalf("aggregate = %+v", state.aggregate)
+	if state.aggregate.descendantCount != 5 || state.aggregate.latestChildSummary != "useful" || state.preview.id != "newer" {
+		t.Fatalf("aggregate = %+v, pick = %q", state.aggregate, state.preview.id)
 	}
 }
 

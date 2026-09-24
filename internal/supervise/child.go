@@ -40,17 +40,51 @@ type child struct {
 }
 
 // spawn starts the selected version with the channel inherited.
+func (s *Supervisor) spawn(selection Selection) (*child, error) {
+	binary, err := s.layout.VersionBinary(selection.Version)
+	if err != nil {
+		return nil, err
+	}
+	return startChild(childSpec{
+		binary: binary,
+		args:   s.config.ChildArgs,
+		env:    s.childEnv(),
+		stdout: s.config.Stdout,
+		stderr: s.config.Stderr,
+		activate: Message{
+			Type: MsgActivate, ProtocolVersion: ProtocolVersion,
+			Trial: selection.Trial, UpdateID: selection.UpdateID,
+			Outcome: string(selection.Outcome), Reason: selection.Reason,
+			TargetVersion: selection.Target,
+			OwnsDataRoot:  s.config.OwnsDataRoot,
+		},
+		version: selection.Version,
+		log:     s.config.Log,
+	})
+}
+
+// childSpec is everything startChild needs: the process, and the opening
+// frame that tells it what it is.
+type childSpec struct {
+	binary         string
+	args           []string
+	env            []string
+	stdout, stderr *os.File
+	// extraFiles are inherited after the channel, from descriptor 5 on.
+	extraFiles []*os.File
+	activate   Message
+	version    string
+	log        func(string, ...any)
+}
+
+// startChild starts a backend with the channel inherited.
 //
 // The activate frame is written BEFORE the child can possibly read it. That is
 // deliberate: the child learns whether it is a trial from its first frame, and
 // pre-loading the pipe means it never waits on a supervisor that might be
 // busy. The frame is tens of bytes into a pipe buffer measured in tens of
 // kilobytes, so the write cannot block.
-func (s *Supervisor) spawn(selection Selection) (*child, error) {
-	binary, err := s.layout.VersionBinary(selection.Version)
-	if err != nil {
-		return nil, err
-	}
+func startChild(spec childSpec) (*child, error) {
 	childReads, parentWrites, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("supervise: create supervisor->backend pipe: %w", err)
@@ -69,11 +103,11 @@ func (s *Supervisor) spawn(selection Selection) (*child, error) {
 	// A context is still required, because procutil.ConfigureGroup installs a
 	// Cancel func and exec refuses one on a command built without a context.
 	// WHEN the group dies stays stopChild's decision alone.
-	command := exec.CommandContext(context.Background(), binary, s.config.ChildArgs...)
-	command.Env = append(s.childEnv(), EnvChannel+"="+ChannelEnvValue())
+	command := exec.CommandContext(context.Background(), spec.binary, spec.args...)
+	command.Env = append(append([]string(nil), spec.env...), EnvChannel+"="+ChannelEnvValue())
 	command.Stdin = nil
-	command.Stdout = s.config.Stdout
-	command.Stderr = s.config.Stderr
+	command.Stdout = spec.stdout
+	command.Stderr = spec.stderr
 	if command.Stdout == nil {
 		command.Stdout = os.Stdout
 	}
@@ -82,34 +116,32 @@ func (s *Supervisor) spawn(selection Selection) (*child, error) {
 	}
 	// ExtraFiles start at descriptor 3 in the child, which is what
 	// ChildReadFD/ChildWriteFD name.
-	command.ExtraFiles = []*os.File{childReads, childWrites}
+	command.ExtraFiles = append([]*os.File{childReads, childWrites}, spec.extraFiles...)
 	// The backend's own children (provider CLIs, terminals) belong to its
 	// group, and a stop that has to become a kill must take the whole tree.
 	procutil.ConfigureGroup(command)
 
 	conn := NewConn(parentReads, parentWrites, parentReads)
-	if err := conn.Send(Message{
-		Type: MsgActivate, ProtocolVersion: ProtocolVersion,
-		Trial: selection.Trial, UpdateID: selection.UpdateID,
-		Outcome: string(selection.Outcome), Reason: selection.Reason,
-		TargetVersion: selection.Target,
-		OwnsDataRoot:  s.config.OwnsDataRoot,
-	}); err != nil {
+	if err := conn.Send(spec.activate); err != nil {
 		closeAll(childReads, childWrites, parentReads, parentWrites)
 		return nil, err
 	}
 
 	if err := command.Start(); err != nil {
 		closeAll(childReads, childWrites, parentReads, parentWrites)
-		return nil, fmt.Errorf("supervise: start %s: %w", binary, err)
+		return nil, fmt.Errorf("supervise: start %s: %w", spec.binary, err)
 	}
 	// The child owns its ends now. Holding them here would keep the read side
 	// open after the child dies, and the supervisor would never see EOF.
 	closeAll(childReads, childWrites)
 
+	logf := spec.log
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
 	c := &child{
 		cmd: command, conn: conn,
-		version: selection.Version, trial: selection.Trial, updateID: selection.UpdateID,
+		version: spec.version, trial: spec.activate.Trial, updateID: spec.activate.UpdateID,
 		exited:    make(chan struct{}),
 		messages:  make(chan Message, messageBuffer),
 		toChild:   parentWrites,
@@ -121,9 +153,9 @@ func (s *Supervisor) spawn(selection Selection) (*child, error) {
 		c.exitErr = command.Wait()
 		close(c.exited)
 	}()
-	go c.readMessages(s.config.Log)
-	s.config.Log("supervise: started version %s (pid %d, trial=%t)",
-		selection.Version, command.Process.Pid, selection.Trial)
+	go c.readMessages(logf)
+	logf("supervise: started version %s (pid %d, trial=%t)",
+		spec.version, command.Process.Pid, spec.activate.Trial)
 	return c, nil
 }
 
@@ -133,7 +165,7 @@ func (s *Supervisor) spawn(selection Selection) (*child, error) {
 const messageBuffer = 8
 
 // readMessages decodes the child's frames onto one channel and closes it when
-// the child's write end goes away — which is the child exiting, in every
+// the child's write end goes away, which is the child exiting in every
 // ordinary case.
 func (c *child) readMessages(logf func(string, ...any)) {
 	defer close(c.messages)
@@ -150,14 +182,19 @@ func (c *child) readMessages(logf func(string, ...any)) {
 }
 
 // stopChild ends the child gracefully, then by force, then waits.
+func (s *Supervisor) stopChild(c *child) {
+	stopChildProcess(c, s.config.StopTimeout, s.config.Log)
+}
+
+// stopChildProcess ends a child gracefully, then by force, then waits.
 //
 // SIGTERM to the process rather than the group: the backend's own shutdown
 // closes provider sessions, flushes SQLite and drains the transport, and
 // signalling its children directly would interrupt exactly that. The group
-// kill is the fallback for a process that did not finish in time — and there
+// kill is the fallback for a process that did not finish in time, and there
 // it must be the group, or a provider CLI keeps the database open past the
 // snapshot.
-func (s *Supervisor) stopChild(c *child) {
+func stopChildProcess(c *child, timeout time.Duration, logf func(string, ...any)) {
 	if c == nil {
 		return
 	}
@@ -166,22 +203,22 @@ func (s *Supervisor) stopChild(c *child) {
 		return
 	}
 	if err := c.cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		s.config.Log("supervise: asking version %s to stop: %v", c.version, err)
+		logf("supervise: asking version %s to stop: %v", c.version, err)
 	}
-	timer := time.NewTimer(s.config.StopTimeout)
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case <-c.exited:
 		if c.exitErr != nil {
-			s.config.Log("supervise: version %s stopped: %v", c.version, c.exitErr)
+			logf("supervise: version %s stopped: %v", c.version, c.exitErr)
 		}
 		return
 	case <-timer.C:
 	}
-	s.config.Log("supervise: version %s did not stop within %s; killing its process group",
-		c.version, s.config.StopTimeout)
+	logf("supervise: version %s did not stop within %s; killing its process group",
+		c.version, timeout)
 	if err := procutil.KillConfiguredGroup(c.cmd); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		s.config.Log("supervise: killing version %s: %v", c.version, err)
+		logf("supervise: killing version %s: %v", c.version, err)
 	}
 	<-c.exited
 }

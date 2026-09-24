@@ -9,7 +9,7 @@ import (
 	"agent-overflow/internal/importir"
 )
 
-func TestConvertSubagentRowsNestUnderTheirTask(t *testing.T) {
+func TestImportNestsSubagentRowsUnderTheirTask(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, sessionA+".jsonl")
 	writeJSONL(t, path,

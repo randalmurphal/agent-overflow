@@ -49,7 +49,7 @@ func TestSnapshotRoundTripsTheWholeTriple(t *testing.T) {
 	}
 	writeDatabase(t, dataDir, "before")
 
-	snapshot, err := TakeSnapshot(layout, dataDir, time.Unix(0, 0))
+	snapshot, err := TakeSnapshot(layout, dataDir, time.Unix(0, 0), SnapshotOptions{})
 	if err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestSnapshotRoundTripsTheWholeTriple(t *testing.T) {
 	// A trial writes, and leaves the WAL and shm in a state of its own.
 	writeDatabase(t, dataDir, "after")
 
-	if err := RestoreSnapshot(layout, dataDir, "u1", "the trial crashed", time.Unix(0, 0)); err != nil {
+	if err := RestoreSnapshot(layout, dataDir, "u1", "the trial crashed", time.Unix(0, 0), nil); err != nil {
 		t.Fatalf("RestoreSnapshot: %v", err)
 	}
 	for _, name := range DatabaseFiles() {
@@ -84,12 +84,12 @@ func TestRestoreRemovesFilesTheSnapshotDidNotHave(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(dataDir, "agent-overflow.db"), "clean")
 
-	if _, err := TakeSnapshot(layout, dataDir, time.Unix(0, 0)); err != nil {
+	if _, err := TakeSnapshot(layout, dataDir, time.Unix(0, 0), SnapshotOptions{}); err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
 	}
 	writeDatabase(t, dataDir, "trial")
 
-	if err := RestoreSnapshot(layout, dataDir, "u1", "budget", time.Unix(0, 0)); err != nil {
+	if err := RestoreSnapshot(layout, dataDir, "u1", "budget", time.Unix(0, 0), nil); err != nil {
 		t.Fatalf("RestoreSnapshot: %v", err)
 	}
 	if got := readFile(t, filepath.Join(dataDir, "agent-overflow.db")); got != "clean" {
@@ -110,7 +110,7 @@ func TestAnInterruptedRestoreIsFinishedFromTheMarkerAlone(t *testing.T) {
 		t.Fatalf("NewLayout: %v", err)
 	}
 	writeDatabase(t, dataDir, "before")
-	if _, err := TakeSnapshot(layout, dataDir, time.Unix(0, 0)); err != nil {
+	if _, err := TakeSnapshot(layout, dataDir, time.Unix(0, 0), SnapshotOptions{}); err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestAnInterruptedRestoreIsFinishedFromTheMarkerAlone(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(dataDir, "agent-overflow.db"), "half-restored")
 
-	marker, resumed, err := ResumeRestore(layout)
+	marker, resumed, err := ResumeRestore(layout, nil)
 	if err != nil || !resumed {
 		t.Fatalf("ResumeRestore = (%t, %v)", resumed, err)
 	}
@@ -140,7 +140,7 @@ func TestAnInterruptedRestoreIsFinishedFromTheMarkerAlone(t *testing.T) {
 		t.Error("the marker survived the resumed restore")
 	}
 	// And a second boot has nothing to finish.
-	if _, resumed, err := ResumeRestore(layout); err != nil || resumed {
+	if _, resumed, err := ResumeRestore(layout, nil); err != nil || resumed {
 		t.Fatalf("second ResumeRestore = (%t, %v), want (false, nil)", resumed, err)
 	}
 }
@@ -153,7 +153,7 @@ func TestSnapshotRefusesAnEmptyDataDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLayout: %v", err)
 	}
-	if _, err := TakeSnapshot(layout, dataDir, time.Unix(0, 0)); err == nil {
+	if _, err := TakeSnapshot(layout, dataDir, time.Unix(0, 0), SnapshotOptions{}); err == nil {
 		t.Fatal("TakeSnapshot invented a snapshot of nothing")
 	}
 }
@@ -165,7 +165,7 @@ func TestDiscardSnapshotIsIdempotent(t *testing.T) {
 		t.Fatalf("NewLayout: %v", err)
 	}
 	writeDatabase(t, dataDir, "before")
-	if _, err := TakeSnapshot(layout, dataDir, time.Unix(0, 0)); err != nil {
+	if _, err := TakeSnapshot(layout, dataDir, time.Unix(0, 0), SnapshotOptions{}); err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
 	}
 	for range 2 {
@@ -205,7 +205,7 @@ func TestRestoreLeavesNoMarkerWhenThereIsNothingToRestore(t *testing.T) {
 	}
 	writeDatabase(t, dataDir, "live")
 
-	err = RestoreSnapshot(layout, dataDir, "upd-1", "the trial crashed", time.Unix(0, 0))
+	err = RestoreSnapshot(layout, dataDir, "upd-1", "the trial crashed", time.Unix(0, 0), nil)
 	if err == nil {
 		t.Fatal("RestoreSnapshot answered nil with no snapshot on disk")
 	}
@@ -217,7 +217,7 @@ func TestRestoreLeavesNoMarkerWhenThereIsNothingToRestore(t *testing.T) {
 			layout.MarkerPath())
 	}
 	// And the next boot finds nothing to resume, so it proceeds normally.
-	if _, resumed, err := ResumeRestore(layout); err != nil || resumed {
+	if _, resumed, err := ResumeRestore(layout, nil); err != nil || resumed {
 		t.Fatalf("ResumeRestore = (%t, %v), want (false, nil)", resumed, err)
 	}
 	// The live database was not touched on the way to the refusal.
@@ -238,7 +238,7 @@ func TestSnapshotPresentAnswersTheThreeStates(t *testing.T) {
 		t.Fatalf("SnapshotPresent on a fresh layout = (%t, %v), want (false, nil)", present, err)
 	}
 	writeDatabase(t, dataDir, "before")
-	if _, err := TakeSnapshot(layout, dataDir, time.Unix(0, 0)); err != nil {
+	if _, err := TakeSnapshot(layout, dataDir, time.Unix(0, 0), SnapshotOptions{}); err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
 	}
 	if present, err := SnapshotPresent(layout); err != nil || !present {

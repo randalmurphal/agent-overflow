@@ -2,6 +2,8 @@ package triage
 
 import (
 	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -407,7 +409,7 @@ func TestBlankResumePromptWritesNoRow(t *testing.T) {
 	}
 }
 
-// The terminal transcript later delivers the same text WITH a provider
+// The session mirror later delivers the same text WITH a provider
 // uuid. That binds the standing row in place; it must not mint a second
 // `user:wire:<uuid>` copy below the answer it asked for.
 func TestResumePromptBindsItsProviderUUIDWithoutDuplicating(t *testing.T) {
@@ -456,15 +458,14 @@ func TestResumePromptBindsItsProviderUUIDWithoutDuplicating(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// The terminal replay.
+// The terminal.
 // ---------------------------------------------------------------------
 
-// The end-to-end shape of the incident: two rounds, both streamed live
-// under the ORIGINAL launch, then a terminal `task_notification` on the
-// CARRIER naming the agent's full sidechain. Pre-fix the carrier was the
-// replay scope, so the whole transcript read as undelivered — round-1
-// tool rows were reparented onto the carrier and its text duplicated.
-func TestResumeTerminalReplayReconcilesAgainstTheTranscriptRoot(t *testing.T) {
+// Two rounds, both streamed live under the ORIGINAL launch, then a
+// terminal `task_notification` on the CARRIER naming the agent's
+// sidechain. The terminal settles the carrier's own lifecycle and leaves
+// every row under the root exactly as the live stream wrote it.
+func TestResumeTerminalOnTheCarrierLeavesTheRootsRowsAlone(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -500,59 +501,34 @@ func TestResumeTerminalReplayReconcilesAgainstTheTranscriptRoot(t *testing.T) {
 	})
 	deliverSubagentBlock(t, router, "t1", "agent-1", "msg_round2#0", "text", "tests pass")
 
+	underRoot := func() []string {
+		var ids []string
+		for _, item := range allTurnItems(t, st, "t1", 0) {
+			if item.ParentID == "agent-1" {
+				ids = append(ids, fmt.Sprintf("%s@%d", item.ID, item.UpdatedAt))
+			}
+		}
+		return ids
+	}
+	before := underRoot()
+
 	// --- Terminal: the notification lands on the CARRIER and names the
-	// agent's whole sidechain, round 1 included.
-	transcript := writeSubagentTranscript(t, "agent-1.jsonl",
-		sidechainPromptRow("s1", "the task prompt", 1),
-		sidechainTextRow("s2", "s1", "msg_open", "reading the file first", 2),
-		sidechainToolUseRow("s3", "s2", "msg_tool", "toolu_sub_read", "Read", 3),
-		sidechainToolResultRow("s4", "s3", "toolu_sub_read", "package main", 4),
-		sidechainTextRow("s5", "s4", "msg_close", "done: it is a main package", 5),
-		sidechainPromptRow("s6", "now check the tests", 6),
-		sidechainTextRow("s7", "s6", "msg_round2", "tests pass", 7),
-	)
+	// agent's sidechain, which completion never reads.
 	stashAgentTerminal(t, router, "t1", "carrier-1", "task-1")
-	notifyAgent(t, router, "t1", "carrier-1", "task-1", transcript, nil)
+	notifyAgent(t, router, "t1", "carrier-1", "task-1", filepath.Join(t.TempDir(), "agent-1.jsonl"), nil)
 	router.WaitForPendingSettles()
 
 	assertNothingIsParentedToACarrier(t, st, "t1", 0)
-
-	// Round-1 rows are untouched: same parent, same creation instant.
-	afterReplay := mustGetItem(t, st, "t1", "toolu_sub_read")
-	if afterReplay.ParentID != "agent-1" {
-		t.Fatalf("round-1 tool reparented to %q (FAILS pre-fix: the carrier)", afterReplay.ParentID)
+	if after := underRoot(); fmt.Sprint(after) != fmt.Sprint(before) {
+		t.Fatalf("the terminal rewrote rows under the root:\nbefore %v\nafter  %v", before, after)
 	}
-	if afterReplay.CreatedAt != round1Tool.CreatedAt {
-		t.Fatalf("round-1 tool re-minted: created_at %d -> %d", round1Tool.CreatedAt, afterReplay.CreatedAt)
+	if after := mustGetItem(t, st, "t1", "toolu_sub_read"); after.ParentID != "agent-1" || after.CreatedAt != round1Tool.CreatedAt {
+		t.Fatalf("round-1 tool moved: parent %q created_at %d, want agent-1 at %d", after.ParentID, after.CreatedAt, round1Tool.CreatedAt)
 	}
-
-	// No `<kind>|provider_item_id` is written twice under the root.
-	seen := map[string]string{}
-	scopedPrompts := 0
-	for _, item := range allTurnItems(t, st, "t1", 0) {
-		if item.ParentID != "agent-1" {
-			continue
-		}
-		if item.Kind == itemKindUserText {
-			scopedPrompts++
-		}
-		providerItemID := decodeProviderItemID(item.Meta)
-		if providerItemID == "" {
-			continue
-		}
-		key := item.Kind + "|" + providerItemID
-		if prior, dup := seen[key]; dup {
-			t.Fatalf("duplicate %s under the root: %s and %s", key, prior, item.ID)
-		}
-		seen[key] = item.ID
-	}
-	// One per round: the agent's opening prompt and the resume message.
-	if scopedPrompts != 2 {
-		t.Fatalf("expected 2 scoped user rows under the root (opening + resume), got %d", scopedPrompts)
-	}
+	// The resume message stays under the root, written from the rebind.
 	resumeRow := mustGetItem(t, st, "t1", provider.SubagentOpeningPromptItemID("carrier-1"))
-	if got := itemMetaField(t, resumeRow, "provider_item_id"); got != "s6" {
-		t.Fatalf("resume prompt bound to %v, want s6 (the transcript's uuid)", got)
+	if resumeRow.ParentID != "agent-1" {
+		t.Fatalf("resume prompt parented to %q, want the root agent-1", resumeRow.ParentID)
 	}
 
 	// The carrier keeps its own lifecycle row and exactly one sibling.

@@ -127,7 +127,7 @@ func subagentPromptEvents(
 		return nil
 	}
 	// An envelope with no stable uuid cannot be deduped against a replay
-	// or against the backfill's copy of the same row, and triage refuses
+	// or against the mirror's copy of the same row, and triage refuses
 	// to mint an id for one. Dropping it is the honest outcome.
 	uuid := readRawString(raw["uuid"])
 	if uuid == "" {
