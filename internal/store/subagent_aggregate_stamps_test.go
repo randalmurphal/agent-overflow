@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -9,45 +11,31 @@ import (
 	"testing"
 )
 
-// writeSubagentStampForTest writes an anchor's meta the way the stamp's
-// owner does: the generation moves by one, so the update trigger takes it
-// as a stamp write rather than a stale whole-meta write to undo.
-func writeSubagentStampForTest(t *testing.T, s *Store, threadID, id, metaExpr string) {
+// setSubagentStampStateForTest moves an anchor's stamp to state, keeping
+// its values: the state a trigger or a recompute leaves, written directly.
+func setSubagentStampStateForTest(t *testing.T, s *Store, threadID, id string, state int) {
 	t.Helper()
-	if _, err := s.db.Exec(`UPDATE items SET meta = json_set(`+metaExpr+`, '`+aggGenPath+`',
-	        COALESCE(`+aggJX("meta", aggGenPath)+`, 0) + 1)
-	  WHERE thread_id = ? AND id = ?`, threadID, id); err != nil {
-		t.Fatalf("write stamp %s/%s: %v", threadID, id, err)
+	result, err := s.db.Exec(`UPDATE subagent_aggregates SET state = ? WHERE thread_id = ? AND item_id = ?`, state, threadID, id)
+	if err != nil {
+		t.Fatalf("set stamp state %s/%s: %v", threadID, id, err)
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		t.Fatalf("set stamp state %s/%s: %d rows (%v)", threadID, id, n, err)
 	}
 }
 
 // stripSubagentStampsForTest leaves rows as a store before v121 held
-// them: no stamp keys. It writes under the bulk-load flag, which suspends
-// the aggregate triggers. No ids strips the whole thread.
+// them: no stamp. No ids strips the whole thread.
 func stripSubagentStampsForTest(t *testing.T, s *Store, threadID string, ids ...string) {
 	t.Helper()
-	tx, err := s.db.Begin()
-	if err != nil {
-		t.Fatalf("begin strip: %v", err)
-	}
-	defer tx.Rollback()
-	if err := setHistoryBulkLoadTx(tx, threadID, true, "test strip"); err != nil {
-		t.Fatal(err)
-	}
-	where, args := "thread_id = ? AND "+aggHasKeysSQL("meta"), []any{threadID}
+	where, args := "thread_id = ?", []any{threadID}
 	if len(ids) > 0 {
-		clause, idArgs := inClause("id", ids)
+		clause, idArgs := inClause("item_id", ids)
 		where += " AND " + clause
 		args = append(args, idArgs...)
 	}
-	if _, err := tx.Exec(`UPDATE items SET meta = `+aggStripMetaSQL("meta")+` WHERE `+where, args...); err != nil {
+	if _, err := s.db.Exec(`DELETE FROM subagent_aggregates WHERE `+where, args...); err != nil {
 		t.Fatalf("strip stamps: %v", err)
-	}
-	if err := setHistoryBulkLoadTx(tx, threadID, false, "test strip"); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit strip: %v", err)
 	}
 }
 
@@ -107,6 +95,20 @@ func subagentCardsForTest(t *testing.T, s *Store, q sqlQueryer, threadID string)
 	return out
 }
 
+// servedRevsForTest reads every row's revision as the page serves it.
+func servedRevsForTest(t *testing.T, s *Store, threadID string) map[string]int64 {
+	t.Helper()
+	rows, err := s.listWireItemsTx(s.reader(), threadID, threadTimelineIDsForTest(t, s.reader(), threadID))
+	if err != nil {
+		t.Fatalf("read wire items: %v", err)
+	}
+	out := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		out[row.ID] = row.Rev
+	}
+	return out
+}
+
 // walkedSubagentCardsForTest is the reference read: every stamp removed
 // and the thread listed for the backfill, so every anchor goes through the
 // read-time aggregator. The transaction is rolled back.
@@ -117,11 +119,7 @@ func walkedSubagentCardsForTest(t *testing.T, s *Store, threadID string) map[str
 		t.Fatalf("begin walked read: %v", err)
 	}
 	defer tx.Rollback()
-	if err := setHistoryBulkLoadTx(tx, threadID, true, "test walk"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(`UPDATE items SET meta = `+aggStripMetaSQL("meta")+`
-	 WHERE thread_id = ? AND `+aggHasKeysSQL("meta"), threadID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM subagent_aggregates WHERE thread_id = ?`, threadID); err != nil {
 		t.Fatalf("strip stamps: %v", err)
 	}
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO subagent_aggregate_backfill(thread_id) VALUES (?)`, threadID); err != nil {
@@ -180,24 +178,51 @@ func assertSubagentStampParity(t *testing.T, s *Store, threadID, stage string, s
 	}
 }
 
+// subagentStampMode is how a read treats a local anchorable row.
+type subagentStampMode int
+
+const (
+	// subagentUnstamped: no stamp row.
+	subagentUnstamped subagentStampMode = iota
+	// subagentStampClean: the stamp is the read.
+	subagentStampClean
+	// subagentStampWalk: dirty or readTime; the read-time aggregator
+	// answers.
+	subagentStampWalk
+)
+
 // subagentStampStateForTest reads a row's generation and mode; gen is -1
 // for an unstamped row.
 func subagentStampStateForTest(t *testing.T, s *Store, threadID, id string) (int64, subagentStampMode) {
 	t.Helper()
-	var meta string
-	if err := s.db.QueryRow(`SELECT meta FROM items WHERE thread_id = ? AND id = ?`, threadID, id).Scan(&meta); err != nil {
-		t.Fatalf("read %s/%s: %v", threadID, id, err)
+	var gen, state int64
+	err := s.db.QueryRow(`SELECT gen, state FROM subagent_aggregates WHERE thread_id = ? AND item_id = ?`,
+		threadID, id).Scan(&gen, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return -1, subagentUnstamped
 	}
-	mode := subagentStampModeOf(meta)
-	if mode == subagentUnstamped {
-		return -1, mode
+	if err != nil {
+		t.Fatalf("read stamp %s/%s: %v", threadID, id, err)
 	}
-	var gen int64
-	if err := s.db.QueryRow(`SELECT COALESCE(`+aggJX("meta", aggGenPath)+`, 0) FROM items WHERE thread_id = ? AND id = ?`,
-		threadID, id).Scan(&gen); err != nil {
-		t.Fatalf("read gen %s/%s: %v", threadID, id, err)
+	if state == aggStateClean {
+		return gen, subagentStampClean
 	}
-	return gen, mode
+	return gen, subagentStampWalk
+}
+
+// subagentStampRowForTest reads a row's whole stamp and generation.
+func subagentStampRowForTest(t *testing.T, s *Store, threadID, id string) (subagentStampValues, int64) {
+	t.Helper()
+	targets, err := subagentStampTargets(s.db, threadID, []string{id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, ok := targets[id]
+	if !ok || !target.stamped {
+		t.Fatalf("%s/%s carries no stamp", threadID, id)
+	}
+	gen, _ := subagentStampStateForTest(t, s, threadID, id)
+	return target.stored, gen
 }
 
 type stampFixtureRow struct {
@@ -294,12 +319,25 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 			}
 		}
 	}
+	// A row whose served card a write changed must be served at a new
+	// revision, or a client holding it could prove a stale card fresh:
+	// the stamp's own row and every completion sibling borrowing it.
 	step := func(stage string, keep []string, write func()) {
 		t.Helper()
 		before := gens(keep...)
+		cardsBefore := subagentCardsForTest(t, s, s.reader(), thread)
+		revsBefore := servedRevsForTest(t, s, thread)
 		write()
 		assertSubagentStampParity(t, s, thread, stage, true)
 		incremental(stage, before)
+		cardsAfter := subagentCardsForTest(t, s, s.reader(), thread)
+		revsAfter := servedRevsForTest(t, s, thread)
+		for id, card := range cardsAfter {
+			was, existed := cardsBefore[id]
+			if existed && !mapsEqual(was, card) && revsAfter[id] == revsBefore[id] {
+				t.Errorf("%s: %s's card changed %v -> %v at the same revision %d", stage, id, was, card, revsAfter[id])
+			}
+		}
 	}
 	summary := func(id, text string) func() {
 		return func() {
@@ -429,4 +467,139 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	if _, mode := subagentStampStateForTest(t, s, thread, "C2"); mode != subagentStampWalk {
 		t.Errorf("unnamed carrier C2 ends mode %d, want readTime", mode)
 	}
+}
+
+// TestSubagentAggregateChainedCarrierJoinsItsRootsFamily pins the
+// recompute of a carrier whose transcript root is itself a carrier: a
+// round resumed from a resumed round. Seeded alone, as a backfill batch
+// can seed it, it brings in the carrier it names and that carrier's own
+// root, so the named carrier is stamped from its root's rounds instead of
+// being written readTime as a root, which would put every read of it and
+// of its completion sibling on a walk of the root's whole transcript.
+func TestSubagentAggregateChainedCarrierJoinsItsRootsFamily(t *testing.T) {
+	s := newTestStore(t)
+	const thread = "t-chained"
+	mustCreateThread(t, s, thread)
+	for _, r := range []stampFixtureRow{
+		{id: "R", kind: "tool_call", tool: "Agent", summary: "Agent: root", turn: 1},
+		{id: "R-a1", kind: "assistant_text", summary: "round one", parent: "R", turn: 1, index: 1},
+		{id: "C1", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", meta: carrierMeta("R"), turn: 2},
+		{id: "P1", kind: "user_text", summary: "again", parent: "R", meta: resumePromptMeta("C1"), turn: 2, index: 1},
+		{id: "R-a2", kind: "assistant_text", summary: "round two", parent: "R", turn: 2, index: 2},
+		{id: "C2", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", meta: carrierMeta("C1"), turn: 3},
+		{id: "P2", kind: "user_text", summary: "once more", parent: "C1", meta: resumePromptMeta("C2"), turn: 3, index: 1},
+		{id: "C1-a1", kind: "assistant_text", summary: "under the carrier", parent: "C1", turn: 3, index: 2},
+	} {
+		if err := s.InsertItem(r.item(thread)); err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+	if _, err := s.AppendCompletionItem(Item{ID: "C1", ThreadID: thread},
+		stampFixtureRow{id: "C1-done", kind: "tool_completion", tool: "SendMessage", summary: "done", turn: 4}.item(thread), nil); err != nil {
+		t.Fatalf("append completion: %v", err)
+	}
+	stripSubagentStampsForTest(t, s, thread)
+	mustExec(t, s.db, `INSERT INTO subagent_aggregate_backfill(thread_id) VALUES (?)`, thread)
+
+	writes, err := computeSubagentStamps(s.reader(), thread, []string{"C2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	states := make(map[string]int64, len(writes))
+	for _, write := range writes {
+		states[write.id] = write.values.State
+	}
+	want := map[string]int64{"R": aggStateClean, "C1": aggStateClean, "C2": aggStateReadTime}
+	if !reflect.DeepEqual(states, want) {
+		t.Fatalf("a batch seeded with the chained carrier writes %v, want %v", states, want)
+	}
+
+	for calls := 0; ; calls++ {
+		if calls > 10 {
+			t.Fatal("backfill does not finish")
+		}
+		result, err := s.RecomputeSubagentAggregates(t.Context(), thread, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.Remaining {
+			break
+		}
+	}
+	assertSubagentStampParity(t, s, thread, "backfilled", true)
+	for id, mode := range map[string]subagentStampMode{"R": subagentStampClean, "C1": subagentStampClean, "C2": subagentStampWalk} {
+		if _, got := subagentStampStateForTest(t, s, thread, id); got != mode {
+			t.Errorf("%s ends mode %d, want %d", id, got, mode)
+		}
+	}
+	completion, found, err := s.GetThreadItem(thread, "C1-done")
+	if err != nil || !found {
+		t.Fatalf("read completion: found=%v err=%v", found, err)
+	}
+	if needs, err := s.ItemReadNeedsDecoration(completion); err != nil || !needs {
+		t.Fatalf("completion needs decoration = %v (%v); completions always go through the page read", needs, err)
+	}
+	if card := subagentCardOf(t, completion.Meta); !mapsEqual(card, subagentCard{"subagentDescendantCount": float64(2)}) {
+		t.Errorf("the completion's read-back is %v, want C1's round under R", card)
+	}
+
+	// The walk gives C1 its round under R in every window: alone, with
+	// the round resumed from it, and with that round's carrier ahead of it.
+	walkWindows := func(stage string) {
+		t.Helper()
+		tx, err := s.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(`DELETE FROM subagent_aggregates WHERE thread_id = ?`, thread); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO subagent_aggregate_backfill(thread_id) VALUES (?)`, thread); err != nil {
+			t.Fatal(err)
+		}
+		full := subagentCardsForTest(t, s, tx, thread)
+		for _, window := range [][]string{{"C1"}, {"C1-done"}, {"C1", "C2"}, {"C2", "C1-done"}, {"C2", "C1"}, {"R", "C2", "C1-done"}} {
+			rows, err := s.listWireItemsTx(tx, thread, window)
+			if err != nil {
+				t.Fatal(err)
+			}
+			byID := make(map[string]Item, len(rows))
+			for _, row := range rows {
+				byID[row.ID] = row
+			}
+			ordered := make([]Item, 0, len(window))
+			for _, id := range window {
+				ordered = append(ordered, byID[id])
+			}
+			decorated, err := s.decorateSubagentAnchors(tx, thread, ordered)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range decorated {
+				if row.ID == "C1" || row.ID == "C1-done" {
+					if got := subagentCardOf(t, row.Meta); !mapsEqual(got, full[row.ID]) {
+						t.Errorf("%s: window %v walks %s as %v, the whole thread as %v", stage, window, row.ID, got, full[row.ID])
+					}
+				}
+			}
+		}
+	}
+	walkWindows("backfilled")
+
+	// Writes after the backfill: a row under C1 is in no card C1 shows,
+	// and a row under R extends C1's round.
+	for _, r := range []stampFixtureRow{
+		{id: "C1-a2", kind: "assistant_text", summary: "under the carrier again", parent: "C1", turn: 5, index: 1},
+		{id: "R-a3", kind: "assistant_text", summary: "round two goes on", parent: "R", turn: 5, index: 2},
+	} {
+		if err := s.InsertItem(r.item(thread)); err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+		assertSubagentStampParity(t, s, thread, "after "+r.id, true)
+	}
+	if _, mode := subagentStampStateForTest(t, s, thread, "C1"); mode != subagentStampClean {
+		t.Errorf("C1 ends mode %d after the writes, want clean", mode)
+	}
+	walkWindows("after writes")
 }

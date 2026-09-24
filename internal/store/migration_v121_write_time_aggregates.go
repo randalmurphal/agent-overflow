@@ -6,10 +6,11 @@ package store
 //   - idx_items_subagent_resume_prompt is the round probe: the latest
 //     resume prompt under an anchor at or before a written row's position.
 //     Its predicate is aggPromptSQL's first three terms.
-//   - idx_items_subagent_aggregate_dirty is the dirty-anchor record: the
-//     flag lives on the anchor's own meta, written by the same UPDATE that
-//     invalidates the stamp, and the partial index finds a thread's dirty
-//     anchors by key.
+//   - subagent_aggregates holds the stamps, one row per anchor, with
+//     idx_subagent_aggregates_dirty finding a thread's dirty anchors by
+//     key and the triggers that stamp an anchor's items row when its
+//     stamp changes (subagentAggregatesTableSQL,
+//     subagentAggregateTriggersSQL).
 //   - subagent_aggregate_backfill lists the threads whose anchors predate
 //     the stamps. The deferred phase (stampLegacySubagentAnchors) stamps
 //     them in paced RecomputeSubagentAggregates batches and removes each
@@ -31,10 +32,6 @@ CREATE INDEX idx_items_subagent_resume_prompt
  WHERE kind = 'user_text' AND parent_id <> ''
    AND json_type(meta, '$.` + metaKeySubagentResumePrompt + `') = 'true';
 
-CREATE INDEX idx_items_subagent_aggregate_dirty
-    ON items(thread_id)
- WHERE ` + subagentAggregateDirtyPredicate + `;
-
 CREATE INDEX idx_items_running_nested_fg_tool_calls
     ON items(thread_id, id)
  WHERE kind = 'tool_call'
@@ -50,10 +47,7 @@ INSERT INTO subagent_aggregate_backfill(thread_id)
 SELECT id FROM threads
  WHERE EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id AND items.kind = 'tool_call');
 
+` + subagentAggregatesTableSQL + subagentAggregateTriggersSQL + `
 ` + dropHistoryRevTriggersSQL + historyRevTriggersSQL + `
 ` + threadTurnErrorSchemaSQL + `
 `
-
-// subagentAggregateDirtyPredicate is idx_items_subagent_aggregate_dirty's
-// predicate, stated verbatim by every query that selects dirty anchors.
-const subagentAggregateDirtyPredicate = `kind = 'tool_call' AND json_extract(meta, '` + aggDirtyPath + `') = 1`

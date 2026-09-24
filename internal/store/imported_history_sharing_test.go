@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -336,10 +335,6 @@ func TestImportedDescendantsKeepWireDecorationAndAncestorRevisions(t *testing.T)
 	local[0].ThreadID, local[0].Rev = "", 0
 	before := imported[0]
 	imported[0].ThreadID, imported[0].Rev = "", 0
-	// The stamp generation counts the writes that set it: the local
-	// launch's triggers and the import's recompute take different paths.
-	local[0].Meta = zeroStampGenForTest(t, local[0].Meta)
-	imported[0].Meta = zeroStampGenForTest(t, imported[0].Meta)
 	if !reflect.DeepEqual(local[0], imported[0]) {
 		t.Fatalf("decoration differs: local=%+v imported=%+v", local[0], imported[0])
 	}
@@ -364,33 +359,6 @@ func TestImportedDescendantsKeepWireDecorationAndAncestorRevisions(t *testing.T)
 	if len(after) != 1 || after[0].Rev <= before.Rev {
 		t.Fatalf("cut did not stamp retained parent: %+v", after)
 	}
-}
-
-// zeroStampGenForTest returns meta with its subagent stamp generation
-// zeroed and its keys in a canonical order.
-func zeroStampGenForTest(t *testing.T, meta string) string {
-	t.Helper()
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(meta), &fields); err != nil {
-		t.Fatalf("decode meta %q: %v", meta, err)
-	}
-	if raw, ok := fields[metaKeySubagentAggregateState]; ok {
-		var state map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &state); err != nil {
-			t.Fatalf("decode stamp state %s: %v", raw, err)
-		}
-		state["gen"] = json.RawMessage("0")
-		encoded, err := json.Marshal(state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fields[metaKeySubagentAggregateState] = encoded
-	}
-	encoded, err := json.Marshal(fields)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(encoded)
 }
 
 func TestImportedHistoryCutCollectsPrivatePayloadOverrides(t *testing.T) {

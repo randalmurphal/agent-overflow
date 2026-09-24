@@ -55,7 +55,7 @@ func forEachSubagentAggregateRow(q sqlQueryer, threadID string, rootIDs []string
 
 // subagentAggregateAccumulator folds one anchor's rows: the card values,
 // plus the preview row and the newest position the write-time stamp keeps
-// beside them (subagentAggregateState).
+// beside them (subagent_aggregates).
 type subagentAggregateAccumulator struct {
 	aggregate subagentAnchorAggregate
 	preview   subagentAggregateRow
@@ -170,7 +170,8 @@ func subagentAggregatesByRound(
 // subagentAccumulatorsByRound is subagentAggregatesByRound before it is
 // reduced to card values: one accumulator per bound, and one per root
 // whose transcript has rounds holding the whole-transcript count and
-// newest position.
+// newest position. Only a root with a bound of its own has a transcript:
+// one without is another root's carrier (subagentRoundBoundsFor).
 func subagentAccumulatorsByRound(
 	q sqlQueryer, threadID string, rootIDs []string, bounds []subagentRoundBounds,
 ) (map[string]*subagentAggregateAccumulator, map[string]*subagentAggregateAccumulator, error) {
@@ -198,6 +199,12 @@ func subagentAccumulatorsByRound(
 	}
 	transcripts := make(map[string]*subagentAggregateAccumulator, len(rootIDs))
 	hasRounds := make(map[string]bool, len(rootIDs))
+	ownBound := make(map[string]bool, len(rootIDs))
+	for _, bound := range bounds {
+		if bound.round && bound.anchorID == bound.rootID {
+			ownBound[bound.rootID] = true
+		}
+	}
 	for _, bound := range bounds {
 		if !bound.round {
 			continue
@@ -217,7 +224,7 @@ func subagentAccumulatorsByRound(
 		}
 	}
 	for root := range transcripts {
-		if !hasRounds[root] {
+		if !hasRounds[root] || !ownBound[root] {
 			delete(transcripts, root)
 		}
 	}

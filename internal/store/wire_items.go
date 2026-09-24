@@ -41,7 +41,11 @@ func (s *Store) ItemReadNeedsDecoration(item Item) (bool, error) {
 	if item.Kind != "tool_call" || item.PayloadKind == "proposed_plan" {
 		return true, nil
 	}
-	walk, err := subagentWalkProbe(s.reader(), item.ThreadID)(item)
+	decider, err := newSubagentWalkDecider(s.reader(), item.ThreadID, map[string]Item{item.ID: item})
+	if err != nil {
+		return false, fmt.Errorf("store: decide decoration of %s/%s: %w", item.ThreadID, item.ID, err)
+	}
+	walk, err := decider.walks(item)
 	if err != nil {
 		return false, fmt.Errorf("store: decide decoration of %s/%s: %w", item.ThreadID, item.ID, err)
 	}
@@ -50,14 +54,13 @@ func (s *Store) ItemReadNeedsDecoration(item Item) (bool, error) {
 
 // firstChildAnchorsSQL selects the clean stamped anchors whose round holds
 // exactly the written row: its parent, or the carrier a resume prompt
-// names. Two primary-key probes.
-var firstChildAnchorsSQL = `SELECT a.id FROM items a
- WHERE a.thread_id = ?1
-   AND a.id IN (?2, COALESCE((SELECT ` + aggPromptCarrierSQL("p.") + ` FROM items p
+// names. Primary-key probes of the prompt row and the stamps.
+var firstChildAnchorsSQL = `SELECT s.item_id FROM subagent_aggregates s
+ WHERE s.thread_id = ?1
+   AND s.item_id IN (?2, COALESCE((SELECT ` + aggPromptCarrierSQL("p.") + ` FROM items p
                                WHERE p.thread_id = ?1 AND p.id = ?3 AND ` + aggPromptSQL("p.") + `), ''))
-   AND ` + aggAnchorableSQL("a.") + ` AND ` + aggCleanSQL("a.meta") + `
-   AND ` + aggJX("a.meta", aggCountPath) + ` = 1
-   AND (` + aggJX("a.meta", aggNewestPath+"[0]") + `, ` + aggJX("a.meta", aggNewestPath+"[1]") + `) = (?4, ?5)`
+   AND s.state = ` + aggCleanLiteral + ` AND s.descendant_count = 1
+   AND (s.newest_turn, s.newest_item) = (?4, ?5)`
 
 // ListFirstChildWireAnchors returns, as a page reads them, the anchors
 // whose card the written child just opened: a clean stamped parent (or,

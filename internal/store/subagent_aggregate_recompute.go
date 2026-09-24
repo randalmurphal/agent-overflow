@@ -3,108 +3,66 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 )
 
-// subagentStampState is subagentAggregateState as stored. Pick is
-// [turn_index, item_index, id]; positions are [turn_index, item_index].
-type subagentStampState struct {
-	Gen              int64  `json:"gen"`
-	Dirty            bool   `json:"dirty,omitempty"`
-	ReadTime         bool   `json:"readTime,omitempty"`
-	Pick             []any  `json:"pick,omitempty"`
-	Newest           []int  `json:"newest,omitempty"`
-	TranscriptNewest []int  `json:"transcriptNewest,omitempty"`
-	ToolPick         string `json:"toolPick,omitempty"`
-}
-
-// subagentStampMode is how a read treats a local anchorable row.
-type subagentStampMode int
-
-const (
-	// subagentUnstamped: no state. A plain tool call, an anchor in a
-	// thread still listed for the backfill, or a carrier whose round the
-	// triggers do not maintain.
-	subagentUnstamped subagentStampMode = iota
-	// subagentStampClean: the stored keys are the read.
-	subagentStampClean
-	// subagentStampWalk: dirty or readTime; the read-time aggregator
-	// answers.
-	subagentStampWalk
-)
-
-func subagentStampModeOf(meta string) subagentStampMode {
-	if !strings.Contains(meta, metaKeySubagentAggregateState) {
-		return subagentUnstamped
-	}
-	var decoded struct {
-		State *subagentStampState `json:"subagentAggregateState"`
-	}
-	if json.Unmarshal([]byte(meta), &decoded) != nil || decoded.State == nil {
-		return subagentUnstamped
-	}
-	if decoded.State.Dirty || decoded.State.ReadTime {
-		return subagentStampWalk
-	}
-	return subagentStampClean
-}
-
-// subagentStampValues is the part of a stamp a recompute derives: the six
-// flat keys (absent ones omitted) and the state without its generation.
+// subagentStampValues is a stamp as stored, without its generation: what
+// a recompute derives and compares. Its fields after State are
+// subagentAggregateValueColumns, in order.
 type subagentStampValues struct {
-	Count           *int               `json:"subagentDescendantCount,omitempty"`
-	Summary         string             `json:"subagentLatestChildSummary,omitempty"`
-	TranscriptCount *int               `json:"subagentTranscriptDescendantCount,omitempty"`
-	ToolSummary     string             `json:"subagentLatestToolSummary,omitempty"`
-	ToolTurnIndex   *int               `json:"subagentLatestToolTurnIndex,omitempty"`
-	ToolItemIndex   *int               `json:"subagentLatestToolItemIndex,omitempty"`
-	State           subagentStampState `json:"subagentAggregateState"`
+	State                                      int64
+	Count                                      sql.NullInt64
+	Summary                                    sql.NullString
+	TranscriptCount                            sql.NullInt64
+	ToolSummary                                sql.NullString
+	ToolTurn, ToolItem                         sql.NullInt64
+	ToolID                                     sql.NullString
+	PickTurn, PickItem                         sql.NullInt64
+	PickID                                     sql.NullString
+	NewestTurn, NewestItem                     sql.NullInt64
+	TranscriptNewestTurn, TranscriptNewestItem sql.NullInt64
 }
 
-// storedSubagentStampValues reads the same shape back from a row's meta,
-// generation zeroed, so a recompute can skip rows it would not change.
-func storedSubagentStampValues(meta string) (subagentStampValues, bool) {
-	var stored subagentStampValues
-	var presence struct {
-		State json.RawMessage `json:"subagentAggregateState"`
+// scanTargets are pointers to the value columns, for a scan.
+func (v *subagentStampValues) scanTargets() []any {
+	return []any{
+		&v.Count, &v.Summary, &v.TranscriptCount,
+		&v.ToolSummary, &v.ToolTurn, &v.ToolItem, &v.ToolID,
+		&v.PickTurn, &v.PickItem, &v.PickID,
+		&v.NewestTurn, &v.NewestItem, &v.TranscriptNewestTurn, &v.TranscriptNewestItem,
 	}
-	if json.Unmarshal([]byte(meta), &presence) != nil || len(presence.State) == 0 {
-		return stored, false
-	}
-	if json.Unmarshal([]byte(meta), &stored) != nil {
-		return stored, false
-	}
-	stored.State.Gen = 0
-	return stored, true
 }
 
-func (v subagentStampValues) equal(other subagentStampValues) bool {
-	a, errA := json.Marshal(v)
-	b, errB := json.Marshal(other)
-	return errA == nil && errB == nil && string(a) == string(b)
+// args are the value columns, for a write.
+func (v subagentStampValues) args() []any {
+	return []any{
+		v.Count, v.Summary, v.TranscriptCount,
+		v.ToolSummary, v.ToolTurn, v.ToolItem, v.ToolID,
+		v.PickTurn, v.PickItem, v.PickID,
+		v.NewestTurn, v.NewestItem, v.TranscriptNewestTurn, v.TranscriptNewestItem,
+	}
 }
 
-// subagentStampTarget is a local row a recompute may write.
+func validInt(n int) sql.NullInt64           { return sql.NullInt64{Int64: int64(n), Valid: true} }
+func nonEmptyString(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
+
+// subagentStampTarget is a local row a recompute may write, with its
+// stored stamp.
 type subagentStampTarget struct {
-	id, kind, toolName, meta string
-	rev                      int64
+	id, kind, toolName string
+	// root is the transcript root a carrier's round is counted under, or
+	// "" for a row that is not a carrier (aggCarrierSQL).
+	root    string
+	rev     int64
+	stamped bool
+	stored  subagentStampValues
 }
 
 func (t subagentStampTarget) anchorable() bool {
 	return t.kind == "tool_call" && t.toolName != "collab_agent"
-}
-
-// transcriptRoot is aggCarrierSQL in Go: the root a carrier's round is
-// counted under, or "" for any row that is not a carrier.
-func (t subagentStampTarget) transcriptRoot() string {
-	if root := transcriptRootFromMeta(t.meta); root != t.id {
-		return root
-	}
-	return ""
 }
 
 // subagentStampWrite is one recomputed stamp. rev is the revision the
@@ -121,13 +79,18 @@ type subagentStampWrite struct {
 // Values come from the read-time aggregator, so a stamp is by
 // construction what decorateSubagentAnchors returns for the row.
 //
+// A carrier's family is its transcript root's. When the root it names is
+// itself a carrier (a round resumed from a carrier), that carrier's own
+// root joins too, so the named carrier is stamped from its family rather
+// than written readTime as a root it is not.
+//
 // A family is marked readTime when its rounds take a shape the triggers do
 // not maintain: a prompt in the immutable history arm (the round probe
 // reads local rows only), a prompt naming the root itself, one carrier
-// named by two prompts, a named carrier stamped as another root's, or a
-// root outside the local overlay. A carrier no prompt names shows the
-// whole transcript, which no incremental rule keeps, and is readTime on
-// its own.
+// named by two prompts, a named carrier stamped as another root's, a root
+// that is itself a carrier, or a root outside the local overlay. A carrier
+// no prompt names shows the whole transcript, which no incremental rule
+// keeps, and is readTime on its own.
 func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]subagentStampWrite, error) {
 	seeds, err := subagentStampTargets(q, threadID, seedIDs)
 	if err != nil {
@@ -135,20 +98,35 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 	}
 	rootSet := make(map[string]struct{}, len(seeds))
 	var roots []string
-	addRoot := func(id string) {
-		if _, ok := rootSet[id]; !ok {
-			rootSet[id] = struct{}{}
-			roots = append(roots, id)
+	addRoot := func(id string) bool {
+		if _, ok := rootSet[id]; ok {
+			return false
 		}
+		rootSet[id] = struct{}{}
+		roots = append(roots, id)
+		return true
 	}
+	var carrierRoots []string
 	for _, seed := range seeds {
 		if !seed.anchorable() {
 			continue
 		}
-		if root := seed.transcriptRoot(); root != "" {
-			addRoot(root)
-		} else {
+		if seed.root == "" {
 			addRoot(seed.id)
+		} else if addRoot(seed.root) {
+			carrierRoots = append(carrierRoots, seed.root)
+		}
+	}
+	for depth := 0; len(carrierRoots) > 0 && depth < 64; depth++ {
+		named, err := subagentStampTargets(q, threadID, carrierRoots)
+		if err != nil {
+			return nil, err
+		}
+		carrierRoots = nil
+		for _, row := range named {
+			if row.anchorable() && row.root != "" && addRoot(row.root) {
+				carrierRoots = append(carrierRoots, row.root)
+			}
 		}
 	}
 	if len(roots) == 0 {
@@ -187,7 +165,7 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 
 	readTimeRoot := make(map[string]bool, len(roots))
 	for _, root := range roots {
-		if row, ok := members[root]; !ok || !row.anchorable() || row.transcriptRoot() != "" {
+		if row, ok := members[root]; !ok || !row.anchorable() || row.root != "" {
 			readTimeRoot[root] = true
 		}
 	}
@@ -198,7 +176,7 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 		if round.anchorID == round.promptID {
 			continue
 		}
-		if carrier, ok := members[round.anchorID]; ok && carrier.anchorable() && carrier.transcriptRoot() != round.rootID {
+		if carrier, ok := members[round.anchorID]; ok && carrier.anchorable() && carrier.root != round.rootID {
 			readTimeRoot[round.rootID] = true
 		}
 	}
@@ -237,51 +215,47 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 	writes := make([]subagentStampWrite, 0, len(writeIDs))
 	for _, id := range writeIDs {
 		row := members[id]
-		values := subagentStampValues{State: subagentStampState{ReadTime: true}}
-		root := row.transcriptRoot()
+		values := subagentStampValues{State: aggStateReadTime}
 		clean := false
-		if root == "" {
+		if row.root == "" {
 			_, isRoot := rootSet[id]
 			clean = isRoot && !readTimeRoot[id]
 		} else {
 			_, bounded := accumulators[id]
-			clean = !readTimeRoot[root] && bounded && named[id] == 1
+			clean = !readTimeRoot[row.root] && bounded && named[id] == 1
 		}
 		if clean {
-			values = subagentStampValues{}
+			values = subagentStampValues{State: aggStateClean}
 			var acc subagentAggregateAccumulator
 			if found := accumulators[id]; found != nil {
 				acc = *found
 			}
 			transcript := transcripts[id]
 			if acc.aggregate.descendantCount > 0 || transcript != nil {
-				count := acc.aggregate.descendantCount
-				values.Count = &count
+				values.Count = validInt(acc.aggregate.descendantCount)
 			}
-			values.Summary = acc.aggregate.latestChildSummary
+			values.Summary = nonEmptyString(acc.aggregate.latestChildSummary)
 			if acc.hasPick {
-				values.State.Pick = []any{acc.preview.turnIndex, acc.preview.itemIndex, acc.preview.id}
+				values.PickTurn, values.PickItem = validInt(acc.preview.turnIndex), validInt(acc.preview.itemIndex)
+				values.PickID = nonEmptyString(acc.preview.id)
 			}
 			if acc.hasNewest {
-				values.State.Newest = []int{acc.newest.TurnIndex, acc.newest.ItemIndex}
+				values.NewestTurn, values.NewestItem = validInt(acc.newest.TurnIndex), validInt(acc.newest.ItemIndex)
 			}
 			if transcript != nil {
-				total := transcript.aggregate.descendantCount
-				values.TranscriptCount = &total
+				values.TranscriptCount = validInt(transcript.aggregate.descendantCount)
 				if transcript.hasNewest {
-					values.State.TranscriptNewest = []int{transcript.newest.TurnIndex, transcript.newest.ItemIndex}
+					values.TranscriptNewestTurn = validInt(transcript.newest.TurnIndex)
+					values.TranscriptNewestItem = validInt(transcript.newest.ItemIndex)
 				}
 			}
 			if tool, ok := tools[id]; ok {
-				turn, item := tool.turnIndex, tool.itemIndex
-				values.ToolSummary, values.ToolTurnIndex, values.ToolItemIndex = tool.summary, &turn, &item
-				values.State.ToolPick = tool.id
+				values.ToolSummary = nonEmptyString(tool.summary)
+				values.ToolTurn, values.ToolItem = validInt(tool.turnIndex), validInt(tool.itemIndex)
+				values.ToolID = nonEmptyString(tool.id)
 			}
 		}
-		// A normalized round trip makes the comparison below exact: the
-		// stored form went through the same encoding.
-		values = normalizedSubagentStampValues(values)
-		if stored, ok := storedSubagentStampValues(row.meta); ok && stored.equal(values) {
+		if row.stamped && row.stored == values {
 			continue
 		}
 		writes = append(writes, subagentStampWrite{id: id, rev: row.rev, values: values})
@@ -289,22 +263,16 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 	return writes, nil
 }
 
-func normalizedSubagentStampValues(v subagentStampValues) subagentStampValues {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return v
-	}
-	var out subagentStampValues
-	if json.Unmarshal(data, &out) != nil {
-		return v
-	}
-	return out
-}
-
-// subagentStampTargetsSQL reads local rows by primary key; ?2 is a JSON
-// array of ids.
-const subagentStampTargetsSQL = `SELECT id, kind, tool_name, meta, rev FROM items
- WHERE thread_id = ?1 AND id IN (SELECT value FROM json_each(?2))`
+// subagentStampTargetsSQL reads local rows by primary key with their
+// stamps; ?2 is a JSON array of ids. Only a tool call's meta is read,
+// for its transcript root.
+var subagentStampTargetsSQL = `SELECT i.id, i.kind, i.tool_name,
+       CASE WHEN i.kind = 'tool_call' THEN COALESCE(` + aggTranscriptRootSQL("i.") + `, '') ELSE '' END,
+       i.rev, s.item_id IS NOT NULL, COALESCE(s.state, 0),
+       s.` + strings.Join(subagentAggregateValueColumns, ", s.") + `
+  FROM items i
+  LEFT JOIN subagent_aggregates s ON s.thread_id = i.thread_id AND s.item_id = i.id
+ WHERE i.thread_id = ?1 AND i.id IN (SELECT value FROM json_each(?2))`
 
 // subagentStampTargets loads local rows by id.
 func subagentStampTargets(q sqlQueryer, threadID string, ids []string) (map[string]subagentStampTarget, error) {
@@ -322,8 +290,13 @@ func subagentStampTargets(q sqlQueryer, threadID string, ids []string) (map[stri
 	}
 	for rows.Next() {
 		var row subagentStampTarget
-		if err := rows.Scan(&row.id, &row.kind, &row.toolName, &row.meta, &row.rev); err != nil {
+		dest := append([]any{&row.id, &row.kind, &row.toolName, &row.root, &row.rev, &row.stamped, &row.stored.State},
+			row.stored.scanTargets()...)
+		if err := rows.Scan(dest...); err != nil {
 			return nil, errors.Join(fmt.Errorf("store: scan subagent stamp target: %w", err), rows.Close())
+		}
+		if row.root == row.id {
+			row.root = ""
 		}
 		out[row.id] = row
 	}
@@ -365,26 +338,32 @@ func subagentCarriersOf(q sqlQueryer, threadID string, roots []string) (map[stri
 	return out, nil
 }
 
+// bumpSubagentAggregateRevSQL advances the thread stamp ahead of a Go
+// write to subagent_aggregates, whose triggers stamp the anchors it
+// writes with the thread's history_rev. Under bulk load the thread stamp
+// is frozen, as the item triggers leave it.
+const bumpSubagentAggregateRevSQL = `UPDATE threads SET history_rev = history_rev + 1
+ WHERE id = ? AND history_bulk_load = 0`
+
 // writeSubagentStampSQL replaces a row's stamp and moves its generation
-// by one, which is how the update trigger tells an owner's write from a
-// stale whole-meta write it must undo. ?4 < 0 writes unconditionally;
-// otherwise the row must still be at the revision the values were
-// computed from.
-var writeSubagentStampSQL = `UPDATE items
-   SET meta = json_set(
-         json_patch(json_remove(meta, ` + aggQuotedPaths(append(slices.Clone(aggKeyPaths), aggStatePath)...) + `), ?1),
-         '` + aggGenPath + `', COALESCE(` + aggJX("meta", aggGenPath) + `, 0) + 1)
- WHERE thread_id = ?2 AND id = ?3 AND (?4 < 0 OR rev = ?4)`
+// by one; a new row starts at generation one. ?3 < 0 writes
+// unconditionally; otherwise the item must still be at the revision the
+// values were computed from.
+var writeSubagentStampSQL = `INSERT INTO subagent_aggregates (thread_id, item_id, state, gen, ` +
+	strings.Join(subagentAggregateValueColumns, ", ") + `)
+SELECT ?1, ?2, ?4, 1` + strings.Repeat(", ?", len(subagentAggregateValueColumns)) + `
+ WHERE EXISTS (SELECT 1 FROM items WHERE thread_id = ?1 AND id = ?2 AND (?3 < 0 OR rev = ?3))
+` + subagentAggregateUpsertSQL("gen = subagent_aggregates.gen + 1")
 
 // writeSubagentStampsTx writes recomputed stamps and returns how many
 // landed. An optimistic write skips a row that moved since it was read;
 // that row is still dirty or unstamped and the next recompute takes it.
-//
-// The write is prepared once per call: preparing an UPDATE on items
-// compiles the item triggers, which costs more than the write itself.
 func writeSubagentStampsTx(tx *sql.Tx, threadID string, writes []subagentStampWrite, optimistic bool) (landed int, err error) {
 	if len(writes) == 0 {
 		return 0, nil
+	}
+	if _, err := tx.Exec(bumpSubagentAggregateRevSQL, threadID); err != nil {
+		return 0, fmt.Errorf("store: bump history for subagent stamps in %s: %w", threadID, err)
 	}
 	stmt, err := tx.Prepare(writeSubagentStampSQL)
 	if err != nil {
@@ -396,15 +375,12 @@ func writeSubagentStampsTx(tx *sql.Tx, threadID string, writes []subagentStampWr
 		}
 	}()
 	for _, write := range writes {
-		patch, err := json.Marshal(write.values)
-		if err != nil {
-			return landed, fmt.Errorf("store: encode subagent stamp %s/%s: %w", threadID, write.id, err)
-		}
 		rev := int64(-1)
 		if optimistic {
 			rev = write.rev
 		}
-		result, err := stmt.Exec(string(patch), threadID, write.id, rev)
+		args := append([]any{threadID, write.id, rev, write.values.State}, write.values.args()...)
+		result, err := stmt.Exec(args...)
 		if err != nil {
 			return landed, fmt.Errorf("store: write subagent stamp %s/%s: %w", threadID, write.id, err)
 		}
@@ -418,15 +394,16 @@ func writeSubagentStampsTx(tx *sql.Tx, threadID string, writes []subagentStampWr
 }
 
 // subagentDirtyAnchorsSQL finds a thread's dirty anchors by
-// idx_items_subagent_aggregate_dirty.
-const subagentDirtyAnchorsSQL = `SELECT id FROM items WHERE thread_id = ? AND ` + subagentAggregateDirtyPredicate + ` LIMIT ?`
+// idx_subagent_aggregates_dirty.
+var subagentDirtyAnchorsSQL = `SELECT item_id FROM subagent_aggregates
+ WHERE thread_id = ? AND state = ` + aggDirtyLiteral + ` LIMIT ?`
 
 // subagentLegacyAnchorsSQL finds a listed thread's anchors that predate
 // the stamps: unstamped local anchorable rows that a read decorates,
 // because they are carriers or have a visible child in either arm. The
 // candidates are the thread's distinct parent ids, read from the covering
 // parent indexes of both arms, and its carriers (idx_items_transcript_root);
-// each candidate costs a primary-key probe and a one-row child probe.
+// each candidate costs two primary-key probes and a one-row child probe.
 var subagentLegacyAnchorsSQL = `SELECT a.id FROM (
     SELECT DISTINCT parent_id AS id FROM items WHERE thread_id = ?1 AND parent_id <> ''
     UNION
@@ -437,7 +414,7 @@ var subagentLegacyAnchorsSQL = `SELECT a.id FROM (
     SELECT id FROM items WHERE thread_id = ?1 AND ` + transcriptRootExpr + ` IS NOT NULL
   ) AS p CROSS JOIN items a
  WHERE a.thread_id = ?1 AND a.id = p.id AND ` + aggAnchorableSQL("a.") + `
-   AND ` + aggJT("a.meta", aggStatePath) + ` IS NULL
+   AND NOT EXISTS (SELECT 1 FROM subagent_aggregates s WHERE s.thread_id = a.thread_id AND s.item_id = a.id)
    AND (` + aggCarrierSQL("a.") + ` OR ` + aggHasChildSQL("a.thread_id", "a.id", "") + `)
  LIMIT ?2`
 
@@ -534,8 +511,8 @@ func (s *Store) RecomputeSubagentAggregates(ctx context.Context, threadID string
 		if seeds, err = subagentAnchorIDs(rtx, subagentDirtyAnchorsSQL, threadID, limit); err != nil {
 			return fmt.Errorf("store: select dirty subagent anchors for %s: %w", threadID, err)
 		}
-		if err := rtx.QueryRow(`SELECT EXISTS(SELECT 1 FROM subagent_aggregate_backfill WHERE thread_id = ?)`, threadID).Scan(&listed); err != nil {
-			return fmt.Errorf("store: probe subagent backfill for %s: %w", threadID, err)
+		if listed, err = subagentBackfillListed(rtx, threadID); err != nil {
+			return err
 		}
 		if listed && len(seeds) < limit {
 			legacy, err := subagentAnchorIDs(rtx, subagentLegacyAnchorsSQL, threadID, limit-len(seeds))
@@ -698,6 +675,9 @@ func markSubagentChainsDirtyTx(tx *sql.Tx, threadID string, fromIDs []string) er
 	if err != nil {
 		return err
 	}
+	if _, err := tx.Exec(bumpSubagentAggregateRevSQL, threadID); err != nil {
+		return fmt.Errorf("store: bump history for dirty subagent anchors in %s: %w", threadID, err)
+	}
 	if _, err := tx.Exec(markSubagentAnchorsDirtySQL, threadID, list); err != nil {
 		return fmt.Errorf("store: mark subagent anchors dirty in %s: %w", threadID, err)
 	}
@@ -706,19 +686,19 @@ func markSubagentChainsDirtyTx(tx *sql.Tx, threadID string, fromIDs []string) er
 
 // markSubagentAnchorsDirtySQL marks dirty the anchors among the local rows
 // the JSON array ?2 names, by primary key, that are clean or unstamped.
-var markSubagentAnchorsDirtySQL = `UPDATE items SET meta = json_set(json_remove(meta, ` + aggQuotedPaths(aggKeyPaths...) + `),
-       '` + aggStatePath + `', json_object('gen', COALESCE(` + aggJX("meta", aggGenPath) + `, 0) + 1, 'dirty', json('true')))
- WHERE thread_id = ?1 AND id IN (SELECT value FROM json_each(?2)) AND ` + aggAnchorableSQL("items.") + `
-   AND ` + aggJT("items.meta", aggDirtyPath) + ` IS NULL AND ` + aggJT("items.meta", aggReadTimePath) + ` IS NULL`
+var markSubagentAnchorsDirtySQL = `INSERT INTO subagent_aggregates (thread_id, item_id, state)
+SELECT a.thread_id, a.id, ` + aggDirtyLiteral + ` FROM items a
+ WHERE a.thread_id = ?1 AND a.id IN (SELECT value FROM json_each(?2)) AND ` + aggAnchorableSQL("a.") + `
+ON CONFLICT (thread_id, item_id) DO UPDATE SET state = ` + aggDirtyLiteral + `, ` +
+	strings.Join(subagentAggregateValueColumns, " = NULL, ") + ` = NULL
+ WHERE subagent_aggregates.state = ` + aggCleanLiteral
 
 // restampSubagentAggregatesTx rebuilds every stamp in a thread whose rows
-// were loaded with the triggers' aggregate work suspended: stamps the rows
-// arrived with are removed, then every anchor a read decorates is
-// recomputed. It runs inside the loading transaction, before the thread
-// leaves bulk load.
+// were loaded with the triggers' aggregate work suspended: its stamps are
+// removed, then every anchor a read decorates is recomputed. It runs
+// inside the loading transaction, before the thread leaves bulk load.
 func restampSubagentAggregatesTx(tx *sql.Tx, threadID string) error {
-	if _, err := tx.Exec(`UPDATE items SET meta = `+aggStripMetaSQL("meta")+`
-	 WHERE thread_id = ? AND `+aggHasKeysSQL("meta"), threadID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM subagent_aggregates WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("store: clear loaded subagent stamps in %s: %w", threadID, err)
 	}
 	ids, err := subagentAnchorIDs(tx, subagentLegacyAnchorsSQL, threadID, -1)

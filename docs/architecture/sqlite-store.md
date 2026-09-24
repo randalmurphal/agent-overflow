@@ -264,8 +264,8 @@ On the measured copy this is 1,041 `Agent` payloads (1.19 GB) and 141
 Five trigger families ride `items`:
 
 - History triggers maintain revision and epoch counters, the per-row
-  `items.rev` stamp, and each subagent anchor's card on the anchor's own
-  row (`subagent_aggregate_stamps.go`). Under `history_bulk_load` the
+  `items.rev` stamp, and each subagent anchor's card in its
+  `subagent_aggregates` row (`subagent_aggregate_stamps.go`). Under `history_bulk_load` the
   triggers skip the card work, and a bulk load that changes a subtree
   recomputes the cards before it commits.
 - Payload-GC triggers collect a payload once no item in the thread references

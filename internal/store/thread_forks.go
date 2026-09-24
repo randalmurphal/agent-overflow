@@ -184,7 +184,7 @@ func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep 
 	// spans here reads heavy values that the insert does not use.
 	query, args := timelineArms(sourceThreadID, timelineSelection{
 		Columns: func(thread, rev string) string {
-			return itemHydrationColumns(thread, "''", "''", "''", rev)
+			return itemHydrationColumns(thread, "''", "''", "''", "items.meta", rev)
 		},
 		OrderBy: "turn_index, item_index",
 	})
@@ -327,9 +327,9 @@ func cloneThreadItemsTx(tx *sql.Tx, sourceThreadID, targetThreadID string, keep 
 		}
 	}
 
-	// The copied rows arrive without the source's stamps (the insert
-	// trigger strips them) and rebuild theirs from the rows inserted
-	// after them. An anchor whose children were attached as shared
+	// The copied rows arrive without the source's stamps (the copy reads
+	// stored meta, and stamps are per thread) and rebuild theirs from the
+	// rows inserted after them. An anchor whose children were attached as shared
 	// history, or inserted ahead of it, arrives dirty; it is recomputed
 	// here.
 	if err := settleSubagentAggregatesTx(tx, targetThreadID); err != nil {

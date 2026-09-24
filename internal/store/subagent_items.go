@@ -233,8 +233,10 @@ func (s *Store) IsSubagentLaunch(threadID, itemID string) (bool, error) {
 // hydrates against.
 //
 // A local anchor the history triggers keep stamped (subagent_aggregate_
-// stamps.go) is returned as stored: its stamp is this decoration, kept at
-// write time. A completion sibling copies its clean launch's stamp. Only
+// stamps.go) is returned as read: a local item projection already merged
+// its clean stamp, which is this decoration kept at write time, and its
+// local completion sibling's card (subagentServedMetaSQL). An imported
+// completion of a clean launch takes the launch's card here. Only
 // imported, dirty, readTime and unstamped carrier rows are walked, plus the
 // unstamped anchors of a thread whose backfill has not finished.
 //
@@ -285,10 +287,6 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 		seenRoot[walkRoot] = struct{}{}
 		rootIDs = append(rootIDs, walkRoot)
 	}
-	walks := subagentWalkProbe(q, threadID)
-	// walked holds the rows this read decorates; every other row is
-	// returned byte for byte as stored.
-	walked := make(map[string]struct{}, len(items))
 	launchByID := make(map[string]Item, len(items))
 	var completionLaunchIDs []string
 	for _, item := range items {
@@ -298,28 +296,15 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 		switch item.Kind {
 		case "tool_call":
 			launchByID[item.ID] = item
-			walk, err := walks(item)
-			if err != nil {
-				return nil, err
-			}
-			if walk {
-				walked[item.ID] = struct{}{}
-				addAnchor(item.ID, item.Meta)
-			}
 		case "tool_completion":
 			// A Codex wait carrier's completion is a wait group, not an
-			// agent card; its launch is walked as a tool_call above if
-			// it ever anchors anything.
+			// agent card (aggBorrowsCardSQL); its launch is walked as a
+			// tool_call if it ever anchors anything.
 			if item.CompletionOf != "" && item.ToolName != "wait_agent" {
 				completionLaunchIDs = append(completionLaunchIDs, item.CompletionOf)
 			}
 		}
 	}
-	// anchorByCompletion maps a completion row's id to the launch whose
-	// aggregate it carries; only completions whose launch resolved to a
-	// Claude tool_call are stamped.
-	var anchorByCompletion map[string]string
-	stampedByCompletion := make(map[string]subagentAnchorAggregate)
 	if len(completionLaunchIDs) > 0 {
 		missing := make([]string, 0, len(completionLaunchIDs))
 		for _, id := range completionLaunchIDs {
@@ -336,33 +321,61 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 				launchByID[id] = launch
 			}
 		}
-		anchorByCompletion = make(map[string]string, len(completionLaunchIDs))
-		for _, item := range items {
-			if item.Kind != "tool_completion" || item.CompletionOf == "" {
-				continue
-			}
-			launch, ok := launchByID[item.CompletionOf]
-			if !ok || launch.Kind != "tool_call" || launch.ToolName == "collab_agent" {
-				continue
-			}
-			walk, err := walks(launch)
-			if err != nil {
-				return nil, err
+	}
+	walks, err := newSubagentWalkDecider(q, threadID, launchByID)
+	if err != nil {
+		return nil, err
+	}
+	// walked holds the rows this read decorates; every other row is
+	// returned as read.
+	walked := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		launch, ok := launchByID[item.ID]
+		if !ok || item.Kind != "tool_call" {
+			continue
+		}
+		walk, err := walks.walks(launch)
+		if err != nil {
+			return nil, err
+		}
+		if walk {
+			walked[item.ID] = struct{}{}
+			addAnchor(item.ID, item.Meta)
+		}
+	}
+	// anchorByCompletion maps a walked completion row's id to the launch
+	// whose aggregate it carries; only completions whose launch resolved
+	// to a Claude tool_call carry one.
+	var anchorByCompletion map[string]string
+	for i := range items {
+		item := items[i]
+		if item.Kind != "tool_completion" || item.CompletionOf == "" ||
+			item.ToolName == "collab_agent" || item.ToolName == "wait_agent" {
+			continue
+		}
+		launch, ok := launchByID[item.CompletionOf]
+		if !ok || launch.Kind != "tool_call" || launch.ToolName == "collab_agent" {
+			continue
+		}
+		walk, err := walks.walks(launch)
+		if err != nil {
+			return nil, err
+		}
+		if walk {
+			if anchorByCompletion == nil {
+				anchorByCompletion = make(map[string]string, len(completionLaunchIDs))
 			}
 			walked[item.ID] = struct{}{}
 			anchorByCompletion[item.ID] = launch.ID
-			if walk {
-				addAnchor(launch.ID, launch.Meta)
-				continue
-			}
-			if agg, stamped := storedSubagentAnchorAggregate(launch.Meta); stamped {
-				stampedByCompletion[item.ID] = agg
-			}
+			addAnchor(launch.ID, launch.Meta)
+			continue
 		}
-	}
-	for i := range items {
-		if agg, ok := stampedByCompletion[items[i].ID]; ok {
-			items[i].Meta = mergeSubagentAnchorMeta(items[i].Meta, agg)
+		// A local completion's projection merged its clean launch's card;
+		// the imported arm has no stamps to merge from.
+		if item.Rev < 0 {
+			if card, ok := walks.card(launch.ID); ok {
+				items[i].Meta = mergeSubagentAnchorMeta(item.Meta, card)
+			}
 		}
 	}
 	if len(rootIDs) == 0 {
@@ -393,9 +406,6 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 		if _, walk := walked[items[i].ID]; !walk {
 			continue
 		}
-		if _, stamped := stampedByCompletion[items[i].ID]; stamped {
-			continue
-		}
 		anchorID := items[i].ID
 		if launchID, isCompletion := anchorByCompletion[items[i].ID]; isCompletion {
 			anchorID = launchID
@@ -424,50 +434,123 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 	return items, nil
 }
 
-// subagentWalkProbe returns the read's decision for one anchorable row:
-// true when the read-time aggregator answers for it, false when the stored
-// row is the read. An unstamped local anchor is walked only while its
-// thread's backfill is pending; one probe per read answers that.
-func subagentWalkProbe(q sqlQueryer, threadID string) func(Item) (bool, error) {
-	var listed *bool
-	return func(item Item) (bool, error) {
-		if item.Rev < 0 {
-			return true, nil
-		}
-		switch subagentStampModeOf(item.Meta) {
-		case subagentStampClean:
-			return false, nil
-		case subagentStampWalk:
-			return true, nil
-		}
-		if root := transcriptRootFromMeta(item.Meta); root != "" && root != item.ID {
-			return true, nil
-		}
-		if listed == nil {
-			found, err := subagentBackfillListed(q, threadID)
-			if err != nil {
-				return false, err
-			}
-			listed = &found
-		}
-		return *listed, nil
-	}
+// subagentWalkDecider decides, for the anchorable rows of one read,
+// whether the read-time aggregator answers for a row (walks) or its
+// stamp is the read. It reads the stamps of the read's local tool calls
+// in one probe; an unstamped local anchor is walked only while its
+// thread's backfill is pending, which one more probe per read answers.
+type subagentWalkDecider struct {
+	q        sqlQueryer
+	threadID string
+	stamps   map[string]subagentStampRead
+	listed   *bool
 }
 
-// storedSubagentAnchorAggregate reads a clean stamp's card values back as
-// the aggregate a walk would produce. stamped is false for a row whose
-// stamp decorates nothing (no descendants, no rounds).
-func storedSubagentAnchorAggregate(meta string) (subagentAnchorAggregate, bool) {
-	values, ok := storedSubagentStampValues(meta)
-	if !ok || values.Count == nil {
-		return subagentAnchorAggregate{}, false
+// subagentStampRead is what a read needs of a local anchor's stamp: its
+// state and, when clean with a card, the card.
+type subagentStampRead struct {
+	state   int
+	card    subagentAnchorAggregate
+	hasCard bool
+}
+
+// subagentStampReadsSQL reads the stamps of the local rows the JSON array
+// ?2 names, by primary key.
+const subagentStampReadsSQL = `SELECT item_id, state, descendant_count, latest_child_summary, transcript_count
+  FROM subagent_aggregates
+ WHERE thread_id = ?1 AND item_id IN (SELECT value FROM json_each(?2))`
+
+// newSubagentWalkDecider reads the stamps of the local tool calls among
+// rows, which must hold every row the decider is later asked about.
+func newSubagentWalkDecider(q sqlQueryer, threadID string, rows map[string]Item) (*subagentWalkDecider, error) {
+	decider := &subagentWalkDecider{q: q, threadID: threadID}
+	ids := make([]string, 0, len(rows))
+	for id, row := range rows {
+		if row.Rev >= 0 && row.Kind == "tool_call" && row.ToolName != "collab_agent" {
+			ids = append(ids, id)
+		}
 	}
-	agg := subagentAnchorAggregate{descendantCount: *values.Count, latestChildSummary: values.Summary}
-	if values.TranscriptCount != nil {
-		agg.transcriptDescendantCount = *values.TranscriptCount
-		agg.hasTranscriptCount = true
+	if len(ids) == 0 {
+		return decider, nil
 	}
-	return agg, true
+	slices.Sort(ids)
+	stamps, err := subagentStampReads(q, threadID, ids)
+	if err != nil {
+		return nil, err
+	}
+	decider.stamps = stamps
+	return decider, nil
+}
+
+func subagentStampReads(q sqlQueryer, threadID string, ids []string) (map[string]subagentStampRead, error) {
+	list, err := jsonList(ids)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(subagentStampReadsSQL, threadID, list)
+	if err != nil {
+		return nil, fmt.Errorf("store: read subagent stamps for %s: %w", threadID, err)
+	}
+	out := make(map[string]subagentStampRead, len(ids))
+	for rows.Next() {
+		var id string
+		var stamp subagentStampRead
+		var count, transcript sql.NullInt64
+		var summary sql.NullString
+		if err := rows.Scan(&id, &stamp.state, &count, &summary, &transcript); err != nil {
+			return nil, errors.Join(fmt.Errorf("store: scan subagent stamp: %w", err), rows.Close())
+		}
+		if stamp.state == aggStateClean && count.Valid {
+			stamp.hasCard = true
+			stamp.card = subagentAnchorAggregate{
+				descendantCount:           int(count.Int64),
+				latestChildSummary:        summary.String,
+				transcriptDescendantCount: int(transcript.Int64),
+				hasTranscriptCount:        transcript.Valid,
+			}
+		}
+		out[id] = stamp
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: iterate subagent stamps for %s: %w", threadID, err)
+	}
+	return out, nil
+}
+
+// walks reports whether the read-time aggregator answers for one
+// anchorable row: an imported row, a dirty or readTime stamp, an
+// unstamped carrier, or an unstamped anchor of a thread whose backfill is
+// pending.
+func (d *subagentWalkDecider) walks(item Item) (bool, error) {
+	if item.Rev < 0 {
+		return true, nil
+	}
+	if stamp, ok := d.stamps[item.ID]; ok {
+		return stamp.state != aggStateClean, nil
+	}
+	if root := transcriptRootFromMeta(item.Meta); root != "" && root != item.ID {
+		return true, nil
+	}
+	if d.listed == nil {
+		found, err := subagentBackfillListed(d.q, d.threadID)
+		if err != nil {
+			return false, err
+		}
+		d.listed = &found
+	}
+	return *d.listed, nil
+}
+
+// clean reports a local row whose clean stamp is its read.
+func (d *subagentWalkDecider) clean(id string) bool {
+	stamp, ok := d.stamps[id]
+	return ok && stamp.state == aggStateClean
+}
+
+// card is a clean stamp's card, when it has one.
+func (d *subagentWalkDecider) card(id string) (subagentAnchorAggregate, bool) {
+	stamp, ok := d.stamps[id]
+	return stamp.card, ok && stamp.hasCard
 }
 
 // subagentResumeRounds finds every §E6 resume-prompt row parented to one
@@ -556,13 +639,23 @@ func subagentResumeRoundsQuery(threadID, roots string) (string, []any) {
 // `carrierRoots` is the window's carrier→root map. A carrier in it that no
 // prompt row named gets one unbounded range — the whole-transcript
 // fallback — because there is nothing to cut its round at.
+//
+// A root that a prompt under another root names is that root's carrier,
+// walked as a root only because a round was resumed from it (a carrier
+// whose transcript_root_id names a carrier). Its card is its round under
+// the other root, whichever order the roots arrive in, so it gets no
+// bound of its own as a root, and no transcript.
 func subagentRoundBoundsFor(
 	rootIDs []string, rounds []subagentRound, carrierRoots map[string]string,
 ) []subagentRoundBounds {
 	// rounds arrive in position order, so each root's slice is too.
 	byRoot := make(map[string][]subagentRound, len(rootIDs))
+	namedElsewhere := make(map[string]bool, len(rounds))
 	for _, r := range rounds {
 		byRoot[r.rootID] = append(byRoot[r.rootID], r)
+		if r.anchorID != r.rootID {
+			namedElsewhere[r.anchorID] = true
+		}
 	}
 
 	out := make([]subagentRoundBounds, 0, len(rootIDs)+len(rounds))
@@ -579,11 +672,13 @@ func subagentRoundBoundsFor(
 
 	for _, root := range rootIDs {
 		rs := byRoot[root]
-		rootBound := subagentRoundBounds{anchorID: root, rootID: root, round: true}
-		if len(rs) > 0 {
-			rootBound.hi = &TimelineCursor{TurnIndex: rs[0].turnIndex, ItemIndex: rs[0].itemIndex}
+		if !namedElsewhere[root] {
+			rootBound := subagentRoundBounds{anchorID: root, rootID: root, round: true}
+			if len(rs) > 0 {
+				rootBound.hi = &TimelineCursor{TurnIndex: rs[0].turnIndex, ItemIndex: rs[0].itemIndex}
+			}
+			add(rootBound)
 		}
-		add(rootBound)
 		for i, r := range rs {
 			b := subagentRoundBounds{
 				anchorID: r.anchorID, rootID: root, round: true,
@@ -672,16 +767,27 @@ func transcriptRootFromMeta(meta string) string {
 // summary under each supplied launch into a read-time copy of that launch.
 // Direct ownership matters: a nested agent has its own tray row, so its tools
 // must not also appear as the parent's latest activity. A clean stamped
-// launch already carries the keys (the history triggers keep them); the one
-// query handles every other launch in the thread and keeps tray refreshes
-// free of N+1 reads.
+// launch read through a local item projection already carries the keys
+// (subagentServedMetaSQL); a Codex runtime copy is a spawn row, which is
+// never stamped. The one query handles every other launch in the thread and
+// keeps tray refreshes free of N+1 reads.
 func (s *Store) decorateLatestDirectSubagentTools(q sqlQueryer, threadID string, items []Item) ([]Item, error) {
-	rootIDs := make([]string, 0, len(items))
+	calls := make(map[string]Item, len(items))
 	for _, item := range items {
-		if item.Kind != "tool_call" || strings.TrimSpace(item.ID) == "" {
+		if item.Kind == "tool_call" && strings.TrimSpace(item.ID) != "" {
+			calls[item.ID] = item
+		}
+	}
+	stamps, err := newSubagentWalkDecider(q, threadID, calls)
+	if err != nil {
+		return nil, err
+	}
+	rootIDs := make([]string, 0, len(calls))
+	for _, item := range items {
+		if _, ok := calls[item.ID]; !ok || item.Kind != "tool_call" {
 			continue
 		}
-		if item.Rev >= 0 && item.ToolName != "collab_agent" && subagentStampModeOf(item.Meta) == subagentStampClean {
+		if item.Rev >= 0 && item.ToolName != "collab_agent" && stamps.clean(item.ID) {
 			continue
 		}
 		rootIDs = append(rootIDs, item.ID)

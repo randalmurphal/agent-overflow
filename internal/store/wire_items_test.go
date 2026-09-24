@@ -82,12 +82,10 @@ func TestItemReadNeedsDecoration(t *testing.T) {
 	})
 
 	// A dirty or readTime stamp is walked.
-	for _, flag := range []string{"dirty", "readTime"} {
-		writeSubagentStampForTest(t, s, "t", "launch",
-			`json_set(meta, '$.subagentAggregateState.`+flag+`', json('true'))`)
+	for flag, state := range map[string]int{"dirty": aggStateDirty, "readTime": aggStateReadTime} {
+		setSubagentStampStateForTest(t, s, "t", "launch", state)
 		check(flag, map[string]bool{"launch": true, "nested": false})
-		writeSubagentStampForTest(t, s, "t", "launch",
-			`json_remove(meta, '$.subagentAggregateState.`+flag+`')`)
+		setSubagentStampStateForTest(t, s, "t", "launch", aggStateClean)
 	}
 
 	// An unstamped anchor is walked only while its thread's stamps are

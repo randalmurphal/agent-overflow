@@ -981,23 +981,35 @@ func TestDecorateSubagentAnchors_CompletionSiblingCarriesTheLaunchAggregate(t *t
 		t.Fatalf("completion decoration: count=%v summary=%q", count, summary)
 	}
 
-	// Completion alone in the window: the launch resolves by lookup.
-	decorated, err := s.decorateSubagentAnchors(s.reader(), "t", []Item{{
-		ID: "complete:bg-agent", ThreadID: "t", Kind: "tool_completion",
-		ToolName: "Agent", CompletionOf: "bg-agent", Meta: `{"status_source":"task_updated"}`,
-	}})
-	if err != nil {
-		t.Fatalf("decorate completion-only window: %v", err)
+	// Completion alone in the window: the launch resolves by lookup, from
+	// the launch's stamp in the row's projection, or by a walk from the
+	// launch while the thread's stamps are still being backfilled.
+	if err := s.UpdateItemMeta("t", "complete:bg-agent", `{"status_source":"task_updated"}`); err != nil {
+		t.Fatalf("write completion meta: %v", err)
 	}
-	count, summary, _, _ = decodedSubagentMeta(t, decorated[0])
-	if count != 2 || summary != "go test ./..." {
-		t.Fatalf("completion-only decoration: count=%v summary=%q meta=%s", count, summary, decorated[0].Meta)
-	}
-	var kept struct {
-		StatusSource string `json:"status_source"`
-	}
-	if err := json.Unmarshal([]byte(decorated[0].Meta), &kept); err != nil || kept.StatusSource != "task_updated" {
-		t.Fatalf("decoration dropped the completion's own meta: %s", decorated[0].Meta)
+	for _, stage := range []string{"stamped", "walked"} {
+		if stage == "walked" {
+			stripSubagentStampsForTest(t, s, "t")
+			mustExec(t, s.db, `INSERT INTO subagent_aggregate_backfill(thread_id) VALUES ('t')`)
+		}
+		read, found, err := s.GetThreadItem("t", "complete:bg-agent")
+		if err != nil || !found {
+			t.Fatalf("%s: read completion: found=%v err=%v", stage, found, err)
+		}
+		decorated, err := s.decorateSubagentAnchors(s.reader(), "t", []Item{read})
+		if err != nil {
+			t.Fatalf("%s: decorate completion-only window: %v", stage, err)
+		}
+		count, summary, _, _ = decodedSubagentMeta(t, decorated[0])
+		if count != 2 || summary != "go test ./..." {
+			t.Fatalf("%s: completion-only decoration: count=%v summary=%q meta=%s", stage, count, summary, decorated[0].Meta)
+		}
+		var kept struct {
+			StatusSource string `json:"status_source"`
+		}
+		if err := json.Unmarshal([]byte(decorated[0].Meta), &kept); err != nil || kept.StatusSource != "task_updated" {
+			t.Fatalf("%s: decoration dropped the completion's own meta: %s", stage, decorated[0].Meta)
+		}
 	}
 
 	// A completion whose launch has no descendants (background Bash) is

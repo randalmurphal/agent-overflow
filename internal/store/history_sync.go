@@ -222,20 +222,23 @@ func stampedRowIDsWithCarrierKey(threadExpr, idExpr, parentExpr, carrierKey stri
 const stampRowsSQL = `UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = items.thread_id)`
 
 // stampPendingSQL keeps a trigger's row stamp off rows the same trigger
-// already stamped: the aggregate statement writes `rev` on every row it
-// changes, and a second write of the same value would fire the update
-// trigger and bump the thread again.
+// already stamped: a subagent_aggregates write stamps its anchor, the
+// served-key strip stamps its row, and a second write of the same value
+// would fire the update trigger and bump the thread again.
 const stampPendingSQL = `rev IS NOT (SELECT history_rev FROM threads WHERE id = items.thread_id)`
 
 // Each trigger runs its subagent aggregate statement
 // (subagent_aggregate_stamps.go) between the thread bump and the row
-// stamp. The insert trigger's two stamping statements are gated on the
-// thread's bulk-load flag, a constant for the statement, so only one of
-// them reads anything.
+// stamp; the insert and update triggers then strip served keys from the
+// written meta, and the update trigger drops the stamp of a row that
+// stopped being an anchor. The insert trigger's two stamping statements
+// are gated on the thread's bulk-load flag, a constant for the statement,
+// so only one of them reads anything.
 var historyRevTriggersSQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
   UPDATE threads SET history_rev = history_rev + 1
    WHERE id = NEW.thread_id AND history_bulk_load = 0;
   ` + subagentAggregateInsertStmt + `
+  ` + subagentStripServedKeysStmt + `
   ` + stampRowsSQL + `
    WHERE thread_id = NEW.thread_id AND id = NEW.id
      AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 1
@@ -257,6 +260,8 @@ BEGIN
          OLD.thread_id  IS NOT NEW.thread_id)
   WHERE id IN (OLD.thread_id, NEW.thread_id) AND history_bulk_load = 0;
   ` + subagentAggregateUpdateStmt + `
+  ` + subagentAggregateUnanchorSQL + `
+  ` + subagentStripServedKeysStmt + `
   ` + stampRowsSQL + `
    WHERE ((thread_id = NEW.thread_id AND id IN (` + stampedRowIDsSQL("NEW") + `))
       OR (thread_id = OLD.thread_id AND id IN (` + stampedRowIDsSQL("OLD") + `)))

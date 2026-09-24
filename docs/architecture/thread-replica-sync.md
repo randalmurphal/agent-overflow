@@ -179,15 +179,20 @@ scrolled out of it and proves a child write under the launch, or under
 a launch nested inside it, still refuses the window.
 
 Between the thread bump and the row stamp, the same triggers keep each
-subagent anchor's card on the anchor's own row (migration v121; the
-contract is in `internal/store/subagent_aggregate_stamps.go`): the
-counts, the preview and tray keys, and a `subagentAggregateState` stamp,
-updated along the written row's parent chain with the same probes, so a
-child write costs a few JSON updates per nesting level and never a walk
-of the subtree. A write no incremental rule keeps exact marks the chain
+subagent anchor's card in its `subagent_aggregates` row (migration v121;
+the contract is in `internal/store/subagent_aggregate_stamps.go`): the
+counts, the preview and tray values, and the positions the incremental
+rules need, updated along the written row's parent chain with the same
+probes, so a child write rewrites one narrow row per nesting level,
+never the anchor's `meta`, and never walks the subtree. A local item
+projection merges a clean row's public values into the served `meta`
+with `json_patch`; a write to the row stamps the anchor and its
+completion siblings, so a changed card is always served at a new
+revision. A write no incremental rule keeps exact marks the chain
 dirty, and the writer recomputes it (`RecomputeSubagentAggregates`)
 before it commits. `decorateSubagentAnchors` serves a clean stamped
-anchor as stored and walks only the rows the triggers do not keep:
+anchor as the projection read it and walks only the rows the triggers
+do not keep:
 imported anchors, dirty and `readTime` rows, carriers whose round prompt
 has not arrived, and unstamped anchors of a thread still listed in
 `subagent_aggregate_backfill` for v121's deferred phase.
@@ -388,7 +393,7 @@ it has seen; `TestAgentsFirstRowPushesItsCardAtOnce` and
 | Import rollback / `DeleteThread` / retention sweep | thread row deleted | tombstone: replica entry dropped by the deleting client directly, and by any other client on the `gone` answer (§5) |
 | `RestoreFrom` (harness snapshot) | whole-DB replace | **generation** re-mint (§3.3) |
 | `decorateSubagentAnchors` (stamp read, or the walk for rows the triggers do not keep) | none: no write occurs | covered transitively: its inputs are the anchor's stamp and descendant item rows, whose writes bump rev |
-| `RecomputeSubagentAggregates` (dirty settle, bulk-load rebuild, v121 backfill) | items UPDATE of the anchor's meta | rev |
+| `RecomputeSubagentAggregates` (dirty settle, bulk-load rebuild, v121 backfill) | explicit thread bump, then `subagent_aggregates` upsert; its trigger stamps the anchor and completion siblings | rev |
 | `EnsureProposedPlanState(WithParent)`, `MarkProposedPlanImplemented`, `CreateProposedPlanComment`, `UpdateProposedPlanComment`, `DeleteOrResolveProposedPlanComment`, `MarkProposedPlanCommentsSent` | explicit, on the thread id the mutator already carries | rev on the PLAN's thread |
 | `RestoreFrom`'s row copy | triggers DROPped for the copy, recreated after | none during the copy: the restored counters are the snapshot's, verbatim |
 

@@ -189,6 +189,11 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	if _, err := tx.Exec(dropThreadTurnErrorTriggersSQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: suspend turn-error triggers: %w", err)
 	}
+	// The copied subagent stamps describe the copied items; stamping
+	// those items again would overwrite the snapshot's revisions.
+	if _, err := tx.Exec(dropSubagentAggregateTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: suspend subagent stamp triggers: %w", err)
+	}
 	for _, table := range tables {
 		if restoreSkipsTable(table) {
 			continue
@@ -241,6 +246,9 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	}
 	if _, err := tx.Exec(threadTurnErrorTriggersSQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: reinstall turn-error triggers: %w", err)
+	}
+	if _, err := tx.Exec(subagentAggregateTriggersSQL); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: reinstall subagent stamp triggers: %w", err)
 	}
 
 	// The search index describes the history that was just replaced, and an

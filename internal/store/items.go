@@ -24,14 +24,27 @@ var ErrItemSettled = errors.New("store: item is no longer streaming")
 // supply from its own row (imported history reads as -1); keeping it at the
 // tail means a hand-written arm projection appends one expression instead of
 // splicing one into the middle of a positional scan order.
-const itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index,
+//
+// The meta column is the row's meta as a read serves it: a local
+// projection merges the row's subagent stamp (servedItemMetaFor).
+var itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''), COALESCE(payloads.kind, ''), COALESCE(payloads.meta, ''),
     COALESCE(payloads.preview_spans, ''),
     COALESCE(items.input_payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
-    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at,
+    items.tool_name, items.decision, ` + servedItemMetaFor("items.rev") + `, items.created_at, items.updated_at,
     items.rev`
+
+// servedItemMetaFor is the meta column of an item projection on the arm
+// whose revision expression is revExpr: a local row's meta as a read
+// serves it (subagentServedMetaSQL). Imported rows carry no stamps.
+func servedItemMetaFor(revExpr string) string {
+	if revExpr == importedItemRevExpr {
+		return "items.meta"
+	}
+	return subagentServedMetaSQL("items.")
+}
 
 const itemInsertPrefix = `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary,
 		payload_id, input_payload_id, parent_id, is_background, completion_of, tool_name, decision, meta,
@@ -225,7 +238,7 @@ func itemColumnsSansPayloadFor(threadIDExpr, revExpr string) string {
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
-    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at,
+    items.tool_name, items.decision, ` + servedItemMetaFor(revExpr) + `, items.created_at, items.updated_at,
     ` + revExpr
 }
 

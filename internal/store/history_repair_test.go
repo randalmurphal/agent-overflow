@@ -28,7 +28,7 @@ func sealItemsForTest(t *testing.T, s *Store, threadID string, ids ...string) st
 	defer tx.Rollback()
 	chunk := importHistoryChunk{id: sealedChunkLow + uuid.NewString()}
 	for _, id := range ids {
-		item, err := scanItemRow(tx.QueryRow(`SELECT `+itemHydrationColumns("items.thread_id", "''", "''", "''", "items.rev")+` FROM items WHERE thread_id=? AND id=?`, threadID, id))
+		item, err := scanItemRow(tx.QueryRow(`SELECT `+itemHydrationColumns("items.thread_id", "''", "''", "''", "items.meta", "items.rev")+` FROM items WHERE thread_id=? AND id=?`, threadID, id))
 		if err != nil {
 			t.Fatalf("read %s: %v", id, err)
 		}

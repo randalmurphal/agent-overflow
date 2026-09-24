@@ -16,7 +16,7 @@ import (
 // thread ever had" versus two index reads — plus the one predicate that
 // had to move with the trigger (see ListLiveBackgroundTasks' doc
 // comment).
-const preSettlementLiveBackgroundTasksSQL = `WITH RECURSIVE bg(id) AS (
+var preSettlementLiveBackgroundTasksSQL = `WITH RECURSIVE bg(id) AS (
 		    SELECT id FROM items
 		     WHERE thread_id = ?
 		       AND kind = 'tool_call'

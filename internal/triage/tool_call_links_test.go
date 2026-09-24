@@ -460,10 +460,10 @@ func TestThreadWithoutLiveStateDefersItsRefresh(t *testing.T) {
 	}
 }
 
-// stripSubagentStampsAndListBackfill makes a thread's rows look as they
-// did before migration v121: no card on any row, and the thread listed for
-// the deferred backfill, so reads decorate its anchors at read time. It
-// goes through a second handle because no accessor can produce the state.
+// stripSubagentStampsAndListBackfill makes a thread look as it did before
+// migration v121: no stamp for any anchor, and the thread listed for the
+// deferred backfill, so reads decorate its anchors at read time. It goes
+// through a second handle because no accessor can produce the state.
 func stripSubagentStampsAndListBackfill(t *testing.T, dbPath, threadID string) {
 	t.Helper()
 	rawDB, err := sql.Open("sqlite", dbPath)
@@ -472,11 +472,7 @@ func stripSubagentStampsAndListBackfill(t *testing.T, dbPath, threadID string) {
 	}
 	defer rawDB.Close()
 	for _, stmt := range []string{
-		`UPDATE threads SET history_bulk_load = 1 WHERE id = ?`,
-		`UPDATE items SET meta = json_remove(meta, '$.subagentDescendantCount', '$.subagentLatestChildSummary',
-		    '$.subagentTranscriptDescendantCount', '$.subagentLatestToolSummary', '$.subagentLatestToolTurnIndex',
-		    '$.subagentLatestToolItemIndex', '$.subagentAggregateState') WHERE thread_id = ?`,
-		`UPDATE threads SET history_bulk_load = 0 WHERE id = ?`,
+		`DELETE FROM subagent_aggregates WHERE thread_id = ?`,
 		`INSERT INTO subagent_aggregate_backfill (thread_id) VALUES (?)`,
 	} {
 		if _, err := rawDB.Exec(stmt, threadID); err != nil {

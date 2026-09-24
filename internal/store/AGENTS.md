@@ -102,6 +102,18 @@ an atomic persistence decision; they must not become a business-logic layer.
   An item it inserts must be one a read already showed, or the thread must be
   rebuilt in the same transaction: under the flag the insert trigger stamps
   only the new row.
+- Subagent cards live in `subagent_aggregates`, one row per anchor keyed
+  `(thread_id, item_id)`; a local item read merges a clean row's public keys
+  into the served meta, and stored meta never holds them. Every bulk writer
+  (import, materialize, hand-off, fork, source-deletion hand-off) follows one
+  stamp contract: it never copies `subagent_aggregates` rows or card keys
+  between threads, and before it commits it recomputes every local anchor
+  whose subtree it changed: `restampSubagentAggregatesTx` for a thread it
+  rebuilt, or `markSubagentChainsDirtyTx` for rows the item triggers did not
+  see (bulk load, shared chunks) and then `settleSubagentAggregatesTx`. Stamp
+  values are written by the triggers or by `writeSubagentStampsTx`, which
+  bumps `threads.history_rev` first so the stamp trigger moves the anchor and
+  its completion siblings to a new revision.
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by

@@ -4,19 +4,20 @@ import "fmt"
 
 // itemHydrationColumns is the canonical frontend-bound Item projection with
 // caller-supplied expressions for the logical thread id, the three payload
-// fields carried alongside a timeline row, and the row revision. Keeping the
-// variable expressions here lets local and imported physical branches share
-// one scanner contract without routing either branch through the compound
-// timeline_payloads view.
-func itemHydrationColumns(threadID, payloadKind, payloadMeta, previewSpans, rev string) string {
+// fields carried alongside a timeline row, the row meta and the row
+// revision. Keeping the variable expressions here lets local and imported
+// physical branches share one scanner contract without routing either
+// branch through the compound timeline_payloads view. A read passes
+// servedItemMetaFor(rev); a copy of the stored rows passes items.meta.
+func itemHydrationColumns(threadID, payloadKind, payloadMeta, previewSpans, meta, rev string) string {
 	return fmt.Sprintf(`items.id, %s, items.turn_index, items.item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''), %s, %s, %s,
     COALESCE(items.input_payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
-    items.tool_name, items.decision, items.meta, items.created_at, items.updated_at,
+    items.tool_name, items.decision, %s, items.created_at, items.updated_at,
     %s`,
-		threadID, payloadKind, payloadMeta, previewSpans, rev)
+		threadID, payloadKind, payloadMeta, previewSpans, meta, rev)
 }
 
 var localItemHydrationColumns = itemHydrationColumns(
@@ -24,6 +25,7 @@ var localItemHydrationColumns = itemHydrationColumns(
 	"COALESCE(payloads.kind, '')",
 	"COALESCE(payloads.meta, '')",
 	"COALESCE(payloads.preview_spans, '')",
+	servedItemMetaFor("items.rev"),
 	"items.rev",
 )
 
@@ -32,6 +34,7 @@ var importedItemHydrationColumns = itemHydrationColumns(
 	"COALESCE(local_payloads.kind, imported_payloads.kind, '')",
 	"COALESCE(local_payloads.meta, imported_payloads.meta, '')",
 	"COALESCE(local_payloads.preview_spans, imported_payloads.preview_spans, '')",
+	servedItemMetaFor(importedItemRevExpr),
 	importedItemRevExpr,
 )
 

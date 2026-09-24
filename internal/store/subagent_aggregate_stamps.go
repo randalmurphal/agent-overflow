@@ -1,86 +1,260 @@
 package store
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // Write-time subagent anchor aggregates.
 //
 // decorateSubagentAnchors derives an anchor's card from a walk of its
-// descendants. The item triggers keep the same values on the anchor row
-// itself, so a page read of a stamped anchor is its stored row and a child
-// write costs a few JSON updates per nesting level instead of a walk:
+// descendants. The item triggers keep the same values in
+// subagent_aggregates, one narrow row per anchor keyed (thread_id,
+// item_id), so a child write updates a few such rows per nesting level
+// instead of walking, and never rewrites an anchor's items row beyond the
+// revision stamp every child write already gives it:
 //
-//   - the card keys subagentDescendantCount, subagentLatestChildSummary and
-//     subagentTranscriptDescendantCount, by the read-time rules: rounds cut
-//     by resume prompts, nested launches counted transitively, plan_update
+//   - the card: descendant_count, latest_child_summary and
+//     transcript_count, by the read-time rules: rounds cut by resume
+//     prompts, nested launches counted transitively, plan_update
 //     notifications excluded, the newest previewable summary;
-//   - the tray keys subagentLatestToolSummary, subagentLatestToolTurnIndex
-//     and subagentLatestToolItemIndex: the newest direct tool_call child
-//     with a nonblank summary (decorateLatestDirectSubagentTools);
-//   - subagentAggregateState, what the incremental rules need: gen (every
-//     Go write of a stamp moves it by one), pick and newest (the round's
-//     preview row and newest descendant position), transcriptNewest (a root
-//     with rounds), toolPick (the tray row's id), and the dirty and
-//     readTime flags.
+//   - the tray: tool_summary, tool_turn and tool_item, the newest direct
+//     tool_call child with a nonblank summary
+//     (decorateLatestDirectSubagentTools);
+//   - what the incremental rules need: the round's preview row (pick_*),
+//     its newest descendant position (newest_*), a root's whole-transcript
+//     newest position (transcript_newest_*), the tray row (tool_id), and
+//     gen, which only a Go write of a stamp moves.
 //
-// A row whose state carries neither flag is clean and its stored meta is
-// the page read. dirty means an incremental rule could not keep the stamp
-// exact (the pick or the newest row was deleted, a prompt landed before
-// existing rows, a row moved); idx_items_subagent_aggregate_dirty finds it
-// and RecomputeSubagentAggregates rewrites it from the read-time
-// aggregator. readTime means the recompute found a shape the triggers do
-// not maintain (imported or duplicate round prompts, a carrier no prompt
-// names) and the row stays on the read-time path. A row without a state is
-// unstamped: an anchor with no child since its insert, a carrier whose
-// prompt has not arrived, or a legacy anchor in a thread still listed in
-// subagent_aggregate_backfill.
+// A local item read serves a clean row's public values merged into the
+// anchor's meta (subagentServedMetaSQL), and a Claude completion sibling
+// its launch's card. The internal columns never reach a client. The
+// stored meta never holds the public keys: the item triggers strip them
+// from a written meta (subagentStripServedKeysSQL), so a writer that
+// writes back the meta of a row it read stores nothing stale.
+//
+// state is clean (0), dirty (1) or readTime (2). A clean row's values are
+// the read. dirty means an incremental rule could not keep them exact (the
+// pick or the newest row was deleted, a prompt landed before existing
+// rows, a row moved); idx_subagent_aggregates_dirty finds it and
+// RecomputeSubagentAggregates rewrites it from the read-time aggregator.
+// readTime means the recompute found a shape the triggers do not maintain
+// (imported or duplicate round prompts, a carrier no prompt names, a round
+// resumed from a carrier) and the anchor stays on the read-time path. An
+// anchor without a row is unstamped: no child since its insert, a carrier
+// whose prompt has not arrived, or a legacy anchor in a thread still
+// listed in subagent_aggregate_backfill.
 //
 // Codex spawn rows (collab_agent) take none of this: their card values are
 // write-time snapshots on the completion row, and the spawn row itself is
 // immutable (docs/specs/agent-visibility.md#immutable-agent-history).
 //
-// Every trigger statement runs after the thread bump and before the row
-// stamp, sets rev to the thread's new history_rev on each row it writes,
-// and so never re-enters the update trigger. The row stamp skips rows that
-// already carry that revision. A Go write of a stamp (the recompute) goes
-// through the update trigger like any other write; the update rule that
-// restores the stamp against a stale whole-meta write recognizes it by
-// gen = previous gen + 1.
+// Each item trigger runs its aggregate statement after the thread bump and
+// before the row stamp. A write to subagent_aggregates stamps its anchor
+// and the anchor's completion siblings with the thread's history_rev
+// (subagentAggregateTriggersSQL); the row stamp then skips them.
+// A Go write bumps the thread first. A row follows its item through the
+// foreign key: deleting the item deletes it.
 //
 // Under history_bulk_load the triggers do no aggregate work; every
 // bulk-load writer that changes a subtree recomputes the stamps before it
 // commits. Folding sealed history back (UnsealThreadHistory) moves rows
 // between the arms without changing any subtree, so the stamps stay as
 // they are. Sealing never took a tool call, so no anchor moves.
-// RecomputeSubagentAggregates is the one recompute: the settle
-// after a write, the bulk-load rebuild, a shadowed imported parent and
-// migration v121's deferred phase all derive their values through it
+// RecomputeSubagentAggregates is the one recompute: the settle after a
+// write, the bulk-load rebuild, a shadowed imported parent and migration
+// v121's deferred phase all derive their values through it
 // (computeSubagentStamps) and write them with writeSubagentStampsTx.
 
-const metaKeySubagentAggregateState = "subagentAggregateState"
-
+// Stamp states.
 const (
-	aggStatePath            = "$." + metaKeySubagentAggregateState
-	aggGenPath              = aggStatePath + ".gen"
-	aggDirtyPath            = aggStatePath + ".dirty"
-	aggReadTimePath         = aggStatePath + ".readTime"
-	aggPickPath             = aggStatePath + ".pick"
-	aggNewestPath           = aggStatePath + ".newest"
-	aggTranscriptNewestPath = aggStatePath + ".transcriptNewest"
-	aggToolPickPath         = aggStatePath + ".toolPick"
-
-	aggCountPath       = "$." + metaKeySubagentDescendantCount
-	aggSummaryPath     = "$." + metaKeySubagentLatestChildSummary
-	aggTranscriptPath  = "$." + metaKeySubagentTranscriptDescendantCount
-	aggToolSummaryPath = "$." + metaKeySubagentLatestToolSummary
-	aggToolTurnPath    = "$." + metaKeySubagentLatestToolTurn
-	aggToolItemPath    = "$." + metaKeySubagentLatestToolItem
+	aggStateClean    = 0
+	aggStateDirty    = 1
+	aggStateReadTime = 2
 )
 
-// aggKeyPaths are the flat keys a stamp owns, card keys then tray keys.
-var aggKeyPaths = []string{
-	aggCountPath, aggSummaryPath, aggTranscriptPath,
-	aggToolSummaryPath, aggToolTurnPath, aggToolItemPath,
+var (
+	aggCleanLiteral = strconv.Itoa(aggStateClean)
+	aggDirtyLiteral = strconv.Itoa(aggStateDirty)
+)
+
+// subagentAggregatesTableSQL is the table and its dirty index.
+var subagentAggregatesTableSQL = `
+CREATE TABLE subagent_aggregates (
+    thread_id              TEXT    NOT NULL,
+    item_id                TEXT    NOT NULL,
+    state                  INTEGER NOT NULL DEFAULT 0 CHECK (state IN (0, 1, 2)),
+    gen                    INTEGER NOT NULL DEFAULT 0,
+    descendant_count       INTEGER,
+    latest_child_summary   TEXT,
+    transcript_count       INTEGER,
+    tool_summary           TEXT,
+    tool_turn              INTEGER,
+    tool_item              INTEGER,
+    tool_id                TEXT,
+    pick_turn              INTEGER,
+    pick_item              INTEGER,
+    pick_id                TEXT,
+    newest_turn            INTEGER,
+    newest_item            INTEGER,
+    transcript_newest_turn INTEGER,
+    transcript_newest_item INTEGER,
+    PRIMARY KEY (thread_id, item_id),
+    FOREIGN KEY (thread_id, item_id) REFERENCES items(thread_id, id) ON DELETE CASCADE ON UPDATE CASCADE
+) WITHOUT ROWID;
+
+CREATE INDEX idx_subagent_aggregates_dirty
+    ON subagent_aggregates(thread_id)
+ WHERE state = ` + aggDirtyLiteral + `;
+`
+
+// subagentAggregateTriggersSQL stamps an anchor when its row is written.
+// Deleting a row needs no stamp: an item delete, an anchor that stops
+// being one and a restamp each stamp the rows whose read changed on their
+// own. RestoreFrom brackets its row copy with
+// dropSubagentAggregateTriggersSQL: the copied rows describe the copied
+// items, whose revisions are the snapshot's.
+var subagentAggregateTriggersSQL = `
+CREATE TRIGGER trg_subagent_aggregates_stamp_insert AFTER INSERT ON subagent_aggregates BEGIN
+  ` + subagentAggregateStampSQL + `
+END;
+
+CREATE TRIGGER trg_subagent_aggregates_stamp_update AFTER UPDATE ON subagent_aggregates BEGIN
+  ` + subagentAggregateStampSQL + `
+END;
+`
+
+const dropSubagentAggregateTriggersSQL = `DROP TRIGGER IF EXISTS trg_subagent_aggregates_stamp_insert;
+DROP TRIGGER IF EXISTS trg_subagent_aggregates_stamp_update;`
+
+// subagentAggregateStampSQL stamps the anchor a subagent_aggregates write
+// changed, and the completion siblings that borrow its card, with the
+// thread's history_rev. A row already at that revision is left alone: a
+// second write of the same value would fire the item update trigger. Two
+// statements, so each reaches its rows by index: SQLite cannot serve an
+// OR of the two lookups under the shared thread_id term with an index.
+const subagentAggregateStampSQL = subagentAggregateStampAnchorSQL + "\n  " + subagentAggregateStampSiblingsSQL
+
+const subagentAggregateStampAnchorSQL = `UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = NEW.thread_id)
+   WHERE thread_id = NEW.thread_id AND id = NEW.item_id
+     AND rev IS NOT (SELECT history_rev FROM threads WHERE id = NEW.thread_id);`
+
+const subagentAggregateStampSiblingsSQL = `UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = NEW.thread_id)
+   WHERE thread_id = NEW.thread_id AND completion_of = NEW.item_id AND completion_of <> ''
+     AND rev IS NOT (SELECT history_rev FROM threads WHERE id = NEW.thread_id);`
+
+// subagentAggregateValueColumns are subagent_aggregates' value columns in
+// the order every writer lists them.
+var subagentAggregateValueColumns = []string{
+	"descendant_count", "latest_child_summary", "transcript_count",
+	"tool_summary", "tool_turn", "tool_item", "tool_id",
+	"pick_turn", "pick_item", "pick_id",
+	"newest_turn", "newest_item", "transcript_newest_turn", "transcript_newest_item",
 }
+
+// subagentAggregateUpsertSQL ends an INSERT of whole rows: a row that
+// exists takes the new state and values. gen is the generation's SET
+// term, or "" to keep it.
+func subagentAggregateUpsertSQL(gen string) string {
+	sets := []string{"state = excluded.state"}
+	if gen != "" {
+		sets = append(sets, gen)
+	}
+	for _, column := range subagentAggregateValueColumns {
+		sets = append(sets, column+" = excluded."+column)
+	}
+	return "ON CONFLICT (thread_id, item_id) DO UPDATE SET " + strings.Join(sets, ", ")
+}
+
+// subagentServedKeys are the public keys a clean row serves, card keys
+// first, and the one place their JSON names meet their columns.
+var subagentServedKeys = []struct{ key, column string }{
+	{metaKeySubagentDescendantCount, "descendant_count"},
+	{metaKeySubagentLatestChildSummary, "latest_child_summary"},
+	{metaKeySubagentTranscriptDescendantCount, "transcript_count"},
+	{metaKeySubagentLatestToolSummary, "tool_summary"},
+	{metaKeySubagentLatestToolTurn, "tool_turn"},
+	{metaKeySubagentLatestToolItem, "tool_item"},
+}
+
+// subagentServedCardKeys is how many of subagentServedKeys a completion
+// sibling borrows from its launch: the card, not the tray.
+const subagentServedCardKeys = 3
+
+// subagentServedPatchSQL is the merge patch of a row's public values. A
+// NULL value removes its key, so the stamp owns each key whether or not
+// it has a value for it, as mergeSubagentAnchorMeta does for a walk.
+func subagentServedPatchSQL(agg string, keys int) string {
+	pairs := make([]string, 0, keys)
+	for _, served := range subagentServedKeys[:keys] {
+		pairs = append(pairs, "'"+served.key+"', "+agg+"."+served.column)
+	}
+	return "json_object(" + strings.Join(pairs, ", ") + ")"
+}
+
+// subagentServedMetaSQL is a local row's meta as a read serves it. A clean
+// stamped anchor's public values are merged into it, and a Claude
+// completion sibling takes its clean launch's card, each by one
+// primary-key probe of subagent_aggregates. A stamp with nothing to show,
+// a meta that does not parse, and every other row serve the stored meta.
+// `a` is the item alias with its trailing dot.
+func subagentServedMetaSQL(a string) string {
+	return `CASE
+	  WHEN ` + aggAnchorableSQL(a) + ` THEN COALESCE((
+	    SELECT json_patch(` + a + `meta, ` + subagentServedPatchSQL("agg_served", len(subagentServedKeys)) + `)
+	      FROM subagent_aggregates agg_served
+	     WHERE agg_served.thread_id = ` + a + `thread_id AND agg_served.item_id = ` + a + `id
+	       AND agg_served.state = ` + aggCleanLiteral + `
+	       AND (agg_served.descendant_count IS NOT NULL OR agg_served.tool_summary IS NOT NULL)
+	       AND json_valid(` + a + `meta)), ` + a + `meta)
+	  WHEN ` + aggBorrowsCardSQL(a) + ` THEN COALESCE((
+	    SELECT json_patch(` + a + `meta, ` + subagentServedPatchSQL("agg_served", subagentServedCardKeys) + `)
+	      FROM subagent_aggregates agg_served
+	     WHERE agg_served.thread_id = ` + a + `thread_id AND agg_served.item_id = ` + a + `completion_of
+	       AND agg_served.state = ` + aggCleanLiteral + ` AND agg_served.descendant_count IS NOT NULL
+	       AND json_valid(` + a + `meta)), ` + a + `meta)
+	  ELSE ` + a + `meta END`
+}
+
+// aggBorrowsCardSQL is a completion row that renders its launch's card
+// (decorateSubagentAnchors): any completion but a Codex spawn's, whose
+// card is its own snapshot, or a Codex wait carrier's. Only an anchor
+// lends one.
+func aggBorrowsCardSQL(a string) string {
+	return "(" + a + "kind = 'tool_completion' AND " + a + "completion_of <> '' AND " +
+		a + "tool_name NOT IN ('wait_agent', 'collab_agent'))"
+}
+
+// subagentStripServedKeysSQL is the item triggers' guard on the stored
+// meta: the written meta of an anchor, or of a completion whose launch is
+// one, that carries a public key, as a writer holding a served row writes
+// it back or a copy carries it, has the keys removed again, so no read
+// can serve a stale value from the stored meta. The instr terms keep
+// every other write off a JSON parse. The write stamps the row, so it
+// does not fire the update trigger again.
+func subagentStripServedKeysSQL(ref string) string {
+	paths := make([]string, 0, len(subagentServedKeys))
+	present := make([]string, 0, len(subagentServedKeys))
+	for _, served := range subagentServedKeys {
+		paths = append(paths, "'$."+served.key+"'")
+		present = append(present, aggJT(ref+".meta", "$."+served.key)+" IS NOT NULL")
+	}
+	return `UPDATE items SET meta = json_remove(meta, ` + strings.Join(paths, ", ") + `), rev = ` + aggStampRevSQL + `
+	 WHERE thread_id = ` + ref + `.thread_id AND id = ` + ref + `.id
+	   AND (` + aggAnchorableSQL(ref+".") + ` OR ` + aggBorrowsCardSQL(ref+".") + `)
+	   AND (instr(` + ref + `.meta, '"subagentDescendantCount"') OR instr(` + ref + `.meta, '"subagentLatest')
+	        OR instr(` + ref + `.meta, '"subagentTranscriptDescendantCount"'))
+	   AND (` + aggAnchorableSQL(ref+".") + `
+	        OR EXISTS (SELECT 1 FROM items l WHERE l.thread_id = ` + ref + `.thread_id AND l.id = ` + ref + `.completion_of
+	                      AND ` + aggAnchorableSQL("l.") + `))
+	   AND (` + strings.Join(present, " OR ") + `);`
+}
+
+// subagentAggregateUnanchorSQL drops the stamp of a row that stops being
+// an anchor: no read decorates it any more.
+var subagentAggregateUnanchorSQL = `DELETE FROM subagent_aggregates
+	 WHERE ` + aggAnchorableSQL("OLD.") + ` AND NOT ` + aggAnchorableSQL("NEW.") + `
+	   AND thread_id = NEW.thread_id AND item_id = NEW.id;`
 
 // aggBlankSQL is subagentPreviewBlank spelled for SQL trim(): the same
 // ASCII set, so a summary is blank to the triggers exactly when it is
@@ -89,10 +263,6 @@ const aggBlankSQL = "char(32, 9, 10, 11, 12, 13)"
 
 func aggJX(expr, path string) string { return "json_extract(" + expr + ", '" + path + "')" }
 func aggJT(expr, path string) string { return "json_type(" + expr + ", '" + path + "')" }
-
-func aggQuotedPaths(paths ...string) string {
-	return "'" + strings.Join(paths, "', '") + "'"
-}
 
 // aggAnchorableSQL is a row that can carry a stamp: any tool_call except a
 // Codex spawn. `a` is the row reference with its trailing dot.
@@ -147,72 +317,47 @@ func aggPromptCarrierSQL(a string) string {
 	return "COALESCE(trim(" + aggJX(a+"meta", "$."+metaKeyResumeCarrierID) + ", " + aggBlankSQL + "), '')"
 }
 
-func aggStampedSQL(m string) string {
-	return "(COALESCE(" + aggJT(m, aggStatePath) + ", '') = 'object')"
-}
-
-func aggCleanSQL(m string) string {
-	return "(" + aggStampedSQL(m) + " AND " + aggJT(m, aggDirtyPath) + " IS NULL AND " +
-		aggJT(m, aggReadTimePath) + " IS NULL)"
-}
-
-func aggIsDirtySQL(m string) string { return "(" + aggJX(m, aggDirtyPath) + " IS 1)" }
-
-// aggHasKeysSQL is any stamp key or state on the row.
-func aggHasKeysSQL(m string) string {
-	terms := make([]string, 0, len(aggKeyPaths)+1)
-	for _, path := range append([]string{aggStatePath}, aggKeyPaths...) {
-		terms = append(terms, aggJT(m, path)+" IS NOT NULL")
-	}
-	return "(" + strings.Join(terms, " OR ") + ")"
-}
-
-// aggKeysDifferSQL compares two metas' stamp keys and state.
-func aggKeysDifferSQL(a, b string) string {
-	terms := make([]string, 0, len(aggKeyPaths)+1)
-	for _, path := range append([]string{aggStatePath}, aggKeyPaths...) {
-		terms = append(terms, aggJX(a, path)+" IS NOT "+aggJX(b, path))
-	}
-	return "(" + strings.Join(terms, " OR ") + ")"
-}
-
 func aggPosSQL(a string) string { return "(" + a + "turn_index, " + a + "item_index)" }
 
-func aggStatePosSQL(m, path string) string {
-	return "(" + aggJX(m, path+"[0]") + ", " + aggJX(m, path+"[1]") + ")"
+// aggAtSQL is "the stored position (turn, item) is ref's", NULL-safe.
+func aggAtSQL(turn, item, ref string) string {
+	return "(((" + turn + ", " + item + ") = " + aggPosSQL(ref) + ") IS 1)"
 }
 
-// aggAtSQL is "the position stored at path is ref's", NULL-safe.
-func aggAtSQL(m, path, ref string) string {
-	return "((" + aggStatePosSQL(m, path) + " = " + aggPosSQL(ref) + ") IS 1)"
+// aggAfterSQL is "the stored position (turn, item) is after ref's",
+// NULL-safe.
+func aggAfterSQL(turn, item, ref string) string {
+	return "(((" + turn + ", " + item + ") > " + aggPosSQL(ref) + ") IS 1)"
 }
 
-// aggAfterSQL is "the position stored at path is after ref's", NULL-safe.
-func aggAfterSQL(m, path, ref string) string {
-	return "((" + aggStatePosSQL(m, path) + " > " + aggPosSQL(ref) + ") IS 1)"
+// aggNewerSQL is "ref is newer than the stored position (turn, item), or
+// nothing is stored".
+func aggNewerSQL(turn, item, ref string) string {
+	return "(" + turn + " IS NULL OR " + aggPosSQL(ref) + " > (" + turn + ", " + item + "))"
 }
 
-// aggNewerSQL is "ref is newer than the position stored at path, or
-// nothing is stored there".
-func aggNewerSQL(m, path, ref string) string {
-	return "(" + aggJX(m, path) + " IS NULL OR " + aggPosSQL(ref) + " > " + aggStatePosSQL(m, path) + ")"
-}
-
-// aggBetterPickSQL is betterSubagentPreview(ref, stored pick).
-func aggBetterPickSQL(m, ref string) string {
-	return "(" + aggPreviewableSQL(ref) + " AND (" + aggJX(m, aggPickPath) + " IS NULL OR " +
-		aggPosSQL(ref) + " > " + aggStatePosSQL(m, aggPickPath) + " OR (" +
-		aggPosSQL(ref) + " = " + aggStatePosSQL(m, aggPickPath) + " AND " + ref + "id < " +
-		aggJX(m, aggPickPath+"[2]") + ")))"
-}
-
-// aggBetterToolSQL is the tray rule: ref is newer than the stored tool,
-// ties by smallest id.
-func aggBetterToolSQL(m, ref string) string {
-	stored := "(" + aggJX(m, aggToolTurnPath) + ", " + aggJX(m, aggToolItemPath) + ")"
-	return "(" + aggToolableSQL(ref) + " AND (" + aggJX(m, aggToolTurnPath) + " IS NULL OR " +
+// aggBetterPickSQL is betterSubagentPreview(ref, the pick stored on s).
+func aggBetterPickSQL(s, ref string) string {
+	stored := "(" + s + ".pick_turn, " + s + ".pick_item)"
+	return "(" + aggPreviewableSQL(ref) + " AND (" + s + ".pick_turn IS NULL OR " +
 		aggPosSQL(ref) + " > " + stored + " OR (" + aggPosSQL(ref) + " = " + stored + " AND " +
-		ref + "id < " + aggJX(m, aggToolPickPath) + ")))"
+		ref + "id < " + s + ".pick_id)))"
+}
+
+// aggBetterToolSQL is the tray rule against the tool stored on s: ref is
+// newer, ties by smallest id.
+func aggBetterToolSQL(s, ref string) string {
+	stored := "(" + s + ".tool_turn, " + s + ".tool_item)"
+	return "(" + aggToolableSQL(ref) + " AND (" + s + ".tool_turn IS NULL OR " +
+		aggPosSQL(ref) + " > " + stored + " OR (" + aggPosSQL(ref) + " = " + stored + " AND " +
+		ref + "id < " + s + ".tool_id)))"
+}
+
+// aggUnroundDirtySQL is "deleting ref takes a row or position the stamp
+// names": its preview, its round's newest or its transcript's newest.
+func aggUnroundDirtySQL(pickID, newestTurn, newestItem, transcriptTurn, transcriptItem, ref string) string {
+	return "(" + pickID + " IS " + ref + "id OR " + aggAtSQL(newestTurn, newestItem, ref) + " OR " +
+		aggAtSQL(transcriptTurn, transcriptItem, ref) + ")"
 }
 
 // aggHasChildSQL is "the row has a visible child other than except",
@@ -239,15 +384,23 @@ func aggHasLocalChildSQL(threadExpr, idExpr, exceptExpr string) string {
 	            AND ` + visibleItemsFilterFor("agg_hc.") + `)`
 }
 
+// aggBulkIdleSQL is "the thread is not bulk loading".
+func aggBulkIdleSQL(threadExpr string) string {
+	return "((SELECT history_bulk_load FROM threads WHERE id = " + threadExpr + ") = 0)"
+}
+
 // aggChainCTE walks ref's ancestors by primary key. walk is the row's
 // visibility: a walk from an ancestor reaches ref only through visible
-// rows, so the chain stops above a hidden one.
-func aggChainCTE(name, ref string) string {
+// rows, so the chain stops above a hidden one. gate is a further condition
+// on the walk's start. Under bulk load the chain is empty, which leaves
+// every statement built on it nothing to do.
+func aggChainCTE(name, ref, gate string) string {
 	return name + `(thread_id, id, parent_id, kind, tool_name, meta, depth, walk) AS (
 	    SELECT thread_id, id, parent_id, kind, tool_name, meta, 1, ` + visibleItemsFilterFor("") + `
 	      FROM items
 	     WHERE thread_id = ` + ref + `.thread_id AND id = ` + ref + `.parent_id
-	       AND ` + ref + `.parent_id <> '' AND ` + visibleItemsFilterFor(ref+".") + `
+	       AND ` + ref + `.parent_id <> '' AND ` + visibleItemsFilterFor(ref+".") + gate + `
+	       AND ` + aggBulkIdleSQL(ref+".thread_id") + `
 	    UNION ALL
 	    SELECT items.thread_id, items.id, items.parent_id, items.kind, items.tool_name, items.meta,
 	           ` + name + `.depth + 1, ` + visibleItemsFilterFor("items.") + `
@@ -262,7 +415,8 @@ func aggChainCTE(name, ref string) string {
 // position (one backwards probe of idx_items_subagent_resume_prompt), and
 // the carrier that prompt names. No prompt means ref is in the anchor's
 // own first round. Carriers are not anchors here: nothing under a carrier
-// counts toward its card.
+// counts toward its card. Each anchor carries what the rules read of its
+// stamp; st is NULL when it has none.
 //
 // carrier_ok is false when the named carrier is a local anchorable row
 // stamped as another root's carrier. Its card is that root's round, so
@@ -276,23 +430,26 @@ func aggChainCTE(name, ref string) string {
 // downstream: every item write would prepare a program many times this
 // size (TestSubagentAggregateStatementPlans counts the probes).
 func aggRoundsCTE(name, chain, ref string) string {
-	return name + `_prompt(thread_id, id, meta, depth, prompt_id) AS MATERIALIZED (
-	    SELECT ` + chain + `.thread_id, ` + chain + `.id, ` + chain + `.meta, ` + chain + `.depth,
+	return name + `_prompt(thread_id, id, depth, prompt_id) AS MATERIALIZED (
+	    SELECT ch.thread_id, ch.id, ch.depth,
 	           (SELECT p.id FROM items p
-	             WHERE p.thread_id = ` + chain + `.thread_id AND p.parent_id = ` + chain + `.id
+	             WHERE p.thread_id = ch.thread_id AND p.parent_id = ch.id
 	               AND ` + aggPromptSQL("p.") + `
 	               AND ` + aggPosSQL("p.") + ` <= ` + aggPosSQL(ref+".") + `
 	             ORDER BY p.turn_index DESC, p.item_index DESC LIMIT 1)
-	      FROM ` + chain + `
-	     WHERE ` + aggAnchorableSQL(chain+".") + ` AND NOT ` + aggCarrierSQL(chain+".") + `
+	      FROM ` + chain + ` ch
+	     WHERE ` + aggAnchorableSQL("ch.") + ` AND NOT ` + aggCarrierSQL("ch.") + `
 	),
-	` + name + `(thread_id, id, meta, depth, prompt_id, carrier_id, carrier_ok) AS MATERIALIZED (
-	    SELECT a.thread_id, a.id, a.meta, a.depth, a.prompt_id, ` + aggPromptCarrierSQL("p.") + `,
-	           CASE WHEN c.id IS NULL THEN 1 ELSE ` + aggTranscriptRootSQL("c.") + ` IS a.id END
+	` + name + `(thread_id, id, depth, prompt_id, carrier_id, carrier_ok, st, pid, nt, ni, xt, xi, tc) AS MATERIALIZED (
+	    SELECT a.thread_id, a.id, a.depth, a.prompt_id, ` + aggPromptCarrierSQL("p.") + `,
+	           CASE WHEN c.id IS NULL THEN 1 ELSE ` + aggTranscriptRootSQL("c.") + ` IS a.id END,
+	           s.state, s.pick_id, s.newest_turn, s.newest_item,
+	           s.transcript_newest_turn, s.transcript_newest_item, s.transcript_count
 	      FROM ` + name + `_prompt a
 	      LEFT JOIN items p ON p.thread_id = a.thread_id AND p.id = a.prompt_id
 	      LEFT JOIN items c ON c.thread_id = a.thread_id AND c.id = ` + aggPromptCarrierSQL("p.") + ` AND c.id <> ''
 	            AND ` + aggAnchorableSQL("c.") + `
+	      LEFT JOIN subagent_aggregates s ON s.thread_id = a.thread_id AND s.item_id = a.id
 	)`
 }
 
@@ -306,25 +463,62 @@ func aggFamilyDirtySQL(roles string) string {
 	       AND ` + aggPromptSQL("p.")
 }
 
-func aggDirtyMetaSQL(m string) string {
-	return "json_set(json_remove(" + m + ", " + aggQuotedPaths(aggKeyPaths...) + "), '" + aggStatePath +
-		"', json_object('gen', COALESCE(" + aggJX(m, aggGenPath) + ", 0), 'dirty', json('true')))"
+// aggTargetsCTE is the rows a statement writes: one per anchor in agg that
+// exists and can carry a stamp, with its current stamp's values as old_*.
+// A dirty stamp is not written dirty again, and nothing is written in a
+// thread under bulk load. flags are named expressions over agg, s and the
+// trigger row, evaluated once per target.
+func aggTargetsCTE(where string, flags ...string) string {
+	columns := make([]string, 0, len(subagentAggregateValueColumns)+len(flags))
+	for _, column := range subagentAggregateValueColumns {
+		columns = append(columns, "s."+column+" AS old_"+column)
+	}
+	columns = append(columns, flags...)
+	return `agg_targets AS MATERIALIZED (
+	    SELECT agg.thread_id AS thread_id, agg.id AS id, agg.op AS op,
+	           ` + strings.Join(columns, ",\n\t           ") + `
+	      FROM agg
+	      CROSS JOIN items i ON i.thread_id = agg.thread_id AND i.id = agg.id
+	      LEFT JOIN subagent_aggregates s ON s.thread_id = agg.thread_id AND s.item_id = agg.id
+	     WHERE ` + aggAnchorableSQL("i.") + ` AND ` + aggBulkIdleSQL("agg.thread_id") + `
+	       AND NOT (agg.op = 'dirty' AND s.state IS ` + aggDirtyLiteral + `)` + where + `
+	)`
 }
 
-func aggStripMetaSQL(m string) string {
-	return "json_remove(" + m + ", " + aggQuotedPaths(append(aggKeyPaths, aggStatePath)...) + ")"
+// aggWriteSQL is a trigger statement's write: the CTEs, then one whole row
+// per target, upserted. values maps a value column to its expression over
+// agg_targets; a column it leaves out keeps its old value, and a dirty row
+// loses every value. gen is left as it is.
+func aggWriteSQL(ctes string, values map[string]string) string {
+	columns := make([]string, 0, len(subagentAggregateValueColumns))
+	for _, column := range subagentAggregateValueColumns {
+		value, ok := values[column]
+		if !ok {
+			value = "old_" + column
+		}
+		columns = append(columns, "CASE WHEN op = 'dirty' THEN NULL ELSE "+value+" END AS "+column)
+	}
+	list := strings.Join(subagentAggregateValueColumns, ", ")
+	return `INSERT INTO subagent_aggregates (thread_id, item_id, state, ` + list + `)
+	SELECT thread_id, id, state, ` + list + `
+	  FROM (
+	    WITH RECURSIVE
+	    ` + ctes + `
+	    SELECT thread_id, id,
+	           CASE WHEN op = 'dirty' THEN ` + aggDirtyLiteral + ` ELSE ` + aggCleanLiteral + ` END AS state,
+	           ` + strings.Join(columns, ",\n\t           ") + `
+	      FROM agg_targets
+	  ) AS agg_values
+	 WHERE true
+	` + subagentAggregateUpsertSQL("") + `;`
 }
-
-func aggClearedMetaSQL(m string) string { return aggStripMetaSQL(m) }
 
 const aggStampRevSQL = "(SELECT history_rev FROM threads WHERE id = items.thread_id)"
 
 // subagentAggregateInsertSQL is the insert trigger's aggregate statement.
 //
 // Roles, per target row:
-//   - NEW itself, when it can carry a stamp: a copied stamp is stripped (a
-//     clone or transfer rebuilds it from the rows it inserts), and a row
-//     that adopts existing children is dirty;
+//   - NEW itself, when it adopts existing children: dirty;
 //   - each anchor on NEW's chain: `round` when NEW is in its first round,
 //     `transcript` when NEW is in a carrier's round (the root's
 //     whole-transcript count), `promptRoot` when NEW is the root's next
@@ -343,31 +537,29 @@ func subagentAggregateInsertSQL() string {
 	    SELECT r.thread_id, r.id, r.depth, r.prompt_id, r.carrier_id, r.carrier_ok,
 	      CASE
 	        WHEN ` + adopts + ` THEN 'dirty'
-	        WHEN NOT ` + aggStampedSQL("r.meta") + ` THEN
+	        WHEN r.st IS NULL THEN
 	          CASE WHEN r.depth = 1 AND (r.prompt_id IS NULL OR r.prompt_id = NEW.id)
 	                    AND NOT ` + aggHasChildSQL("r.thread_id", "r.id", "NEW.id") + `
 	               THEN CASE WHEN r.prompt_id IS NULL THEN 'init'
 	                         WHEN r.carrier_id <> r.id AND r.carrier_ok THEN 'initRoot'
 	                         ELSE 'dirty' END
 	               ELSE 'dirty' END
-	        WHEN NOT ` + aggCleanSQL("r.meta") + ` THEN NULL
+	        WHEN r.st <> ` + aggCleanLiteral + ` THEN NULL
 	        WHEN NOT r.carrier_ok THEN 'dirty'
 	        WHEN r.prompt_id IS NULL THEN 'round'
 	        WHEN r.prompt_id = NEW.id THEN
 	          CASE WHEN r.carrier_id = r.id
-	                 OR ` + aggAfterSQL("r.meta", aggNewestPath, "NEW.") + `
-	                 OR ` + aggAfterSQL("r.meta", aggTranscriptNewestPath, "NEW.") + `
-	                 OR EXISTS (SELECT 1 FROM items c WHERE c.thread_id = r.thread_id AND c.id = r.carrier_id
-	                              AND ` + aggStampedSQL("c.meta") + `)
+	                 OR ` + aggAfterSQL("r.nt", "r.ni", "NEW.") + `
+	                 OR ` + aggAfterSQL("r.xt", "r.xi", "NEW.") + `
+	                 OR EXISTS (SELECT 1 FROM subagent_aggregates cs WHERE cs.thread_id = r.thread_id AND cs.item_id = r.carrier_id)
 	               THEN 'dirty' ELSE 'promptRoot' END
-	        WHEN ` + aggJT("r.meta", aggTranscriptPath) + ` IS NULL THEN 'dirty'
+	        WHEN r.tc IS NULL THEN 'dirty'
 	        ELSE 'transcript'
 	      END
 	      FROM agg_rounds r
 	  )`
 	ops := `agg_ops(thread_id, id, role) AS MATERIALIZED (
-	    SELECT NEW.thread_id, NEW.id, CASE WHEN ` + adopts + ` THEN 'dirty' ELSE 'strip' END
-	     WHERE ` + aggAnchorableSQL("NEW.") + ` AND (` + adopts + ` OR ` + aggHasKeysSQL("NEW.meta") + `)
+	    SELECT NEW.thread_id, NEW.id, 'dirty' WHERE ` + aggAnchorableSQL("NEW.") + ` AND ` + adopts + `
 	    UNION ALL
 	    SELECT thread_id, id, role FROM agg_roles WHERE role IS NOT NULL
 	    UNION ALL
@@ -378,105 +570,86 @@ func subagentAggregateInsertSQL() string {
 	          CASE WHEN r.role IN ('promptRoot', 'initRoot')
 	                    AND NOT ` + aggHasLocalChildSQL("c.thread_id", "c.id", "") + `
 	               THEN 'carrierInit' ELSE 'dirty' END
-	        WHEN ` + aggCleanSQL("c.meta") + ` THEN 'round'
-	        WHEN ` + aggStampedSQL("c.meta") + ` THEN NULL
+	        WHEN cs.state IS ` + aggCleanLiteral + ` THEN 'round'
+	        WHEN cs.state IS NOT NULL THEN NULL
 	        ELSE 'dirty'
 	      END
 	      FROM agg_roles r CROSS JOIN items c
+	      LEFT JOIN subagent_aggregates cs ON cs.thread_id = c.thread_id AND cs.item_id = c.id
 	     WHERE r.carrier_id <> '' AND r.carrier_id <> r.id AND r.carrier_ok
 	       AND c.thread_id = r.thread_id AND c.id = r.carrier_id AND ` + aggAnchorableSQL("c.") + `
 	    UNION ALL
 	    ` + aggFamilyDirtySQL("agg_roles") + `
 	    UNION ALL
 	    SELECT ch.thread_id, ch.id, 'tray'
-	      FROM agg_chain ch
-	     WHERE ch.depth = 1 AND ` + aggToolableSQL("NEW.") + ` AND ` + aggAnchorableSQL("ch.") + `
-	       AND ` + aggCleanSQL("ch.meta") + `
+	      FROM agg_chain ch CROSS JOIN subagent_aggregates ts
+	     WHERE ch.depth = 1 AND ` + aggToolableSQL("NEW.") + `
+	       AND ts.thread_id = ch.thread_id AND ts.item_id = ch.id AND ts.state = ` + aggCleanLiteral + `
 	  )`
-	aggregate := `SELECT thread_id, id,
-	         CASE WHEN SUM(role = 'dirty') > 0
-	                OR SUM(role IN ('init', 'initRoot', 'carrierInit', 'round', 'transcript', 'promptRoot')) > 1
-	                OR SUM(role = 'tray') > 1
-	                OR (SUM(role = 'strip') > 0 AND COUNT(*) > 1)
-	              THEN 'dirty'
-	              ELSE COALESCE(MAX(CASE WHEN role <> 'tray' THEN role END), 'none') END AS op,
-	         SUM(role = 'tray') > 0 AS tray
-	    FROM agg_ops WHERE role IS NOT NULL AND id <> ''
-	   GROUP BY thread_id, id`
+	aggregate := `agg(thread_id, id, op, tray) AS MATERIALIZED (
+	    SELECT thread_id, id,
+	           CASE WHEN SUM(role = 'dirty') > 0
+	                  OR SUM(role IN ('init', 'initRoot', 'carrierInit', 'round', 'transcript', 'promptRoot')) > 1
+	                  OR SUM(role = 'tray') > 1
+	                THEN 'dirty'
+	                ELSE COALESCE(MAX(CASE WHEN role <> 'tray' THEN role END), 'none') END,
+	           SUM(role = 'tray') > 0
+	      FROM agg_ops WHERE role IS NOT NULL AND id <> ''
+	     GROUP BY thread_id, id
+	  )`
+	targets := aggTargetsCTE(" AND NOT (agg.op = 'none' AND NOT agg.tray)",
+		"agg.op = 'round' AND "+aggBetterPickSQL("s", "NEW.")+" AS pick",
+		"agg.op = 'round' AND "+aggNewerSQL("s.newest_turn", "s.newest_item", "NEW.")+" AS newest",
+		"(agg.op IN ('transcript', 'promptRoot') OR (agg.op = 'round' AND s.transcript_count IS NOT NULL)) AND "+
+			aggNewerSQL("s.transcript_newest_turn", "s.transcript_newest_item", "NEW.")+" AS xnewest",
+		"agg.tray AND "+aggBetterToolSQL("s", "NEW.")+" AS tool")
 
-	m := "items.meta"
-	round := "agg.op = 'round'"
-	hasTranscript := "(" + aggJT(m, aggTranscriptPath) + " IS NOT NULL)"
-	better := aggBetterPickSQL(m, "NEW.")
-	tool := "(agg.tray AND " + aggBetterToolSQL(m, "NEW.") + ")"
-	newPos := "json_array(NEW.turn_index, NEW.item_index)"
-	patch := `json_patch(` + m + `, json_object(
-	    '` + metaKeySubagentDescendantCount + `', CASE agg.op
-	        WHEN 'round' THEN COALESCE(` + aggJX(m, aggCountPath) + `, 0) + 1
-	        WHEN 'promptRoot' THEN COALESCE(` + aggJX(m, aggCountPath) + `, 0)
-	        ELSE ` + aggJX(m, aggCountPath) + ` END,
-	    '` + metaKeySubagentLatestChildSummary + `', CASE WHEN ` + round + ` AND ` + better + `
-	        THEN NEW.summary ELSE ` + aggJX(m, aggSummaryPath) + ` END,
-	    '` + metaKeySubagentTranscriptDescendantCount + `', CASE
-	        WHEN agg.op = 'transcript' OR (` + round + ` AND ` + hasTranscript + `) THEN ` + aggJX(m, aggTranscriptPath) + ` + 1
-	        WHEN agg.op = 'promptRoot' THEN COALESCE(` + aggJX(m, aggTranscriptPath) + `, ` + aggJX(m, aggCountPath) + `, 0) + 1
-	        ELSE ` + aggJX(m, aggTranscriptPath) + ` END,
-	    '` + metaKeySubagentLatestToolSummary + `', CASE WHEN ` + tool + `
-	        THEN trim(NEW.summary, ` + aggBlankSQL + `) ELSE ` + aggJX(m, aggToolSummaryPath) + ` END,
-	    '` + metaKeySubagentLatestToolTurn + `', CASE WHEN ` + tool + ` THEN NEW.turn_index ELSE ` + aggJX(m, aggToolTurnPath) + ` END,
-	    '` + metaKeySubagentLatestToolItem + `', CASE WHEN ` + tool + ` THEN NEW.item_index ELSE ` + aggJX(m, aggToolItemPath) + ` END,
-	    '` + metaKeySubagentAggregateState + `', json_object(
-	        'pick', json(CASE WHEN ` + round + ` AND ` + better + `
-	            THEN json_array(NEW.turn_index, NEW.item_index, NEW.id) ELSE ` + aggJX(m, aggPickPath) + ` END),
-	        'newest', json(CASE WHEN ` + round + ` AND ` + aggNewerSQL(m, aggNewestPath, "NEW.") + `
-	            THEN ` + newPos + ` ELSE ` + aggJX(m, aggNewestPath) + ` END),
-	        'transcriptNewest', json(CASE
-	            WHEN (agg.op IN ('transcript', 'promptRoot') OR (` + round + ` AND ` + hasTranscript + `))
-	             AND ` + aggNewerSQL(m, aggTranscriptNewestPath, "NEW.") + `
-	            THEN ` + newPos + ` ELSE ` + aggJX(m, aggTranscriptNewestPath) + ` END),
-	        'toolPick', CASE WHEN ` + tool + ` THEN NEW.id ELSE ` + aggJX(m, aggToolPickPath) + ` END)))`
-	initMeta := `json_patch(` + aggClearedMetaSQL(m) + `, json_object(
-	    '` + metaKeySubagentDescendantCount + `', 1,
-	    '` + metaKeySubagentLatestChildSummary + `', CASE WHEN ` + aggPreviewableSQL("NEW.") + ` THEN NEW.summary END,
-	    '` + metaKeySubagentLatestToolSummary + `', CASE WHEN ` + aggToolableSQL("NEW.") + ` THEN trim(NEW.summary, ` + aggBlankSQL + `) END,
-	    '` + metaKeySubagentLatestToolTurn + `', CASE WHEN ` + aggToolableSQL("NEW.") + ` THEN NEW.turn_index END,
-	    '` + metaKeySubagentLatestToolItem + `', CASE WHEN ` + aggToolableSQL("NEW.") + ` THEN NEW.item_index END,
-	    '` + metaKeySubagentAggregateState + `', json_object('gen', 0, 'newest', ` + newPos + `,
-	        'pick', json(CASE WHEN ` + aggPreviewableSQL("NEW.") + ` THEN json_array(NEW.turn_index, NEW.item_index, NEW.id) END),
-	        'toolPick', CASE WHEN ` + aggToolableSQL("NEW.") + ` THEN NEW.id END)))`
-	initRootMeta := `json_patch(` + aggClearedMetaSQL(m) + `, json_object(
-	    '` + metaKeySubagentDescendantCount + `', 0,
-	    '` + metaKeySubagentTranscriptDescendantCount + `', 1,
-	    '` + metaKeySubagentAggregateState + `', json_object('gen', 0, 'transcriptNewest', ` + newPos + `)))`
-	carrierInitMeta := `json_patch(` + aggClearedMetaSQL(m) + `, json_object(
-	    '` + metaKeySubagentDescendantCount + `', 1,
-	    '` + metaKeySubagentAggregateState + `', json_object('gen', 0, 'newest', ` + newPos + `)))`
-
-	return `UPDATE items SET
-	    meta = CASE agg.op
-	      WHEN 'dirty' THEN ` + aggDirtyMetaSQL(m) + `
-	      WHEN 'strip' THEN ` + aggStripMetaSQL(m) + `
-	      WHEN 'init' THEN ` + initMeta + `
-	      WHEN 'initRoot' THEN ` + initRootMeta + `
-	      WHEN 'carrierInit' THEN ` + carrierInitMeta + `
-	      ELSE ` + patch + `
-	    END,
-	    rev = ` + aggStampRevSQL + `
-	  FROM (
-	    WITH RECURSIVE
-	    ` + aggChainCTE("agg_chain", "NEW") + `,
-	    ` + aggRoundsCTE("agg_rounds", "agg_chain", "NEW") + `,
-	    agg_orphan(adopts) AS MATERIALIZED (SELECT ` + aggHasChildSQL("NEW.thread_id", "NEW.id", "") + `),
-	    ` + roles + `,
-	    ` + ops + `
-	    ` + aggregate + `
-	  ) AS agg
-	 WHERE (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 0
-	   AND ((NEW.parent_id <> '' AND ` + visibleItemsFilterFor("NEW.") + `) OR ` + aggAnchorableSQL("NEW.") + `)
-	   AND items.thread_id = agg.thread_id AND items.id = agg.id
-	   AND (` + aggAnchorableSQL("items.") + ` OR agg.op = 'strip')
-	   AND NOT (agg.op = 'dirty' AND ` + aggIsDirtySQL(m) + `)
-	   AND NOT (agg.op = 'none' AND NOT agg.tray);`
+	// column is a value for each op that starts a row (init, initRoot,
+	// carrierInit), then for the ops that move one on.
+	column := func(init, initRoot, carrierInit, kept string) string {
+		return "CASE op WHEN 'init' THEN " + init + " WHEN 'initRoot' THEN " + initRoot +
+			" WHEN 'carrierInit' THEN " + carrierInit + " ELSE " + kept + " END"
+	}
+	previewable, toolable := aggPreviewableSQL("NEW."), aggToolableSQL("NEW.")
+	pick := func(value, old string) string {
+		return column("CASE WHEN "+previewable+" THEN "+value+" END", "NULL", "NULL",
+			"CASE WHEN pick THEN "+value+" ELSE "+old+" END")
+	}
+	tool := func(value, old string) string {
+		return column("CASE WHEN "+toolable+" THEN "+value+" END", "NULL", "NULL",
+			"CASE WHEN tool THEN "+value+" ELSE "+old+" END")
+	}
+	return aggWriteSQL(aggChainCTE("agg_chain", "NEW", "")+`,
+	    `+aggRoundsCTE("agg_rounds", "agg_chain", "NEW")+`,
+	    agg_orphan(adopts) AS MATERIALIZED (
+	      SELECT `+aggBulkIdleSQL("NEW.thread_id")+` AND `+aggHasChildSQL("NEW.thread_id", "NEW.id", "")+`),
+	    `+roles+`,
+	    `+ops+`,
+	    `+aggregate+`,
+	    `+targets, map[string]string{
+		"descendant_count": column("1", "0", "1",
+			"CASE op WHEN 'round' THEN COALESCE(old_descendant_count, 0) + 1"+
+				" WHEN 'promptRoot' THEN COALESCE(old_descendant_count, 0) ELSE old_descendant_count END"),
+		"latest_child_summary": pick("NEW.summary", "old_latest_child_summary"),
+		"transcript_count": column("NULL", "1", "NULL",
+			"CASE op WHEN 'transcript' THEN old_transcript_count + 1 WHEN 'round' THEN old_transcript_count + 1"+
+				" WHEN 'promptRoot' THEN COALESCE(old_transcript_count, old_descendant_count, 0) + 1 ELSE old_transcript_count END"),
+		"tool_summary": tool("trim(NEW.summary, "+aggBlankSQL+")", "old_tool_summary"),
+		"tool_turn":    tool("NEW.turn_index", "old_tool_turn"),
+		"tool_item":    tool("NEW.item_index", "old_tool_item"),
+		"tool_id":      tool("NEW.id", "old_tool_id"),
+		"pick_turn":    pick("NEW.turn_index", "old_pick_turn"),
+		"pick_item":    pick("NEW.item_index", "old_pick_item"),
+		"pick_id":      pick("NEW.id", "old_pick_id"),
+		"newest_turn": column("NEW.turn_index", "NULL", "NEW.turn_index",
+			"CASE WHEN newest THEN NEW.turn_index ELSE old_newest_turn END"),
+		"newest_item": column("NEW.item_index", "NULL", "NEW.item_index",
+			"CASE WHEN newest THEN NEW.item_index ELSE old_newest_item END"),
+		"transcript_newest_turn": column("NULL", "NEW.turn_index", "NULL",
+			"CASE WHEN xnewest THEN NEW.turn_index ELSE old_transcript_newest_turn END"),
+		"transcript_newest_item": column("NULL", "NEW.item_index", "NULL",
+			"CASE WHEN xnewest THEN NEW.item_index ELSE old_transcript_newest_item END"),
+	})
 }
 
 // subagentAggregateDeleteSQL is the delete trigger's aggregate statement.
@@ -487,19 +660,15 @@ func subagentAggregateInsertSQL() string {
 // every walk above it) makes the affected anchors dirty.
 func subagentAggregateDeleteSQL() string {
 	adopts := "(SELECT adopts FROM agg_orphan)"
-	unroundDirty := func(m string) string {
-		return "(" + aggJX(m, aggPickPath+"[2]") + " IS OLD.id OR " +
-			aggAtSQL(m, aggNewestPath, "OLD.") + " OR " + aggAtSQL(m, aggTranscriptNewestPath, "OLD.") + ")"
-	}
 	roles := `agg_roles(thread_id, id, depth, prompt_id, carrier_id, carrier_ok, role) AS MATERIALIZED (
 	    SELECT r.thread_id, r.id, r.depth, r.prompt_id, r.carrier_id, r.carrier_ok,
 	      CASE
-	        WHEN NOT ` + aggStampedSQL("r.meta") + ` THEN 'dirty'
-	        WHEN NOT ` + aggCleanSQL("r.meta") + ` THEN NULL
+	        WHEN r.st IS NULL THEN 'dirty'
+	        WHEN r.st <> ` + aggCleanLiteral + ` THEN NULL
 	        WHEN ` + adopts + ` OR NOT r.carrier_ok OR (r.depth = 1 AND ` + aggIsPromptSQL("OLD.") + `) THEN 'dirty'
-	        WHEN r.prompt_id IS NULL THEN CASE WHEN ` + unroundDirty("r.meta") + ` THEN 'dirty' ELSE 'unround' END
-	        WHEN ` + aggJT("r.meta", aggTranscriptPath) + ` IS NULL
-	          OR ` + aggAtSQL("r.meta", aggTranscriptNewestPath, "OLD.") + ` THEN 'dirty'
+	        WHEN r.prompt_id IS NULL THEN
+	          CASE WHEN ` + aggUnroundDirtySQL("r.pid", "r.nt", "r.ni", "r.xt", "r.xi", "OLD.") + ` THEN 'dirty' ELSE 'unround' END
+	        WHEN r.tc IS NULL OR ` + aggAtSQL("r.xt", "r.xi", "OLD.") + ` THEN 'dirty'
 	        ELSE 'untranscript'
 	      END
 	      FROM agg_rounds r
@@ -509,12 +678,14 @@ func subagentAggregateDeleteSQL() string {
 	    UNION ALL
 	    SELECT r.thread_id, c.id,
 	      CASE
-	        WHEN ` + adopts + ` OR NOT ` + aggStampedSQL("c.meta") + ` THEN 'dirty'
-	        WHEN NOT ` + aggCleanSQL("c.meta") + ` THEN NULL
-	        WHEN ` + unroundDirty("c.meta") + ` THEN 'dirty'
+	        WHEN ` + adopts + ` OR cs.state IS NULL THEN 'dirty'
+	        WHEN cs.state <> ` + aggCleanLiteral + ` THEN NULL
+	        WHEN ` + aggUnroundDirtySQL("cs.pick_id", "cs.newest_turn", "cs.newest_item",
+		"cs.transcript_newest_turn", "cs.transcript_newest_item", "OLD.") + ` THEN 'dirty'
 	        ELSE 'unround'
 	      END
 	      FROM agg_roles r CROSS JOIN items c
+	      LEFT JOIN subagent_aggregates cs ON cs.thread_id = c.thread_id AND cs.item_id = c.id
 	     WHERE r.carrier_id <> '' AND r.carrier_id <> r.id AND r.carrier_ok
 	       AND c.thread_id = r.thread_id AND c.id = r.carrier_id AND ` + aggAnchorableSQL("c.") + `
 	    UNION ALL
@@ -523,36 +694,25 @@ func subagentAggregateDeleteSQL() string {
 	    SELECT OLD.thread_id, ` + aggPromptCarrierSQL("OLD.") + `, 'dirty' WHERE ` + aggIsPromptSQL("OLD.") + `
 	    UNION ALL
 	    SELECT ch.thread_id, ch.id, 'dirty'
-	      FROM agg_chain ch
-	     WHERE ch.depth = 1 AND ` + aggAnchorableSQL("ch.") + ` AND ` + aggCleanSQL("ch.meta") + `
-	       AND ` + aggJX("ch.meta", aggToolPickPath) + ` IS OLD.id
+	      FROM agg_chain ch CROSS JOIN subagent_aggregates ts
+	     WHERE ch.depth = 1 AND ts.thread_id = ch.thread_id AND ts.item_id = ch.id
+	       AND ts.state = ` + aggCleanLiteral + ` AND ts.tool_id IS OLD.id
 	  )`
-	aggregate := `SELECT thread_id, id,
-	         CASE WHEN SUM(role = 'dirty') > 0 OR COUNT(*) > 1 THEN 'dirty' ELSE MAX(role) END AS op
-	    FROM agg_ops WHERE role IS NOT NULL AND id <> ''
-	   GROUP BY thread_id, id`
-	m := "items.meta"
-	patch := `json_patch(` + m + `, json_object(
-	    '` + metaKeySubagentDescendantCount + `', CASE agg.op WHEN 'unround' THEN ` + aggJX(m, aggCountPath) + ` - 1
-	        ELSE ` + aggJX(m, aggCountPath) + ` END,
-	    '` + metaKeySubagentTranscriptDescendantCount + `', ` + aggJX(m, aggTranscriptPath) + ` - 1))`
-	return `UPDATE items SET
-	    meta = CASE agg.op WHEN 'dirty' THEN ` + aggDirtyMetaSQL(m) + ` ELSE ` + patch + ` END,
-	    rev = ` + aggStampRevSQL + `
-	  FROM (
-	    WITH RECURSIVE
-	    ` + aggChainCTE("agg_chain", "OLD") + `,
-	    ` + aggRoundsCTE("agg_rounds", "agg_chain", "OLD") + `,
-	    agg_orphan(adopts) AS MATERIALIZED (SELECT ` + aggHasChildSQL("OLD.thread_id", "OLD.id", "") + `),
-	    ` + roles + `,
-	    ` + ops + `
-	    ` + aggregate + `
-	  ) AS agg
-	 WHERE (SELECT history_bulk_load FROM threads WHERE id = OLD.thread_id) = 0
-	   AND OLD.parent_id <> '' AND ` + visibleItemsFilterFor("OLD.") + `
-	   AND items.thread_id = agg.thread_id AND items.id = agg.id
-	   AND ` + aggAnchorableSQL("items.") + `
-	   AND NOT (agg.op = 'dirty' AND ` + aggIsDirtySQL(m) + `);`
+	aggregate := `agg(thread_id, id, op) AS MATERIALIZED (
+	    SELECT thread_id, id, CASE WHEN SUM(role = 'dirty') > 0 OR COUNT(*) > 1 THEN 'dirty' ELSE MAX(role) END
+	      FROM agg_ops WHERE role IS NOT NULL AND id <> ''
+	     GROUP BY thread_id, id
+	  )`
+	return aggWriteSQL(aggChainCTE("agg_chain", "OLD", "")+`,
+	    `+aggRoundsCTE("agg_rounds", "agg_chain", "OLD")+`,
+	    agg_orphan(adopts) AS MATERIALIZED (SELECT `+aggHasChildSQL("OLD.thread_id", "OLD.id", "")+`),
+	    `+roles+`,
+	    `+ops+`,
+	    `+aggregate+`,
+	    `+aggTargetsCTE(""), map[string]string{
+		"descendant_count": "CASE op WHEN 'unround' THEN old_descendant_count - 1 ELSE old_descendant_count END",
+		"transcript_count": "old_transcript_count - 1",
+	})
 }
 
 // subagentAggregateUpdateSQL is the update trigger's aggregate statement.
@@ -563,18 +723,17 @@ func subagentAggregateDeleteSQL() string {
 //   - A summary or kind change re-stamps the preview of NEW's round anchor
 //     when NEW is its pick or now newer than it, and the tray of NEW's
 //     parent likewise; a pick that stops qualifying makes the anchor dirty.
-//   - On the row itself: becoming or ceasing to be an anchor, or a changed
-//     carrier root, forces a recompute; a whole-meta write that changed the
-//     stamp without being a stamp write (gen + 1) gets the previous stamp
-//     back, so a writer holding stale meta cannot erase it.
+//   - On the row itself: becoming an anchor, or a changed carrier root,
+//     forces a recompute. A row that stops being an anchor loses its stamp
+//     (subagentAggregateUnanchorSQL).
 //
-// Status, updated_at, payload and rev-only writes match none of these and
-// leave every stamp alone.
+// Status, updated_at, payload, meta and rev-only writes match none of
+// these: the chains are not walked and every stamp is left alone.
 //
-// The three change classes are spelled twice: once as the statement's
-// gate, and once in agg_change, which every branch reads. Inlining them
-// in each branch multiplied the text the update program is compiled
-// from, and every INSERT, UPDATE and DELETE on items compiles it.
+// The three change classes are computed once, in agg_change, which both
+// chains and every branch read. Inlining them in each branch multiplied
+// the text the update program is compiled from, and every INSERT, UPDATE
+// and DELETE on items compiles it.
 func subagentAggregateUpdateSQL() string {
 	visOld, visNew := visibleItemsFilterFor("OLD."), visibleItemsFilterFor("NEW.")
 	structuralTerms := `((` + visOld + ` OR ` + visNew + `) AND (OLD.parent_id <> '' OR NEW.parent_id <> '') AND (
@@ -589,11 +748,9 @@ func subagentAggregateUpdateSQL() string {
 	contentTerms := `(NEW.parent_id <> '' AND ` + visNew + `
 	   AND (OLD.summary IS NOT NEW.summary OR OLD.kind IS NOT NEW.kind OR OLD.tool_name IS NOT NEW.tool_name)
 	   AND (` + previewKind("OLD.") + ` OR ` + previewKind("NEW.") + `))`
-	rootChanged := "(" + aggJX("OLD.meta", "$."+metaKeyTranscriptRootID) + " IS NOT " + aggJX("NEW.meta", "$."+metaKeyTranscriptRootID) + ")"
-	genBump := "(" + aggJX("NEW.meta", aggGenPath) + " IS COALESCE(" + aggJX("OLD.meta", aggGenPath) + ", 0) + 1)"
-	selfTerms := `((` + aggAnchorableSQL("OLD.") + ` OR ` + aggAnchorableSQL("NEW.") + `) AND (
-	      ` + aggAnchorableSQL("OLD.") + ` IS NOT ` + aggAnchorableSQL("NEW.") + `
-	   OR ` + rootChanged + ` OR ` + aggKeysDifferSQL("OLD.meta", "NEW.meta") + `))`
+	rootChanged := "(OLD.meta IS NOT NEW.meta AND " + aggJX("OLD.meta", "$."+metaKeyTranscriptRootID) +
+		" IS NOT " + aggJX("NEW.meta", "$."+metaKeyTranscriptRootID) + ")"
+	selfTerms := `(` + aggAnchorableSQL("NEW.") + ` AND (NOT ` + aggAnchorableSQL("OLD.") + ` OR ` + rootChanged + `))`
 	change := `agg_change(structural, content, self) AS MATERIALIZED (
 	    SELECT ` + structuralTerms + `, ` + contentTerms + `, ` + selfTerms + `)`
 	structural := "(SELECT structural FROM agg_change)"
@@ -602,8 +759,9 @@ func subagentAggregateUpdateSQL() string {
 
 	chainDirty := func(chain string) string {
 		return `SELECT ch.thread_id, ch.id, 'dirty' FROM ` + chain + ` ch
+	      LEFT JOIN subagent_aggregates cs ON cs.thread_id = ch.thread_id AND cs.item_id = ch.id
 	     WHERE ` + structural + ` AND ` + aggAnchorableSQL("ch.") + `
-	       AND (` + aggCleanSQL("ch.meta") + ` OR (NOT ` + aggStampedSQL("ch.meta") + ` AND NOT ` + aggCarrierSQL("ch.") + `))
+	       AND (cs.state IS ` + aggCleanLiteral + ` OR (cs.state IS NULL AND NOT ` + aggCarrierSQL("ch.") + `))
 	    UNION ALL
 	    SELECT ch.thread_id, ` + aggPromptCarrierSQL("p.") + `, 'dirty'
 	      FROM ` + chain + ` ch CROSS JOIN items p
@@ -619,86 +777,58 @@ func subagentAggregateUpdateSQL() string {
 	    UNION ALL
 	    SELECT NEW.thread_id, ` + aggPromptCarrierSQL("NEW.") + `, 'dirty' WHERE ` + structural + ` AND ` + aggIsPromptSQL("NEW.") + `
 	    UNION ALL
-	    SELECT x.thread_id, x.id,
-	      CASE WHEN ` + aggJX("x.meta", aggPickPath+"[2]") + ` IS NEW.id
+	    SELECT xs.thread_id, xs.item_id,
+	      CASE WHEN xs.pick_id IS NEW.id
 	             THEN CASE WHEN ` + aggPreviewableSQL("NEW.") + ` THEN 'pick' ELSE 'dirty' END
-	           WHEN ` + aggBetterPickSQL("x.meta", "NEW.") + ` THEN 'pick'
+	           WHEN ` + aggBetterPickSQL("xs", "NEW.") + ` THEN 'pick'
 	      END
-	      FROM agg_rounds r CROSS JOIN items x
+	      FROM agg_rounds r CROSS JOIN subagent_aggregates xs
 	     WHERE ` + content + `
 	       AND (r.prompt_id IS NULL OR r.carrier_ok)
-	       AND x.thread_id = r.thread_id AND x.id = CASE WHEN r.prompt_id IS NULL THEN r.id ELSE r.carrier_id END
-	       AND ` + aggAnchorableSQL("x.") + ` AND ` + aggCleanSQL("x.meta") + `
+	       AND xs.thread_id = r.thread_id AND xs.item_id = CASE WHEN r.prompt_id IS NULL THEN r.id ELSE r.carrier_id END
+	       AND xs.state = ` + aggCleanLiteral + `
 	    UNION ALL
-	    SELECT ch.thread_id, ch.id,
-	      CASE WHEN ` + aggJX("ch.meta", aggToolPickPath) + ` IS NEW.id
+	    SELECT ts.thread_id, ts.item_id,
+	      CASE WHEN ts.tool_id IS NEW.id
 	             THEN CASE WHEN ` + aggToolableSQL("NEW.") + ` THEN 'tool' ELSE 'dirty' END
-	           WHEN ` + aggBetterToolSQL("ch.meta", "NEW.") + ` THEN 'tool'
+	           WHEN ` + aggBetterToolSQL("ts", "NEW.") + ` THEN 'tool'
 	      END
-	      FROM agg_chain_new ch
-	     WHERE ` + content + ` AND ch.depth = 1 AND ` + aggAnchorableSQL("ch.") + ` AND ` + aggCleanSQL("ch.meta") + `
+	      FROM agg_chain_new ch CROSS JOIN subagent_aggregates ts
+	     WHERE ` + content + ` AND ch.depth = 1
+	       AND ts.thread_id = ch.thread_id AND ts.item_id = ch.id AND ts.state = ` + aggCleanLiteral + `
 	    UNION ALL
-	    SELECT NEW.thread_id, NEW.id,
-	      CASE
-	        WHEN ` + aggAnchorableSQL("OLD.") + ` IS NOT ` + aggAnchorableSQL("NEW.") + ` THEN
-	          CASE WHEN ` + aggAnchorableSQL("NEW.") + ` THEN 'dirty' WHEN ` + aggStampedSQL("NEW.meta") + ` THEN 'strip' END
-	        WHEN ` + rootChanged + ` AND (` + aggStampedSQL("NEW.meta") + ` OR ` + aggHasChildSQL("NEW.thread_id", "NEW.id", "") + `)
-	          THEN 'dirty'
-	        WHEN ` + aggKeysDifferSQL("OLD.meta", "NEW.meta") + ` AND NOT ` + genBump + ` THEN 'restore'
-	      END
-	     WHERE ` + self + `
+	    SELECT NEW.thread_id, NEW.id, 'dirty'
+	     WHERE ` + self + ` AND (NOT ` + aggAnchorableSQL("OLD.") + `
+	        OR EXISTS (SELECT 1 FROM subagent_aggregates ss WHERE ss.thread_id = NEW.thread_id AND ss.item_id = NEW.id)
+	        OR ` + aggHasChildSQL("NEW.thread_id", "NEW.id", "") + `)
 	  )`
-	aggregate := `SELECT thread_id, id,
-	         CASE WHEN SUM(role = 'dirty') > 0 OR SUM(role = 'pick') > 1 OR SUM(role = 'tool') > 1
-	                OR (SUM(role IN ('restore', 'strip')) > 0 AND COUNT(*) > 1)
-	              THEN 'dirty'
-	              WHEN SUM(role = 'restore') > 0 THEN 'restore'
-	              WHEN SUM(role = 'strip') > 0 THEN 'strip'
-	              ELSE 'patch' END AS op,
-	         SUM(role = 'pick') > 0 AS pick,
-	         SUM(role = 'tool') > 0 AS tool
-	    FROM agg_ops WHERE role IS NOT NULL AND id <> ''
-	   GROUP BY thread_id, id`
-
-	m := "items.meta"
-	restoreValues := make([]string, 0, len(aggKeyPaths)+1)
-	for _, path := range aggKeyPaths {
-		restoreValues = append(restoreValues, "'"+strings.TrimPrefix(path, "$.")+"', "+aggJX("OLD.meta", path))
-	}
-	restoreValues = append(restoreValues, "'"+metaKeySubagentAggregateState+"', json("+aggJX("OLD.meta", aggStatePath)+")")
-	restore := `json_patch(` + aggClearedMetaSQL(m) + `, json_object(` + strings.Join(restoreValues, ", ") + `))`
-	patch := `json_patch(` + m + `, json_object(
-	    '` + metaKeySubagentLatestChildSummary + `', CASE WHEN agg.pick THEN NEW.summary ELSE ` + aggJX(m, aggSummaryPath) + ` END,
-	    '` + metaKeySubagentLatestToolSummary + `', CASE WHEN agg.tool
-	        THEN trim(NEW.summary, ` + aggBlankSQL + `) ELSE ` + aggJX(m, aggToolSummaryPath) + ` END,
-	    '` + metaKeySubagentLatestToolTurn + `', CASE WHEN agg.tool THEN NEW.turn_index ELSE ` + aggJX(m, aggToolTurnPath) + ` END,
-	    '` + metaKeySubagentLatestToolItem + `', CASE WHEN agg.tool THEN NEW.item_index ELSE ` + aggJX(m, aggToolItemPath) + ` END,
-	    '` + metaKeySubagentAggregateState + `', json_object(
-	        'pick', json(CASE WHEN agg.pick THEN json_array(NEW.turn_index, NEW.item_index, NEW.id)
-	            ELSE ` + aggJX(m, aggPickPath) + ` END),
-	        'toolPick', CASE WHEN agg.tool THEN NEW.id ELSE ` + aggJX(m, aggToolPickPath) + ` END)))`
-	return `UPDATE items SET
-	    meta = CASE agg.op
-	      WHEN 'dirty' THEN ` + aggDirtyMetaSQL(m) + `
-	      WHEN 'strip' THEN ` + aggStripMetaSQL(m) + `
-	      WHEN 'restore' THEN ` + restore + `
-	      ELSE ` + patch + `
-	    END,
-	    rev = ` + aggStampRevSQL + `
-	  FROM (
-	    WITH RECURSIVE
-	    ` + change + `,
-	    ` + aggChainCTE("agg_chain_new", "NEW") + `,
-	    ` + aggChainCTE("agg_chain_old", "OLD") + `,
-	    ` + aggRoundsCTE("agg_rounds", "agg_chain_new", "NEW") + `,
-	    ` + ops + `
-	    ` + aggregate + `
-	  ) AS agg
-	 WHERE NOT EXISTS (SELECT 1 FROM threads WHERE id IN (OLD.thread_id, NEW.thread_id) AND history_bulk_load <> 0)
-	   AND (` + structuralTerms + ` OR ` + contentTerms + ` OR ` + selfTerms + `)
-	   AND items.thread_id = agg.thread_id AND items.id = agg.id
-	   AND (` + aggAnchorableSQL("items.") + ` OR agg.op = 'strip')
-	   AND NOT (agg.op = 'dirty' AND ` + aggIsDirtySQL(m) + `);`
+	aggregate := `agg(thread_id, id, op, pick, tool) AS MATERIALIZED (
+	    SELECT thread_id, id,
+	           CASE WHEN SUM(role = 'dirty') > 0 OR SUM(role = 'pick') > 1 OR SUM(role = 'tool') > 1
+	                THEN 'dirty' ELSE 'patch' END,
+	           SUM(role = 'pick') > 0, SUM(role = 'tool') > 0
+	      FROM agg_ops WHERE role IS NOT NULL AND id <> ''
+	     GROUP BY thread_id, id
+	  )`
+	pick := func(value, old string) string { return "CASE WHEN pick THEN " + value + " ELSE " + old + " END" }
+	tool := func(value, old string) string { return "CASE WHEN tool THEN " + value + " ELSE " + old + " END" }
+	return aggWriteSQL(change+`,
+	    `+aggChainCTE("agg_chain_new", "NEW", " AND (SELECT structural OR content FROM agg_change)")+`,
+	    `+aggChainCTE("agg_chain_old", "OLD", " AND (SELECT structural FROM agg_change)")+`,
+	    `+aggRoundsCTE("agg_rounds", "agg_chain_new", "NEW")+`,
+	    `+ops+`,
+	    `+aggregate+`,
+	    `+aggTargetsCTE("", "agg.pick AS pick", "agg.tool AS tool"),
+		map[string]string{
+			"latest_child_summary": pick("NEW.summary", "old_latest_child_summary"),
+			"pick_turn":            pick("NEW.turn_index", "old_pick_turn"),
+			"pick_item":            pick("NEW.item_index", "old_pick_item"),
+			"pick_id":              pick("NEW.id", "old_pick_id"),
+			"tool_summary":         tool("trim(NEW.summary, "+aggBlankSQL+")", "old_tool_summary"),
+			"tool_turn":            tool("NEW.turn_index", "old_tool_turn"),
+			"tool_item":            tool("NEW.item_index", "old_tool_item"),
+			"tool_id":              tool("NEW.id", "old_tool_id"),
+		})
 }
 
 // The statements are built once: the trigger DDL embeds them, and the
@@ -707,4 +837,5 @@ var (
 	subagentAggregateInsertStmt = subagentAggregateInsertSQL()
 	subagentAggregateUpdateStmt = subagentAggregateUpdateSQL()
 	subagentAggregateDeleteStmt = subagentAggregateDeleteSQL()
+	subagentStripServedKeysStmt = subagentStripServedKeysSQL("NEW")
 )

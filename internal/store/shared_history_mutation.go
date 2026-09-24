@@ -95,7 +95,7 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 		        imported.kind, imported.role, imported.status, imported.summary,
 		        imported.payload_id, imported.input_payload_id, imported.parent_id,
 		        imported.is_background, imported.completion_of, imported.tool_name,
-		        imported.decision, `+localizedMetaSQL+`, imported.created_at, imported.updated_at
+		        imported.decision, imported.meta, imported.created_at, imported.updated_at
 		   FROM import_history_items imported
 		   CROSS JOIN thread_import_chunks refs ON refs.chunk_id = imported.chunk_id
 		  WHERE imported.id = ? AND refs.thread_id = ?`,
@@ -106,6 +106,9 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 	}
 	if err := requireRowsAffected(result, fmt.Sprintf("%s copy imported item %s/%s", label, threadID, itemID)); err != nil {
 		return false, err
+	}
+	if _, err := tx.Exec(localizedAnchorDirtySQL, threadID, itemID); err != nil {
+		return false, fmt.Errorf("%s mark localized anchor %s/%s: %w", label, threadID, itemID, err)
 	}
 	// The override moves this item from the import arm to the item arm, so its
 	// index row moves with it. The caller's mutation re-indexes the new text.
@@ -121,15 +124,16 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 	return true, nil
 }
 
-// localizedMetaSQL is the meta a localized copy takes. An imported anchor
-// has no stamp (shared chunks cannot hold one); its local copy with
-// children arrives dirty, so reads keep walking it until a recompute
-// stamps it, and one without children arrives without stamp keys.
-var localizedMetaSQL = `CASE
-    WHEN ` + aggAnchorableSQL("imported.") + ` AND ` + aggHasChildSQL("refs.thread_id", "imported.id", "") + `
-      THEN ` + aggDirtyMetaSQL("imported.meta") + `
-    WHEN ` + aggHasKeysSQL("imported.meta") + ` THEN ` + aggStripMetaSQL("imported.meta") + `
-    ELSE imported.meta END`
+// localizedAnchorDirtySQL marks a localized anchor with children dirty.
+// An imported anchor has no stamp (shared chunks cannot hold one), and
+// the copy is inserted under bulk load, where the triggers do no
+// aggregate work; dirty keeps reads walking it until a recompute stamps
+// it. A copy without children stays unstamped, as a new anchor does.
+var localizedAnchorDirtySQL = `INSERT INTO subagent_aggregates (thread_id, item_id, state)
+SELECT a.thread_id, a.id, ` + aggDirtyLiteral + ` FROM items a
+ WHERE a.thread_id = ?1 AND a.id = ?2 AND ` + aggAnchorableSQL("a.") + `
+   AND ` + aggHasChildSQL("a.thread_id", "a.id", "") + `
+ON CONFLICT (thread_id, item_id) DO NOTHING`
 
 func setHistoryBulkLoadTx(tx *sql.Tx, threadID string, enabled bool, label string) error {
 	from, to := 0, 1
