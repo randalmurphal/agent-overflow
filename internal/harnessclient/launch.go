@@ -41,6 +41,9 @@ type LaunchOptions struct {
 	// MockProvider overrides where the boot finds ao-mockprovider
 	// (default: alongside Binary, which is what the boot itself resolves).
 	MockProvider string
+	// MockForge overrides where the boot finds ao-mockforge, the fake gh
+	// and glab (default: alongside Binary).
+	MockForge string
 	// Soak boots the soak backend mode consumed by a launcher or a windowed
 	// shell instead of the harness backend mode. Both isolate identically.
 	Soak bool
@@ -167,6 +170,9 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launched, error) {
 	}
 	if opts.MockProvider != "" {
 		args = append(args, "--mock-provider", opts.MockProvider)
+	}
+	if opts.MockForge != "" {
+		args = append(args, "--mock-forge", opts.MockForge)
 	}
 	args = append(args, opts.ExtraArgs...)
 

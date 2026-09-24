@@ -100,6 +100,10 @@ type ServerConfig struct {
 	// with its MockID + Registration). The backend re-emits these as
 	// harness:mock events.
 	OnReport func(info MockInfo, rep Report)
+	// Forge answers one invocation forwarded by the fake forge CLI. Nil
+	// makes every /forge request fail with 503, which the fake reports as
+	// the CLI failing.
+	Forge func(ForgeCall) ForgeResult
 }
 
 // Server is the loopback control listener. One per harness process.
@@ -178,6 +182,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /register", s.auth(s.handleRegister))
 	mux.HandleFunc("GET /commands", s.auth(s.handleCommands))
 	mux.HandleFunc("POST /report", s.auth(s.handleReport))
+	mux.HandleFunc("POST /forge", s.auth(s.handleForge))
 	s.httpSrv = &http.Server{Handler: mux}
 
 	go func() {

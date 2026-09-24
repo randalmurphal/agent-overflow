@@ -15,6 +15,8 @@ export {
 
 export interface ImagePreviewItem {
   id: string;
+  /** The thread that owns the attachment, for actions on its original bytes. */
+  threadId: string;
   filename: string;
   mimeType: string;
   size: number;
@@ -50,6 +52,7 @@ export async function loadAttachmentPreview(attachment: AttachmentPreviewSource)
   const result = await GetAttachmentThumbnail(attachment.threadId, attachment.id);
   return {
     id: attachment.id,
+    threadId: attachment.threadId,
     filename: attachment.filename,
     mimeType: result.mimeType,
     size: attachment.size,
@@ -75,6 +78,7 @@ export async function loadAttachmentFullSize(attachment: AttachmentPreviewSource
   const blob = await fetchAttachmentBytes(attachment.threadId, attachment.id);
   return {
     id: attachment.id,
+    threadId: attachment.threadId,
     filename: attachment.filename,
     // The response's own type, which the backend wrote from the verified
     // content type on the stored row. Falling back to the row's copy

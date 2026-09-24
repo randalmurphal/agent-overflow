@@ -33,3 +33,26 @@ it('blocks app and portal interaction, retains prior inert state, and restores o
   expect(shortcut).toHaveBeenCalledTimes(1);
   window.removeEventListener('keydown', shortcut);
 });
+
+it('keeps the native-menu policy for a right-click it stops on the lock screen', () => {
+  const overlay = document.createElement('div');
+  const label = document.createElement('p');
+  const field = document.createElement('input');
+  field.type = 'text';
+  overlay.append(label, field);
+  document.body.append(overlay);
+  const surface = createLockSurface(overlay);
+  surface.setLocked(true);
+  const rightClick = (target: Element) => {
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'isTrusted', { value: true });
+    target.dispatchEvent(event);
+    return event;
+  };
+  try {
+    expect(rightClick(label).defaultPrevented).toBe(true);
+    expect(rightClick(field).defaultPrevented).toBe(false);
+  } finally {
+    surface.dispose();
+  }
+});

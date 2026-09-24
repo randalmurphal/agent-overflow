@@ -100,6 +100,9 @@ type Migration struct {
 	// CASCADE against child tables — and foreign_keys can only be toggled
 	// outside a transaction, so these run through applyRebuildMigration.
 	Rebuild bool
+	// Deferred is the part of a one-time data fix too long to run while the
+	// store opens. See DeferredMigration.
+	Deferred *DeferredMigration
 }
 
 // migrations is the ordered list of all schema migrations. Squashed
@@ -1660,7 +1663,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 105, Name: "thread_group_names", SQL: threadGroupNamesV105SQL},
 	{Version: 106, Name: "fork_preparation", SQL: `ALTER TABLE threads ADD COLUMN fork_preparing INTEGER NOT NULL DEFAULT 0 CHECK(fork_preparing IN (0,1));`},
 	{Version: 107, Name: "payload_snapshots", SQL: payloadSnapshotsV107SQL},
-	{Version: 108, Name: "history_preparation", SQL: historyPreparationV108SQL},
+	{Version: 108, Name: "history_preparation", SQL: chunkAdmissionV108SQL},
 	{Version: 109, Name: "attachment_owners", SQL: attachmentOwnersV109SQL, Rebuild: true},
 	{Version: 110, Name: "local_sessions", SQL: localSessionsV110SQL, Rebuild: true},
 	{Version: 111, Name: "scoped_timeline_indexes", SQL: scopedTimelineIndexesV111SQL},
@@ -1668,6 +1671,22 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 113, Name: "async_questions", SQL: asyncQuestionsV113SQL},
 	{Version: 114, Name: "async_answer_delivery", SQL: asyncAnswerDeliveryV114SQL},
 	{Version: 115, Name: "imported_parent_lookup", SQL: importedParentLookupV115SQL},
+	{Version: 116, Name: "imported_key_lookups", SQL: importedKeyLookupsV116SQL},
+	{Version: 117, Name: "drop_history_preparation_index", SQL: dropHistoryPreparationIndexV117SQL},
+	{Version: 118, Name: "rev_trigger_carrier_probe", SQL: revTriggerCarrierProbeV118SQL},
+	{
+		Version: 119,
+		Name:    "history_repair",
+		SQL:     historyRepairV119SQL,
+		Deferred: &DeferredMigration{
+			Title: "History repair",
+			Steps: []DeferredStep{
+				{Name: "fold_sealed_history_and_prune_orphan_payloads", Run: repairStoredHistory},
+				{Name: "blank_legacy_transcript_copies", Run: blankLegacyTranscriptCopies},
+				{Name: "auto_vacuum_conversion", Run: convertToIncrementalVacuumStep},
+			},
+		},
+	},
 }
 
 // MigrationStep describes one pending migration as it begins.
@@ -1679,8 +1698,9 @@ type MigrationStep struct {
 	Index, Pending int
 }
 
-// runMigrations sets PRAGMAs, creates the version tracking table, and applies
-// any unapplied migrations in order.
+// runMigrations refuses a database a newer build migrated, then sets
+// PRAGMAs, creates the version tracking table, and applies any unapplied
+// migrations in order.
 func runMigrations(db *sql.DB) error {
 	return runMigrationsContext(context.Background(), db, nil)
 }
@@ -1690,6 +1710,9 @@ func runMigrations(db *sql.DB) error {
 // Cancelling ctx interrupts the running migration; its transaction rolls
 // back and it runs again on the next open.
 func runMigrationsContext(ctx context.Context, db *sql.DB, onMigration func(MigrationStep)) error {
+	if err := refuseNewerSchema(db); err != nil {
+		return err
+	}
 	if err := configureDatabase(db); err != nil {
 		return err
 	}
@@ -1702,7 +1725,56 @@ func runMigrationsContext(ctx context.Context, db *sql.DB, onMigration func(Migr
 		return err
 	}
 
-	return applyPendingMigrations(ctx, db, applied, onMigration)
+	if err := applyPendingMigrations(ctx, db, applied, onMigration); err != nil {
+		return err
+	}
+	if applied == 0 {
+		// A new database has nothing for a deferred phase to fix.
+		return writeDeferredWatermark(db, latestDeferredVersion)
+	}
+	return nil
+}
+
+// SchemaTooNewError refuses a database a newer build has migrated: its
+// recorded migration version or deferred-phase watermark is above every
+// migration this build knows, so this build would run on a schema it does
+// not understand. Error is the sentence the user reads at boot.
+type SchemaTooNewError struct {
+	// Database is the newer of the database's migration version and its
+	// deferred-phase watermark.
+	Database int
+	// Build is this build's latest migration.
+	Build int
+}
+
+func (e *SchemaTooNewError) Error() string {
+	return fmt.Sprintf("database is at schema v%d; this build knows v%d; install the newer version", e.Database, e.Build)
+}
+
+// refuseNewerSchema returns a SchemaTooNewError when the database is ahead
+// of this build. It only reads, and runs before anything writes: even
+// configureDatabase's PRAGMAs commit to the file header.
+func refuseNewerSchema(db *sql.DB) error {
+	var tables int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'migration_versions'`).Scan(&tables); err != nil {
+		return fmt.Errorf("store: probe migration_versions: %w", err)
+	}
+	applied := 0
+	if tables > 0 {
+		var err error
+		if applied, err = currentMigrationVersion(db); err != nil {
+			return err
+		}
+	}
+	watermark, err := readDeferredWatermark(db)
+	if err != nil {
+		return err
+	}
+	known := migrations[len(migrations)-1].Version
+	if version := max(applied, watermark); version > known {
+		return &SchemaTooNewError{Database: version, Build: known}
+	}
+	return nil
 }
 
 func configureDatabase(db *sql.DB) error {
@@ -1711,7 +1783,8 @@ func configureDatabase(db *sql.DB) error {
 	// created, and after that a plain PRAGMA cannot change it: on a
 	// database that already has tables this statement is a silent no-op,
 	// which is exactly what existing databases should get. They keep
-	// auto_vacuum=none until ConvertToIncrementalVacuum rebuilds them.
+	// auto_vacuum=none until v119's deferred phase rebuilds them
+	// (convertToIncrementalVacuumStep).
 	//
 	// Incremental is what lets ReclaimFreeSpace hand freed pages back to
 	// the filesystem in 128-page steps instead of rewriting the whole

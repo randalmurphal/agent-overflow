@@ -27,6 +27,7 @@
     type ExpandedImagePreview,
   } from '../../utils/attachmentPreview.svelte';
   import { generatedImageRow } from '../../utils/generatedImageMeta';
+  import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
   import { formatTimeOfDay } from '../../utils/format';
 
   let {
@@ -79,6 +80,7 @@
             aria-label={`Preview ${attachment.filename}`}
             class="max-w-[520px] overflow-hidden rounded-lg border border-border bg-surface-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
             onclick={() => expand(attachment.id)}
+            {...attachmentImageMenuTag(attachment)}
           >
             {#if preview}
               <img

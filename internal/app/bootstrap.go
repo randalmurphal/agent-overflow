@@ -30,6 +30,11 @@ type IsolationConfig struct {
 	// (app_isolated_workspace.go). Empty disables the check, which only unit
 	// tests do.
 	WorkspaceRoot string
+	// ForgeCLI is the fake forge CLI (ao-mockforge) run in place of gh and
+	// glab. Isolation applies whether or not it is set: empty means every
+	// forge CLI invocation fails with a named error instead of reaching
+	// the real CLI on PATH.
+	ForgeCLI string
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -44,6 +49,8 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.backgroundFetchDisabled = config.DisableBackgroundFetch
 	a.browser.mockEngine = config.MockBrowserEngine
 	a.isolatedWorkspaceRoot = config.WorkspaceRoot
+	a.forgeCLIs = isolatedForgeCLIs{isolated: true, fake: config.ForgeCLI}
+	a.downloadsIsolated = true
 }
 
 // UseFileKeychain moves provider credentials and the browser companion's

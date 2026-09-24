@@ -98,20 +98,21 @@ func (s *Store) ListTurnEditDiffPatches(threadID string, turnIndex int) ([]TurnE
 			       COALESCE(local_payloads.kind, imported_payloads.kind),
 			       COALESCE(local_payloads.data, imported_payloads.data)
 			  FROM thread_import_chunks AS refs
-			  JOIN import_history_items AS items ON items.chunk_id = refs.chunk_id
+			  CROSS JOIN import_history_items AS items ON items.chunk_id = refs.chunk_id
 			  LEFT JOIN resolved_payloads AS local_payloads
 			    ON local_payloads.thread_id = refs.thread_id AND local_payloads.id = items.payload_id
 			  LEFT JOIN import_history_payloads AS imported_payloads
 			    ON imported_payloads.chunk_id = items.chunk_id AND imported_payloads.id = items.payload_id
 			  LEFT JOIN thread_import_item_overrides AS overrides
 			    ON overrides.thread_id = refs.thread_id AND overrides.item_id = items.id
-			 WHERE refs.thread_id = ? AND items.turn_index = ? AND overrides.item_id IS NULL
+			 WHERE refs.thread_id = ? AND `+importedTurnRange("?")+`
+			   AND items.turn_index = ? AND overrides.item_id IS NULL
 		)
 		SELECT payload_id, data
 		  FROM edit_items
 		 WHERE kind IN ('tool_result', 'diff') AND length(data) > 0
 		 ORDER BY item_index ASC`,
-		threadID, turnIndex, threadID, turnIndex,
+		threadID, turnIndex, threadID, turnIndex, turnIndex, turnIndex,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list turn edit diff patches for %s/%d: %w", threadID, turnIndex, err)

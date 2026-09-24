@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, waitFor } from '@testing-library/svelte';
+import { fireEvent } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import ForgeAttachmentChatHarness from './ForgeAttachmentChatHarness.svelte';
+import ImageMenuHost from './ImageMenuHost.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { __resetForgeAttachmentCacheForTest } from '../../utils/forgeAttachmentCache';
 import type { ForgeAttachmentSource } from '../../utils/forgeAttachments';
@@ -200,5 +203,47 @@ describe('forge media inside an html block, with no forge source', () => {
     expect(container.querySelector('img')!.hasAttribute('src')).toBe(false);
     expect(container.querySelector('[data-markdown-embedded-html]')).toBeNull();
     expect(rpc).not.toHaveBeenCalled();
+  });
+});
+
+// Every path a forge image renders through carries the image menu: a
+// markdown image token, and media inside an HTML wrapper, on both renderers.
+// Video and audio do not.
+describe.each(paths)('the image menu on forge media, on %s', (_name, streaming, root) => {
+  async function rightClick(target: Element): Promise<void> {
+    await fireEvent(target, new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+    await tick();
+  }
+  function imageMenu(): Element | null {
+    return document.querySelector('[role="menu"][aria-label="Image Actions"]');
+  }
+
+  it.each([
+    ['a markdown image', `![a shot](${GITHUB_ASSET})`],
+    ['an image inside an HTML wrapper', `<p align="center"><img src="${GITHUB_ASSET}" alt="a shot"></p>`],
+  ])('opens on %s', async (_shape, source) => {
+    stageAttachment();
+    render(ImageMenuHost);
+    const { container } = render(ForgeAttachmentChatHarness, {
+      props: { source, forgeSource: GITHUB, streaming },
+    });
+    await waitFor(() => expect(container.querySelector(`${root} img[src^="blob:"]`)).not.toBeNull());
+    await rightClick(container.querySelector(`${root} img[src^="blob:"]`)!);
+    expect(imageMenu()).not.toBeNull();
+  });
+
+  it('does not open on a video', async () => {
+    stageAttachment('video');
+    render(ImageMenuHost);
+    const { container } = render(ForgeAttachmentChatHarness, {
+      props: {
+        source: `<div align="center"><video src="/uploads/${HEX}/clip.mp4" controls></video></div>`,
+        forgeSource: GITLAB,
+        streaming,
+      },
+    });
+    await waitFor(() => expect(container.querySelector(`${root} video[src^="blob:"]`)).not.toBeNull());
+    await rightClick(container.querySelector(`${root} video`)!);
+    expect(imageMenu()).toBeNull();
   });
 });

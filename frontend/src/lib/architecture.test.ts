@@ -22,6 +22,7 @@ import {
   walkSources,
 } from '../test/sourceScan';
 import { findCompositorSourceFindings } from '../test/compositorSourceScan';
+import { findContextMenuPropagationFindings } from '../test/contextMenuSourceScan';
 
 const STORES_DIR = join(SRC_ROOT, 'lib', 'stores');
 const BINDINGS_MODULE = join(STORES_DIR, 'bindings');
@@ -709,6 +710,29 @@ describe('architecture', () => {
       {},
       'New violations.',
       'Drive visible motion through scrollTop. Do not add compositor state to controller surfaces or restore probes that query the deleted layer class.',
+    );
+  });
+
+  // The native-menu guard runs after every app handler (window, bubble
+  // phase; utils/browserHistoryGuard.ts). A `contextmenu` handler that stops
+  // propagation hides the event from it, so it must claim the event first.
+  it('keeps every contextmenu that stops propagation claimed first', () => {
+    const offenders = new Map<string, string[]>();
+    let handlersSeen = 0;
+    for (const file of scannedSources(SOURCE_EXTENSIONS)) {
+      const text = readFileSync(file, 'utf8');
+      if (text.includes('contextmenu')) handlersSeen += 1;
+      const findings = findContextMenuPropagationFindings(file, text);
+      if (findings.length > 0) offenders.set(repoPath(file), findings);
+    }
+    expect(handlersSeen, 'the scan found no contextmenu handlers; it would pass vacuously').toBeGreaterThan(5);
+    expectAllowlistExact(
+      offenders,
+      {},
+      'New violations.',
+      'Call event.preventDefault() (the handler opened its own menu) or suppressNativeContextMenu(event)'
+      + ' from utils/browserHistoryGuard.ts before stopping propagation, and declare the handler in the'
+      + ' same file so its body can be checked.',
     );
   });
 });

@@ -380,11 +380,21 @@ func hasNewerItems(q sqlQueryer, threadID string, cursor TimelineCursor, scope t
 	return hasItemsBeyond(q, threadID, cursor, scope, ">")
 }
 func hasItemsBeyond(q sqlQueryer, threadID string, cursor TimelineCursor, scope timelineScope, comparison string) (bool, error) {
-	filter, args := scope.filter("")
-	args = append([]any{threadID}, args...)
-	args = append(args, cursor.TurnIndex, cursor.ItemIndex)
+	filter, args := scope.filter("items.")
+	sel := timelineSelection{
+		Columns:   func(string, string) string { return "1" },
+		Where:     filter + " AND (items.turn_index, items.item_index) " + comparison + " (?, ?)",
+		WhereArgs: append(args, cursor.TurnIndex, cursor.ItemIndex),
+	}
+	if comparison == ">" {
+		// A newer row is in the cursor's turn or a later one, so only the
+		// chunks that reach that turn can hold it. At the tail of a thread
+		// that is none of them.
+		sel.Turn, sel.TurnArgs, sel.FromTurn = "?", []any{cursor.TurnIndex}, true
+	}
+	probe, probeArgs := timelineArms(threadID, sel)
 	var exists bool
-	err := q.QueryRow(`SELECT EXISTS(SELECT 1 FROM timeline_items WHERE thread_id = ? AND `+filter+` AND (turn_index, item_index) `+comparison+` (?, ?))`, args...).Scan(&exists)
+	err := q.QueryRow(`SELECT EXISTS(`+probe+`)`, probeArgs...).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("probe timeline edge: %w", err)
 	}

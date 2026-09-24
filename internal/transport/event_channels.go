@@ -329,6 +329,16 @@ var channelPolicies = []ChannelPolicy{
 			"latest-only.",
 	},
 	{
+		Channel:   eventchan.HarnessForge,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionDefault,
+		Scope:     ScopeHost,
+		Why: "Frames carry the argv, cwd (a local path) and stdin of each " +
+			"gh/glab call an isolated boot made to the fake forge. " +
+			"Harness-only, like harness:mock; its consumers are loopback " +
+			"test tooling by construction.",
+	},
+	{
 		Channel:   eventchan.HarnessMock,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,

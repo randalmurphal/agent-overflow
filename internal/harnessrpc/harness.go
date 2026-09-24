@@ -23,6 +23,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/harness"
 	"agent-overflow/internal/harness/control"
+	"agent-overflow/internal/harness/forgefake"
 	"agent-overflow/internal/keybindings"
 	"agent-overflow/internal/notify"
 	replaylog "agent-overflow/internal/observability/replay"
@@ -38,15 +39,18 @@ import (
 // that the harness must behave like the real app in every way except
 // the provider processes.
 type Config struct {
-	Host            Host
-	Window          WindowController
-	Version         string
-	BuildStamp      string
-	DataRoot        string
-	DataDir         string
-	HomeDir         string
-	CredentialHome  string
-	MockProvider    string
+	Host           Host
+	Window         WindowController
+	Version        string
+	BuildStamp     string
+	DataRoot       string
+	DataDir        string
+	HomeDir        string
+	CredentialHome string
+	MockProvider   string
+	// MockForge is the fake forge CLI run in place of gh and glab, empty
+	// when none was found (every forge call then fails).
+	MockForge       string
 	AssetsFreshness string
 	AssetsDigest    string
 	Now             func() time.Time
@@ -67,6 +71,9 @@ type Harness struct {
 	recording     *harnessRecording     // the one in-flight bundle capture
 	control       *control.Server       // mock-provider control channel
 	scenarioRules []harnessScenarioRule // mock → scenario assignment
+	// forge answers ao-mockforge through the control channel. Built in
+	// New and never replaced; it carries its own lock.
+	forge *forgefake.Engine
 	// soakAutopilot latches how the --autopilot arming went. Empty means
 	// this boot has no autopilot at all; see soakAutopilotState.
 	soakAutopilot string
@@ -120,7 +127,9 @@ func New(config Config) *Harness {
 	if config.ShutdownTimeout <= 0 {
 		config.ShutdownTimeout = 10 * time.Second
 	}
-	return &Harness{config: config, pageMarker: newHarnessPageMarker()}
+	h := &Harness{config: config, pageMarker: newHarnessPageMarker()}
+	h.forge = forgefake.New(forgefake.Options{OnInvocation: h.onForgeInvocation})
+	return h
 }
 
 func (h *Harness) store() *store.Store {
@@ -164,7 +173,10 @@ type HarnessInfoResult struct {
 	DataDir      string `json:"dataDir"`
 	HomeDir      string `json:"homeDir,omitempty"`
 	MockProvider string `json:"mockProvider"`
-	DBPath       string `json:"dbPath"`
+	// MockForge is the fake gh/glab (ao-mockforge), empty when this boot
+	// found none and every forge CLI call fails.
+	MockForge string `json:"mockForge"`
+	DBPath    string `json:"dbPath"`
 	// EventLogDir holds the per-thread NDJSON event logs
 	// (internal/observability/replay) — always enabled in harness mode,
 	// and the raw material for wire-level replay recordings.
@@ -246,6 +258,7 @@ func (h *Harness) HarnessInfo() (HarnessInfoResult, error) {
 		DataDir:            dataDir,
 		HomeDir:            h.config.HomeDir,
 		MockProvider:       h.config.MockProvider,
+		MockForge:          h.config.MockForge,
 		DBPath:             filepath.Join(dataDir, "agent-overflow.db"),
 		EventLogDir:        filepath.Join(dataDir, "replay"),
 		UITracePath:        filepath.Join(dataDir, uitrace.DirName, uitrace.FileName),

@@ -12,6 +12,16 @@
 // context-menu policy. Wails' DefaultContextMenuDisabled is
 // deliberately NOT set on any window: it is Windows-only and would
 // hard-disable the editable-field menus below this layer.
+//
+// The context-menu half runs LAST, on window in the bubble phase, so
+// `defaultPrevented` means "an app handler claimed this press" to every
+// handler that runs before it: the delegated menu hosts yield on it, and
+// the long-press bridge (longPressContextMenu.ts) reads it to learn
+// whether any menu opened. A handler that stops a `contextmenu`'s
+// propagation keeps it from reaching this guard, so it must have claimed
+// the event (`preventDefault`) or applied `suppressNativeContextMenu`
+// first; `architecture.test.ts` enforces that. Only a trusted event can
+// open the native menu, so a synthetic one is left alone.
 
 import { isMacPlatform } from './platform';
 
@@ -39,13 +49,13 @@ function install(): () => void {
   document.addEventListener('mousedown', preventHistoryMouseButton, options);
   document.addEventListener('mouseup', preventHistoryMouseButton, options);
   document.addEventListener('auxclick', preventHistoryMouseButton, options);
-  document.addEventListener('contextmenu', preventBrowserContextMenu, options);
+  window.addEventListener('contextmenu', suppressNativeContextMenu);
   return () => {
     document.removeEventListener('keydown', preventHistoryKey, options);
     document.removeEventListener('mousedown', preventHistoryMouseButton, options);
     document.removeEventListener('mouseup', preventHistoryMouseButton, options);
     document.removeEventListener('auxclick', preventHistoryMouseButton, options);
-    document.removeEventListener('contextmenu', preventBrowserContextMenu, options);
+    window.removeEventListener('contextmenu', suppressNativeContextMenu);
   };
 }
 
@@ -70,11 +80,15 @@ function preventHistoryMouseButton(event: MouseEvent): void {
   consume(event);
 }
 
-function preventBrowserContextMenu(event: MouseEvent): void {
+/**
+ * Suppress the native context menu for `event` unless it lands where the
+ * native menu is useful. The guard applies this after every app handler;
+ * code that stops a `contextmenu`'s propagation without claiming it calls
+ * it first, because the guard will not see that event.
+ */
+export function suppressNativeContextMenu(event: MouseEvent): void {
+  if (!event.isTrusted || event.defaultPrevented) return;
   if (allowsNativeContextMenu(event)) return;
-  // preventDefault only — app-level oncontextmenu handlers (sidebar
-  // rows, pane titles, …) still receive the event and open their own
-  // custom menus.
   event.preventDefault();
 }
 

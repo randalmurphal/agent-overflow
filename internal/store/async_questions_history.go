@@ -9,9 +9,18 @@ import (
 )
 
 // Only an explicit conversation cut removes question state. Cache pruning does not.
-func cutAsyncQuestionsTx(tx *sql.Tx, threadID, predicate string, args []any) error {
-	selection := `SELECT id FROM timeline_items WHERE thread_id=? AND (` + predicate + `)`
-	binds := append([]any{threadID, threadID}, args...)
+// The cut is predicate over the thread's rows, all of which are in fromTurn
+// or later.
+func cutAsyncQuestionsTx(tx *sql.Tx, threadID string, fromTurn int, predicate string, args []any) error {
+	selection, cutArgs := timelineArms(threadID, timelineSelection{
+		Columns:   func(string, string) string { return "items.id" },
+		Turn:      "?",
+		TurnArgs:  []any{fromTurn},
+		FromTurn:  true,
+		Where:     "(" + predicate + ")",
+		WhereArgs: args,
+	})
+	binds := append([]any{threadID}, cutArgs...)
 	if _, err := tx.Exec(`DELETE FROM async_questions WHERE thread_id=? AND item_id IN (`+selection+`)`, binds...); err != nil {
 		return err
 	}

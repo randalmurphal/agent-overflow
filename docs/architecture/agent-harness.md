@@ -2,7 +2,8 @@
 
 The harness boots the **real backend and the real SPA** headless, on an
 isolated data directory, with both provider binaries pointed at
-`ao-mockprovider`. An agent (or a Playwright script) can therefore
+`ao-mockprovider` and the forge CLIs (`gh`, `glab`) replaced by
+`ao-mockforge`. An agent (or a Playwright script) can therefore
 exercise any UI flow, reproduce streaming/rendering bugs
 frame-accurately, and capture evidence, without touching real app data
 or a real Claude/Codex process.
@@ -25,8 +26,8 @@ runs. It owns `~/.agent-overflow-perf`, its own WebView2 profile, and CDP
 9226, so reset/reload/interrupt cannot land on the harness or soak by
 profile collision. See [soak-rig.md](soak-rig.md).
 
-Native isolated launches also isolate their executables: the backend and
-mock provider live at `~/.local/share/agent-overflow/<profile>/bin/`.
+Native isolated launches also isolate their executables: the backend,
+mock provider and mock forge live at `~/.local/share/agent-overflow/<profile>/bin/`.
 They never reuse the normal launcher's cached installation path or replace
 `~/.local/bin/agent-overflow`. The staging recipe cleans up only exe names
 belonging to the profile being launched.
@@ -35,7 +36,7 @@ belonging to the profile being launched.
 
 ```
 make harness                    # build + run at a per-checkout /tmp root (reused)
-bin/agent-overflow --harness --data-dir <scratch> [--mock-provider <path>] [--listen 127.0.0.1:0]
+bin/agent-overflow --harness --data-dir <scratch> [--mock-provider <path>] [--mock-forge <path>] [--listen 127.0.0.1:0]
 ```
 
 `--harness` is the only way the harness surface exists: the `Harness`
@@ -106,7 +107,11 @@ Boot performs, in order (`prepareHarness`):
    the next one free with no stale-pid reaping.
 4. **Mock provider resolution.** `--mock-provider`, else the
    `ao-mockprovider` binary next to the running executable (where
-   `make harness-build` puts it). Validated eagerly.
+   `make harness-build` puts it). Validated eagerly. The fake forge CLI
+   resolves the same way: `--mock-forge` (must be runnable), else a
+   runnable `ao-mockforge` beside the executable. Without one the boot logs
+   a line and every `gh`/`glab` call fails; it is never resolved on `PATH`
+   (see [The fake forge](#the-fake-forge-cmdao-mockforge)).
 5. **Settings seed.** `claudeBinaryPath` and `codexBinaryPath` both
    point at the mock; the NDJSON event log
    (`observabilityEventLogEnabled`) is switched on so every session is
@@ -130,7 +135,7 @@ stdout carries exactly one parseable line:
 
 ```
 __AO_HARNESS__: {"url":"http://127.0.0.1:PORT/?t=TICKET&cid=...","port":PORT,"token":"...",
-                 "dataRoot":"...","dataDir":"...","homeDir":"...","mockProvider":"...",
+                 "dataRoot":"...","dataDir":"...","homeDir":"...","mockProvider":"...","mockForge":"...",
                  "pid":123,"version":"...","clientId":"...",
                  "startupError":"only on failed boot"}
 ```
@@ -307,12 +312,14 @@ every App plus Harness method. Use `ao-harness rpc --list` for that full list.
 | `HarnessWindowCommand(command)` | Drive one native action (`maximize`, `unmaximize`, `fullscreen`, `unfullscreen`, `minimize`, `unminimize`, `reveal`) or set one outer DIP `bounds` rect. Exactly one is required. `reveal` is the production bring-forward path (`uiwindow.Reveal`, what an OS-notification click and a second launch call), so "a maximized window stays maximized after a reveal" is a scriptable assertion rather than a click on a real notification. Animated transitions return before settling; poll `HarnessWindowState`. Windowed boots only. On macOS the webview runs rAF only while the window is frontmost, so `reveal` right before any timing-sensitive send: a spring that shows `active` with no writes and a trace ring that stops growing is a backgrounded window, not a frozen glide. |
 | `HarnessListThreadRows()` | Every non-archived thread ROW, drafts included. `App.ListThreads` hides a row until it has an item or a content-carrying draft, so this is the only read that can prove a row was *not* created (or read back what a just-materialized one was bound to). |
 | `HarnessSeed(spec)` | **Strictly decoded** (unknown fields refused, positions reported, since a mistyped `treads:` used to seed nothing and return success). Declarative fixtures: projects (existing path or generated git repo), threads, pre-baked turn/item history, project-scoped workflow definitions/profile/items, and `providerHome` files, which are slash-separated relative paths written under the harness-owned provider home (`<dataRoot>/home`, never the real one, even under `AO_HARNESS_KEEP_HOME`), for `.claude.json` MCP config, skills, settings, or a `.claude/projects/...` transcript paired with a thread's `sessionRef`. Returns created ids and the home paths written. |
-| `HarnessReset()` | Blank slate without a reboot: set the global workflow pause and cancel every live run through the production cancel path, stop sessions, settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords`: production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, remove the provider trees under the harness-owned home (`.claude`, `.claude.json`, `.codex`: seeded `providerHome` fixtures plus the transcripts mocks wrote, which would otherwise leak into the next test's import scan), drop the cached session-import scan (its dedup is a projection of the rows just deleted, and nothing but a finished import run invalidates it), clear persisted UI view state (`ui_state` rows name entity ids: the workflows overlay stack persists work-item ids, and a surviving row makes the next test's fresh page restore a selection onto deleted rows — the wipe also takes the user and device settings tiers, which live in the same table since `internal/settings/residency.go`, so the reset drops the settings cache with it and both return to their defaults), discard the event bus's retained history (a fresh loopback page replays `notification:activated` from zero, so an activation one spec sent would otherwise open, or toast the absence of, its target on the next spec's page), and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
+| `HarnessReset()` | Blank slate without a reboot: set the global workflow pause and cancel every live run through the production cancel path, stop sessions, settle in-flight turns, delete the workflow run records (`DeleteProjectWorkflowRecords`: production deletion drops these too under D25, but reset drops them first so the delete has no worktrees left to walk against a spec's fixtures), delete projects through the production cascade, remove workflow config/run dirs and generated seed workspaces, remove the provider trees under the harness-owned home (`.claude`, `.claude.json`, `.codex`: seeded `providerHome` fixtures plus the transcripts mocks wrote, which would otherwise leak into the next test's import scan), drop the cached session-import scan (its dedup is a projection of the rows just deleted, and nothing but a finished import run invalidates it), clear persisted UI view state (`ui_state` rows name entity ids: the workflows overlay stack persists work-item ids, and a surviving row makes the next test's fresh page restore a selection onto deleted rows — the wipe also takes the user and device settings tiers, which live in the same table since `internal/settings/residency.go`, so the reset drops the settings cache with it and both return to their defaults), discard the event bus's retained history (a fresh loopback page replays `notification:activated` from zero, so an activation one spec sent would otherwise open, or toast the absence of, its target on the next spec's page), and drop harness-owned state (scenario rules, active replay, in-flight recording, mock registrations, the fake forge's fixture and invocation log). The pause is then **cleared**, not restored, so a spec that deliberately left the engine paused cannot hold every later spec's runs in the same worker. Recorded bundles survive. Reload the page after. |
 | `HarnessSetScenario(spec)` | Install/replace a mock scenario rule (library `name` or inline `scenario` JSON, optional `cwd` and `sessionRef` scopes, described in "Scoping a scenario" below). Validated at set time. |
 | `HarnessClearScenarios()` / `HarnessListScenarios()` | Drop rules / list library + active rules. |
 | `HarnessListMocks()` | Registered mock processes in spawn order, dead ones pruned by a PID probe (30s grace so a just-exited mock's terminal reports still land). Each row carries `openGate` (the `waitSignal` gate the mock is currently blocked on, empty when none) and `pendingAdvances` (advances buffered for gates that have not opened yet), the state a stuck `advance` await is diagnosed from. |
 | `HarnessClearThreadProviderCursor(threadId)` | Fault injection for an idle thread: clear AO's durable provider cursor without touching the mock process or transcript, so recovery must choose a fresh thread. Refuses an active turn or an already-empty cursor. |
 | `HarnessMockCommand(mockId, cmd)` | Drive a live mock: `advance` (release a `waitSignal`/`stall` gate), `emit` (inject wire lines, `${VAR}`-substituted), `exit` (code), `login_complete` (settle a Codex device-code sign-in; `error` empty succeeds and writes the credential, set fails with that text). |
+| `HarnessForgeSeed(fixture)` | **Strictly decoded.** Add repositories, pull or merge requests, comments, review threads, CI and attachments to the fake forge (`forgefake.Fixture`). Reseeding a forge and project replaces it. Returns the fixture with generated ids filled in. |
+| `HarnessForgeInvocations(since)` | Every recorded `gh`/`glab` call after sequence `since`: argv, cwd, stdin, the route that answered or `unhandled`, exit status. Each call is also a `harness:forge` event. |
 | `HarnessRecordStart(name, threadId)` / `HarnessRecordStop()` | Capture a replay bundle: DB snapshot at start + the event-log slice recorded until stop. Start requires the thread to be idle (no turn in flight) so the snapshot/event boundary is exact; a failed stop discards the recording and frees the name. |
 | `HarnessReplayBundle(name, opts)` | Restore a bundle's DB snapshot and replay its events with original timing. Refused while another replay is active (checked before the destructive restore). |
 | `HarnessListBundles()` | Enumerate saved bundles. |
@@ -689,6 +696,29 @@ the stored transcript or a Codex app-server process id. A mock that reported `ex
 `HarnessMockCommand`s (nothing would consume them). Without the env
 vars (or if the harness dies), the mock falls back to scenario-file /
 builtin behaviour and still works standalone.
+
+## The fake forge (`cmd/ao-mockforge`)
+
+An isolated boot never runs the developer's `gh` or `glab`: their login
+and the network behind them are outside the harness boundary.
+`internal/git` executes every forge CLI through one seam
+(`WithIsolatedForgeCLIs`, set by `App.newGitCore` under isolation), which
+runs `ao-mockforge` with `AO_FORGE_CLI` naming the CLI it stands in for.
+Unconfigured, the call fails with `ForgeCLIUnavailableError` before
+anything is executed. Git itself still resolves on `PATH`; terminals the
+user opens are ordinary shells under the redirected `$HOME`.
+
+`ao-mockforge` holds no behavior. It forwards argv, cwd and stdin to the
+harness over the control channel (`POST /forge`, the same loopback
+listener and token as the mock provider, injected through
+`App.providerExtraEnv`) and prints the answer. The engine
+(`internal/harness/forgefake`) answers from the fixture
+`HarnessForgeSeed` installed, records every call, and publishes it as a
+loopback-only `harness:forge` event. A call it has no handler for fails
+with its full argv, so a spec sees a changed invocation as a failure
+rather than an empty PR. Specs use `e2e/tests/forge-helpers.ts`; the
+route table, the handled and unhandled invocations and how to add an
+endpoint are in [forgefake/AGENTS.md](../../internal/harness/forgefake/AGENTS.md).
 
 ## Record / replay bundles
 
@@ -1306,13 +1336,17 @@ greppable evidence.
 
 ## Recipes
 
-**Review pane against a merge request, zero network.** A local dumb-HTTP
-git origin (`git update-server-info` plus `python -m http.server` in the
-bare repo) with a `refs/merge-requests/<n>/head` ref, a stub `glab` on
-PATH answering the MR JSON, and `gitlabSelfHostedHosts: ["127.0.0.1"]` in
-settings renders the PR scope end to end. `git daemon` is not installed on
-AlmaLinux, and an `insteadOf` rewrite cannot hide a local path from forge
-detection (`remote get-url` applies rewrites).
+**Review pane against a merge request, zero network.** A pr-anchor thread
+(Start Thread From Pull/Merge Request with a seeded `HarnessForgeSeed`
+PR) needs nothing else. A checkout-backed PR scope also fetches the PR
+head: give the workspace a loopback dumb-HTTP origin (a bare repo with
+`git update-server-info` and a `refs/merge-requests/<n>/head` ref, served
+as static files on 127.0.0.1), set `gitlabSelfHostedHosts: ["127.0.0.1"]`,
+and seed the MR with `host: "127.0.0.1"`.
+`e2e/tests/compact-forge-image-menu.spec.ts` is the worked example. `git
+daemon` is not installed on AlmaLinux, and an `insteadOf` rewrite cannot
+hide a local path from forge detection (`remote get-url` applies
+rewrites).
 
 ## e2e/ (Playwright)
 

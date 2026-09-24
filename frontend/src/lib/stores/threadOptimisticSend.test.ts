@@ -81,7 +81,7 @@ describe('optimistic send acknowledgement', () => {
     const placeholder = optimistic(pane, 'mine');
     pane.setUserMessageExpanded(placeholder.id, true);
     const cache = pane.attachmentCacheFor(placeholder.id);
-    const preview = { id: 'attachment', filename: 'image.png', mimeType: 'image/png', size: 1, url: 'data:image/png;base64,AA==' };
+    const preview = { id: 'attachment', threadId: 'thread-1', filename: 'image.png', mimeType: 'image/png', size: 1, url: 'data:image/png;base64,AA==' };
     cache.set('attachment', preview);
     const revision = pane.timelineRevision;
     const confirmed = canonical(pane, 'mine');

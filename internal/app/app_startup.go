@@ -14,7 +14,6 @@ import (
 	appbrowser "agent-overflow/internal/browser"
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
-	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/gitwatch"
 	"agent-overflow/internal/logging"
 	obsotel "agent-overflow/internal/observability/otel"
@@ -148,6 +147,18 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	// database undoes it — and the git reads it makes take no action.
 	go a.backfillProjectIdentity()
 
+	// Finish the deferred phases of the store's one-time data migrations:
+	// paced write transactions that run once per database, after which
+	// this starts nothing. See store.DeferredMigration.
+	//
+	// NOT behind the activation gate. Its row work is SQLite rows, which
+	// restoring the database undoes. The one step that is not, the
+	// auto_vacuum conversion, writes a snapshot beside the database and
+	// renames the old file aside, outside the snapshot triple; its wait
+	// (storeFileSwapWait) parks on the activation gate itself. See
+	// app_store_maintenance.go.
+	a.startDeferredMigrations()
+
 	// Assert the persisted keep-awake state. Synchronous and cheap (one
 	// D-Bus round trip at most, nothing at all when the setting is off),
 	// and it must run on the boot path rather than lazily: the whole
@@ -233,19 +244,6 @@ func (a *App) startUnattendedWork() error {
 	// sweep waits for the app to settle rather than firing on a timer;
 	// the gate is in awaitRetentionSettled.
 	a.startRetentionCleanup()
-
-	// Start the one-time auto_vacuum conversion scheduler. It watches
-	// for an idle moment to rebuild a pre-incremental database file so
-	// retention can hand freed pages back to the filesystem, then exits
-	// for good. Databases already on incremental auto-vacuum, which is
-	// every database this build creates, stop it on its first check.
-	//
-	// Behind the activation gate because the rebuild writes a snapshot
-	// beside the database and renames the old file aside: both sit
-	// outside the snapshot triple, so a rollback would leave them until
-	// the next boot clears them. See app_store_maintenance.go.
-	a.startStoreMaintenance()
-	a.startHistoryPreparation()
 
 	// Watch the provider binaries for an upgrade under a running app: a
 	// quiet tick is two stats, and a changed file re-reads the version,
@@ -342,6 +340,11 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	})
 	endMigrations()
 	if err != nil {
+		// A database a newer build migrated is refused with the sentence
+		// the boot failure shows; it goes out as it is.
+		if tooNew := (*store.SchemaTooNewError)(nil); errors.As(err, &tooNew) {
+			return "", nil, err
+		}
 		return "", nil, fmt.Errorf("failed to open database: %w", err)
 	}
 	if err := repairSQLiteSidecarPermissions(dbPath); err != nil {
@@ -366,7 +369,7 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 		)
 	}
 	a.storeIdentity.Store(&identity)
-	a.git = gitops.NewCore()
+	a.git = a.newGitCore()
 	a.gitWatch = gitwatch.NewManager(gitwatch.ManagerConfig{
 		StatusFn:     a.git.Status,
 		FastStatusFn: a.git.StatusFast,

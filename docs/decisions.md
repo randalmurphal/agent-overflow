@@ -48,6 +48,17 @@ qualifies costs nothing.
 `VACUUM` is not run by the application. Mechanisms and measurements are in
 [the SQLite store document](architecture/sqlite-store.md#free-space).
 
+One-time data fixes are migrations in the chain, run once and version-gated
+(ruling 2026-09-23). Work too long for a synchronous migration gets a deferred
+paced phase after open, and only then. No sweep, timer or standing job may
+exist to fix a one-time state; a sweep only does work that recurs by design
+(retention, reclaim). A phase never abandons an item: a run skips a failing
+item so it can finish, but the phase is not recorded as done, the failure
+count and first error persist beside the watermark, the user gets a notice,
+and every later start retries, with no attempt cap (ruling 2026-09-23).
+Mechanism in
+[the SQLite store document](architecture/sqlite-store.md#deferred-phases).
+
 ## Startup
 
 - A boot never shows an empty catalog. Until a computer's threads and
@@ -57,8 +68,8 @@ qualifies costs nothing.
 - Readiness reports progress. A starting backend names its phase, step and
   elapsed time, and a boot right after an in-app update reads as finishing
   that update. The launcher's loading page, the startup screen and the
-  sidebar show the same sentence. A replaced binary without the updater's
-  marker shows an ordinary start.
+  sidebar show the same sentence. The update record is the only source of
+  that version, so a boot the record does not name shows an ordinary start.
 - The Windows launcher fails a boot only when its progress stalls for 30 s,
   and names the stalled phase. A slow boot that keeps reporting is never torn
   down.

@@ -77,6 +77,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 	"github.com/wailsapp/wails/v3/pkg/updater"
+	"golang.org/x/sys/windows"
 )
 
 //go:embed picker.html
@@ -272,6 +273,11 @@ func main() {
 	// to silently writing into a phantom path.
 	exportAppDataToWSL()
 
+	// The same plumbing for the Windows Downloads folder, so a file the
+	// backend saves lands where the Windows user looks rather than in the
+	// WSL home. Best-effort: without it the backend keeps its own default.
+	exportDownloadsToWSL()
+
 	// Forward AGENT_OVERFLOW_DEBUG (if set) to the WSL backend so raw
 	// provider stdio capture works for `make dev-wsl PROVIDER_DEBUG=1`
 	// and for end users who set the env var in their Windows shell.
@@ -355,6 +361,40 @@ func exportAppDataToWSL() {
 		return
 	}
 	if err := prependWSLENVRule(wsldistro.AppDataEnv + "/p"); err != nil {
+		log.Printf("set WSLENV: %v", err)
+	}
+}
+
+// knownDownloadsFolder resolves the user's Downloads known folder, which
+// may be redirected away from %USERPROFILE%\Downloads (OneDrive, a policy
+// or the folder's Location tab). A variable so tests can replace it.
+var knownDownloadsFolder = func() (string, error) {
+	return windows.KnownFolderPath(windows.FOLDERID_Downloads, 0)
+}
+
+// exportDownloadsToWSL sets AGENT_OVERFLOW_WIN_DOWNLOADS + WSLENV the way
+// exportAppDataToWSL does for AppData, with the /p rule translating the
+// folder to its /mnt/c form for the backend's downloadsDir.
+//
+// A folder that cannot be resolved is logged and not exported. A folder
+// /p cannot translate (a UNC redirection) reaches the backend in a form
+// wsldistro.WindowsDownloadsDir refuses. Either way the backend falls back
+// to its own Downloads resolution, and saving still works.
+func exportDownloadsToWSL() {
+	dir, err := knownDownloadsFolder()
+	if err != nil {
+		log.Printf("resolve the Windows Downloads folder: %v; saved files will use the WSL-side default", err)
+		return
+	}
+	if dir == "" {
+		log.Printf("the Windows Downloads folder resolved empty; saved files will use the WSL-side default")
+		return
+	}
+	if err := os.Setenv(wsldistro.DownloadsEnv, dir); err != nil {
+		log.Printf("set %s: %v", wsldistro.DownloadsEnv, err)
+		return
+	}
+	if err := prependWSLENVRule(wsldistro.DownloadsEnv + "/p"); err != nil {
 		log.Printf("set WSLENV: %v", err)
 	}
 }

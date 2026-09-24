@@ -61,6 +61,8 @@ func checkBackendVerbFlags(verb string, flags cliFlags) error {
 		return fmt.Errorf("cannot combine %s with --window: %s never opens a window, which is what it is for", verb, verb)
 	case flags.mockProvider != "":
 		return fmt.Errorf("cannot combine %s with --mock-provider: mock providers belong to --harness and --soak", verb)
+	case flags.mockForge != "":
+		return fmt.Errorf("cannot combine %s with --mock-forge: the fake forge CLI belongs to --harness and --soak", verb)
 	}
 	return nil
 }

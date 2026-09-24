@@ -43,6 +43,12 @@ an atomic persistence decision; they must not become a business-logic layer.
   `migration_v*.go` are the forward-only chain. A migration applied to persistent
   data, including by an uncommitted development build, is deployed and immutable.
   Add a migration and a test; record each new version in `migrate_freeze_test.go`.
+- A one-time data fix is a migration. Work too long to run at open goes in
+  the migration's `Deferred` phase: idempotent, paced, progress in the data.
+  A failing item is skipped for the run, recorded, and retried by the next
+  open; the watermark does not pass it. Never fix a one-time state from a
+  sweep, timer or standing job
+  ([deferred phases](../../docs/architecture/sqlite-store.md#deferred-phases)).
 - New rebuild migrations contain their final SQL directly. The old
   `mustReplaceOnce`, `mustReplaceEvery`, and `mustCutFrom` derivations are
   frozen compatibility code, not a pattern for new migrations.
@@ -90,10 +96,15 @@ an atomic persistence decision; they must not become a business-logic layer.
 - `SyncThreadWindow` reads store identity, stamps, and rows in one read
   transaction so they describe one WAL snapshot.
 - `history_bulk_load` may suppress stamp triggers only in a transaction that
-  writes the exact aggregate revision before commit.
+  writes the exact aggregate revision before commit. An item it inserts must
+  be one a read already showed, or the thread must be rebuilt in the same
+  transaction: under the flag the insert trigger stamps only the new row.
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
-  `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`.
+  `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by
+  id, key, or turn set `KeyFirst`, `Turn`, or `FromTurn` so their cost does not
+  grow with the thread's import chunk count; add each new lookup to
+  `TestImportedLookupsDoNotEnumerateChunks`.
 - Background tool launches remain `running`; a sibling identified by
   `completion_of` carries completion. Use the schema-maintained
   `live_background_active` projection and preserve the distinction between tray
@@ -111,6 +122,11 @@ an atomic persistence decision; they must not become a business-logic layer.
   scope. Keep selection separate from wire page shape.
 - Put connection-scoped PRAGMAs in the DSN. A post-open `Exec` does not cover
   replacement pooled connections. Keep boot verification for required PRAGMAs.
+- Each pooled connection keeps its recent statements compiled
+  (`stmt_cache.go`). Give a statement that a hot or bulk path repeats one SQL
+  text: bind a variable-length list as a JSON array read with `json_each`
+  rather than building placeholders per length. See
+  [Connections](../../docs/architecture/sqlite-store.md#connections).
 - `TruncateCheckpoint` quiesces readers and reports contention through
   `CheckpointResult.Busy`; checking only the error is insufficient. Quiescing
   stalls every read, so it stays at boot and `Close`, never on a sweep.
@@ -118,7 +134,8 @@ an atomic persistence decision; they must not become a business-logic layer.
   `SnapshotTo` uses, is online-safe. Free space is reclaimed by
   `ReclaimFreeSpace` in paced
   `incremental_vacuum` chunks, and an existing database is converted to
-  incremental auto-vacuum by `ConvertToIncrementalVacuum`. Read
+  incremental auto-vacuum by `ConvertToIncrementalVacuum`, the last step of
+  v119's deferred phase. Read
   [sqlite-store.md](../../docs/architecture/sqlite-store.md#free-space) before
   changing either, or before adding an operation that replaces or reopens the
   database file.

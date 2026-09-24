@@ -59,6 +59,7 @@ var (
 		eventchan.BackendSetChanged,
 		eventchan.BrowserCompanionState,
 		eventchan.BrowserHost,
+		eventchan.HarnessForge,
 		eventchan.HarnessMock,
 		eventchan.HarnessPerf,
 		eventchan.HarnessReplay,

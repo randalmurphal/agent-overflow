@@ -377,6 +377,9 @@ export {
   // would pay a mint round trip per tile.
   MintAttachmentUploadTicket,
   MintAttachmentDownloadTicket,
+  // Writes an image attachment into the owning computer's Downloads folder,
+  // for a client that cannot run a browser download (utils/fileSaveAction.ts).
+  SaveAttachment,
   ListAttachments,
   DeleteAttachment,
   GetAttachmentThumbnail,

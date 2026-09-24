@@ -207,6 +207,7 @@ func TestCheckServeFlags(t *testing.T) {
 		{name: "soak", args: []string{"--soak", "--data-dir", "/tmp/x"}},
 		{name: "window", args: []string{"--soak", "--window", "--data-dir", "/tmp/x"}},
 		{name: "mock-provider", args: []string{"--harness", "--data-dir", "/tmp/x", "--mock-provider", "/tmp/p"}},
+		{name: "mock-forge", args: []string{"--harness", "--data-dir", "/tmp/x", "--mock-forge", "/tmp/f"}},
 	}
 	for _, test := range refused {
 		t.Run("refuses "+test.name, func(t *testing.T) {
@@ -257,7 +258,7 @@ func TestFrontendFlags(t *testing.T) {
 	for _, args := range [][]string{
 		{"--connect", "ws://host:1/?token=t"}, {"--harness"}, {"--soak"},
 		{"--window"}, {"--print-url-fd", "3"}, {"--listen", "127.0.0.1:0"},
-		{"--mock-provider", "/mock"},
+		{"--mock-provider", "/mock"}, {"--mock-forge", "/mock"},
 	} {
 		if _, err := parseFlags(append([]string{"--frontend"}, args...)); err == nil {
 			t.Errorf("frontend accepted conflicting arguments: %v", args)

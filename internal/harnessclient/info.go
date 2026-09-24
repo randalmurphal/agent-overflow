@@ -20,6 +20,7 @@ type HarnessInfo struct {
 	DataDir      string `json:"dataDir"`
 	HomeDir      string `json:"homeDir,omitempty"`
 	MockProvider string `json:"mockProvider"`
+	MockForge    string `json:"mockForge"`
 	DBPath       string `json:"dbPath"`
 	// EventLogDir holds the per-thread NDJSON event logs that back
 	// wire-level replay recordings.

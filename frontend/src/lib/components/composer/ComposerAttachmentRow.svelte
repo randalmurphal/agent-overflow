@@ -10,6 +10,7 @@
     type AttachmentPreviewCache,
     type ExpandedImagePreview,
   } from '../../utils/attachmentPreview.svelte';
+  import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
 
   interface Props {
     attachments: Attachment[];
@@ -89,6 +90,7 @@
           class="group relative h-16 w-16 overflow-hidden rounded-lg border border-border bg-surface-1 shadow-sheet"
           data-testid="attachment-thumb"
           title={`${attachment.filename} (${formatAttachmentSize(attachment.size)})`}
+          {...attachmentImageMenuTag(attachment)}
         >
           <button
             type="button"

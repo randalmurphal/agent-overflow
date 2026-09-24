@@ -25,9 +25,6 @@ func TestAsyncQuestionHistoryTransferCloneAndCut(t *testing.T) {
 	if err := s.SetAsyncQuestionDismissed("q", item.ID, 1, true); err != nil {
 		t.Fatal(err)
 	}
-	if count, err := s.PrepareThreadHistory(context.Background(), "q"); err != nil || count != 1 {
-		t.Fatalf("question history preparation: %d %v", count, err)
-	}
 	var exported bytes.Buffer
 	if err := s.ExportThreadHistory(context.Background(), "q", &exported); err != nil {
 		t.Fatal(err)

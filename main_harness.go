@@ -65,6 +65,10 @@ type harnessPaths struct {
 	// MockProvider is the resolved ao-mockprovider binary path that
 	// both provider binary settings point at.
 	MockProvider string
+	// MockForge is the resolved ao-mockforge binary every git.Core runs
+	// in place of gh and glab. Empty when none was found beside this
+	// executable: forge CLI calls then fail, and never reach PATH.
+	MockForge string
 	// AssetsFreshness is the embedded-bundle verdict from
 	// checkEmbeddedDistFreshness: "match", "stale", "unknown", or
 	// "dev-server". Computed once at boot; HarnessInfo exposes it and
@@ -268,6 +272,8 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		MockBrowserEngine: !opts.RealBrowserEngine,
 		// Workspace boundary; see internal/app/app_isolated_workspace.go.
 		WorkspaceRoot: paths.DataRoot,
+		// gh and glab; see internal/git/forge_cli.go.
+		ForgeCLI: paths.MockForge,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)
@@ -382,6 +388,7 @@ func newHarness(app *App, paths harnessPaths, window harnessrpc.WindowController
 		HomeDir:         paths.HomeDir,
 		CredentialHome:  paths.CredentialHome,
 		MockProvider:    paths.MockProvider,
+		MockForge:       paths.MockForge,
 		BuildStamp:      buildStamp(),
 		AssetsFreshness: paths.AssetsFreshness,
 		AssetsDigest:    paths.AssetsDigest,
@@ -477,6 +484,11 @@ func prepareHarness(flags cliFlags) (harnessPaths, error) {
 		return harnessPaths{}, err
 	}
 
+	mockForge, err := resolveMockForge(flags.mockForge)
+	if err != nil {
+		return harnessPaths{}, err
+	}
+
 	if err := seedHarnessSettings(dataDir, mockProvider); err != nil {
 		return harnessPaths{}, err
 	}
@@ -487,6 +499,7 @@ func prepareHarness(flags cliFlags) (harnessPaths, error) {
 		HomeDir:        homeDir,
 		CredentialHome: filepath.Join(dataRoot, "home"),
 		MockProvider:   mockProvider,
+		MockForge:      mockForge,
 	}, nil
 }
 
@@ -628,6 +641,38 @@ func resolveMockProvider(flagPath string) (string, error) {
 	return abs, nil
 }
 
+// resolveMockForge locates the ao-mockforge binary. An explicit
+// --mock-forge must be runnable. Without it the binary beside this
+// executable is used when present; when it is absent the boot still
+// comes up, logs that forge CLIs are disabled, and every gh or glab call
+// fails with git.ForgeCLIUnavailableError. It never falls back to PATH.
+func resolveMockForge(flagPath string) (string, error) {
+	if flagPath != "" {
+		abs, err := filepath.Abs(flagPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve mock forge path: %w", err)
+		}
+		if _, err := exec.LookPath(abs); err != nil {
+			return "", fmt.Errorf("mock forge binary not runnable at %s (build it with `make mockforge`): %w", abs, err)
+		}
+		return abs, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("locate own executable for mock forge lookup: %w", err)
+	}
+	name := "ao-mockforge"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	candidate := filepath.Join(filepath.Dir(exe), name)
+	if _, err := exec.LookPath(candidate); err != nil {
+		log.Printf("harness: no runnable ao-mockforge at %s; gh and glab calls will fail (build it with `make mockforge`, or pass --mock-forge): %v", candidate, err)
+		return "", nil
+	}
+	return candidate, nil
+}
+
 // seedHarnessSettings points both provider binary settings at the mock
 // provider and switches on the NDJSON event log so every harness
 // session is recordable for wire-level replay. Runs through the real
@@ -667,6 +712,7 @@ type harnessBootstrap struct {
 	DataDir      string `json:"dataDir"`
 	HomeDir      string `json:"homeDir,omitempty"`
 	MockProvider string `json:"mockProvider"`
+	MockForge    string `json:"mockForge"`
 	PID          int    `json:"pid"`
 	Version      string `json:"version"`
 	// ClientID is this instance's durable UI-state identity
@@ -705,6 +751,7 @@ func newHarnessBootstrap(srv *transport.Server, paths harnessPaths, startupErr e
 		DataDir:      paths.DataDir,
 		HomeDir:      paths.HomeDir,
 		MockProvider: paths.MockProvider,
+		MockForge:    paths.MockForge,
 		PID:          os.Getpid(),
 		Version:      version,
 		ClientID:     clientID,

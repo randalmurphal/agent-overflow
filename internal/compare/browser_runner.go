@@ -18,12 +18,13 @@ import (
 )
 
 // BrowserRunnerOptions describes the real app/browser pair used for one leg.
-// Binary and MockProvider are explicit because a comparison must not resolve
-// either from a developer's live installation. CDP is optional. WebKitGTK
+// Binary, MockProvider and MockForge are explicit because a comparison must
+// not resolve any of them from a developer's live installation. CDP is optional. WebKitGTK
 // has no CDP, but can still provide bridge semantics and frontend perf data.
 type BrowserRunnerOptions struct {
 	Binary        string
 	MockProvider  string
+	MockForge     string
 	Window        bool
 	CDP           string
 	PageID        string
@@ -169,7 +170,7 @@ func (r *BrowserRunner) Run(ctx context.Context, req LegRequest) (result LegResu
 	manifestPath := filepath.Join(req.Root, "compare-supervisor.json")
 	manifest := supervisorManifest{Version: CurrentVersion, Leg: req.Leg, Pair: req.Pair, Instrument: instrument, RunManifest: harnessrun.ManifestPath(req.Root), DataRoot: req.Root, DataDir: req.DataDir, BrowserProfile: req.BrowserProfile, StartedAt: time.Now().UTC(), Status: "starting"}
 	writeManifest := func() error { return atomicfile.WriteJSON(manifestPath, manifest) }
-	plan := harnessrun.RunPlan{Version: harnessrun.PlanVersion, RunID: fmt.Sprintf("compare-%s%d", req.Leg, req.Pair), Workload: req.Workload.Name, DataRoot: req.Root, Adapter: harnessrun.AdapterCompare, Capsule: req.CapsulePath, Leg: string(req.Leg), Pairs: 1, BaseDir: filepath.Dir(req.Root), Binary: o.Binary, MockProvider: o.MockProvider, Window: true, CDP: o.CDP, SampleMS: o.SampleMs, Meters: append([]string(nil), o.PerfMeters...), PreserveRoot: req.KeepRoot, Ownership: harnessrun.OwnershipFresh}
+	plan := harnessrun.RunPlan{Version: harnessrun.PlanVersion, RunID: fmt.Sprintf("compare-%s%d", req.Leg, req.Pair), Workload: req.Workload.Name, DataRoot: req.Root, Adapter: harnessrun.AdapterCompare, Capsule: req.CapsulePath, Leg: string(req.Leg), Pairs: 1, BaseDir: filepath.Dir(req.Root), Binary: o.Binary, MockProvider: o.MockProvider, MockForge: o.MockForge, Window: true, CDP: o.CDP, SampleMS: o.SampleMs, Meters: append([]string(nil), o.PerfMeters...), PreserveRoot: req.KeepRoot, Ownership: harnessrun.OwnershipFresh}
 	retention, err := harnessrun.NewDefaultArtifactRegistry()
 	if err != nil {
 		_ = restoreRoot(payloadStage, req.Root)
@@ -230,7 +231,7 @@ func (r *BrowserRunner) Run(ctx context.Context, req LegRequest) (result LegResu
 	if transitionErr := runSupervisor.Transition(harnessrun.StatePreparing, harnessrun.PhasePrepare); transitionErr != nil {
 		return result, transitionErr
 	}
-	launched, err := harnessclient.Launch(ctx, harnessclient.LaunchOptions{Binary: o.Binary, DataRoot: req.Root, MockProvider: o.MockProvider, Window: true, Timeout: launchTimeout, Detach: false, StdoutPath: filepath.Join(req.Root, "compare-stdout.log"), StderrPath: filepath.Join(req.Root, "compare-stderr.log"), MemoryLimitBytes: governor.DefaultCeilingBytes})
+	launched, err := harnessclient.Launch(ctx, harnessclient.LaunchOptions{Binary: o.Binary, DataRoot: req.Root, MockProvider: o.MockProvider, MockForge: o.MockForge, Window: true, Timeout: launchTimeout, Detach: false, StdoutPath: filepath.Join(req.Root, "compare-stdout.log"), StderrPath: filepath.Join(req.Root, "compare-stderr.log"), MemoryLimitBytes: governor.DefaultCeilingBytes})
 	if err != nil {
 		launchCleanup = func(context.Context) error { return cleanupLaunchedBackend(launched) }
 		manifest.Status = "failed"

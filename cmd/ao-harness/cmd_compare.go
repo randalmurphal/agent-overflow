@@ -75,6 +75,7 @@ func compareRunContext(ctx context.Context, e *env, args []string) error {
 	capsule := flags.String("capsule", "", "capsule manifest or capsule directory")
 	binary := flags.String("binary", "", "agent-overflow backend binary (default: harness binary resolution)")
 	mockProvider := flags.String("mock-provider", "", "mock provider binary (default: backend resolution)")
+	mockForge := flags.String("mock-forge", "", "fake gh/glab binary (default: backend resolution)")
 	window := flags.Bool("window", true, "launch a real webview window for each leg")
 	cdp := flags.String("cdp", defaultCDPSpec(), "optional Chromium DevTools endpoint to record exact page ownership")
 	instrument := flags.String("instrument", "perf", "leg instrument: perf or none")
@@ -119,7 +120,7 @@ func compareRunContext(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	runner := compare.NewBrowserRunner(compare.BrowserRunnerOptions{Binary: backend, MockProvider: *mockProvider, Window: *window, PageID: strings.TrimSpace(e.pageID), CDP: *cdp, SampleMs: *sampleMs, AssetDigest: *asset, BuildDigest: *build, Instrument: *instrument})
+	runner := compare.NewBrowserRunner(compare.BrowserRunnerOptions{Binary: backend, MockProvider: *mockProvider, MockForge: *mockForge, Window: *window, PageID: strings.TrimSpace(e.pageID), CDP: *cdp, SampleMs: *sampleMs, AssetDigest: *asset, BuildDigest: *build, Instrument: *instrument})
 	report, runErr := compare.Run(ctx, compare.RunOptions{Capsule: manifest, BaseDir: *base, Pairs: *pairs, Bootstrap: *bootstrap, KeepRoots: *keep, ReportPath: *out, ExpectedAsset: *asset, ExpectedBuild: *build, Instrument: *instrument}, runner, nil)
 	if e.jsonOutput() {
 		if err := e.writeJSON(report); err != nil {

@@ -621,6 +621,38 @@ describe('threadSwitchLoad', () => {
       }
     });
 
+    it('a verified cache hit never shows the spinner while other legs are still loading', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const pane = createThreadPane();
+        const items = [
+          makeItem({ id: 'a', threadId: 't', turnIndex: 0, itemIndex: 0 }),
+        ];
+        setBindingMock('ListThreadSliceAround', async () => ({
+          items,
+          oldestTurnIndex: 0,
+          hasMore: false,
+        }));
+        await pane.switchThread(makeThread({ id: 't' }));
+        await pane.switchThread(makeThread({ id: 'other' }));
+
+        // Re-enter; verification answers, another leg of the switch hangs
+        // so the pane stays loading past the threshold.
+        setBindingMock('ListRecentTurns', () => new Promise(() => {}));
+        void pane.switchThread(makeThread({ id: 't' }));
+        await vi.waitFor(() => expect(pane.historyWindowPending).toBe(false));
+
+        vi.advanceTimersByTime(500);
+        await Promise.resolve();
+        expect(pane.loading).toBe(true);
+        expect(pane.items.length).toBe(1);
+        expect(pane.showLoadingSpinner).toBe(false);
+        expect(pane.items.map((item) => item.id)).toEqual(['a']);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('above-threshold empty load shows the spinner', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {

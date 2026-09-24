@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openForgeAttachment } from './forgeAttachmentActions';
-import { forgeAttachmentAction } from './forgeAttachmentAction';
 import { buildForgeAttachmentHref, parseForgeAttachmentHref } from './forgeAttachments';
 import { resetBindingMocks, setBindingMock } from '../../test/mocks/bindings-app';
 import type { PRRef } from './prReference';
@@ -66,43 +65,6 @@ function spyAnchorClicks(): Array<[string, string]> {
   });
   return clicks;
 }
-
-describe('deciding what activating a forge attachment does', () => {
-  beforeEach(() => {
-    nativeShell.value = false;
-    webviewHosted.value = false;
-    hostScope.value = false;
-  });
-
-  it('saves into Downloads when the page runs on the owning computer', () => {
-    hostScope.value = true;
-    expect(forgeAttachmentAction('gpu', FORGE_URL)).toBe('save-here');
-    expect(forgeAttachmentAction('gpu', null)).toBe('save-here');
-  });
-
-  it('opens the forge from the phone shell even when a grant claims host', () => {
-    nativeShell.value = true;
-    hostScope.value = true;
-    expect(forgeAttachmentAction('gpu', FORGE_URL)).toBe('open-externally');
-  });
-
-  it("opens the forge from the desktop webview when the PR is another computer's", () => {
-    webviewHosted.value = true;
-    expect(forgeAttachmentAction('gpu', FORGE_URL)).toBe('open-externally');
-  });
-
-  it('saves on the owning computer from a webview that has no forge URL to open', () => {
-    webviewHosted.value = true;
-    expect(forgeAttachmentAction('gpu', null)).toBe('save-there');
-    nativeShell.value = true;
-    expect(forgeAttachmentAction('gpu', null)).toBe('save-there');
-  });
-
-  it('downloads in a connected browser', () => {
-    expect(forgeAttachmentAction('gpu', FORGE_URL)).toBe('download');
-    expect(forgeAttachmentAction('gpu', null)).toBe('download');
-  });
-});
 
 describe('activating a forge attachment', () => {
   beforeEach(() => {

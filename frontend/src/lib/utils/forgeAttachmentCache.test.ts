@@ -115,6 +115,23 @@ describe('the forge attachment cache', () => {
     expect(rpc).toHaveBeenCalledTimes(2);
   });
 
+  // The page's CSP (connect-src 'self') refuses a fetch of a blob: or data:
+  // URL, so a copy cannot read the bytes back from the URL it painted.
+  it('hands back the bytes it read, so a copy needs no second request', async () => {
+    setBindingMock('FetchForgeAttachment', async () => attachment());
+    stageBody('png-bytes', { headers: { 'content-type': 'image/png' } });
+    const raster = await acquireForgeAttachment('gpu', PR, HREF).value;
+    expect(await raster.blob.text()).toBe('png-bytes');
+
+    setBindingMock('FetchForgeAttachment', async () =>
+      attachment({ mimeType: 'image/svg+xml', filename: 'diagram.svg' }),
+    );
+    stageBody('<svg/>');
+    const svg = await acquireForgeAttachment('gpu', PR, `${HREF}?svg`).value;
+    expect(await svg.blob.text()).toBe('<svg/>');
+    expect(svg.blob.type).toBe('image/svg+xml');
+  });
+
   it('serves SVG as a data URL, never a same-origin blob URL', async () => {
     setBindingMock('FetchForgeAttachment', async () =>
       attachment({ mimeType: 'image/svg+xml', filename: 'diagram.svg' }),
@@ -124,6 +141,28 @@ describe('the forge attachment cache', () => {
     const resolved = await acquireForgeAttachment('gpu', PR, HREF).value;
     expect(resolved.url.startsWith('data:image/svg+xml;base64,')).toBe(true);
     expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it('counts an SVG data URL against the byte budget beside its bytes', async () => {
+    // 30 MiB each by the meta, plus a 4 MiB data URL each: two fit the
+    // 64 MiB budget only if the data URL is not counted.
+    const rpc = setBindingMock('FetchForgeAttachment', async () =>
+      attachment({ mimeType: 'image/svg+xml', filename: 'big.svg', sizeBytes: 30 * 1024 * 1024 }),
+    );
+    const body = `<svg>${'x'.repeat(3 * 1024 * 1024)}</svg>`;
+    stageBody(body);
+    stageBody(body);
+    stageBody(body);
+
+    const first = acquireForgeAttachment('gpu', PR, `${HREF}?a`);
+    await first.value;
+    first.release();
+    const second = acquireForgeAttachment('gpu', PR, `${HREF}?b`);
+    await second.value;
+    second.release();
+    // The first was evicted, so asking again fetches again.
+    await acquireForgeAttachment('gpu', PR, `${HREF}?a`).value;
+    expect(rpc).toHaveBeenCalledTimes(3);
   });
 
   it('revokes an evicted entry, and never one a mount still displays', async () => {

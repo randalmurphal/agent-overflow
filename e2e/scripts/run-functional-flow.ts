@@ -24,6 +24,7 @@ interface Options {
   dataDir?: string;
   binary?: string;
   mockProvider?: string;
+  mockForge?: string;
   compatibilityLeg?: string;
   pageID?: string;
   supervisedRoot?: boolean;
@@ -82,7 +83,7 @@ function usage(message?: string): never {
 }
 
 function flowUsage(): string {
-  return 'usage: pnpm harness:flow --spec <scenario.json> [--report <report.json>] [--data-dir <empty-root>] [--binary <path>] [--mock-provider <path>] [--headed] [--leg <compatibility-leg>] [--page-id <page-id>]\n';
+  return 'usage: pnpm harness:flow --spec <scenario.json> [--report <report.json>] [--data-dir <empty-root>] [--binary <path>] [--mock-provider <path>] [--mock-forge <path>] [--headed] [--leg <compatibility-leg>] [--page-id <page-id>]\n';
 }
 
 function parseArgs(argv: string[]): Options {
@@ -92,6 +93,7 @@ function parseArgs(argv: string[]): Options {
   let dataDir: string | undefined;
   let binary: string | undefined;
   let mockProvider: string | undefined;
+  let mockForge: string | undefined;
   let compatibilityLeg: string | undefined;
   let pageID: string | undefined;
   let supervisedRoot = false;
@@ -116,11 +118,12 @@ function parseArgs(argv: string[]): Options {
 			if (!pageID) usage('--page-id needs a non-empty value');
 			continue;
 		}
-	    if (flag === '--data-dir' || flag === '--binary' || flag === '--mock-provider') {
+	    if (flag === '--data-dir' || flag === '--binary' || flag === '--mock-provider' || flag === '--mock-forge') {
 	      const value = argv[++index];
 	      if (!value || value.startsWith('--')) usage(`${flag} needs a value`);
 	      if (flag === '--data-dir') dataDir = path.resolve(value);
 	      else if (flag === '--binary') binary = path.resolve(value);
+	      else if (flag === '--mock-forge') mockForge = path.resolve(value);
 	      else mockProvider = path.resolve(value);
 	      continue;
 	    }
@@ -134,7 +137,7 @@ function parseArgs(argv: string[]): Options {
     usage(`unknown argument ${JSON.stringify(flag)}`);
   }
   if (!spec) usage('--spec is required');
-  return { spec, report, headed, dataDir, binary, mockProvider, compatibilityLeg, pageID, supervisedRoot };
+  return { spec, report, headed, dataDir, binary, mockProvider, mockForge, compatibilityLeg, pageID, supervisedRoot };
 }
 
 async function main(options: Options): Promise<number> {
@@ -192,7 +195,7 @@ async function main(options: Options): Promise<number> {
   activeCleanup = cleanup;
   try {
     browser = await chromium.launch({ headless: !options.headed });
-    harness = await launchHarness({ dataDir: flowDataDir, binary: options.binary, mockProvider: options.mockProvider });
+    harness = await launchHarness({ dataDir: flowDataDir, binary: options.binary, mockProvider: options.mockProvider, mockForge: options.mockForge });
     context = await browser.newContext();
     const page = await context.newPage();
     await harness.open(page, { waitUntil: 'domcontentloaded' });

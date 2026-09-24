@@ -580,6 +580,11 @@ type App struct {
 	// the command — the `/workflow` composer block says so. Written once by
 	// Start, read-only afterwards.
 	cliBinDir string
+	// forgeCLIs is the isolated boot's forge CLI pin: every git.Core this
+	// App builds (newGitCore) runs the fake in place of gh and glab and
+	// never resolves them on PATH. The zero value is the desktop
+	// behavior. Set once before Start; never mutated afterwards.
+	forgeCLIs isolatedForgeCLIs
 	// providerBinaryOverride, when non-empty, wins over the settings-
 	// backed provider binary paths in providerBinaryPath. Harness mode
 	// points it at ao-mockprovider so the "providers are always mocked"
@@ -633,6 +638,12 @@ type App struct {
 	// the check, which only unit tests do. Set once before Start; never
 	// mutated afterwards.
 	isolatedWorkspaceRoot string
+	// downloadsIsolated keeps saved files under the app data directory
+	// instead of the user's Downloads folder (downloadsDir). A mocked boot
+	// inherits the developer's HOME and the launcher's environment, so
+	// without it a harness save would write into their real Downloads.
+	// Set once before Start; never mutated afterwards.
+	downloadsIsolated bool
 	// idleReaperNowFn is a test-only clock injection for the reaper.
 	// Production leaves it nil and reaperNow reads time.Now directly.
 	idleReaperNowFn func() time.Time
@@ -648,10 +659,9 @@ type App struct {
 	// maintenance shortens the background maintenance timings for
 	// tests. Zero fields mean production values.
 	maintenance maintenanceTuning
-	// storeMaintenance owns the one-time auto_vacuum conversion
-	// scheduler's stop gate. See app_store_maintenance.go.
-	storeMaintenance   backgroundLoop
-	historyPreparation backgroundLoop
+	// deferredMigrations owns the stop gate of the run that finishes the
+	// store's deferred migration phases. See app_store_maintenance.go.
+	deferredMigrations backgroundLoop
 	// codexThread owns provider-thread reconcile and cumulative-cost reads.
 	codexThreadOnce sync.Once
 	codexThread     *codexthread.Service

@@ -112,6 +112,7 @@ func StartControl(h *Harness) (*ControlServer, map[string]string, error) {
 	srv, err := control.NewServer(control.ServerConfig{
 		Resolve:  h.resolveScenario,
 		OnReport: h.onMockReport,
+		Forge:    h.forge.Handle,
 	})
 	if err != nil {
 		return nil, nil, err

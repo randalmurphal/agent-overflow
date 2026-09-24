@@ -34,6 +34,7 @@ type HarnessPaths struct {
 	HomeDir         string
 	CredentialHome  string
 	MockProvider    string
+	MockForge       string
 	BuildStamp      string
 	AssetsFreshness string
 	AssetsDigest    string
@@ -54,6 +55,7 @@ func NewHarness(app *App, paths HarnessPaths) *harnessrpc.Harness {
 		HomeDir:         paths.HomeDir,
 		CredentialHome:  paths.CredentialHome,
 		MockProvider:    paths.MockProvider,
+		MockForge:       paths.MockForge,
 		AssetsFreshness: paths.AssetsFreshness,
 		AssetsDigest:    paths.AssetsDigest,
 		ShutdownTimeout: paths.ShutdownTimeout,

@@ -16,6 +16,10 @@ states its own coverage; do not maintain a duplicate spec catalog here.
   only the intended disposable device profile.
 - Shared provider frames, pairing flows, and result narrowing belong in the
   relevant `*-helpers.ts` or `probe-wire.ts`, not inline copies.
+- `forge-helpers.ts` seeds the fake `gh`/`glab` (`HarnessForgeSeed`), reads
+  the recorded calls and opens a PR's review pane through the UI. A forge
+  call the fake does not answer is added to the fake first:
+  [forgefake/AGENTS.md](../internal/harness/forgefake/AGENTS.md).
 - `rigs/` contains manual performance tools outside release gates. Follow
   [rigs/README.md](rigs/README.md) for their data and scenario rules.
 
@@ -32,9 +36,9 @@ page's connection, not on the backend screen's.
 
 ## Running and evidence
 
-`make e2e` builds the backend, mock provider, and fixed-purpose launcher,
-typechecks all suite sources, then runs Playwright under the harness memory
-boundary. The `desktop` project runs ordinary specs; `compact` runs
+`make e2e` builds the backend, mock provider, mock forge, and fixed-purpose
+launcher, typechecks all suite sources, then runs Playwright under the harness
+memory boundary. The `desktop` project runs ordinary specs; `compact` runs
 `compact-*.spec.ts` with touch and compact viewport settings. Run one file with
 `bin/ao-harness-e2e tests/<spec>`; it runs the `bin/agent-overflow` from the last
 `make harness-build`, so rebuild after changing Go or frontend code.

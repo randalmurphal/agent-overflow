@@ -21,15 +21,16 @@ func clonePayloadSnapshotsTx(tx *sql.Tx, source, target string, ids []string) er
 		}
 		if _, err := tx.Exec(`INSERT OR IGNORE INTO payload_snapshots(id,payload_id,chunk_id)
  SELECT lower(hex(randomblob(16))),p.id,p.chunk_id
- FROM thread_import_chunks refs JOIN import_history_payloads p ON p.chunk_id = refs.chunk_id
+ FROM import_history_payloads p CROSS JOIN thread_import_chunks refs ON refs.chunk_id = p.chunk_id
  WHERE refs.thread_id = ? AND `+clause+`
  AND NOT EXISTS (SELECT 1 FROM payloads local WHERE local.thread_id = refs.thread_id AND local.id = p.id)`, args...); err != nil {
 			return fmt.Errorf("store: snapshot imported fork payloads: %w", err)
 		}
-		args = append([]any{target, source}, tail...)
+		logical, logicalArgs := timelinePayloadArms(source, func(string, string) string {
+			return "p.id AS id, p.kind AS kind, p.meta AS meta, p.created_at AS created_at, p.preview_spans AS preview_spans, p.spans AS spans"
+		}, clause, tail)
 		result, err := tx.Exec(`INSERT INTO payloads(thread_id,id,kind,meta,data,created_at,preview_spans,spans)
- SELECT ?,p.id,p.kind,p.meta,x'',p.created_at,p.preview_spans,p.spans
- FROM timeline_payloads p WHERE p.thread_id = ? AND `+clause, args...)
+ SELECT ?,id,kind,meta,x'',created_at,preview_spans,spans FROM (`+logical+`)`, append([]any{target}, logicalArgs...)...)
 		if err != nil {
 			return fmt.Errorf("store: copy fork payload metadata: %w", err)
 		}
@@ -40,6 +41,7 @@ func clonePayloadSnapshotsTx(tx *sql.Tx, source, target string, ids []string) er
 		if count != int64(len(batch)) {
 			return fmt.Errorf("store: clone fork payloads: copied %d of %d payloads", count, len(batch))
 		}
+		args = append([]any{target, source}, tail...)
 		if _, err := tx.Exec(`INSERT INTO payload_snapshot_refs(thread_id,payload_id,snapshot_id)
  SELECT ?,p.id,COALESCE(r.snapshot_id,s.id)
  FROM payloads p
@@ -50,7 +52,7 @@ func clonePayloadSnapshotsTx(tx *sql.Tx, source, target string, ids []string) er
 		}
 		if _, err := tx.Exec(`INSERT INTO payload_snapshot_refs(thread_id,payload_id,snapshot_id)
  SELECT ?,p.id,s.id
- FROM thread_import_chunks refs JOIN import_history_payloads p ON p.chunk_id = refs.chunk_id
+ FROM import_history_payloads p CROSS JOIN thread_import_chunks refs ON refs.chunk_id = p.chunk_id
  JOIN payload_snapshots s ON s.chunk_id = p.chunk_id AND s.payload_id = p.id
  WHERE refs.thread_id = ? AND `+clause+`
  AND NOT EXISTS (SELECT 1 FROM payloads local WHERE local.thread_id = refs.thread_id AND local.id = p.id)`, args...); err != nil {

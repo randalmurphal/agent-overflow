@@ -35,6 +35,12 @@ export interface ResolvedForgeAttachment {
   kind: ForgeAttachmentKind;
   sizeBytes: number;
   filename: string;
+  /**
+   * The bytes `url` was made from. A copy reads them here: the page's CSP
+   * (connect-src 'self') refuses a fetch of a blob: or data: URL. For an
+   * object URL this is the same data the URL pins, not a second copy.
+   */
+  blob: Blob;
 }
 
 export interface ForgeAttachmentHandle {
@@ -99,7 +105,9 @@ export function acquireForgeAttachment(
         // request and its reply; only account for one still in the map.
         if (entries.get(key) === created) {
           created.objectURL = resolved.url.startsWith('blob:') ? resolved.url : '';
-          created.bytes = Math.max(0, resolved.sizeBytes);
+          // A data URL is a second, base64 copy beside the Blob.
+          created.bytes = Math.max(0, resolved.sizeBytes)
+            + (resolved.url.startsWith('data:') ? resolved.url.length : 0);
           cachedBytes += created.bytes;
           evict();
         } else if (resolved.url.startsWith('blob:')) {
@@ -174,12 +182,16 @@ async function loadForgeAttachment(
   }
   const kind = normalizeKind(meta.kind);
   const mimeType = meta.mimeType || blob.type || 'application/octet-stream';
+  // Typed by what the backend classified, so a consumer of `blob` reads the
+  // same type `url` was made with.
+  const typed = blob.type === mimeType ? blob : new Blob([blob], { type: mimeType });
   return {
-    url: await objectOrDataUrl(blob, mimeType),
+    url: await objectOrDataUrl(typed, mimeType),
     mimeType,
     kind,
     sizeBytes: meta.sizeBytes || blob.size,
     filename: meta.filename,
+    blob: typed,
   };
 }
 

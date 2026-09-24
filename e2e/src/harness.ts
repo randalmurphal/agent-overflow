@@ -63,6 +63,7 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
   const binary =
     opts.binary ?? process.env.AO_HARNESS_BIN ?? path.join(repoRoot, 'bin', 'agent-overflow');
   const mockProvider = opts.mockProvider ?? process.env.AO_MOCKPROVIDER;
+  const mockForge = opts.mockForge ?? process.env.AO_MOCKFORGE;
   const ownsDataDir = !opts.dataDir;
 
   if (process.env.AO_E2E_CONTAINED !== '1' && process.env.AO_E2E_FUNCTIONAL_MANAGED !== '1') {
@@ -75,6 +76,7 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
 
   const args = ['--harness', '--data-dir', dataDir];
   if (mockProvider) args.push('--mock-provider', mockProvider);
+  if (mockForge) args.push('--mock-forge', mockForge);
 
   const child = spawnContained(binary, args, {
     memoryLimitBytes: opts.memoryLimitBytes ?? FALLBACK_MEMORY_LIMIT_BYTES,

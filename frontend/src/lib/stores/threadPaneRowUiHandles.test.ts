@@ -98,6 +98,7 @@ describe('threadRowUiState (pane handles)', () => {
     const cacheA = pane.attachmentCacheFor('item-1');
     cacheA.set('att-1', {
       id: 'att-1',
+      threadId: 'thread-1',
       filename: 'a.png',
       mimeType: 'image/png',
       size: 1,

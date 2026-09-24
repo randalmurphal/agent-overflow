@@ -494,6 +494,7 @@ describe('createThreadRowUiState', () => {
     const firstItemCache = rowUiState.attachmentCacheFor('item-a');
     firstItemCache.set('blob-preview', {
       id: 'blob-preview',
+      threadId: 'thread-1',
       filename: 'blob.png',
       mimeType: 'image/png',
       size: 1,
@@ -501,6 +502,7 @@ describe('createThreadRowUiState', () => {
     });
     firstItemCache.set('data-preview', {
       id: 'data-preview',
+      threadId: 'thread-1',
       filename: 'data.png',
       mimeType: 'image/png',
       size: 1,
@@ -523,6 +525,7 @@ describe('createThreadRowUiState', () => {
     const staleCache = rowUiState.attachmentCacheFor('item-a');
     staleCache.set('before-clear', {
       id: 'before-clear',
+      threadId: 'thread-1',
       filename: 'before.png',
       mimeType: 'image/png',
       size: 1,
@@ -532,6 +535,7 @@ describe('createThreadRowUiState', () => {
     rowUiState.clear();
     staleCache.set('after-clear', {
       id: 'after-clear',
+      threadId: 'thread-1',
       filename: 'after.png',
       mimeType: 'image/png',
       size: 1,
@@ -571,6 +575,7 @@ describe('createThreadRowUiState', () => {
     const staleCache = rowUiState.attachmentCacheFor(item.id);
     staleCache.set('before-dispose', {
       id: 'before-dispose',
+      threadId: 'thread-1',
       filename: 'before.png',
       mimeType: 'image/png',
       size: 1,
@@ -596,6 +601,7 @@ describe('createThreadRowUiState', () => {
 
     staleCache.set('after-dispose', {
       id: 'after-dispose',
+      threadId: 'thread-1',
       filename: 'after.png',
       mimeType: 'image/png',
       size: 1,
@@ -844,6 +850,7 @@ describe('createThreadRowUiState', () => {
     const retainedAttachmentCache = rowUiState.attachmentCacheFor(retainedItem.id);
     oldAttachmentCache.set('old-attachment', {
       id: 'old-attachment',
+      threadId: 'thread-1',
       filename: 'old.png',
       mimeType: 'image/png',
       size: 1,
@@ -851,6 +858,7 @@ describe('createThreadRowUiState', () => {
     });
     retainedAttachmentCache.set('retained-attachment', {
       id: 'retained-attachment',
+      threadId: 'thread-1',
       filename: 'retained.png',
       mimeType: 'image/png',
       size: 1,
@@ -893,6 +901,7 @@ describe('createThreadRowUiState', () => {
 
     retainedAttachmentCache.set('retained-after-prune', {
       id: 'retained-after-prune',
+      threadId: 'thread-1',
       filename: 'retained-after.png',
       mimeType: 'image/png',
       size: 1,
@@ -903,6 +912,7 @@ describe('createThreadRowUiState', () => {
 
     oldAttachmentCache.set('after-prune', {
       id: 'after-prune',
+      threadId: 'thread-1',
       filename: 'after.png',
       mimeType: 'image/png',
       size: 1,

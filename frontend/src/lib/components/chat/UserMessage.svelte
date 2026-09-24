@@ -36,6 +36,7 @@
   import { formatTimeOfDay } from '../../utils/format';
   import type { UserMessageActions } from './userMessageActions';
   import { isCompactLayout } from '../../stores/layoutMode.svelte';
+  import { attachmentImageMenuTag } from '../../utils/imageMenuActions';
 
   interface Props {
     item: Item;
@@ -240,6 +241,7 @@
           aria-label={`Preview ${attachment.filename}`}
           class="relative overflow-hidden rounded-lg border border-border bg-surface-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
           onclick={() => expandAttachment(attachment.id)}
+          {...attachmentImageMenuTag(attachment)}
         >
           {#if preview}
             <img

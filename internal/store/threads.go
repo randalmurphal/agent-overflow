@@ -22,22 +22,63 @@ import (
 // timestamp and distinguish migrated front-burner pins from explicit groups.
 // The two boolean tail columns are derived sidebar state:
 // they are cheap scalar probes over indexed tables, not threads columns.
-// newestTurnErrorPredicate is the row test behind a thread's Failed pill:
-// kind `error` at or after the newest turn (an orphan error has no turn row
-// of its own). threadColumns derives hasFailedTurn from it and
+// newestTurnErrors selects the rows behind a thread's Failed pill: kind
+// `error` at or after the newest turn (an orphan error has no turn row of
+// its own). threadColumns derives hasFailedTurn from it and
 // threadReadStateQuery advances the read stamp past it, so the pill and the
 // read that clears it cannot disagree about which rows count.
 //
-// `rows` aliases the timeline row source; `thread` is the expression naming
-// that source's thread — the correlated `threads.id` inside a threads
-// projection, a bind in the standalone arm read. The thread-id term itself
-// stays with the caller because the view states it once and the arms state
-// it per arm.
-func newestTurnErrorPredicate(rows, thread string) string {
-	return rows + `.kind = 'error'
-         AND ` + rows + `.turn_index >= COALESCE((
-           SELECT MAX(turns.turn_index) FROM turns WHERE turns.thread_id = ` + thread + `
-         ), 0)`
+// `thread` is the expression naming the thread: the correlated
+// `threads.id` inside a threads projection, or "?" bound to threadArgs in
+// the standalone read. The newest turn is a lower turn bound, so the
+// imported arm reads only chunks that reach it.
+func newestTurnErrors(thread string, threadArgs []any) timelineSelection {
+	return timelineSelection{
+		Where:    "items.kind = 'error'",
+		Turn:     `COALESCE((SELECT MAX(turns.turn_index) FROM turns WHERE turns.thread_id = ` + thread + `), 0)`,
+		TurnArgs: threadArgs,
+		FromTurn: true,
+	}
+}
+
+// hasUnreadNewestTurnErrorSQL is threadColumns' Failed-pill probe: an
+// error of the newest turn created after the thread was last read.
+func hasUnreadNewestTurnErrorSQL() string {
+	sel := newestTurnErrors("threads.id", nil)
+	sel.Thread = "threads.id"
+	sel.Columns = func(string, string) string { return "1" }
+	sel.Where += " AND (threads.last_read_at IS NULL OR threads.last_read_at < items.created_at)"
+	sql, _ := timelineArms("", sel)
+	return sql
+}
+
+// proposedPlanItemSQL is the row behind a thread's pending-plan flag: the
+// latest plan's completed assistant row, whose payload (local overlay
+// first, as timeline_payloads resolves it) is a proposed plan. Both the
+// row and its imported payload are found by id, so a sidebar row costs
+// the same however many chunks its thread references.
+func proposedPlanItemSQL() string {
+	sql, _ := timelineArms("", timelineSelection{
+		Columns:  func(string, string) string { return "1" },
+		Thread:   "proposed_plans.thread_id",
+		KeyFirst: true,
+		Where: `items.id = proposed_plans.item_id
+         AND items.role = 'assistant'
+         AND items.status = 'completed'
+         AND COALESCE(
+           (SELECT local_payload.kind
+              FROM payloads AS local_payload
+             WHERE local_payload.thread_id = proposed_plans.thread_id
+               AND local_payload.id = items.payload_id),
+           (SELECT imported_payload.kind
+              FROM import_history_payloads AS imported_payload
+             CROSS JOIN thread_import_chunks AS payload_refs
+                ON payload_refs.chunk_id = imported_payload.chunk_id
+             WHERE imported_payload.id = items.payload_id
+               AND payload_refs.thread_id = proposed_plans.thread_id)
+         ) = 'proposed_plan'`,
+	})
+	return sql
 }
 
 var threadColumns = `id, COALESCE(project_id, ''),
@@ -61,9 +102,6 @@ var threadColumns = `id, COALESCE(project_id, ''),
 	EXISTS (
       SELECT 1
         FROM proposed_plans
-		JOIN timeline_items AS items
-          ON items.thread_id = proposed_plans.thread_id
-         AND items.id = proposed_plans.item_id
        WHERE proposed_plans.thread_id = threads.id
          AND proposed_plans.version = (
            SELECT MAX(latest.version)
@@ -71,20 +109,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
             WHERE latest.thread_id = threads.id
          )
          AND proposed_plans.implemented_at = 0
-         AND items.role = 'assistant'
-         AND items.status = 'completed'
-         AND COALESCE(
-           (SELECT local_payload.kind
-              FROM payloads AS local_payload
-             WHERE local_payload.thread_id = items.thread_id
-               AND local_payload.id = items.payload_id),
-           (SELECT imported_payload.kind
-              FROM thread_import_chunks AS refs
-              JOIN import_history_payloads AS imported_payload
-                ON imported_payload.chunk_id = refs.chunk_id
-               AND imported_payload.id = items.payload_id
-             WHERE refs.thread_id = items.thread_id)
-         ) = 'proposed_plan'
+         AND EXISTS (` + proposedPlanItemSQL() + `)
     ),
     COALESCE((
       SELECT CASE
@@ -106,12 +131,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
        WHERE turns.thread_id = threads.id
        ORDER BY turns.turn_index DESC
        LIMIT 1
-    ), 0) OR EXISTS (
-      SELECT 1 FROM timeline_items AS errors
-       WHERE errors.thread_id = threads.id
-         AND ` + newestTurnErrorPredicate("errors", "threads.id") + `
-         AND (threads.last_read_at IS NULL OR threads.last_read_at < errors.created_at)
-    ),
+    ), 0) OR EXISTS (` + hasUnreadNewestTurnErrorSQL() + `),
     NOT EXISTS (SELECT 1 FROM timeline_items WHERE timeline_items.thread_id = threads.id),
     (SELECT COALESCE(MAX(ownership_epoch),0) FROM thread_transfers
       WHERE thread_id = threads.id AND direction = 'incoming' AND phase = 'complete')`
@@ -1177,22 +1197,18 @@ func (s *Store) MarkThreadActivity(threadID string, at int64) error {
 // The error timestamp goes through timelineArms rather than through the
 // `timeline_items` view, for the reason timeline_arms.go states: an
 // aggregate (or an ordered, limited read) over the compound view cannot be
-// flattened, so SQLite runs both arms whole and SCANs `items`. The sibling
-// probe in threadColumns is an EXISTS, which flattens and walks
-// idx_items_thread_turn_item_unique; only this one needs the VALUE, so only
-// this one has to render the arms itself. On the author's 4.7 GB store the
-// view form took 1.1 s warm for one thread and the arms form 3 ms.
+// flattened, so SQLite runs both arms whole and SCANs `items`. On the
+// author's 4.7 GB store the view form took 1.1 s warm for one thread and
+// the arms form 3 ms.
 func threadReadStateQuery(id string) (string, []any) {
-	newestErrorAt, args := timelineArms(id, timelineSelection{
-		Columns:   func(string, string) string { return `items.created_at AS created_at` },
-		Where:     newestTurnErrorPredicate("items", "?"),
-		WhereArgs: []any{id},
-		// Same answer as MAX(created_at): descending order puts NULLs
-		// last, so the first row is the newest non-null stamp and an
-		// empty arm pair yields NULL either way.
-		OrderBy: `created_at DESC`,
-		Limit:   1,
-	})
+	sel := newestTurnErrors("?", []any{id})
+	sel.Columns = func(string, string) string { return `items.created_at AS created_at` }
+	// Same answer as MAX(created_at): descending order puts NULLs last,
+	// so the first row is the newest non-null stamp and an empty arm
+	// pair yields NULL either way.
+	sel.OrderBy = `created_at DESC`
+	sel.Limit = 1
+	newestErrorAt, args := timelineArms(id, sel)
 	return `SELECT
 		    (SELECT MAX(completed_at) FROM turns
 		      WHERE thread_id = threads.id AND completed_at IS NOT NULL),

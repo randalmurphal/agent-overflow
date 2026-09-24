@@ -6,23 +6,18 @@ import (
 	"agent-overflow/internal/store"
 )
 
-// A fork flush can meet a row that settled, moved to shared history, or was
-// removed before its buffered delta arrived. These transitions must complete
-// successfully without appending stale bytes or recreating deleted history.
+// A fork flush can meet a row that settled or was removed before its
+// buffered delta arrived. These transitions must complete successfully
+// without appending stale bytes or recreating deleted history.
 func TestHistoryTransitionsDoNotFailLateStreamFlush(t *testing.T) {
 	for _, kind := range []string{itemKindAssistantText, itemKindThinking} {
-		for _, state := range []string{"settled", "prepared", "deleted"} {
+		for _, state := range []string{"settled", "deleted"} {
 			t.Run(kind+"/"+state, func(t *testing.T) {
 				router, st, _ := newTestRouter(t)
 				createTestThread(t, st, "source")
 				item := store.Item{ID: "item", ThreadID: "source", Kind: kind, Role: "assistant", Status: "completed", Summary: "authoritative text", PayloadID: "payload", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
 				if err := st.InsertItemWithPayload(item, store.Payload{ID: "payload", Kind: "text", Data: []byte(item.Summary), Meta: "{}", CreatedAt: 1}); err != nil {
 					t.Fatal(err)
-				}
-				if state != "settled" {
-					if n, err := st.PrepareThreadHistory(t.Context(), item.ThreadID); err != nil || n != 1 {
-						t.Fatalf("prepare: n=%d err=%v", n, err)
-					}
 				}
 				if state == "deleted" {
 					if err := st.DeleteThreadItem(item.ThreadID, item.ID); err != nil {

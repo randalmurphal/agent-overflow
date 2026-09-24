@@ -19,14 +19,16 @@ func ensureLocalPayloadTx(tx *sql.Tx, threadID, payloadID, label string) error {
 		return nil
 	}
 
+	// No local row exists, so the imported row is the whole logical payload.
 	result, err := tx.Exec(
 		`INSERT OR IGNORE INTO payloads (
 		    thread_id, id, kind, meta, data, created_at, preview_spans, spans
 		 )
-		 SELECT thread_id, id, kind, meta, data, created_at, preview_spans, spans
-		   FROM timeline_payloads
-		  WHERE thread_id = ? AND id = ?`,
-		threadID, payloadID,
+		 SELECT refs.thread_id, p.id, p.kind, p.meta, p.data, p.created_at, p.preview_spans, p.spans
+		   FROM import_history_payloads p
+		   CROSS JOIN thread_import_chunks refs ON refs.chunk_id = p.chunk_id
+		  WHERE p.id = ? AND refs.thread_id = ?`,
+		payloadID, threadID,
 	)
 	if err != nil {
 		return fmt.Errorf("%s copy imported payload %s/%s: %w", label, threadID, payloadID, err)
@@ -54,12 +56,12 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 	var payloadID, inputPayloadID string
 	err := tx.QueryRow(
 		`SELECT COALESCE(imported.payload_id, ''), COALESCE(imported.input_payload_id, '')
-		   FROM thread_import_chunks refs
-		   JOIN import_history_items imported ON imported.chunk_id = refs.chunk_id
-		  WHERE refs.thread_id = ? AND imported.id = ?
+		   FROM import_history_items imported
+		   CROSS JOIN thread_import_chunks refs ON refs.chunk_id = imported.chunk_id
+		  WHERE imported.id = ? AND refs.thread_id = ?
 		    AND NOT EXISTS (SELECT 1 FROM thread_import_item_overrides o
 		      WHERE o.thread_id = refs.thread_id AND o.item_id = imported.id)`,
-		threadID, itemID,
+		itemID, threadID,
 	).Scan(&payloadID, &inputPayloadID)
 	if err == sql.ErrNoRows {
 		return false, nil
@@ -94,10 +96,10 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 		        imported.payload_id, imported.input_payload_id, imported.parent_id,
 		        imported.is_background, imported.completion_of, imported.tool_name,
 		        imported.decision, imported.meta, imported.created_at, imported.updated_at
-		   FROM thread_import_chunks refs
-		   JOIN import_history_items imported ON imported.chunk_id = refs.chunk_id
-		  WHERE refs.thread_id = ? AND imported.id = ?`,
-		threadID, threadID, itemID,
+		   FROM import_history_items imported
+		   CROSS JOIN thread_import_chunks refs ON refs.chunk_id = imported.chunk_id
+		  WHERE imported.id = ? AND refs.thread_id = ?`,
+		threadID, itemID, threadID,
 	)
 	if err != nil {
 		return false, fmt.Errorf("%s copy imported item %s/%s: %w", label, threadID, itemID, err)

@@ -103,10 +103,8 @@ func applyItemDefaults(item *Item) {
 
 func nextItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (int, error) {
 	var maxIndex sql.NullInt64
-	if err := tx.QueryRow(
-		`SELECT MAX(item_index) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`,
-		threadID, turnIndex,
-	).Scan(&maxIndex); err != nil {
+	query, args := turnAggregateQuery(threadID, turnIndex, "MAX", "item_index")
+	if err := tx.QueryRow(query, args...).Scan(&maxIndex); err != nil {
 		return 0, fmt.Errorf("%s: %w", label, err)
 	}
 	if !maxIndex.Valid {
@@ -124,10 +122,8 @@ func nextItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (
 // row as turn-initial.
 func headItemIndexTx(tx *sql.Tx, threadID string, turnIndex int, label string) (int, error) {
 	var minIndex sql.NullInt64
-	if err := tx.QueryRow(
-		`SELECT MIN(item_index) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`,
-		threadID, turnIndex,
-	).Scan(&minIndex); err != nil {
+	query, args := turnAggregateQuery(threadID, turnIndex, "MIN", "item_index")
+	if err := tx.QueryRow(query, args...).Scan(&minIndex); err != nil {
 		return 0, fmt.Errorf("%s: %w", label, err)
 	}
 	if !minIndex.Valid {
@@ -171,12 +167,19 @@ func insertItemWithIDTx(tx *sql.Tx, item Item, label string) error {
 // that only need status/summary/kind/role (force-close safety net, the
 // turn-complete flip loop) so we skip the LEFT JOIN and the two string
 // scans. Column order in scanItemRowSansPayload must match exactly.
-const itemColumnsSansPayload = `items.id, items.thread_id, items.turn_index, items.item_index,
+var itemColumnsSansPayload = itemColumnsSansPayloadFor("items.thread_id", "items.rev")
+
+// itemColumnsSansPayloadFor is itemColumnsSansPayload as a timelineArms
+// projection: the arm supplies the thread id and revision expressions,
+// and the ordering keys carry their names for the compound's ORDER BY.
+func itemColumnsSansPayloadFor(threadIDExpr, revExpr string) string {
+	return `items.id, ` + threadIDExpr + ` AS thread_id, items.turn_index AS turn_index, items.item_index AS item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''),
     items.parent_id, items.is_background, items.completion_of,
     items.tool_name, items.decision, items.meta, items.created_at, items.updated_at,
-    items.rev`
+    ` + revExpr
+}
 
 // scanItemRowSansPayload hydrates an Item without the joined payload
 // kind / meta columns. PayloadKind and PayloadMeta are left empty on

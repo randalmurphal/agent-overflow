@@ -203,7 +203,7 @@ func TestItemRevisionStampProbesIndexes(t *testing.T) {
 	if !strings.Contains(text, "SEARCH items USING INDEX sqlite_autoindex_items_1") && !strings.Contains(text, "USING PRIMARY KEY") {
 		t.Errorf("ancestor walk does not probe the primary key:\n%s", text)
 	}
-	for _, index := range []string{"idx_items_completion_of", "idx_items_transcript_root"} {
+	for _, index := range []string{"idx_items_completion_of", carrierProbeByValue} {
 		if !strings.Contains(text, index) {
 			t.Errorf("stamp plan does not probe %s:\n%s", index, text)
 		}

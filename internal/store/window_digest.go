@@ -248,21 +248,20 @@ func heldWindowHasUsableShape(held HeldWindow) bool {
 }
 
 // windowEdgeCursorTx resolves one edge id to its timeline coordinate,
-// admitting only the rows a window can contain. A single-row lookup is the
-// one shape the compound `timeline_items` view is right for.
+// admitting only the rows a window can contain.
 func windowEdgeCursorTx(q sqlQueryer, threadID, itemID string, scope timelineScope) (TimelineCursor, bool, error) {
 	if itemID == "" {
 		return TimelineCursor{}, false, nil
 	}
 	cursor := TimelineCursor{ItemID: itemID}
-	filter, args := scope.filter("")
-	args = append([]any{threadID, itemID}, args...)
-	err := q.QueryRow(
-		`SELECT turn_index, item_index FROM timeline_items
-		  WHERE thread_id = ? AND id = ?
-		    AND `+filter,
-		args...,
-	).Scan(&cursor.TurnIndex, &cursor.ItemIndex)
+	filter, filterArgs := scope.filter("items.")
+	query, args := timelineArms(threadID, timelineSelection{
+		Columns:   func(string, string) string { return "items.turn_index, items.item_index" },
+		KeyFirst:  true,
+		Where:     "items.id = ? AND " + filter,
+		WhereArgs: append([]any{itemID}, filterArgs...),
+	})
+	err := q.QueryRow(query, args...).Scan(&cursor.TurnIndex, &cursor.ItemIndex)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TimelineCursor{}, false, nil
 	}

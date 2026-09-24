@@ -3190,7 +3190,8 @@ func TestThreadReadStateQueryWalksTheItemIndex(t *testing.T) {
 	// differs.
 	viewForm := `SELECT (SELECT MAX(errors.created_at) FROM timeline_items AS errors
        WHERE errors.thread_id = threads.id
-         AND ` + newestTurnErrorPredicate("errors", "threads.id") + `)
+         AND errors.kind = 'error'
+         AND errors.turn_index >= COALESCE((SELECT MAX(turns.turn_index) FROM turns WHERE turns.thread_id = threads.id), 0))
        FROM threads WHERE id = ?`
 	var want sql.NullInt64
 	if err := s.db.QueryRow(viewForm, threadID).Scan(&want); err != nil {

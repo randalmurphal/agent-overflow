@@ -1,4 +1,4 @@
-.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider harness-build harness harness-window soak-window e2e e2e-mobile-browser apk apk-release e2e-android
+.PHONY: help ao-harness-docs methodgen install dev dev-wsl launch-wsl harness-wsl perf-wsl soak soak-check soak-contract build build-wsl test check verify release release-macos go-build go-test test-race provider-smoke-compile provider-smoke provider-smoke-revert import-corpus-smoke mockprovider mockforge harness-build harness harness-window soak-window e2e e2e-mobile-browser apk apk-release e2e-android
 
 # Print the supported build, test, harness, and smoke targets. Keep this
 # short enough to use from an unfamiliar checkout. `make e2e` is the
@@ -383,12 +383,14 @@ launch-wsl:
 	DEV_VERSION=$$PROFILE_TAG-$$(date +%Y%m%d%H%M%S)-$$$$; \
 	$(MAKE) build-wsl WSL_VERSION=$$DEV_VERSION WSL_FORCE_RELINK=1 UI_TRACE=$(UI_TRACE) UI_ORACLES=$(UI_ORACLES) WSL_BUILD_MODE=$(LAUNCH_WSL_BUILD_MODE); \
 	if [ -n "$(LAUNCH_PROFILE)" ]; then \
-		$(MAKE) mockprovider; \
+		$(MAKE) mockprovider mockforge; \
 		PROFILE_BIN="$$HOME/.local/share/agent-overflow/$(LAUNCH_PROFILE)/bin"; \
 		mkdir -p "$$PROFILE_BIN"; \
-		cp bin/ao-mockprovider "$$PROFILE_BIN/ao-mockprovider.tmp.$$$$"; \
-		mv -f "$$PROFILE_BIN/ao-mockprovider.tmp.$$$$" "$$PROFILE_BIN/ao-mockprovider"; \
-		echo "Installed mock provider at $$PROFILE_BIN/ao-mockprovider"; \
+		for MOCK in ao-mockprovider ao-mockforge; do \
+			cp "bin/$$MOCK" "$$PROFILE_BIN/$$MOCK.tmp.$$$$"; \
+			mv -f "$$PROFILE_BIN/$$MOCK.tmp.$$$$" "$$PROFILE_BIN/$$MOCK"; \
+			echo "Installed $$MOCK at $$PROFILE_BIN/$$MOCK"; \
+		done; \
 	fi; \
 	WIN_LAD=$$(/mnt/c/Windows/System32/cmd.exe /c 'echo %LOCALAPPDATA%' 2>/dev/null | tr -d '\r\n'); \
 	if [ -z "$$WIN_LAD" ]; then \
@@ -486,10 +488,15 @@ HARNESS_DATA_DIR ?= $(HARNESS_TMPDIR)/agent-overflow-harness$(subst /,-,$(CURDIR
 mockprovider:
 	go build -o bin/ao-mockprovider ./cmd/ao-mockprovider
 
+# mockforge is the fake gh and glab an isolated boot runs in place of the
+# real CLIs (cmd/ao-mockforge, internal/harness/forgefake).
+mockforge:
+	go build -o bin/ao-mockforge ./cmd/ao-mockforge
+
 # harness-build produces bin/agent-overflow with the production SPA
-# embedded, plus the sibling ao-mockprovider the harness resolves by
-# default. That same bin/agent-overflow is the workflow CLI the workflows
-# spec drives by verb (D30) — there is no second binary to build. UI_TRACE=1
+# embedded, plus the sibling ao-mockprovider and ao-mockforge the harness
+# resolves by default. That same bin/agent-overflow is the workflow CLI the
+# workflows spec drives by verb (D30) — there is no second binary to build. UI_TRACE=1
 # bakes the render-trace instrumentation into the SPA (see the flag docs at
 # the top of this file).
 #
@@ -497,12 +504,13 @@ mockprovider:
 # instance (docs/specs/testing-harness.md §3, cmd/ao-harness/AGENTS.md),
 # and it resolves the backend binary as its own sibling, so building the
 # two together is what makes `bin/ao-harness up` need no configuration.
-harness-build: mockprovider $(FRONTEND_DEPS)
+harness-build: mockprovider mockforge $(FRONTEND_DEPS)
 	cd frontend && VITE_AGENT_OVERFLOW_UI_TRACE=$(UI_TRACE) VITE_AGENT_OVERFLOW_UI_ORACLES=$(UI_ORACLES) pnpm run build
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/agent-overflow .
 	go build -ldflags "-X main.version=$(VERSION)" -o bin/ao-harness ./cmd/ao-harness
 	go build -o bin/ao-harness-e2e ./cmd/ao-harness-e2e
 	go test -c -o bin/ao-frontendclient-test ./internal/frontendclient
+	go test -c -o bin/ao-store-test ./internal/store
 
 harness: harness-build
 	bin/agent-overflow --harness --data-dir "$(HARNESS_DATA_DIR)"

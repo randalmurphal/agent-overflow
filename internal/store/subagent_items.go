@@ -432,23 +432,27 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 // index instead of probing the parent index (measured on the arms parity
 // fixture). One agent has a handful of rounds, so the sort is free.
 // TestSubagentResumeRoundProbeProbesTheParentIndexes is the tripwire.
-func (s *Store) subagentResumeRounds(q sqlQueryer, threadID string, rootIDs []string) ([]subagentRound, error) {
+func subagentResumeRoundsQuery(threadID string, rootIDs []string) (string, []any) {
 	rootArgs := make([]any, 0, len(rootIDs))
 	for _, id := range rootIDs {
 		rootArgs = append(rootArgs, id)
 	}
-	query, args := timelineArms(threadID, timelineSelection{
+	return timelineArms(threadID, timelineSelection{
 		Columns: func(string, string) string {
 			return `items.parent_id AS root, items.id AS id, items.meta AS meta,
 			        items.turn_index AS turn_index, items.item_index AS item_index`
 		},
+		KeyFirst: true,
 		Where: `items.kind = 'user_text'
 			   AND items.parent_id IN (` + placeholders(len(rootIDs)) + `)
 			   AND items.parent_id <> ''
 			   AND items.meta LIKE '%` + metaKeySubagentResumePrompt + `%'`,
 		WhereArgs: rootArgs,
 	})
+}
 
+func (s *Store) subagentResumeRounds(q sqlQueryer, threadID string, rootIDs []string) ([]subagentRound, error) {
+	query, args := subagentResumeRoundsQuery(threadID, rootIDs)
 	rows, err := q.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: query subagent resume rounds for %s: %w", threadID, err)
@@ -568,6 +572,7 @@ func (s *Store) subagentLaunchRowsByID(q sqlQueryer, threadID string, ids []stri
 		Columns: func(string, string) string {
 			return "items.id AS id, items.kind AS kind, items.tool_name AS tool_name, items.meta AS meta"
 		},
+		KeyFirst:  true,
 		Where:     "items.id IN (" + placeholders + ")",
 		WhereArgs: args,
 	})
@@ -713,6 +718,7 @@ func (s *Store) SubagentCompletedChildIndex(threadID, launchID string) (int, err
 		Columns: func(string, string) string {
 			return "json_extract(items.meta, '$.codex_execution_child_end_index') AS child_end"
 		},
+		KeyFirst:  true,
 		Where:     "items.completion_of <> '' AND items.completion_of = ?",
 		WhereArgs: []any{launchID},
 	})

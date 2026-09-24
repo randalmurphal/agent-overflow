@@ -263,26 +263,6 @@ func TestSaveForgeAttachmentFallsBackToTheAppDirectory(t *testing.T) {
 	}
 }
 
-func TestDownloadFileName(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"hero.png", "hero.png"},
-		{"Screen Shot (1).png", "Screen Shot (1).png"},
-		{"Отчёт.png", "Отчёт.png"},
-		{"../../etc/passwd", "passwd"},
-		{`C:\Users\me\clip.mp4`, "clip.mp4"},
-		{"a;rm -rf ~.png", "a-rm -rf.png"},
-		{"", "attachment"},
-		{"...", "attachment"},
-		{".hidden", "attachment.hidden"},
-		{strings.Repeat("x", 200) + ".png", strings.Repeat("x", 80) + ".png"},
-	}
-	for _, tc := range cases {
-		if got := downloadFileName(tc.in); got != tc.want {
-			t.Errorf("downloadFileName(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
 // TestOpenForgeAttachmentMissesAfterEviction: the route's 404 for an id
 // the cache no longer holds comes from here.
 func TestOpenForgeAttachmentMissesAfterEviction(t *testing.T) {

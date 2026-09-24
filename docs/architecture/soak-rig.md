@@ -58,6 +58,7 @@ isolation pins are applied:
 | pin | effect |
 | --- | --- |
 | `providerBinaryOverride` | every spawn resolves to `ao-mockprovider`, even after an `UpdateSettings` |
+| `forgeCLIs` | every `gh`/`glab` call runs `ao-mockforge`, and fails rather than reaching `PATH` when there is none |
 | `credentialHomeOverride` | account slots / prune / canonical credential stay under `<dataRoot>/home` |
 | `fileKeychainOverride` | no OS keychain |
 | `backgroundFetchDisabled` | no network on a run that lasts hours |
@@ -124,11 +125,12 @@ parameterised by `LAUNCH_PROFILE`): cross-compile the Linux backend and
 the Windows `.exe`, stage the exe to a versioned `%LOCALAPPDATA%` path,
 launch it through Windows. The soak leg adds two things:
 
-1. `make mockprovider`, then stage it at
-   `~/.local/share/agent-overflow/soak/bin/ao-mockprovider`.
-   The WSL payload installs the backend beside it as `agent-overflow`
-   and `resolveMockProvider` looks *beside the running executable*
-   (`main_harness.go`), so that is where the mock has to be. The harness
+1. `make mockprovider mockforge`, then stage both at
+   `~/.local/share/agent-overflow/soak/bin/`.
+   The WSL payload installs the backend beside them as `agent-overflow`
+   and `resolveMockProvider` and `resolveMockForge` look *beside the
+   running executable* (`main_harness.go`), so that is where the mocks
+   have to be. The harness
    and perf profiles use their own corresponding directories; none
    replaces the installed developer binary at `~/.local/bin/agent-overflow`.
 2. `--profile soak` on the launcher's argv, which becomes

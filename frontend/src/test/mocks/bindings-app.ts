@@ -661,6 +661,7 @@ export const GetPRCIJobs = dispatch('GetPRCIJobs');
 export const GetPRCIJobLog = dispatch('GetPRCIJobLog');
 export const SavePRCIJobLog = dispatch('SavePRCIJobLog');
 export const FetchForgeAttachment = dispatch('FetchForgeAttachment');
+export const SaveAttachment = dispatch('SaveAttachment');
 export const SaveForgeAttachment = dispatch('SaveForgeAttachment');
 export const ListPRReviewThreads = dispatch('ListPRReviewThreads');
 export const SubmitPRReview = dispatch('SubmitPRReview');

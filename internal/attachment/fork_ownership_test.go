@@ -1,7 +1,6 @@
 package attachment
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"testing"
@@ -32,17 +31,15 @@ func TestForkAttachmentsSurviveOriginalAndIntermediateDeletion(t *testing.T) {
 					t.Fatal(err)
 				}
 				item := store.Item{ThreadID: "source", ID: "prompt", Kind: "user_text", Role: "user", Status: "completed", Summary: "attachment", Meta: fmt.Sprintf(`{"attachments":[{"id":%q,"threadId":"source","filename":%q,"mimeType":%q,"size":%d}]}`, a.ID, name, mime, len(data)), CreatedAt: 1, UpdatedAt: 1}
+				// A generated reference arrives through imported history.
 				if generated {
 					item.Kind = "assistant_text"
 					item.Role = "assistant"
-				}
-				if err := meta.InsertItem(item); err != nil {
-					t.Fatal(err)
-				}
-				if generated {
-					if n, err := meta.PrepareThreadHistory(context.Background(), "source"); err != nil || n != 1 {
-						t.Fatalf("prepare generated attachment: %d %v", n, err)
+					if err := meta.ApplyImportBatch("source", store.ImportBatch{Rows: []store.ImportRow{{Item: item}}}); err != nil {
+						t.Fatal(err)
 					}
+				} else if err := meta.InsertItem(item); err != nil {
+					t.Fatal(err)
 				}
 				for _, pair := range [][2]string{{"source", "fork"}, {"fork", "grandchild"}} {
 					if _, err := meta.CloneThreadHistoryThroughTurn(pair[0], pair[1], nil); err != nil {

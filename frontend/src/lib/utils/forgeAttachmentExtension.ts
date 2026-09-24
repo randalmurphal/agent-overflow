@@ -24,7 +24,7 @@
 
 import type { Token, Tokens, TokensList } from '../markdown';
 import { markedEmbeddedInlineHtml } from '../markdown';
-import { forgeAttachmentAction } from './forgeAttachmentAction';
+import { fileSaveAction } from './fileSaveAction';
 import {
   buildForgeAttachmentHref,
   browserUrlForForgeAttachment,
@@ -120,11 +120,11 @@ export function buildForgeAttachmentExtension(
   const rewrite = (href: string): string =>
     buildForgeAttachmentHref({ href, pr, backend, webBase });
 
-  // The verb is the click's own decision (`forgeAttachmentAction`), so the
+  // The verb is the click's own decision (`fileSaveAction`), so the
   // tooltip never promises a download that turns out to open the forge.
   const linkTitle = (href: string): string => {
     const name = forgeAttachmentName(forge, href) || 'attachment';
-    const action = forgeAttachmentAction(
+    const action = fileSaveAction(
       backend,
       browserUrlForForgeAttachment(forge, href, webBase, pr),
     );

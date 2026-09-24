@@ -526,8 +526,9 @@ type Settings struct {
 	// "predates the mapping" carve-out any more, because a kind nobody can
 	// silence individually is one the master switch is the only answer to.
 	NotifyWorkflowAttention bool `json:"notifyWorkflowAttention"`
-	// NotifyAppUpdate covers the WSL launcher's "update didn't apply"
-	// notice. Same reasoning as NotifyWorkflowAttention.
+	// NotifyAppUpdate covers notify.KindAppUpdate: the WSL launcher's
+	// "update didn't apply" notice and an unfinished deferred store
+	// migration. Same reasoning as NotifyWorkflowAttention.
 	NotifyAppUpdate bool `json:"notifyAppUpdate"`
 	// NotifyHiddenThreads lets a thread the sidebar does not list (a
 	// workflow-owned mode, or a thread with no row) interrupt this screen.

@@ -25,6 +25,7 @@
     parseForgeAttachmentHref,
   } from '../../../utils/forgeAttachments';
   import { openForgeAttachment } from '../../../utils/forgeAttachmentActions';
+  import { forgeImageMenuTag } from '../../../utils/imageMenuActions';
   import {
     acquireForgeAttachment,
     type ResolvedForgeAttachment,
@@ -129,6 +130,7 @@
       title={browserUrl ?? undefined}
       loading="lazy"
       data-markdown-image-src={parsed?.href}
+      {...forgeImageMenuTag(token.href)}
       onerror={handleDecodeError}
     />
   </span>
