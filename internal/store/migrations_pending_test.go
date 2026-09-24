@@ -89,3 +89,16 @@ func TestRefusePendingMigrationsCreatesANewDatabase(t *testing.T) {
 		})
 	}
 }
+
+// TestRefusePendingMigrationsLeavesANewerSchemaToItsOwnRefusal: a database
+// a newer build migrated has nothing pending here; the open refuses it as
+// too new, so the launcher shows that failure instead of running a trial.
+func TestRefusePendingMigrationsLeavesANewerSchemaToItsOwnRefusal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-overflow.db")
+	stampAhead(t, path, latestMigrationVersionForTest()+2, 0)
+	_, err := NewWithOptions(path, Options{RefusePendingMigrations: true})
+	var tooNew *SchemaTooNewError
+	if !errors.As(err, &tooNew) {
+		t.Fatalf("open = %v, want a SchemaTooNewError", err)
+	}
+}
