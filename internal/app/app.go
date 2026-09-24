@@ -182,9 +182,12 @@ type App struct {
 	threadRequestsWG sync.WaitGroup
 	// threadSearchIndex is the boot-time search index build.
 	threadSearchIndex threadSearchIndexBuild
-	remoteWatchWG     sync.WaitGroup
-	remoteStartsOnce  sync.Once
-	remoteStarts      *keyedlock.Registry
+	// firstReads holds heavy post-boot work until a client has read its
+	// catalogs. See app_first_reads.go.
+	firstReads       firstReadsGate
+	remoteWatchWG    sync.WaitGroup
+	remoteStartsOnce sync.Once
+	remoteStarts     *keyedlock.Registry
 	// providerTerminals is the per-connection take-control bookkeeping for
 	// claude-tui PTYs: which caller armed which attachment, so a dead socket
 	// releases exactly its own claim and its input lease. Zero value ready.

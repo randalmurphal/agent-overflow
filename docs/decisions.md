@@ -62,6 +62,9 @@ qualifies costs nothing.
 - The Windows launcher fails a boot only when its progress stalls for 30 s,
   and names the stalled phase. A slow boot that keeps reporting is never torn
   down.
+- Heavy post-boot scans, such as the search index build, wait for the first
+  client's `ListThreads` and `ListProjects` answers, or 15 s after the backend
+  starts answering when no page reads.
 
 ## Streaming and reveal
 
