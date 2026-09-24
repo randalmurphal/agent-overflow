@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -309,6 +310,101 @@ func TestPointerForkNeverReadsAPartlyDeletedSource(t *testing.T) {
 	}
 	if pauses == 0 {
 		t.Fatal("the source drained in one chunk; the fixture must span several")
+	}
+}
+
+// TestPointerForkOfADeletingSourceIsRefused: from the start of a paced
+// delete, a fork of the thread is refused, whatever its cut, and leaves no
+// thread behind; so is a fork of the thread once it is gone. A delete that
+// ends, finished or failed, stops refusing.
+func TestPointerForkOfADeletingSourceIsRefused(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "S")
+	mustExec(t, s.db, `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 1199)
+		INSERT INTO items(thread_id,id,turn_index,item_index,kind,role,status,summary,meta,created_at,updated_at)
+		SELECT 'S', 'r' || i, i / 10, i % 10, 'assistant_text', 'assistant', 'completed', 'row', '{}', 1, 1 FROM n`)
+	refused := func(fork string, cut ForkCut) {
+		t.Helper()
+		err := s.CreatePointerFork(makeThread(fork, "claude"), "S", cut, testInterruptedSummary, 999)
+		if !errors.Is(err, ErrForkSourceDeleted) {
+			t.Errorf("fork %s of a deleting source = %v, want ErrForkSourceDeleted", fork, err)
+		}
+		if _, err := s.GetThread(fork); !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("a refused fork left thread %s: %v", fork, err)
+		}
+	}
+	pauses := 0
+	if err := s.DeleteThreadPaced("S", func() {
+		pauses++
+		refused(fmt.Sprintf("N%d", pauses), ForkCut{})
+		refused(fmt.Sprintf("E%d", pauses), throughTurn(-1))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if pauses == 0 {
+		t.Fatal("the source drained in one chunk; the fixture must span several")
+	}
+	refused("after", ForkCut{})
+	if s.threadDeletes.active("S") {
+		t.Fatal("a finished delete still marks its thread")
+	}
+	if err := s.DeleteThreadPaced("missing", nil); err == nil {
+		t.Fatal("deleting a missing thread succeeded")
+	}
+	if s.threadDeletes.active("missing") {
+		t.Fatal("a failed delete still marks its thread")
+	}
+}
+
+// TestPointerForkAdmittedAsTheDeleteBeginsIsDetached: a fork whose
+// transaction is open when the source's delete begins passed the check
+// before the delete marked the source, and the delete's detach waits for
+// the writer connection, so the fork commits first and the delete detaches
+// it: it keeps its own rows, loses the source's, and its divider records
+// the deletion.
+func TestPointerForkAdmittedAsTheDeleteBeginsIsDetached(t *testing.T) {
+	s := newTestStore(t)
+	seedForkSource(t, s, "S", []Item{
+		{ID: "u0", TurnIndex: 0, ItemIndex: 0, Kind: "user_text", Role: "user", Status: "completed", Summary: "hi", Meta: "{}"},
+		{ID: "a0", TurnIndex: 0, ItemIndex: 1, Kind: "assistant_text", Role: "assistant", Status: "streaming", Summary: "partial", Meta: "{}"},
+	})
+	reports := watchForkMoves(s)
+	deleted := make(chan error, 1)
+	var started bool
+	// The fork settles S's streaming row inside its transaction, which is
+	// where the delete begins.
+	summarise := func(summary string) string {
+		if !started {
+			started = true
+			go func() { deleted <- s.DeleteThreadPaced("S", nil) }()
+			for deadline := time.Now().Add(5 * time.Second); !s.threadDeletes.active("S"); {
+				if time.Now().After(deadline) {
+					t.Fatal("the delete never began")
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}
+		return testInterruptedSummary(summary)
+	}
+	if err := s.CreatePointerFork(makeThread("N", "claude"), "S", ForkCut{}, summarise, 999); err != nil {
+		t.Fatalf("a fork admitted before the delete = %v", err)
+	}
+	if !started {
+		t.Fatal("the fork settled no row, so the delete never began inside it")
+	}
+	if err := <-deleted; err != nil {
+		t.Fatalf("delete = %v", err)
+	}
+	if _, err := s.GetThread("S"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("source after the delete: %v", err)
+	}
+	requireIDs(t, "N lineage", forkLineage(t, s, "N"), nil)
+	requireIDs(t, "N rows", itemIDs(forkRows(t, s, "N")), []string{"a0"})
+	if _, origin := forkDivider(t, s, "N"); !origin.SourceDeleted {
+		t.Fatalf("N divider = %+v", origin)
+	}
+	if got, want := reports.take(), [][]string{{"N"}}; !slices.EqualFunc(got, want, slices.Equal) {
+		t.Fatalf("the delete reported %v, want %v", got, want)
 	}
 }
 

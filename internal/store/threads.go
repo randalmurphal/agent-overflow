@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 
 	"agent-overflow/internal/threadmode"
 )
@@ -990,8 +991,13 @@ func (s *Store) DeleteThread(id string) error {
 // a crash mid-drain leaves a thread a retried delete completes.
 //
 // Forks that read through the thread detach first, in their own
-// transaction, so none of them ever reads a partly drained history.
+// transaction, so none of them ever reads a partly drained history. From
+// the start of the delete a fork of the thread is refused
+// (ErrForkSourceDeleted), so that detach covers every fork it has: one
+// admitted before it began has committed by the time the detach's
+// transaction gets the writer connection.
 func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
+	defer s.threadDeletes.begin(id)()
 	if err := s.detachForkDescendants(id); err != nil {
 		return err
 	}
@@ -1012,16 +1018,11 @@ func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 		return fmt.Errorf("store: begin delete thread %s: %w", id, err)
 	}
 	defer tx.Rollback()
-	defer dropForkMovesTx(tx)
 	// What the chunk loop could not name: the thread's title row and the
 	// index rows of its imported history. The mapping table cascades with
 	// the thread, but the contentless FTS rows it names do not, so they
 	// come off here rather than being left behind.
 	if err := deleteThreadSearchThreadTx(tx, id); err != nil {
-		return err
-	}
-	// A fork made while the items drained.
-	if err := s.detachForkDescendantsTx(tx, id); err != nil {
 		return err
 	}
 	result, err := tx.Exec(`DELETE FROM threads WHERE id = ?`, id)
@@ -1031,10 +1032,42 @@ func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 	if err := requireRowsAffected(result, fmt.Sprintf("store: delete thread %s", id)); err != nil {
 		return err
 	}
-	if err := s.commitReportingForks(tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit delete thread %s: %w", id, err)
 	}
 	return nil
+}
+
+// threadDeletes counts the DeleteThreadPaced calls in progress per
+// thread. A paced delete spans several transactions, and a fork admitted
+// between them would read rows the drain is removing.
+type threadDeletes struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+// begin marks id as being deleted until the returned function runs.
+func (d *threadDeletes) begin(id string) (end func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.n == nil {
+		d.n = make(map[string]int)
+	}
+	d.n[id]++
+	return func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if d.n[id]--; d.n[id] == 0 {
+			delete(d.n, id)
+		}
+	}
+}
+
+// active reports whether a delete of id is in progress.
+func (d *threadDeletes) active(id string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.n[id] > 0
 }
 
 // deleteThreadItemsChunk removes one bounded slice while aggregating the
