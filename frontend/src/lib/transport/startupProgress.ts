@@ -169,6 +169,11 @@ export function startupStatusText(startup: Pick<TransportStartup, 'detail' | 'up
   return `Finishing update to ${displayVersion(startup.updatingTo)}: ${lowerFirst(detail)}`;
 }
 
+/** The step, as "Step 3 of 7", or '' when the phase reports no steps. */
+export function startupStepText(startup: Pick<TransportStartup, 'step' | 'steps'>): string {
+  return startup.steps > 0 ? `Step ${startup.step} of ${startup.steps}` : '';
+}
+
 /**
  * The step and elapsed time, as "Step 3 of 7 · 0:12 elapsed", or only the
  * parts the report has. The Windows launcher's loading page writes the
@@ -176,7 +181,8 @@ export function startupStatusText(startup: Pick<TransportStartup, 'detail' | 'up
  */
 export function startupMetaText(startup: Pick<TransportStartup, 'step' | 'steps' | 'elapsedMs'>): string {
   const parts: string[] = [];
-  if (startup.steps > 0) parts.push(`Step ${startup.step} of ${startup.steps}`);
+  const step = startupStepText(startup);
+  if (step) parts.push(step);
   if (startup.elapsedMs >= 1000) {
     const seconds = Math.floor(startup.elapsedMs / 1000);
     parts.push(`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} elapsed`);

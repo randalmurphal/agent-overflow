@@ -5,6 +5,7 @@ import {
   sameTransportStartup,
   startupMetaText,
   startupStatusText,
+  startupStepText,
   transportStartup,
 } from './startupProgress';
 
@@ -60,5 +61,10 @@ describe('startup status text', () => {
     expect(startupMetaText({ step: 3, steps: 7, elapsedMs: 72_400 })).toBe('Step 3 of 7 · 1:12 elapsed');
     expect(startupMetaText({ step: 0, steps: 0, elapsedMs: 5_000 })).toBe('0:05 elapsed');
     expect(startupMetaText({ step: 0, steps: 0, elapsedMs: 999 })).toBe('');
+  });
+
+  it('writes the step alone for the sidebar, which does not repeat the clock', () => {
+    expect(startupStepText({ step: 3, steps: 7 })).toBe('Step 3 of 7');
+    expect(startupStepText({ step: 0, steps: 0 })).toBe('');
   });
 });

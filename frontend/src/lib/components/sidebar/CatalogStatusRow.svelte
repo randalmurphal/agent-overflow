@@ -1,11 +1,13 @@
 <script lang="ts">
   // One computer whose threads or projects have not loaded. Loading reads
-  // the computer's connection: a starting backend names its boot phase, an
-  // unreachable one says it is connecting. A failed load shows its error
-  // and a Retry; the catalog store keeps retrying on its own meanwhile.
+  // the computer's connection: a starting backend names its boot phase and
+  // step, an unreachable one says it is connecting. The elapsed clock is
+  // not repeated here; the startup screen or the connection banner for the
+  // same computer already ticks it. A failed load shows its error and a
+  // Retry; the catalog store keeps retrying on its own meanwhile.
   import type { BackendKey } from '../../transport/backendKey';
   import { isTerminalConnectionStatus } from '../../transport/connectionRefusal';
-  import { startupMetaText, startupStatusText } from '../../transport/startupProgress';
+  import { startupStatusText, startupStepText } from '../../transport/startupProgress';
   import { retryCatalogLoad } from '../../stores/catalogLoad.svelte';
   import { getSettings } from '../../stores/settings.svelte';
   import { getTransportStatusFor } from '../../stores/transportStatus.svelte';
@@ -30,7 +32,7 @@
     if (isTerminalConnectionStatus(status.status)) return 'Not connected.';
     return 'Connecting…';
   });
-  let meta = $derived(startup ? startupMetaText(startup) : '');
+  let meta = $derived(startup ? startupStepText(startup) : '');
   let prefix = $derived(name ? `${name}: ` : '');
 </script>
 
@@ -59,7 +61,7 @@
     <div class="min-w-0 flex-1">
       <p class="[overflow-wrap:anywhere]" data-testid="sidebar-catalog-loading-label">{prefix}{label}</p>
       {#if meta}
-        <p class="mt-0.5 opacity-80" data-testid="sidebar-catalog-loading-meta">{meta}</p>
+        <p class="mt-0.5 opacity-80 tabular-nums" data-testid="sidebar-catalog-loading-meta">{meta}</p>
       {/if}
     </div>
   </div>

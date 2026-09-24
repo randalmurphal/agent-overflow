@@ -174,7 +174,7 @@ describe('<ProjectsSection>', () => {
       await tick();
       expect(getByTestId('sidebar-catalog-loading')).toHaveAttribute('data-status', 'starting');
       expect(getByTestId('sidebar-catalog-loading-label')).toHaveTextContent('Applying migration 3 of 7 add_index');
-      expect(getByTestId('sidebar-catalog-loading-meta')).toHaveTextContent('Step 3 of 7 · 1:12 elapsed');
+      expect(getByTestId('sidebar-catalog-loading-meta')).toHaveTextContent(/^Step 3 of 7$/);
       expect(queryByTestId('sidebar-projects-empty')).toBeNull();
 
       __setTransportStatusForTest({
