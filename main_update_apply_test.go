@@ -389,10 +389,11 @@ func TestDesktopHelperShowsWhyItCannotRun(t *testing.T) {
 		if page := r.ui.lastPage(t); page.Title != "The update could not start." {
 			t.Fatalf("page = %+v", page)
 		}
+		// Only the lock's holder writes the record; the next launch
+		// recovers it.
 		loaded, _, err := supervise.LoadDesktopRecord(r.layout())
-		if err != nil || loaded.Update.State != supervise.UpdateFailed || loaded.Update.Reported ||
-			loaded.Update.Reason != "another Agent Overflow backend was using the data folder" {
-			t.Fatalf("record = %+v, %v; want failed and left for the next launch to report", loaded.Update, err)
+		if err != nil || loaded.Update.State != supervise.UpdatePending || loaded.Update.Attempts != 0 {
+			t.Fatalf("record = %+v, %v; want it left pending as the handoff wrote it", loaded.Update, err)
 		}
 		if r.trialRuns() != 0 || len(r.started()) != 0 {
 			t.Fatal("the helper ran or relaunched without the lock")
@@ -480,13 +481,14 @@ func TestDesktopWaitFlagsBelongToTheDesktopBoot(t *testing.T) {
 	}
 }
 
-// TestHelperSettlesAnUpdateWhoseAppDidNotExit: an app that outlives the
-// wait fails its update before anything ran; one that exited is not waited
-// on.
-func TestHelperSettlesAnUpdateWhoseAppDidNotExit(t *testing.T) {
+// TestHelperLeavesTheRecordOfAnAppThatDidNotExit: the helper of an app that
+// outlives the wait writes nothing, since that app holds the backend lock;
+// the next launch settles the update under the lock and reports it. An app
+// that exited is not waited on.
+func TestHelperLeavesTheRecordOfAnAppThatDidNotExit(t *testing.T) {
 	const id = "0123456789abcdef"
 	r := newDesktopApplyRig(t)
-	r.desktopUpdateFixture(id, 0)
+	record, _ := r.desktopUpdateFixture(id, 0)
 	sleeper := exec.Command("sleep", "30")
 	if err := sleeper.Start(); err != nil {
 		t.Fatal(err)
@@ -499,24 +501,19 @@ func TestHelperSettlesAnUpdateWhoseAppDidNotExit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	flags := desktopApplyFlags{id: id, wait: running}
-	if err := waitForReplacedApp(flags, 200*time.Millisecond, time.Now); err == nil ||
+	if err := waitForReplacedApp(running, 200*time.Millisecond); err == nil ||
 		!errors.Is(err, supervise.ErrProcessRunning) {
 		t.Fatalf("waiting on a running app = %v", err)
 	}
 	loaded, _, err := supervise.LoadDesktopRecord(r.layout())
-	if err != nil || loaded.Update.State != supervise.UpdateFailed || loaded.Update.Reported ||
-		loaded.Update.Reason != "the previous version did not exit" {
-		t.Fatalf("record = %+v, %v", loaded.Update, err)
+	if err != nil || loaded.Update.State != supervise.UpdatePending || loaded.Update.Attempts != 0 {
+		t.Fatalf("record = %+v, %v; want it left as the handoff wrote it", loaded.Update, err)
 	}
-
-	// One that started a trial is left for the recovery table.
-	r.desktopUpdateFixture(id, 1)
-	if err := waitForReplacedApp(flags, 200*time.Millisecond, time.Now); err == nil {
-		t.Fatal("waiting on a running app succeeded")
-	}
-	if loaded, _, err := supervise.LoadDesktopRecord(r.layout()); err != nil || loaded.Update.State != supervise.UpdatePending {
-		t.Fatalf("record = %+v, %v; want the tried update pending", loaded.Update, err)
+	b, _ := r.boot()
+	b.update.Version = record.Update.From
+	plan := b.reconcile(t.Context())
+	if !plan.launch || plan.failedTo != "2.0.0" || plan.failedReason != "the update was interrupted before its trial started" {
+		t.Fatalf("the next launch = %+v; want the update settled and reported", plan)
 	}
 
 	if err := sleeper.Process.Kill(); err != nil {
@@ -524,14 +521,101 @@ func TestHelperSettlesAnUpdateWhoseAppDidNotExit(t *testing.T) {
 	}
 	_ = sleeper.Wait()
 	started := time.Now()
-	if err := waitForReplacedApp(flags, 10*time.Second, time.Now); err != nil || time.Since(started) > 5*time.Second {
+	if err := waitForReplacedApp(running, 10*time.Second); err != nil || time.Since(started) > 5*time.Second {
 		t.Fatalf("waiting on an exited app = %v after %s", err, time.Since(started))
 	}
 }
 
+// TestTwoHelpersForOneUpdateRunOneTrial: a second helper of the same record
+// that finds the lock taken while the first is between its lock and its
+// trial leaves the record alone, and the first runs the one trial.
+func TestTwoHelpersForOneUpdateRunOneTrial(t *testing.T) {
+	const id = "0123456789abcdef"
+	r := newDesktopApplyRig(t)
+	_, install := r.desktopUpdateFixture(id, 0)
+	flags := desktopApplyFlags{id: id, relaunch: []string{"--data-dir", r.root}}
+
+	snapshotting := make(chan struct{})
+	proceed := make(chan struct{})
+	release := sync.OnceFunc(func() { close(proceed) })
+	t.Cleanup(release)
+	var once sync.Once
+	winner := r.applier(flags, "prepare", func(u *supervise.DesktopUpdate) {
+		// The snapshot reads the schema under the lock, before the trial
+		// is counted: the winner holds it here until the loser has given
+		// up.
+		u.SchemaVersion = func() (int, error) {
+			once.Do(func() {
+				close(snapshotting)
+				<-proceed
+			})
+			return 88, nil
+		}
+	})
+	loserUI := &fakeApplyUI{}
+	loser := r.applier(flags, "prepare", nil)
+	loser.ui = loserUI
+	loser.acquireLock = func(ctx context.Context) (*os.File, error) {
+		lock, err := waitForBackendInstanceLock(ctx, r.dir, 300*time.Millisecond)
+		if err != nil {
+			return nil, err
+		}
+		return lock.file, nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		winner.run(t.Context())
+	}()
+	select {
+	case <-snapshotting:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first helper did not reach its snapshot")
+	}
+	loser.run(t.Context())
+	if page := loserUI.lastPage(t); page.Title != "The update could not start." {
+		t.Fatalf("the second helper's page = %+v", page)
+	}
+	loaded, _, err := supervise.LoadDesktopRecord(r.layout())
+	if err != nil || loaded.Update.State != supervise.UpdatePending || loaded.Update.Attempts != 0 {
+		t.Fatalf("record after the second helper = %+v, %v; want the first helper's, untouched", loaded.Update, err)
+	}
+
+	release()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the first helper did not finish")
+	}
+	if runs := r.trialRuns(); runs != 1 {
+		t.Fatalf("%d trials ran, want one", runs)
+	}
+	loaded, _, err = supervise.LoadDesktopRecord(r.layout())
+	if err != nil || loaded.Update.State != supervise.UpdateCommitted || loaded.Update.Attempts != 1 {
+		t.Fatalf("record = %+v, %v; want committed after one attempt", loaded.Update, err)
+	}
+	if got, err := os.ReadFile(install); err != nil || string(got) != "new" {
+		t.Fatalf("the install path holds %q (%v), want the target", got, err)
+	}
+	if starts := r.started(); len(starts) != 1 || r.ui.quits != 1 {
+		t.Fatalf("started %q and quit %d times; want the first helper's one relaunch", starts, r.ui.quits)
+	}
+}
+
+// latestSchema is this build's migration version.
+func latestSchema(t *testing.T) int {
+	t.Helper()
+	var pending *store.MigrationsPendingError
+	if !errors.As(store.PendingMigrations(1), &pending) {
+		t.Fatal("this build has nothing to migrate from v1")
+	}
+	return pending.Build
+}
+
 // boot is a desktop boot's half over the rig, as reconcileDesktopUpdate
 // builds it under the backend lock, with helpers recorded rather than
-// started.
+// started and a database at this build's schema.
 func (r *desktopApplyRig) boot() (*desktopBoot, *[][]string) {
 	r.t.Helper()
 	r.release()
@@ -542,16 +626,19 @@ func (r *desktopApplyRig) boot() (*desktopBoot, *[][]string) {
 	r.mu.Lock()
 	r.lock = lock
 	r.mu.Unlock()
-	b, err := newDesktopBoot(lock.file)
-	if err != nil {
-		r.t.Fatal(err)
+	gate := newDesktopGate(lock.file)
+	if gate.boot == nil {
+		r.t.Fatalf("the boot has no update half: %v", gate.unavailable)
 	}
+	b := gate.boot
+	latest := latestSchema(r.t)
+	b.update.SchemaVersion = func() (int, error) { return latest, nil }
 	var helpers [][]string
 	b.startHelper = func(executable string, args []string, logPath string) error {
 		helpers = append(helpers, append([]string{executable, logPath}, args...))
 		return r.startErr
 	}
-	return &b, &helpers
+	return b, &helpers
 }
 
 func TestDesktopBootHandsTheRecordToItsHelper(t *testing.T) {
@@ -590,25 +677,80 @@ func TestDesktopBootHandsTheRecordToItsHelper(t *testing.T) {
 	if plan := b.reconcile(t.Context()); plan.launch || plan.page == nil || plan.page.Title != "The update could not resume." {
 		t.Fatalf("plan = %+v", plan)
 	}
+}
 
-	// The gate hands a database the App refused to migrate live to this
-	// version's helper, and nothing else.
-	r.startErr = nil
-	b, helpers = r.boot()
-	refused := fmt.Errorf("app: open store: %w", &store.MigrationsPendingError{Database: 88, Build: 90, Pending: 2})
-	if handled, page := b.startFailed(refused); !handled || page != nil {
-		t.Fatalf("startFailed = %v, %+v; want the database handed to the helper", handled, page)
+// TestDesktopBootMigratesBeforeAnyWindow: a launch whose database this
+// build would migrate starts this version's helper with the database's
+// schema and ends without launching or showing a page; any other database
+// launches.
+func TestDesktopBootMigratesBeforeAnyWindow(t *testing.T) {
+	r := newDesktopApplyRig(t)
+	latest := latestSchema(t)
+
+	b, helpers := r.boot()
+	b.update.SchemaVersion = func() (int, error) { return latest - 1, nil }
+	plan := b.reconcile(t.Context())
+	if plan.launch || plan.page != nil || len(*helpers) != 1 {
+		t.Fatalf("plan = %+v, helpers %q; want the database handed to the helper", plan, *helpers)
 	}
-	if got := (*helpers)[0]; got[0] != b.update.Executable || !reflect.DeepEqual(got[2:5], []string{supervise.DesktopApplyCommand, "--migrate", "88"}) {
-		t.Fatalf("the migration helper = %q", got)
+	helper := (*helpers)[0]
+	if helper[0] != b.update.Executable || helper[1] != b.logPath {
+		t.Fatalf("the migration helper = %q", helper)
 	}
-	if handled, _ := b.startFailed(errors.New("store: disk I/O error")); handled || len(*helpers) != 1 {
-		t.Fatalf("another start failure was handed on (%v, %d helpers)", handled, len(*helpers))
+	flags, err := parseDesktopApplyFlags(helper[3:])
+	if err != nil || !flags.migrate || flags.schema != latest-1 || !reflect.DeepEqual(flags.relaunch, b.relaunch) {
+		t.Fatalf("the migration helper's flags = %+v, %v", flags, err)
 	}
+
+	// A helper that cannot start says so and changes nothing.
 	r.startErr = errors.New("exec format error")
-	if handled, page := b.startFailed(refused); !handled || page == nil ||
-		page.Title != "Agent Overflow could not start the database upgrade this version needs." || page.Log != b.logPath {
-		t.Fatalf("a helper that cannot start = %v, %+v", handled, page)
+	b, _ = r.boot()
+	b.update.SchemaVersion = func() (int, error) { return latest - 1, nil }
+	if plan := b.reconcile(t.Context()); plan.launch || plan.page == nil ||
+		plan.page.Title != "Agent Overflow could not start the database upgrade this version needs." || plan.page.Log != b.logPath {
+		t.Fatalf("plan = %+v", plan)
+	}
+	r.startErr = nil
+
+	for _, tc := range []struct {
+		name string
+		read func() (int, error)
+	}{
+		{"the current schema", func() (int, error) { return latest, nil }},
+		{"a new database", func() (int, error) { return 0, nil }},
+		{"no database file", databaseSchemaVersion(r.dir)},
+		// The store's open says why; its refusal still guards the database.
+		{"an unreadable database", func() (int, error) { return 0, errors.New("file is not a database") }},
+	} {
+		if tc.name == "no database file" {
+			if err := os.Remove(filepath.Join(r.dir, "agent-overflow.db")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		b, helpers := r.boot()
+		b.update.SchemaVersion = tc.read
+		if plan := b.reconcile(t.Context()); !plan.launch || plan.page != nil || len(*helpers) != 0 {
+			t.Fatalf("%s: plan = %+v, helpers %q; want a launch", tc.name, plan, *helpers)
+		}
+	}
+}
+
+// TestDesktopStoreRefusalShowsWhy: a database the store refused although
+// the boot's check did not route it to the helper shows the page, with the
+// refusal as the reason, and starts nothing.
+func TestDesktopStoreRefusalShowsWhy(t *testing.T) {
+	r := newDesktopApplyRig(t)
+	b, helpers := r.boot()
+	gate := desktopGate{boot: b, logPath: b.logPath, logf: b.logf}
+	refused := fmt.Errorf("app: open store: %w", &store.MigrationsPendingError{Database: 88, Build: 90, Pending: 2})
+	page := gate.startFailed(refused)
+	if page == nil || page.Title != "Agent Overflow could not start the database upgrade this version needs." ||
+		!strings.Contains(page.Detail, "database is at schema v88") || !strings.Contains(page.Detail, "Nothing was changed.") ||
+		page.Log != b.logPath || len(*helpers) != 0 {
+		t.Fatalf("page = %+v, helpers %q", page, *helpers)
+	}
+	if page := gate.startFailed(errors.New("store: disk I/O error")); page != nil {
+		t.Fatalf("another start failure showed %+v", page)
 	}
 }
 

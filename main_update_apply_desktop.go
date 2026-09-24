@@ -28,11 +28,12 @@ import (
 // RetryMigration the Retry button calls. It holds the desktop's
 // single-instance identity, so a launch while it runs shows it.
 type desktopApplyWindow struct {
-	app     *application.App
+	// quitApp is the application's Quit, which asks shouldQuit.
+	quitApp func()
 	pages   *desktopPages
 	applier *desktopApplier
 	// running is set while the loading page shows: closing the window then
-	// hides it, and the helper continues.
+	// hides it, the application refuses to quit, and the helper continues.
 	running atomic.Bool
 }
 
@@ -48,7 +49,28 @@ func (w *desktopApplyWindow) fail(page startuppage.Failure) {
 	w.pages.showFailure(page)
 }
 
-func (w *desktopApplyWindow) quit() { w.app.Quit() }
+// quit ends the helper. Its own quit goes through shouldQuit too, so the
+// run ends first.
+func (w *desktopApplyWindow) quit() {
+	w.running.Store(false)
+	w.quitApp()
+}
+
+// shouldQuit is the application's ShouldQuit, which every quit asks: Cmd+Q,
+// the application menu, the last window closing and the helper's own quit.
+// A quit while the update or the migration runs is refused.
+func (w *desktopApplyWindow) shouldQuit() bool { return !w.running.Load() }
+
+// applicationOptions is the helper's application: the window's pages and
+// service, the desktop's single-instance identity and its quit rule.
+func (w *desktopApplyWindow) applicationOptions(title string) application.Options {
+	opts := desktopApplicationOptions(title)
+	opts.SingleInstance = desktopSingleInstanceOptions(w.pages.attached)
+	opts.Services = []application.Service{application.NewService(w)}
+	opts.Assets = application.AssetOptions{Handler: w.pages}
+	opts.ShouldQuit = w.shouldQuit
+	return opts
+}
 
 // RetryMigration is bound to the page of a database upgrade the failure
 // memory stopped. It runs the upgrade again, once.
@@ -107,12 +129,8 @@ func runDesktopApplyWindow(flags desktopApplyFlags) int {
 		logf: log.Printf,
 	}
 
-	opts := desktopApplicationOptions(title)
-	opts.SingleInstance = desktopSingleInstanceOptions(window.pages.attached)
-	opts.Services = []application.Service{application.NewService(window)}
-	opts.Assets = application.AssetOptions{Handler: window.pages}
-	app := application.New(opts)
-	window.app = app
+	app := application.New(window.applicationOptions(title))
+	window.quitApp = app.Quit
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		// At the saved placement, which this window does not save: the
 		// placement belongs to the app.

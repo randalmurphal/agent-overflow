@@ -639,11 +639,14 @@ func TestDesktopReconcileRecoversAPendingUpdate(t *testing.T) {
 // fakes for its preflight and its helper's start.
 type handoffRig struct {
 	*desktopRig
-	install    string
+	install string
+	// tempDir stands for the temp directory the framework downloads under.
+	tempDir    string
 	downloaded string
 	answer     Preflight
 	startErr   error
 	started    [][]string
+	logged     []string
 }
 
 func newHandoffRig(t *testing.T) *handoffRig {
@@ -652,21 +655,30 @@ func newHandoffRig(t *testing.T) *handoffRig {
 	writeFile(t, h.db, "live")
 	h.install = filepath.Join(h.apps, "agent-overflow")
 	writeExecutable(t, h.install, "old")
-	// The framework writes the download without the executable bit.
-	h.downloaded = filepath.Join(t.TempDir(), "wails-update-1", "agent-overflow")
-	if err := os.MkdirAll(filepath.Dir(h.downloaded), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(h.downloaded, []byte("new"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	h.tempDir = t.TempDir()
+	h.downloaded = filepath.Join(h.tempDir, frameworkDownloadPrefix+"1", "agent-overflow")
+	h.download(t, h.downloaded)
 	return h
+}
+
+// download writes a release at path as the framework does: without the
+// executable bit, beside the archive it came in.
+func (h *handoffRig) download(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(filepath.Dir(path), "agent-overflow.tar.gz"), "archive")
 }
 
 func (h *handoffRig) handoff() DesktopHandoff {
 	return DesktopHandoff{
 		DataDir: h.dataDir, DataDirFlag: h.dataDir, Version: "1.0.0", Executable: h.install, GOOS: "linux",
 		RelaunchArgs: []string{"--data-dir", h.dataDir},
+		TempDir:      h.tempDir,
 		Preflight: func(_ context.Context, binary string) (Preflight, error) {
 			info, err := os.Stat(binary)
 			if err != nil {
@@ -681,7 +693,7 @@ func (h *handoffRig) handoff() DesktopHandoff {
 			h.started = append(h.started, append([]string{executable, logPath}, args...))
 			return h.startErr
 		},
-		Logf: func(string, ...any) {},
+		Logf: func(format string, args ...any) { h.logged = append(h.logged, fmt.Sprintf(format, args...)) },
 	}
 }
 
@@ -730,6 +742,9 @@ func TestDesktopHandOffStagesRecordsAndStartsTheTargetsHelper(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o755 || exists(h.downloaded) {
 		t.Fatalf("staged = %v, %v; want the download moved beside the install with its mode", info, err)
 	}
+	if exists(filepath.Dir(h.downloaded)) || !exists(h.tempDir) {
+		t.Fatal("the framework's download folder was left, or more than it was removed")
+	}
 	self, err := CurrentProcessRef()
 	if err != nil {
 		t.Fatal(err)
@@ -751,6 +766,76 @@ func TestDesktopHandOffStagesRecordsAndStartsTheTargetsHelper(t *testing.T) {
 	if err := handoff.HandOff(context.Background(), h.downloaded, "2.0.0"); err == nil || !strings.Contains(err.Error(), "still in progress") {
 		t.Fatalf("a second HandOff = %v, want the pending update's refusal", err)
 	}
+}
+
+// TestDesktopHandOffRemovesOnlyTheFrameworksDownloadFolder: the handoff
+// replaces the framework's Restart, which removed the folder it downloaded
+// into. The handoff removes that folder once the record names the staged
+// copy, and leaves any other folder, saying so.
+func TestDesktopHandOffRemovesOnlyTheFrameworksDownloadFolder(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// rel is the download under the temp directory; outside places it
+		// in another directory.
+		rel     string
+		outside bool
+		// removed is the folder under the temp directory that goes.
+		removed string
+	}{
+		{name: "a bundle extracted in a subfolder", rel: filepath.Join(frameworkDownloadPrefix+"7", "extracted", "agent-overflow"), removed: frameworkDownloadPrefix + "7"},
+		{name: "a folder the framework did not name", rel: filepath.Join("other-1", "agent-overflow")},
+		{name: "the temp directory itself", rel: "agent-overflow"},
+		{name: "outside the temp directory", rel: filepath.Join(frameworkDownloadPrefix+"1", "agent-overflow"), outside: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHandoffRig(t)
+			if err := os.RemoveAll(filepath.Dir(h.downloaded)); err != nil {
+				t.Fatal(err)
+			}
+			base := h.tempDir
+			if tc.outside {
+				base = t.TempDir()
+			}
+			h.downloaded = filepath.Join(base, tc.rel)
+			h.download(t, h.downloaded)
+			if err := h.handoff().HandOff(context.Background(), h.downloaded, "2.0.0"); err != nil {
+				t.Fatal(err)
+			}
+			if exists(h.downloaded) || h.record(t).Update.State != UpdatePending {
+				t.Fatal("the download was not handed off")
+			}
+			archive := filepath.Join(filepath.Dir(h.downloaded), "agent-overflow.tar.gz")
+			if tc.removed != "" {
+				if exists(filepath.Join(h.tempDir, tc.removed)) || !exists(h.tempDir) {
+					t.Fatal("the framework's download folder was left, or the temp directory went with it")
+				}
+				return
+			}
+			if !exists(archive) || !exists(h.tempDir) {
+				t.Fatal("a folder the framework did not download into was removed")
+			}
+			if len(h.logged) == 0 || !strings.Contains(strings.Join(h.logged, "\n"), "is not in a download folder of the updater") {
+				t.Fatalf("logged %q; want the folder left named", h.logged)
+			}
+		})
+	}
+
+	t.Run("a folder that cannot be removed", func(t *testing.T) {
+		h := newHandoffRig(t)
+		if err := os.Chmod(h.tempDir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(h.tempDir, 0o700) })
+		if err := h.handoff().HandOff(context.Background(), h.downloaded, "2.0.0"); err != nil {
+			t.Fatalf("HandOff = %v; a folder left behind does not stop the update", err)
+		}
+		if len(h.started) != 1 || !exists(filepath.Dir(h.downloaded)) {
+			t.Fatalf("started %q; want the helper started and the folder left", h.started)
+		}
+		if !strings.Contains(strings.Join(h.logged, "\n"), "remove the download folder") {
+			t.Fatalf("logged %q; want the failed removal named", h.logged)
+		}
+	})
 }
 
 func TestDesktopHandOffThatCannotStartItsHelperSettlesTheUpdate(t *testing.T) {

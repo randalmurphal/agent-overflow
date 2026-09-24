@@ -1775,19 +1775,24 @@ func (e *MigrationsPendingError) Error() string {
 }
 
 // refusePendingMigrations returns a MigrationsPendingError when an existing
-// database has migrations to apply. It only reads. A database without an
-// applied migration is new: there is nothing in it to protect.
+// database has migrations to apply (PendingMigrations). It only reads.
 func refusePendingMigrations(db *sql.DB) error {
-	var tables int
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'migration_versions'`).Scan(&tables); err != nil {
-		return fmt.Errorf("store: probe migration_versions: %w", err)
-	}
-	if tables == 0 {
-		return nil
-	}
-	applied, err := currentMigrationVersion(db)
-	if err != nil || applied == 0 {
+	applied, err := schemaVersion(db)
+	if err != nil {
 		return err
+	}
+	return PendingMigrations(applied)
+}
+
+// PendingMigrations returns a MigrationsPendingError when this build has
+// migrations to apply to a database at migration version applied, as
+// ReadSchemaVersion reads it, and nil otherwise. 0 is a database without an
+// applied migration, as is one without the migration_versions table or
+// without a file: it is new, and there is nothing in it to protect. A
+// version newer than this build's is SchemaTooNewError's, not this.
+func PendingMigrations(applied int) error {
+	if applied == 0 {
+		return nil
 	}
 	pending := pendingMigrationCount(applied)
 	if pending == 0 {
@@ -1878,7 +1883,9 @@ func ensureMigrationTable(db *sql.DB) error {
 // stopped backend left is checkpointed into the database on close, as by
 // any open, which keeps its content. The in-app update's snapshot reads it
 // under the data root's lock to name the schema a trial starts from
-// (supervise.FailedTrial).
+// (supervise.FailedTrial), and the desktop boot to ask PendingMigrations
+// before it opens a window. A missing file is an error that wraps
+// os.ErrNotExist.
 func ReadSchemaVersion(dbPath string) (version int, err error) {
 	if _, err := os.Stat(dbPath); err != nil {
 		return 0, fmt.Errorf("store: read the schema version: %w", err)
@@ -1893,6 +1900,12 @@ func ReadSchemaVersion(dbPath string) (version int, err error) {
 			err = fmt.Errorf("store: close %s after reading its schema version: %w", dbPath, closeErr)
 		}
 	}()
+	return schemaVersion(db)
+}
+
+// schemaVersion is the database's migration version, 0 without the
+// migration_versions table.
+func schemaVersion(db *sql.DB) (int, error) {
 	var tables int
 	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'migration_versions'`).Scan(&tables); err != nil {
 		return 0, fmt.Errorf("store: probe migration_versions: %w", err)

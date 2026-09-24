@@ -6,11 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,14 +25,14 @@ import (
 
 // The macOS and Linux desktop's in-app update and its no-live-migration gate
 // (docs/specs/app-update.md, "macOS and Linux desktop"). A downloaded target,
-// or a boot that refused to migrate its database live, starts this binary's
+// or a boot whose database this version would migrate, starts this binary's
 // helper mode (supervise.DesktopApplyCommand). The helper waits for the app
 // to exit, shows the loading page, runs the update or the migration under
 // the backend lock and starts the install path again. The desktop boot
-// reconciles the record before the store opens (desktopBoot). The steps and
-// the recovery table live in supervise.DesktopUpdate; this file owns argv,
-// the lock, the processes started and the pages shown. The window is
-// main_update_apply_desktop.go.
+// reconciles the record and checks the database before the store opens and
+// before any window (desktopGate). The steps and the recovery table live in
+// supervise.DesktopUpdate; this file owns argv, the lock, the processes
+// started and the pages shown. The window is main_update_apply_desktop.go.
 
 // desktopWaitTimeout bounds the helper's wait for the app that started it,
 // and the app's wait for the helper that started it, as the Wails swap's
@@ -45,7 +47,7 @@ type desktopApplyFlags struct {
 	// id is the update the helper applies, or the migration it resumes.
 	id string
 	// migrate starts a migration of the database at migration version
-	// schema, which the app refused to migrate live.
+	// schema, which the app does not migrate live.
 	migrate bool
 	schema  int
 	// wait is the app the helper waits for.
@@ -62,7 +64,7 @@ func parseDesktopApplyFlags(args []string) (desktopApplyFlags, error) {
 	set := flag.NewFlagSet(name, flag.ContinueOnError)
 	set.SetOutput(io.Discard)
 	set.StringVar(&flags.id, "id", "", "the update or migration to continue")
-	schema := set.Int("migrate", -1, "the migration version of a database the app refused to migrate live")
+	schema := set.Int("migrate", -1, "the migration version of a database the app does not migrate live")
 	set.IntVar(&flags.wait.PID, supervise.DesktopWaitPIDFlag, 0, "the app to wait for")
 	set.StringVar(&flags.wait.Start, supervise.DesktopWaitStartFlag, "", "its start time")
 	set.StringVar(&flags.dataDir, "data-dir", "", "the data root, as for a boot")
@@ -105,7 +107,7 @@ func runDesktopApply(args []string) int {
 		return 2
 	}
 	dataDirRoot = flags.dataDir
-	if err := waitForReplacedApp(flags, desktopWaitTimeout, time.Now); err != nil {
+	if err := waitForReplacedApp(flags.wait, desktopWaitTimeout); err != nil {
 		log.Printf("updater: %v", err)
 		return 1
 	}
@@ -113,23 +115,16 @@ func runDesktopApply(args []string) int {
 }
 
 // waitForReplacedApp waits for the app that started the helper to exit, so
-// the helper claims the single-instance identity and the lock after it. An
-// update whose app did not exit is settled failed: the next launch reports
-// it from the version still installed. One that already started a trial is
-// left to the recovery table (supervise.SettleDesktopUpdate).
-func waitForReplacedApp(flags desktopApplyFlags, timeout time.Duration, now func() time.Time) error {
-	err := supervise.WaitForExit(context.Background(), flags.wait, timeout)
-	if err == nil {
-		return nil
+// the helper claims the single-instance identity and the lock after it. The
+// record of an app that did not exit is left as it is: only a process that
+// holds the backend lock writes it, and that app holds it. The next launch
+// recovers it under the lock (a pending update without a trial settles
+// failed and is reported).
+func waitForReplacedApp(wait supervise.ProcessRef, timeout time.Duration) error {
+	if err := supervise.WaitForExit(context.Background(), wait, timeout); err != nil {
+		return fmt.Errorf("the app that started this helper (pid %d) did not exit; the next launch recovers the update: %w", wait.PID, err)
 	}
-	err = fmt.Errorf("the app that started this helper (pid %d) did not exit: %w", flags.wait.PID, err)
-	if !flags.migrate {
-		if settleErr := supervise.SettleDesktopUpdate(bootSettingsDir(), flags.id, supervise.UpdateFailed,
-			"the previous version did not exit", false, now()); settleErr != nil {
-			log.Printf("updater: update %s: %v", flags.id, settleErr)
-		}
-	}
-	return err
+	return nil
 }
 
 // desktopInstall is this binary as a helper or a relaunch starts it, and
@@ -321,8 +316,9 @@ func (a *desktopApplier) run(ctx context.Context) {
 }
 
 // lock takes the backend lock. Another backend on the data root refuses
-// the run: an update that has not started a trial settles failed, which
-// the next launch reports.
+// the run, and the record is left as it is: only the lock's holder writes
+// it, and the holder may be a helper of the same record between its lock
+// and its trial. The next launch recovers it under the lock.
 func (a *desktopApplier) lock(ctx context.Context, migration bool) bool {
 	lock, err := a.acquireLock(ctx)
 	if err == nil {
@@ -334,10 +330,6 @@ func (a *desktopApplier) lock(ctx context.Context, migration bool) bool {
 		a.fail("Agent Overflow could not start the database upgrade this version needs.",
 			"Another Agent Overflow backend is using the data folder, so the upgrade did not run. Close it, then start Agent Overflow again. "+desktopUpdateDetails)
 		return false
-	}
-	if settleErr := supervise.SettleDesktopUpdate(a.update.DataDir, a.flags.id, supervise.UpdateFailed,
-		"another Agent Overflow backend was using the data folder", false, a.now()); settleErr != nil {
-		a.logf("updater: update %s: %v", a.flags.id, settleErr)
 	}
 	a.fail("The update could not start.",
 		"Another Agent Overflow backend is using the data folder, so the update did not run. Close it, then start Agent Overflow again. "+desktopUpdateDetails)
@@ -397,11 +389,71 @@ func (a *desktopApplier) fail(title, detail string) {
 	a.ui.fail(startuppage.Failure{Title: title, Detail: detail, Log: a.logPath})
 }
 
-func (a *desktopApplier) now() time.Time {
-	if a.update.Now != nil {
-		return a.update.Now()
+// desktopGate is the desktop boot's no-live-migration gate (rule 7). The
+// boot's store refuses pending migrations whatever happens here. The update
+// half hands a database with pending migrations to this version's helper
+// before any window opens; a boot without one says why on the failure page.
+type desktopGate struct {
+	// boot is the update half, nil when unavailable says why there is none.
+	boot        *desktopBoot
+	unavailable error
+	logPath     string
+	logf        func(string, ...any)
+}
+
+// newDesktopGate is this boot's gate under lock, the backend lock the boot
+// holds, which the record's recovery runs under. Its lines go to the update
+// log too.
+func newDesktopGate(lock *os.File) desktopGate {
+	logPath, err := desktopUpdateLogPath()
+	if err != nil {
+		log.Printf("updater: in-app updates with a trial and the database upgrade helper are unavailable: %v", err)
+		return desktopGate{unavailable: err, logf: log.Printf}
 	}
-	return time.Now()
+	logf := desktopUpdateLogf(logPath)
+	boot, err := newDesktopBoot(lock, logPath, logf)
+	if err != nil {
+		logf("updater: in-app updates with a trial and the database upgrade helper are unavailable: %v", err)
+		return desktopGate{unavailable: err, logPath: logPath, logf: logf}
+	}
+	return desktopGate{boot: &boot, logPath: logPath, logf: logf}
+}
+
+// reconcile is the update half's plan; a boot without one launches, and its
+// store refuses a database it would migrate.
+func (g desktopGate) reconcile(ctx context.Context) desktopBootPlan {
+	if g.boot == nil {
+		return desktopBootPlan{launch: true}
+	}
+	return g.boot.reconcile(ctx)
+}
+
+// startFailed is the page for a start the store refused because the
+// database needs migrating (store.MigrationsPendingError), nil for any other
+// failure. The boot routes such a database to the helper before the window
+// opens, so this is a boot without the update half, or the store's guard
+// for a database the boot's check did not find pending. Nothing was
+// changed either way.
+func (g desktopGate) startFailed(err error) *startuppage.Failure {
+	var pending *store.MigrationsPendingError
+	if !errors.As(err, &pending) {
+		return nil
+	}
+	cause := g.unavailable
+	if cause == nil {
+		cause = err
+	}
+	logf := g.logf
+	if logf == nil {
+		logf = log.Printf
+	}
+	logf("updater: the database needs an upgrade this launch cannot start: %v", cause)
+	reason := strings.TrimSuffix(strings.TrimSpace(cause.Error()), ".")
+	return &startuppage.Failure{
+		Title:  "Agent Overflow could not start the database upgrade this version needs.",
+		Detail: "Reason: " + reason + ". Nothing was changed. " + desktopUpdateDetails,
+		Log:    g.logPath,
+	}
 }
 
 // desktopBoot is the desktop boot's half of the update: it runs under the
@@ -421,8 +473,9 @@ type desktopBoot struct {
 
 // desktopBootPlan is what the boot does after reconciling the record.
 type desktopBootPlan struct {
-	// launch starts the App. Otherwise a helper continues the record and
-	// the boot ends, or page says why nothing starts.
+	// launch starts the App. Otherwise a helper continues the record or
+	// migrates the database and the boot ends without a window, or page
+	// says why nothing starts.
 	launch bool
 	page   *startuppage.Failure
 	// updatingTo is the update this launch finishes, which the startup
@@ -433,16 +486,10 @@ type desktopBootPlan struct {
 	failedTo, failedReason string
 }
 
-// newDesktopBoot is the update's half of this desktop boot, under lock,
-// the backend lock the boot holds, which the record's recovery runs under.
-// Its lines go to the update log too, and the helpers it starts get this
-// process's environment without an AppImage's mount.
-func newDesktopBoot(lock *os.File) (desktopBoot, error) {
-	logPath, err := desktopUpdateLogPath()
-	if err != nil {
-		return desktopBoot{}, err
-	}
-	logf := desktopUpdateLogf(logPath)
+// newDesktopBoot is the update's half of this desktop boot, under lock. Its
+// lines go to logf, and the helpers it starts get this process's
+// environment without an AppImage's mount.
+func newDesktopBoot(lock *os.File, logPath string, logf func(string, ...any)) (desktopBoot, error) {
 	update, err := newDesktopUpdate(logf)
 	if err != nil {
 		return desktopBoot{}, err
@@ -477,7 +524,9 @@ func (b desktopBoot) handoff() supervise.DesktopHandoff {
 }
 
 // reconcile applies the record's recovery (supervise.DesktopUpdate.Reconcile)
-// and starts the helper it hands to.
+// and starts the helper it hands to. A launch whose database this version
+// would migrate starts the helper instead (migrate), before any window
+// opens.
 func (b desktopBoot) reconcile(ctx context.Context) desktopBootPlan {
 	decision, err := b.update.Reconcile(ctx)
 	if err != nil {
@@ -502,33 +551,38 @@ func (b desktopBoot) reconcile(ctx context.Context) desktopBootPlan {
 		b.logf("updater: update %s blocks this launch: %s", record.Update.ID, decision.Title)
 		return b.refuse(decision.Title, decision.Detail)
 	}
+	if schema, pending := b.pendingMigrations(); pending {
+		if err := b.migrate(schema); err != nil {
+			b.logf("updater: start the database upgrade: %v", err)
+			return b.refuse("Agent Overflow could not start the database upgrade this version needs.",
+				"Nothing was changed. Start Agent Overflow again. "+desktopUpdateDetails)
+		}
+		return desktopBootPlan{}
+	}
 	return desktopBootPlan{launch: true, updatingTo: decision.UpdatingTo, failedTo: decision.FailedTo, failedReason: decision.FailedReason}
 }
 
-// startFailed hands a database the App refused to migrate live
-// (store.MigrationsPendingError) to a helper of this version, and the boot
-// then quits for it. handled is false for any other failure. A helper that
-// cannot start leaves page to show instead.
-func (b desktopBoot) startFailed(err error) (handled bool, page *startuppage.Failure) {
-	var pending *store.MigrationsPendingError
-	if !errors.As(err, &pending) {
-		return false, nil
+// pendingMigrations reads the database's migration version under the boot's
+// lock and asks the store whether this build migrates it
+// (store.PendingMigrations). A missing database is new. One whose version
+// cannot be read launches: the store's open reports why, and its refusal
+// still guards the database.
+func (b desktopBoot) pendingMigrations() (schema int, pending bool) {
+	schema, err := b.update.SchemaVersion()
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return 0, false
+	case err != nil:
+		b.logf("updater: read the database's schema version: %v", err)
+		return 0, false
 	}
-	if handErr := b.migrate(pending.Database); handErr != nil {
-		b.logf("updater: start the database upgrade: %v", handErr)
-		return true, &startuppage.Failure{
-			Title:  "Agent Overflow could not start the database upgrade this version needs.",
-			Detail: "Nothing was changed. Start Agent Overflow again. " + desktopUpdateDetails,
-			Log:    b.logPath,
-		}
-	}
-	return true, nil
+	return schema, store.PendingMigrations(schema) != nil
 }
 
-// migrate hands the database this boot refused to migrate live, at
-// migration version schema, to a helper of this version.
+// migrate hands the database this boot does not migrate live, at migration
+// version schema, to a helper of this version.
 func (b desktopBoot) migrate(schema int) error {
-	b.logf("updater: this version refused to migrate its database (schema v%d) live; its helper migrates it through a trial", schema)
+	b.logf("updater: this version does not migrate its database (schema v%d) live; its helper migrates it through a trial", schema)
 	return b.hand(b.update.Executable, []string{"--migrate", strconv.Itoa(schema)})
 }
 

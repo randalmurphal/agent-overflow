@@ -432,8 +432,8 @@ seeing one bundle at the install path.
 | # | Who | Step |
 |---|---|---|
 | 1 | Old app | `RestartToUpdate`: interlocks and free-space check; the updater downloads and verifies the release (as now). |
-| 2 | Old app | `supervise.DesktopHandoff.Check`, at restart time: the same version, a target older than `v0.0.15`, and a target whose `__service-preflight` does not report `appUpdateTrial` take the existing swap. Otherwise the old app moves the artifact the framework extracted to `<install dir>/.agent-overflow-update-<id>` (`.app` for a bundle; a copy when the two are on different filesystems), which also proves the directory is writable. Runs the staged binary's `__service-preflight` and the snapshot's free-space check again. Writes the record `pending` durably with the staged executable's SHA-256. Starts `<staged> __update-apply --id <id> --wait-pid <pid> --wait-start <start> [--data-dir <dir>] -- <its own arguments>` detached in a new session, and quits through the ordinary shutdown with the existing 25 s watchdog. A helper that cannot start settles the update `failed`, reported, and the error is shown. |
-| 3 | Helper | Waits for the old app to exit (30 s, by pid and start time; otherwise settles an update with no trial `failed`, which the next launch reports, and exits). Claims the single-instance identity, shows the loading page (Decision 1), then takes `backend.lock` (waiting up to `UpdateLockWait`) and holds it to the end. Another backend on the data root settles the update `failed` and shows why. |
+| 2 | Old app | `supervise.DesktopHandoff.Check`, at restart time: the same version, a target older than `v0.0.15`, and a target whose `__service-preflight` does not report `appUpdateTrial` take the existing swap. Otherwise the old app moves the artifact the framework extracted to `<install dir>/.agent-overflow-update-<id>` (`.app` for a bundle; a copy when the two are on different filesystems), which also proves the directory is writable. Runs the staged binary's `__service-preflight` and the snapshot's free-space check again. Writes the record `pending` durably with the staged executable's SHA-256. Removes the folder the framework downloaded into, the artifact's `wails-update-*` ancestor directly under the temp directory, which the framework's `Restart` removed and the handoff replaces; an artifact anywhere else is logged and its folder left. Starts `<staged> __update-apply --id <id> --wait-pid <pid> --wait-start <start> [--data-dir <dir>] -- <its own arguments>` detached in a new session, and quits through the ordinary shutdown with the existing 25 s watchdog. A helper that cannot start settles the update `failed`, reported, and the error is shown. |
+| 3 | Helper | Waits for the old app to exit (30 s, by pid and start time; otherwise exits and leaves the record to the next launch). Claims the single-instance identity, shows the loading page (Decision 1), then takes `backend.lock` (waiting up to `UpdateLockWait`) and holds it to the end. Another backend on the data root leaves the record as it is and shows why. Only a holder of `backend.lock` writes the record: the old app in step 2, the helper from here, the launch that reconciles it. |
 | 4 | Helper | Snapshot on the first attempt, `Retry` durably, trial child with the stall rule (`supervise.UpdateRun`, the steps the Windows update commands run). |
 | 5a | Helper | On `prepared`: stop the trial, `Settle(committed)`, discard the snapshot, publish, start the install path, exit. |
 | 5b | Helper | On failure: restore marker-first, `Settle(rolled-back, reason)`, discard, start the install path (still the old app), exit. The staged target runs the helper, so the next launch removes it. |
@@ -476,9 +476,37 @@ rewritten, only published at a distinct path, holds.
 loading page with backup and trial progress, naming the target, then closes
 as the app opens at the saved placement. Closing it while the update runs
 hides it and the update continues; after a failure it shows the page, and
-closing it ends the helper. Quitting it from the application menu is not
-prevented: the next launch recovers the record. On macOS the helper's window
-gives it a Dock icon while it runs; the trial child has none.
+closing it ends the helper. A quit while the update runs is refused: the
+application's `ShouldQuit` answers false for Cmd+Q, the application menu,
+SIGINT and SIGTERM until the run ends, and the helper's own quit clears the
+run first. So the helper cancels a macOS logout or shutdown while it runs,
+and a Linux session end or `kill` stops it only by SIGKILL or the
+framework's third signal, after which the next launch recovers the record.
+On macOS the helper's window gives it a Dock icon while it runs; the trial
+child has none.
+
+**Launch during the handoff.** From the old app's exit until the helper's
+application claims the single-instance identity (step 3), a launch of the
+install path can claim it first. The identity decides; the record is only
+written under `backend.lock`:
+
+1. The helper claims it first: the launch reveals the helper's window and
+   exits. One trial runs.
+2. The launch claims it first: the helper, opening its application, finds
+   the identity held, reveals the launch's window and exits before it takes
+   the lock or writes anything. The launch takes `backend.lock` and
+   reconciles a pending record with no attempts: it settles `failed` ("the
+   update was interrupted before its trial started"), reports it once and
+   boots the old version, keeping the staged target while a process runs
+   from it. The update was not applied; the updater offers it again.
+3. Two helpers of one record at once, which the identity already prevents,
+   are ordered by `backend.lock`: the first to take it counts and runs the
+   one trial; the other waits `UpdateLockWait`, leaves the record as it is
+   and shows why. No process settles a record without the lock, so the
+   losing helper cannot settle one between the winner's lock and its trial
+   mark.
+
+The cost is case 2: a launch in that gap cancels the update.
 
 **Helper crash.** The next launch of the install path runs the recovery table
 below with local steps. Before publish that is the old app, which can restore;
@@ -503,19 +531,34 @@ page instead of starting.
 
 ### No live migration on macOS and Linux
 
-The desktop boot takes `backend.lock` before the store opens, reconciles
-the record, and starts the App with `RefusePendingMigrations`. When
-`App.Start` fails with `MigrationsPendingError`, the boot starts this
-binary's `__update-apply --migrate <database version>` with the same wait
-flags and arguments, and quits. Its window has opened by then and shows the
-boot's progress until it closes. The helper runs `DesktopUpdate.Migrate`: a
-migration record (`State.BeginMigration`), steps 4 and 5 without a staged
-target, and the record removed once it settles. On commit it starts the
-install path, which finds nothing pending. Otherwise its window shows why,
-with the recorded reason. A helper that cannot start shows a failure page in
-the app's window and changes nothing. A later launch recovers a migration
-record as the Windows launcher does: one with attempts resumes through the
-helper, one without is settled and removed.
+The desktop boot takes `backend.lock` before the store opens and before any
+window, and always starts the App with `RefusePendingMigrations`. With its
+update half (`desktopBoot`), it reconciles the record; when that launches,
+it reads the database's migration version (`DesktopUpdate.SchemaVersion`,
+`store.ReadSchemaVersion`) and asks `store.PendingMigrations`, the rule the
+store's refusal applies: no file, no `migration_versions` table or no
+applied migration is a new database, not pending. A pending one goes to
+this binary's `__update-apply --migrate <database version>` with the wait
+flags and the boot's arguments, and the boot exits without a window. The
+helper runs `DesktopUpdate.Migrate`: a migration record
+(`State.BeginMigration`), steps 4 and 5 without a staged target, and the
+record removed once it settles. On commit it starts the install path, which
+finds nothing pending. Otherwise its window shows why, with the recorded
+reason. A helper that cannot start shows a failure page and changes
+nothing. A later launch recovers a migration record as the Windows launcher
+does: one with attempts resumes through the helper, one without is settled
+and removed.
+
+The store's refusal stays the guard. A boot without its update half (the
+executable, the bundle's executable name or a relative `$APPIMAGE` cannot be
+resolved) logs why in-app updates are unavailable and launches; a database
+at this build's schema boots normally. When `App.Start` then fails with
+`MigrationsPendingError`, from such a boot or from a database the boot's
+check read as current, the window shows "Agent Overflow could not start the
+database upgrade this version needs." with the cause (the missing update
+half's error, otherwise the refusal), "Nothing was changed" and the update
+log, and the process exits with the error once it closes. No second path
+hands the database to the helper after a window opened.
 
 The helper applies the [failure memory](#failure-memory) before it opens a
 migration. The memory is `service-state.failed-trial.json` beside the record.
@@ -561,8 +604,13 @@ macOS:
 - The helper's window in WKWebView: the loading page, hiding on close while
   the update runs, the failure page, and Retry reaching the bound
   `RetryMigration` through `/wails/runtime`.
-- The migration gate: the app's window opening, the boot refusing, the app
-  quitting and the helper's window replacing it.
+- The migration gate: the helper's window opening after a windowless boot
+  exits.
+- The helper refusing Cmd+Q, the application menu's Quit and a logout while
+  the update runs (`applicationShouldTerminate` returning
+  `NSTerminateCancel`), and quitting after a failure page.
+- A launch during the handoff: the helper exiting at the single-instance
+  check when the launch holds the identity, and revealing the launch.
 
 Windows:
 
@@ -590,9 +638,11 @@ Windows:
 
 Linux: `FICLONE` on btrfs and XFS needs root for a loop mount here. The
 desktop helper's window, the app's window opening on a failure page, the
-migration gate's handoff between the two windows, and the AppImage relaunch
-need a Linux desktop session with isolated provider homes; the unit tests
-here run the helper's steps, argv and pages without a window.
+helper's window opening after a windowless boot exits, the helper refusing a
+quit and SIGTERM while the update runs, the single-instance order of a
+launch during the handoff, and the AppImage relaunch need a Linux desktop
+session with isolated provider homes; the unit tests here run the helper's
+steps, argv, pages and quit rule without a window.
 
 ## Decisions
 

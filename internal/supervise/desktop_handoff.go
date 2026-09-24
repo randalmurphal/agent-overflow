@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/mod/semver"
@@ -44,9 +45,17 @@ type DesktopHandoff struct {
 	// Start starts the helper detached, its output going to logPath
 	// (StartDesktopHelper with the environment the caller gives helpers).
 	Start func(executable string, args []string, logPath string) error
-	Now   func() time.Time
-	Logf  func(string, ...any)
+	// TempDir is the directory the framework downloads under, os.TempDir()
+	// when empty (removeFrameworkDownload).
+	TempDir string
+	Now     func() time.Time
+	Logf    func(string, ...any)
 }
+
+// frameworkDownloadPrefix names the folder the Wails updater downloads a
+// release into: os.MkdirTemp("", "wails-update-*"). The framework removes it
+// in its own Restart, which a handoff replaces.
+const frameworkDownloadPrefix = "wails-update-"
 
 // Check reports whether the downloaded release at downloaded, of version,
 // takes the trial, or why it cannot be installed now. The same version,
@@ -71,10 +80,12 @@ func (h DesktopHandoff) Check(ctx context.Context, downloaded, version string) (
 }
 
 // HandOff stages the downloaded target beside the install path, records the
-// update pending and starts the target's helper, which waits for this app
-// to exit. Nothing is recorded unless the staged target answers as version
-// and the snapshot fits; a helper that cannot start settles the update
-// failed, and its error is the caller's to show.
+// update pending, removes the framework's download folder and starts the
+// target's helper, which waits for this app to exit. Nothing is recorded
+// unless the staged target answers as version and the snapshot fits; a
+// helper that cannot start settles the update failed, and its error is the
+// caller's to show. This app holds the data root's backend lock throughout,
+// which a write of the record needs (SettleDesktopUpdate).
 func (h DesktopHandoff) HandOff(ctx context.Context, downloaded, version string) error {
 	install, err := DesktopInstallPath(h.Executable, h.GOOS)
 	if err != nil {
@@ -112,6 +123,7 @@ func (h DesktopHandoff) HandOff(ctx context.Context, downloaded, version string)
 		discard()
 		return err
 	}
+	h.removeFrameworkDownload(downloaded)
 	self, err := CurrentProcessRef()
 	if err == nil {
 		args := DesktopHelperArgs([]string{"--id", id}, self, h.DataDirFlag, h.RelaunchArgs)
@@ -171,6 +183,41 @@ func (h DesktopHandoff) record(ctx context.Context, layout Layout, install, stag
 		return DesktopRecord{}, fmt.Errorf("record the update: %w", err)
 	}
 	return record, nil
+}
+
+// removeFrameworkDownload removes the folder the framework downloaded the
+// staged target into, once the record names the staged copy: the ancestor
+// of downloaded directly under the temp directory, with the framework's
+// prefix. Any other location is left as it is.
+func (h DesktopHandoff) removeFrameworkDownload(downloaded string) {
+	tempDir := h.TempDir
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	folder, ok := frameworkDownloadFolder(downloaded, tempDir)
+	if !ok {
+		h.logf("updater: %s is not in a download folder of the updater under %s; its folder is left as it is", downloaded, tempDir)
+		return
+	}
+	if err := os.RemoveAll(folder); err != nil {
+		h.logf("updater: remove the download folder %s: %v", folder, err)
+	}
+}
+
+// frameworkDownloadFolder is the ancestor of downloaded directly under
+// tempDir, when the framework named it (frameworkDownloadPrefix).
+func frameworkDownloadFolder(downloaded, tempDir string) (string, bool) {
+	tempDir = filepath.Clean(tempDir)
+	for dir := filepath.Dir(filepath.Clean(downloaded)); ; {
+		parent := filepath.Dir(dir)
+		if parent == tempDir {
+			return dir, strings.HasPrefix(filepath.Base(dir), frameworkDownloadPrefix)
+		}
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
 }
 
 // RestartingTo is the version this app handed its update to: the target

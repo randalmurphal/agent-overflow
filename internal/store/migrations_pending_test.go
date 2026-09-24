@@ -103,6 +103,34 @@ func TestRefusePendingMigrationsLeavesANewerSchemaToItsOwnRefusal(t *testing.T) 
 	}
 }
 
+// TestPendingMigrationsIsTheRefusalsRule: the answer the desktop boot asks
+// for a schema version it read is the refusal an open with the option gives
+// for a database at that version.
+func TestPendingMigrationsIsTheRefusalsRule(t *testing.T) {
+	latest := latestMigrationVersionForTest()
+	for _, applied := range []int{0, latest} {
+		if err := PendingMigrations(applied); err != nil {
+			t.Fatalf("PendingMigrations(%d) = %v; want nothing pending", applied, err)
+		}
+	}
+	if err := PendingMigrations(latest + 2); err != nil {
+		t.Fatalf("PendingMigrations(a newer schema) = %v; that is SchemaTooNewError's", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "agent-overflow.db")
+	writeHistoryRepairFixture(t, path)
+	applied, err := ReadSchemaVersion(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := PendingMigrations(applied)
+	_, refusal := NewWithOptions(path, Options{RefusePendingMigrations: true})
+	var fromAnswer, fromOpen *MigrationsPendingError
+	if !errors.As(answer, &fromAnswer) || !errors.As(refusal, &fromOpen) || *fromAnswer != *fromOpen {
+		t.Fatalf("PendingMigrations(%d) = %v; the open refused with %v", applied, answer, refusal)
+	}
+}
+
 // databaseFileSet is each file of the database at path that exists, by
 // digest.
 func databaseFileSet(t *testing.T, path string) map[string][32]byte {

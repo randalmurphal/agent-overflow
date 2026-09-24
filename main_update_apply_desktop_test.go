@@ -79,6 +79,36 @@ func TestDesktopApplyWindowHidesOnlyWhileItRuns(t *testing.T) {
 	}
 }
 
+// TestDesktopApplyWindowRefusesToQuitWhileItRuns: the application's
+// ShouldQuit, which Cmd+Q and every other quit ask, refuses while the
+// loading page shows and allows a quit after a failure and the helper's own
+// quit, which clears the run before it asks.
+func TestDesktopApplyWindowRefusesToQuitWhileItRuns(t *testing.T) {
+	window := &desktopApplyWindow{pages: newDesktopPages("")}
+	var asked []bool
+	window.quitApp = func() { asked = append(asked, window.shouldQuit()) }
+	opts := window.applicationOptions("Agent Overflow")
+	if opts.ShouldQuit == nil {
+		t.Fatal("the helper's application has no quit rule")
+	}
+	window.loading()
+	if opts.ShouldQuit() {
+		t.Fatal("a quit was allowed while the loading page shows")
+	}
+	window.fail(startuppage.Failure{Title: "x"})
+	if !opts.ShouldQuit() {
+		t.Fatal("a quit was refused on a failure page")
+	}
+	window.loading()
+	if opts.ShouldQuit() {
+		t.Fatal("a quit was allowed while Retry's loading page shows")
+	}
+	window.quit()
+	if !reflect.DeepEqual(asked, []bool{true}) || !opts.ShouldQuit() {
+		t.Fatalf("the helper's own quit was answered %v", asked)
+	}
+}
+
 // TestDesktopApplyWindowBindsOnlyRetry: the helper's window is a Wails
 // service, so every exported method is callable from its pages. Only the
 // Retry button's is.

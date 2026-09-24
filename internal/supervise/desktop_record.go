@@ -132,11 +132,13 @@ func SaveDesktopRecord(layout Layout, record DesktopRecord) error {
 
 // SettleDesktopUpdate settles the pending update id in dataDir's record,
 // marked reported when reported is set: a failure the caller has already
-// shown. Only an update that has not started a trial is settled here: its
-// database was not touched. The helper settles one whose previous version
-// never exited this way, and the old app one whose helper could not start.
-// One that started a trial is left to the recovery table, which restores
-// the database or resumes it.
+// shown. The caller holds the data root's backend lock, as every writer of
+// the record does: a process without it could overwrite a helper that took
+// the lock and is about to count its trial. The old app settles an update
+// whose helper could not start this way. Only an update that has not
+// started a trial is settled here: its database was not touched. One that
+// started a trial is left to the recovery table, which restores the
+// database or resumes it.
 func SettleDesktopUpdate(dataDir, id string, state UpdateState, reason string, reported bool, now time.Time) error {
 	layout, err := NewAppUpdateLayout(dataDir)
 	if err != nil {

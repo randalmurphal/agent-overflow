@@ -381,9 +381,9 @@ func runDesktop(listenAddr string, helper supervise.ProcessRef) {
 		},
 		beforeRun: func(app *application.App) bool {
 			plan := desktopBootPlan{launch: true}
-			var update *desktopBoot
+			var gate desktopGate
 			if desktopUpdateTrial {
-				update, plan = reconcileDesktopUpdate(appService)
+				gate, plan = reconcileDesktopUpdate(appService)
 			}
 			if plan.page != nil {
 				pages.showFailure(*plan.page)
@@ -398,8 +398,8 @@ func runDesktop(listenAddr string, helper supervise.ProcessRef) {
 			// builds and on provider/init failure (logged) — updates stay unavailable
 			// and the app runs normally.
 			var trial appupdate.DesktopTrial
-			if update != nil {
-				trial = update.handoff()
+			if gate.boot != nil {
+				trial = gate.boot.handoff()
 			}
 			appservice.InitUpdater(appService.App, app, trial)
 			if plan.failedTo != "" {
@@ -414,11 +414,12 @@ func runDesktop(listenAddr string, helper supervise.ProcessRef) {
 			srv = bootTransport(appService, listenAddr, bootTransportOptions{UpdatingTo: plan.updatingTo})
 			// ServiceStartup runs App.Start on its own goroutine so the
 			// window opens and shows the boot's progress. Success releases
-			// the readiness gate. A database this version refused to
-			// migrate live goes to the update helper, and the app quits for
-			// it. Any other failure serves the terminal bootstrap answer and
-			// quits, and the process exits with the error as it did when
-			// Start ran inside Run. Quit on its own goroutine: it waits on
+			// the readiness gate. A database the store refused to migrate
+			// live shows why in the window (desktopGate.startFailed), and
+			// the process exits with the error once it closes. Any other
+			// failure serves the terminal bootstrap answer and quits, and
+			// the process exits with the error as it did when Start ran
+			// inside Run. Quit on its own goroutine: it waits on
 			// ServiceShutdown, which waits for this Start.
 			appservice.SetStartDone(appService.App, func(err error) {
 				if err == nil {
@@ -427,20 +428,12 @@ func runDesktop(listenAddr string, helper supervise.ProcessRef) {
 					return
 				}
 				log.Printf("app: service startup: %v", err)
-				if update != nil {
-					if handled, page := update.startFailed(err); handled {
-						if page == nil {
-							go app.Quit()
-							return
-						}
-						srv.MarkStartupFailed()
-						setStartErr(err)
-						pages.showFailure(*page)
-						return
-					}
-				}
 				srv.MarkStartupFailed()
 				setStartErr(err)
+				if page := gate.startFailed(err); page != nil {
+					pages.showFailure(*page)
+					return
+				}
 				go app.Quit()
 			})
 			return true
@@ -484,21 +477,17 @@ func runDesktop(listenAddr string, helper supervise.ProcessRef) {
 }
 
 // reconcileDesktopUpdate takes the backend lock, which bootTransport then
-// keeps, and applies the update record's recovery before anything opens
-// the database. It refuses pending migrations for the App, whose helper
-// migrates them through a trial. A boot that cannot reach its update
-// record's paths launches as before without either.
-func reconcileDesktopUpdate(appService *App) (*desktopBoot, desktopBootPlan) {
+// keeps, and applies the update record's recovery and the migration gate
+// before anything opens the database. The App refuses pending migrations
+// whatever the gate can do (rule 7): a boot whose update half is
+// unavailable launches, and a database it would migrate shows why instead.
+func reconcileDesktopUpdate(appService *App) (desktopGate, desktopBootPlan) {
 	if err := holdBackendLock(bootSettingsDir()); err != nil {
 		fatalf("backend: %v", err)
 	}
-	update, err := newDesktopBoot(heldBackendLock.file)
-	if err != nil {
-		log.Printf("updater: in-app updates with a trial and the database upgrade gate are unavailable: %v", err)
-		return nil, desktopBootPlan{launch: true}
-	}
 	appservice.RefusePendingMigrations(appService.App)
-	return &update, update.reconcile(context.Background())
+	gate := newDesktopGate(heldBackendLock.file)
+	return gate, gate.reconcile(context.Background())
 }
 
 // defaultWindowBackgroundColour is the compiled-in fallback ground: the
