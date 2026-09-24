@@ -77,20 +77,6 @@ func TestProviderSmokeForkContinuity(t *testing.T) {
 			}
 			kept, discarded := providerSmokeCodeword(), providerSmokeCodeword()
 			first, _ := send(t, source, providerSmokeCodewordPrompt(kept))
-			prepared := 0
-			for {
-				n, err := app.store.PrepareThreadHistory(ctx, source.ID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if n == 0 {
-					break
-				}
-				prepared += n
-			}
-			if prepared == 0 {
-				t.Fatal("smoke must exercise shared history")
-			}
 			tail, err := app.ForkThread(ctx, source.ID, nil)
 			if err != nil {
 				t.Fatal(err)

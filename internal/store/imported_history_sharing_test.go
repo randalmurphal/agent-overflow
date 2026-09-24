@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -10,10 +11,9 @@ import (
 	"testing"
 )
 
-func TestPreparedHistoryDeletedItemCannotBeMutated(t *testing.T) {
+func TestImportedHistoryDeletedItemCannotBeMutated(t *testing.T) {
 	s := newTestStore(t)
-	preparedHistoryFixture(t, s, "source", 20)
-	prepareAllHistory(t, s, "source")
+	importedHistoryFixture(t, s, "source", 20)
 	if _, _, err := s.DeleteConversationFromTurn("source", 1); err != nil {
 		t.Fatal(err)
 	}
@@ -29,10 +29,9 @@ func TestPreparedHistoryDeletedItemCannotBeMutated(t *testing.T) {
 	}
 }
 
-func TestDeletePreparedItemDoesNotMaterializeAndCollectsLastReference(t *testing.T) {
+func TestDeleteImportedItemDoesNotMaterializeAndCollectsLastReference(t *testing.T) {
 	s := newTestStore(t)
-	preparedHistoryFixture(t, s, "source", 1)
-	prepareAllHistory(t, s, "source")
+	importedHistoryFixture(t, s, "source", 1)
 	if err := s.CreateThread(makeThread("fork", "claude")); err != nil {
 		t.Fatal(err)
 	}
@@ -62,85 +61,27 @@ func TestDeletePreparedItemDoesNotMaterializeAndCollectsLastReference(t *testing
 	}
 }
 
-func preparedHistoryFixture(t *testing.T, s *Store, thread string, count int) {
+// importedHistoryFixture imports count completed rows, ten per turn, each
+// with its own payload. One batch keeps them in one shared chunk.
+func importedHistoryFixture(t *testing.T, s *Store, thread string, count int) {
 	t.Helper()
-	if err := s.CreateThread(makeThread(thread, "claude")); err != nil {
-		t.Fatal(err)
-	}
+	newImportTargetThread(t, s, thread)
+	var batch ImportBatch
 	for i := 0; i < count; i++ {
 		id := fmt.Sprintf("item-%03d", i)
-		item := Item{ThreadID: thread, ID: id, TurnIndex: i / 10, ItemIndex: i % 10, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "inherited searchable history", PayloadID: id, Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
-		if err := s.InsertItemWithPayload(item, Payload{ID: id, Kind: "text", Meta: "{}", Data: []byte("original "), CreatedAt: 1}); err != nil {
-			t.Fatal(err)
-		}
-		if err := s.AppendPayloadData(thread, id, []byte("chunk"), "{}", 2); err != nil {
-			t.Fatal(err)
-		}
+		batch.Rows = append(batch.Rows, ImportRow{
+			Item:    Item{ID: id, TurnIndex: i / 10, ItemIndex: i % 10, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "inherited searchable history", PayloadID: id, Meta: "{}", CreatedAt: 1, UpdatedAt: 1},
+			Payload: &Payload{ID: id, Kind: "text", Meta: "{}", Data: []byte("original chunk"), CreatedAt: 1},
+		})
+	}
+	if err := s.ApplyImportBatch(thread, batch); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func prepareAllHistory(t *testing.T, s *Store, thread string) {
-	t.Helper()
-	for i := 0; i < 1000; i++ {
-		n, err := s.PrepareThreadHistory(context.Background(), thread)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if n == 0 {
-			return
-		}
-		if n > historyPreparationRows {
-			t.Fatalf("preparation batch has %d rows", n)
-		}
-	}
-	t.Fatal("history preparation did not finish")
-}
-
-func TestPreparedHistoryPreservesReadsSearchAndForkIsolation(t *testing.T) {
+func TestImportedHistoryForkIsolationSearchAndLastReference(t *testing.T) {
 	s := newTestStore(t)
-	preparedHistoryFixture(t, s, "source", 140)
-	before, err := s.ListItems("source")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var rev, epoch int64
-	if err := s.db.QueryRow(`SELECT history_rev,history_epoch FROM threads WHERE id='source'`).Scan(&rev, &epoch); err != nil {
-		t.Fatal(err)
-	}
-	beforeSearch, err := s.SearchThreads("inherited", ThreadSearchFilter{ThreadIDs: []string{"source"}, Limit: 200})
-	if err != nil {
-		t.Fatal(err)
-	}
-	prepareAllHistory(t, s, "source")
-	after, err := s.ListItems("source")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range before {
-		before[i].Rev = 0
-		after[i].Rev = 0
-	}
-	if !reflect.DeepEqual(before, after) {
-		t.Fatal("preparation changed logical history")
-	}
-	var gotRev, gotEpoch int64
-	if err := s.db.QueryRow(`SELECT history_rev,history_epoch FROM threads WHERE id='source'`).Scan(&gotRev, &gotEpoch); err != nil {
-		t.Fatal(err)
-	}
-	if gotRev != rev || gotEpoch != epoch {
-		t.Fatalf("preparation changed stamps: %d/%d -> %d/%d", rev, epoch, gotRev, gotEpoch)
-	}
-	afterSearch, err := s.SearchThreads("inherited", ThreadSearchFilter{ThreadIDs: []string{"source"}, Limit: 200})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range beforeSearch {
-		beforeSearch[i].Source = ""
-		afterSearch[i].Source = ""
-	}
-	if !reflect.DeepEqual(beforeSearch, afterSearch) {
-		t.Fatal("preparation changed search ranking or hits")
-	}
+	importedHistoryFixture(t, s, "source", 140)
 	for _, pair := range [][2]string{{"source", "fork"}, {"fork", "grandchild"}} {
 		if err := s.CreateThread(makeThread(pair[1], "claude")); err != nil {
 			t.Fatal(err)
@@ -153,7 +94,7 @@ func TestPreparedHistoryPreservesReadsSearchAndForkIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 		if private != 0 {
-			t.Fatalf("fork copied %d prepared items", private)
+			t.Fatalf("fork copied %d imported items", private)
 		}
 	}
 	if err := s.BuildSearchIndex(context.Background()); err != nil {
@@ -207,49 +148,11 @@ func TestPreparedHistoryPreservesReadsSearchAndForkIsolation(t *testing.T) {
 	}
 }
 
-func TestPreparedHistoryRollsBackAndSkipsLiveAndAnchoredRows(t *testing.T) {
-	s := newTestStore(t)
-	preparedHistoryFixture(t, s, "source", 4)
-	if _, err := s.db.Exec(`UPDATE items SET kind='user_text',role='user' WHERE id='item-000'; UPDATE items SET status='streaming' WHERE id='item-001'`); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.UpsertMessageAnchor(MessageAnchor{ThreadID: "source", UserItemID: "item-000", CreatedAt: 1}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.Exec(`CREATE TRIGGER fail_prepared_attach BEFORE INSERT ON thread_import_chunks BEGIN SELECT RAISE(ABORT,'prepared attach failed'); END`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.PrepareThreadHistory(context.Background(), "source"); err == nil {
-		t.Fatal("injected failure succeeded")
-	}
-	var private, bulk, chunks int
-	if err := s.db.QueryRow(`SELECT (SELECT count(*) FROM items WHERE thread_id='source'),history_bulk_load,(SELECT count(*) FROM import_history_chunks) FROM threads WHERE id='source'`).Scan(&private, &bulk, &chunks); err != nil {
-		t.Fatal(err)
-	}
-	if private != 4 || bulk != 0 || chunks != 0 {
-		t.Fatalf("partial preparation survived: items=%d bulk=%d chunks=%d", private, bulk, chunks)
-	}
-	if _, err := s.db.Exec(`DROP TRIGGER fail_prepared_attach`); err != nil {
-		t.Fatal(err)
-	}
-	prepareAllHistory(t, s, "source")
-	if _, found, err := s.GetMessageAnchor("source", "item-000"); err != nil || !found {
-		t.Fatalf("anchor lost: %v", err)
-	}
-	if err := s.db.QueryRow(`SELECT count(*) FROM items WHERE thread_id='source'`).Scan(&private); err != nil {
-		t.Fatal(err)
-	}
-	if private != 2 {
-		t.Fatalf("private rows=%d, want user and active row", private)
-	}
-}
-
-func TestPreparedHistoryCutsKeepSharedPrefix(t *testing.T) {
+func TestImportedHistoryCutsKeepSharedPrefix(t *testing.T) {
 	for _, message := range []bool{false, true} {
 		t.Run(fmt.Sprint("message=", message), func(t *testing.T) {
 			s := newTestStore(t)
-			preparedHistoryFixture(t, s, "source", 140)
-			prepareAllHistory(t, s, "source")
+			importedHistoryFixture(t, s, "source", 140)
 			if err := s.CreateThread(makeThread("fork", "claude")); err != nil {
 				t.Fatal(err)
 			}
@@ -316,10 +219,9 @@ func TestPreparedHistoryCutsKeepSharedPrefix(t *testing.T) {
 	}
 }
 
-func TestPreparedHistoryForkCopiesPayloadOverrides(t *testing.T) {
+func TestImportedHistoryForkCopiesPayloadOverrides(t *testing.T) {
 	s := newTestStore(t)
-	preparedHistoryFixture(t, s, "source", 3)
-	prepareAllHistory(t, s, "source")
+	importedHistoryFixture(t, s, "source", 3)
 	// Payload mutation can create a private overlay without localizing its item.
 	if err := s.ReplacePayloadData("source", "item-000", []byte("new bytes"), `{"new":true}`, 2); err != nil {
 		t.Fatal(err)
@@ -339,10 +241,9 @@ func TestPreparedHistoryForkCopiesPayloadOverrides(t *testing.T) {
 	}
 }
 
-func TestPreparedHistorySnapshotRestoreWithPrivateOverride(t *testing.T) {
+func TestImportedHistorySnapshotRestoreWithPrivateOverride(t *testing.T) {
 	s := newTestStore(t)
-	preparedHistoryFixture(t, s, "source", 80)
-	prepareAllHistory(t, s, "source")
+	importedHistoryFixture(t, s, "source", 80)
 	if err := s.UpdateItemMeta("source", "item-000", `{"override":true}`); err != nil {
 		t.Fatal(err)
 	}
@@ -383,113 +284,118 @@ func TestPreparedHistorySnapshotRestoreWithPrivateOverride(t *testing.T) {
 	}
 }
 
-func TestPreparedHistoryBoundsCancellationAndPlanLifetime(t *testing.T) {
+// A local launch whose children are imported decorates exactly as it does
+// with local children, and a held child still refreshes it.
+func TestImportedDescendantsKeepWireDecorationAndAncestorRevisions(t *testing.T) {
 	s := newTestStore(t)
-	preparedHistoryFixture(t, s, "source", 70)
-	// A plan can acquire its dependent state after its item is persisted.
-	mustExec(t, s.db, `UPDATE payloads SET kind='proposed_plan' WHERE thread_id='source' AND id='item-000'`)
-	mustExec(t, s.db, `UPDATE payloads SET data=zeroblob(?) WHERE thread_id='source' AND id='item-001'`, historyPreparationBytes+1)
-	for _, id := range []string{"item-002", "item-003", "item-004"} {
-		mustExec(t, s.db, `UPDATE payloads SET data=zeroblob(?) WHERE thread_id='source' AND id=?`, historyPreparationBytes/2, id)
+	launch := Item{ID: "item-000", Kind: "tool_call", ToolName: "Agent", Role: "assistant", Status: "completed", Summary: "agent", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
+	children := func(thread string) []Item {
+		var rows []Item
+		for i := 1; i < 4; i++ {
+			rows = append(rows, Item{ThreadID: thread, ID: fmt.Sprintf("item-%03d", i), ItemIndex: i, ParentID: launch.ID, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "child", Meta: "{}", CreatedAt: 1, UpdatedAt: 1})
+		}
+		return rows
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := s.PrepareThreadHistory(ctx, "source"); err == nil {
-		t.Fatal("canceled preparation succeeded")
-	}
-	var total int
-	mustCount := func(query string, args ...any) int {
-		t.Helper()
-		var n int
-		if err := s.db.QueryRow(query, args...).Scan(&n); err != nil {
+	newImportTargetThread(t, s, "source")
+	mustCreateThread(t, s, "local")
+	for _, thread := range []string{"source", "local"} {
+		row := launch
+		row.ThreadID = thread
+		if err := s.InsertItem(row); err != nil {
 			t.Fatal(err)
 		}
-		return n
 	}
-	if n := mustCount(`SELECT count(*) FROM items WHERE thread_id='source'`); n != 70 {
-		t.Fatalf("cancellation changed %d rows", n)
-	}
-	for {
-		n, err := s.PrepareThreadHistory(context.Background(), "source")
-		if err != nil {
+	for _, child := range children("local") {
+		if err := s.InsertItem(child); err != nil {
 			t.Fatal(err)
 		}
-		if n == 0 {
-			break
-		}
-		total += n
-		if n > historyPreparationRows {
-			t.Fatalf("unbounded batch: %d", n)
-		}
 	}
-	if total != 68 {
-		t.Fatalf("prepared %d rows, want 68", total)
+	var batch ImportBatch
+	for _, child := range children("source") {
+		batch.Rows = append(batch.Rows, ImportRow{Item: child})
 	}
-	if n := mustCount(`SELECT count(*) FROM import_history_chunks c WHERE c.item_count>? OR (SELECT sum(length(data)) FROM import_history_payloads p WHERE p.chunk_id=c.id)>?`, historyPreparationRows, historyPreparationBytes); n != 0 {
-		t.Fatalf("%d chunks exceed the budget", n)
-	}
-	for _, id := range []string{"item-000", "item-001"} {
-		if n := mustCount(`SELECT count(*) FROM items WHERE thread_id='source' AND id=?`, id); n != 1 {
-			t.Fatalf("protected row %s moved", id)
-		}
-	}
-	if _, err := s.EnsureProposedPlanState("source", "item-000", 3); err != nil {
+	if err := s.ApplyImportBatch("source", batch); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestPreparedDescendantsKeepWireDecorationAndAncestorRevisions(t *testing.T) {
-	s := newTestStore(t)
-	preparedHistoryFixture(t, s, "source", 4)
-	mustExec(t, s.db, `UPDATE items SET kind='tool_call',tool_name='Agent' WHERE thread_id='source' AND id='item-000'`)
-	mustExec(t, s.db, `UPDATE items SET parent_id='item-000' WHERE thread_id='source' AND id<>'item-000'`)
-	before, err := s.ListWireItems("source", []string{"item-000"})
+	local, err := s.ListWireItems("local", []string{launch.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(before) != 1 {
-		t.Fatal(before)
-	}
-	prepareAllHistory(t, s, "source")
-	needs, err := s.ItemReadNeedsDecoration(before[0])
-	if err != nil || !needs {
-		t.Fatalf("prepared descendants need decoration=%v err=%v", needs, err)
-	}
-	after, err := s.ListWireItems("source", []string{"item-000"})
+	imported, err := s.ListWireItems("source", []string{launch.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(before, after) {
-		t.Fatalf("decoration changed: before=%+v after=%+v", before, after)
+	if len(local) != 1 || len(imported) != 1 {
+		t.Fatalf("launch reads: local=%+v imported=%+v", local, imported)
 	}
-	// A seal between the write and its emission must still refresh its parent.
+	// The bulk load stamped the launch, so its stored row is its read.
+	needs, err := s.ItemReadNeedsDecoration(imported[0])
+	if err != nil || needs {
+		t.Fatalf("stamped launch over imported descendants needs decoration=%v err=%v", needs, err)
+	}
+	local[0].ThreadID, local[0].Rev = "", 0
+	before := imported[0]
+	imported[0].ThreadID, imported[0].Rev = "", 0
+	// The stamp generation counts the writes that set it: the local
+	// launch's triggers and the import's recompute take different paths.
+	local[0].Meta = zeroStampGenForTest(t, local[0].Meta)
+	imported[0].Meta = zeroStampGenForTest(t, imported[0].Meta)
+	if !reflect.DeepEqual(local[0], imported[0]) {
+		t.Fatalf("decoration differs: local=%+v imported=%+v", local[0], imported[0])
+	}
 	behind, err := s.ListWireItemsBehind("source", map[string]int64{"item-003": 0})
 	if err != nil {
 		t.Fatal(err)
 	}
 	found := false
 	for _, item := range behind {
-		found = found || item.ID == "item-000"
+		found = found || item.ID == launch.ID
 	}
 	if !found {
-		t.Fatalf("sealed write lost parent refresh: %+v", behind)
+		t.Fatalf("held imported child lost parent refresh: %+v", behind)
 	}
 	if _, _, err := s.DeleteConversationFromItem("source", "item-002"); err != nil {
 		t.Fatal(err)
 	}
-	after, err = s.ListWireItems("source", []string{"item-000"})
+	after, err := s.ListWireItems("source", []string{launch.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(after) != 1 || after[0].Rev <= before[0].Rev {
+	if len(after) != 1 || after[0].Rev <= before.Rev {
 		t.Fatalf("cut did not stamp retained parent: %+v", after)
 	}
 }
 
-func TestPreparedHistoryCutCollectsPrivatePayloadOverrides(t *testing.T) {
+// zeroStampGenForTest returns meta with its subagent stamp generation
+// zeroed and its keys in a canonical order.
+func zeroStampGenForTest(t *testing.T, meta string) string {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(meta), &fields); err != nil {
+		t.Fatalf("decode meta %q: %v", meta, err)
+	}
+	if raw, ok := fields[metaKeySubagentAggregateState]; ok {
+		var state map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &state); err != nil {
+			t.Fatalf("decode stamp state %s: %v", raw, err)
+		}
+		state["gen"] = json.RawMessage("0")
+		encoded, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fields[metaKeySubagentAggregateState] = encoded
+	}
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+func TestImportedHistoryCutCollectsPrivatePayloadOverrides(t *testing.T) {
 	s := newTestStore(t)
-	preparedHistoryFixture(t, s, "source", 12)
-	prepareAllHistory(t, s, "source")
+	importedHistoryFixture(t, s, "source", 12)
 	if err := s.ReplacePayloadData("source", "item-011", []byte("private override"), "{}", 3); err != nil {
 		t.Fatal(err)
 	}

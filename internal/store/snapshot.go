@@ -222,8 +222,9 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 		}
 	}
 
-	// Re-install what the copy ran without, from the same var migration
-	// v100 installs, so the two can never describe different contracts.
+	// Re-install what the copy ran without, from the same var the latest
+	// trigger migration installs, so the two can never describe different
+	// contracts.
 	if _, err := tx.Exec(historyRevTriggersSQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: recreate history triggers: %w", err)
 	}
@@ -235,7 +236,7 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 		return Identity{}, fmt.Errorf("store: restore: reinstall payload snapshots: %w", err)
 	}
 
-	if _, err := tx.Exec(attachmentOwnerTriggersSQL + sharedChunkAdmissionTriggersSQL); err != nil {
+	if _, err := tx.Exec(attachmentOwnerTriggersSQL + sharedChunkAdmissionTriggersV116SQL); err != nil {
 		return Identity{}, fmt.Errorf("store: restore: reinstall attachment and chunk admission triggers: %w", err)
 	}
 	if _, err := tx.Exec(threadTurnErrorTriggersSQL); err != nil {
@@ -266,6 +267,17 @@ WHERE saved.thread_id = owned.id AND saved.direction = 'incoming' AND saved.phas
 	}
 	identity, err = identityFrom(tx)
 	if err != nil {
+		return Identity{}, err
+	}
+
+	// The deferred migration watermark describes the rows, so it comes from
+	// the snapshot with them: a snapshot taken before a deferred phase
+	// finished still needs that phase.
+	var watermark int
+	if err := tx.QueryRow(`PRAGMA restore_src.user_version`).Scan(&watermark); err != nil {
+		return Identity{}, fmt.Errorf("store: restore: read snapshot deferred migration watermark: %w", err)
+	}
+	if err := writeDeferredWatermark(tx, watermark); err != nil {
 		return Identity{}, err
 	}
 

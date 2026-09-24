@@ -547,6 +547,7 @@ func subagentResumeRoundsQuery(threadID string, rootIDs []string) (string, []any
 			        items.turn_index AS turn_index, items.item_index AS item_index,
 			        ` + revExpr + ` < 0 AS imported`
 		},
+		KeyFirst: true,
 		Where: `items.parent_id IN (` + placeholders(len(rootIDs)) + `)
 			   AND ` + aggPromptSQL("items."),
 		WhereArgs: rootArgs,
@@ -625,6 +626,7 @@ func (s *Store) subagentLaunchRowsByID(q sqlQueryer, threadID string, ids []stri
 		Columns: func(_, revExpr string) string {
 			return "items.id AS id, items.kind AS kind, items.tool_name AS tool_name, items.meta AS meta, " + revExpr + " AS rev"
 		},
+		KeyFirst:  true,
 		Where:     "items.id IN (" + placeholders + ")",
 		WhereArgs: args,
 	})
@@ -770,6 +772,7 @@ func (s *Store) SubagentCompletedChildIndex(threadID, launchID string) (int, err
 		Columns: func(string, string) string {
 			return "json_extract(items.meta, '$.codex_execution_child_end_index') AS child_end"
 		},
+		KeyFirst:  true,
 		Where:     "items.completion_of <> '' AND items.completion_of = ?",
 		WhereArgs: []any{launchID},
 	})

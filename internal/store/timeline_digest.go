@@ -99,7 +99,7 @@ func (s *Store) resolveTimelineDigest(q sqlQueryer, threadID string, scope *time
 			d.Before = &TimelineCursor{TurnIndex: launch.TurnIndex, ItemIndex: *meta.End + 1}
 		} else {
 			d.CompletedAt = &anchor.CreatedAt
-			previous, args := timelineArms(threadID, timelineSelection{Columns: func(string, string) string { return "items.created_at" }, Where: "items.completion_of <> '' AND items.completion_of=? AND (items.turn_index,items.item_index)<(?,?)", WhereArgs: []any{launch.ID, anchor.TurnIndex, anchor.ItemIndex}})
+			previous, args := timelineArms(threadID, timelineSelection{Columns: func(string, string) string { return "items.created_at" }, KeyFirst: true, Where: "items.completion_of <> '' AND items.completion_of=? AND (+items.turn_index,items.item_index)<(?,?)", WhereArgs: []any{launch.ID, anchor.TurnIndex, anchor.ItemIndex}})
 			var started sql.NullInt64
 			if err := q.QueryRow("SELECT MAX(created_at) FROM ("+previous+")", args...).Scan(&started); err != nil {
 				return err
@@ -118,7 +118,7 @@ func (s *Store) resolveTimelineDigest(q sqlQueryer, threadID string, scope *time
 	pick := func(kind, order string) (string, error) {
 		where := "items.parent_id <> '' AND items.parent_id=? AND items.kind=? AND " + bounds
 		args := append([]any{root, kind}, values...)
-		query, args := timelineArms(threadID, timelineSelection{Columns: timelineIDColumns, Where: where, WhereArgs: args, OrderBy: order, Limit: 1})
+		query, args := timelineArms(threadID, timelineSelection{Columns: timelineIDColumns, KeyFirst: true, Where: where, WhereArgs: args, OrderBy: order, Limit: 1})
 		rows, err := q.Query(query, args...)
 		if err != nil {
 			return "", err

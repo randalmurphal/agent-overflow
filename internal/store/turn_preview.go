@@ -39,12 +39,15 @@ func (s *Store) ThreadTurnPreview(threadID, itemID string) (TurnPreview, bool, e
 func (s *Store) threadTurnPreview(q sqlQueryer, threadID, itemID string) (TurnPreview, bool, error) {
 	var userText, parentID string
 	var turnIndex, itemIndex int
-	err := q.QueryRow(
-		`SELECT summary, turn_index, item_index, parent_id FROM timeline_items
-		  WHERE thread_id = ? AND id = ?
-		    AND `+userMessageTickFilterFor(""),
-		threadID, itemID,
-	).Scan(&userText, &turnIndex, &itemIndex, &parentID)
+	anchor, anchorArgs := timelineArms(threadID, timelineSelection{
+		Columns: func(string, string) string {
+			return "items.summary, items.turn_index, items.item_index, items.parent_id"
+		},
+		KeyFirst:  true,
+		Where:     "items.id = ? AND " + userMessageTickFilterFor("items."),
+		WhereArgs: []any{itemID},
+	})
+	err := q.QueryRow(anchor, anchorArgs...).Scan(&userText, &turnIndex, &itemIndex, &parentID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TurnPreview{}, false, nil
 	}
@@ -69,6 +72,9 @@ func (s *Store) threadTurnPreview(q sqlQueryer, threadID, itemID string) (TurnPr
 			                      THEN json_extract(items.meta, '$.wire_only') END, 0) AS wire_only,
 			        items.turn_index AS turn_index, items.item_index AS item_index`
 		},
+		Turn:     "?",
+		TurnArgs: []any{turnIndex},
+		FromTurn: true,
 		Where: filter + `
 		   AND items.kind IN ('user_text', 'assistant_text')
 		   AND (items.turn_index > ? OR (items.turn_index = ? AND items.item_index > ?))`,

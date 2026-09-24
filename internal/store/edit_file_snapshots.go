@@ -89,16 +89,27 @@ func (s *Store) GetEditFileSnapshot(threadID, payloadID, path string) (string, b
 // path from the LAST edit payload of a turn that touched it — the same
 // item order ListTurnEditDiffPatches concatenates in, so the snapshot
 // matches the final merged section the whole-turn Edits view renders.
+// The turn's rows drive the read; each probes its payload's snapshot of
+// path, so the thread's other snapshots are never read.
 func (s *Store) GetLatestTurnEditFileSnapshot(threadID string, turnIndex int, path string) (string, bool, error) {
 	var blob []byte
+	turnRows, turnArgs := timelineArms(threadID, timelineSelection{
+		Columns: func(string, string) string {
+			return "items.payload_id AS payload_id, items.item_index AS item_index"
+		},
+		Turn: "?", TurnArgs: []any{turnIndex},
+	})
 	err := s.reader().QueryRow(
-		`SELECT s.content
-		   FROM timeline_edit_file_snapshots s
-		   JOIN timeline_items i ON i.thread_id = s.thread_id AND i.payload_id = s.payload_id
-		  WHERE i.thread_id = ? AND i.turn_index = ? AND s.path = ?
-		  ORDER BY i.item_index DESC
+		`SELECT content FROM (
+		   SELECT i.item_index AS item_index,
+		          (SELECT s.content FROM timeline_edit_file_snapshots s
+		            WHERE s.thread_id = ? AND s.payload_id = i.payload_id AND s.path = ?) AS content
+		     FROM (`+turnRows+`) i
+		 )
+		  WHERE content IS NOT NULL
+		  ORDER BY item_index DESC
 		  LIMIT 1`,
-		threadID, turnIndex, path,
+		append([]any{threadID, path}, turnArgs...)...,
 	).Scan(&blob)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil

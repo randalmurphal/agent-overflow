@@ -42,16 +42,21 @@ import { projectBackend, threadBackend } from '../transport/entityIndex';
  */
 export function workspaceKeyForThread(
   // Structural for the same reason as `workspaceRefForThread` below: the
-  // pane hands over the two fields it already keys on, not a whole row.
-  thread: { id: string; workspacePath?: string } | null | undefined,
+  // pane hands over the fields it already keys on, not a whole row.
+  thread: { id: string; projectId?: string; workspacePath?: string } | null | undefined,
 ): string | null {
   const path = thread?.workspacePath?.trim() ?? '';
-  if (path === '') return null;
+  if (path === '' || !thread) return null;
   // The thread's own backend, which the entity index learned when the row
-  // arrived. An id it has not seen resolves home — the same fallback every
-  // other unresolvable route takes, and the only possible answer on a
+  // arrived. An id it has not seen, such as a draft placeholder's, resolves
+  // through its project: a thread and its project are rows of one backend.
+  // With neither known the key is home, the only possible answer on a
   // single-backend client.
-  return composeWorkspaceKey(thread ? threadBackend(thread.id) : undefined, path);
+  const projectId = thread.projectId?.trim() ?? '';
+  return composeWorkspaceKey(
+    threadBackend(thread.id) ?? (projectId === '' ? undefined : projectBackend(projectId)),
+    path,
+  );
 }
 
 /** The key for a path known to live on a given backend. */

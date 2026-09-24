@@ -11,6 +11,35 @@ import (
 	"agent-overflow/internal/threadmode"
 )
 
+// proposedPlanItemSQL is the row behind a thread's pending-plan flag: the
+// latest plan's completed assistant row, whose payload (local overlay
+// first, as timeline_payloads resolves it) is a proposed plan. Both the
+// row and its imported payload are found by id, so a sidebar row costs
+// the same however many chunks its thread references.
+func proposedPlanItemSQL() string {
+	sql, _ := timelineArms("", timelineSelection{
+		Columns:  func(string, string) string { return "1" },
+		Thread:   "proposed_plans.thread_id",
+		KeyFirst: true,
+		Where: `items.id = proposed_plans.item_id
+         AND items.role = 'assistant'
+         AND items.status = 'completed'
+         AND COALESCE(
+           (SELECT local_payload.kind
+              FROM payloads AS local_payload
+             WHERE local_payload.thread_id = proposed_plans.thread_id
+               AND local_payload.id = items.payload_id),
+           (SELECT imported_payload.kind
+              FROM import_history_payloads AS imported_payload
+             CROSS JOIN thread_import_chunks AS payload_refs
+                ON payload_refs.chunk_id = imported_payload.chunk_id
+             WHERE imported_payload.id = items.payload_id
+               AND payload_refs.thread_id = proposed_plans.thread_id)
+         ) = 'proposed_plan'`,
+	})
+	return sql
+}
+
 // threadColumns lists every column in the order scanThread expects. The
 // COALESCE-ing of nullable text columns returns "" instead of NULL so the
 // Go struct has a clean empty-string value for unset optional fields.
@@ -23,9 +52,8 @@ import (
 // The boolean tail columns are derived sidebar state: keyed probes whose
 // cost does not grow with the thread's rows. hasFailedTurn's turn-error
 // half reads the write-time pair thread_turn_error_aggregate.go maintains,
-// and the actionable plan's imported payload is found by its id first
-// (CROSS JOIN fixes the order), not by walking the thread's chunks.
-
+// and the pending-plan flag finds its row and payload by id
+// (proposedPlanItemSQL).
 var threadColumns = `id, COALESCE(project_id, ''),
     COALESCE((SELECT path FROM projects WHERE projects.id = threads.project_id), ''),
     title, provider, model,
@@ -47,9 +75,6 @@ var threadColumns = `id, COALESCE(project_id, ''),
 	EXISTS (
       SELECT 1
         FROM proposed_plans
-		JOIN timeline_items AS items
-          ON items.thread_id = proposed_plans.thread_id
-         AND items.id = proposed_plans.item_id
        WHERE proposed_plans.thread_id = threads.id
          AND proposed_plans.version = (
            SELECT MAX(latest.version)
@@ -57,20 +82,7 @@ var threadColumns = `id, COALESCE(project_id, ''),
             WHERE latest.thread_id = threads.id
          )
          AND proposed_plans.implemented_at = 0
-         AND items.role = 'assistant'
-         AND items.status = 'completed'
-         AND COALESCE(
-           (SELECT local_payload.kind
-              FROM payloads AS local_payload
-             WHERE local_payload.thread_id = items.thread_id
-               AND local_payload.id = items.payload_id),
-           (SELECT imported_payload.kind
-              FROM import_history_payloads AS imported_payload
-             CROSS JOIN thread_import_chunks AS refs
-                ON refs.chunk_id = imported_payload.chunk_id
-               AND refs.thread_id = items.thread_id
-             WHERE imported_payload.id = items.payload_id)
-         ) = 'proposed_plan'
+         AND EXISTS (` + proposedPlanItemSQL() + `)
     ),
     COALESCE((
       SELECT CASE

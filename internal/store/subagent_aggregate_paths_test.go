@@ -124,7 +124,13 @@ func pageAccessesForTest(t *testing.T, s *Store, query string, args ...any) int 
 	read := func(reset bool) int {
 		total := 0
 		if err := conn.Raw(func(dc any) error {
-			status := dc.(sqlite.DBStatus)
+			if cached, ok := dc.(*stmtCacheConn); ok {
+				dc = cached.sqliteConn
+			}
+			status, ok := dc.(sqlite.DBStatus)
+			if !ok {
+				return fmt.Errorf("driver connection %T has no page counters", dc)
+			}
 			for _, op := range []sqlite.DBStatusOp{sqlite.DBStatusCacheHit, sqlite.DBStatusCacheMiss} {
 				current, _, err := status.Status(op, reset)
 				if err != nil {
@@ -798,57 +804,4 @@ func TestSubagentChildProbeKeepsTheCallersAliases(t *testing.T) {
 			t.Errorf("local child probe for %s = %v, want %v", id, has, want)
 		}
 	}
-}
-
-// TestSubagentAggregatePreparationKeepsTheCard: history preparation moves
-// an agent's settled leaf rows into an import chunk. Logically the rows
-// have not moved, so every card keeps its stamp byte for byte, and later
-// writes under the anchors, including deleting a prepared child, keep the
-// cards equal to the read-time aggregator's.
-func TestSubagentAggregatePreparationKeepsTheCard(t *testing.T) {
-	s := newTestStore(t)
-	const thread = "t-prepare"
-	if err := s.CreateThread(makeThread(thread, "claude")); err != nil {
-		t.Fatal(err)
-	}
-	insert := func(r stampFixtureRow) {
-		t.Helper()
-		if err := s.InsertItem(r.item(thread)); err != nil {
-			t.Fatalf("insert %s: %v", r.id, err)
-		}
-	}
-	insert(stampFixtureRow{id: "agent-1", kind: "tool_call", tool: "Agent", summary: "Agent: outer", status: "running"})
-	insert(stampFixtureRow{id: "agent-2", kind: "tool_call", tool: "Agent", summary: "Agent: inner", status: "running", parent: "agent-1", index: 1})
-	insert(stampFixtureRow{id: "text-1", kind: "assistant_text", summary: "first finding", parent: "agent-1", index: 2})
-	insert(stampFixtureRow{id: "bash-1", kind: "tool_call", tool: "Bash", summary: "Bash: ls", parent: "agent-2", index: 3})
-	insert(stampFixtureRow{id: "text-2", kind: "assistant_text", summary: "inner finding", parent: "agent-2", index: 4})
-	insert(stampFixtureRow{id: "text-3", kind: "assistant_text", summary: "last finding", parent: "agent-1", index: 5})
-	assertSubagentStampParity(t, s, thread, "before preparation", true)
-	before := map[string]string{"agent-1": itemMetaForTest(t, s, thread, "agent-1"), "agent-2": itemMetaForTest(t, s, thread, "agent-2")}
-
-	prepareAllHistory(t, s, thread)
-	var local int
-	if err := s.db.QueryRow(`SELECT count(*) FROM items WHERE thread_id = ? AND id IN ('text-1','text-2','text-3')`, thread).Scan(&local); err != nil {
-		t.Fatal(err)
-	}
-	if local != 0 {
-		t.Fatalf("%d of the settled leaf rows are still local, want all three prepared", local)
-	}
-	assertSubagentStampParity(t, s, thread, "prepared", true)
-	for id, meta := range before {
-		if got := itemMetaForTest(t, s, thread, id); got != meta {
-			t.Errorf("preparation rewrote %s's meta:\n got %s\nwant %s", id, got, meta)
-		}
-	}
-
-	insert(stampFixtureRow{id: "text-4", kind: "assistant_text", summary: "after preparation", parent: "agent-2", index: 6})
-	assertSubagentStampParity(t, s, thread, "child written after preparation", true)
-	if err := s.DeleteThreadItem(thread, "bash-1"); err != nil {
-		t.Fatalf("delete bash-1: %v", err)
-	}
-	assertSubagentStampParity(t, s, thread, "local child deleted", true)
-	if err := s.DeleteThreadItem(thread, "text-3"); err != nil {
-		t.Fatalf("delete text-3: %v", err)
-	}
-	assertSubagentStampParity(t, s, thread, "prepared preview child deleted", true)
 }

@@ -18,9 +18,15 @@ package store
 //
 // timelineArms renders that compound. Every ordered or limited read of a
 // thread's logical timeline goes through it; `timeline_items` stays for
-// unordered set reads, `EXISTS` probes, and single-row lookups.
+// unordered whole-thread set reads and thread-level `EXISTS` probes.
 // `TestTimelineArmSelectionsWalkIndexes` is the tripwire that keeps the
 // class from coming back.
+//
+// The view's imported arm also starts from the thread's chunk references,
+// so a lookup by id, by another key or by turn through it probes every
+// chunk the thread references. Those lookups render the arms with
+// KeyFirst or Turn instead; TestImportedLookupsDoNotEnumerateChunks pins
+// their plans.
 
 // importedNotOverridden is the imported arm's half of the view's
 // semantics: a thread hides one imported row by writing a
@@ -75,6 +81,32 @@ type timelineSelection struct {
 	// rescan the thread per row.
 	Source string
 
+	// KeyFirst drives the imported arm from import_history_items through
+	// an index that leads with a key Where pins (items.id, parent_id,
+	// completion_of, meta.task_id, meta.transcript_root_id), then probes
+	// the row's chunk for membership in the thread. The arm then costs
+	// the matching rows, not one probe per chunk the thread references.
+	// Where MUST pin such a key: without one the arm reads every imported
+	// row in the database.
+	KeyFirst bool
+
+	// Turn, when non-empty, pins the selection to one turn, or with
+	// FromTurn to that turn and every later one. It is an SQL
+	// expression, "?" or an outer query's column, and TurnArgs are its
+	// bind values, emitted at each place the expression is rendered. The
+	// imported arm reads only the chunk references whose turn range can
+	// hold such a turn (idx_thread_import_chunks_turns), so a turn past
+	// the thread's imported history reads no chunk at all.
+	Turn     string
+	TurnArgs []any
+	FromTurn bool
+
+	// Thread, when non-empty, is an outer query's column that names the
+	// thread, for a selection correlated per outer row. It replaces the
+	// bound thread id, and timelineArms then ignores its threadID
+	// argument.
+	Thread string
+
 	// Where is the arm predicate, qualified with the `items.` alias and
 	// EXCLUDING the thread-id term each arm supplies itself. The alias is
 	// mandatory: the imported arm also has `refs` in scope, and an
@@ -99,7 +131,8 @@ type timelineSelection struct {
 
 // timelineArms renders sel as `<local arm> UNION ALL <imported arm>
 // ORDER BY … LIMIT …` and returns the SQL plus its bind values in wire
-// order: thread id and the predicate args once per arm, then the limit.
+// order: per arm the thread id, the turn and the predicate args, then
+// the limit.
 //
 // The rows and their order are identical to the same selection against
 // `timeline_items`, because the arms ARE the view's arms: same overrides
@@ -116,30 +149,71 @@ func timelineArms(threadID string, sel timelineSelection) (string, []any) {
 		source = sel.Source + "\n		  CROSS JOIN "
 	}
 	importedSource := source + "thread_import_chunks refs\n\t\t  JOIN import_history_items items ON items.chunk_id = refs.chunk_id"
-	if sel.Source != "" {
+	switch {
+	case sel.Source != "" || sel.KeyFirst:
 		importedSource = source + "import_history_items items\n\t\t  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = items.chunk_id"
+	case sel.Turn != "":
+		importedSource = "thread_import_chunks refs\n\t\t  CROSS JOIN import_history_items items ON items.chunk_id = refs.chunk_id"
+	}
+	localTurn, importedTurn := "", ""
+	importedTurnRenders := 0
+	switch {
+	case sel.Turn != "" && sel.FromTurn:
+		localTurn = "\n		   AND items.turn_index >= " + sel.Turn
+		importedTurn = "\n		   AND refs.max_turn_index >= " + sel.Turn +
+			"\n		   AND items.turn_index >= " + sel.Turn
+		importedTurnRenders = 2
+	case sel.Turn != "":
+		localTurn = "\n		   AND items.turn_index = " + sel.Turn
+		importedTurn = "\n		   AND " + importedTurnRange(sel.Turn) +
+			"\n		   AND items.turn_index = " + sel.Turn
+		importedTurnRenders = 3
+	}
+	thread := "?"
+	var threadArgs []any
+	if sel.Thread != "" {
+		thread = sel.Thread
+	} else {
+		threadArgs = []any{threadID}
 	}
 	sql := `SELECT ` + sel.Columns("items.thread_id", "items.rev") + `
 		  FROM ` + source + `items
-		 WHERE items.thread_id = ?` + where + `
+		 WHERE items.thread_id = ` + thread + localTurn + where + `
 		UNION ALL
 		SELECT ` + sel.Columns("refs.thread_id", importedItemRevExpr) + `
 		  FROM ` + importedSource + `
-		 WHERE refs.thread_id = ?` + where + `
+		 WHERE refs.thread_id = ` + thread + importedTurn + where + `
 		   AND ` + importedNotOverridden
 	if sel.OrderBy != "" {
 		sql += "\n		 ORDER BY " + sel.OrderBy
 	}
-	args := make([]any, 0, 2*(len(sel.WhereArgs)+1)+1)
-	args = append(args, threadID)
+	turnArgs := 0
+	if sel.Turn != "" {
+		turnArgs = len(sel.TurnArgs)
+	}
+	args := make([]any, 0, 2*(len(sel.WhereArgs)+1)+(1+importedTurnRenders)*turnArgs+1)
+	args = append(args, threadArgs...)
+	args = append(args, sel.TurnArgs[:turnArgs]...)
 	args = append(args, sel.WhereArgs...)
-	args = append(args, threadID)
+	args = append(args, threadArgs...)
+	for range importedTurnRenders {
+		args = append(args, sel.TurnArgs[:turnArgs]...)
+	}
 	args = append(args, sel.WhereArgs...)
 	if sel.Limit > 0 {
 		sql += "\n		 LIMIT ?"
 		args = append(args, sel.Limit)
 	}
 	return sql, args
+}
+
+// importedTurnRange limits an imported arm's chunk references (`refs`)
+// to the ones whose turn range can hold turn, an SQL expression rendered
+// twice. idx_thread_import_chunks_turns ranges over the leading
+// max_turn_index term, so a turn past the imported history matches no
+// reference.
+func importedTurnRange(turn string) string {
+	return "refs.max_turn_index >= " + turn + " AND refs.min_turn_index <= " + turn
 }
 
 // timelineIDColumns is the projection every id-selection uses: the id the
@@ -156,4 +230,79 @@ func timelineIDSelection(threadID string, sel timelineSelection) (string, []any)
 	sel.Columns = timelineIDColumns
 	sql, args := timelineArms(threadID, sel)
 	return "SELECT id FROM (\n" + sql + "\n)", args
+}
+
+// turnIDSelection selects the ids of one turn's logical rows.
+func turnIDSelection(threadID string, turnIndex int) (string, []any) {
+	return timelineIDSelection(threadID, timelineSelection{Turn: "?", TurnArgs: []any{turnIndex}})
+}
+
+// timelineKeyedIDSelection selects the ids of the few rows a key pins,
+// ordered by orderBy (over result columns of project) and cut to limit.
+// The materialized key rows are ordered afterwards: ordering the arms
+// themselves would invite the local arm to walk its ordering index and
+// test the key per row instead.
+func timelineKeyedIDSelection(threadID string, project, where string, whereArgs []any, orderBy string, limit int) (string, []any) {
+	sql, args := timelineArms(threadID, timelineSelection{
+		Columns:   func(string, string) string { return "items.id AS id, " + project },
+		KeyFirst:  true,
+		Where:     where,
+		WhereArgs: whereArgs,
+	})
+	return "WITH keyed AS MATERIALIZED (\n" + sql + "\n) SELECT id FROM keyed ORDER BY " + orderBy + " LIMIT ?", append(args, limit)
+}
+
+// turnAggregateQuery renders aggregate(column) over one turn's logical
+// rows, such as MAX(item_index); NULL when the turn has none.
+func turnAggregateQuery(threadID string, turnIndex int, aggregate, column string) (string, []any) {
+	sql, args := timelineArms(threadID, timelineSelection{
+		Columns:  func(string, string) string { return "items." + column + " AS " + column },
+		Turn:     "?",
+		TurnArgs: []any{turnIndex},
+	})
+	return "SELECT " + aggregate + "(" + column + ") FROM (\n" + sql + "\n)", args
+}
+
+// timelinePayloadArms renders a thread's logical payloads whose id
+// matches idWhere (a predicate on `p.id` that pins it: `p.id = ?` or an IN
+// list), the way the timeline_payloads view resolves them: the thread's
+// own row, resolved through payload snapshots, or else the imported row.
+// The imported arm starts from idx_import_history_payloads_id and probes
+// the chunk's membership in the thread, where the view would probe every
+// chunk the thread references. columns is written against alias `p`
+// with the arm's thread id and data length expressions.
+func timelinePayloadArms(threadID string, columns func(threadIDExpr, dataLengthExpr string) string, idWhere string, idArgs []any) (string, []any) {
+	sql := `SELECT ` + columns("p.thread_id", "p.data_length") + `
+		  FROM resolved_payloads p
+		 WHERE p.thread_id = ? AND ` + idWhere + `
+		UNION ALL
+		SELECT ` + columns("refs.thread_id", "length(p.data)") + `
+		  FROM import_history_payloads p
+		  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = p.chunk_id
+		 WHERE refs.thread_id = ? AND ` + idWhere + `
+		   AND NOT EXISTS (SELECT 1 FROM payloads local WHERE local.thread_id = refs.thread_id AND local.id = p.id)`
+	args := make([]any, 0, 2+2*len(idArgs))
+	args = append(args, threadID)
+	args = append(args, idArgs...)
+	args = append(args, threadID)
+	args = append(args, idArgs...)
+	return sql, args
+}
+
+// logicalPayloadReferenceSQL is true while a logical timeline row of
+// thread (an SQL expression) names payload (an SQL expression) as its
+// payload or input payload. Local rows answer through the two partial
+// payload indexes on items. An imported row's payload lives in its own
+// chunk, so the imported probe starts from the payload's chunk rows
+// (idx_import_history_payloads_id), keeps chunks the thread references,
+// and scans only those chunks' rows.
+func logicalPayloadReferenceSQL(thread, payload string) string {
+	return `(EXISTS (SELECT 1 FROM items ref WHERE ref.thread_id = ` + thread + ` AND ref.payload_id = ` + payload + `)
+	      OR EXISTS (SELECT 1 FROM items ref WHERE ref.thread_id = ` + thread + ` AND ref.input_payload_id = ` + payload + `)
+	      OR EXISTS (SELECT 1 FROM import_history_payloads ref_payload
+	                  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = ref_payload.chunk_id
+	                  CROSS JOIN import_history_items items ON items.chunk_id = ref_payload.chunk_id
+	                 WHERE ref_payload.id = ` + payload + ` AND refs.thread_id = ` + thread + `
+	                   AND (items.payload_id = ref_payload.id OR items.input_payload_id = ref_payload.id)
+	                   AND ` + importedNotOverridden + `))`
 }

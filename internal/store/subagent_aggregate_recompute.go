@@ -591,9 +591,11 @@ func subagentBackfillListed(q sqlQueryer, threadID string) (bool, error) {
 	return listed, nil
 }
 
-// markSubagentChainsDirtyTx marks the clean local anchors above each
-// given row dirty. It is for writes the triggers do not see: imported
-// rows leaving or joining a local anchor's subtree. The walk follows the
+// markSubagentChainsDirtyTx marks dirty the local anchors above each
+// given row that are clean or unstamped. It is for writes the triggers do
+// not see: imported rows leaving or joining a local anchor's subtree. An
+// unstamped anchor is included because rows joining it end the "no child
+// since its insert" that lets a read skip its walk. The walk follows the
 // logical parent chain, imported links included, by primary key.
 func markSubagentChainsDirtyTx(tx *sql.Tx, threadID string, fromIDs []string) error {
 	seen := make(map[string]bool)
@@ -603,7 +605,12 @@ func markSubagentChainsDirtyTx(tx *sql.Tx, threadID string, fromIDs []string) er
 			seen[id] = true
 			chain = append(chain, id)
 			var parent string
-			err := tx.QueryRow(`SELECT parent_id FROM timeline_items WHERE thread_id = ? AND id = ?`, threadID, id).Scan(&parent)
+			query, args := timelineArms(threadID, timelineSelection{
+				Columns:  func(string, string) string { return "items.parent_id" },
+				KeyFirst: true,
+				Where:    "items.id = ?", WhereArgs: []any{id},
+			})
+			err := tx.QueryRow(query, args...).Scan(&parent)
 			if errors.Is(err, sql.ErrNoRows) {
 				break
 			}
@@ -613,14 +620,19 @@ func markSubagentChainsDirtyTx(tx *sql.Tx, threadID string, fromIDs []string) er
 			id = parent
 		}
 	}
-	for start := 0; start < len(chain); start += 256 {
-		clause, args := inClause("id", chain[start:min(start+256, len(chain))])
-		if _, err := tx.Exec(`UPDATE items SET meta = json_set(json_remove(meta, `+aggQuotedPaths(aggKeyPaths...)+`),
-		       '`+aggStatePath+`', json_object('gen', COALESCE(`+aggJX("meta", aggGenPath)+`, 0) + 1, 'dirty', json('true')))
-		 WHERE thread_id = ? AND `+clause+` AND `+aggAnchorableSQL("items.")+` AND `+aggCleanSQL("items.meta"),
-			append([]any{threadID}, args...)...); err != nil {
-			return fmt.Errorf("store: mark subagent anchors dirty in %s: %w", threadID, err)
-		}
+	if len(chain) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(chain)
+	if err != nil {
+		return fmt.Errorf("store: encode subagent chain in %s: %w", threadID, err)
+	}
+	if _, err := tx.Exec(`UPDATE items SET meta = json_set(json_remove(meta, `+aggQuotedPaths(aggKeyPaths...)+`),
+	       '`+aggStatePath+`', json_object('gen', COALESCE(`+aggJX("meta", aggGenPath)+`, 0) + 1, 'dirty', json('true')))
+	 WHERE thread_id = ? AND id IN (SELECT value FROM json_each(?)) AND `+aggAnchorableSQL("items.")+`
+	   AND `+aggJT("items.meta", aggDirtyPath)+` IS NULL AND `+aggJT("items.meta", aggReadTimePath)+` IS NULL`,
+		threadID, string(encoded)); err != nil {
+		return fmt.Errorf("store: mark subagent anchors dirty in %s: %w", threadID, err)
 	}
 	return nil
 }

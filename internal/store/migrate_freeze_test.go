@@ -7,9 +7,10 @@ import (
 )
 
 // Pin the evaluated SQL of every migration, including referenced trigger and
-// schema definitions. Persistent development databases also apply this chain.
-// Add hashes for new versions before deployment; repair deployed versions with
-// a forward migration instead of changing their SQL or recorded hash.
+// schema definitions, and the names of its deferred steps. Persistent
+// development databases also apply this chain. Add hashes for new versions
+// before deployment; repair deployed versions with a forward migration
+// instead of changing their SQL or recorded hash.
 var frozenMigrationSQL = map[int]string{
 	1:   "b685404186f8b714754bfc3fbd0b4e887a9e4bafe574753e1c66d5452989a1da",
 	2:   "263250f46ae8283ae531d3952644e37cf51368ce921ed3844ac3cbfc5fdb52a2",
@@ -126,7 +127,26 @@ var frozenMigrationSQL = map[int]string{
 	113: "a1b59a41cd8d8106da86abbcf518e1b4e8b897acbc2566050b84496b8389068d",
 	114: "b0a6dca33ef74f85601867a153a65d16457582ce952c86de1fe77c20974f238c",
 	115: "a665ed6d0552e4d77ea60f4e04ca47bf0c023b25d3adaa99f43b4d9355272bd6",
-	121: "41c1c38040283ea662c0e0179443914c0f291c4c5408c5fdfa08845d02b2b41b",
+	116: "d12e02d43f55b8e7ecf12d743129e6219d8edc92d5d442c912fba4d40d20b981",
+	117: "d233e6c55926d79e5c4d4b3327dbadb0d4bf4f171a611601b09709912a5a9839",
+	118: "128717e6242fedb799097340da2fc1c0c817883feab7981f6803a0f650ee4f4a",
+	119: "c69b0d9bb765cc4da013e8fb9bb864e954a0093298873b9043ea8462f8821a06",
+	121: "c74b892432c6073eeff7442a1199c62f620df372679f60086961f7c54daa698d",
+}
+
+// frozenMigrationText is what a migration's frozen hash covers. A deferred
+// phase's steps are live code, so their names stand for them: moving a step
+// to another version, dropping it or adding one changes the hash, because
+// the deferred watermark records phases by version.
+func frozenMigrationText(m Migration) string {
+	if m.Deferred == nil {
+		return m.SQL
+	}
+	text := m.SQL
+	for _, step := range m.Deferred.Steps {
+		text += "\n-- deferred step: " + step.Name
+	}
+	return text
 }
 
 func TestShippedMigrationSQLIsFrozen(t *testing.T) {
@@ -136,7 +156,7 @@ func TestShippedMigrationSQLIsFrozen(t *testing.T) {
 			t.Errorf("duplicate migration version %d", m.Version)
 		}
 		seen[m.Version] = true
-		got := fmt.Sprintf("%x", sha256.Sum256([]byte(m.SQL)))
+		got := fmt.Sprintf("%x", sha256.Sum256([]byte(frozenMigrationText(m))))
 		want, ok := frozenMigrationSQL[m.Version]
 		if !ok {
 			t.Errorf("migration v%d (%s) has no frozen SQL hash; record this new version before deploying it:\n%d: %q,", m.Version, m.Name, m.Version, got)

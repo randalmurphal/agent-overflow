@@ -64,10 +64,12 @@ func classifyStreamingUpdateMissTx(tx *sql.Tx, threadID string, id string, opera
 	// status='streaming', any existing row is settled; only absence means
 	// callers should fall back to creating the row.
 	var exists int
-	probeErr := tx.QueryRow(
-		`SELECT 1 FROM timeline_items WHERE thread_id = ? AND id = ?`,
-		threadID, id,
-	).Scan(&exists)
+	query, args := timelineArms(threadID, timelineSelection{
+		Columns:  func(string, string) string { return "1" },
+		KeyFirst: true,
+		Where:    "items.id = ?", WhereArgs: []any{id},
+	})
+	probeErr := tx.QueryRow(query, args...).Scan(&exists)
 	if errors.Is(probeErr, sql.ErrNoRows) {
 		return sql.ErrNoRows
 	}
@@ -659,7 +661,7 @@ func (s *Store) DeleteThreadItem(threadID, itemID string) error {
 		return fmt.Errorf("store: begin delete item %s/%s: %w", threadID, itemID, err)
 	}
 	defer tx.Rollback()
-	sharedDeleted, err := deleteSharedHistoryWhereTx(tx, threadID, "items.id = ?", []any{itemID})
+	sharedDeleted, err := deleteSharedHistoryItemTx(tx, threadID, itemID)
 	if err != nil {
 		return err
 	}
@@ -710,10 +712,10 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 		return 0, HistoryStamp{}, fmt.Errorf("store: begin delete conversation from turn tx: %w", err)
 	}
 	defer tx.Rollback()
-	if err := cutAsyncQuestionsTx(tx, threadID, "turn_index >= ?", []any{fromTurnIndex}); err != nil {
+	if err := cutAsyncQuestionsTx(tx, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex}); err != nil {
 		return 0, HistoryStamp{}, err
 	}
-	sharedDeleted, err := deleteSharedHistoryWhereTx(tx, threadID, "turn_index >= ?", []any{fromTurnIndex})
+	sharedDeleted, err := deleteSharedHistoryFromTurnTx(tx, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex})
 	if err != nil {
 		return 0, HistoryStamp{}, err
 	}
@@ -801,10 +803,12 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, H
 
 	var turnIndex, itemIndex int
 	var meta string
-	if err := tx.QueryRow(
-		`SELECT turn_index, item_index, meta FROM timeline_items WHERE thread_id = ? AND id = ?`,
-		threadID, itemID,
-	).Scan(&turnIndex, &itemIndex, &meta); err != nil {
+	anchorQuery, anchorArgs := timelineArms(threadID, timelineSelection{
+		Columns:  func(string, string) string { return "items.turn_index, items.item_index, items.meta" },
+		KeyFirst: true,
+		Where:    "items.id = ?", WhereArgs: []any{itemID},
+	})
+	if err := tx.QueryRow(anchorQuery, anchorArgs...).Scan(&turnIndex, &itemIndex, &meta); err != nil {
 		return nil, HistoryStamp{}, fmt.Errorf("store: delete conversation from item lookup %s/%s: %w", threadID, itemID, err)
 	}
 	promotion, err := itemmeta.DecodePromotionState(meta)
@@ -837,27 +841,30 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, H
 		if promotion.HasEchoBoundary {
 			itemPredicate += ` OR (turn_index = ? AND item_index > ? AND (role != 'user' OR parent_id != ''))`
 			itemArgs = append(itemArgs, turnIndex, promotion.EchoBoundary)
-			contentPredicate = `item_index > ?`
-			contentArgs = []any{threadID, turnIndex, promotion.EchoBoundary}
+			contentPredicate = `items.item_index > ?`
+			contentArgs = []any{promotion.EchoBoundary}
 		}
 	} else {
-		contentPredicate = `item_index > ?`
-		contentArgs = []any{threadID, turnIndex, itemIndex}
+		contentPredicate = `items.item_index > ?`
+		contentArgs = []any{itemIndex}
 	}
 	deletedTurnContent := false
 	if contentPredicate != "" {
-		if err := tx.QueryRow(
-			`SELECT EXISTS(SELECT 1 FROM timeline_items
-			  WHERE thread_id = ? AND turn_index = ? AND (role != 'user' OR parent_id != '') AND `+contentPredicate+`)`,
-			contentArgs...,
-		).Scan(&deletedTurnContent); err != nil {
+		contentQuery, args := timelineArms(threadID, timelineSelection{
+			Columns:   func(string, string) string { return "1" },
+			Turn:      "?",
+			TurnArgs:  []any{turnIndex},
+			Where:     `(items.role != 'user' OR items.parent_id != '') AND ` + contentPredicate,
+			WhereArgs: contentArgs,
+		})
+		if err := tx.QueryRow(`SELECT EXISTS(`+contentQuery+`)`, args...).Scan(&deletedTurnContent); err != nil {
 			return nil, HistoryStamp{}, fmt.Errorf("store: probe deleted turn content for thread %s: %w", threadID, err)
 		}
 	}
-	if err := cutAsyncQuestionsTx(tx, threadID, itemPredicate, itemArgs[1:]); err != nil {
+	if err := cutAsyncQuestionsTx(tx, threadID, turnIndex, itemPredicate, itemArgs[1:]); err != nil {
 		return nil, HistoryStamp{}, err
 	}
-	if _, err := deleteSharedHistoryWhereTx(tx, threadID, itemPredicate, itemArgs[1:]); err != nil {
+	if _, err := deleteSharedHistoryFromTurnTx(tx, threadID, turnIndex, itemPredicate, itemArgs[1:]); err != nil {
 		return nil, HistoryStamp{}, err
 	}
 	if _, err := deleteItemsAndSearchRowsTx(tx, threadID,
@@ -877,12 +884,15 @@ func (s *Store) DeleteConversationFromItem(threadID, itemID string) ([]string, H
 
 	// The anchor turn keeps its turn row while any items survive in it:
 	// the remaining prefix still happened.
+	survivors, survivorArgs := timelineArms(threadID, timelineSelection{
+		Columns: func(string, string) string { return "1" },
+		Turn:    "turns.turn_index",
+	})
 	if _, err := tx.Exec(
 		`DELETE FROM turns WHERE thread_id = ?
 		 AND turn_index >= ?
-		 AND NOT EXISTS (SELECT 1 FROM timeline_items
-		                 WHERE thread_id = ? AND turn_index = turns.turn_index)`,
-		threadID, turnIndex, threadID,
+		 AND NOT EXISTS (`+survivors+`)`,
+		append([]any{threadID, turnIndex}, survivorArgs...)...,
 	); err != nil {
 		return nil, HistoryStamp{}, fmt.Errorf("store: delete turns from item for thread %s: %w", threadID, err)
 	}
@@ -931,7 +941,7 @@ func (s *Store) ListTurnTimelineItemIDs(threadID string, turnIndex int) ([]strin
 }
 
 func listTurnTimelineItemIDs(q sqlQueryer, threadID string, turnIndex int) ([]string, error) {
-	query, args := timelineIDSelection(threadID, timelineSelection{Where: "items.turn_index = ?", WhereArgs: []any{turnIndex}, OrderBy: "turn_index, item_index"})
+	query, args := timelineIDSelection(threadID, timelineSelection{Turn: "?", TurnArgs: []any{turnIndex}, OrderBy: "turn_index, item_index"})
 	rows, err := q.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list turn %d items for thread %s: %w", turnIndex, threadID, err)
@@ -960,10 +970,8 @@ func listTurnTimelineItemIDs(q sqlQueryer, threadID string, turnIndex int) ([]st
 // was never settled.
 func trimTurnSettleToSurvivorsTx(tx *sql.Tx, threadID string, turnIndex int) error {
 	var lastKept sql.NullInt64
-	if err := tx.QueryRow(
-		`SELECT MAX(created_at) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`,
-		threadID, turnIndex,
-	).Scan(&lastKept); err != nil {
+	query, args := turnAggregateQuery(threadID, turnIndex, "MAX", "created_at")
+	if err := tx.QueryRow(query, args...).Scan(&lastKept); err != nil {
 		return fmt.Errorf("store: trim turn settle survivors lookup for thread %s: %w", threadID, err)
 	}
 	if !lastKept.Valid {

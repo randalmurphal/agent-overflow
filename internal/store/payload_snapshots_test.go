@@ -373,7 +373,8 @@ func TestForkPayloadLengthsNeverMaterializeBlobs(t *testing.T) {
 		}
 		roots[root] = physicalBlob{table, column}
 	}
-	rows, err := s.db.Query("EXPLAIN "+payloadLengthsSQL, "fork", "payload")
+	query, args := payloadLengthsQuery("fork", "payload")
+	rows, err := s.db.Query("EXPLAIN "+query, args...)
 	if err != nil {
 		t.Fatal(err)
 	}

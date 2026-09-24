@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 
 	"agent-overflow/internal/itemmeta"
 )
@@ -12,16 +11,21 @@ import (
 // user rows that will move. Call while the provider-order drain is serialized.
 // Empty means the turn's head, including when only moving rows currently exist.
 func (s *Store) CaptureUserPlacementBoundary(threadID string, turnIndex int, movingItemIDs []string) (string, error) {
-	query := `SELECT id FROM timeline_items WHERE thread_id = ? AND turn_index = ?`
-	args := []any{threadID, turnIndex}
+	sel := timelineSelection{
+		Columns: func(string, string) string { return "items.id AS id, items.item_index AS item_index" },
+		Turn:    "?", TurnArgs: []any{turnIndex},
+		OrderBy: "item_index DESC, id DESC",
+		Limit:   1,
+	}
 	if len(movingItemIDs) != 0 {
-		query += ` AND id NOT IN (` + strings.TrimSuffix(strings.Repeat("?,", len(movingItemIDs)), ",") + `)`
+		sel.Where = `items.id NOT IN (` + placeholders(len(movingItemIDs)) + `)`
 		for _, id := range movingItemIDs {
-			args = append(args, id)
+			sel.WhereArgs = append(sel.WhereArgs, id)
 		}
 	}
+	query, args := timelineArms(threadID, sel)
 	var id string
-	err := s.reader().QueryRow(query+` ORDER BY item_index DESC, id DESC LIMIT 1`, args...).Scan(&id)
+	err := s.reader().QueryRow(`SELECT id FROM (`+query+`)`, args...).Scan(&id)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -58,7 +62,7 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 	defer tx.Rollback()
 	boundary := -1
 	if boundaryID != "" {
-		if err := tx.QueryRow(`SELECT item_index FROM timeline_items WHERE thread_id = ? AND turn_index = ? AND id = ?`, threadID, turnIndex, boundaryID).Scan(&boundary); err != nil {
+		if boundary, err = turnItemIndexTx(tx, threadID, turnIndex, boundaryID); err != nil {
 			return nil, fmt.Errorf("store: resolve user placement boundary %s: %w", boundaryID, err)
 		}
 	}
@@ -101,7 +105,8 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 	}
 	if park {
 		var minimum int
-		if err := tx.QueryRow(`SELECT MIN(item_index) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`, threadID, turnIndex).Scan(&minimum); err != nil {
+		query, args := turnAggregateQuery(threadID, turnIndex, "MIN", "item_index")
+		if err := tx.QueryRow(query, args...).Scan(&minimum); err != nil {
 			return nil, err
 		}
 		for i, item := range group {
@@ -178,7 +183,7 @@ func (s *Store) UpdateItemMetaAtBoundary(threadID, itemID, boundaryID string, tr
 	}
 	boundary := -1
 	if boundaryID != "" {
-		if err := tx.QueryRow(`SELECT item_index FROM timeline_items WHERE thread_id = ? AND turn_index = ? AND id = ?`, threadID, item.TurnIndex, boundaryID).Scan(&boundary); err != nil {
+		if boundary, err = turnItemIndexTx(tx, threadID, item.TurnIndex, boundaryID); err != nil {
 			return Item{}, err
 		}
 	}
@@ -241,13 +246,16 @@ type userPlacementPosition struct {
 func userPlacementSuffixTx(tx *sql.Tx, threadID string, turnIndex int, boundaryID string, boundary int, moving map[string]struct{}) ([]userPlacementPosition, error) {
 	// Find the first nonmoving suffix row. Most confirmations append and have
 	// no suffix; delayed retries pay only for the rows they actually displace.
-	suffixQuery := `SELECT id, item_index FROM timeline_items WHERE thread_id = ? AND turn_index = ?`
-	suffixArgs := []any{threadID, turnIndex}
-	if boundaryID != "" {
-		suffixQuery += ` AND item_index > ?`
-		suffixArgs = append(suffixArgs, boundary)
+	sel := timelineSelection{
+		Columns: func(string, string) string { return "items.id AS id, items.item_index AS item_index" },
+		Turn:    "?", TurnArgs: []any{turnIndex},
+		OrderBy: "item_index, id",
 	}
-	rows, err := tx.Query(suffixQuery+` ORDER BY item_index, id`, suffixArgs...)
+	if boundaryID != "" {
+		sel.Where, sel.WhereArgs = `items.item_index > ?`, []any{boundary}
+	}
+	suffixQuery, suffixArgs := timelineArms(threadID, sel)
+	rows, err := tx.Query(suffixQuery, suffixArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +296,12 @@ func shiftUserPlacementSuffixTx(tx *sql.Tx, threadID string, turnIndex int, suff
 	}
 	// Boundaries are numeric history metadata. User rows moving around them
 	// do not change provider-order membership, but displaced content does.
-	metas, err := tx.Query(`SELECT id, meta FROM timeline_items WHERE thread_id = ? AND turn_index = ? AND meta LIKE '%"promoted_echo_boundary"%'`, threadID, turnIndex)
+	metaQuery, metaArgs := timelineArms(threadID, timelineSelection{
+		Columns: func(string, string) string { return "items.id, items.meta" },
+		Turn:    "?", TurnArgs: []any{turnIndex},
+		Where: `items.meta LIKE '%"promoted_echo_boundary"%'`,
+	})
+	metas, err := tx.Query(metaQuery, metaArgs...)
 	if err != nil {
 		return err
 	}
@@ -334,4 +347,18 @@ func shiftUserPlacementSuffixTx(tx *sql.Tx, threadID string, turnIndex int, suff
 		mark(update.id)
 	}
 	return nil
+}
+
+// turnItemIndexTx resolves a row of the turn to its item_index through
+// each arm's id index; sql.ErrNoRows when the turn has no such row.
+func turnItemIndexTx(q sqlQueryer, threadID string, turnIndex int, id string) (int, error) {
+	query, args := timelineArms(threadID, timelineSelection{
+		Columns:   func(string, string) string { return "items.item_index" },
+		KeyFirst:  true,
+		Where:     "items.id = ? AND items.turn_index = ?",
+		WhereArgs: []any{id, turnIndex},
+	})
+	var index int
+	err := q.QueryRow(query, args...).Scan(&index)
+	return index, err
 }

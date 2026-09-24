@@ -18,11 +18,12 @@ package store
 // Both are NULL when the set is empty. A write that adds rows raises the
 // pair with them. A write that can remove a counted row recomputes it: one
 // idx_items_thread_error probe, plus one idx_import_history_items_error
-// probe per attached chunk. That happens only when a counted row leaves
-// the set or the newest turn moves back: an error row's delete or key
-// change, a turn delete, a counted imported row hidden by an override, a
-// chunk with a counted row detached. A new newest turn recomputes only when
-// an error already sits at or past it.
+// probe per attached chunk whose turn range reaches the newest turn, found
+// through idx_thread_import_chunks_turns. That happens only when a counted
+// row leaves the set or the newest turn moves back: an error row's delete
+// or key change, a turn delete, a counted imported row hidden by an
+// override, a chunk with a counted row detached. A new newest turn
+// recomputes only when an error already sits at or past it.
 //
 // The triggers do not consult history_bulk_load: none of them walks the
 // thread, and the bulk paths (imports, thread deletion, transferred
@@ -60,8 +61,9 @@ func turnErrorRowsSQL(thread, skipChunk string) string {
 	UNION ALL
 	SELECT imported.created_at, imported.turn_index
 	  FROM thread_import_chunks refs
-	  JOIN import_history_items imported ON imported.chunk_id = refs.chunk_id
+	  CROSS JOIN import_history_items imported ON imported.chunk_id = refs.chunk_id
 	 WHERE refs.thread_id = ` + thread + skip + `
+	   AND refs.max_turn_index >= ` + turnErrorNewestTurnSQL(thread) + `
 	   AND imported.kind = 'error'
 	   AND imported.turn_index >= ` + turnErrorNewestTurnSQL(thread) + `
 	   AND ` + turnErrorNotOverriddenSQL(thread)
@@ -101,7 +103,7 @@ func turnErrorChunkRowsSQL(thread, chunk string) string {
 func turnErrorImportedRowSQL(thread, item string) string {
 	return `SELECT imported.created_at, imported.turn_index
 	  FROM import_history_items imported
-	  JOIN thread_import_chunks refs ON refs.chunk_id = imported.chunk_id AND refs.thread_id = ` + thread + `
+	  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = imported.chunk_id AND refs.thread_id = ` + thread + `
 	 WHERE imported.id = ` + item + ` AND imported.kind = 'error'
 	   AND imported.turn_index >= ` + turnErrorNewestTurnSQL(thread)
 }

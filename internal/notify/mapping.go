@@ -62,8 +62,9 @@ const (
 	// nobody can silence individually is one whose only answer is the master
 	// switch, which is the wrong price for one noisy workflow.
 	KindWorkflowAttention Kind = "workflow-attention"
-	// KindAppUpdate is the WSL launcher's "update didn't apply" notice, the
-	// second sender that predates this mapping. Its own toggle too, same
+	// KindAppUpdate is an app-level notice with no thread: the WSL
+	// launcher's "update didn't apply", and a deferred store migration that
+	// left items to retry on the next start. Its own toggle too, same
 	// reasoning as KindWorkflowAttention.
 	KindAppUpdate Kind = "app-update"
 )

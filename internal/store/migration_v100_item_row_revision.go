@@ -18,9 +18,9 @@ package store
 //     (idx_items_transcript_root). transcriptRootExpr is its expression
 //     and the trigger's, so the planner can serve one from the other.
 //   - the three history triggers, replayed drop-then-create, because their
-//     bodies now stamp rows as well as the thread. The generation is frozen
-//     as historyRevTriggersV100SQL; later migrations replace it with the
-//     live historyRevTriggersSQL that RestoreFrom reinstalls.
+//     bodies now stamp rows as well as the thread. historyRevTriggersV100SQL
+//     is this generation, frozen; later migrations replace it, and v121
+//     installs the historyRevTriggersSQL RestoreFrom reinstalls.
 //   - the `timeline_items` view, recreated with the column. The view is the
 //     logical row set, and `rev` is now part of a logical row; the imported
 //     arm reads -1 because shared immutable chunks have no thread-scoped

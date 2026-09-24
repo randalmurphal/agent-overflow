@@ -72,15 +72,17 @@ type ThreadWindowSync struct {
 
 // historyRevTriggersSQL is the latest DDL for the three AFTER triggers on
 // `items` that maintain the contract (docs/architecture/thread-replica-sync.md
-// §3.1). It is a const rather than inline migration text because it has
-// two installers: migration v121 replays drop+create to add the subagent
-// aggregate stamps, and RestoreFrom recreates the triggers after dropping
-// them for the row copy. Earlier points in the chain install the generation that matches
-// the schema they run against — historyRevTriggersLegacySQL (v55, v58, before
-// threads.history_bulk_load exists), historyRevTriggersBulkLoadSQL (v59,
-// v72, before items.rev exists) and historyRevTriggersV100SQL (v100, v101,
-// before the subagent aggregate stamps). Two hand-kept latest copies would be
-// free to drift, and the drifted
+// §3.1). It is shared rather than inline migration text because it has
+// two installers: migration v121 replays drop+create of all three to add
+// the subagent aggregate stamps, and RestoreFrom recreates them after
+// dropping them for the row copy. Earlier points in the chain install the
+// generation that matches the schema they run against:
+// historyRevTriggersLegacySQL (v55, v58, before threads.history_bulk_load
+// exists), historyRevTriggersBulkLoadSQL (v59, v72, before items.rev
+// exists), historyRevTriggersV100SQL (v100, v101), historyRevTriggersV118SQL
+// (v118) and historyRevInsertTriggerV119SQL (v119, before the subagent
+// aggregate stamps).
+// Two hand-kept latest copies would be free to drift, and the drifted
 // half would be the one running on a restored database — the state
 // nobody re-reads a migration to check.
 //
@@ -120,10 +122,19 @@ type ThreadWindowSync struct {
 // stamps take the thread's current history_rev. That is sound only while
 // no bulk-load writer UPDATES the content of an existing local row: such a
 // write would leave a stamp a client may already hold on different bytes.
-// Bulk-load writers localize an imported row or delete private rows during
-// pruning and preparation. Preparation preserves logical bytes and stamps;
-// a localized copy replaces a row held at rev -1. ApplyImportBatch writes
-// shared import history and adds its row count to history_rev before commit.
+//
+// An INSERT under the flag stamps only the inserted row. Every bulk-load
+// insert either moves a row that was already visible from imported history
+// into `items` (localizeImportedItemTx, UnsealThreadHistory), which changes
+// no other row's read, or rebuilds a thread whose rows the same transaction
+// deleted (a returning transfer), where every row it could stamp was
+// inserted at the same frozen revision. The anchor legs would rewrite each
+// anchor once per inserted child for no change in any read. A bulk-load
+// writer that inserts a row a read did not already show must not hold the
+// flag. Deletes under the flag (thread deletion chunks) do change their
+// anchors' reads, so the update and delete triggers stamp every changed
+// row. ApplyImportBatch writes shared import history and adds its row
+// count to history_rev before commit.
 
 // transcriptRootExpr is the SQL expression that reads a resume carrier's
 // `transcript_root_id` stamp. It is one string because the trigger
@@ -147,7 +158,8 @@ const transcriptRootExpr = "json_extract(meta, '$." + metaKeyTranscriptRootID + 
 // Every leg is an index probe: the primary key for ids,
 // idx_items_completion_of for siblings and idx_items_transcript_root for
 // carriers, so a child write costs a fixed handful of probes regardless
-// of thread size (TestItemRevisionStampProbesIndexes). The outer
+// of thread size (TestItemRevisionStampProbesIndexes,
+// TestItemRevisionTriggersProbeCarriersByValue). The outer
 // `id IN (...)` stamps each row once even when legs overlap, which
 // matters because a stamp that leaves `rev` unchanged would fire the
 // update trigger's thread bump a second time.
@@ -165,7 +177,25 @@ func stampedRowIDsSQL(ref string) string {
 // (subagentAggregatesByRoot), so a write under a nested launch changes
 // the outer launch's read too. The chain is walked by primary key; the
 // depth guard only bounds a corrupt cycle, real chains are a few levels.
+//
+// The carrier leg compares transcriptRootExpr with `+ancestors.id`.
+// `ancestors.id` is a CTE column with TEXT affinity, and SQLite applies it
+// to the other operand, which has none; an index on the expression can then
+// serve only its thread_id prefix, so every write under a parent would read
+// and parse the meta of each of the thread's carriers. The unary plus drops
+// the affinity and the probe keys on the expression.
 func stampedRowIDsFor(threadExpr, idExpr, parentExpr string) string {
+	return stampedRowIDsWithCarrierKey(threadExpr, idExpr, parentExpr, "+ancestors.id")
+}
+
+// stampedRowIDsV100SQL is the row set of the v100 trigger generation, whose
+// carrier leg compares against `ancestors.id`. It is frozen because
+// migrations v100 and v101 install that generation; v118 replaces it.
+func stampedRowIDsV100SQL(ref string) string {
+	return stampedRowIDsWithCarrierKey(ref+".thread_id", ref+".id", ref+".parent_id", "ancestors.id")
+}
+
+func stampedRowIDsWithCarrierKey(threadExpr, idExpr, parentExpr, carrierKey string) string {
 	ancestors := `WITH RECURSIVE ancestors(id, parent_id, depth) AS (
               SELECT id, parent_id, 1 FROM items WHERE thread_id = ` + threadExpr + ` AND id = ` + parentExpr + `
               UNION ALL
@@ -177,7 +207,7 @@ func stampedRowIDsFor(threadExpr, idExpr, parentExpr string) string {
 	anchors := `SELECT id FROM ancestors
               UNION ALL
               SELECT items.id FROM ancestors CROSS JOIN items
-               WHERE items.thread_id = ` + threadExpr + ` AND ` + transcriptRootExpr + ` = ancestors.id`
+               WHERE items.thread_id = ` + threadExpr + ` AND ` + transcriptRootExpr + ` = ` + carrierKey
 	return ancestors + `
           SELECT ` + idExpr + `
           UNION ALL
@@ -199,13 +229,20 @@ const stampPendingSQL = `rev IS NOT (SELECT history_rev FROM threads WHERE id = 
 
 // Each trigger runs its subagent aggregate statement
 // (subagent_aggregate_stamps.go) between the thread bump and the row
-// stamp.
+// stamp. The insert trigger's two stamping statements are gated on the
+// thread's bulk-load flag, a constant for the statement, so only one of
+// them reads anything.
 var historyRevTriggersSQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
   UPDATE threads SET history_rev = history_rev + 1
    WHERE id = NEW.thread_id AND history_bulk_load = 0;
   ` + subagentAggregateInsertStmt + `
   ` + stampRowsSQL + `
+   WHERE thread_id = NEW.thread_id AND id = NEW.id
+     AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 1
+     AND ` + stampPendingSQL + `;
+  ` + stampRowsSQL + `
    WHERE thread_id = NEW.thread_id AND id IN (` + stampedRowIDsSQL("NEW") + `)
+     AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 0
      AND ` + stampPendingSQL + `;
 END;
 
@@ -238,15 +275,46 @@ CREATE TRIGGER trg_items_rev_delete AFTER DELETE ON items BEGIN
 END;`
 
 // historyRevTriggersV100SQL is the generation migrations v100 and v101
-// install, frozen with their recorded SQL; v121 replaces it.
-var historyRevTriggersV100SQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
+// install. It is frozen with their recorded SQL; v118 replaces it.
+var historyRevTriggersV100SQL = historyRevTriggersFrom(stampedRowIDsV100SQL)
+
+// historyRevTriggersV118SQL is the generation migration v118 installs,
+// frozen with its recorded SQL; v119 replaces its insert trigger.
+var historyRevTriggersV118SQL = historyRevTriggersFrom(stampedRowIDsSQL)
+
+// historyRevInsertTriggerV119SQL is the insert trigger migration v119
+// installs, frozen with its recorded SQL; v121 replaces it. Its two
+// stamping statements are gated on the thread's bulk-load flag.
+var historyRevInsertTriggerV119SQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
+  UPDATE threads SET history_rev = history_rev + 1
+   WHERE id = NEW.thread_id AND history_bulk_load = 0;
+  ` + stampRowsSQL + `
+   WHERE thread_id = NEW.thread_id AND id = NEW.id
+     AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 1;
+  ` + stampRowsSQL + `
+   WHERE thread_id = NEW.thread_id AND id IN (` + stampedRowIDsSQL("NEW") + `)
+     AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 0;
+END;`
+
+// historyRevTriggersFrom builds the three row-stamping triggers of the
+// v100 and v118 generations over one definition of the rows a write
+// changed.
+func historyRevTriggersFrom(stampedRowIDsSQL func(ref string) string) string {
+	return `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
   UPDATE threads SET history_rev = history_rev + 1
    WHERE id = NEW.thread_id AND history_bulk_load = 0;
   ` + stampRowsSQL + `
    WHERE thread_id = NEW.thread_id AND id IN (` + stampedRowIDsSQL("NEW") + `);
 END;
 
-CREATE TRIGGER trg_items_rev_update AFTER UPDATE ON items
+` + historyRevUpdateDeleteTriggersFrom(stampedRowIDsSQL)
+}
+
+// historyRevUpdateDeleteTriggersFrom builds the update and delete
+// triggers of the v100 and v118 generations over one definition of the
+// rows a write changed.
+func historyRevUpdateDeleteTriggersFrom(stampedRowIDsSQL func(ref string) string) string {
+	return `CREATE TRIGGER trg_items_rev_update AFTER UPDATE ON items
 WHEN OLD.rev IS NEW.rev
 BEGIN
   UPDATE threads SET
@@ -269,6 +337,7 @@ CREATE TRIGGER trg_items_rev_delete AFTER DELETE ON items BEGIN
   ` + stampRowsSQL + `
    WHERE thread_id = OLD.thread_id AND id IN (` + stampedRowIDsSQL("OLD") + `);
 END;`
+}
 
 // historyRevTriggersBulkLoadSQL is the v59 trigger body: bulk-load aware,
 // thread stamps only. It is frozen because two points in the migration chain

@@ -113,12 +113,17 @@ func buildImportHistoryChunks(rows []ImportRow) ([]importHistoryChunk, error) {
 		if err != nil {
 			return nil, err
 		}
-		chunks = append(chunks, importHistoryChunk{
+		chunk := importHistoryChunk{
 			id:      id,
 			rows:    chunkRows,
 			minTurn: chunkRows[0].Item.TurnIndex,
-			maxTurn: chunkRows[len(chunkRows)-1].Item.TurnIndex,
-		})
+			maxTurn: chunkRows[0].Item.TurnIndex,
+		}
+		for _, row := range chunkRows[1:] {
+			chunk.minTurn = min(chunk.minTurn, row.Item.TurnIndex)
+			chunk.maxTurn = max(chunk.maxTurn, row.Item.TurnIndex)
+		}
+		chunks = append(chunks, chunk)
 		start = end
 	}
 	return chunks, nil
@@ -211,7 +216,7 @@ func insertImportHistoryChunkRowsTx(tx *sql.Tx, chunk importHistoryChunk) error 
 		func(row importHistoryPayloadRow) []any {
 			return []any{
 				chunk.id, row.payload.ID, row.payload.Kind, row.payload.Meta,
-				row.payload.Data, row.payload.CreatedAt, "", "",
+				payloadDataArg(row.payload.Data), row.payload.CreatedAt, "", "",
 			}
 		},
 		func(row importHistoryPayloadRow) string { return row.itemID },

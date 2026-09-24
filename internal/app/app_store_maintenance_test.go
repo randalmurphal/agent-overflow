@@ -1,13 +1,20 @@
 package app
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"agent-overflow/internal/store"
 )
 
-// The conversion scheduler exists to pick a moment the user cannot
-// notice. These tests pin the two predicates that decide it: a full
-// quiet window with no commits, and at most one attempt an hour.
+// The auto_vacuum conversion's wait exists to pick a moment the user cannot
+// notice. These tests pin what decides it: the activation gate, no live
+// turn, a full quiet window with no commits, and at most one attempt an
+// hour.
 
 func TestCommitQuietGateNeedsAFullWindowWithoutCommits(t *testing.T) {
 	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
@@ -51,35 +58,47 @@ func TestCommitQuietGateCapsAttemptsPerHour(t *testing.T) {
 	}
 }
 
-// TestStoreConversionTickWaitsForQuietThenFinishes drives the real tick
-// against the test store, which this build already creates as an
-// incremental database: the scheduler must reach the attempt only after
-// the quiet window, and then stop for good.
-func TestStoreConversionTickWaitsForQuietThenFinishes(t *testing.T) {
+// TestStoreSwapReadyWaitsForQuietAndCapsAttempts drives the real sample
+// against the test store: an attempt is allowed only after the quiet
+// window, and the next one only after the retry interval.
+func TestStoreSwapReadyWaitsForQuietAndCapsAttempts(t *testing.T) {
 	app := retentionTestApp(t)
+	ctx := context.Background()
 	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	app.maintenance.quietWindow = time.Minute
 	gate := newCommitQuietGate(base)
 	defer gate.close()
 
-	if done := app.storeConversionTick(gate, base); done {
-		t.Fatal("the first tick only establishes the baseline")
+	sample := func(at time.Duration) bool {
+		t.Helper()
+		ready, err := app.storeSwapReady(ctx, gate, base.Add(at))
+		if err != nil {
+			t.Fatalf("sample at %s: %v", at, err)
+		}
+		return ready
+	}
+	if sample(0) {
+		t.Fatal("the first sample only establishes the baseline")
 	}
 	// A commit restarts the window.
 	if err := app.store.SetUIState("client:test", map[string]string{"k": "v"}); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if done := app.storeConversionTick(gate, base.Add(30*time.Second)); done {
-		t.Fatal("a tick right after a commit must not attempt the conversion")
+	if sample(30 * time.Second) {
+		t.Fatal("a sample right after a commit must not allow an attempt")
 	}
-	// Quiet from here on: the tick past the window attempts, finds the
-	// database already incremental and stops the scheduler.
-	if done := app.storeConversionTick(gate, base.Add(2*time.Minute)); !done {
-		t.Fatal("a quiet tick on an incremental database must finish the scheduler")
+	if !sample(2 * time.Minute) {
+		t.Fatal("a quiet sample past the window must allow the attempt")
+	}
+	if sample(3 * time.Minute) {
+		t.Fatal("a second attempt inside the retry interval must be refused")
+	}
+	if !sample(2*time.Minute + storeConvertRetryInterval) {
+		t.Fatal("an attempt is due again after the retry interval")
 	}
 }
 
-func TestStoreConversionTickTreatsALiveTurnAsActivity(t *testing.T) {
+func TestStoreSwapReadyTreatsALiveTurnAsActivity(t *testing.T) {
 	app := retentionTestApp(t)
 	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	app.maintenance.quietWindow = time.Minute
@@ -91,8 +110,9 @@ func TestStoreConversionTickTreatsALiveTurnAsActivity(t *testing.T) {
 	app.sessionManager().put("live-thread", session{Liveness: liveness})
 	defer app.sessionManager().take("live-thread")
 
-	if done := app.storeConversionTick(gate, base.Add(2*time.Minute)); done {
-		t.Fatal("a live turn must not produce an attempt")
+	ready, err := app.storeSwapReady(context.Background(), gate, base.Add(2*time.Minute))
+	if err != nil || ready {
+		t.Fatalf("a live turn produced ready = %v, err = %v", ready, err)
 	}
 	if gate.watch != nil {
 		t.Fatal("a live turn must not open the commit watcher")
@@ -102,33 +122,131 @@ func TestStoreConversionTickTreatsALiveTurnAsActivity(t *testing.T) {
 	}
 }
 
-func TestStoreMaintenanceLoopExitsOnAnIncrementalDatabase(t *testing.T) {
-	app := retentionTestApp(t)
-	app.maintenance.convertPoll = time.Millisecond
+// useLegacyStore replaces the fixture's store with one whose file predates
+// incremental auto-vacuum and whose deferred watermark is below v119, as an
+// upgraded install's is.
+func useLegacyStore(t *testing.T, app *App) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var journal string
+	if err := raw.QueryRow(`PRAGMA journal_mode=WAL`).Scan(&journal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE legacy_seed (x INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.New(path)
+	if err != nil {
+		t.Fatalf("open legacy store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if mode, err := st.AutoVacuumMode(); err != nil || mode != store.AutoVacuumNone {
+		t.Fatalf("legacy store auto_vacuum = %v (%v), want none", mode, err)
+	}
+	app.store = st
+	setDeferredWatermark(t, path, 118)
+}
 
-	done := make(chan struct{})
-	go func() {
-		app.runStoreConversionLoop(make(chan struct{}))
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the scheduler must stop immediately on an incremental database")
+// setDeferredWatermark writes the deferred phase watermark through a second
+// handle on the file; no store accessor moves it backwards.
+func setDeferredWatermark(t *testing.T, path string, version int) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, version)); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestStartStopStoreMaintenanceRoundTrip(t *testing.T) {
-	app := retentionTestApp(t)
-	app.maintenance.convertPoll = time.Millisecond
+func storeAutoVacuum(t *testing.T, app *App) store.AutoVacuumMode {
+	t.Helper()
+	mode, err := app.store.AutoVacuumMode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mode
+}
 
-	app.startStoreMaintenance()
+// A supervisor trial never replaces its database file: the conversion waits
+// on the activation gate, and converts once the gate opens.
+func TestDeferredConversionWaitsForActivation(t *testing.T) {
+	app := retentionTestApp(t)
+	useLegacyStore(t, app)
+	app.maintenance.chunkPause = time.Millisecond
+	app.maintenance.convertPoll = time.Millisecond
+	app.maintenance.quietWindow = 10 * time.Millisecond
+	app.activation.Park()
+
+	app.startDeferredMigrations()
+	time.Sleep(300 * time.Millisecond)
+	if mode := storeAutoVacuum(t, app); mode != store.AutoVacuumNone {
+		t.Fatalf("a parked backend converted its database (auto_vacuum = %v)", mode)
+	}
+	if !deferredMigrationsPending(t, app) {
+		t.Fatal("the phase finished while the conversion was parked")
+	}
+
+	app.activation.Open()
+	waitFor(t, "the conversion after activation", func() bool { return !deferredMigrationsPending(t, app) })
+	app.stopDeferredMigrations()
+	if mode := storeAutoVacuum(t, app); mode != store.AutoVacuumIncremental {
+		t.Fatalf("auto_vacuum = %v after activation, want incremental", mode)
+	}
+	if failure, err := app.store.DeferredMigrationFailure(); err != nil || failure != nil {
+		t.Fatalf("failure record = %+v, %v", failure, err)
+	}
+}
+
+// A quit while the conversion waits returns promptly and records nothing,
+// so the next launch runs the step again.
+func TestDeferredConversionWaitStopsOnQuit(t *testing.T) {
+	app := retentionTestApp(t)
+	useLegacyStore(t, app)
+	app.maintenance.chunkPause = time.Millisecond
+	app.maintenance.convertPoll = time.Millisecond
+	app.maintenance.quietWindow = time.Hour
+
+	app.startDeferredMigrations()
+	time.Sleep(100 * time.Millisecond)
+	stopped := time.Now()
+	app.stopDeferredMigrations()
+	if elapsed := time.Since(stopped); elapsed > 5*time.Second {
+		t.Fatalf("stop waited %s for the conversion wait", elapsed)
+	}
+	if !deferredMigrationsPending(t, app) {
+		t.Fatal("a quit moved the watermark")
+	}
+	if failure, err := app.store.DeferredMigrationFailure(); err != nil || failure != nil {
+		t.Fatalf("a quit recorded a failure: %+v, %v", failure, err)
+	}
+	if mode := storeAutoVacuum(t, app); mode != store.AutoVacuumNone {
+		t.Fatalf("auto_vacuum = %v after a quit, want none", mode)
+	}
+}
+
+func TestDeferredMigrationsStartStopRoundTrip(t *testing.T) {
+	app := retentionTestApp(t)
+	useLegacyStore(t, app)
+	app.maintenance.convertPoll = time.Millisecond
+	app.maintenance.quietWindow = time.Hour
+
+	app.startDeferredMigrations()
 	// Idempotent: a second start must not fan out a goroutine.
-	app.startStoreMaintenance()
-	app.stopStoreMaintenance()
+	app.startDeferredMigrations()
+	app.stopDeferredMigrations()
 	// Idempotent: a second stop must not panic on the closed channel.
-	app.stopStoreMaintenance()
+	app.stopDeferredMigrations()
 	// Restart after stop must work.
-	app.startStoreMaintenance()
-	app.stopStoreMaintenance()
+	app.startDeferredMigrations()
+	app.stopDeferredMigrations()
 }

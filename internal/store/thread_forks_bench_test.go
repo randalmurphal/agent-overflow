@@ -1,28 +1,22 @@
 package store
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // Include heavy tool output: transcript row counts alone understate fork work.
 func BenchmarkForkHistory(b *testing.B) {
 	for _, fixture := range []struct {
-		count    int
-		nested   bool
-		prepared bool
-	}{{1000, false, false}, {10000, false, false}, {15000, true, false}, {15000, true, true}} {
+		count  int
+		nested bool
+	}{{1000, false}, {10000, false}, {15000, true}} {
 		count := fixture.count
 		name := fmt.Sprint(count)
 		if fixture.nested {
 			name += "/nested"
-		}
-		if fixture.prepared {
-			name += "/prepared"
 		}
 		b.Run(name, func(b *testing.B) {
 			path := filepath.Join(b.TempDir(), "store.sqlite")
@@ -78,20 +72,6 @@ func BenchmarkForkHistory(b *testing.B) {
 			if err := tx.Commit(); err != nil {
 				b.Fatal(err)
 			}
-			var slowest time.Duration
-			if fixture.prepared {
-				for {
-					started := time.Now()
-					n, err := s.PrepareThreadHistory(context.Background(), source.ID)
-					slowest = max(slowest, time.Since(started))
-					if err != nil {
-						b.Fatal(err)
-					}
-					if n == 0 {
-						break
-					}
-				}
-			}
 			b.ResetTimer()
 			for range b.N {
 				fork := BuildForkedThread(source)
@@ -115,9 +95,6 @@ func BenchmarkForkHistory(b *testing.B) {
 				b.StartTimer()
 			}
 			b.StopTimer()
-			if fixture.prepared {
-				b.ReportMetric(float64(slowest.Microseconds())/1000, "max-prepare-ms")
-			}
 		})
 	}
 }

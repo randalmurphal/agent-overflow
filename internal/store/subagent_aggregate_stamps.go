@@ -48,8 +48,10 @@ import "strings"
 //
 // Under history_bulk_load the triggers do no aggregate work; every
 // bulk-load writer that changes a subtree recomputes the stamps before it
-// commits. History preparation moves settled leaf rows into the import arm
-// without changing any subtree, so the stamps stay as they are.
+// commits. Folding sealed history back (UnsealThreadHistory) moves rows
+// between the arms without changing any subtree, so the stamps stay as
+// they are; an anchor it moves arrives unstamped and reads through the
+// walk until v121's deferred phase stamps it.
 // RecomputeSubagentAggregates is the one recompute: the settle
 // after a write, the bulk-load rebuild, a shadowed imported parent and
 // migration v121's deferred phase all derive their values through it

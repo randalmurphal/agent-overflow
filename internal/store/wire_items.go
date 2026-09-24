@@ -104,6 +104,7 @@ func (s *Store) listWireItemsTx(q sqlQueryer, threadID string, ids []string) ([]
 		args = append(args, id)
 	}
 	selectedSQL, selectedArgs := timelineIDSelection(threadID, timelineSelection{
+		KeyFirst:  true,
 		Where:     "items.id IN (" + placeholders(len(ids)) + ")",
 		WhereArgs: args,
 	})
@@ -143,10 +144,14 @@ func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) (
 	for id := range emitted {
 		var parentID, completionOf string
 		var rev int64
-		err := tx.QueryRow(
-			`SELECT parent_id, completion_of, rev FROM timeline_items WHERE thread_id = ? AND id = ?`,
-			threadID, id,
-		).Scan(&parentID, &completionOf, &rev)
+		written, args := timelineArms(threadID, timelineSelection{
+			Columns: func(_, revExpr string) string {
+				return "items.parent_id, items.completion_of, " + revExpr
+			},
+			KeyFirst: true,
+			Where:    "items.id = ?", WhereArgs: []any{id},
+		})
+		err := tx.QueryRow(written, args...).Scan(&parentID, &completionOf, &rev)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}

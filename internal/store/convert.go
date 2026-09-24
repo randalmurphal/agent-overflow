@@ -32,7 +32,7 @@ var walSidecarSuffixes = []string{"-wal", "-shm"}
 const (
 	// swapAcquireTimeout bounds how long the swap waits for the writer
 	// connection. Failing to get it means a long write is in flight,
-	// which is not a quiet moment; the scheduler tries again later.
+	// which is not a quiet moment; the conversion step waits for the next one.
 	swapAcquireTimeout = 2 * time.Second
 	// swapSidecarWait bounds how long the swap waits for the -wal and
 	// -shm files to disappear after it has discarded its own
@@ -326,6 +326,52 @@ func (s *Store) ConvertToIncrementalVacuum(ctx context.Context) (ConvertResult, 
 		result.SizeAfter = size
 	}
 	return result, nil
+}
+
+// convertToIncrementalVacuumStep is the last step of migration v119's
+// deferred phase. A database created before incremental auto-vacuum keeps
+// freed pages on its freelist for good; the step converts it
+// (ConvertToIncrementalVacuum) so ReclaimFreeSpace can shrink it. A database
+// that is already incremental, which is every database this build creates,
+// finishes the step on its first check, and one that cannot be converted
+// this way finishes it without converting.
+//
+// The swap briefly stops writes and a commit during the snapshot wastes it,
+// so each attempt waits for the host to report a moment the user will not
+// notice (DeferredHost.AwaitFileSwap). A snapshot a commit invalidated is
+// discarded and the step waits for the next such moment.
+func convertToIncrementalVacuumStep(ctx context.Context, s *Store, run *deferredRun) error {
+	for ctx.Err() == nil {
+		mode, err := s.AutoVacuumMode()
+		if err != nil {
+			return err
+		}
+		if mode == AutoVacuumIncremental {
+			return nil
+		}
+		if err := run.awaitFileSwap(ctx); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("wait for a quiet moment: %w", err)
+		}
+		result, err := s.ConvertToIncrementalVacuum(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		switch result.Outcome {
+		case ConvertConverted:
+			log.Printf("store: database converted to incremental auto-vacuum; %d -> %d bytes, writes blocked %s",
+				result.SizeBefore, result.SizeAfter, result.BlockedWindow.Round(time.Millisecond))
+			return nil
+		case ConvertAlreadyIncremental, ConvertUnsupported:
+			return nil
+		}
+	}
+	return nil
 }
 
 // prepareConvertedSnapshot gives the VACUUM INTO output the file-level

@@ -15,18 +15,16 @@ import (
 // fallback lookup for late completion events; the hot delta path keeps the
 // in-memory item id and never pays this JSON predicate.
 func (s *Store) FindStreamItemByProviderItemID(threadID string, turnIndex int, kind, parentID, providerItemID string) (Item, bool, error) {
-	item, found, err := queryOneHydratedTimelineItem(
-		s.reader(), threadID,
-		`SELECT id FROM timeline_items
-		  WHERE thread_id = ?
-		    AND turn_index = ?
-		    AND kind = ?
-		    AND parent_id = ?
-		    AND json_extract(meta, '$.provider_item_id') = ?
-		  ORDER BY item_index ASC
-		  LIMIT 1`,
-		threadID, turnIndex, kind, parentID, providerItemID,
-	)
+	selection, args := timelineIDSelection(threadID, timelineSelection{
+		Turn: "?", TurnArgs: []any{turnIndex},
+		Where: `items.kind = ?
+		    AND items.parent_id = ?
+		    AND json_extract(items.meta, '$.provider_item_id') = ?`,
+		WhereArgs: []any{kind, parentID, providerItemID},
+		OrderBy:   "item_index ASC",
+		Limit:     1,
+	})
+	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find stream item by provider item id: %w", err)
 	}
@@ -46,11 +44,8 @@ func (s *Store) ListItems(threadID string) ([]Item, error) {
 }
 
 func (s *Store) ListItemsForTurn(threadID string, turnIndex int) ([]Item, error) {
-	items, err := queryHydratedTimelineItems(
-		s.reader(), threadID,
-		`SELECT id FROM timeline_items WHERE thread_id = ? AND turn_index = ?`,
-		threadID, turnIndex,
-	)
+	selection, args := turnIDSelection(threadID, turnIndex)
+	items, err := queryHydratedTimelineItems(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list items for thread %s turn %d: %w", threadID, turnIndex, err)
 	}
@@ -90,14 +85,12 @@ func (s *Store) lastTurnIndex(threadID string) (sql.NullInt64, error) {
 }
 
 func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item, bool, error) {
-	item, found, err := queryOneHydratedTimelineItem(
-		s.reader(), threadID,
-		`SELECT id FROM timeline_items
-		  WHERE thread_id = ? AND turn_index = ? AND kind = ?
-		  ORDER BY item_index DESC
-		  LIMIT 1`,
-		threadID, turnIndex, kind,
-	)
+	selection, args := timelineIDSelection(threadID, timelineSelection{
+		Turn: "?", TurnArgs: []any{turnIndex},
+		Where: "items.kind = ?", WhereArgs: []any{kind},
+		OrderBy: "item_index DESC", Limit: 1,
+	})
+	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find turn item: %w", err)
 	}
@@ -111,10 +104,10 @@ func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item,
 // reconnect with a fresh parser, when the adapter's in-memory
 // task_id ↔ tool_use_id map has been dropped.
 //
-// The query is O(log N) thanks to the partial expression index
-// idx_items_meta_task_id which materialises
-// json_extract(meta, '$.task_id') for the narrow subset of rows that
-// actually carry a task_id. The kind filter stays in Go-space rather
+// The query is O(log N) thanks to the partial expression indexes
+// idx_items_meta_task_id and idx_import_history_items_task_lookup, which
+// materialise json_extract(meta, '$.task_id') for the narrow subset of
+// rows that actually carry a task_id. The kind filter stays in Go-space rather
 // than the index because every row this function cares about is a
 // tool_call by construction (only that kind sets task_id in meta), and
 // adding kind to the index would bloat it for no planner benefit.
@@ -125,15 +118,11 @@ func (s *Store) FindToolCallItemByTaskID(threadID, taskID string) (Item, bool, e
 	if taskID == "" {
 		return Item{}, false, nil
 	}
-	item, found, err := queryOneHydratedTimelineItem(
-		s.reader(), threadID,
-		`SELECT id FROM timeline_items
-		  WHERE thread_id = ?
-		    AND json_extract(meta, '$.task_id') = ?
-		  ORDER BY updated_at DESC
-		  LIMIT 1`,
-		threadID, taskID,
-	)
+	selection, args := timelineKeyedIDSelection(threadID,
+		"items.updated_at AS updated_at",
+		"json_extract(items.meta, '$.task_id') = ?", []any{taskID},
+		"updated_at DESC", 1)
+	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find tool call by task id %s: %w", taskID, err)
 	}
@@ -158,16 +147,11 @@ func (s *Store) FindOriginalAgentLaunchByTaskID(threadID, taskID, excludeItemID 
 	if taskID == "" {
 		return Item{}, false, nil
 	}
-	item, found, err := queryOneHydratedTimelineItem(
-		s.reader(), threadID,
-		`SELECT id FROM timeline_items
-		  WHERE thread_id = ?
-		    AND json_extract(meta, '$.task_id') = ?
-		    AND id <> ?
-		  ORDER BY created_at ASC
-		  LIMIT 1`,
-		threadID, taskID, excludeItemID,
-	)
+	selection, args := timelineKeyedIDSelection(threadID,
+		"items.created_at AS created_at",
+		"json_extract(items.meta, '$.task_id') = ? AND items.id <> ?", []any{taskID, excludeItemID},
+		"created_at ASC", 1)
+	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find original agent launch by task id %s: %w", taskID, err)
 	}
@@ -216,6 +200,7 @@ func (s *Store) FindUserTextItemBySendID(threadID, sendID string) (Item, bool, e
 
 func sendIdentityQuery(threadID, sendID string) (string, []any) {
 	return timelineIDSelection(threadID, timelineSelection{
+		KeyFirst: true,
 		Where: readerAuthoredUserTextFilterFor("items.") +
 			` AND json_valid(items.meta) AND json_extract(items.meta, '$.sendId') IS NOT NULL
 			  AND json_extract(items.meta, '$.sendId') = ?`,
@@ -291,22 +276,32 @@ func (s *Store) FindProvisionalSubagentPrompt(threadID, parentID, content string
 // payload_id OR input_payload_id matches payloadID, so a payload id is
 // not usable outside the thread that references it. The two partial
 // indexes (idx_items_payload_id, idx_items_input_payload_id) cover the
-// two columns; UNION ALL keeps each branch index-friendly. A single
+// two local columns; UNION keeps each branch index-friendly. A single
 // OR-clause forces SQLite onto the broad thread_id index instead, which
-// would scan every row in the thread on every lazy-load click.
+// would scan every row in the thread on every lazy-load click. An
+// imported row's payload lives in its own chunk, so the imported branch
+// starts from the payload's chunk rows and scans only those chunks.
 func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool, error) {
 	item, found, err := queryOneHydratedTimelineItem(
 		s.reader(), threadID,
 		`SELECT id FROM (
-		     SELECT id, updated_at FROM timeline_items
+		     SELECT id, updated_at FROM items
 		      WHERE thread_id = ? AND payload_id = ?
 		     UNION
-		     SELECT id, updated_at FROM timeline_items
+		     SELECT id, updated_at FROM items
 		      WHERE thread_id = ? AND input_payload_id = ?
+		     UNION
+		     SELECT items.id, items.updated_at
+		       FROM import_history_payloads payload
+		       CROSS JOIN thread_import_chunks refs ON refs.chunk_id = payload.chunk_id
+		       CROSS JOIN import_history_items items ON items.chunk_id = payload.chunk_id
+		      WHERE payload.id = ? AND refs.thread_id = ?
+		        AND (items.payload_id = payload.id OR items.input_payload_id = payload.id)
+		        AND `+importedNotOverridden+`
 		 )
 		 ORDER BY updated_at DESC
 		 LIMIT 1`,
-		threadID, payloadID, threadID, payloadID,
+		threadID, payloadID, threadID, payloadID, payloadID, threadID,
 	)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: get item by payload id %s on thread %s: %w", payloadID, threadID, err)
@@ -487,12 +482,11 @@ func (s *Store) GetThreadItem(threadID, id string) (Item, bool, error) {
 // getThreadItem is GetThreadItem against a caller-chosen queryer, so a
 // window read that must be attested by stamps from the same transaction
 // can resolve its anchor inside that transaction too.
+//
+// The selection is the id itself: the hydrator resolves it through each
+// arm's id index and returns nothing when the thread has no such row.
 func (s *Store) getThreadItem(q sqlQueryer, threadID, id string) (Item, bool, error) {
-	item, found, err := queryOneHydratedTimelineItem(
-		q, threadID,
-		`SELECT id FROM timeline_items WHERE thread_id = ? AND id = ?`,
-		threadID, id,
-	)
+	item, found, err := queryOneHydratedTimelineItem(q, threadID, `SELECT ? AS id`, id)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: get item %s on thread %s: %w", id, threadID, err)
 	}
@@ -507,19 +501,15 @@ func (s *Store) FindNotificationItemByTaskID(threadID, taskID string) (Item, boo
 	if taskID == "" {
 		return Item{}, false, nil
 	}
-	// INDEXED BY: without stats the planner walks the thread's ordering
-	// index newest-first probing meta per row instead of using the narrow
-	// partial expression index (13ms vs 0.04ms on a 38k-item thread).
-	item, found, err := queryOneHydratedTimelineItem(
-		s.reader(), threadID,
-		`SELECT id FROM timeline_items
-		  WHERE thread_id = ?
-		    AND kind = 'notification'
-		    AND json_extract(meta, '$.task_id') = ?
-		  ORDER BY turn_index DESC, item_index DESC
-		  LIMIT 1`,
-		threadID, taskID,
-	)
+	// The order is applied after the keyed arms: ordered arms would let the
+	// planner walk the thread's ordering index newest-first probing meta
+	// per row instead of using the narrow partial expression index (13ms
+	// vs 0.04ms on a 38k-item thread).
+	selection, args := timelineKeyedIDSelection(threadID,
+		"items.turn_index AS turn_index, items.item_index AS item_index",
+		"items.kind = 'notification' AND json_extract(items.meta, '$.task_id') = ?", []any{taskID},
+		"turn_index DESC, item_index DESC", 1)
+	item, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: find notification by task_id %s: %w", taskID, err)
 	}
@@ -527,11 +517,8 @@ func (s *Store) FindNotificationItemByTaskID(threadID, taskID string) (Item, boo
 }
 
 func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
-	items, err := queryHydratedTimelineItems(
-		s.reader(), threadID,
-		`SELECT id FROM timeline_items WHERE thread_id = ? AND turn_index = ?`,
-		threadID, turnIndex,
-	)
+	selection, args := turnIDSelection(threadID, turnIndex)
+	items, err := queryHydratedTimelineItems(s.reader(), threadID, selection, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list turn items for thread %s turn %d: %w", threadID, turnIndex, err)
 	}
@@ -546,13 +533,12 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 // (e.g. tool_result_diff_upgrade.loadSummaryOnlyToolResultCandidate)
 // keep ListTurnItems, which hydrates them.
 func (s *Store) ListTurnItemsSansPayload(threadID string, turnIndex int) ([]Item, error) {
-	rows, err := s.reader().Query(
-		`SELECT `+itemColumnsSansPayload+`
-		   FROM timeline_items AS items
-		  WHERE items.thread_id = ? AND items.turn_index = ?
-		 ORDER BY items.item_index`,
-		threadID, turnIndex,
-	)
+	query, args := timelineArms(threadID, timelineSelection{
+		Columns: itemColumnsSansPayloadFor,
+		Turn:    "?", TurnArgs: []any{turnIndex},
+		OrderBy: "item_index",
+	})
+	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list turn items (sans payload) for thread %s turn %d: %w", threadID, turnIndex, err)
 	}
@@ -738,20 +724,16 @@ func threadTitleContextWindowHolds(window []Item, candidate Item) bool {
 
 func (s *Store) HasMatchingSystemItem(threadID string, turnIndex int, kind, parentID, summary string) (bool, error) {
 	var exists int
-	err := s.reader().QueryRow(
-		`SELECT EXISTS(
-			SELECT 1
-			  FROM timeline_items
-			 WHERE thread_id = ?
-			   AND turn_index = ?
-			   AND kind = ?
-			   AND role = 'system'
-			   AND parent_id = ?
-			   AND summary = ?
-			 LIMIT 1
-		)`,
-		threadID, turnIndex, kind, parentID, summary,
-	).Scan(&exists)
+	query, args := timelineArms(threadID, timelineSelection{
+		Columns: func(string, string) string { return "1" },
+		Turn:    "?", TurnArgs: []any{turnIndex},
+		Where: `items.kind = ?
+			   AND items.role = 'system'
+			   AND items.parent_id = ?
+			   AND items.summary = ?`,
+		WhereArgs: []any{kind, parentID, summary},
+	})
+	err := s.reader().QueryRow(`SELECT EXISTS(`+query+`)`, args...).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("store: matching system item for thread %s turn %d: %w", threadID, turnIndex, err)
 	}
@@ -765,10 +747,8 @@ func (s *Store) HasMatchingSystemItem(threadID string, turnIndex int, kind, pare
 // it precedes the queued message in the provider transcript.
 func (s *Store) MaxItemIndexForTurn(threadID string, turnIndex int) (int, bool, error) {
 	var maxIndex sql.NullInt64
-	if err := s.reader().QueryRow(
-		`SELECT MAX(item_index) FROM timeline_items WHERE thread_id = ? AND turn_index = ?`,
-		threadID, turnIndex,
-	).Scan(&maxIndex); err != nil {
+	query, args := turnAggregateQuery(threadID, turnIndex, "MAX", "item_index")
+	if err := s.reader().QueryRow(query, args...).Scan(&maxIndex); err != nil {
 		return 0, false, fmt.Errorf("store: max item index for %s/%d: %w", threadID, turnIndex, err)
 	}
 	if !maxIndex.Valid {
