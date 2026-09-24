@@ -295,8 +295,10 @@ test('a gated boot refuses a v118 database, a real trial migrates it, and the ne
     expect(refusal.cacheControl).toContain('no-store');
     const pending = JSON.parse(refusal.body) as { reason: string; database: number; build: number; pending: number };
     expect(pending).toMatchObject({ reason: 'migrations-pending', database: FIXTURE_VERSION });
-    expect(pending.pending).toBe(pending.build - FIXTURE_VERSION);
+    // The count is the chain's: at least one, and never more than the
+    // version span, which versions need not fill contiguously.
     expect(pending.pending).toBeGreaterThan(0);
+    expect(pending.pending).toBeLessThanOrEqual(pending.build - FIXTURE_VERSION);
     await stopHeadless(refused);
     expect(await databaseFiles(sb.dbPath)).toEqual(fixture);
 
