@@ -18,9 +18,9 @@ import (
 const Reason = "starting"
 
 // Progress is what a starting backend reports. Times are Unix
-// milliseconds. UpdatedAt advances with every report and with the
-// heartbeat of an open step, so a client can tell a slow step from a
-// backend that stopped working.
+// milliseconds. UpdatedAt advances only on observed progress and AliveAt
+// on a heartbeat, so a client can tell a slow step that is working from
+// one that stopped, and both from a backend that stopped responding.
 type Progress struct {
 	// Phase is the boot phase id (the `boot: phase=` log name).
 	Phase string `json:"phase"`
@@ -32,8 +32,12 @@ type Progress struct {
 	Steps int `json:"steps"`
 	// StartedAt is when this backend began starting.
 	StartedAt int64 `json:"startedAt"`
-	// UpdatedAt is the last report or heartbeat.
+	// UpdatedAt is the last observed progress: a new phase, detail or
+	// step, or the database file or its WAL changing size.
 	UpdatedAt int64 `json:"updatedAt"`
+	// AliveAt is the last heartbeat. It advances every second while a boot
+	// phase is open, whether or not anything progressed.
+	AliveAt int64 `json:"aliveAt"`
 	// UpdatingTo names the version this boot is finishing an in-app update
 	// to. Empty on an ordinary start.
 	UpdatingTo string `json:"updatingTo,omitempty"`

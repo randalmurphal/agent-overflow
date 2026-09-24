@@ -6,9 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -16,6 +20,7 @@ import (
 
 	"agent-overflow/internal/computerroute"
 	"agent-overflow/internal/startupprogress"
+	"agent-overflow/internal/wsllauncher"
 )
 
 func newGatedServer(t *testing.T) *Server {
@@ -70,7 +75,7 @@ func TestServer_BootstrapReportsStartupProgress(t *testing.T) {
 
 	srv.SetStartupProgress(startupprogress.Progress{
 		Phase: "store.migrate", Detail: "Applying migration 3 of 7 add_index",
-		Step: 3, Steps: 7, StartedAt: 1000, UpdatedAt: 4000, UpdatingTo: "1.2.3",
+		Step: 3, Steps: 7, StartedAt: 1000, UpdatedAt: 4000, AliveAt: 5000, UpdatingTo: "1.2.3",
 	})
 	resp = getBootstrap(t, srv.Addr())
 	if resp.StatusCode != http.StatusServiceUnavailable {
@@ -88,7 +93,7 @@ func TestServer_BootstrapReportsStartupProgress(t *testing.T) {
 	body := readStartupBody(t, resp)
 	want := map[string]any{
 		"reason": "starting", "phase": "store.migrate", "detail": "Applying migration 3 of 7 add_index",
-		"step": 3.0, "steps": 7.0, "startedAt": 1000.0, "updatedAt": 4000.0, "updatingTo": "1.2.3",
+		"step": 3.0, "steps": 7.0, "startedAt": 1000.0, "updatedAt": 4000.0, "aliveAt": 5000.0, "updatingTo": "1.2.3",
 	}
 	if fmt.Sprint(body) != fmt.Sprint(want) {
 		t.Fatalf("body = %v, want %v", body, want)
@@ -223,10 +228,10 @@ func progressOf(srv *Server) startupprogress.Progress {
 	return startupprogress.Progress{}
 }
 
-// TestStartupReporter_PhasesNestAndHeartbeat: an open phase advances
-// UpdatedAt without new reports; ending an inner phase restores its
-// parent's report; ending the outermost stops the heartbeat, so a backend
-// wedged between phases stops advancing.
+// TestStartupReporter_PhasesNestAndHeartbeat: reports advance UpdatedAt and
+// AliveAt; an open phase heartbeats AliveAt alone; ending an inner phase
+// restores its parent's report; ending the outermost stops the heartbeat,
+// so a backend wedged between phases stops advancing both.
 func TestStartupReporter_PhasesNestAndHeartbeat(t *testing.T) {
 	srv := &Server{}
 	var clock atomic.Int64
@@ -235,7 +240,7 @@ func TestStartupReporter_PhasesNestAndHeartbeat(t *testing.T) {
 	r := newStartupReporter(srv, "2.0.0", 2*time.Millisecond, now)
 
 	initial := progressOf(srv)
-	if initial.Phase != "starting" || initial.UpdatingTo != "2.0.0" || initial.StartedAt == 0 {
+	if initial.Phase != "starting" || initial.UpdatingTo != "2.0.0" || initial.StartedAt == 0 || initial.AliveAt != initial.UpdatedAt {
 		t.Fatalf("initial report = %+v", initial)
 	}
 
@@ -248,6 +253,9 @@ func TestStartupReporter_PhasesNestAndHeartbeat(t *testing.T) {
 	if got.StartedAt != initial.StartedAt || got.UpdatingTo != "2.0.0" {
 		t.Fatalf("report lost boot identity: %+v", got)
 	}
+	if got.UpdatedAt <= initial.UpdatedAt || got.AliveAt < got.UpdatedAt {
+		t.Fatalf("a report did not advance UpdatedAt and AliveAt: %+v after %+v", got, initial)
+	}
 
 	endInner := r.BeginBootPhase("store.backfill", "Backfilling")
 	if got := progressOf(srv); got.Phase != "store.backfill" || got.Step != 0 {
@@ -259,23 +267,26 @@ func TestStartupReporter_PhasesNestAndHeartbeat(t *testing.T) {
 		t.Fatalf("after the inner phase ended = %+v, want the parent's report", got)
 	}
 
-	before := progressOf(srv).UpdatedAt
-	if !waitFor(func() bool { return progressOf(srv).UpdatedAt > before+2 }, 5*time.Second) {
+	before := progressOf(srv)
+	if !waitFor(func() bool { return progressOf(srv).AliveAt > before.AliveAt+2 }, 5*time.Second) {
 		t.Fatal("an open phase did not heartbeat")
+	}
+	if got := progressOf(srv); got.UpdatedAt != before.UpdatedAt {
+		t.Fatalf("the heartbeat advanced UpdatedAt from %d to %d with nothing progressing", before.UpdatedAt, got.UpdatedAt)
 	}
 
 	endOuter()
-	stopped := progressOf(srv).UpdatedAt
+	stopped := progressOf(srv)
 	time.Sleep(20 * time.Millisecond)
-	if after := progressOf(srv).UpdatedAt; after != stopped {
-		t.Fatalf("UpdatedAt advanced from %d to %d with no phase open", stopped, after)
+	if after := progressOf(srv); after.AliveAt != stopped.AliveAt || after.UpdatedAt != stopped.UpdatedAt {
+		t.Fatalf("the report advanced from %+v to %+v with no phase open", stopped, after)
 	}
 	endOuter()
 
 	// A later phase starts a fresh heartbeat.
 	end := r.BeginBootPhase("app.start", "Starting services")
-	before = progressOf(srv).UpdatedAt
-	if !waitFor(func() bool { return progressOf(srv).UpdatedAt > before+2 }, 5*time.Second) {
+	before = progressOf(srv)
+	if !waitFor(func() bool { return progressOf(srv).AliveAt > before.AliveAt+2 }, 5*time.Second) {
 		t.Fatal("a later phase did not heartbeat")
 	}
 	end()
@@ -283,6 +294,216 @@ func TestStartupReporter_PhasesNestAndHeartbeat(t *testing.T) {
 	var nilReporter *StartupReporter
 	nilReporter.BeginBootPhase("x", "y")()
 	nilReporter.BootPhaseDetail("z", 1, 1)
+	nilReporter.WatchBootFiles("w")
+}
+
+// TestStartupReporter_WatchedFileSizeChangesAreProgress: a heartbeat that
+// finds a watched file created, grown, shrunk or removed advances
+// UpdatedAt; one that finds every file unchanged advances only AliveAt. A
+// file that cannot be read is no evidence either way.
+func TestStartupReporter_WatchedFileSizeChangesAreProgress(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(dir, "app.db")
+	wal := db + "-wal"
+	blocked := filepath.Join(dir, "blocked")
+	unreadable := filepath.Join(blocked, "app.db-wal")
+	if err := os.WriteFile(db, []byte("header"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A regular file where a directory is expected: stat of a path under
+	// it fails with ENOTDIR, which is neither a size nor absence.
+	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{}
+	var clock atomic.Int64
+	clock.Store(1_000)
+	now := func() time.Time { return time.UnixMilli(clock.Add(1)) }
+	// The ticker never fires; the test drives each heartbeat.
+	r := newStartupReporter(srv, "", time.Hour, now)
+	r.WatchBootFiles(db, wal, unreadable)
+	end := r.BeginBootPhase("store.migrate", "Applying migration 1 of 1 rebuild")
+	defer end()
+
+	beat := func(what string, progressed bool) {
+		t.Helper()
+		before := progressOf(srv)
+		r.beat()
+		after := progressOf(srv)
+		if after.AliveAt <= before.AliveAt {
+			t.Fatalf("%s: AliveAt did not advance: %+v", what, after)
+		}
+		if moved := after.UpdatedAt != before.UpdatedAt; moved != progressed {
+			t.Fatalf("%s: UpdatedAt moved = %v, want %v (%d -> %d)", what, moved, progressed, before.UpdatedAt, after.UpdatedAt)
+		}
+	}
+	appendTo := func(path, data string) {
+		t.Helper()
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString(data); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	beat("nothing written", false)
+	beat("still nothing written", false)
+	appendTo(wal, "frame")
+	beat("the WAL appeared", true)
+	beat("the WAL is unchanged", false)
+	appendTo(wal, "another frame")
+	beat("the WAL grew", true)
+	if err := os.Truncate(wal, 0); err != nil {
+		t.Fatal(err)
+	}
+	beat("the WAL was checkpointed to empty", true)
+	appendTo(db, "page")
+	beat("the database grew", true)
+	if err := os.Remove(wal); err != nil {
+		t.Fatal(err)
+	}
+	beat("the WAL was removed", true)
+
+	// The unreadable path becomes readable. Its first readable size is
+	// the baseline, not progress; a later change is.
+	if err := os.Remove(blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	appendTo(unreadable, "frame")
+	beat("the unreadable file became readable", false)
+	appendTo(unreadable, "frame")
+	beat("the once-unreadable file grew", true)
+
+	// A readable file that becomes unreadable keeps its last known size:
+	// losing sight of it is not progress, and neither is finding it again
+	// at that size.
+	if err := os.RemoveAll(blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blocked, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beat("a readable file became unreadable", false)
+	if err := os.Remove(blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	appendTo(unreadable, "frameframe")
+	beat("it became readable at its last known size", false)
+}
+
+// TestStartupReporter_LauncherProbeJudgesProgressNotHeartbeat drives the
+// Windows launcher's probe against this reporter through a real server.
+// A boot phase that heartbeats but writes nothing fails at the deadline,
+// naming the phase; one whose statement only grows the WAL never fails and
+// connects once the boot finishes.
+func TestStartupReporter_LauncherProbeJudgesProgressNotHeartbeat(t *testing.T) {
+	const (
+		heartbeat = 20 * time.Millisecond
+		deadline  = 500 * time.Millisecond
+	)
+	probe := func(srv *Server) (time.Duration, error) {
+		_, portText, err := net.SplitHostPort(srv.Addr())
+		if err != nil {
+			t.Fatal(err)
+		}
+		port, err := strconv.Atoi(portText)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		started := time.Now()
+		// 25 ms polls stay inside the bootstrap route's per-peer burst for
+		// the longest case.
+		err = wsllauncher.ProbeBootstrap(ctx, port, "test-token", wsllauncher.ProbeConfig{
+			Deadline: deadline, PollInterval: 25 * time.Millisecond, AttemptTimeout: time.Second,
+		})
+		return time.Since(started), err
+	}
+
+	t.Run("heartbeat only", func(t *testing.T) {
+		srv := newGatedServer(t)
+		dir := t.TempDir()
+		db := filepath.Join(dir, "app.db")
+		r := newStartupReporter(srv, "", heartbeat, time.Now)
+		r.WatchBootFiles(db, db+"-wal")
+		end := r.BeginBootPhase("store.migrate", "Applying migration 1 of 1 rebuild")
+		defer end()
+
+		took, err := probe(srv)
+		var stalled *wsllauncher.BackendStalledError
+		if !errors.As(err, &stalled) || stalled.Unresponsive || stalled.Progress.Phase != "store.migrate" {
+			t.Fatalf("error = %v (%+v), want no progress in store.migrate while responding", err, stalled)
+		}
+		if !strings.Contains(err.Error(), "store.migrate") {
+			t.Fatalf("error %q does not name the phase", err)
+		}
+		if took < deadline {
+			t.Fatalf("failed after %s, before the %s deadline", took, deadline)
+		}
+		if stalled.Progress.AliveAt <= stalled.Progress.UpdatedAt {
+			t.Fatalf("the last report %+v shows no heartbeat past its progress", stalled.Progress)
+		}
+	})
+
+	t.Run("WAL growth only", func(t *testing.T) {
+		srv := newGatedServer(t)
+		dir := t.TempDir()
+		db := filepath.Join(dir, "app.db")
+		wal := db + "-wal"
+		r := newStartupReporter(srv, "", heartbeat, time.Now)
+		r.WatchBootFiles(db, wal)
+		end := r.BeginBootPhase("store.migrate", "Applying migration 1 of 1 rebuild")
+
+		// One statement writing for four deadlines, then the boot ends.
+		writing := 4 * deadline
+		done := make(chan error, 1)
+		go func() {
+			f, err := os.OpenFile(wal, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+			if err != nil {
+				done <- err
+				return
+			}
+			stop := time.Now().Add(writing)
+			for time.Now().Before(stop) {
+				if _, err := f.WriteString("frame"); err != nil {
+					_ = f.Close()
+					done <- err
+					return
+				}
+				time.Sleep(heartbeat / 2)
+			}
+			if err := f.Close(); err != nil {
+				done <- err
+				return
+			}
+			end()
+			srv.MarkReady()
+			done <- nil
+		}()
+
+		took, err := probe(srv)
+		if werr := <-done; werr != nil {
+			t.Fatalf("write the WAL: %v", werr)
+		}
+		if err != nil {
+			t.Fatalf("a boot whose WAL kept growing failed after %s: %v", took, err)
+		}
+		if took < writing {
+			t.Fatalf("probe returned after %s, before the boot finished at %s", took, writing)
+		}
+	})
 }
 
 // TestAttachedBootstrapPassesOnAStartingReport: a carried backend that is
@@ -290,14 +511,14 @@ func TestStartupReporter_PhasesNestAndHeartbeat(t *testing.T) {
 func TestAttachedBootstrapPassesOnAStartingReport(t *testing.T) {
 	f, carrier := newAttachedFixture(t)
 	carrier.manifestErr = fmt.Errorf("wrapped: %w", &BackendStartingError{Progress: startupprogress.Progress{
-		Phase: "store.migrate", Detail: "Applying migration 1 of 4 x", Step: 1, Steps: 4, UpdatedAt: 42,
+		Phase: "store.migrate", Detail: "Applying migration 1 of 4 x", Step: 1, Steps: 4, UpdatedAt: 42, AliveAt: 43,
 	}})
 	resp := do(t, attachedRequest(t, http.MethodGet, "http://"+f.srv.Addr()+"/bootstrap/mini.json"))
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)
 	}
 	body := readStartupBody(t, resp)
-	if body["reason"] != "starting" || body["phase"] != "store.migrate" || body["steps"] != 4.0 || body["updatedAt"] != 42.0 {
+	if body["reason"] != "starting" || body["phase"] != "store.migrate" || body["steps"] != 4.0 || body["updatedAt"] != 42.0 || body["aliveAt"] != 43.0 {
 		t.Fatalf("body = %v, want the far backend's report", body)
 	}
 

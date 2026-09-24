@@ -26,6 +26,7 @@ function report(step: number, updatedAt: number, patch: Partial<StartupProgress>
     steps: 7,
     startedAt: 1_000,
     updatedAt,
+    aliveAt: updatedAt,
     updatingTo: '',
     ...patch,
   };

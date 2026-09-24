@@ -35,17 +35,24 @@ func (e BootstrapHTTPError) Error() string {
 }
 
 // BackendStalledError reports a backend that sent startup progress and then
-// stopped advancing it for Quiet. It matches ErrBackendNotReady.
+// made none for Quiet. Unresponsive means its heartbeat stopped as well:
+// no report advanced aliveAt or updatedAt for Quiet. It matches
+// ErrBackendNotReady.
 type BackendStalledError struct {
 	// Progress is the last report the backend sent.
-	Progress startupprogress.Progress
-	Quiet    time.Duration
+	Progress     startupprogress.Progress
+	Quiet        time.Duration
+	Unresponsive bool
 	// Last is the final attempt's failure: a 503 or a transport error.
 	Last error
 }
 
 func (e *BackendStalledError) Error() string {
-	return fmt.Sprintf("%v: no progress for %s in phase %s (%s): %v", ErrBackendNotReady, e.Quiet, e.Progress.Phase, e.Progress.Status(), e.Last)
+	what := "no progress"
+	if e.Unresponsive {
+		what = "backend stopped responding"
+	}
+	return fmt.Sprintf("%v: %s for %s in phase %s (%s): %v", ErrBackendNotReady, what, e.Quiet, e.Progress.Phase, e.Progress.Status(), e.Last)
 }
 
 func (e *BackendStalledError) Unwrap() error { return ErrBackendNotReady }
@@ -57,9 +64,10 @@ const bootstrapProbeAttemptTimeout = 1 * time.Second
 
 // bootstrapProbeDeadline is the longest the probe waits without evidence of
 // progress: no HTTP response, a bare 503, or a starting report whose
-// updatedAt stopped advancing. WSL2 NAT mode installs the Windows-side
-// forward rule for a fresh listener after it binds, so the first attempts
-// are often refused while the backend is healthy.
+// updatedAt, or whose aliveAt heartbeat, stopped advancing. WSL2 NAT mode
+// installs the Windows-side forward rule for a fresh listener after it
+// binds, so the first attempts are often refused while the backend is
+// healthy.
 const bootstrapProbeDeadline = 30 * time.Second
 
 // bootstrapProbePollInterval caps the gap between attempts. The gap starts
@@ -132,12 +140,15 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // Windows localhost until it answers the manifest this launch expects.
 //
 // A 503 is retried. A starting report counts as progress whenever its
-// updatedAt changes, so a long boot that keeps reporting never fails; the
-// probe gives up after Deadline without progress. The failure is
-// ErrBackendUnreachable when no HTTP response ever arrived, a
-// BackendStalledError after a starting report, and ErrBackendNotReady for
-// a backend that only answered the bare 503. Any other status is terminal
-// as a BootstrapHTTPError; an unexpected manifest is ErrInvalidBootstrap.
+// updatedAt changes, so a long boot that keeps making progress never
+// fails; the probe gives up after Deadline without progress. A heartbeat
+// alone (aliveAt) is not progress, but a report that advances neither for
+// Deadline, or no report at all, means the backend stopped responding.
+// The failure is ErrBackendUnreachable when no HTTP response ever
+// arrived, a BackendStalledError after a starting report, and
+// ErrBackendNotReady for a backend that only answered the bare 503. Any
+// other status is terminal as a BootstrapHTTPError; an unexpected manifest
+// is ErrInvalidBootstrap.
 func ProbeBootstrap(ctx context.Context, port int, token string, cfg ProbeConfig) error {
 	cfg = cfg.withDefaults()
 	// 127.0.0.1, not "localhost": Windows resolves "localhost" to ::1 as
@@ -146,7 +157,10 @@ func ProbeBootstrap(ctx context.Context, port int, token string, cfg ProbeConfig
 	log.Printf("probe: GET %s (token=%d bytes)", target, len(token))
 
 	client := &http.Client{Timeout: cfg.AttemptTimeout}
-	lastAdvance := cfg.now()
+	// lastProgress is when updatedAt last changed, lastAlive when aliveAt
+	// or updatedAt did. Both start with the probe.
+	lastProgress := cfg.now()
+	lastAlive := lastProgress
 	var (
 		lastErr         error
 		attempt         int
@@ -181,7 +195,10 @@ func ProbeBootstrap(ctx context.Context, port int, token string, cfg ProbeConfig
 				lastErr = fmt.Errorf("GET %s: status %d", target, resp.StatusCode)
 				if p, ok := startupprogress.Parse(resp.StatusCode, body); ok {
 					if reported == nil || p.UpdatedAt != reported.UpdatedAt {
-						lastAdvance = cfg.now()
+						lastProgress = cfg.now()
+					}
+					if reported == nil || p.UpdatedAt != reported.UpdatedAt || p.AliveAt != reported.AliveAt {
+						lastAlive = cfg.now()
 					}
 					if reported == nil || p.Phase != reported.Phase || p.Step != reported.Step {
 						log.Printf("probe: backend starting: phase=%s step=%d/%d updating_to=%q", p.Phase, p.Step, p.Steps, p.UpdatingTo)
@@ -196,15 +213,21 @@ func ProbeBootstrap(ctx context.Context, port int, token string, cfg ProbeConfig
 				return BootstrapHTTPError{StatusCode: resp.StatusCode, URL: target}
 			}
 		}
-		if quiet := cfg.now().Sub(lastAdvance); quiet >= cfg.Deadline {
-			switch {
-			case !sawHTTPResponse:
-				return fmt.Errorf("GET %s: %w after %d attempts: %w", target, ErrBackendUnreachable, attempt, lastErr)
-			case reported != nil:
-				return &BackendStalledError{Progress: *reported, Quiet: quiet, Last: lastErr}
-			default:
-				return fmt.Errorf("%w: GET %s timed out after %d attempts: %w", ErrBackendNotReady, target, attempt, lastErr)
+		now := cfg.now()
+		if reported != nil {
+			// A stopped heartbeat takes precedence: it is the same failure
+			// and says more.
+			if quiet := now.Sub(lastAlive); quiet >= cfg.Deadline {
+				return &BackendStalledError{Progress: *reported, Quiet: quiet, Unresponsive: true, Last: lastErr}
 			}
+			if quiet := now.Sub(lastProgress); quiet >= cfg.Deadline {
+				return &BackendStalledError{Progress: *reported, Quiet: quiet, Last: lastErr}
+			}
+		} else if now.Sub(lastProgress) >= cfg.Deadline {
+			if !sawHTTPResponse {
+				return fmt.Errorf("GET %s: %w after %d attempts: %w", target, ErrBackendUnreachable, attempt, lastErr)
+			}
+			return fmt.Errorf("%w: GET %s timed out after %d attempts: %w", ErrBackendNotReady, target, attempt, lastErr)
 		}
 		if err := cfg.sleep(ctx, wait); err != nil {
 			return fmt.Errorf("probe GET %s: %w", target, err)

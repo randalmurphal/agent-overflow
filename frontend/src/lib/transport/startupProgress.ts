@@ -13,7 +13,10 @@ export interface StartupProgress {
   step: number;
   steps: number;
   startedAt: number;
+  /** The last observed progress. */
   updatedAt: number;
+  /** The last heartbeat, whether or not anything progressed. */
+  aliveAt: number;
   /** The version an in-app update is being finished to; '' on a plain start. */
   updatingTo: string;
 }
@@ -72,6 +75,7 @@ export function parseStartupProgress(body: unknown): StartupProgress | null {
     steps: count(report.steps),
     startedAt: count(report.startedAt),
     updatedAt: count(report.updatedAt),
+    aliveAt: count(report.aliveAt),
     updatingTo: text(report.updatingTo),
   };
 }
@@ -112,15 +116,19 @@ export async function readStartupProgress(resp: Response): Promise<StartupProgre
   return parseStartupProgress(parsed);
 }
 
-/** The transport status fields for a report. */
+/**
+ * The transport status fields for a report. Elapsed time runs to the
+ * report's latest time, so it keeps counting through a step that is
+ * working without visible progress.
+ */
 export function transportStartup(progress: StartupProgress): TransportStartup {
+  const latest = Math.max(progress.updatedAt, progress.aliveAt);
   return {
     phase: progress.phase,
     detail: progress.detail,
     step: progress.step,
     steps: progress.steps,
-    elapsedMs: progress.startedAt > 0 && progress.updatedAt > progress.startedAt
-      ? progress.updatedAt - progress.startedAt : 0,
+    elapsedMs: progress.startedAt > 0 && latest > progress.startedAt ? latest - progress.startedAt : 0,
     updatingTo: progress.updatingTo,
   };
 }

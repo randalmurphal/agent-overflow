@@ -9,9 +9,12 @@ import (
 // BootProgress receives App.Start's phases for the readiness report that a
 // not-ready bootstrap serves (transport.StartupReporter). Phase ids are the
 // `boot: phase=` log names; details are sentences a person reads.
+// WatchBootFiles names files whose size changes count as progress while a
+// phase runs, so a long statement that writes reads as working.
 type BootProgress interface {
 	BeginBootPhase(phase, detail string) (end func())
 	BootPhaseDetail(detail string, step, steps int)
+	WatchBootFiles(paths ...string)
 }
 
 // bootPhase begins a reported boot phase. The returned end reports the
@@ -38,6 +41,13 @@ func BeginBootPhase(a *App, phase, detail string) (end func()) {
 func (a *App) bootPhaseDetail(detail string, step, steps int) {
 	if a.bootProgress != nil {
 		a.bootProgress.BootPhaseDetail(detail, step, steps)
+	}
+}
+
+// watchBootFiles reports files whose size changes count as boot progress.
+func (a *App) watchBootFiles(paths ...string) {
+	if a.bootProgress != nil {
+		a.bootProgress.WatchBootFiles(paths...)
 	}
 }
 

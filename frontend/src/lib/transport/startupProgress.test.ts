@@ -13,18 +13,24 @@ describe('startup report', () => {
     expect(parseStartupProgress(null)).toBeNull();
     expect(parseStartupProgress({ reason: 'ready' })).toBeNull();
     expect(parseStartupProgress({ reason: 'starting', phase: 7, detail: 'x'.repeat(500), step: -1, steps: 2.7, startedAt: 'soon' }))
-      .toEqual({ phase: '', detail: 'x'.repeat(200), step: 0, steps: 2, startedAt: 0, updatedAt: 0, updatingTo: '' });
+      .toEqual({ phase: '', detail: 'x'.repeat(200), step: 0, steps: 2, startedAt: 0, updatedAt: 0, aliveAt: 0, updatingTo: '' });
+    expect(parseStartupProgress({ reason: 'starting', startedAt: 1, updatedAt: 2, aliveAt: 3 }))
+      .toMatchObject({ startedAt: 1, updatedAt: 2, aliveAt: 3 });
   });
 
-  it('measures elapsed time on the backend clock', () => {
-    const progress = { phase: 'p', detail: 'd', step: 1, steps: 2, startedAt: 1_000, updatedAt: 13_500, updatingTo: '' };
+  it('measures elapsed time on the backend clock, through a step without progress', () => {
+    const progress = { phase: 'p', detail: 'd', step: 1, steps: 2, startedAt: 1_000, updatedAt: 13_500, aliveAt: 13_500, updatingTo: '' };
     expect(transportStartup(progress).elapsedMs).toBe(12_500);
+    // The heartbeat keeps the clock running while nothing progresses.
+    expect(transportStartup({ ...progress, aliveAt: 40_000 }).elapsedMs).toBe(39_000);
+    // A backend that reports no heartbeat still counts to its progress.
+    expect(transportStartup({ ...progress, aliveAt: 0 }).elapsedMs).toBe(12_500);
     expect(transportStartup({ ...progress, startedAt: 0 }).elapsedMs).toBe(0);
-    expect(transportStartup({ ...progress, updatedAt: 500 }).elapsedMs).toBe(0);
+    expect(transportStartup({ ...progress, updatedAt: 500, aliveAt: 500 }).elapsedMs).toBe(0);
   });
 
   it('compares snapshots field by field', () => {
-    const a = transportStartup({ phase: 'p', detail: 'd', step: 1, steps: 2, startedAt: 1, updatedAt: 2, updatingTo: '' });
+    const a = transportStartup({ phase: 'p', detail: 'd', step: 1, steps: 2, startedAt: 1, updatedAt: 2, aliveAt: 2, updatingTo: '' });
     expect(sameTransportStartup(a, { ...a })).toBe(true);
     expect(sameTransportStartup(a, { ...a, elapsedMs: 2 })).toBe(false);
     expect(sameTransportStartup(a, undefined)).toBe(false);

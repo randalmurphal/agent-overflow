@@ -328,8 +328,11 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	}
 
 	// Each pending migration is a step of its own boot phase, which is
-	// what a launcher waiting on a long migration chain reads. ctx lets a
-	// shutdown interrupt the chain; the running migration rolls back.
+	// what a launcher waiting on a long migration chain reads. Inside a
+	// step, and in every later phase, the database and its WAL changing
+	// size is progress too. ctx lets a shutdown interrupt the chain; the
+	// running migration rolls back.
+	a.watchBootFiles(dbPath, dbPath+"-wal")
 	endMigrations := func() {}
 	st, err := store.NewWithOptions(dbPath, store.Options{
 		Context: ctx,

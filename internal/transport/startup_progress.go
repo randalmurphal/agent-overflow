@@ -1,16 +1,21 @@
 package transport
 
 import (
+	"errors"
+	"io/fs"
+	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
 	"agent-overflow/internal/startupprogress"
 )
 
-// startupHeartbeatInterval is how often an open boot step advances
-// UpdatedAt. Clients judge a stall against it (the Windows launcher fails
-// after 30 s without an advance), so it must stay well under that.
+// startupHeartbeatInterval is how often an open boot phase advances
+// AliveAt and looks for watched files changing size. Clients judge a
+// stall against both (the Windows launcher fails after 30 s without an
+// advance), so it must stay well under that.
 const startupHeartbeatInterval = time.Second
 
 // SetStartupProgress replaces the progress a readiness-gated
@@ -44,11 +49,18 @@ func (e *BackendStartingError) Error() string {
 }
 
 // StartupReporter turns boot phases into startup progress on one server.
-// Phases nest: ending an inner phase restores its parent's report. While
-// any phase is open a heartbeat advances UpdatedAt; it stops when the
-// outermost phase ends, so a backend wedged between phases stops
-// advancing. All methods are safe for concurrent use and on a nil
-// receiver, which reports nothing.
+// Phases nest: ending an inner phase restores its parent's report.
+//
+// UpdatedAt advances only on observed progress: a phase beginning or
+// ending, a new detail or step, or a watched file (WatchBootFiles)
+// changing size since the previous heartbeat. A long CREATE INDEX or table
+// rebuild grows the WAL and counts; a statement that hangs does not.
+// AliveAt advances on every heartbeat. The heartbeat runs every interval
+// while any phase is open and stops when the outermost phase ends, so a
+// backend wedged between phases stops advancing both.
+//
+// All methods are safe for concurrent use and on a nil receiver, which
+// reports nothing.
 type StartupReporter struct {
 	srv      *Server
 	now      func() time.Time
@@ -59,6 +71,11 @@ type StartupReporter struct {
 	open    []startupPhase
 	stop    chan struct{}
 	stopped chan struct{}
+	// watched maps each WatchBootFiles path to its size at the last look:
+	// -1 while it does not exist, statUnknown until a look could read it.
+	watched map[string]int64
+	// statFailed holds paths whose stat failure was already logged.
+	statFailed map[string]bool
 }
 
 type startupPhase struct {
@@ -74,17 +91,36 @@ func NewStartupReporter(srv *Server, updatingTo string) *StartupReporter {
 }
 
 func newStartupReporter(srv *Server, updatingTo string, interval time.Duration, now func() time.Time) *StartupReporter {
-	r := &StartupReporter{srv: srv, now: now, interval: interval}
+	r := &StartupReporter{srv: srv, now: now, interval: interval, watched: map[string]int64{}, statFailed: map[string]bool{}}
 	started := now().UnixMilli()
 	r.current = startupprogress.Progress{
 		Phase:      "starting",
 		Detail:     "Starting",
 		StartedAt:  started,
 		UpdatedAt:  started,
+		AliveAt:    started,
 		UpdatingTo: updatingTo,
 	}
 	srv.SetStartupProgress(r.current)
 	return r
+}
+
+// WatchBootFiles adds files whose size changes count as progress, such as
+// the database and its WAL. A file that does not exist yet counts when it
+// appears.
+func (r *StartupReporter) WatchBootFiles(paths ...string) {
+	if r == nil {
+		return
+	}
+	sizes := make([]int64, len(paths))
+	for i, path := range paths {
+		sizes[i] = r.fileSize(path)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, path := range paths {
+		r.watched[path] = sizes[i]
+	}
 }
 
 // BeginBootPhase reports that phase began. The returned func ends it and
@@ -153,12 +189,66 @@ func (r *StartupReporter) heartbeat(stop <-chan struct{}, stopped chan<- struct{
 		case <-stop:
 			return
 		case <-ticker.C:
-			r.mu.Lock()
-			r.current.UpdatedAt = r.now().UnixMilli()
-			r.srv.SetStartupProgress(r.current)
-			r.mu.Unlock()
+			r.beat()
 		}
 	}
+}
+
+// beat stamps the heartbeat, and progress when a watched file changed
+// size since the last look. Files are read outside the lock so a slow
+// filesystem cannot hold up a report.
+func (r *StartupReporter) beat() {
+	r.mu.Lock()
+	paths := make([]string, 0, len(r.watched))
+	for path := range r.watched {
+		paths = append(paths, path)
+	}
+	r.mu.Unlock()
+	sizes := make([]int64, len(paths))
+	for i, path := range paths {
+		sizes[i] = r.fileSize(path)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now().UnixMilli()
+	for i, path := range paths {
+		if sizes[i] == statUnknown {
+			continue
+		}
+		if prev := r.watched[path]; prev != sizes[i] {
+			r.watched[path] = sizes[i]
+			if prev != statUnknown {
+				r.current.UpdatedAt = now
+			}
+		}
+	}
+	r.current.AliveAt = now
+	r.srv.SetStartupProgress(r.current)
+}
+
+// statUnknown is a size fileSize could not read. It is no evidence either
+// way, so the file keeps its last known size.
+const statUnknown = -2
+
+// fileSize is path's size, -1 when it does not exist, or statUnknown when
+// it cannot be read. A read failure is logged once per path.
+func (r *StartupReporter) fileSize(path string) int64 {
+	info, err := os.Stat(path)
+	switch {
+	case err == nil:
+		return info.Size()
+	case errors.Is(err, fs.ErrNotExist):
+		return -1
+	}
+	r.mu.Lock()
+	first := !r.statFailed[path]
+	r.statFailed[path] = true
+	r.mu.Unlock()
+	if first {
+		log.Printf("startup progress: cannot read %s, its writes will not count as progress: %v", path, err)
+	}
+	return statUnknown
 }
 
 func (r *StartupReporter) publishLocked() {
@@ -167,6 +257,8 @@ func (r *StartupReporter) publishLocked() {
 	r.current.Detail = inner.detail
 	r.current.Step = inner.step
 	r.current.Steps = inner.steps
-	r.current.UpdatedAt = r.now().UnixMilli()
+	now := r.now().UnixMilli()
+	r.current.UpdatedAt = now
+	r.current.AliveAt = now
 	r.srv.SetStartupProgress(r.current)
 }

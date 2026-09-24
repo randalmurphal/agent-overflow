@@ -59,9 +59,10 @@ qualifies costs nothing.
   that update. The launcher's loading page, the startup screen and the
   sidebar show the same sentence. A replaced binary without the updater's
   marker shows an ordinary start.
-- The Windows launcher fails a boot only when its progress stalls for 30 s,
-  and names the stalled phase. A slow boot that keeps reporting is never torn
-  down.
+- The Windows launcher fails a boot only when it makes no observed progress
+  for 30 s, and names the stalled phase. A heartbeat alone is not progress;
+  a new step or a database or WAL size change is. A slow boot that keeps
+  progressing is never torn down.
 - Heavy post-boot scans, such as the search index build, wait for the first
   client's `ListThreads` and `ListProjects` answers, or 15 s after the backend
   starts answering when no page reads.

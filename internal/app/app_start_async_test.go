@@ -25,6 +25,7 @@ type recordingBootProgress struct {
 	begun   []string
 	ended   []string
 	details []string
+	watched []string
 }
 
 func newRecordingBootProgress(block string) *recordingBootProgress {
@@ -49,6 +50,12 @@ func (p *recordingBootProgress) BeginBootPhase(phase, _ string) func() {
 func (p *recordingBootProgress) BootPhaseDetail(detail string, _, _ int) {
 	p.mu.Lock()
 	p.details = append(p.details, detail)
+	p.mu.Unlock()
+}
+
+func (p *recordingBootProgress) WatchBootFiles(paths ...string) {
+	p.mu.Lock()
+	p.watched = append(p.watched, paths...)
 	p.mu.Unlock()
 }
 
@@ -112,6 +119,15 @@ func TestAsyncStartCanceledMidMigrationStopsWithoutReporting(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("Start never reached the migration chain")
 	}
+	// The database and its WAL are watched before the first migration
+	// runs, so a long statement that writes reads as progress.
+	dbPath := filepath.Join(a.dataDirOverride, "agent-overflow", databaseFileName)
+	progress.mu.Lock()
+	watched := append([]string(nil), progress.watched...)
+	progress.mu.Unlock()
+	if strings.Join(watched, ",") != dbPath+","+dbPath+"-wal" {
+		t.Fatalf("watched %v when the migrations began, want the database and its WAL", watched)
+	}
 
 	stopped := make(chan struct{})
 	go func() {
@@ -151,7 +167,6 @@ func TestAsyncStartCanceledMidMigrationStopsWithoutReporting(t *testing.T) {
 	}
 
 	// Nothing was applied: reopening runs the whole chain from the start.
-	dbPath := filepath.Join(a.dataDirOverride, "agent-overflow", databaseFileName)
 	var first store.MigrationStep
 	st, err := store.NewWithOptions(dbPath, store.Options{OnMigration: func(step store.MigrationStep) {
 		if step.Index == 1 {

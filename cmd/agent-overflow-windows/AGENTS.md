@@ -28,10 +28,11 @@ a stall page may name the backend's reported phase, escaped and bounded.
 `wsllauncher.ProbeBootstrap` fails only after 30 s without progress: no HTTP
 response, a bare 503, or a
 [starting report](../../docs/architecture/transport.md#startup-readiness)
-whose `updatedAt` stopped advancing. A boot that keeps reporting is never cut
-off. `/loading` and the picker poll the launcher-local `/loading.json` for the
-latest report and the launch's elapsed time while the page is visible
-(`loading.js`).
+whose `updatedAt` stopped advancing. A report whose `aliveAt` heartbeat also
+stopped fails as a backend that stopped responding. A boot that keeps
+progressing is never cut off. `/loading` and the picker poll the
+launcher-local `/loading.json` for the latest report and the launch's elapsed
+time while the page is visible (`loading.js`).
 
 Trust a recorded payload path only when distro and embedded-byte digest match.
 Invalidate the digest before replacement and record the new path and digest
