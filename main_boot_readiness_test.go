@@ -57,7 +57,7 @@ func TestHeadlessBootReportsTheUpdateItFinishes(t *testing.T) {
 // TestHeadlessBootRefusesPendingMigrationsWhenAsked: the headless boot the
 // launcher starts with --refuse-pending-migrations asks the store to refuse
 // before Start, and answers a refusal as the refusal, not as a startup
-// failure.
+// failure. e2e/tests/update-trial.spec.ts proves the answer end to end.
 func TestHeadlessBootRefusesPendingMigrationsWhenAsked(t *testing.T) {
 	text := readRootSource(t, "main.go")
 	body := text[strings.Index(text, "func runHeadless("):]
