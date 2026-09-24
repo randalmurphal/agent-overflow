@@ -445,7 +445,7 @@ describe('<AgentPane>', () => {
     // so gating on the round count would skip the fetch and the pane
     // would open without round two.
     // The third argument is the inline-previews flag (false on a loopback
-    // client; `wantsInlinePreviews` in stores/threadSubagentMemory.ts).
+    // client; `wantsInlinePreviews` in stores/threadPaneShared.ts).
     const listDescendants = vi.fn(async () => []);
     setBindingMock('ListSubagentDescendants', listDescendants);
     const { ctx } = await setup([

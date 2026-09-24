@@ -190,18 +190,20 @@ export function applyMembersStub(
  * Re-point a record at the span the pane holds now, without a server
  * answer. Used when a wholesale item replacement moved a run's loaded
  * members (a streamed append, a reconcile) — the stub still describes the
- * old span, so the record goes dirty and a refresh restates it.
+ * old span, so the record goes dirty and a refresh restates it. Returns
+ * whether the span moved.
  */
 export function noteSpanMoved(
   record: ActivityRunRecord,
   span: ActivityRunSpan | null,
-): void {
+): boolean {
   const first = span?.firstItemId ?? '';
   const last = span?.lastItemId ?? '';
-  if (record.loadedFirstItemId === first && record.loadedLastItemId === last) return;
+  if (record.loadedFirstItemId === first && record.loadedLastItemId === last) return false;
   record.loadedFirstItemId = first;
   record.loadedLastItemId = last;
   invalidateActivityRun(record);
+  return true;
 }
 
 export function invalidateActivityRun(record: ActivityRunRecord): void {

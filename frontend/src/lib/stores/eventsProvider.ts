@@ -1,5 +1,4 @@
 import { evictStaleWindowCaches, survivesRevertedTurnEvent } from './eventsItemStream';
-import type { EventOrigin } from '../transport/handle';
 import { resolveThreadBackend } from '../transport/entityIndex';
 import { HOME_BACKEND, type BackendKey } from '../transport/backendKey';
 import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
@@ -405,8 +404,8 @@ export function applyProviderSessionAccount(evt: ProviderSessionAccountEvent): v
  * is `GetThreadLiveState` hydration after refresh. Neither path derives
  * turn activity from durable item history.
  */
-export function applyTurnStarted(evt: TurnStartedEvent, origin?: EventOrigin): void {
-  if (!evt?.threadId || !evt.turnId || !survivesRevertedTurnEvent(evt.threadId, 'turnStartedSequence', origin)) return;
+export function applyTurnStarted(evt: TurnStartedEvent, sequence?: number): void {
+  if (!evt?.threadId || !evt.turnId || !survivesRevertedTurnEvent(evt.threadId, 'turnStartedSequence', sequence)) return;
   evictStaleWindowCaches(evt.threadId, paneShowsThread(evt.threadId));
   // Pass the full {turnIndex, startedAt} into the global registry so
   // the chat working indicator's self-ticking timer and the timeline
@@ -438,8 +437,8 @@ export function applyTurnStarted(evt: TurnStartedEvent, origin?: EventOrigin): v
  * thread-switch rehydration — so malformed JSON degrades gracefully to
  * `tokenUsage: null` rather than crashing the listener.
  */
-export function applyTurnCompleted(evt: TurnCompletedEvent, origin?: EventOrigin): void {
-  if (!evt?.threadId || !evt.turnId || !survivesRevertedTurnEvent(evt.threadId, 'turnCompletedSequence', origin)) return;
+export function applyTurnCompleted(evt: TurnCompletedEvent, sequence?: number): void {
+  if (!evt?.threadId || !evt.turnId || !survivesRevertedTurnEvent(evt.threadId, 'turnCompletedSequence', sequence)) return;
   evictStaleWindowCaches(evt.threadId, paneShowsThread(evt.threadId));
   // New usage_ledger rows may exist for this turn; nudge every usage
   // surface (composer chip, sidebar footer, usage modal) to refetch —

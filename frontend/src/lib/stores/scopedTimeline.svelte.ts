@@ -56,7 +56,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     },
   };
   const itemWindow = createThreadItemWindow({
-    optimisticItemIds, streamingReveal: () => reveal, rowUiState: () => rows,
+    optimisticItemIds, selection: () => selection, streamingReveal: () => reveal, rowUiState: () => rows,
     activityRuns: () => runs, switchLoad: () => mutations,
   });
   const { getItems, getItemById, itemIndexById, writeItemAt, appendDirectAssistantLiteral,
@@ -74,7 +74,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     appendLivePayloadDeltaForItem: rows.appendLivePayloadDeltaForItem,
   });
   const window = createThreadTimelineWindow({
-    getItems, replaceTimelineItems, installTimelineItems, getThread: () => thread,
+    getItems, replaceTimelineItems, installTimelineItems, getThread: () => thread, windowedRowCount: itemWindow.windowedRowCount,
     getSwitchGeneration: () => generation, getScrollController: () => scroll.controller,
     activityRuns: () => runs, selection: () => selection,
   });
@@ -99,14 +99,18 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     name: 'agent scope context', delayMs: 100, maxWaitMs: 500,
     run: () => refresh().catch(error => reportFrontendDiagnostic('scoped timeline refresh failed', errString(error))),
   });
+  // Every surface of the thread sees every event, so a removal this window
+  // does not hold must not walk the window.
   function remove(ids: ReadonlySet<string>) {
-    if (ids.size) window.invalidatePendingReads();
+    if (ids.size === 0) return;
+    window.invalidatePendingReads();
+    let held = false;
     for (const id of ids) {
       noteItemMutation(id);
       for (const items of unheldItems.values()) items.delete(id);
+      if (itemIndexById.has(id)) held = true;
     }
-    const next = getItems().filter(item => !ids.has(item.id));
-    if (next.length !== getItems().length) replaceTimelineItems(next, { disposeDropped: true });
+    if (held) replaceTimelineItems(getItems().filter(item => !ids.has(item.id)), { disposeDropped: true });
   }
   function applyMutation(mutation: TimelineMutation) {
     if (gone || disposed) return;

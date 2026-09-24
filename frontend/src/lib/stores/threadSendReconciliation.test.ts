@@ -111,9 +111,7 @@ describe('confirmation ordering and page coverage', () => {
     const before = send('optimistic:send-1');
     expect(apply([before], [send('user:other-thread', 0, { threadId: 'other' })])).toBeNull();
     const parented = send('user:agent', 0, { parentId: 'absent' });
-    const result = apply([before], [parented]);
-    expect(result?.items).toEqual([before]);
-    expect(result?.rejectedParentedItems).toEqual([parented]);
+    expect(apply([before], [parented])).toBeNull();
   });
 });
 
@@ -121,7 +119,7 @@ describe('confirmation through history loading', () => {
   it('a snapshot supersedes the same send even if its provisional row was touched during the fetch', () => {
     const before = send('optimistic:send-1', 12);
     const confirmed = send('user:canonical', 10);
-    expect(reconcileSnapshotPage([confirmed], [before], new Set([before.id])).items).toEqual([confirmed]);
+    expect(reconcileSnapshotPage([confirmed], [before], new Set([before.id]))).toEqual([confirmed]);
     expect(mergeItemsById([confirmed], [before])).toEqual([confirmed]);
     expect(mergeItemsById([confirmed, confirmed], [before])).toEqual([confirmed]);
   });

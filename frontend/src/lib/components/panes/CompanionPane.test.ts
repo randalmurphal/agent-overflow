@@ -3,6 +3,13 @@ import { flushSync, tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import CompanionPane from './CompanionPane.svelte';
+// The bodies these tests open, loaded with the file. CompanionPane imports
+// its body lazily, and a first import in a test transforms the body's whole
+// component graph inside the test's own wait, so the wait grew with suite
+// load. Loaded here, the pane's import resolves from the module cache and
+// the tests wait only for the mount.
+import '../agent/AgentPane.svelte';
+import '../review/ReviewPane.svelte';
 import { installTimelineScopeCapability, installPaneMocks, installThreadSwitchMocks, makeItem, makeThread } from '../../../test/helpers/chat';
 import { createThreadPane } from '../../stores/thread.svelte';
 import { registerPaneForTest, resetPanesForTest } from '../../stores/panes.svelte';
@@ -35,11 +42,7 @@ describe('CompanionPane across a source-pane thread switch', () => {
     __resetAgentPaneStateForTest();
   });
 
-  // The 15s test timeout matches the findBy wait below: the agent body is
-  // a lazily-imported chunk, and under full-suite worker load the default
-  // 5s test timeout fired before the 10s findBy could (flake seen twice on
-  // full runs, passes solo in ~5s).
-  it('mounts the agent body at the scope its companion was opened on', { timeout: 15_000 }, async () => {
+  it('mounts the agent body at the scope its companion was opened on', async () => {
     const thread = makeThread({ id: 'thread-agent' });
     installPaneMocks([makeItem({ threadId: 'thread-agent' })]);
     const pane = createThreadPane({ paneId: 'main' });
@@ -56,10 +59,7 @@ describe('CompanionPane across a source-pane thread switch', () => {
       props: { paneId: 'agent-main', kind: 'agent', sourcePaneId: 'main' },
     });
 
-    // The body is a lazily-imported chunk — and no longer a tiny
-    // placeholder: it pulls the chat row components. Give the first
-    // paint more than findBy's 1s default.
-    await findByTestId('companion-pane-agent-body', {}, { timeout: 10_000 });
+    await findByTestId('companion-pane-agent-body');
     // textContent flattens inter-element whitespace, so normalize around
     // the separator glyphs before comparing.
     expect(getByTestId('agent-pane-breadcrumb').textContent?.replace(/\s*›\s*/g, ' › ').trim())
@@ -106,7 +106,7 @@ describe('CompanionPane across a source-pane thread switch', () => {
     expect(isCompanionOpen('main', 'review')).toBe(false);
   });
 
-  it('rebinds an open review when the same conversation changes ownership or checkout', { timeout: 15_000 }, async () => {
+  it('rebinds an open review when the same conversation changes ownership or checkout', async () => {
     const read = setBindingMock('GetWorkspaceCurrentDiff', vi.fn(async () => ''));
     const thread = makeThread({ id: 'moving-thread', projectId: 'source-project', workspacePath: '/source', ownershipEpoch: 0 });
     const pane = createThreadPane({ paneId: 'main' });
@@ -115,9 +115,8 @@ describe('CompanionPane across a source-pane thread switch', () => {
     setPaneLayoutItemsForTest([{ id: 'main', paneId: 'main', kind: 'thread', widthPx: 400 }]);
     openCompanion('main', 'review');
     const { findByTestId } = render(CompanionPane, { props: { paneId: 'review-main', kind: 'review', sourcePaneId: 'main' } });
-    // The lazy review body can take longer than the assertion wait's default
-    // second under the full suite. Wait for its actual mount before its effects.
-    await findByTestId('review-pane', {}, { timeout: 10_000 });
+    // Wait for the body's mount before its effects.
+    await findByTestId('review-pane');
     await vi.waitFor(() => expect(read).toHaveBeenCalled());
     const initialCalls = read.mock.calls.length;
     pane.replaceThread({ ...thread, title: 'A new title' });

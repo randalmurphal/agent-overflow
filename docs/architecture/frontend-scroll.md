@@ -400,13 +400,11 @@ window (streaming append, settle, `loadOlder`, `loadNewer`) cuts through
 `keepWindowNearReader` in `threadTimelineWindow.svelte.ts`. Three rules
 bound every cut:
 
-- **Caps count top-level rows only**, and cuts select by an item's
-  top-level root, so children always travel with their anchor — the
-  frontend half of the backend pagers' `topLevelItemsFilter` rule.
-  Subagent children render inside their anchor's card (or the agent
-  companion, whose held rows every cut also keeps), so counting them let
-  a busy agent's invisible child mass force the prune into evicting the
-  visible conversation (incident 2026-08-31).
+- **A window holds only rows of its scope**, the frontend half of the
+  backend pagers' `topLevelItemsFilter` rule: the main window holds
+  top-level rows and a scoped window its root's direct children
+  (`threadItemWindow` refuses anything else). Caps count the rows the
+  timeline renders as entries (`isWindowedTimelineRow`).
 - **Visible rows are kept whole.** The timeline reports every item the
   viewport shows (`visibleTimelineItemIds`, members of collapsed runs and
   groups included, null while holding the bottom), and the cut keeps that
@@ -460,12 +458,14 @@ active, until `ACTIVE_TIMELINE_WINDOW_HARD_CEILING_ITEMS`, past which
 the cut runs mid-stream. The ceiling ends the deferral only; the
 visible-row rule holds at every count.
 
-Subagent child rows leave the main pane when they settle. The pane retains
-active rows for stream deltas and folds settled counts and previews in
-`utils/subagentFold.ts`. Inline cards and agent panes own independent paged
-scopes; expanding a card does not retain its transcript in the main pane.
-Explicit navigation reclaims only the target and its ancestry from the fold.
-Folds follow the thread-switch snapshot and suppress replayed settled rows.
+Subagent child rows never enter the main pane. Its item stream drops a
+row outside the window's scope, so the pane keeps no per-child state. A
+collapsed card reads its entry count and preview from the backend
+decoration on its launch row (`decoratedSubagentAggregates`), which triage
+re-pushes after the children are written (`internal/triage/wire_items.go`).
+Inline cards and agent panes own independent paged scopes and receive live
+children through the timeline mutation fan-out; navigation to a child opens
+the agent pane.
 
 ## Run Height Changes
 

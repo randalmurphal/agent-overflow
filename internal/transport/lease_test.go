@@ -2,6 +2,7 @@ package transport
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +77,7 @@ func TestLeaseItemFrameMatchesItemStreamEvent(t *testing.T) {
 		Action:    "delta",
 		ThreadID:  "thread-A",
 		ItemID:    "item-1",
+		ParentID:  "agent-1",
 		Kind:      "assistant_text",
 		Delta:     "hello",
 		UpdatedAt: 1234,
@@ -87,6 +89,7 @@ func TestLeaseItemFrameMatchesItemStreamEvent(t *testing.T) {
 		Action:    itemStreamActionDelta,
 		ThreadID:  "thread-A",
 		ItemID:    "item-1",
+		ParentID:  "agent-1",
 		Kind:      "assistant_text",
 		Delta:     "hello",
 		UpdatedAt: 1234,
@@ -158,6 +161,39 @@ func TestDeltaCoalescerMergesPerRow(t *testing.T) {
 		if len(e.WireBytes) == 0 {
 			t.Fatalf("merged frame %d has no pre-encoded wire bytes", i)
 		}
+	}
+}
+
+// TestDeltaCoalescerKeepsTheRowParent: a merged delta names the row's
+// parent like the frames it replaces. A client whose window does not hold
+// the row reads it to ignore another scope's row instead of reporting a
+// missing one.
+func TestDeltaCoalescerKeepsTheRowParent(t *testing.T) {
+	var out []Event
+	c := deltaCoalescer{window: time.Hour, emit: func(e Event) { out = append(out, e) }}
+	child := func(text string, updatedAt int64) json.RawMessage {
+		buf, err := json.Marshal(triage.ItemStreamEvent{
+			Action: "delta", ThreadID: "thread-A", ItemID: "child-1", ParentID: "agent-1",
+			Kind: "assistant_text", Delta: text, UpdatedAt: updatedAt,
+		})
+		if err != nil {
+			t.Fatalf("marshal child delta: %v", err)
+		}
+		return buf
+	}
+	c.intercept(itemEvent(1, "thread-A", child("par", 10)))
+	c.intercept(itemEvent(2, "thread-A", deltaPayload(t, "thread-A", "top", "top", 11)))
+	c.intercept(itemEvent(3, "thread-A", child("ent", 12)))
+	c.flushAll()
+	if len(out) != 2 {
+		t.Fatalf("merged frames = %d, want one per row", len(out))
+	}
+	merged, top := decodeDelta(t, out[1]), decodeDelta(t, out[0])
+	if merged.ItemID != "child-1" || merged.Delta != "parent" || merged.ParentID != "agent-1" {
+		t.Fatalf("child merge = %+v, want child-1 \"parent\" under agent-1", merged)
+	}
+	if top.ParentID != "" {
+		t.Fatalf("top-level merge gained a parent: %+v", top)
 	}
 }
 
@@ -237,6 +273,48 @@ func TestDeltaCoalescerCarriesGapForward(t *testing.T) {
 	}
 	if !strings.Contains(string(out[0].WireBytes), `"gap":true`) {
 		t.Fatalf("the encoded frame lost the gap flag: %s", out[0].WireBytes)
+	}
+}
+
+// TestDeltaCoalescerMergesGapAttribution: a merge announces every loss its
+// parts did. Named threads union, and one unattributed part makes the
+// merged announcement unattributed.
+func TestDeltaCoalescerMergesGapAttribution(t *testing.T) {
+	cases := []struct {
+		name  string
+		parts [][]string // one gap attribution per part; nil = unattributed
+		want  []string
+	}{
+		{"union", [][]string{{"thread-C", "thread-A"}, {"thread-B", "thread-C"}}, []string{"thread-A", "thread-B", "thread-C"}},
+		{"unattributed first", [][]string{nil, {"thread-B"}}, nil},
+		{"unattributed last", [][]string{{"thread-B"}, nil}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out []Event
+			c := deltaCoalescer{window: time.Hour, emit: func(e Event) { out = append(out, e) }}
+			for i, threads := range tc.parts {
+				part := itemEvent(uint64(i+1), "thread-A", deltaPayload(t, "thread-A", "item-1", "x", int64(i+1)))
+				part.Gap = true
+				part.GapThreads = threads
+				c.intercept(part)
+			}
+			c.intercept(itemEvent(9, "thread-A", deltaPayload(t, "thread-A", "item-1", "y", 9)))
+			c.flushAll()
+			if len(out) != 1 || !out[0].Gap {
+				t.Fatalf("merged frames = %+v, want one carrying gap:true", out)
+			}
+			if !slices.Equal(out[0].GapThreads, tc.want) || (tc.want == nil) != (out[0].GapThreads == nil) {
+				t.Fatalf("GapThreads = %v, want %v", out[0].GapThreads, tc.want)
+			}
+			var frame ServerFrame
+			if err := json.Unmarshal(out[0].WireBytes, &frame); err != nil {
+				t.Fatalf("decode merged frame: %v", err)
+			}
+			if !slices.Equal(frame.GapThreads, tc.want) {
+				t.Fatalf("wire gapThreads = %v, want %v", frame.GapThreads, tc.want)
+			}
+		})
 	}
 }
 

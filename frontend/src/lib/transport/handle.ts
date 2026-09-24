@@ -27,7 +27,9 @@ import type { StepUpProver } from './wsClient';
 /**
  * Which connection something arrived on. Carried by every event the hub
  * fans out, so a store that has to tell two backends' events apart reads
- * a field instead of being re-plumbed.
+ * a field instead of being re-plumbed. Identity only: a frame's own facts
+ * (its sequence, the replay mark) travel beside it, so every frame from one
+ * connection shares the handle's one object.
  *
  * `backendId` is empty when the backend does not identify itself (the
  * `--connect` stub, an older server). Empty means UNKNOWN, never "any" —
@@ -35,23 +37,6 @@ import type { StepUpProver } from './wsClient';
  */
 export interface EventOrigin {
   readonly backendId: string;
-  readonly sequence?: number;
-  /**
-   * True for a frame the transport delivered out of its reconnect replay
-   * window rather than as it happened.
-   *
-   * Almost every subscriber converges state and must treat the two
-   * identically — that is what makes reconnect recovery correct. It is here
-   * for the subscribers that INTERRUPT a person: a banner re-raised after a
-   * reconnect replaces itself by tag and costs nothing, while a sound
-   * replayed minutes later names a moment that has passed. See
-   * `stores/browserNotificationPresenter.svelte.ts`.
-   *
-   * Absent means "not known to be replayed", which is the live reading: a
-   * transport that never buffered (the `--connect` stub, an older bundle)
-   * delivers only live frames.
-   */
-  readonly replayed?: boolean;
 }
 
 /** What a transport must provide to carry this app's RPCs and events. */

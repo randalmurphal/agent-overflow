@@ -2310,7 +2310,7 @@ Prerequisite sweep, valuable standalone:
   by tag, so it replaces itself) and NO CUE: a banner replayed after a
   reconnect is still true, while a cue names a moment that has already
   passed — the same argument that makes `notification:sound` ephemeral.
-  The transport marks it: `EventOrigin.replayed` is set for frames
+  The transport marks it: the `replayed` delivery argument is set for frames
   drained out of the reconnect replay window, deliberately including live
   frames that arrived during it, because "may have been missed" is the
   honest answer for those. Retractions are gated by neither preferences

@@ -136,27 +136,25 @@ describe('timeline row projection reactivity', () => {
     const pane = await buildPane(undefined, [
       makeItem({ id: 'user:0', itemIndex: 0, kind: 'user_text', role: 'user', summary: 'go' }),
       agentLaunch('agent:1', 1),
-      makeItem({
-        id: 'child:1', itemIndex: 2, parentId: 'agent:1',
-        status: 'streaming', summary: 'reading',
-      }),
     ]);
+    pane.upsertItem(makeItem({
+      id: 'child:1', itemIndex: 2, parentId: 'agent:1',
+      kind: 'tool_call', toolName: 'Read', status: 'streaming', summary: 'reading',
+    }));
     const projection = mountProjection(pane);
     try {
       const before = projection.nodes;
       const evaluationsBefore = projection.evaluations;
       expect(findGroup(before)).not.toBeNull();
 
-      // A content-only replacement of a group descendant: exactly what a
-      // streaming delta produces once the smoother commits it.
       pane.upsertItem(makeItem({
         id: 'child:1', itemIndex: 2, parentId: 'agent:1',
-        status: 'streaming', summary: 'reading src/lib/stores/thread.svelte.ts',
-        updatedAt: 1,
+        kind: 'tool_call', toolName: 'Read', status: 'streaming',
+        summary: 'reading src/lib/stores/thread.svelte.ts', updatedAt: 1,
       }));
       flushSync();
 
-      expect(pane.getItemById('child:1')?.summary).toContain('thread.svelte.ts');
+      expect(pane.getItemById('child:1')).toBeUndefined();
       expect(projection.evaluations).toBe(evaluationsBefore);
       expect(projection.nodes).toBe(before);
     } finally {
@@ -165,16 +163,7 @@ describe('timeline row projection reactivity', () => {
   });
 
   it('holds revealedNodes identity when the group anchor settles', async () => {
-    const pane = await buildPane(undefined, [
-      agentLaunch('agent:1', 0),
-      // Left running on purpose: the pane evicts SETTLED descendants of a
-      // collapsed card, which is a real structural change. The anchor
-      // itself is never evicted, so its status flip is the clean case.
-      makeItem({
-        id: 'child:1', itemIndex: 1, parentId: 'agent:1',
-        kind: 'tool_call', toolName: 'Read', status: 'running', summary: 'Read a.ts',
-      }),
-    ]);
+    const pane = await buildPane(undefined, [agentLaunch('agent:1', 0)]);
     const projection = mountProjection(pane);
     try {
       const before = projection.nodes;
@@ -197,16 +186,12 @@ describe('timeline row projection reactivity', () => {
     }
   });
 
-  it('rebuilds revealedNodes when a new child appends under the group', async () => {
-    const pane = await buildPane(undefined, [
-      agentLaunch('agent:1', 0),
-      // Both children stay active so the collapsed card's live eviction
-      // does not drop the first one and mask the append.
-      makeItem({
-        id: 'child:1', itemIndex: 1, parentId: 'agent:1',
-        status: 'running', summary: 'one',
-      }),
-    ]);
+  it('holds revealedNodes identity when a new child appends under the group', async () => {
+    const pane = await buildPane(undefined, [agentLaunch('agent:1', 0)]);
+    pane.upsertItem(makeItem({
+      id: 'child:1', itemIndex: 1, parentId: 'agent:1',
+      status: 'running', summary: 'one',
+    }));
     const projection = mountProjection(pane);
     try {
       const before = projection.nodes;
@@ -218,9 +203,41 @@ describe('timeline row projection reactivity', () => {
       }));
       flushSync();
 
-      expect(projection.evaluations).toBeGreaterThan(evaluationsBefore);
-      expect(projection.nodes).not.toBe(before);
-      expect(findGroup(projection.nodes)?.children).toHaveLength(2);
+      // The card reads its count and preview off the anchor's decoration.
+      expect(pane.getItemById('child:2')).toBeUndefined();
+      expect(projection.evaluations).toBe(evaluationsBefore);
+      expect(projection.nodes).toBe(before);
+    } finally {
+      projection.dispose();
+    }
+  });
+
+  it.each([
+    ['a decorated count', { subagentDescendantCount: 1 }],
+    ['the fork stamp', { skillFork: { agentId: 'fork-1', commandName: 'brainstorm' } }],
+  ])('rebuilds revealedNodes when a loaded Skill row\'s re-upsert carries %s', async (_signal, fork) => {
+    const input = { toolName: 'Skill', input: { skill: 'brainstorm' } };
+    const skill = makeItem({
+      id: 'skill:1', itemIndex: 0, kind: 'tool_call', toolName: 'Skill', status: 'running',
+      summary: 'Skill: brainstorm', meta: JSON.stringify(input),
+    });
+    const pane = await buildPane(undefined, [skill]);
+    const projection = mountProjection(pane);
+    try {
+      expect(findGroup(projection.nodes)).toBeNull();
+
+      // The fork's streamed child never reaches the main window.
+      pane.upsertItem(makeItem({
+        id: 'fork-text', itemIndex: 1, parentId: 'skill:1',
+        kind: 'assistant_text', status: 'streaming', summary: 'option A', updatedAt: 2,
+      }));
+      flushSync();
+      expect(findGroup(projection.nodes)).toBeNull();
+
+      pane.upsertItem({ ...skill, meta: JSON.stringify({ ...input, ...fork }), rev: 2, updatedAt: 3 });
+      flushSync();
+
+      expect(findGroup(projection.nodes)?.parent.id).toBe('skill:1');
     } finally {
       projection.dispose();
     }

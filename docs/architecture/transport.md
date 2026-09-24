@@ -192,6 +192,10 @@ When a subscriber buffer is full, the server records the affected channel. The
 next deliverable event for that channel carries `gap:true`; other affected
 channels receive standalone gap markers before later delivery. Latest-only
 channels do not need a marker because their next frame supersedes the loss.
+The announcement lists the entity keys of the dropped frames in `gapThreads`
+when every dropped frame had one and they number at most `MaxWatchThreads`;
+the frontend then recovers only those threads. Without the list, as on every
+replay marker, recovery covers every thread.
 Client-side forward-sequence detection remains a second loss signal within one
 connection.
 

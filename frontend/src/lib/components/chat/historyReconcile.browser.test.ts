@@ -62,11 +62,6 @@ for (const activity of ['unchanged-child', 'streaming-child', 'parent', 'cold', 
       if (row && getComputedStyle(row).visibility === 'visible') openingGaps.push(distanceToBottom(scrollEl));
     }
     if (activity === 'cold') expect(pane.items).toHaveLength(0);
-    let readingTop = 0;
-    if (activity === 'reading') {
-      await userScrollTo(scrollEl, scrollEl.scrollTop - 800);
-      readingTop = scrollEl.scrollTop;
-    }
     if (activity === 'unchanged-child') {
       pane.applyItemPatch({ threadId: thread.id, itemId: child.id, kind: child.kind,
         patch: { summary: child.summary, rev: 2 } });
@@ -81,35 +76,58 @@ for (const activity of ['unchanged-child', 'streaming-child', 'parent', 'cold', 
       await waitFor(() => pane.getItemById(child.id)?.summary !== child.summary, 'child reveal before sync');
       expect(pane.lastLiveContentAt).toBe(0);
     }
-    const oldHeight = scrollEl.scrollHeight;
     answer();
     const gaps: number[] = [];
-    const readingPositions: number[] = [];
-    let growthFrames = 0;
+    const visibleHeights: number[] = [];
+    let firstTailText: string | null = null;
     for (let i = 0; i < 100; i++) {
-      await raf();
-      // Sample after the rendering update: rAF itself runs before the row
-      // ResizeObserver can commit its correction, which is still pre-paint.
-      await new Promise(resolve => setTimeout(resolve, 0));
+      await afterRendering();
       const row = scrollEl.querySelector('[data-item-id="tail"]');
-      readingPositions.push(scrollEl.scrollTop);
       if (row && getComputedStyle(row).visibility === 'visible') {
+        firstTailText ??= row.textContent ?? '';
         gaps.push(distanceToBottom(scrollEl));
-        if (scrollEl.scrollHeight > oldHeight + 100) growthFrames++;
+        visibleHeights.push(scrollEl.scrollHeight);
       }
     }
     await switching;
-    expect(Math.max(0, ...openingGaps)).toBeLessThanOrEqual(2);
-    if (activity === 'reading') {
-      expect(Math.max(...readingPositions.map(top => Math.abs(top - readingTop)))).toBeLessThanOrEqual(2);
-      return;
-    }
-    if (activity === 'unchanged') {
-      expect(scrollEl.scrollHeight).toBe(oldHeight);
-      expect(Math.max(...gaps)).toBeLessThanOrEqual(2);
-      return;
-    }
-    expect(growthFrames).toBeGreaterThan(10);
+    // The staged window stays hidden until SyncThreadWindow verifies it, so
+    // the first painted frame is the reconciled window at the bottom.
+    expect(openingGaps).toEqual([]);
+    expect(gaps.length).toBeGreaterThan(0);
     expect(Math.max(...gaps), JSON.stringify(getUiRenderTraceRecords().filter(r => r.label === 'scroll.contentRO'))).toBeLessThanOrEqual(2);
+    if (activity === 'unchanged') {
+      expect(firstTailText).not.toContain('Additional saved prose');
+      expect(new Set(visibleHeights).size).toBe(1);
+      return;
+    }
+    expect(firstTailText).toContain('Additional saved prose');
+    if (activity !== 'reading') return;
+
+    // A reconcile over the visible window (a backend refresh) grows the
+    // history the reader is in without moving the reader.
+    await userScrollTo(scrollEl, scrollEl.scrollTop - 800);
+    const readingTop = scrollEl.scrollTop;
+    installThreadSwitchMocks(thread, next.map((item) => item.id === tail.id
+      ? { ...item, summary: `${item.summary}\n\n${'Recovered saved prose. '.repeat(100)}`, updatedAt: 3 }
+      : item));
+    const refresh = pane.refreshFromBackend(true);
+    const readingPositions: number[] = [];
+    for (let i = 0; i < 60; i++) {
+      await afterRendering();
+      readingPositions.push(scrollEl.scrollTop);
+    }
+    await refresh;
+    expect(pane.getItemById(tail.id)?.summary).toContain('Recovered saved prose');
+    expect(Math.max(...readingPositions.map(top => Math.abs(top - readingTop)))).toBeLessThanOrEqual(2);
   });
+}
+
+/**
+ * One frame, sampled after the rendering update: rAF itself runs before
+ * the row ResizeObserver can commit its correction, which is still
+ * pre-paint.
+ */
+async function afterRendering(): Promise<void> {
+  await raf();
+  await new Promise(resolve => setTimeout(resolve, 0));
 }

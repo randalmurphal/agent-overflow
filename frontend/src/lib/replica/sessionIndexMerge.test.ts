@@ -101,7 +101,6 @@ function body(overrides: Partial<ReplicaBody> = {}): ReplicaBody {
     hasMoreOlder: false,
     hasMoreNewer: false,
     latestSettledTurn: null,
-    subagentFolds: null,
     runs: [],
     ...overrides,
   };

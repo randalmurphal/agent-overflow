@@ -43,7 +43,6 @@ function body(): ReplicaBody {
     hasMoreOlder: false,
     hasMoreNewer: false,
     latestSettledTurn: null,
-    subagentFolds: null,
     runs: [],
   };
 }

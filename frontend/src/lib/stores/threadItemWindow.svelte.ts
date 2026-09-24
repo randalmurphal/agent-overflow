@@ -27,8 +27,10 @@ import type { ApplyItemUpsertsToWindowResult } from './threadItemUpserts';
 import type { ThreadStreamingReveal } from './threadStreamingReveal.svelte';
 import type { ThreadRowUiState } from './threadRowUiState.svelte';
 import type { ThreadActivityRuns } from './threadActivityRuns.svelte';
-import type { ThreadSubagentMemory } from './threadSubagentMemory';
 import type { ThreadSwitchLoad } from './threadSwitchLoad.svelte';
+import { reportFrontendDiagnostic } from '../utils/frontendErrorCapture';
+import { isWindowedTimelineRow } from './threadWindowDigest';
+import type { TimelineSelection } from '../../../bindings/agent-overflow/internal/store/models';
 
 /** Shared "nothing was dropped" list, so the common replacement allocates none. */
 const NO_ITEMS: readonly Item[] = Object.freeze([]);
@@ -47,16 +49,22 @@ export interface TimelineCommitOptions {
  */
 export interface ThreadItemWindowOptions {
   optimisticItemIds: Set<string>;
+  /**
+   * The transcript this window holds: omitted for a thread's main window;
+   * an agent scope names its launch in `scopeRootId`. Rows parented
+   * elsewhere are subagent children and never enter the window, and
+   * `windowedRowCount` counts the rows the selection pages.
+   */
+  selection?(): TimelineSelection;
   streamingReveal(): ThreadStreamingReveal;
   rowUiState(): ThreadRowUiState;
   activityRuns(): ThreadActivityRuns;
-  subagentMemory?(): Pick<ThreadSubagentMemory, 'retainFoldAnchors'>;
   switchLoad(): Pick<ThreadSwitchLoad, 'noteItemMutation' | 'noteItemMutations' | 'noteItemWindowReplacement'>;
 }
 
 export function createThreadItemWindow(options: ThreadItemWindowOptions) {
-  // `$state.raw`, not `$state`: the window is replaced wholesale on every
-  // upsert batch, and a deep proxy re-minted a source per index and per
+  // `$state.raw`, not `$state`: the window is replaced wholesale by every
+  // batch that admits rows, and a deep proxy re-minted a source per index and per
   // item field on every read after each replacement (9.9MB/min of proxy
   // `get` allocation in the 2026-08-23 profile) — and because the nested
   // Item proxies were new each time, every mounted row's `displayItem`
@@ -64,9 +72,10 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
   // had been written. Row-level reactivity comes from `itemBoxes` instead:
   // one `$state.raw` box per LOADED item id, written at the same
   // chokepoints that write `items`, so a row re-derives only when its own
-  // row is written. The array signal itself fires on replacement only
-  // (structure, and the batch commit); an in-place `writeItemAt` is
-  // silent at the array and loud at the row's box.
+  // row is written. The array signal itself fires on replacement only (a
+  // batch that admits, moves or confirms rows, and the wholesale
+  // chokepoints); an in-place write (`writeItemAt`, or a batch that only
+  // rewrites held rows) is silent at the array and loud at the row's box.
   let items: Item[] = $state.raw([]);
   // Structural revision for timeline projections that should skip
   // summary-only streaming deltas. Bump whenever the item window's array
@@ -98,6 +107,13 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
   // and a reactive reader of one tracks the registry's creation version
   // so it wakes when that row lands.
   const itemBoxes = createKeyedSignalRegistry<Item | undefined>(undefined);
+  // Rows the window's selection pages (`isWindowedTimelineRow`), which is
+  // what the retention cut measures the window by. Maintained at every
+  // write below so an append does not recount the window. Plain, not
+  // `$state`: its readers are the prune paths, which read imperatively.
+  let windowedRows = 0;
+  const isWindowed = (item: Item): number =>
+    (isWindowedTimelineRow(item, options.selection?.()) ? 1 : 0);
 
   function getItems(): Item[] {
     return items;
@@ -173,6 +189,7 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     }
     options.streamingReveal().reconcileItemWrite(previous, next);
     if (rowUiRetentionChanged(previous, next)) rowUiRetentionRevision += 1;
+    windowedRows += isWindowed(next) - isWindowed(previous);
     const errors: unknown[] = [];
     // Same chokepoint logic for the activity-run header: it summarises the
     // rows in a run from five fields, and this is the write that fires at
@@ -243,10 +260,13 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
 
   function rebuildItemIndexes(nextItems: Item[]): void {
     itemIndexById.clear();
+    let windowed = 0;
     for (let index = 0; index < nextItems.length; index += 1) {
       const item = nextItems[index];
       itemIndexById.set(item.id, index);
+      windowed += isWindowed(item);
     }
+    windowedRows = windowed;
     for (const id of options.optimisticItemIds) {
       if (!itemIndexById.has(id)) options.optimisticItemIds.delete(id);
     }
@@ -325,12 +345,36 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     afterCommit?: () => void;
   }
 
+  /**
+   * Wholesale installs come from pages, snapshots and caches, all built
+   * from rows of this window's scope. A row parented elsewhere is refused
+   * here too, so no install path can put a subagent child in the window.
+   */
+  function rowsInScope(nextItems: Item[]): Item[] {
+    const scope = options.selection?.().scopeRootId ?? '';
+    let admitted: Item[] | null = null;
+    for (let index = 0; index < nextItems.length; index += 1) {
+      const item = nextItems[index];
+      if ((item.parentId ?? '') === scope) {
+        admitted?.push(item);
+        continue;
+      }
+      admitted ??= nextItems.slice(0, index);
+    }
+    if (admitted === null) return nextItems;
+    reportFrontendDiagnostic(
+      'timeline window: refused rows outside the window scope',
+      `${nextItems.length - admitted.length} of ${nextItems.length} rows`,
+    );
+    return admitted;
+  }
+
   function commitTimelineItems(
     nextItems: Item[],
     droppedItems: readonly Item[],
     commitOptions: TimelineItemsCommitOptions = {},
   ): boolean {
-    return options.streamingReveal().withReconciledItems(nextItems, (nextItems) => {
+    return options.streamingReveal().withReconciledItems(rowsInScope(nextItems), (nextItems) => {
       const previous = items;
       reconcileItemReplacements(previous, nextItems);
       items = nextItems;
@@ -346,20 +390,6 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       // `itemIndexById` no longer knows it.
       rebuildItemIndexes(items);
       syncItemBoxes(previous, items);
-      // Fold↔items chokepoint: folds are only meaningful while their
-      // anchor row is loaded — once an anchor leaves the window, the
-      // next load of its region decorates from SQLite. Every wholesale
-      // window replacement (prune, reconcile, revert, cache install,
-      // eviction) flows through here, so one sweep after the index
-      // rebuild keeps the registry consistent everywhere. Streamed upserts
-      // can replace provisional user records but cannot remove fold anchors.
-      // Eviction callers record their folds BEFORE replacing, with the
-      // anchors still loaded, so those folds are retained.
-      try {
-        options.subagentMemory?.().retainFoldAnchors();
-      } catch (error) {
-        errors.push(error);
-      }
       try {
         disposeDroppedItemState(droppedItems);
       } catch (error) {
@@ -453,13 +483,9 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
   /**
    * Replace the window by dropping the rows `shouldDrop` selects. ONE
    * pass yields both the surviving array and the dropped rows, where
-   * `replaceTimelineItems` has to diff the two arrays afterwards — a
-   * second full walk plus a Set of every surviving id. Any caller that
-   * already knows which rows are leaving belongs here; subagent
-   * eviction, which drops a settled subtree on every settling batch, is
-   * why it exists. Returns the dropped rows in their previous order; a
-   * no-op drop leaves the window untouched, so it costs no revision
-   * bump.
+   * `replaceTimelineItems` has to diff the two arrays afterwards. Returns
+   * the dropped rows in their previous order; a no-op drop leaves the
+   * window untouched, so it costs no revision bump.
    */
   function dropTimelineItems(
     shouldDrop: (item: Item) => boolean,
@@ -497,11 +523,22 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     if (errors.length > 0) {
       throw new AggregateError(errors, 'timeline item upsert reconciliation failed');
     }
+    // Loops below walk `committed`, not `items`: every read of the
+    // `$state.raw` binding is a signal read.
     const previousItems = items;
-    items = next.items;
+    const committed = next.items;
+    if (committed === previousItems) {
+      for (const write of next.rowWrites) committed[write.index] = write.item;
+    } else {
+      items = committed;
+    }
+    for (const write of next.rowWrites) {
+      windowedRows += isWindowed(write.item) - isWindowed(write.previous);
+    }
+    for (const item of next.appendedItems) windowedRows += isWindowed(item);
     try {
       if (next.replacedItems.length > 0) {
-        options.switchLoad().noteItemWindowReplacement(previousItems, items);
+        options.switchLoad().noteItemWindowReplacement(previousItems, committed);
       } else {
         options.switchLoad().noteItemMutations(next.changedItems);
       }
@@ -509,16 +546,14 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
       errors.push(error);
     }
     try {
-      if (next.indexesNeedRebuild) {
-        rebuildItemIndexes(items);
-      } else {
-        const firstAppendIndex = items.length - next.appendedItems.length;
-        for (let index = 0; index < next.appendedItems.length; index += 1) {
-          itemIndexById.set(
-            next.appendedItems[index].id,
-            firstAppendIndex + index,
-          );
-        }
+      // Only entries from `reindexFrom` moved; a confirmed send's
+      // provisional id leaves the map and the optimistic ledger with it.
+      for (const replaced of next.replacedItems) {
+        itemIndexById.delete(replaced.id);
+        options.optimisticItemIds.delete(replaced.id);
+      }
+      for (let index = next.reindexFrom; index < committed.length; index += 1) {
+        itemIndexById.set(committed[index].id, index);
       }
     } catch (error) {
       errors.push(error);
@@ -576,6 +611,8 @@ export function createThreadItemWindow(options: ThreadItemWindowOptions) {
     get rowUiRetentionRevision() {
       return rowUiRetentionRevision;
     },
+    /** Rows of the window its selection pages; see `windowedRows`. */
+    windowedRowCount: () => windowedRows,
     writeItemAt,
     appendDirectAssistantLiteral,
     replaceTimelineItems,

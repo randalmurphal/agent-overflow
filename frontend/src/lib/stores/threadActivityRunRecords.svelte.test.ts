@@ -100,11 +100,68 @@ describe('syncRunSpans', () => {
     const items = [activityRunRow('b', 1), activityRunRow('c', 2), activityRunRow('d', 3)];
     const f = fixture(items);
     f.runs.syncRunSpans(items, [activityRunStub()]);
+    const revision = f.runs.revision;
+    const windowRevision = f.runs.windowRevision;
     const grown = [...items, activityRunRow('e', 6)];
     f.setItems(grown);
     f.runs.syncRunSpans(grown);
     expect(f.runs.heldRunFold()).toBeNull();
     expect(f.runs.snapshotStubs()).toBeNull();
+    expect(f.runs.revision).toBe(revision + 1);
+    expect(f.runs.windowRevision).toBe(windowRevision + 1);
+  });
+
+  it('moves no revision when a resync finds every held span unchanged', () => {
+    const items = [activityRunProse('p0', 0), activityRunRow('b', 2), activityRunRow('c', 3), activityRunRow('d', 4), activityRunProse('p1', 8)];
+    const f = fixture(items);
+    f.runs.syncRunSpans(items, [activityRunStub()]);
+    const revision = f.runs.revision;
+    const windowRevision = f.runs.windowRevision;
+
+    f.runs.syncRunSpans(items);
+    const appended = [...items, activityRunProse('p2', 9), activityRunRow('z', 10)];
+    f.setItems(appended);
+    f.runs.syncRunSpans(appended);
+
+    expect(f.runs.revision).toBe(revision);
+    expect(f.runs.windowRevision).toBe(windowRevision);
+    expect(f.runs.snapshotStubs()).toHaveLength(1);
+  });
+
+  it('moves the revisions when a held run gains a member inside its span', () => {
+    const items = [activityRunProse('p0', 0), activityRunRow('b', 2), activityRunRow('d', 4), activityRunProse('p1', 8)];
+    const f = fixture(items);
+    f.runs.syncRunSpans(items, [activityRunStub()]);
+    const windowRevision = f.runs.windowRevision;
+    const grown = [items[0], items[1], activityRunRow('c', 3), ...items.slice(2)];
+    f.setItems(grown);
+    f.runs.syncRunSpans(grown);
+    expect(f.runs.isLoadedMember('c')).toBe(true);
+    expect(f.runs.windowRevision).toBe(windowRevision + 1);
+  });
+
+  it('moves no revision for a window that holds no record', () => {
+    const items = [activityRunRow('b', 1), activityRunRow('c', 2)];
+    const f = fixture(items);
+    const revision = f.runs.revision;
+    const windowRevision = f.runs.windowRevision;
+    f.runs.syncRunSpans(items);
+    f.runs.applyWindowCut(items, items.slice(1));
+    expect(f.runs.revision).toBe(revision);
+    expect(f.runs.windowRevision).toBe(windowRevision);
+  });
+
+  it('moves the revisions once when a record leaves, and not on the next resync', () => {
+    const items = [activityRunProse('p0', 0), activityRunRow('b', 1), activityRunRow('c', 2), activityRunRow('d', 3)];
+    const f = fixture(items);
+    f.runs.syncRunSpans(items, [activityRunStub()]);
+    const revision = f.runs.revision;
+    const next = [activityRunProse('p0', 0)];
+    f.setItems(next);
+    f.runs.syncRunSpans(next);
+    f.runs.syncRunSpans(next);
+    expect(f.runs.revision).toBe(revision + 1);
+    expect(f.runs.isLoadedMember('b')).toBe(false);
   });
 });
 
@@ -156,6 +213,17 @@ describe('runCoveringUnshipped', () => {
 });
 
 describe('applyWindowCut', () => {
+  it('moves no revision for a cut that leaves every held run whole', () => {
+    const items = [activityRunProse('p0', 0), activityRunRow('b', 2), activityRunRow('c', 3), activityRunRow('d', 4), activityRunProse('p1', 8), activityRunProse('p2', 9)];
+    const f = fixture(items);
+    f.runs.syncRunSpans(items, [activityRunStub()]);
+    const revision = f.runs.revision;
+    const windowRevision = f.runs.windowRevision;
+    f.runs.applyWindowCut(items, items.slice(0, -1));
+    expect(f.runs.revision).toBe(revision);
+    expect(f.runs.windowRevision).toBe(windowRevision);
+  });
+
   it('sheds the members a cut dropped from a run\'s older side', () => {
     const items = [activityRunRow('b', 1), activityRunRow('c', 2), activityRunRow('d', 3)];
     const f = fixture(items);

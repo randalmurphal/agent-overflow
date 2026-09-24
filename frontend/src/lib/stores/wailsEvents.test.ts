@@ -1,6 +1,6 @@
-// The event hub's delivery contract: the payload, and the connection it
-// arrived on. Driven through the runtime mock, which stamps the origin
-// the same way the production shim does.
+// The event hub's delivery contract: the payload, the connection it
+// arrived on, and the frame's own sequence and replay mark. Driven through
+// the runtime mock, which delivers them the way the production shim does.
 import { describe, expect, it, vi } from 'vitest';
 import { emitWailsEvent } from '../../test/mocks/wailsio-runtime';
 import { setBackendIdentityFromBootstrap } from '../transport/backendIdentity';
@@ -16,7 +16,7 @@ describe('wailsEventOn', () => {
 
     emitWailsEvent('thread:updated', { id: 'thread-a' });
 
-    expect(handler).toHaveBeenCalledWith({ id: 'thread-a' }, { backendId: BACKEND });
+    expect(handler).toHaveBeenCalledWith({ id: 'thread-a' }, { backendId: BACKEND }, undefined, false);
     off();
     emitWailsEvent('thread:updated', { id: 'thread-b' });
     expect(handler).toHaveBeenCalledTimes(1);
@@ -30,7 +30,22 @@ describe('wailsEventOn', () => {
 
     // No identity: a subscriber must not read the missing stamp as "the
     // backend I am attached to".
-    expect(handler).toHaveBeenCalledWith({ id: 'thread-a' }, { backendId: '' });
+    expect(handler).toHaveBeenCalledWith({ id: 'thread-a' }, { backendId: '' }, undefined, false);
+    off();
+  });
+
+  it('hands the frame\'s sequence and replay mark beside the connection\'s origin', () => {
+    setBackendIdentityFromBootstrap(BACKEND, 'gen-1');
+    const handler = vi.fn();
+    const off = wailsEventOn('provider:item_event', handler);
+
+    emitWailsEvent('provider:item_event', { n: 1 }, undefined, { sequence: 7 });
+    emitWailsEvent('provider:item_event', { n: 2 }, undefined, { sequence: 8, replayed: true });
+
+    expect(handler.mock.calls).toEqual([
+      [{ n: 1 }, { backendId: BACKEND }, 7, false],
+      [{ n: 2 }, { backendId: BACKEND }, 8, true],
+    ]);
     off();
   });
 });
