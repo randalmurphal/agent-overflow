@@ -117,8 +117,16 @@ type UserMessageRevertedEvent struct {
 // composer draft + queue + pane items; the backend checks SQLite +
 // flush queue. Both must agree for revert to succeed.
 //
+// Both branches interrupt the provider, and a Claude interrupt kills the
+// thread's live background agents (app_background_kill.go). Unless
+// confirmBackgroundKill is set, the call refuses with
+// background_agents_running and the agents once it is known to interrupt,
+// before anything is interrupted, reverted or written. That refusal comes
+// ahead of the predicate's own "running background tasks" decline, which a
+// confirmed call still takes to the plain interrupt.
+//
 //ao:scope threads:operate
-func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOptions) (InterruptAndRevertResult, error) {
+func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOptions, confirmBackgroundKill bool) (InterruptAndRevertResult, error) {
 	if a.shuttingDown.Load() {
 		return InterruptAndRevertResult{}, ErrShuttingDown
 	}
@@ -148,6 +156,22 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 	if err != nil {
 		return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: predicate: %w", err)
 	}
+	if eligible && opts.ExpectedSendID != "" {
+		meta, err := usermessage.FromItem(userItem)
+		if err != nil {
+			return InterruptAndRevertResult{}, err
+		}
+		if meta.SendID != opts.ExpectedSendID {
+			return InterruptAndRevertResult{Reason: "latest message changed"}, nil
+		}
+	}
+	if !confirmBackgroundKill {
+		if sess, ok := a.sessionManager().get(threadID); ok {
+			if err := a.refuseBackgroundKill(threadID, sess); err != nil {
+				return InterruptAndRevertResult{}, err
+			}
+		}
+	}
 	if !eligible {
 		// Frontend predicate disagreed (race) or queue carries
 		// follow-up intent. Fall back to plain interrupt semantics so
@@ -159,15 +183,6 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		return InterruptAndRevertResult{Reverted: false, Reason: reason}, nil
 	}
 
-	if opts.ExpectedSendID != "" {
-		meta, err := usermessage.FromItem(userItem)
-		if err != nil {
-			return InterruptAndRevertResult{}, err
-		}
-		if meta.SendID != opts.ExpectedSendID {
-			return InterruptAndRevertResult{Reason: "latest message changed"}, nil
-		}
-	}
 	promptDraft, err := composerdraft.FromUserItem(threadID, userItem, time.Now().UnixMilli())
 	if err != nil {
 		return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: build prompt draft: %w", err)

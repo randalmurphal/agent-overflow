@@ -472,7 +472,14 @@ func (d *Dispatcher) processResults(m *Method, results []reflect.Value, exposeEr
 				return nil, frame
 			}
 			if code, message, ok := errorsx.PublicDetails(methodErr); ok {
-				return nil, &FrameError{Code: code, Message: message}
+				frame := &FrameError{Code: code, Message: message}
+				// The refused stop names what it would have killed. A tiny
+				// interface for the same reason as the transfer ref above.
+				var agents interface{ RefusedBackgroundAgents() json.RawMessage }
+				if code == ErrCodeBackgroundAgentsRunning && errors.As(methodErr, &agents) {
+					frame.BackgroundAgents = agents.RefusedBackgroundAgents()
+				}
+				return nil, frame
 			}
 			if errors.Is(methodErr, sql.ErrNoRows) {
 				// Missing history is ordinary application state. Preserve that

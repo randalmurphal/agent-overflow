@@ -312,6 +312,29 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it.each([
+    ['background_agents_running', [{ launchItemId: 'a1' }]],
+    ['method_error', undefined],
+  ])('carries a refused stop\'s agents only on %s', async (code, want) => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const promise = client.callByID(7, []);
+    let caught: unknown;
+    const settled = promise.catch((err: unknown) => { caught = err; });
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    const rpc = ws.sent.find((frame) => frame.type === 'rpc')!;
+    ws.pushFrame({ type: 'rpc', id: rpc.id, error: {
+      code, message: 'Confirm to stop it.', backgroundAgents: [{ launchItemId: 'a1' }],
+    } });
+    await settled;
+    expect(caught).toBeInstanceOf(TransportError);
+    expect((caught as TransportError).code).toBe(code);
+    expect((caught as TransportError).backgroundAgents).toEqual(want);
+    client.close();
+  });
+
   it('subscribe receives event frames and unsubscribe stops them', async () => {
     const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
 

@@ -128,13 +128,7 @@ export interface PaneSession {
   readonly ensureMaterializedThread: () => Promise<string | null>;
   /** Dev-only memory probe; opaque to every consumer, which just records it. */
   readonly debugMemoryStats: () => unknown;
-  /**
-   * Same-tick idle presentation for a Stop (`revertOnInterrupt.svelte.ts`
-   * clearWorkingPresentation): drops the live turn from the registry and
-   * the send-in-flight flag; the real `provider:turn_completed` re-runs the
-   * same path and is idempotent on it.
-   */
-  readonly clearActiveTurn: () => void;
+  /** A Stop drops the send-in-flight flag with the turn it clears (`revertOnInterrupt.svelte.ts`). */
   readonly setSendInFlight: (value: boolean) => void;
 }
 

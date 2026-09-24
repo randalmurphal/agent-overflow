@@ -157,6 +157,10 @@ const completedTurnIDsByThread = new Map<string, Set<string>>();
 const errorThreads = new Set<string>();
 const interruptedThreads = new Set<string>();
 const liveStateHydrationTokenByThread = new Map<string, number>();
+// The turn a Stop optimistically cleared while its interrupt RPC is
+// unanswered, so a background-kill refusal can put it back. Any canonical
+// turn signal for the thread supersedes it.
+const refusableStops = new Map<string, ActiveTurn>();
 
 function trackedIDsFor(map: Map<string, Set<string>>, threadId: string): Set<string> {
   let ids = map.get(threadId);
@@ -295,6 +299,7 @@ export function setThreadStatus(threadId: string, status: ThreadLiveStatus): voi
 export function clearThreadStatus(threadId: string): void {
   activeTurns.drop(threadId);
   completedTurnIDsByThread.delete(threadId);
+  refusableStops.delete(threadId);
   retireUndoableSend(threadId);
   pendingSendThreads.drop(threadId);
   for (const requestIdSet of [
@@ -478,6 +483,7 @@ export function projectTurnStarted(
   // the durable hasActionableProposedPlan on the same event, which is
   // where the pill reads it from for panes and off-pane sidebars alike.
   pendingSendThreads.set(threadId, false);
+  refusableStops.delete(threadId);
   if (hasCompletedTurnID(threadId, turnId)) {
     recalculateThreadStatus(threadId);
     return;
@@ -512,11 +518,16 @@ export function projectTurnCompleted(
   opts: { turnIndex?: number; aborted?: boolean; errorMessage?: string; revertedUserMessage?: boolean } = {},
 ): void {
   if (!threadId || !turnId) return;
+  // A Stop whose interrupt RPC is unanswered marked the thread interrupted
+  // on its own say-so; this canonical signal outranks it.
+  const unansweredStop = refusableStops.get(threadId);
+  refusableStops.delete(threadId);
   markCompletedTurnID(threadId, turnId);
   if (opts.turnIndex !== undefined && getUndoableSend(threadId)?.turnIndex === opts.turnIndex) retireUndoableSend(threadId);
   if (activeTurns.get(threadId)?.turnId === turnId) {
     retireUndoableSend(threadId);
     activeTurns.set(threadId, null);
+    cancelBackgroundKillConfirmationForThread(threadId);
   }
   if (opts.errorMessage && opts.errorMessage.length > 0) {
     errorThreads.add(threadId);
@@ -533,8 +544,45 @@ export function projectTurnCompleted(
       interruptedThreads.add(threadId);
       errorThreads.delete(threadId);
     }
+  } else if (unansweredStop?.turnId === turnId) {
+    // The turn ended on its own before the Stop could take effect.
+    interruptedThreads.delete(threadId);
   }
   recalculateThreadStatus(threadId);
+}
+
+/**
+ * A Stop's optimistic clear: the turn reads as interrupted at once, as
+ * projectTurnCompleted({aborted}) makes it. Returns the cleared turn, the
+ * handle that restoreRefusedTurnStop and settleTurnStopRequest take once
+ * the interrupt RPC answers; null when no turn was showing.
+ */
+export function projectTurnStopRequested(threadId: string): ActiveTurn | null {
+  const current = getActiveTurn(threadId);
+  if (!current) return null;
+  projectTurnCompleted(threadId, current.turnId, { aborted: true });
+  refusableStops.set(threadId, current);
+  return current;
+}
+
+/**
+ * The backend refused the Stop before it had any effect, so the cleared
+ * turn is still running: show it again. No-op once a canonical turn
+ * signal or a later Stop superseded this one.
+ */
+export function restoreRefusedTurnStop(threadId: string, stopped: ActiveTurn | null): void {
+  if (!stopped || refusableStops.get(threadId) !== stopped) return;
+  refusableStops.delete(threadId);
+  if (activeTurns.get(threadId) !== null) return;
+  completedTurnIDsByThread.get(threadId)?.delete(stopped.turnId);
+  interruptedThreads.delete(threadId);
+  activeTurns.set(threadId, stopped);
+  recalculateThreadStatus(threadId);
+}
+
+/** The Stop's interrupt RPC answered with anything but a refusal. */
+export function settleTurnStopRequest(threadId: string, stopped: ActiveTurn | null): void {
+  if (stopped && refusableStops.get(threadId) === stopped) refusableStops.delete(threadId);
 }
 
 /**
@@ -565,6 +613,8 @@ export function projectTurnCompleted(
  */
 export function projectThreadReverted(threadId: string): void {
   if (!threadId) return;
+  refusableStops.delete(threadId);
+  cancelBackgroundKillConfirmationForThread(threadId);
   const active = activeTurns.get(threadId);
   if (active) markCompletedTurnID(threadId, active.turnId);
   activeTurns.set(threadId, null);
@@ -612,19 +662,6 @@ function markCompletedTurnID(threadId: string, turnId: string): void {
 
 function hasCompletedTurnID(threadId: string, turnId: string): boolean {
   return completedTurnIDsByThread.get(threadId)?.has(turnId) === true;
-}
-
-/**
- * Undo an optimistic abort (ThreadPane.clearActiveTurn) the backend refused:
- * the turn never stopped, so its id is live again and the Interrupted mark
- * comes off. Only a fresh backend read may say so (a refused Stop reads
- * GetThreadLiveState; revertOnInterrupt.svelte.ts): a completion that
- * landed meanwhile would have left that read with no active turn.
- */
-export function reviveActiveTurn(threadId: string, turn: ActiveTurn): void {
-  if (!threadId || !turn.turnId) return;
-  completedTurnIDsByThread.get(threadId)?.delete(turn.turnId);
-  projectTurnStarted(threadId, turn.turnId, turn.turnIndex, turn.startedAt);
 }
 
 /** Execution reconciliation must read through the temporary presentation overlay. */
@@ -780,6 +817,7 @@ export function resetForTest(): void {
   resetUndoableSendsForTest();
   activeTurns.reset();
   completedTurnIDsByThread.clear();
+  refusableStops.clear();
   pendingSendThreads.reset();
   approvalIDsByThread.clear();
   interactiveRevisions.clear();

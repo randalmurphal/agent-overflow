@@ -124,9 +124,15 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 // bookkeeping fails we log — the provider interrupt already fired, so
 // the session state is correct even if the timeline marker is missing.
 //
+// A Claude interrupt also kills the thread's live background agents
+// (app_background_kill.go). Unless confirmBackgroundKill is set, the call
+// refuses with background_agents_running and the agents instead, before
+// anything is cancelled, interrupted or written.
+//
 //ao:scope threads:operate
-func (a *App) InterruptTurn(threadID string) error {
-	return a.interruptTurnCtx(context.Background(), threadID)
+func (a *App) InterruptTurn(threadID string, confirmBackgroundKill bool) error {
+	_, err := a.interruptTurnAtIndex(context.Background(), threadID, anyOpenTurn, !confirmBackgroundKill)
+	return err
 }
 
 // SwitchThread returns the requested thread. Provider sessions are

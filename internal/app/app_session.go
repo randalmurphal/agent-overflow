@@ -855,8 +855,11 @@ type SendMessageOptions struct {
 // exactly as an unbounded call would: provider IO in flight is never wired to
 // a cancellation, because "cancelled" there is indistinguishable from
 // "delivered".
+//
+// It never refuses on live background agents: its callers, a workflow
+// takeover and an agent request's cancel, are not a person's Stop.
 func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
-	_, err := a.interruptTurnAtIndex(ctx, threadID, anyOpenTurn)
+	_, err := a.interruptTurnAtIndex(ctx, threadID, anyOpenTurn, false)
 	return err
 }
 
@@ -870,9 +873,21 @@ const anyOpenTurn = -1
 // taking a later turn away from whoever started it; anyOpenTurn interrupts
 // whatever is running. It reports whether the interrupt was sent, so a caller
 // that must say what it stopped does not have to guess.
-func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectTurnIndex int) (bool, error) {
+//
+// refuseAgentKill makes the call return a backgroundKillRefusal while the
+// interrupt would kill live background agents. The check runs before the
+// parked-call cancels below and again under the thread action lock, where an
+// agent launched after the first check is still seen before the interrupt.
+func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectTurnIndex int, refuseAgentKill bool) (bool, error) {
 	if a.shuttingDown.Load() {
 		return false, ErrShuttingDown
+	}
+	if refuseAgentKill {
+		if current, ok := a.sessionManager().get(threadID); ok {
+			if err := a.refuseBackgroundKill(threadID, current); err != nil {
+				return false, err
+			}
+		}
 	}
 	// A tool call parked on a remote command returns at once as backgrounded;
 	// the command itself keeps running and the tray still owns stopping it.
@@ -929,6 +944,11 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	providerSess := sess.ProviderSession()
 	if providerSess == nil {
 		return false, fmt.Errorf("session has no provider")
+	}
+	if refuseAgentKill {
+		if err := a.refuseBackgroundKill(threadID, sess); err != nil {
+			return false, err
+		}
 	}
 	// Sampled BEFORE the interrupt ack: the event worker keeps handling
 	// wire events while it is awaited, so the cut turn can settle in the gap and

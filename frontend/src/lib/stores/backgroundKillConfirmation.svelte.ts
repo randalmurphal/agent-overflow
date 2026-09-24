@@ -12,11 +12,14 @@
  *
  * One question at a time. A second ask while one is open settles the first
  * as "keep them" and takes its place: the newer press is the person's
- * current intent, and the older question's agent list may be stale. A
- * thread torn down while its question is open settles it the same way.
+ * current intent, and the older question's agent list may be stale. The
+ * question also settles as "keep them" when there is nothing left to stop:
+ * the turn it was about completes or reverts (threadStatuses.svelte.ts),
+ * its thread is torn down, or the thread's history is invalidated.
  */
 
 import type { BackgroundKillAgent } from '../transport/backgroundKillRefusal';
+import { onThreadHistoryInvalidated } from './threadIdentityInvalidation';
 
 export interface PendingBackgroundKill {
   readonly threadId: string;
@@ -58,7 +61,11 @@ export function resolveBackgroundKillConfirmation(stop: boolean): void {
   current?.resolve(stop);
 }
 
-/** A thread being torn down cannot be stopped: its open question is "keep them". */
+/**
+ * Nothing on the thread is left to stop (its turn ended, it is being torn
+ * down, or its history moved): the open question, if it is this thread's,
+ * is "keep them".
+ */
 export function cancelBackgroundKillConfirmationForThread(threadId: string): void {
   if (pending?.threadId !== threadId) return;
   resolveBackgroundKillConfirmation(false);
@@ -67,3 +74,7 @@ export function cancelBackgroundKillConfirmationForThread(threadId: string): voi
 export function resetForTest(): void {
   resolveBackgroundKillConfirmation(false);
 }
+
+onThreadHistoryInvalidated((owns) => {
+  if (pending && owns(pending.threadId)) resolveBackgroundKillConfirmation(false);
+});

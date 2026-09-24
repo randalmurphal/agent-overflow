@@ -2621,8 +2621,8 @@ func TestSubagentTranscriptLaunchIsTheAgentTool(t *testing.T) {
 		"Monitor": false, "Bash": false, "Skill": false, "SendMessage": false, "": false,
 	} {
 		launch := store.Item{Kind: itemKindToolCall, ToolName: tool, IsBackground: true, Meta: `{` + taskFields + `}`}
-		if got := isSubagentTranscriptLaunch(launch); got != want {
-			t.Errorf("isSubagentTranscriptLaunch(%q) = %v, want %v", tool, got, want)
+		if got := IsSubagentTranscriptLaunch(launch); got != want {
+			t.Errorf("IsSubagentTranscriptLaunch(%q) = %v, want %v", tool, got, want)
 		}
 	}
 	for _, stamp := range []string{
@@ -2631,11 +2631,11 @@ func TestSubagentTranscriptLaunchIsTheAgentTool(t *testing.T) {
 	} {
 		carrier := store.Item{Kind: itemKindToolCall, ToolName: "SendMessage", IsBackground: true,
 			Meta: `{` + taskFields + `,` + stamp + `}`}
-		if !isSubagentTranscriptLaunch(carrier) {
+		if !IsSubagentTranscriptLaunch(carrier) {
 			t.Errorf("a SendMessage carrier stamped %s is not read as the agent's round", stamp)
 		}
 	}
-	if isSubagentTranscriptLaunch(store.Item{Kind: itemKindNotification, ToolName: "Agent"}) {
+	if IsSubagentTranscriptLaunch(store.Item{Kind: itemKindNotification, ToolName: "Agent"}) {
 		t.Error("a notification row is not a launch")
 	}
 }

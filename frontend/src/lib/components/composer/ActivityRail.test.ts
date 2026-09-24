@@ -22,6 +22,8 @@ import type { QueueItem } from '../../stores/sendQueue.svelte';
 import { applyItemStreamEvent, flushItemEventQueue } from '../../stores/eventsItemStream';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { UsageBucket } from '../../stores/bindings';
+import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
+import { TRAY_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
 
 function backgroundLaunch(overrides = {}) {
   return makeItem({
@@ -958,17 +960,27 @@ describe('<ActivityRail>', () => {
     expect(getByTestId('activity-rail-background-count').textContent?.trim()).toBe('1');
   });
 
-  it('projects a direct Codex child tool without re-fetching the tray', async () => {
+  // The tray reads no child rows: a Codex agent's activity line is the
+  // latest-tool decoration the list read serves on its launch row, which the
+  // backend nudges on each of the agent's direct tool calls
+  // (activityRailBackground.svelte.ts).
+  it('shows a Codex agent’s latest tool from the nudged list read, not from child pushes', async () => {
     vi.useFakeTimers();
     let fetches = 0;
-    const launch = backgroundLaunch({
+    const spawnMeta = (summary: string, itemIndex: number) => JSON.stringify({
+      input: { tool: 'spawn_agent' },
+      [TRAY_LATEST_TOOL_META.summary]: summary,
+      [TRAY_LATEST_TOOL_META.turnIndex]: 0,
+      [TRAY_LATEST_TOOL_META.itemIndex]: itemIndex,
+    });
+    let launch = backgroundLaunch({
       id: 'spawn-agent',
       summary: 'spawn agent',
       toolName: 'collab_agent',
       payloadKind: undefined,
       payloadId: undefined,
       payloadMeta: undefined,
-      meta: JSON.stringify({ input: { tool: 'spawn_agent' } }),
+      meta: spawnMeta('Bash: pnpm test', 1),
     });
     setBindingMock('ListLiveBackgroundTasks', async () => {
       fetches++;
@@ -980,28 +992,11 @@ describe('<ActivityRail>', () => {
     await tick();
     await fireEvent.click(getByTestId('activity-rail-background-toggle'));
     await tick();
+    expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Bash: pnpm test');
     const baseline = fetches;
 
-    const childTool = makeItem({
-      id: 'child-tool',
-      threadId: pane.threadId!,
-      kind: 'tool_call',
-      role: 'assistant',
-      parentId: 'spawn-agent',
-      toolName: 'Bash',
-      summary: 'Bash: pnpm test',
-      itemIndex: 1,
-    });
-    applyItemStreamEvent({
-      action: 'upsert',
-      threadId: pane.threadId!,
-      item: childTool,
-    });
-    flushItemEventQueue();
-    await tick();
-
-    expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Bash: pnpm test');
-
+    // A child tool call pushed to the thread neither projects onto the row
+    // nor reads the list.
     const newerTool = makeItem({
       id: 'child-tool-newer',
       threadId: pane.threadId!,
@@ -1014,20 +1009,16 @@ describe('<ActivityRail>', () => {
     });
     applyItemStreamEvent({ action: 'upsert', threadId: pane.threadId!, item: newerTool });
     flushItemEventQueue();
-    await tick();
-
-    const lateOlderTool = {
-      ...childTool,
-      status: 'completed' as const,
-      summary: 'Bash: pnpm test (done)',
-    };
-    applyItemStreamEvent({ action: 'upsert', threadId: pane.threadId!, item: lateOlderTool });
-    flushItemEventQueue();
-    await tick();
-
-    expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Read: newest.ts');
-    await vi.advanceTimersByTimeAsync(101);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Bash: pnpm test');
     expect(fetches).toBe(baseline);
+
+    // The backend's nudge re-reads the list, whose row carries the tool.
+    launch = { ...launch, meta: spawnMeta('Read: newest.ts', 2) };
+    emitWailsEvent('provider:background_tasks_changed', { threadId: pane.threadId }, '');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetches).toBe(baseline + 1);
+    expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Read: newest.ts');
   });
 
   function userInputRequest(): UserInputRequest {

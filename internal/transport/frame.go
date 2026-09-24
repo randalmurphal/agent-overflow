@@ -514,6 +514,13 @@ type FrameError struct {
 	// Transfer locates recoverable ownership state without parsing prose.
 	// Present only for thread_moved / thread_transfer_pending.
 	Transfer *TransferRef `json:"transfer,omitempty"`
+	// BackgroundAgents is set only alongside ErrCodeBackgroundAgentsRunning
+	// and lists the live background agents the refused call would have
+	// killed, so the caller can name them when it asks for confirmation.
+	// Transport only carries it: the element shape belongs to the method
+	// that refused (app.BackgroundKillAgent), and a client validates it as
+	// untrusted input.
+	BackgroundAgents json.RawMessage `json:"backgroundAgents,omitempty"`
 }
 
 type TransferRef struct {
@@ -542,21 +549,26 @@ type TransferRef struct {
 //   - auth_failed:      the caller's session credential did not admit this
 //     call. The FrameError carries a Reason naming which
 //     check refused it; see the field.
+//   - background_agents_running: a stop was refused before it had any
+//     effect because it would kill live background agents. The FrameError
+//     carries BackgroundAgents; repeating the call with confirmation
+//     proceeds.
 //
 // Two more live in authorize.go beside the gate that produces them:
 // scope_required and step_up_required (docs/specs/remote-access.md §5).
 const (
-	ErrCodeMethodNotFound         = "method_not_found"
-	ErrCodeNotFound               = "not_found" // The method exists; its requested row does not.
-	ErrCodeBadParams              = "bad_params"
-	ErrCodeMethodError            = "method_error"
-	ErrCodeTemporarilyUnavailable = "temporarily_unavailable"
-	ErrCodeAlreadyHandled         = "already_handled"
-	ErrCodeThreadMoved            = "thread_moved"
-	ErrCodeThreadTransferPending  = "thread_transfer_pending"
-	ErrCodeInternal               = "internal"
-	ErrCodeShuttingDown           = "shutting_down"
-	ErrCodeAuthFailed             = "auth_failed"
+	ErrCodeMethodNotFound          = "method_not_found"
+	ErrCodeNotFound                = "not_found" // The method exists; its requested row does not.
+	ErrCodeBadParams               = "bad_params"
+	ErrCodeMethodError             = "method_error"
+	ErrCodeTemporarilyUnavailable  = "temporarily_unavailable"
+	ErrCodeAlreadyHandled          = "already_handled"
+	ErrCodeThreadMoved             = "thread_moved"
+	ErrCodeThreadTransferPending   = "thread_transfer_pending"
+	ErrCodeInternal                = "internal"
+	ErrCodeShuttingDown            = "shutting_down"
+	ErrCodeAuthFailed              = "auth_failed"
+	ErrCodeBackgroundAgentsRunning = "background_agents_running"
 	// ErrCodeClientOverloaded refuses an RPC this connection has no slot
 	// for: it already holds Config.MaxConcurrentRPCs in flight. The call
 	// was never started, so a client may reissue it once one of its own

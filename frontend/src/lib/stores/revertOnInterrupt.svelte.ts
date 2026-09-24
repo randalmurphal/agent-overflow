@@ -13,7 +13,14 @@ import type { ComposerDraftSnapshot } from './composerDraftSnapshots';
 import type { ErrorSurface, PaneSession, ThreadPaneIngest } from './threadPaneRoles';
 import { isReaderAuthoredUserText } from '../utils/userMessageMeta';
 import { restoredDraftSnapshotFromUserItem } from '../utils/userMessageDraftSnapshot';
-import { getActiveTurn, reviveActiveTurn } from './threadStatuses.svelte';
+import {
+  getActiveTurn,
+  isThreadWorking,
+  projectTurnStopRequested,
+  restoreRefusedTurnStop,
+  settleTurnStopRequest,
+  type ActiveTurn,
+} from './threadStatuses.svelte';
 import { getQueueForThread } from './sendQueue.svelte';
 import { reportNonBenignInterruptError } from './interruptErrors';
 import { applyUserMessageReverted } from './eventsMessageRevert';
@@ -26,7 +33,6 @@ import {
 } from './threadInterruptState.svelte';
 import {
   CountRunningBackgroundTasks,
-  GetThreadLiveState,
   InterruptAndRevertIfClean,
   InterruptTurn,
 } from './bindings';
@@ -79,7 +85,7 @@ export type RevertEligibility =
  */
 type InterruptPane = ThreadPaneIngest
   & Pick<ErrorSurface, 'setGeneralError'>
-  & Pick<PaneSession, 'clearActiveTurn' | 'setSendInFlight'>;
+  & Pick<PaneSession, 'setSendInFlight'>;
 
 /**
  * Whether a plain interrupt owns the pane's working presentation. 'clear'
@@ -193,29 +199,33 @@ export function runInterrupt(pane: InterruptPane): void {
   void runPlainInterrupt(pane, threadId, interruptToken, 'clear');
 }
 
-function clearWorkingPresentation(pane: InterruptPane): void {
-  pane.clearActiveTurn();
-  pane.setSendInFlight(false);
+/**
+ * The Stop's optimistic clear. Returns the handle the answer to its
+ * interrupt RPC takes: a refusal puts the turn back (restoreRefusedTurnStop),
+ * anything else settles it.
+ */
+function clearWorkingPresentation(pane: InterruptPane, threadId: string): ActiveTurn | null {
+  const stopped = projectTurnStopRequested(threadId);
+  if (pane.threadId === threadId) pane.setSendInFlight(false);
+  return stopped;
 }
 
-/**
- * The idle presentation a Stop cleared before the backend refused it. The
- * registry the pre-check read was stale (an agent launched between the
- * tray's last read and the press), which is why the backend, not the
- * registry, is the authority on the refusal. The turn it still runs comes
- * from a fresh live-state read, which post-dates the refusal: a turn that
- * ended meanwhile is not revived.
- */
-async function restoreWorkingPresentation(pane: InterruptPane, threadId: string): Promise<void> {
+/** InterruptTurn for a Stop whose optimistic clear is `stopped`. */
+async function interruptTurnForStop(
+  pane: InterruptPane,
+  threadId: string,
+  confirmed: boolean,
+  stopped: ActiveTurn | null,
+): Promise<BackgroundKillAgent[] | null> {
   try {
-    const live = await GetThreadLiveState(threadId);
-    const turn = live?.activeTurn;
-    if (turn && pane.threadId === threadId) {
-      reviveActiveTurn(threadId, { turnId: turn.turnId, turnIndex: turn.turnIndex, startedAt: turn.startedAt });
-    }
+    await InterruptTurn(threadId, confirmed);
   } catch (err) {
+    const agents = refusedBackgroundAgents(err);
+    if (agents !== null) return agents;
     reportNonBenignInterruptError(pane, err);
   }
+  settleTurnStopRequest(threadId, stopped);
+  return null;
 }
 
 /**
@@ -224,9 +234,10 @@ async function restoreWorkingPresentation(pane: InterruptPane, threadId: string)
  * and the agents until the caller confirms
  * (transport/backgroundKillRefusal.ts); the person answers through the
  * app-root dialog, and "keep them" leaves the turn running. The working
- * presentation is cleared in the press's tick when no listed agent is live
- * (the refusal would flash the thread idle and back), else after the
- * confirmation.
+ * presentation is cleared in the press's tick when no listed agent is
+ * live, else after the confirmation. The backend, not the registry, is the
+ * authority: a refusal on a stale registry (an agent launched since the
+ * tray's last read) puts the cleared turn back before asking.
  */
 async function runPlainInterrupt(
   pane: InterruptPane,
@@ -234,43 +245,48 @@ async function runPlainInterrupt(
   interruptToken: number,
   presentation: InterruptPresentation,
 ): Promise<void> {
-  const clearedEarly = presentation === 'clear' && !hasLiveSubagentRunStates(threadId);
-  if (clearedEarly) clearWorkingPresentation(pane);
+  const stopped = presentation === 'clear' && !hasLiveSubagentRunStates(threadId)
+    ? clearWorkingPresentation(pane, threadId)
+    : null;
+  let agents: BackgroundKillAgent[] | null = null;
   try {
-    await InterruptTurn(threadId, false);
-  } catch (err) {
-    const agents = refusedBackgroundAgents(err);
-    if (agents === null) {
-      reportNonBenignInterruptError(pane, err);
-      return;
-    }
-    if (clearedEarly) await restoreWorkingPresentation(pane, threadId);
-    await interruptAfterConfirmation(pane, threadId, interruptToken, agents, presentation);
+    agents = await interruptTurnForStop(pane, threadId, false, stopped);
+    if (agents !== null) restoreRefusedTurnStop(threadId, stopped);
   } finally {
     finishThreadInterrupt(threadId, interruptToken);
   }
+  if (agents !== null) await interruptAfterConfirmation(pane, threadId, agents);
 }
 
 /**
- * The refused Stop's second half: ask, and on "stop everything" interrupt
- * with the confirmation set. The interrupt transaction stays open while
- * the question is on screen, so a second press meanwhile is the same Stop.
+ * The refused Stop's second half: ask, and on "stop everything" run a Stop
+ * of its own with the confirmation set. The refused Stop's transaction is
+ * already closed: the question is the person's, not an interrupt in
+ * flight, so the composer keeps showing the running turn and its Stop
+ * behind the dialog. Nothing is asked when the turn ended before the
+ * refusal landed: there is nothing left to stop.
  */
 async function interruptAfterConfirmation(
   pane: InterruptPane,
   threadId: string,
-  interruptToken: number,
   agents: readonly BackgroundKillAgent[],
-  presentation: InterruptPresentation,
 ): Promise<void> {
-  if (!isThreadInterruptCurrent(threadId, interruptToken)) return;
+  if (!isThreadWorking(threadId)) return;
   const stop = await confirmBackgroundKill(threadId, agents);
-  if (!stop || !isThreadInterruptCurrent(threadId, interruptToken)) return;
-  if (presentation === 'clear') clearWorkingPresentation(pane);
+  if (!stop) return;
+  const interruptToken = beginThreadInterrupt(threadId);
+  if (interruptToken === null) return;
   try {
-    await InterruptTurn(threadId, true);
-  } catch (err) {
-    reportNonBenignInterruptError(pane, err);
+    const stopped = clearWorkingPresentation(pane, threadId);
+    const refusedAgain = await interruptTurnForStop(pane, threadId, true, stopped);
+    if (refusedAgain !== null) {
+      // A confirmed Stop is never refused; a backend that does is reporting
+      // a contract breach, and the turn it left running stays on screen.
+      restoreRefusedTurnStop(threadId, stopped);
+      reportNonBenignInterruptError(pane, new Error('confirmed Stop was refused for background agents'));
+    }
+  } finally {
+    finishThreadInterrupt(threadId, interruptToken);
   }
 }
 
@@ -364,12 +380,9 @@ async function runEarlyInterrupt(
       // An agent launched after the count above: the un-send is off the
       // table (the message stays), and the Stop asks like a plain one.
       const refreshNeeded = restore();
-      try {
-        await interruptAfterConfirmation(pane, threadId, interruptToken, agents, 'keep');
-      } finally {
-        finishThreadInterrupt(threadId, interruptToken);
-      }
+      finishThreadInterrupt(threadId, interruptToken);
       if (refreshNeeded && pane.threadId === threadId) await pane.refreshFromBackend();
+      await interruptAfterConfirmation(pane, threadId, agents);
       return;
     }
     reportNonBenignInterruptError(pane, err);

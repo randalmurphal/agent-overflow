@@ -227,7 +227,7 @@ func TestAnInterruptIsFencedOnTheTurnItNames(t *testing.T) {
 	waitUntil(t, 10*time.Second, func() bool {
 		return f.app.triage.OpenTurnIndex(receipt.TargetThreadID) == index
 	})
-	interrupted, err := f.app.interruptTurnAtIndex(t.Context(), receipt.TargetThreadID, index+1)
+	interrupted, err := f.app.interruptTurnAtIndex(t.Context(), receipt.TargetThreadID, index+1, false)
 	if err != nil {
 		t.Fatalf("interruptTurnAtIndex(a later turn): %v", err)
 	}
@@ -237,7 +237,7 @@ func TestAnInterruptIsFencedOnTheTurnItNames(t *testing.T) {
 	if live, err := f.adapter().LiveState(t.Context(), receipt.TargetThreadID); err != nil || !live.ActiveTurn {
 		t.Fatalf("live state = %+v err=%v, want the turn still running", live, err)
 	}
-	interrupted, err = f.app.interruptTurnAtIndex(t.Context(), receipt.TargetThreadID, index)
+	interrupted, err = f.app.interruptTurnAtIndex(t.Context(), receipt.TargetThreadID, index, false)
 	if err != nil {
 		t.Fatalf("interruptTurnAtIndex(its own turn): %v", err)
 	}

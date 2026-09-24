@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
+import { confirmBackgroundKill, pendingBackgroundKillConfirmation } from './backgroundKillConfirmation.svelte';
 import { flushSync } from 'svelte';
 import { probeReactivity } from '../../test/helpers/reactivity.svelte';
 import {
@@ -24,9 +25,11 @@ import {
   projectTurnStarted,
   projectUserInputRequest,
   projectUserInputResolution,
+  projectTurnStopRequested,
   resetForTest,
-  reviveActiveTurn,
+  restoreRefusedTurnStop,
   sameActiveTurn,
+  settleTurnStopRequest,
 } from './threadStatuses.svelte';
 import {
   confirmFlushedByUserItemId,
@@ -58,27 +61,71 @@ function seedQueueItem(threadId: string, partial: Partial<QueueItem> & { message
   replaceQueueForThread(threadId, [...current, item]);
 }
 
-describe('reviveActiveTurn', () => {
+describe('the optimistic clear of a Stop and its refusal', () => {
   beforeEach(() => resetForTest());
 
-  it('brings back a turn an optimistic abort dropped, and a later real completion still ends it', () => {
+  it('clears the turn as interrupted, puts it back on a refusal, and a later real completion still ends it', () => {
     projectTurnStarted('t1', 'turn-1', 0, 5);
-    projectTurnCompleted('t1', 'turn-1', { aborted: true });
+    const stopped = projectTurnStopRequested('t1');
+    expect(stopped).toEqual({ turnId: 'turn-1', turnIndex: 0, startedAt: 5 });
     expect(getActiveTurn('t1')).toBeNull();
     expect(getThreadStatus('t1')).toBe('interrupted');
-    // A completed id never restarts through the ordinary path.
-    projectTurnStarted('t1', 'turn-1', 0, 5);
-    expect(getActiveTurn('t1')).toBeNull();
 
-    reviveActiveTurn('t1', { turnId: 'turn-1', turnIndex: 0, startedAt: 5 });
+    restoreRefusedTurnStop('t1', stopped);
     expect(getActiveTurn('t1')).toEqual({ turnId: 'turn-1', turnIndex: 0, startedAt: 5 });
     expect(getThreadStatus('t1')).toBe('running');
+    // Restored once: the handle is spent.
+    projectTurnCompleted('t1', 'turn-1', { aborted: true });
+    restoreRefusedTurnStop('t1', stopped);
+    expect(getActiveTurn('t1')).toBeNull();
 
+    projectTurnStarted('t1', 'turn-2', 1, 6);
+    projectTurnCompleted('t1', 'turn-2', { turnIndex: 1 });
+    expect(getThreadStatus('t1')).toBe('idle');
+    expect(projectTurnStopRequested('t1')).toBeNull();
+    restoreRefusedTurnStop('t1', null);
+    expect(getActiveTurn('t1')).toBeNull();
+  });
+
+  it('does not put a turn back once a canonical signal or a later Stop superseded the clear', () => {
+    projectTurnStarted('t1', 'turn-1', 0, 5);
+    const first = projectTurnStopRequested('t1');
     projectTurnCompleted('t1', 'turn-1', { turnIndex: 0 });
+    restoreRefusedTurnStop('t1', first);
     expect(getActiveTurn('t1')).toBeNull();
     expect(getThreadStatus('t1')).toBe('idle');
-    reviveActiveTurn('', { turnId: 'turn-1', turnIndex: 0, startedAt: 5 });
+
+    projectTurnStarted('t1', 'turn-2', 1, 6);
+    const stale = projectTurnStopRequested('t1');
+    projectTurnStarted('t1', 'turn-3', 2, 7);
+    restoreRefusedTurnStop('t1', stale);
+    expect(getActiveTurn('t1')?.turnId).toBe('turn-3');
+
+    const settled = projectTurnStopRequested('t1');
+    settleTurnStopRequest('t1', settled);
+    restoreRefusedTurnStop('t1', settled);
     expect(getActiveTurn('t1')).toBeNull();
+    expect(getThreadStatus('t1')).toBe('interrupted');
+  });
+
+  it('settles the open background-kill question as "keep them" when its turn ends', async () => {
+    projectTurnStarted('t1', 'turn-1', 0, 5);
+    let ask = confirmBackgroundKill('t1', []);
+    projectTurnCompleted('t1', 'stale-turn', { turnIndex: 0 });
+    expect(pendingBackgroundKillConfirmation()?.threadId).toBe('t1');
+    projectTurnCompleted('t1', 'turn-1', { turnIndex: 0 });
+    await expect(ask).resolves.toBe(false);
+
+    projectTurnStarted('t1', 'turn-2', 1, 6);
+    ask = confirmBackgroundKill('t1', []);
+    projectThreadReverted('t1');
+    await expect(ask).resolves.toBe(false);
+
+    projectTurnStarted('t1', 'turn-3', 2, 7);
+    ask = confirmBackgroundKill('t1', []);
+    clearThreadStatus('t1');
+    await expect(ask).resolves.toBe(false);
+    expect(pendingBackgroundKillConfirmation()).toBeNull();
   });
 });
 

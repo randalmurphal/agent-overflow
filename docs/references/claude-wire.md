@@ -849,14 +849,22 @@ months-old source mirror disagreed on the async case, the wire won):
   `output_file:""` and no `task_updated`. Verified on 2.1.280
   (2026-09-24, stream-json spike captures A: agent plus its shell plus
   a main-thread shell in the interrupted turn; B: agent from an earlier
-  turn, foreground Bash in the interrupted one). A parked agent's case
-  is not yet captured. The source mirror's "background agents should
-  survive ESC" (`registerAsyncAgent`) does not hold for this path.
-  AO's plain Stop and the Stop un-send both send this interrupt
-  (`interruptTurnAtIndex` in `internal/app/app_session.go`); the
-  un-send also stops the session (`InterruptAndRevertIfClean`,
-  `stopSession`) and declines while background work runs
-  (`hasRunningBackgroundTasks`).
+  turn, foreground Bash in the interrupted one; D: an agent parked on
+  its own shell in an earlier turn). A PARKED agent (§E6b) dies too and
+  never wakes. It already sent `task_updated{completed}` +
+  `task_notification` at its park; the interrupt sends a second
+  `task_updated{killed}` with no notification, `background_tasks_changed`
+  with `tasks:[]`, and `task_updated{killed}` +
+  `task_notification{stopped}` for its owned shell, all within 3 ms and
+  before the `control_response`. No wake `task_started` follows. The
+  source mirror's "background agents should survive ESC"
+  (`registerAsyncAgent`) does not hold for this path. AO's plain Stop
+  and the Stop un-send both send this interrupt (`interruptTurnAtIndex`
+  in `internal/app/app_session.go`). While a running or parked agent is
+  live, both refuse with `background_agents_running` until the caller
+  confirms (`internal/app/app_background_kill.go`). The un-send also
+  stops the session (`InterruptAndRevertIfClean`, `stopSession`) and
+  declines while background work runs (`hasRunningBackgroundTasks`).
 - Session close kills every remaining shell and every async agent
   and, on a graceful stdin
   close, emits their killed terminals before exit. AO tears the thread
@@ -2212,6 +2220,8 @@ ever binds the wake prompt.
   `task_updated{killed}` and nothing else (no notification), the level
   set empties, and its owned shells are killed with it (`killed` +
   `task_notification{stopped}`). Nothing wakes.
+- A `control_request{interrupt}` on a later turn kills a parked agent
+  the same way (§Background task ownership).
 - A FOREGROUND agent is unchanged: its exit kills its shells (§Background
   task ownership), so there is nothing to park.
 
