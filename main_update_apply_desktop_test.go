@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"agent-overflow/internal/startuppage"
+
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 func servePage(t *testing.T, pages *desktopPages, path string) (int, string) {
@@ -79,33 +81,53 @@ func TestDesktopApplyWindowHidesOnlyWhileItRuns(t *testing.T) {
 	}
 }
 
-// TestDesktopApplyWindowRefusesToQuitWhileItRuns: the application's
-// ShouldQuit, which Cmd+Q and every other quit ask, refuses while the
-// loading page shows and allows a quit after a failure and the helper's own
-// quit, which clears the run before it asks.
-func TestDesktopApplyWindowRefusesToQuitWhileItRuns(t *testing.T) {
-	window := &desktopApplyWindow{pages: newDesktopPages("")}
-	var asked []bool
-	window.quitApp = func() { asked = append(asked, window.shouldQuit()) }
-	opts := window.applicationOptions("Agent Overflow")
-	if opts.ShouldQuit == nil {
-		t.Fatal("the helper's application has no quit rule")
+type recordedMenus struct{ set []*application.Menu }
+
+func (m *recordedMenus) Set(menu *application.Menu) { m.set = append(m.set, menu) }
+
+// TestDesktopApplyWindowDisablesQuitWhileItRuns: on macOS the helper's
+// application menu holds Quit, whose Cmd+Q would end the helper mid-run.
+// Quit is disabled while the loading page shows, from the first one that
+// shows before the menu exists, and enabled on a failure page. Elsewhere
+// the helper sets no application menu. On a Linux host the default menu is
+// Linux's, with Quit under File; macOS's holds it under the application
+// menu, which FindByRole searches the same way.
+func TestDesktopApplyWindowDisablesQuitWhileItRuns(t *testing.T) {
+	var elsewhere recordedMenus
+	(&desktopApplyWindow{pages: newDesktopPages("")}).installMenu(&elsewhere, "linux")
+	if len(elsewhere.set) != 0 {
+		t.Fatal("the helper set an application menu off macOS")
 	}
-	window.loading()
-	if opts.ShouldQuit() {
-		t.Fatal("a quit was allowed while the loading page shows")
+
+	window := &desktopApplyWindow{pages: newDesktopPages("")}
+	quits := 0
+	window.quitApp = func() { quits++ }
+	// As runDesktopApplyWindow does before the application exists.
+	window.running.Store(true)
+	var menus recordedMenus
+	window.installMenu(&menus, "darwin")
+	if len(menus.set) != 1 || window.quitItem == nil || menus.set[0].FindByRole(application.Quit) != window.quitItem {
+		t.Fatal("the helper's application menu is not set with its Quit held")
+	}
+	quit := window.quitItem
+	if quit.Enabled() {
+		t.Fatal("Quit is enabled while the first loading page shows")
 	}
 	window.fail(startuppage.Failure{Title: "x"})
-	if !opts.ShouldQuit() {
-		t.Fatal("a quit was refused on a failure page")
+	if !quit.Enabled() {
+		t.Fatal("Quit is disabled on a failure page")
 	}
 	window.loading()
-	if opts.ShouldQuit() {
-		t.Fatal("a quit was allowed while Retry's loading page shows")
+	if quit.Enabled() {
+		t.Fatal("Quit is enabled while Retry's loading page shows")
+	}
+	window.fail(startuppage.Failure{Title: "x"})
+	if !quit.Enabled() {
+		t.Fatal("Quit is disabled on Retry's failure page")
 	}
 	window.quit()
-	if !reflect.DeepEqual(asked, []bool{true}) || !opts.ShouldQuit() {
-		t.Fatalf("the helper's own quit was answered %v", asked)
+	if quits != 1 || window.running.Load() {
+		t.Fatalf("the helper's own quit quit %d times, running %t", quits, window.running.Load())
 	}
 }
 

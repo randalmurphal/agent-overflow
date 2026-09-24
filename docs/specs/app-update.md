@@ -483,14 +483,13 @@ rewritten, only published at a distinct path, holds.
 loading page with backup and trial progress, naming the target, then closes
 as the app opens at the saved placement. Closing it while the update runs
 hides it and the update continues; after a failure it shows the page, and
-closing it ends the helper. A quit while the update runs is refused: the
-application's `ShouldQuit` answers false for Cmd+Q, the application menu,
-SIGINT and SIGTERM until the run ends, and the helper's own quit clears the
-run first. So the helper cancels a macOS logout or shutdown while it runs,
-and a Linux session end or `kill` stops it only by SIGKILL or the
-framework's third signal, after which the next launch recovers the record.
-On macOS the helper's window gives it a Dock icon while it runs; the trial
-child has none.
+closing it ends the helper. On macOS the helper sets the default application
+menu with its Quit item, which carries Cmd+Q, disabled while the loading page
+shows and enabled on a failure page. On Linux the helper has no application
+menu, so no key quits it. Nothing else holds the helper: a logout, a
+shutdown, the Dock's Quit, SIGINT or SIGTERM ends it at any point, and the
+next launch recovers the record (Helper crash, below). On macOS the helper's
+window gives it a Dock icon while it runs; the trial child has none.
 
 **Launch during the handoff.** From the old app's exit until the helper's
 application claims the single-instance identity (step 3), a launch of the
@@ -613,9 +612,9 @@ macOS:
   `RetryMigration` through `/wails/runtime`.
 - The migration gate: the helper's window opening after a windowless boot
   exits.
-- The helper refusing Cmd+Q, the application menu's Quit and a logout while
-  the update runs (`applicationShouldTerminate` returning
-  `NSTerminateCancel`), and quitting after a failure page.
+- The helper's application menu: Quit and Cmd+Q inert while the update
+  runs, working on a failure page, and the rest of the menu as Wails's
+  default.
 - A launch during the handoff: the helper exiting at the single-instance
   check when the launch holds the identity, and revealing the launch.
 

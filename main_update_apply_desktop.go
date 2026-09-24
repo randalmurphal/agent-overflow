@@ -28,48 +28,72 @@ import (
 // RetryMigration the Retry button calls. It holds the desktop's
 // single-instance identity, so a launch while it runs shows it.
 type desktopApplyWindow struct {
-	// quitApp is the application's Quit, which asks shouldQuit.
 	quitApp func()
 	pages   *desktopPages
 	applier *desktopApplier
 	// running is set while the loading page shows: closing the window then
-	// hides it, the application refuses to quit, and the helper continues.
+	// hides it, the menu's Quit is disabled, and the helper continues.
 	running atomic.Bool
+	// quitItem is the application menu's Quit, nil without one. It is set
+	// before the run starts.
+	quitItem *application.MenuItem
 }
 
 func (w *desktopApplyWindow) loading() {
-	w.running.Store(true)
+	w.setRunning(true)
 	w.pages.showLoading()
 }
 
 func (w *desktopApplyWindow) progress(p startupprogress.Progress) { w.pages.status.SetProgress(p) }
 
 func (w *desktopApplyWindow) fail(page startuppage.Failure) {
-	w.running.Store(false)
+	w.setRunning(false)
 	w.pages.showFailure(page)
 }
 
-// quit ends the helper. Its own quit goes through shouldQuit too, so the
-// run ends first.
+// quit ends the helper once the run is over, closing its window.
 func (w *desktopApplyWindow) quit() {
 	w.running.Store(false)
 	w.quitApp()
 }
 
-// shouldQuit is the application's ShouldQuit, which every quit asks: Cmd+Q,
-// the application menu, the last window closing and the helper's own quit.
-// A quit while the update or the migration runs is refused.
-func (w *desktopApplyWindow) shouldQuit() bool { return !w.running.Load() }
+// setRunning records whether the update or the migration runs and
+// disables the menu's Quit while it does.
+func (w *desktopApplyWindow) setRunning(running bool) {
+	w.running.Store(running)
+	if w.quitItem != nil {
+		w.quitItem.SetEnabled(!running)
+	}
+}
 
 // applicationOptions is the helper's application: the window's pages and
-// service, the desktop's single-instance identity and its quit rule.
+// service and the desktop's single-instance identity.
 func (w *desktopApplyWindow) applicationOptions(title string) application.Options {
 	opts := desktopApplicationOptions(title)
 	opts.SingleInstance = desktopSingleInstanceOptions(w.pages.attached)
 	opts.Services = []application.Service{application.NewService(w)}
 	opts.Assets = application.AssetOptions{Handler: w.pages}
-	opts.ShouldQuit = w.shouldQuit
 	return opts
+}
+
+// applicationMenus is the part of the application that takes its menu.
+type applicationMenus interface {
+	Set(menu *application.Menu)
+}
+
+// installMenu gives the helper on macOS the default application menu,
+// which Wails would install anyway, and holds its Quit so a run disables
+// it: Quit carries Cmd+Q. Other platforms keep no application menu (Linux
+// would show one as a menu bar in the window), so no key quits there. It
+// runs after application.New, which names the macOS application menu.
+func (w *desktopApplyWindow) installMenu(menus applicationMenus, goos string) {
+	if goos != "darwin" {
+		return
+	}
+	menu := application.DefaultApplicationMenu()
+	w.quitItem = menu.FindByRole(application.Quit)
+	w.setRunning(w.running.Load())
+	menus.Set(menu)
 }
 
 // RetryMigration is bound to the page of a database upgrade the failure
@@ -131,6 +155,7 @@ func runDesktopApplyWindow(flags desktopApplyFlags) int {
 
 	app := application.New(window.applicationOptions(title))
 	window.quitApp = app.Quit
+	window.installMenu(app.Menu, runtime.GOOS)
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
 		// At the saved placement, which this window does not save: the
 		// placement belongs to the app.
