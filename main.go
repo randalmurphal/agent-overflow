@@ -322,7 +322,11 @@ type bootTransportOptions struct {
 	// Set only from the parent's explicit activate-frame claim. An older
 	// supervisor omits it, so its child still takes the ordinary boot lock.
 	BackendLockHeldBySupervisor bool
-	IgnorePersistedNetwork      bool
+	// ServeLayoutOwnedBySupervisor is set for a serve child of a supervisor,
+	// which finishes its own restores and whose pending update is this
+	// child's trial. The boot still checks the in-app update layout.
+	ServeLayoutOwnedBySupervisor bool
+	IgnorePersistedNetwork       bool
 	// NoPortPin binds exactly the listen address and neither reads nor
 	// writes the persisted port: an update's trial must not move the port
 	// the published version later binds.
@@ -387,7 +391,9 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 		// Under the lock and before the store opens: finish a restore an
 		// interrupted update left, and refuse to run on an update another
 		// process has not finished (docs/specs/app-update.md).
-		if err := supervise.PrepareDataRoot(bootSettingsDir(), supervise.PrepareOptions{Log: log.Printf}); err != nil {
+		if err := supervise.PrepareDataRoot(bootSettingsDir(), supervise.PrepareOptions{
+			OwnsServeLayout: opts.ServeLayoutOwnedBySupervisor, Log: log.Printf,
+		}); err != nil {
 			fatalf("backend: %v", err)
 		}
 	}

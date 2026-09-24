@@ -1,9 +1,9 @@
 # In-app updates: trial and rollback
 
-Status: the Windows launcher and WSL payload and the macOS and Linux desktop
-helper are implemented, each with the no-live-migration gate (rule 7) and
-the failure memory. Serve's trial budget is not. Decisions are listed at the
-end.
+Status: implemented. The Windows launcher and WSL payload and the macOS and
+Linux desktop helper each have the no-live-migration gate (rule 7) and the
+failure memory, and serve's supervisor judges its trial by the stall rule.
+Decisions are listed at the end.
 
 An in-app update on macOS, the Linux desktop or Windows (the launcher and its
 WSL payload) must leave the previous version and its database in place when
@@ -182,8 +182,15 @@ holds the lock:
   trial's 30 s plus 15 s, so the command judges its trial and reports before
   the launcher stops it) and a 60 minute ceiling.
 
-Serve uses the same timer: its supervisor gains the stall rule and nothing
-else changes in its cycle.
+Serve's supervisor judges its trial by the same rule (`Supervisor.runChild`
+and `RunTrial` share one judge). A serve trial's `hello` sets the capability
+and its startup reports go to the supervisor as `progress` frames. A failed
+`App.Start` sends `failed` with its error, so the supervisor rolls back at
+once instead of after the window; the trial keeps serving its startup
+failure until the supervisor stops it, as any failed serve boot does. The
+judge ends at `prepared`, because the committed trial is the live backend.
+An ordinary supervised boot sends neither frame. A supervisor that predates
+this reads neither frame, so it keeps its 120 s budget for every trial.
 
 ### No live migration
 

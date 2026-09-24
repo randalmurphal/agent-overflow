@@ -39,6 +39,11 @@ fi
 
 note() { printf '%s\n' "$*" >> "$OBS/log"; }
 
+# report sends one progress frame: UpdatedAt $1, AliveAt $2, Detail $3.
+report() {
+	printf '{"type":"progress","progress":{"phase":"store.migrate","detail":"%s","updatedAt":%s,"aliveAt":%s}}\n' "$3" "$1" "$2" >&4
+}
+
 serve_until_stopped() {
 	trap 'note "stopped $VERSION"; exit 0' TERM INT
 	while :; do
@@ -51,7 +56,7 @@ serve_until_stopped() {
 
 IFS= read -r ACTIVATE <&3
 printf '%s\n' "$ACTIVATE" >> "$OBS/activate"
-printf '{"type":"hello","protocolVersion":%s,"version":"%s"}\n' "$PROTO" "$VERSION" >&4
+printf '{"type":"hello","protocolVersion":%s,"version":"%s"__HELLO__}\n' "$PROTO" "$VERSION" >&4
 note "hello $VERSION"
 
 __BEHAVIOR__
@@ -150,17 +155,30 @@ func (r *rig) stage(version, behavior string) {
 
 func (r *rig) stageProtocol(version string, protocol int, behavior string) {
 	r.t.Helper()
+	r.stageHello(version, protocol, "", behavior)
+}
+
+// stageReporting writes a scripted version whose hello says it reports
+// progress, so its trial is judged by the stall rule.
+func (r *rig) stageReporting(version, behavior string) {
+	r.t.Helper()
+	r.stageHello(version, ProtocolVersion, `,"reportsProgress":true`, behavior)
+}
+
+func (r *rig) stageHello(version string, protocol int, hello, behavior string) {
+	r.t.Helper()
 	binary, err := r.layout.VersionBinary(version)
 	if err != nil {
 		r.t.Fatalf("VersionBinary: %v", err)
 	}
-	r.writeScript(binary, version, protocol, behavior)
+	r.writeScript(binary, version, protocol, hello, behavior)
 }
 
 // writeScript renders one scripted version to an arbitrary path. Separate from
 // stage so a test can put a script somewhere the supervisor has to COPY it
-// from, which is the fresh-install case.
-func (r *rig) writeScript(path, version string, protocol int, behavior string) {
+// from, which is the fresh-install case. hello is appended to the hello
+// frame's fields.
+func (r *rig) writeScript(path, version string, protocol int, hello, behavior string) {
 	r.t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		r.t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
@@ -171,6 +189,7 @@ func (r *rig) writeScript(path, version string, protocol int, behavior string) {
 		"__OBS__", r.obs,
 		"__DB__", filepath.Join(r.dataDir, DatabaseFiles()[0]),
 		"__PREFLIGHT__", PreflightSubcommand,
+		"__HELLO__", hello,
 		"__BEHAVIOR__", behavior,
 	).Replace(fakeChildScript)
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
@@ -198,11 +217,11 @@ func (r *rig) config() Config {
 		ChildArgs:      []string{"serve"},
 		// PATH for `sleep`, and a HOME that is not the developer's. Nothing
 		// else: a scripted child has no business resolving anything.
-		Env:           []string{"PATH=" + os.Getenv("PATH"), "HOME=" + r.home},
-		Log:           r.log,
-		TrialBudget:   10 * time.Second,
-		ResponseGrace: 20 * time.Millisecond,
-		StopTimeout:   5 * time.Second,
+		Env:               []string{"PATH=" + os.Getenv("PATH"), "HOME=" + r.home},
+		Log:               r.log,
+		LegacyTrialBudget: 10 * time.Second,
+		ResponseGrace:     20 * time.Millisecond,
+		StopTimeout:       5 * time.Second,
 	}
 }
 
@@ -318,7 +337,7 @@ func TestAFreshInstallAdoptsTheSupervisorsOwnBinary(t *testing.T) {
 	config := rig.config()
 	// The supervisor's own executable, sitting where a service manager would
 	// have started it from: outside the versions directory entirely.
-	rig.writeScript(config.SelfExecutable, config.SelfVersion, ProtocolVersion, behaviorServe)
+	rig.writeScript(config.SelfExecutable, config.SelfVersion, ProtocolVersion, "", behaviorServe)
 
 	if err := rig.runUntil(config, "hello 0.0.0-supervisor", 1); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -466,7 +485,7 @@ func TestATrialThatNeverPreparesIsRolledBackAtTheBudget(t *testing.T) {
 	writeDatabase(t, rig.dataDir, "before")
 
 	config := rig.config()
-	config.TrialBudget = 400 * time.Millisecond
+	config.LegacyTrialBudget = 400 * time.Millisecond
 
 	stop, done := rig.run(config)
 	defer stop()

@@ -52,9 +52,12 @@ type Config struct {
 	// Now is the clock. nil means time.Now.
 	Now func() time.Time
 
-	// TrialBudget is how long a trial has to report prepared. Zero takes
+	// TrialRule judges a trial whose hello says it reports progress. Zero
+	// takes DefaultTrialStallRule.
+	TrialRule StallRule
+	// LegacyTrialBudget bounds a trial whose hello does not. Zero takes
 	// DefaultTrialBudget.
-	TrialBudget time.Duration
+	LegacyTrialBudget time.Duration
 	// ResponseGrace is how long an accepted child gets to flush its answer
 	// before it is stopped. Zero takes DefaultResponseGrace.
 	ResponseGrace time.Duration
@@ -64,11 +67,10 @@ type Config struct {
 }
 
 const (
-	// DefaultTrialBudget is the hard ceiling on a trial reaching prepared. The
-	// number is t3code's, and it is a ceiling rather than an estimate: a trial
-	// runs migrations against a database this host actually has, so a slow one
-	// is not wrong — but a trial that has not bound a listener in two minutes
-	// is not going to.
+	// DefaultTrialBudget is the one fixed budget a trial gets when its hello
+	// does not say it reports progress, as a version from before progress
+	// frames does not. Such a trial cannot be judged by the stall rule, so it
+	// keeps the budget every trial had then.
 	DefaultTrialBudget = 120 * time.Second
 	// DefaultResponseGrace is how long a child that just had an update
 	// accepted gets before it is stopped. It exists so the RPC that asked can
@@ -99,9 +101,6 @@ func New(config Config) (*Supervisor, error) {
 	}
 	if config.Now == nil {
 		config.Now = time.Now
-	}
-	if config.TrialBudget <= 0 {
-		config.TrialBudget = DefaultTrialBudget
 	}
 	if config.ResponseGrace <= 0 {
 		config.ResponseGrace = DefaultResponseGrace
@@ -303,16 +302,17 @@ type outcome struct {
 func (s *Supervisor) runChild(ctx context.Context, c *child, state *State) outcome {
 	var (
 		trial       = c.trial
-		trialTimer  = newIdleTimer()
 		graceTimer  = newIdleTimer()
 		acceptedFor string
+		// judge decides when the trial has failed to start. nil once the
+		// child is not a trial, so its channels never fire.
+		judge *trialJudge
 	)
-	defer trialTimer.Stop()
 	defer graceTimer.Stop()
-
 	if trial {
-		trialTimer.Reset(s.config.TrialBudget)
+		judge = newTrialJudge(s.config.TrialRule, s.config.LegacyTrialBudget)
 	}
+	defer func() { judge.stop() }()
 
 	for {
 		select {
@@ -332,9 +332,13 @@ func (s *Supervisor) runChild(ctx context.Context, c *child, state *State) outco
 			}
 			return outcome{kind: outcomeExited, err: c.exitErr}
 
-		case <-trialTimer.C():
-			return outcome{kind: outcomeTrialFailed, reason: fmt.Sprintf(
-				"the trial did not report prepared within %s", s.config.TrialBudget)}
+		case <-judge.stalled():
+			if reason, failed := judge.stall(); failed {
+				return outcome{kind: outcomeTrialFailed, reason: reason}
+			}
+
+		case <-judge.expired():
+			return outcome{kind: outcomeTrialFailed, reason: judge.ceilingReason()}
 
 		case <-graceTimer.C():
 			return outcome{kind: outcomeUpdate, target: acceptedFor}
@@ -347,7 +351,7 @@ func (s *Supervisor) runChild(ctx context.Context, c *child, state *State) outco
 				// STATUS is the better description of what happened and it is
 				// only a moment behind, so disable this arm and let the exit —
 				// or, if the process somehow lingers with its pipe shut, the
-				// trial budget — supply the reason. Returning here made a
+				// trial's judge — supply the reason. Returning here made a
 				// crashed trial's durably recorded reason a coin flip between
 				// "closed its channel" and the exit code an operator needs.
 				c.messages = nil
@@ -355,8 +359,11 @@ func (s *Supervisor) runChild(ctx context.Context, c *child, state *State) outco
 			}
 			switch msg.Type {
 			case MsgHello:
-				s.config.Log("supervise: backend %s speaking update protocol %d",
-					msg.Version, msg.ProtocolVersion)
+				s.config.Log("supervise: backend %s speaking update protocol %d (progress=%t)",
+					msg.Version, msg.ProtocolVersion, msg.ReportsProgress)
+				if trial {
+					judge.hello(msg)
+				}
 				if msg.ProtocolVersion > ProtocolVersion {
 					s.config.Log("supervise: the running backend speaks a newer update protocol " +
 						"than this supervisor; over-the-wire updates are unavailable until the " +
@@ -375,11 +382,25 @@ func (s *Supervisor) runChild(ctx context.Context, c *child, state *State) outco
 					}
 				}
 
+			case MsgProgress:
+				if trial && msg.Progress != nil {
+					judge.progress(*msg.Progress)
+				}
+
+			case MsgFailed:
+				if !trial {
+					s.config.Log("supervise: the backend reported a failed start outside a trial, "+
+						"which changes nothing: %s", failedReason(msg))
+					continue
+				}
+				return outcome{kind: outcomeTrialFailed, reason: failedReason(msg)}
+
 			case MsgPrepared:
 				if !trial {
 					continue
 				}
-				trialTimer.Stop()
+				judge.stop()
+				judge = nil
 				next, err := s.commit(*state, c)
 				if err != nil {
 					// The commit is what makes the trial's work durable; a

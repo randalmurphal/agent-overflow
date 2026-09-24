@@ -113,7 +113,9 @@ func TestProductionServiceArtifact(t *testing.T) {
 	}
 	config := supervise.Config{DataDir: data, SelfExecutable: oldBinary, SelfVersion: oldVersion,
 		ChildArgs: []string{"serve", "--data-dir", dataRoot, "--listen", address}, Env: env,
-		Stdout: log, Stderr: log, TrialBudget: 30 * time.Second, StopTimeout: 10 * time.Second}
+		Stdout: log, Stderr: log, LegacyTrialBudget: 30 * time.Second, StopTimeout: 10 * time.Second,
+		// The transitions, including which judge each trial had.
+		Log: t.Logf}
 	start := func(wantVersion string) (string, func()) {
 		t.Helper()
 		supervisor, err := supervise.New(config)

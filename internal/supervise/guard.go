@@ -23,7 +23,8 @@ func (e *PendingUpdateError) Error() string {
 // PrepareOptions tunes PrepareDataRoot.
 type PrepareOptions struct {
 	// OwnsServeLayout is set by the serve supervisor, which resumes its own
-	// restores and runs its own trials.
+	// restores and runs its own trials, and by a serve child it started,
+	// whose pending update is that supervisor's trial.
 	OwnsServeLayout bool
 	// OwnsAppLayout is set by the desktop process that applies or recovers
 	// the in-app layout's record (DesktopUpdate). A marked restore is still

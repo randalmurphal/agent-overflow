@@ -125,7 +125,10 @@ func runServe(flags cliFlags) {
 	appservice.InitWSLUpdater(appService.App, bootSettingsDir(), appupdate.LauncherFailure{})
 
 	srv := bootTransport(appService, flags.listenAddr, bootTransportOptions{
-		BackendLockHeldBySupervisor: supervisor != nil && supervisor.ownsDataRoot,
+		BackendLockHeldBySupervisor:  supervisor != nil && supervisor.ownsDataRoot,
+		ServeLayoutOwnedBySupervisor: supervisor != nil,
+		// A trial's supervisor judges it by this progress.
+		BootProgressObserver: supervisor.bootProgress(),
 	})
 	appservice.ConfigureTransportNotifications(appService.App)
 	// The bus exists now, so the boot's update check can say its piece to a
@@ -136,9 +139,11 @@ func runServe(flags cliFlags) {
 	bootCtx, bootCancel := context.WithCancel(context.Background())
 	defer bootCancel()
 	phaseStarted := time.Now()
-	if err := appService.Start(bootCtx); err != nil {
+	startErr := appService.Start(bootCtx)
+	supervisor.startFinished(startErr)
+	if startErr != nil {
 		logBootPhase("serve.service_startup", phaseStarted)
-		log.Printf("app: service startup: %v", err)
+		log.Printf("app: service startup: %v", startErr)
 		srv.MarkStartupFailed()
 		// Deliberately not exiting: the transport is bound and answers
 		// every bootstrap request with a terminal failure that names what

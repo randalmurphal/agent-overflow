@@ -119,6 +119,113 @@ func (w *StallWatch) Stop() {
 	w.ceiling.Stop()
 }
 
+// trialJudge decides when a starting trial has failed. The one-shot trial
+// (RunTrial) and the serve supervisor's trial (Supervisor.runChild) share
+// it: the stall rule over the progress the child reports, or one fixed
+// budget for a child whose hello does not say it reports progress.
+type trialJudge struct {
+	rule         StallRule
+	legacyBudget time.Duration
+	watch        *StallWatch
+	legacy       bool
+}
+
+// newTrialJudge arms the rule from now. A zero rule takes
+// DefaultTrialStallRule; a zero budget takes DefaultTrialBudget.
+func newTrialJudge(rule StallRule, legacyBudget time.Duration) *trialJudge {
+	if rule == (StallRule{}) {
+		rule = DefaultTrialStallRule()
+	}
+	if legacyBudget <= 0 {
+		legacyBudget = DefaultTrialBudget
+	}
+	return &trialJudge{rule: rule, legacyBudget: legacyBudget, watch: NewStallWatch(rule)}
+}
+
+// hello applies the child's hello. One without ReportsProgress gets the
+// legacy budget from now, because it sends no progress to judge.
+func (j *trialJudge) hello(msg Message) {
+	if msg.ReportsProgress || j.legacy {
+		return
+	}
+	j.legacy = true
+	j.watch.Budget(j.legacyBudget)
+}
+
+// progress records a report. Only observed progress (a changed UpdatedAt)
+// moves the stall window; a heartbeat alone only proves the child alive.
+func (j *trialJudge) progress(p startupprogress.Progress) {
+	if !j.legacy {
+		j.watch.Report(p)
+	}
+}
+
+// stalled fires when the child may have stalled; stall says whether it did.
+// A nil judge never fires.
+func (j *trialJudge) stalled() <-chan time.Time {
+	if j == nil {
+		return nil
+	}
+	return j.watch.Stalled()
+}
+
+// expired fires at the ceiling, or at the legacy budget. A nil judge never
+// fires.
+func (j *trialJudge) expired() <-chan time.Time {
+	if j == nil {
+		return nil
+	}
+	return j.watch.Expired()
+}
+
+// stall judges the child once stalled fired: failed with the reason, or not
+// stalled with the window rearmed. A stall is worded as every judge of a
+// starting backend words it (startupprogress.Stall).
+func (j *trialJudge) stall() (reason string, failed bool) {
+	stall, silent := j.watch.Stall()
+	switch {
+	case silent:
+		return fmt.Sprintf("the new version reported no progress within %s of starting", j.rule.Window), true
+	case stall != nil:
+		return "the new version did not finish starting: " + stall.Error(), true
+	}
+	return "", false
+}
+
+// ceilingReason is the reason once expired fired.
+func (j *trialJudge) ceilingReason() string {
+	if j.legacy {
+		return fmt.Sprintf("the trial did not report prepared within %s", j.legacyBudget)
+	}
+	if step := j.lastStep(); step != "" {
+		return fmt.Sprintf("the new version did not finish starting within %s (last step: %s)", j.rule.Ceiling, step)
+	}
+	return fmt.Sprintf("the new version did not finish starting within %s", j.rule.Ceiling)
+}
+
+func (j *trialJudge) lastStep() string {
+	last, _ := j.watch.Last()
+	if last.Detail != "" {
+		return last.Detail
+	}
+	return last.Phase
+}
+
+// stop disarms the judge. Safe on nil and more than once.
+func (j *trialJudge) stop() {
+	if j != nil {
+		j.watch.Stop()
+	}
+}
+
+// failedReason is the reason a trial's failed frame gives.
+func failedReason(msg Message) string {
+	if reason := strings.TrimSpace(msg.Reason); reason != "" {
+		return reason
+	}
+	return "the new version failed to start"
+}
+
 // TrialConfig describes one one-shot trial.
 type TrialConfig struct {
 	// Binary and Args start the new version in its trial mode.
@@ -174,12 +281,6 @@ const trialDrainGrace = time.Second
 // trial was stopped and nothing is known about the outcome, so the caller
 // must leave the update to recovery rather than record one.
 func RunTrial(ctx context.Context, cfg TrialConfig) error {
-	if cfg.Rule == (StallRule{}) {
-		cfg.Rule = DefaultTrialStallRule()
-	}
-	if cfg.LegacyBudget <= 0 {
-		cfg.LegacyBudget = DefaultTrialBudget
-	}
 	if cfg.StopTimeout <= 0 {
 		cfg.StopTimeout = DefaultStopTimeout
 	}
@@ -219,16 +320,15 @@ func RunTrial(ctx context.Context, cfg TrialConfig) error {
 	if err != nil {
 		return &TrialFailedError{Reason: "the new version did not start: " + err.Error()}
 	}
-	t := &trialRun{cfg: cfg, child: c, watch: NewStallWatch(cfg.Rule)}
-	defer t.watch.Stop()
+	t := &trialRun{cfg: cfg, child: c, judge: newTrialJudge(cfg.Rule, cfg.LegacyBudget)}
+	defer t.judge.stop()
 	return t.run(ctx)
 }
 
 type trialRun struct {
-	cfg    TrialConfig
-	child  *child
-	watch  *StallWatch
-	legacy bool
+	cfg   TrialConfig
+	child *child
+	judge *trialJudge
 	// step is the last Detail the trial reported (TrialFailedError.Step).
 	step string
 }
@@ -254,17 +354,17 @@ func (t *trialRun) run(ctx context.Context) error {
 			c.conn.Close()
 			return t.fail(exitReason(c.exitErr))
 
-		case <-t.watch.Stalled():
-			stall, silent := t.watch.Stall()
-			if stall == nil && !silent {
+		case <-t.judge.stalled():
+			reason, failed := t.judge.stall()
+			if !failed {
 				continue
 			}
 			t.stop()
-			return t.fail(t.stallReason(stall))
+			return t.fail(reason)
 
-		case <-t.watch.Expired():
+		case <-t.judge.expired():
 			t.stop()
-			return t.fail(t.ceilingReason())
+			return t.fail(t.judge.ceilingReason())
 
 		case msg, ok := <-c.messages:
 			if !ok {
@@ -289,10 +389,7 @@ func (t *trialRun) handle(msg Message) (outcome error, decided bool) {
 	case MsgHello:
 		t.cfg.Log("supervise: trial of %s is version %s speaking update protocol %d (progress=%t)",
 			t.cfg.TargetVersion, msg.Version, msg.ProtocolVersion, msg.ReportsProgress)
-		if !msg.ReportsProgress {
-			t.legacy = true
-			t.watch.Budget(t.cfg.LegacyBudget)
-		}
+		t.judge.hello(msg)
 	case MsgProgress:
 		if msg.Progress == nil {
 			return nil, false
@@ -303,15 +400,9 @@ func (t *trialRun) handle(msg Message) (outcome error, decided bool) {
 		if t.cfg.OnProgress != nil {
 			t.cfg.OnProgress(*msg.Progress)
 		}
-		if !t.legacy {
-			t.watch.Report(*msg.Progress)
-		}
+		t.judge.progress(*msg.Progress)
 	case MsgFailed:
-		reason := strings.TrimSpace(msg.Reason)
-		if reason == "" {
-			reason = "the new version failed to start"
-		}
-		return t.fail(reason), true
+		return t.fail(failedReason(msg)), true
 	case MsgPrepared:
 		t.cfg.Log("supervise: trial of %s reported prepared", t.cfg.TargetVersion)
 		return nil, true
@@ -353,33 +444,6 @@ func (t *trialRun) stop() {
 		t.cfg.OnStopping()
 	}
 	stopChildProcess(t.child, t.cfg.StopTimeout, t.cfg.Log)
-}
-
-func (t *trialRun) lastStep() string {
-	last, _ := t.watch.Last()
-	if last.Detail != "" {
-		return last.Detail
-	}
-	return last.Phase
-}
-
-// stallReason words a stall as every judge of a starting backend does
-// (startupprogress.Stall), or silence from the start.
-func (t *trialRun) stallReason(stall *startupprogress.Stall) string {
-	if stall == nil {
-		return fmt.Sprintf("the new version reported no progress within %s of starting", t.cfg.Rule.Window)
-	}
-	return "the new version did not finish starting: " + stall.Error()
-}
-
-func (t *trialRun) ceilingReason() string {
-	if t.legacy {
-		return fmt.Sprintf("the trial did not report prepared within %s", t.cfg.LegacyBudget)
-	}
-	if step := t.lastStep(); step != "" {
-		return fmt.Sprintf("the new version did not finish starting within %s (last step: %s)", t.cfg.Rule.Ceiling, step)
-	}
-	return fmt.Sprintf("the new version did not finish starting within %s", t.cfg.Rule.Ceiling)
 }
 
 func isTrialFailure(err error) bool {
