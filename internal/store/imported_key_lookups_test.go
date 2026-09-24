@@ -310,8 +310,13 @@ func keyedLookups(th string) []keyedLookup {
 		{name: "subagent reads", run: func(t *testing.T, s *Store) {
 			q := s.reader()
 			must[[]subagentRound](t, "resume rounds")(subagentResumeRounds(q, th, []string{"launch-1"}))
+			named := []subagentRound{{rootID: "launch-1", promptID: "user-1", anchorID: "launch-2"}}
+			if err := keepRootCarriers(q, th, named); err != nil {
+				t.Errorf("round carriers: %v", err)
+			}
 			must[map[string]Item](t, "launch rows")(s.subagentLaunchRowsByID(q, th, []string{"launch-1"}))
-			must[map[string]subagentAnchorAggregate](t, "aggregates")(subagentAggregatesByRoot(q, th, []string{"launch-1"}))
+			roots := []string{"launch-1"}
+			must[map[string]subagentAnchorAggregate](t, "aggregates")(subagentAggregatesByRound(q, th, roots, subagentRoundBoundsFor(roots, named, nil)))
 			must[int](t, "completed child index")(s.SubagentCompletedChildIndex(th, "launch-1"))
 		}},
 		{name: "ThreadTurnPreview", run: func(t *testing.T, s *Store) {

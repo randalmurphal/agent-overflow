@@ -347,7 +347,7 @@ func TestTimelineArmsMatchTheViewForUserMessageReads(t *testing.T) {
 }
 
 // legacyDescendantsCTE is the two-arm, view-backed recursive walk
-// ListSubagentDescendants and subagentAggregatesByRoot used before the
+// ListSubagentDescendants and subagentAggregatesByRound used before the
 // per-source arms replaced it. It is the oracle for both: identical
 // rows, identical order, and the only difference is the plan.
 //
@@ -399,7 +399,7 @@ func TestTimelineArmsMatchTheViewForSubagentReads(t *testing.T) {
 
 	t.Run("anchor aggregates", func(t *testing.T) {
 		roots := []string{"imp-launch-0", "loc-launch-2", "loc-child-2"}
-		got, err := subagentAggregatesByRoot(s.reader(), timelineParityThreadID, roots)
+		got, err := subagentAggregatesByRound(s.reader(), timelineParityThreadID, roots, subagentRoundBoundsFor(roots, nil, nil))
 		if err != nil {
 			t.Fatalf("aggregates: %v", err)
 		}
@@ -709,11 +709,12 @@ func TestSubagentWalksDoNotMaterializeTheView(t *testing.T) {
 		}
 	})
 
-	t.Run("subagentAggregatesByRoot", func(t *testing.T) {
+	t.Run("subagentAggregatesByRound", func(t *testing.T) {
 		// Exercised through the store method so the aggregate query the
 		// decorator actually runs is the one under test; the plan is
 		// asserted on the same statement shape below.
-		if _, err := subagentAggregatesByRoot(s.reader(), timelineParityThreadID, []string{"loc-launch-2"}); err != nil {
+		roots := []string{"loc-launch-2"}
+		if _, err := subagentAggregatesByRound(s.reader(), timelineParityThreadID, roots, subagentRoundBoundsFor(roots, nil, nil)); err != nil {
 			t.Fatalf("aggregates: %v", err)
 		}
 		resolvedSQL, resolvedArgs := mustTimelineArms(t, s, timelineParityThreadID, timelineSelection{

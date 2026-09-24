@@ -545,6 +545,10 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	roundCarriers, roundCarrierArgs, err := subagentRoundCarriersQuery(s.reader(), thread, jsonListForTest(t, "L", "M"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	// The legacy selection reads the union of the thread's parent ids: its
 	// own derived table p, and the merge sort of the import arm's distinct
 	// parent ids, which span chunks.
@@ -560,6 +564,7 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 		{"dirty selection", subagentDirtyAnchorsSQL, "idx_subagent_aggregates_dirty", []any{thread, 16}, boundedPlan{}},
 		{"legacy selection", subagentLegacyAnchorsSQL, "COVERING INDEX idx_items_parent", []any{thread, 16}, legacy},
 		{"resume rounds", rounds, "idx_items_subagent_resume_prompt (thread_id=? AND parent_id=?)", roundArgs, listed},
+		{"carriers the rounds name", roundCarriers, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", roundCarrierArgs, listed},
 		{"first child anchors", firstChildAnchorsSQL, "SEARCH s USING PRIMARY KEY (thread_id=? AND item_id=?)",
 			[]any{thread, "L", "L-c3", 1, 3}, boundedPlan{}},
 		{"stamp reads", subagentStampReadsSQL, "USING PRIMARY KEY (thread_id=? AND item_id=?)", []any{thread, ids}, listed},
@@ -582,7 +587,6 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 			append([]any{thread, "L", 1}, subagentStampValues{}.args()...), boundedPlan{}},
 		{"flush of a carrier's first stamp", flushSubagentCarrierInsertSQL, "idx_items_parent",
 			append(append([]any{thread, "L", 1}, subagentStampValues{}.args()...), "R"), boundedPlan{}},
-		{"restamp", restampSubagentStampSQL, "USING PRIMARY KEY (thread_id=? AND item_id=?)", []any{1, thread, "L"}, boundedPlan{}},
 		{"prompts naming a carrier", subagentPromptNamesSQL, "idx_items_subagent_resume_prompt (thread_id=? AND parent_id=?)",
 			[]any{thread, "R", "L"}, boundedPlan{}},
 		// A card's liveness: its anchor, and the agents resuming it.

@@ -43,7 +43,11 @@ import (
 //     its transcript, and the carrier the prompt names opens its card
 //     with the prompt; a prompt stored before a row the root took, one
 //     naming the root or a carrier the thread holds, and one under a
-//     stamp that is not live recompute at the next flush;
+//     stamp that is not live recompute at the next flush. A prompt's
+//     carrier counts only when the named row is anchorable and its
+//     transcript root is the prompt's parent; otherwise the prompt cuts
+//     the round with no card, and a prompt naming its root leaves its
+//     family readTime (subagentResumeRounds, computeSubagentFamilies);
 //   - the parent takes a toolable row into its tray when it is newer than
 //     the tray row;
 //   - a changed summary of the preview row or the tray row replaces it
@@ -53,10 +57,13 @@ import (
 //
 // A carrier's own children count toward no card of the carrier, only
 // toward its tray. A stamp the recompute left readTime is walked by every
-// read and takes no value; a row that reaches it makes the next flush
-// check that no recompute changed it since, and serve anew the carriers
-// another root owns that its prompts name (foreignSubagentCarriersTx),
-// which no item trigger stamps.
+// read and takes no value. A row that reaches a stamp and leaves its
+// values, readTime or not, makes the next flush check that no recompute
+// changed the stamp since: a writer that moves rows into the thread
+// rewrites stamps outside the cards (recomputeLocalizedCardsTx). The item
+// triggers serve every card a row changes anew: the anchors on its chain,
+// and the carriers their prompts name, whose transcript root is on that
+// chain.
 //
 // A write the rules do not follow recomputes the stamps it changed in its
 // own transaction (recomputeSubagentChainsTx): a row inserted after rows
@@ -308,7 +315,7 @@ type cardStamp struct {
 	// carrier reports a carrier: its own children count toward no card of
 	// it, only toward its tray.
 	carrier bool
-	// reached marks an inert stamp a note reached since the last flush.
+	// reached marks a stamp a note reached since the last flush.
 	reached bool
 	// openedBy is the root whose resume prompt opened this carrier's card
 	// in memory (notePrompt), until its first stamp is written.
@@ -336,6 +343,7 @@ func (st *cardStamp) takes() bool {
 	case cardRecompute:
 		return false
 	}
+	st.reached = true
 	return true
 }
 
@@ -1206,9 +1214,6 @@ SELECT ?1, ?2, ` + aggCleanLiteral + `, ?3` + strings.Repeat(", ?", len(subagent
                  AND ` + aggTranscriptRootSQL("a.") + ` = ` + carrierRootParam + `
                  AND NOT ` + aggHasLocalChildSQL("a.thread_id", "a.id", "") + `)
 ON CONFLICT (thread_id, item_id) DO NOTHING`
-	// restampSubagentStampSQL moves a stamp to a new generation without
-	// changing its values. Its trigger serves the anchor at a new revision.
-	restampSubagentStampSQL = `UPDATE subagent_aggregates SET gen = ? WHERE thread_id = ? AND item_id = ?`
 )
 
 // carrierRootParam is flushSubagentCarrierInsertSQL's root parameter,
@@ -1248,14 +1253,23 @@ func (s *Store) flushCardsTx(tx *sql.Tx, t *cardThread, changedOut *[]string, bu
 		gen int64
 	}
 	var wrote []landed
+	// checked are the stamps a note reached and left as they were, whose
+	// generation the flush checked: their reach is reset once it commits.
 	var checked []*cardStamp
 	var changed []string
 	for _, id := range ids {
 		st := t.stamps[id]
-		switch st.state {
-		case cardRecompute:
+		unchanged := st.state == cardInert || st.values == st.stored
+		switch {
+		case st.state == cardRecompute:
 			seeds = append(seeds, id)
-		case cardInert:
+		case unchanged && !st.exists && st.state == cardLive:
+			checked = append(checked, st)
+		case unchanged:
+			want := int64(aggStateClean)
+			if st.state == cardInert {
+				want = aggStateReadTime
+			}
 			var gen, state int64
 			err := tx.QueryRow(`SELECT gen, state FROM subagent_aggregates WHERE thread_id = ? AND item_id = ?`, t.id, id).Scan(&gen, &state)
 			switch {
@@ -1263,12 +1277,12 @@ func (s *Store) flushCardsTx(tx *sql.Tx, t *cardThread, changedOut *[]string, bu
 				seeds = append(seeds, id)
 			case err != nil:
 				return nil, fmt.Errorf("store: check subagent stamp %s/%s: %w", t.id, id, err)
-			case gen != st.gen || state != aggStateReadTime:
+			case gen != st.gen || state != want:
 				seeds = append(seeds, id)
 			default:
 				checked = append(checked, st)
 			}
-		case cardLive:
+		default:
 			if err := bump(); err != nil {
 				return nil, err
 			}
@@ -1309,27 +1323,9 @@ func (s *Store) flushCardsTx(tx *sql.Tx, t *cardThread, changedOut *[]string, bu
 			changed = append(changed, id)
 		}
 	}
-	// A readTime root a row reached: the carriers another root's prompts
-	// name show its rows, and nothing else serves them anew.
-	var roots []string
-	for _, st := range checked {
-		if !st.carrier {
-			roots = append(roots, st.id)
-		}
-	}
-	foreign, err := foreignSubagentCarriersTx(tx, t.id, roots)
-	if err != nil {
-		return nil, err
-	}
-	restamped, err := restampSubagentStampsTx(tx, t.id, foreign, bump)
-	if err != nil {
-		return nil, err
-	}
-	for id := range restamped {
-		changed = append(changed, id)
-	}
 	var members []subagentFamilyMember
 	if len(seeds) > 0 {
+		var err error
 		if members, err = recomputeSubagentFamiliesTx(tx, t.id, seeds, bump); err != nil {
 			return nil, err
 		}
@@ -1345,15 +1341,10 @@ func (s *Store) flushCardsTx(tx *sql.Tx, t *cardThread, changedOut *[]string, bu
 	}
 	return func() {
 		for _, w := range wrote {
-			w.st.stored, w.st.exists, w.st.gen, w.st.openedBy = w.st.values, true, w.gen, ""
+			w.st.stored, w.st.exists, w.st.gen, w.st.openedBy, w.st.reached = w.st.values, true, w.gen, "", false
 		}
 		for _, st := range checked {
 			st.reached = false
-		}
-		for id, gen := range restamped {
-			if st := t.stamps[id]; st != nil {
-				st.gen = gen
-			}
 		}
 		fresh := make(map[string]*cardStamp, len(members))
 		for _, m := range members {
@@ -1406,77 +1397,6 @@ func subagentBumpOnce(tx *sql.Tx, threadID string) func() error {
 	}
 }
 
-// foreignSubagentCarriersTx returns the stamped carriers the resume
-// prompts under roots name that another root owns (computeSubagentFamilies
-// serves such a root readTime). A row under the root changes their cards,
-// and the item triggers, which stamp the carriers whose transcript root
-// is on the written row's chain, do not reach them.
-func foreignSubagentCarriersTx(q sqlQueryer, threadID string, roots []string) ([]string, error) {
-	if len(roots) == 0 {
-		return nil, nil
-	}
-	rounds, err := subagentResumeRounds(q, threadID, roots)
-	if err != nil {
-		return nil, err
-	}
-	var named []string
-	for _, round := range rounds {
-		if round.anchorID != round.promptID {
-			named = append(named, round.anchorID)
-		}
-	}
-	if len(named) == 0 {
-		return nil, nil
-	}
-	targets, err := subagentStampTargets(q, threadID, named)
-	if err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, round := range rounds {
-		target, ok := targets[round.anchorID]
-		if ok && target.anchorable() && target.stamped && target.root != round.rootID {
-			out = append(out, target.id)
-		}
-	}
-	slices.Sort(out)
-	return slices.Compact(out), nil
-}
-
-// restampSubagentStampsTx serves the anchors ids at a new revision by
-// moving each stamp row to a new generation (restampSubagentStampSQL). An
-// id without a stamp row is skipped: a read walks it. bump advances the
-// thread stamp before the first write. It returns each re-stamped
-// anchor's generation.
-func restampSubagentStampsTx(tx *sql.Tx, threadID string, ids []string, bump func() error) (map[string]int64, error) {
-	var out map[string]int64
-	for _, id := range ids {
-		if _, done := out[id]; done || id == "" {
-			continue
-		}
-		if err := bump(); err != nil {
-			return nil, err
-		}
-		gen := newSubagentGen()
-		result, err := tx.Exec(restampSubagentStampSQL, gen, threadID, id)
-		if err != nil {
-			return nil, fmt.Errorf("store: restamp subagent stamp %s/%s: %w", threadID, id, err)
-		}
-		n, err := result.RowsAffected()
-		if err != nil {
-			return nil, fmt.Errorf("store: count restamped subagent stamp %s/%s: %w", threadID, id, err)
-		}
-		if n == 0 {
-			continue
-		}
-		if out == nil {
-			out = make(map[string]int64)
-		}
-		out[id] = gen
-	}
-	return out, nil
-}
-
 // subagentCardLiveSQL reports whether the boot pass would recover the
 // stamps a card's rows reach (RecoverSubagentCards): the card's nearest
 // anchor ?2 is a running agent (liveSubagentAgentSQL), or a running
@@ -1511,11 +1431,8 @@ type cardWrite struct {
 	chains, seeds    []string
 	unanchor         []string
 	// carriers are inserted carriers, whose root may hold a prompt that
-	// named them before they arrived; named are the carriers of prompts
-	// the write deleted or changed, whose cards change with no trigger
-	// stamping a carrier another root owns.
+	// named them before they arrived.
 	carriers []subagentRow
-	named    []string
 	// relive names the anchors whose agents the write may have started
 	// or stopped (subagentCards.relive); reliveAll is every agent of the
 	// thread, for a completion sibling written or deleted, whose trigger
@@ -1618,9 +1535,6 @@ func (w *cardWrite) updated(old, row subagentRow) error {
 	if structural {
 		w.chains = append(w.chains, old.parentID, row.parentID)
 		w.seeds = append(w.seeds, old.carrier, row.carrier)
-		if old.prompt {
-			w.named = append(w.named, old.carrier)
-		}
 	}
 	if old.anchorable() != row.anchorable() || old.root != row.root {
 		w.seeds = append(w.seeds, row.id, old.root, row.root)
@@ -1659,7 +1573,6 @@ func (w *cardWrite) deleted(old subagentRow) {
 	}
 	if old.prompt {
 		w.seeds = append(w.seeds, old.carrier)
-		w.named = append(w.named, old.carrier)
 	}
 	if old.anchorable() {
 		w.seeds = append(w.seeds, old.id, old.root)
@@ -1727,12 +1640,7 @@ func (w *cardWrite) recompute() error {
 	if err != nil {
 		return err
 	}
-	// The recompute rewrote the named carriers whose values changed; one
-	// whose values did not still shows other rows now.
-	if _, err := restampSubagentStampsTx(w.tx, w.threadID, w.named, bump); err != nil {
-		return err
-	}
-	w.chains, w.seeds, w.unanchor, w.named = nil, nil, nil, nil
+	w.chains, w.seeds, w.unanchor = nil, nil, nil
 	w.stale = append(w.stale, stale...)
 	if w.t == nil {
 		w.s.cards.invalidate(w.threadID, stale)

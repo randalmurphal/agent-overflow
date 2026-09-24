@@ -69,10 +69,8 @@ func ensureLocalPayloadTx(tx *sql.Tx, threadID, payloadID, label string) error {
 // mutable overlay. The explicit override is inserted first because the items
 // trigger rejects accidental shadowing. Item INSERT history accounting is
 // suppressed while the representation changes; the caller's subsequent
-// UPDATE or DELETE advances the public stamp exactly once. An imported
-// anchor has no stamp (shared chunks cannot hold one); a copy with
-// children is stamped here, and one without stays unstamped, as a new
-// anchor does.
+// UPDATE or DELETE advances the public stamp. The cards the move changes
+// are recomputed here (recomputeLocalizedCardsTx).
 func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, error) {
 	var payloadID, inputPayloadID string
 	err := tx.QueryRow(
@@ -128,10 +126,6 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 	if err := requireRowsAffected(result, fmt.Sprintf("%s copy imported item %s/%s", label, threadID, itemID)); err != nil {
 		return false, err
 	}
-	var stamp bool
-	if err := tx.QueryRow(localizedAnchorHasChildSQL, threadID, itemID).Scan(&stamp); err != nil {
-		return false, fmt.Errorf("%s probe localized anchor %s/%s: %w", label, threadID, itemID, err)
-	}
 	// The override moves this item from the import arm to the item arm, so its
 	// index row moves with it. The caller's mutation re-indexes the new text.
 	if err := deleteThreadSearchItemsTx(tx, threadID, []string{itemID}); err != nil {
@@ -143,23 +137,92 @@ func localizeImportedItemTx(tx *sql.Tx, threadID, itemID, label string) (bool, e
 	if err := setHistoryBulkLoadTx(tx, threadID, false, label); err != nil {
 		return false, err
 	}
-	if stamp {
-		// The recompute stamps the copy and every stamp of its family
-		// (a carrier naming it as its root) at a new revision; the card
-		// accumulators of those stamps recompute at their next flush,
-		// their generation having moved.
-		if _, err := recomputeSubagentFamiliesTx(tx, threadID, []string{itemID}, nil); err != nil {
-			return false, err
-		}
+	if err := recomputeLocalizedCardsTx(tx, threadID, []string{itemID}, label); err != nil {
+		return false, err
 	}
 	return true, nil
 }
 
-// localizedAnchorHasChildSQL reports a localized anchor with children to
-// count.
-var localizedAnchorHasChildSQL = `SELECT EXISTS (SELECT 1 FROM items a
- WHERE a.thread_id = ?1 AND a.id = ?2 AND ` + aggAnchorableSQL("a.") + `
-   AND ` + aggHasChildSQL("a.thread_id", "a.id", "") + `)`
+// recomputeLocalizedCardsTx recomputes, with their families, the cards
+// that moving ids from a read-only arm (imported history, an ancestor's
+// rows) into threadID's items changes. A read shows the same rows, but a
+// card reads its tray from local rows only (latestDirectSubagentToolSQL),
+// a round whose prompt is not local is readTime, and only a local anchor
+// holds a stamp. So the cards are: the parent of a moved tool call or
+// prompt, a moved carrier, a moved root a local carrier names, and a
+// moved anchor with a visible child in any arm; a moved anchor with none
+// stays unstamped, as a new anchor does. Every member of their families
+// is written at a new generation, its values changed or not, so each is
+// served anew: a walked member's read changes with its tray though its
+// stamp does not, and no write of its own follows a hand-off. The thread
+// stamp advances before the first stamp write, under history_bulk_load
+// too. An accumulator a card holds for a member recomputes once a note
+// reaches it (flushCardsTx checks the generation of every stamp a note
+// reached).
+func recomputeLocalizedCardsTx(tx *sql.Tx, threadID string, ids []string, label string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	list, err := jsonList(ids)
+	if err != nil {
+		return err
+	}
+	seeds, err := queryIDs(tx, localizedCardsSQL, threadID, list)
+	if err != nil {
+		return fmt.Errorf("%s find the cards of localized rows in %s: %w", label, threadID, err)
+	}
+	anchors, err := queryIDs(tx, `SELECT id FROM items
+		 WHERE thread_id = ? AND id IN (SELECT value FROM json_each(?)) AND `+aggAnchorableSQL("items."),
+		threadID, list)
+	if err != nil {
+		return fmt.Errorf("%s find localized subagent anchors in %s: %w", label, threadID, err)
+	}
+	if len(anchors) > 0 {
+		if list, err = jsonList(anchors); err != nil {
+			return err
+		}
+		children, args, err := timelineArms(tx, threadID, timelineSelection{
+			Columns:   func(_, _ string) string { return "items.parent_id AS parent_id" },
+			KeyFirst:  true,
+			Where:     "items.parent_id IN (SELECT value FROM json_each(?)) AND items.parent_id <> '' AND " + visibleItemsFilterFor("items."),
+			WhereArgs: []any{list},
+		})
+		if err != nil {
+			return err
+		}
+		parents, err := queryIDs(tx, `SELECT DISTINCT parent_id FROM (`+children+`)`, args...)
+		if err != nil {
+			return fmt.Errorf("%s probe children of localized subagent anchors in %s: %w", label, threadID, err)
+		}
+		seeds = append(seeds, parents...)
+	}
+	if len(seeds) == 0 {
+		return nil
+	}
+	bumped := false
+	_, err = rewriteSubagentFamiliesTx(tx, threadID, seeds, func() error {
+		if bumped {
+			return nil
+		}
+		bumped = true
+		return bumpHistoryRevTx(tx, threadID, label+" serve localized cards")
+	}, true)
+	return err
+}
+
+// localizedCardsSQL selects, among the rows ?2 (a JSON array) moved into
+// ?1's items, the parents of tool calls and prompts, the carriers, and the
+// roots a local carrier names. Each moved row is read by key; the carrier
+// probe compares with `+m.id` so idx_items_transcript_root serves the
+// value, as in stampedRowIDsFor.
+var localizedCardsSQL = `SELECT m.parent_id FROM json_each(?2) AS moved
+  CROSS JOIN items m ON m.thread_id = ?1 AND m.id = moved.value
+ WHERE m.parent_id <> '' AND (` + aggToolableSQL("m.") + ` OR ` + aggPromptSQL("m.") + `)
+UNION
+SELECT m.id FROM json_each(?2) AS moved
+  CROSS JOIN items m ON m.thread_id = ?1 AND m.id = moved.value
+ WHERE ` + aggAnchorableSQL("m.") + `
+   AND (` + aggCarrierSQL("m.") + ` OR EXISTS (SELECT 1 FROM items WHERE thread_id = ?1 AND ` + transcriptRootExpr + ` = +m.id))`
 
 func setHistoryBulkLoadTx(tx *sql.Tx, threadID string, enabled bool, label string) error {
 	from, to := 0, 1

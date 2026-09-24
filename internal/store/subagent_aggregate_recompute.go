@@ -98,24 +98,16 @@ type subagentFamilyMember struct {
 	rounds  bool
 	lo      TimelineCursor
 	roundID string
-	// foreign reports a carrier a prompt under another root names. The
-	// item triggers stamp only the carriers whose transcript root is on a
-	// written row's chain, so rows under the naming root do not reach it.
-	foreign bool
 	// written reports that the recompute stored values, at generation gen.
 	written bool
 }
 
-// changed reports a member whose stored stamp is not its values.
+// changed reports a member whose stored stamp is not its values: one a
+// recompute writes.
 func (m subagentFamilyMember) changed() bool { return !m.stamped || m.stored != m.values }
 
-// restamp reports a member a recompute writes: one that changed, and a
-// foreign carrier, whose card the rows the recompute covers may have
-// changed with no trigger stamping it.
-func (m subagentFamilyMember) restamp() bool { return m.changed() || m.foreign }
-
 // computeSubagentStamps is computeSubagentFamilies reduced to the stamps
-// it writes (restamp), each with a new generation.
+// it writes (changed), each with a new generation.
 func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]subagentStampWrite, error) {
 	members, err := computeSubagentFamilies(q, threadID, seedIDs)
 	if err != nil {
@@ -123,7 +115,7 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 	}
 	var writes []subagentStampWrite
 	for _, m := range members {
-		if m.restamp() {
+		if m.changed() {
 			writes = append(writes, subagentStampWrite{id: m.id, rev: m.rev, gen: newSubagentGen(), values: m.values})
 		}
 	}
@@ -139,16 +131,19 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 // A carrier's family is its transcript root's. When the root it names is
 // itself a carrier (a round resumed from a carrier), that carrier's own
 // root joins too, so the named carrier is stamped from its family rather
-// than written readTime as a root it is not.
+// than written readTime as a root it is not. Every carrier of a family's
+// root joins as a root too, of the carriers that name it: the family is
+// closed both ways over transcript roots.
 //
 // A family is marked readTime when its rounds take a shape the card rules
 // do not maintain: a prompt in the immutable history arm (the round probe
 // reads local rows only), a prompt naming the root itself, one carrier
-// named by two prompts, a named carrier stamped as another root's (a
-// foreign carrier, which every recompute of the family re-stamps), a root
-// that is itself a carrier, or a root outside the local overlay. A carrier
-// no prompt names shows the whole transcript, which no incremental rule
-// keeps, and is readTime on its own.
+// named by two prompts, a root that is itself a carrier, or a root outside
+// the local overlay. A carrier no prompt names shows the whole transcript,
+// which no incremental rule keeps, and is readTime on its own. Closed
+// both ways, with a prompt naming only a carrier of its own root
+// (subagentResumeRounds), a family is the same whichever of its members
+// seeds it.
 func computeSubagentFamilies(q sqlQueryer, threadID string, seedIDs []string) ([]subagentFamilyMember, error) {
 	seeds, err := subagentStampTargets(q, threadID, seedIDs)
 	if err != nil {
@@ -165,13 +160,16 @@ func computeSubagentFamilies(q sqlQueryer, threadID string, seedIDs []string) ([
 		return true
 	}
 	var carrierRoots []string
-	for _, seed := range seeds {
-		if !seed.anchorable() {
-			continue
-		}
-		if seed.root == "" {
-			addRoot(seed.id)
-		} else if addRoot(seed.root) {
+	for _, id := range seedIDs {
+		seed, local := seeds[id]
+		switch {
+		case id == "":
+		case !local || !seed.anchorable() || seed.root == "":
+			// A row that does not anchor, deleted or imported included,
+			// still roots the carriers that name it, which are walked while
+			// it does not.
+			addRoot(id)
+		case addRoot(seed.root):
 			carrierRoots = append(carrierRoots, seed.root)
 		}
 	}
@@ -190,13 +188,25 @@ func computeSubagentFamilies(q sqlQueryer, threadID string, seedIDs []string) ([
 	if len(roots) == 0 {
 		return nil, nil
 	}
+	carriersByRoot := make(map[string][]string)
+	for frontier, depth := slices.Clone(roots), 0; len(frontier) > 0 && depth < 64; depth++ {
+		found, err := subagentCarriersOf(q, threadID, frontier)
+		if err != nil {
+			return nil, err
+		}
+		frontier = nil
+		for root, carriers := range found {
+			carriersByRoot[root] = carriers
+			for _, id := range carriers {
+				if addRoot(id) {
+					frontier = append(frontier, id)
+				}
+			}
+		}
+	}
 	slices.Sort(roots)
 
 	rounds, err := subagentResumeRounds(q, threadID, roots)
-	if err != nil {
-		return nil, err
-	}
-	carriersByRoot, err := subagentCarriersOf(q, threadID, roots)
 	if err != nil {
 		return nil, err
 	}
@@ -227,17 +237,9 @@ func computeSubagentFamilies(q sqlQueryer, threadID string, seedIDs []string) ([
 			readTimeRoot[root] = true
 		}
 	}
-	foreign := make(map[string]bool)
 	for _, round := range rounds {
 		if round.imported || round.anchorID == round.rootID || named[round.anchorID] > 1 {
 			readTimeRoot[round.rootID] = true
-		}
-		if round.anchorID == round.promptID {
-			continue
-		}
-		if carrier, ok := members[round.anchorID]; ok && carrier.anchorable() && carrier.root != round.rootID {
-			readTimeRoot[round.rootID] = true
-			foreign[round.anchorID] = true
 		}
 	}
 
@@ -281,7 +283,7 @@ func computeSubagentFamilies(q sqlQueryer, threadID string, seedIDs []string) ([
 	for _, id := range writeIDs {
 		row := members[id]
 		member := subagentFamilyMember{id: id, root: row.root, rev: row.rev, gen: row.gen, stamped: row.stamped,
-			stored: row.stored, foreign: foreign[id]}
+			stored: row.stored}
 		values := subagentStampValues{State: aggStateReadTime}
 		clean := false
 		if row.root == "" {
@@ -505,11 +507,17 @@ func subagentAnchorIDs(q sqlQueryer, query string, args ...any) ([]string, error
 }
 
 // recomputeSubagentFamiliesTx recomputes the given anchors with their
-// families inside a write transaction and writes each stamp it restamps
-// at a new generation. bump advances the thread stamp before the first
-// write; nil bumps it once here. It returns every member, written or
-// not, for the card accumulators.
+// families inside a write transaction and writes each stamp whose values
+// changed at a new generation. bump advances the thread stamp before the
+// first write; nil bumps it once here. It returns every member, written
+// or not, for the card accumulators.
 func recomputeSubagentFamiliesTx(tx *sql.Tx, threadID string, seeds []string, bump func() error) ([]subagentFamilyMember, error) {
+	return rewriteSubagentFamiliesTx(tx, threadID, seeds, bump, false)
+}
+
+// rewriteSubagentFamiliesTx is recomputeSubagentFamiliesTx; all writes
+// every member at a new generation, its values changed or not.
+func rewriteSubagentFamiliesTx(tx *sql.Tx, threadID string, seeds []string, bump func() error, all bool) ([]subagentFamilyMember, error) {
 	members, err := computeSubagentFamilies(tx, threadID, seeds)
 	if err != nil {
 		return nil, err
@@ -517,7 +525,7 @@ func recomputeSubagentFamiliesTx(tx *sql.Tx, threadID string, seeds []string, bu
 	var writes []subagentStampWrite
 	var written []int
 	for i := range members {
-		if !members[i].restamp() {
+		if !all && !members[i].changed() {
 			continue
 		}
 		members[i].gen = newSubagentGen()

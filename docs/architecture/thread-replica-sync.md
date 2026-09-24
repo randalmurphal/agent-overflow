@@ -259,11 +259,15 @@ stamped inside the batch, so no client can hold a rev a later read would
 reproduce for different bytes.
 
 Under the flag the insert trigger stamps only the inserted row. Every
-insert into `items` under the flag moves a row a read already showed from
-imported history (`localizeImportedItemTx`, `UnsealThreadHistory`) or
-rebuilds a thread whose rows the same transaction deleted (a returning
-transfer), so no other row's read changes; stamping the inserted row's
-anchors would rewrite each of them once per moved child. A writer that
+insert into `items` under the flag moves a row a read already showed, from
+imported history (`localizeImportedItemTx`, `UnsealThreadHistory`) or from a
+pointer fork's ancestor (`copyInheritedRowsTx`), or rebuilds a thread whose
+rows the same transaction deleted (a returning transfer). A moved row
+changes no other row's read but its parent's subagent tray, which reads
+local rows only; the movers of rows that can be tool calls recompute the
+cards they change and serve them anew (`recomputeLocalizedCardsTx`).
+Stamping the inserted row's anchors would rewrite each of them once per
+moved child. A writer that
 inserts a row no read showed must not hold the flag. The update and delete
 triggers stamp the full set under the flag, because thread deletion chunks
 delete under it and a delete changes its anchors' reads.
