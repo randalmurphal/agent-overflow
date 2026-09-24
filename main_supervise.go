@@ -60,6 +60,11 @@ func runSupervise(bootArgs []string) {
 		fatalf("supervise: %v", err)
 	}
 	heldBackendLock = lock
+	// The in-app update's layout under the same lock. Serve's own layout is
+	// the supervisor's to resume, which Run does.
+	if err := supervise.PrepareDataRoot(dataDir, supervise.PrepareOptions{OwnsServeLayout: true, Log: log.Printf}); err != nil {
+		fatalf("supervise: %v", err)
+	}
 	executable, err := os.Executable()
 	if err != nil {
 		fatalf("supervise: cannot find this binary's own path: %v", err)

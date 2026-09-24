@@ -59,6 +59,7 @@ type StartupReporter struct {
 	open    []startupPhase
 	stop    chan struct{}
 	stopped chan struct{}
+	observe func(p startupprogress.Progress, liveness bool)
 }
 
 type startupPhase struct {
@@ -84,6 +85,23 @@ func newStartupReporter(srv *Server, updatingTo string, interval time.Duration, 
 		UpdatingTo: updatingTo,
 	}
 	srv.SetStartupProgress(r.current)
+	return r
+}
+
+// Observe installs fn to receive every report as it is published, starting
+// with the current one, and returns r. liveness is true for a heartbeat,
+// which only advances UpdatedAt; every other report is a real step. fn runs
+// under the reporter's lock and must not block. A nil fn observes nothing.
+func (r *StartupReporter) Observe(fn func(p startupprogress.Progress, liveness bool)) *StartupReporter {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.observe = fn
+	if fn != nil {
+		fn(r.current, false)
+	}
 	return r
 }
 
@@ -156,6 +174,9 @@ func (r *StartupReporter) heartbeat(stop <-chan struct{}, stopped chan<- struct{
 			r.mu.Lock()
 			r.current.UpdatedAt = r.now().UnixMilli()
 			r.srv.SetStartupProgress(r.current)
+			if r.observe != nil {
+				r.observe(r.current, true)
+			}
 			r.mu.Unlock()
 		}
 	}
@@ -169,4 +190,7 @@ func (r *StartupReporter) publishLocked() {
 	r.current.Steps = inner.steps
 	r.current.UpdatedAt = r.now().UnixMilli()
 	r.srv.SetStartupProgress(r.current)
+	if r.observe != nil {
+		r.observe(r.current, false)
+	}
 }

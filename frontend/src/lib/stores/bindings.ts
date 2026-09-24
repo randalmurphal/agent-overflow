@@ -548,6 +548,7 @@ export {
   ListReleases,
   DownloadUpdate,
   RestartToUpdate,
+  CancelRestartToUpdate,
 
   // Updating a SUPERVISED serve host from wherever you are
   // (docs/architecture/serve-mode.md § Updating over the wire). All three

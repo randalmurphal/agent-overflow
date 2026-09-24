@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -283,6 +284,67 @@ func TestStartupReporter_PhasesNestAndHeartbeat(t *testing.T) {
 	var nilReporter *StartupReporter
 	nilReporter.BeginBootPhase("x", "y")()
 	nilReporter.BootPhaseDetail("z", 1, 1)
+}
+
+// TestStartupReporter_ObserveSeparatesHeartbeatsFromSteps: a trial is
+// judged only by real steps, so the observer must be able to tell a
+// heartbeat from a report.
+func TestStartupReporter_ObserveSeparatesHeartbeatsFromSteps(t *testing.T) {
+	srv := &Server{}
+	var clock atomic.Int64
+	now := func() time.Time { return time.UnixMilli(clock.Add(1)) }
+	r := newStartupReporter(srv, "", 2*time.Millisecond, now)
+
+	type report struct {
+		detail   string
+		liveness bool
+	}
+	var mu sync.Mutex
+	var got []report
+	if r.Observe(func(p startupprogress.Progress, liveness bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, report{p.Detail, liveness})
+	}) != r {
+		t.Fatal("Observe did not return its reporter")
+	}
+	end := r.BeginBootPhase("store.open", "Opening the database")
+	r.BootPhaseDetail("Applying migration 1 of 1", 1, 1)
+	heartbeats := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, g := range got {
+			if g.liveness {
+				n++
+			}
+		}
+		return n
+	}
+	if !waitFor(func() bool { return heartbeats() >= 2 }, 5*time.Second) {
+		t.Fatal("no heartbeat reached the observer")
+	}
+	end()
+
+	mu.Lock()
+	defer mu.Unlock()
+	var steps []string
+	for _, g := range got {
+		if !g.liveness {
+			steps = append(steps, g.detail)
+		} else if g.detail != "Opening the database" && g.detail != "Applying migration 1 of 1" {
+			t.Fatalf("heartbeat carried %q, want the open step", g.detail)
+		}
+	}
+	want := []string{"Starting", "Opening the database", "Applying migration 1 of 1"}
+	if !slices.Equal(steps, want) {
+		t.Fatalf("steps = %q, want %q", steps, want)
+	}
+
+	var nilReporter *StartupReporter
+	if nilReporter.Observe(func(startupprogress.Progress, bool) { t.Fatal("a nil reporter reported") }) != nil {
+		t.Fatal("a nil reporter returned a reporter")
+	}
 }
 
 // TestAttachedBootstrapPassesOnAStartingReport: a carried backend that is

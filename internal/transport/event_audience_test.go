@@ -76,6 +76,9 @@ var (
 		eventchan.UpdaterInstalling,
 		eventchan.UpdaterProgress,
 		eventchan.UpdaterReady,
+		// The restart-to-update wait: its RPCs are host-scoped and only
+		// this host restarts.
+		eventchan.UpdaterRestart,
 		eventchan.UpdaterVerifying,
 		eventchan.WebviewTrim,
 	}

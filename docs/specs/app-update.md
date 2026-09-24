@@ -1,6 +1,8 @@
 # In-app updates: trial and rollback
 
-Status: design, not implemented. Open decisions are listed at the end.
+Status: the Windows launcher and WSL payload are implemented. The macOS and
+Linux desktop helper and serve's trial budget are not. Decisions are listed at
+the end.
 
 An in-app update on macOS, the Linux desktop or Windows (the launcher and its
 WSL payload) must leave the previous version and its database in place when
@@ -35,8 +37,8 @@ model stay in
    version where the user launches it, and a target that cannot start never
    displaces it.
 4. After commit only the new version is kept. The previous version cannot run
-   safely on the migrated database: there are no down migrations and the store
-   does not refuse a newer schema.
+   safely on the migrated database: there are no down migrations, and the
+   store refuses a schema newer than it knows.
 5. Every step is recoverable on the next launch from durable state, by
    whichever version the install path holds.
 6. Layout, snapshot, restore, state, the child channel and the stall rule come
@@ -55,8 +57,11 @@ while here the install path is the selection.
 On Windows the WSL side uses only that layout's `snapshot/` and
 `restore-marker.json`. The record lives on the Windows side, under `runtime\`
 in the launcher's config directory (`wsldistro.WSLConfigDir`), one file per
-runtime profile. The launcher chooses an executable before WSL starts, and
-fsync and rename are native there.
+runtime profile (`supervise.LauncherRecord`). The launcher chooses an
+executable before WSL starts, and fsync and rename are native there. The WSL
+backend reads the record through `/mnt/c` only for the reason it shows after
+a rollback; it reads the file dev and production launchers share, because
+isolated profiles run the harness backend, which has no updater.
 
 The record is `supervise.State` with one `UpdateRecord`. `Begin` refuses a
 second update while one is pending, `Retry` counts a trial attempt durably
@@ -79,8 +84,10 @@ stopped mid-restore or mid-trial opens that database today.
 
 - **Free space first.** The data directory's filesystem must have room for the
   database, WAL and shared-memory files plus a margin of 10% of their size,
-  at least 512 MiB. The old version checks before it hands off, so the user
-  sees the failure in the running app, and the snapshot step checks again.
+  at least 512 MiB. The old version checks before it waits for running work
+  and again before it hands off, so the user sees the failure in the running
+  app, and the snapshot step checks again. Reinstalling the running version
+  takes no snapshot and is not checked.
   The check applies to clones too, because the trial's writes unshare cloned
   blocks. The margin is not a guarantee: a migration that rewrites a large
   table can need more. A trial that runs out of space fails and rolls back,
@@ -99,7 +106,10 @@ stopped mid-restore or mid-trial opens that database today.
 
 The copy still runs only while no process holds the database. Every backend
 takes `backend.lock` before it opens SQLite, and the step that snapshots, runs
-the trial or restores holds that lock for its whole duration. The snapshot is
+the trial or restores holds that lock for its whole duration. The manifest
+records the size and modification time of each file of the triple, so a
+later step can prove the live database is still the one the snapshot copied
+(`VerifyLiveUnchanged`). The snapshot is
 deleted only after a durable commit, or after a durable rollback settlement.
 
 Measured on WSL2 ext4 with a warm page cache:
@@ -116,7 +126,10 @@ holds the lock:
 - It boots as the platform's real boot does, including its credential backend
   (not serve's `UseFileKeychain`), with the lock held by the parent
   (`BackendLockHeldBySupervisor`) and unattended work parked
-  (`ParkUnattendedWork`), as a serve trial does.
+  (`ParkUnattendedWork`), as a serve trial does. The parent passes its lock
+  descriptor to the trial (fd 5, named by `AO_BACKEND_LOCK_FD`), so the data
+  root stays locked until the trial exits even when the parent dies first.
+  The trial makes it close-on-exec, so nothing the trial starts keeps it.
 - It has no window, binds an ephemeral loopback port, does not write the port
   pin, and skips the boot-time update reconciliation and notices, which belong
   to the published version's boot.
@@ -130,24 +143,30 @@ holds the lock:
 ### Progress and the stall rule
 
 - A `progress` frame carries the boot progress report
-  (`startupprogress.Progress`: phase, detail, step, steps, `updatedAt`). The
-  child's startup reporter sends every report it publishes, heartbeats
-  included.
+  (`startupprogress.Progress`: phase, detail, step, steps, `updatedAt`) and a
+  `liveness` flag. The child's startup reporter sends every report it
+  publishes. Its once-a-second heartbeat while a phase is open is liveness;
+  a phase or step it enters is progress.
 - `hello` gains a `progress` capability flag. It is additive, so
   `ProtocolVersion` stays 1 and existing supervisors keep accepting new
   children.
-- The parent's trial timer resets whenever `updatedAt` advances. The trial
-  fails after 30 s without an advance, the limit the launcher's loading page
-  uses, with the reason "the trial stopped reporting progress during
-  <phase>". It also fails when the child exits before `prepared`.
+- The parent's trial timer resets only on progress, never on liveness. The
+  trial fails after 30 s without progress (`TrialStallWindow`, the limit the
+  launcher's loading page uses) with the reason "the new version stopped
+  making progress for 30s (last step: <step>)", and after 30 minutes
+  (`TrialCeiling`) whatever it reports. It also fails when the child exits
+  before `prepared`.
 - A child without the capability keeps the 120 s ceiling
   (`DefaultTrialBudget`), because there is no signal to judge a stall by. An
   older target chosen in the version picker is such a child.
-- The startup reporter advances `updatedAt` every second while any phase is
-  open, so a step that blocks inside an open phase never stalls. That is the
-  reason for an absolute ceiling (Decision 4).
+- The SQLite driver exposes no per-statement progress, so a migration step
+  is one report. A single migration statement that runs longer than 30 s
+  fails the trial and rolls back (Decision 4).
 - A process running the trial reports its own progress (snapshot bytes, trial,
-  restore bytes) the same way, and its watcher applies the same 30 s rule.
+  restore bytes) the same way, relays the trial's reports, and announces each
+  wait as a step. The launcher judges each WSL command with a 45 s window
+  (the trial's 30 s plus 15 s for the two announced waits: the previous
+  backend's lock and the trial's stop) and a 60 minute ceiling.
 
 Serve uses the same timer: its supervisor gains the stall rule and nothing
 else changes in its cycle.
@@ -173,8 +192,12 @@ turns, transfers, terminals and workflows. Added:
   admission through `workAdmission.quiesce(updateWorkReason)`: unfinished
   triage work, queued dispatch, remote jobs, terminals, running workflows,
   active provider turns, running background work, and every lease holder,
-  transfers included. The status names what it waits for. A failed handoff
-  reopens admission. How the wait appears is Decision 7.
+  transfers included. An idle host hands off within the call. A busy one
+  returns at once and waits: `updater:restart` names what it waits for,
+  `CheckForUpdate` reports it as `restartWaitingFor` to a reloaded page, and
+  `CancelRestartToUpdate` ends the wait until the handoff begins. A failed
+  handoff, or a WSL handoff the launcher fails, refuses or goes silent on,
+  reopens admission. Shutdown ends and joins a waiting restart (Decision 7).
 - **One update at a time.** In process, `busy` and `updateInstalling` as now.
   Across processes, a pending record refuses `Begin`, and the process applying
   the update holds the single-instance identity for its whole duration.
@@ -215,25 +238,30 @@ result and is known to start.
 
 | # | Who | Step |
 |---|---|---|
-| 1 | B_old | `RestartToUpdate`: interlocks, free-space check, selfupdate marker, `updater:install` directive (as now). |
-| 2 | L_old | Directive checks, `proceeding` acknowledgement and `CheckAndInstall` verification (as now). A target older than the first release with this flow takes the existing swap. Otherwise L_old checks that it can write beside S, then runs `L_new --update-preflight`, which installs B_new to a staging path on the same filesystem as the stable payload and runs its `__service-preflight` through `wsl.exe`. A failure reports `failed`; nothing has changed. |
+| 1 | B_old | `RestartToUpdate`: interlocks, the wait for running work, free-space check, selfupdate marker, `updater:install` directive (as now). |
+| 2 | L_old | Directive checks and `proceeding` acknowledgement (as now). `StageCopy` copies L_new to `runtime\agent-overflow-update-<id>.exe` and verifies its digest. L_old checks that it can write beside S, then runs `L_new --update-preflight <answer> --update-id <id> --distro <d> --update-stable <path>` (3 min), which installs B_new beside the stable payload, runs its `__service-preflight` through `wsl.exe` and writes the answer file. A launcher that predates this flow rejects the unknown flag and writes no answer; that target, and the running version again, take the existing swap. A failed answer reports `failed`; nothing has changed. |
 | 3 | L_old | Writes the record `pending` (From L_old, To L_new) durably, starts `L_new --update-apply <id> --wait-pid <pid>` detached, and quits through its ordinary shutdown, which stops B_old. |
-| 4 | L_new | Waits for L_old to exit (30 s, as the Wails helper does; otherwise settles `failed` and exits). Claims the single-instance identity, so a launch of S during the update focuses this window. Shows the loading page with `updatingTo`. |
-| 5 | L_new, B_new | On the first attempt, `__update-snapshot`: waits up to 30 s for B_old to release `backend.lock` (otherwise the update settles `failed` and S starts), finishes a marked restore, checks free space, snapshots with progress. |
+| 4 | L_new | Waits for L_old to exit before it claims the single-instance identity (30 s, as the Wails helper does; otherwise settles `failed` and exits). A launch of S during the update then focuses this window. Shows the loading page with `updatingTo`; closing the window hides it and the update continues. |
+| 5 | L_new, B_new | On the first attempt, `__update-snapshot`, given the free space of the host drive that holds the distribution (`--host-free`): waits up to 30 s for B_old to release `backend.lock` (otherwise the update settles `failed` and S starts), finishes a marked restore, checks free space, snapshots with progress. |
 | 6 | L_new | `Retry`, durably. |
-| 7 | L_new, B_new | `__update-trial-run`: takes the lock, requires the snapshot, runs the trial child with the stall rule and forwards its progress. On `prepared` it stops the trial and exits 0. On failure it restores the snapshot marker-first and exits with the reason. If its stdout closes, it stops the trial and exits without restoring, leaving that to recovery. |
+| 7 | L_new, B_new | `__update-trial-run`: takes the lock, requires the snapshot, and on the first attempt refuses when the live triple no longer matches the sizes and modification times the snapshot recorded. Runs the trial child with the stall rule and relays its progress. On `prepared` it stops the trial and exits 0. On failure it restores the snapshot marker-first and exits with the reason. If its stdout closes, it stops the trial and exits without restoring, leaving that to recovery. A refusal on the first attempt settles `failed`; any other end that is not `prepared` or `rolled-back` takes step 8b with a restore. |
 | 8a | L_new | Commit: `Settle(committed)` durably, then `__update-discard`. Invalidate `wsl.json`, rename the staged B_new over the stable path, and record its fingerprint; the trial was a successful boot of those bytes. Copy L_new to `S.new` beside S and replace S with it (`MoveFileEx`, `REPLACE_EXISTING` and `WRITE_THROUGH`). Start S and exit. |
-| 8b | L_new | Rollback: `Settle(rolled-back, reason)` durably, `__update-discard`, delete the staged payload, start S (still L_old) and exit. |
-| 9 | Launcher at S | Ordinary launch. Marks a settled record reported when it starts the backend and removes staging residue. After a rollback or failure, B_old's boot reads the reason from the record beside the selfupdate marker and shows it through `ApplyFailure` and `NotifyPendingUpdateApplyFailure`. |
+| 8b | L_new | Rollback: `__update-restore` through the stable payload unless the trial command restored, `Settle(rolled-back, reason)` durably, `__update-discard`, delete the staged payload, start S (still L_old) and exit. A restore that fails leaves the record `pending` and shows an error page; the next launch retries it. |
+| 9 | Launcher at S | Reconciles the record after it claims the single-instance identity and before WSL starts, then launches. Marks a settled record reported and removes staging residue. After a rollback or failure, B_old's boot reads the reason from the record beside the selfupdate marker and shows "Update to X didn't apply: <reason>. Still running Y." through `ApplyFailure` and `NotifyPendingUpdateApplyFailure`. |
 
 Handing back to the previous launcher is step 8b: S still holds L_old because
 nothing is published before commit. After commit S holds L_new, and the
 previous launcher and payload are gone (rule 4).
 
 Between steps 5 and 7 no process holds `backend.lock`. The single-instance
-identity keeps other launchers out; a backend started by hand inside WSL in
-that interval blocks step 7 until it exits, and its writes are lost if the
-trial then rolls back.
+identity keeps other launchers out. A backend started by hand inside WSL in
+that interval blocks step 7 until it exits, and step 7 then refuses because
+the database changed, so a rollback never loses its writes. A resumed attempt
+cannot make that check, because the earlier trial changed the database.
+
+B_old's install deadline after the acknowledgement is 5 minutes: the staged
+copy, the 3 minute preflight or the 2 minute direct swap, and the 25 s exit
+watchdog.
 
 ### Recovery on the next launch
 
@@ -245,14 +273,16 @@ A launcher at S reads the record before it starts WSL:
 | settled, not reported | ordinary launch; the backend shows the outcome |
 | pending, 0 attempts | settle `failed` ("interrupted before it started"), `__update-discard` for a partial snapshot; ordinary launch |
 | pending, attempts below `TrialAttemptLimit` | hand off to the staged `L_new --update-apply <id>`, which resumes at step 5 |
-| pending, at the limit or staged launcher missing | `__update-restore` through the stable payload, settle `rolled-back`, `__update-discard`, ordinary launch |
+| pending, at the limit or staged launcher missing | `__update-restore` through the stable payload, settle `rolled-back`, `__update-discard`, ordinary launch; if the restore fails, an error page and nothing starts |
 | committed, S is not the target | hand off to the staged L_new, which repeats step 8a; if it is missing, show an error page naming the version to reinstall and start nothing |
 | committed, S is the target | `__update-discard` while the record is unreported; ordinary launch |
 
 Steps 8a and 8b are idempotent. A pending record with attempts and no snapshot
-fails closed, as serve's `snapshotForTrial` does. A command that stalls for
-30 s is stopped from the Linux side (`wsl.exe --exec kill`, with the pid from
-its first report), because killing `wsl.exe` may not end the Linux process.
+fails closed, as serve's `snapshotForTrial` does. A command that stalls is
+stopped from the Linux side (`wsl.exe --exec kill`, SIGTERM then SIGKILL,
+with the pid from its first report), because killing `wsl.exe` may not end
+the Linux process; `wsl.exe` is killed last. A result the command reports
+while it stops still decides the trial.
 
 ## macOS and Linux desktop
 
@@ -375,10 +405,17 @@ Windows:
 - Whether a Linux process survives when the Job Object kills its `wsl.exe`.
 - Resolving the host drive of the distribution's virtual disk.
 - Copy throughput with a cold page cache.
+- L_new waiting on L_old's process handle, hiding its window on close while
+  the update runs, and starting S detached after it.
 
 Linux: `FICLONE` on btrfs and XFS needs root for a loop mount here.
 
-## Decisions needed
+## Decisions
+
+Accepted: 2, 3, 4 (with a progress-only stall rule), 5, 8 and 9. Decisions
+1, 6 and 7 are the user's; the implementation follows each recommendation in
+one place: 1 in the helper's window, 6 in `CheckDatabaseSnapshotSpace` and
+`TakeSnapshot`, 7 in `App.RestartToUpdate`.
 
 1. **Progress window during an update on macOS and Linux.** Recommended: the
    helper shows the boot progress page, claims the single-instance identity so
@@ -394,12 +431,11 @@ Linux: `FICLONE` on btrfs and XFS needs root for a loop mount here.
 3. **Rollback ends at commit.** Recommended: no confirmation after the
    relaunch, and the snapshot is deleted at commit. A failure after
    activation (provider resume, workflows) is not rolled back, as for serve.
-4. **Absolute trial ceiling.** Named reason: an open phase heartbeats while
-   its step is blocked. Recommended: a 30 minute ceiling beside the 30 s stall
-   rule. The alternative is progress that advances only on real work, which
-   needs per-statement progress from SQLite that the driver does not expose
-   through `database/sql`; a single long statement would otherwise stall
-   falsely.
+4. **Absolute trial ceiling.** Accepted: a 30 minute ceiling beside the 30 s
+   stall rule, which counts progress and never liveness. The driver exposes
+   no per-statement progress, so one migration statement longer than 30 s
+   fails the trial. Open: accept that, count liveness during migrations
+   within the ceiling, or report progress per migration batch from the store.
 5. **Deferred migration phases.** Recommended: outside the rollback boundary.
    They are idempotent and retried on each open by design, may still run
    inside the trial, and continue after commit. The alternative runs them to
@@ -416,7 +452,7 @@ Linux: `FICLONE` on btrfs and XFS needs root for a loop mount here.
    `TrialAttemptLimit` of 2 and its selection table, so the next launch
    resumes an interrupted update once before rolling back. The alternative
    rolls back at the first interruption.
-9. **Opening a newer schema.** The store opens a database migrated by a newer
-   binary. A version-picker downgrade therefore passes its trial and runs on
-   the newer schema. A store refusal would make that trial fail and roll back.
-   This belongs to the store owner.
+9. **Opening a newer schema.** Accepted: the store refuses a database whose
+   migration version is newer than the build knows, so a version-picker
+   downgrade fails its trial and rolls back with that error as the reason.
+   The store owns the refusal.

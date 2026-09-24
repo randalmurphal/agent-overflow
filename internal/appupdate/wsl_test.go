@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/selfupdate"
+	"agent-overflow/internal/supervise"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
 	"github.com/wailsapp/wails/v3/pkg/updater/providers/github"
@@ -136,6 +138,7 @@ func newWSLTestApp(t *testing.T, srv *httptest.Server, current string, deadlines
 	mode := &wslUpdateMode{
 		stagingDir:      filepath.Join(t.TempDir(), selfupdate.StagingDirName),
 		markerDir:       t.TempDir(),
+		snapshotSpace:   func(string) error { return nil },
 		ackTimeout:      deadlines.ack,
 		backstopTimeout: deadlines.backstop,
 	}
@@ -224,6 +227,15 @@ func TestConfigureWSLTargetsLauncherArtifact(t *testing.T) {
 	if a.updater.wsl.markerDir != markerDir {
 		t.Fatalf("markerDir = %q, want %q", a.updater.wsl.markerDir, markerDir)
 	}
+	// The launcher writes its record under its own config dir, which is the
+	// staging root seen through /mnt/c.
+	wantRecord := filepath.Join(stagingRoot, "runtime", "app-update.json")
+	if a.updater.wsl.launcherRecord != wantRecord {
+		t.Fatalf("launcherRecord = %q, want %q", a.updater.wsl.launcherRecord, wantRecord)
+	}
+	if reflect.ValueOf(a.updater.wsl.snapshotSpace).Pointer() != reflect.ValueOf(supervise.CheckDatabaseSnapshotSpace).Pointer() {
+		t.Fatal("snapshotSpace is not supervise.CheckDatabaseSnapshotSpace")
+	}
 }
 
 func TestConfigureWSLRequiresStorageRoots(t *testing.T) {
@@ -283,7 +295,7 @@ func TestWSLUpdateFlowStagesAndHandsOff(t *testing.T) {
 	}
 
 	// Hand off.
-	if err := a.RestartToUpdate(); err != nil {
+	if err := a.RestartToUpdate(nil); err != nil {
 		t.Fatalf("RestartToUpdate: %v", err)
 	}
 	directive, ok := rec.await(t, selfupdate.ChannelInstall, 5*time.Second).(selfupdate.InstallDirective)
@@ -353,7 +365,7 @@ func TestWSLReadyEventLandsAfterTheDownloadFenceDrops(t *testing.T) {
 			return
 		}
 		select {
-		case restarted <- a.RestartToUpdate():
+		case restarted <- a.RestartToUpdate(nil):
 		default:
 		}
 	}
@@ -382,7 +394,7 @@ func TestWSLInstallFailedReportUnwinds(t *testing.T) {
 	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", noDeadlines)
 	stageForTest(t, a, rec)
 
-	if err := a.RestartToUpdate(); err != nil {
+	if err := a.RestartToUpdate(nil); err != nil {
 		t.Fatalf("RestartToUpdate: %v", err)
 	}
 	rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
@@ -420,7 +432,7 @@ func TestWSLInstallACKTimeoutUnwinds(t *testing.T) {
 	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", wslTestDeadlines{ack: 20 * time.Millisecond, backstop: time.Hour})
 	stageForTest(t, a, rec)
 
-	if err := a.RestartToUpdate(); err != nil {
+	if err := a.RestartToUpdate(nil); err != nil {
 		t.Fatalf("RestartToUpdate: %v", err)
 	}
 	info, ok := rec.await(t, "updater:error", 5*time.Second).(updater.ErrorInfo)
@@ -454,7 +466,7 @@ func handOffForTest(t *testing.T, a *Service, rec *eventRecorder) {
 	t.Helper()
 	stageForTest(t, a, rec)
 	from := rec.mark()
-	if err := a.RestartToUpdate(); err != nil {
+	if err := a.RestartToUpdate(nil); err != nil {
 		t.Fatalf("RestartToUpdate: %v", err)
 	}
 	rec.awaitAfter(t, selfupdate.ChannelInstall, from, 5*time.Second)
@@ -616,7 +628,7 @@ func TestWSLInstallResequencesAfterBackstop(t *testing.T) {
 	mode.backstopTimeout = time.Hour
 	stageForTest(t, a, rec)
 	from := rec.mark()
-	if err := a.RestartToUpdate(); err != nil {
+	if err := a.RestartToUpdate(nil); err != nil {
 		t.Fatalf("second RestartToUpdate: %v", err)
 	}
 	rec.awaitAfter(t, selfupdate.ChannelInstall, from, 5*time.Second)
@@ -704,7 +716,7 @@ func TestWSLInstallUnwindDropsTheMarkerBeforeTheFenceLifts(t *testing.T) {
 	handOffForTest(t, a, rec)
 
 	a.updater.mu.Lock()
-	acted := a.abandonWSLInstallLocked(a.updater.installGen)
+	_, acted := a.abandonWSLInstallLocked(a.updater.installGen)
 	marker, err := selfupdate.LoadMarker(mode.markerDir)
 	a.updater.mu.Unlock()
 	if !acted {
@@ -790,7 +802,7 @@ func TestReportUpdateInstallStatusRejectsStaleVersion(t *testing.T) {
 	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
 	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", noDeadlines)
 	stageForTest(t, a, rec)
-	if err := a.RestartToUpdate(); err != nil {
+	if err := a.RestartToUpdate(nil); err != nil {
 		t.Fatalf("RestartToUpdate: %v", err)
 	}
 	rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
@@ -813,7 +825,7 @@ func TestReportUpdateInstallStatusDuplicateFailedIsIdempotent(t *testing.T) {
 	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
 	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", noDeadlines)
 	stageForTest(t, a, rec)
-	if err := a.RestartToUpdate(); err != nil {
+	if err := a.RestartToUpdate(nil); err != nil {
 		t.Fatalf("RestartToUpdate: %v", err)
 	}
 	rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
@@ -854,11 +866,123 @@ func countEvents(rec *eventRecorder, channel string) int {
 func TestRestartToUpdateWSLRequiresStagedArtifact(t *testing.T) {
 	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
 	a, _, mode := newWSLTestApp(t, srv, "0.0.1", noDeadlines)
-	if err := a.RestartToUpdate(); !errors.Is(err, ErrUpdateNotReady) {
+	if err := a.RestartToUpdate(nil); !errors.Is(err, ErrUpdateNotReady) {
 		t.Fatalf("RestartToUpdate with nothing staged = %v, want ErrUpdateNotReady", err)
 	}
 	if m := readMarker(t, mode.markerDir); m != nil {
 		t.Fatalf("a refused restart must write no marker, got %+v", m)
+	}
+}
+
+func TestRestartToUpdateWSLRefusesWithoutSnapshotSpace(t *testing.T) {
+	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
+	a, rec, mode := newWSLTestApp(t, srv, "0.0.1", noDeadlines)
+	stageForTest(t, a, rec)
+	short := &supervise.InsufficientSpaceError{Need: 3 << 30, Available: 1 << 30, Where: "the disk that holds " + mode.markerDir}
+	var checked []string
+	mode.snapshotSpace = func(dir string) error {
+		checked = append(checked, dir)
+		return short
+	}
+
+	if err := a.RestartReady(); !errors.Is(err, short) {
+		t.Fatalf("RestartReady = %v, want the space refusal", err)
+	}
+	if err := a.RestartToUpdate(nil); !errors.Is(err, short) {
+		t.Fatalf("RestartToUpdate = %v, want the space refusal", err)
+	}
+	if len(checked) != 2 || checked[0] != mode.markerDir || checked[1] != mode.markerDir {
+		t.Fatalf("space checked for %q, want the data dir %q on each call", checked, mode.markerDir)
+	}
+	if m := readMarker(t, mode.markerDir); m != nil {
+		t.Fatalf("a refused restart must write no marker, got %+v", m)
+	}
+	if a.busySnapshot() {
+		t.Fatal("a refused restart must not hold the fence")
+	}
+	rec.refute(t, selfupdate.ChannelInstall, 50*time.Millisecond)
+
+	// Space freed: the same staged update hands off.
+	mode.snapshotSpace = func(string) error { return nil }
+	if err := a.RestartReady(); err != nil {
+		t.Fatalf("RestartReady after space is freed: %v", err)
+	}
+	if err := a.RestartToUpdate(nil); err != nil {
+		t.Fatalf("RestartToUpdate after space is freed: %v", err)
+	}
+	rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
+}
+
+func TestRestartToUpdateWSLSameVersionNeedsNoSnapshotSpace(t *testing.T) {
+	// Reinstalling the running version is the launcher's direct swap, which
+	// takes no snapshot, so it must not be refused for one.
+	srv := newMockGitHub(t, wslReleases(), sumsForWSL)
+	a, rec, mode := newWSLTestApp(t, srv, "0.0.8", noDeadlines)
+	if err := a.DownloadUpdate("v0.0.8"); err != nil {
+		t.Fatalf("DownloadUpdate(v0.0.8): %v", err)
+	}
+	rec.await(t, "updater:ready", 20*time.Second)
+	mode.snapshotSpace = func(string) error { return errors.New("the space check must not run") }
+
+	if err := a.RestartToUpdate(nil); err != nil {
+		t.Fatalf("RestartToUpdate of the running version: %v", err)
+	}
+	rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
+}
+
+func TestWSLInstallUnwindRunsOnAbandoned(t *testing.T) {
+	// The host closes work admission for a restart; every unwind of a
+	// handed-off install must tell it to reopen, exactly once.
+	proceed := func(t *testing.T, a *Service) {
+		if err := a.ReportUpdateInstallStatus(selfupdate.StatusProceeding, "0.0.8", ""); err != nil {
+			t.Fatalf("proceeding report: %v", err)
+		}
+	}
+	fail := func(t *testing.T, a *Service) {
+		if err := a.ReportUpdateInstallStatus(selfupdate.StatusFailed, "0.0.8", "no"); err != nil {
+			t.Fatalf("failed report: %v", err)
+		}
+	}
+	for _, tc := range []struct {
+		name      string
+		deadlines wslTestDeadlines
+		// live is false when the unwind can fire before the test looks.
+		live   bool
+		unwind func(t *testing.T, a *Service)
+	}{
+		{"launcher failed", noDeadlines, true, fail},
+		{"launcher failed after acknowledging", noDeadlines, true, func(t *testing.T, a *Service) {
+			proceed(t, a)
+			fail(t, a)
+		}},
+		{"silence after acknowledging", wslTestDeadlines{ack: time.Hour, backstop: 20 * time.Millisecond}, true, proceed},
+		{"no acknowledgement", wslTestDeadlines{ack: 20 * time.Millisecond, backstop: time.Hour}, false, func(*testing.T, *Service) {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newMockGitHub(t, wslReleases(), sumsForWSL)
+			a, rec, _ := newWSLTestApp(t, srv, "0.0.1", tc.deadlines)
+			var abandoned atomic.Int32
+			stageForTest(t, a, rec)
+			if err := a.RestartToUpdate(func() { abandoned.Add(1) }); err != nil {
+				t.Fatalf("RestartToUpdate: %v", err)
+			}
+			rec.await(t, selfupdate.ChannelInstall, 5*time.Second)
+			if n := abandoned.Load(); tc.live && n != 0 {
+				t.Fatalf("onAbandoned ran %d times during a live handoff", n)
+			}
+			tc.unwind(t, a)
+			rec.await(t, "updater:error", 5*time.Second)
+			if n := abandoned.Load(); n != 1 {
+				t.Fatalf("onAbandoned ran %d times, want 1", n)
+			}
+			// A late report finds nothing in flight and runs nothing.
+			if err := a.ReportUpdateInstallStatus(selfupdate.StatusFailed, "0.0.8", "late"); !errors.Is(err, ErrNoInstallInFlight) {
+				t.Fatalf("late report = %v, want ErrNoInstallInFlight", err)
+			}
+			if n := abandoned.Load(); n != 1 {
+				t.Fatalf("onAbandoned ran %d times after a late report, want 1", n)
+			}
+		})
 	}
 }
 
@@ -870,7 +994,7 @@ func TestRestartToUpdateWSLRejectedWhileBusy(t *testing.T) {
 	a.updater.mu.Lock()
 	a.updater.busy = true
 	a.updater.mu.Unlock()
-	if err := a.RestartToUpdate(); !errors.Is(err, ErrUpdateBusy) {
+	if err := a.RestartToUpdate(nil); !errors.Is(err, ErrUpdateBusy) {
 		t.Fatalf("RestartToUpdate while busy = %v, want ErrUpdateBusy", err)
 	}
 }
@@ -957,7 +1081,7 @@ func TestUpdaterPendingStashSequences(t *testing.T) {
 			t.Fatalf("staged = %+v, want the untouched 0.0.6", staged)
 		}
 
-		if err := a.RestartToUpdate(); err != nil {
+		if err := a.RestartToUpdate(nil); err != nil {
 			t.Fatalf("RestartToUpdate: %v", err)
 		}
 		directive := rec.await(t, selfupdate.ChannelInstall, 5*time.Second).(selfupdate.InstallDirective)
@@ -1011,7 +1135,7 @@ func TestStageWSLUpdateDigestMismatchEmitsError(t *testing.T) {
 	}
 	// The restart must now refuse rather than hand the launcher a directive for
 	// a file that is not there.
-	if err := a.RestartToUpdate(); !errors.Is(err, ErrUpdateNotReady) {
+	if err := a.RestartToUpdate(nil); !errors.Is(err, ErrUpdateNotReady) {
 		t.Fatalf("RestartToUpdate after a failed stage = %v, want ErrUpdateNotReady", err)
 	}
 }
@@ -1037,8 +1161,38 @@ func TestStageWSLUpdateWithoutIdentityFailsClosed(t *testing.T) {
 
 func newReconcileFixture(t *testing.T) (*Service, *wslUpdateMode) {
 	t.Helper()
-	mode := &wslUpdateMode{markerDir: t.TempDir(), stagingDir: filepath.Join(t.TempDir(), selfupdate.StagingDirName)}
+	mode := &wslUpdateMode{
+		markerDir:      t.TempDir(),
+		stagingDir:     filepath.Join(t.TempDir(), selfupdate.StagingDirName),
+		launcherRecord: filepath.Join(t.TempDir(), "runtime", "app-update.json"),
+	}
 	return &Service{updater: appUpdaterState{wsl: mode}}, mode
+}
+
+// saveLauncherRecord writes the launcher's record for an update from from to
+// to that settled in state with reason.
+func saveLauncherRecord(t *testing.T, path, from, to string, state supervise.UpdateState, reason string) {
+	t.Helper()
+	adopted, err := supervise.Adopt(from)
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	begun, err := adopted.Begin("0123456789abcdef", to, time.Now())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	settled, err := begun.Settle(state, reason, time.Now())
+	if err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+	if err := supervise.SaveLauncherRecord(path, supervise.LauncherRecord{
+		State: settled, Distro: "Ubuntu", StablePayload: "/home/u/.local/bin/agent-overflow",
+		StagedPayload:  "/home/u/.local/bin/agent-overflow.update-0123456789abcdef",
+		StagedLauncher: `C:\Users\u\AppData\Roaming\agent-overflow\runtime\agent-overflow-update-0123456789abcdef.exe`,
+		InstallPath:    `C:\Program Files\Agent Overflow\agent-overflow.exe`, TargetFingerprint: "abc",
+	}); err != nil {
+		t.Fatalf("save launcher record: %v", err)
+	}
 }
 
 // seedStagedArtifact drops a file in the staging dir so the sweep half of the
@@ -1127,6 +1281,57 @@ func TestReconcileWSLUpdateMarkerMismatchRecordsNotice(t *testing.T) {
 	}
 }
 
+func TestReconcileWSLUpdateMarkerNamesTheLauncherReason(t *testing.T) {
+	const reason = "the trial stopped reporting progress during migrate."
+	generic := "Update to 0.0.11 didn't apply — still running 0.0.10."
+	for _, tc := range []struct {
+		name   string
+		record func(t *testing.T, path string)
+		want   string
+	}{
+		{"rolled back", func(t *testing.T, path string) {
+			saveLauncherRecord(t, path, "0.0.10", "0.0.11", supervise.UpdateRolledBack, reason)
+		}, "Update to 0.0.11 didn't apply: the trial stopped reporting progress during migrate. Still running 0.0.10."},
+		{"failed", func(t *testing.T, path string) {
+			saveLauncherRecord(t, path, "0.0.10", "0.0.11", supervise.UpdateFailed, "the new launcher could not be started")
+		}, "Update to 0.0.11 didn't apply: the new launcher could not be started. Still running 0.0.10."},
+		{"no record", func(*testing.T, string) {}, generic},
+		{"another target", func(t *testing.T, path string) {
+			saveLauncherRecord(t, path, "0.0.10", "0.0.12", supervise.UpdateRolledBack, reason)
+		}, generic},
+		{"from another version", func(t *testing.T, path string) {
+			saveLauncherRecord(t, path, "0.0.9", "0.0.11", supervise.UpdateRolledBack, reason)
+		}, generic},
+		{"committed", func(t *testing.T, path string) {
+			saveLauncherRecord(t, path, "0.0.10", "0.0.11", supervise.UpdateCommitted, "")
+		}, generic},
+		{"unreadable", func(t *testing.T, path string) {
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, generic},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, mode := newReconcileFixture(t)
+			if err := selfupdate.SaveMarker(mode.markerDir, selfupdate.Marker{
+				ExpectedVersion: "0.0.11", PriorVersion: "0.0.10", StagedAt: time.Now(),
+			}); err != nil {
+				t.Fatalf("save marker: %v", err)
+			}
+			tc.record(t, mode.launcherRecord)
+
+			reconcileWSLUpdateMarker(a, "0.0.10", mode)
+
+			if a.updater.applyFailure != tc.want {
+				t.Fatalf("notice = %q, want %q", a.updater.applyFailure, tc.want)
+			}
+		})
+	}
+}
+
 func TestReconcileWSLUpdateMarkerCorruptIsLoudAndSelfHealing(t *testing.T) {
 	// An undecodable marker means an install WAS attempted and we cannot tell
 	// which. Report the uncertainty rather than swallow it, and clear the file
@@ -1202,6 +1407,32 @@ func TestInitWSLUpdaterSurfacesApplyFailureThroughCheck(t *testing.T) {
 	}
 	if again.LastApplyFailure != avail.LastApplyFailure {
 		t.Fatalf("LastApplyFailure = %q on re-check, want it unchanged", again.LastApplyFailure)
+	}
+}
+
+func TestInitWSLUpdaterReadsTheLauncherRecordUnderTheStagingRoot(t *testing.T) {
+	appData := t.TempDir()
+	markerDir := t.TempDir()
+	if err := selfupdate.SaveMarker(markerDir, selfupdate.Marker{
+		ExpectedVersion: "0.0.11", PriorVersion: "0.0.10", StagedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("save marker: %v", err)
+	}
+	saveLauncherRecord(t, filepath.Join(appData, "runtime", "app-update.json"),
+		"0.0.10", "0.0.11", supervise.UpdateRolledBack, "the trial did not finish within 30m0s")
+
+	a := New("0.0.10", Deps{})
+	if err := a.ConfigureWSL(WSLConfig{
+		CurrentVersion: "0.0.10",
+		Arch:           "amd64",
+		StagingRoot:    appData,
+		MarkerDir:      markerDir,
+	}); err != nil {
+		t.Fatalf("ConfigureWSL: %v", err)
+	}
+	want := "Update to 0.0.11 didn't apply: the trial did not finish within 30m0s. Still running 0.0.10."
+	if got := a.ApplyFailure(); got != want {
+		t.Fatalf("ApplyFailure = %q, want %q", got, want)
 	}
 }
 

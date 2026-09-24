@@ -1,15 +1,24 @@
-import { describe, expect, it, beforeEach } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
+import { fireEvent, render } from '@testing-library/svelte';
 import UpdatesSettings from './UpdatesSettings.svelte';
 import { getUpdateState, resetForTest } from '../../stores/updates.svelte';
 
 // The panel is a pure projection of the updates store — every RPC it can fire
 // is behind a button press or the Advanced disclosure — so these tests drive
-// the store directly rather than stubbing bindings.
+// the store directly. Only the cancel a button press sends is stubbed.
+vi.mock('../../stores/bindings', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../stores/bindings')>()),
+  CancelRestartToUpdate: vi.fn(),
+}));
+
+import { CancelRestartToUpdate } from '../../stores/bindings';
+
+const mockCancelRestart = vi.mocked(CancelRestartToUpdate);
 
 describe('<UpdatesSettings>', () => {
   beforeEach(() => {
     resetForTest();
+    mockCancelRestart.mockReset().mockResolvedValue(undefined);
   });
 
   describe('unsupported copy', () => {
@@ -83,6 +92,51 @@ describe('<UpdatesSettings>', () => {
       const { getByRole } = render(UpdatesSettings);
       const button = getByRole('button', { name: 'Check for Updates' }) as HTMLButtonElement;
       expect(button.disabled).toBe(false);
+    });
+  });
+
+  describe('waiting phase', () => {
+    const waitingFor = 'Close this computer’s terminals to finish the update.';
+
+    it('names what the restart waits for and offers Cancel in place of Restart', () => {
+      const s = getUpdateState();
+      s.phase = 'waiting';
+      s.waitingFor = waitingFor;
+      const { getByTestId, queryByRole, getByRole } = render(UpdatesSettings);
+      expect(getByTestId('update-restart-waiting').textContent).toContain(waitingFor);
+      expect(queryByRole('button', { name: 'Restart to update' })).toBeNull();
+      const cancel = getByRole('button', { name: 'Cancel restart' }) as HTMLButtonElement;
+      expect(cancel.disabled).toBe(false);
+      const check = getByRole('button', { name: 'Check for Updates' }) as HTMLButtonElement;
+      expect(check.disabled).toBe(true);
+    });
+
+    it('cancels back to the Restart button', async () => {
+      const s = getUpdateState();
+      s.phase = 'waiting';
+      s.waitingFor = waitingFor;
+      const { getByRole, findByRole, queryByTestId } = render(UpdatesSettings);
+      await fireEvent.click(getByRole('button', { name: 'Cancel restart' }));
+      expect(mockCancelRestart).toHaveBeenCalledOnce();
+      await findByRole('button', { name: 'Restart to update' });
+      expect(queryByTestId('update-restart-waiting')).toBeNull();
+    });
+
+    it('disables Cancel while the cancel is in flight', () => {
+      const s = getUpdateState();
+      s.phase = 'waiting';
+      s.canceling = true;
+      const { getByRole } = render(UpdatesSettings);
+      const cancel = getByRole('button', { name: 'Canceling…' }) as HTMLButtonElement;
+      expect(cancel.disabled).toBe(true);
+    });
+
+    it('shows a refused cancel as an error callout', () => {
+      const s = getUpdateState();
+      s.phase = 'waiting';
+      s.cancelError = 'The update is already restarting.';
+      const { getByRole } = render(UpdatesSettings);
+      expect(getByRole('alert').textContent).toContain('The update is already restarting.');
     });
   });
 

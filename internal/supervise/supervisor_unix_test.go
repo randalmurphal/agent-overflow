@@ -570,7 +570,7 @@ func TestAMarkedRestoreIsFinishedBeforeAnythingIsSpawned(t *testing.T) {
 
 	// Exactly what a supervisor killed one instruction into a restore leaves:
 	// a pending update, a snapshot, a marker, and a database that is neither.
-	if _, err := TakeSnapshot(rig.layout, rig.dataDir, time.Unix(0, 0)); err != nil {
+	if _, err := TakeSnapshot(rig.layout, rig.dataDir, time.Unix(0, 0), SnapshotOptions{}); err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
 	}
 	writeFile(t, filepath.Join(rig.dataDir, DatabaseFiles()[0]), "half-restored")
@@ -787,17 +787,21 @@ func TestOpenChildChannelOpensThePipesAndClearsTheMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
+	defer read.Close()
 	defer writeToChild.Close()
 	readFromChild, write, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
+	defer write.Close()
 	defer readFromChild.Close()
 
+	// The channel owns what it opens, so it is handed copies: two owners of
+	// one descriptor would each close it.
 	cleared := false
 	conn, err := OpenChildChannel(
 		func(string) (string, bool) {
-			return strconv.Itoa(int(read.Fd())) + "," + strconv.Itoa(int(write.Fd())), true
+			return strconv.Itoa(dupFD(t, read)) + "," + strconv.Itoa(dupFD(t, write)), true
 		},
 		func(string) error { cleared = true; return nil },
 	)
@@ -807,6 +811,7 @@ func TestOpenChildChannelOpensThePipesAndClearsTheMarker(t *testing.T) {
 	if conn == nil {
 		t.Fatal("OpenChildChannel returned no channel for a present marker")
 	}
+	defer conn.Close()
 	if !cleared {
 		t.Error("the marker was not cleared")
 	}
@@ -827,14 +832,18 @@ func TestOpenChildChannelOpensThePipesAndClearsTheMarker(t *testing.T) {
 // A marker pointing at descriptors that are not pipes is a broken spawn, and
 // inheriting somebody else's fd 3 as a control channel is worth failing on.
 func TestOpenChildChannelRefusesDescriptorsThatAreNotPipes(t *testing.T) {
-	file, err := os.CreateTemp(t.TempDir(), "not-a-pipe")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
+	dir := t.TempDir()
+	var fds []string
+	for _, name := range []string{"read", "write"} {
+		file, err := os.Create(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		defer file.Close()
+		fds = append(fds, strconv.Itoa(int(file.Fd())))
 	}
-	defer file.Close()
-	fd := strconv.Itoa(int(file.Fd()))
 	if _, err := OpenChildChannel(
-		func(string) (string, bool) { return fd + "," + fd, true },
+		func(string) (string, bool) { return fds[0] + "," + fds[1], true },
 		func(string) error { return nil },
 	); err == nil {
 		t.Fatal("OpenChildChannel accepted a regular file as a control channel")

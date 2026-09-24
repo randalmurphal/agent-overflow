@@ -487,6 +487,15 @@ export function CancelProviderLogin(providerName: string): $CancellablePromise<p
 }
 
 /**
+ * CancelRestartToUpdate ends a restart that is waiting for running work.
+ * The update stays ready. It is a no-op when no restart waits, and refused
+ * once the handoff began.
+ */
+export function CancelRestartToUpdate(): $CancellablePromise<void> {
+    return $Call.ByID(73679326);
+}
+
+/**
  * CancelSSHConnection releases the SSH console, not the remote backend.
  */
 export function CancelSSHConnection(id: string): $CancellablePromise<void> {
@@ -4215,10 +4224,15 @@ export function RestartTerminal(terminalID: string): $CancellablePromise<app$0.T
  * replaces the binary (or .app bundle) and starts the new version. This quits
  * the running app, so it is only ever wired to an explicit button.
  * 
- * The WSL backend cannot do any of that — the executable being replaced is the
- * Windows launcher's, on a filesystem this process only sees through /mnt/c —
- * so it hands the staged artifact to the launcher instead and lets the launcher
+ * The WSL backend cannot do any of that: the executable being replaced is the
+ * Windows launcher's, on a filesystem this process only sees through /mnt/c.
+ * It hands the staged artifact to the launcher instead and lets the launcher
  * kill it. See restartToUpdateWSL.
+ * 
+ * Running work is never stopped for the restart. When the host is busy the
+ * call returns at once and the restart waits, publishing what it waits for
+ * on updater:restart; CancelRestartToUpdate ends the wait. When the host is
+ * idle the handoff runs in this call and its error is the call's.
  */
 export function RestartToUpdate(): $CancellablePromise<void> {
     return $Call.ByID(3141913084);

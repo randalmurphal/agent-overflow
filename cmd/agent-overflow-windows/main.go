@@ -223,6 +223,22 @@ func main() {
 		}
 		log.Fatalf("flags: %v", flagErr)
 	}
+	// The new launcher's preflight for an in-app update is headless and
+	// writes its answer file; it never reaches Wails or single-instance.
+	if flags.UpdatePreflight != "" {
+		os.Exit(runUpdatePreflightMode(flags))
+	}
+	// A launcher started by the one it replaces waits for that one to exit
+	// before claiming the single-instance identity.
+	if flags.WaitPID > 0 {
+		if err := waitForParentLauncher(flags.WaitPID); err != nil {
+			log.Printf("launcher: %v", err)
+			if flags.UpdateApply != "" {
+				failUpdateBeforeApply(flags.UpdateApply, err)
+				os.Exit(1)
+			}
+		}
+	}
 	if err := installHarnessBoundary(governor.DefaultCeilingBytes); err != nil {
 		log.Fatalf("harness containment: %v", err)
 	}
@@ -260,6 +276,15 @@ func main() {
 	// provider stdio capture works for `make dev-wsl PROVIDER_DEBUG=1`
 	// and for end users who set the env var in their Windows shell.
 	forwardDebugEnvToWSL()
+
+	// The new launcher of an in-app update shows the loading page with the
+	// update's progress and needs no distro list or picker.
+	if flags.UpdateApply != "" {
+		app := buildApp(nil, "/loading", "", false)
+		app.updateApplyID = flags.UpdateApply
+		app.run()
+		return
+	}
 
 	phaseStarted := time.Now()
 	distros, err := wsllauncher.ListDistros(context.Background())
@@ -508,6 +533,17 @@ type launcherApp struct {
 	// bridge's dispatch goroutine and held across the whole install, which
 	// would otherwise block every lifecycle path that takes the mutex.
 	updateInstalling atomic.Bool
+	// payloadDistro and payloadPath are the running backend's distro and
+	// Linux path, recorded by launchAndShow for an in-app update (under mu).
+	payloadDistro string
+	payloadPath   string
+	// updateApplyID is the update --update-apply runs, set before the app
+	// starts. updateRunning keeps that window open while it runs.
+	updateApplyID string
+	updateRunning atomic.Bool
+	// reconciling refuses a picker launch while the update record's
+	// recovery runs.
+	reconciling atomic.Bool
 
 	// backendURL holds the page URL launchAndShow pointed the WebView at.
 	// Read by the reload keybinding (uikeys.BrowserWithReload) so Ctrl+R
@@ -554,6 +590,9 @@ func (a *launcherApp) PickDistro(name string) error {
 	a.mu.Unlock()
 	if already {
 		return errors.New("backend already launched")
+	}
+	if a.reconciling.Load() {
+		return errors.New("an interrupted update is still being finished")
 	}
 
 	if err := a.validateDistroName(name); err != nil {
@@ -680,6 +719,9 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	if err := a.persistSuccessfulLaunch(distro, binPath, !transient); err != nil {
 		log.Printf("save config after launch: %v", err)
 	}
+	a.mu.Lock()
+	a.payloadDistro, a.payloadPath = distro, binPath
+	a.mu.Unlock()
 
 	// The backend assembles the page URL (main.go webviewPageURL): the
 	// client id and page marker that ride on it are its own. It carries
@@ -1366,24 +1408,33 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		a.flushGeometry = flush
 		a.mu.Unlock()
 
-		if chosen == "" {
-			return
-		}
-		// We already know which distro; skip the picker and launch the backend.
 		// The launch path takes 5-15s on cold boot, so run it off the event
 		// goroutine while the window's /loading state covers the gap. We start
-		// it only after the window exists so launchAndShow's SetURL calls land.
-		// launchAndShow owns the WebView URL on every exit path: WSL backend on
-		// success, /connectivity-error or /picker on failure — the goroutine
-		// just logs.
-		go func() {
-			if err := a.launchAndShow(chosen, transient); err != nil {
-				log.Printf("launch backend: %v", err)
-			}
-		}()
+		// it only after the window exists so its SetURL calls land.
+		go a.afterWindow(chosen, transient)
 	})
 
 	return a
+}
+
+// afterWindow runs an --update-apply, or finishes an interrupted update and
+// then launches the chosen distro. launchAndShow owns the WebView URL on
+// every exit path: WSL backend on success, /connectivity-error or /picker on
+// failure; this goroutine just logs.
+func (a *launcherApp) afterWindow(chosen string, transient bool) {
+	if a.updateApplyID != "" {
+		a.runUpdateApply(a.updateApplyID)
+		return
+	}
+	a.reconciling.Store(true)
+	proceed := a.reconcileUpdate()
+	a.reconciling.Store(false)
+	if !proceed || chosen == "" {
+		return
+	}
+	if err := a.launchAndShow(chosen, transient); err != nil {
+		log.Printf("launch backend: %v", err)
+	}
 }
 
 func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap, launcher *wsllauncher.Launcher) error {

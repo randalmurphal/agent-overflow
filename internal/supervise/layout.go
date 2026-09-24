@@ -26,22 +26,43 @@ type Layout struct{ root string }
 const BinaryName = "agent-overflow"
 
 const (
-	runtimeDirName = "runtime"
-	versionsDir    = "versions"
-	snapshotDir    = "snapshot"
-	stateFileName  = "service-state.json"
-	markerFileName = "restore-marker.json"
+	runtimeDirName   = "runtime"
+	appUpdateDirName = "app-update"
+	versionsDir      = "versions"
+	snapshotDir      = "snapshot"
+	stateFileName    = "service-state.json"
+	markerFileName   = "restore-marker.json"
 )
 
 // NewLayout roots a layout at an app data directory.
 func NewLayout(dataDir string) (Layout, error) {
-	if strings.TrimSpace(dataDir) == "" {
-		return Layout{}, errors.New("supervise: the data directory is required")
-	}
-	if !filepath.IsAbs(dataDir) {
-		return Layout{}, fmt.Errorf("supervise: the data directory must be absolute, got %q", dataDir)
+	if err := checkDataDir(dataDir); err != nil {
+		return Layout{}, err
 	}
 	return Layout{root: filepath.Join(dataDir, runtimeDirName)}, nil
+}
+
+// NewAppUpdateLayout roots the in-app update's layout at an app data
+// directory: `<dataDir>/runtime/app-update/`, with serve's file names. It is
+// separate from serve's because serve's state selects a binary under
+// versions/, while an in-app update's selection is the install path itself
+// (docs/specs/app-update.md). The snapshot still lands on the database's
+// filesystem.
+func NewAppUpdateLayout(dataDir string) (Layout, error) {
+	if err := checkDataDir(dataDir); err != nil {
+		return Layout{}, err
+	}
+	return Layout{root: filepath.Join(dataDir, runtimeDirName, appUpdateDirName)}, nil
+}
+
+func checkDataDir(dataDir string) error {
+	if strings.TrimSpace(dataDir) == "" {
+		return errors.New("supervise: the data directory is required")
+	}
+	if !filepath.IsAbs(dataDir) {
+		return fmt.Errorf("supervise: the data directory must be absolute, got %q", dataDir)
+	}
+	return nil
 }
 
 // Root is the runtime directory itself.

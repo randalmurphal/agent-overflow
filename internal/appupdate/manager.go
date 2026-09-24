@@ -37,17 +37,20 @@ type Service struct {
 // appUpdaterState travels as one unit with Service: the Wails updater handle,
 // provider, and all resolve/download/WSL-install state guarded by mu.
 type appUpdaterState struct {
-	handle       *updater.Updater
-	provider     *targetableProvider
-	mu           sync.Mutex
-	busy         bool
-	pending      *updater.Release
-	staged       *updater.Release
-	install      *updater.Release
-	installAcked bool
-	installGen   uint64
-	installTimer *time.Timer
-	applyFailure string
+	handle   *updater.Updater
+	provider *targetableProvider
+	mu       sync.Mutex
+	busy     bool
+	pending  *updater.Release
+	staged   *updater.Release
+	install  *updater.Release
+	// installAbandoned is the callback RestartToUpdate was given for the
+	// install in flight.
+	installAbandoned func()
+	installAcked     bool
+	installGen       uint64
+	installTimer     *time.Timer
+	applyFailure     string
 	// appliedUpdate is the version this boot finished an update to: the
 	// WSL install marker the previous run wrote named this build.
 	appliedUpdate string
@@ -243,6 +246,9 @@ type UpdateAvailability struct {
 	// still reach the panel: the boot-detected "didn't apply" notice must not
 	// vanish behind an offline check.
 	CheckError string `json:"checkError,omitempty"`
+	// RestartWaitingFor names the running work a requested restart to update
+	// is waiting for. The host sets it; it is empty unless a restart waits.
+	RestartWaitingFor string `json:"restartWaitingFor,omitempty"`
 }
 
 // CheckForUpdate asks the configured provider whether a newer release exists.
@@ -266,11 +272,7 @@ func (a *Service) CheckForUpdate() (UpdateAvailability, error) {
 	// probing the network. The busy client's next check, after the install
 	// settles, returns the authoritative answer.
 	if a.updater.busy {
-		return UpdateAvailability{
-			Supported:        true,
-			CurrentVersion:   a.updater.handle.CurrentVersion(),
-			LastApplyFailure: a.updater.applyFailure,
-		}, nil
+		return a.availabilityLocked(), nil
 	}
 
 	// The passive check always reports the newest release: clear any tag a
@@ -314,6 +316,26 @@ func (a *Service) CheckForUpdate() (UpdateAvailability, error) {
 		out.ReleaseNotes = rel.Notes
 	}
 	return out, nil
+}
+
+// Availability is CheckForUpdate's answer from state alone, without a release
+// check: support, the running version and the boot notice.
+func (a *Service) Availability() UpdateAvailability {
+	if a.updater.handle == nil {
+		return UpdateAvailability{Supported: false, CurrentVersion: a.version}
+	}
+	a.updater.mu.Lock()
+	defer a.updater.mu.Unlock()
+	return a.availabilityLocked()
+}
+
+// availabilityLocked is Availability. Caller holds a.updater.mu.
+func (a *Service) availabilityLocked() UpdateAvailability {
+	return UpdateAvailability{
+		Supported:        true,
+		CurrentVersion:   a.updater.handle.CurrentVersion(),
+		LastApplyFailure: a.updater.applyFailure,
+	}
 }
 
 // snapshotRelease copies the parts of a resolved release the service retains, so
@@ -496,17 +518,42 @@ const defaultRestartExitWatchdogDelay = 25 * time.Second
 // Windows launcher's, on a filesystem this process only sees through /mnt/c —
 // so it hands the staged artifact to the launcher instead and lets the launcher
 // kill it. See restartToUpdateWSL.
-func (a *Service) RestartToUpdate() error {
+//
+// onAbandoned runs if a handoff this call reported as started ends without a
+// restart: the WSL launcher failed, refused or went silent. The host reopens
+// what it closed for the restart there. On desktop every failure is this
+// call's error, and success quits the process.
+func (a *Service) RestartToUpdate(onAbandoned func()) error {
 	if a.updater.handle == nil {
 		return ErrUpdatesUnsupported
 	}
 	if a.updater.wsl != nil {
-		return a.restartToUpdateWSL()
+		return a.restartToUpdateWSL(onAbandoned)
 	}
 	if a.updater.handle.DownloadedPath() == "" {
 		return ErrUpdateNotReady
 	}
 	return a.restartWithExitWatchdog(a.updater.handle.Restart)
+}
+
+// RestartReady returns the error RestartToUpdate would refuse with now, or
+// nil, without starting anything. A host that waits for running work before
+// the restart asks first, so a restart with nothing to install is refused
+// before the wait rather than after it.
+func (a *Service) RestartReady() error {
+	if a.updater.handle == nil {
+		return ErrUpdatesUnsupported
+	}
+	if a.updater.wsl != nil {
+		a.updater.mu.Lock()
+		defer a.updater.mu.Unlock()
+		_, err := a.wslRestartTargetLocked()
+		return err
+	}
+	if a.updater.handle.DownloadedPath() == "" {
+		return ErrUpdateNotReady
+	}
+	return nil
 }
 
 // restartWithExitWatchdog arms a force-exit watchdog around the restart

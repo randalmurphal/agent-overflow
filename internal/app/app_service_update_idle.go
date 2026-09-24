@@ -51,7 +51,10 @@ func (a *App) updateWorkReason() (string, error) {
 	return "", nil
 }
 
-func (a *App) waitForUpdateIdle(ctx context.Context) error {
+// waitForUpdateIdle returns once work admission is closed with nothing
+// running, or with ctx's error. onWaiting receives each new reason the host
+// is not idle yet.
+func (a *App) waitForUpdateIdle(ctx context.Context, onWaiting func(reason string)) error {
 	var previous string
 	for {
 		if err := ctx.Err(); err != nil {
@@ -62,10 +65,7 @@ func (a *App) waitForUpdateIdle(ctx context.Context) error {
 			return err
 		}
 		if reason != previous {
-			a.publishServiceUpdate(func(status *ServiceUpdateStatus) {
-				status.Phase = serviceUpdatePhaseWaiting
-				status.WaitingFor = reason
-			})
+			onWaiting(reason)
 			previous = reason
 		}
 		timer := time.NewTimer(time.Second)

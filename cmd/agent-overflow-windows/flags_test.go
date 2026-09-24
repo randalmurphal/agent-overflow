@@ -114,3 +114,35 @@ func TestParseLauncherFlags_UnknownProfileErrors(t *testing.T) {
 		t.Fatal("expected error for an unknown profile from the environment")
 	}
 }
+
+func TestParseLauncherFlags_UpdateModes(t *testing.T) {
+	const id = "0123456789abcdef"
+	got, err := parseLauncherFlags([]string{"--update-apply", id, "--wait-pid", "4242"})
+	if err != nil {
+		t.Fatalf("parse --update-apply: %v", err)
+	}
+	if got.UpdateApply != id || got.WaitPID != 4242 {
+		t.Fatalf("apply flags = %+v", got)
+	}
+	got, err = parseLauncherFlags([]string{
+		"--update-preflight", `C:\cfg\runtime\preflight-` + id + ".json", "--update-id", id,
+		"--distro", "Ubuntu", "--update-stable", "/home/u/.local/bin/agent-overflow",
+	})
+	if err != nil {
+		t.Fatalf("parse --update-preflight: %v", err)
+	}
+	if got.UpdateID != id || got.Distro != "Ubuntu" || got.UpdateStable != "/home/u/.local/bin/agent-overflow" {
+		t.Fatalf("preflight flags = %+v", got)
+	}
+	for _, bad := range [][]string{
+		{"--update-apply", "../x"},
+		{"--update-apply", "0123456789ABCDEF"},
+		{"--update-preflight", "answer.json"},
+		{"--update-preflight", "answer.json", "--update-id", "short"},
+		{"--wait-pid", "-1"},
+	} {
+		if _, err := parseLauncherFlags(bad); err == nil {
+			t.Errorf("parseLauncherFlags(%q) accepted it", bad)
+		}
+	}
+}

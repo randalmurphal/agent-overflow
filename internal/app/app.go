@@ -605,6 +605,9 @@ type App struct {
 	// else, which is what makes "this install has no supervisor" an answer
 	// rather than a nil dereference. See app_service_update.go.
 	serviceUpdate serviceUpdateState
+	// restartUpdate is the in-app restart to update while it waits for
+	// running work and hands off. See app_update_restart.go.
+	restartUpdate restartUpdateState
 	workAdmission workAdmission
 	// credentialHomeOverride, when non-empty, replaces os.UserHomeDir()
 	// as the home that provideraccounts.Credentials operates under —

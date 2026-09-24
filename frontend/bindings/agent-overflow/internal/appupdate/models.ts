@@ -122,6 +122,12 @@ export class UpdateAvailability {
      */
     "checkError"?: string;
 
+    /**
+     * RestartWaitingFor names the running work a requested restart to update
+     * is waiting for. The host sets it; it is empty unless a restart waits.
+     */
+    "restartWaitingFor"?: string;
+
     /** Creates a new UpdateAvailability instance. */
     constructor($$source: Partial<UpdateAvailability> = {}) {
         if (!("supported" in $$source)) {

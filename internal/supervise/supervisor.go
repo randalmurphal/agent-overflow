@@ -130,7 +130,7 @@ func (s *Supervisor) Layout() Layout { return s.layout }
 func (s *Supervisor) Run(ctx context.Context) error {
 	// Before anything reads the state file, let alone spawns a version: a
 	// half-restored database must not be opened by either version.
-	if marker, resumed, err := ResumeRestore(s.layout); err != nil {
+	if marker, resumed, err := ResumeRestore(s.layout, nil); err != nil {
 		return fmt.Errorf("supervise: resume interrupted restore: %w", err)
 	} else if resumed {
 		s.config.Log("supervise: finished the restore left by update %s (%s)", marker.UpdateID, marker.Reason)
@@ -547,7 +547,7 @@ func (s *Supervisor) snapshotForTrial(state State) (_ State, failure bool, _ err
 		return state, false, nil
 	}
 	s.config.Log("supervise: snapshotting the database before trialling version %s", state.Update.To)
-	if _, err := TakeSnapshot(s.layout, s.config.DataDir, s.config.Now()); err != nil {
+	if _, err := TakeSnapshot(s.layout, s.config.DataDir, s.config.Now(), SnapshotOptions{}); err != nil {
 		s.config.Log("supervise: could not snapshot the database: %v", err)
 		settled, settleErr := s.settleFailure(state, fmt.Sprintf("the database could not be snapshotted: %v", err))
 		if settleErr != nil {
@@ -598,7 +598,7 @@ func (s *Supervisor) rollBack(state State, reason string) (State, error) {
 		updateID = state.Update.ID
 	}
 	s.config.Log("supervise: rolling back update %s: %s", updateID, reason)
-	if err := RestoreSnapshot(s.layout, s.config.DataDir, updateID, reason, s.config.Now()); err != nil {
+	if err := RestoreSnapshot(s.layout, s.config.DataDir, updateID, reason, s.config.Now(), nil); err != nil {
 		// A restore that cannot complete is the one failure this supervisor
 		// must not paper over: the database is the trial's, and starting the
 		// previous version against it would be worse than not starting.

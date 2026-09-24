@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/wsllauncher"
 )
 
 // launcherFlags carries the parsed CLI state. Today only --distro is
@@ -46,6 +47,17 @@ type launcherFlags struct {
 	// isolated run share one of them and quietly reach into the
 	// developer's real instance.
 	Profile string
+
+	// The in-app update's internal modes (update_trial.go). UpdatePreflight
+	// is the answer file a new launcher writes after staging and checking
+	// its payload beside UpdateStable in Distro, for update UpdateID.
+	// UpdateApply runs the update with that id. WaitPID is a launcher that
+	// must exit before this one claims the single-instance identity.
+	UpdatePreflight string
+	UpdateID        string
+	UpdateStable    string
+	UpdateApply     string
+	WaitPID         int
 }
 
 // profileEnv is the environment fallback for --profile, so the axis can
@@ -71,8 +83,22 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 		os.Getenv(profileEnv),
 		"launch profile: empty for normal, `harness` for the driveable mock instance, `soak` for its autopilot, or `perf` for isolated renderer benchmarks",
 	)
+	updatePreflight := fs.String("update-preflight", "", "internal in-app update mode")
+	updateID := fs.String("update-id", "", "internal in-app update mode")
+	updateStable := fs.String("update-stable", "", "internal in-app update mode")
+	updateApply := fs.String("update-apply", "", "internal in-app update mode")
+	waitPID := fs.Int("wait-pid", 0, "internal: wait for this launcher to exit first")
 	if err := fs.Parse(args); err != nil {
 		return launcherFlags{}, fmt.Errorf("parse flags: %w", err)
+	}
+	if *updateApply != "" && !wsllauncher.ValidUpdateID(*updateApply) {
+		return launcherFlags{}, fmt.Errorf("--update-apply %q is not an update id", *updateApply)
+	}
+	if *updatePreflight != "" && !wsllauncher.ValidUpdateID(*updateID) {
+		return launcherFlags{}, fmt.Errorf("--update-id %q is not an update id", *updateID)
+	}
+	if *waitPID < 0 {
+		return launcherFlags{}, fmt.Errorf("--wait-pid %d is not a process id", *waitPID)
 	}
 	// An unknown profile is an error, never a silent fall-back to the
 	// default instance: a typo that resolved to "" would run the isolated
@@ -83,8 +109,13 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 		return launcherFlags{}, err
 	}
 	return launcherFlags{
-		Distro:    strings.TrimSpace(*distro),
-		Embedding: *embedding,
-		Profile:   normalizedProfile,
+		Distro:          strings.TrimSpace(*distro),
+		Embedding:       *embedding,
+		Profile:         normalizedProfile,
+		UpdatePreflight: *updatePreflight,
+		UpdateID:        *updateID,
+		UpdateStable:    *updateStable,
+		UpdateApply:     *updateApply,
+		WaitPID:         *waitPID,
 	}, nil
 }

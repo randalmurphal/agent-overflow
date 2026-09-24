@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"agent-overflow/internal/startupprogress"
 )
 
 // ProtocolVersion is what the two processes agree on. It is part of the safety
@@ -54,6 +56,15 @@ const (
 	// MsgCommit releases that gate. The supervisor sends it only after the
 	// commit is durable.
 	MsgCommit = "commit"
+	// MsgProgress is a trial reporting its boot, from a child whose hello set
+	// ReportsProgress. Liveness marks a heartbeat, which proves the child is
+	// running; every other progress frame is a real step and is the only
+	// thing the stall rule counts.
+	MsgProgress = "progress"
+	// MsgFailed is a trial that knows why it cannot reach prepared, sent
+	// before it exits so the recorded reason is the cause rather than an
+	// exit status.
+	MsgFailed = "failed"
 )
 
 // Message is one JSON line on the pipe. One struct for both directions: the
@@ -86,8 +97,17 @@ type Message struct {
 	// whole point is that the version answering is not the one requested, and
 	// it is the only one that can say so.
 	Outcome string `json:"outcome,omitempty"`
-	// Reason rides update-refused, and activate beside a settled Outcome.
+	// Reason rides update-refused, failed, and activate beside a settled
+	// Outcome.
 	Reason string `json:"reason,omitempty"`
+	// ReportsProgress rides hello: this child sends progress frames, so its
+	// trial is judged by the stall rule rather than one fixed budget. Additive
+	// on protocol 1, because a supervisor that does not read it gives such a
+	// child its fixed budget, which is what that supervisor always did.
+	ReportsProgress bool `json:"reportsProgress,omitempty"`
+	// Progress and Liveness ride progress.
+	Progress *startupprogress.Progress `json:"progress,omitempty"`
+	Liveness bool                      `json:"liveness,omitempty"`
 }
 
 // EnvChannel names the environment variable that tells a child it has a
@@ -222,20 +242,33 @@ func OpenChildChannel(lookupEnv func(string) (string, bool), unsetEnv func(strin
 	if err != nil {
 		return nil, fmt.Errorf("supervise: %s write descriptor %q: %w", EnvChannel, writeText, err)
 	}
+	if readFD == writeFD {
+		return nil, fmt.Errorf("supervise: %s names descriptor %d for both ends", EnvChannel, readFD)
+	}
+	// Both are proven pipes before either is wrapped, so a refused marker
+	// takes nothing from whoever holds the descriptors.
+	for _, end := range []struct {
+		name string
+		fd   int
+	}{{"read", readFD}, {"write", writeFD}} {
+		mode, err := descriptorMode(end.fd)
+		if err != nil {
+			return nil, fmt.Errorf("supervise: %s %s descriptor %d: %w", EnvChannel, end.name, end.fd, err)
+		}
+		if mode&os.ModeNamedPipe == 0 {
+			return nil, fmt.Errorf("supervise: %s %s descriptor %d is not a pipe", EnvChannel, end.name, end.fd)
+		}
+	}
+	// Close-on-exec before the channel is used: the backend starts provider
+	// CLIs, terminals and browsers, and one that inherited the write end
+	// would hold the channel open after this process exits.
+	for _, fd := range []int{readFD, writeFD} {
+		if err := setCloseOnExec(fd); err != nil {
+			return nil, fmt.Errorf("supervise: %s names descriptor %d: %w", EnvChannel, fd, err)
+		}
+	}
 	read := os.NewFile(uintptr(readFD), "supervisor-read")
 	write := os.NewFile(uintptr(writeFD), "supervisor-write")
-	if read == nil || write == nil {
-		return nil, fmt.Errorf("supervise: %s names descriptors %d,%d, which are not open", EnvChannel, readFD, writeFD)
-	}
-	for name, file := range map[string]*os.File{"read": read, "write": write} {
-		info, err := file.Stat()
-		if err != nil {
-			return nil, fmt.Errorf("supervise: %s descriptor: %w", name, err)
-		}
-		if info.Mode()&os.ModeNamedPipe == 0 {
-			return nil, fmt.Errorf("supervise: %s descriptor %s is not a pipe", name, file.Name())
-		}
-	}
 	return NewConn(read, write, read), nil
 }
 

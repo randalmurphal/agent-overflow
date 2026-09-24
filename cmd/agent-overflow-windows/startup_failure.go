@@ -53,6 +53,15 @@ func startupFailureHTML(err error) []byte {
 		detail = "No HTTP response arrived from the backend's local port."
 		action = "Close and reopen Agent Overflow. If this continues, check that localhostForwarding is enabled in %USERPROFILE%\\.wslconfig and that local connections are not blocked."
 	}
+	return failurePageHTML(title, detail, action)
+}
+
+// failurePageHTML renders a failure page from fixed copy. action may be
+// empty.
+func failurePageHTML(title, detail, action string) []byte {
+	if action != "" {
+		action = "<p>" + template.HTMLEscapeString(action) + "</p>"
+	}
 	return []byte(fmt.Sprintf(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8" /><title>Agent Overflow — startup failed</title>
 <style>
@@ -60,9 +69,9 @@ html,body{margin:0;min-height:100%%;background:#16161e;color:#c0caf5}
 body{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:32px;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 .card{max-width:640px;font-size:14px;line-height:1.6}h1{font-size:18px;line-height:1.4;color:#f7768e}
 code{background:#1a1b26;color:#7dcfff;padding:1px 6px;border-radius:4px;overflow-wrap:anywhere}
-</style></head><body><main class="card"><h1>%s</h1><p>%s</p><p>%s</p>
+</style></head><body><main class="card"><h1>%s</h1><p>%s</p>%s
 <p>Startup details: <code>%%APPDATA%%\agent-overflow\launcher.log</code></p></main></body></html>`,
-		template.HTMLEscapeString(title), template.HTMLEscapeString(detail), template.HTMLEscapeString(action)))
+		template.HTMLEscapeString(title), template.HTMLEscapeString(detail), action))
 }
 
 // stalledStartupCopy names the phase a starting backend stopped advancing

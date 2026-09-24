@@ -42,6 +42,7 @@ import (
 	"agent-overflow/internal/servercert"
 	"agent-overflow/internal/settings"
 	"agent-overflow/internal/shellenv"
+	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/wsllauncher"
@@ -135,6 +136,13 @@ func main() {
 			fatalf("service preflight: %v", err)
 		}
 		return
+	}
+
+	// The in-app update's steps, run by the Windows launcher through
+	// wsl.exe, and the trial they start. Internal re-execs with their own
+	// argv and stdout contract (main_update.go), so they short-circuit here.
+	if len(os.Args) > 1 && isUpdateCommand(os.Args[1]) {
+		os.Exit(runUpdateCommand(os.Args[1], os.Args[2:]))
 	}
 
 	// This binary is also the workflow CLI (D30): there is no separate `ao`
@@ -306,6 +314,14 @@ type bootTransportOptions struct {
 	// supervisor omits it, so its child still takes the ordinary boot lock.
 	BackendLockHeldBySupervisor bool
 	IgnorePersistedNetwork      bool
+	// NoPortPin binds exactly the listen address and neither reads nor
+	// writes the persisted port: an update's trial must not move the port
+	// the published version later binds.
+	NoPortPin bool
+	// BootProgressObserver receives every startup report; liveness marks a
+	// heartbeat. Only an update's trial sets it, to forward progress to the
+	// process judging the trial.
+	BootProgressObserver func(p startupprogress.Progress, liveness bool)
 	// HarnessReceiver, when non-nil, is registered on the dispatcher as
 	// a second RPC receiver under "main.Harness.<Method>". Only harness
 	// mode sets this — in every other boot the harness surface does not
@@ -358,6 +374,12 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 			fatalf("backend: %v", lockErr)
 		}
 		heldBackendLock = lock
+		// Under the lock and before the store opens: finish a restore an
+		// interrupted update left, and refuse to run on an update another
+		// process has not finished (docs/specs/app-update.md).
+		if err := supervise.PrepareDataRoot(bootSettingsDir(), supervise.PrepareOptions{Log: log.Printf}); err != nil {
+			fatalf("backend: %v", err)
+		}
 	}
 	started := time.Now()
 	defer logBootPhase("transport.total", started)
@@ -530,7 +552,10 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	// stabilises the LAN share URL. --reset-transport-port drops the
 	// existing pin first, which is how the Windows launcher escapes a
 	// pinned port the host cannot reach.
-	portPin := pinTransportPort(&cfg, bootSettingsDir(), settingsPort, resetTransportPortPin)
+	var portPin transportPortPin
+	if !opts.NoPortPin {
+		portPin = pinTransportPort(&cfg, bootSettingsDir(), settingsPort, resetTransportPortPin)
+	}
 
 	// One decoration rule for every page URL this backend hands out, and
 	// the transport serves it (PageURLPath) to the local tooling that
@@ -553,12 +578,12 @@ func bootTransport(appService *App, listenAddr string, opts bootTransportOptions
 	// Before the listener serves, so the first not-ready bootstrap already
 	// reports progress. An update the updater just saw apply makes the
 	// whole boot read as finishing it.
-	appservice.SetBootProgress(appService.App, transport.NewStartupReporter(srv, appservice.AppliedUpdateVersion(appService.App)))
+	appservice.SetBootProgress(appService.App, transport.NewStartupReporter(srv, appservice.AppliedUpdateVersion(appService.App)).Observe(opts.BootProgressObserver))
 	// A settings-driven rebind moves the listener without going through
 	// the boot path, so the port cache would otherwise keep naming an
 	// address nothing is on. Installed only when there is a directory to
 	// write to; a nil recorder is a no-op inside the App.
-	if dir := bootSettingsDir(); dir != "" {
+	if dir := bootSettingsDir(); dir != "" && !opts.NoPortPin {
 		appservice.SetBoundPortRecorder(appService.App, func(port int) { storeTransportPort(dir, port) })
 	}
 	// Revocation is only real if it reaches live connections: hand the

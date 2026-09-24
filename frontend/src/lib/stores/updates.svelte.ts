@@ -11,6 +11,7 @@ import {
   ListReleases,
   DownloadUpdate,
   RestartToUpdate,
+  CancelRestartToUpdate,
 } from './bindings';
 import type { ReleaseSummary } from './bindings';
 import { wailsEventOn } from './wailsEvents';
@@ -31,6 +32,10 @@ export type UpdaterPhase =
   | 'verifying'
   | 'installing'
   | 'ready'
+  // 'waiting' is a requested restart the backend holds until this host's
+  // running work finishes (updater:restart names what it waits for). Cancel
+  // returns to 'ready'.
+  | 'waiting'
   // 'restarting' latches after a successful RestartToUpdate call. On desktop
   // the process quits moments later, but on WSL the RPC returns as soon as the
   // directive is handed to the Windows launcher, which then spends up to two
@@ -52,6 +57,15 @@ interface ErrorPayload {
   message?: string;
 }
 
+// updater:restart, the backend's RestartUpdateStatus.
+interface RestartPayload {
+  phase?: 'waiting' | 'restarting' | 'canceled' | 'failed' | 'idle';
+  waitingFor?: string;
+  error?: string;
+}
+
+const restartFailedMessage = 'Could not restart to apply the update.';
+
 const state = $state({
   // supported is false on builds that can't self-update (dev builds) and on
   // remote sessions, where the updater RPCs are `host`-scoped and no grant
@@ -65,6 +79,10 @@ const state = $state({
   written: 0,
   total: 0,
   error: '',
+  // waitingFor is what a 'waiting' restart waits for, in the backend's words.
+  waitingFor: '',
+  canceling: false,
+  cancelError: '',
   // lastApplyFailure mirrors the backend's boot-detected notice that the
   // PREVIOUS session's staged update never got applied. It is backend-owned
   // process-lifetime state, so this store copies whatever each check returns
@@ -128,6 +146,7 @@ export function isUpdateFlowBusy(phase: UpdaterPhase): boolean {
   return (
     phase === 'checking' ||
     phase === 'ready' ||
+    phase === 'waiting' ||
     phase === 'restarting' ||
     isDownloadInFlight(phase)
   );
@@ -219,6 +238,12 @@ export async function runUpdateCheck(): Promise<void> {
     }
     state.supported = true;
     state.lastApplyFailure = result.lastApplyFailure ?? '';
+    if (result.restartWaitingFor) {
+      // A restart this page asked for before a reload is still waiting.
+      state.phase = 'waiting';
+      state.waitingFor = result.restartWaitingFor;
+      return;
+    }
     if (result.checkError) {
       // The backend carries a failed release check as result state rather
       // than an RPC error, so lastApplyFailure above still arrives — a boot
@@ -316,15 +341,39 @@ export async function restartForUpdate(): Promise<void> {
   // Latch out of 'ready' before the RPC so the button cannot double-fire; see
   // the 'restarting' phase comment for why the process may outlive this call.
   state.phase = 'restarting';
+  state.cancelError = '';
   try {
     await RestartToUpdate();
     // Desktop: the app is shutting down and the swap helper relaunches the new
     // version. WSL: the Windows launcher has the directive and this process
     // stays 'restarting' until the launcher kills it — or the backend reports
-    // the handoff failed via updater:error, which lands us in 'error'.
+    // the handoff failed via updater:error, which lands us in 'error'. A
+    // busy host answers at once and holds the restart; updater:restart then
+    // moves us to 'waiting'.
   } catch (err) {
     state.phase = 'error';
-    state.error = userFacingError(err, 'Could not restart to apply the update.');
+    state.error = userFacingError(err, restartFailedMessage);
+  }
+}
+
+/**
+ * cancelRestartForUpdate ends a restart that is waiting for running work.
+ * The update stays downloaded, so the phase returns to 'ready'.
+ */
+export async function cancelRestartForUpdate(): Promise<void> {
+  if (state.phase !== 'waiting' || state.canceling) return;
+  state.canceling = true;
+  state.cancelError = '';
+  try {
+    await CancelRestartToUpdate();
+    if (state.phase === 'waiting') {
+      state.phase = 'ready';
+      state.waitingFor = '';
+    }
+  } catch (err) {
+    state.cancelError = userFacingError(err, 'Could not cancel the update.');
+  } finally {
+    state.canceling = false;
   }
 }
 
@@ -357,6 +406,26 @@ export function initUpdates(): () => void {
     wailsEventOn('updater:ready', () => {
       state.phase = 'ready';
     }),
+    wailsEventOn<RestartPayload>('updater:restart', (e) => {
+      switch (e?.phase) {
+        case 'waiting':
+          state.phase = 'waiting';
+          state.waitingFor = e.waitingFor ?? '';
+          return;
+        case 'restarting':
+          state.phase = 'restarting';
+          break;
+        case 'canceled':
+          if (state.phase === 'waiting' || state.phase === 'restarting') state.phase = 'ready';
+          break;
+        case 'failed':
+          state.phase = 'error';
+          state.error = userFacingError(e.error, restartFailedMessage);
+          break;
+        // 'idle': the launcher abandoned the handoff; updater:error says why.
+      }
+      state.waitingFor = '';
+    }),
     wailsEventOn<ErrorPayload>('updater:error', (e) => {
       state.phase = 'error';
       const stage = e?.stage ? `${e.stage} ` : '';
@@ -388,6 +457,9 @@ export function resetForTest(): void {
   state.written = 0;
   state.total = 0;
   state.error = '';
+  state.waitingFor = '';
+  state.canceling = false;
+  state.cancelError = '';
   state.lastApplyFailure = '';
   state.availableVersions = [];
   state.versionsLoaded = false;

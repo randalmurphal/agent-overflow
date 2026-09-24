@@ -43,6 +43,7 @@ export const METHOD_ROUTES: Readonly<Record<number, MethodRoute>> = {
 	2848608143: 'home', // BrowserHostReport
 	2608316491: 'home', // CancelDevicePairing
 	341374423: 'home', // CancelProviderLogin
+	73679326: 'home', // CancelRestartToUpdate
 	812773075: 'home', // CancelSSHConnection
 	3773103567: 'selected', // CancelServiceUpdate
 	2562316972: 'selected', // CancelSessionImport

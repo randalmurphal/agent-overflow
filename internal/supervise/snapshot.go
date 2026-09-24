@@ -15,7 +15,7 @@ import (
 //
 // A trial runs migrations and writes. Making that reversible without down
 // migrations means copying the database out of the way first, which is only
-// safe while NO process has it open — so the copy happens between stopping the
+// safe while NO process has it open, so the copy happens between stopping the
 // old child and starting the trial, and nowhere else.
 //
 // What is inside the boundary is the SQLite triple and nothing more.
@@ -32,40 +32,106 @@ import (
 type Snapshot struct {
 	Files     []string `json:"files"`
 	TakenAtMs int64    `json:"takenAtMs"`
+	// UpdateID is the in-app update the snapshot was taken for. Serve's
+	// snapshots leave it empty: its state file names the update.
+	UpdateID string `json:"updateId,omitempty"`
+	// Live is each live database file's identity as it was copied, absent
+	// ones included. VerifyLiveUnchanged compares against it, so a process
+	// that ran against the database between the snapshot and the trial is
+	// caught before the trial and its rollback could discard that work.
+	// Manifests written before this field existed have none.
+	Live []FileIdentity `json:"live,omitempty"`
+}
+
+// FileIdentity is what VerifyLiveUnchanged compares: presence, size and
+// modification time. SQLite changes at least one of them on every commit
+// that reaches the file, and a checkpoint or WAL reset does too.
+type FileIdentity struct {
+	Name      string `json:"name"`
+	Present   bool   `json:"present"`
+	Size      int64  `json:"size,omitempty"`
+	ModTimeNs int64  `json:"modTimeNs,omitempty"`
+}
+
+// CopyProgress receives the bytes copied so far out of the total, after
+// every chunk of a snapshot or restore copy. A clone reports its whole file
+// at once.
+type CopyProgress func(copied, total int64)
+
+// SnapshotOptions tunes TakeSnapshot. The zero value is serve's snapshot.
+type SnapshotOptions struct {
+	// UpdateID is recorded in the manifest.
+	UpdateID string
+	// Progress, when set, receives copy progress.
+	Progress CopyProgress
+	// HostAvailable bounds the free space from outside the data directory's
+	// own filesystem, for a filesystem whose statfs does not describe the
+	// disk it lives on: inside WSL, the Windows drive that holds the
+	// distribution's virtual disk. nil means no such bound.
+	HostAvailable *uint64
 }
 
 const snapshotManifest = "snapshot.json"
+
+var (
+	errNoDatabase        = errors.New("supervise: no database to snapshot")
+	errChangedDuringCopy = errors.New("changed while it was being backed up, so another process is using the database")
+)
 
 // TakeSnapshot copies the SQLite triple into the layout's snapshot directory.
 //
 // Any previous snapshot is cleared first: there is one update in flight at a
 // time, so a leftover is residue from an update that already settled, and
-// keeping it would make a later restore put back the wrong moment.
-func TakeSnapshot(layout Layout, dataDir string, now time.Time) (Snapshot, error) {
+// keeping it would make a later restore put back the wrong moment. Free space
+// is checked after that, so a leftover does not count against this one.
+func TakeSnapshot(layout Layout, dataDir string, now time.Time, opts SnapshotOptions) (Snapshot, error) {
 	dir := layout.SnapshotDir()
 	if err := os.RemoveAll(dir); err != nil {
 		return Snapshot{}, fmt.Errorf("supervise: clear snapshot dir: %w", err)
 	}
-	if err := os.MkdirAll(dir, dirPerm); err != nil {
-		return Snapshot{}, fmt.Errorf("supervise: create snapshot dir: %w", err)
+	live, total, err := identifyDatabase(dataDir)
+	if err != nil {
+		return Snapshot{}, err
 	}
-	snapshot := Snapshot{TakenAtMs: now.UnixMilli()}
-	for _, name := range DatabaseFiles() {
-		source := filepath.Join(dataDir, name)
-		copied, err := copyFileIfPresent(source, filepath.Join(dir, name))
-		if err != nil {
-			return Snapshot{}, err
-		}
-		if copied {
-			snapshot.Files = append(snapshot.Files, name)
-		}
-	}
-	if len(snapshot.Files) == 0 {
+	if !anyPresent(live) {
 		// A serve host with no database has nothing to roll back, and a
 		// snapshot of nothing would restore an empty directory over a database
 		// the trial legitimately created. Refuse instead: the caller records a
 		// failed update rather than one it cannot undo.
-		return Snapshot{}, fmt.Errorf("supervise: no database to snapshot in %s", dataDir)
+		return Snapshot{}, fmt.Errorf("%w in %s", errNoDatabase, dataDir)
+	}
+	if err := CheckSnapshotSpace(dataDir, total, opts.HostAvailable); err != nil {
+		return Snapshot{}, err
+	}
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
+		return Snapshot{}, fmt.Errorf("supervise: create snapshot dir: %w", err)
+	}
+	snapshot := Snapshot{TakenAtMs: now.UnixMilli(), UpdateID: opts.UpdateID, Live: live}
+	copied := int64(0)
+	for _, before := range live {
+		if !before.Present {
+			continue
+		}
+		source := filepath.Join(dataDir, before.Name)
+		if err := copyFile(source, filepath.Join(dir, before.Name), func(n int64) {
+			if opts.Progress != nil {
+				opts.Progress(copied+n, total)
+			}
+		}); err != nil {
+			return Snapshot{}, err
+		}
+		copied += before.Size
+		// A file that changed while it was copied is a copy of no moment at
+		// all, and the only thing that changes it is another process using
+		// the database.
+		after, err := identify(dataDir, before.Name)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if after != before {
+			return Snapshot{}, fmt.Errorf("supervise: %s %w", before.Name, errChangedDuringCopy)
+		}
+		snapshot.Files = append(snapshot.Files, before.Name)
 	}
 	if err := atomicfile.WriteJSON(filepath.Join(dir, snapshotManifest), snapshot); err != nil {
 		return Snapshot{}, fmt.Errorf("supervise: write snapshot manifest: %w", err)
@@ -76,6 +142,105 @@ func TakeSnapshot(layout Layout, dataDir string, now time.Time) (Snapshot, error
 	return snapshot, nil
 }
 
+// identifyDatabase reads the live triple's identities and total size.
+func identifyDatabase(dataDir string) ([]FileIdentity, int64, error) {
+	var (
+		live  []FileIdentity
+		total int64
+	)
+	for _, name := range DatabaseFiles() {
+		id, err := identify(dataDir, name)
+		if err != nil {
+			return nil, 0, err
+		}
+		live = append(live, id)
+		total += id.Size
+	}
+	return live, total, nil
+}
+
+func identify(dataDir, name string) (FileIdentity, error) {
+	info, err := os.Stat(filepath.Join(dataDir, name))
+	if errors.Is(err, os.ErrNotExist) {
+		return FileIdentity{Name: name}, nil
+	}
+	if err != nil {
+		return FileIdentity{}, fmt.Errorf("supervise: stat %s: %w", name, err)
+	}
+	if !info.Mode().IsRegular() {
+		return FileIdentity{}, fmt.Errorf("supervise: %s is not a regular file", filepath.Join(dataDir, name))
+	}
+	return FileIdentity{Name: name, Present: true, Size: info.Size(), ModTimeNs: info.ModTime().UnixNano()}, nil
+}
+
+func anyPresent(ids []FileIdentity) bool {
+	for _, id := range ids {
+		if id.Present {
+			return true
+		}
+	}
+	return false
+}
+
+// LiveDatabaseChangedError reports that the live database is not the one the
+// snapshot copied. The trial must not run: its rollback would put back the
+// snapshot and discard whatever changed it.
+type LiveDatabaseChangedError struct {
+	Snapshot FileIdentity
+	Live     FileIdentity
+}
+
+func (e *LiveDatabaseChangedError) Error() string {
+	return fmt.Sprintf("the database changed after it was backed up for the update (%s: %s), "+
+		"so another Agent Overflow backend used it. The update stopped so a rollback cannot lose that work",
+		e.Snapshot.Name, describeIdentityChange(e.Snapshot, e.Live))
+}
+
+func describeIdentityChange(before, after FileIdentity) string {
+	switch {
+	case before.Present && !after.Present:
+		return "removed"
+	case !before.Present && after.Present:
+		return fmt.Sprintf("created, %d bytes", after.Size)
+	case before.Size != after.Size:
+		return fmt.Sprintf("%d bytes, was %d", after.Size, before.Size)
+	default:
+		return fmt.Sprintf("modified at %s, was %s",
+			time.Unix(0, after.ModTimeNs).UTC().Format(time.RFC3339Nano),
+			time.Unix(0, before.ModTimeNs).UTC().Format(time.RFC3339Nano))
+	}
+}
+
+// VerifyLiveUnchanged checks that the live triple is still the moment the
+// snapshot copied, by presence, size and modification time.
+//
+// It exists for a process that snapshots and later runs the trial without
+// holding the database lock in between (the Windows launcher's separate WSL
+// commands): anything that opened the database in that gap wrote work the
+// snapshot does not have. A manifest without identities fails closed.
+func VerifyLiveUnchanged(layout Layout, dataDir string) error {
+	snapshot, found, err := readSnapshotManifest(layout)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("supervise: there is no database snapshot in %s to compare against", layout.SnapshotDir())
+	}
+	if len(snapshot.Live) == 0 {
+		return errors.New("supervise: the database snapshot records no file identities, so it cannot prove the database is unchanged")
+	}
+	for _, recorded := range snapshot.Live {
+		live, err := identify(dataDir, recorded.Name)
+		if err != nil {
+			return err
+		}
+		if live != recorded {
+			return &LiveDatabaseChangedError{Snapshot: recorded, Live: live}
+		}
+	}
+	return nil
+}
+
 // SnapshotPresent reports whether a complete snapshot is on disk.
 //
 // Asked before a rollback is begun and before a trial that has already been
@@ -84,6 +249,12 @@ func TakeSnapshot(layout Layout, dataDir string, now time.Time) (Snapshot, error
 func SnapshotPresent(layout Layout) (bool, error) {
 	_, found, err := readSnapshotManifest(layout)
 	return found, err
+}
+
+// ReadSnapshot reads a complete snapshot's manifest. found is false with a
+// nil error when there is none.
+func ReadSnapshot(layout Layout) (Snapshot, bool, error) {
+	return readSnapshotManifest(layout)
 }
 
 // readSnapshotManifest reads the manifest, if there is one. found is false
@@ -136,10 +307,13 @@ func ReadRestoreMarker(layout Layout) (RestoreMarker, bool, error) {
 // The order is the contract: write and sync the marker, remove every live
 // database file, copy the snapshot's back, sync the directory, THEN remove the
 // marker. A crash at any point leaves a marker, and ResumeRestore run on the
-// next boot repeats the whole thing — which is safe because every step is
+// next boot repeats the whole thing. That is safe because every step is
 // idempotent against the snapshot, and unsafe to skip because the middle of it
 // is a database with no WAL.
-func RestoreSnapshot(layout Layout, dataDir, updateID, reason string, now time.Time) error {
+//
+// It needs no free space beyond what the live files held, because they are
+// removed before the copy.
+func RestoreSnapshot(layout Layout, dataDir, updateID, reason string, now time.Time, progress CopyProgress) error {
 	// The manifest is read BEFORE the marker is written, and the order is the
 	// whole point of this check. A marker says "the database under this path
 	// is half a restore", and every later boot finishes what it names before
@@ -161,7 +335,7 @@ func RestoreSnapshot(layout Layout, dataDir, updateID, reason string, now time.T
 	if err := atomicfile.WriteJSON(layout.MarkerPath(), marker); err != nil {
 		return fmt.Errorf("supervise: write restore marker: %w", err)
 	}
-	if err := applyRestore(layout, dataDir); err != nil {
+	if err := applyRestore(layout, dataDir, progress); err != nil {
 		return err
 	}
 	if err := os.Remove(layout.MarkerPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -175,12 +349,12 @@ func RestoreSnapshot(layout Layout, dataDir, updateID, reason string, now time.T
 // Runs before the state file is even read: a supervisor that selected a
 // version and spawned it while the database was half-restored would hand a
 // live backend a file nothing can vouch for.
-func ResumeRestore(layout Layout) (RestoreMarker, bool, error) {
+func ResumeRestore(layout Layout, progress CopyProgress) (RestoreMarker, bool, error) {
 	marker, found, err := ReadRestoreMarker(layout)
 	if err != nil || !found {
 		return marker, false, err
 	}
-	if err := applyRestore(layout, marker.DataDir); err != nil {
+	if err := applyRestore(layout, marker.DataDir, progress); err != nil {
 		return marker, true, err
 	}
 	if err := os.Remove(layout.MarkerPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -194,7 +368,7 @@ func ResumeRestore(layout Layout) (RestoreMarker, bool, error) {
 
 // applyRestore is the copy itself: remove the live triple, put back exactly
 // what the manifest recorded.
-func applyRestore(layout Layout, dataDir string) error {
+func applyRestore(layout Layout, dataDir string, progress CopyProgress) error {
 	if dataDir == "" {
 		return errors.New("supervise: the restore names no data directory")
 	}
@@ -213,15 +387,31 @@ func applyRestore(layout Layout, dataDir string) error {
 				"Restore the data directory from a backup, then delete %s",
 			dir, layout.MarkerPath())
 	}
+	var total int64
+	sizes := make(map[string]int64, len(snapshot.Files))
+	for _, name := range snapshot.Files {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			return fmt.Errorf("supervise: the snapshot's %s: %w", name, err)
+		}
+		sizes[name] = info.Size()
+		total += info.Size()
+	}
 	for _, name := range DatabaseFiles() {
 		if err := os.Remove(filepath.Join(dataDir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("supervise: remove %s before restore: %w", name, err)
 		}
 	}
+	copied := int64(0)
 	for _, name := range snapshot.Files {
-		if _, err := copyFileIfPresent(filepath.Join(dir, name), filepath.Join(dataDir, name)); err != nil {
+		if err := copyFile(filepath.Join(dir, name), filepath.Join(dataDir, name), func(n int64) {
+			if progress != nil {
+				progress(copied+n, total)
+			}
+		}); err != nil {
 			return err
 		}
+		copied += sizes[name]
 	}
 	return atomicfile.SyncDir(dataDir)
 }
@@ -231,33 +421,64 @@ const (
 	filePerm os.FileMode = 0o600
 )
 
-// copyFileIfPresent copies one file, fsyncing the destination. An absent
-// source is not an error and reports false: a cleanly closed SQLite database
-// has no -wal and no -shm, and that IS the snapshot.
-func copyFileIfPresent(source, destination string) (bool, error) {
+// copyChunk is how much a copy moves between progress reports. Small enough
+// that a slow disk still reports within the stall window, large enough that
+// copy_file_range does the work in few calls.
+const copyChunk = 8 << 20
+
+// cloneFile is the platform's copy-on-write clone, a seam for tests. It
+// reports false with a nil error when the filesystem cannot clone, which
+// sends the caller to an ordinary copy.
+var cloneFile = platformCloneFile
+
+// copyFile clones or copies one file and fsyncs the destination. progress
+// receives the bytes of THIS file copied so far.
+func copyFile(source, destination string, progress func(int64)) error {
 	in, err := os.Open(source)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, fmt.Errorf("supervise: open %s: %w", source, err)
+		return fmt.Errorf("supervise: open %s: %w", source, err)
 	}
 	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return fmt.Errorf("supervise: stat %s: %w", source, err)
+	}
+	cloned, err := cloneFile(in, destination)
+	if err != nil {
+		return fmt.Errorf("supervise: clone %s -> %s: %w", source, destination, err)
+	}
+	if cloned {
+		progress(info.Size())
+		return nil
+	}
 
 	out, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, filePerm)
 	if err != nil {
-		return false, fmt.Errorf("supervise: create %s: %w", destination, err)
+		return fmt.Errorf("supervise: create %s: %w", destination, err)
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return false, fmt.Errorf("supervise: copy %s -> %s: %w", source, destination, err)
+	var written int64
+	for {
+		// io.CopyN over two *os.File reaches copy_file_range on Linux, so
+		// chunking costs one syscall per chunk and no userspace buffer.
+		n, err := io.CopyN(out, in, copyChunk)
+		written += n
+		if n > 0 {
+			progress(written)
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			out.Close()
+			return fmt.Errorf("supervise: copy %s -> %s: %w", source, destination, err)
+		}
 	}
 	if err := out.Sync(); err != nil {
 		out.Close()
-		return false, fmt.Errorf("supervise: sync %s: %w", destination, err)
+		return fmt.Errorf("supervise: sync %s: %w", destination, err)
 	}
 	if err := out.Close(); err != nil {
-		return false, fmt.Errorf("supervise: close %s: %w", destination, err)
+		return fmt.Errorf("supervise: close %s: %w", destination, err)
 	}
-	return true, nil
+	return nil
 }

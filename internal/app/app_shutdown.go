@@ -71,6 +71,7 @@ const (
 //wails:ignore
 func (a *App) Shutdown(ctx context.Context) error {
 	a.workAdmission.stopWaiting()
+	a.stopRestartUpdate()
 	a.closeComputerPairing()
 	// Step 0 (pre-shutdown): drain the transport server while every
 	// subsystem is still alive. Without this, a webview WS client that

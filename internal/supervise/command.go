@@ -1,0 +1,224 @@
+package supervise
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+
+	"agent-overflow/internal/startupprogress"
+)
+
+// The in-app update's steps on a host whose supervisor cannot hold a child
+// channel open across them: the Windows launcher runs each step as a command
+// of the backend binary through wsl.exe (docs/specs/app-update.md). A command
+// reports on stdout with UpdateEventPrefix and ends with one result event and
+// its exit code, as the headless bootstrap handshake does.
+
+// The update commands. Double-underscored like the other internal re-execs,
+// because nobody types them.
+const (
+	// UpdateSnapshotCommand waits for the data root's lock, finishes a marked
+	// restore, checks free space and snapshots the database.
+	UpdateSnapshotCommand = "__update-snapshot"
+	// UpdateTrialRunCommand holds the lock, runs UpdateTrialCommand as a
+	// supervised child under the stall rule, and restores the snapshot when
+	// the trial fails.
+	UpdateTrialRunCommand = "__update-trial-run"
+	// UpdateRestoreCommand puts the snapshot back, or finishes a marked
+	// restore.
+	UpdateRestoreCommand = "__update-restore"
+	// UpdateDiscardCommand removes the snapshot.
+	UpdateDiscardCommand = "__update-discard"
+	// UpdateTrialCommand is the trial itself: a backend boot that reports
+	// progress and prepared on the supervise channel and never serves a
+	// client.
+	UpdateTrialCommand = "__update-trial"
+)
+
+// UpdateEventPrefix marks a command's report lines on stdout. Everything
+// else on stdout is ignored, so a log line cannot be read as a report.
+const UpdateEventPrefix = "__AO_UPDATE__:"
+
+// UpdateEventType is one of the three report kinds.
+type UpdateEventType string
+
+const (
+	// UpdateEventStarted is the first report: the command's pid inside its
+	// host, which is what stops it when its own stall rule cannot.
+	UpdateEventStarted UpdateEventType = "started"
+	// UpdateEventProgress carries a progress report. Liveness marks a
+	// heartbeat, which the stall rule does not count.
+	UpdateEventProgress UpdateEventType = "progress"
+	// UpdateEventResult is the last report.
+	UpdateEventResult UpdateEventType = "result"
+)
+
+// UpdateOutcome is a command's result.
+type UpdateOutcome string
+
+const (
+	// UpdateOutcomeOK is a snapshot, restore or discard that finished.
+	UpdateOutcomeOK UpdateOutcome = "ok"
+	// UpdateOutcomePrepared is a trial that reached prepared and was stopped.
+	// The database is the trial's; the caller commits.
+	UpdateOutcomePrepared UpdateOutcome = "prepared"
+	// UpdateOutcomeRolledBack is a trial that failed, with the snapshot
+	// restored. Reason says why the trial failed.
+	UpdateOutcomeRolledBack UpdateOutcome = "rolled-back"
+	// UpdateOutcomeRefused is a command that changed nothing: the lock
+	// stayed held, the disk is too full, or the live database is not the one
+	// the snapshot copied.
+	UpdateOutcomeRefused UpdateOutcome = "refused"
+	// UpdateOutcomeNoSnapshot is a trial or restore that found no snapshot of
+	// this update. Nothing was changed.
+	UpdateOutcomeNoSnapshot UpdateOutcome = "no-snapshot"
+	// UpdateOutcomeFailed is a command that failed part-way. The database is
+	// in an unknown state until a restore finishes.
+	UpdateOutcomeFailed UpdateOutcome = "failed"
+)
+
+// UpdateEvent is one report line.
+type UpdateEvent struct {
+	Type     UpdateEventType           `json:"type"`
+	PID      int                       `json:"pid,omitempty"`
+	Progress *startupprogress.Progress `json:"progress,omitempty"`
+	Liveness bool                      `json:"liveness,omitempty"`
+	Outcome  UpdateOutcome             `json:"outcome,omitempty"`
+	Reason   string                    `json:"reason,omitempty"`
+}
+
+// WriteUpdateEvent writes one report line.
+func WriteUpdateEvent(w io.Writer, event UpdateEvent) error {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	line := make([]byte, 0, len(UpdateEventPrefix)+len(data)+1)
+	line = append(line, UpdateEventPrefix...)
+	line = append(line, data...)
+	line = append(line, '\n')
+	_, err = w.Write(line)
+	return err
+}
+
+// ParseUpdateEvent reads one stdout line. ok is false for a line that is not
+// a report. A line with the prefix that does not decode is an error.
+func ParseUpdateEvent(line string) (event UpdateEvent, ok bool, err error) {
+	line = strings.TrimRight(line, "\r\n")
+	rest, found := strings.CutPrefix(line, UpdateEventPrefix)
+	if !found {
+		return UpdateEvent{}, false, nil
+	}
+	if err := json.Unmarshal([]byte(rest), &event); err != nil {
+		return UpdateEvent{}, true, fmt.Errorf("supervise: decode update report: %w", err)
+	}
+	switch event.Type {
+	case UpdateEventStarted, UpdateEventProgress, UpdateEventResult:
+	default:
+		return UpdateEvent{}, true, fmt.Errorf("supervise: update report of unknown type %q", event.Type)
+	}
+	if event.Type == UpdateEventProgress && event.Progress == nil {
+		return UpdateEvent{}, true, errors.New("supervise: progress report carries no progress")
+	}
+	return event, true, nil
+}
+
+// ProgressRelay delivers progress reports on its own goroutine and keeps only
+// the latest undelivered one, so a slow or stalled reader never blocks the
+// process that reports. A heartbeat that replaces an undelivered real report
+// is delivered as a real report: coalescing may drop reports, never the fact
+// that progress happened.
+type ProgressRelay struct {
+	deliver func(startupprogress.Progress, bool) error
+
+	mu      sync.Mutex
+	pending *relayedProgress
+	closed  bool
+	err     error
+
+	wake   chan struct{}
+	failed chan struct{}
+	done   chan struct{}
+}
+
+type relayedProgress struct {
+	progress startupprogress.Progress
+	liveness bool
+}
+
+// NewProgressRelay starts the delivery goroutine. Close stops it.
+func NewProgressRelay(deliver func(p startupprogress.Progress, liveness bool) error) *ProgressRelay {
+	r := &ProgressRelay{
+		deliver: deliver,
+		wake:    make(chan struct{}, 1),
+		failed:  make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	go r.run()
+	return r
+}
+
+// Report queues p. It never blocks on delivery.
+func (r *ProgressRelay) Report(p startupprogress.Progress, liveness bool) {
+	r.mu.Lock()
+	if r.closed || r.err != nil {
+		r.mu.Unlock()
+		return
+	}
+	if r.pending != nil && !r.pending.liveness {
+		liveness = false
+	}
+	r.pending = &relayedProgress{progress: p, liveness: liveness}
+	r.mu.Unlock()
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
+}
+
+// Failed is closed once a delivery fails. Later reports are dropped.
+func (r *ProgressRelay) Failed() <-chan struct{} { return r.failed }
+
+// Close delivers the last queued report, stops the goroutine and returns the
+// first delivery error.
+func (r *ProgressRelay) Close() error {
+	r.mu.Lock()
+	r.closed = true
+	r.mu.Unlock()
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
+	<-r.done
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.err
+}
+
+func (r *ProgressRelay) run() {
+	defer close(r.done)
+	for {
+		r.mu.Lock()
+		next := r.pending
+		r.pending = nil
+		closed := r.closed
+		r.mu.Unlock()
+		if next != nil {
+			if err := r.deliver(next.progress, next.liveness); err != nil {
+				r.mu.Lock()
+				r.err = err
+				r.mu.Unlock()
+				close(r.failed)
+				return
+			}
+			continue
+		}
+		if closed {
+			return
+		}
+		<-r.wake
+	}
+}

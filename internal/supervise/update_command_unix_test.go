@@ -1,0 +1,364 @@
+//go:build !windows
+
+package supervise
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// commandRig is a data root plus a scripted trial, for the WSL-side update
+// commands.
+type commandRig struct {
+	*trialRig
+	dataDir string
+	layout  Layout
+	out     *lockedBuffer
+}
+
+type lockedBuffer struct {
+	mu     sync.Mutex
+	buf    bytes.Buffer
+	failOn string
+	failed bool
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.failed || (b.failOn != "" && bytes.Contains(p, []byte(b.failOn))) {
+		b.failed = true
+		return 0, syscall.EPIPE
+	}
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) events(t *testing.T) []UpdateEvent {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var events []UpdateEvent
+	for _, line := range strings.Split(b.buf.String(), "\n") {
+		event, ok, err := ParseUpdateEvent(line)
+		if err != nil {
+			t.Fatalf("ParseUpdateEvent(%q): %v", line, err)
+		}
+		if ok {
+			events = append(events, event)
+		}
+	}
+	return events
+}
+
+func (b *lockedBuffer) details(t *testing.T) string {
+	var details []string
+	for _, event := range b.events(t) {
+		if event.Progress != nil {
+			details = append(details, event.Progress.Detail)
+		}
+	}
+	return strings.Join(details, "\n")
+}
+
+func newCommandRig(t *testing.T) *commandRig {
+	t.Helper()
+	tr := newTrialRig(t)
+	dataDir := filepath.Dir(tr.db)
+	return &commandRig{trialRig: tr, dataDir: dataDir, layout: appLayout(t, dataDir), out: &lockedBuffer{}}
+}
+
+// flockAcquire is the lock seam over a real flock on <dataDir>/backend.lock.
+func flockAcquire(dataDir string) func(context.Context, time.Duration) (*os.File, func(), error) {
+	return func(ctx context.Context, wait time.Duration) (*os.File, func(), error) {
+		file, err := os.OpenFile(filepath.Join(dataDir, "backend.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			file.Close()
+			return nil, nil, err
+		}
+		return file, func() { file.Close() }, nil
+	}
+}
+
+func (r *commandRig) command(id string) UpdateCommand {
+	return UpdateCommand{
+		DataDir: r.dataDir, UpdateID: id, Out: r.out,
+		AcquireLock: flockAcquire(r.dataDir),
+	}
+}
+
+func (r *commandRig) trialOptions(behavior string, attempt int) TrialRunOptions {
+	cfg := r.config(r.script(helloProgress, behavior))
+	return TrialRunOptions{
+		Binary: cfg.Binary, Env: cfg.Env, TargetVersion: "2.0.0", Attempt: attempt,
+		Rule: cfg.Rule, StopTimeout: cfg.StopTimeout,
+	}
+}
+
+func (r *commandRig) database(t *testing.T) string {
+	t.Helper()
+	return readFile(t, r.db)
+}
+
+const (
+	trialWritesAndPrepares = `printf 'migrated' > "$DB"
+progress store.migrate "Applying migration 1 of 1"
+printf '{"type":"prepared"}\n' >&4
+serve_until_stopped`
+	trialWritesAndCrashes = `printf 'half-migrated' > "$DB"
+progress store.migrate "Applying migration 1 of 1"
+exit 3`
+)
+
+func TestSnapshotCommandBacksUpUnderTheLock(t *testing.T) {
+	r := newCommandRig(t)
+	writeFile(t, r.db, "live")
+	result := r.command("u1").Snapshot(context.Background(), nil)
+	if result.Type != UpdateEventResult || result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("result = %+v", result)
+	}
+	snapshot, found, err := ReadSnapshot(r.layout)
+	if err != nil || !found || snapshot.UpdateID != "u1" || len(snapshot.Live) != 3 {
+		t.Fatalf("snapshot = %+v %v %v", snapshot, found, err)
+	}
+	// Reports coalesce behind a slow reader, so only the last is certain.
+	if details := r.out.details(t); !strings.HasSuffix(details, "Backing up the database: 1 MB of 1 MB") {
+		t.Fatalf("progress %q does not end with the copy", details)
+	}
+	if !lockable(t, filepath.Join(r.dataDir, "backend.lock")) {
+		t.Fatal("the command kept the lock")
+	}
+}
+
+func TestSnapshotCommandRefusesWithoutChangingAnything(t *testing.T) {
+	t.Run("lock held", func(t *testing.T) {
+		r := newCommandRig(t)
+		writeFile(t, r.db, "live")
+		cmd := r.command("u1")
+		cmd.AcquireLock = func(context.Context, time.Duration) (*os.File, func(), error) {
+			return nil, nil, errors.New("another Agent Overflow backend already holds backend.lock")
+		}
+		result := cmd.Snapshot(context.Background(), nil)
+		if result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, "still in use") {
+			t.Fatalf("result = %+v", result)
+		}
+	})
+	t.Run("no space", func(t *testing.T) {
+		r := newCommandRig(t)
+		writeFile(t, r.db, "live")
+		withFreeBytes(t, func(string) (uint64, error) { return 1, nil })
+		result := r.command("u1").Snapshot(context.Background(), nil)
+		if result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, "Free at least") {
+			t.Fatalf("result = %+v", result)
+		}
+		if present, _ := SnapshotPresent(r.layout); present {
+			t.Fatal("a refused snapshot left a manifest")
+		}
+	})
+	t.Run("host drive short", func(t *testing.T) {
+		r := newCommandRig(t)
+		writeFile(t, r.db, "live")
+		host := uint64(1)
+		result := r.command("u1").Snapshot(context.Background(), &host)
+		if result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, hostDiskDescription) {
+			t.Fatalf("result = %+v", result)
+		}
+	})
+	t.Run("serve update pending", func(t *testing.T) {
+		r := newCommandRig(t)
+		writeFile(t, r.db, "live")
+		serve, err := NewLayout(r.dataDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := SaveState(serve, pendingState(t, "serve-u")); err != nil {
+			t.Fatal(err)
+		}
+		result := r.command("u1").Snapshot(context.Background(), nil)
+		if result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, "serve-u") {
+			t.Fatalf("result = %+v", result)
+		}
+	})
+}
+
+func TestTrialRunCommandPreparesAndKeepsTheTrialsDatabase(t *testing.T) {
+	r := newCommandRig(t)
+	writeFile(t, r.db, "live")
+	if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("snapshot = %+v", result)
+	}
+	result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 1))
+	if result.Outcome != UpdateOutcomePrepared {
+		t.Fatalf("result = %+v", result)
+	}
+	if got := r.database(t); got != "migrated" {
+		t.Fatalf("database = %q, want the trial's", got)
+	}
+	if present, _ := SnapshotPresent(r.layout); !present {
+		t.Fatal("the snapshot was dropped before the caller committed")
+	}
+	if details := r.out.details(t); !strings.HasSuffix(details, "Stopping the trial") {
+		t.Fatalf("progress %q does not end with the stop", details)
+	}
+	if !strings.Contains(r.read("log"), "stopped") {
+		t.Fatal("the trial was not stopped")
+	}
+}
+
+func TestTrialRunCommandRestoresTheSnapshotWhenTheTrialFails(t *testing.T) {
+	r := newCommandRig(t)
+	writeFile(t, r.db, "live")
+	if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("snapshot = %+v", result)
+	}
+	result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndCrashes, 1))
+	if result.Outcome != UpdateOutcomeRolledBack || !strings.Contains(result.Reason, "exit status 3") {
+		t.Fatalf("result = %+v", result)
+	}
+	if got := r.database(t); got != "live" {
+		t.Fatalf("database = %q, want the snapshot restored", got)
+	}
+	if !absent(t, r.layout.MarkerPath()) {
+		t.Fatal("the restore left its marker")
+	}
+	if !strings.Contains(r.out.details(t), "Restoring the database") {
+		t.Fatal("the restore reported no progress")
+	}
+}
+
+func TestTrialRunCommandRefusesADatabaseChangedSinceTheSnapshot(t *testing.T) {
+	r := newCommandRig(t)
+	writeFile(t, r.db, "live")
+	if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("snapshot = %+v", result)
+	}
+	// A backend started by hand between the two commands wrote to it.
+	writeFile(t, r.db, "written in the gap")
+	result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 1))
+	if result.Outcome != UpdateOutcomeRefused || !strings.Contains(result.Reason, "changed after it was backed up") {
+		t.Fatalf("result = %+v", result)
+	}
+	if got := r.database(t); got != "written in the gap" {
+		t.Fatalf("database = %q, want the gap's work kept", got)
+	}
+	if r.read("activate") != "" {
+		t.Fatal("a trial ran on a database the snapshot does not match")
+	}
+
+	// A retry runs on what an earlier attempt of this update left, so it
+	// does not compare.
+	result = r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 2))
+	if result.Outcome != UpdateOutcomePrepared {
+		t.Fatalf("retry = %+v", result)
+	}
+}
+
+func TestTrialRunCommandRequiresThisUpdatesSnapshot(t *testing.T) {
+	r := newCommandRig(t)
+	writeFile(t, r.db, "live")
+	result := r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 1))
+	if result.Outcome != UpdateOutcomeNoSnapshot {
+		t.Fatalf("no snapshot = %+v", result)
+	}
+	if result := r.command("other").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("snapshot = %+v", result)
+	}
+	result = r.command("u1").TrialRun(context.Background(), r.trialOptions(trialWritesAndPrepares, 1))
+	if result.Outcome != UpdateOutcomeNoSnapshot || !strings.Contains(result.Reason, `"other"`) {
+		t.Fatalf("another update's snapshot = %+v", result)
+	}
+	if got := r.database(t); got != "live" {
+		t.Fatalf("database = %q", got)
+	}
+}
+
+// A supervisor that went away takes the command's output with it. The trial
+// stops and nothing is restored: the update's recovery belongs to whoever
+// resumes it, and a restore racing that recovery could undo a commit.
+func TestTrialRunCommandStopsWithoutRestoringWhenItsOutputCloses(t *testing.T) {
+	r := newCommandRig(t)
+	writeFile(t, r.db, "live")
+	if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("snapshot = %+v", result)
+	}
+	r.out.failOn = "store.migrate"
+	opts := r.trialOptions(`printf 'half-migrated' > "$DB"
+progress store.migrate "Applying migration 1 of 9"
+note ready
+serve_until_stopped`, 1)
+	opts.Rule = StallRule{Window: time.Minute, Ceiling: time.Minute}
+	result := r.command("u1").TrialRun(context.Background(), opts)
+	if result.Outcome != UpdateOutcomeFailed || !strings.Contains(result.Reason, "interrupted") {
+		t.Fatalf("result = %+v", result)
+	}
+	if !strings.Contains(r.read("log"), "stopped") {
+		t.Fatal("the trial was left running")
+	}
+	if got := r.database(t); got != "half-migrated" {
+		t.Fatalf("database = %q, want it left for recovery", got)
+	}
+	if present, _ := SnapshotPresent(r.layout); !present {
+		t.Fatal("the snapshot recovery needs is gone")
+	}
+}
+
+func TestRestoreCommandPutsTheSnapshotBackOrFinishesAMarkedOne(t *testing.T) {
+	r := newCommandRig(t)
+	writeFile(t, r.db, "live")
+	if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("snapshot = %+v", result)
+	}
+	writeFile(t, r.db, "trial")
+	if result := r.command("u1").Restore(context.Background(), "the launcher stopped the trial"); result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("restore = %+v", result)
+	}
+	if got := r.database(t); got != "live" {
+		t.Fatalf("database = %q", got)
+	}
+
+	// Interrupted mid-restore: the marker is down and the database is gone.
+	writeFile(t, r.layout.MarkerPath(), `{"updateId":"u1","dataDir":`+quote(r.dataDir)+`,"reason":"x","writtenAtMs":1}`)
+	if err := os.Remove(r.db); err != nil {
+		t.Fatal(err)
+	}
+	if result := r.command("u1").Restore(context.Background(), "again"); result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("resumed restore = %+v", result)
+	}
+	if got := r.database(t); got != "live" || !absent(t, r.layout.MarkerPath()) {
+		t.Fatalf("database = %q after the resumed restore", got)
+	}
+}
+
+func TestDiscardCommandKeepsASnapshotARestoreStillNeeds(t *testing.T) {
+	r := newCommandRig(t)
+	writeFile(t, r.db, "live")
+	if result := r.command("u1").Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("snapshot = %+v", result)
+	}
+	writeFile(t, r.layout.MarkerPath(), `{"updateId":"u1","dataDir":`+quote(r.dataDir)+`,"reason":"x","writtenAtMs":1}`)
+	if result := r.command("u1").Discard(context.Background()); result.Outcome != UpdateOutcomeRefused {
+		t.Fatalf("discard under a marker = %+v", result)
+	}
+	if present, _ := SnapshotPresent(r.layout); !present {
+		t.Fatal("the snapshot a restore needs was discarded")
+	}
+	if err := os.Remove(r.layout.MarkerPath()); err != nil {
+		t.Fatal(err)
+	}
+	if result := r.command("u1").Discard(context.Background()); result.Outcome != UpdateOutcomeOK {
+		t.Fatalf("discard = %+v", result)
+	}
+	if !absent(t, r.layout.SnapshotDir()) {
+		t.Fatal("the snapshot survived its discard")
+	}
+}
