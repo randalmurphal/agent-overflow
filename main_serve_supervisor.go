@@ -12,6 +12,7 @@ import (
 
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appupdate"
+	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/supervise"
 )
 
@@ -22,9 +23,9 @@ import (
 //
 // A supervised `serve` inherits one pipe pair and learns three things over
 // it: whether this boot is a TRIAL, when an update it asked for was
-// accepted, and when that update committed. It reports two: what it is
-// (hello), and that a trial booted fully with every unattended subsystem
-// parked (prepared).
+// accepted, and when that update committed. It reports what it is (hello)
+// and, on a trial, its boot progress, then either that it booted fully with
+// every unattended subsystem parked (prepared) or why it could not (failed).
 //
 // Everything here is optional by construction. `agent-overflow serve`
 // started from a terminal has no channel, and every function below reads
@@ -59,6 +60,9 @@ type serveSupervisor struct {
 	// client is told both, because "the update to X was rolled back, running
 	// Y" is the only phrasing that names the version that actually failed.
 	target string
+	// progress forwards a trial's boot progress to the supervisor, which
+	// judges the trial by it. nil on a boot that is not a trial.
+	progress *supervise.ProgressRelay
 
 	// answerTimeout bounds the wait for an answer to a request-update frame.
 	// A field rather than the constant so a test can describe a supervisor
@@ -109,16 +113,52 @@ func attachServeSupervisor() (*serveSupervisor, error) {
 		committed:     make(chan struct{}),
 		restart:       make(chan struct{}),
 	}
+	// A trial says it reports progress, so the supervisor judges it by the
+	// stall rule instead of one fixed budget.
 	if err := conn.Send(supervise.Message{
 		Type:            supervise.MsgHello,
 		ProtocolVersion: supervise.ProtocolVersion,
 		Version:         version,
+		ReportsProgress: sup.trial,
 	}); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("greet the supervisor: %w", err)
 	}
+	if sup.trial {
+		sup.progress = supervise.NewProgressRelay(func(p startupprogress.Progress) error {
+			return conn.Send(supervise.Message{Type: supervise.MsgProgress, Progress: &p})
+		})
+	}
 	go sup.read()
 	return sup, nil
+}
+
+// bootProgress is the observer of this boot's startup reports: the trial's
+// relay to the supervisor, or nil when this boot is not a trial.
+func (s *serveSupervisor) bootProgress() func(startupprogress.Progress) {
+	if s == nil || s.progress == nil {
+		return nil
+	}
+	return s.progress.Report
+}
+
+// startFinished ends a trial's progress reports when Start returns, and
+// reports a failed start so the supervisor rolls the trial back now rather
+// than when the stall rule would. It does nothing on a boot that is not a
+// trial.
+func (s *serveSupervisor) startFinished(startErr error) {
+	if s == nil || s.progress == nil {
+		return
+	}
+	if err := s.progress.Close(); err != nil {
+		log.Printf("serve: forward boot progress to the supervisor: %v", err)
+	}
+	if startErr == nil {
+		return
+	}
+	if err := s.conn.Send(supervise.Message{Type: supervise.MsgFailed, Reason: startErr.Error()}); err != nil {
+		log.Printf("serve: report the failed start to the supervisor: %v", err)
+	}
 }
 
 // read routes the supervisor's later frames. One goroutine, because a channel
@@ -256,8 +296,8 @@ func (s *serveSupervisor) RequestUpdate(target string) (string, error) {
 // reportPrepared tells the supervisor this trial booted fully, then waits for
 // the commit.
 //
-// Nothing about the wait is optional or bounded here: the supervisor owns the
-// budget, and a trial that gave up on its own would open its activation gate
+// Nothing about the wait is optional or bounded here: the supervisor judges the
+// trial, and a trial that gave up on its own would open its activation gate
 // on an update nobody committed. It ends one of two ways — a commit frame, or
 // the SIGTERM the supervisor sends when it rolls back, which this process
 // handles as the ordinary shutdown it is.
@@ -388,7 +428,7 @@ func finishServeSupervision(appService *App, sup *serveSupervisor) {
 		return
 	}
 	if err := sup.reportPrepared(); err != nil {
-		// The supervisor will time this trial out and roll it back, which is
+		// The supervisor will judge this trial stalled and roll it back, which is
 		// the correct outcome for a trial that cannot report. Say so rather
 		// than opening the gate on an update nobody committed.
 		log.Printf("serve: could not report prepared to the supervisor: %v", err)

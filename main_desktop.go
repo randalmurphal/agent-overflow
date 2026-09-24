@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -26,6 +27,8 @@ import (
 	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/clientmode"
 	"agent-overflow/internal/settings"
+	"agent-overflow/internal/startuppage"
+	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/theme"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/uikeys"
@@ -35,6 +38,12 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
+
+// desktopUpdateTrial is whether this build applies its in-app updates, and
+// migrates its database, through a helper with a snapshot and a trial
+// (main_update_apply.go). The preflight reports it to the version that
+// downloads this one.
+const desktopUpdateTrial = runtime.GOOS == "darwin" || runtime.GOOS == "linux"
 
 // runClient opens a desktop frontend. A paired target uses a local connection
 // manager with one independent carrier per computer and no execution backend.
@@ -141,7 +150,8 @@ type webviewShell struct {
 	// second launch into the first window would be wrong.
 	singleInstance bool
 	// services builds the Wails service list, given a getter for the
-	// window (which does not exist until ApplicationStarted). Nil
+	// window (which does not exist until ApplicationStarted). It is called
+	// after beforeRun, which decides whether the boot starts them. Nil
 	// registers none.
 	services func(getWindow func() *application.WebviewWindow) []application.Service
 	// withWindow receives the same getter, for a boot that needs the window
@@ -150,10 +160,16 @@ type webviewShell struct {
 	// App.Start, and the isolated windowed boots register no services at
 	// all, so `services` is not a hook they have.
 	withWindow func(getWindow func() *application.WebviewWindow)
-	// beforeRun runs after application.New and before the app loop
-	// starts. runDesktop boots its transport here, because the updater
-	// must observe the application first.
-	beforeRun func(app *application.App)
+	// beforeRun runs after application.New, which claims the
+	// single-instance identity, and before the app loop starts. runDesktop
+	// reconciles the update record and boots its transport here, because
+	// the updater must observe the application first. It returns false to
+	// end the boot without opening the window.
+	beforeRun func(app *application.App) bool
+	// pages, when set, serves the startup pages as the application's
+	// assets. A failure shown before the window opens is the window's page
+	// instead of pageURL's.
+	pages *desktopPages
 	// pageURL returns the CURRENT page URL, bare and marked
 	// webview-hosted (the transport's WebviewPageURL). A getter, not a
 	// value: Ctrl+R re-reads it so a rebind (the LAN toggle) reloads
@@ -193,15 +209,70 @@ func (s webviewShell) run() error {
 	if s.singleInstance {
 		appOpts.SingleInstance = desktopSingleInstanceOptions(getWindow)
 	}
+	if s.pages != nil {
+		appOpts.Assets = application.AssetOptions{Handler: s.pages}
+	}
 	if s.withWindow != nil {
 		s.withWindow(getWindow)
 	}
-	if s.services != nil {
-		appOpts.Services = s.services(getWindow)
-	}
 	app := application.New(appOpts)
-	if s.beforeRun != nil {
-		s.beforeRun(app)
+	if s.beforeRun != nil && !s.beforeRun(app) {
+		return nil
+	}
+	if s.services != nil {
+		for _, service := range s.services(getWindow) {
+			app.RegisterService(service)
+		}
+	}
+	opts, err := s.windowOptions()
+	if err != nil {
+		return err
+	}
+	// Reopen where we left off last. The window is created on ApplicationStarted
+	// (not here) so it materializes synchronously against a live app loop — that
+	// lets uiwindow.RestoreAndTrack maximize/fullscreen a restored window on the
+	// monitor it was saved on, and reveal it already in that state, instead of
+	// flashing at normal size or always landing on the primary. See
+	// uiwindow.RestoreAndTrack for why creation must happen here.
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		w, flush := uiwindow.RestoreAndTrack(app, opts, s.loadGeometry(), s.persistGeometry)
+		uiwindow.DeliverPageTicket(w, s.mintTicket)
+		if s.pages != nil {
+			s.pages.attach(w, opts.URL)
+		}
+		winMu.Lock()
+		window = w
+		flushGeometry = flush
+		winMu.Unlock()
+	})
+
+	runErr := app.Run()
+	// Backstop the WindowClosing flush: persist the final placement from the
+	// tracker's in-memory latest (safe even though the window is now gone).
+	winMu.Lock()
+	flush := flushGeometry
+	winMu.Unlock()
+	if flush != nil {
+		flush()
+	}
+	return runErr
+}
+
+// windowOptions are the window's options: on the app's page, or on the
+// failure the boot shows instead.
+func (s webviewShell) windowOptions() (application.WebviewWindowOptions, error) {
+	opts := application.WebviewWindowOptions{
+		Title:            s.title,
+		Width:            1280,
+		Height:           800,
+		MinWidth:         800,
+		MinHeight:        600,
+		BackgroundColour: bootWindowBackgroundColour(),
+	}
+	if s.pages.showing() {
+		opts.URL = startuppage.FailurePath
+		opts.KeyBindings = uikeys.WithDevTools(uikeys.Browser())
+		return opts, nil
 	}
 
 	// Assert non-empty before constructing the WebviewWindowOptions.
@@ -213,7 +284,7 @@ func (s webviewShell) run() error {
 	// fallthrough or a port-less URL hitting port 80.
 	appURL := s.pageURL()
 	if appURL == "" {
-		return errors.New("transport: page URL is empty after Start; refusing to fall through to the Wails IPC scheme")
+		return opts, errors.New("transport: page URL is empty after Start; refusing to fall through to the Wails IPC scheme")
 	}
 
 	// Thread the durable UI-state client ID onto the page URL (and the
@@ -231,41 +302,9 @@ func (s webviewShell) run() error {
 	// menus below the JS layer (on the platforms where it does
 	// anything at all). F12 devtools is a compiled no-op in production
 	// builds, so WithDevTools is safe unconditionally here.
-	opts := application.WebviewWindowOptions{
-		Title:            s.title,
-		Width:            1280,
-		Height:           800,
-		MinWidth:         800,
-		MinHeight:        600,
-		BackgroundColour: bootWindowBackgroundColour(),
-		URL:              withClientID(appURL),
-		KeyBindings:      uikeys.WithDevTools(uikeys.BrowserWithReload(reloadURL)),
-	}
-	// Reopen where we left off last. The window is created on ApplicationStarted
-	// (not here) so it materializes synchronously against a live app loop — that
-	// lets uiwindow.RestoreAndTrack maximize/fullscreen a restored window on the
-	// monitor it was saved on, and reveal it already in that state, instead of
-	// flashing at normal size or always landing on the primary. See
-	// uiwindow.RestoreAndTrack for why creation must happen here.
-	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
-		w, flush := uiwindow.RestoreAndTrack(app, opts, s.loadGeometry(), s.persistGeometry)
-		uiwindow.DeliverPageTicket(w, s.mintTicket)
-		winMu.Lock()
-		window = w
-		flushGeometry = flush
-		winMu.Unlock()
-	})
-
-	runErr := app.Run()
-	// Backstop the WindowClosing flush: persist the final placement from the
-	// tracker's in-memory latest (safe even though the window is now gone).
-	winMu.Lock()
-	flush := flushGeometry
-	winMu.Unlock()
-	if flush != nil {
-		flush()
-	}
-	return runErr
+	opts.URL = withClientID(appURL)
+	opts.KeyBindings = uikeys.WithDevTools(uikeys.BrowserWithReload(reloadURL))
+	return opts, nil
 }
 
 // nativeWindowPointer adapts a Wails window getter to the raw handle the
@@ -285,7 +324,16 @@ func nativeWindowPointer(getWindow func() *application.WebviewWindow) func() uns
 // runDesktop is the original Wails-window entry point used on
 // macOS/Linux/Windows native builds. The Windows binary that proxies
 // into WSL is a separate cmd/ — see cmd/agent-overflow-windows.
-func runDesktop(listenAddr string) {
+//
+// helper is the update helper that started this launch
+// (main_update_apply.go), zero when none did: it holds the single-instance
+// identity and the backend lock until it exits.
+func runDesktop(listenAddr string, helper supervise.ProcessRef) {
+	if helper.PID != 0 {
+		if err := supervise.WaitForExit(context.Background(), helper, desktopWaitTimeout); err != nil {
+			log.Printf("updater: the update helper (pid %d) has not exited: %v", helper.PID, err)
+		}
+	}
 	if runExistingDesktop() {
 		return
 	}
@@ -294,16 +342,25 @@ func runDesktop(listenAddr string) {
 	// starts — so every later read (the reload keybinding on the UI
 	// thread, the shutdown below) sees the started server.
 	var srv *transport.Server
+	// launch is beforeRun's decision to start the App, which registers it.
+	var launch bool
 	// startErr is App.Start's failure, which ends the process once the
 	// app loop and the transport have shut down.
 	var (
 		startErrMu sync.Mutex
 		startErr   error
 	)
+	setStartErr := func(err error) {
+		startErrMu.Lock()
+		startErr = err
+		startErrMu.Unlock()
+	}
+	pages := newDesktopPages("")
 
 	shell := webviewShell{
 		title:          appidentity.AppTitle(nativeSingleInstanceMode()),
 		singleInstance: true,
+		pages:          pages,
 		// The embedded browser's in-process engine hosts its views inside
 		// this window. Handed over before Start, because the manager picks
 		// its engine while starting; answering nil (no window yet, or a
@@ -314,42 +371,72 @@ func runDesktop(listenAddr string) {
 			appservice.SetBrowserNativeWindow(appService.App, nativeWindowPointer(getWindow))
 		},
 		services: func(getWindow func() *application.WebviewWindow) []application.Service {
+			if !launch {
+				return nil
+			}
 			return []application.Service{
 				application.NewService(appservice.NewDesktopNotificationService(appService.App, getWindow)),
 				application.NewService(appService),
 			}
 		},
-		beforeRun: func(app *application.App) {
+		beforeRun: func(app *application.App) bool {
+			plan := desktopBootPlan{launch: true}
+			var gate desktopGate
+			if desktopUpdateTrial {
+				gate, plan = reconcileDesktopUpdate(appService)
+			}
+			if plan.page != nil {
+				pages.showFailure(*plan.page)
+				return true
+			}
+			if !plan.launch {
+				return false
+			}
+			launch = true
 			// Configure in-app self-update before the transport serves, so the updater
 			// RPC handlers observe appService.updater.handle without a race. No-op for dev
 			// builds and on provider/init failure (logged) — updates stay unavailable
 			// and the app runs normally.
-			appservice.InitUpdater(appService.App, app)
+			var trial appupdate.DesktopTrial
+			if gate.boot != nil {
+				trial = gate.boot.handoff()
+			}
+			appservice.InitUpdater(appService.App, app, trial)
+			if plan.failedTo != "" {
+				appservice.ReportUnsuccessfulUpdate(appService.App, plan.failedTo, plan.failedReason)
+			}
 			// An empty AppURL is refused by the shell, immediately after
 			// this returns and before the window options are built — one
 			// check, on the path that would actually hand Wails the empty
 			// URL. Repeating it here only added a second wording for one
 			// failure, and a fatalf that skipped the transport shutdown
 			// the shell's error return runs.
-			srv = bootTransport(appService, listenAddr, bootTransportOptions{})
+			srv = bootTransport(appService, listenAddr, bootTransportOptions{UpdatingTo: plan.updatingTo})
 			// ServiceStartup runs App.Start on its own goroutine so the
 			// window opens and shows the boot's progress. Success releases
-			// the readiness gate. A failure serves the terminal bootstrap
-			// answer and quits, and the process exits with the error as it
-			// did when Start ran inside Run. Quit on its own goroutine:
-			// it waits on ServiceShutdown, which waits for this Start.
+			// the readiness gate. A database the store refused to migrate
+			// live shows why in the window (desktopGate.startFailed), and
+			// the process exits with the error once it closes. Any other
+			// failure serves the terminal bootstrap answer and quits, and
+			// the process exits with the error as it did when Start ran
+			// inside Run. Quit on its own goroutine: it waits on
+			// ServiceShutdown, which waits for this Start.
 			appservice.SetStartDone(appService.App, func(err error) {
 				if err == nil {
 					srv.MarkReady()
+					appservice.NotifyPendingUpdateApplyFailure(appService.App)
 					return
 				}
 				log.Printf("app: service startup: %v", err)
 				srv.MarkStartupFailed()
-				startErrMu.Lock()
-				startErr = err
-				startErrMu.Unlock()
+				setStartErr(err)
+				if page := gate.startFailed(err); page != nil {
+					pages.showFailure(*page)
+					return
+				}
 				go app.Quit()
 			})
+			return true
 		},
 		pageURL: func() string {
 			if srv == nil {
@@ -387,6 +474,20 @@ func runDesktop(listenAddr string) {
 	if err != nil {
 		fatalf("app: service startup: %v", err)
 	}
+}
+
+// reconcileDesktopUpdate takes the backend lock, which bootTransport then
+// keeps, and applies the update record's recovery and the migration gate
+// before anything opens the database. The App refuses pending migrations
+// whatever the gate can do (rule 7): a boot whose update half is
+// unavailable launches, and a database it would migrate shows why instead.
+func reconcileDesktopUpdate(appService *App) (desktopGate, desktopBootPlan) {
+	if err := holdBackendLock(bootSettingsDir()); err != nil {
+		fatalf("backend: %v", err)
+	}
+	appservice.RefusePendingMigrations(appService.App)
+	gate := newDesktopGate(heldBackendLock.file)
+	return gate, gate.reconcile(context.Background())
 }
 
 // defaultWindowBackgroundColour is the compiled-in fallback ground: the

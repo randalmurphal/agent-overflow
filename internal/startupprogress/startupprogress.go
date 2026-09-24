@@ -1,7 +1,8 @@
 // Package startupprogress is the wire contract of a backend that is still
 // starting: the 503 body its readiness-gated /bootstrap.json answers until
-// the boot finishes. internal/transport writes it, carriers pass it on,
-// and the Windows launcher and the frontend read it.
+// the boot finishes, and the 409 body of a backend that refused to migrate
+// its database live. internal/transport writes them, carriers pass the
+// starting report on, and the Windows launcher and the frontend read it.
 //
 // Stdlib-only by construction: the Windows launcher links this and does
 // not link internal/transport.

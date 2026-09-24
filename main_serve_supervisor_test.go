@@ -116,3 +116,49 @@ func TestAnAnsweredUpdateRequestReturnsTheSupervisorsID(t *testing.T) {
 		t.Fatal("an answered request never returned")
 	}
 }
+
+// An unsupervised serve has no supervisor to report to: no observer, and a
+// finished start sends nothing.
+func TestAnUnsupervisedServeReportsNoBootProgress(t *testing.T) {
+	var sup *serveSupervisor
+	if sup.bootProgress() != nil {
+		t.Fatal("an unsupervised serve has a boot progress observer")
+	}
+	sup.startFinished(errors.New("open the database: disk I/O error"))
+}
+
+// TestSupervisedServeLeavesTheServeLayoutToItsSupervisor: a serve child that
+// takes its own lock (under a supervisor that does not claim it) must not
+// refuse the pending update it is the trial of. The supervisor finished its
+// restores before it spawned the child. The production-artifact smoke
+// (internal/supervise TestProductionServiceArtifact) runs this path.
+func TestSupervisedServeLeavesTheServeLayoutToItsSupervisor(t *testing.T) {
+	serve := readRootSource(t, "main_serve.go")
+	if !strings.Contains(serve, "ServeLayoutOwnedBySupervisor: supervisor != nil,") {
+		t.Fatal("runServe does not tell bootTransport that a supervisor owns the serve layout")
+	}
+	boot := readRootSource(t, "main.go")
+	body := boot[strings.Index(boot, "func bootTransport("):]
+	if !strings.Contains(body, "OwnsServeLayout: opts.ServeLayoutOwnedBySupervisor,") {
+		t.Fatal("bootTransport does not pass the supervisor's ownership to PrepareDataRoot")
+	}
+}
+
+// TestServeForwardsItsBootToTheSupervisor pins runServe's wiring: the
+// startup reporter forwards to the supervisor, and Start's result reaches it
+// before the boot serves either the failure or readiness. The supervisor
+// judges a trial by these (internal/supervise, Supervisor.runChild).
+func TestServeForwardsItsBootToTheSupervisor(t *testing.T) {
+	text := readRootSource(t, "main_serve.go")
+	body := text[strings.Index(text, "func runServe("):]
+	observer := strings.Index(body, "BootProgressObserver: supervisor.bootProgress(),")
+	start := strings.Index(body, "startErr := appService.Start(bootCtx)")
+	finished := strings.Index(body, "supervisor.startFinished(startErr)")
+	failed := strings.Index(body, "srv.MarkStartupFailed()")
+	ready := strings.Index(body, "srv.MarkReady()")
+	if observer < 0 || start < 0 || finished < 0 || failed < 0 || ready < 0 ||
+		!(observer < start && start < finished && finished < failed && failed < ready) {
+		t.Fatalf("runServe: observer=%d Start=%d startFinished=%d MarkStartupFailed=%d MarkReady=%d; want the observer before Start and Start's result reported before either outcome",
+			observer, start, finished, failed, ready)
+	}
+}

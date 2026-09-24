@@ -165,7 +165,14 @@ func RestoreAndTrack(app *application.App, base application.WebviewWindowOptions
 // tracking; it is also wired to WindowClosing. Callers should additionally call
 // it once after the app loop returns as a backstop — it uses the in-memory
 // latest, so it is safe even after the window is destroyed.
+//
+// A nil sink tracks nothing and its flush does nothing: the window shows the
+// saved placement without owning it, as an update's progress window does, so
+// the placement file keeps one writer.
 func Track(w *application.WebviewWindow, restored windowgeom.Geometry, sink func(windowgeom.Geometry)) func() {
+	if sink == nil {
+		return func() {}
+	}
 	tr := windowgeom.NewTracker(saveDebounce, sink, restored)
 	record := func(*application.WindowEvent) { tr.Record(sampleWindow(w)) }
 	for _, et := range geometryEvents {

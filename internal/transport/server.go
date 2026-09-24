@@ -559,6 +559,9 @@ type Server struct {
 	startupMethods map[string]bool
 
 	startupFailed atomic.Bool
+	// migrationsPending is the refusal a backend started to refuse pending
+	// migrations answers instead of the startup failure (MarkMigrationsPending).
+	migrationsPending atomic.Pointer[startupprogress.MigrationsPending]
 
 	// sessionConns is the live-session registry: which upgraded sockets
 	// carry which durable session, and how to close them. Built at New
@@ -1366,6 +1369,14 @@ func (s *Server) MarkReady() { s.ready.Store(true) }
 // a terminal startup failure instead of "still booting".
 func (s *Server) MarkStartupFailed() { s.startupFailed.Store(true) }
 
+// MarkMigrationsPending makes a readiness-gated bootstrap endpoint answer
+// that the boot refused to migrate its database live, with m, instead of
+// "still booting". It is terminal, as MarkStartupFailed is: the launcher
+// stops this backend and migrates the database through a trial.
+func (s *Server) MarkMigrationsPending(m startupprogress.MigrationsPending) {
+	s.migrationsPending.Store(&m)
+}
+
 // Ready reports whether /bootstrap.json is allowed to return the
 // manifest. Servers without RequireReadyForBootstrap start ready.
 func (s *Server) Ready() bool { return s.ready.Load() }
@@ -1652,6 +1663,10 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("Cache-Control", "no-store, max-age=0")
 	WriteSecurityHeaders(h, s.csp)
+	if m := s.migrationsPending.Load(); m != nil {
+		startupprogress.WriteMigrationsPending(w, *m)
+		return
+	}
 	if s.startupFailed.Load() {
 		h.Set("Content-Type", "text/plain; charset=utf-8")
 		http.Error(w, "backend startup failed", http.StatusInternalServerError)

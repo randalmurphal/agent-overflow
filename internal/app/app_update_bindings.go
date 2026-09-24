@@ -39,6 +39,14 @@ func (a *App) CheckForUpdate() (UpdateAvailability, error) {
 	if a.updater == nil {
 		return UpdateAvailability{CurrentVersion: a.version}, nil
 	}
+	// A restart waiting for running work holds a staged update the release
+	// check must not retarget; the page that reloads during the wait needs
+	// the wait, not a fresh check.
+	if waitingFor := a.restartWaitingFor(); waitingFor != "" {
+		availability := a.updater.Availability()
+		availability.RestartWaitingFor = waitingFor
+		return availability, nil
+	}
 	return a.updater.CheckForUpdate()
 }
 
@@ -93,26 +101,6 @@ func (a *App) DownloadUpdate(tag string) error {
 		return ErrShuttingDown
 	}
 	return a.updater.DownloadUpdate(tag)
-}
-
-// RestartToUpdate swaps in the staged update and relaunches. It spawns the
-// detached swap helper and asks Wails to begin its normal shutdown, so the
-// transport drains and stores flush before the process exits; the helper then
-// replaces the binary (or .app bundle) and starts the new version. This quits
-// the running app, so it is only ever wired to an explicit button.
-//
-// The WSL backend cannot do any of that — the executable being replaced is the
-// Windows launcher's, on a filesystem this process only sees through /mnt/c —
-// so it hands the staged artifact to the launcher instead and lets the launcher
-// kill it. See restartToUpdateWSL.
-//
-//ao:scope host
-//ao:route home
-func (a *App) RestartToUpdate() error {
-	if a.updater == nil {
-		return ErrUpdatesUnsupported
-	}
-	return a.updater.RestartToUpdate()
 }
 
 // ReportUpdateInstallStatus is how the Windows launcher answers an

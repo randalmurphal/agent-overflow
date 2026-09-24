@@ -84,6 +84,7 @@ var (
 		"updater:installing", // 2026-08-25 pass
 		"updater:progress",   // 2026-08-25 pass
 		"updater:ready",      // 2026-08-25 pass
+		"updater:restart",    // the restart-to-update wait; RestartToUpdate is host-scoped
 		"updater:verifying",  // 2026-08-25 pass
 		"webview:trim",       // 2026-08-25: launcher GC directive, same posture as updater:install
 	}
@@ -134,6 +135,10 @@ var (
 		"system:stats",
 		"theme:changed",
 		"updater:progress", // 2026-08-25 pass
+		// One restart at a time (RestartToUpdate refuses a second) and each
+		// frame is the whole state, the same membership as
+		// service:update-status.
+		"updater:restart",
 		"workflow:definitions-changed",
 		"workflow:engine-state", // 2026-08-25 pass
 		// 2026-09-03 (the convergence wave): each an UNKEYED whole-answer or

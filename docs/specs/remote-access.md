@@ -1637,8 +1637,9 @@ compatibility with the installed supervisor is checked *before*
 anything is touched; the store is **snapshotted while quiescent**
 before migrations; the new version boots fully as a trial — runs
 migrations, binds listeners, starts everything — but parks at an
-activation gate until it reports prepared within a hard time budget;
-only then does the supervisor durably commit. Failure or timeout
+activation gate until it reports prepared, judged by the progress it
+reports under a ceiling ([app update](app-update.md#progress-and-the-stall-rule));
+only then does the supervisor durably commit. Failure, a stall or the ceiling
 restores the snapshot and restarts the old version, with a durable
 restore marker so a supervisor crash mid-rollback resumes correctly.
 The update carries an id the client correlates through its reconnect,

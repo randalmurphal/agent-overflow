@@ -37,6 +37,44 @@ const DefaultBootstrapPrefix = "__AO_BOOTSTRAP__:"
 // passing a flag the other rejects.
 const ResetTransportPortFlag = "reset-transport-port"
 
+// UpdatingToFlag is the backend boot flag (no dashes) naming the version
+// whose committed update this launch finishes, for the backend's startup
+// report. The launcher takes it from its update record
+// (UpdateSequence.Reconcile), the one source of that version. It is shared
+// for the reason ResetTransportPortFlag is.
+const UpdatingToFlag = "updating-to"
+
+// UpdatingToArgs is the backend argv naming version, or nothing when this
+// launch finishes no update.
+func UpdatingToArgs(version string) []string {
+	if version == "" {
+		return nil
+	}
+	return []string{"--" + UpdatingToFlag, version}
+}
+
+// UpdateFailedToFlag and UpdateFailedReasonFlag are the backend boot flags
+// (no dashes) naming an update from the backend's version that the
+// launcher's record settled as rolled back or failed, and why, for the
+// backend's notice that the update did not apply. They are shared for the
+// reason ResetTransportPortFlag is.
+const (
+	UpdateFailedToFlag     = "update-failed-to"
+	UpdateFailedReasonFlag = "update-failed-reason"
+)
+
+// RefusePendingMigrationsFlag is the backend boot flag (no dashes) that
+// makes the backend refuse to migrate its database live: with migrations
+// pending it answers MigrationsPendingError on its bootstrap instead of
+// starting, and the launcher migrates the database through a snapshot and a
+// trial first (UpdateSequence.Migrate). It is shared for the reason
+// ResetTransportPortFlag is.
+const RefusePendingMigrationsFlag = "refuse-pending-migrations"
+
+// updateFailedReasonLimit bounds the reason on the backend's command line,
+// which Windows caps.
+const updateFailedReasonLimit = 512
+
 // PageURLPath is the backend transport route that answers a page URL.
 // The launcher asks it twice over a document's life: once for the bare
 // URL to navigate to (the reload keybinding, since the boot URL is a

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	appservice "agent-overflow/internal/app"
+	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/supervise"
 )
@@ -63,6 +64,8 @@ func checkBackendVerbFlags(verb string, flags cliFlags) error {
 		return fmt.Errorf("cannot combine %s with --mock-provider: mock providers belong to --harness and --soak", verb)
 	case flags.mockForge != "":
 		return fmt.Errorf("cannot combine %s with --mock-forge: the fake forge CLI belongs to --harness and --soak", verb)
+	case flags.waitFor != (supervise.ProcessRef{}):
+		return fmt.Errorf("cannot combine %s with --%s: only the desktop boot is started by its update helper", verb, supervise.DesktopWaitPIDFlag)
 	}
 	return nil
 }
@@ -119,10 +122,13 @@ func runServe(flags cliFlags) {
 	// see a fully wired App before the transport can dispatch to them.
 	// Runtime-gated on the Windows launcher having spawned us, so on a
 	// serve host it is a no-op.
-	appservice.InitWSLUpdater(appService.App, bootSettingsDir())
+	appservice.InitWSLUpdater(appService.App, bootSettingsDir(), appupdate.LauncherFailure{})
 
 	srv := bootTransport(appService, flags.listenAddr, bootTransportOptions{
-		BackendLockHeldBySupervisor: supervisor != nil && supervisor.ownsDataRoot,
+		BackendLockHeldBySupervisor:  supervisor != nil && supervisor.ownsDataRoot,
+		ServeLayoutOwnedBySupervisor: supervisor != nil,
+		// A trial's supervisor judges it by this progress.
+		BootProgressObserver: supervisor.bootProgress(),
 	})
 	appservice.ConfigureTransportNotifications(appService.App)
 	// The bus exists now, so the boot's update check can say its piece to a
@@ -133,9 +139,11 @@ func runServe(flags cliFlags) {
 	bootCtx, bootCancel := context.WithCancel(context.Background())
 	defer bootCancel()
 	phaseStarted := time.Now()
-	if err := appService.Start(bootCtx); err != nil {
+	startErr := appService.Start(bootCtx)
+	supervisor.startFinished(startErr)
+	if startErr != nil {
 		logBootPhase("serve.service_startup", phaseStarted)
-		log.Printf("app: service startup: %v", err)
+		log.Printf("app: service startup: %v", startErr)
 		srv.MarkStartupFailed()
 		// Deliberately not exiting: the transport is bound and answers
 		// every bootstrap request with a terminal failure that names what

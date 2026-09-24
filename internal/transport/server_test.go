@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"agent-overflow/internal/eventchan"
+	"agent-overflow/internal/startupprogress"
 
 	"github.com/coder/websocket"
 )
@@ -376,6 +377,57 @@ func TestServer_BootstrapStartupFailureBeatsReadinessGate(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("bootstrap status after startup failure = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+}
+
+// TestServer_BootstrapReportsARefusalToMigrateLive: a boot that refused its
+// pending migrations answers the refusal, not the starting report or the
+// startup failure, to an authenticated request only.
+func TestServer_BootstrapReportsARefusalToMigrateLive(t *testing.T) {
+	d := NewDispatcher()
+	bus := NewEventBus(20)
+	srv, err := New(Config{
+		Dispatcher:               d,
+		EventBus:                 bus,
+		Token:                    "test-token",
+		RequireReadyForBootstrap: true,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() {
+		shutCtx, c := context.WithTimeout(context.Background(), 2*time.Second)
+		defer c()
+		_ = srv.Shutdown(shutCtx)
+	})
+
+	srv.SetStartupProgress(startupprogress.Progress{Phase: "app.init_stores"})
+	want := startupprogress.MigrationsPending{Database: 118, Build: 119, Pending: 1}
+	srv.MarkMigrationsPending(want)
+	srv.MarkStartupFailed()
+	resp := getBootstrap(t, srv.Addr())
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := startupprogress.ParseMigrationsPending(resp.StatusCode, body); !ok || got != want {
+		t.Fatalf("bootstrap = %d %q, want the refusal %+v", resp.StatusCode, body, want)
+	}
+	if got := resp.Header.Get("Cache-Control"); !strings.Contains(got, "no-store") {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+
+	unauthenticated, err := http.Get(fmt.Sprintf("http://%s/bootstrap.json", srv.Addr()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthenticated.Body.Close()
+	if unauthenticated.StatusCode != http.StatusNotFound {
+		t.Fatalf("unauthenticated bootstrap = %d, want 404", unauthenticated.StatusCode)
 	}
 }
 

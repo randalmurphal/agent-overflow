@@ -519,6 +519,10 @@ type App struct {
 	// (it returns $HOME/Library/Application Support), which env overrides
 	// can't redirect.
 	dataDirOverride string
+	// refusePendingMigrations fails Start with a store.MigrationsPendingError
+	// instead of migrating the database (RefusePendingMigrations). A boot
+	// input like dataDirOverride.
+	refusePendingMigrations bool
 	// certFingerprint is the fingerprint of the TLS certificate the
 	// transport listener presents (internal/servercert), carried on every
 	// pairing link this backend mints so a client that owns its own TLS
@@ -617,6 +621,9 @@ type App struct {
 	// else, which is what makes "this install has no supervisor" an answer
 	// rather than a nil dereference. See app_service_update.go.
 	serviceUpdate serviceUpdateState
+	// restartUpdate is the in-app restart to update while it waits for
+	// running work and hands off. See app_update_restart.go.
+	restartUpdate restartUpdateState
 	workAdmission workAdmission
 	// credentialHomeOverride, when non-empty, replaces os.UserHomeDir()
 	// as the home that provideraccounts.Credentials operates under —

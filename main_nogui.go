@@ -14,10 +14,23 @@
 // the inverse `!nogui` tag.
 package main
 
+import "agent-overflow/internal/supervise"
+
+// desktopUpdateTrial is false: this build has no desktop window, so it
+// applies no desktop updates (main_update_apply.go).
+const desktopUpdateTrial = false
+
 func runClient(_ string) {
 	fatalf("--frontend and --connect require a desktop build; this binary only runs headless. Launch the desktop binary on your host OS instead.")
 }
 
-func runDesktop(_ string) {
+func runDesktop(_ string, _ supervise.ProcessRef) {
 	fatalf("desktop mode is not available in this build; the WSL backend payload only runs with --print-url-fd to publish its bootstrap line. Use the Windows launcher (agent-overflow.exe) to drive it.")
+}
+
+// runDesktopApplyWindow is never reached: runDesktopApply refuses first,
+// because desktopUpdateTrial is false.
+func runDesktopApplyWindow(desktopApplyFlags) int {
+	fatalf("the desktop update helper is not available in this build")
+	return 2
 }

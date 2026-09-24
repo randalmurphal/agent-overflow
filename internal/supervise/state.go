@@ -88,11 +88,21 @@ type UpdateRecord struct {
 	// written before this field existed decodes to and is the correct
 	// reading of one: nobody had reported it.
 	Reported bool `json:"reported,omitempty"`
+	// FromSchema is the database's migration version when the update began
+	// its trials, 0 until known. A trial that settles without committing
+	// is remembered for it (FailedTrial).
+	FromSchema int `json:"fromSchema,omitempty"`
 }
 
 // Settled reports whether the record has reached a terminal state.
 func (r *UpdateRecord) Settled() bool {
 	return r != nil && r.State != UpdatePending
+}
+
+// Migration reports whether the state holds a migration of the database of
+// the version already installed (BeginMigration) instead of an update.
+func (s State) Migration() bool {
+	return s.Update != nil && s.Update.From == s.Update.To
 }
 
 // Selection is what a validated state says to run.
@@ -212,6 +222,9 @@ func (s State) Validate() error {
 		return fmt.Errorf("supervise: update %q says it started from %q but the active version is %q",
 			record.ID, record.From, s.ActiveVersion)
 	}
+	if record.FromSchema < 0 {
+		return fmt.Errorf("supervise: update %q names schema version %d", record.ID, record.FromSchema)
+	}
 	if record.Attempts < 0 {
 		return fmt.Errorf("supervise: update %q has %d attempts", record.ID, record.Attempts)
 	}
@@ -296,6 +309,37 @@ func (s State) Begin(id, target string, now time.Time) (State, error) {
 			From: selection.Version, To: target,
 			// Zero trials so far. Run counts one immediately before it spawns.
 			Attempts: 0, StartedAtMs: now.UnixMilli(),
+		},
+	}
+	if err := next.Validate(); err != nil {
+		return State{}, err
+	}
+	return next, nil
+}
+
+// BeginMigration opens a pending record from the selected version to itself:
+// the version stays, and its trial migrates the database before it runs
+// live. The Windows launcher opens one when its backend refused to migrate
+// its database live (docs/specs/app-update.md, the no-live-migration rule).
+// Begin never opens such a record, so From equal to To is what marks one.
+func (s State) BeginMigration(id string, now time.Time) (State, error) {
+	selection, err := s.Select()
+	if err != nil {
+		return State{}, err
+	}
+	if selection.Trial {
+		return State{}, fmt.Errorf("supervise: update %q is already in flight", selection.UpdateID)
+	}
+	if strings.TrimSpace(id) == "" {
+		return State{}, errors.New("supervise: an update id is required")
+	}
+	next := State{
+		Schema:        StateSchema,
+		ActiveVersion: selection.Version,
+		Update: &UpdateRecord{
+			ID: id, State: UpdatePending,
+			From: selection.Version, To: selection.Version,
+			StartedAtMs: now.UnixMilli(),
 		},
 	}
 	if err := next.Validate(); err != nil {

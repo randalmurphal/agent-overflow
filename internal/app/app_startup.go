@@ -331,8 +331,9 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	a.watchBootFiles(dbPath, dbPath+"-wal")
 	endMigrations := func() {}
 	st, err := store.NewWithOptions(dbPath, store.Options{
-		Context:     ctx,
-		OnMigration: a.reportMigration(&endMigrations),
+		Context:                 ctx,
+		OnMigration:             a.reportMigration(&endMigrations),
+		RefusePendingMigrations: a.refusePendingMigrations,
 	})
 	endMigrations()
 	if err != nil {

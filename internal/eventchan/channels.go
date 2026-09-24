@@ -302,6 +302,8 @@ const (
 // Wails updater event names by internal/appupdate's updaterEventBridge;
 // UpdaterInstall is the imperative directive the Windows launcher acts
 // on, and internal/selfupdate re-exports its spelling as a string.
+// UpdaterRestart is the App's restart-to-update state: waiting for
+// running work, restarting, canceled or failed.
 const (
 	UpdaterDownloadStarted Channel = "updater:download-started"
 	UpdaterError           Channel = "updater:error"
@@ -309,6 +311,7 @@ const (
 	UpdaterInstalling      Channel = "updater:installing"
 	UpdaterProgress        Channel = "updater:progress"
 	UpdaterReady           Channel = "updater:ready"
+	UpdaterRestart         Channel = "updater:restart"
 	UpdaterVerifying       Channel = "updater:verifying"
 )
 

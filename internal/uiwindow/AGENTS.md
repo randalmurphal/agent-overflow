@@ -20,7 +20,8 @@ and reload races; repeated delivery of a spent ticket is harmless only after
 the document already has its authenticated cookie.
 
 All Wails geometry is in device-independent pixels. Keep placement and tracking
-math in internal/windowgeom, persistence in caller-provided sinks, and ticket
+math in internal/windowgeom, persistence in caller-provided sinks (nil for a
+window that shows the saved placement without owning it), and ticket
 vocabulary in internal/pagehost. Flush the tracker's in-memory state on close
 instead of reading a window during teardown.
 

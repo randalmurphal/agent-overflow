@@ -1,11 +1,7 @@
 package transport
 
 import (
-	"errors"
-	"io/fs"
-	"log"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 
@@ -54,7 +50,7 @@ func (e *BackendStartingError) Error() string {
 // UpdatedAt advances only on observed progress: a phase beginning or
 // ending, a new detail or step, or, between two heartbeats, a watched
 // file (WatchBootFiles) changing size or this process doing work: CPU
-// time or storage I/O over the thresholds in startup_work.go. A sort, a
+// time or storage I/O over startupprogress.Sampler's thresholds. A sort, a
 // foreign key check, a cold read or a rebuild counts; a statement blocked
 // on a lock does not. AliveAt advances on every heartbeat. The heartbeat
 // runs every interval while any phase is open and stops when the
@@ -73,20 +69,10 @@ type StartupReporter struct {
 	open    []startupPhase
 	stop    chan struct{}
 	stopped chan struct{}
-	// watched maps each WatchBootFiles path to its size at the last look:
-	// -1 while it does not exist, statUnknown until a look could read it.
-	watched map[string]int64
-	// stat reads a watched file; statFailed holds paths whose stat failure
-	// was already logged.
-	stat       func(string) (fs.FileInfo, error)
-	statFailed map[string]bool
-	// sampleWork reads the process's work so far; work is the last
-	// sample, valid when haveWork. workFailed is set once a failed sample
-	// has been logged.
-	sampleWork func() (processWork, error)
-	work       processWork
-	haveWork   bool
-	workFailed bool
+	observe func(p startupprogress.Progress)
+	// sampler finds progress between two heartbeats. It is set before the
+	// reporter is shared and never replaced.
+	sampler *startupprogress.Sampler
 }
 
 type startupPhase struct {
@@ -104,8 +90,7 @@ func NewStartupReporter(srv *Server, updatingTo string) *StartupReporter {
 func newStartupReporter(srv *Server, updatingTo string, interval time.Duration, now func() time.Time) *StartupReporter {
 	r := &StartupReporter{
 		srv: srv, now: now, interval: interval,
-		watched: map[string]int64{}, stat: os.Stat, statFailed: map[string]bool{},
-		sampleWork: readProcessWork,
+		sampler: startupprogress.NewSampler(startupprogress.SamplerOptions{Interval: interval}),
 	}
 	started := now().UnixMilli()
 	r.current = startupprogress.Progress{
@@ -120,6 +105,23 @@ func newStartupReporter(srv *Server, updatingTo string, interval time.Duration, 
 	return r
 }
 
+// Observe installs fn to receive every report as it is published, heartbeats
+// included, starting with the current one, and returns r. A report's
+// UpdatedAt and AliveAt say what it proves. fn runs under the reporter's
+// lock and must not block. A nil fn observes nothing.
+func (r *StartupReporter) Observe(fn func(p startupprogress.Progress)) *StartupReporter {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.observe = fn
+	if fn != nil {
+		fn(r.current)
+	}
+	return r
+}
+
 // WatchBootFiles adds files whose size changes count as progress, such as
 // the database and its WAL. A file that does not exist yet counts when it
 // appears.
@@ -127,15 +129,7 @@ func (r *StartupReporter) WatchBootFiles(paths ...string) {
 	if r == nil {
 		return
 	}
-	sizes := make([]int64, len(paths))
-	for i, path := range paths {
-		sizes[i] = r.fileSize(path)
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for i, path := range paths {
-		r.watched[path] = sizes[i]
-	}
+	r.sampler.Watch(paths...)
 }
 
 // BeginBootPhase reports that phase began. The returned func ends it and
@@ -209,79 +203,23 @@ func (r *StartupReporter) heartbeat(stop <-chan struct{}, stopped chan<- struct{
 	}
 }
 
-// beat stamps the heartbeat, and progress when a watched file changed
-// size or the process did enough work since the last look. Files and
-// counters are read outside the lock so a slow read cannot hold up a
+// beat stamps the heartbeat, and progress when the sampler found a watched
+// file changed size or the process did enough work since the last look.
+// The sampler reads outside the lock so a slow read cannot hold up a
 // report.
 func (r *StartupReporter) beat() {
+	progressed := r.sampler.Sample()
 	r.mu.Lock()
-	paths := make([]string, 0, len(r.watched))
-	for path := range r.watched {
-		paths = append(paths, path)
-	}
-	r.mu.Unlock()
-	sizes := make([]int64, len(paths))
-	for i, path := range paths {
-		sizes[i] = r.fileSize(path)
-	}
-	work, workErr := r.sampleWork()
-
-	r.mu.Lock()
+	defer r.mu.Unlock()
 	now := r.now().UnixMilli()
-	for i, path := range paths {
-		if sizes[i] == statUnknown {
-			continue
-		}
-		if prev := r.watched[path]; prev != sizes[i] {
-			r.watched[path] = sizes[i]
-			if prev != statUnknown {
-				r.current.UpdatedAt = now
-			}
-		}
-	}
-	logWorkErr := false
-	if workErr != nil {
-		// No evidence either way. The next sample is a fresh baseline so
-		// it is not measured across the gap.
-		r.haveWork = false
-		logWorkErr = !r.workFailed
-		r.workFailed = true
-	} else {
-		if r.haveWork && workProgressed(r.work, work, r.interval) {
-			r.current.UpdatedAt = now
-		}
-		r.work, r.haveWork = work, true
+	if progressed {
+		r.current.UpdatedAt = now
 	}
 	r.current.AliveAt = now
 	r.srv.SetStartupProgress(r.current)
-	r.mu.Unlock()
-	if logWorkErr {
-		log.Printf("startup progress: cannot read this process's CPU and I/O, so only reports and file sizes count as progress: %v", workErr)
+	if r.observe != nil {
+		r.observe(r.current)
 	}
-}
-
-// statUnknown is a size fileSize could not read. It is no evidence either
-// way, so the file keeps its last known size.
-const statUnknown = -2
-
-// fileSize is path's size, -1 when it does not exist, or statUnknown when
-// it cannot be read. A read failure is logged once per path.
-func (r *StartupReporter) fileSize(path string) int64 {
-	info, err := r.stat(path)
-	switch {
-	case err == nil:
-		return info.Size()
-	case errors.Is(err, fs.ErrNotExist):
-		return -1
-	}
-	r.mu.Lock()
-	first := !r.statFailed[path]
-	r.statFailed[path] = true
-	r.mu.Unlock()
-	if first {
-		log.Printf("startup progress: cannot read %s, its writes will not count as progress: %v", path, err)
-	}
-	return statUnknown
 }
 
 func (r *StartupReporter) publishLocked() {
@@ -294,4 +232,7 @@ func (r *StartupReporter) publishLocked() {
 	r.current.UpdatedAt = now
 	r.current.AliveAt = now
 	r.srv.SetStartupProgress(r.current)
+	if r.observe != nil {
+		r.observe(r.current)
+	}
 }

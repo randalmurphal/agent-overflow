@@ -109,6 +109,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.UpdaterInstalling,
 		eventchan.UpdaterProgress,
 		eventchan.UpdaterReady,
+		eventchan.UpdaterRestart,
 		eventchan.UpdaterVerifying,
 		eventchan.WebviewTrim,
 		eventchan.UsageThreadCost,

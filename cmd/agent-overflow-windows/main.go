@@ -68,6 +68,7 @@ import (
 	"agent-overflow/internal/observability/pprofserve"
 	"agent-overflow/internal/pagehost"
 	"agent-overflow/internal/serialqueue"
+	"agent-overflow/internal/startuppage"
 	"agent-overflow/internal/uikeys"
 	"agent-overflow/internal/uiwindow"
 	"agent-overflow/internal/webview2host"
@@ -224,6 +225,22 @@ func main() {
 		}
 		log.Fatalf("flags: %v", flagErr)
 	}
+	// The new launcher's preflight for an in-app update is headless and
+	// writes its answer file; it never reaches Wails or single-instance.
+	if flags.UpdatePreflight != "" {
+		os.Exit(runUpdatePreflightMode(flags))
+	}
+	// A launcher started by the one it replaces waits for that one to exit
+	// before claiming the single-instance identity.
+	if flags.Wait.PID > 0 {
+		if err := waitForParentLauncher(flags.Wait); err != nil {
+			log.Printf("launcher: %v", err)
+			if flags.UpdateApply != "" {
+				failUpdateBeforeApply(flags.UpdateApply, flags.Distro, err)
+				os.Exit(1)
+			}
+		}
+	}
 	if err := installHarnessBoundary(governor.DefaultCeilingBytes); err != nil {
 		log.Fatalf("harness containment: %v", err)
 	}
@@ -235,7 +252,8 @@ func main() {
 	if removed := webview2host.ScrubEnvOverrides(); len(removed) > 0 {
 		log.Printf("launcher: cleared inherited WebView2 env overrides: %s", webview2host.FormatScrub(removed))
 	}
-	if err := prepareWebviewStorage(launcherRuntimeMode()); err != nil {
+	applier := flags.UpdateApply != ""
+	if err := prepareWebviewStorage(launcherWebviewDataDir(launcherRuntimeMode(), applier), renderDiagnosticsDir(launcherRuntimeMode())); err != nil {
 		log.Fatalf("webview2 storage: %v", err)
 	}
 	if activeProfile != "" {
@@ -266,6 +284,16 @@ func main() {
 	// provider stdio capture works for `make dev-wsl PROVIDER_DEBUG=1`
 	// and for end users who set the env var in their Windows shell.
 	forwardDebugEnvToWSL()
+
+	// The new launcher of an in-app update shows the loading page with the
+	// update's progress and needs no distro list or picker.
+	if applier {
+		app := buildApp(nil, "/loading", "", false, true)
+		app.updateApplyID, app.updateApplyDistro = flags.UpdateApply, flags.Distro
+		app.updateApplyTransient = !flags.RememberDistro
+		app.run()
+		return
+	}
 
 	phaseStarted := time.Now()
 	distros, err := wsllauncher.ListDistros(context.Background())
@@ -302,7 +330,7 @@ func main() {
 	// buildApp creates the window (and, when chosen != "", kicks off the
 	// backend launch) on ApplicationStarted — see its doc for why creation is
 	// deferred into the running app loop.
-	app := buildApp(distros, initialURL, chosen, transient)
+	app := buildApp(distros, initialURL, chosen, transient, false)
 	logBootPhase("launcher.before_run", bootStarted)
 
 	app.run()
@@ -406,31 +434,18 @@ func prependWSLENVRule(rule string) error {
 	return os.Setenv("WSLENV", merged)
 }
 
-// resolveChosenDistro picks the distro to launch in based on (in
-// order) the --distro override, then the saved wsl.json config, then
-// a single-distro auto-pick. Returns ("", false) when none matched
-// and the picker (or the WSL-missing page, if zero distros) should
-// run instead.
-//
-// The returned bool is the "transient" flag — true when an override
-// supplied the choice and the launcher should NOT persist it after a
-// successful boot. Picker selections, saved-config rehydrations, and
-// single-distro auto-picks are non-transient (the auto-pick is
-// effectively a "first-time setup" pick and should persist so the
-// next launch isn't asked again if the user later installs more
-// distros).
+// resolveChosenDistro is wsllauncher.ChooseDistro for these flags and the
+// saved wsl.json config. The returned bool is the "transient" flag: true
+// when the launcher must NOT persist the choice after a successful boot.
 func resolveChosenDistro(flags launcherFlags, cfg *wsldistro.Config, distros []wsllauncher.Distro) (string, bool) {
-	if flags.Distro != "" {
-		for _, d := range distros {
-			if d.Name == flags.Distro {
-				return d.Name, true
-			}
-		}
+	saved := ""
+	if cfg != nil {
+		saved = cfg.Distro
+	}
+	chosen, transient := wsllauncher.ChooseDistro(flags.Distro, flags.RememberDistro, saved, distros)
+	if flags.Distro != "" && chosen == "" {
 		// --distro pointed at a distro that wsl.exe doesn't know
 		// about (typo, distro uninstalled since the env var was set).
-		// Fall through to the picker so the user sees the real list
-		// rather than silently dropping back to a saved choice that
-		// might be the wrong dev environment entirely.
 		names := make([]string, 0, len(distros))
 		for _, d := range distros {
 			names = append(names, d.Name)
@@ -439,23 +454,8 @@ func resolveChosenDistro(flags launcherFlags, cfg *wsldistro.Config, distros []w
 			"warning: --distro %q not found among installed distros (%v); showing picker",
 			flags.Distro, names,
 		)
-		return "", false
 	}
-	if cfg != nil && cfg.Distro != "" {
-		for _, d := range distros {
-			if d.Name == cfg.Distro {
-				return d.Name, false
-			}
-		}
-	}
-	// Single-distro auto-pick: nothing to choose between, so don't
-	// make the user click. Persist on success so a later install of
-	// a second distro doesn't surprise the user with a picker on
-	// next launch — they explicitly own their pick now.
-	if len(distros) == 1 {
-		return distros[0].Name, false
-	}
-	return "", false
+	return chosen, transient
 }
 
 // openLog opens %APPDATA%\agent-overflow\launcher.log for append (or
@@ -548,6 +548,34 @@ type launcherApp struct {
 	// bridge's dispatch goroutine and held across the whole install, which
 	// would otherwise block every lifecycle path that takes the mutex.
 	updateInstalling atomic.Bool
+	// payloadDistro and payloadPath are the running backend's distro and
+	// Linux path, recorded by launchAndShow for an in-app update (under mu).
+	// payloadTransient is whether that launch saves its distro choice,
+	// which the update's relaunch carries (wsllauncher.DistroArgs).
+	payloadDistro    string
+	payloadPath      string
+	payloadTransient bool
+	// updateApplyID is the update --update-apply runs for the data root in
+	// updateApplyDistro, set before the app starts, with the launch's
+	// choice of that distro. updateRunning keeps that window open while
+	// it runs.
+	updateApplyID        string
+	updateApplyDistro    string
+	updateApplyTransient bool
+	updateRunning        atomic.Bool
+	// yielded is set once this applier hid its window for a launch that
+	// joined the update.
+	yielded atomic.Bool
+	// launching refuses a picker launch while another launch, including
+	// its update record's recovery, runs.
+	launching atomic.Bool
+	// migrationRetry is the launch the failure page's Retry runs again
+	// (RetryMigration): set when a remembered failed trial stopped that
+	// launch's database upgrade, and taken by the one Retry that runs it.
+	migrationRetry atomic.Pointer[launchTarget]
+	// backendUpdateArgs is what the distro's update record tells the
+	// backend this launch starts (ReconcileDecision.BackendArgs).
+	backendUpdateArgs atomic.Pointer[[]string]
 
 	// backendURL holds the page URL launchAndShow pointed the WebView at.
 	// Read by the reload keybinding (uikeys.BrowserWithReload) so Ctrl+R
@@ -557,7 +585,13 @@ type launcherApp struct {
 	backendURL     atomic.Pointer[string]
 	startupFailure atomic.Pointer[[]byte]
 	// loading is what /loading.json reports while the backend starts.
-	loading loadingStatus
+	loading startuppage.Status
+}
+
+// launchTarget is a launch launchAndShow can run again.
+type launchTarget struct {
+	distro    string
+	transient bool
 }
 
 type launcherExit struct {
@@ -595,18 +629,46 @@ func (a *launcherApp) PickDistro(name string) error {
 	if already {
 		return errors.New("backend already launched")
 	}
-
 	if err := a.validateDistroName(name); err != nil {
 		return err
 	}
+	if !a.launching.CompareAndSwap(false, true) {
+		return errors.New("a launch is already in progress")
+	}
+	defer a.launching.Store(false)
 
 	// Picker selections are user intent — persist on success.
 	// launchAndShow owns the WebView URL on every exit path (picker,
 	// connectivity-error, or backend URL), so we don't override it here.
-	if err := a.launchAndShow(name, false); err != nil {
+	if err := a.launchAndShow(name, false, false); err != nil {
 		return err
 	}
 	return nil
+}
+
+// RetryMigration is bound to the failure page a remembered failed database
+// upgrade shows. It runs that launch again, and the upgrade with it, which
+// the failure memory otherwise stops (docs/specs/app-update.md). Only the
+// launch the page was shown for runs, once.
+func (a *launcherApp) RetryMigration() error {
+	a.mu.Lock()
+	already := a.launcher != nil
+	a.mu.Unlock()
+	if already {
+		return errors.New("backend already launched")
+	}
+	if !a.launching.CompareAndSwap(false, true) {
+		return errors.New("a launch is already in progress")
+	}
+	defer a.launching.Store(false)
+	target := a.migrationRetry.Swap(nil)
+	if target == nil {
+		return errors.New("there is no database upgrade to retry")
+	}
+	if w := a.win(); w != nil {
+		w.SetURL("/loading")
+	}
+	return a.launchAndShow(target.distro, target.transient, true)
 }
 
 // validateDistroName ensures `name` matches one of the distros wsl.exe
@@ -633,12 +695,15 @@ func (a *launcherApp) validateDistroName(name string) error {
 // doesn't overwrite the user's saved pick from double-clicking the
 // .exe earlier.
 //
+// retryMigration runs a database upgrade the failure memory would stop:
+// the person pressed Retry on the page it showed (RetryMigration).
+//
 // Outer timeout removed — cold WSL2 boot can exceed any single budget
 // (the WSL VM itself can take 20+ seconds, then 9P startup, then SQLite
 // migrations). Inner phase timeouts (install, bootstrap) bound the
 // user-visible wait per step. If the user wants to abort they close
 // the window; the Wails OnShutdown hook tears the WSL child down.
-func (a *launcherApp) launchAndShow(distro string, transient bool) error {
+func (a *launcherApp) launchAndShow(distro string, transient, retryMigration bool) error {
 	ctx := context.Background()
 
 	// The window is created on the ApplicationStarted handler, which kicks off
@@ -652,7 +717,13 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 
 	started := time.Now()
 	defer logBootPhase("launcher.launch_and_show.total", started)
-	a.loading.begin(started)
+	a.loading.Begin(started)
+
+	// The distro's update record is reconciled before anything runs in it.
+	// A launch it hands off or blocks owns the window from there.
+	if !a.reconcileUpdate(distro, transient) {
+		return nil
+	}
 
 	phaseStarted := time.Now()
 	binPath, cachedPath, err := a.ensurePayloadInstalled(ctx, distro)
@@ -681,6 +752,14 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 			binPath = fresh
 			l, bs, err = a.launchAndProbe(ctx, distro, binPath)
 		}
+	}
+	// Only the refusal itself: one joined to a failed stop leaves a backend
+	// that may still hold the database, and takes the failure page below.
+	if pending, ok := err.(*wsllauncher.MigrationsPendingError); ok {
+		if !a.migrateBeforeLaunch(distro, binPath, pending, transient, retryMigration) {
+			return nil
+		}
+		l, bs, err = a.launchAndProbe(ctx, distro, binPath)
 	}
 	if err != nil {
 		page := startupFailureHTML(err)
@@ -720,6 +799,9 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	if err := a.persistSuccessfulLaunch(distro, binPath, !transient); err != nil {
 		log.Printf("save config after launch: %v", err)
 	}
+	a.mu.Lock()
+	a.payloadDistro, a.payloadPath, a.payloadTransient = distro, binPath, transient
+	a.mu.Unlock()
 
 	// The backend assembles the page URL (main.go webviewPageURL): the
 	// client id and page marker that ride on it are its own. It carries
@@ -879,6 +961,16 @@ func (a *launcherApp) launchBackend(ctx context.Context, distro, binPath string,
 		return nil, nil, err
 	}
 	args := append(profileArgs, extraArgs...)
+	if update := a.backendUpdateArgs.Load(); update != nil {
+		args = append(args, *update...)
+	}
+	if activeProfile == "" {
+		// The ordinary backend never migrates its database live: it
+		// refuses, and launchAndShow migrates through a trial first. An
+		// isolated profile runs the harness backend on its own data root,
+		// which the update commands do not address.
+		args = append(args, wsllauncher.RefusePendingMigrationsArgs()...)
+	}
 	l, bs, err := wsllauncher.Launch(ctx, wsllauncher.LaunchOptions{
 		Distro:         distro,
 		BinaryPath:     binPath,
@@ -1051,9 +1143,9 @@ func waitBackendGone(ctx context.Context, bs *wsllauncher.Bootstrap) error {
 // backend's startup progress to the loading page, and logs its verdict.
 func (a *launcherApp) probeLaunchedBackend(ctx context.Context, bs *wsllauncher.Bootstrap) error {
 	phaseStarted := time.Now()
-	a.loading.clearProgress()
+	a.loading.ClearProgress()
 	err := wsllauncher.ProbeBootstrap(ctx, bs.Port, bs.Token, wsllauncher.ProbeConfig{
-		OnProgress: a.loading.setProgress,
+		OnProgress: a.loading.SetProgress,
 	})
 	logBootPhase("launcher.probe_bootstrap", phaseStarted)
 	if err != nil {
@@ -1255,7 +1347,13 @@ func (a *launcherApp) win() *application.WebviewWindow {
 // chosen/transient describe the resolved launch target: when chosen is
 // non-empty the handler also kicks off the backend launch (the picker is
 // skipped).
-func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient bool) *launcherApp {
+//
+// applier is the launcher running an --update-apply. It holds no
+// single-instance identity, so a launch can run beside it and join the
+// update (wsllauncher.Join); that launch owns the identity, the WebView2
+// profile with its DevTools port, and notifications. The applier gets its
+// own profile and neither of the others.
+func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient, applier bool) *launcherApp {
 	a := &launcherApp{
 		distros:                 distros,
 		notificationActivations: wsllauncher.NewNotificationActivationQueue(),
@@ -1270,7 +1368,8 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 
 	// Preserve the previous browser session's Chromium log before this
 	// session's WebView2 environment truncates it — see rotateChromeDebugLog.
-	rotateChromeDebugLog(webviewDataDir(mode))
+	profileDir := launcherWebviewDataDir(mode, applier)
+	rotateChromeDebugLog(profileDir)
 
 	diagnosticsDir := renderDiagnosticsDir(mode)
 	if diagnosticsDir == "" {
@@ -1281,9 +1380,18 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		log.Printf("webview2: render-hang diagnostics dir: %s", diagnosticsDir)
 	}
 
+	singleInstance := wslSingleInstanceOptions(a.win)
+	services := []application.Service{
+		application.NewService(notificationService),
+		application.NewService(a),
+	}
+	if applier {
+		singleInstance = nil
+		services = []application.Service{application.NewService(a)}
+	}
 	app := application.New(application.Options{
 		Name:           title,
-		SingleInstance: wslSingleInstanceOptions(a.win),
+		SingleInstance: singleInstance,
 		// Route Wails' internal slog into launcher.log. Its default logger
 		// writes to stderr, which a GUI subsystem exe discards — that hid
 		// the WebView2 process-failure/recovery lines ("webview2: process
@@ -1291,19 +1399,16 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		Logger: slog.New(slog.NewTextHandler(log.Writer(), &slog.HandlerOptions{
 			Level: wailsLogLevel(mode),
 		})),
-		Services: []application.Service{
-			application.NewService(notificationService),
-			application.NewService(a),
-		},
+		Services: services,
 		Assets: application.AssetOptions{
 			Handler: pickerAssetHandler(distros, func() []byte {
 				if page := a.startupFailure.Load(); page != nil {
 					return *page
 				}
 				return startupFailureHTML(nil)
-			}, func() loadingReport { return a.loading.report(time.Now()) }),
+			}, func() startuppage.Report { return a.loading.Report(time.Now()) }),
 		},
-		Windows: webviewBrowserOptions(mode, webviewDataDir(mode), diagnosticsDir),
+		Windows: webviewBrowserOptions(mode, profileDir, diagnosticsDir, !applier),
 		// Cancel app shutdown until the user explicitly closes the
 		// window. Without this, a transient WSL hiccup during launch
 		// would crash us silently.
@@ -1392,7 +1497,7 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 	// SetURL navigation because it's the same window object, and is stored
 	// Windows-side in window.json, not the WSL settings.
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
-		w, flush := uiwindow.RestoreAndTrack(app, opts, loadWindowGeometry(), saveWindowGeometry)
+		w, flush := uiwindow.RestoreAndTrack(app, opts, loadWindowGeometry(), windowPlacementSink(applier))
 		trimWebviewMemoryOnMinimise(w)
 		// Every SPA document this window loads is handed its one-time
 		// page ticket here, so the URL the launcher navigates to (and
@@ -1406,24 +1511,31 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 		a.flushGeometry = flush
 		a.mu.Unlock()
 
-		if chosen == "" {
-			return
-		}
-		// We already know which distro; skip the picker and launch the backend.
 		// The launch path takes 5-15s on cold boot, so run it off the event
 		// goroutine while the window's /loading state covers the gap. We start
-		// it only after the window exists so launchAndShow's SetURL calls land.
-		// launchAndShow owns the WebView URL on every exit path: WSL backend on
-		// success, /connectivity-error or /picker on failure — the goroutine
-		// just logs.
-		go func() {
-			if err := a.launchAndShow(chosen, transient); err != nil {
-				log.Printf("launch backend: %v", err)
-			}
-		}()
+		// it only after the window exists so its SetURL calls land.
+		go a.afterWindow(chosen, transient)
 	})
 
 	return a
+}
+
+// afterWindow runs an --update-apply, or finishes an interrupted update and
+// then launches the chosen distro. launchAndShow owns the WebView URL on
+// every exit path: WSL backend on success, /connectivity-error or /picker on
+// failure; this goroutine just logs.
+func (a *launcherApp) afterWindow(chosen string, transient bool) {
+	if a.updateApplyID != "" {
+		a.runUpdateApply(a.updateApplyID, a.updateApplyDistro, a.updateApplyTransient)
+		return
+	}
+	if chosen == "" || !a.launching.CompareAndSwap(false, true) {
+		return
+	}
+	defer a.launching.Store(false)
+	if err := a.launchAndShow(chosen, transient, false); err != nil {
+		log.Printf("launch backend: %v", err)
+	}
 }
 
 func (a *launcherApp) startNotificationBridge(bs *wsllauncher.Bootstrap, launcher *wsllauncher.Launcher) error {
@@ -1592,7 +1704,8 @@ func wslSingleInstanceMode() string {
 // Chrome DevTools / wsjson to the WebView2 from inside WSL, on a
 // per-mode port (appidentity.DevToolsPort, distinct for every diagnostic
 // profile so all can be attached at once). The protocol is unauthenticated, so
-// production gets no port at all.
+// production gets no port at all. devTools false omits it for a window that
+// runs beside the one that owns the mode's port.
 //
 // Memory experiments tried and pulled back: --single-process (~290 MB
 // savings, but couples all rendering work onto one thread pool and
@@ -1603,7 +1716,7 @@ func wslSingleInstanceMode() string {
 // single-process turns any future big-memory feature — large diffs,
 // terminal log dumps — into a whole-window crash). Revisit if memory
 // becomes a real constraint.
-func browserArgs(mode string) []string {
+func browserArgs(mode string, devTools bool) []string {
 	args := []string{
 		"--disable-background-networking",
 		"--disable-component-update",
@@ -1621,7 +1734,7 @@ func browserArgs(mode string) []string {
 		// service. 1 MiB is the practical floor (0 means "default").
 		"--disk-cache-size=1048576",
 	}
-	if port := appidentity.DevToolsPort(mode); port > 0 {
+	if port := appidentity.DevToolsPort(mode); devTools && port > 0 {
 		args = append(args,
 			fmt.Sprintf("--remote-debugging-port=%d", port),
 			"--remote-debugging-address=127.0.0.1",
@@ -1661,9 +1774,9 @@ func browserArgs(mode string) []string {
 //
 // Chromium defaults own text antialiasing and scroller placement. Paired
 // overrides can promote content-sized layers and increase raster memory.
-func webviewBrowserOptions(mode, userDataDir, diagnosticsDir string) application.WindowsOptions {
+func webviewBrowserOptions(mode, userDataDir, diagnosticsDir string, devTools bool) application.WindowsOptions {
 	return application.WindowsOptions{
-		AdditionalBrowserArgs: browserArgs(mode),
+		AdditionalBrowserArgs: browserArgs(mode, devTools),
 		DisabledFeatures:      browserDisabledFeatures(),
 		// Stable per-mode WebView2 profile. Without this the profile path
 		// defaults to %APPDATA%\<exe name>, and dev builds carry a unique
@@ -1765,6 +1878,18 @@ func webviewDataDir(mode string) string {
 		return ""
 	}
 	return filepath.Join(dir, appidentity.WebviewProfileDir(mode))
+}
+
+// launcherWebviewDataDir is webviewDataDir, or for a launcher applying an
+// update its own profile beside it: a launch that joins the update runs a
+// WebView2 environment on the mode's profile at the same time, and one
+// profile shared by two processes needs identical environment options.
+func launcherWebviewDataDir(mode string, applier bool) string {
+	dir := webviewDataDir(mode)
+	if !applier || dir == "" {
+		return dir
+	}
+	return dir + "-update"
 }
 
 // renderDiagnosticsDir is where the wails fork's render watchdog drops a

@@ -21,7 +21,23 @@ var (
 	ErrBackendUnreachable = errors.New("no HTTP response from the WSL backend over Windows localhost")
 	ErrInvalidBootstrap   = errors.New("unexpected backend startup response")
 	ErrBackendNotReady    = errors.New("backend did not finish starting")
+	// ErrMigrationsPending is a backend that refused to migrate its
+	// database live (MigrationsPendingError).
+	ErrMigrationsPending = errors.New("the backend's database has migrations pending")
 )
+
+// MigrationsPendingError is a backend started to refuse pending migrations
+// that found some. It matches ErrMigrationsPending. The backend stays up
+// answering the refusal until it is stopped.
+type MigrationsPendingError struct {
+	startupprogress.MigrationsPending
+}
+
+func (e *MigrationsPendingError) Error() string {
+	return fmt.Sprintf("%v: schema v%d, this build v%d (%d pending)", ErrMigrationsPending, e.Database, e.Build, e.Pending)
+}
+
+func (e *MigrationsPendingError) Unwrap() error { return ErrMigrationsPending }
 
 // BootstrapHTTPError is a bootstrap answer other than 200 or 503: the
 // backend is reachable and refused or failed.
@@ -48,11 +64,8 @@ type BackendStalledError struct {
 }
 
 func (e *BackendStalledError) Error() string {
-	what := "no progress"
-	if e.Unresponsive {
-		what = "backend stopped responding"
-	}
-	return fmt.Sprintf("%v: %s for %s in phase %s (%s): %v", ErrBackendNotReady, what, e.Quiet, e.Progress.Phase, e.Progress.Status(), e.Last)
+	stall := startupprogress.Stall{Progress: e.Progress, Quiet: e.Quiet, Unresponsive: e.Unresponsive}
+	return fmt.Sprintf("%v: %v: %v", ErrBackendNotReady, &stall, e.Last)
 }
 
 func (e *BackendStalledError) Unwrap() error { return ErrBackendNotReady }
@@ -146,9 +159,10 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // Deadline, or no report at all, means the backend stopped responding.
 // The failure is ErrBackendUnreachable when no HTTP response ever
 // arrived, a BackendStalledError after a starting report, and
-// ErrBackendNotReady for a backend that only answered the bare 503. Any
-// other status is terminal as a BootstrapHTTPError; an unexpected manifest
-// is ErrInvalidBootstrap.
+// ErrBackendNotReady for a backend that only answered the bare 503. A
+// refusal to migrate live is a MigrationsPendingError. Any other status is
+// terminal as a BootstrapHTTPError; an unexpected manifest is
+// ErrInvalidBootstrap.
 func ProbeBootstrap(ctx context.Context, port int, token string, cfg ProbeConfig) error {
 	cfg = cfg.withDefaults()
 	// 127.0.0.1, not "localhost": Windows resolves "localhost" to ::1 as
@@ -157,15 +171,12 @@ func ProbeBootstrap(ctx context.Context, port int, token string, cfg ProbeConfig
 	log.Printf("probe: GET %s (token=%d bytes)", target, len(token))
 
 	client := &http.Client{Timeout: cfg.AttemptTimeout}
-	// lastProgress is when updatedAt last changed, lastAlive when aliveAt
-	// or updatedAt did. Both start with the probe.
-	lastProgress := cfg.now()
-	lastAlive := lastProgress
+	// The rule every judge of a start applies, from the probe's start.
+	judge := startupprogress.NewStallWatch(cfg.Deadline, cfg.now())
 	var (
 		lastErr         error
 		attempt         int
 		sawHTTPResponse bool
-		reported        *startupprogress.Progress
 	)
 	wait := cfg.InitialPollInterval
 	for {
@@ -194,18 +205,19 @@ func ProbeBootstrap(ctx context.Context, port int, token string, cfg ProbeConfig
 			case http.StatusServiceUnavailable:
 				lastErr = fmt.Errorf("GET %s: status %d", target, resp.StatusCode)
 				if p, ok := startupprogress.Parse(resp.StatusCode, body); ok {
-					if reported == nil || p.UpdatedAt != reported.UpdatedAt {
-						lastProgress = cfg.now()
-					}
-					if reported == nil || p.UpdatedAt != reported.UpdatedAt || p.AliveAt != reported.AliveAt {
-						lastAlive = cfg.now()
-					}
-					if reported == nil || p.Phase != reported.Phase || p.Step != reported.Step {
+					if prev, had := judge.Last(); !had || p.Phase != prev.Phase || p.Step != prev.Step {
 						log.Printf("probe: backend starting: phase=%s step=%d/%d updating_to=%q", p.Phase, p.Step, p.Steps, p.UpdatingTo)
 					}
-					reported = &p
+					judge.Report(p, cfg.now())
 					cfg.OnProgress(p)
 				}
+			case http.StatusConflict:
+				if m, ok := startupprogress.ParseMigrationsPending(resp.StatusCode, body); ok {
+					log.Printf("probe: backend refused to migrate its database live: schema v%d, build v%d (%d pending)", m.Database, m.Build, m.Pending)
+					return &MigrationsPendingError{MigrationsPending: m}
+				}
+				log.Printf("probe: status=%d host-resp=%q", resp.StatusCode, string(body[:min(len(body), 256)]))
+				return BootstrapHTTPError{StatusCode: resp.StatusCode, URL: target}
 			default:
 				// Reachable but refused. The status and the first bytes of
 				// the body go to the log only.
@@ -214,16 +226,10 @@ func ProbeBootstrap(ctx context.Context, port int, token string, cfg ProbeConfig
 			}
 		}
 		now := cfg.now()
-		if reported != nil {
-			// A stopped heartbeat takes precedence: it is the same failure
-			// and says more.
-			if quiet := now.Sub(lastAlive); quiet >= cfg.Deadline {
-				return &BackendStalledError{Progress: *reported, Quiet: quiet, Unresponsive: true, Last: lastErr}
-			}
-			if quiet := now.Sub(lastProgress); quiet >= cfg.Deadline {
-				return &BackendStalledError{Progress: *reported, Quiet: quiet, Last: lastErr}
-			}
-		} else if now.Sub(lastProgress) >= cfg.Deadline {
+		if stall := judge.Check(now); stall != nil {
+			return &BackendStalledError{Progress: stall.Progress, Quiet: stall.Quiet, Unresponsive: stall.Unresponsive, Last: lastErr}
+		}
+		if judge.Silent(now) {
 			if !sawHTTPResponse {
 				return fmt.Errorf("GET %s: %w after %d attempts: %w", target, ErrBackendUnreachable, attempt, lastErr)
 			}

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 )
@@ -1768,6 +1769,49 @@ func (e *SchemaTooNewError) Error() string {
 	return fmt.Sprintf("database is at schema v%d; this build knows v%d; install the newer version", e.Database, e.Build)
 }
 
+// MigrationsPendingError refuses to migrate an existing database outside a
+// trial (Options.RefusePendingMigrations). Error is the sentence the boot
+// failure shows.
+type MigrationsPendingError struct {
+	// Database is the database's migration version.
+	Database int
+	// Build is this build's latest migration.
+	Build int
+	// Pending counts the migrations an open would apply.
+	Pending int
+}
+
+func (e *MigrationsPendingError) Error() string {
+	return fmt.Sprintf("database is at schema v%d and this build migrates it to v%d (%d pending); it is migrated only after a backup", e.Database, e.Build, e.Pending)
+}
+
+// refusePendingMigrations returns a MigrationsPendingError when an existing
+// database has migrations to apply (PendingMigrations). It only reads.
+func refusePendingMigrations(db *sql.DB) error {
+	applied, err := schemaVersion(db)
+	if err != nil {
+		return err
+	}
+	return PendingMigrations(applied)
+}
+
+// PendingMigrations returns a MigrationsPendingError when this build has
+// migrations to apply to a database at migration version applied, as
+// ReadSchemaVersion reads it, and nil otherwise. 0 is a database without an
+// applied migration, as is one without the migration_versions table or
+// without a file: it is new, and there is nothing in it to protect. A
+// version newer than this build's is SchemaTooNewError's, not this.
+func PendingMigrations(applied int) error {
+	if applied == 0 {
+		return nil
+	}
+	pending := pendingMigrationCount(applied)
+	if pending == 0 {
+		return nil
+	}
+	return &MigrationsPendingError{Database: applied, Build: migrations[len(migrations)-1].Version, Pending: pending}
+}
+
 // refuseNewerSchema returns a SchemaTooNewError when the database is ahead
 // of this build. It only reads, and runs before anything writes: even
 // configureDatabase's PRAGMAs commit to the file header.
@@ -1841,6 +1885,48 @@ func ensureMigrationTable(db *sql.DB) error {
 	return nil
 }
 
+// ReadSchemaVersion returns the migration version of the existing database
+// at dbPath, 0 when no migration was applied. It is the version
+// MigrationsPendingError reports as Database, read the way that refusal
+// reads it: the one connection writes nothing (query_only), and as the last
+// to close it removes the WAL and shared-memory files the open created, so
+// a database closed cleanly keeps its bytes and its file set. A WAL a
+// stopped backend left is checkpointed into the database on close, as by
+// any open, which keeps its content. The in-app update's snapshot reads it
+// under the data root's lock to name the schema a trial starts from
+// (supervise.FailedTrial), and the desktop boot to ask PendingMigrations
+// before it opens a window. A missing file is an error that wraps
+// os.ErrNotExist.
+func ReadSchemaVersion(dbPath string) (version int, err error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		return 0, fmt.Errorf("store: read the schema version: %w", err)
+	}
+	db, err := sql.Open("sqlite", poolDSN(dbPath, readerConnPragmas))
+	if err != nil {
+		return 0, fmt.Errorf("store: open %s to read its schema version: %w", dbPath, err)
+	}
+	db.SetMaxOpenConns(1)
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("store: close %s after reading its schema version: %w", dbPath, closeErr)
+		}
+	}()
+	return schemaVersion(db)
+}
+
+// schemaVersion is the database's migration version, 0 without the
+// migration_versions table.
+func schemaVersion(db *sql.DB) (int, error) {
+	var tables int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'migration_versions'`).Scan(&tables); err != nil {
+		return 0, fmt.Errorf("store: probe migration_versions: %w", err)
+	}
+	if tables == 0 {
+		return 0, nil
+	}
+	return currentMigrationVersion(db)
+}
+
 func currentMigrationVersion(db *sql.DB) (int, error) {
 	var maxVersion sql.NullInt64
 	if err := db.QueryRow("SELECT MAX(version) FROM migration_versions").Scan(&maxVersion); err != nil {
@@ -1888,13 +1974,20 @@ func tableColumns(db sqlQueryer, table string) (map[string]bool, error) {
 	return columns, nil
 }
 
-func applyPendingMigrations(ctx context.Context, db *sql.DB, applied int, onMigration func(MigrationStep)) error {
+// pendingMigrationCount is how many migrations an open of a database at
+// version applied runs.
+func pendingMigrationCount(applied int) int {
 	pending := 0
 	for _, m := range migrations {
 		if m.Version > applied {
 			pending++
 		}
 	}
+	return pending
+}
+
+func applyPendingMigrations(ctx context.Context, db *sql.DB, applied int, onMigration func(MigrationStep)) error {
+	pending := pendingMigrationCount(applied)
 	index := 0
 	for _, m := range migrations {
 		if m.Version <= applied {

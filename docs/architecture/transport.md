@@ -130,7 +130,10 @@ Every executable boot binds its listener before `App.Start` and calls
   progress, the body is
   `{"reason":"starting","phase","detail","step","steps","startedAt","updatedAt","aliveAt","updatingTo"}`
   with Unix-millisecond times; before any report it is a bare text 503.
-  `MarkStartupFailed` answers 500.
+  `MarkStartupFailed` answers 500. `MarkMigrationsPending`, for a boot
+  started with `--refuse-pending-migrations` whose store refused, answers 409
+  with `{"reason":"migrations-pending","database","build","pending"}`
+  ([no live migration on Windows](../specs/app-update.md#no-live-migration-on-windows)).
 - `phase` is the `boot: phase=` log id and `detail` is display text.
   `step` and `steps` count sub-steps such as pending migrations.
   `updatingTo` names the version the boot is finishing an in-app update to.
@@ -170,7 +173,8 @@ Every executable boot binds its listener before `App.Start` and calls
   ladder instead of the starting poll. It sees the report for the phases
   after `app.init_identity`.
 
-The body is `internal/startupprogress`, which the Windows launcher shares.
+The body is `internal/startupprogress`, which the Windows launcher shares,
+with the work sampler and the stall rule every judge of a start applies.
 `StartupReporter` (`startup_progress.go`) turns `App.Start`'s boot phases
 into these reports; boot wiring installs it through `app.SetBootProgress`.
 

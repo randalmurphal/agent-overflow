@@ -5,10 +5,10 @@ package main
 import (
 	"errors"
 	"fmt"
-	"html/template"
 	"net/http"
 	"strings"
 
+	"agent-overflow/internal/startuppage"
 	"agent-overflow/internal/startupprogress"
 	"agent-overflow/internal/wsllauncher"
 )
@@ -30,6 +30,12 @@ func startupFailureHTML(err error) []byte {
 	var httpErr wsllauncher.BootstrapHTTPError
 	var stalled *wsllauncher.BackendStalledError
 	switch {
+	case errors.Is(err, wsllauncher.ErrMigrationsPending):
+		// A refusal whose backend could not be stopped, so nothing migrates
+		// a database it may still hold, or one after a migration that
+		// committed (launchAndShow).
+		title = "Agent Overflow could not upgrade the database."
+		detail = "This version upgrades the database only after backing it up, and the backend refused to start on it before the upgrade could run."
 	case errors.Is(err, errLaunchFailed):
 		detail = "The backend process could not start inside WSL."
 	case errors.As(err, &httpErr):
@@ -53,16 +59,23 @@ func startupFailureHTML(err error) []byte {
 		detail = "No HTTP response arrived from the backend's local port."
 		action = "Close and reopen Agent Overflow. If this continues, check that localhostForwarding is enabled in %USERPROFILE%\\.wslconfig and that local connections are not blocked."
 	}
-	return []byte(fmt.Sprintf(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8" /><title>Agent Overflow — startup failed</title>
-<style>
-html,body{margin:0;min-height:100%%;background:#16161e;color:#c0caf5}
-body{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:32px;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-.card{max-width:640px;font-size:14px;line-height:1.6}h1{font-size:18px;line-height:1.4;color:#f7768e}
-code{background:#1a1b26;color:#7dcfff;padding:1px 6px;border-radius:4px;overflow-wrap:anywhere}
-</style></head><body><main class="card"><h1>%s</h1><p>%s</p><p>%s</p>
-<p>Startup details: <code>%%APPDATA%%\agent-overflow\launcher.log</code></p></main></body></html>`,
-		template.HTMLEscapeString(title), template.HTMLEscapeString(detail), template.HTMLEscapeString(action)))
+	return failurePageHTML(title, detail, action)
+}
+
+// launcherLogDisplay is where a failure page says the details are.
+const launcherLogDisplay = `%APPDATA%\agent-overflow\launcher.log`
+
+// failurePageHTML renders a failure page from fixed copy. action may be
+// empty.
+func failurePageHTML(title, detail, action string) []byte {
+	return startuppage.Failure{Title: title, Detail: detail, Action: action, Log: launcherLogDisplay}.HTML()
+}
+
+// migrationRetryPageHTML is the failure page of a database upgrade the
+// failure memory stopped. Its Retry button calls the launcher's bound
+// RetryMigration.
+func migrationRetryPageHTML(title, detail string) []byte {
+	return startuppage.Failure{Title: title, Detail: detail, Log: launcherLogDisplay, Retry: boundMethodFQN("RetryMigration")}.HTML()
 }
 
 // stalledStartupCopy names the phase a starting backend stopped advancing

@@ -1417,6 +1417,20 @@ var channelPolicies = []ChannelPolicy{
 			"stageWSLUpdate on WSL.)",
 	},
 	{
+		Channel:   eventchan.UpdaterRestart,
+		Audience:  AudienceLoopbackOnly,
+		Retention: RetentionLatestOnly,
+		Scope:     ScopeHost,
+		Why: "The App's restart-to-update state: what running work the " +
+			"restart waits for, then restarting, canceled or failed. " +
+			"RestartToUpdate and CancelRestartToUpdate are host-scoped and " +
+			"only this host restarts, so loopback-only with the rest of the " +
+			"lifecycle. Latest-only, and the membership rule holds: one " +
+			"restart at a time (RestartToUpdate refuses a second), each frame " +
+			"is the whole state, and a reconnecting pane wants the current " +
+			"one so it can offer Cancel.",
+	},
+	{
 		Channel:   eventchan.UpdaterVerifying,
 		Audience:  AudienceLoopbackOnly,
 		Retention: RetentionDefault,

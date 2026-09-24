@@ -39,6 +39,11 @@ fi
 
 note() { printf '%s\n' "$*" >> "$OBS/log"; }
 
+# report sends one progress frame: UpdatedAt $1, AliveAt $2, Detail $3.
+report() {
+	printf '{"type":"progress","progress":{"phase":"store.migrate","detail":"%s","updatedAt":%s,"aliveAt":%s}}\n' "$3" "$1" "$2" >&4
+}
+
 serve_until_stopped() {
 	trap 'note "stopped $VERSION"; exit 0' TERM INT
 	while :; do
@@ -51,7 +56,7 @@ serve_until_stopped() {
 
 IFS= read -r ACTIVATE <&3
 printf '%s\n' "$ACTIVATE" >> "$OBS/activate"
-printf '{"type":"hello","protocolVersion":%s,"version":"%s"}\n' "$PROTO" "$VERSION" >&4
+printf '{"type":"hello","protocolVersion":%s,"version":"%s"__HELLO__}\n' "$PROTO" "$VERSION" >&4
 note "hello $VERSION"
 
 __BEHAVIOR__
@@ -150,17 +155,30 @@ func (r *rig) stage(version, behavior string) {
 
 func (r *rig) stageProtocol(version string, protocol int, behavior string) {
 	r.t.Helper()
+	r.stageHello(version, protocol, "", behavior)
+}
+
+// stageReporting writes a scripted version whose hello says it reports
+// progress, so its trial is judged by the stall rule.
+func (r *rig) stageReporting(version, behavior string) {
+	r.t.Helper()
+	r.stageHello(version, ProtocolVersion, `,"reportsProgress":true`, behavior)
+}
+
+func (r *rig) stageHello(version string, protocol int, hello, behavior string) {
+	r.t.Helper()
 	binary, err := r.layout.VersionBinary(version)
 	if err != nil {
 		r.t.Fatalf("VersionBinary: %v", err)
 	}
-	r.writeScript(binary, version, protocol, behavior)
+	r.writeScript(binary, version, protocol, hello, behavior)
 }
 
 // writeScript renders one scripted version to an arbitrary path. Separate from
 // stage so a test can put a script somewhere the supervisor has to COPY it
-// from, which is the fresh-install case.
-func (r *rig) writeScript(path, version string, protocol int, behavior string) {
+// from, which is the fresh-install case. hello is appended to the hello
+// frame's fields.
+func (r *rig) writeScript(path, version string, protocol int, hello, behavior string) {
 	r.t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		r.t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
@@ -171,6 +189,7 @@ func (r *rig) writeScript(path, version string, protocol int, behavior string) {
 		"__OBS__", r.obs,
 		"__DB__", filepath.Join(r.dataDir, DatabaseFiles()[0]),
 		"__PREFLIGHT__", PreflightSubcommand,
+		"__HELLO__", hello,
 		"__BEHAVIOR__", behavior,
 	).Replace(fakeChildScript)
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
@@ -198,11 +217,11 @@ func (r *rig) config() Config {
 		ChildArgs:      []string{"serve"},
 		// PATH for `sleep`, and a HOME that is not the developer's. Nothing
 		// else: a scripted child has no business resolving anything.
-		Env:           []string{"PATH=" + os.Getenv("PATH"), "HOME=" + r.home},
-		Log:           r.log,
-		TrialBudget:   10 * time.Second,
-		ResponseGrace: 20 * time.Millisecond,
-		StopTimeout:   5 * time.Second,
+		Env:               []string{"PATH=" + os.Getenv("PATH"), "HOME=" + r.home},
+		Log:               r.log,
+		LegacyTrialBudget: 10 * time.Second,
+		ResponseGrace:     20 * time.Millisecond,
+		StopTimeout:       5 * time.Second,
 	}
 }
 
@@ -318,7 +337,7 @@ func TestAFreshInstallAdoptsTheSupervisorsOwnBinary(t *testing.T) {
 	config := rig.config()
 	// The supervisor's own executable, sitting where a service manager would
 	// have started it from: outside the versions directory entirely.
-	rig.writeScript(config.SelfExecutable, config.SelfVersion, ProtocolVersion, behaviorServe)
+	rig.writeScript(config.SelfExecutable, config.SelfVersion, ProtocolVersion, "", behaviorServe)
 
 	if err := rig.runUntil(config, "hello 0.0.0-supervisor", 1); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -466,7 +485,7 @@ func TestATrialThatNeverPreparesIsRolledBackAtTheBudget(t *testing.T) {
 	writeDatabase(t, rig.dataDir, "before")
 
 	config := rig.config()
-	config.TrialBudget = 400 * time.Millisecond
+	config.LegacyTrialBudget = 400 * time.Millisecond
 
 	stop, done := rig.run(config)
 	defer stop()
@@ -570,7 +589,7 @@ func TestAMarkedRestoreIsFinishedBeforeAnythingIsSpawned(t *testing.T) {
 
 	// Exactly what a supervisor killed one instruction into a restore leaves:
 	// a pending update, a snapshot, a marker, and a database that is neither.
-	if _, err := TakeSnapshot(rig.layout, rig.dataDir, time.Unix(0, 0)); err != nil {
+	if _, err := TakeSnapshot(rig.layout, rig.dataDir, time.Unix(0, 0), SnapshotOptions{}); err != nil {
 		t.Fatalf("TakeSnapshot: %v", err)
 	}
 	writeFile(t, filepath.Join(rig.dataDir, DatabaseFiles()[0]), "half-restored")
@@ -787,17 +806,21 @@ func TestOpenChildChannelOpensThePipesAndClearsTheMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
+	defer read.Close()
 	defer writeToChild.Close()
 	readFromChild, write, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
+	defer write.Close()
 	defer readFromChild.Close()
 
+	// The channel owns what it opens, so it is handed copies: two owners of
+	// one descriptor would each close it.
 	cleared := false
 	conn, err := OpenChildChannel(
 		func(string) (string, bool) {
-			return strconv.Itoa(int(read.Fd())) + "," + strconv.Itoa(int(write.Fd())), true
+			return strconv.Itoa(dupFD(t, read)) + "," + strconv.Itoa(dupFD(t, write)), true
 		},
 		func(string) error { cleared = true; return nil },
 	)
@@ -807,6 +830,7 @@ func TestOpenChildChannelOpensThePipesAndClearsTheMarker(t *testing.T) {
 	if conn == nil {
 		t.Fatal("OpenChildChannel returned no channel for a present marker")
 	}
+	defer conn.Close()
 	if !cleared {
 		t.Error("the marker was not cleared")
 	}
@@ -827,14 +851,18 @@ func TestOpenChildChannelOpensThePipesAndClearsTheMarker(t *testing.T) {
 // A marker pointing at descriptors that are not pipes is a broken spawn, and
 // inheriting somebody else's fd 3 as a control channel is worth failing on.
 func TestOpenChildChannelRefusesDescriptorsThatAreNotPipes(t *testing.T) {
-	file, err := os.CreateTemp(t.TempDir(), "not-a-pipe")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
+	dir := t.TempDir()
+	var fds []string
+	for _, name := range []string{"read", "write"} {
+		file, err := os.Create(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		defer file.Close()
+		fds = append(fds, strconv.Itoa(int(file.Fd())))
 	}
-	defer file.Close()
-	fd := strconv.Itoa(int(file.Fd()))
 	if _, err := OpenChildChannel(
-		func(string) (string, bool) { return fd + "," + fd, true },
+		func(string) (string, bool) { return fds[0] + "," + fds[1], true },
 		func(string) error { return nil },
 	); err == nil {
 		t.Fatal("OpenChildChannel accepted a regular file as a control channel")

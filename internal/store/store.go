@@ -79,6 +79,12 @@ type Options struct {
 	Context context.Context
 	// OnMigration, when set, is called before each pending migration runs.
 	OnMigration func(MigrationStep)
+	// RefusePendingMigrations fails the open of an existing database with
+	// pending migrations with a MigrationsPendingError, before anything
+	// writes. A database is migrated only by a trial that snapshots it
+	// first (docs/specs/app-update.md, the no-live-migration rule). A new
+	// database has nothing to protect and is created as usual.
+	RefusePendingMigrations bool
 }
 
 // New opens (or creates) the SQLite database at the given path and runs migrations.
@@ -103,6 +109,12 @@ func NewWithOptions(dbPath string, opts Options) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 
+	if opts.RefusePendingMigrations {
+		if err := refusePendingMigrations(db); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	if err := runMigrationsContext(ctx, db, opts.OnMigration); err != nil {
 		db.Close()
 		// The refusal is already the sentence the boot failure shows.
