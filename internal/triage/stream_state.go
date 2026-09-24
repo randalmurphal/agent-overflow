@@ -827,7 +827,7 @@ func (r *Router) enrichStreamingPathRefsAndEmit(item store.Item, updatedAt int64
 	state.lastMerged = merged
 	state.lastRefs = refs
 	state.lastMetaBase = item.Meta
-	r.emit(eventchan.ProviderItemEvent, newItemStreamMeta(item.ThreadID, item.ID, item.Kind, merged, updatedAt))
+	r.emit(eventchan.ProviderItemEvent, newItemStreamMeta(item.ThreadID, item.ID, item.ParentID, item.Kind, merged, updatedAt))
 }
 
 // workspacePathFor returns the WorkspacePath for threadID, using a
