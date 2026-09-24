@@ -87,6 +87,12 @@ func TestStartRefusesPendingMigrationsWhenAsked(t *testing.T) {
 	if _, err := raw.Exec(`DELETE FROM migration_versions WHERE version = ?`, latest); err != nil {
 		t.Fatal(err)
 	}
+	// The chain's previous version, whatever number it carries: versions
+	// need not be contiguous while lanes land.
+	var previous int
+	if err := raw.QueryRow(`SELECT max(version) FROM migration_versions`).Scan(&previous); err != nil {
+		t.Fatal(err)
+	}
 	if err := raw.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -105,8 +111,8 @@ func TestStartRefusesPendingMigrationsWhenAsked(t *testing.T) {
 		}
 	})
 	var pending *store.MigrationsPendingError
-	if !errors.As(err, &pending) || pending.Database != latest-1 || pending.Build != latest || pending.Pending != 1 {
-		t.Fatalf("Start = %v, want a MigrationsPendingError from v%d", err, latest-1)
+	if !errors.As(err, &pending) || pending.Database != previous || pending.Build != latest || pending.Pending != 1 {
+		t.Fatalf("Start = %v, want a MigrationsPendingError from v%d to v%d with 1 pending", err, previous, latest)
 	}
 	if app.store != nil {
 		t.Fatal("a refused database was installed as the app's store")
