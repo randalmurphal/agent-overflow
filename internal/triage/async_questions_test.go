@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,5 +72,36 @@ func TestUnansweredAsyncQuestionSurvivesInterrupt(t *testing.T) {
 	rows, err := s.ListAsyncQuestions("q", "")
 	if err != nil || len(rows) != 1 || rows[0].State != "unanswered" {
 		t.Fatalf("interrupt canceled async question: %+v %v", rows, err)
+	}
+}
+
+// TestAsyncQuestionFromAnAgentFeedsItsCard pins that a question a child
+// agent asks is written with the card of its parent: the row persists
+// under the agent and reaches the stamps of its launches when the card
+// flushes.
+func TestAsyncQuestionFromAnAgentFeedsItsCard(t *testing.T) {
+	r, s, _ := newTestRouter(t)
+	createTestThread(t, s, "q")
+	seedOpenTurn(t, r, s, "q", 0)
+	seedAgentChain(t, s, "q")
+	r.identity("q")
+	event := provider.ProviderEvent{Kind: provider.EventContentBlockStart, ThreadID: "q", ItemID: "child-ask",
+		ParentToolUseID: "agent-2", Meta: json.RawMessage(`{"delivery":"async","questions":[{"title":"Which?"}]}`), Timestamp: time.Now()}
+	if err := r.Handle(event); err != nil {
+		t.Fatalf("child question: %v", err)
+	}
+	item, found, err := s.GetThreadItem("q", "question:child-ask")
+	if err != nil || !found || item.ParentID != "agent-2" {
+		t.Fatalf("child question row: found=%v %+v %v", found, item, err)
+	}
+	r.flushSubagentCards("q")
+	for id, want := range map[string]string{"agent-1": `"subagentDescendantCount":2`, "agent-2": `"subagentDescendantCount":1`} {
+		launch, _, err := s.GetThreadItem("q", id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(launch.Meta, want) {
+			t.Errorf("%s does not count the question (want %s): %s", id, want, launch.Meta)
+		}
 	}
 }
