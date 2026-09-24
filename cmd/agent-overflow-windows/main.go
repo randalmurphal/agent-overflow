@@ -231,8 +231,8 @@ func main() {
 	}
 	// A launcher started by the one it replaces waits for that one to exit
 	// before claiming the single-instance identity.
-	if flags.WaitPID > 0 {
-		if err := waitForParentLauncher(flags.WaitPID); err != nil {
+	if flags.Wait.PID > 0 {
+		if err := waitForParentLauncher(flags.Wait); err != nil {
 			log.Printf("launcher: %v", err)
 			if flags.UpdateApply != "" {
 				failUpdateBeforeApply(flags.UpdateApply, err)

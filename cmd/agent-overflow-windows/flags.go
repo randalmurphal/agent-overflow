@@ -8,12 +8,14 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/wsllauncher"
 )
 
@@ -51,13 +53,14 @@ type launcherFlags struct {
 	// The in-app update's internal modes (update_trial.go). UpdatePreflight
 	// is the answer file a new launcher writes after staging and checking
 	// its payload beside UpdateStable in Distro, for update UpdateID.
-	// UpdateApply runs the update with that id. WaitPID is a launcher that
-	// must exit before this one claims the single-instance identity.
+	// UpdateApply runs the update with that id. Wait is a launcher that
+	// must exit before this one claims the single-instance identity, named
+	// by --wait-pid and --wait-start so a reused process id never matches.
 	UpdatePreflight string
 	UpdateID        string
 	UpdateStable    string
 	UpdateApply     string
-	WaitPID         int
+	Wait            supervise.ProcessRef
 }
 
 // profileEnv is the environment fallback for --profile, so the axis can
@@ -88,6 +91,7 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 	updateStable := fs.String("update-stable", "", "internal in-app update mode")
 	updateApply := fs.String("update-apply", "", "internal in-app update mode")
 	waitPID := fs.Int("wait-pid", 0, "internal: wait for this launcher to exit first")
+	waitStart := fs.String("wait-start", "", "internal: the start time of the --wait-pid launcher")
 	if err := fs.Parse(args); err != nil {
 		return launcherFlags{}, fmt.Errorf("parse flags: %w", err)
 	}
@@ -99,6 +103,9 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 	}
 	if *waitPID < 0 {
 		return launcherFlags{}, fmt.Errorf("--wait-pid %d is not a process id", *waitPID)
+	}
+	if (*waitPID == 0) != (*waitStart == "") {
+		return launcherFlags{}, errors.New("--wait-pid and --wait-start go together")
 	}
 	// An unknown profile is an error, never a silent fall-back to the
 	// default instance: a typo that resolved to "" would run the isolated
@@ -116,6 +123,6 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 		UpdateID:        *updateID,
 		UpdateStable:    *updateStable,
 		UpdateApply:     *updateApply,
-		WaitPID:         *waitPID,
+		Wait:            supervise.ProcessRef{PID: *waitPID, Start: *waitStart},
 	}, nil
 }

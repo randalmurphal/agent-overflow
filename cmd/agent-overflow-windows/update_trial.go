@@ -127,7 +127,7 @@ func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, st
 		}
 		return fmt.Errorf("record the update: %w", err)
 	}
-	if err := startLauncher(launcherPath, "--update-apply", id, "--wait-pid", strconv.Itoa(os.Getpid())); err != nil {
+	if err := startLauncherAfterThis(launcherPath, "--update-apply", id); err != nil {
 		// Settled before the error is reported, so no later launch tries
 		// to resume an update whose new launcher never ran.
 		if settleErr := wsllauncher.SettleLauncherUpdate(recordPath, id, supervise.UpdateFailed,
@@ -203,22 +203,12 @@ func (preflightHost) InstallEmbeddedPayload(ctx context.Context, distro, staged 
 }
 
 // waitForParentLauncher waits for the launcher that started this one to
-// exit, so this one can claim the single-instance identity.
-func waitForParentLauncher(pid int) error {
-	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
-	if err != nil {
-		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
-			return nil // already gone
-		}
-		return fmt.Errorf("open process %d: %w", pid, err)
-	}
-	defer windows.CloseHandle(handle)
-	event, err := windows.WaitForSingleObject(handle, uint32(updateParentExitTimeout.Milliseconds()))
-	if err != nil {
-		return fmt.Errorf("wait for process %d: %w", pid, err)
-	}
-	if event != windows.WAIT_OBJECT_0 {
-		return fmt.Errorf("the previous launcher (pid %d) did not exit within %s", pid, updateParentExitTimeout)
+// exit, so this one can claim the single-instance identity. The wait holds
+// a handle to the process whose creation time matches, so a reused process
+// id is never waited on.
+func waitForParentLauncher(parent supervise.ProcessRef) error {
+	if err := supervise.WaitForExit(context.Background(), parent, updateParentExitTimeout); err != nil {
+		return fmt.Errorf("the previous launcher (pid %d): %w", parent.PID, err)
 	}
 	return nil
 }
@@ -234,6 +224,16 @@ func failUpdateBeforeApply(id string, cause error) {
 	if err := wsllauncher.SettleLauncherUpdate(recordPath, id, supervise.UpdateFailed, cause.Error(), time.Now()); err != nil {
 		log.Printf("updater: settle update %s: %v", id, err)
 	}
+}
+
+// startLauncherAfterThis starts a launcher that waits for this one to exit
+// before it claims the single-instance identity.
+func startLauncherAfterThis(path string, args ...string) error {
+	self, err := supervise.CurrentProcessRef()
+	if err != nil {
+		return fmt.Errorf("name this launcher: %w", err)
+	}
+	return startLauncher(path, append(args, "--wait-pid", strconv.Itoa(self.PID), "--wait-start", self.Start)...)
 }
 
 // startLauncher starts a launcher that outlives this one.
@@ -345,7 +345,7 @@ func (a *launcherApp) relaunchInstallPath(dir string) {
 		a.showUpdateFailure("The update finished, but Agent Overflow could not be restarted.", "Start Agent Overflow again.")
 		return
 	}
-	if err := startLauncher(record.InstallPath, "--wait-pid", strconv.Itoa(os.Getpid())); err != nil {
+	if err := startLauncherAfterThis(record.InstallPath); err != nil {
 		log.Printf("updater: start %s: %v", record.InstallPath, err)
 		a.showUpdateFailure("The update finished, but Agent Overflow could not be restarted.", "Start Agent Overflow again.")
 		return
@@ -372,8 +372,7 @@ func (a *launcherApp) reconcileUpdate() bool {
 	switch decision.Action {
 	case wsllauncher.ReconcileHandOff:
 		log.Printf("updater: resuming update %s with %s", decision.Record.Update.ID, decision.Record.StagedLauncher)
-		if err := startLauncher(decision.Record.StagedLauncher, "--update-apply", decision.Record.Update.ID,
-			"--wait-pid", strconv.Itoa(os.Getpid())); err != nil {
+		if err := startLauncherAfterThis(decision.Record.StagedLauncher, "--update-apply", decision.Record.Update.ID); err != nil {
 			log.Printf("updater: start %s: %v", decision.Record.StagedLauncher, err)
 			a.showUpdateFailure("The update could not resume.", "Start Agent Overflow again. Details are in the launcher log.")
 			return false

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/supervise"
 )
 
 func TestParseLauncherFlags_Empty(t *testing.T) {
@@ -117,11 +118,11 @@ func TestParseLauncherFlags_UnknownProfileErrors(t *testing.T) {
 
 func TestParseLauncherFlags_UpdateModes(t *testing.T) {
 	const id = "0123456789abcdef"
-	got, err := parseLauncherFlags([]string{"--update-apply", id, "--wait-pid", "4242"})
+	got, err := parseLauncherFlags([]string{"--update-apply", id, "--wait-pid", "4242", "--wait-start", "133000000000000000"})
 	if err != nil {
 		t.Fatalf("parse --update-apply: %v", err)
 	}
-	if got.UpdateApply != id || got.WaitPID != 4242 {
+	if got.UpdateApply != id || got.Wait != (supervise.ProcessRef{PID: 4242, Start: "133000000000000000"}) {
 		t.Fatalf("apply flags = %+v", got)
 	}
 	got, err = parseLauncherFlags([]string{
@@ -140,6 +141,8 @@ func TestParseLauncherFlags_UpdateModes(t *testing.T) {
 		{"--update-preflight", "answer.json"},
 		{"--update-preflight", "answer.json", "--update-id", "short"},
 		{"--wait-pid", "-1"},
+		{"--wait-pid", "4242"},
+		{"--wait-start", "133000000000000000"},
 	} {
 		if _, err := parseLauncherFlags(bad); err == nil {
 			t.Errorf("parseLauncherFlags(%q) accepted it", bad)
