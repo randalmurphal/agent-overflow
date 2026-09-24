@@ -33,78 +33,92 @@ var sqlCompleteTrans = [8][8]uint8{
 }
 
 // sqlStatements splits a script into its statements, each ending with
-// its semicolon, where SQLite's sqlite3_complete finds statement ends: a
-// semicolon outside strings, quoted identifiers, comments and CREATE
-// TRIGGER bodies. Statements holding only whitespace and comments are
-// dropped. Trailing text without a closing semicolon is returned as a
-// final statement for SQLite to judge.
+// its semicolon (sqlStatementEnds). Statements holding only whitespace,
+// comments and semicolons are dropped. Trailing text without a closing
+// semicolon is returned as a final statement for SQLite to judge.
 func sqlStatements(script string) []string {
 	var out []string
-	state := uint8(0)
-	start, hasToken := 0, false
-	for i := 0; i < len(script); {
-		kind, next, closed := scanSQLToken(script, i)
-		if kind != tkWS && kind != tkSemi {
-			hasToken = true
+	start := 0
+	for _, end := range append(sqlStatementEnds(script), len(script)) {
+		if stmt := script[start:end]; sqlHasToken(stmt) {
+			out = append(out, stmt)
 		}
-		if !closed {
-			break
-		}
-		state = sqlCompleteTrans[state][kind]
-		i = next
-		if kind == tkSemi && state == 1 {
-			if hasToken {
-				out = append(out, script[start:i])
-			}
-			start, hasToken = i, false
-		}
-	}
-	if hasToken {
-		out = append(out, script[start:])
+		start = end
 	}
 	return out
 }
 
+// sqlStatementEnds is the offset just past each semicolon that ends a
+// statement, where SQLite's sqlite3_complete finds one: a semicolon
+// outside strings, quoted identifiers, comments and CREATE TRIGGER
+// bodies. An empty statement's semicolon counts.
+func sqlStatementEnds(script string) []int {
+	var ends []int
+	state := uint8(0)
+	for i := 0; i < len(script); {
+		kind, next := scanSQLToken(script, i)
+		state = sqlCompleteTrans[state][kind]
+		i = next
+		if kind == tkSemi && state == 1 {
+			ends = append(ends, i)
+		}
+	}
+	return ends
+}
+
+// sqlHasToken reports whether s holds anything but whitespace, comments
+// and semicolons.
+func sqlHasToken(s string) bool {
+	for i := 0; i < len(s); {
+		kind, next := scanSQLToken(s, i)
+		if kind != tkWS && kind != tkSemi {
+			return true
+		}
+		i = next
+	}
+	return false
+}
+
 // scanSQLToken reads the token at s[i], returning its class and the index
-// after it. closed is false for a string, quoted identifier or block
-// comment that runs to the end of s.
-func scanSQLToken(s string, i int) (kind sqlToken, next int, closed bool) {
+// after it. A string, quoted identifier or comment that is not closed runs
+// to the end of s, so no later semicolon ends a statement.
+func scanSQLToken(s string, i int) (kind sqlToken, next int) {
 	switch c := s[i]; c {
 	case ';':
-		return tkSemi, i + 1, true
+		return tkSemi, i + 1
 	case ' ', '\r', '\t', '\n', '\f':
-		return tkWS, i + 1, true
+		return tkWS, i + 1
 	case '/':
 		if strings.HasPrefix(s[i:], "/*") {
 			end := strings.Index(s[i+2:], "*/")
 			if end < 0 {
-				return tkWS, len(s), false
+				return tkWS, len(s)
 			}
-			return tkWS, i + 2 + end + 2, true
+			return tkWS, i + 2 + end + 2
 		}
 	case '-':
 		if strings.HasPrefix(s[i:], "--") {
 			end := strings.IndexByte(s[i:], '\n')
 			if end < 0 {
-				return tkWS, len(s), true
+				return tkWS, len(s)
 			}
-			return tkWS, i + end + 1, true
+			return tkWS, i + end + 1
 		}
 	case '[':
 		end := strings.IndexByte(s[i+1:], ']')
 		if end < 0 {
-			return tkOther, len(s), false
+			return tkOther, len(s)
 		}
-		return tkOther, i + 1 + end + 1, true
+		return tkOther, i + 1 + end + 1
 	case '`', '"', '\'':
 		end := strings.IndexByte(s[i+1:], c)
 		if end < 0 {
-			return tkOther, len(s), false
+			return tkOther, len(s)
 		}
-		return tkOther, i + 1 + end + 1, true
+		return tkOther, i + 1 + end + 1
 	}
 	if !isSQLIdentChar(s[i]) {
-		return tkOther, i + 1, true
+		return tkOther, i + 1
 	}
 	j := i + 1
 	for j < len(s) && isSQLIdentChar(s[j]) {
@@ -112,17 +126,17 @@ func scanSQLToken(s string, i int) (kind sqlToken, next int, closed bool) {
 	}
 	switch word := s[i:j]; {
 	case strings.EqualFold(word, "create"):
-		return tkCreate, j, true
+		return tkCreate, j
 	case strings.EqualFold(word, "trigger"):
-		return tkTrigger, j, true
+		return tkTrigger, j
 	case strings.EqualFold(word, "temp"), strings.EqualFold(word, "temporary"):
-		return tkTemp, j, true
+		return tkTemp, j
 	case strings.EqualFold(word, "end"):
-		return tkEnd, j, true
+		return tkEnd, j
 	case strings.EqualFold(word, "explain"):
-		return tkExplain, j, true
+		return tkExplain, j
 	}
-	return tkOther, j, true
+	return tkOther, j
 }
 
 // isSQLIdentChar matches SQLite's IdChar: letters, digits, '_', '$' and
@@ -137,12 +151,9 @@ func isSQLIdentChar(c byte) bool {
 func createIndexName(stmt string) (string, bool) {
 	var words []string
 	for i := 0; i < len(stmt) && len(words) < 9; {
-		kind, next, closed := scanSQLToken(stmt, i)
+		kind, next := scanSQLToken(stmt, i)
 		if kind != tkWS {
 			words = append(words, stmt[i:next])
-		}
-		if !closed {
-			break
 		}
 		i = next
 	}
