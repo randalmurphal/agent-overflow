@@ -27,8 +27,11 @@ const fakeTrialScript = `#!/bin/sh
 OBS='__OBS__'
 DB='__DB__'
 note() { printf '%s\n' "$*" >> "$OBS/log"; }
+# Before anything is reported, as the real trial handles signals before it
+# can say prepared: a stop that lands between prepared and the loop below
+# must still be observed.
+trap 'note stopped; exit 0' TERM INT
 serve_until_stopped() {
-	trap 'note stopped; exit 0' TERM INT
 	while :; do
 		# The sleep must not inherit descriptor 5: the real trial makes it
 		# close-on-exec, and a sleeping child would hold the lock.
