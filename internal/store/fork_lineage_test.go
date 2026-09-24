@@ -351,11 +351,10 @@ func TestPointerForkOfADeletingSourceIsRefused(t *testing.T) {
 
 // TestPointerForkAdmittedAsTheDeleteBeginsIsDetached: a fork whose
 // transaction is open when the source's delete begins passed the check
-// before the delete marked the source, and the delete's first transaction,
-// which marks the source and detaches its forks, waits for the writer
-// connection, so the fork commits first and the delete detaches it: it
-// keeps its own rows, loses the source's, and its divider records the
-// deletion.
+// before the delete marked the source, and the delete's mark waits for the
+// writer connection, so the fork commits first and the detach that follows
+// the mark covers it: it keeps its own rows, loses the source's, and its
+// divider records the deletion.
 func TestPointerForkAdmittedAsTheDeleteBeginsIsDetached(t *testing.T) {
 	s := newTestStore(t)
 	seedForkSource(t, s, "S", []Item{

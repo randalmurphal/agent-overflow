@@ -73,7 +73,7 @@ func TestForkMoveOwnersReport(t *testing.T) {
 			violations = append(violations, fn.name+" hands "+call.callee+" a callback that records fork moves; "+call.callee+" commits it without reporting them")
 		}
 	}
-	for _, name := range []string{"Store.DeleteEmptyDraftThread", "Store.UpdatePayloadSpans", "Store.beginThreadDelete"} {
+	for _, name := range []string{"Store.DeleteEmptyDraftThread", "Store.UpdatePayloadSpans", "Store.detachThreadForks"} {
 		if !slices.Contains(owners, name) {
 			t.Fatalf("owners found %v, missing %s", owners, name)
 		}

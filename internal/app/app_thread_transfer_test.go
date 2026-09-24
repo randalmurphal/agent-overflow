@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -23,7 +25,13 @@ import (
 
 func transferTestBackend(t *testing.T, readiness ...func(context.Context, string) error) *App {
 	t.Helper()
-	backend := newPairedBackend(t)
+	return transferTestBackendOn(t, newPairedBackend(t), readiness...)
+}
+
+// transferTestBackendOn is transferTestBackend on a backend the test built,
+// for one that needs a second handle on its database.
+func transferTestBackendOn(t *testing.T, backend *pairedBackend, readiness ...func(context.Context, string) error) *App {
+	t.Helper()
 	a := backend.app
 	// The fixture clones a migrated database template. Give each transport its
 	// own published identity, as independent production installations have.
@@ -327,4 +335,153 @@ func awaitTransferPhase(t *testing.T, a *App, id, phase string, recovering ...bo
 	row, _ := a.store.GetThreadTransfer(id)
 	t.Fatalf("timed out awaiting %s: %+v", phase, row)
 	return row
+}
+
+// TestPointerForkTransferDuringASourceDelete: when the source's delete
+// begins between two batches of a pointer fork's export, the attempt fails
+// with the public sentence, which the transfer status shows, and the fork
+// reads what it read. Once the delete has finished, the retried attempt
+// transfers the fork without the source's messages.
+func TestPointerForkTransferDuringASourceDelete(t *testing.T) {
+	app, dbPath := newTestAppWithStorePath(t)
+	if err := app.initIdentity("backend-under-test"); err != nil {
+		t.Fatal(err)
+	}
+	source, destination := transferTestBackendOn(t, servePairedApp(t, app)), transferTestBackend(t)
+	ctx := context.Background()
+	sourcePath, destinationPath := testutil.InitGitRepo(t), testutil.InitGitRepo(t)
+	sourceProject, err := source.store.CreateProject(store.Project{ID: uuid.NewString(), Name: "Source", Path: sourcePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destProject, err := destination.store.CreateProject(store.Project{ID: uuid.NewString(), Name: "Destination", Path: destinationPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := store.Thread{ID: uuid.NewString(), ProjectID: sourceProject.ID, Title: "Origin", Provider: "claude", RuntimeMode: string(provider.RuntimeApprovalRequired), WorkspacePath: sourcePath, CreatedAt: 1, UpdatedAt: 1}
+	if err := source.store.CreateThread(origin); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", "file:"+dbPath+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	// 600 rows: the export's first batch copies 500 of them.
+	if _, err := raw.Exec(`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 599)
+		INSERT INTO items(thread_id,id,turn_index,item_index,kind,role,status,summary,meta,created_at,updated_at)
+		SELECT ?, 'origin-' || i, i / 10, i % 10, 'assistant_text', 'assistant', 'completed', 'origin row', '{}', 1, 1 FROM n`, origin.ID); err != nil {
+		t.Fatal(err)
+	}
+	fork := origin
+	fork.ID, fork.Title, fork.ForkedFromThreadID, fork.SessionRef, fork.CreatedAt, fork.UpdatedAt = uuid.NewString(), "Fork", origin.ID, uuid.NewString(), 2, 2
+	if err := source.store.CreatePointerFork(fork, origin.ID, store.ForkCut{}, func(s string) string { return s }, 1); err != nil {
+		t.Fatal(err)
+	}
+	projects, err := source.claudeProjectsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeDir, err := sessionfork.WorkspaceProjectDir(projects, sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(nativeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	native := `{"type":"user","sessionId":"` + fork.SessionRef + `","uuid":"` + uuid.NewString() + `","parentUuid":null,"message":{"role":"user","content":"fork only"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(nativeDir, fork.SessionRef+".jsonl"), []byte(native), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.store.InsertItem(store.Item{ID: "fork-own", ThreadID: fork.ID, TurnIndex: 100, Kind: "user_text", Role: "user", Status: "completed", Summary: "fork only", Meta: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	forkIDs := func() []string {
+		t.Helper()
+		items, err := source.store.ListItems(fork.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, len(items))
+		for i, item := range items {
+			ids[i] = item.ID
+		}
+		return ids
+	}
+	before := forkIDs()
+	if len(before) != 602 {
+		t.Fatalf("the fork reads %d rows, want the origin's 600, its divider and its own", len(before))
+	}
+	// The delete's mark, committed with the first batch's copies.
+	if _, err := raw.Exec(`CREATE TRIGGER test_delete_begins_mid_export AFTER INSERT ON thread_fork_copied
+		WHEN (SELECT count(*) FROM thread_fork_copied WHERE thread_id = NEW.thread_id) = 500
+		BEGIN UPDATE threads SET deleting = 1 WHERE id = '` + origin.ID + `'; END`); err != nil {
+		t.Fatal(err)
+	}
+
+	destinationID, _ := destination.backendIdentity()
+	operation := uuid.NewString()
+	intent, err := source.BeginThreadTransfer(ctx, fork.ID, operation, destinationID, "copy", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer, err := destination.CreateThreadTransferOffer(ctx, intent, destProject.ID, destinationPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.BindThreadTransferDestination(ctx, fork.ID, offer); err != nil {
+		t.Fatal(err)
+	}
+	const refusal = "A conversation this one was forked from is being deleted. The transfer will continue without its messages once the delete finishes."
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		statuses, err := source.GetThreadTransfers()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var status store.ThreadTransfer
+		for _, row := range statuses {
+			if row.ID == operation {
+				status = row
+			}
+		}
+		if status.Error == refusal {
+			break
+		}
+		if status.Error != "" || status.Phase == "complete" || time.Now().After(deadline) {
+			t.Fatalf("transfer status = %s %q, want the refusal", status.Phase, status.Error)
+		}
+	}
+	if got := forkIDs(); !slices.Equal(got, before) {
+		t.Fatalf("the refused export changed the fork to %d rows", len(got))
+	}
+
+	if _, err := raw.Exec(`DROP TRIGGER test_delete_begins_mid_export`); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.DeleteThread(origin.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := forkIDs(), []string{"fork-origin-" + fork.ID, "fork-own"}; !slices.Equal(got, want) {
+		t.Fatalf("fork after the origin's delete = %v, want %v", got, want)
+	}
+	var records int
+	if err := raw.QueryRow(`SELECT count(*) FROM thread_fork_copied`).Scan(&records); err != nil || records != 0 {
+		t.Fatalf("records after the origin's delete = %d, %v", records, err)
+	}
+	if err := source.RetryThreadTransfer(operation); err != nil {
+		t.Fatal(err)
+	}
+	awaitTransferPhase(t, source, operation, "complete", true)
+	awaitTransferPhase(t, destination, operation, "complete", true)
+	copied, err := destination.store.ListItems(intent.TargetThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, item := range copied {
+		ids = append(ids, item.ID)
+	}
+	if !slices.Contains(ids, "fork-own") || slices.ContainsFunc(ids, func(id string) bool { return strings.HasPrefix(id, "origin-") }) {
+		t.Fatalf("the transferred fork holds %v, want its own rows only", ids)
+	}
 }

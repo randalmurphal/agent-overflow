@@ -247,11 +247,22 @@ A fork takes its own copy of an inherited row only when it must own it
 - copy-on-write, before the fork mutates an inherited row or payload
   (`requireMutableItemTx`, `requireMutablePayloadTx`);
 - hand-off, before any thread updates, moves, deletes or hides a row a fork
-  reads through it (`handOffIDsTx`, `handOffPayloadTx`), so the fork's history
-  stays what it was when the fork was made;
+  reads through it (`handOffIDsTx`, `handOffRemovedIDsTx`,
+  `handOffPayloadTx`), so the fork's history stays what it was when the fork
+  was made;
 - materialization, when the fork's history leaves this database
   (`MaterializeForkHistory`, run by the transfer export). It copies in bounded
-  transactions, and the last one drops the lineage.
+  transactions and records each batch's copies in `thread_fork_copied`, with
+  the ancestor that held each row. The last transaction copies the rows that
+  list attachments, with their ownership, and the turn rows, drops the
+  lineage and clears the records, so an unfinished materialization owns no
+  attachment through its copies. A transaction that finds an ancestor being
+  deleted copies nothing and returns `ErrForkSourceDeleting`, which the
+  transfer attempt reports as a public error and retries. A write of the
+  fork to a row, or of a row under it, makes the recorded copies on the
+  row's parent chain its own (`settleForkCopiesTx`), as a card's write makes
+  the inherited anchors on its chain its own; a delete, hide or revert
+  settles none.
 
 A copy keeps the row's id, position and content and hides the ancestor's row
 from the copier, so the fork reads the same timeline before and after. A copy
@@ -308,9 +319,18 @@ cut costs the same for any number of forks. The rule and its write paths are in
 
 ### Source deletion
 
-Deleting a thread first marks it `deleting` and detaches the forks that read
-through it, in one transaction before any item is drained
-(`beginThreadDelete`, `detachForkDescendantsTx`). Each fork drops the lineage
+Deleting a thread first marks it `deleting` (`beginThreadDelete`), which
+stops every materialization that reads through it. It then rolls back, in
+paced transactions and in timeline order, the copies those unfinished
+materializations recorded of rows held by the thread or by a thread the
+fork reads through it (`rollBackForkCopiesThrough`), so a fork keeps no part
+of that history whether its export is running, was stopped or was cut short
+by a crash, and reads the same rows meanwhile. Copies of rows a nearer
+ancestor holds stay recorded: the fork still reads them after the detach.
+One transaction then detaches the forks that read through the thread,
+before any item is drained (`detachThreadForks`, `detachForkDescendantsTx`,
+which rolls back any such copies still recorded, as the draft and
+import-rollback deletes that call it directly need). Each fork drops the lineage
 levels at and beyond the deleted thread and keeps its nearer levels, so the
 rows the deleted thread owned leave its timeline and its epoch advances. The
 divider of every fork made from the deleted thread, including the copies

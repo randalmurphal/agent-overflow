@@ -847,7 +847,7 @@ func retractInheritedTx(tx *sql.Tx, w *cardWrite, threadID string, fromTurn int,
 		for i, row := range reverted {
 			ids[i] = row.id
 		}
-		if err := handOffIDsTx(tx, threadID, ids); err != nil {
+		if err := handOffRemovedIDsTx(tx, threadID, ids); err != nil {
 			return err
 		}
 		if err := hideForkRowsTx(tx, threadID, ids); err != nil {
@@ -950,7 +950,7 @@ func hideInheritedItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) (boo
 	if err != nil {
 		return false, err
 	}
-	if err := handOffIDsTx(tx, threadID, []string{itemID}); err != nil {
+	if err := handOffRemovedIDsTx(tx, threadID, []string{itemID}); err != nil {
 		return false, err
 	}
 	if err := hideForkRowsTx(tx, threadID, []string{itemID}); err != nil {
@@ -966,6 +966,10 @@ func hideInheritedItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) (boo
 // records that the source is gone and its title, so rendering it never has
 // to look for the source. A fork that stops reading rows recomputes what
 // its copied anchors count and its turn-error pair (forkViewChangedTx).
+//
+// A detached fork whose materialization has not finished first loses the
+// copies it made of rows it read through threadID (rollBackForkCopiesTx),
+// so it keeps no part of that history.
 //
 // It records against tx (fork_moves.go) every thread whose stamps it moves:
 // the detached forks, each thread holding a divider it marks, and the forks
@@ -998,8 +1002,23 @@ func (s *Store) detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 			return nil
 		}
 	}
+	// The copies an unfinished materialization made of the rows a fork
+	// stops reading are rolled back before it stops. DeleteThreadPaced has
+	// rolled them back in paced transactions; what is left goes here.
+	writes := make(map[string]*cardWrite, len(detached))
 	copies := make(map[string][]string, len(detached))
 	for _, id := range detached {
+		w := s.bulkItemWrites(tx, id, false)
+		for {
+			removed, err := rollBackForkCopiesTx(tx, w, id, threadID, forkCopyRollbackChunk)
+			if err != nil {
+				return err
+			}
+			if removed < forkCopyRollbackChunk {
+				break
+			}
+		}
+		writes[id] = w
 		if copies[id], err = forkCopyStampsTx(tx, id); err != nil {
 			return err
 		}
@@ -1063,7 +1082,7 @@ func (s *Store) detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 	}
 	recordForkMovesTx(tx, detached...)
 	for _, id := range detached {
-		w := s.bulkItemWrites(tx, id, false)
+		w := writes[id]
 		if err := forkViewChangedTx(tx, w, id, copies[id]); err != nil {
 			return err
 		}
@@ -1078,21 +1097,46 @@ func (s *Store) detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 // transaction copies.
 const materializeForkBatch = 500
 
+// ErrForkSourceDeleting reports a materialization that stopped because a
+// thread the fork reads from is being deleted. The delete rolls back the
+// copies of the rows the fork read through that thread
+// (rollBackForkCopiesTx); a later materialization copies what the fork
+// reads once the delete has detached it.
+var ErrForkSourceDeleting = errors.New("store: a thread this fork reads from is being deleted")
+
 // MaterializeForkHistory makes threadID own every row it reads from its
 // ancestors, then drops its lineage. The transfer export runs it, because
 // a conversation that leaves this database must carry its history.
 //
 // It copies in bounded transactions. Each batch replaces inherited rows
 // with identical own rows, so the timeline reads the same between batches
-// and nothing waits on the whole copy. The last transaction copies the
-// turn rows and drops the lineage. Every copied row brings the ownership
-// of the attachments it shows (copyInheritedRowsTx).
+// and nothing waits on the whole copy, and records its copies
+// (thread_fork_copied). The last transaction copies the rows that list
+// attachments, with the ownership of the attachments they show
+// (copyInheritedRowsTx), the rest of the rows and the turn rows, drops
+// the lineage and the records. Until then the fork owns no attachment
+// through the copies, and the delete of an ancestor can roll back the
+// copies of the rows the fork reads through it.
+//
+// A batch or the last transaction that finds an ancestor being deleted
+// copies nothing and returns ErrForkSourceDeleting. A batch after the
+// delete has detached the fork copies what the fork reads without that
+// ancestor. The records outlive an error, a cancel or a crash; a later
+// materialization copies what is left.
 func (s *Store) MaterializeForkHistory(ctx context.Context, threadID string) error {
+	return s.materializeForkHistory(ctx, threadID, nil)
+}
+
+// materializeForkHistory is MaterializeForkHistory with a hook run after
+// each committed batch, for tests.
+func (s *Store) materializeForkHistory(ctx context.Context, threadID string, afterBatch func()) error {
 	depth, err := forkLineageDepth(s.reader(), threadID)
 	if err != nil || depth == 0 {
 		return err
 	}
-	pending, err := queryInheritedRows(s.reader(), threadID, allLevels, timelineSelection{})
+	pending, err := queryInheritedRows(s.reader(), threadID, allLevels, timelineSelection{
+		Where: "NOT (" + attachmentBearingSQL + ")",
+	})
 	if err != nil {
 		return err
 	}
@@ -1107,11 +1151,34 @@ func (s *Store) MaterializeForkHistory(ctx context.Context, threadID string) err
 		if err := s.materializeForkRows(threadID, ids); err != nil {
 			return err
 		}
+		if afterBatch != nil {
+			afterBatch()
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	return s.finishForkMaterialization(threadID)
+}
+
+// deletingForkAncestorSQL reports whether a thread reads from one whose
+// delete has begun.
+const deletingForkAncestorSQL = `SELECT EXISTS (SELECT 1 FROM thread_fork_lineage l JOIN threads t ON t.id = l.ancestor_id
+  WHERE l.thread_id = ? AND t.deleting = 1)`
+
+// requireNoDeletingAncestorTx fails a materialization transaction whose
+// fork reads from a thread whose delete has begun (threads.deleting). From
+// that mark until its detach, the delete rolls back the fork's copies, so
+// a copy made in between would outlive it.
+func requireNoDeletingAncestorTx(tx *sql.Tx, threadID string) error {
+	var deleting bool
+	if err := tx.QueryRow(deletingForkAncestorSQL, threadID).Scan(&deleting); err != nil {
+		return fmt.Errorf("store: check the ancestors of %s: %w", threadID, err)
+	}
+	if deleting {
+		return fmt.Errorf("store: materialize %s: %w", threadID, ErrForkSourceDeleting)
+	}
+	return nil
 }
 
 func (s *Store) materializeForkRows(threadID string, ids []string) error {
@@ -1120,12 +1187,29 @@ func (s *Store) materializeForkRows(threadID string, ids []string) error {
 		return fmt.Errorf("store: begin materialize %s: %w", threadID, err)
 	}
 	defer tx.Rollback()
+	if err := requireNoDeletingAncestorTx(tx, threadID); err != nil {
+		return err
+	}
 	rows, err := inheritedRowsByID(tx, threadID, ids, allLevels)
 	if err != nil {
 		return err
 	}
 	if err := copyInheritedRowsStampedTx(tx, threadID, rows); err != nil {
 		return err
+	}
+	copied := make([][2]string, len(rows))
+	for i, row := range rows {
+		copied[i] = [2]string{row.id, row.owner}
+	}
+	list, err := json.Marshal(copied)
+	if err != nil {
+		return fmt.Errorf("store: encode the rows materialized into %s: %w", threadID, err)
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO thread_fork_copied (thread_id, item_id, source_id)
+		 SELECT ?, json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(?)`, threadID, string(list),
+	); err != nil {
+		return fmt.Errorf("store: record the rows materialized into %s: %w", threadID, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit materialize %s: %w", threadID, err)
@@ -1139,6 +1223,9 @@ func (s *Store) finishForkMaterialization(threadID string) error {
 		return fmt.Errorf("store: begin finish materialize %s: %w", threadID, err)
 	}
 	defer tx.Rollback()
+	if err := requireNoDeletingAncestorTx(tx, threadID); err != nil {
+		return err
+	}
 	// Batches only ever shrink what is left to copy: a write between them
 	// copies or hides rows, and nothing new appears below a cut. This read
 	// runs in the transaction that drops the lineage, so no inherited row
@@ -1168,11 +1255,125 @@ func (s *Store) finishForkMaterialization(threadID string) error {
 	if _, err := tx.Exec(`DELETE FROM thread_fork_lineage WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("store: unlink materialized %s: %w", threadID, err)
 	}
+	// The copies are the thread's own history from here on.
+	if _, err := tx.Exec(`DELETE FROM thread_fork_copied WHERE thread_id = ?`, threadID); err != nil {
+		return fmt.Errorf("store: settle the rows materialized into %s: %w", threadID, err)
+	}
 	if err := bumpHistoryRevTx(tx, threadID, "store: stamp materialized fork"); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit finish materialize %s: %w", threadID, err)
+	}
+	return nil
+}
+
+// forkCopyRollbackChunk bounds how many copies one rollback statement
+// removes, as deleteThreadItemChunk bounds a delete's.
+const forkCopyRollbackChunk = 500
+
+// forkCopiesToRollBackSQL lists, in timeline order, a chunk of the
+// recorded copies fork ?1 made of rows it reads through thread ?2: rows
+// ?2 holds, or a thread ?1 reads through ?2, which the detach of ?2 stops
+// ?1 reading. Copies of rows a nearer ancestor holds stay: the fork reads
+// them after the detach too, and the ancestor may have rewritten its own
+// rows since. In timeline order a chunk rolls back an anchor with the
+// children that follow it, so a later chunk's rows have no copied anchor
+// left to recompute.
+const forkCopiesToRollBackSQL = `SELECT c.item_id FROM thread_fork_lineage gone
+  CROSS JOIN thread_fork_lineage l ON l.thread_id = gone.thread_id AND l.depth >= gone.depth
+  CROSS JOIN thread_fork_copied c ON c.thread_id = l.thread_id AND c.source_id = l.ancestor_id
+  CROSS JOIN items i ON i.thread_id = c.thread_id AND i.id = c.item_id
+ WHERE gone.thread_id = ?1 AND gone.ancestor_id = ?2
+ ORDER BY i.turn_index, i.item_index LIMIT ?3`
+
+// rollBackForkCopiesTx removes up to limit of the copies forkID's
+// unfinished materialization made of rows it reads through goneID
+// (forkCopiesToRollBackSQL), with the hides that let them sit below its cut,
+// so the fork reads those rows from its ancestors again, as it did before
+// it copied them. It returns how many it removed.
+//
+// The rows are an ancestor's history, identical to what the fork reads in
+// their place, and no row the fork wrote sits under one
+// (settleForkCopiesTx): the fork shows the rows and cards it showed before
+// it copied them, and no copied anchor it keeps counts a changed subtree.
+// A thread forked from forkID that showed a copy reads the same row one
+// level further, so nothing is handed off to it: a hand-off would keep
+// the row after goneID's delete detaches that fork too.
+func rollBackForkCopiesTx(tx *sql.Tx, w *cardWrite, forkID, goneID string, limit int) (int, error) {
+	ids, err := queryIDs(tx, forkCopiesToRollBackSQL, forkID, goneID, limit)
+	if err != nil {
+		return 0, fmt.Errorf("store: list the rows %s copied through %s: %w", forkID, goneID, err)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	list, err := jsonList(ids)
+	if err != nil {
+		return 0, err
+	}
+	action := "store: roll back the rows " + forkID + " copied through " + goneID
+	if err := withHistoryBulkLoadTx(tx, forkID, func() error {
+		removed, err := deleteItemRowsTx(tx, w, `id IN (SELECT value FROM json_each(?))`, []any{list}, action)
+		if err != nil {
+			return err
+		}
+		if removed != int64(len(ids)) {
+			return fmt.Errorf("%s: removed %d of %d", action, removed, len(ids))
+		}
+		if _, err := tx.Exec(
+			`DELETE FROM thread_fork_hidden WHERE thread_id = ? AND item_id IN (SELECT value FROM json_each(?))`, forkID, list,
+		); err != nil {
+			return fmt.Errorf("%s: unhide: %w", action, err)
+		}
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	return len(ids), nil
+}
+
+// forksWithCopiesSQL lists the forks that read through thread ?1 and hold
+// recorded copies of rows they read through it (forkCopiesToRollBackSQL).
+const forksWithCopiesSQL = `SELECT DISTINCT gone.thread_id FROM thread_fork_lineage gone
+ WHERE gone.ancestor_id = ?1 AND EXISTS (SELECT 1 FROM thread_fork_lineage l
+   CROSS JOIN thread_fork_copied c ON c.thread_id = l.thread_id AND c.source_id = l.ancestor_id
+  WHERE l.thread_id = gone.thread_id AND l.depth >= gone.depth)`
+
+// rollBackForkCopiesThrough rolls back, in bounded transactions with pause
+// between them, the copies unfinished materializations made of rows their
+// forks read through threadID (rollBackForkCopiesTx). DeleteThreadPaced
+// runs it after the mark, which stops every materialization through
+// threadID from copying more (requireNoDeletingAncestorTx), and before the
+// detach, so each fork reads the same rows throughout and the detach has
+// none left to roll back. A chunk moves the fork's stamps and recomputes
+// its turn-error pair (forkViewChangedTx); it changes no subtree of an
+// anchor the fork keeps, so it names no copied anchor to recompute.
+func (s *Store) rollBackForkCopiesThrough(threadID string, pause ChunkPause) error {
+	forks, err := queryIDs(s.reader(), forksWithCopiesSQL, threadID)
+	if err != nil {
+		return fmt.Errorf("store: list the forks of %s with unfinished copies: %w", threadID, err)
+	}
+	for _, fork := range forks {
+		for {
+			var removed int
+			if err := s.bulkWriteItems(fork, "roll back materialized rows", func(tx *sql.Tx, w *cardWrite) error {
+				var err error
+				if removed, err = rollBackForkCopiesTx(tx, w, fork, threadID, forkCopyRollbackChunk); err != nil || removed == 0 {
+					return err
+				}
+				recordForkMovesTx(tx, fork)
+				return forkViewChangedTx(tx, w, fork, nil)
+			}); err != nil {
+				return err
+			}
+			if removed < forkCopyRollbackChunk {
+				break
+			}
+			if pause != nil {
+				pause()
+			}
+		}
 	}
 	return nil
 }

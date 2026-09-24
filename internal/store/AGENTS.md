@@ -144,8 +144,8 @@ an atomic persistence decision; they must not become a business-logic layer.
   opens, writes with, flushes or closes a card.
 - A pointer fork reads its ancestors' rows in place. A writer that updates,
   moves, deletes or hides a row another thread can read hands it off to the
-  forks that show it first (`handOffIDsTx`, `handOffPayloadTx`); add the
-  writer to `TestPointerForkSourceRewritesHandOff`
+  forks that show it first (`handOffIDsTx`, `handOffRemovedIDsTx`,
+  `handOffPayloadTx`); add the writer to `TestPointerForkSourceRewritesHandOff`
   ([pointer forks](../../docs/architecture/sqlite-store.md#copies)).
   A transaction that can move a fork's stamps runs in `writeItems` or
   `bulkWriteItems`, whose `cardTxLocked` reports them, or commits with
