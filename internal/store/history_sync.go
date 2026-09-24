@@ -91,9 +91,8 @@ type ThreadWindowSync struct {
 // ROWS whose read result the write changed with the thread's new
 // history_rev. The row stamp is `items.rev`, and it is what lets a client
 // describe a held window as (id, rev) pairs (§5). Rows are stamped only
-// here. The one value Go writes to the column is subagentClaimRev, which
-// marks a claimed write for the triggers and which the row stamp replaces
-// in the same statement.
+// here and by the subagent_aggregates stamp triggers; Go never writes the
+// column.
 //
 // Which rows a write changes is stampedRowIDsSQL: the row, the rows a
 // page decorates FROM it, and the anchors a page decorates from its
@@ -114,14 +113,10 @@ type ThreadWindowSync struct {
 // does not fire it: no second thread bump for one write, and no trigger
 // program per stamped row. SQLite's `recursive_triggers` is OFF (pinned in
 // writerConnPragmas), which stops a trigger re-entering ITSELF but NOT
-// another trigger on the same table. `WHEN OLD.rev IS NEW.rev` excludes the
-// one stamp that also writes a listed column, the served-key strip
-// (subagentStripServedKeysSQL): it always writes a `rev` the row did not
-// have, because the stamp is read after a bump. A claimed write
-// (subagentClaimRev) changes `rev` too and is let through by name. Go's touch
-// (bumpHistoryRevForItemTx, touchPayloadOwnerRowsSQL) writes `updated_at`
-// to itself, a listed column left equal, so it DOES fire and the trigger
-// does the stamping.
+// another trigger on the same table; no stamp writes a listed column. Go's
+// touch (bumpHistoryRevForItemTx, touchPayloadOwnerRowsSQL) writes
+// `updated_at` to itself, a listed column left equal, so it DOES fire and
+// the trigger does the stamping.
 //
 // Under `history_bulk_load = 1` the thread stamp is frozen and the row
 // stamps take the thread's current history_rev. That is sound only while
@@ -246,9 +241,8 @@ func threadRevSQL(threadExpr string) string {
 }
 
 // stampRowsInSQL is a trigger's row stamp to revision rev.
-// stampPendingInSQL keeps it off rows the same trigger already stamped (a
-// subagent_aggregates write stamps its anchor, the served-key strip its
-// row), which it would rewrite for nothing.
+// stampPendingInSQL keeps it off rows already at that revision, which it
+// would rewrite for nothing.
 func stampRowsInSQL(rev string) string { return `UPDATE items SET rev = ` + rev }
 
 func stampPendingInSQL(rev string) string { return `rev IS NOT ` + rev }
@@ -258,18 +252,13 @@ func stampPendingInSQL(rev string) string { return `rev IS NOT ` + rev }
 var updatedRowRevSQL = `(CASE WHEN thread_id = NEW.thread_id THEN ` + threadRevSQL("NEW.thread_id") +
 	` ELSE ` + threadRevSQL("OLD.thread_id") + ` END)`
 
-// Each trigger runs its subagent mark statement
-// (subagent_aggregate_stamps.go) between the thread bump and the row
-// stamp; the insert and update triggers then strip served keys from the
-// written meta, and the update trigger drops the stamp of a row that
-// stopped being an anchor. The insert trigger's two stamping statements
-// are gated on the thread's bulk-load flag, a constant for the statement,
-// so only one of them reads anything.
+// The triggers do no subagent card work: the store keeps the cards in Go
+// (subagent_card.go). The insert trigger's two stamping statements are
+// gated on the thread's bulk-load flag, a constant for the statement, so
+// only one of them reads anything.
 var historyRevTriggersSQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
   UPDATE threads SET history_rev = history_rev + 1
    WHERE id = NEW.thread_id AND history_bulk_load = 0;
-  ` + subagentMarkInsertStmt + `
-  ` + subagentStripServedKeysStmt + `
   ` + stampRowsInSQL(threadRevSQL("NEW.thread_id")) + `
    WHERE thread_id = NEW.thread_id AND id = NEW.id
      AND (SELECT history_bulk_load FROM threads WHERE id = NEW.thread_id) = 1
@@ -281,7 +270,6 @@ var historyRevTriggersSQL = `CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON
 END;
 
 CREATE TRIGGER trg_items_rev_update AFTER UPDATE OF ` + strings.Join(itemRevUpdateColumns, ", ") + ` ON items
-WHEN OLD.rev IS NEW.rev OR ` + aggClaimedSQL("NEW") + `
 BEGIN
   UPDATE threads SET
     history_rev   = history_rev + 1,
@@ -290,9 +278,6 @@ BEGIN
          OLD.item_index IS NOT NEW.item_index OR
          OLD.thread_id  IS NOT NEW.thread_id)
   WHERE id IN (OLD.thread_id, NEW.thread_id) AND history_bulk_load = 0;
-  ` + subagentMarkUpdateStmt + `
-  ` + subagentAggregateUnanchorSQL + `
-  ` + subagentStripServedKeysStmt + `
   ` + stampRowsInSQL(updatedRowRevSQL) + `
    WHERE ((thread_id = NEW.thread_id AND id IN (` + stampedRowIDsSQL("NEW") + `))
       OR (thread_id = OLD.thread_id AND id IN (` + stampedRowIDsSQL("OLD") + `)))
@@ -304,7 +289,6 @@ CREATE TRIGGER trg_items_rev_delete AFTER DELETE ON items BEGIN
     history_rev   = history_rev + 1,
     history_epoch = history_epoch + 1
   WHERE id = OLD.thread_id AND history_bulk_load = 0;
-  ` + subagentMarkDeleteStmt + `
   ` + stampRowsInSQL(threadRevSQL("OLD.thread_id")) + `
    WHERE thread_id = OLD.thread_id AND id IN (` + stampedRowIDsSQL("OLD") + `)
      AND ` + stampPendingInSQL(threadRevSQL("OLD.thread_id")) + `;

@@ -121,7 +121,6 @@ CREATE TRIGGER trg_items_rev_insert AFTER INSERT ON items BEGIN
 END;
 
 CREATE TRIGGER trg_items_rev_update AFTER UPDATE OF <every column but rev> ON items
-WHEN OLD.rev IS NEW.rev OR NEW.rev IS -2  -- -2: a claimed write (subagentClaimRev)
 BEGIN
   UPDATE threads SET
     history_rev   = history_rev + 1,
@@ -171,9 +170,8 @@ CTE column's TEXT affinity would otherwise apply to the indexed
 expression and limit the probe to the thread's whole carrier set.
 `TestItemRevisionStampProbesIndexes` pins the plan of the query and
 `TestItemRevisionTriggersProbeCarriersByValue` the installed triggers. The set is one
-`id IN (...)` so an overlapping leg stamps a row once: a second stamp
-that left `rev` unchanged would pass the update trigger's guard below and
-bump the thread twice. `TestHeldWindowSeesThroughToAnchorsWalkedFromOutside`
+`id IN (...)` so an overlapping leg stamps a row once.
+`TestHeldWindowSeesThroughToAnchorsWalkedFromOutside`
 holds a window of carriers and completion siblings with the launch
 scrolled out of it and proves a child write under the launch, or under
 a launch nested inside it, still refuses the window.
@@ -182,27 +180,27 @@ Each subagent anchor's card lives in its `subagent_aggregates` row
 (migration v121; the contract is in
 `internal/store/subagent_aggregate_stamps.go`): the counts, the preview
 and tray values, and the positions the incremental rules need. A live
-write names the anchor its row counts toward (`Item.SubagentAnchor`),
-and the store applies the write's effect with keyed reads and writes per
-nesting level of the written row (`subagent_aggregate_writes.go`), so a
-child write rewrites one narrow row per nesting level, never the
-anchor's `meta`, and never walks the subtree. Any other write is marked
-by the same triggers, between the thread bump and the row stamp: the
-chain goes dirty, and the writer recomputes it
-(`settleSubagentAggregatesTx`) before it commits, as it does for a
-claimed write no keyed rule keeps exact. A local item projection merges
-a clean row's public values into the served `meta` with `json_patch`; a
-write to the row stamps the anchor and its completion siblings, so a
-changed card is always served at a new revision.
-`decorateSubagentAnchors` serves a clean stamped
-anchor as the projection read it and walks only the rows the triggers
-do not keep:
+write carries its parent's card (`Item.SubagentCard`,
+`internal/store/subagent_card.go`). The store feeds the card from the
+committed row in Go, with no statement, and a flush writes each changed
+card with one keyed statement, so a child write never rewrites the
+anchor's `meta` and never walks the subtree. The router flushes before it
+pushes the anchors, on its refresh timer and at the boundaries
+`docs/specs/agent-visibility.md` lists; between flushes a read serves the
+card as of the last one. A write the card rules do not follow, and every
+bulk writer, recompute the chains they changed before they commit. A
+local item projection merges a clean row's public values into the served
+`meta` with `json_patch`; a write to the row stamps the anchor and its
+completion siblings, so a changed card is always served at a new
+revision. `decorateSubagentAnchors` serves a clean stamped
+anchor as the projection read it and walks only the rows no clean stamp
+keeps:
 imported anchors, dirty and `readTime` rows, carriers whose round prompt
 has not arrived, and unstamped anchors of a thread still listed in
 `subagent_aggregate_backfill` for v121's deferred phase.
 `TestSubagentAggregateStampsMatchTheReadTimeAggregator` compares every
-served card with the walk after each kind of write, and the rows the
-keyed writes keep with the rows the recompute derives;
+served card with the walk at each flush boundary, and the stamps the
+cards keep with the ones the recompute derives;
 `TestSubagentAggregateTriggersDoNotScanASubtree` and
 `TestSubagentAggregateStatementPlans` pin the cost.
 
@@ -212,9 +210,7 @@ but `rev`, and a stamp writes `rev` alone. `recursive_triggers` is OFF
 (pinned in `writerConnPragmas` with boot verification) so a trigger does
 not re-fire *itself*, but the insert trigger's stamp is an UPDATE and
 would otherwise fire the update trigger, bumping `history_rev` a second
-time per insert. The served-key strip, the one stamp that also writes
-`meta`, is excluded by `WHEN OLD.rev IS NEW.rev`; a claimed write stores
-`subagentClaimRev` and is let through by name. Exact arithmetic for
+time per insert. Exact arithmetic for
 insert, update, delete and child writes is pinned by
 `TestItemRevisionTriggerArithmetic`.
 
@@ -400,9 +396,9 @@ it has seen; `TestAgentsFirstRowPushesItsCardAtOnce` and
 | Import rollback / `DeleteThread` / retention sweep | thread row deleted | tombstone: replica entry dropped by the deleting client directly, and by any other client on the `gone` answer (§5) |
 | `RestoreFrom` (harness snapshot) | whole-DB replace | **generation** re-mint (§3.3) |
 | `decorateSubagentAnchors` (stamp read, or the walk for rows the triggers do not keep) | none: no write occurs | covered transitively: its inputs are the anchor's stamp and descendant item rows, whose writes bump rev |
-| Keyed stamp writes of a claimed item write (`subagent_aggregate_writes.go`) | the item write's own row stamp, which covers the chain's anchors, their carriers and completion siblings | rev |
+| Card flush (`FlushSubagentCards`, a card's `Close`, `Store.Close`) | explicit thread bump, then one keyed `subagent_aggregates` write per changed card; its trigger stamps the anchor and completion siblings | rev |
 | `RecomputeSubagentAggregates` (v121 backfill, standalone recompute) | explicit thread bump, then `subagent_aggregates` upsert; its trigger stamps the anchor and completion siblings | rev |
-| Dirty settle inside a write (`settleSubagentAggregatesTx`), bulk-load rebuild | none of its own: the transaction's item write or dirty mark already bumped (a bulk-loaded thread's loader writes the exact revision); the upsert's trigger stamps the anchor and completion siblings | rev, once per write |
+| Recompute inside a write the card rules do not follow (`recomputeSubagentChainsTx`), bulk-load rebuild | none of its own: the transaction's item write already bumped (a bulk-loaded thread's loader writes the exact revision); the upsert's trigger stamps the anchor and completion siblings | rev, once per write |
 | `EnsureProposedPlanState(WithParent)`, `MarkProposedPlanImplemented`, `CreateProposedPlanComment`, `UpdateProposedPlanComment`, `DeleteOrResolveProposedPlanComment`, `MarkProposedPlanCommentsSent` | explicit, on the thread id the mutator already carries | rev on the PLAN's thread |
 | `RestoreFrom`'s row copy | triggers DROPped for the copy, recreated after | none during the copy: the restored counters are the snapshot's, verbatim |
 

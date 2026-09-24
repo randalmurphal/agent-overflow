@@ -21,7 +21,7 @@ func TestScopedTimelineTraversesAllHistoryAndRunMembers(t *testing.T) {
 			item.Kind = "assistant_text"
 			item.ToolName = ""
 		}
-		if err := s.InsertItem(item); err != nil {
+		if err := insertCarded(s, item); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -112,7 +112,7 @@ func TestScopedTimelineEmptyToolsAndContextOnlyChange(t *testing.T) {
 		rows = append(rows, WindowDigestRow{ID: row.ID, Rev: row.Rev})
 	}
 	held := &HeldWindow{OldestItemID: "prose", NewestItemID: "answer", Count: 3, Digest: WindowDigest(rows)}
-	if err := s.InsertItem(Item{ID: "complete:agent:turn:second", ThreadID: "scope", TurnIndex: 0, ItemIndex: 4, Kind: "tool_completion", ToolName: "Task", Role: "assistant", Status: "completed", CompletionOf: "agent", CreatedAt: 10}); err != nil {
+	if err := insertCarded(s, Item{ID: "complete:agent:turn:second", ThreadID: "scope", TurnIndex: 0, ItemIndex: 4, Kind: "tool_completion", ToolName: "Task", Role: "assistant", Status: "completed", CompletionOf: "agent", CreatedAt: 10}); err != nil {
 		t.Fatal(err)
 	}
 	synced, err = s.SyncThreadWindow(context.Background(), "scope", "", 40, 10, synced.Stamp, held, selection)
@@ -161,7 +161,7 @@ func TestScopedTimelineImportedAndLocalHistoryAgree(t *testing.T) {
 			}
 			if imported {
 				batch.Rows = append(batch.Rows, ImportRow{Item: row})
-			} else if err := s.InsertItem(row); err != nil {
+			} else if err := insertCarded(s, row); err != nil {
 				t.Fatal(err)
 			}
 		}

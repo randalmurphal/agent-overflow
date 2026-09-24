@@ -175,7 +175,7 @@ func TestCodexRecoveryPreservesExecutionBoundariesAndCreatesMissingCompletion(t 
 		}
 	}
 	signal("A", "running", false)
-	if err := st.InsertItem(store.Item{ID: "child-a", ThreadID: "t1", TurnIndex: 0, ItemIndex: 100, Kind: "assistant_text", Role: "assistant", Status: "completed", ParentID: "spawn", Summary: "first answer", CreatedAt: 1}); err != nil {
+	if err := insertSeed(st, store.Item{ID: "child-a", ThreadID: "t1", TurnIndex: 0, ItemIndex: 100, Kind: "assistant_text", Role: "assistant", Status: "completed", ParentID: "spawn", Summary: "first answer", CreatedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	signal("A", "completed", false)
@@ -195,7 +195,7 @@ func TestCodexRecoveryPreservesExecutionBoundariesAndCreatesMissingCompletion(t 
 	if current.Runtime.ChildStartIndex != 100 {
 		t.Fatalf("lost boundary: %+v", current.Runtime)
 	}
-	if err := st.InsertItem(store.Item{ID: "child-b", ThreadID: "t1", TurnIndex: 0, ItemIndex: 200, Kind: "assistant_text", Role: "assistant", Status: "completed", ParentID: "spawn", Summary: "second answer", CreatedAt: 2}); err != nil {
+	if err := insertSeed(st, store.Item{ID: "child-b", ThreadID: "t1", TurnIndex: 0, ItemIndex: 200, Kind: "assistant_text", Role: "assistant", Status: "completed", ParentID: "spawn", Summary: "second answer", CreatedAt: 2}); err != nil {
 		t.Fatal(err)
 	}
 	signal("B", "completed", true)

@@ -192,7 +192,7 @@ func seedUserPlan(
 		PayloadID: payloadID,
 		CreatedAt: int64(turnIndex*10 + itemIndex),
 	}
-	if err := s.InsertItemWithPayload(item, payload); err != nil {
+	if err := insertWithPayloadCarded(s, item, payload); err != nil {
 		t.Fatalf("seed user plan %s: %v", id, err)
 	}
 }
@@ -229,7 +229,7 @@ func TestMarkLiveBackgroundToolCallsInactiveClearsOnlyLiveTopLevelLaunches(t *te
 	seedBackgroundItem(t, s, "t", "run", 0, 0, "running", "", 1000)
 	seedBackgroundItem(t, s, "t", "completed-launch", 0, 1, "running", "", 1000)
 	seedBackgroundItem(t, s, "t", "completed-row", 0, 2, "completed", "completed-launch", 2000)
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID:           "child",
 		ThreadID:     "t",
 		TurnIndex:    0,
@@ -328,7 +328,7 @@ func TestListLiveBackgroundTasks_ExcludesInactiveCodexSubagent(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID:           "spawn-inactive",
 		ThreadID:     "t",
 		TurnIndex:    0,
@@ -365,7 +365,7 @@ func TestListLiveCodexSubagentLaunches_DecoratesLatestDirectToolWithoutMutatingL
 		Summary: "spawn_agent", IsBackground: true, ToolName: "collab_agent",
 		Meta: `{"input":{"tool":"spawn_agent","receiverThreadIds":["child-1"]}}`, CreatedAt: 1000,
 	}
-	if err := s.InsertItem(spawn); err != nil {
+	if err := insertCarded(s, spawn); err != nil {
 		t.Fatalf("seed spawn: %v", err)
 	}
 	for _, item := range []Item{
@@ -376,7 +376,7 @@ func TestListLiveCodexSubagentLaunches_DecoratesLatestDirectToolWithoutMutatingL
 		{ID: "nested-spawn", ThreadID: "t", TurnIndex: 0, ItemIndex: 3, Kind: "tool_call", Role: "assistant", Status: "completed", Summary: "spawn_agent", ToolName: "collab_agent", ParentID: spawn.ID, CreatedAt: 1003},
 		{ID: "nested-tool", ThreadID: "t", TurnIndex: 0, ItemIndex: 4, Kind: "tool_call", Role: "assistant", Status: "running", Summary: "Grep: nested", ToolName: "grep", ParentID: "nested-spawn", CreatedAt: 1004},
 	} {
-		if err := s.InsertItem(item); err != nil {
+		if err := insertCarded(s, item); err != nil {
 			t.Fatalf("seed %s: %v", item.ID, err)
 		}
 	}
@@ -574,7 +574,7 @@ func TestListLiveBackgroundTasks_IncludesSubagentScopedBackgroundRows(t *testing
 		CreatedAt: 100,
 		UpdatedAt: 100,
 	}
-	if err := s.InsertItem(parent); err != nil {
+	if err := insertCarded(s, parent); err != nil {
 		t.Fatalf("seed parent: %v", err)
 	}
 	scopedLaunch := Item{
@@ -592,7 +592,7 @@ func TestListLiveBackgroundTasks_IncludesSubagentScopedBackgroundRows(t *testing
 		CreatedAt:    200,
 		UpdatedAt:    200,
 	}
-	if err := s.InsertItem(scopedLaunch); err != nil {
+	if err := insertCarded(s, scopedLaunch); err != nil {
 		t.Fatalf("seed scoped launch: %v", err)
 	}
 	scopedCompletion := Item{
@@ -611,13 +611,13 @@ func TestListLiveBackgroundTasks_IncludesSubagentScopedBackgroundRows(t *testing
 		CreatedAt:    5000,
 		UpdatedAt:    5000,
 	}
-	if err := s.InsertItem(scopedCompletion); err != nil {
+	if err := insertCarded(s, scopedCompletion); err != nil {
 		t.Fatalf("seed scoped completion: %v", err)
 	}
 
 	// A FOREGROUND plain tool call under the same agent: the agent's own
 	// work, rendered inside its card, never a tray row.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID:        "child-read",
 		ThreadID:  "t",
 		TurnIndex: 0,
@@ -713,7 +713,7 @@ func seedChildToolCall(
 	createdAt int64,
 ) {
 	t.Helper()
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID:        id,
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
@@ -750,7 +750,7 @@ func TestHasLiveBackgroundToolCall_ExcludesSubagentScopedBackgroundRows(t *testi
 		CreatedAt: 100,
 		UpdatedAt: 100,
 	}
-	if err := s.InsertItem(parent); err != nil {
+	if err := insertCarded(s, parent); err != nil {
 		t.Fatalf("seed parent: %v", err)
 	}
 	scopedLaunch := Item{
@@ -768,7 +768,7 @@ func TestHasLiveBackgroundToolCall_ExcludesSubagentScopedBackgroundRows(t *testi
 		CreatedAt:    200,
 		UpdatedAt:    200,
 	}
-	if err := s.InsertItem(scopedLaunch); err != nil {
+	if err := insertCarded(s, scopedLaunch); err != nil {
 		t.Fatalf("seed scoped launch: %v", err)
 	}
 

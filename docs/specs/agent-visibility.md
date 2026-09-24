@@ -103,6 +103,16 @@ subagent model and the user explicitly authorizes the corresponding change.
   compaction, retries, and child launches live in the pane. The digest is a
   capped virtualized inner timeline with the normal bottom-follow spring and
   reader escape. It never recursively embeds child agents in the main thread.
+- A card's count, preview and tray line are kept in memory while the agent
+  writes and reach the stored card at a flush (`internal/store/subagent_card.go`).
+  The router flushes a thread's cards on its refresh timer, at most
+  `wireRefreshMaxWait` (5 s, `internal/triage/wire_items.go`) after the
+  first row of a burst and `wireRefreshQuiet` (1 s) after the last, and
+  synchronously at an agent's first row, its completion or stop, turn end,
+  session close and shutdown. The anchor push follows the flush, so a
+  served card is at most `wireRefreshMaxWait` behind the rows written
+  under it. After a crash the boot pass recomputes the cards of the agents
+  that were running.
 - Pane = companion kind `agent` with a scope (launch item id), rendered by the
   thread renderer filtered to direct `parent_id == scope` rows. A direct child
   launch appears as a normal agent row without its descendants.

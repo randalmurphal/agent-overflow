@@ -8,6 +8,7 @@ import (
 
 	"agent-overflow/internal/itemwire"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 )
 
 // --- the projection preference ---------------------------------------
@@ -223,7 +224,7 @@ func TestPageAnchorIndex_ResolvesAnAnchorThePageDidNotShip(t *testing.T) {
 		ID: "child", ThreadID: thread.ID, TurnIndex: 3, ItemIndex: 35, ParentID: "row-03",
 		Kind: "assistant_text", Role: "assistant", Status: "completed",
 	}
-	if err := app.store.InsertItem(child); err != nil {
+	if err := storetest.WithParentCard(app.store, child, app.store.InsertItem); err != nil {
 		t.Fatalf("seed child: %v", err)
 	}
 
@@ -442,11 +443,18 @@ func TestScopedPageByteTrimPreservesContextAndEveryHistoryRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	const count = 600
+	card, err := app.store.OpenSubagentCard(thread.ID, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < count; i++ {
-		item := store.Item{ID: fmt.Sprintf("child-%04d", i), ThreadID: thread.ID, TurnIndex: 0, ItemIndex: i + 1, ParentID: root.ID, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: strings.Repeat("x", 2048)}
+		item := store.Item{ID: fmt.Sprintf("child-%04d", i), ThreadID: thread.ID, TurnIndex: 0, ItemIndex: i + 1, ParentID: root.ID, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: strings.Repeat("x", 2048), SubagentCard: card}
 		if err := app.store.InsertItem(item); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := card.Close(); err != nil {
+		t.Fatal(err)
 	}
 	selection := store.TimelineSelection{ScopeRootID: root.ID}
 	shape := PageShape{MaxBytes: 12 << 10, RunWindowRows: 30}

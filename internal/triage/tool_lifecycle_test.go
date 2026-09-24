@@ -1086,7 +1086,7 @@ func TestCodexWaitStartSnapshotsActiveReceiversWhenWireTargetsAreMissing(t *test
 
 	seedLaunch := func(id, parentID, meta string, itemIndex int) {
 		t.Helper()
-		if err := st.InsertItem(store.Item{
+		if err := insertSeed(st, store.Item{
 			ID: id, ThreadID: "t1", TurnIndex: 0, ItemIndex: itemIndex,
 			Kind: itemKindToolCall, Role: "assistant", Status: statusCompleted,
 			ParentID: parentID, ToolName: "collab_agent", IsBackground: true,

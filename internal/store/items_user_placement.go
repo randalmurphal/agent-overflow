@@ -60,6 +60,9 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 		return nil, fmt.Errorf("store: begin user placement: %w", err)
 	}
 	defer tx.Rollback()
+	// Shifting a turn's suffix moves agent rows too; the anchors above
+	// them are recomputed before the rows are read back.
+	w := s.bulkItemWrites(tx, threadID, false)
 	boundary := -1
 	if boundaryID != "" {
 		if boundary, err = turnItemIndexTx(tx, threadID, turnIndex, boundaryID); err != nil {
@@ -96,6 +99,8 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 	// UNIQUE(thread, turn, item_index) is immediate. Temporarily move the
 	// existing group below the turn head so swaps and suffix shifts cannot
 	// collide with its old slots; only final rows escape the transaction.
+	// The group is top-level user rows (loadUserPlacementGroupTx), which
+	// no subagent card counts, so its moves are not recorded in w.
 	park := false
 	for i, item := range group {
 		if existing[i] && item.ItemIndex != start+i {
@@ -119,7 +124,7 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 		}
 	}
 	if delta > 0 {
-		if err := shiftUserPlacementSuffixTx(tx, threadID, turnIndex, suffix, delta, group, updatedAt, mark); err != nil {
+		if err := shiftUserPlacementSuffixTx(tx, w, turnIndex, suffix, delta, group, updatedAt, mark); err != nil {
 			return nil, err
 		}
 	}
@@ -142,14 +147,12 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 			}
 		} else {
 			applyItemDefaults(&item)
-			if err := insertItemRowTx(tx, item, "store: insert placed user message"); err != nil {
+			if err := insertItemTx(tx, w, item, "store: insert placed user message"); err != nil {
 				return nil, err
 			}
 		}
 	}
-	// Shifting a turn's suffix moves agent rows too; the anchors above
-	// them are recomputed before the rows are read back.
-	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+	if err := w.finish(); err != nil {
 		return nil, err
 	}
 	result := make([]Item, 0, len(changedIDs))
@@ -169,38 +172,35 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 // UpdateItemMetaAtBoundary keeps an interrupt-anchored row in place while
 // resolving the separate consumption boundary in the metadata transaction.
 func (s *Store) UpdateItemMetaAtBoundary(threadID, itemID, boundaryID string, transform func(string, int) (string, error), updatedAt int64) (Item, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Item{}, err
-	}
-	defer tx.Rollback()
-	if err := requireMutableItemTx(tx, threadID, itemID, "store: confirm user metadata"); err != nil {
-		return Item{}, err
-	}
-	item, err := readBackItemTx(tx, threadID, itemID)
-	if err != nil {
-		return Item{}, err
-	}
-	boundary := -1
-	if boundaryID != "" {
-		if boundary, err = turnItemIndexTx(tx, threadID, item.TurnIndex, boundaryID); err != nil {
-			return Item{}, err
+	var item Item
+	err := s.writeItems(threadID, nil, "confirm user metadata", func(tx *sql.Tx, w *cardWrite) error {
+		old, err := readMutableSubagentRowTx(tx, threadID, itemID, "store: confirm user metadata")
+		if err != nil {
+			return err
 		}
-	}
-	meta, err := transform(item.Meta, boundary)
-	if err != nil {
-		return Item{}, err
-	}
-	if meta != item.Meta {
-		if _, err := tx.Exec(`UPDATE items SET meta = ?, updated_at = ? WHERE thread_id = ? AND id = ?`, meta, updatedAt, threadID, itemID); err != nil {
-			return Item{}, err
+		var stored string
+		if err := tx.QueryRow(`SELECT meta FROM items WHERE thread_id = ? AND id = ?`, threadID, itemID).Scan(&stored); err != nil {
+			return fmt.Errorf("store: confirm user metadata lookup %s/%s: %w", threadID, itemID, err)
 		}
-	}
-	item, err = readBackItemTx(tx, threadID, itemID)
+		boundary := -1
+		if boundaryID != "" {
+			if boundary, err = turnItemIndexTx(tx, threadID, old.turn, boundaryID); err != nil {
+				return err
+			}
+		}
+		meta, err := transform(stored, boundary)
+		if err != nil {
+			return err
+		}
+		if meta != stored {
+			if err := updateItemMetaTx(tx, w, old, meta, &updatedAt); err != nil {
+				return err
+			}
+		}
+		item, err = readBackItemTx(tx, threadID, itemID)
+		return err
+	})
 	if err != nil {
-		return Item{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return Item{}, err
 	}
 	return item, nil
@@ -278,17 +278,25 @@ func userPlacementSuffixTx(tx *sql.Tx, threadID string, turnIndex int, boundaryI
 	return suffix, nil
 }
 
-func shiftUserPlacementSuffixTx(tx *sql.Tx, threadID string, turnIndex int, suffix []userPlacementPosition, delta int, group []Item, updatedAt int64, mark func(string)) error {
-
-	for _, row := range suffix {
-		if err := requireMutableItemTx(tx, threadID, row.id, "store: shift user placement suffix"); err != nil {
+func shiftUserPlacementSuffixTx(tx *sql.Tx, w *cardWrite, turnIndex int, suffix []userPlacementPosition, delta int, group []Item, updatedAt int64, mark func(string)) error {
+	threadID := w.threadID
+	olds := make([]subagentRow, len(suffix))
+	for i, row := range suffix {
+		old, err := readMutableSubagentRowTx(tx, threadID, row.id, "store: shift user placement suffix")
+		if err != nil {
 			return err
 		}
+		olds[i] = old
 	}
 	// Localize the entire suffix before changing positions: a moved row
 	// must not collide with a still-imported sibling's old slot.
 	for i := len(suffix) - 1; i >= 0; i-- {
 		row := suffix[i]
+		moved := olds[i]
+		moved.index = row.index + delta
+		if err := w.updated(olds[i], moved); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(`UPDATE items SET item_index = ?, updated_at = ? WHERE thread_id = ? AND id = ?`, row.index+delta, updatedAt, threadID, row.id); err != nil {
 			return err
 		}
@@ -333,10 +341,11 @@ func shiftUserPlacementSuffixTx(tx *sql.Tx, threadID string, turnIndex int, suff
 		return err
 	}
 	for _, update := range updates {
-		if err := requireMutableItemTx(tx, threadID, update.id, "store: rebase user placement boundary"); err != nil {
+		old, err := readMutableSubagentRowTx(tx, threadID, update.id, "store: rebase user placement boundary")
+		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`UPDATE items SET meta = ?, updated_at = ? WHERE thread_id = ? AND id = ?`, update.meta, updatedAt, threadID, update.id); err != nil {
+		if err := updateItemMetaTx(tx, w, old, update.meta, &updatedAt); err != nil {
 			return err
 		}
 		for i := range group {

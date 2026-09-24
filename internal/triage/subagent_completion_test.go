@@ -416,7 +416,7 @@ func TestAgentCompletionReadsNoTranscript(t *testing.T) {
 			if i%2 == 1 {
 				kind, toolName = itemKindToolCall, "Read"
 			}
-			if _, err := st.AppendItem(store.Item{
+			if _, err := appendSeed(st, store.Item{
 				ID: fmt.Sprintf("%s-child-%03d", launchID, i), ThreadID: "t1", TurnIndex: 0,
 				Kind: kind, Role: "assistant", Status: statusCompleted, ToolName: toolName,
 				Summary: "mirrored row", ParentID: launchID, CreatedAt: now, UpdatedAt: now,

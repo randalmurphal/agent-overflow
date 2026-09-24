@@ -84,12 +84,11 @@ an atomic persistence decision; they must not become a business-logic layer.
 
 ## History and trigger contracts
 
-- Item triggers maintain history stamps, the marks that keep subagent
-  anchor cards, the thread row's turn-error aggregate, payload garbage
-  collection, imported history integrity, and background-launch settlement.
-  Do not duplicate or bypass those invariants in Go. The one card path in Go
-  is a write that names its subagent anchor, whose effect the store applies
-  with keyed writes (`subagent_aggregate_writes.go`).
+- Item triggers maintain history stamps, the thread row's turn-error
+  aggregate, payload garbage collection, imported history integrity, and
+  background-launch settlement. Do not duplicate or bypass those invariants
+  in Go. The item triggers do no subagent card work: the cards are kept in
+  Go (`subagent_card.go`).
 - A write to a payload or plan row an item renders calls
   `bumpHistoryRevForItemTx` / `bumpHistoryRevForPayloadTx` so the owning row's
   `rev` moves with the thread stamp; plain `bumpHistoryRevTx` is only for a
@@ -106,22 +105,25 @@ an atomic persistence decision; they must not become a business-logic layer.
   only the new row.
 - Subagent cards live in `subagent_aggregates`, one row per anchor keyed
   `(thread_id, item_id)`; a local item read merges a clean row's public keys
-  into the served meta, and stored meta never holds them. Every bulk writer
-  (import, materialize, hand-off, fork, source-deletion hand-off) follows one
-  stamp contract: it never copies `subagent_aggregates` rows or card keys
-  between threads, and before it commits it recomputes every local anchor
-  whose subtree it changed: `restampSubagentAggregatesTx` for a thread it
-  rebuilt, or `markSubagentChainsDirtyTx` for rows the item triggers did not
-  see (bulk load, shared chunks) and then `settleSubagentAggregatesTx`. A live
-  write names the anchor its row counts toward (`Item.SubagentAnchor`,
-  checked against the parent chain) and keeps the cards with keyed writes;
-  any other item write leaves the chain marked dirty, and its writer settles
-  before it commits. Stamp values are written by those keyed writes or by
-  `writeSubagentStampsTx`, in a transaction that already advanced
-  `threads.history_rev`: the item write, the dirty mark, or
-  `RecomputeSubagentAggregates`'s own bump. A settle adds no bump, so one
-  item write moves the thread once, and the anchor and its completion
-  siblings are served at a new revision.
+  into the served meta, and stored meta never holds them: a writer that
+  writes a row back reads it with `GetThreadItemForWrite`. A visible row
+  with a parent is written with its parent's card (`OpenSubagentCard`,
+  `Item.SubagentCard`, `ItemPartialUpdate.SubagentCard`), and a counted
+  preview-kind row changes its summary only with it; outside a bulk writer
+  either write fails with `ErrSubagentAnchor`. The store feeds the card from
+  the committed row in memory and writes it to the stamps at a flush
+  (`FlushSubagentCards`, the card's `Close`, `Store.Close`). A write the card
+  rules do not follow recomputes the chains it changed in its own
+  transaction. Every bulk writer (import, materialize, hand-off, fork,
+  source-deletion hand-off) writes without cards: it never copies
+  `subagent_aggregates` rows or card keys between threads, and before it
+  commits it recomputes every local anchor whose subtree it changed, through
+  `bulkItemWrites` or with `restampSubagentAggregatesTx` for a thread it
+  rebuilt. A stamp write follows a `threads.history_rev` advance in its
+  transaction (the item write's trigger, or the writer's own bump), so the
+  anchor and its completion siblings are served at a new revision. After a
+  crash, `RecoverSubagentCards` recomputes the anchors of the agents that
+  were running.
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by

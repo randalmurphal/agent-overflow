@@ -18,8 +18,8 @@ import (
 // prove (docs/architecture/thread-replica-sync.md §3.1):
 //
 //   - a row whose page read is decorated (store.ItemReadNeedsDecoration:
-//     an anchor the history triggers do not keep stamped, a completion
-//     sibling, a plan) is pushed as written but marked unstamped, and
+//     an anchor no clean stamp serves, a completion sibling, a plan) is
+//     pushed as written but marked unstamped, and
 //     noted so the next refresh pushes its page read. The write never
 //     reads the decorated row itself: that read can walk the anchor's
 //     descendants, and the writes that land here arrive at tens per
@@ -28,15 +28,18 @@ import (
 //     wholesale and the stored meta is not the decorated one. A stamped
 //     anchor's stored row is its page read and goes out as written;
 //   - a write stamps rows it did not touch (the parent anchor, resume
-//     carriers, completion siblings), so after a burst of writes the
-//     rows whose revision moved without a push of their own are read as
-//     a page would and pushed again. That happens at quiet points, never
-//     per write: one second after the last push on the thread, at most
-//     wireRefreshMaxWait after the first, and synchronously at turn
+//     carriers, completion siblings), and the rows written under an agent
+//     reach its card's stamp only when the thread's cards are flushed
+//     (subagent_cards.go). So after a burst of writes the cards are
+//     flushed, and the rows whose revision moved without a push of their
+//     own, with the anchors whose stamp the flush changed, are read as a
+//     page would and pushed again. That happens at quiet points, never
+//     per write: wireRefreshQuiet after the last push on the thread, at
+//     most wireRefreshMaxWait after the first, and synchronously at turn
 //     completion and session teardown. The one exception is an agent's
-//     first row: the anchor whose card it opens (store.
-//     ListFirstChildWireAnchors) is pushed with it, so the card appears
-//     with the agent's first activity.
+//     first row: the cards are flushed and the anchor whose card it opens
+//     (store.ListFirstChildWireAnchors) is pushed with it, so the card
+//     appears with the agent's first activity.
 //
 // A wire row the emitter altered on purpose (blankedStreamingWireRow)
 // carries store.UnstampedItemRev and takes neither path: the settle patch
@@ -99,6 +102,8 @@ func (r *Router) emitFirstChildAnchors(child store.Item) {
 	if child.Kind != itemKindUserText && !r.claimFirstChildProbe(child.ThreadID, child.ParentID) {
 		return
 	}
+	// The child is in its card, not yet in the stamp the probe reads.
+	r.flushSubagentCards(child.ThreadID)
 	anchors, err := r.store.ListFirstChildWireAnchors(child)
 	if err != nil {
 		log.Printf("triage: read first child anchors of %s/%s: %v", child.ThreadID, child.ID, err)
@@ -170,12 +175,18 @@ func (r *Router) emitItemPatch(threadID, itemID, kind string, rev int64, patch I
 // page read is pushed as an unstamped upsert instead of a patch (see the
 // file comment); item must therefore be the whole row.
 //
-// The push carries the stored row, not the caller's fields: a meta
-// written without an anchor's subagent stamp keeps the stamp
-// (subagent_aggregate_stamps.go), and the client must hold what a read
+// The push carries the row as a read serves it, not the caller's fields:
+// the stored meta holds no card key, a read merges an anchor's stamp into
+// it (subagent_aggregate_stamps.go), and the client must hold what a read
 // returns at that revision.
 func (r *Router) persistItemFieldsAndPatch(item store.Item, update store.ItemPartialUpdate) error {
-	stored, err := r.store.UpdateItemFields(item.ThreadID, item.ID, update)
+	var stored store.Item
+	err := r.withSubagentCard(item.ThreadID, item.ParentID, func(card *store.SubagentCard) error {
+		update.SubagentCard = card
+		var err error
+		stored, err = r.store.UpdateItemFields(item.ThreadID, item.ID, update)
+		return err
+	})
 	if err != nil {
 		return err
 	}
@@ -303,6 +314,14 @@ func (r *Router) flushAllWireItemRefresh() {
 }
 
 func (r *Router) refreshWireItems(threadID string, emitted map[string]int64) {
+	// The push follows the flush: the anchors whose stamp it changed are
+	// read again with the rest.
+	for _, id := range r.flushSubagentCards(threadID) {
+		if emitted == nil {
+			emitted = make(map[string]int64)
+		}
+		emitted[id] = store.UnstampedItemRev
+	}
 	if len(emitted) == 0 {
 		return
 	}

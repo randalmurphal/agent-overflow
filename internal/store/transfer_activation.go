@@ -89,13 +89,13 @@ WHERE thread_id = ? AND id <> ? AND phase <> 'canceled' ORDER BY rowid DESC LIMI
 		return ThreadTransfer{}, errors.New("transfer: missing prepared history")
 	}
 	if existed {
-		if err := replaceTransferredHistoryTx(ctx, tx, target, history); err != nil {
+		if err := s.replaceTransferredHistoryTx(ctx, tx, target, history); err != nil {
 			return ThreadTransfer{}, err
 		}
 		if _, err := tx.Exec(`UPDATE threads SET history_rev = MAX(history_rev, ?), history_epoch = MAX(history_epoch, ?) WHERE id = ?`, stamp.Rev+1, stamp.Epoch+1, target.ID); err != nil {
 			return ThreadTransfer{}, err
 		}
-	} else if err := importThreadHistoryTx(ctx, tx, target, history); err != nil {
+	} else if err := s.importThreadHistoryTx(ctx, tx, target, history); err != nil {
 		return ThreadTransfer{}, err
 	}
 	row.Phase, row.Error, row.UpdatedAt = "complete", "", time.Now().UnixMilli()
@@ -108,7 +108,7 @@ WHERE thread_id = ? AND id <> ? AND phase <> 'canceled' ORDER BY rowid DESC LIMI
 	return row, nil
 }
 
-func replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, history io.Reader) error {
+func (s *Store) replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, history io.Reader) error {
 	prepared, lastReadAt, err := prepareThreadForCreate(target)
 	if err != nil {
 		return err
@@ -148,7 +148,7 @@ func replaceTransferredHistoryTx(ctx context.Context, tx *sql.Tx, target Thread,
 	// The rows were loaded with the triggers' aggregate work suspended and
 	// carry whatever stamps the sending computer wrote; rebuild them from
 	// the rows this thread now holds.
-	if err := restampSubagentAggregatesTx(tx, target.ID); err != nil {
+	if err := s.restampSubagentAggregatesTx(tx, target.ID); err != nil {
 		return err
 	}
 	return setHistoryBulkLoadTx(tx, target.ID, false, "returning transfer")

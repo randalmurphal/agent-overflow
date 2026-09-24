@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -260,25 +261,6 @@ func carrierMeta(rootID string) string {
 	return fmt.Sprintf(`{%q:%q}`, metaKeyTranscriptRootID, rootID)
 }
 
-// stampFixtureAnchor is the anchor a live writer names for a row under
-// parent: the parent itself when it is a subagent launch in the thread's
-// timeline, as triage names it (Router.subagentAnchorFor). A row whose
-// parent has not arrived names none.
-func stampFixtureAnchor(t *testing.T, s *Store, threadID, parent string) string {
-	t.Helper()
-	if parent == "" {
-		return ""
-	}
-	row, found, err := s.GetThreadItem(threadID, parent)
-	if err != nil {
-		t.Fatalf("read parent %s/%s: %v", threadID, parent, err)
-	}
-	if !found || row.Kind != "tool_call" || row.ToolName == "collab_agent" {
-		return ""
-	}
-	return parent
-}
-
 // subagentStampRowsForTest reads a thread's stamp rows without their
 // generation, which only says which path wrote a row.
 func subagentStampRowsForTest(t *testing.T, s *Store, threadID string) map[string]subagentStampValues {
@@ -321,195 +303,377 @@ func assertStampsAreTheRecompute(t *testing.T, s *Store, threadID, stage string)
 		t.Fatalf("%s: recompute: %v", stage, err)
 	}
 	for _, write := range writes {
-		if was, ok := stored[write.id]; ok {
+		if was, ok := stored[write.id]; ok && was != write.values {
 			t.Errorf("%s: %s is stored as %+v, the recompute derives %+v", stage, write.id, was, write.values)
 		}
 	}
 }
 
-// stampParityStore is one of the two stores the parity test drives with
-// the same writes: one names each row's anchor, so the keyed writes keep
-// the stamps, the other names none, so every stamp is the recompute's.
-type stampParityStore struct {
-	name    string
-	claimed bool
-	s       *Store
+// withParentCardForTest runs write with item carrying the card of its
+// parent, opened for this write and closed after it, which flushes it. A
+// top-level row is written as it is.
+func withParentCardForTest(s *Store, item Item, write func(Item) error) error {
+	if item.ParentID == "" {
+		return write(item)
+	}
+	return s.WithSubagentCard(item.ThreadID, item.ParentID, func(card *SubagentCard) error {
+		item.SubagentCard = card
+		return write(item)
+	})
+}
+
+// insertWithCardForTest is InsertItem with the parent's card.
+func insertWithCardForTest(t *testing.T, s *Store, item Item) {
+	t.Helper()
+	if err := withParentCardForTest(s, item, s.InsertItem); err != nil {
+		t.Fatalf("insert %s/%s: %v", item.ThreadID, item.ID, err)
+	}
+}
+
+// The item writers with the written row's parent card
+// (withParentCardForTest), for fixtures that seed rows straight to the
+// store.
+
+func insertCarded(s *Store, item Item) error {
+	return withParentCardForTest(s, item, s.InsertItem)
+}
+
+func appendCarded(s *Store, item Item) (index int, err error) {
+	err = withParentCardForTest(s, item, func(item Item) error {
+		index, err = s.AppendItem(item)
+		return err
+	})
+	return index, err
+}
+
+func insertWithPayloadCarded(s *Store, item Item, payload Payload) error {
+	return withParentCardForTest(s, item, func(item Item) error { return s.InsertItemWithPayload(item, payload) })
+}
+
+func appendWithPayloadCarded(s *Store, item Item, payload Payload) (index int, err error) {
+	err = withParentCardForTest(s, item, func(item Item) error {
+		index, err = s.AppendItemWithPayload(item, payload)
+		return err
+	})
+	return index, err
+}
+
+func upsertCarded(s *Store, item Item, payload *Payload) (written Item, err error) {
+	err = withParentCardForTest(s, item, func(item Item) error {
+		written, err = s.UpsertItem(item, payload)
+		return err
+	})
+	return written, err
+}
+
+func upsertAtTurnHeadCarded(s *Store, item Item) (written Item, err error) {
+	err = withParentCardForTest(s, item, func(item Item) error {
+		written, err = s.UpsertItemAtTurnHead(item)
+		return err
+	})
+	return written, err
+}
+
+// cardSessionForTest is a live writer's cards: one open card per parent,
+// kept across writes as triage keeps them (internal/triage/subagent_cards.go).
+type cardSessionForTest struct {
+	t      *testing.T
+	s      *Store
+	thread string
+	cards  map[string]*SubagentCard
+}
+
+func newCardSessionForTest(t *testing.T, s *Store, thread string) *cardSessionForTest {
+	return &cardSessionForTest{t: t, s: s, thread: thread, cards: make(map[string]*SubagentCard)}
+}
+
+// card is the open card for rows under parent, opened on first use, or
+// nil for a top-level row.
+func (c *cardSessionForTest) card(parent string) *SubagentCard {
+	c.t.Helper()
+	if parent == "" {
+		return nil
+	}
+	if card := c.cards[parent]; card != nil {
+		return card
+	}
+	card, err := c.s.OpenSubagentCard(c.thread, parent)
+	if err != nil {
+		c.t.Fatalf("open the card of %s/%s: %v", c.thread, parent, err)
+	}
+	c.cards[parent] = card
+	return card
+}
+
+// flush is the refresh timer's flush of the thread.
+func (c *cardSessionForTest) flush() {
+	c.t.Helper()
+	if _, err := c.s.FlushSubagentCards(c.thread); err != nil {
+		c.t.Fatalf("flush %s: %v", c.thread, err)
+	}
+}
+
+// settle is an agent's completion, park or kill: the thread is flushed
+// and the agent's card closed (Router.settleSubagentCard).
+func (c *cardSessionForTest) settle(parent string) {
+	c.t.Helper()
+	c.flush()
+	if card := c.cards[parent]; card != nil {
+		delete(c.cards, parent)
+		if err := card.Close(); err != nil {
+			c.t.Fatalf("close the card of %s: %v", parent, err)
+		}
+	}
+}
+
+// closeAll closes every card: the session ends.
+func (c *cardSessionForTest) closeAll() {
+	c.t.Helper()
+	for _, parent := range slices.Sorted(maps.Keys(c.cards)) {
+		if err := c.cards[parent].Close(); err != nil {
+			c.t.Fatalf("close the card of %s: %v", parent, err)
+		}
+	}
+	clear(c.cards)
+}
+
+// crashSubagentCardsForTest loses every card accumulator, as a process
+// that stops without a flush does. Cards opened before are unusable.
+func crashSubagentCardsForTest(s *Store) {
+	s.cards.mu.Lock()
+	s.cards.threads = nil
+	s.cards.mu.Unlock()
+}
+
+// pendingCardsForTest lists the thread's accumulators holding changes no
+// flush has written, and the anchors left for the next flush's recompute.
+func pendingCardsForTest(s *Store, threadID string) []string {
+	t := s.cards.acquire(threadID, false)
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	var ids []string
+	for id, st := range t.stamps {
+		if st.pending() {
+			ids = append(ids, id)
+		}
+	}
+	for id := range t.seeds {
+		ids = append(ids, "seed "+id)
+	}
+	s.cards.release(t)
+	t.mu.Unlock()
+	slices.Sort(ids)
+	return ids
+}
+
+// cardBoundaryForTest is a point at which the cards reach their stamps.
+type cardBoundaryForTest struct {
+	name  string
+	flush func(parent string)
 }
 
 // TestSubagentAggregateStampsMatchTheReadTimeAggregator drives the shapes
-// the stamps must keep through every kind of write, on two stores: one
-// whose writes name their anchors (the keyed writes) and one whose writes
-// name none (the triggers' marks and the settle's recompute). After each
-// write both must serve what the read-time aggregator computes from the
-// rows, hold the same stamp rows, internal columns included, and hold
-// exactly what a recompute of every stamped anchor derives. The shapes: a
+// the stamps must keep through every kind of write, written as a live
+// session writes them: each row with its parent's card, the cards kept
+// open between writes. Each write is followed by one of the flush
+// boundaries in turn: the refresh timer, a card's own flush, an agent's
+// settle (completion, park, kill), the session's end, and a shutdown that
+// reopens the store. After each, every row must be served what the
+// read-time aggregator computes from the rows, the stamps must be exactly
+// what a recompute of every stamped anchor derives, internal columns
+// included, and no accumulator may hold anything unwritten. The shapes: a
 // plain launch, a nested launch, a §E6 root with two carrier rounds and a
 // wake prompt, a detached launch with its completion sibling, plan_update
 // notifications, and an imported chunk with a local child under an
-// imported launch. Stamps the keyed writes keep must also stay at their
-// generation, which only a recompute moves, so a keyed rule that stopped
-// working cannot hide behind the settle.
+// imported launch. A write the card rules follow must change no stamp
+// before its flush, and the flush must keep the stamps it names at their
+// generation, which only a recompute moves, so a rule that stopped
+// working cannot hide behind the recompute. A bulk write after unflushed
+// live writes, and a crash that loses them before the boot pass, must
+// end on the recompute too.
 func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	const thread = "t-parity"
-	stores := []*stampParityStore{{name: "keyed", claimed: true}, {name: "recomputed"}}
-	for _, p := range stores {
-		p.s = newTestStore(t)
-		s := p.s
-		newImportTargetThread(t, s, thread)
-		imported := func(r stampFixtureRow) ImportRow { return ImportRow{Item: r.item(thread)} }
-		if err := s.ApplyImportBatch(thread, ImportBatch{
-			Turns: []Turn{{TurnID: thread + ":0", ThreadID: thread, TurnIndex: 0, StartedAt: 1_000}},
-			Rows: []ImportRow{
-				imported(stampFixtureRow{id: "imp-user", kind: "user_text", summary: "imported ask"}),
-				imported(stampFixtureRow{id: "imp-launch", kind: "tool_call", tool: "Agent", summary: "Agent: imported", index: 1}),
-				imported(stampFixtureRow{id: "imp-c1", kind: "assistant_text", summary: "imported child", parent: "imp-launch", index: 2}),
-				imported(stampFixtureRow{id: "imp-c2", kind: "tool_call", tool: "Grep", summary: "grep x", parent: "imp-launch", index: 3}),
-				imported(stampFixtureRow{id: "imp-plan", kind: "notification", tool: "plan_update", summary: "plan", parent: "imp-launch", index: 4}),
-			},
-		}); err != nil {
-			t.Fatalf("%s: apply import batch: %v", p.name, err)
-		}
-		assertSubagentStampParity(t, s, thread, p.name+": imported chunk", true)
+	path := newTestStorePath(t)
+	s, err := New(path)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+	session := newCardSessionForTest(t, s, thread)
+	newImportTargetThread(t, s, thread)
+	imported := func(r stampFixtureRow) ImportRow { return ImportRow{Item: r.item(thread)} }
+	if err := s.ApplyImportBatch(thread, ImportBatch{
+		Turns: []Turn{{TurnID: thread + ":0", ThreadID: thread, TurnIndex: 0, StartedAt: 1_000}},
+		Rows: []ImportRow{
+			imported(stampFixtureRow{id: "imp-user", kind: "user_text", summary: "imported ask"}),
+			imported(stampFixtureRow{id: "imp-launch", kind: "tool_call", tool: "Agent", summary: "Agent: imported", index: 1}),
+			imported(stampFixtureRow{id: "imp-c1", kind: "assistant_text", summary: "imported child", parent: "imp-launch", index: 2}),
+			imported(stampFixtureRow{id: "imp-c2", kind: "tool_call", tool: "Grep", summary: "grep x", parent: "imp-launch", index: 3}),
+			imported(stampFixtureRow{id: "imp-plan", kind: "notification", tool: "plan_update", summary: "plan", parent: "imp-launch", index: 4}),
+		},
+	}); err != nil {
+		t.Fatalf("apply import batch: %v", err)
+	}
+	assertSubagentStampParity(t, s, thread, "imported chunk", true)
 
-	anchorOf := func(p *stampParityStore, parent string) string {
-		t.Helper()
-		if !p.claimed {
-			return ""
-		}
-		return stampFixtureAnchor(t, p.s, thread, parent)
+	boundaries := []cardBoundaryForTest{
+		{"refresh timer", func(string) { session.flush() }},
+		{"card flush", func(parent string) {
+			card := session.cards[parent]
+			if card == nil {
+				session.flush()
+				return
+			}
+			if _, err := card.Flush(); err != nil {
+				t.Fatalf("flush the card of %s: %v", parent, err)
+			}
+		}},
+		{"agent settles", func(parent string) { session.settle(parent) }},
+		{"session ends", func(string) { session.closeAll() }},
+		{"shutdown", func(string) {
+			// Close flushes every card; the next process opens the file.
+			if err := s.Close(); err != nil {
+				t.Fatalf("close: %v", err)
+			}
+			if s, err = New(path); err != nil {
+				t.Fatalf("reopen: %v", err)
+			}
+			session = newCardSessionForTest(t, s, thread)
+		}},
 	}
-	parentOf := func(p *stampParityStore, id string) string {
+	steps := 0
+
+	parentOf := func(id string) string {
 		t.Helper()
-		row, found, err := p.s.GetThreadItem(thread, id)
+		row, found, err := s.GetThreadItemForWrite(thread, id)
 		if err != nil || !found {
-			t.Fatalf("%s: read %s: found=%v err=%v", p.name, id, found, err)
+			t.Fatalf("read %s: found=%v err=%v", id, found, err)
 		}
 		return row.ParentID
 	}
-	gens := func(s *Store, ids ...string) map[string]int64 {
+	gens := func(ids ...string) map[string]int64 {
 		out := make(map[string]int64, len(ids))
 		for _, id := range ids {
 			out[id], _ = subagentStampStateForTest(t, s, thread, id)
 		}
 		return out
 	}
-	// incremental asserts the keyed writes kept these stamps without a
-	// recompute: clean, and at the generation they had before the step.
-	// A row unstamped before the step must now be at generation 0, which
-	// only a keyed write leaves.
-	incremental := func(p *stampParityStore, stage string, before map[string]int64) {
+	// settled asserts the invariants every boundary ends on: the served
+	// cards are the walk's, the stamps the recompute's, and nothing waits
+	// for a flush.
+	settled := func(stage string) {
 		t.Helper()
-		for id, was := range before {
-			gen, mode := subagentStampStateForTest(t, p.s, thread, id)
-			want := max(was, 0)
-			if mode != subagentStampClean || gen != want {
-				t.Errorf("%s: %s: %s is mode %d at gen %d, want clean at gen %d (kept by the keyed writes)",
-					p.name, stage, id, mode, gen, want)
-			}
+		assertSubagentStampParity(t, s, thread, stage, true)
+		assertStampsAreTheRecompute(t, s, thread, stage)
+		if pending := pendingCardsForTest(s, thread); len(pending) > 0 {
+			t.Errorf("%s: accumulators still pending after the flush: %v", stage, pending)
 		}
 	}
-	// step runs one write on both stores. keep names the stamps the keyed
-	// writes must keep on their own. A row whose served card a write
-	// changed must be served at a new revision, or a client holding it
-	// could prove a stale card fresh: the stamp's own row and every
+	// step runs one write and the next boundary. keep names the stamps the
+	// card rules keep on their own: the write changes no stamp row before
+	// the flush, and the flush leaves them clean at the generation they
+	// had (a stamp that had none is written clean). A row whose served
+	// card changed must be served at a new revision, or a client holding
+	// it could prove a stale card fresh: the stamp's own row and every
 	// completion sibling borrowing it.
-	step := func(stage string, keep []string, write func(p *stampParityStore)) {
+	step := func(stage string, keep []string, write func() string) {
 		t.Helper()
-		for _, p := range stores {
-			s := p.s
-			before := gens(s, keep...)
-			cardsBefore := subagentCardsForTest(t, s, s.reader(), thread)
-			revsBefore := servedRevsForTest(t, s, thread)
-			write(p)
-			assertSubagentStampParity(t, s, thread, p.name+": "+stage, true)
-			assertStampsAreTheRecompute(t, s, thread, p.name+": "+stage)
-			if p.claimed {
-				incremental(p, stage, before)
-			}
-			cardsAfter := subagentCardsForTest(t, s, s.reader(), thread)
-			revsAfter := servedRevsForTest(t, s, thread)
-			for id, card := range cardsAfter {
-				was, existed := cardsBefore[id]
-				if existed && !mapsEqual(was, card) && revsAfter[id] == revsBefore[id] {
-					t.Errorf("%s: %s: %s's card changed %v -> %v at the same revision %d", p.name, stage, id, was, card, revsAfter[id])
-				}
+		boundary := boundaries[steps%len(boundaries)]
+		steps++
+		stage += " (" + boundary.name + ")"
+		before := gens(keep...)
+		stampsBefore := subagentStampRowsForTest(t, s, thread)
+		cardsBefore := subagentCardsForTest(t, s, s.reader(), thread)
+		revsBefore := servedRevsForTest(t, s, thread)
+		parent := write()
+		if keep != nil {
+			if got := subagentStampRowsForTest(t, s, thread); !reflect.DeepEqual(got, stampsBefore) {
+				t.Errorf("%s: the write changed stamp rows before any flush", stage)
 			}
 		}
-		keyed, recomputed := subagentStampRowsForTest(t, stores[0].s, thread), subagentStampRowsForTest(t, stores[1].s, thread)
-		if !reflect.DeepEqual(keyed, recomputed) {
-			ids := make([]string, 0, len(keyed)+len(recomputed))
-			for id := range keyed {
-				ids = append(ids, id)
+		boundary.flush(parent)
+		settled(stage)
+		for id, was := range before {
+			gen, mode := subagentStampStateForTest(t, s, thread, id)
+			if mode != subagentStampClean || (was >= 0 && gen != was) {
+				t.Errorf("%s: %s is mode %d at gen %d, want clean at gen %d (kept by the card)", stage, id, mode, gen, was)
 			}
-			for id := range recomputed {
-				if _, ok := keyed[id]; !ok {
-					ids = append(ids, id)
-				}
-			}
-			slices.Sort(ids)
-			for _, id := range ids {
-				k, kok := keyed[id]
-				r, rok := recomputed[id]
-				if kok != rok || k != r {
-					t.Errorf("%s: %s is %+v (stamped %v) by the keyed writes, %+v (stamped %v) by the recompute", stage, id, k, kok, r, rok)
-				}
+		}
+		cardsAfter := subagentCardsForTest(t, s, s.reader(), thread)
+		revsAfter := servedRevsForTest(t, s, thread)
+		for id, card := range cardsAfter {
+			was, existed := cardsBefore[id]
+			if existed && !mapsEqual(was, card) && revsAfter[id] == revsBefore[id] {
+				t.Errorf("%s: %s's card changed %v -> %v at the same revision %d", stage, id, was, card, revsAfter[id])
 			}
 		}
 	}
-	add := func(r stampFixtureRow) func(*stampParityStore) {
-		return func(p *stampParityStore) {
+	add := func(r stampFixtureRow) func() string {
+		return func() string {
 			t.Helper()
 			item := r.item(thread)
-			item.SubagentAnchor = anchorOf(p, r.parent)
-			if err := p.s.InsertItem(item); err != nil {
-				t.Fatalf("%s: insert %s: %v", p.name, r.id, err)
+			item.SubagentCard = session.card(r.parent)
+			if err := s.InsertItem(item); err != nil {
+				t.Fatalf("insert %s: %v", r.id, err)
 			}
+			return r.parent
 		}
 	}
-	update := func(id string, update ItemPartialUpdate) func(*stampParityStore) {
-		return func(p *stampParityStore) {
+	update := func(id string, update ItemPartialUpdate) func() string {
+		return func() string {
 			t.Helper()
-			update.SubagentAnchor = anchorOf(p, parentOf(p, id))
-			if _, err := p.s.UpdateItemFields(thread, id, update); err != nil {
-				t.Fatalf("%s: update %s: %v", p.name, id, err)
+			parent := parentOf(id)
+			update.SubagentCard = session.card(parent)
+			if _, err := s.UpdateItemFields(thread, id, update); err != nil {
+				t.Fatalf("update %s: %v", id, err)
 			}
+			return parent
 		}
 	}
-	summary := func(id, text string) func(*stampParityStore) { return update(id, ItemPartialUpdate{Summary: &text}) }
-	status := func(id, value string) func(*stampParityStore) { return update(id, ItemPartialUpdate{Status: &value}) }
-	// An append names no anchor: the streaming writers append only to
+	summary := func(id, text string) func() string { return update(id, ItemPartialUpdate{Summary: &text}) }
+	status := func(id, value string) func() string { return update(id, ItemPartialUpdate{Status: &value}) }
+	// An append carries no card: the streaming writers append only to
 	// text and thinking rows, which no card previews.
-	appendSummary := func(id, delta string) func(*stampParityStore) {
-		return func(p *stampParityStore) {
+	appendSummary := func(id, delta string) func() string {
+		return func() string {
 			t.Helper()
-			if _, err := p.s.AppendItemSummary(thread, id, delta, 5_000); err != nil {
-				t.Fatalf("%s: append summary %s: %v", p.name, id, err)
+			if _, err := s.AppendItemSummary(thread, id, delta, 5_000); err != nil {
+				t.Fatalf("append summary %s: %v", id, err)
 			}
+			return parentOf(id)
 		}
 	}
-	remove := func(id string) func(*stampParityStore) {
-		return func(p *stampParityStore) {
+	remove := func(id string) func() string {
+		return func() string {
 			t.Helper()
-			if err := p.s.DeleteThreadItem(thread, id); err != nil {
-				t.Fatalf("%s: delete %s: %v", p.name, id, err)
+			parent := parentOf(id)
+			if err := s.DeleteThreadItem(thread, id); err != nil {
+				t.Fatalf("delete %s: %v", id, err)
 			}
+			return parent
 		}
 	}
 	// upsert rewrites a whole row through UpsertItem, the path triage's
-	// persist takes for a row that exists.
-	upsert := func(id string, change func(*Item)) func(*stampParityStore) {
-		return func(p *stampParityStore) {
+	// persist takes for a row that exists, with the row's stored meta.
+	upsert := func(id string, change func(*Item)) func() string {
+		return func() string {
 			t.Helper()
-			row, found, err := p.s.GetThreadItem(thread, id)
+			row, found, err := s.GetThreadItemForWrite(thread, id)
 			if err != nil || !found {
-				t.Fatalf("%s: read %s: found=%v err=%v", p.name, id, found, err)
+				t.Fatalf("read %s: found=%v err=%v", id, found, err)
 			}
 			change(&row)
-			row.SubagentAnchor = anchorOf(p, row.ParentID)
-			if _, err := p.s.UpsertItem(row, nil); err != nil {
-				t.Fatalf("%s: upsert %s: %v", p.name, id, err)
+			row.SubagentCard = session.card(row.ParentID)
+			if _, err := s.UpsertItem(row, nil); err != nil {
+				t.Fatalf("upsert %s: %v", id, err)
 			}
+			return row.ParentID
 		}
 	}
 
@@ -528,12 +692,24 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	step("child rewritten whole", []string{"L"}, upsert("L-b1", func(row *Item) { row.Summary, row.Status = "Bash: ls -la /", "completed" }))
 	step("launch status flip", []string{"L"}, status("L", "completed"))
 
-	// A nested launch counts toward its parent's card.
+	// A nested launch counts toward its parent's card; a grandchild's
+	// card carries every level up its chain.
 	step("nested launch", []string{"L"}, add(stampFixtureRow{id: "N", kind: "tool_call", tool: "Agent", summary: "Agent: nested", parent: "L", status: "running", turn: 1, index: 5}))
 	step("nested first child", []string{"L", "N"}, add(stampFixtureRow{id: "N-a1", kind: "assistant_text", summary: "nested work", parent: "N", turn: 1, index: 6}))
 	step("nested tool", []string{"L", "N"}, add(stampFixtureRow{id: "N-b1", kind: "tool_call", tool: "Read", summary: "Read: file", parent: "N", status: "streaming", turn: 1, index: 7}))
 	step("nested tool summary", []string{"L", "N"}, summary("N-b1", "Read: file.go"))
-	step("nested tool appends", nil, appendSummary("N-b1", " more"))
+	step("doubly nested launch", []string{"L", "N"}, add(stampFixtureRow{id: "NN", kind: "tool_call", tool: "Agent", summary: "Agent: deeper", parent: "N", status: "running", turn: 1, index: 8}))
+	step("doubly nested tool", []string{"L", "N", "NN"}, add(stampFixtureRow{id: "NN-b1", kind: "tool_call", tool: "Grep", summary: "Grep: deep", parent: "NN", turn: 1, index: 9}))
+	step("doubly nested pick changes", []string{"L", "N", "NN"}, summary("NN-b1", "Grep: deeper"))
+	// A streaming append to a previewed row would change a card without
+	// one: the store refuses it and writes nothing.
+	step("nested tool append refused", []string{"L", "N"}, func() string {
+		t.Helper()
+		if _, err := s.AppendItemSummary(thread, "N-b1", " more", 5_000); !errors.Is(err, ErrSubagentAnchor) {
+			t.Fatalf("append to a previewed row: %v, want ErrSubagentAnchor", err)
+		}
+		return "N"
+	})
 
 	// A §E6 root resumed twice, then woken without a carrier.
 	step("root", nil, add(stampFixtureRow{id: "R", kind: "tool_call", tool: "Agent", summary: "Agent: root", turn: 2}))
@@ -549,7 +725,7 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	step("round three pick changes", []string{"R", "C1", "C2"}, summary("R-a3", "Grep: y"))
 	step("wake prompt", []string{"R", "C1", "C2"}, add(stampFixtureRow{id: "W", kind: "user_text", summary: "wake", parent: "R", meta: resumePromptMeta(""), turn: 5}))
 	step("woken child", []string{"R", "C1", "C2"}, add(stampFixtureRow{id: "R-a4", kind: "assistant_text", summary: "woken", parent: "R", turn: 5, index: 1}))
-	// Rows under a carrier itself count toward no card.
+	// Rows under a carrier itself count toward no card, only its tray.
 	step("text under a carrier", []string{"R", "C1", "C2"}, add(stampFixtureRow{id: "C1-a", kind: "assistant_text", summary: "under the carrier", parent: "C1", turn: 5, index: 2}))
 	step("tool under a carrier", []string{"R", "C1", "C2"}, add(stampFixtureRow{id: "C1-b", kind: "tool_call", tool: "Bash", summary: "Bash: under", parent: "C1", turn: 5, index: 3}))
 	step("tool under a carrier changes", []string{"R", "C1", "C2"}, summary("C1-b", "Bash: under the carrier"))
@@ -559,11 +735,12 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	step("detached launch", nil, add(stampFixtureRow{id: "B", kind: "tool_call", tool: "Agent", summary: "Agent: detached", status: "running", background: true, turn: 6}))
 	step("detached child", []string{"B"}, add(stampFixtureRow{id: "B-a1", kind: "assistant_text", summary: "detached work", parent: "B", turn: 6, index: 1}))
 	step("detached tool", []string{"B"}, add(stampFixtureRow{id: "B-b1", kind: "tool_call", tool: "Bash", summary: "Bash: sleep", parent: "B", turn: 6, index: 2}))
-	step("completion sibling", []string{"B"}, func(p *stampParityStore) {
-		if _, err := p.s.AppendCompletionItem(Item{ID: "B", ThreadID: thread},
+	step("completion sibling", []string{"B"}, func() string {
+		if _, err := s.AppendCompletionItem(Item{ID: "B", ThreadID: thread},
 			stampFixtureRow{id: "B-done", kind: "tool_completion", tool: "Agent", summary: "done", turn: 7}.item(thread), nil); err != nil {
-			t.Fatalf("%s: append completion: %v", p.name, err)
+			t.Fatalf("append completion: %v", err)
 		}
+		return "B"
 	})
 	step("late detached child", []string{"B"}, add(stampFixtureRow{id: "B-a2", kind: "error", summary: "late", parent: "B", turn: 7, index: 5}))
 	step("detached blank tool", []string{"B"}, add(stampFixtureRow{id: "B-b2", kind: "tool_call", tool: "Bash", parent: "B", turn: 7, index: 6}))
@@ -578,10 +755,8 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	// A local child under the imported launch shadows the launch into
 	// the overlay, where it is stamped like a local one.
 	step("child under imported launch", nil, add(stampFixtureRow{id: "imp-local", kind: "tool_call", tool: "Bash", summary: "Bash: local", parent: "imp-launch", turn: 8}))
-	for _, p := range stores {
-		if gen, mode := subagentStampStateForTest(t, p.s, thread, "imp-launch"); mode != subagentStampClean {
-			t.Fatalf("%s: shadowed imported launch is mode %d gen %d, want clean", p.name, mode, gen)
-		}
+	if gen, mode := subagentStampStateForTest(t, s, thread, "imp-launch"); mode != subagentStampClean {
+		t.Fatalf("shadowed imported launch is mode %d gen %d, want clean", mode, gen)
 	}
 	step("second child under shadowed launch", []string{"imp-launch"}, add(stampFixtureRow{id: "imp-local-2", kind: "assistant_text", summary: "local text", parent: "imp-launch", turn: 8, index: 1}))
 
@@ -591,6 +766,7 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	step("orphan child", nil, add(stampFixtureRow{id: "O-a1", kind: "assistant_text", summary: "early", parent: "O", turn: 9, index: 1}))
 	step("orphan tool", nil, add(stampFixtureRow{id: "O-b1", kind: "tool_call", tool: "Bash", summary: "Bash: early", parent: "O", turn: 9, index: 2}))
 	step("launch adopts its children", nil, add(stampFixtureRow{id: "O", kind: "tool_call", tool: "Agent", summary: "Agent: late", turn: 9}))
+	step("orphan's card after its parent arrived", []string{"O"}, add(stampFixtureRow{id: "O-b3", kind: "tool_call", tool: "Bash", summary: "Bash: later", parent: "O", turn: 9, index: 3}))
 	step("second root", nil, add(stampFixtureRow{id: "Q", kind: "tool_call", tool: "Agent", summary: "Agent: second root", turn: 10}))
 	step("launch becomes a carrier", nil, update("O", ItemPartialUpdate{Meta: new(carrierMeta("Q"))}))
 	step("top-level text", nil, add(stampFixtureRow{id: "T-top", kind: "assistant_text", summary: "top level", turn: 11}))
@@ -657,102 +833,144 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	step("self-resumed round child", nil, add(stampFixtureRow{id: "H-b2", kind: "tool_call", tool: "Bash", summary: "Bash: h", parent: "H", turn: 27, index: 2}))
 
 	// A prompt stored before the carrier it names: the carrier arrives
-	// unstamped and is stamped by the first write in its round.
+	// unstamped and is stamped by the recompute its round's first row
+	// makes.
 	step("root resumed before its carrier", nil, add(stampFixtureRow{id: "E", kind: "tool_call", tool: "Agent", summary: "Agent: e", turn: 28}))
 	step("early-prompt root child", []string{"E"}, add(stampFixtureRow{id: "E-a1", kind: "assistant_text", summary: "e", parent: "E", turn: 28, index: 1}))
-	step("prompt before its carrier", []string{"E"}, add(stampFixtureRow{id: "EP", kind: "user_text", summary: "e again", parent: "E", meta: resumePromptMeta("EC"), turn: 29, index: 1}))
+	step("prompt before its carrier", nil, add(stampFixtureRow{id: "EP", kind: "user_text", summary: "e again", parent: "E", meta: resumePromptMeta("EC"), turn: 29, index: 1}))
 	step("late carrier", nil, add(stampFixtureRow{id: "EC", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", meta: carrierMeta("E"), turn: 29, index: 2}))
-	step("child in the late carrier's round", []string{"E"}, add(stampFixtureRow{id: "E-b2", kind: "tool_call", tool: "Bash", summary: "Bash: e", parent: "E", turn: 29, index: 3}))
+	step("child in the late carrier's round", nil, add(stampFixtureRow{id: "E-b2", kind: "tool_call", tool: "Bash", summary: "Bash: e", parent: "E", turn: 29, index: 3}))
 	step("next child in the late carrier's round", []string{"E", "EC"}, add(stampFixtureRow{id: "E-b3", kind: "tool_call", tool: "Bash", summary: "Bash: e3", parent: "E", turn: 29, index: 4}))
 
 	// A launch written before the stamps existed carries none, and its
-	// thread is listed for the backfill, whose reads walk it. A child
-	// claimed under it before the backfill arrives recomputes it.
-	step("unstamped launch with children", nil, func(p *stampParityStore) {
+	// thread is listed for the backfill, whose reads walk it. A card
+	// opened under it recomputes it.
+	step("unstamped launch with children", nil, func() string {
 		for _, r := range []stampFixtureRow{
 			{id: "G", kind: "tool_call", tool: "Agent", summary: "Agent: legacy", turn: 23},
 			{id: "G-a1", kind: "assistant_text", summary: "g", parent: "G", turn: 23, index: 1},
 			{id: "G-b2", kind: "tool_call", tool: "Bash", summary: "Bash: g", parent: "G", turn: 23, index: 2},
 		} {
-			add(r)(p)
+			add(r)()
 		}
-		stripSubagentStampsForTest(t, p.s, thread, "G")
-		mustExec(t, p.s.db, `INSERT INTO subagent_aggregate_backfill(thread_id) VALUES (?)`, thread)
+		session.settle("G")
+		stripSubagentStampsForTest(t, s, thread, "G")
+		mustExec(t, s.db, `INSERT INTO subagent_aggregate_backfill(thread_id) VALUES (?)`, thread)
+		return ""
 	})
 	step("child under the unstamped launch", nil, add(stampFixtureRow{id: "G-b3", kind: "tool_call", tool: "Bash", summary: "Bash: g3", parent: "G", turn: 23, index: 3}))
 	step("next child under the recomputed launch", []string{"G"}, add(stampFixtureRow{id: "G-a4", kind: "assistant_text", summary: "g4", parent: "G", turn: 23, index: 4}))
 	// The backfill finds nothing left to stamp.
-	for _, p := range stores {
-		mustExec(t, p.s.db, `DELETE FROM subagent_aggregate_backfill WHERE thread_id = ?`, thread)
-		assertSubagentStampParity(t, p.s, thread, p.name+": backfill done", true)
-	}
+	mustExec(t, s.db, `DELETE FROM subagent_aggregate_backfill WHERE thread_id = ?`, thread)
+	settled("backfill done")
 
-	// A claimed rewrite that moves its row is left to the marks.
+	// A rewrite that moves its row to another launch recomputes both.
 	step("child moves to another launch", nil, upsert("B-a1", func(row *Item) { row.ParentID = "L" }))
+	step("child leaves for the top level", nil, upsert("B-b2", func(row *Item) { row.ParentID = "" }))
+	step("top-level row joins a launch", nil, upsert("T-top", func(row *Item) { row.ParentID = "L" }))
 
-	// Deletes name no anchor; the recompute keeps them.
+	// A bulk write after live writes no flush has written: the revert cut
+	// takes two of them and recomputes the anchors it leaves, and the
+	// accumulators it retired recompute at the next flush.
+	step("bulk cut after live writes", nil, func() string {
+		for _, r := range []stampFixtureRow{
+			{id: "L-t30", kind: "tool_call", tool: "Bash", summary: "Bash: cut", parent: "L", turn: 30},
+			{id: "NN-t30", kind: "tool_call", tool: "Bash", summary: "Bash: cut too", parent: "NN", turn: 30, index: 1},
+			{id: "R-t30", kind: "assistant_text", summary: "cut round row", parent: "R", turn: 30, index: 2},
+			{id: "B-t29", kind: "tool_call", tool: "Bash", summary: "Bash: kept", parent: "B", turn: 29, index: 9},
+		} {
+			add(r)()
+		}
+		if pending := pendingCardsForTest(s, thread); len(pending) == 0 {
+			t.Fatal("the live writes left nothing for the flush")
+		}
+		if _, _, err := s.DeleteConversationFromTurn(thread, 30); err != nil {
+			t.Fatalf("revert cut: %v", err)
+		}
+		return "B"
+	})
 	step("delete an older child", nil, remove("L-a1"))
 	step("delete the pick", nil, remove("N-b1"))
-	// B's newest row is B-b2 (blank, so neither preview nor tray); B-b1
-	// is only its tray row and B-a2 only its preview.
+	// B's newest row is B-t29; B-b1 is only its tray row and B-a2 only its
+	// preview.
 	step("delete the tray row", nil, remove("B-b1"))
 	step("delete a preview that is not the newest", nil, remove("B-a2"))
 	step("delete the transcript's newest", nil, remove("R-a4"))
 	step("delete a round row", nil, remove("R-a2"))
 	step("delete a prompt", nil, remove("P2"))
+	step("delete the prompt naming the foreign carrier", nil, remove("XP"))
 	step("delete a nested launch", nil, remove("N"))
 
-	for _, p := range stores {
-		s := p.s
-		// A write the store did not settle (raw SQL moving a row between
-		// launches) leaves anchors dirty; reads walk them until the
-		// recompute.
-		if _, err := s.db.Exec(`UPDATE items SET parent_id = 'B' WHERE thread_id = ? AND id = 'L-b1'`, thread); err != nil {
-			t.Fatalf("re-parent: %v", err)
+	// A crash: live writes under running agents, nested and in a resumed
+	// round, that no flush wrote, lost with the process. The boot pass
+	// recomputes every agent that was running. B completed before the
+	// crash, so it is not one of them.
+	step("running agents", nil, func() string {
+		for _, r := range []stampFixtureRow{
+			{id: "M", kind: "tool_call", tool: "Agent", summary: "Agent: running", status: "running", turn: 31},
+			{id: "M-a1", kind: "assistant_text", summary: "m", parent: "M", turn: 31, index: 1},
+			{id: "M2", kind: "tool_call", tool: "Agent", summary: "Agent: running nested", status: "running", parent: "M", turn: 31, index: 2},
+			{id: "M2-b1", kind: "tool_call", tool: "Bash", summary: "Bash: m2", parent: "M2", turn: 31, index: 3},
+			{id: "RC3", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", meta: carrierMeta("R"), status: "running", turn: 32},
+			{id: "P3", kind: "user_text", summary: "resume again", parent: "R", meta: resumePromptMeta("RC3"), turn: 32, index: 1},
+			{id: "R-a5", kind: "assistant_text", summary: "round four", parent: "R", turn: 32, index: 2},
+		} {
+			add(r)()
 		}
-		for _, id := range []string{"L", "B"} {
-			if _, mode := subagentStampStateForTest(t, s, thread, id); mode != subagentStampWalk {
-				t.Errorf("%s: re-parent left %s mode %d, want dirty", p.name, id, mode)
-			}
+		return "M2"
+	})
+	session.flush()
+	for _, r := range []stampFixtureRow{
+		{id: "M2-b2", kind: "tool_call", tool: "Bash", summary: "Bash: lost", parent: "M2", turn: 31, index: 4},
+		{id: "M-b3", kind: "tool_call", tool: "Read", summary: "Read: lost", parent: "M", turn: 31, index: 5},
+		{id: "R-b6", kind: "tool_call", tool: "Grep", summary: "Grep: lost", parent: "R", turn: 32, index: 3},
+	} {
+		add(r)()
+	}
+	crashSubagentCardsForTest(s)
+	session = newCardSessionForTest(t, s, thread)
+	served := subagentCardsForTest(t, s, s.reader(), thread)
+	walked := walkedSubagentCardsForTest(t, s, thread)
+	for _, id := range []string{"M", "M2", "R", "RC3"} {
+		if mapsEqual(served[id], walked[id]) {
+			t.Errorf("crash: %s serves %v, which the lost writes should have left stale", id, served[id])
 		}
-		assertSubagentStampParity(t, s, thread, p.name+": re-parented, unsettled", false)
-		if _, err := s.RecomputeSubagentAggregates(t.Context(), thread, 16); err != nil {
-			t.Fatalf("recompute: %v", err)
-		}
-		assertSubagentStampParity(t, s, thread, p.name+": re-parented, recomputed", true)
+	}
+	if _, err := s.RecoverSubagentCards(t.Context()); err != nil {
+		t.Fatalf("boot pass: %v", err)
+	}
+	settled("boot pass after a crash")
 
-		// Moves across the top level change the card of a launch on one
-		// side of the move only: a row leaving B, and a top-level row
-		// joining L.
-		for _, move := range [][2]string{{"B-b2", ""}, {"T-top", "L"}} {
-			if _, err := s.db.Exec(`UPDATE items SET parent_id = ? WHERE thread_id = ? AND id = ?`, move[1], thread, move[0]); err != nil {
-				t.Fatalf("move %s: %v", move[0], err)
-			}
-		}
-		for _, id := range []string{"B", "L"} {
-			if _, mode := subagentStampStateForTest(t, s, thread, id); mode != subagentStampWalk {
-				t.Errorf("%s: move across the top level left %s mode %d, want dirty", p.name, id, mode)
-			}
-		}
-		assertSubagentStampParity(t, s, thread, p.name+": moved across the top level, unsettled", false)
-		if _, err := s.RecomputeSubagentAggregates(t.Context(), thread, 16); err != nil {
-			t.Fatalf("recompute: %v", err)
-		}
-		assertSubagentStampParity(t, s, thread, p.name+": moved across the top level, recomputed", true)
-		assertStampsAreTheRecompute(t, s, thread, p.name+": after the raw moves")
+	// A clean shutdown flushed everything: the boot pass recomputes what
+	// the stamps already hold.
+	add(stampFixtureRow{id: "M-b4", kind: "tool_call", tool: "Bash", summary: "Bash: flushed at close", parent: "M", turn: 31, index: 6})()
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if s, err = New(path); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	session = newCardSessionForTest(t, s, thread)
+	settled("clean shutdown")
+	if _, err := s.RecoverSubagentCards(t.Context()); err != nil {
+		t.Fatalf("boot pass: %v", err)
+	}
+	settled("boot pass after a clean shutdown")
 
-		// Every anchor the fixture names ends on a stamp a page serves as
-		// stored: the parity above was not won by walking everything. C2
-		// lost the prompt that named it, so it shows the whole transcript,
-		// which only the walk computes.
-		for _, id := range []string{"L", "R", "C1", "B", "imp-launch"} {
-			if _, mode := subagentStampStateForTest(t, s, thread, id); mode != subagentStampClean {
-				t.Errorf("%s: %s ends mode %d, want clean", p.name, id, mode)
-			}
+	// Every anchor the fixture names ends on a stamp a page serves as
+	// stored: the parity above was not won by walking everything. C2
+	// lost the prompt that named it, so it shows the whole transcript,
+	// which only the walk computes.
+	for _, id := range []string{"L", "R", "C1", "B", "M", "M2", "imp-launch"} {
+		if _, mode := subagentStampStateForTest(t, s, thread, id); mode != subagentStampClean {
+			t.Errorf("%s ends mode %d, want clean", id, mode)
 		}
-		if _, mode := subagentStampStateForTest(t, s, thread, "C2"); mode != subagentStampWalk {
-			t.Errorf("%s: unnamed carrier C2 ends mode %d, want readTime", p.name, mode)
-		}
+	}
+	if _, mode := subagentStampStateForTest(t, s, thread, "C2"); mode != subagentStampWalk {
+		t.Errorf("unnamed carrier C2 ends mode %d, want readTime", mode)
+	}
+	if steps < 3*len(boundaries) {
+		t.Fatalf("%d steps exercise each boundary less than three times", steps)
 	}
 }
 
@@ -777,9 +995,7 @@ func TestSubagentAggregateChainedCarrierJoinsItsRootsFamily(t *testing.T) {
 		{id: "P2", kind: "user_text", summary: "once more", parent: "C1", meta: resumePromptMeta("C2"), turn: 3, index: 1},
 		{id: "C1-a1", kind: "assistant_text", summary: "under the carrier", parent: "C1", turn: 3, index: 2},
 	} {
-		if err := s.InsertItem(r.item(thread)); err != nil {
-			t.Fatalf("insert %s: %v", r.id, err)
-		}
+		insertWithCardForTest(t, s, r.item(thread))
 	}
 	if _, err := s.AppendCompletionItem(Item{ID: "C1", ThreadID: thread},
 		stampFixtureRow{id: "C1-done", kind: "tool_completion", tool: "SendMessage", summary: "done", turn: 4}.item(thread), nil); err != nil {
@@ -880,13 +1096,203 @@ func TestSubagentAggregateChainedCarrierJoinsItsRootsFamily(t *testing.T) {
 		{id: "C1-a2", kind: "assistant_text", summary: "under the carrier again", parent: "C1", turn: 5, index: 1},
 		{id: "R-a3", kind: "assistant_text", summary: "round two goes on", parent: "R", turn: 5, index: 2},
 	} {
-		if err := s.InsertItem(r.item(thread)); err != nil {
-			t.Fatalf("insert %s: %v", r.id, err)
-		}
+		insertWithCardForTest(t, s, r.item(thread))
 		assertSubagentStampParity(t, s, thread, "after "+r.id, true)
 	}
 	if _, mode := subagentStampStateForTest(t, s, thread, "C1"); mode != subagentStampClean {
 		t.Errorf("C1 ends mode %d after the writes, want clean", mode)
 	}
 	walkWindows("after writes")
+}
+
+// TestSubagentServedKeysAreNeverStored pins that the card keys a read
+// serves stay out of every stored meta. A read of an anchor, and of the
+// completion sibling that borrows its card, serves them; a writer that
+// writes such a row back reads it through GetThreadItemForWrite, which
+// returns the stored meta, and the write returns the row as a read serves
+// it, so an emitter pushes what a read returns.
+// RowsStoringServedSubagentKeys, which the storetest cleanup runs after
+// every test of the packages above the store, finds a meta that holds
+// one, and not a Codex spawn completion's snapshot, which is its own.
+func TestSubagentServedKeysAreNeverStored(t *testing.T) {
+	s := newTestStore(t)
+	const thread = "t-served"
+	mustCreateThread(t, s, thread)
+	insertWithCardForTest(t, s, stampFixtureRow{id: "A", kind: "tool_call", tool: "Agent", summary: "Agent: a",
+		meta: `{"input":{"prompt":"go"}}`, status: "running", turn: 1}.item(thread))
+	insertWithCardForTest(t, s, stampFixtureRow{id: "A-b1", kind: "tool_call", tool: "Bash", summary: "Bash: ls",
+		parent: "A", turn: 1, index: 1}.item(thread))
+	if _, err := s.AppendCompletionItem(Item{ID: "A", ThreadID: thread},
+		stampFixtureRow{id: "A-done", kind: "tool_completion", tool: "Agent", summary: "done", meta: `{"result":"ok"}`, turn: 2}.item(thread), nil); err != nil {
+		t.Fatalf("append completion: %v", err)
+	}
+	for _, id := range []string{"A", "A-done"} {
+		served, _, err := s.GetThreadItem(thread, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(subagentCardOf(t, served.Meta)) == 0 {
+			t.Fatalf("a read of %s serves no card: %s", id, served.Meta)
+		}
+		stored, found, err := s.GetThreadItemForWrite(thread, id)
+		if err != nil || !found {
+			t.Fatalf("read %s for write: found=%v err=%v", id, found, err)
+		}
+		if card := subagentCardOf(t, stored.Meta); len(card) > 0 || stored.Meta != itemMetaForTest(t, s, thread, id) {
+			t.Fatalf("%s for write reads %s, want the stored meta %s", id, stored.Meta, itemMetaForTest(t, s, thread, id))
+		}
+		// Writing back what a write reads stores no card key.
+		stored.Status = "completed"
+		if _, err := s.UpsertItem(stored, nil); err != nil {
+			t.Fatalf("write back %s: %v", id, err)
+		}
+		updated, err := s.UpdateItemFields(thread, id, ItemPartialUpdate{Meta: &stored.Meta})
+		if err != nil {
+			t.Fatalf("write back %s's meta: %v", id, err)
+		}
+		if got, want := subagentCardOf(t, updated.Meta), subagentCardOf(t, served.Meta); !mapsEqual(got, want) {
+			t.Errorf("UpdateItemFields returned %s with %v, a read serves %v", id, got, want)
+		}
+	}
+	rows, err := s.RowsStoringServedSubagentKeys(10)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("after writes of the stored meta, rows storing served keys = %v (%v), want none", rows, err)
+	}
+
+	// Writing back a served meta stores the card, and the check finds it.
+	served, _, err := s.GetThreadItem(thread, "A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateItemMeta(thread, "A", served.Meta); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := s.RowsStoringServedSubagentKeys(10); err != nil || !slices.Equal(rows, []string{thread + "/A"}) {
+		t.Fatalf("after a served meta was written back, rows storing served keys = %v (%v), want %s/A", rows, err, thread)
+	}
+	if err := s.UpdateItemMeta(thread, "A", `{"input":{"prompt":"go"}}`); err != nil {
+		t.Fatal(err)
+	}
+
+	// A Codex spawn's completion stores its card as a snapshot.
+	insertWithCardForTest(t, s, stampFixtureRow{id: "S", kind: "tool_call", tool: "collab_agent", summary: "spawn", turn: 3}.item(thread))
+	if _, err := s.AppendCompletionItem(Item{ID: "S", ThreadID: thread},
+		stampFixtureRow{id: "S-done", kind: "tool_completion", tool: "collab_agent", summary: "done",
+			meta: `{"subagentDescendantCount":4,"subagentLatestChildSummary":"codex work"}`, turn: 4}.item(thread), nil); err != nil {
+		t.Fatalf("append spawn completion: %v", err)
+	}
+	if rows, err := s.RowsStoringServedSubagentKeys(10); err != nil || len(rows) != 0 {
+		t.Fatalf("a spawn completion's snapshot counts as a stored served key: %v (%v)", rows, err)
+	}
+}
+
+// TestSubagentCardIsRequired pins the handle requirement: outside a bulk
+// writer, a visible row with a parent is written only with its parent's
+// card, and a counted preview-kind row changes its summary only with it.
+// A refused write stores nothing. Rows no card counts, a hidden row and a
+// top-level one, need none, and a bulk writer recomputes instead.
+func TestSubagentCardIsRequired(t *testing.T) {
+	s := newTestStore(t)
+	const thread = "t-card-required"
+	mustCreateThread(t, s, thread)
+	mustCreateThread(t, s, "t-other")
+	insertWithCardForTest(t, s, stampFixtureRow{id: "L", kind: "tool_call", tool: "Agent", summary: "Agent: l", status: "running", turn: 1}.item(thread))
+	insertWithCardForTest(t, s, stampFixtureRow{id: "L2", kind: "tool_call", tool: "Agent", summary: "Agent: l2", status: "running", turn: 1, index: 1}.item(thread))
+	insertWithCardForTest(t, s, stampFixtureRow{id: "L-b1", kind: "tool_call", tool: "Bash", summary: "Bash: one", parent: "L", turn: 1, index: 2}.item(thread))
+	child := stampFixtureRow{id: "L-b2", kind: "tool_call", tool: "Bash", summary: "Bash: two", parent: "L", turn: 1, index: 3}.item(thread)
+	stamps := subagentStampRowsForTest(t, s, thread)
+
+	refused := func(what string, err error) {
+		t.Helper()
+		if !errors.Is(err, ErrSubagentAnchor) {
+			t.Errorf("%s: %v, want ErrSubagentAnchor", what, err)
+		}
+		if _, found, err := s.GetThreadItemForWrite(thread, child.ID); err != nil || found {
+			t.Errorf("%s stored the row (found=%v err=%v)", what, found, err)
+		}
+	}
+	refused("InsertItem without a card", s.InsertItem(child))
+	_, err := s.AppendItem(child)
+	refused("AppendItem without a card", err)
+	refused("InsertItemWithPayload without a card", s.InsertItemWithPayload(child, Payload{ID: "p-b2", Kind: "text", Meta: "{}", Data: []byte("x"), CreatedAt: 1}))
+	_, err = s.UpsertItem(child, nil)
+	refused("UpsertItem without a card", err)
+
+	card, err := s.OpenSubagentCard(thread, "L2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	withCard := child
+	withCard.SubagentCard = card
+	refused("InsertItem with another parent's card", s.InsertItem(withCard))
+	if err := card.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if card, err = s.OpenSubagentCard("t-other", "L"); err != nil {
+		t.Fatal(err)
+	}
+	withCard.SubagentCard = card
+	refused("InsertItem with another thread's card", s.InsertItem(withCard))
+	if err := card.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if card, err = s.OpenSubagentCard(thread, "L"); err != nil {
+		t.Fatal(err)
+	}
+	if err := card.Close(); err != nil {
+		t.Fatal(err)
+	}
+	withCard.SubagentCard = card
+	refused("InsertItem with a closed card", s.InsertItem(withCard))
+
+	// A summary change of a counted preview-kind row needs the card; a
+	// status change, which moves no card, does not.
+	if _, err := s.UpdateItemFields(thread, "L-b1", ItemPartialUpdate{Summary: new("Bash: changed")}); !errors.Is(err, ErrSubagentAnchor) {
+		t.Errorf("summary change without a card: %v, want ErrSubagentAnchor", err)
+	}
+	stored, _, err := s.GetThreadItemForWrite(thread, "L-b1")
+	if err != nil || stored.Summary != "Bash: one" {
+		t.Errorf("the refused summary change stored %q (%v)", stored.Summary, err)
+	}
+	stored.Summary = "Bash: rewritten"
+	if _, err := s.UpsertItem(stored, nil); !errors.Is(err, ErrSubagentAnchor) {
+		t.Errorf("whole-row summary change without a card: %v, want ErrSubagentAnchor", err)
+	}
+	if _, err := s.UpdateItemFields(thread, "L-b1", ItemPartialUpdate{Status: new("errored")}); err != nil {
+		t.Errorf("status change without a card: %v", err)
+	}
+	if got := subagentStampRowsForTest(t, s, thread); !reflect.DeepEqual(got, stamps) {
+		t.Errorf("the refused writes changed stamps: %v -> %v", stamps, got)
+	}
+
+	// Rows no card counts need none.
+	if err := s.InsertItem(stampFixtureRow{id: "top", kind: "assistant_text", summary: "top", turn: 2}.item(thread)); err != nil {
+		t.Errorf("top-level row: %v", err)
+	}
+	if err := s.InsertItem(stampFixtureRow{id: "L-plan", kind: "notification", tool: "plan_update", summary: "plan", parent: "L", turn: 1, index: 4}.item(thread)); err != nil {
+		t.Errorf("hidden row under L: %v", err)
+	}
+	// A bulk writer writes counted rows without a card and recomputes the
+	// chains it touched.
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	w := s.bulkItemWrites(tx, thread, true)
+	bulk := stampFixtureRow{id: "L-b3", kind: "tool_call", tool: "Bash", summary: "Bash: bulk", parent: "L", turn: 1, index: 3}.item(thread)
+	applyItemDefaults(&bulk)
+	if err := insertItemTx(tx, w, bulk, "test bulk"); err != nil {
+		t.Fatalf("bulk insert: %v", err)
+	}
+	if err := w.finish(); err != nil {
+		t.Fatalf("bulk finish: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	// The card writes what the refused ones could not.
+	insertWithCardForTest(t, s, stampFixtureRow{id: "L-b5", kind: "tool_call", tool: "Bash", summary: "Bash: five", parent: "L", turn: 1, index: 5}.item(thread))
+	assertSubagentStampParity(t, s, thread, "after the card writes", true)
+	assertStampsAreTheRecompute(t, s, thread, "after the card writes")
 }

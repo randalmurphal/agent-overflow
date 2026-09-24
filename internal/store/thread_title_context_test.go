@@ -15,7 +15,7 @@ func seedTitleContextItem(t *testing.T, s *Store, threadID string, turn, index i
 
 func seedTitleContextItemWithMeta(t *testing.T, s *Store, threadID string, turn, index int, kind, role, summary, parentID, meta string) {
 	t.Helper()
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID:        summary + "-id",
 		ThreadID:  threadID,
 		TurnIndex: turn,

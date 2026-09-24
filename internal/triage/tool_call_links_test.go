@@ -38,7 +38,7 @@ func seedAgentChain(t *testing.T, st *store.Store, threadID string) {
 		{ID: "agent-2", ThreadID: threadID, TurnIndex: 0, Kind: itemKindToolCall, Role: "assistant",
 			Status: statusRunning, ToolName: "Agent", Summary: "Agent: inner", ParentID: "agent-1", IsBackground: true, CreatedAt: 1, UpdatedAt: 1},
 	} {
-		if _, err := st.AppendItem(row); err != nil {
+		if _, err := appendSeed(st, row); err != nil {
 			t.Fatalf("seed %s: %v", row.ID, err)
 		}
 	}
@@ -170,9 +170,9 @@ func mapKeys(rows map[string]store.Item) []string {
 func TestToolCallLinksEvictUnreferencedFirst(t *testing.T) {
 	var links toolCallLinks
 	for i := 0; i < maxToolCallLinksPerThread; i++ {
-		links.put(fmt.Sprintf("leaf-%d", i), "root", 0, true)
+		links.put(fmt.Sprintf("leaf-%d", i), "root", 0)
 	}
-	links.put("root", "", 7, true)
+	links.put("root", "", 7)
 	if len(links.byID) != maxToolCallLinksPerThread {
 		t.Fatalf("holds %d links, want the bound %d", len(links.byID), maxToolCallLinksPerThread)
 	}
@@ -183,7 +183,7 @@ func TestToolCallLinksEvictUnreferencedFirst(t *testing.T) {
 		if _, ok := links.get("root"); !ok {
 			t.Fatalf("the referenced root was evicted after %d newer links", i)
 		}
-		links.put(fmt.Sprintf("new-%d", i), "root", 0, true)
+		links.put(fmt.Sprintf("new-%d", i), "root", 0)
 		if len(links.byID) > maxToolCallLinksPerThread || len(links.ring) > maxToolCallLinksPerThread {
 			t.Fatalf("grew past the bound: %d links, %d ring slots", len(links.byID), len(links.ring))
 		}
@@ -233,7 +233,7 @@ func TestShouldDropParentIDOverLinks(t *testing.T) {
 
 	var links toolCallLinks
 	for i := 0; i < 20; i++ {
-		links.put(fmt.Sprintf("deep-%d", i), fmt.Sprintf("deep-%d", i+1), 0, true)
+		links.put(fmt.Sprintf("deep-%d", i), fmt.Sprintf("deep-%d", i+1), 0)
 	}
 	router.mu.Lock()
 	router.state("t1").toolCalls = links
@@ -556,16 +556,16 @@ func subagentStampForTest(t *testing.T, dbPath, threadID, id string) (gen, state
 	return gen, state, true
 }
 
-// TestLiveSubagentWritesNameTheirAnchor pins that triage names the parent
-// launch on the writes of an agent's row that can move a card, so the
-// store keeps the launch cards with keyed writes: after inserts, a
-// whole-row rewrite, a linked payload append and an amended approval
-// under a nested agent, both launches are clean at the generation they
-// had, which a recompute would have moved. A row whose parent is not
-// stored yet names no anchor and still persists. The field updates triage
-// makes (text and thinking settles, progress meta) name none: no card
-// previews what they change, so the store marks nothing for them.
-func TestLiveSubagentWritesNameTheirAnchor(t *testing.T) {
+// TestLiveSubagentWritesFeedTheirCard pins that triage writes an agent's
+// rows with the card of their parent and that a flush writes the card in
+// place: after inserts, a whole-row rewrite, a linked payload append and
+// an amended approval under a nested agent, both launches are clean at
+// the generation they had, which a recompute would have moved, and the
+// inner one serves four children and the amended tool as its latest. The
+// live session keeps the cards between writes. A row whose parent is not
+// stored yet still persists, as does a row under a Codex spawn row,
+// which anchors no card.
+func TestLiveSubagentWritesFeedTheirCard(t *testing.T) {
 	dbPath := storetest.ClonePath(t)
 	st, err := store.New(dbPath)
 	if err != nil {
@@ -576,6 +576,7 @@ func TestLiveSubagentWritesNameTheirAnchor(t *testing.T) {
 	t.Cleanup(router.DrainWireItemRefresh)
 	createTestThread(t, st, "t1")
 	seedAgentChain(t, st, "t1")
+	router.identity("t1")
 
 	row := func(id, kind, tool, summary, parent string) store.Item {
 		return store.Item{ID: id, ThreadID: "t1", Kind: kind, Role: "assistant", Status: statusRunning,
@@ -584,6 +585,7 @@ func TestLiveSubagentWritesNameTheirAnchor(t *testing.T) {
 	if err := router.persistItem(row("c1", itemKindToolCall, "Bash", "Bash: ls", "agent-2"), nil); err != nil {
 		t.Fatalf("persist first child: %v", err)
 	}
+	router.flushSubagentCards("t1")
 	gens := make(map[string]int64)
 	for _, id := range []string{"agent-1", "agent-2"} {
 		gen, state, ok := subagentStampForTest(t, dbPath, "t1", id)
@@ -591,6 +593,12 @@ func TestLiveSubagentWritesNameTheirAnchor(t *testing.T) {
 			t.Fatalf("%s stamp: ok=%v state=%d, want clean", id, ok, state)
 		}
 		gens[id] = gen
+	}
+	router.mu.Lock()
+	cached := router.state("t1").subagentCards["agent-2"] != nil
+	router.mu.Unlock()
+	if !cached {
+		t.Fatal("the live session did not keep agent-2's card")
 	}
 
 	if err := router.persistItem(row("c2", itemKindToolCall, "Read", "Read: a.go", "agent-2"), nil); err != nil {
@@ -621,9 +629,10 @@ func TestLiveSubagentWritesNameTheirAnchor(t *testing.T) {
 		Input: json.RawMessage(`{"command":"rm b"}`)}, "amended", 3); err != nil {
 		t.Fatalf("amend approval: %v", err)
 	}
+	router.flushSubagentCards("t1")
 	for id, was := range gens {
 		if gen, state, ok := subagentStampForTest(t, dbPath, "t1", id); !ok || state != 0 || gen != was {
-			t.Errorf("%s stamp: ok=%v state=%d gen=%d, want clean at gen %d (kept by keyed writes)", id, ok, state, gen, was)
+			t.Errorf("%s stamp: ok=%v state=%d gen=%d, want clean at gen %d (written in place)", id, ok, state, gen, was)
 		}
 	}
 	inner, _, err := st.GetThreadItem("t1", "agent-2")
@@ -646,12 +655,114 @@ func TestLiveSubagentWritesNameTheirAnchor(t *testing.T) {
 	if err := router.persistItem(row("orphan", itemKindAssistantText, "", "early", "agent-3"), nil); err != nil {
 		t.Fatalf("persist a row whose parent is not stored: %v", err)
 	}
-	// A Codex spawn row is a tool call that anchors no card, so a row
-	// under it names none; the store would reject it as an anchor.
 	if err := router.persistItem(row("spawn", itemKindToolCall, "collab_agent", "Spawned worker", ""), nil); err != nil {
 		t.Fatalf("persist spawn row: %v", err)
 	}
 	if err := router.persistItem(row("under-spawn", itemKindAssistantText, "", "note", "spawn"), nil); err != nil {
 		t.Fatalf("persist a row under a spawn row: %v", err)
+	}
+}
+
+// TestLiveSubagentCardsFlushAtTheirBoundaries drives a live session
+// through each boundary the router flushes its cards at: an agent's first
+// row (its card opens with its anchor), the refresh timer, the agent's
+// completion before its sibling is written, turn end and session close.
+// Between boundaries a row stays in the card; at each one the stamp takes
+// it, and the anchor push that follows carries the flushed card.
+func TestLiveSubagentCardsFlushAtTheirBoundaries(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	router.MarkThreadActive("t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	startMeta, _ := json.Marshal(map[string]any{"toolName": "Bash", "input": map[string]any{"command": "ls"}})
+	child := func(id, parent string) {
+		t.Helper()
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventToolStart, ThreadID: "t1", ItemID: id, ItemType: "Bash",
+			Meta: startMeta, ParentToolUseID: parent, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("child %s: %v", id, err)
+		}
+		router.WaitForPendingSettles()
+	}
+	count := func(id string) any {
+		t.Helper()
+		row, found, err := st.GetThreadItem("t1", id)
+		if err != nil || !found {
+			t.Fatalf("read %s: found=%v err=%v", id, found, err)
+		}
+		return decodeItemMetaMap(t, row.Meta)["subagentDescendantCount"]
+	}
+	pushedCount := func(id string) any {
+		t.Helper()
+		var last any
+		for _, row := range itemUpserts(emissions.snapshot()) {
+			if row.ID == id {
+				last = decodeItemMetaMap(t, row.Meta)["subagentDescendantCount"]
+			}
+		}
+		return last
+	}
+	pending := func(stage, id string, want bool) {
+		t.Helper()
+		if got := st.SubagentCardPending("t1", id); got != want {
+			t.Errorf("%s: %s pending = %v, want %v", stage, id, got, want)
+		}
+	}
+
+	startAgentLaunch(t, router, "t1", "agent-a", "", "task-a")
+	emissions.reset()
+	child("a-1", "agent-a")
+	pending("first row", "agent-a", false)
+	if got := pushedCount("agent-a"); got != float64(1) {
+		t.Errorf("first row pushed agent-a with count %v, want 1", got)
+	}
+
+	child("a-2", "agent-a")
+	pending("second row", "agent-a", true)
+	if got := count("agent-a"); got != float64(1) {
+		t.Errorf("agent-a serves count %v before a flush, want 1", got)
+	}
+	emissions.reset()
+	router.DrainWireItemRefresh()
+	pending("refresh", "agent-a", false)
+	if got, pushed := count("agent-a"), pushedCount("agent-a"); got != float64(2) || pushed != float64(2) {
+		t.Errorf("after the refresh agent-a serves %v and was pushed with %v, want 2", got, pushed)
+	}
+
+	child("a-3", "agent-a")
+	pending("third row", "agent-a", true)
+	stashAgentTerminal(t, router, "t1", "agent-a", "task-a")
+	notifyAgent(t, router, "t1", "agent-a", "task-a", "", nil)
+	pending("completion", "agent-a", false)
+	if got := count(ToolCompletionID("agent-a")); got != float64(3) {
+		t.Errorf("the completion sibling serves count %v, want the launch's final 3", got)
+	}
+	router.mu.Lock()
+	cached := router.state("t1").subagentCards["agent-a"] != nil
+	router.mu.Unlock()
+	if cached {
+		t.Error("the completed agent's card is still cached")
+	}
+
+	startAgentLaunch(t, router, "t1", "agent-b", "", "task-b")
+	child("b-1", "agent-b")
+	child("b-2", "agent-b")
+	pending("before turn end", "agent-b", true)
+	if err := router.Handle(provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1",
+		TurnComplete: &provider.WireTurnCompleteMeta{StopReason: "end_turn"}, Timestamp: time.Now()}); err != nil {
+		t.Fatalf("turn complete: %v", err)
+	}
+	pending("turn end", "agent-b", false)
+	if got := count("agent-b"); got != float64(2) {
+		t.Errorf("after turn end agent-b serves %v, want 2", got)
+	}
+
+	child("b-3", "agent-b")
+	pending("after turn end", "agent-b", true)
+	router.CleanupThread("t1")
+	pending("session close", "agent-b", false)
+	if got := count("agent-b"); got != float64(3) {
+		t.Errorf("after session close agent-b serves %v, want 3", got)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -55,10 +56,10 @@ type subagentStampTarget struct {
 	id, kind, toolName string
 	// root is the transcript root a carrier's round is counted under, or
 	// "" for a row that is not a carrier (aggCarrierSQL).
-	root    string
-	rev     int64
-	stamped bool
-	stored  subagentStampValues
+	root     string
+	rev, gen int64
+	stamped  bool
+	stored   subagentStampValues
 }
 
 func (t subagentStampTarget) anchorable() bool {
@@ -66,22 +67,71 @@ func (t subagentStampTarget) anchorable() bool {
 }
 
 // SubagentAnchorable reports whether a row of this kind and tool anchors
-// a subagent card, which makes it a valid Item.SubagentAnchor: a tool
-// call other than a Codex spawn row. aggAnchorableSQL is the same rule.
+// a subagent card: a tool call other than a Codex spawn row.
+// aggAnchorableSQL is the same rule.
 func SubagentAnchorable(kind, toolName string) bool {
 	return kind == "tool_call" && toolName != "collab_agent"
 }
 
 // subagentStampWrite is one recomputed stamp. rev is the revision the
-// computation read, for the optimistic write.
+// computation read, for the optimistic write; gen is the generation the
+// write stores (newSubagentGen).
 type subagentStampWrite struct {
-	id     string
-	rev    int64
-	values subagentStampValues
+	id       string
+	rev, gen int64
+	values   subagentStampValues
 }
 
-// computeSubagentStamps recomputes the stamps of the given anchors and of
-// every anchor whose stamp depends on the same resume prompts: a root and
+// subagentFamilyMember is one local anchor a recompute derived, with what
+// a card accumulator needs to go on from it.
+type subagentFamilyMember struct {
+	id string
+	// root is a carrier's transcript root, or "".
+	root     string
+	rev, gen int64
+	stamped  bool
+	stored   subagentStampValues
+	values   subagentStampValues
+	// rounds reports a clean root with resume rounds: lo is its last
+	// round's prompt position, and roundID that round's carrier, or ""
+	// when the prompt names none.
+	rounds  bool
+	lo      TimelineCursor
+	roundID string
+	// foreign reports a carrier a prompt under another root names. The
+	// item triggers stamp only the carriers whose transcript root is on a
+	// written row's chain, so rows under the naming root do not reach it.
+	foreign bool
+	// written reports that the recompute stored values, at generation gen.
+	written bool
+}
+
+// changed reports a member whose stored stamp is not its values.
+func (m subagentFamilyMember) changed() bool { return !m.stamped || m.stored != m.values }
+
+// restamp reports a member a recompute writes: one that changed, and a
+// foreign carrier, whose card the rows the recompute covers may have
+// changed with no trigger stamping it.
+func (m subagentFamilyMember) restamp() bool { return m.changed() || m.foreign }
+
+// computeSubagentStamps is computeSubagentFamilies reduced to the stamps
+// it writes (restamp), each with a new generation.
+func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]subagentStampWrite, error) {
+	members, err := computeSubagentFamilies(q, threadID, seedIDs)
+	if err != nil {
+		return nil, err
+	}
+	var writes []subagentStampWrite
+	for _, m := range members {
+		if m.restamp() {
+			writes = append(writes, subagentStampWrite{id: m.id, rev: m.rev, gen: newSubagentGen(), values: m.values})
+		}
+	}
+	return writes, nil
+}
+
+// computeSubagentFamilies recomputes the stamps of the given anchors and
+// of every anchor whose stamp depends on the same resume prompts: a root and
 // the carriers of its rounds are one family, because a prompt cuts both.
 // Values come from the read-time aggregator, so a stamp is by
 // construction what decorateSubagentAnchors returns for the row.
@@ -91,14 +141,15 @@ type subagentStampWrite struct {
 // root joins too, so the named carrier is stamped from its family rather
 // than written readTime as a root it is not.
 //
-// A family is marked readTime when its rounds take a shape the triggers do
-// not maintain: a prompt in the immutable history arm (the round probe
+// A family is marked readTime when its rounds take a shape the card rules
+// do not maintain: a prompt in the immutable history arm (the round probe
 // reads local rows only), a prompt naming the root itself, one carrier
-// named by two prompts, a named carrier stamped as another root's, a root
+// named by two prompts, a named carrier stamped as another root's (a
+// foreign carrier, which every recompute of the family re-stamps), a root
 // that is itself a carrier, or a root outside the local overlay. A carrier
 // no prompt names shows the whole transcript, which no incremental rule
 // keeps, and is readTime on its own.
-func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]subagentStampWrite, error) {
+func computeSubagentFamilies(q sqlQueryer, threadID string, seedIDs []string) ([]subagentFamilyMember, error) {
 	seeds, err := subagentStampTargets(q, threadID, seedIDs)
 	if err != nil {
 		return nil, err
@@ -176,6 +227,7 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 			readTimeRoot[root] = true
 		}
 	}
+	foreign := make(map[string]bool)
 	for _, round := range rounds {
 		if round.imported || round.anchorID == round.rootID || named[round.anchorID] > 1 {
 			readTimeRoot[round.rootID] = true
@@ -185,6 +237,7 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 		}
 		if carrier, ok := members[round.anchorID]; ok && carrier.anchorable() && carrier.root != round.rootID {
 			readTimeRoot[round.rootID] = true
+			foreign[round.anchorID] = true
 		}
 	}
 
@@ -205,6 +258,11 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 	if err != nil {
 		return nil, err
 	}
+	// A clean root's last round takes the rows a card writes after it.
+	lastRound := make(map[string]subagentRound, len(cleanRoots))
+	for _, round := range cleanRounds {
+		lastRound[round.rootID] = round
+	}
 
 	// Every local anchorable member gets a stamp: its round's values when
 	// its family is clean and a bound covers it, readTime otherwise.
@@ -219,9 +277,11 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 	if err != nil {
 		return nil, err
 	}
-	writes := make([]subagentStampWrite, 0, len(writeIDs))
+	out := make([]subagentFamilyMember, 0, len(writeIDs))
 	for _, id := range writeIDs {
 		row := members[id]
+		member := subagentFamilyMember{id: id, root: row.root, rev: row.rev, gen: row.gen, stamped: row.stamped,
+			stored: row.stored, foreign: foreign[id]}
 		values := subagentStampValues{State: aggStateReadTime}
 		clean := false
 		if row.root == "" {
@@ -261,13 +321,18 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 				values.ToolTurn, values.ToolItem = validInt(tool.turnIndex), validInt(tool.itemIndex)
 				values.ToolID = nonEmptyString(tool.id)
 			}
+			if round, ok := lastRound[id]; ok && row.root == "" {
+				member.rounds = true
+				member.lo = TimelineCursor{TurnIndex: round.turnIndex, ItemIndex: round.itemIndex}
+				if round.anchorID != round.promptID {
+					member.roundID = round.anchorID
+				}
+			}
 		}
-		if row.stamped && row.stored == values {
-			continue
-		}
-		writes = append(writes, subagentStampWrite{id: id, rev: row.rev, values: values})
+		member.values = values
+		out = append(out, member)
 	}
-	return writes, nil
+	return out, nil
 }
 
 // subagentStampTargetsSQL reads local rows by primary key with their
@@ -275,7 +340,7 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 // for its transcript root.
 var subagentStampTargetsSQL = `SELECT i.id, i.kind, i.tool_name,
        CASE WHEN i.kind = 'tool_call' THEN COALESCE(` + aggTranscriptRootSQL("i.") + `, '') ELSE '' END,
-       i.rev, s.item_id IS NOT NULL, COALESCE(s.state, 0),
+       i.rev, COALESCE(s.gen, 0), s.item_id IS NOT NULL, COALESCE(s.state, 0),
        s.` + strings.Join(subagentAggregateValueColumns, ", s.") + `
   FROM items i
   LEFT JOIN subagent_aggregates s ON s.thread_id = i.thread_id AND s.item_id = i.id
@@ -297,7 +362,7 @@ func subagentStampTargets(q sqlQueryer, threadID string, ids []string) (map[stri
 	}
 	for rows.Next() {
 		var row subagentStampTarget
-		dest := append([]any{&row.id, &row.kind, &row.toolName, &row.root, &row.rev, &row.stamped, &row.stored.State},
+		dest := append([]any{&row.id, &row.kind, &row.toolName, &row.root, &row.rev, &row.gen, &row.stamped, &row.stored.State},
 			row.stored.scanTargets()...)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, errors.Join(fmt.Errorf("store: scan subagent stamp target: %w", err), rows.Close())
@@ -353,15 +418,14 @@ func subagentCarriersOf(q sqlQueryer, threadID string, roots []string) (map[stri
 const bumpSubagentAggregateRevSQL = `UPDATE threads SET history_rev = history_rev + 1
  WHERE id = ? AND history_bulk_load = 0`
 
-// writeSubagentStampSQL replaces a row's stamp and moves its generation
-// by one; a new row starts at generation one. ?3 < 0 writes
-// unconditionally; otherwise the item must still be at the revision the
-// values were computed from.
+// writeSubagentStampSQL replaces a row's stamp with state ?4 at
+// generation ?5. ?3 < 0 writes unconditionally; otherwise the item must
+// still be at the revision the values were computed from.
 var writeSubagentStampSQL = `INSERT INTO subagent_aggregates (thread_id, item_id, state, gen, ` +
 	strings.Join(subagentAggregateValueColumns, ", ") + `)
-SELECT ?1, ?2, ?4, 1` + strings.Repeat(", ?", len(subagentAggregateValueColumns)) + `
+SELECT ?1, ?2, ?4, ?5` + strings.Repeat(", ?", len(subagentAggregateValueColumns)) + `
  WHERE EXISTS (SELECT 1 FROM items WHERE thread_id = ?1 AND id = ?2 AND (?3 < 0 OR rev = ?3))
-` + subagentAggregateUpsertSQL("gen = subagent_aggregates.gen + 1")
+` + subagentAggregateUpsertSQL("gen = excluded.gen")
 
 // writeSubagentStampsTx writes recomputed stamps and returns how many
 // landed. An optimistic write skips a row that moved since it was read;
@@ -385,7 +449,7 @@ func writeSubagentStampsTx(tx *sql.Tx, threadID string, writes []subagentStampWr
 		if optimistic {
 			rev = write.rev
 		}
-		args := append([]any{threadID, write.id, rev, write.values.State}, write.values.args()...)
+		args := append([]any{threadID, write.id, rev, write.values.State, write.gen}, write.values.args()...)
 		result, err := stmt.Exec(args...)
 		if err != nil {
 			return landed, fmt.Errorf("store: write subagent stamp %s/%s: %w", threadID, write.id, err)
@@ -440,49 +504,101 @@ func subagentAnchorIDs(q sqlQueryer, query string, args ...any) ([]string, error
 	return ids, errors.Join(rows.Err(), rows.Close())
 }
 
-// settleSubagentAggregatesTx recomputes the thread's dirty anchors inside
-// the caller's write transaction. A write path that can leave an anchor
-// dirty calls it before it reads back or commits, so the dirty state never
-// outlives the write that caused it. The probe is one keyed read of an
-// index that is empty almost always. It does not advance the thread
-// stamp: every dirty mark is made in the same transaction as a thread
-// bump (recomputeSubagentAggregatesTx), so one item write moves the thread
-// once.
-func settleSubagentAggregatesTx(tx *sql.Tx, threadID string) error {
-	const batch = 256
-	for pass := 0; ; pass++ {
-		ids, err := subagentAnchorIDs(tx, subagentDirtyAnchorsSQL, threadID, batch)
-		if err != nil {
-			return fmt.Errorf("store: select dirty subagent anchors for %s: %w", threadID, err)
-		}
-		if len(ids) == 0 {
-			return nil
-		}
-		if pass > 0 && pass >= len(ids)+1 {
-			return fmt.Errorf("store: dirty subagent anchors in %s do not settle: %v", threadID, ids)
-		}
-		if err := recomputeSubagentAggregatesTx(tx, threadID, ids); err != nil {
-			return err
-		}
+// recomputeSubagentFamiliesTx recomputes the given anchors with their
+// families inside a write transaction and writes each stamp it restamps
+// at a new generation. bump advances the thread stamp before the first
+// write; nil bumps it once here. It returns every member, written or
+// not, for the card accumulators.
+func recomputeSubagentFamiliesTx(tx *sql.Tx, threadID string, seeds []string, bump func() error) ([]subagentFamilyMember, error) {
+	members, err := computeSubagentFamilies(tx, threadID, seeds)
+	if err != nil {
+		return nil, err
 	}
+	var writes []subagentStampWrite
+	var written []int
+	for i := range members {
+		if !members[i].restamp() {
+			continue
+		}
+		members[i].gen = newSubagentGen()
+		writes = append(writes, subagentStampWrite{id: members[i].id, gen: members[i].gen, values: members[i].values})
+		written = append(written, i)
+	}
+	if len(writes) == 0 {
+		return members, nil
+	}
+	if bump == nil {
+		bump = subagentBumpOnce(tx, threadID)
+	}
+	if err := bump(); err != nil {
+		return nil, err
+	}
+	landed, err := writeSubagentStampsTx(tx, threadID, writes, false)
+	if err != nil {
+		return nil, err
+	}
+	if landed != len(writes) {
+		return nil, fmt.Errorf("store: write subagent stamps in %s: %d of %d found their row", threadID, landed, len(writes))
+	}
+	for _, i := range written {
+		m := &members[i]
+		m.written, m.stamped, m.stored = true, true, m.values
+	}
+	return members, nil
 }
 
-// recomputeSubagentAggregatesTx is RecomputeSubagentAggregates for the
-// given anchors inside a caller's write transaction, which already holds
-// the rows still and has advanced the thread stamp: the item triggers
-// bump the thread in the statement that marks a chain, a claimed write's
-// keyed marks follow its item write, markSubagentChainsDirtyTx bumps
-// before it marks, a localized anchor is marked for its caller's item
-// write, and a bulk-loaded thread's stamp is frozen until its loader
-// writes the exact revision. The stamps it writes therefore land on a
-// revision no reader has seen.
-func recomputeSubagentAggregatesTx(tx *sql.Tx, threadID string, ids []string) error {
-	writes, err := computeSubagentStamps(tx, threadID, ids)
-	if err != nil {
-		return err
+// recomputeSubagentChainsTx recomputes, inside a write transaction, what
+// the write changed that the card rules do not follow: every local anchor
+// on the logical parent chain from each of fromIDs upward (the id itself
+// included, the walk ending above a hidden row, under which nothing
+// counts), and the anchors seeds names, each with its family. It drops
+// the stamps of unanchor, rows that stopped anchoring. bump advances the
+// thread stamp before a stamp write; for an item write, whose trigger
+// already has, it does nothing. It returns every stamp
+// it covered, whose card accumulators the caller retires (cardWrite.finish).
+func (s *Store) recomputeSubagentChainsTx(tx *sql.Tx, threadID string, fromIDs, seeds, unanchor []string, bump func() error) ([]string, error) {
+	ids := make(map[string]struct{}, len(seeds))
+	for _, id := range seeds {
+		if id != "" {
+			ids[id] = struct{}{}
+		}
 	}
-	_, err = writeSubagentStampsTx(tx, threadID, writes, false)
-	return err
+	walked := make(map[string]bool, len(fromIDs))
+	for _, from := range fromIDs {
+		if from == "" || walked[from] {
+			continue
+		}
+		chain, err := subagentChainTx(tx, threadID, from, true)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range chain {
+			walked[row.id] = true
+			if !row.imported && SubagentAnchorable(row.kind, row.toolName) {
+				ids[row.id] = struct{}{}
+			}
+		}
+	}
+	stale := slices.Sorted(maps.Keys(ids))
+	if len(unanchor) > 0 {
+		list, err := jsonList(unanchor)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(`DELETE FROM subagent_aggregates WHERE thread_id = ?1 AND item_id IN (SELECT value FROM json_each(?2))`,
+			threadID, list); err != nil {
+			return nil, fmt.Errorf("store: drop subagent stamps of former anchors in %s: %w", threadID, err)
+		}
+	}
+	members, err := recomputeSubagentFamiliesTx(tx, threadID, stale, bump)
+	if err != nil {
+		return nil, err
+	}
+	stale = append(stale, unanchor...)
+	for _, m := range members {
+		stale = append(stale, m.id)
+	}
+	return stale, nil
 }
 
 // SubagentRecompute reports one RecomputeSubagentAggregates call.
@@ -507,9 +623,13 @@ type SubagentRecompute struct {
 // that predates the stamps is left. The proof is the snapshot's, not a
 // re-selection under the writer, which on a large thread would hold it
 // for hundreds of milliseconds. A write after the snapshot cannot add
-// such an anchor: the insert trigger stamps or dirties an unstamped
-// parent at its child's insert, and a carrier, unstamped until its
-// prompt lands, is walked in every thread.
+// such an anchor: a card opened on an unstamped anchor with children
+// recomputes it (seedCardStamp), a write without a card recomputes the
+// chain it changed (recomputeSubagentChainsTx), and a carrier, unstamped
+// until its prompt lands, is walked in every thread.
+//
+// A stamp it writes moves to a new generation, so a card accumulator
+// read before it recomputes at its next flush rather than write over it.
 func (s *Store) RecomputeSubagentAggregates(ctx context.Context, threadID string, limit int) (SubagentRecompute, error) {
 	if limit <= 0 {
 		return SubagentRecompute{}, fmt.Errorf("store: recompute subagent aggregates for %s: limit must be positive", threadID)
@@ -659,51 +779,6 @@ func subagentBackfillListed(q sqlQueryer, threadID string) (bool, error) {
 	return listed, nil
 }
 
-// markSubagentChainsDirtyTx marks dirty the local anchors above each
-// given row that are clean or unstamped. It is for writes the triggers do
-// not see: imported rows leaving or joining a local anchor's subtree. An
-// unstamped anchor is included because rows joining it end the "no child
-// since its insert" that lets a read skip its walk. The walk follows the
-// logical parent chain, imported links included, by primary key.
-func markSubagentChainsDirtyTx(tx *sql.Tx, threadID string, fromIDs []string) error {
-	seen := make(map[string]bool)
-	var chain []string
-	for _, id := range fromIDs {
-		for depth := 0; id != "" && depth < 64 && !seen[id]; depth++ {
-			seen[id] = true
-			chain = append(chain, id)
-			var parent string
-			query, args := timelineArms(threadID, timelineSelection{
-				Columns:  func(string, string) string { return "items.parent_id" },
-				KeyFirst: true,
-				Where:    "items.id = ?", WhereArgs: []any{id},
-			})
-			err := tx.QueryRow(query, args...).Scan(&parent)
-			if errors.Is(err, sql.ErrNoRows) {
-				break
-			}
-			if err != nil {
-				return fmt.Errorf("store: walk subagent chain %s/%s: %w", threadID, id, err)
-			}
-			id = parent
-		}
-	}
-	if len(chain) == 0 {
-		return nil
-	}
-	list, err := jsonList(chain)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(bumpSubagentAggregateRevSQL, threadID); err != nil {
-		return fmt.Errorf("store: bump history for dirty subagent anchors in %s: %w", threadID, err)
-	}
-	if _, err := tx.Exec(markSubagentAnchorsDirtySQL, threadID, list); err != nil {
-		return fmt.Errorf("store: mark subagent anchors dirty in %s: %w", threadID, err)
-	}
-	return nil
-}
-
 // markSubagentAnchorsDirtySQL marks dirty the anchors among the local rows
 // the JSON array ?2 names, by primary key, that are clean or unstamped.
 var markSubagentAnchorsDirtySQL = `INSERT INTO subagent_aggregates (thread_id, item_id, state)
@@ -713,11 +788,147 @@ ON CONFLICT (thread_id, item_id) DO UPDATE SET state = ` + aggDirtyLiteral + `, 
 	strings.Join(subagentAggregateValueColumns, " = NULL, ") + ` = NULL
  WHERE subagent_aggregates.state = ` + aggCleanLiteral
 
+// liveSubagentAgentsSQL lists the agents that were running when the
+// previous process stopped: running tool calls in the foreground, at the
+// top level and nested, and live background launches, each set read
+// through its partial index (idx_items_running_fg_tool_calls,
+// idx_items_running_nested_fg_tool_calls, idx_items_running_bg_tool_calls),
+// with the transcript root a resumed round writes under.
+var liveSubagentAgentsSQL = `SELECT thread_id, id, COALESCE(` + aggTranscriptRootSQL("") + `, '') FROM items
+ WHERE kind = 'tool_call' AND status = 'running' AND is_background = 0 AND parent_id = ''
+   AND tool_name <> 'collab_agent'
+UNION ALL
+SELECT thread_id, id, COALESCE(` + aggTranscriptRootSQL("") + `, '') FROM items
+ WHERE kind = 'tool_call' AND status = 'running' AND is_background = 0 AND parent_id <> ''
+   AND tool_name <> 'collab_agent'
+UNION ALL
+SELECT thread_id, id, COALESCE(` + aggTranscriptRootSQL("") + `, '') FROM items
+ WHERE kind = 'tool_call' AND status = 'running' AND is_background = 1
+   AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+   AND tool_name <> 'collab_agent'`
+
+// recoverSubagentCardsBatch is how many dirty anchors one recompute of
+// the boot pass takes.
+const recoverSubagentCardsBatch = 64
+
+// RecoverSubagentCards is the boot pass for the card accumulators a
+// process lost: rows written under an agent after the last flush are in
+// no stamp. It marks dirty the stamps of every agent running when the
+// previous process stopped, with every anchor above it and above the
+// transcript root it writes under, and recomputes them. The work is
+// bounded by the running agents, not the history. A clean shutdown
+// flushed first (FlushAllSubagentCards), so the recompute writes back the
+// values the stamps held. A dirty stamp the recompute leaves is
+// read through the aggregator until a later write recomputes it. It must
+// run before the crash sweeps settle the running rows, and before any
+// card is opened.
+func (s *Store) RecoverSubagentCards(ctx context.Context) (int, error) {
+	marked, err := s.markLiveSubagentChainsDirty()
+	if err != nil {
+		return 0, err
+	}
+	stamped := 0
+	var errs []error
+	for _, threadID := range marked {
+		for stalled := 0; ; {
+			if ctx.Err() != nil {
+				return stamped, ctx.Err()
+			}
+			result, err := s.RecomputeSubagentAggregates(ctx, threadID, recoverSubagentCardsBatch)
+			if err != nil {
+				errs = append(errs, err)
+				break
+			}
+			stamped += result.Stamped
+			if !result.Remaining {
+				break
+			}
+			if result.Stamped > 0 {
+				stalled = 0
+				continue
+			}
+			if stalled++; stalled >= subagentBackfillStallLimit {
+				errs = append(errs, fmt.Errorf("store: recover subagent cards of %s: its rows moved under %d batches in a row", threadID, stalled))
+				break
+			}
+		}
+	}
+	return stamped, errors.Join(errs...)
+}
+
+// markLiveSubagentChainsDirty is RecoverSubagentCards' first step, one
+// transaction: it returns the threads it marked.
+func (s *Store) markLiveSubagentChainsDirty() ([]string, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("store: begin subagent card recovery: %w", err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(liveSubagentAgentsSQL)
+	if err != nil {
+		return nil, fmt.Errorf("store: select running agents: %w", err)
+	}
+	from := make(map[string][]string)
+	for rows.Next() {
+		var threadID, id, root string
+		if err := rows.Scan(&threadID, &id, &root); err != nil {
+			return nil, errors.Join(fmt.Errorf("store: scan running agent: %w", err), rows.Close())
+		}
+		from[threadID] = append(from[threadID], id)
+		if root != "" && root != id {
+			from[threadID] = append(from[threadID], root)
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: iterate running agents: %w", err)
+	}
+	threadIDs := slices.Sorted(maps.Keys(from))
+	var marked []string
+	for _, threadID := range threadIDs {
+		var anchors []string
+		seen := make(map[string]bool)
+		for _, id := range from[threadID] {
+			if seen[id] {
+				continue
+			}
+			chain, err := subagentChainTx(tx, threadID, id, true)
+			if err != nil {
+				return nil, err
+			}
+			for _, row := range chain {
+				seen[row.id] = true
+				if !row.imported && SubagentAnchorable(row.kind, row.toolName) {
+					anchors = append(anchors, row.id)
+				}
+			}
+		}
+		if len(anchors) == 0 {
+			continue
+		}
+		list, err := jsonList(anchors)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(bumpSubagentAggregateRevSQL, threadID); err != nil {
+			return nil, fmt.Errorf("store: bump history for dirty subagent anchors in %s: %w", threadID, err)
+		}
+		if _, err := tx.Exec(markSubagentAnchorsDirtySQL, threadID, list); err != nil {
+			return nil, fmt.Errorf("store: mark subagent anchors dirty in %s: %w", threadID, err)
+		}
+		marked = append(marked, threadID)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: commit subagent card recovery: %w", err)
+	}
+	return marked, nil
+}
+
 // restampSubagentAggregatesTx rebuilds every stamp in a thread whose rows
-// were loaded with the triggers' aggregate work suspended: its stamps are
-// removed, then every anchor a read decorates is recomputed. It runs
-// inside the loading transaction, before the thread leaves bulk load.
-func restampSubagentAggregatesTx(tx *sql.Tx, threadID string) error {
+// were loaded with no card to keep them: its stamps are removed, then
+// every anchor a read decorates is recomputed. It runs inside the loading
+// transaction, before the thread leaves bulk load, and retires every
+// card accumulator of the thread.
+func (s *Store) restampSubagentAggregatesTx(tx *sql.Tx, threadID string) error {
 	if _, err := tx.Exec(`DELETE FROM subagent_aggregates WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("store: clear loaded subagent stamps in %s: %w", threadID, err)
 	}
@@ -725,5 +936,7 @@ func restampSubagentAggregatesTx(tx *sql.Tx, threadID string) error {
 	if err != nil {
 		return fmt.Errorf("store: select loaded subagent anchors in %s: %w", threadID, err)
 	}
-	return recomputeSubagentAggregatesTx(tx, threadID, ids)
+	s.cards.invalidateThread(threadID)
+	_, err = recomputeSubagentFamiliesTx(tx, threadID, ids, func() error { return nil })
+	return err
 }

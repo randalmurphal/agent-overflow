@@ -854,7 +854,7 @@ func (s *Store) UpdateSessionRefAndRemapProviderIDs(
 	if err := requireRowsAffected(result, fmt.Sprintf("store: update session ref for provider id remap %s", threadID)); err != nil {
 		return false, err
 	}
-	if err := remapProviderIDsTx(tx, threadID, items, anchors); err != nil {
+	if err := s.remapProviderIDsTx(tx, threadID, items, anchors); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -873,7 +873,7 @@ func (s *Store) RemapProviderIDs(threadID string, items []ItemMetaUpdate, anchor
 		return fmt.Errorf("store: begin provider id remap: %w", err)
 	}
 	defer tx.Rollback()
-	if err := remapProviderIDsTx(tx, threadID, items, anchors); err != nil {
+	if err := s.remapProviderIDsTx(tx, threadID, items, anchors); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -882,25 +882,20 @@ func (s *Store) RemapProviderIDs(threadID string, items []ItemMetaUpdate, anchor
 	return nil
 }
 
-func remapProviderIDsTx(
+func (s *Store) remapProviderIDsTx(
 	tx *sql.Tx,
 	threadID string,
 	items []ItemMetaUpdate,
 	anchors []MessageAnchorProviderIDsUpdate,
 ) error {
+	w := s.bulkItemWrites(tx, threadID, false)
 	for _, item := range items {
 		label := fmt.Sprintf("store: remap item meta %s/%s", threadID, item.ItemID)
-		if err := requireMutableItemTx(tx, threadID, item.ItemID, label); err != nil {
+		old, err := readMutableSubagentRowTx(tx, threadID, item.ItemID, label)
+		if err != nil {
 			return err
 		}
-		result, err := tx.Exec(
-			`UPDATE items SET meta = ? WHERE thread_id = ? AND id = ?`,
-			item.Meta, threadID, item.ItemID,
-		)
-		if err != nil {
-			return fmt.Errorf("%s: %w", label, err)
-		}
-		if err := requireRowsAffected(result, label); err != nil {
+		if err := updateItemMetaTx(tx, w, old, item.Meta, nil); err != nil {
 			return err
 		}
 	}

@@ -20,7 +20,7 @@ func seedChildItem(
 	parentID, summary, status string,
 ) {
 	t.Helper()
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID:        id,
 		ThreadID:  threadID,
 		TurnIndex: turnIndex,
@@ -44,7 +44,7 @@ func seedToolChildItem(
 	parentID, summary, status string,
 ) {
 	t.Helper()
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: id, ThreadID: threadID, TurnIndex: turnIndex, ItemIndex: itemIndex,
 		Kind: "tool_call", Role: "assistant", ToolName: "Bash", Status: status,
 		Summary: summary, ParentID: parentID, CreatedAt: int64(turnIndex*10 + itemIndex),
@@ -92,7 +92,7 @@ func TestListSubagentDescendants_MultiLevelOrderedAndExcludedFromWindows(t *test
 	// intermediate "parent" row is itself a launch (tool_call) but
 	// still a child of grand. Unrelated top-level noise sits between.
 	seedAnchorItem(t, s, "t", "grand", 0, 0)
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "parent", ThreadID: "t", TurnIndex: 1, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "Task",
 		Summary: "parent", ParentID: "grand", CreatedAt: 10,
@@ -234,7 +234,7 @@ func TestListSubagentDescendants_FiltersPlanUpdateChildren(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 	seedAnchorItem(t, s, "t", "anchor", 0, 0)
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "c-plan", ThreadID: "t", TurnIndex: 0, ItemIndex: 1,
 		Kind: "notification", Role: "system", ToolName: "plan_update",
 		Summary: "plan", ParentID: "anchor", CreatedAt: 1,
@@ -274,7 +274,7 @@ func TestListSubagentDescendants_HydratesPayloadMeta(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 	seedAnchorItem(t, s, "t", "anchor", 0, 0)
-	if err := s.InsertItemWithPayload(Item{
+	if err := insertWithPayloadCarded(s, Item{
 		ID: "c-cmd", ThreadID: "t", TurnIndex: 0, ItemIndex: 1,
 		Kind: "tool_call", Role: "assistant", ToolName: "Bash",
 		Summary: "go test ./...", ParentID: "anchor",
@@ -455,7 +455,7 @@ func TestDecorateSubagentAnchors_StaleStoredSummaryKeyDropped(t *testing.T) {
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "anchor", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "Task",
 		Summary: "launch", CreatedAt: 0,
@@ -497,7 +497,7 @@ func TestDecorateSubagentAnchors_LeavesChildlessRowsUntouched(t *testing.T) {
 
 	// A tool_call with no children keeps its meta byte-identical — no
 	// decoration keys, no JSON re-marshal churn.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "plain-tool", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "Read",
 		Summary: "read a file", Meta: `{"filePath":"/tmp/x"}`, CreatedAt: 0,
@@ -545,7 +545,7 @@ func TestIsSubagentLaunch_StructuralNotToolName(t *testing.T) {
 	seedAnchorItem(t, s, "t", "mcp__thing", 0, 0)
 	seedChildItem(t, s, "t", "child", 0, 1, "mcp__thing", "child work", "completed")
 	// A row NAMED Agent with nothing attributed is NOT.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "toolu_bare_agent", ThreadID: "t", TurnIndex: 0, ItemIndex: 2,
 		Kind: "tool_call", Role: "assistant", Status: "running",
 		Summary: "Agent: review", ToolName: "Agent", CreatedAt: 2,
@@ -614,7 +614,7 @@ func TestSubagentReadsResolveAResumeCarrierToItsTranscriptRoot(t *testing.T) {
 	seedChildItem(t, s, "t", "child-1", 0, 1, "agent-1", "round one", "completed")
 	seedToolChildItem(t, s, "t", "child-2", 0, 2, "agent-1", "round two", "completed")
 	// The carrier is a top-level tool_call with no children of its own.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "carrier-1", ThreadID: "t", TurnIndex: 0, ItemIndex: 3,
 		Kind: "tool_call", Role: "assistant", ToolName: "SendMessage",
 		Summary: "Agent: review", Status: "running", CreatedAt: 3,
@@ -669,7 +669,7 @@ func seedResumePromptItem(
 		`{"wire_only":true,%q:true,%q:%q}`,
 		metaKeySubagentResumePrompt, metaKeyResumeCarrierID, carrierID,
 	)
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "user:subagent-prompt:" + carrierID, ThreadID: threadID,
 		TurnIndex: turnIndex, ItemIndex: itemIndex,
 		Kind: "user_text", Role: "user", Status: "completed",
@@ -684,7 +684,7 @@ func seedResumeCarrierItem(
 	t *testing.T, s *Store, threadID, carrierID string, turnIndex, itemIndex int, rootID string,
 ) {
 	t.Helper()
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: carrierID, ThreadID: threadID, TurnIndex: turnIndex, ItemIndex: itemIndex,
 		Kind: "tool_call", Role: "assistant", ToolName: "SendMessage",
 		Summary: "Agent: continue", Status: "running",
@@ -746,7 +746,7 @@ func TestSubagentAnchorsAreDecoratedPerResumeRound(t *testing.T) {
 	// A childless tool call shares the bounded query's bind list (every
 	// windowed tool_call is a walk root) and must still come back
 	// undecorated: the query answers for it with a zero, not by omission.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "plain-bash", ThreadID: "t", TurnIndex: 1, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "Bash",
 		Summary: "ls", Status: "completed", CreatedAt: 10,
@@ -852,7 +852,7 @@ func TestSubagentLaunchWithoutRoundsIsUnchanged(t *testing.T) {
 	seedChildItem(t, s, "t", "child-1", 0, 1, "agent-1", "thinking", "completed")
 	seedToolChildItem(t, s, "t", "child-2", 0, 2, "agent-1", "ran a thing", "completed")
 	// A childless tool call is not an anchor and must stay undecorated.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "plain", ThreadID: "t", TurnIndex: 1, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "Bash",
 		Summary: "ls", Status: "completed", CreatedAt: 10,
@@ -924,7 +924,7 @@ func TestCodexExecutionSnapshotExcludesOtherRunsAndLeavesSpawnUndecorated(t *tes
 		t.Fatal(err)
 	}
 	spawn := Item{ID: "spawn", ThreadID: "t", Kind: "tool_call", Role: "assistant", ToolName: "collab_agent", Status: "completed", CreatedAt: 1, Meta: `{}`}
-	if err := s.InsertItem(spawn); err != nil {
+	if err := insertCarded(s, spawn); err != nil {
 		t.Fatal(err)
 	}
 	seedToolChildItem(t, s, "t", "first", 0, 1, "spawn", "first task", "completed")
@@ -956,7 +956,7 @@ func TestDecorateSubagentAnchors_CompletionSiblingCarriesTheLaunchAggregate(t *t
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "bg-agent", ThreadID: "t", TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", ToolName: "Agent", Status: "running",
 		Summary: "Agent: review", IsBackground: true, CreatedAt: 1,

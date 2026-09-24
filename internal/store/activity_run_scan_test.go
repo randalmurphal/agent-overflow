@@ -23,6 +23,7 @@ func TestActivityRunScanGrowsChunksWithoutLosingMembers(t *testing.T) {
 			t.Errorf("close seed transaction: %v", err)
 		}
 	}()
+	w := s.bulkItemWrites(tx, "t", false)
 	for i := 0; i <= members+1; i++ {
 		item := Item{
 			ID: fmt.Sprintf("row-%d", i), ThreadID: "t", TurnIndex: 0,
@@ -34,9 +35,12 @@ func TestActivityRunScanGrowsChunksWithoutLosingMembers(t *testing.T) {
 		} else {
 			item.Kind, item.ToolName = "tool_call", "Bash"
 		}
-		if err := insertItemTx(tx, item, "test"); err != nil {
+		if err := insertItemTx(tx, w, item, "test"); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := w.finish(); err != nil {
+		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)

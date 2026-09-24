@@ -102,7 +102,7 @@ func seedTimelineParityThread(t *testing.T, s *Store) {
 		t.Fatalf("insert local turn 3: %v", err)
 	}
 	for _, item := range locals {
-		if err := s.InsertItem(item); err != nil {
+		if err := insertCarded(s, item); err != nil {
 			t.Fatalf("insert local item %s: %v", item.ID, err)
 		}
 	}

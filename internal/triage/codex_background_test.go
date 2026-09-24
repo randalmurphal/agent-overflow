@@ -1267,7 +1267,7 @@ func TestCodexSubagentInactiveStatusMarksLaunchInactiveWithoutTranscriptCompleti
 	}); err != nil {
 		t.Fatalf("spawn complete: %v", err)
 	}
-	if _, err := st.AppendItem(store.Item{
+	if _, err := appendSeed(st, store.Item{
 		ID:        "child-final",
 		ThreadID:  "t1",
 		TurnIndex: 0,

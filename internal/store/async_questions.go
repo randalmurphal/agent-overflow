@@ -42,32 +42,31 @@ func (s *Store) RecordAsyncQuestions(item Item) (Item, error) {
 		return Item{}, fmt.Errorf("invalid async question item")
 	}
 	applyItemDefaults(&item)
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Item{}, err
-	}
-	defer tx.Rollback()
-	existing, exists, err := s.getThreadItem(tx, item.ThreadID, item.ID)
-	if err != nil {
-		return Item{}, err
-	}
-	if exists {
-		previous, structured, err := userquestion.Decode([]byte(existing.Meta))
-		if err != nil || !structured || !reflect.DeepEqual(previous.Questions, meta.Questions) {
-			return Item{}, fmt.Errorf("question identity %s has different content", item.ID)
+	var persisted Item
+	err = s.writeItems(item.ThreadID, item.SubagentCard, "record async questions", func(tx *sql.Tx, w *cardWrite) error {
+		existing, exists, err := s.getThreadItem(tx, item.ThreadID, item.ID)
+		if err != nil {
+			return err
 		}
-		item = existing
-	} else if err := writeItem(tx, &item); err != nil {
-		return Item{}, err
-	}
-	if err := insertAsyncQuestions(tx, item, meta.Questions, "unanswered"); err != nil {
-		return Item{}, err
-	}
-	persisted, err := readBackUpsertedItem(tx, item.ThreadID, item.ID)
+		if exists {
+			previous, structured, err := userquestion.Decode([]byte(existing.Meta))
+			if err != nil || !structured || !reflect.DeepEqual(previous.Questions, meta.Questions) {
+				return fmt.Errorf("question identity %s has different content", item.ID)
+			}
+			item = existing
+		} else if err := writeItemWithIndexFn(tx, w, &item, nextItemIndexTx); err != nil {
+			return err
+		}
+		if err := insertAsyncQuestions(tx, item, meta.Questions, "unanswered"); err != nil {
+			return err
+		}
+		if err := w.finish(); err != nil {
+			return err
+		}
+		persisted, err = readBackUpsertedItem(tx, item.ThreadID, item.ID)
+		return err
+	})
 	if err != nil {
-		return Item{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return Item{}, err
 	}
 	return persisted, nil

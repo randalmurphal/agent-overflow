@@ -68,6 +68,9 @@ type Store struct {
 	// deferredMu serializes the runs that advance the deferred migration
 	// watermark. See DeferredMigration.
 	deferredMu sync.Mutex
+	// cards holds the subagent card accumulators between flushes
+	// (subagent_card.go).
+	cards subagentCards
 }
 
 // New opens (or creates) the SQLite database at the given path and runs migrations.
@@ -257,6 +260,11 @@ func (s *Store) quiesceReads(fn func() error) error {
 // checkpoint picks up whatever this one left behind.
 func (s *Store) Close() error {
 	var errs []error
+	// A clean shutdown leaves every subagent card in its stamps, so the
+	// boot pass (RecoverSubagentCards) recomputes the values they hold.
+	if err := s.FlushAllSubagentCards(); err != nil {
+		errs = append(errs, fmt.Errorf("store: flush subagent cards: %w", err))
+	}
 	if s.read != nil {
 		if err := s.read.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("store: close read pool: %w", err))
@@ -633,23 +641,19 @@ type Item struct {
 	// That is what lets a client describe a held window by its (id, rev)
 	// pairs instead of shipping the rows back.
 	//
-	// It is stamped only by the item history triggers: the one value an
-	// INSERT or UPDATE column list assigns it is subagentClaimRev, which
-	// the trigger's row stamp replaces in the same statement. Imported
+	// It is stamped only by the item history triggers, never by Go: no
+	// INSERT or UPDATE column list may assign it a value. Imported
 	// history rows read as -1 because they live in shared immutable
 	// chunks with no thread-scoped place to stamp; a window containing
 	// one cannot be verified by digest (see importedItemRevExpr and
 	// UnstampedItemRev, which is the same refusal for a wire row an
 	// emitter altered on purpose).
 	Rev int64 `json:"rev"`
-	// SubagentAnchor is a write's claim, never read back: the anchor whose
-	// card the row counts toward (SubagentAnchorable), the row's parent or
-	// a local ancestor of it.
-	// The store checks it against the parent chain (ErrSubagentAnchor)
-	// and keeps the launch's card with keyed writes instead of a
-	// recompute (subagent_aggregate_writes.go). A write that leaves it
-	// empty marks the chain for the recompute.
-	SubagentAnchor string `json:"-"`
+	// SubagentCard is the card of the row's parent (OpenSubagentCard),
+	// never read back. A write of a visible row with a parent needs it,
+	// outside a bulk writer (ErrSubagentAnchor): the store feeds the row
+	// to the card's accumulators once the write commits.
+	SubagentCard *SubagentCard `json:"-"`
 }
 
 // Payload represents heavy content stored for on-demand loading.

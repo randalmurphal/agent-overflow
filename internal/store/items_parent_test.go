@@ -50,7 +50,7 @@ func TestInsertItemPersistsParentID(t *testing.T) {
 		ParentID:  "task_tool_42",
 		CreatedAt: now,
 	}
-	if err := s.InsertItem(item); err != nil {
+	if err := insertCarded(s, item); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
@@ -82,7 +82,7 @@ func TestInsertItemEmptyParentIDRoundTrips(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID:        "item-top",
 		ThreadID:  threadID,
 		TurnIndex: 0,
@@ -122,14 +122,14 @@ func TestListItemsPreservesParentID(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create thread: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "parent", ThreadID: threadID, TurnIndex: 0, ItemIndex: 0,
 		Kind: "tool_call", Role: "assistant", Summary: "Task",
 		CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("insert parent: %v", err)
 	}
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "child-1", ThreadID: threadID, TurnIndex: 0, ItemIndex: 1,
 		Kind: "assistant_text", Role: "assistant", Summary: "child result",
 		ParentID: "parent", CreatedAt: now,
@@ -174,7 +174,7 @@ func TestItemIndexUniqueConstraintBlocksDuplicate(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 	// First insert is fine.
-	if err := s.InsertItem(Item{
+	if err := insertCarded(s, Item{
 		ID: "i-a", ThreadID: "t-dup", TurnIndex: 0, ItemIndex: 0,
 		Kind: "assistant_text", Role: "assistant", CreatedAt: now,
 	}); err != nil {
@@ -217,7 +217,7 @@ func TestConcurrentAppendItemAssignsUniqueIndex(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			if _, err := s.AppendItem(Item{
+			if _, err := appendCarded(s, Item{
 				ID:        fmt.Sprintf("item-%d", n),
 				ThreadID:  "t-race",
 				TurnIndex: 0,
@@ -269,7 +269,7 @@ func TestAppendItemReturnsAssignedIndex(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	idxA, err := s.AppendItem(Item{
+	idxA, err := appendCarded(s, Item{
 		ID: "a", ThreadID: "t-ra", TurnIndex: 0, Kind: "assistant_text",
 		Role: "assistant", CreatedAt: now,
 	})
@@ -279,7 +279,7 @@ func TestAppendItemReturnsAssignedIndex(t *testing.T) {
 	if idxA != 0 {
 		t.Errorf("first append should return 0, got %d", idxA)
 	}
-	idxB, err := s.AppendItem(Item{
+	idxB, err := appendCarded(s, Item{
 		ID: "b", ThreadID: "t-ra", TurnIndex: 0, Kind: "assistant_text",
 		Role: "assistant", CreatedAt: now,
 	})
@@ -317,7 +317,7 @@ func TestConcurrentAppendItemWithPayloadAssignsUniqueIndex(t *testing.T) {
 				ID: payloadID, Kind: "diff", Meta: "{}",
 				Data: []byte("delta"), CreatedAt: now,
 			}
-			_, err := s.AppendItemWithPayload(Item{
+			_, err := appendWithPayloadCarded(s, Item{
 				ID:        itemID,
 				ThreadID:  "t-race-pl",
 				TurnIndex: 0,
@@ -380,7 +380,7 @@ func TestAppendItemWithPayloadReturnsAssignedIndex(t *testing.T) {
 		t.Fatalf("create thread: %v", err)
 	}
 
-	idx, err := s.AppendItemWithPayload(Item{
+	idx, err := appendWithPayloadCarded(s, Item{
 		ID: "a", ThreadID: "t-rap", TurnIndex: 0, Kind: "tool_call",
 		Role: "assistant", PayloadID: "pa", CreatedAt: now,
 	}, Payload{ID: "pa", Kind: "diff", Meta: "{}", Data: []byte("pa"), CreatedAt: now})
@@ -390,7 +390,7 @@ func TestAppendItemWithPayloadReturnsAssignedIndex(t *testing.T) {
 	if idx != 0 {
 		t.Errorf("first append index = %d, want 0", idx)
 	}
-	idx, err = s.AppendItemWithPayload(Item{
+	idx, err = appendWithPayloadCarded(s, Item{
 		ID: "b", ThreadID: "t-rap", TurnIndex: 0, Kind: "tool_call",
 		Role: "assistant", PayloadID: "pb", CreatedAt: now,
 	}, Payload{ID: "pb", Kind: "diff", Meta: "{}", Data: []byte("pb"), CreatedAt: now})

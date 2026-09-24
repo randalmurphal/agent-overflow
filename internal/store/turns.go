@@ -1,7 +1,9 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -263,8 +265,22 @@ type CrashedTurn struct {
 // sweeping crash residue is not a user interaction (matches
 // RecoverCodexBackgroundRuntime).
 //
+// Before the sweep, RecoverSubagentCards recomputes the subagent cards
+// of every agent the previous instance left running, which the sweep is
+// about to settle: rows written under them after their last flush are in
+// no stamp. A failure there does not stop the sweep; both are returned.
+//
 // Returns the settled turns so the caller can log the repair.
 func (s *Store) RecoverCrashedTurns(summarise func(string) string, now int64) ([]CrashedTurn, error) {
+	var cardsErr error
+	if _, err := s.RecoverSubagentCards(context.Background()); err != nil {
+		cardsErr = fmt.Errorf("store: recover subagent cards: %w", err)
+	}
+	crashed, err := s.recoverCrashedTurns(summarise, now)
+	return crashed, errors.Join(cardsErr, err)
+}
+
+func (s *Store) recoverCrashedTurns(summarise func(string) string, now int64) ([]CrashedTurn, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("store: begin crashed-turn recovery tx: %w", err)
@@ -311,7 +327,7 @@ func (s *Store) RecoverCrashedTurns(summarise func(string) string, now int64) ([
 	}
 
 	for _, c := range crashed {
-		if err := flipCrashedTurnItemsTx(tx, c, summarise, now); err != nil {
+		if err := s.flipCrashedTurnItemsTx(tx, c, summarise, now); err != nil {
 			return nil, err
 		}
 	}
@@ -325,8 +341,8 @@ func (s *Store) RecoverCrashedTurns(summarise func(string) string, now int64) ([
 // flipCrashedTurnItemsTx flips one crashed turn's streaming/running
 // items to errored inside the recovery transaction. Backgrounded
 // tool_call launches are exempt — see RecoverCrashedTurns.
-func flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func(string) string, now int64) error {
-	return settleStrandedItemsTx(tx, c.ThreadID, &c.TurnIndex, summarise, now)
+func (s *Store) flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func(string) string, now int64) error {
+	return s.settleStrandedItemsTx(tx, c.ThreadID, &c.TurnIndex, summarise, now)
 }
 
 // settleStrandedItemsTx is the shared "no live process can ever finish
@@ -344,8 +360,10 @@ func flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func(string) st
 // approval that never resolved is only answerable while triage holds
 // its pending request in memory, so the status flip is the whole
 // settle for those rows too (a fork thread has no triage state at
-// all, and a rebooted app has none either).
-func settleStrandedItemsTx(tx *sql.Tx, threadID string, turnIndex *int, summarise func(string) string, now int64) error {
+// all, and a rebooted app has none either). A flipped agent child's
+// summary can move its launch's card; the settle carries no card and
+// recomputes those chains.
+func (s *Store) settleStrandedItemsTx(tx *sql.Tx, threadID string, turnIndex *int, summarise func(string) string, now int64) error {
 	scope := threadID
 	args := []any{threadID}
 	turnFilter := ""
@@ -356,7 +374,7 @@ func settleStrandedItemsTx(tx *sql.Tx, threadID string, turnIndex *int, summaris
 	}
 
 	rows, err := tx.Query(
-		`SELECT id, summary FROM items
+		`SELECT `+subagentRowColumns("")+` FROM items
 		  WHERE thread_id = ?`+turnFilter+`
 		    AND status IN ('streaming', 'running')
 		    AND NOT (is_background = 1 AND kind = 'tool_call')`,
@@ -365,11 +383,10 @@ func settleStrandedItemsTx(tx *sql.Tx, threadID string, turnIndex *int, summaris
 	if err != nil {
 		return fmt.Errorf("store: stranded item select %s: %w", scope, err)
 	}
-	type flip struct{ id, summary string }
-	var flips []flip
+	var flips []subagentRow
 	for rows.Next() {
-		var f flip
-		if err := rows.Scan(&f.id, &f.summary); err != nil {
+		f, err := scanSubagentRow(rows)
+		if err != nil {
 			rows.Close()
 			return fmt.Errorf("store: stranded item scan: %w", err)
 		}
@@ -381,21 +398,23 @@ func settleStrandedItemsTx(tx *sql.Tx, threadID string, turnIndex *int, summaris
 	}
 	rows.Close()
 
+	w := s.bulkItemWrites(tx, threadID, false)
 	for _, f := range flips {
+		row := f
+		row.summary = summarise(f.summary)
+		if err := w.updated(f, row); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(
 			`UPDATE items
 			    SET status = 'errored', summary = ?, updated_at = ?
 			  WHERE thread_id = ? AND id = ?`,
-			summarise(f.summary), now, threadID, f.id,
+			row.summary, now, threadID, f.id,
 		); err != nil {
 			return fmt.Errorf("store: stranded item flip %s: %w", f.id, err)
 		}
 	}
-	if len(flips) == 0 {
-		return nil
-	}
-	// A flipped agent child's summary can move its launch's card.
-	return settleSubagentAggregatesTx(tx, threadID)
+	return w.finish()
 }
 
 // GetTurn returns a single turn by its provider-assigned id. Returns

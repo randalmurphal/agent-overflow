@@ -559,7 +559,7 @@ func TestUnsealThreadHistoryMovesLargeChunksInPieces(t *testing.T) {
 	s := newTestStore(t)
 	ids := localHistoryFixture(t, s, "t", 40)
 	// A local row the search index build has not reached.
-	if err := s.InsertItem(Item{ID: "unindexed", ThreadID: "t", TurnIndex: 9, Kind: "assistant_text",
+	if err := insertCarded(s, Item{ID: "unindexed", ThreadID: "t", TurnIndex: 9, Kind: "assistant_text",
 		Role: "assistant", Status: "completed", Summary: "not indexed yet", CreatedAt: 1, UpdatedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -673,13 +673,20 @@ func TestUnsealThreadHistoryLeavesAnchorStampsAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	var children []string
+	card, err := s.OpenSubagentCard("t", "launch")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := 1; i <= 8; i++ {
 		id := fmt.Sprintf("child-%d", i)
-		child := Item{ID: id, ThreadID: "t", TurnIndex: 1, ItemIndex: i, Kind: "assistant_text", Role: "assistant", Status: "completed", ParentID: "launch", Summary: id, Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
+		child := Item{ID: id, ThreadID: "t", TurnIndex: 1, ItemIndex: i, Kind: "assistant_text", Role: "assistant", Status: "completed", ParentID: "launch", Summary: id, Meta: "{}", CreatedAt: 1, UpdatedAt: 1, SubagentCard: card}
 		if _, err := s.UpsertItemWithInputPayload(child, &Payload{ID: "p-" + id, Kind: "text", Meta: "{}", Data: []byte(id), CreatedAt: 1}, nil); err != nil {
 			t.Fatal(err)
 		}
 		children = append(children, id)
+	}
+	if err := card.Close(); err != nil {
+		t.Fatal(err)
 	}
 	sealItemsForTest(t, s, "t", children...)
 	// A later write moves the thread stamp past the launch's, so a re-stamp
@@ -1113,10 +1120,10 @@ func TestPruneOrphanPayloadBatchRechecksReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := Item{ID: "a", ThreadID: "t", Kind: "compaction", Role: "system", Status: "completed", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
-	if _, err := s.UpsertItem(item, &Payload{ID: "old", Kind: "compaction", Meta: "{}", Data: []byte("old"), CreatedAt: 1}); err != nil {
+	if _, err := upsertCarded(s, item, &Payload{ID: "old", Kind: "compaction", Meta: "{}", Data: []byte("old"), CreatedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpsertItem(item, &Payload{ID: "new", Kind: "compaction", Meta: "{}", Data: []byte("new"), CreatedAt: 1}); err != nil {
+	if _, err := upsertCarded(s, item, &Payload{ID: "new", Kind: "compaction", Meta: "{}", Data: []byte("new"), CreatedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	var scanned []orphanPayload
@@ -1130,7 +1137,7 @@ func TestPruneOrphanPayloadBatchRechecksReferences(t *testing.T) {
 		t.Fatalf("scan = %+v, want the old payload", scanned)
 	}
 	item.PayloadID = "old"
-	if _, err := s.UpsertItem(item, nil); err != nil {
+	if _, err := upsertCarded(s, item, nil); err != nil {
 		t.Fatal(err)
 	}
 	stats, released, err := s.pruneOrphanPayloadBatch(scanned)
@@ -1158,7 +1165,7 @@ func TestPruneOrphanPayloadsSkipsAFailingBatch(t *testing.T) {
 		{ID: "p3", Data: []byte("live")},
 	} {
 		payload.Kind, payload.Meta, payload.CreatedAt = "compaction", "{}", 1
-		if _, err := s.UpsertItem(item, &payload); err != nil {
+		if _, err := upsertCarded(s, item, &payload); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1187,7 +1194,7 @@ func TestPruneOrphanPayloadsStopsOnCancel(t *testing.T) {
 	}
 	item := Item{ID: "a", ThreadID: "t", Kind: "compaction", Role: "system", Status: "completed", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
 	for i := 0; i <= historyRepairRows+1; i++ {
-		if _, err := s.UpsertItem(item, &Payload{ID: fmt.Sprintf("p%03d", i), Kind: "compaction", Meta: "{}", Data: []byte("x"), CreatedAt: 1}); err != nil {
+		if _, err := upsertCarded(s, item, &Payload{ID: fmt.Sprintf("p%03d", i), Kind: "compaction", Meta: "{}", Data: []byte("x"), CreatedAt: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}

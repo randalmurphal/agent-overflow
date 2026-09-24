@@ -47,7 +47,7 @@ func TestListThreadUserMessageTicks(t *testing.T) {
 	}
 	for _, it := range rows {
 		it.CreatedAt, it.UpdatedAt = now, now
-		if err := s.InsertItem(it); err != nil {
+		if err := insertCarded(s, it); err != nil {
 			t.Fatalf("insert %s: %v", it.ID, err)
 		}
 	}
@@ -119,7 +119,7 @@ func TestListThreadUserMessageHistory(t *testing.T) {
 	}
 	for _, it := range rows {
 		it.CreatedAt, it.UpdatedAt = now, now
-		if err := s.InsertItem(it); err != nil {
+		if err := insertCarded(s, it); err != nil {
 			t.Fatalf("insert %s: %v", it.ID, err)
 		}
 	}
@@ -190,7 +190,7 @@ func TestThreadTurnPreview(t *testing.T) {
 	}
 	for _, it := range rows {
 		it.ThreadID, it.CreatedAt, it.UpdatedAt = "t-p", now, now
-		if err := s.InsertItem(it); err != nil {
+		if err := insertCarded(s, it); err != nil {
 			t.Fatalf("insert %s: %v", it.ID, err)
 		}
 	}
@@ -254,7 +254,7 @@ func TestThreadTurnPreviewUsesChildTranscript(t *testing.T) {
 		row.ThreadID = "scope-preview"
 		row.ItemIndex = i + 1
 		row.CreatedAt = 1
-		if err := s.InsertItem(row); err != nil {
+		if err := insertCarded(s, row); err != nil {
 			t.Fatal(err)
 		}
 	}

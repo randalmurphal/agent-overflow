@@ -21,7 +21,7 @@ func TestTransferHistoryMetadataTransformPreservesReverseIDTimelineAcrossPages(t
 		item := Item{ID: fmt.Sprintf("item-%03d", count-i), ThreadID: thread.ID,
 			TurnIndex: 0, ItemIndex: i, Kind: "assistant_text", Role: "assistant",
 			Summary: fmt.Sprintf("message %d", i), Status: "completed", Meta: `{"native":"original"}`}
-		if err := source.InsertItem(item); err != nil {
+		if err := insertCarded(source, item); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -96,13 +96,13 @@ func TestTransferHistoryRoundTripWithLargePayloadAndSubagentRows(t *testing.T) {
 	}
 	body := bytes.Repeat([]byte("long command output\n"), 50_000)
 	parent := Item{ID: "parent", ThreadID: thread.ID, TurnIndex: 0, ItemIndex: 0, Kind: "tool_call", Role: "assistant", Status: "completed", Summary: "command", PayloadID: "output", Meta: `{}`}
-	if err := source.InsertItemWithPayload(parent, Payload{ID: "output", Kind: "tool_output", Meta: `{}`, Data: body[:100], CreatedAt: 1}); err != nil {
+	if err := insertWithPayloadCarded(source, parent, Payload{ID: "output", Kind: "tool_output", Meta: `{}`, Data: body[:100], CreatedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if err := source.AppendPayloadData(thread.ID, "output", body[100:], `{}`, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.InsertItem(Item{ID: "child", ThreadID: thread.ID, TurnIndex: 0, ItemIndex: 1, ParentID: "parent", Kind: "assistant_text", Role: "assistant", Summary: "nested", Status: "completed"}); err != nil {
+	if err := insertCarded(source, Item{ID: "child", ThreadID: thread.ID, TurnIndex: 0, ItemIndex: 1, ParentID: "parent", Kind: "assistant_text", Role: "assistant", Summary: "nested", Status: "completed"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := source.InsertTurn(Turn{ThreadID: thread.ID, TurnID: "turn-1", TurnIndex: 0, StartedAt: 1}); err != nil {
@@ -160,7 +160,7 @@ func TestTransferHistoryRefusesPartialOrForeignDataAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := source.InsertItemWithPayload(Item{ID: "item", ThreadID: thread.ID, Kind: "assistant_text", Role: "assistant", PayloadID: "payload"}, Payload{ID: "payload", Kind: "markdown", Data: []byte("answer"), Meta: `{}`}); err != nil {
+	if err := insertWithPayloadCarded(source, Item{ID: "item", ThreadID: thread.ID, Kind: "assistant_text", Role: "assistant", PayloadID: "payload"}, Payload{ID: "payload", Kind: "markdown", Data: []byte("answer"), Meta: `{}`}); err != nil {
 		t.Fatal(err)
 	}
 	var original bytes.Buffer
@@ -221,7 +221,7 @@ func TestTransferHistoryCarriesInheritedAttachmentsAndAllowsIndependentCopies(t 
 	if err := source.InsertAttachment(Attachment{ID: "inherited", ThreadID: "parent", Kind: AttachmentKindFile, Filename: "notes.txt", RelativePath: "parent/inherited/notes.txt", MimeType: "text/plain", Size: 3}); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.InsertItem(Item{ID: "user", ThreadID: "fork", Kind: "user_text", Role: "user", Meta: `{"provider_item_id":"native-wire-id","attachments":[{"id":"inherited","threadId":"parent","filename":"notes.txt"}]}`}); err != nil {
+	if err := insertCarded(source, Item{ID: "user", ThreadID: "fork", Kind: "user_text", Role: "user", Meta: `{"provider_item_id":"native-wire-id","attachments":[{"id":"inherited","threadId":"parent","filename":"notes.txt"}]}`}); err != nil {
 		t.Fatal(err)
 	}
 	thread, err := source.GetThread("fork")
@@ -271,7 +271,7 @@ func TestTransferHistoryRewritesAssistantRowAttachments(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.InsertItem(Item{
+	if err := insertCarded(source, Item{
 		ID: "image:img-1", ThreadID: "origin", Kind: "assistant_text", Role: "assistant",
 		Status: "completed", Summary: "A quiet dashboard",
 		Meta: `{"generatedImage":{"sourceItemId":"img-1","provider":"codex","prompt":"A quiet dashboard"},` +
@@ -328,7 +328,7 @@ func TestTransferHistoryCopiesReviewNotesWithoutAliasingTheirIDs(t *testing.T) {
 	if err := source.UpdateTurnCompleted("source:wire-turn", 2, "end_turn", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.InsertItem(Item{ID: "plan", ThreadID: "source", Kind: "assistant_text", Role: "assistant", Summary: "plan"}); err != nil {
+	if err := insertCarded(source, Item{ID: "plan", ThreadID: "source", Kind: "assistant_text", Role: "assistant", Summary: "plan"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := source.EnsureProposedPlanState("source", "plan", 1); err != nil {
@@ -337,7 +337,7 @@ func TestTransferHistoryCopiesReviewNotesWithoutAliasingTheirIDs(t *testing.T) {
 	if _, err := source.db.Exec(`INSERT INTO proposed_plan_comments (` + proposedPlanCommentColumns + `) VALUES ('note','source','plan','sent',1,1,'selected','keep this note',2,'source:wire-turn',1,2)`); err != nil {
 		t.Fatal(err)
 	}
-	if err := source.InsertItem(Item{ID: "revision", ThreadID: "source", Kind: "user_text", Role: "user", ItemIndex: 1, Meta: `{"revisionSourceProposedPlan":{"threadId":"source","itemId":"plan"},"revisionSourceCommentIds":["note"]}`}); err != nil {
+	if err := insertCarded(source, Item{ID: "revision", ThreadID: "source", Kind: "user_text", Role: "user", ItemIndex: 1, Meta: `{"revisionSourceProposedPlan":{"threadId":"source","itemId":"plan"},"revisionSourceCommentIds":["note"]}`}); err != nil {
 		t.Fatal(err)
 	}
 	thread, err := source.GetThread("source")
