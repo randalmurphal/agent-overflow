@@ -53,7 +53,8 @@ type launcherFlags struct {
 	// The in-app update's internal modes (update_trial.go). UpdatePreflight
 	// is the answer file a new launcher writes after staging and checking
 	// its payload beside UpdateStable in Distro, for update UpdateID.
-	// UpdateApply runs the update with that id. Wait is a launcher that
+	// UpdateApply runs the update with that id from Distro's record. Wait
+	// is a launcher that
 	// must exit before this one claims the single-instance identity, named
 	// by --wait-pid and --wait-start so a reused process id never matches.
 	UpdatePreflight string
@@ -97,6 +98,9 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 	}
 	if *updateApply != "" && !wsllauncher.ValidUpdateID(*updateApply) {
 		return launcherFlags{}, fmt.Errorf("--update-apply %q is not an update id", *updateApply)
+	}
+	if *updateApply != "" && strings.TrimSpace(*distro) == "" {
+		return launcherFlags{}, errors.New("--update-apply requires --distro, whose update record it runs")
 	}
 	if *updatePreflight != "" && !wsllauncher.ValidUpdateID(*updateID) {
 		return launcherFlags{}, fmt.Errorf("--update-id %q is not an update id", *updateID)

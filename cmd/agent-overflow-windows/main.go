@@ -235,7 +235,7 @@ func main() {
 		if err := waitForParentLauncher(flags.Wait); err != nil {
 			log.Printf("launcher: %v", err)
 			if flags.UpdateApply != "" {
-				failUpdateBeforeApply(flags.UpdateApply, err)
+				failUpdateBeforeApply(flags.UpdateApply, flags.Distro, err)
 				os.Exit(1)
 			}
 		}
@@ -287,7 +287,7 @@ func main() {
 	// update's progress and needs no distro list or picker.
 	if flags.UpdateApply != "" {
 		app := buildApp(nil, "/loading", "", false)
-		app.updateApplyID = flags.UpdateApply
+		app.updateApplyID, app.updateApplyDistro = flags.UpdateApply, flags.Distro
 		app.run()
 		return
 	}
@@ -577,17 +577,18 @@ type launcherApp struct {
 	// Linux path, recorded by launchAndShow for an in-app update (under mu).
 	payloadDistro string
 	payloadPath   string
-	// updateApplyID is the update --update-apply runs, set before the app
-	// starts. updateRunning keeps that window open while it runs.
-	updateApplyID string
-	updateRunning atomic.Bool
-	// reconciling refuses a picker launch while the update record's
-	// recovery runs.
-	reconciling atomic.Bool
-	// updatingTo is the version whose committed update this launcher
-	// process finishes, from the record's reconciliation; every backend it
-	// starts is told (wsllauncher.UpdatingToArgs).
-	updatingTo atomic.Pointer[string]
+	// updateApplyID is the update --update-apply runs for the data root in
+	// updateApplyDistro, set before the app starts. updateRunning keeps
+	// that window open while it runs.
+	updateApplyID     string
+	updateApplyDistro string
+	updateRunning     atomic.Bool
+	// launching refuses a picker launch while another launch, including
+	// its update record's recovery, runs.
+	launching atomic.Bool
+	// backendUpdateArgs is what the distro's update record tells the
+	// backend this launch starts (ReconcileDecision.BackendArgs).
+	backendUpdateArgs atomic.Pointer[[]string]
 
 	// backendURL holds the page URL launchAndShow pointed the WebView at.
 	// Read by the reload keybinding (uikeys.BrowserWithReload) so Ctrl+R
@@ -635,13 +636,13 @@ func (a *launcherApp) PickDistro(name string) error {
 	if already {
 		return errors.New("backend already launched")
 	}
-	if a.reconciling.Load() {
-		return errors.New("an interrupted update is still being finished")
-	}
-
 	if err := a.validateDistroName(name); err != nil {
 		return err
 	}
+	if !a.launching.CompareAndSwap(false, true) {
+		return errors.New("a launch is already in progress")
+	}
+	defer a.launching.Store(false)
 
 	// Picker selections are user intent — persist on success.
 	// launchAndShow owns the WebView URL on every exit path (picker,
@@ -696,6 +697,12 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	started := time.Now()
 	defer logBootPhase("launcher.launch_and_show.total", started)
 	a.loading.begin(started)
+
+	// The distro's update record is reconciled before anything runs in it.
+	// A launch it hands off or blocks owns the window from there.
+	if !a.reconcileUpdate(distro) {
+		return nil
+	}
 
 	phaseStarted := time.Now()
 	binPath, cachedPath, err := a.ensurePayloadInstalled(ctx, distro)
@@ -925,8 +932,8 @@ func (a *launcherApp) launchBackend(ctx context.Context, distro, binPath string,
 		return nil, nil, err
 	}
 	args := append(profileArgs, extraArgs...)
-	if version := a.updatingTo.Load(); version != nil {
-		args = append(args, wsllauncher.UpdatingToArgs(*version)...)
+	if update := a.backendUpdateArgs.Load(); update != nil {
+		args = append(args, *update...)
 	}
 	l, bs, err := wsllauncher.Launch(ctx, wsllauncher.LaunchOptions{
 		Distro:         distro,
@@ -1470,15 +1477,13 @@ func buildApp(distros []wsllauncher.Distro, initialURL, chosen string, transient
 // failure; this goroutine just logs.
 func (a *launcherApp) afterWindow(chosen string, transient bool) {
 	if a.updateApplyID != "" {
-		a.runUpdateApply(a.updateApplyID)
+		a.runUpdateApply(a.updateApplyID, a.updateApplyDistro)
 		return
 	}
-	a.reconciling.Store(true)
-	proceed := a.reconcileUpdate()
-	a.reconciling.Store(false)
-	if !proceed || chosen == "" {
+	if chosen == "" || !a.launching.CompareAndSwap(false, true) {
 		return
 	}
+	defer a.launching.Store(false)
 	if err := a.launchAndShow(chosen, transient); err != nil {
 		log.Printf("launch backend: %v", err)
 	}

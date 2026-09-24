@@ -53,6 +53,20 @@ func UpdatingToArgs(version string) []string {
 	return []string{"--" + UpdatingToFlag, version}
 }
 
+// UpdateFailedToFlag and UpdateFailedReasonFlag are the backend boot flags
+// (no dashes) naming an update from the backend's version that the
+// launcher's record settled as rolled back or failed, and why, for the
+// backend's notice that the update did not apply. They are shared for the
+// reason ResetTransportPortFlag is.
+const (
+	UpdateFailedToFlag     = "update-failed-to"
+	UpdateFailedReasonFlag = "update-failed-reason"
+)
+
+// updateFailedReasonLimit bounds the reason on the backend's command line,
+// which Windows caps.
+const updateFailedReasonLimit = 512
+
 // PageURLPath is the backend transport route that answers a page URL.
 // The launcher asks it twice over a document's life: once for the bare
 // URL to navigate to (the reload keybinding, since the boot URL is a

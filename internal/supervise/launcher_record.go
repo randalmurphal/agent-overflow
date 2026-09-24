@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/atomicfile"
 )
 
@@ -14,8 +13,9 @@ import (
 // (docs/specs/app-update.md). The launcher supervises that update, so the
 // record lives on the Windows side, where it can be read before WSL starts and
 // fsync and rename are native. It is State with one update, plus what a later
-// launch needs to resume or recover that update. The WSL backend reads it
-// through /mnt/c for the reason a rollback shows.
+// launch needs to resume or recover that update. The launcher passes the
+// backend what the record settled (wsllauncher.ReconcileDecision.BackendArgs);
+// the backend never reads it.
 type LauncherRecord struct {
 	State
 	// Distro is the WSL distribution the payload runs in.
@@ -39,10 +39,31 @@ type LauncherRecord struct {
 // that holds the record and the staged launcher.
 const LauncherRecordDir = "runtime"
 
-// LauncherRecordPath is one runtime profile's record under the launcher's
-// config directory (wsldistro.WSLConfigDir).
-func LauncherRecordPath(configDir, mode string) string {
-	return filepath.Join(configDir, LauncherRecordDir, appidentity.StateFileName("app-update.json", mode))
+// LauncherRecordPath is the record for one launcher build and one data root,
+// under the launcher's config directory (wsldistro.WSLConfigDir). mode is the
+// launcher's runtime mode (appidentity.LauncherMode: dev, prod or an isolated
+// profile) and distro the WSL distribution that holds the backend's data.
+// Dev and production launchers, and launches of different distributions,
+// never read each other's record.
+func LauncherRecordPath(configDir, mode, distro string) string {
+	return filepath.Join(configDir, LauncherRecordDir, "app-update-"+recordNamePart(mode)+"."+recordNamePart(distro)+".json")
+}
+
+// recordNamePart is s as part of a file name: lower case, because Windows
+// file names and WSL distribution names ignore case, with every byte outside
+// [a-z0-9._-] percent-encoded, so distinct names never share a file and no
+// name leaves the directory. A mode holds no dot, so the first dot ends it.
+func recordNamePart(s string) string {
+	var b strings.Builder
+	for _, c := range []byte(strings.ToLower(s)) {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '.', c == '_', c == '-':
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
 }
 
 // Validate is State's check plus the launcher's fields. A launcher record
@@ -101,17 +122,18 @@ func SaveLauncherRecord(path string, record LauncherRecord) error {
 	return nil
 }
 
-// UnsuccessfulUpdateReason is the recorded reason an update to target did not
-// commit, or "" when the record says nothing about that update: another
-// target, still pending, or committed.
-func (r LauncherRecord) UnsuccessfulUpdateReason(target string) string {
+// UnsuccessfulUpdate is the update from version from that the record settled
+// as rolled back or failed, and its recorded reason. ok is false when the
+// record holds no such update: another starting version, still pending, or
+// committed.
+func (r LauncherRecord) UnsuccessfulUpdate(from string) (to, reason string, ok bool) {
 	update := r.Update
-	if update == nil || update.To != target {
-		return ""
+	if update == nil || update.From != from {
+		return "", "", false
 	}
 	switch update.State {
 	case UpdateRolledBack, UpdateFailed:
-		return update.Reason
+		return update.To, update.Reason, true
 	}
-	return ""
+	return "", "", false
 }

@@ -119,7 +119,7 @@ func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, st
 		}
 		return fmt.Errorf("the downloaded %s reports version %s", directive.Version, answer.Version)
 	}
-	recordPath := supervise.LauncherRecordPath(dir, launcherRuntimeMode())
+	recordPath := supervise.LauncherRecordPath(dir, launcherRuntimeMode(), distro)
 	if _, err := wsllauncher.BeginLauncherUpdate(recordPath, record, payloadVersion, directive.Version, id, time.Now()); err != nil {
 		discardLauncher()
 		if removeErr := payloads.RemoveStagedPayload(context.Background(), record); removeErr != nil {
@@ -127,7 +127,7 @@ func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, st
 		}
 		return fmt.Errorf("record the update: %w", err)
 	}
-	if err := startLauncherAfterThis(launcherPath, "--update-apply", id); err != nil {
+	if err := startLauncherAfterThis(launcherPath, "--update-apply", id, "--distro", distro); err != nil {
 		// Settled before the error is reported, so no later launch tries
 		// to resume an update whose new launcher never ran.
 		if settleErr := wsllauncher.SettleLauncherUpdate(recordPath, id, supervise.UpdateFailed,
@@ -215,12 +215,12 @@ func waitForParentLauncher(parent supervise.ProcessRef) error {
 
 // failUpdateBeforeApply settles an update whose previous launcher never
 // exited, so the next launch reports it rather than resuming it.
-func failUpdateBeforeApply(id string, cause error) {
+func failUpdateBeforeApply(id, distro string, cause error) {
 	dir, ok := wsldistro.WSLConfigDir()
 	if !ok {
 		return
 	}
-	recordPath := supervise.LauncherRecordPath(dir, launcherRuntimeMode())
+	recordPath := supervise.LauncherRecordPath(dir, launcherRuntimeMode(), distro)
 	if err := wsllauncher.SettleLauncherUpdate(recordPath, id, supervise.UpdateFailed, cause.Error(), time.Now()); err != nil {
 		log.Printf("updater: settle update %s: %v", id, err)
 	}
@@ -273,11 +273,11 @@ func newUpdatePayloads() wsllauncher.UpdatePayloads {
 	return wsllauncher.UpdatePayloads{Runner: wsllauncher.UpdateCommandRunner{Logf: log.Printf}}
 }
 
-// updateSequence builds the sequence for this runtime profile's record,
-// with the loading page as its progress sink.
-func (a *launcherApp) updateSequence(dir string) wsllauncher.UpdateSequence {
+// updateSequence builds the sequence for the record of this runtime
+// profile and distro, with the loading page as its progress sink.
+func (a *launcherApp) updateSequence(dir, distro string) wsllauncher.UpdateSequence {
 	return wsllauncher.UpdateSequence{
-		RecordPath: supervise.LauncherRecordPath(dir, launcherRuntimeMode()),
+		RecordPath: supervise.LauncherRecordPath(dir, launcherRuntimeMode(), distro),
 		Host:       launcherUpdateHost{UpdatePayloads: newUpdatePayloads(), configDir: dir},
 		Progress:   a.loading.setProgress,
 		Logf:       log.Printf,
@@ -288,7 +288,7 @@ func (a *launcherApp) updateSequence(dir string) wsllauncher.UpdateSequence {
 // loading page showing progress, then start the install path and quit. The
 // window hides instead of closing while the update runs; a second launch
 // shows it again.
-func (a *launcherApp) runUpdateApply(id string) {
+func (a *launcherApp) runUpdateApply(id, distro string) {
 	w := a.win()
 	a.updateRunning.Store(true)
 	w.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
@@ -304,7 +304,7 @@ func (a *launcherApp) runUpdateApply(id string) {
 		return
 	}
 	a.loading.begin(time.Now())
-	sequence := a.updateSequence(dir)
+	sequence := a.updateSequence(dir, distro)
 	record, found, err := supervise.LoadLauncherRecord(sequence.RecordPath)
 	if err == nil && found {
 		target := record.Update.To
@@ -333,13 +333,13 @@ func (a *launcherApp) runUpdateApply(id string) {
 	default:
 		log.Printf("updater: update %s ended %s", id, end.State)
 	}
-	a.relaunchInstallPath(dir)
+	a.relaunchInstallPath(sequence.RecordPath)
 }
 
 // relaunchInstallPath starts the launcher at the install path, which waits
 // for this one to exit, and quits.
-func (a *launcherApp) relaunchInstallPath(dir string) {
-	record, found, err := supervise.LoadLauncherRecord(supervise.LauncherRecordPath(dir, launcherRuntimeMode()))
+func (a *launcherApp) relaunchInstallPath(recordPath string) {
+	record, found, err := supervise.LoadLauncherRecord(recordPath)
 	if err != nil || !found {
 		log.Printf("updater: no install path to start (found=%v): %v", found, err)
 		a.showUpdateFailure("The update finished, but Agent Overflow could not be restarted.", "Start Agent Overflow again.")
@@ -353,15 +353,15 @@ func (a *launcherApp) relaunchInstallPath(dir string) {
 	a.wails.Quit()
 }
 
-// reconcileUpdate runs the recovery table before WSL starts. It returns
-// false when this launch must not start the backend: it handed off to the
-// new launcher or shows why it cannot start.
-func (a *launcherApp) reconcileUpdate() bool {
+// reconcileUpdate runs the recovery table for distro's record before its
+// backend starts. It returns false when this launch must not start the
+// backend: it handed off to the new launcher or shows why it cannot start.
+func (a *launcherApp) reconcileUpdate(distro string) bool {
 	dir, ok := wsldistro.WSLConfigDir()
 	if !ok {
 		return true
 	}
-	sequence := a.updateSequence(dir)
+	sequence := a.updateSequence(dir, distro)
 	decision, err := sequence.Reconcile(context.Background(), embeddedPayloadFingerprint())
 	if err != nil {
 		log.Printf("updater: reconcile the update record: %v", err)
@@ -372,7 +372,7 @@ func (a *launcherApp) reconcileUpdate() bool {
 	switch decision.Action {
 	case wsllauncher.ReconcileHandOff:
 		log.Printf("updater: resuming update %s with %s", decision.Record.Update.ID, decision.Record.StagedLauncher)
-		if err := startLauncherAfterThis(decision.Record.StagedLauncher, "--update-apply", decision.Record.Update.ID); err != nil {
+		if err := startLauncherAfterThis(decision.Record.StagedLauncher, "--update-apply", decision.Record.Update.ID, "--distro", distro); err != nil {
 			log.Printf("updater: start %s: %v", decision.Record.StagedLauncher, err)
 			a.showUpdateFailure("The update could not resume.", "Start Agent Overflow again. Details are in the launcher log.")
 			return false
@@ -391,7 +391,8 @@ func (a *launcherApp) reconcileUpdate() bool {
 		a.showUpdateFailure(title, detail)
 		return false
 	}
-	a.updatingTo.Store(&decision.UpdatingTo)
+	args := decision.BackendArgs(payloadVersion)
+	a.backendUpdateArgs.Store(&args)
 	return true
 }
 

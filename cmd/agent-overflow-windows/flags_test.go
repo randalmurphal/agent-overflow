@@ -118,11 +118,11 @@ func TestParseLauncherFlags_UnknownProfileErrors(t *testing.T) {
 
 func TestParseLauncherFlags_UpdateModes(t *testing.T) {
 	const id = "0123456789abcdef"
-	got, err := parseLauncherFlags([]string{"--update-apply", id, "--wait-pid", "4242", "--wait-start", "133000000000000000"})
+	got, err := parseLauncherFlags([]string{"--update-apply", id, "--distro", "Ubuntu", "--wait-pid", "4242", "--wait-start", "133000000000000000"})
 	if err != nil {
 		t.Fatalf("parse --update-apply: %v", err)
 	}
-	if got.UpdateApply != id || got.Wait != (supervise.ProcessRef{PID: 4242, Start: "133000000000000000"}) {
+	if got.UpdateApply != id || got.Distro != "Ubuntu" || got.Wait != (supervise.ProcessRef{PID: 4242, Start: "133000000000000000"}) {
 		t.Fatalf("apply flags = %+v", got)
 	}
 	got, err = parseLauncherFlags([]string{
@@ -136,8 +136,9 @@ func TestParseLauncherFlags_UpdateModes(t *testing.T) {
 		t.Fatalf("preflight flags = %+v", got)
 	}
 	for _, bad := range [][]string{
-		{"--update-apply", "../x"},
-		{"--update-apply", "0123456789ABCDEF"},
+		{"--update-apply", "../x", "--distro", "Ubuntu"},
+		{"--update-apply", id},
+		{"--update-apply", "0123456789ABCDEF", "--distro", "Ubuntu"},
 		{"--update-preflight", "answer.json"},
 		{"--update-preflight", "answer.json", "--update-id", "short"},
 		{"--wait-pid", "-1"},

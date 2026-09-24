@@ -10,6 +10,7 @@ import (
 	"time"
 
 	appservice "agent-overflow/internal/app"
+	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/network"
 	"agent-overflow/internal/supervise"
 )
@@ -119,7 +120,7 @@ func runServe(flags cliFlags) {
 	// see a fully wired App before the transport can dispatch to them.
 	// Runtime-gated on the Windows launcher having spawned us, so on a
 	// serve host it is a no-op.
-	appservice.InitWSLUpdater(appService.App, bootSettingsDir())
+	appservice.InitWSLUpdater(appService.App, bootSettingsDir(), appupdate.LauncherFailure{})
 
 	srv := bootTransport(appService, flags.listenAddr, bootTransportOptions{
 		BackendLockHeldBySupervisor: supervisor != nil && supervisor.ownsDataRoot,

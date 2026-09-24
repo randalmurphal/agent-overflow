@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"agent-overflow/internal/aocli"
+	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/harness/instanceinfo"
 	"agent-overflow/internal/wsllauncher"
 )
@@ -200,6 +201,8 @@ type bootFlags struct {
 	mockForge          *string
 	resetTransportPort *bool
 	updatingTo         *string
+	updateFailedTo     *string
+	updateFailedReason *string
 }
 
 // newBootFlagSet declares every flag this binary's boot modes take. The flag
@@ -231,6 +234,10 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 			"discard this install's pinned transport port before binding and adopt whatever the OS hands out. The Windows launcher passes it on its one retry when the pinned port turned out to be unreachable from the host (see main_transport_port.go)."),
 		updatingTo: flagSet.String(updatingToFlag, "",
 			"--print-url-fd only: the version whose committed in-app update this launch finishes, named in the startup report. Set by the Windows launcher from its update record."),
+		updateFailedTo: flagSet.String(wsllauncher.UpdateFailedToFlag, "",
+			"--print-url-fd only: the version an in-app update from this version to did not reach. Set by the Windows launcher from its update record, with --"+wsllauncher.UpdateFailedReasonFlag+"."),
+		updateFailedReason: flagSet.String(wsllauncher.UpdateFailedReasonFlag, "",
+			"--print-url-fd only: why that update did not apply, for the notice that says so."),
 	}
 }
 
@@ -309,6 +316,9 @@ type cliFlags struct {
 	// finishes, which the startup report names. Only the Windows launcher
 	// passes it, from its update record.
 	updatingTo string
+	// updateFailure is an update from this version that the launcher's
+	// record settled as rolled back or failed, for the updater's notice.
+	updateFailure appupdate.LauncherFailure
 }
 
 // parseFlags pulls the command-line flags for a boot.
@@ -341,6 +351,10 @@ func parseFlags(args []string) (cliFlags, error) {
 		mockForge:              *values.mockForge,
 		resetTransportPort:     *values.resetTransportPort,
 		updatingTo:             strings.TrimSpace(*values.updatingTo),
+		updateFailure: appupdate.LauncherFailure{
+			To:     strings.TrimSpace(*values.updateFailedTo),
+			Reason: strings.TrimSpace(*values.updateFailedReason),
+		},
 	}
 	if out.isolatedProfile != "" && out.isolatedProfile != string(instanceinfo.ModePerf) {
 		return cliFlags{}, fmt.Errorf("unknown --isolated-profile %q (valid: %q)", out.isolatedProfile, instanceinfo.ModePerf)
@@ -513,6 +527,14 @@ func parseFlags(args []string) (cliFlags, error) {
 		// Only the launcher's ordinary backend finishes an in-app update;
 		// anywhere else the flag would label a boot that updates nothing.
 		return cliFlags{}, fmt.Errorf("--%s requires --print-url-fd without --soak (only the Windows launcher's backend finishes an update)", updatingToFlag)
+	}
+	if failure := out.updateFailure; failure != (appupdate.LauncherFailure{}) {
+		if failure.To == "" || failure.Reason == "" {
+			return cliFlags{}, fmt.Errorf("--%s and --%s go together", wsllauncher.UpdateFailedToFlag, wsllauncher.UpdateFailedReasonFlag)
+		}
+		if !out.headless || out.soak {
+			return cliFlags{}, fmt.Errorf("--%s requires --print-url-fd without --soak (only the Windows launcher's backend reports its updates)", wsllauncher.UpdateFailedToFlag)
+		}
 	}
 	return out, nil
 }

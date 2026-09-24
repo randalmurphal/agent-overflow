@@ -128,7 +128,7 @@ type updateFixture struct {
 
 func newUpdateFixture(t *testing.T) *updateFixture {
 	dir := t.TempDir()
-	path := supervise.LauncherRecordPath(dir, "prod")
+	path := supervise.LauncherRecordPath(dir, "prod", "Ubuntu")
 	host := &fakeUpdateHost{t: t, recordPath: path, answers: map[string][]fakeAnswer{}, states: map[string]string{}}
 	launcher := filepath.Join(dir, "runtime", "agent-overflow-2.0.0.exe")
 	return &updateFixture{
@@ -573,5 +573,50 @@ func TestReconcileRefusesAnUnreadableRecord(t *testing.T) {
 	}
 	if _, err := f.sequence.Reconcile(t.Context(), "any"); err == nil {
 		t.Fatal("an unreadable record was treated as none")
+	}
+}
+
+// TestReconcileDecisionBackendArgs: the backend is told the update this
+// launch finishes, or why an update from its own version did not apply,
+// and nothing about any other update.
+func TestReconcileDecisionBackendArgs(t *testing.T) {
+	failed := "--" + UpdateFailedToFlag + " 2.0.0 --" + UpdateFailedReasonFlag + " earlier reason"
+	for _, c := range []struct {
+		name     string
+		state    supervise.UpdateState
+		reported bool
+		version  string
+		want     string
+	}{
+		{"rolled back", supervise.UpdateRolledBack, false, "1.0.0", failed},
+		{"rolled back and reported", supervise.UpdateRolledBack, true, "1.0.0", failed},
+		{"failed", supervise.UpdateFailed, false, "1.0.0", failed},
+		{"another backend version", supervise.UpdateRolledBack, false, "1.5.0", ""},
+		{"committed", supervise.UpdateCommitted, false, "1.0.0", ""},
+		{"pending", supervise.UpdatePending, false, "1.0.0", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newUpdateFixture(t)
+			record := f.save(c.state, 1, c.reported)
+			got := strings.Join(ReconcileDecision{Record: record}.BackendArgs(c.version), " ")
+			if got != c.want {
+				t.Fatalf("BackendArgs = %q, want %q", got, c.want)
+			}
+		})
+	}
+	if got := (ReconcileDecision{}).BackendArgs("1.0.0"); got != nil {
+		t.Fatalf("BackendArgs without a record = %q", got)
+	}
+	updating := ReconcileDecision{UpdatingTo: "2.0.0"}.BackendArgs("2.0.0")
+	if strings.Join(updating, " ") != "--"+UpdatingToFlag+" 2.0.0" {
+		t.Fatalf("BackendArgs for a committed launch = %q", updating)
+	}
+
+	f := newUpdateFixture(t)
+	record := f.save(supervise.UpdateRolledBack, 1, false)
+	record.Update.Reason = strings.Repeat("é", 2*updateFailedReasonLimit)
+	args := ReconcileDecision{Record: record}.BackendArgs("1.0.0")
+	if reason := args[len(args)-1]; len([]rune(reason)) != updateFailedReasonLimit || !strings.HasSuffix(reason, "…") {
+		t.Fatalf("a long reason reached the argv as %d runes", len([]rune(reason)))
 	}
 }

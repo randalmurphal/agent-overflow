@@ -186,6 +186,21 @@ type ReconcileDecision struct {
 	UpdatingTo string
 }
 
+// BackendArgs is the argv that tells a backend of version backendVersion
+// what the record settled: the update this launch finishes, or an update
+// from that version that rolled back or failed, with its reason.
+func (d ReconcileDecision) BackendArgs(backendVersion string) []string {
+	args := UpdatingToArgs(d.UpdatingTo)
+	to, reason, ok := d.Record.UnsuccessfulUpdate(backendVersion)
+	if !ok || reason == "" {
+		return args
+	}
+	if runes := []rune(reason); len(runes) > updateFailedReasonLimit {
+		reason = string(runes[:updateFailedReasonLimit-1]) + "…"
+	}
+	return append(args, "--"+UpdateFailedToFlag, to, "--"+UpdateFailedReasonFlag, reason)
+}
+
 // Reconcile applies the recovery table for a launcher at the install path
 // whose embedded payload digest is fingerprint. It runs before WSL starts
 // the backend and while this process holds the single-instance identity.

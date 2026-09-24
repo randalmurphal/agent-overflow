@@ -49,10 +49,8 @@ import (
 	"strings"
 	"time"
 
-	"agent-overflow/internal/appidentity"
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/selfupdate"
-	"agent-overflow/internal/supervise"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
 )
@@ -108,11 +106,9 @@ type wslUpdateMode struct {
 	// asked for, read by the next boot of this same backend, and it must
 	// survive a launcher that never touches the staging dir at all.
 	markerDir string
-	// launcherRecord is the launcher's update record
-	// (supervise.LauncherRecord), read through /mnt/c for the reason an
-	// update did not apply. Dev and production launchers share its name;
-	// isolated profiles run the harness backend, which has no updater.
-	launcherRecord string
+	// launcherFailure is the update the launcher's record settled as rolled
+	// back or failed, which the launcher passed on this backend's argv.
+	launcherFailure LauncherFailure
 	// ackTimeout and backstopTimeout are the two install deadlines
 	// (wslInstallACKTimeout / wslInstallBackstopTimeout in production; tests
 	// inject short ones so both paths are asserted rather than slept through).
@@ -133,9 +129,19 @@ type WSLConfig struct {
 	Arch            string
 	StagingRoot     string
 	MarkerDir       string
+	LauncherFailure LauncherFailure
 	ACKTimeout      time.Duration
 	BackstopTimeout time.Duration
 	Provider        Config
+}
+
+// LauncherFailure is an update from this backend's version that the
+// Windows launcher's record settled as rolled back or failed: its target
+// and the recorded reason. The launcher passes it on the backend's argv
+// (wsllauncher.ReconcileDecision.BackendArgs); zero when there is none.
+type LauncherFailure struct {
+	To     string
+	Reason string
 }
 
 // ConfigureWSL builds the headless updater and reconciles the previous
@@ -156,7 +162,7 @@ func (a *Service) ConfigureWSL(config WSLConfig) error {
 	mode := &wslUpdateMode{
 		stagingDir:      filepath.Join(config.StagingRoot, selfupdate.StagingDirName),
 		markerDir:       config.MarkerDir,
-		launcherRecord:  supervise.LauncherRecordPath(config.StagingRoot, appidentity.ModeProd),
+		launcherFailure: config.LauncherFailure,
 		ackTimeout:      config.ACKTimeout,
 		backstopTimeout: config.BackstopTimeout,
 	}
@@ -208,31 +214,12 @@ func reconcileWSLUpdateMarker(a *Service, currentVersion string, mode *wslUpdate
 	log.Printf("updater: update to %s did not apply — still running %s (staged at %s)",
 		marker.ExpectedVersion, currentVersion, marker.StagedAt.Format(time.RFC3339))
 	notice := fmt.Sprintf("Update to %s didn't apply — still running %s.", marker.ExpectedVersion, currentVersion)
-	if reason := launcherUpdateReason(mode.launcherRecord, marker.ExpectedVersion, currentVersion); reason != "" {
+	if failure := mode.launcherFailure; failure.To == marker.ExpectedVersion && failure.Reason != "" {
 		notice = fmt.Sprintf("Update to %s didn't apply: %s. Still running %s.",
-			marker.ExpectedVersion, strings.TrimRight(reason, "."), currentVersion)
+			marker.ExpectedVersion, strings.TrimRight(failure.Reason, "."), currentVersion)
 	}
 	a.setUpdateApplyFailure(notice)
 	clearWSLUpdateResidue(mode)
-}
-
-// launcherUpdateReason is the reason the launcher's record gives for the
-// update from current to target not committing, or "" when the record does
-// not describe that update. The launcher settles a rollback or failure before
-// it starts this backend, so the record is final when this boot reads it.
-func launcherUpdateReason(path, target, current string) string {
-	if path == "" {
-		return ""
-	}
-	record, found, err := supervise.LoadLauncherRecord(path)
-	if err != nil {
-		log.Printf("updater: %v", err)
-		return ""
-	}
-	if !found || record.Update.From != current {
-		return ""
-	}
-	return record.UnsuccessfulUpdateReason(target)
 }
 
 // clearWSLUpdateResidue drops both halves of a settled install: the marker (its

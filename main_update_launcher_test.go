@@ -138,7 +138,7 @@ func TestLauncherUpdateSequenceRunsTheRealCommands(t *testing.T) {
 				}
 			}
 			config := t.TempDir()
-			recordPath := supervise.LauncherRecordPath(config, "prod")
+			recordPath := supervise.LauncherRecordPath(config, "prod", "Ubuntu")
 			if _, err := wsllauncher.BeginLauncherUpdate(recordPath, supervise.LauncherRecord{
 				Distro: "Ubuntu", StablePayload: stable, StagedPayload: staged,
 				StagedLauncher: wsllauncher.StagedLauncherPath(config, id),

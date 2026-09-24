@@ -23,7 +23,7 @@ func handoffRecord(dir string) supervise.LauncherRecord {
 
 func TestBeginLauncherUpdate(t *testing.T) {
 	dir := t.TempDir()
-	path := supervise.LauncherRecordPath(dir, "prod")
+	path := supervise.LauncherRecordPath(dir, "prod", "Ubuntu")
 	now := time.UnixMilli(5)
 	record, err := BeginLauncherUpdate(path, handoffRecord(dir), "1.0.0", "2.0.0", "u1", now)
 	if err != nil {
@@ -55,7 +55,7 @@ func TestBeginLauncherUpdate(t *testing.T) {
 
 func TestSettleLauncherUpdateIgnoresOtherUpdates(t *testing.T) {
 	dir := t.TempDir()
-	path := supervise.LauncherRecordPath(dir, "prod")
+	path := supervise.LauncherRecordPath(dir, "prod", "Ubuntu")
 	if err := SettleLauncherUpdate(path, "u1", supervise.UpdateFailed, "x", time.Now()); err != nil {
 		t.Fatalf("no record: %v", err)
 	}

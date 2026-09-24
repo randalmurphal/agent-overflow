@@ -4,9 +4,12 @@ import (
 	"flag"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/aocli"
+	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/serviceinstall"
+	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/wsllauncher"
 )
 
@@ -335,6 +338,45 @@ func TestParseFlagsResetTransportPort(t *testing.T) {
 
 	if _, err := parseFlags([]string{"--connect", "ws://host:1/", "--" + resetTransportPortFlag}); err == nil {
 		t.Error("parseFlags accepted --connect with --" + resetTransportPortFlag)
+	}
+}
+
+// TestParseFlagsUpdateFailure: the argv the launcher builds from a record
+// that settled an update from the backend's version as unsuccessful reaches
+// cliFlags, both flags or neither, and only on the launcher's ordinary
+// backend.
+func TestParseFlagsUpdateFailure(t *testing.T) {
+	headless := []string{"--print-url-fd", "0"}
+	record := supervise.LauncherRecord{}
+	adopted, err := supervise.Adopt("1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	begun, err := adopted.Begin("0123456789abcdef", "2.0.0", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.State, err = begun.Settle(supervise.UpdateRolledBack, "the trial did not finish: no progress for 30s", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	args := wsllauncher.ReconcileDecision{Record: record}.BackendArgs("1.0.0")
+	got, err := parseFlags(append(headless, args...))
+	if err != nil {
+		t.Fatalf("parseFlags(%q): %v", args, err)
+	}
+	want := appupdate.LauncherFailure{To: "2.0.0", Reason: "the trial did not finish: no progress for 30s"}
+	if got.updateFailure != want {
+		t.Fatalf("updateFailure = %+v, want %+v", got.updateFailure, want)
+	}
+	for _, bad := range [][]string{
+		append([]string{}, args...),
+		append(append([]string{"--soak"}, headless...), args...),
+		append(append([]string{}, headless...), "--"+wsllauncher.UpdateFailedToFlag, "2.0.0"),
+		append(append([]string{}, headless...), "--"+wsllauncher.UpdateFailedReasonFlag, "why"),
+	} {
+		if _, err := parseFlags(bad); err == nil || !strings.Contains(err.Error(), "--"+wsllauncher.UpdateFailedToFlag) {
+			t.Errorf("parseFlags(%q) = %v, want the flags refused", bad, err)
+		}
 	}
 }
 

@@ -39,12 +39,14 @@ func TestBootTransportReportsProgressBeforeServing(t *testing.T) {
 }
 
 // TestHeadlessBootReportsTheUpdateItFinishes: the version the launcher names
-// with --updating-to is the one the headless boot's startup report carries.
+// with --updating-to is the one the headless boot's startup report carries,
+// and the failed update it names is the one the updater's notice quotes.
 func TestHeadlessBootReportsTheUpdateItFinishes(t *testing.T) {
 	text := readRootSource(t, "main.go")
 	for _, want := range []string{
-		"runHeadless(flags.listenAddr, flags.printURLFD, flags.updatingTo)",
+		"runHeadless(flags.listenAddr, flags.printURLFD, flags.updatingTo, flags.updateFailure)",
 		"bootTransport(appService, listenAddr, bootTransportOptions{UpdatingTo: updatingTo})",
+		"appservice.InitWSLUpdater(appService.App, bootSettingsDir(), updateFailure)",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("main.go lacks %q", want)

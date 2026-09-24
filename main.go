@@ -26,6 +26,7 @@ import (
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/appidentity"
+	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/attachedbackends"
 	"agent-overflow/internal/bundle"
 	"agent-overflow/internal/cdprelay"
@@ -263,7 +264,7 @@ func main() {
 		// needs its own isolated boot, not the ordinary one.
 		runSoak(flags)
 	case flags.headless:
-		runHeadless(flags.listenAddr, flags.printURLFD, flags.updatingTo)
+		runHeadless(flags.listenAddr, flags.printURLFD, flags.updatingTo, flags.updateFailure)
 	default:
 		runDesktop(flags.listenAddr)
 	}
@@ -702,12 +703,12 @@ func applyServerCertificate(cfg *transport.Config, appService *App) {
 // bound, but /bootstrap.json returns 503 until ServiceStartup finishes
 // and MarkReady releases the WebView navigation. That separates "WSL
 // process has published a port" from "backend is ready to render."
-func runHeadless(listenAddr string, printURLFD int, updatingTo string) {
+func runHeadless(listenAddr string, printURLFD int, updatingTo string, updateFailure appupdate.LauncherFailure) {
 	appService := newApp()
 	// Before the transport server starts, so the updater RPC handlers see a
 	// fully wired App.updater.handle / App.updater.wsl without a race. Gated at runtime
 	// on the Windows launcher having spawned us; a no-op otherwise.
-	appservice.InitWSLUpdater(appService.App, bootSettingsDir())
+	appservice.InitWSLUpdater(appService.App, bootSettingsDir(), updateFailure)
 	// The launcher closes its window by asking this backend to stop. This
 	// mode's shell is the signal wait below, so the door hands the request
 	// to that wait and the teardown a Ctrl-C would get runs unchanged.

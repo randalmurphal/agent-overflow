@@ -16,7 +16,6 @@ import (
 
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/selfupdate"
-	"agent-overflow/internal/supervise"
 
 	"github.com/wailsapp/wails/v3/pkg/updater"
 	"github.com/wailsapp/wails/v3/pkg/updater/providers/github"
@@ -196,11 +195,13 @@ func TestConfigureWSLTargetsLauncherArtifact(t *testing.T) {
 	markerDir := t.TempDir()
 	a := New("0.0.10", Deps{})
 
+	failure := LauncherFailure{To: "0.0.11", Reason: "the trial did not finish"}
 	if err := a.ConfigureWSL(WSLConfig{
-		CurrentVersion: "0.0.10",
-		Arch:           "amd64",
-		StagingRoot:    stagingRoot,
-		MarkerDir:      markerDir,
+		CurrentVersion:  "0.0.10",
+		Arch:            "amd64",
+		StagingRoot:     stagingRoot,
+		MarkerDir:       markerDir,
+		LauncherFailure: failure,
 	}); err != nil {
 		t.Fatalf("ConfigureWSL: %v", err)
 	}
@@ -225,11 +226,8 @@ func TestConfigureWSLTargetsLauncherArtifact(t *testing.T) {
 	if a.updater.wsl.markerDir != markerDir {
 		t.Fatalf("markerDir = %q, want %q", a.updater.wsl.markerDir, markerDir)
 	}
-	// The launcher writes its record under its own config dir, which is the
-	// staging root seen through /mnt/c.
-	wantRecord := filepath.Join(stagingRoot, "runtime", "app-update.json")
-	if a.updater.wsl.launcherRecord != wantRecord {
-		t.Fatalf("launcherRecord = %q, want %q", a.updater.wsl.launcherRecord, wantRecord)
+	if a.updater.wsl.launcherFailure != failure {
+		t.Fatalf("launcherFailure = %+v, want %+v", a.updater.wsl.launcherFailure, failure)
 	}
 }
 
@@ -1101,37 +1099,10 @@ func TestStageWSLUpdateWithoutIdentityFailsClosed(t *testing.T) {
 func newReconcileFixture(t *testing.T) (*Service, *wslUpdateMode) {
 	t.Helper()
 	mode := &wslUpdateMode{
-		markerDir:      t.TempDir(),
-		stagingDir:     filepath.Join(t.TempDir(), selfupdate.StagingDirName),
-		launcherRecord: filepath.Join(t.TempDir(), "runtime", "app-update.json"),
+		markerDir:  t.TempDir(),
+		stagingDir: filepath.Join(t.TempDir(), selfupdate.StagingDirName),
 	}
 	return &Service{updater: appUpdaterState{wsl: mode}}, mode
-}
-
-// saveLauncherRecord writes the launcher's record for an update from from to
-// to that settled in state with reason.
-func saveLauncherRecord(t *testing.T, path, from, to string, state supervise.UpdateState, reason string) {
-	t.Helper()
-	adopted, err := supervise.Adopt(from)
-	if err != nil {
-		t.Fatalf("adopt: %v", err)
-	}
-	begun, err := adopted.Begin("0123456789abcdef", to, time.Now())
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	settled, err := begun.Settle(state, reason, time.Now())
-	if err != nil {
-		t.Fatalf("settle: %v", err)
-	}
-	if err := supervise.SaveLauncherRecord(path, supervise.LauncherRecord{
-		State: settled, Distro: "Ubuntu", StablePayload: "/home/u/.local/bin/agent-overflow",
-		StagedPayload:  "/home/u/.local/bin/agent-overflow.update-0123456789abcdef",
-		StagedLauncher: `C:\Users\u\AppData\Roaming\agent-overflow\runtime\agent-overflow-update-0123456789abcdef.exe`,
-		InstallPath:    `C:\Program Files\Agent Overflow\agent-overflow.exe`, TargetFingerprint: "abc",
-	}); err != nil {
-		t.Fatalf("save launcher record: %v", err)
-	}
 }
 
 // seedStagedArtifact drops a file in the staging dir so the sweep half of the
@@ -1209,47 +1180,33 @@ func TestReconcileWSLUpdateMarkerMismatchRecordsNotice(t *testing.T) {
 	}
 }
 
+// TestReconcileWSLUpdateMarkerNamesTheLauncherReason: the notice quotes
+// the reason the launcher passed for the update the marker expected, and
+// only for that update.
 func TestReconcileWSLUpdateMarkerNamesTheLauncherReason(t *testing.T) {
 	const reason = "the trial stopped reporting progress during migrate."
 	generic := "Update to 0.0.11 didn't apply — still running 0.0.10."
 	for _, tc := range []struct {
-		name   string
-		record func(t *testing.T, path string)
-		want   string
+		name    string
+		failure LauncherFailure
+		want    string
 	}{
-		{"rolled back", func(t *testing.T, path string) {
-			saveLauncherRecord(t, path, "0.0.10", "0.0.11", supervise.UpdateRolledBack, reason)
-		}, "Update to 0.0.11 didn't apply: the trial stopped reporting progress during migrate. Still running 0.0.10."},
-		{"failed", func(t *testing.T, path string) {
-			saveLauncherRecord(t, path, "0.0.10", "0.0.11", supervise.UpdateFailed, "the new launcher could not be started")
-		}, "Update to 0.0.11 didn't apply: the new launcher could not be started. Still running 0.0.10."},
-		{"no record", func(*testing.T, string) {}, generic},
-		{"another target", func(t *testing.T, path string) {
-			saveLauncherRecord(t, path, "0.0.10", "0.0.12", supervise.UpdateRolledBack, reason)
-		}, generic},
-		{"from another version", func(t *testing.T, path string) {
-			saveLauncherRecord(t, path, "0.0.9", "0.0.11", supervise.UpdateRolledBack, reason)
-		}, generic},
-		{"committed", func(t *testing.T, path string) {
-			saveLauncherRecord(t, path, "0.0.10", "0.0.11", supervise.UpdateCommitted, "")
-		}, generic},
-		{"unreadable", func(t *testing.T, path string) {
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}, generic},
+		{"rolled back", LauncherFailure{To: "0.0.11", Reason: reason},
+			"Update to 0.0.11 didn't apply: the trial stopped reporting progress during migrate. Still running 0.0.10."},
+		{"failed", LauncherFailure{To: "0.0.11", Reason: "the new launcher could not be started"},
+			"Update to 0.0.11 didn't apply: the new launcher could not be started. Still running 0.0.10."},
+		{"none", LauncherFailure{}, generic},
+		{"another target", LauncherFailure{To: "0.0.12", Reason: reason}, generic},
+		{"no reason", LauncherFailure{To: "0.0.11"}, generic},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, mode := newReconcileFixture(t)
+			mode.launcherFailure = tc.failure
 			if err := selfupdate.SaveMarker(mode.markerDir, selfupdate.Marker{
 				ExpectedVersion: "0.0.11", PriorVersion: "0.0.10", StagedAt: time.Now(),
 			}); err != nil {
 				t.Fatalf("save marker: %v", err)
 			}
-			tc.record(t, mode.launcherRecord)
 
 			reconcileWSLUpdateMarker(a, "0.0.10", mode)
 
@@ -1335,7 +1292,7 @@ func TestInitWSLUpdaterSurfacesApplyFailureThroughCheck(t *testing.T) {
 	}
 }
 
-func TestInitWSLUpdaterReadsTheLauncherRecordUnderTheStagingRoot(t *testing.T) {
+func TestConfigureWSLNamesTheLauncherReason(t *testing.T) {
 	appData := t.TempDir()
 	markerDir := t.TempDir()
 	if err := selfupdate.SaveMarker(markerDir, selfupdate.Marker{
@@ -1343,15 +1300,14 @@ func TestInitWSLUpdaterReadsTheLauncherRecordUnderTheStagingRoot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save marker: %v", err)
 	}
-	saveLauncherRecord(t, filepath.Join(appData, "runtime", "app-update.json"),
-		"0.0.10", "0.0.11", supervise.UpdateRolledBack, "the trial did not finish within 30m0s")
 
 	a := New("0.0.10", Deps{})
 	if err := a.ConfigureWSL(WSLConfig{
-		CurrentVersion: "0.0.10",
-		Arch:           "amd64",
-		StagingRoot:    appData,
-		MarkerDir:      markerDir,
+		CurrentVersion:  "0.0.10",
+		Arch:            "amd64",
+		StagingRoot:     appData,
+		MarkerDir:       markerDir,
+		LauncherFailure: LauncherFailure{To: "0.0.11", Reason: "the trial did not finish within 30m0s"},
 	}); err != nil {
 		t.Fatalf("ConfigureWSL: %v", err)
 	}
