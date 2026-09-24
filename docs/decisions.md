@@ -70,6 +70,15 @@ Mechanism in
   that update. The launcher's loading page, the startup screen and the
   sidebar show the same sentence. The update record is the only source of
   that version, so a boot the record does not name shows an ordinary start.
+- An in-app update migrates the database in a trial over a snapshot on every
+  platform: macOS, the Linux desktop, Windows and a supervised serve host.
+  The new version is kept only once it has booted fully. A failure, 30 s
+  without observed progress, or the 30 minute ceiling restores the snapshot,
+  keeps the previous version and reports the reason. No boot migrates an
+  existing database live: one that would, outside an update, runs the same
+  snapshot and trial first. An update to a version that predates the trial
+  keeps the framework's swap. Mechanism in
+  [the update spec](specs/app-update.md).
 - A migration or update trial that failed does not run again on its own.
   The next launch of the same build over the same database schema version
   shows the stored reason and phase with Retry; a different build or schema

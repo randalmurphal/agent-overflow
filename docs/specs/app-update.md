@@ -644,11 +644,10 @@ Windows:
 
 Linux: `FICLONE` on btrfs and XFS needs root for a loop mount here. The
 desktop helper's window, the app's window opening on a failure page, the
-helper's window opening after a windowless boot exits, the helper refusing a
-quit and SIGTERM while the update runs, the single-instance order of a
-launch during the handoff, and the AppImage relaunch need a Linux desktop
-session with isolated provider homes; the unit tests here run the helper's
-steps, argv, pages and quit rule without a window.
+helper's window opening after a windowless boot exits, the single-instance
+order of a launch during the handoff, and the AppImage relaunch need a Linux
+desktop session with isolated provider homes; the unit tests here run the
+helper's steps, argv, pages and menu state without a window.
 
 ## Decisions
 
