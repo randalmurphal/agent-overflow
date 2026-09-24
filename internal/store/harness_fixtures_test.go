@@ -84,7 +84,7 @@ func TestHistoryRepairFixtureRepairs(t *testing.T) {
 	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
 		t.Fatal(err)
 	}
-	if deferredPending(t, s) || deferredWatermarkOf(t, s) != 119 {
+	if deferredPending(t, s) || deferredWatermarkOf(t, s) != latestDeferredVersion {
 		t.Fatalf("watermark after the phase = %d", deferredWatermarkOf(t, s))
 	}
 	if failure := deferredFailureOf(t, s); failure != nil {

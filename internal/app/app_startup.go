@@ -144,7 +144,6 @@ func (a *App) Start(ctx context.Context) (startErr error) {
 	// (storeFileSwapWait) parks on the activation gate itself. See
 	// app_store_maintenance.go.
 	a.startDeferredMigrations()
-	a.startSubagentAggregateBackfill()
 
 	// Assert the persisted keep-awake state. Synchronous and cheap (one
 	// D-Bus round trip at most, nothing at all when the setting is off),

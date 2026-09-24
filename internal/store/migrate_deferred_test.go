@@ -162,7 +162,7 @@ func TestDeferredMigrationResumesAndRunsOnce(t *testing.T) {
 	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
 		t.Fatal(err)
 	}
-	if deferredPending(t, s) || deferredWatermarkOf(t, s) != 119 {
+	if deferredPending(t, s) || deferredWatermarkOf(t, s) != latestDeferredVersion {
 		t.Fatalf("finished phase left watermark %d", deferredWatermarkOf(t, s))
 	}
 	requireSameRepairView(t, "folded", readRepairView(t, s, "t"), before)
@@ -240,7 +240,7 @@ func TestHistoryRepairRetriesAFailingChunkOnTheNextRun(t *testing.T) {
 	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
 		t.Fatal(err)
 	}
-	if deferredPending(t, s) || deferredWatermarkOf(t, s) != 119 {
+	if deferredPending(t, s) || deferredWatermarkOf(t, s) != latestDeferredVersion {
 		t.Fatalf("the run after the fault left watermark %d", deferredWatermarkOf(t, s))
 	}
 	if failure := deferredFailureOf(t, s); failure != nil {

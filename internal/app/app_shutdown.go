@@ -256,7 +256,6 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// conversion's snapshot, and the next launch resumes it. Idempotent
 	// and blocks until the goroutine returns.
 	a.stopDeferredMigrations()
-	a.subagentBackfill.halt()
 	record("stop deferred migrations", nil)
 
 	// Step 3d: stop the background `git fetch` cadence. Each pass reads

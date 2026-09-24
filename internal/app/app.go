@@ -645,9 +645,6 @@ type App struct {
 	// deferredMigrations owns the stop gate of the run that finishes the
 	// store's deferred migration phases. See app_store_maintenance.go.
 	deferredMigrations backgroundLoop
-	// subagentBackfill runs store migration v121's deferred phase. See
-	// app_subagent_aggregate_backfill.go.
-	subagentBackfill backgroundLoop
 	// codexThread owns provider-thread reconcile and cumulative-cost reads.
 	codexThreadOnce sync.Once
 	codexThread     *codexthread.Service

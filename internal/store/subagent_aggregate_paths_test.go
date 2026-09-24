@@ -566,11 +566,11 @@ func TestSubagentAggregateBackfillIsRestartable(t *testing.T) {
 			t.Errorf("close: %v", err)
 		}
 	})
-	next, err := s.NextSubagentAggregateBackfillThread(ctx, "")
+	next, err := s.nextSubagentBackfillThread(ctx, "")
 	if err != nil || next != thread {
 		t.Fatalf("after reopen the next listed thread is %q (%v), want %q", next, err, thread)
 	}
-	if after, err := s.NextSubagentAggregateBackfillThread(ctx, thread); err != nil || after != "" {
+	if after, err := s.nextSubagentBackfillThread(ctx, thread); err != nil || after != "" {
 		t.Fatalf("no thread follows %q, got %q (%v)", thread, after, err)
 	}
 	for calls := 0; ; calls++ {
@@ -588,7 +588,7 @@ func TestSubagentAggregateBackfillIsRestartable(t *testing.T) {
 	if listed, err := subagentBackfillListed(s.reader(), thread); err != nil || listed {
 		t.Fatalf("thread still listed after the last batch (%v)", err)
 	}
-	if next, err := s.NextSubagentAggregateBackfillThread(ctx, ""); err != nil || next != "" {
+	if next, err := s.nextSubagentBackfillThread(ctx, ""); err != nil || next != "" {
 		t.Fatalf("backfill list not empty: %q (%v)", next, err)
 	}
 	assertSubagentStampParity(t, s, thread, "backfilled", true)
@@ -602,6 +602,184 @@ func TestSubagentAggregateBackfillIsRestartable(t *testing.T) {
 	if result, err := s.RecomputeSubagentAggregates(ctx, thread, 2); err != nil || result.Stamped != 0 || result.Remaining {
 		t.Fatalf("recompute on a finished thread = %+v (%v)", result, err)
 	}
+}
+
+// legacyStampThreadsForTest leaves each thread holding a launch with two
+// children as v121's SQL leaves an existing thread: no stamp on any row,
+// and the thread listed for the deferred phase. The watermark is v119's,
+// so v121's phase is the one pending.
+func legacyStampThreadsForTest(t *testing.T, s *Store, threads ...string) {
+	t.Helper()
+	for _, thread := range threads {
+		mustCreateThread(t, s, thread)
+		seedStampLaunch(t, s, thread, "L", 1, 2)
+		stripSubagentStampsForTest(t, s, thread)
+		mustExec(t, s.db, `INSERT INTO subagent_aggregate_backfill(thread_id) VALUES (?)`, thread)
+	}
+	mustExec(t, s.db, `PRAGMA user_version = 119`)
+}
+
+func backfillListForTest(t *testing.T, s *Store) []string {
+	t.Helper()
+	listed, err := subagentAnchorIDs(s.db, `SELECT thread_id FROM subagent_aggregate_backfill ORDER BY thread_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return listed
+}
+
+// TestSubagentAggregatePhaseStampsListedThreads runs migration v121's
+// deferred phase over threads whose anchors predate the stamps. It stamps
+// every listed thread. A thread whose stamps never land (its rows move
+// under every batch) is reported without holding up the threads after it,
+// the run records the failure and leaves the watermark, and the next open
+// finishes the thread and clears the record.
+func TestSubagentAggregatePhaseStampsListedThreads(t *testing.T) {
+	s := openStoreAt(t)
+	threads := []string{"a-moving", "b-legacy", "c-legacy"}
+	legacyStampThreadsForTest(t, s, threads...)
+	s = reopenStore(t, s)
+	if !deferredPending(t, s) {
+		t.Fatal("v121's phase is not pending")
+	}
+	for _, thread := range threads {
+		assertSubagentStampParity(t, s, thread, thread+" listed", false)
+	}
+	mustExec(t, s.db, `CREATE TRIGGER test_rows_move BEFORE UPDATE ON items WHEN OLD.thread_id = 'a-moving'
+	  BEGIN SELECT RAISE(IGNORE); END`)
+
+	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := backfillListForTest(t, s); !slices.Equal(got, []string{"a-moving"}) {
+		t.Fatalf("after the first run the list is %v, want the moving thread alone", got)
+	}
+	failure := deferredFailureOf(t, s)
+	if failure == nil || failure.Version != 121 || failure.Title != "Agent card update" || failure.Failures != 1 ||
+		!strings.Contains(failure.FirstError, "a-moving") {
+		t.Fatalf("recorded failure = %+v, want the moving thread's", failure)
+	}
+	if got := deferredWatermarkOf(t, s); got != 119 {
+		t.Fatalf("a run that left a thread moved the watermark to %d", got)
+	}
+	for _, thread := range threads[1:] {
+		assertSubagentStampParity(t, s, thread, thread+" stamped", true)
+		if _, mode := subagentStampStateForTest(t, s, thread, "L"); mode != subagentStampClean {
+			t.Errorf("%s's launch ends mode %d, want clean", thread, mode)
+		}
+	}
+	assertSubagentStampParity(t, s, "a-moving", "moving thread, still listed", false)
+
+	mustExec(t, s.db, `DROP TRIGGER test_rows_move`)
+	s = reopenStore(t, s)
+	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
+		t.Fatal(err)
+	}
+	if deferredPending(t, s) || deferredWatermarkOf(t, s) != latestDeferredVersion {
+		t.Fatalf("the finishing run left watermark %d", deferredWatermarkOf(t, s))
+	}
+	if failure := deferredFailureOf(t, s); failure != nil {
+		t.Fatalf("a finished run kept the failure record: %+v", failure)
+	}
+	if got := backfillListForTest(t, s); len(got) != 0 {
+		t.Fatalf("a finished run left %v listed", got)
+	}
+	assertSubagentStampParity(t, s, "a-moving", "moving thread, finished", true)
+}
+
+// TestSubagentAggregatePhaseQuitRecordsNothing stops the phase at its first
+// pause: the stamped thread stays done, the rest stay listed, nothing is
+// recorded, and the next run finishes from the list.
+func TestSubagentAggregatePhaseQuitRecordsNothing(t *testing.T) {
+	s := openStoreAt(t)
+	legacyStampThreadsForTest(t, s, "a", "b", "c")
+	s = reopenStore(t, s)
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := s.RunDeferredMigrations(ctx, DeferredHost{Pause: ChunkPause(cancel)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := deferredWatermarkOf(t, s); got != 119 {
+		t.Fatalf("a quit moved the watermark to %d", got)
+	}
+	if failure := deferredFailureOf(t, s); failure != nil {
+		t.Fatalf("a quit recorded a failure: %+v", failure)
+	}
+	if got := backfillListForTest(t, s); !slices.Equal(got, []string{"b", "c"}) {
+		t.Fatalf("after the quit the list is %v, want the threads after the first", got)
+	}
+	for _, thread := range []string{"a", "b", "c"} {
+		assertSubagentStampParity(t, s, thread, thread+" after the quit", false)
+	}
+	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
+		t.Fatal(err)
+	}
+	if deferredPending(t, s) || len(backfillListForTest(t, s)) != 0 {
+		t.Fatalf("the resumed run left watermark %d and list %v", deferredWatermarkOf(t, s), backfillListForTest(t, s))
+	}
+	for _, thread := range []string{"a", "b", "c"} {
+		assertSubagentStampParity(t, s, thread, thread+" resumed", true)
+	}
+}
+
+// TestDeferredPhasesStampAFoldedSubtree upgrades from before v119: a
+// launch's children are sealed and the launch predates the stamps. The
+// phases run in version order, v119 folding the children back into the
+// thread's rows and v121 stamping the launch, and the card matches the
+// walk before, between and after.
+func TestDeferredPhasesStampAFoldedSubtree(t *testing.T) {
+	s := openStoreAt(t)
+	const thread = "t-folded"
+	mustCreateThread(t, s, thread)
+	if err := s.InsertItem(stampFixtureRow{id: "L", kind: "tool_call", tool: "Agent", summary: "Agent: sealed children", turn: 1}.item(thread)); err != nil {
+		t.Fatal(err)
+	}
+	var children []string
+	for i := 1; i <= 6; i++ {
+		row := stampFixtureRow{id: fmt.Sprintf("L-c%d", i), kind: "assistant_text", summary: fmt.Sprintf("child %d", i),
+			parent: "L", turn: 1, index: i}
+		if err := s.InsertItem(row.item(thread)); err != nil {
+			t.Fatal(err)
+		}
+		children = append(children, row.id)
+	}
+	sealItemsForTest(t, s, thread, children[:3]...)
+	sealItemsForTest(t, s, thread, children[3:]...)
+	stripSubagentStampsForTest(t, s, thread)
+	mustExec(t, s.db, `INSERT INTO subagent_aggregate_backfill(thread_id) VALUES (?)`, thread)
+	mustExec(t, s.db, `PRAGMA user_version = 118`)
+	s = reopenStore(t, s)
+	assertSubagentStampParity(t, s, thread, "sealed and listed", false)
+
+	var throughV119 []Migration
+	for _, m := range migrations {
+		if m.Version <= 119 {
+			throughV119 = append(throughV119, m)
+		}
+	}
+	if err := s.runDeferredMigrations(context.Background(), DeferredHost{}, throughV119); err != nil {
+		t.Fatal(err)
+	}
+	if got := deferredWatermarkOf(t, s); got != 119 {
+		t.Fatalf("watermark after v119's phase = %d, want 119", got)
+	}
+	if n := countRows(t, s, `SELECT count(*) FROM thread_import_chunks WHERE thread_id = ?`, thread); n != 0 {
+		t.Fatalf("v119's phase left %d sealed chunks", n)
+	}
+	assertSubagentStampParity(t, s, thread, "folded, still listed", false)
+
+	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
+		t.Fatal(err)
+	}
+	if deferredPending(t, s) || deferredFailureOf(t, s) != nil {
+		t.Fatalf("phases left watermark %d, failure %+v", deferredWatermarkOf(t, s), deferredFailureOf(t, s))
+	}
+	if _, mode := subagentStampStateForTest(t, s, thread, "L"); mode != subagentStampClean {
+		t.Fatalf("the launch ends mode %d, want clean", mode)
+	}
+	if meta := itemMetaForTest(t, s, thread, "L"); !strings.Contains(meta, `"subagentDescendantCount":6`) {
+		t.Fatalf("launch meta %s, want a card counting the six folded children", meta)
+	}
+	assertSubagentStampParity(t, s, thread, "stamped", true)
 }
 
 // TestSubagentAggregateRecomputeSkipsARowWrittenSinceItsRead pins the

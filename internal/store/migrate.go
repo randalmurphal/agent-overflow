@@ -1687,7 +1687,17 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 			},
 		},
 	},
-	{Version: 121, Name: "write_time_aggregates", SQL: writeTimeAggregatesV121SQL},
+	{
+		Version: 121,
+		Name:    "write_time_aggregates",
+		SQL:     writeTimeAggregatesV121SQL,
+		Deferred: &DeferredMigration{
+			Title: "Agent card update",
+			Steps: []DeferredStep{
+				{Name: "stamp_subagent_anchors", Run: stampLegacySubagentAnchors},
+			},
+		},
+	},
 }
 
 // runMigrations refuses a database a newer build migrated, then sets

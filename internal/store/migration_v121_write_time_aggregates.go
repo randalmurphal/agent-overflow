@@ -10,13 +10,13 @@ package store
 //     flag lives on the anchor's own meta, written by the same UPDATE that
 //     invalidates the stamp, and the partial index finds a thread's dirty
 //     anchors by key.
-//   - subagent_aggregate_backfill is the migration's deferred phase: the
-//     threads whose anchors predate the stamps. After the store opens the
-//     app stamps them in paced RecomputeSubagentAggregates batches
-//     (internal/app/app_subagent_aggregate_backfill.go), removing each
-//     thread with its last anchor, so a quit resumes from what is left and
-//     an empty table is the applied phase. Until then a listed thread's
-//     unstamped anchors are read through the read-time aggregator.
+//   - subagent_aggregate_backfill lists the threads whose anchors predate
+//     the stamps. The deferred phase (stampLegacySubagentAnchors) stamps
+//     them in paced RecomputeSubagentAggregates batches and removes each
+//     thread with its last anchor, so a quit resumes from what is left.
+//     Until then a listed thread's unstamped anchors are read through the
+//     read-time aggregator. v119's phase runs first; the rows it folds
+//     back are never tool calls, so they add no anchor to stamp.
 //   - idx_items_running_nested_fg_tool_calls is the tray's nested
 //     candidate set (ListLiveBackgroundTasks): foreground tool calls in
 //     flight below the top level.

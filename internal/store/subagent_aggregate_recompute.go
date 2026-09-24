@@ -563,11 +563,67 @@ func (s *Store) RecomputeSubagentAggregates(ctx context.Context, threadID string
 	return out, nil
 }
 
-// NextSubagentAggregateBackfillThread names the first listed thread after
-// `after` whose anchors predate the stamps, or "" when none follows it.
-// The list is migration v121's deferred work: an empty list is the
-// applied phase.
-func (s *Store) NextSubagentAggregateBackfillThread(ctx context.Context, after string) (string, error) {
+// subagentBackfillBatch is how many anchors one call of v121's deferred
+// phase stamps. The call computes on a read snapshot and holds the writer
+// only for the stamp writes.
+const subagentBackfillBatch = 16
+
+// subagentBackfillStallLimit is how many batches in a row may land no
+// stamp before the phase leaves the thread to the next run: its rows moved
+// under every one of them.
+const subagentBackfillStallLimit = 8
+
+// stampLegacySubagentAnchors is migration v121's deferred phase. It stamps
+// the anchors of each thread subagent_aggregate_backfill lists, in paced
+// RecomputeSubagentAggregates batches, and a thread leaves the list with
+// its last anchor: the list is the phase's progress and an empty list its
+// end. Until then reads walk a listed thread's unstamped anchors, so the
+// phase changes no read. A thread whose batch fails, or whose rows move
+// under subagentBackfillStallLimit batches in a row, is reported and stays
+// listed for the next run; the threads after it go on.
+func stampLegacySubagentAnchors(ctx context.Context, s *Store, run *deferredRun) error {
+	after := ""
+	batches := 0
+	for {
+		threadID, err := s.nextSubagentBackfillThread(ctx, after)
+		if err != nil || threadID == "" {
+			return err
+		}
+		after = threadID
+		for stalled := 0; ; {
+			if batches > 0 {
+				run.pause()
+			}
+			if ctx.Err() != nil {
+				return nil
+			}
+			batches++
+			result, err := s.RecomputeSubagentAggregates(ctx, threadID, subagentBackfillBatch)
+			if err != nil {
+				if ctx.Err() != nil {
+					return nil
+				}
+				run.fail(fmt.Errorf("stamp subagent anchors of thread %s: %w", threadID, err))
+				break
+			}
+			if !result.Remaining {
+				break
+			}
+			if result.Stamped > 0 {
+				stalled = 0
+				continue
+			}
+			if stalled++; stalled >= subagentBackfillStallLimit {
+				run.fail(fmt.Errorf("stamp subagent anchors of thread %s: its rows moved under %d batches in a row", threadID, stalled))
+				break
+			}
+		}
+	}
+}
+
+// nextSubagentBackfillThread names the first listed thread after `after`
+// whose anchors predate the stamps, or "" when none follows it.
+func (s *Store) nextSubagentBackfillThread(ctx context.Context, after string) (string, error) {
 	var threadID string
 	err := s.reader().QueryRowContext(ctx,
 		`SELECT thread_id FROM subagent_aggregate_backfill WHERE thread_id > ? ORDER BY thread_id LIMIT 1`,

@@ -57,7 +57,7 @@ func TestV119PhaseConvertsALegacyDatabase(t *testing.T) {
 	if mode, err := s.AutoVacuumMode(); err != nil || mode != AutoVacuumIncremental {
 		t.Fatalf("auto_vacuum = %v (%v), want incremental", mode, err)
 	}
-	if deferredPending(t, s) || deferredWatermarkOf(t, s) != 119 {
+	if deferredPending(t, s) || deferredWatermarkOf(t, s) != latestDeferredVersion {
 		t.Fatalf("watermark = %d after the conversion", deferredWatermarkOf(t, s))
 	}
 	if failure := deferredFailureOf(t, s); failure != nil {
