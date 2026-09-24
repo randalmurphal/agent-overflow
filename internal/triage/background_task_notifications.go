@@ -261,9 +261,9 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	readErrorString := ""
 	switch {
 	case meta.OutputFile == "":
-	case isCommandOutputLaunch(launch):
-		// A command's output_file is read, so the bell and the sibling
-		// show it loading first.
+	case !isSubagentTranscriptLaunch(launch):
+		// A command's or a watch task's output_file is read, so the bell
+		// and the sibling show it loading first.
 		if err := persistBell("loading", "", nil); err != nil {
 			return err
 		}
@@ -312,7 +312,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 // caller's `IsBackground` gate already excludes; a background shell has
 // no children and is excluded before the store is asked.
 func (r *Router) launchIsParked(threadID string, launch store.Item) (bool, error) {
-	if !isSubagentTranscriptLaunch(launch) || launchIsWatchTask(launch) {
+	if !isSubagentTranscriptLaunch(launch) {
 		return false, nil
 	}
 	root, err := r.transcriptRootOrSelf(threadID, launch)
@@ -332,14 +332,23 @@ func (r *Router) launchIsParked(threadID string, launch store.Item) (bool, error
 }
 
 // isSubagentTranscriptLaunch reports whether a launch is an agent, whose
-// `output_file` is its sidechain transcript, rather than a command, whose
-// `output_file` is captured stdout/stderr. Claude names the same field for
-// both task types; the tool name is the discriminator, the same one
-// backgroundOutputPayload splits on.
+// `output_file` is its sidechain transcript, rather than a task whose
+// `output_file` is captured stdout/stderr (a background Bash, a Monitor
+// watch). Claude names the same field for every task type and backgrounds
+// both kinds, so only the agent's identity tells them apart: the agent
+// tool, "Agent" or "Task" on older CLIs (the parser's isAgentLaunchToolName
+// set), or a §E6 resume carrier, the SendMessage row that runs a resumed
+// agent's round, which the parser stamps with the agent it resumes
+// (isResumeCarrierMeta). backgroundOutputPayload splits on the same test.
 func isSubagentTranscriptLaunch(launch store.Item) bool {
-	return launch.Kind == itemKindToolCall &&
-		strings.TrimSpace(launch.ToolName) != "" &&
-		!isCommandOutputLaunch(launch)
+	if launch.Kind != itemKindToolCall {
+		return false
+	}
+	switch strings.TrimSpace(launch.ToolName) {
+	case "Agent", "Task":
+		return true
+	}
+	return isResumeCarrierMeta(DecodeToolStartMeta([]byte(launch.Meta)))
 }
 
 // drainTaskNotificationStash drains the pending-background-terminal
@@ -542,12 +551,13 @@ func notificationOutputState(raw string) (string, string) {
 
 // backgroundOutputPayload builds the payload for a task's `output_file`.
 //
-// A command's file is its captured output, read into a bounded
-// command_output payload. Any other task's file is an agent's sidechain
-// transcript, which completion never reads or replays (docs/decisions.md,
-// ruling 2026-09-23): the agent's rows are the ones the live stream and
-// the session mirror delivered, and transcript_mirror_degraded is the only
-// degraded outcome. The agent's payload carries only the answer preview.
+// An agent's file is its sidechain transcript, which completion never
+// reads or replays (docs/decisions.md, ruling 2026-09-23): the agent's
+// rows are the ones the live stream and the session mirror delivered, and
+// transcript_mirror_degraded is the only degraded outcome. The agent's
+// payload carries only the answer preview. Any other task's file (a
+// command, a Monitor watch) is its captured output, read into a bounded
+// command_output payload.
 //
 // The payload's `preview` is the agent's final report, the same 240-char
 // collapsed line a Codex completion carries for its FINAL_ANSWER
@@ -556,7 +566,7 @@ func notificationOutputState(raw string) (string, string) {
 // completion without a preview.
 func backgroundOutputPayload(launch store.Item, outputFile, report string, exitCode *int, now int64) (*store.Payload, error) {
 	payloadID := "tool-call-result:" + launch.ID
-	if isCommandOutputLaunch(launch) {
+	if !isSubagentTranscriptLaunch(launch) {
 		data, _, err := readClaudeTaskOutputFile(outputFile, claudeCommandOutputFileMaxBytes)
 		if err != nil {
 			return nil, err

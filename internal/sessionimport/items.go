@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/google/uuid"
-
 	"agent-overflow/internal/importir"
 	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/provider"
@@ -189,7 +187,7 @@ func (b *builder) proposedPlan(evt importir.Event) error {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, &store.Payload{
-		ID:        uuid.NewString(),
+		ID:        triage.AttachedPayloadID(payloadKindProposedPlan, itemID),
 		Kind:      payloadKindProposedPlan,
 		Meta:      payloadMeta,
 		Data:      []byte(evt.Content),
@@ -261,7 +259,7 @@ func (b *builder) compaction(evt importir.Event) error {
 		Meta:      string(rest),
 		CreatedAt: now,
 		UpdatedAt: now,
-	}, triage.BuildCompactionPayload(summary, now), nil)
+	}, triage.BuildCompactionPayload(itemID, summary, now), nil)
 	return err
 }
 

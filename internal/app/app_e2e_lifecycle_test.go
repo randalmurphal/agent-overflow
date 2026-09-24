@@ -997,11 +997,14 @@ func TestE2E_DiffItemPersistsWithPayload(t *testing.T) {
 		t.Fatalf("CreateThread: %v", err)
 	}
 
-	// Synthesise a diff event directly: this mirrors what Claude would emit
-	// and exercises the diff-payload persistence round-trip.
+	// Synthesise a diff event directly. A diff names the file change it
+	// belongs to (the Codex rollout shape); this one's row does not exist
+	// yet, so the diff creates it and exercises the diff-payload
+	// persistence round-trip.
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventDiff,
 		ThreadID:  thread.ID,
+		ItemID:    "patch-1",
 		Content:   "diff --git a/file.txt b/file.txt\n@@ -0,0 +1 @@\n+hello\n",
 		Timestamp: time.Now(),
 	}
@@ -1374,11 +1377,15 @@ func TestE2E_CommandOutputPersistsToPayload(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
+	// The authoritative snapshot a command's completion carries (Codex
+	// aggregatedOutput): it names its command, whose row it creates here.
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventCommandOutput,
 		ThreadID:  thread.ID,
+		ItemID:    "cmd-ls",
 		Content:   "line 1\nline 2\nline 3\n",
 		Meta:      json.RawMessage(`{"command":"ls -la","exitCode":0}`),
+		Replace:   true,
 		Timestamp: time.Now(),
 	}
 	if err := app.triage.Handle(evt); err != nil {
@@ -1464,8 +1471,10 @@ func TestE2E_GetPayloadDataReturnsRawCommandOutput(t *testing.T) {
 	evt := provider.ProviderEvent{
 		Kind:      provider.EventCommandOutput,
 		ThreadID:  thread.ID,
+		ItemID:    "cmd-run",
 		Content:   "\x1b[31merror: boom\x1b[0m",
 		Meta:      json.RawMessage(`{"command":"run","exitCode":1}`),
+		Replace:   true,
 		Timestamp: time.Now(),
 	}
 	if err := app.triage.Handle(evt); err != nil {

@@ -2608,3 +2608,115 @@ func TestWatchTaskCompletionSiblingCarriesNoCaption(t *testing.T) {
 			meta["notification_summary"], dones[0].Meta)
 	}
 }
+
+// Only the agent tool launches an agent with a sidechain transcript, and
+// only the carrier the parser stamped as resuming one runs a later round
+// of it. Claude backgrounds commands and Monitor watches through the same
+// task fields (run_in_background, output_file), and a Monitor's input has
+// a description too, so none of those can decide it.
+func TestSubagentTranscriptLaunchIsTheAgentTool(t *testing.T) {
+	const taskFields = `"is_background":true,"output_file":"/tmp/x","input":{"run_in_background":true,"description":"watch"}`
+	for tool, want := range map[string]bool{
+		"Agent": true, "Task": true,
+		"Monitor": false, "Bash": false, "Skill": false, "SendMessage": false, "": false,
+	} {
+		launch := store.Item{Kind: itemKindToolCall, ToolName: tool, IsBackground: true, Meta: `{` + taskFields + `}`}
+		if got := isSubagentTranscriptLaunch(launch); got != want {
+			t.Errorf("isSubagentTranscriptLaunch(%q) = %v, want %v", tool, got, want)
+		}
+	}
+	for _, stamp := range []string{
+		`"resumes_tool_use_id":"agent-1"`, `"transcript_root_id":"agent-1"`,
+		`"description":"Spike root"`, `"subagent_type":"general-purpose"`,
+	} {
+		carrier := store.Item{Kind: itemKindToolCall, ToolName: "SendMessage", IsBackground: true,
+			Meta: `{` + taskFields + `,` + stamp + `}`}
+		if !isSubagentTranscriptLaunch(carrier) {
+			t.Errorf("a SendMessage carrier stamped %s is not read as the agent's round", stamp)
+		}
+	}
+	if isSubagentTranscriptLaunch(store.Item{Kind: itemKindNotification, ToolName: "Agent"}) {
+		t.Error("a notification row is not a launch")
+	}
+}
+
+// A Monitor watch is a local_bash task (claude-wire.md §E7): its
+// output_file is the watched command's captured output, not an agent's
+// transcript. The notification and the completion sibling keep it.
+func TestMonitorOutputFileIsReadAsCapturedOutput(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName": "Monitor",
+		"input":    map[string]any{"command": "tail -f build.log", "description": "watch the build"},
+	})
+	taskStartedMeta, _ := json.Marshal(map[string]any{"task_id": "task-mon"})
+	ackMeta, _ := json.Marshal(map[string]any{"is_background": true, "watch_task": true})
+	for _, evt := range []provider.ProviderEvent{
+		{Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "mon-1", ItemType: "Monitor", Meta: startMeta},
+		{Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "mon-1", Meta: taskStartedMeta},
+		{Kind: provider.EventToolComplete, ThreadID: "t1", ItemID: "mon-1", ItemType: "Monitor", Meta: ackMeta},
+	} {
+		evt.Timestamp = time.Now()
+		if err := router.Handle(evt); err != nil {
+			t.Fatalf("monitor launch %s: %v", evt.Kind, err)
+		}
+	}
+	launch, found, err := st.GetThreadItem("t1", "mon-1")
+	if err != nil || !found {
+		t.Fatalf("monitor launch: found=%v err=%v", found, err)
+	}
+	if !launchIsWatchTask(launch) || launch.ToolName != "Monitor" {
+		t.Fatalf("fixture launch is not a Monitor watch: tool=%q meta=%s", launch.ToolName, launch.Meta)
+	}
+
+	const output = "event 1: build started\nevent 2: build failed\n"
+	outputPath := filepath.Join(t.TempDir(), "task-mon.output")
+	if err := os.WriteFile(outputPath, []byte(output), 0o644); err != nil {
+		t.Fatalf("write output file: %v", err)
+	}
+	notificationMeta, _ := json.Marshal(map[string]any{
+		"task_id": "task-mon", "tool_use_id": "mon-1", "status": "completed", "output_file": outputPath,
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1", ItemID: "mon-1",
+		Meta: notificationMeta, Content: "Monitor ended", Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("notification: %v", err)
+	}
+	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
+	if len(notifications) != 1 || notifications[0].PayloadID == "" {
+		t.Fatalf("want one notification row with a payload, got %+v", notifications)
+	}
+	assertMonitorOutput := func(row store.Item) {
+		t.Helper()
+		if row.PayloadKind != payloadKindCommandOutput {
+			t.Errorf("%s payload kind = %q, want %q", row.ID, row.PayloadKind, payloadKindCommandOutput)
+		}
+		data, err := st.GetPayloadData("t1", row.PayloadID)
+		if err != nil {
+			t.Fatalf("read %s payload: %v", row.ID, err)
+		}
+		if string(data) != output {
+			t.Errorf("%s payload = %q, want the Monitor's captured output", row.ID, data)
+		}
+	}
+	assertMonitorOutput(notifications[0])
+
+	terminalMeta, _ := json.Marshal(map[string]any{
+		"task_id": "task-mon", "tool_use_id": "mon-1", "status": "completed", "source": "task_output",
+	})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "mon-1",
+		Meta: terminalMeta, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("terminal: %v", err)
+	}
+	sibling, found, err := st.GetThreadItem("t1", ToolCompletionID("mon-1"))
+	if err != nil || !found {
+		t.Fatalf("completion sibling: found=%v err=%v", found, err)
+	}
+	assertMonitorOutput(sibling)
+}

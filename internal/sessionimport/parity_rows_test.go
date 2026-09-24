@@ -3,7 +3,6 @@ package sessionimport
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"testing"
 
 	"agent-overflow/internal/store"
@@ -83,7 +82,7 @@ func readParityPayload(t *testing.T, st *store.Store, threadID, payloadID string
 		t.Fatalf("payload data %s: %v", payloadID, err)
 	}
 	return &parityPayload{
-		ID:   maskUUIDs(meta.ID),
+		ID:   meta.ID,
 		Kind: meta.Kind,
 		Meta: normalizeMeta(t, meta.Meta),
 		Data: string(data),
@@ -178,27 +177,6 @@ func normalizeMeta(t *testing.T, meta string) any {
 		return meta
 	}
 	return value
-}
-
-// bareUUIDPattern is ANCHORED on purpose. The only payload ids that
-// legitimately differ between the two writers are the ones both mint
-// from `uuid.NewString()` — nothing else, so the whole id is a uuid and
-// nothing more. An unanchored match would also blank a uuid EMBEDDED in
-// a deterministic id (`compact:1:provider:<uuid>` is the live shape when
-// the provider names a compaction by uuid), which is exactly the half of
-// the id that proves the two writers agree on how it is derived.
-var bareUUIDPattern = regexp.MustCompile(
-	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-
-// maskUUIDs replaces a payload id that is nothing BUT a random uuid (the
-// promoted tool_call_input blob, the compaction summary blob, the plan
-// blob). Every other id is deterministic on both sides and is compared
-// verbatim, uuid-shaped substrings included.
-func maskUUIDs(id string) string {
-	if bareUUIDPattern.MatchString(id) {
-		return "<uuid>"
-	}
-	return id
 }
 
 func formatRow(row parityRow) string     { return formatAny(row) }

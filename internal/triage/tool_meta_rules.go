@@ -8,8 +8,6 @@ import (
 
 	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/store"
-
-	"github.com/google/uuid"
 )
 
 // payloadKindToolCallInput tags the lazy-loaded sibling row that
@@ -196,7 +194,6 @@ func applyToolMetaRule(toolName string, raw json.RawMessage, now int64) (json.Ra
 		return nil, nil, fmt.Errorf("marshal promoted tool input for %s: %w", toolName, err)
 	}
 	payload := &store.Payload{
-		ID:        uuid.NewString(),
 		Kind:      payloadKindToolCallInput,
 		Meta:      buildToolCallInputPayloadMeta(toolName, promoted),
 		Data:      data,
@@ -330,6 +327,9 @@ func ShapeToolItemMeta(item *store.Item, now int64) (*store.Payload, error) {
 		// Already has a canonical input payload from the launch row;
 		// drop the freshly-extracted one to avoid duplicate writes.
 		return nil, nil
+	}
+	if payload != nil {
+		payload.ID = ToolCallInputPayloadID(item.ID)
 	}
 	return payload, nil
 }

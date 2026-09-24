@@ -150,6 +150,7 @@ func TestDiffPayloadObserverToolResults(t *testing.T) {
 		Kind:      provider.EventDiff,
 		ThreadID:  "t1",
 		Content:   turnDiff,
+		Meta:      json.RawMessage(`{"upgrade_only":true,"source":"turn/diff/updated"}`),
 		Replace:   true,
 		Timestamp: time.Now(),
 	}); err != nil {

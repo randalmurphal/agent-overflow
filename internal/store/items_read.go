@@ -758,50 +758,6 @@ func (s *Store) HasMatchingSystemItem(threadID string, turnIndex int, kind, pare
 	return exists != 0, nil
 }
 
-// LatestToolCallByName returns the most-recently-inserted tool_call row
-// in (threadID, turnIndex) whose lower(tool_name) equals any of
-// toolNames. Matches the iteration pattern in triage.findLatestToolCall
-// but pushes the filter into SQLite so we don't deserialize every item
-// in turns with a lot of tool calls. Returns (zero Item, false, nil)
-// when no match exists.
-//
-// toolNames must be non-empty and are matched case-insensitively; the
-// names are lowercased by the caller (to keep the SQL string short).
-func (s *Store) LatestToolCallByName(threadID string, turnIndex int, toolNames []string) (Item, bool, error) {
-	if len(toolNames) == 0 {
-		return Item{}, false, nil
-	}
-
-	// Build a parametrized IN clause. SQLite has no native array type; we
-	// use ? placeholders. Thread id + turn index stay as the final two
-	// parameters so the SELECT works regardless of the tool-name slice
-	// length. Performance-wise we rely on the items.thread_id +
-	// turn_index covering index — the LIMIT 1 makes the scan minimal.
-	placeholders := ""
-	args := make([]any, 0, len(toolNames)+2)
-	for i, name := range toolNames {
-		if i > 0 {
-			placeholders += ", "
-		}
-		placeholders += "?"
-		args = append(args, name)
-	}
-	args = append(args, threadID, turnIndex)
-
-	query := `SELECT id FROM timeline_items
-		  WHERE kind = 'tool_call'
-		    AND lower(tool_name) IN (` + placeholders + `)
-		    AND thread_id = ? AND turn_index = ?
-		  ORDER BY item_index DESC
-		  LIMIT 1`
-
-	it, found, err := queryOneHydratedTimelineItem(s.reader(), threadID, query, args...)
-	if err != nil {
-		return Item{}, false, fmt.Errorf("store: latest tool_call thread %s turn %d: %w", threadID, turnIndex, err)
-	}
-	return it, found, nil
-}
-
 // MaxItemIndexForTurn returns the highest item_index currently persisted
 // for (threadID, turnIndex), with ok=false when the turn holds no items.
 // The echo handler uses it to stamp a promoted row's provider-order

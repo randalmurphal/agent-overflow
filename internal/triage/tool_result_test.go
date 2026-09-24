@@ -73,6 +73,7 @@ func TestFileChangeToolResultUpgradesFromTurnDiff(t *testing.T) {
 		Kind:      provider.EventDiff,
 		ThreadID:  "t1",
 		Content:   turnDiff,
+		Meta:      json.RawMessage(`{"upgrade_only":true,"source":"turn/diff/updated"}`),
 		Replace:   true,
 		Timestamp: time.Now(),
 	}); err != nil {
@@ -174,16 +175,25 @@ func TestFileChangeToolResultDoesNotOverwriteExistingExactPatch(t *testing.T) {
 		"+export const nativeTurnPatch = 3;",
 	}, "\n")
 
+	// The turn-level snapshot as Codex sends it (turn/diff/updated).
 	if err := router.Handle(provider.ProviderEvent{
 		Kind:      provider.EventDiff,
 		ThreadID:  "t1",
 		Content:   turnDiff,
+		Meta:      json.RawMessage(`{"upgrade_only":true,"source":"turn/diff/updated"}`),
 		Replace:   true,
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("handle diff: %v", err)
 	}
 
+	item, found, err := st.GetThreadItem("t1", "item-file-change")
+	if err != nil || !found {
+		t.Fatalf("file change item after diff: found=%v err=%v", found, err)
+	}
+	if item.PayloadID != payloadID {
+		t.Fatalf("file change item payload = %q, want the exact patch %q", item.PayloadID, payloadID)
+	}
 	after, err := st.GetPayloadData("t1", payloadID)
 	if err != nil {
 		t.Fatalf("get payload data after diff: %v", err)
@@ -193,6 +203,62 @@ func TestFileChangeToolResultDoesNotOverwriteExistingExactPatch(t *testing.T) {
 	}
 	if strings.Contains(string(after), "nativeTurnPatch") {
 		t.Fatalf("expected native turn patch not to overwrite exact tool patch, got %q", string(after))
+	}
+}
+
+// A diff that names no row and is not a turn-level upgrade has no row it
+// may replace: it is dropped, and neither the latest file change's exact
+// patch nor the thread's rows change.
+func TestDiffWithoutItemIDIsDropped(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	workspace := t.TempDir()
+	createToolResultThread(t, st, "t1", workspace)
+	payloadID := ToolResultPayloadID("item-file-change")
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:     provider.EventToolStart,
+		ThreadID: "t1",
+		ItemID:   "item-file-change",
+		ItemType: "file_change",
+		Meta: json.RawMessage(`{"item": {"id": "item-file-change", "type": "file_change", "title": "File change",
+			"data": {"item": {"changes": [{"path": "src/app.ts", "kind": {"type": "update", "move_path": null},
+				"diff": "@@ -1 +1,2 @@\n export const value = 1;\n+export const exactToolPatch = 2;"}]}}}}`),
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle tool start: %v", err)
+	}
+	before, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+
+	if err := router.Handle(provider.ProviderEvent{
+		Kind:      provider.EventDiff,
+		ThreadID:  "t1",
+		Content:   "diff --git a/src/app.ts b/src/app.ts\n+export const wholeTurn = 3;",
+		Replace:   true,
+		Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle diff: %v", err)
+	}
+
+	after, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("an item-less diff wrote rows: %d before, %d after", len(before), len(after))
+	}
+	for i := range after {
+		if after[i].ID != before[i].ID || after[i].PayloadID != before[i].PayloadID {
+			t.Fatalf("an item-less diff repointed %s: payload %q, was %q", after[i].ID, after[i].PayloadID, before[i].PayloadID)
+		}
+	}
+	data, err := st.GetPayloadData("t1", payloadID)
+	if err != nil {
+		t.Fatalf("get payload data: %v", err)
+	}
+	if !strings.Contains(string(data), "exactToolPatch") || strings.Contains(string(data), "wholeTurn") {
+		t.Fatalf("an item-less diff replaced the exact patch: %q", data)
 	}
 }
 
@@ -1031,4 +1097,56 @@ func readToolResultMeta(t *testing.T, st *store.Store, threadID, payloadID strin
 		t.Fatalf("unmarshal tool result meta: %v", err)
 	}
 	return meta
+}
+
+// Command output that names no command has no row it may be attached to:
+// it is dropped, both as a delta and as a snapshot, and the latest
+// command keeps its own output.
+func TestCommandOutputWithoutItemIDIsDropped(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	insertToolCallItem(t, st, "t1", "cmd-1", "Bash: go build", "command_execution", "running")
+	cmdMeta, _ := json.Marshal(map[string]any{"command": "go build", "exitCode": 0})
+	if err := router.Handle(provider.ProviderEvent{
+		Kind: provider.EventCommandOutput, ThreadID: "t1", ItemID: "cmd-1",
+		Content: "own output\n", Meta: cmdMeta, Replace: true, Timestamp: time.Now(),
+	}); err != nil {
+		t.Fatalf("handle own output: %v", err)
+	}
+	before, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+
+	for _, replace := range []bool{false, true} {
+		if err := router.Handle(provider.ProviderEvent{
+			Kind: provider.EventCommandOutput, ThreadID: "t1",
+			Content: "someone else's output\n", Meta: cmdMeta, Replace: replace, Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("handle item-less output (replace=%v): %v", replace, err)
+		}
+	}
+	if err := router.FlushThread("t1"); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	after, err := st.ListItems("t1")
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("item-less output wrote rows: %d before, %d after", len(before), len(after))
+	}
+	for i := range after {
+		if after[i].ID != before[i].ID || after[i].PayloadID != before[i].PayloadID {
+			t.Fatalf("item-less output repointed %s: payload %q, was %q", after[i].ID, after[i].PayloadID, before[i].PayloadID)
+		}
+	}
+	data, err := st.GetPayloadData("t1", before[0].PayloadID)
+	if err != nil {
+		t.Fatalf("get payload data: %v", err)
+	}
+	if string(data) != "own output\n" {
+		t.Fatalf("cmd-1's output = %q, want only its own", data)
+	}
 }
