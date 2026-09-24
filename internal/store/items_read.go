@@ -534,8 +534,9 @@ func (s *Store) ListTurnItems(threadID string, turnIndex int) ([]Item, error) {
 // keep ListTurnItems, which hydrates them.
 func (s *Store) ListTurnItemsSansPayload(threadID string, turnIndex int) ([]Item, error) {
 	query, args := timelineArms(threadID, timelineSelection{
-		Columns: itemColumnsSansPayloadFor,
-		Turn:    "?", TurnArgs: []any{turnIndex},
+		Columns:   itemColumnsSansPayloadFor,
+		LocalJoin: servedItemJoin,
+		Turn:      "?", TurnArgs: []any{turnIndex},
 		OrderBy: "item_index",
 	})
 	rows, err := s.reader().Query(query, args...)

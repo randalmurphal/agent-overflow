@@ -44,6 +44,9 @@ func (s *Store) appendStreamingItemSummaryAndPayload(
 		}
 	}
 
+	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+		return Item{}, err
+	}
 	updated, err := readBackItemTx(tx, threadID, id)
 	if err != nil {
 		return Item{}, fmt.Errorf("store: %s %s/%s: %w", rereadOperation, threadID, id, err)
@@ -99,7 +102,7 @@ func readBackItemTx(tx *sql.Tx, threadID string, id string) (Item, error) {
 	row := tx.QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
-		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id`+servedItemJoin+`
 		  WHERE items.thread_id = ? AND items.id = ?`,
 		threadID, id,
 	)
@@ -450,6 +453,18 @@ func writeItemWithIndexFn(tx *sql.Tx, item *Item, indexFn func(*sql.Tx, string, 
 	}
 }
 
+const itemUpdateSet = `UPDATE items
+		 SET turn_index = ?, kind = ?, role = ?, status = ?, summary = ?,
+		     payload_id = ?,
+		     input_payload_id = COALESCE(NULLIF(?, ''), input_payload_id),
+		     parent_id = ?, is_background = ?, completion_of = ?,
+		     tool_name = ?, decision = ?, meta = ?, updated_at = ?`
+
+var (
+	itemUpdateSQL        = itemUpdateSet + ` WHERE thread_id = ? AND id = ?`
+	itemUpdateClaimedSQL = itemUpdateSet + subagentClaimSetSQL + ` WHERE thread_id = ? AND id = ?`
+)
+
 // updateExistingItem writes every mutable column on the existing row.
 // item_index / created_at are preserved (the caller already copied them
 // from the lookup) so the upsert is logically "update-in-place".
@@ -460,20 +475,33 @@ func writeItemWithIndexFn(tx *sql.Tx, item *Item, indexFn func(*sql.Tx, string, 
 // pair "use the new value if non-empty, else keep the existing column"
 // keeps that contract in a single UPDATE.
 func updateExistingItem(tx *sql.Tx, item Item) error {
-	if _, err := tx.Exec(
-		`UPDATE items
-		 SET turn_index = ?, kind = ?, role = ?, status = ?, summary = ?,
-		     payload_id = ?,
-		     input_payload_id = COALESCE(NULLIF(?, ''), input_payload_id),
-		     parent_id = ?, is_background = ?, completion_of = ?,
-		     tool_name = ?, decision = ?, meta = ?, updated_at = ?
-		 WHERE thread_id = ? AND id = ?`,
+	claimed := item.SubagentAnchor != ""
+	query := itemUpdateSQL
+	var old subagentClaimRow
+	if claimed {
+		var err error
+		if old, err = readSubagentClaimRowTx(tx, item.ThreadID, item.ID); err != nil {
+			return err
+		}
+		if err := shadowImportedParentTx(tx, item, "store: update item "+item.ID); err != nil {
+			return err
+		}
+		query = itemUpdateClaimedSQL
+	}
+	if _, err := tx.Exec(query,
 		item.TurnIndex, item.Kind, item.Role, item.Status, item.Summary,
 		nilIfEmpty(item.PayloadID), item.InputPayloadID,
 		item.ParentID, boolToInt(item.IsBackground), item.CompletionOf,
 		item.ToolName, item.Decision, item.Meta, item.UpdatedAt, item.ThreadID, item.ID,
 	); err != nil {
 		return fmt.Errorf("store: update item %s: %w", item.ID, err)
+	}
+	if claimed {
+		row := subagentClaimRowOf(item)
+		row.index = old.index
+		if err := claimSubagentContentTx(tx, old, row, item.SubagentAnchor); err != nil {
+			return err
+		}
 	}
 	// This is where an assistant message or a tool call leaves the running
 	// state, so this is where its text enters the search index. A row that
@@ -1036,6 +1064,8 @@ type ItemPartialUpdate struct {
 	Meta      *string
 	Decision  *string
 	UpdatedAt *int64
+	// SubagentAnchor claims the write as Item.SubagentAnchor does.
+	SubagentAnchor string
 }
 
 // UpdateItemFields writes only the non-nil fields from update onto the
@@ -1087,8 +1117,19 @@ func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) 
 	if err := requireMutableItemTx(tx, threadID, id, "store: update item fields"); err != nil {
 		return Item{}, err
 	}
+	var old subagentClaimRow
+	claim := ""
+	if update.SubagentAnchor != "" {
+		if old, err = readSubagentClaimRowTx(tx, threadID, id); err != nil {
+			return Item{}, err
+		}
+		if err := shadowImportedParentTx(tx, Item{ThreadID: threadID, ParentID: old.parentID}, "store: update item fields"); err != nil {
+			return Item{}, err
+		}
+		claim = subagentClaimSetSQL
+	}
 	args = append(args, threadID, id)
-	query := "UPDATE items SET " + strings.Join(setClauses, ", ") + " WHERE thread_id = ? AND id = ?"
+	query := "UPDATE items SET " + strings.Join(setClauses, ", ") + claim + " WHERE thread_id = ? AND id = ?"
 	result, err := tx.Exec(query, args...)
 	if err != nil {
 		return Item{}, fmt.Errorf("store: update item fields %s/%s: %w", threadID, id, err)
@@ -1098,6 +1139,15 @@ func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) 
 		fmt.Sprintf("store: update item fields %s/%s", threadID, id),
 	); err != nil {
 		return Item{}, err
+	}
+	if update.SubagentAnchor != "" {
+		row := old
+		if update.Summary != nil {
+			row.summary = *update.Summary
+		}
+		if err := claimSubagentContentTx(tx, old, row, update.SubagentAnchor); err != nil {
+			return Item{}, err
+		}
 	}
 	// A partial update can be the write that settles a row (the
 	// turn-complete flip, the force-close safety net), so the row's

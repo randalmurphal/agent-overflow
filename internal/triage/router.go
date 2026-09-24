@@ -1352,6 +1352,7 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 			item.ParentID = ""
 		}
 	}
+	item.SubagentAnchor = r.subagentAnchorFor(item.ThreadID, item.ID, item.ParentID)
 
 	// Codex spawn events and completed executions cannot acquire later data,
 	// including when duplicate completions arrive through the deferred queue.
@@ -1404,6 +1405,7 @@ func (r *Router) persistItemWithPayloadAppend(item store.Item, payloadID string,
 			item.ParentID = ""
 		}
 	}
+	item.SubagentAnchor = r.subagentAnchorFor(item.ThreadID, item.ID, item.ParentID)
 
 	persisted, err := r.store.UpsertItemWithPayloadAppend(item, payloadID, delta, payloadMeta, item.UpdatedAt)
 	if err != nil {

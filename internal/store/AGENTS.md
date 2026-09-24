@@ -84,10 +84,12 @@ an atomic persistence decision; they must not become a business-logic layer.
 
 ## History and trigger contracts
 
-- Item triggers maintain history stamps, subagent anchor cards, the thread
-  row's turn-error aggregate, payload garbage collection, imported history
-  integrity, and background-launch settlement. Do not duplicate or bypass
-  those invariants in Go.
+- Item triggers maintain history stamps, the marks that keep subagent
+  anchor cards, the thread row's turn-error aggregate, payload garbage
+  collection, imported history integrity, and background-launch settlement.
+  Do not duplicate or bypass those invariants in Go. The one card path in Go
+  is a write that names its subagent anchor, whose effect the store applies
+  with keyed writes (`subagent_aggregate_writes.go`).
 - A write to a payload or plan row an item renders calls
   `bumpHistoryRevForItemTx` / `bumpHistoryRevForPayloadTx` so the owning row's
   `rev` moves with the thread stamp; plain `bumpHistoryRevTx` is only for a
@@ -110,10 +112,16 @@ an atomic persistence decision; they must not become a business-logic layer.
   between threads, and before it commits it recomputes every local anchor
   whose subtree it changed: `restampSubagentAggregatesTx` for a thread it
   rebuilt, or `markSubagentChainsDirtyTx` for rows the item triggers did not
-  see (bulk load, shared chunks) and then `settleSubagentAggregatesTx`. Stamp
-  values are written by the triggers or by `writeSubagentStampsTx`, which
-  bumps `threads.history_rev` first so the stamp trigger moves the anchor and
-  its completion siblings to a new revision.
+  see (bulk load, shared chunks) and then `settleSubagentAggregatesTx`. A live
+  write names the anchor its row counts toward (`Item.SubagentAnchor`,
+  checked against the parent chain) and keeps the cards with keyed writes;
+  any other item write leaves the chain marked dirty, and its writer settles
+  before it commits. Stamp values are written by those keyed writes or by
+  `writeSubagentStampsTx`, in a transaction that already advanced
+  `threads.history_rev`: the item write, the dirty mark, or
+  `RecomputeSubagentAggregates`'s own bump. A settle adds no bump, so one
+  item write moves the thread once, and the anchor and its completion
+  siblings are served at a new revision.
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by

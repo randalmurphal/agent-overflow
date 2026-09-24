@@ -130,7 +130,9 @@ They depend on `recursive_triggers` being OFF, which `dsn.go` pins and boot
 verifies. The update trigger fires on every column but `rev`, so a stamping
 write, which writes `rev` alone, does not fire it, and its
 `WHEN OLD.rev IS NEW.rev` guard excludes the one stamp that also rewrites
-`meta`. Go never names `rev` in a column list; its touch writes `updated_at`
+`meta`. The one `rev` Go writes is `subagentClaimRev`, the claim of a write
+that names its subagent anchor: the guard lets it through by name and the
+row stamp replaces it in the same statement. Go's touch writes `updated_at`
 to itself.
 
 A window-visible mutation outside `items`, such as payload content or a plan
@@ -265,11 +267,15 @@ On the measured copy this is 1,041 `Agent` payloads (1.19 GB) and 141
 
 Five trigger families ride `items`:
 
-- History triggers maintain revision and epoch counters, the per-row
-  `items.rev` stamp, and each subagent anchor's card in its
-  `subagent_aggregates` row (`subagent_aggregate_stamps.go`). Under `history_bulk_load` the
-  triggers skip the card work, and a bulk load that changes a subtree
-  recomputes the cards before it commits.
+- History triggers maintain revision and epoch counters and the per-row
+  `items.rev` stamp, and mark dirty the subagent cards in
+  `subagent_aggregates` a write may have changed
+  (`subagent_aggregate_stamps.go`). A write that names its anchor is not
+  marked: the store keeps its cards with keyed writes
+  (`subagent_aggregate_writes.go`). Every other writer recomputes what the
+  marks name before it commits. Under `history_bulk_load` the triggers mark
+  nothing, and a bulk load that changes a subtree recomputes the cards
+  before it commits.
 - Payload-GC triggers collect a payload once no item in the thread references
   it: after an item is deleted, and after an update repoints an item's
   `payload_id` or `input_payload_id`.

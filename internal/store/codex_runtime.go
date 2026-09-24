@@ -60,7 +60,7 @@ func (s *Store) retireCodexBackgroundRuntime(threadID string, summarise func(str
 	if err := collect(
 		`SELECT `+itemColumnsSansPayload+`
 		   FROM items INDEXED BY idx_items_running_bg_tool_calls
-		   JOIN threads ON threads.id = items.thread_id
+		   JOIN threads ON threads.id = items.thread_id`+servedItemJoin+`
 		  WHERE threads.provider = 'codex'
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'
@@ -94,6 +94,19 @@ func (s *Store) retireCodexBackgroundRuntime(threadID string, summarise func(str
 		); err != nil {
 			return nil, fmt.Errorf("store: retire Codex background item %s: %w", item.ID, err)
 		}
+	}
+	// A retired child's summary can move its launch's card. retired is
+	// sorted by thread, so each thread settles once.
+	for i := range retired {
+		if i > 0 && retired[i].ThreadID == retired[i-1].ThreadID {
+			continue
+		}
+		if err := settleSubagentAggregatesTx(tx, retired[i].ThreadID); err != nil {
+			return nil, err
+		}
+	}
+	for i := range retired {
+		item := &retired[i]
 		// The rows were selected before the UPDATE, so their revision is
 		// the pre-write one. These structs are emitted to clients.
 		if item.Rev, err = readItemRevTx(tx, item.ThreadID, item.ID); err != nil {

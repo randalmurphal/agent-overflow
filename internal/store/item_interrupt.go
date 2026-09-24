@@ -30,6 +30,9 @@ func (s *Store) ErrorActiveItemIfRevision(threadID, id string, revision int64, s
 	if err := indexItemByIDTx(tx, threadID, id); err != nil {
 		return Item{}, false, err
 	}
+	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+		return Item{}, false, err
+	}
 	item, err := readBackItemTx(tx, threadID, id)
 	if err != nil {
 		return Item{}, false, fmt.Errorf("store: read interrupted item: %w", err)

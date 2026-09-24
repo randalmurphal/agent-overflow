@@ -2245,7 +2245,7 @@ func TestCodexBackgroundRuntimeRecoveryUsesPartialIndexes(t *testing.T) {
 	assertPlanUses(t, s.db, "idx_items_running_bg_tool_calls",
 		`EXPLAIN QUERY PLAN SELECT `+itemColumnsSansPayload+`
 		   FROM items INDEXED BY idx_items_running_bg_tool_calls
-		   JOIN threads ON threads.id = items.thread_id
+		   JOIN threads ON threads.id = items.thread_id`+servedItemJoin+`
 		  WHERE threads.provider = 'codex'
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'
@@ -2254,7 +2254,7 @@ func TestCodexBackgroundRuntimeRecoveryUsesPartialIndexes(t *testing.T) {
 	assertPlanUses(t, s.db, "idx_items_live_codex_subagent",
 		`EXPLAIN QUERY PLAN SELECT `+itemColumnsSansPayload+`
 		   FROM items INDEXED BY idx_items_live_codex_subagent
-		   JOIN threads ON threads.id = items.thread_id
+		   JOIN threads ON threads.id = items.thread_id`+servedItemJoin+`
 		  WHERE threads.provider = 'codex'
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'completed'
@@ -2630,7 +2630,7 @@ func TestCompletionSiblingProbesUseIndex(t *testing.T) {
 			name: "payload left join list",
 			query: `SELECT ` + itemColumns + `
 			   FROM items
-			   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+			   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id` + servedItemJoin + `
 			  WHERE items.thread_id = ?
 			    AND items.kind = 'tool_call'
 			    AND items.status = 'running'
@@ -2643,7 +2643,7 @@ func TestCompletionSiblingProbesUseIndex(t *testing.T) {
 			// ListLiveBackgroundChildLaunches.
 			name: "direct children of one launch",
 			query: `SELECT ` + itemColumnsSansPayload + `
-			   FROM items
+			   FROM items` + servedItemJoin + `
 			  WHERE items.thread_id = ?
 			    AND items.parent_id = ?
 			    AND items.parent_id <> ''
@@ -2685,7 +2685,7 @@ func TestCompletionSiblingProbesUseIndex(t *testing.T) {
 			query: `SELECT ` + itemColumns + `
 			   FROM items
 			   JOIN threads ON threads.id = items.thread_id
-			   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+			   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id` + servedItemJoin + `
 			  WHERE threads.provider IN ('claude', 'claude-tui')
 			    AND items.kind = 'tool_call'
 			    AND items.status = 'running'
@@ -2698,7 +2698,7 @@ func TestCompletionSiblingProbesUseIndex(t *testing.T) {
 			query: `SELECT ` + itemColumns + `
 			   FROM items
 			   JOIN threads ON threads.id = items.thread_id
-			   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+			   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id` + servedItemJoin + `
 			  WHERE items.thread_id = ?
 			    AND threads.provider = 'codex'
 			    AND items.kind = 'tool_call'
@@ -2795,7 +2795,7 @@ func TestListLiveBackgroundChildLaunchesListsOnlyLiveDirectChildren(t *testing.T
 	}
 
 	assertPlanUses(t, s.db, "idx_items_parent", `EXPLAIN QUERY PLAN SELECT `+itemColumnsSansPayload+`
-	   FROM items
+	   FROM items`+servedItemJoin+`
 	  WHERE items.thread_id = ?
 	    AND items.parent_id = ?
 	    AND items.parent_id <> ''

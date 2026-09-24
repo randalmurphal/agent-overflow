@@ -72,7 +72,7 @@ func queryHydratedTimelineItems(
 		  CROSS JOIN items AS items
 		    ON items.thread_id = ? AND items.id = selected.id
 		  LEFT JOIN payloads AS payloads
-		    ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+		    ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id`+servedItemJoin+`
 		UNION ALL
 		SELECT `+importedItemHydrationColumns+`
 		  FROM selected

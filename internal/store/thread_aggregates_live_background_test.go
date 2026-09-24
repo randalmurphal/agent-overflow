@@ -39,7 +39,7 @@ var preSettlementLiveBackgroundTasksSQL = `WITH RECURSIVE bg(id) AS (
 		)
 		SELECT ` + itemColumns + `
 		   FROM items
-		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id` + servedItemJoin + `
 		  WHERE items.thread_id = ?
 		    AND (
 		      (

@@ -62,7 +62,14 @@ type subagentStampTarget struct {
 }
 
 func (t subagentStampTarget) anchorable() bool {
-	return t.kind == "tool_call" && t.toolName != "collab_agent"
+	return SubagentAnchorable(t.kind, t.toolName)
+}
+
+// SubagentAnchorable reports whether a row of this kind and tool anchors
+// a subagent card, which makes it a valid Item.SubagentAnchor: a tool
+// call other than a Codex spawn row. aggAnchorableSQL is the same rule.
+func SubagentAnchorable(kind, toolName string) bool {
+	return kind == "tool_call" && toolName != "collab_agent"
 }
 
 // subagentStampWrite is one recomputed stamp. rev is the revision the
@@ -338,10 +345,11 @@ func subagentCarriersOf(q sqlQueryer, threadID string, roots []string) (map[stri
 	return out, nil
 }
 
-// bumpSubagentAggregateRevSQL advances the thread stamp ahead of a Go
-// write to subagent_aggregates, whose triggers stamp the anchors it
-// writes with the thread's history_rev. Under bulk load the thread stamp
-// is frozen, as the item triggers leave it.
+// bumpSubagentAggregateRevSQL advances the thread stamp for a Go write
+// that changes cards outside an item write: subagent_aggregates' triggers
+// stamp the anchors it writes with the thread's history_rev, which must
+// be one no reader has seen. Under bulk load the thread stamp is frozen,
+// as the item triggers leave it.
 const bumpSubagentAggregateRevSQL = `UPDATE threads SET history_rev = history_rev + 1
  WHERE id = ? AND history_bulk_load = 0`
 
@@ -358,12 +366,10 @@ SELECT ?1, ?2, ?4, 1` + strings.Repeat(", ?", len(subagentAggregateValueColumns)
 // writeSubagentStampsTx writes recomputed stamps and returns how many
 // landed. An optimistic write skips a row that moved since it was read;
 // that row is still dirty or unstamped and the next recompute takes it.
+// The caller has advanced the thread stamp in this transaction.
 func writeSubagentStampsTx(tx *sql.Tx, threadID string, writes []subagentStampWrite, optimistic bool) (landed int, err error) {
 	if len(writes) == 0 {
 		return 0, nil
-	}
-	if _, err := tx.Exec(bumpSubagentAggregateRevSQL, threadID); err != nil {
-		return 0, fmt.Errorf("store: bump history for subagent stamps in %s: %w", threadID, err)
 	}
 	stmt, err := tx.Prepare(writeSubagentStampSQL)
 	if err != nil {
@@ -438,7 +444,10 @@ func subagentAnchorIDs(q sqlQueryer, query string, args ...any) ([]string, error
 // the caller's write transaction. A write path that can leave an anchor
 // dirty calls it before it reads back or commits, so the dirty state never
 // outlives the write that caused it. The probe is one keyed read of an
-// index that is empty almost always.
+// index that is empty almost always. It does not advance the thread
+// stamp: every dirty mark is made in the same transaction as a thread
+// bump (recomputeSubagentAggregatesTx), so one item write moves the thread
+// once.
 func settleSubagentAggregatesTx(tx *sql.Tx, threadID string) error {
 	const batch = 256
 	for pass := 0; ; pass++ {
@@ -460,7 +469,13 @@ func settleSubagentAggregatesTx(tx *sql.Tx, threadID string) error {
 
 // recomputeSubagentAggregatesTx is RecomputeSubagentAggregates for the
 // given anchors inside a caller's write transaction, which already holds
-// the rows still.
+// the rows still and has advanced the thread stamp: the item triggers
+// bump the thread in the statement that marks a chain, a claimed write's
+// keyed marks follow its item write, markSubagentChainsDirtyTx bumps
+// before it marks, a localized anchor is marked for its caller's item
+// write, and a bulk-loaded thread's stamp is frozen until its loader
+// writes the exact revision. The stamps it writes therefore land on a
+// revision no reader has seen.
 func recomputeSubagentAggregatesTx(tx *sql.Tx, threadID string, ids []string) error {
 	writes, err := computeSubagentStamps(tx, threadID, ids)
 	if err != nil {
@@ -539,6 +554,11 @@ func (s *Store) RecomputeSubagentAggregates(ctx context.Context, threadID string
 		return SubagentRecompute{}, fmt.Errorf("store: begin subagent recompute write for %s: %w", threadID, err)
 	}
 	defer tx.Rollback()
+	if len(writes) > 0 {
+		if _, err := tx.Exec(bumpSubagentAggregateRevSQL, threadID); err != nil {
+			return SubagentRecompute{}, fmt.Errorf("store: bump history for subagent stamps in %s: %w", threadID, err)
+		}
+	}
 	landed, err := writeSubagentStampsTx(tx, threadID, writes, true)
 	if err != nil {
 		return SubagentRecompute{}, err

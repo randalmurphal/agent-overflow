@@ -391,7 +391,11 @@ func settleStrandedItemsTx(tx *sql.Tx, threadID string, turnIndex *int, summaris
 			return fmt.Errorf("store: stranded item flip %s: %w", f.id, err)
 		}
 	}
-	return nil
+	if len(flips) == 0 {
+		return nil
+	}
+	// A flipped agent child's summary can move its launch's card.
+	return settleSubagentAggregatesTx(tx, threadID)
 }
 
 // GetTurn returns a single turn by its provider-assigned id. Returns

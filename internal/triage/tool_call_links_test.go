@@ -170,9 +170,9 @@ func mapKeys(rows map[string]store.Item) []string {
 func TestToolCallLinksEvictUnreferencedFirst(t *testing.T) {
 	var links toolCallLinks
 	for i := 0; i < maxToolCallLinksPerThread; i++ {
-		links.put(fmt.Sprintf("leaf-%d", i), "root", 0)
+		links.put(fmt.Sprintf("leaf-%d", i), "root", 0, true)
 	}
-	links.put("root", "", 7)
+	links.put("root", "", 7, true)
 	if len(links.byID) != maxToolCallLinksPerThread {
 		t.Fatalf("holds %d links, want the bound %d", len(links.byID), maxToolCallLinksPerThread)
 	}
@@ -183,7 +183,7 @@ func TestToolCallLinksEvictUnreferencedFirst(t *testing.T) {
 		if _, ok := links.get("root"); !ok {
 			t.Fatalf("the referenced root was evicted after %d newer links", i)
 		}
-		links.put(fmt.Sprintf("new-%d", i), "root", 0)
+		links.put(fmt.Sprintf("new-%d", i), "root", 0, true)
 		if len(links.byID) > maxToolCallLinksPerThread || len(links.ring) > maxToolCallLinksPerThread {
 			t.Fatalf("grew past the bound: %d links, %d ring slots", len(links.byID), len(links.ring))
 		}
@@ -233,7 +233,7 @@ func TestShouldDropParentIDOverLinks(t *testing.T) {
 
 	var links toolCallLinks
 	for i := 0; i < 20; i++ {
-		links.put(fmt.Sprintf("deep-%d", i), fmt.Sprintf("deep-%d", i+1), 0)
+		links.put(fmt.Sprintf("deep-%d", i), fmt.Sprintf("deep-%d", i+1), 0, true)
 	}
 	router.mu.Lock()
 	router.state("t1").toolCalls = links
@@ -532,5 +532,126 @@ func TestAgentsFirstRowPushesItsCardAtOnce(t *testing.T) {
 	}
 	if got := pushedIDs(itemUpserts(emissions.snapshot())); len(got) != 1 || got[0] != "bash-1" {
 		t.Fatalf("the agent's second row pushed %v, want only its own row", got)
+	}
+}
+
+// subagentStampForTest reads an anchor's stamp through a second handle:
+// its generation, which only the store's recompute moves, and its state
+// (0 clean). ok is false for an unstamped anchor.
+func subagentStampForTest(t *testing.T, dbPath, threadID, id string) (gen, state int64, ok bool) {
+	t.Helper()
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer rawDB.Close()
+	err = rawDB.QueryRow(`SELECT gen, state FROM subagent_aggregates WHERE thread_id = ? AND item_id = ?`,
+		threadID, id).Scan(&gen, &state)
+	if err == sql.ErrNoRows {
+		return 0, 0, false
+	}
+	if err != nil {
+		t.Fatalf("read stamp %s/%s: %v", threadID, id, err)
+	}
+	return gen, state, true
+}
+
+// TestLiveSubagentWritesNameTheirAnchor pins that triage names the parent
+// launch on the writes of an agent's row that can move a card, so the
+// store keeps the launch cards with keyed writes: after inserts, a
+// whole-row rewrite, a linked payload append and an amended approval
+// under a nested agent, both launches are clean at the generation they
+// had, which a recompute would have moved. A row whose parent is not
+// stored yet names no anchor and still persists. The field updates triage
+// makes (text and thinking settles, progress meta) name none: no card
+// previews what they change, so the store marks nothing for them.
+func TestLiveSubagentWritesNameTheirAnchor(t *testing.T) {
+	dbPath := storetest.ClonePath(t)
+	st, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	router := NewRouter(st, func(eventchan.Channel, any) {})
+	t.Cleanup(router.DrainWireItemRefresh)
+	createTestThread(t, st, "t1")
+	seedAgentChain(t, st, "t1")
+
+	row := func(id, kind, tool, summary, parent string) store.Item {
+		return store.Item{ID: id, ThreadID: "t1", Kind: kind, Role: "assistant", Status: statusRunning,
+			ToolName: tool, Summary: summary, ParentID: parent, CreatedAt: 2, UpdatedAt: 2}
+	}
+	if err := router.persistItem(row("c1", itemKindToolCall, "Bash", "Bash: ls", "agent-2"), nil); err != nil {
+		t.Fatalf("persist first child: %v", err)
+	}
+	gens := make(map[string]int64)
+	for _, id := range []string{"agent-1", "agent-2"} {
+		gen, state, ok := subagentStampForTest(t, dbPath, "t1", id)
+		if !ok || state != 0 {
+			t.Fatalf("%s stamp: ok=%v state=%d, want clean", id, ok, state)
+		}
+		gens[id] = gen
+	}
+
+	if err := router.persistItem(row("c2", itemKindToolCall, "Read", "Read: a.go", "agent-2"), nil); err != nil {
+		t.Fatalf("persist second child: %v", err)
+	}
+	rewritten := row("c2", itemKindToolCall, "Read", "Read: b.go", "agent-2")
+	rewritten.Status = statusCompleted
+	if err := router.persistItem(rewritten, nil); err != nil {
+		t.Fatalf("rewrite second child: %v", err)
+	}
+	output := row("c3", itemKindToolCall, "Bash", "Bash: make", "agent-2")
+	output.PayloadID = "c3-out"
+	if err := router.persistItem(output, &store.Payload{ID: "c3-out", Kind: payloadKindCommandOutput, Data: []byte("a")}); err != nil {
+		t.Fatalf("persist streaming child: %v", err)
+	}
+	output.Summary = "Bash: make test"
+	if err := router.persistItemWithPayloadAppend(output, "c3-out", []byte("b"), "", false); err != nil {
+		t.Fatalf("append streaming child: %v", err)
+	}
+	if err := router.persistItem(row("c4", itemKindToolCall, "Bash", "Bash: rm a", "agent-2"), nil); err != nil {
+		t.Fatalf("persist approval child: %v", err)
+	}
+	asked, _, err := st.GetThreadItem("t1", "c4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.updateApprovalItem(asked, provider.ApprovalRequest{ToolName: "Bash",
+		Input: json.RawMessage(`{"command":"rm b"}`)}, "amended", 3); err != nil {
+		t.Fatalf("amend approval: %v", err)
+	}
+	for id, was := range gens {
+		if gen, state, ok := subagentStampForTest(t, dbPath, "t1", id); !ok || state != 0 || gen != was {
+			t.Errorf("%s stamp: ok=%v state=%d gen=%d, want clean at gen %d (kept by keyed writes)", id, ok, state, gen, was)
+		}
+	}
+	inner, _, err := st.GetThreadItem("t1", "agent-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	amended, _, err := st.GetThreadItem("t1", "c4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	quoted, err := json.Marshal(amended.Summary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if amended.Summary == "Bash: rm a" || !strings.Contains(inner.Meta, `"subagentDescendantCount":4`) ||
+		!strings.Contains(inner.Meta, `"subagentLatestToolSummary":`+string(quoted)) {
+		t.Errorf("agent-2 serves %s after the amend to %q, want four children and the amended tool as its latest", inner.Meta, amended.Summary)
+	}
+
+	if err := router.persistItem(row("orphan", itemKindAssistantText, "", "early", "agent-3"), nil); err != nil {
+		t.Fatalf("persist a row whose parent is not stored: %v", err)
+	}
+	// A Codex spawn row is a tool call that anchors no card, so a row
+	// under it names none; the store would reject it as an anchor.
+	if err := router.persistItem(row("spawn", itemKindToolCall, "collab_agent", "Spawned worker", ""), nil); err != nil {
+		t.Fatalf("persist spawn row: %v", err)
+	}
+	if err := router.persistItem(row("under-spawn", itemKindAssistantText, "", "note", "spawn"), nil); err != nil {
+		t.Fatalf("persist a row under a spawn row: %v", err)
 	}
 }

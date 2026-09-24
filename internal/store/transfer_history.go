@@ -402,7 +402,7 @@ func readTransferHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, input
 					return err
 				}
 			}
-			if err := insertItemTx(tx, item, "transfer item"); err != nil {
+			if err := insertItemRowTx(tx, item, "transfer item"); err != nil {
 				return err
 			}
 		case "turn":
@@ -501,6 +501,11 @@ func readTransferHistoryTx(ctx context.Context, tx *sql.Tx, target Thread, input
 	}
 	if !ended {
 		return errors.New("transfer: incomplete conversation history")
+	}
+	// The rows carry no subagent anchor; the stamps their inserts marked
+	// are recomputed once, from the whole copy.
+	if err := settleSubagentAggregatesTx(tx, target.ID); err != nil {
+		return err
 	}
 	if err := bumpHistoryRevTx(tx, target.ID, "transfer history"); err != nil {
 		return fmt.Errorf("transfer: initialize history: %w", err)

@@ -26,7 +26,8 @@ var ErrItemSettled = errors.New("store: item is no longer streaming")
 // splicing one into the middle of a positional scan order.
 //
 // The meta column is the row's meta as a read serves it: a local
-// projection merges the row's subagent stamp (servedItemMetaFor).
+// projection merges the row's subagent stamp (servedItemMetaFor), which
+// it reads through servedItemJoin.
 var itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index,
     items.kind, items.role, items.status, items.summary,
     COALESCE(items.payload_id, ''), COALESCE(payloads.kind, ''), COALESCE(payloads.meta, ''),
@@ -38,7 +39,8 @@ var itemColumns = `items.id, items.thread_id, items.turn_index, items.item_index
 
 // servedItemMetaFor is the meta column of an item projection on the arm
 // whose revision expression is revExpr: a local row's meta as a read
-// serves it (subagentServedMetaSQL). Imported rows carry no stamps.
+// serves it (subagentServedMetaSQL, read through servedItemJoin).
+// Imported rows carry no stamps.
 func servedItemMetaFor(revExpr string) string {
 	if revExpr == importedItemRevExpr {
 		return "items.meta"
@@ -157,34 +159,42 @@ func itemInsertArgs(item Item) []any {
 	}
 }
 
-// insertItemTx inserts one row and indexes its text when the row arrives
-// settled (a user message, a cloned or transferred row). A row that arrives
-// streaming is indexed later by the write that settles it. The index write
-// shares this transaction, so a rolled-back insert leaves nothing searchable.
+// insertItemTx inserts one row and settles the subagent stamps it
+// changed (insertItemRowTx).
 func insertItemTx(tx *sql.Tx, item Item, label string) error {
-	if err := shadowImportedParentTx(tx, item, label); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
-		return fmt.Errorf("%s: %w", label, err)
-	}
-	if err := indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary); err != nil {
+	if err := insertItemRowTx(tx, item, label); err != nil {
 		return err
 	}
 	return settleSubagentAggregatesTx(tx, item.ThreadID)
 }
 
-func insertItemWithIDTx(tx *sql.Tx, item Item, label string) error {
+// insertItemRowTx inserts one row and indexes its text when the row arrives
+// settled (a user message, a cloned or transferred row). A row that arrives
+// streaming is indexed later by the write that settles it. The index write
+// shares this transaction, so a rolled-back insert leaves nothing searchable.
+// A claimed row (Item.SubagentAnchor) keeps its anchors' stamps here; any
+// other leaves them marked, and the caller settles before it commits.
+func insertItemRowTx(tx *sql.Tx, item Item, label string) error {
 	if err := shadowImportedParentTx(tx, item, label); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(itemInsertSQL, itemInsertArgs(item)...); err != nil {
-		return fmt.Errorf("%s %s: %w", label, item.ID, err)
+	query := itemInsertSQL
+	if item.SubagentAnchor != "" {
+		query = itemInsertClaimedSQL
 	}
-	if err := indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary); err != nil {
-		return err
+	if _, err := tx.Exec(query, itemInsertArgs(item)...); err != nil {
+		return fmt.Errorf("%s: %w", label, err)
 	}
-	return settleSubagentAggregatesTx(tx, item.ThreadID)
+	if item.SubagentAnchor != "" {
+		if err := claimSubagentInsertTx(tx, subagentClaimRowOf(item), item.SubagentAnchor); err != nil {
+			return err
+		}
+	}
+	return indexSettledItemTx(tx, item.ThreadID, item.ID, item.Kind, item.Status, item.Summary)
+}
+
+func insertItemWithIDTx(tx *sql.Tx, item Item, label string) error {
+	return insertItemTx(tx, item, label+" "+item.ID)
 }
 
 // shadowImportedParentTx moves an imported anchor into the thread's local

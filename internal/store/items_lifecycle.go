@@ -256,7 +256,7 @@ func (s *Store) ForceCloseRunningToolCallsInTurn(
 
 	rows, err := tx.Query(
 		`SELECT `+itemColumnsSansPayload+`
-		   FROM items
+		   FROM items`+servedItemJoin+`
 		  WHERE items.thread_id = ?
 		    AND items.turn_index = ?
 		    AND items.kind = 'tool_call'
@@ -309,6 +309,12 @@ func (s *Store) ForceCloseRunningToolCallsInTurn(
 		); err != nil {
 			return nil, fmt.Errorf("store: force-close update %s: %w", flipped[i].ID, err)
 		}
+	}
+	// A flipped agent child's summary can move its launch's card.
+	if err := settleSubagentAggregatesTx(tx, threadID); err != nil {
+		return nil, err
+	}
+	for i := range flipped {
 		// Selected before the UPDATE, emitted after it: re-read the
 		// trigger-assigned revision (readItemRevTx).
 		rev, err := readItemRevTx(tx, flipped[i].ThreadID, flipped[i].ID)
@@ -344,7 +350,7 @@ func (s *Store) ListRunningBackgroundToolCalls(threadID string) ([]Item, error) 
 	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
 		   FROM items
-		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id`+servedItemJoin+`
 		  WHERE items.thread_id = ?
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'
@@ -397,7 +403,7 @@ func (s *Store) ListLiveBackgroundChildLaunches(threadID, parentID string) ([]It
 	}
 	rows, err := s.reader().Query(
 		`SELECT `+itemColumnsSansPayload+`
-		   FROM items
+		   FROM items`+servedItemJoin+`
 		  WHERE items.thread_id = ?
 		    AND items.parent_id = ?
 		    AND items.parent_id <> ''
@@ -427,7 +433,7 @@ func (s *Store) ListIncompleteCodexSubagentLaunches(threadID string) ([]Item, er
 	rows, err := s.reader().Query(
 		`SELECT `+itemColumns+`
 		   FROM items
-		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id`+servedItemJoin+`
 		  WHERE items.thread_id = ?
 		    AND items.kind = 'tool_call'
 		    AND items.tool_name = 'collab_agent'
@@ -502,7 +508,7 @@ func (s *Store) GetIncompleteCodexSubagentLaunch(threadID, itemID string) (Item,
 	row := s.reader().QueryRow(
 		`SELECT `+itemColumns+`
 		   FROM items
-		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id`+servedItemJoin+`
 		  WHERE items.thread_id = ?
 		    AND items.id = ?
 		    AND items.kind = 'tool_call'
@@ -575,7 +581,7 @@ func (s *Store) listRecoverableClaudeBackgroundLaunches(threadID string) ([]Item
 	query := `SELECT ` + itemColumns + `
 		   FROM items
 		   JOIN threads ON threads.id = items.thread_id
-		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id
+		   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id` + servedItemJoin + `
 		  WHERE threads.provider IN ('claude', 'claude-tui')
 		    AND items.kind = 'tool_call'
 		    AND items.status = 'running'

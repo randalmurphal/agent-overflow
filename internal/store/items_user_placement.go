@@ -142,7 +142,7 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 			}
 		} else {
 			applyItemDefaults(&item)
-			if err := insertItemTx(tx, item, "store: insert placed user message"); err != nil {
+			if err := insertItemRowTx(tx, item, "store: insert placed user message"); err != nil {
 				return nil, err
 			}
 		}

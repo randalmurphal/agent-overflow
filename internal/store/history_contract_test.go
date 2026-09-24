@@ -615,12 +615,18 @@ func TestHistoryTriggersFireOnRawSQL(t *testing.T) {
 	// No store code moves a row between threads, but the trigger must not
 	// depend on that staying true: a cross-thread UPDATE is a delete from
 	// one ordering and an insert into another, so BOTH threads' stamps
-	// advance and both take the epoch bump.
+	// advance and both take the epoch bump. The moved row takes its new
+	// thread's revision and the launch it left takes the old thread's.
 	seedContractThread(t, s, "t2")
-	exec(`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, created_at, updated_at)
-	      VALUES ('mover', 't', 0, 0, 'assistant_text', 'assistant', 'completed', 'mover', 1, 1)`)
+	exec(`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, tool_name, created_at, updated_at)
+	      VALUES ('mover-launch', 't', 0, 1, 'tool_call', 'assistant', 'running', 'Agent: go', 'Agent', 1, 1)`)
+	exec(`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, parent_id, created_at, updated_at)
+	      VALUES ('mover', 't', 0, 2, 'assistant_text', 'assistant', 'completed', 'mover', 'mover-launch', 1, 1)`)
 	stamp = historyStampOf(t, s, "t")
 	stamp2 := historyStampOf(t, s, "t2")
+	if stamp.Rev == stamp2.Rev {
+		t.Fatalf("fixture: both threads at revision %d; the move could not tell their stamps apart", stamp.Rev)
+	}
 	exec(`UPDATE items SET thread_id = 't2' WHERE id = 'mover'`)
 	after := historyStampOf(t, s, "t")
 	after2 := historyStampOf(t, s, "t2")
@@ -631,6 +637,18 @@ func TestHistoryTriggersFireOnRawSQL(t *testing.T) {
 	if after2.Rev-stamp2.Rev != 1 || after2.Epoch-stamp2.Epoch != 1 {
 		t.Fatalf("cross-thread move, target: (rev, epoch) delta = (%d, %d), want (1, 1)",
 			after2.Rev-stamp2.Rev, after2.Epoch-stamp2.Epoch)
+	}
+	for _, row := range []struct {
+		thread, id string
+		want       int64
+	}{{"t2", "mover", after2.Rev}, {"t", "mover-launch", after.Rev}} {
+		var rev int64
+		if err := s.db.QueryRow(`SELECT rev FROM items WHERE thread_id = ? AND id = ?`, row.thread, row.id).Scan(&rev); err != nil {
+			t.Fatalf("read %s/%s rev: %v", row.thread, row.id, err)
+		}
+		if rev != row.want {
+			t.Fatalf("cross-thread move stamped %s/%s at %d, want its thread's revision %d", row.thread, row.id, rev, row.want)
+		}
 	}
 }
 

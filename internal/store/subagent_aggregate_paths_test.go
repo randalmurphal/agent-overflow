@@ -12,8 +12,9 @@ import (
 	sqlite "modernc.org/sqlite"
 )
 
-// seedStampLaunch writes a launch and its children through the store, so
-// the launch ends stamped the way live writes stamp it.
+// seedStampLaunch writes a launch and its children through the store,
+// each child naming the launch as its anchor, so the launch ends stamped
+// the way live writes stamp it.
 func seedStampLaunch(t *testing.T, s *Store, threadID, launchID string, turn, children int) {
 	t.Helper()
 	if err := s.InsertItem(stampFixtureRow{id: launchID, kind: "tool_call", tool: "Agent",
@@ -22,9 +23,10 @@ func seedStampLaunch(t *testing.T, s *Store, threadID, launchID string, turn, ch
 	}
 	for i := 1; i <= children; i++ {
 		row := stampFixtureRow{id: fmt.Sprintf("%s-c%d", launchID, i), kind: "tool_call", tool: "Bash",
-			summary: fmt.Sprintf("Bash: step %d", i), parent: launchID, turn: turn, index: i}
-		if err := s.InsertItem(row.item(threadID)); err != nil {
-			t.Fatalf("insert %s: %v", row.id, err)
+			summary: fmt.Sprintf("Bash: step %d", i), parent: launchID, turn: turn, index: i}.item(threadID)
+		row.SubagentAnchor = launchID
+		if err := s.InsertItem(row); err != nil {
+			t.Fatalf("insert %s: %v", row.ID, err)
 		}
 	}
 }
@@ -167,51 +169,70 @@ func TestSubagentAggregateChildWritesLeaveTheAnchorMetaAlone(t *testing.T) {
 	assertSubagentStampParity(t, s, thread, "after card writes", true)
 }
 
-// pageAccessesForTest counts the page-cache lookups (hits plus misses) of
-// one statement on the writer connection: every table and index page its
-// statement and triggers touch.
-func pageAccessesForTest(t *testing.T, s *Store, query string, args ...any) int {
+// writerPagesForTest reads the page-cache lookups (hits plus misses) the
+// writer connection has counted, and resets the count when reset is set.
+// The writer pool holds one connection, so the count covers every write
+// the store ran since the last reset.
+func writerPagesForTest(t *testing.T, s *Store, reset bool) int {
 	t.Helper()
-	ctx := context.Background()
-	conn, err := s.db.Conn(ctx)
+	conn, err := s.db.Conn(context.Background())
 	if err != nil {
 		t.Fatalf("writer conn: %v", err)
 	}
 	defer conn.Close()
-	read := func(reset bool) int {
-		total := 0
-		if err := conn.Raw(func(dc any) error {
-			if cached, ok := dc.(*stmtCacheConn); ok {
-				dc = cached.sqliteConn
-			}
-			status, ok := dc.(sqlite.DBStatus)
-			if !ok {
-				return fmt.Errorf("driver connection %T has no page counters", dc)
-			}
-			for _, op := range []sqlite.DBStatusOp{sqlite.DBStatusCacheHit, sqlite.DBStatusCacheMiss} {
-				current, _, err := status.Status(op, reset)
-				if err != nil {
-					return err
-				}
-				total += current
-			}
-			return nil
-		}); err != nil {
-			t.Fatalf("read page counters: %v", err)
+	total := 0
+	if err := conn.Raw(func(dc any) error {
+		if cached, ok := dc.(*stmtCacheConn); ok {
+			dc = cached.sqliteConn
 		}
-		return total
+		status, ok := dc.(sqlite.DBStatus)
+		if !ok {
+			return fmt.Errorf("driver connection %T has no page counters", dc)
+		}
+		for _, op := range []sqlite.DBStatusOp{sqlite.DBStatusCacheHit, sqlite.DBStatusCacheMiss} {
+			current, _, err := status.Status(op, reset)
+			if err != nil {
+				return err
+			}
+			total += current
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read page counters: %v", err)
 	}
-	read(true)
-	if _, err := conn.ExecContext(ctx, query, args...); err != nil {
+	return total
+}
+
+// pageAccessesForTest counts the page-cache lookups of one statement on
+// the writer connection: every table and index page its statement and
+// triggers touch.
+func pageAccessesForTest(t *testing.T, s *Store, query string, args ...any) int {
+	t.Helper()
+	writerPagesForTest(t, s, true)
+	if _, err := s.db.Exec(query, args...); err != nil {
 		t.Fatalf("exec %q: %v", query, err)
 	}
-	return read(false)
+	return writerPagesForTest(t, s, false)
+}
+
+// storePageAccessesForTest counts the page-cache lookups of one store
+// call's writes: its statements, their triggers, the keyed stamp writes
+// and the settle.
+func storePageAccessesForTest(t *testing.T, s *Store, name string, call func() error) int {
+	t.Helper()
+	writerPagesForTest(t, s, true)
+	if err := call(); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return writerPagesForTest(t, s, false)
 }
 
 // TestSubagentAggregateTriggersDoNotScanASubtree measures the pages each
-// trigger path touches under a launch with 2000 children against the same
-// write under a launch with 20. The stamp keeps a child write at a few
-// probes per nesting level, so the two must cost the same up to B-tree
+// write touches under a launch with 2000 children against the same write
+// under a launch with 20. A claimed write keeps the stamps with keyed
+// reads and writes per nesting level; an unclaimed one marks the chain
+// with a few probes per level and leaves the recompute to its writer's
+// settle. Either must cost the same under both launches up to B-tree
 // depth; any statement that walked the launch's children would read the
 // 2000-row subtree.
 func TestSubagentAggregateTriggersDoNotScanASubtree(t *testing.T) {
@@ -265,67 +286,148 @@ func TestSubagentAggregateTriggersDoNotScanASubtree(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	for _, launch := range []string{big, small} {
-		if _, mode := subagentStampStateForTest(t, s, thread, launch); mode != subagentStampClean {
+	launches := map[string]int{big: 1, small: 2}
+	gens := make(map[string]int64)
+	for launch := range launches {
+		gen, mode := subagentStampStateForTest(t, s, thread, launch)
+		if mode != subagentStampClean {
 			t.Fatalf("%s is not stamped clean", launch)
+		}
+		gens[launch] = gen
+	}
+	compare := func(name string, smallPages, bigPages int) {
+		t.Helper()
+		t.Logf("%s: %d pages under 20 children, %d under 2000", name, smallPages, bigPages)
+		if bigPages > smallPages+8 {
+			t.Errorf("%s touches %d pages under a 2000-child launch and %d under a 20-child one: a write reads the subtree",
+				name, bigPages, smallPages)
 		}
 	}
 
-	type write struct {
-		name  string
-		query func(launch string, turn int) (string, []any)
+	// Claimed writes, through the store as triage makes them: each child
+	// names its launch.
+	child := func(launch, suffix string, turn, index int, summary string) Item {
+		item := stampFixtureRow{id: launch + suffix, kind: "tool_call", tool: "Bash", summary: summary,
+			parent: launch, status: "running", turn: turn, index: index}.item(thread)
+		item.SubagentAnchor = launch
+		return item
 	}
-	writes := []write{
-		{"insert a child", func(launch string, turn int) (string, []any) {
+	fields := func(launch, id string, update ItemPartialUpdate) error {
+		update.SubagentAnchor = launch
+		_, err := s.UpdateItemFields(thread, id, update)
+		return err
+	}
+	claimed := []struct {
+		name string
+		run  func(launch string, turn int) error
+	}{
+		{"insert a child", func(launch string, turn int) error {
+			return s.InsertItem(child(launch, "-new", turn, 2_000_000, "Bash: new"))
+		}},
+		{"change the newest child's summary", func(launch string, turn int) error {
+			return fields(launch, launch+"-new", ItemPartialUpdate{Summary: new("Bash: new more")})
+		}},
+		{"settle the newest child", func(launch string, turn int) error {
+			return fields(launch, launch+"-new", ItemPartialUpdate{Status: new("completed")})
+		}},
+		{"edit an old child", func(launch string, turn int) error {
+			return fields(launch, launch+"-2", ItemPartialUpdate{Summary: new("edited")})
+		}},
+		{"insert a carrier", func(launch string, turn int) error {
+			return s.InsertItem(stampFixtureRow{id: launch + "-carrier", kind: "tool_call", tool: "SendMessage",
+				summary: "Agent: continue", meta: carrierMeta(launch), status: "running", turn: turn, index: 2_500_000}.item(thread))
+		}},
+		{"insert the resume prompt", func(launch string, turn int) error {
+			prompt := stampFixtureRow{id: launch + "-prompt", kind: "user_text", summary: "again", parent: launch,
+				meta: resumePromptMeta(launch + "-carrier"), turn: turn, index: 3_000_000}.item(thread)
+			prompt.SubagentAnchor = launch
+			return s.InsertItem(prompt)
+		}},
+		{"insert a child in the second round", func(launch string, turn int) error {
+			return s.InsertItem(child(launch, "-later", turn, 4_000_000, "Bash: later"))
+		}},
+		{"change the second round's pick", func(launch string, turn int) error {
+			return fields(launch, launch+"-later", ItemPartialUpdate{Summary: new("Bash: later more")})
+		}},
+	}
+	for _, c := range claimed {
+		smallPages := storePageAccessesForTest(t, s, c.name, func() error { return c.run(small, launches[small]) })
+		bigPages := storePageAccessesForTest(t, s, c.name, func() error { return c.run(big, launches[big]) })
+		compare("claimed: "+c.name, smallPages, bigPages)
+	}
+	// The keyed writes kept every stamp: no recompute ran, so each stamp
+	// is at the generation it had, and the carrier, which a keyed write
+	// created, at 0.
+	for launch := range launches {
+		for id, want := range map[string]int64{launch: gens[launch], launch + "-carrier": 0} {
+			if gen, mode := subagentStampStateForTest(t, s, thread, id); mode != subagentStampClean || gen != want {
+				t.Errorf("%s is mode %d at gen %d after the claimed writes, want clean at gen %d (kept by the keyed writes)",
+					id, mode, gen, want)
+			}
+		}
+	}
+	assertSubagentStampParity(t, s, thread, "after the claimed writes", true)
+
+	// Unclaimed writes: raw SQL, as a writer that names no anchor. A write
+	// that can change a card marks the launch for the recompute, which
+	// runs between the writes so each is measured against a clean stamp.
+	writes := []struct {
+		name  string
+		marks bool
+		query func(launch string, turn int) (string, []any)
+	}{
+		{"insert a child", true, func(launch string, turn int) (string, []any) {
 			return `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, parent_id, tool_name, created_at, updated_at)
-			  VALUES (?, ?, ?, 2000000, 'tool_call', 'assistant', 'running', 'Bash: new', ?, 'Bash', 1, 1)`,
-				[]any{launch + "-new", thread, turn, launch}
+			  VALUES (?, ?, ?, 4100000, 'tool_call', 'assistant', 'running', 'Bash: raw', ?, 'Bash', 1, 1)`,
+				[]any{launch + "-raw", thread, turn, launch}
 		}},
-		{"stream the newest child", func(launch string, turn int) (string, []any) {
-			return `UPDATE items SET summary = summary || ' more' WHERE thread_id = ? AND id = ?`, []any{thread, launch + "-new"}
+		{"stream the newest child", true, func(launch string, turn int) (string, []any) {
+			return `UPDATE items SET summary = summary || ' more' WHERE thread_id = ? AND id = ?`, []any{thread, launch + "-raw"}
 		}},
-		{"settle the newest child", func(launch string, turn int) (string, []any) {
-			return `UPDATE items SET status = 'completed' WHERE thread_id = ? AND id = ?`, []any{thread, launch + "-new"}
+		{"settle the newest child", false, func(launch string, turn int) (string, []any) {
+			return `UPDATE items SET status = 'completed' WHERE thread_id = ? AND id = ?`, []any{thread, launch + "-raw"}
 		}},
-		{"edit an old child", func(launch string, turn int) (string, []any) {
-			return `UPDATE items SET summary = 'edited' WHERE thread_id = ? AND id = ?`, []any{thread, launch + "-2"}
+		{"edit an old child", true, func(launch string, turn int) (string, []any) {
+			return `UPDATE items SET summary = 'edited again' WHERE thread_id = ? AND id = ?`, []any{thread, launch + "-2"}
 		}},
-		{"delete an old child", func(launch string, turn int) (string, []any) {
+		{"delete an old child", true, func(launch string, turn int) (string, []any) {
 			return `DELETE FROM items WHERE thread_id = ? AND id = ?`, []any{thread, launch + "-4"}
 		}},
-		{"insert a carrier", func(launch string, turn int) (string, []any) {
+		{"insert a carrier", false, func(launch string, turn int) (string, []any) {
 			return `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, tool_name, meta, created_at, updated_at)
-			  VALUES (?, ?, ?, 2500000, 'tool_call', 'assistant', 'running', 'Agent: continue', 'SendMessage', ?, 1, 1)`,
-				[]any{launch + "-carrier", thread, turn, carrierMeta(launch)}
+			  VALUES (?, ?, ?, 4200000, 'tool_call', 'assistant', 'running', 'Agent: continue', 'SendMessage', ?, 1, 1)`,
+				[]any{launch + "-raw-carrier", thread, turn, carrierMeta(launch)}
 		}},
-		{"insert the resume prompt", func(launch string, turn int) (string, []any) {
+		{"insert the resume prompt", true, func(launch string, turn int) (string, []any) {
 			return `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, parent_id, meta, created_at, updated_at)
-			  VALUES (?, ?, ?, 3000000, 'user_text', 'user', 'completed', 'again', ?, ?, 1, 1)`,
-				[]any{launch + "-prompt", thread, turn, launch, resumePromptMeta(launch + "-carrier")}
+			  VALUES (?, ?, ?, 4300000, 'user_text', 'user', 'completed', 'again', ?, ?, 1, 1)`,
+				[]any{launch + "-raw-prompt", thread, turn, launch, resumePromptMeta(launch + "-raw-carrier")}
 		}},
-		{"insert a child in the second round", func(launch string, turn int) (string, []any) {
+		{"insert a child in the third round", true, func(launch string, turn int) (string, []any) {
 			return `INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, parent_id, tool_name, created_at, updated_at)
-			  VALUES (?, ?, ?, 4000000, 'tool_call', 'assistant', 'running', 'Bash: later', ?, 'Bash', 1, 1)`,
-				[]any{launch + "-later", thread, turn, launch}
+			  VALUES (?, ?, ?, 4400000, 'tool_call', 'assistant', 'running', 'Bash: third', ?, 'Bash', 1, 1)`,
+				[]any{launch + "-raw-later", thread, turn, launch}
 		}},
 	}
 	for _, w := range writes {
-		smallQuery, smallArgs := w.query(small, 2)
-		bigQuery, bigArgs := w.query(big, 1)
-		smallPages := pageAccessesForTest(t, s, smallQuery, smallArgs...)
-		bigPages := pageAccessesForTest(t, s, bigQuery, bigArgs...)
-		t.Logf("%s: %d pages under 20 children, %d under 2000", w.name, smallPages, bigPages)
-		if bigPages > smallPages+8 {
-			t.Errorf("%s touches %d pages under a 2000-child launch and %d under a 20-child one: a trigger reads the subtree",
-				w.name, bigPages, smallPages)
+		smallQuery, smallArgs := w.query(small, launches[small])
+		bigQuery, bigArgs := w.query(big, launches[big])
+		compare("unclaimed: "+w.name, pageAccessesForTest(t, s, smallQuery, smallArgs...), pageAccessesForTest(t, s, bigQuery, bigArgs...))
+		for launch := range launches {
+			if _, mode := subagentStampStateForTest(t, s, thread, launch); (mode == subagentStampWalk) != w.marks {
+				t.Errorf("unclaimed %s left %s mode %d, want marked %v", w.name, launch, mode, w.marks)
+			}
+		}
+		if _, err := s.RecomputeSubagentAggregates(t.Context(), thread, 16); err != nil {
+			t.Fatalf("recompute after %s: %v", w.name, err)
+		}
+		for launch := range launches {
+			if _, mode := subagentStampStateForTest(t, s, thread, launch); mode != subagentStampClean {
+				t.Errorf("the recompute after %s left %s mode %d, want clean", w.name, launch, mode)
+			}
 		}
 	}
-	for _, launch := range []string{big, small} {
-		if _, mode := subagentStampStateForTest(t, s, thread, launch); mode != subagentStampClean {
-			t.Errorf("%s left mode %d after the writes, want clean (kept by the triggers)", launch, mode)
-		}
-	}
-	assertSubagentStampParity(t, s, thread, "after the measured writes", true)
+	assertSubagentStampParity(t, s, thread, "after the unclaimed writes", true)
 }
 
 // triggerStatementForTest rewrites a trigger statement's NEW./OLD. column
@@ -333,7 +435,7 @@ func TestSubagentAggregateTriggersDoNotScanASubtree(t *testing.T) {
 // constants a trigger's row values are, so EXPLAIN can show the plan the
 // trigger runs.
 func triggerStatementForTest(statement string, rows map[string]Item) (string, []any) {
-	columns := []string{"thread_id", "turn_index", "item_index", "tool_name", "parent_id", "completion_of", "summary", "kind", "meta", "id"}
+	columns := []string{"thread_id", "turn_index", "item_index", "tool_name", "parent_id", "completion_of", "summary", "kind", "meta", "rev", "id"}
 	var args []any
 	pairs := make([]string, 0, 2*len(columns)*len(rows))
 	for _, ref := range []string{"NEW", "OLD"} {
@@ -344,7 +446,7 @@ func triggerStatementForTest(statement string, rows map[string]Item) (string, []
 		values := map[string]any{
 			"thread_id": row.ThreadID, "turn_index": row.TurnIndex, "item_index": row.ItemIndex,
 			"tool_name": row.ToolName, "parent_id": row.ParentID, "completion_of": row.CompletionOf, "summary": row.Summary,
-			"kind": row.Kind, "meta": row.Meta, "id": row.ID,
+			"kind": row.Kind, "meta": row.Meta, "rev": row.Rev, "id": row.ID,
 		}
 		for _, column := range columns {
 			args = append(args, values[column])
@@ -354,14 +456,12 @@ func triggerStatementForTest(statement string, rows map[string]Item) (string, []
 	return strings.NewReplacer(pairs...).Replace(strings.TrimSuffix(strings.TrimSpace(statement), ";")), args
 }
 
-// aggregatePlanCTEs are the names the trigger statements give their CTEs
+// aggregatePlanCTEs are the names the mark statements give their CTEs
 // and derived tables. A plan may SCAN those; the statements alias stored
-// tables only as items, c, p, x, threads and agg_hc*, never as one of
-// these.
+// tables only as items, a, c, p, q, s, cs, ss, threads and agg_hc*, never
+// as one of these.
 var aggregatePlanCTEs = map[string]bool{
-	"agg_chain": true, "agg_chain_new": true, "agg_chain_old": true, "agg_rounds": true, "agg_rounds_prompt": true,
-	"agg_roles": true, "agg_ops": true, "agg_orphan": true, "agg_change": true, "agg": true, "agg_targets": true,
-	"agg_values": true, "ch": true, "r": true, "a": true, "b": true,
+	"agg_chain": true, "agg_chain_new": true, "agg_chain_old": true, "ch": true, "m": true,
 }
 
 var planScanTarget = regexp.MustCompile(`^SCAN (\S+)`)
@@ -407,8 +507,9 @@ func assertBoundedPlan(t *testing.T, s *Store, name string, allowed boundedPlan,
 }
 
 // TestSubagentAggregateStatementPlans is the EXPLAIN tripwire for every
-// statement the stamps added: the three trigger statements, the recompute
-// selections, and the reads that serve stamped rows.
+// statement the stamps added: the three mark statements, the keyed
+// writes' reads, the recompute selections, and the reads that serve
+// stamped rows.
 func TestSubagentAggregateStatementPlans(t *testing.T) {
 	s := newTestStore(t)
 	const thread = "t-plan"
@@ -419,17 +520,17 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 	moved.ParentID, moved.Summary = "M", "Bash: moved"
 
 	// probes is the number of resume-prompt probes each statement is
-	// written with: the round probe, and the prompts under each chain it
-	// dirties. A plan with more has inlined a CTE at each of its mentions,
-	// so the item triggers compile, and run, the probe that many times.
+	// written with: the prompts under each chain it marks. A plan with
+	// more has inlined a CTE at each of its mentions, so the item triggers
+	// compile, and run, the probe that many times.
 	for _, tc := range []struct {
 		name, statement string
 		rows            map[string]Item
 		probes          int
 	}{
-		{"insert trigger", subagentAggregateInsertStmt, map[string]Item{"NEW": child}, 2},
-		{"delete trigger", subagentAggregateDeleteStmt, map[string]Item{"OLD": child}, 2},
-		{"update trigger", subagentAggregateUpdateStmt, map[string]Item{"NEW": moved, "OLD": child}, 3},
+		{"insert mark", subagentMarkInsertStmt, map[string]Item{"NEW": child}, 1},
+		{"delete mark", subagentMarkDeleteStmt, map[string]Item{"OLD": child}, 1},
+		{"update mark", subagentMarkUpdateStmt, map[string]Item{"NEW": moved, "OLD": child}, 2},
 		{"stamp anchor", strings.ReplaceAll(subagentAggregateStampAnchorSQL, "NEW.item_id", "NEW.id"), map[string]Item{"NEW": child}, 0},
 		{"stamp siblings", strings.ReplaceAll(subagentAggregateStampSiblingsSQL, "NEW.item_id", "NEW.id"), map[string]Item{"NEW": child}, 0},
 		{"served key strip", subagentStripServedKeysStmt, map[string]Item{"NEW": child}, 0},
@@ -480,7 +581,7 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 			[]any{thread, "L", "L-c3", 1, 3}, boundedPlan{}},
 		{"stamp reads", subagentStampReadsSQL, "USING PRIMARY KEY (thread_id=? AND item_id=?)", []any{thread, ids}, listed},
 		{"served row", `SELECT ` + itemColumns + ` FROM items LEFT JOIN payloads ON payloads.thread_id = items.thread_id
-		  AND payloads.id = items.payload_id WHERE items.thread_id = ? AND items.id = ?`,
+		  AND payloads.id = items.payload_id` + servedItemJoin + ` WHERE items.thread_id = ? AND items.id = ?`,
 			"SEARCH agg_served USING PRIMARY KEY (thread_id=? AND item_id=?)", []any{thread, "L"}, boundedPlan{}},
 		{"latest direct tool", latestDirectSubagentToolSQL, "idx_items_parent", []any{thread, "L"}, boundedPlan{}},
 		{"carriers of roots", subagentCarriersSQL, "idx_items_transcript_root (thread_id=? AND <expr>=?)", []any{thread, ids}, listed},
@@ -488,6 +589,23 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 		{"chain marked dirty", markSubagentAnchorsDirtySQL, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", []any{thread, ids}, listed},
 		{"stamp write", writeSubagentStampSQL, "sqlite_autoindex_items_1",
 			append([]any{thread, "L", 3, 0}, subagentStampValues{}.args()...), boundedPlan{}},
+		// The keyed writes of a claimed row: one primary-key read per
+		// chain level with a backwards probe for its round's prompt, and
+		// keyed reads and writes of the stamps its rules name.
+		{"claim chain level", subagentClaimLevelSQL,
+			"idx_items_subagent_resume_prompt (thread_id=? AND parent_id=?", []any{thread, "L", 1, 3}, boundedPlan{}},
+		{"claim level carrier probe", subagentClaimLevelSQL,
+			"COVERING INDEX idx_items_transcript_root (thread_id=?)", []any{thread, "L", 1, 3}, boundedPlan{}},
+		{"claim stamp", subagentClaimStampSQL, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", []any{thread, "L"}, boundedPlan{}},
+		{"claim stamp carrier probe", subagentClaimStampSQL,
+			"COVERING INDEX idx_items_transcript_root (thread_id=?)", []any{thread, "L"}, boundedPlan{}},
+		{"claim row", subagentClaimRowSQL, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", []any{thread, "L-c3"}, boundedPlan{}},
+		{"claim other child", subagentHasOtherChildSQL, "idx_items_parent", []any{thread, "L", "L-c3"}, boundedPlan{}},
+		{"claim local child", subagentHasLocalChildSQL, "idx_items_parent", []any{thread, "L"}, boundedPlan{}},
+		{"claim prompt carriers", subagentPromptCarriersSQL,
+			"idx_items_subagent_resume_prompt (thread_id=? AND parent_id=?)", []any{thread, "L"}, boundedPlan{}},
+		{"claim stamp write", subagentClaimWriteSQL, "",
+			append([]any{thread, "L", aggStateClean}, subagentStampValues{}.args()...), boundedPlan{}},
 	} {
 		text := assertBoundedPlan(t, s, tc.name, tc.allowed, tc.query, tc.args...)
 		if !strings.Contains(text, tc.index) {
@@ -679,12 +797,28 @@ func TestSubagentAggregateBackfillIsRestartable(t *testing.T) {
 	assertSubagentStampParity(t, s, thread, "legacy, listed", false)
 
 	ctx := context.Background()
+	before := historyStampOf(t, s, thread).Rev
 	first, err := s.RecomputeSubagentAggregates(ctx, thread, 2)
 	if err != nil {
 		t.Fatalf("first batch: %v", err)
 	}
 	if first.Stamped == 0 || !first.Remaining {
 		t.Fatalf("first batch = %+v, want some stamped and more remaining", first)
+	}
+	// The batch runs in its own transaction, after no item write: it
+	// advances the thread itself, and serves what it stamped at the new
+	// revision.
+	after := historyStampOf(t, s, thread).Rev
+	if after != before+1 {
+		t.Fatalf("first batch moved history_rev %d -> %d, want one bump", before, after)
+	}
+	var restamped int
+	if err := s.db.QueryRow(`SELECT count(*) FROM subagent_aggregates a JOIN items i ON i.thread_id = a.thread_id AND i.id = a.item_id
+		 WHERE a.thread_id = ? AND i.rev = ?`, thread, after).Scan(&restamped); err != nil {
+		t.Fatal(err)
+	}
+	if restamped != first.Stamped {
+		t.Fatalf("%d anchors served at the batch's revision, want the %d it stamped", restamped, first.Stamped)
 	}
 	assertSubagentStampParity(t, s, thread, "partly backfilled", false)
 	if err := s.Close(); err != nil {
@@ -732,9 +866,13 @@ func TestSubagentAggregateBackfillIsRestartable(t *testing.T) {
 		}
 	}
 	// Idle once applied: an unlisted thread with nothing dirty writes
-	// nothing.
+	// nothing, and leaves the thread stamp alone.
+	idle := historyStampOf(t, s, thread).Rev
 	if result, err := s.RecomputeSubagentAggregates(ctx, thread, 2); err != nil || result.Stamped != 0 || result.Remaining {
 		t.Fatalf("recompute on a finished thread = %+v (%v)", result, err)
+	}
+	if got := historyStampOf(t, s, thread).Rev; got != idle {
+		t.Fatalf("an idle recompute moved history_rev %d -> %d", idle, got)
 	}
 }
 

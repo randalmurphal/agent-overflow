@@ -35,10 +35,12 @@ import (
 // thousands of leaf tool calls cycle through the rest of the ring.
 const maxToolCallLinksPerThread = 2048
 
-// toolCallLink is one cached tool_call row's placement.
+// toolCallLink is one cached tool_call row's placement, and whether it
+// anchors a subagent card (store.SubagentAnchorable).
 type toolCallLink struct {
 	parentID   string
 	turnIndex  int
+	anchorable bool
 	referenced bool
 }
 
@@ -59,17 +61,18 @@ func (l *toolCallLinks) get(id string) (toolCallLink, bool) {
 	return *link, true
 }
 
-func (l *toolCallLinks) put(id, parentID string, turnIndex int) {
+func (l *toolCallLinks) put(id, parentID string, turnIndex int, anchorable bool) {
 	if link := l.byID[id]; link != nil {
 		link.parentID = parentID
 		link.turnIndex = turnIndex
+		link.anchorable = anchorable
 		link.referenced = true
 		return
 	}
 	if l.byID == nil {
 		l.byID = make(map[string]*toolCallLink)
 	}
-	link := &toolCallLink{parentID: parentID, turnIndex: turnIndex}
+	link := &toolCallLink{parentID: parentID, turnIndex: turnIndex, anchorable: anchorable}
 	if len(l.ring) < maxToolCallLinksPerThread {
 		l.ring = append(l.ring, id)
 		l.byID[id] = link
@@ -95,9 +98,10 @@ func (l *toolCallLinks) put(id, parentID string, turnIndex int) {
 // itemLink is the placement of any row a link lookup found: a cached
 // tool_call, or the row the fallback read returned.
 type itemLink struct {
-	kind      string
-	parentID  string
-	turnIndex int
+	kind       string
+	parentID   string
+	turnIndex  int
+	anchorable bool
 }
 
 // noteToolCallLink caches a just-persisted row's placement. Rows that are
@@ -113,7 +117,7 @@ func (r *Router) noteToolCallLink(item store.Item) {
 	if id := r.identityIfPresent(item.ThreadID); id != nil && id.stopped {
 		return
 	}
-	r.state(item.ThreadID).toolCalls.put(item.ID, item.ParentID, item.TurnIndex)
+	r.state(item.ThreadID).toolCalls.put(item.ID, item.ParentID, item.TurnIndex, store.SubagentAnchorable(item.Kind, item.ToolName))
 }
 
 // lookupItemLink answers where a row sits and what kind it is, from the
@@ -128,14 +132,32 @@ func (r *Router) lookupItemLink(threadID, itemID string) (itemLink, bool, error)
 	}
 	r.mu.Unlock()
 	if cached {
-		return itemLink{kind: itemKindToolCall, parentID: link.parentID, turnIndex: link.turnIndex}, true, nil
+		return itemLink{kind: itemKindToolCall, parentID: link.parentID, turnIndex: link.turnIndex, anchorable: link.anchorable}, true, nil
 	}
 	row, found, err := r.store.GetThreadItem(threadID, itemID)
 	if err != nil || !found {
 		return itemLink{}, found, err
 	}
 	r.noteToolCallLink(row)
-	return itemLink{kind: row.Kind, parentID: row.ParentID, turnIndex: row.TurnIndex}, true, nil
+	return itemLink{kind: row.Kind, parentID: row.ParentID, turnIndex: row.TurnIndex,
+		anchorable: store.SubagentAnchorable(row.Kind, row.ToolName)}, true, nil
+}
+
+// subagentAnchorFor names the anchor a row under parentID claims on its
+// store write (store.Item.SubagentAnchor): the parent itself when it is a
+// stored row that anchors a card. The store then keeps the parent chain's
+// stamps with keyed writes. A parent not yet stored, a row that names
+// itself, or a failed lookup name none: the store marks the chain and
+// recomputes it, which serves the same cards at a higher cost.
+func (r *Router) subagentAnchorFor(threadID, itemID, parentID string) string {
+	if parentID == "" || parentID == itemID {
+		return ""
+	}
+	link, found, err := r.lookupItemLink(threadID, parentID)
+	if err != nil || !found || !link.anchorable {
+		return ""
+	}
+	return parentID
 }
 
 // ForgetToolCallLinks drops the thread's cached links. The app calls it

@@ -32,6 +32,7 @@ func (r *Router) updateApprovalItem(item store.Item, request provider.ApprovalRe
 			item.Status = statusErrored
 		}
 		item.UpdatedAt = now
+		item.SubagentAnchor = r.subagentAnchorFor(item.ThreadID, item.ID, item.ParentID)
 
 		persisted, changed, err := r.store.UpdateItemIfRevision(item)
 		if err != nil {
