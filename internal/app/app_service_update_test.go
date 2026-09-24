@@ -181,9 +181,11 @@ func (r *serviceUpdateRig) fakePreflight(_ context.Context, binary string) (supe
 	return supervise.Preflight{ProtocolVersion: r.preflightProtocol, Version: r.preflightVersion}, nil
 }
 
-// settled waits for the flow to reach a terminal phase and returns the last
-// status frame. The flow runs on its own goroutine by design — the RPC returns
-// as soon as it is claimed — so every assertion below has to wait for it.
+// settled waits for the flow to reach a terminal phase and exit, and returns
+// the last status frame. The flow runs on its own goroutine by design — the
+// RPC returns as soon as it is claimed — so every assertion below has to wait
+// for it. It publishes the phase before its deferred cleanup runs, so the
+// phase alone does not mean the flow has finished.
 func (r *serviceUpdateRig) settled() ServiceUpdateStatus {
 	r.t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -194,7 +196,12 @@ func (r *serviceUpdateRig) settled() ServiceUpdateStatus {
 		}
 		switch status.Phase {
 		case serviceUpdatePhaseRequested, serviceUpdatePhaseError, serviceUpdatePhaseCanceled:
-			return status
+			r.app.serviceUpdate.mu.Lock()
+			running := r.app.serviceUpdate.busy
+			r.app.serviceUpdate.mu.Unlock()
+			if !running {
+				return status
+			}
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
