@@ -213,13 +213,29 @@ func reconcileWSLUpdateMarker(a *Service, currentVersion string, mode *wslUpdate
 	}
 	log.Printf("updater: update to %s did not apply — still running %s (staged at %s)",
 		marker.ExpectedVersion, currentVersion, marker.StagedAt.Format(time.RFC3339))
-	notice := fmt.Sprintf("Update to %s didn't apply — still running %s.", marker.ExpectedVersion, currentVersion)
-	if failure := mode.launcherFailure; failure.To == marker.ExpectedVersion && failure.Reason != "" {
-		notice = fmt.Sprintf("Update to %s didn't apply: %s. Still running %s.",
-			marker.ExpectedVersion, strings.TrimRight(failure.Reason, "."), currentVersion)
+	reason := ""
+	if failure := mode.launcherFailure; failure.To == marker.ExpectedVersion {
+		reason = failure.Reason
 	}
-	a.setUpdateApplyFailure(notice)
+	a.setUpdateApplyFailure(unsuccessfulUpdateNotice(marker.ExpectedVersion, reason, currentVersion))
 	clearWSLUpdateResidue(mode)
+}
+
+// unsuccessfulUpdateNotice is the boot notice for an update to `to` that
+// did not apply, with the reason its record settled on when there is one.
+func unsuccessfulUpdateNotice(to, reason, running string) string {
+	if reason = strings.TrimRight(strings.TrimSpace(reason), "."); reason == "" {
+		return fmt.Sprintf("Update to %s didn't apply — still running %s.", to, running)
+	}
+	return fmt.Sprintf("Update to %s didn't apply: %s. Still running %s.", to, reason, running)
+}
+
+// ReportUnsuccessfulUpdate records the boot notice for an update from this
+// version to `to` that its durable record settled rolled back or failed with
+// reason. The desktop's boot reads it from the record
+// (supervise.DesktopDecision); ApplyFailure and CheckForUpdate carry it.
+func (a *Service) ReportUnsuccessfulUpdate(to, reason string) {
+	a.setUpdateApplyFailure(unsuccessfulUpdateNotice(to, reason, a.version))
 }
 
 // clearWSLUpdateResidue drops both halves of a settled install: the marker (its
@@ -389,9 +405,17 @@ func (a *Service) restartToUpdateWSL(onAbandoned func()) error {
 // restartingToLocked is RestartingTo: on WSL, the version the marker names
 // while this process's handoff is in flight. The marker is written before
 // the directive and dropped when the handoff is abandoned; one the boot
-// could not clear names no handoff of this process. Desktop reports none.
-// Caller holds a.updater.mu.
+// could not clear names no handoff of this process. On the desktop it is
+// the pending update the trial's record names once a helper has it; before
+// that there is none, and the record is not read. Caller holds
+// a.updater.mu.
 func (a *Service) restartingToLocked() string {
+	if mode := a.updater.desktop; mode != nil {
+		if !mode.handedOff {
+			return ""
+		}
+		return mode.trial.RestartingTo()
+	}
 	if a.updater.wsl == nil || a.updater.install == nil {
 		return ""
 	}

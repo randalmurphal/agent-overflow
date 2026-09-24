@@ -49,6 +49,17 @@ func initWSLUpdaterIn(a *App, currentVersion, markerDir string, failure appupdat
 	log.Printf("updater: configured (current version %s, target wsl/%s, staging root %s)", currentVersion, runtime.GOARCH, configDir)
 }
 
+// ReportUnsuccessfulUpdate records the notice for an update from this
+// version to `to` that the desktop's update record settled without
+// applying. NotifyPendingUpdateApplyFailure presents it.
+func ReportUnsuccessfulUpdate(a *App, to, reason string) {
+	if a.updater == nil {
+		log.Printf("updater: the update to %s did not apply (%s); no updater service carries the notice", to, reason)
+		return
+	}
+	a.updater.ReportUnsuccessfulUpdate(to, reason)
+}
+
 // notifyPendingUpdateApplyFailure presents the boot-detected failure only
 // after the notification transport has been wired. The same notice remains
 // available through CheckForUpdate for the life of the process.

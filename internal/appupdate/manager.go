@@ -52,6 +52,9 @@ type appUpdaterState struct {
 	installTimer     *time.Timer
 	applyFailure     string
 	wsl              *wslUpdateMode
+	// desktop is the macOS and Linux desktop's trial, nil without one
+	// (ConfigureDesktopTrial).
+	desktop *desktopTrialMode
 }
 
 // New returns an unconfigured updater service. Configure or ConfigureWSL must
@@ -155,6 +158,10 @@ func BridgedEvents() []string {
 // ForwardFrameworkEvent maps one Wails updater event onto the transport
 // channel shared by the desktop and WSL hosts.
 func (a *Service) ForwardFrameworkEvent(name string, data any) {
+	if name == updater.EventUpdateReady && a.desktopTrialConfigured() {
+		// desktopDownloaded emits it once the release is recorded.
+		return
+	}
 	if channel, ok := updaterEventBridge[name]; ok {
 		a.emit(channel, data)
 	}
@@ -492,8 +499,11 @@ func (a *Service) DownloadUpdate(tag string) error {
 		// updater:ready the frontend acts on once the bytes have landed —
 		// verified again on the far side. Desktop mode never enters this branch
 		// and keeps the bridged event.
-		if a.updater.wsl != nil {
+		switch {
+		case a.updater.wsl != nil:
 			terminal = a.stageWSLUpdate(pending)
+		case a.desktopTrialConfigured():
+			terminal = a.desktopDownloaded(pending)
 		}
 	}()
 	return nil
@@ -534,10 +544,22 @@ func (a *Service) RestartToUpdate(onAbandoned func()) error {
 	if a.updater.wsl != nil {
 		return a.restartToUpdateWSL(onAbandoned)
 	}
+	if a.desktopTrialConfigured() {
+		return a.restartToUpdateDesktop()
+	}
 	if a.updater.handle.DownloadedPath() == "" {
 		return ErrUpdateNotReady
 	}
-	return a.restartWithExitWatchdog(a.updater.handle.Restart)
+	return a.restartWithExitWatchdog(a.frameworkRestart)
+}
+
+// frameworkRestart is the framework's swap and relaunch
+// (updater.Updater.Restart), which re-executes the running binary as its
+// helper. Tests replace it.
+var frameworkRestart = (*updater.Updater).Restart
+
+func (a *Service) frameworkRestart(ctx context.Context) error {
+	return frameworkRestart(a.updater.handle, ctx)
 }
 
 // RestartReady returns the error RestartToUpdate would refuse with now, or
@@ -552,6 +574,12 @@ func (a *Service) RestartReady() error {
 		a.updater.mu.Lock()
 		defer a.updater.mu.Unlock()
 		_, err := a.wslRestartTargetLocked()
+		return err
+	}
+	if a.desktopTrialConfigured() {
+		a.updater.mu.Lock()
+		defer a.updater.mu.Unlock()
+		_, _, err := a.desktopRestartTargetLocked()
 		return err
 	}
 	if a.updater.handle.DownloadedPath() == "" {
@@ -572,16 +600,20 @@ func (a *Service) RestartReady() error {
 // zombie that cancels it. Disarmed only when the helper spawn itself
 // fails and the app intentionally stays alive on the old version.
 func (a *Service) restartWithExitWatchdog(restart func(ctx context.Context) error) error {
-	delay := a.deps.RestartWatchdogDelay
-	if delay <= 0 {
-		delay = defaultRestartExitWatchdogDelay
-	}
-	disarm := a.armRestartExitWatchdog(delay)
+	disarm := a.armRestartExitWatchdog(a.restartWatchdogDelay())
 	if err := restart(a.context()); err != nil {
 		disarm()
 		return fmt.Errorf("restart to update: %w", err)
 	}
 	return nil
+}
+
+// restartWatchdogDelay is the host's shutdown budget for a restart.
+func (a *Service) restartWatchdogDelay() time.Duration {
+	if a.deps.RestartWatchdogDelay > 0 {
+		return a.deps.RestartWatchdogDelay
+	}
+	return defaultRestartExitWatchdogDelay
 }
 
 // armRestartExitWatchdog schedules a hard process exit after delay and

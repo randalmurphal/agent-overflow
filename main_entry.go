@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/aocli"
 	"agent-overflow/internal/appupdate"
 	"agent-overflow/internal/harness/instanceinfo"
+	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/wsllauncher"
 )
 
@@ -204,6 +205,8 @@ type bootFlags struct {
 	updateFailedTo     *string
 	updateFailedReason *string
 	refusePending      *bool
+	waitPID            *int
+	waitStart          *string
 }
 
 // newBootFlagSet declares every flag this binary's boot modes take. The flag
@@ -241,6 +244,10 @@ func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 			"--print-url-fd only: why that update did not apply, for the notice that says so."),
 		refusePending: flagSet.Bool(wsllauncher.RefusePendingMigrationsFlag, false,
 			"--print-url-fd only: refuse to migrate an existing database live, answering the bootstrap with the pending migrations instead of starting. Set by the Windows launcher, which migrates the database through a snapshot and a trial first."),
+		waitPID: flagSet.Int(supervise.DesktopWaitPIDFlag, 0,
+			"desktop boot only: the update helper that started this launch, which it waits for before it starts. Set by the helper, with --"+supervise.DesktopWaitStartFlag+"."),
+		waitStart: flagSet.String(supervise.DesktopWaitStartFlag, "",
+			"desktop boot only: the start time of that helper, so a reused process id is never waited on."),
 	}
 }
 
@@ -325,6 +332,9 @@ type cliFlags struct {
 	// refusePendingMigrations stops the boot, instead of migrating, when the
 	// database has migrations pending. Only the Windows launcher passes it.
 	refusePendingMigrations bool
+	// waitFor is the desktop update helper that started this launch, zero
+	// when none did. The desktop boot waits for it to exit.
+	waitFor supervise.ProcessRef
 }
 
 // parseFlags pulls the command-line flags for a boot.
@@ -362,6 +372,7 @@ func parseFlags(args []string) (cliFlags, error) {
 			Reason: strings.TrimSpace(*values.updateFailedReason),
 		},
 		refusePendingMigrations: *values.refusePending,
+		waitFor:                 supervise.ProcessRef{PID: *values.waitPID, Start: strings.TrimSpace(*values.waitStart)},
 	}
 	if out.isolatedProfile != "" && out.isolatedProfile != string(instanceinfo.ModePerf) {
 		return cliFlags{}, fmt.Errorf("unknown --isolated-profile %q (valid: %q)", out.isolatedProfile, instanceinfo.ModePerf)
@@ -547,6 +558,16 @@ func parseFlags(args []string) (cliFlags, error) {
 		// Only the launcher's ordinary backend has a launcher that migrates
 		// through a trial; any other boot would refuse and stay refused.
 		return cliFlags{}, fmt.Errorf("--%s requires --print-url-fd without --soak (only the Windows launcher migrates a database through a trial)", wsllauncher.RefusePendingMigrationsFlag)
+	}
+	if out.waitFor != (supervise.ProcessRef{}) {
+		// The desktop update helper starts the ordinary desktop boot with
+		// both, and no other mode is started by it.
+		if out.waitFor.PID <= 0 || out.waitFor.Start == "" {
+			return cliFlags{}, fmt.Errorf("--%s and --%s go together, with a process id", supervise.DesktopWaitPIDFlag, supervise.DesktopWaitStartFlag)
+		}
+		if out.headless || out.harness || out.soak || out.frontend || out.connect != "" {
+			return cliFlags{}, fmt.Errorf("--%s is for the desktop boot the update helper starts", supervise.DesktopWaitPIDFlag)
+		}
 	}
 	return out, nil
 }

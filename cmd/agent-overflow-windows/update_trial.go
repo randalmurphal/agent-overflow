@@ -70,7 +70,7 @@ func (a *launcherApp) beginTrialUpdate(directive selfupdate.InstallDirective, st
 	if err != nil {
 		return fmt.Errorf("locate this launcher: %w", err)
 	}
-	id, err := wsllauncher.NewUpdateID()
+	id, err := supervise.NewUpdateID()
 	if err != nil {
 		return err
 	}

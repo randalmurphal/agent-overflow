@@ -25,6 +25,10 @@ type PrepareOptions struct {
 	// OwnsServeLayout is set by the serve supervisor, which resumes its own
 	// restores and runs its own trials.
 	OwnsServeLayout bool
+	// OwnsAppLayout is set by the desktop process that applies or recovers
+	// the in-app layout's record (DesktopUpdate). A marked restore is still
+	// finished.
+	OwnsAppLayout bool
 	// Progress receives the copy progress of a restore being finished.
 	Progress CopyProgress
 	// Log receives one line per restore finished. nil is silent.
@@ -48,7 +52,8 @@ func PrepareDataRoot(dataDir string, opts PrepareOptions) error {
 	layouts := []struct {
 		layout Layout
 		owner  string
-	}{{appLayout, "the Agent Overflow app"}}
+		owned  bool
+	}{{appLayout, "the Agent Overflow app", opts.OwnsAppLayout}}
 	if !opts.OwnsServeLayout {
 		serveLayout, err := NewLayout(dataDir)
 		if err != nil {
@@ -57,7 +62,8 @@ func PrepareDataRoot(dataDir string, opts PrepareOptions) error {
 		layouts = append(layouts, struct {
 			layout Layout
 			owner  string
-		}{serveLayout, "`agent-overflow supervise`"})
+			owned  bool
+		}{serveLayout, "`agent-overflow supervise`", false})
 	}
 	for _, entry := range layouts {
 		marker, resumed, err := ResumeRestore(entry.layout, opts.Progress)
@@ -71,7 +77,7 @@ func PrepareDataRoot(dataDir string, opts PrepareOptions) error {
 		if err != nil {
 			return err
 		}
-		if found && state.Update != nil && state.Update.State == UpdatePending {
+		if found && !entry.owned && state.Update != nil && state.Update.State == UpdatePending {
 			return &PendingUpdateError{Update: *state.Update, Owner: entry.owner}
 		}
 	}

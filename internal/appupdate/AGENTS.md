@@ -1,9 +1,10 @@
 # Application update service
 
 This package owns release discovery, exact artifact selection, verified
-downloads, update serialization, WSL staging and launcher handoff, deadlines, and
-lifecycle events. It may use the framework-independent updater library but must
-not import the Wails application package.
+downloads, update serialization, WSL staging and launcher handoff, the desktop
+trial handoff (`DesktopTrial`, implemented by `supervise.DesktopHandoff`),
+deadlines, and lifecycle events. It may use the framework-independent updater
+library but must not import the Wails application package.
 
 Service owns its mutexes, timers, provider handles, pending releases, and WSL
 install state. Application adapters supply narrow platform callbacks. Stable

@@ -2,8 +2,6 @@ package wsllauncher
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +9,6 @@ import (
 	"path"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/atomicfile"
@@ -106,7 +103,7 @@ func PreflightStagedPayload(ctx context.Context, host PreflightHost, req Preflig
 	fail := func(format string, args ...any) PreflightAnswer {
 		return PreflightAnswer{Reason: fmt.Sprintf(format, args...)}
 	}
-	if req.Distro == "" || !path.IsAbs(req.Stable) || !ValidUpdateID(req.ID) {
+	if req.Distro == "" || !path.IsAbs(req.Stable) || !supervise.ValidUpdateID(req.ID) {
 		return fail("the preflight needs an update id, a distro and the stable backend's path")
 	}
 	staged := StagedPayloadPath(req.Stable, req.ID)
@@ -143,26 +140,6 @@ func PreflightStagedPayload(ctx context.Context, host PreflightHost, req Preflig
 		}
 	}
 	return answer
-}
-
-// NewUpdateID returns a fresh update id. It names files on both sides, so it
-// is lowercase hex.
-func NewUpdateID() (string, error) {
-	var raw [8]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(raw[:]), nil
-}
-
-// ValidUpdateID reports whether id is one NewUpdateID could have made. Ids
-// arrive on the command line and name files, so nothing else is accepted.
-func ValidUpdateID(id string) bool {
-	if len(id) != 16 {
-		return false
-	}
-	_, err := hex.DecodeString(id)
-	return err == nil && strings.ToLower(id) == id
 }
 
 // StagedPayloadPath is where update id stages the payload: beside the stable

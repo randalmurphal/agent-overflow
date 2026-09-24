@@ -198,7 +198,8 @@ func (s UpdateSequence) Reconcile(ctx context.Context, fingerprint string) (Reco
 		return s.markReported(run, record)
 	}
 
-	end, resume, err := run.RecoverPending(ctx, record.State, fileExists(record.StagedLauncher), "its new launcher")
+	end, resume, err := run.RecoverPending(ctx, record.State, fileExists(record.StagedLauncher),
+		"the update was interrupted and its new launcher is missing")
 	if err != nil {
 		return ReconcileDecision{}, err
 	}

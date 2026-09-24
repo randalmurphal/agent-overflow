@@ -72,8 +72,9 @@ refusal leaves the file byte-for-byte as it was.
 An open with `Options.RefusePendingMigrations` also refuses an existing
 database with migrations to apply, with `MigrationsPendingError`, before
 anything writes it. A database without an applied migration is created as
-usual. The Windows launcher's backend opens this way, so a database is
-migrated only by an update trial that snapshots it first
+usual. The Windows launcher's backend and the macOS and Linux desktop boot
+open this way, so a database is migrated only by an update trial that
+snapshots it first
 ([no live migration](../specs/app-update.md#no-live-migration)).
 
 A rebuild must carry forward every column, index, trigger, and relationship

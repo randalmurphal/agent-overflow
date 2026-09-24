@@ -125,7 +125,7 @@ func TestLauncherUpdateSequenceRunsTheRealCommands(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			id, err := wsllauncher.NewUpdateID()
+			id, err := supervise.NewUpdateID()
 			if err != nil {
 				t.Fatal(err)
 			}

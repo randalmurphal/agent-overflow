@@ -51,8 +51,11 @@ func requireWindowedBuild() {}
 //     testing.
 func runWindowedShell(appService *App, srv *transport.Server, title string, nativeWindow *isolatedNativeWindow) error {
 	shell := webviewShell{
-		title:     title,
-		beforeRun: quitOnSignal,
+		title: title,
+		beforeRun: func(app *application.App) bool {
+			quitOnSignal(app)
+			return true
+		},
 		// The browser engine's window getter was installed empty before
 		// App.Start (newIsolatedProviderApp) and is filled here, which is the
 		// first moment a window can exist at all on this path. Selection only

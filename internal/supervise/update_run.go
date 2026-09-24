@@ -2,6 +2,8 @@ package supervise
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
@@ -18,6 +20,26 @@ import (
 // kept and how each step runs. The Windows launcher runs the steps as WSL
 // commands (wsllauncher.UpdateSequence); the macOS and Linux helper runs
 // them in its own process (DesktopUpdate).
+
+// NewUpdateID returns a fresh update id. It names files, so it is lowercase
+// hex.
+func NewUpdateID() (string, error) {
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+// ValidUpdateID reports whether id is one NewUpdateID could have made. Ids
+// arrive on the command line and name files, so nothing else is accepted.
+func ValidUpdateID(id string) bool {
+	if len(id) != 16 {
+		return false
+	}
+	_, err := hex.DecodeString(id)
+	return err == nil && strings.ToLower(id) == id
+}
 
 // UpdateSteps is a platform's half of an UpdateRun, for one record.
 type UpdateSteps interface {
@@ -273,9 +295,9 @@ func (r UpdateRun) MarkReported(state State) (State, error) {
 // (canResume) resumes: resume is true and the caller hands it to the
 // target. Otherwise the database is restored and the update settles rolled
 // back; one whose trial was interrupted at every attempt is remembered.
-// missing names the target that is gone, as in "the update was interrupted
-// and <missing> is missing".
-func (r UpdateRun) RecoverPending(ctx context.Context, state State, canResume bool, missing string) (end UpdateEnd, resume bool, err error) {
+// stopped is the reason of one that cannot resume below the limit, as in
+// "the update was interrupted and its new launcher is missing".
+func (r UpdateRun) RecoverPending(ctx context.Context, state State, canResume bool, stopped string) (end UpdateEnd, resume bool, err error) {
 	update := state.Update
 	switch {
 	case update.Attempts == 0:
@@ -287,7 +309,7 @@ func (r UpdateRun) RecoverPending(ctx context.Context, state State, canResume bo
 	exhausted := update.Attempts >= TrialAttemptLimit
 	reason := fmt.Sprintf("the trial was interrupted %d times without finishing", update.Attempts)
 	if !exhausted {
-		reason = "the update was interrupted and " + missing + " is missing"
+		reason = stopped
 	}
 	end, err = r.RollBack(ctx, state, reason)
 	if err == nil && exhausted && end.State == UpdateRolledBack {

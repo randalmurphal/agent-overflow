@@ -26,6 +26,21 @@ func acquireBackendInstanceLock(root string) (*harnessInstanceLock, error) {
 	return acquireInstanceLock(root, "backend", "backend.lock", "another Agent Overflow backend")
 }
 
+// holdBackendLock takes the backend lock for the process's life unless this
+// boot already holds it: the desktop boot takes it before bootTransport, to
+// reconcile its update record (reconcileDesktopUpdate).
+func holdBackendLock(root string) error {
+	if heldBackendLock != nil {
+		return nil
+	}
+	lock, err := acquireBackendInstanceLock(root)
+	if err != nil {
+		return err
+	}
+	heldBackendLock = lock
+	return nil
+}
+
 // backendLockPoll is how often waitForBackendInstanceLock retries.
 const backendLockPoll = 200 * time.Millisecond
 

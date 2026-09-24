@@ -79,7 +79,7 @@ func (s UpdateSequence) Migrate(ctx context.Context, req MigrationRequest) super
 		}
 	}
 	s.step("update.migrate", "Preparing to upgrade the database")
-	id, err := NewUpdateID()
+	id, err := supervise.NewUpdateID()
 	if err == nil {
 		_, err = BeginLauncherMigration(s.RecordPath, req.Distro, req.Payload, req.Version, req.Schema, id, s.now())
 	}

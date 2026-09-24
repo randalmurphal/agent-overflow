@@ -101,7 +101,7 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 	if err := fs.Parse(args); err != nil {
 		return launcherFlags{}, fmt.Errorf("parse flags: %w", err)
 	}
-	if *updateApply != "" && !wsllauncher.ValidUpdateID(*updateApply) {
+	if *updateApply != "" && !supervise.ValidUpdateID(*updateApply) {
 		return launcherFlags{}, fmt.Errorf("--update-apply %q is not an update id", *updateApply)
 	}
 	if *rememberDistro && strings.TrimSpace(*distro) == "" {
@@ -110,7 +110,7 @@ func parseLauncherFlags(args []string) (launcherFlags, error) {
 	if *updateApply != "" && strings.TrimSpace(*distro) == "" {
 		return launcherFlags{}, errors.New("--update-apply requires --distro, whose update record it runs")
 	}
-	if *updatePreflight != "" && !wsllauncher.ValidUpdateID(*updateID) {
+	if *updatePreflight != "" && !supervise.ValidUpdateID(*updateID) {
 		return launcherFlags{}, fmt.Errorf("--update-id %q is not an update id", *updateID)
 	}
 	if *waitPID < 0 {

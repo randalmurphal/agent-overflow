@@ -284,11 +284,16 @@ const PreflightSubcommand = "__service-preflight"
 type Preflight struct {
 	ProtocolVersion int    `json:"protocolVersion"`
 	Version         string `json:"version"`
+	// AppUpdateTrial is true for a desktop build that applies an in-app
+	// update as a helper (DesktopApplyCommand). The desktop app hands such
+	// a target the update; any other target takes the framework's swap.
+	AppUpdateTrial bool `json:"appUpdateTrial,omitempty"`
 }
 
-// WritePreflight renders this binary's answer.
-func WritePreflight(w io.Writer, version string) error {
-	data, err := json.Marshal(Preflight{ProtocolVersion: ProtocolVersion, Version: version})
+// WritePreflight renders this binary's answer. appUpdateTrial is whether
+// this build runs DesktopApplyCommand.
+func WritePreflight(w io.Writer, version string, appUpdateTrial bool) error {
+	data, err := json.Marshal(Preflight{ProtocolVersion: ProtocolVersion, Version: version, AppUpdateTrial: appUpdateTrial})
 	if err != nil {
 		return err
 	}

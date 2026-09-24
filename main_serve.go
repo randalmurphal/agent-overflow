@@ -64,6 +64,8 @@ func checkBackendVerbFlags(verb string, flags cliFlags) error {
 		return fmt.Errorf("cannot combine %s with --mock-provider: mock providers belong to --harness and --soak", verb)
 	case flags.mockForge != "":
 		return fmt.Errorf("cannot combine %s with --mock-forge: the fake forge CLI belongs to --harness and --soak", verb)
+	case flags.waitFor != (supervise.ProcessRef{}):
+		return fmt.Errorf("cannot combine %s with --%s: only the desktop boot is started by its update helper", verb, supervise.DesktopWaitPIDFlag)
 	}
 	return nil
 }

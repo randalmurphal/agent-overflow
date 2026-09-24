@@ -59,7 +59,22 @@ type stubTrialBackend struct {
 	observe func(startupprogress.Progress)
 }
 
+// stubTrialRuns is the file each stub trial appends a line to, so a test
+// counts the trials that ran.
+const stubTrialRuns = "stub-trial-runs"
+
 func (b *stubTrialBackend) start(ctx context.Context) error {
+	runs, err := os.OpenFile(filepath.Join(b.root, stubTrialRuns), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = runs.WriteString("trial\n")
+	if closeErr := runs.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
 	b.observe(startupprogress.Progress{Phase: "store.migrate", Detail: "Applying migration 1 of 1", UpdatedAt: 1, AliveAt: 1})
 	// Progress relays keep only the newest report, so the step is held long
 	// enough to be delivered before the next report supersedes it.

@@ -134,7 +134,7 @@ func main() {
 	// JSON line and an exit, and a version being asked whether it can be
 	// talked to must not boot a transport to say so. See internal/supervise.
 	if len(os.Args) > 1 && os.Args[1] == supervise.PreflightSubcommand {
-		if err := supervise.WritePreflight(os.Stdout, version); err != nil {
+		if err := supervise.WritePreflight(os.Stdout, version, desktopUpdateTrial); err != nil {
 			fatalf("service preflight: %v", err)
 		}
 		return
@@ -145,6 +145,13 @@ func main() {
 	// argv and stdout contract (main_update.go), so they short-circuit here.
 	if len(os.Args) > 1 && isUpdateCommand(os.Args[1]) {
 		os.Exit(runUpdateCommand(os.Args[1], os.Args[2:]))
+	}
+
+	// The macOS and Linux desktop's update helper, started by the app it
+	// replaces or by a boot that refused to migrate its database live
+	// (main_update_apply.go).
+	if len(os.Args) > 1 && os.Args[1] == supervise.DesktopApplyCommand {
+		os.Exit(runDesktopApply(os.Args[2:]))
 	}
 
 	// This binary is also the workflow CLI (D30): there is no separate `ao`
@@ -267,7 +274,7 @@ func main() {
 	case flags.headless:
 		runHeadless(flags.listenAddr, flags.printURLFD, flags.updatingTo, flags.updateFailure, flags.refusePendingMigrations)
 	default:
-		runDesktop(flags.listenAddr)
+		runDesktop(flags.listenAddr, flags.waitFor)
 	}
 }
 
@@ -374,11 +381,9 @@ func applyBootReadiness(cfg *transport.Config) {
 
 func bootTransport(appService *App, listenAddr string, opts bootTransportOptions) *transport.Server {
 	if !opts.BackendLockHeldBySupervisor {
-		lock, lockErr := acquireBackendInstanceLock(bootSettingsDir())
-		if lockErr != nil {
+		if lockErr := holdBackendLock(bootSettingsDir()); lockErr != nil {
 			fatalf("backend: %v", lockErr)
 		}
-		heldBackendLock = lock
 		// Under the lock and before the store opens: finish a restore an
 		// interrupted update left, and refuse to run on an update another
 		// process has not finished (docs/specs/app-update.md).

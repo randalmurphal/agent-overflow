@@ -26,6 +26,12 @@ type UpdateCommand struct {
 	// Out receives the report lines. A failed write means the caller's
 	// supervisor is gone: the trial stops and nothing is restored.
 	Out io.Writer
+	// Progress, when set, receives the progress instead of Out: the steps
+	// run in the process that shows it (DesktopUpdate).
+	Progress func(startupprogress.Progress)
+	// OwnsAppLayout is set by the process that applies the in-app layout's
+	// record, whose pending update is its own (PrepareOptions).
+	OwnsAppLayout bool
 	// AcquireLock takes the data root's backend lock, waiting up to wait.
 	// The file is what a trial inherits; release drops the lock.
 	AcquireLock func(ctx context.Context, wait time.Duration) (lock *os.File, release func(), err error)
@@ -314,8 +320,9 @@ func (c UpdateCommand) lockAndPrepareFile(ctx context.Context, relay *commandRel
 			fmt.Errorf("the database is still in use by another Agent Overflow backend: %w", err)), false
 	}
 	err = PrepareDataRoot(c.DataDir, PrepareOptions{
-		Progress: relay.copyProgress(phaseRestore, "Finishing an interrupted restore"),
-		Log:      c.log,
+		OwnsAppLayout: c.OwnsAppLayout,
+		Progress:      relay.copyProgress(phaseRestore, "Finishing an interrupted restore"),
+		Log:           c.log,
 	})
 	if err != nil {
 		release()
@@ -375,9 +382,16 @@ func (c UpdateCommand) startRelay(ctx context.Context) (*commandRelay, context.C
 	if out == nil {
 		out = io.Discard
 	}
-	relay := newCommandRelay(func(p startupprogress.Progress) error {
+	deliver := func(p startupprogress.Progress) error {
 		return WriteUpdateEvent(out, UpdateEvent{Type: UpdateEventProgress, Progress: &p})
-	}, startupprogress.NewSampler(startupprogress.SamplerOptions{
+	}
+	if c.Progress != nil {
+		deliver = func(p startupprogress.Progress) error {
+			c.Progress(p)
+			return nil
+		}
+	}
+	relay := newCommandRelay(deliver, startupprogress.NewSampler(startupprogress.SamplerOptions{
 		Interval: commandHeartbeatInterval, Logf: c.log,
 	}), c.now, commandHeartbeatInterval)
 	go func() {

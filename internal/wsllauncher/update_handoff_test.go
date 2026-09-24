@@ -100,12 +100,12 @@ func TestPreflightAnswerRoundTrip(t *testing.T) {
 }
 
 func TestUpdateIDs(t *testing.T) {
-	id, err := NewUpdateID()
-	if err != nil || !ValidUpdateID(id) {
+	id, err := supervise.NewUpdateID()
+	if err != nil || !supervise.ValidUpdateID(id) {
 		t.Fatalf("id %q err %v", id, err)
 	}
 	for _, bad := range []string{"", "u1", "0123456789ABCDEF", "0123456789abcde/", "..\\..\\0123456789"} {
-		if ValidUpdateID(bad) {
+		if supervise.ValidUpdateID(bad) {
 			t.Fatalf("%q was accepted", bad)
 		}
 	}
