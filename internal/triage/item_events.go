@@ -27,6 +27,12 @@ const (
 	// what keeps a client from rendering the fold half-applied — the join
 	// and the removals apply in one flush.
 	itemStreamActionRemove = "remove"
+	// itemStreamActionResync tells a client showing the thread to re-sync
+	// its window: a write to another thread moved the thread's stamps, a
+	// pointer fork's source changing or losing a row the fork shows, and
+	// no row frame of the thread's own describes the change. See
+	// NewItemStreamResync.
+	itemStreamActionResync = "resync"
 )
 
 // ItemPatchFields carries the mutable subset of an Item for a patch event.
@@ -101,6 +107,14 @@ func NewItemStreamUpsert(item store.Item) ItemStreamEvent {
 		ThreadID: projected.ThreadID,
 		Item:     &projected,
 	}
+}
+
+// NewItemStreamResync is the frame the app pushes for a pointer fork whose
+// stamps another thread's write moved (store.OnForkStampsMoved). It
+// carries the thread only: the client re-reads its window, which the
+// store's stamps now describe.
+func NewItemStreamResync(threadID string) ItemStreamEvent {
+	return ItemStreamEvent{Action: itemStreamActionResync, ThreadID: threadID}
 }
 
 // newItemStreamRemove announces that a row no longer exists. Carries the id

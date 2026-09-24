@@ -40,8 +40,9 @@ an atomic persistence decision; they must not become a business-logic layer.
 ## Schema and migrations
 
 - `schema_v1.go` is the squashed baseline. `migrate.go` and
-  `migration_v*.go` are the forward-only chain. A migration applied to persistent
-  data, including by an uncommitted development build, is deployed and immutable.
+  `migration_v*.go` are the forward-only chain. An unshipped migration may be
+  amended in a change that deliberately updates its hash in
+  `migrate_freeze_test.go`; a shipped migration never is.
   Add a migration and a test; record each new version in `migrate_freeze_test.go`.
 - A one-time data fix is a migration. Work too long to run at open goes in
   the migration's `Deferred` phase: idempotent, paced, progress in the data.
@@ -146,6 +147,10 @@ an atomic persistence decision; they must not become a business-logic layer.
   forks that show it first (`handOffIDsTx`, `handOffPayloadTx`); add the
   writer to `TestPointerForkSourceRewritesHandOff`
   ([pointer forks](../../docs/architecture/sqlite-store.md#copies)).
+  A transaction that can move a fork's stamps runs in
+  `writeItemsReportingForks`, or commits with `commitReportingForks` and
+  defers `dropForkMovesTx`, so the forks it moved are reported
+  (`fork_moves.go`, enforced from the source by `TestForkMoveOwnersReport`).
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by

@@ -235,6 +235,15 @@ export type ItemStreamEvent =
 	  | ({ action: 'meta' } & ItemMetaEvent)
 	  | ({ action: 'patch' } & ItemPatchEvent)
 	  /**
+	   * A write to another thread moved this thread's history stamps: a
+	   * pointer fork's source changed or deleted rows the fork shows. No row
+	   * rides it; a client showing the thread re-syncs its window.
+	   */
+	  | {
+	      action: 'resync';
+	      threadId: string;
+	    }
+	  /**
 	   * A row the backend deleted. The one producer is the Claude
 	   * queue-boundary merge fold: the provider merged several dispatched
 	   * messages into one transcript entry, so the surviving row is upserted

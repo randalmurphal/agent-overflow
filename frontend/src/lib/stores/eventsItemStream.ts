@@ -28,6 +28,7 @@ import { compositeKey } from '../utils/compositeKey';
 import { isPendingFlushRow } from '../utils/userMessageMeta';
 import type { ThreadPaneIngest } from './threadPaneRoles';
 import { itemEventQueued, itemEventsSettled, resetItemEventSettlement } from './itemEventSettlement';
+import { applyThreadResync } from './threadWindowRecovery';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
@@ -45,6 +46,8 @@ const ITEM_EVENT_QUEUE_FORCE_FLUSH_EVENTS = 2_000;
 // alone; accepted events are never truncated or dropped.
 const ITEM_EVENT_FLUSH_MAX_CHARS = 256 * 1024;
 const ITEM_EVENT_QUEUE_FORCE_FLUSH_CHARS = 2 * 1024 * 1024;
+/** The frames that describe a row; a `resync` is applied, not queued. */
+type QueuedStreamEvent = Exclude<ItemStreamEvent, { action: 'resync' }>;
 /**
  * An accepted item event with what ingest derived from it, so the flush
  * reuses them instead of deriving them again: `chars` for the text budgets,
@@ -53,7 +56,7 @@ const ITEM_EVENT_QUEUE_FORCE_FLUSH_CHARS = 2 * 1024 * 1024;
  * mutable field: a revert stamps entries that arrived unsequenced.
  */
 interface QueuedItemEvent {
-  readonly evt: ItemStreamEvent;
+  readonly evt: QueuedStreamEvent;
   readonly chars: number;
   readonly rowKey: string;
   sequence: number | undefined;
@@ -122,7 +125,7 @@ export function fenceRevertedItemEvents(cut: UserMessageRevertedEvent): void {
   });
 }
 
-function itemEventChars(evt: ItemStreamEvent): number {
+function itemEventChars(evt: QueuedStreamEvent): number {
   const fields = evt.action === 'upsert' ? evt.item : evt.action === 'patch' ? evt.patch : evt;
   let chars = 0;
   for (const key in fields) {
@@ -464,6 +467,12 @@ export function applyItemStreamEvent(evt: ItemStreamEvent, sequence?: number): v
     // Required, unlike the fields above: the patch is what stamps a
     // settled streaming row's revision (types/events.ts ItemPatchEvent).
     if (!Number.isInteger(evt.patch.rev)) return;
+  } else if (evt.action === 'resync') {
+    // No row to queue: the thread's windows are re-read once the frames
+    // queued ahead of this one have applied.
+    if (!isBoundedString(evt.threadId, 512)) return;
+    applyThreadResync(evt.threadId);
+    return;
   } else {
     return;
   }

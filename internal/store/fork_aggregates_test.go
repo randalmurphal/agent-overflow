@@ -307,3 +307,55 @@ func TestPointerForkTurnErrorsReadTheLineage(t *testing.T) {
 		})
 	}
 }
+
+// TestPointerForkTurnErrorTriggersKeepInheritedErrors: a trigger that
+// recomputes a fork's pair after a write to the fork's own rows or turns
+// counts the rows the fork reads through its lineage too, so the inherited
+// error keeps the fork Failed after its own error goes and after a revert
+// of its newest turn.
+func TestPointerForkTurnErrorTriggersKeepInheritedErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(t *testing.T, s *Store)
+	}{
+		{"delete of its own error", func(t *testing.T, s *Store) {
+			own := Item{ID: "F-err", ThreadID: "F", TurnIndex: 1, ItemIndex: 10, Kind: "error", Role: "assistant",
+				Status: "completed", Summary: "fork failed", Meta: "{}", CreatedAt: 5, UpdatedAt: 5}
+			if err := s.InsertItem(own); err != nil {
+				t.Fatal(err)
+			}
+			if got := forkTurnErrorAt(t, s, "F"); got.Int64 != 5 {
+				t.Fatalf("fixture: the fork's own error left the pair at %v", got)
+			}
+			if err := s.DeleteThreadItem("F", "F-err"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"revert of its newest turn", func(t *testing.T, s *Store) {
+			if err := s.InsertTurn(Turn{TurnID: "F:2", ThreadID: "F", TurnIndex: 2, StartedAt: 2}); err != nil {
+				t.Fatal(err)
+			}
+			if got := forkTurnErrorAt(t, s, "F"); got.Valid {
+				t.Fatalf("fixture: a new turn left the pair at %v", got)
+			}
+			if _, _, err := s.DeleteConversationFromTurn("F", 2); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			seedFailedForkSource(t, s, "S")
+			mustPointerFork(t, s, "S", "F", throughTurn(1))
+
+			tc.write(t, s)
+
+			if got, want := forkTurnErrorAt(t, s, "F"), forkTurnErrorAt(t, s, "S"); !got.Valid || got != want {
+				t.Errorf("the fork's turn-error pair is %v, want the inherited error's %v", got, want)
+			}
+			if !failedPillAfterUnread(t, s, "F") {
+				t.Error("the fork does not show Failed for the error it inherits")
+			}
+		})
+	}
+}

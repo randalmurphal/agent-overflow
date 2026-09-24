@@ -611,7 +611,8 @@ func forkHandOffFixture(t *testing.T) *Store {
 
 // TestPointerForkSourceRewritesHandOff: a source that changes, moves or
 // deletes a row a fork reads gives the fork its own copy first, so the
-// fork's history is what it was when it was made.
+// fork's history is what it was when it was made. The write reports
+// exactly the forks whose stamps it moved (fork_moves.go).
 func TestPointerForkSourceRewritesHandOff(t *testing.T) {
 	for name, rewrite := range map[string]func(*Store) error{
 		"delete row":       func(s *Store) error { return s.DeleteThreadItem("S", "a0") },
@@ -625,6 +626,8 @@ func TestPointerForkSourceRewritesHandOff(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s := forkHandOffFixture(t)
 			source, fork, grandchild := timelineShape(t, s, "S"), timelineShape(t, s, "F"), timelineShape(t, s, "G")
+			stamps := map[string]HistoryStamp{"F": historyStampOf(t, s, "F"), "G": historyStampOf(t, s, "G")}
+			reports := watchForkMoves(s)
 			if err := rewrite(s); err != nil {
 				t.Fatal(err)
 			}
@@ -633,6 +636,19 @@ func TestPointerForkSourceRewritesHandOff(t *testing.T) {
 			}
 			requireShape(t, s, "F", fork)
 			requireShape(t, s, "G", grandchild)
+			var moved, reported []string
+			for _, id := range []string{"F", "G"} {
+				if historyStampOf(t, s, id) != stamps[id] {
+					moved = append(moved, id)
+				}
+			}
+			for _, ids := range reports.take() {
+				reported = append(reported, ids...)
+			}
+			slices.Sort(reported)
+			if len(moved) == 0 || !slices.Equal(reported, moved) {
+				t.Fatalf("the rewrite moved the stamps of %v and reported %v", moved, reported)
+			}
 		})
 	}
 }
@@ -792,10 +808,11 @@ func touchItemForTest(t *testing.T, s *Store, threadID, itemID string) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 	if err := bumpHistoryRevForItemTx(tx, threadID, itemID, "test touch"); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		t.Fatal(err)
 	}
 }

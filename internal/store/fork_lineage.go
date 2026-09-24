@@ -434,10 +434,23 @@ func handOff(tx *sql.Tx, threadID string, from timelineRow, read func(reader for
 		if err != nil {
 			return err
 		}
-		if err := copyInheritedRowsStampedTx(tx, reader.threadID, rows); err != nil {
+		if err := handOffCopyTx(tx, reader.threadID, rows); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+// handOffCopyTx gives reader its copy of rows and records that its stamp
+// moved (fork_moves.go).
+func handOffCopyTx(tx *sql.Tx, reader string, rows []inheritedRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := copyInheritedRowsStampedTx(tx, reader, rows); err != nil {
+		return err
+	}
+	recordForkMovesTx(tx, reader)
 	return nil
 }
 
@@ -460,7 +473,7 @@ func handOffIDsTx(tx *sql.Tx, threadID string, ids []string) error {
 // through threadID.
 func handOffReadIDsTx(tx *sql.Tx, threadID string, ids []string) error {
 	return forEachReaderShowingTx(tx, threadID, ids, func(reader string, rows []inheritedRow) error {
-		return copyInheritedRowsStampedTx(tx, reader, rows)
+		return handOffCopyTx(tx, reader, rows)
 	})
 }
 
@@ -591,7 +604,11 @@ func bumpPayloadReadersTx(tx *sql.Tx, holder, payloadID, label string) error {
 		return err
 	}
 	return forEachReaderShowingTx(tx, holder, ids, func(reader string, _ []inheritedRow) error {
-		return bumpHistoryRevTx(tx, reader, label)
+		if err := bumpHistoryRevTx(tx, reader, label); err != nil {
+			return err
+		}
+		recordForkMovesTx(tx, reader)
+		return nil
 	})
 }
 

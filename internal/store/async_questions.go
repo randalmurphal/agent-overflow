@@ -43,7 +43,7 @@ func (s *Store) RecordAsyncQuestions(item Item) (Item, error) {
 	}
 	applyItemDefaults(&item)
 	var persisted Item
-	err = s.writeItems(item.ThreadID, item.SubagentCard, "record async questions", func(tx *sql.Tx, w *cardWrite) error {
+	err = s.writeItemsReportingForks(item.ThreadID, item.SubagentCard, "record async questions", func(tx *sql.Tx, w *cardWrite) error {
 		existing, exists, err := s.getThreadItem(tx, item.ThreadID, item.ID)
 		if err != nil {
 			return err

@@ -108,6 +108,7 @@ func (s *Store) CreateProposedPlanComment(comment ProposedPlanComment) (Proposed
 		return ProposedPlanComment{}, fmt.Errorf("store: begin create proposed plan comment %s: %w", comment.ID, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 
 	if _, err := tx.Exec(
 		`INSERT INTO proposed_plan_comments (
@@ -126,7 +127,7 @@ func (s *Store) CreateProposedPlanComment(comment ProposedPlanComment) (Proposed
 	if err != nil {
 		return ProposedPlanComment{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return ProposedPlanComment{}, fmt.Errorf("store: commit create proposed plan comment %s: %w", comment.ID, err)
 	}
 	return stored, nil
@@ -142,6 +143,7 @@ func (s *Store) UpdateProposedPlanComment(threadID, commentID string, update Pro
 		return ProposedPlanComment{}, fmt.Errorf("store: begin update proposed plan comment %s/%s: %w", threadID, commentID, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 
 	res, err := tx.Exec(
 		`UPDATE proposed_plan_comments
@@ -164,7 +166,7 @@ func (s *Store) UpdateProposedPlanComment(threadID, commentID string, update Pro
 	if err := bumpHistoryRevForItemTx(tx, threadID, stored.PlanItemID, fmt.Sprintf("store: update proposed plan comment %s", commentID)); err != nil {
 		return ProposedPlanComment{}, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return ProposedPlanComment{}, fmt.Errorf("store: commit update proposed plan comment %s/%s: %w", threadID, commentID, err)
 	}
 	return stored, nil
@@ -180,6 +182,7 @@ func (s *Store) DeleteOrResolveProposedPlanComment(threadID, commentID string, n
 		return fmt.Errorf("store: begin delete-or-resolve proposed plan comment %s/%s: %w", threadID, commentID, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 
 	comment, err := getProposedPlanCommentQ(tx, threadID, commentID)
 	if err != nil {
@@ -200,7 +203,7 @@ func (s *Store) DeleteOrResolveProposedPlanComment(threadID, commentID string, n
 	if err := bumpHistoryRevForItemTx(tx, threadID, comment.PlanItemID, fmt.Sprintf("store: delete-or-resolve proposed plan comment %s", commentID)); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return fmt.Errorf("store: commit delete-or-resolve proposed plan comment %s/%s: %w", threadID, commentID, err)
 	}
 	return nil
@@ -223,6 +226,7 @@ func (s *Store) MarkProposedPlanCommentsSent(threadID, planItemID string, commen
 		return fmt.Errorf("store: begin mark proposed plan comments sent for %s: %w", threadID, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 
 	query := `UPDATE proposed_plan_comments
 	             SET status = 'sent', sent_at = ?, sent_turn_id = ?, updated_at = ?
@@ -254,7 +258,7 @@ func (s *Store) MarkProposedPlanCommentsSent(threadID, planItemID string, commen
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return fmt.Errorf("store: commit mark proposed plan comments sent for %s: %w", threadID, err)
 	}
 	return nil

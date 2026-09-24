@@ -13,7 +13,7 @@ import (
 func (s *Store) ErrorActiveItemIfRevision(threadID, id string, revision int64, summary string, now int64, card *SubagentCard) (Item, bool, error) {
 	var item Item
 	var changed bool
-	err := s.writeItems(threadID, card, "interrupt item", func(tx *sql.Tx, w *cardWrite) error {
+	err := s.writeItemsReportingForks(threadID, card, "interrupt item", func(tx *sql.Tx, w *cardWrite) error {
 		old, err := readMutableSubagentRowTx(tx, threadID, id, "store: interrupt item")
 		if err != nil {
 			return err

@@ -24,22 +24,25 @@ import (
 // pair with them. A write that can remove a counted row recomputes it: one
 // idx_items_thread_error probe, plus one idx_import_history_items_error
 // probe per attached chunk whose turn range reaches the newest turn, found
-// through idx_thread_import_chunks_turns. That happens only when a counted
-// row leaves the set or the newest turn moves back: an error row's delete
-// or key change, a turn delete, a counted imported row hidden by an
-// override, a chunk with a counted row detached. A new newest turn
-// recomputes only when an error already sits at or past it.
+// through idx_thread_import_chunks_turns, and the same probes on each
+// ancestor a pointer fork reads through (one thread_fork_lineage probe for
+// a thread without lineage). That happens only when a counted row leaves
+// the set or the newest turn moves back: an error row's delete or key
+// change, a turn delete, a counted imported row hidden by an override, a
+// chunk with a counted row detached. A new newest turn recomputes only
+// when an error already sits at or past it.
 //
 // The triggers do not consult history_bulk_load: none of them walks the
 // thread, and the bulk paths (imports, thread deletion, transferred
 // history) move exactly the rows these aggregates count.
 //
 // A pointer fork also counts the error rows it reads through its lineage,
-// which sit at or before its cut turn. No trigger sees a change to that set
-// (the fork's creation, a revert of inherited rows, a hidden row, a detached
-// source); each such writer recomputes the pair with the lineage arms
-// (recomputeTurnErrorsTx). A copy of an inherited row changes no set: the
-// insert raises the pair with a row it already counts.
+// which sit at or before its cut turn; every recompute reads them
+// (turnErrorLineageRowsSQL). A write that changes which rows the fork reads
+// without writing a row or turn a trigger counts (the fork's creation, a
+// revert of inherited rows, a hidden row, a detached source) recomputes the
+// pair itself (recomputeTurnErrorsTx). A copy of an inherited row changes
+// no set: the insert raises the pair with a row it already counts.
 //
 // thread_import_chunks rows are detached before an unreferenced chunk is
 // collected (trg_thread_import_chunks_gc), and SQLite does not order
@@ -83,7 +86,7 @@ func turnErrorRowsSQL(thread, skipChunk string) string {
 
 // turnErrorLineageRowsSQL is turnErrorRowsSQL's arms for the rows a pointer
 // fork reads from its ancestors, under the timeline arms' visibility rule.
-// A thread without lineage rows probes them once.
+// A thread without lineage rows probes them once per arm.
 func turnErrorLineageRowsSQL(thread string) string {
 	return `SELECT items.created_at, items.turn_index
 	  FROM thread_fork_lineage l
@@ -105,30 +108,28 @@ func turnErrorLineageRowsSQL(thread string) string {
 	   AND ` + inheritedItemVisibleSQL
 }
 
-// recomputeForkTurnErrorsSQL rewrites one thread's pair from its own rows
-// and the rows it reads through its lineage.
-var recomputeForkTurnErrorsSQL = `UPDATE threads
-	   SET (newest_turn_error_at, newest_turn_error_turn) = (
-	       SELECT MAX(created_at), MAX(turn_index) FROM (` + turnErrorRowsSQL("threads.id", "") + `
-	UNION ALL
-	` + turnErrorLineageRowsSQL("threads.id") + `))
-	 WHERE id = ?`
+// recomputeTurnErrorsSQL rewrites one thread's pair.
+var recomputeTurnErrorsSQL = turnErrorRecomputeSQL("id = ?", "")
 
 // recomputeTurnErrorsTx rewrites threadID's pair, for a write that changes
-// which rows a pointer fork reads through its lineage.
+// which rows a pointer fork reads through its lineage and writes no row or
+// turn whose trigger recomputes it.
 func recomputeTurnErrorsTx(tx *sql.Tx, threadID string) error {
-	if _, err := tx.Exec(recomputeForkTurnErrorsSQL, threadID); err != nil {
+	if _, err := tx.Exec(recomputeTurnErrorsSQL, threadID); err != nil {
 		return fmt.Errorf("store: recompute turn errors of %s: %w", threadID, err)
 	}
 	return nil
 }
 
 // turnErrorRecomputeSQL rewrites the pair of the threads rows `where`
-// selects from their rows.
+// selects from their own rows and the rows they read through their
+// lineage.
 func turnErrorRecomputeSQL(where, skipChunk string) string {
 	return `UPDATE threads
 	   SET (newest_turn_error_at, newest_turn_error_turn) = (
-	       SELECT MAX(created_at), MAX(turn_index) FROM (` + turnErrorRowsSQL("threads.id", skipChunk) + `))
+	       SELECT MAX(created_at), MAX(turn_index) FROM (` + turnErrorRowsSQL("threads.id", skipChunk) + `
+	UNION ALL
+	` + turnErrorLineageRowsSQL("threads.id") + `))
 	 WHERE ` + where + `;`
 }
 

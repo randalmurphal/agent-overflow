@@ -353,6 +353,7 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 	}
 
 	a.store = st
+	a.watchForkStamps()
 	// Published for the transport bootstrap manifest the moment the store
 	// is open. A failure here is fatal to the store: without a backend id
 	// a client cannot key its replica database, and silently serving an

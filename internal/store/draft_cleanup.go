@@ -58,6 +58,7 @@ func (s *Store) DeleteEmptyDraftThread(threadID string) (bool, error) {
 		return false, fmt.Errorf("store: begin delete empty draft thread %s: %w", threadID, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 	// A thread whose history was reverted away can still be a fork source.
 	// The detach rolls back with the transaction when the guard below
 	// keeps the thread.
@@ -101,7 +102,7 @@ func (s *Store) DeleteEmptyDraftThread(threadID string) (bool, error) {
 	if err := deleteThreadSearchThreadTx(tx, threadID); err != nil {
 		return false, err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return false, fmt.Errorf("store: commit delete empty draft thread %s: %w", threadID, err)
 	}
 	return affected > 0, nil

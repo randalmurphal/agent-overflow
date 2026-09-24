@@ -472,10 +472,13 @@ var subagentDirtyAnchorsSQL = `SELECT item_id FROM subagent_aggregates
 
 // subagentLegacyAnchorsSQL finds a listed thread's anchors that predate
 // the stamps: unstamped local anchorable rows that a read decorates,
-// because they are carriers or have a visible child in either arm. The
+// because they are carriers or have a visible child in its timeline. The
 // candidates are the thread's distinct parent ids, read from the covering
-// parent indexes of both arms, and its carriers (idx_items_transcript_root);
-// each candidate costs two primary-key probes and a one-row child probe.
+// parent indexes of both arms, its carriers (idx_items_transcript_root),
+// and for a pointer fork its rows below the cut: they are copies of
+// inherited rows, the only own rows whose children the fork can read from
+// an ancestor. Each candidate costs two primary-key probes and a one-row
+// child probe.
 var subagentLegacyAnchorsSQL = `SELECT a.id FROM (
     SELECT DISTINCT parent_id AS id FROM items WHERE thread_id = ?1 AND parent_id <> ''
     UNION
@@ -484,6 +487,11 @@ var subagentLegacyAnchorsSQL = `SELECT a.id FROM (
      WHERE refs.thread_id = ?1 AND items.parent_id <> ''
     UNION
     SELECT id FROM items WHERE thread_id = ?1 AND ` + transcriptRootExpr + ` IS NOT NULL
+    UNION
+    SELECT copies.id FROM thread_fork_lineage l
+      CROSS JOIN items copies ON copies.thread_id = l.thread_id
+     WHERE l.thread_id = ?1 AND l.depth = 1
+       AND (copies.turn_index, copies.item_index) < (l.cut_turn_index, l.cut_item_index)
   ) AS p CROSS JOIN items a
  WHERE a.thread_id = ?1 AND a.id = p.id AND ` + aggAnchorableSQL("a.") + `
    AND NOT EXISTS (SELECT 1 FROM subagent_aggregates s WHERE s.thread_id = a.thread_id AND s.item_id = a.id)

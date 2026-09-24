@@ -55,6 +55,7 @@ import { holdBackendRecovery } from './transportRecovery';
 import { threadMachine, getAttachedBackends } from './attachedBackends.svelte';
 import { applyBackendSetChange } from './systems.svelte';
 import { reconcileThreadLiveActivity } from './threadLiveActivity';
+import { recoverThreadWindows } from './threadWindowRecovery';
 
 // The registry hands out whole ThreadPanes; this module narrows them to
 // the ingest surface at the one acquisition point, so a new pane member
@@ -131,21 +132,6 @@ function resyncThreadLiveActivity(origin?: EventOrigin): void {
   }));
 }
 
-/**
- * An item-event loss the server attributed: recover exactly the named
- * threads' panes, timeline surfaces and cached stamps. Everything an item
- * event updates is keyed by its own thread (`applyItemStreamEvent`), so
- * the sidebar and every other thread are as current as before the loss.
- */
-function recoverItemEventThreads(threads: ReadonlySet<string>): void {
-  refreshTimelineSurfaces(threads);
-  threadItemCache.dropUnattestedStamps(threads);
-  for (const pane of ingestPanes()) {
-    if (!pane.threadId || !threads.has(pane.threadId)) continue;
-    holdBackendRecovery(threadMachine(pane.threadId, pane.thread?.projectId), pane.refreshFromBackend());
-  }
-}
-
 /** The blanket answer: forget the stamps, re-read the sidebar, refresh every pane. */
 function refreshEverything(): void {
   refreshTimelineSurfaces();
@@ -211,8 +197,10 @@ function applySettledTransportGap(gap: TransportGap, origin?: EventOrigin): void
       resyncThreadLiveActivity(origin);
       return;
     case 'provider:item_event':
+      // An item-event loss the server attributed: the sidebar and every
+      // other thread are as current as before the loss.
       if (gap.threads) {
-        recoverItemEventThreads(new Set(gap.threads));
+        recoverThreadWindows(new Set(gap.threads));
         return;
       }
       // Unattributed: any thread may have lost frames, so fall through to

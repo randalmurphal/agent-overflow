@@ -296,8 +296,14 @@ func aggPromptCarrierSQL(a string) string {
 }
 
 // aggHasChildSQL is "the row has a visible child other than except",
-// over both physical arms of the thread's timeline. Its aliases are
-// prefixed so a caller's own aliases (c, refs, o) cannot be captured.
+// over the thread's whole timeline: both physical arms, and the rows a
+// pointer fork reads through its lineage, where only a copy of an
+// inherited anchor finds children. The lineage arms state the timeline
+// arms' visibility rule, which names the ancestor row `items` and the
+// lineage row `l`, so threadExpr and idExpr must not name either; the
+// other aliases are prefixed so a caller's own (c, refs, o) cannot be
+// captured. A thread without lineage probes thread_fork_lineage once per
+// lineage arm.
 func aggHasChildSQL(threadExpr, idExpr, exceptExpr string) string {
 	return "(" + aggHasLocalChildSQL(threadExpr, idExpr, exceptExpr) + `
 	 OR EXISTS (SELECT 1 FROM import_history_items agg_hc
@@ -306,7 +312,21 @@ func aggHasChildSQL(threadExpr, idExpr, exceptExpr string) string {
 	            WHERE agg_hc.parent_id = ` + idExpr + ` AND agg_hc.parent_id <> ''
 	              AND ` + visibleItemsFilterFor("agg_hc.") + `
 	              AND NOT EXISTS (SELECT 1 FROM thread_import_item_overrides agg_hc_o
-	                               WHERE agg_hc_o.thread_id = agg_hc_refs.thread_id AND agg_hc_o.item_id = agg_hc.id)))`
+	                               WHERE agg_hc_o.thread_id = agg_hc_refs.thread_id AND agg_hc_o.item_id = agg_hc.id))
+	 OR EXISTS (SELECT 1 FROM thread_fork_lineage l
+	             CROSS JOIN items ON items.thread_id = l.ancestor_id AND items.parent_id = ` + idExpr + `
+	            WHERE l.thread_id = ` + threadExpr + ` AND items.parent_id <> ''
+	              AND ` + visibleItemsFilterFor("items.") + `
+	              AND ` + inheritedKeyedItemVisibleSQL + `)
+	 OR EXISTS (SELECT 1 FROM thread_fork_lineage l
+	             CROSS JOIN import_history_items items ON items.parent_id = ` + idExpr + `
+	             CROSS JOIN thread_import_chunks agg_hc_refs
+	                ON agg_hc_refs.chunk_id = items.chunk_id AND agg_hc_refs.thread_id = l.ancestor_id
+	            WHERE l.thread_id = ` + threadExpr + ` AND items.parent_id <> ''
+	              AND ` + visibleItemsFilterFor("items.") + `
+	              AND NOT EXISTS (SELECT 1 FROM thread_import_item_overrides agg_hc_o
+	                               WHERE agg_hc_o.thread_id = l.ancestor_id AND agg_hc_o.item_id = items.id)
+	              AND ` + inheritedKeyedItemVisibleSQL + `))`
 }
 
 func aggHasLocalChildSQL(threadExpr, idExpr, exceptExpr string) string {

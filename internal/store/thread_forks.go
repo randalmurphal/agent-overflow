@@ -880,8 +880,8 @@ func retractInheritedTx(tx *sql.Tx, w *cardWrite, threadID string, fromTurn int,
 
 // forkViewChangedTx records a change to which inherited rows threadID
 // shows: its stamps move (bumpForkViewTx), its turn-error pair is
-// recomputed, which no item or turn trigger does for rows it reads through
-// its lineage, and w's finish recomputes the stamps of copies, the copied
+// recomputed, because the change writes no row or turn whose trigger
+// would, and w's finish recomputes the stamps of copies, the copied
 // anchors forkCopyStampsTx listed before the change.
 func forkViewChangedTx(tx *sql.Tx, w *cardWrite, threadID string, copies []string) error {
 	if err := bumpForkViewTx(tx, threadID); err != nil {
@@ -953,10 +953,11 @@ func (s *Store) detachForkDescendants(threadID string) error {
 		return fmt.Errorf("store: begin detach forks of %s: %w", threadID, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 	if err := s.detachForkDescendantsTx(tx, threadID); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return fmt.Errorf("store: commit detach forks of %s: %w", threadID, err)
 	}
 	return nil
@@ -969,6 +970,13 @@ func (s *Store) detachForkDescendants(threadID string) error {
 // records that the source is gone and its title, so rendering it never has
 // to look for the source. A fork that stops reading rows recomputes what
 // its copied anchors count and its turn-error pair (forkViewChangedTx).
+//
+// It records against tx (fork_moves.go) every thread whose stamps it moves:
+// the detached forks, each thread holding a divider it marks, and the forks
+// that show a marked divider in place. It is idempotent: a fork already
+// detached reads nothing through threadID and its dividers are marked, so
+// a later detach of threadID (DeleteThreadPaced's, for a fork made while
+// the items drained) neither marks nor stamps it again.
 func (s *Store) detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 	var title string
 	if err := tx.QueryRow(`SELECT title FROM threads WHERE id = ?`, threadID).Scan(&title); err != nil {
@@ -977,31 +985,25 @@ func (s *Store) detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 		}
 		return fmt.Errorf("store: read fork source %s: %w", threadID, err)
 	}
-	rows, err := tx.Query(
-		`SELECT DISTINCT thread_id FROM thread_fork_lineage WHERE ancestor_id = ?
-		 UNION
-		 SELECT id FROM threads WHERE fork_source_thread_id = ? AND fork_source_thread_id <> ''`,
-		threadID, threadID,
-	)
+	detached, err := queryIDs(tx, `SELECT DISTINCT thread_id FROM thread_fork_lineage WHERE ancestor_id = ?`, threadID)
 	if err != nil {
 		return fmt.Errorf("store: list forks of %s: %w", threadID, err)
 	}
-	var affected []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return errors.Join(fmt.Errorf("store: scan fork of %s: %w", threadID, err), rows.Close())
+	if len(detached) == 0 {
+		// A materialized fork reads nothing through threadID, but its
+		// divider still names it.
+		var forked bool
+		if err := tx.QueryRow(
+			`SELECT EXISTS (SELECT 1 FROM threads WHERE fork_source_thread_id = ? AND fork_source_thread_id <> '')`, threadID,
+		).Scan(&forked); err != nil {
+			return fmt.Errorf("store: look for forks of %s: %w", threadID, err)
 		}
-		affected = append(affected, id)
+		if !forked {
+			return nil
+		}
 	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return fmt.Errorf("store: iterate forks of %s: %w", threadID, err)
-	}
-	if len(affected) == 0 {
-		return nil
-	}
-	copies := make(map[string][]string, len(affected))
-	for _, id := range affected {
+	copies := make(map[string][]string, len(detached))
+	for _, id := range detached {
 		if copies[id], err = forkCopyStampsTx(tx, id); err != nil {
 			return err
 		}
@@ -1022,8 +1024,11 @@ func (s *Store) detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 	}
 	// A fork's divider is also copied into the forks made from it when it
 	// is handed off or materialized, so each thread descended from a fork
-	// of threadID is checked for a copy, by primary key.
-	if _, err := tx.Exec(
+	// of threadID is checked for a copy, by primary key. The mark stamps
+	// the holder, and trg_items_fork_reader_stamp the forks that show the
+	// holder's divider, which the mark returns. A divider already marked
+	// is left alone.
+	marked, err := tx.Query(
 		`WITH RECURSIVE forks(id) AS (
 		   SELECT id FROM threads WHERE fork_source_thread_id = ?1 AND fork_source_thread_id <> ''
 		 ), holders(id) AS (
@@ -1035,12 +1040,33 @@ func (s *Store) detachForkDescendantsTx(tx *sql.Tx, threadID string) error {
 		    SET meta = json_set(CASE WHEN json_valid(meta) THEN meta ELSE '{}' END,
 		                        '$.sourceDeleted', json('true'), '$.sourceTitle', ?2)
 		  WHERE (thread_id, id) IN (SELECT holders.id, 'fork-origin-' || forks.id FROM holders CROSS JOIN forks)
-		    AND tool_name = '`+forkDividerToolName+`'`,
+		    AND tool_name = '`+forkDividerToolName+`'
+		    AND json_extract(CASE WHEN json_valid(meta) THEN meta ELSE '{}' END, '$.sourceDeleted') IS NOT 1
+		 RETURNING thread_id, `+forkReadersOfRowSQL,
 		threadID, title,
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("store: mark fork dividers of %s: %w", threadID, err)
 	}
-	for _, id := range affected {
+	var readers []string
+	for marked.Next() {
+		var holder, shown string
+		if err := marked.Scan(&holder, &shown); err != nil {
+			return errors.Join(fmt.Errorf("store: scan a marked fork divider of %s: %w", threadID, err), marked.Close())
+		}
+		recordForkMovesTx(tx, holder)
+		readers = append(readers, shown)
+	}
+	if err := errors.Join(marked.Err(), marked.Close()); err != nil {
+		return fmt.Errorf("store: mark fork dividers of %s: %w", threadID, err)
+	}
+	for _, shown := range readers {
+		if err := recordForkReadersTx(tx, shown); err != nil {
+			return err
+		}
+	}
+	recordForkMovesTx(tx, detached...)
+	for _, id := range detached {
 		w := s.bulkItemWrites(tx, id, false)
 		if err := forkViewChangedTx(tx, w, id, copies[id]); err != nil {
 			return err

@@ -227,6 +227,8 @@ test('a fork shows its source’s images until the source is deleted, then runs 
   const expanded = page.getByRole('dialog', { name: FILENAME }).getByRole('img', { name: FILENAME });
   await expect.poll(() => expanded.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(PNG_WIDTH);
   await page.keyboard.press('Escape');
+  // The divider names the source and opens it while the source exists.
+  await expect(page.getByTestId('fork-divider-source')).toContainText('Forked from Image fork source');
   expect(await harness.rpc<AttachmentRow[]>('ListAttachments', fork.id)).toHaveLength(0);
   const ticket = await harness.rpc<string>('MintAttachmentDownloadTicket', fork.id, sourceAttachment.id);
   const response = await fetch(new URL(ticket, harness.url));
@@ -236,7 +238,9 @@ test('a fork shows its source’s images until the source is deleted, then runs 
   await page.getByText('Image fork source', { exact: true }).click();
   await harness.rpc('DeleteThread', threadId);
   await page.getByText(fork.title, { exact: true }).click();
-  await expect(page.getByText('Forked from Image fork source', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('fork-divider')).toContainText('Forked from Image fork source');
+  await expect(page.getByTestId('fork-divider-deleted')).toBeVisible();
+  await expect(page.getByTestId('fork-divider-source')).toHaveCount(0);
   await expect(page.getByText(/Keep this image in the fork\./)).toHaveCount(0);
   const detached = await harness.rpc<Array<{ kind: string; summary: string; meta: string }>>('ListItems', fork.id, true);
   expect(detached.map((item) => [item.kind, item.summary])).toEqual([['notification', 'Forked from Image fork source']]);

@@ -1012,6 +1012,7 @@ func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 		return fmt.Errorf("store: begin delete thread %s: %w", id, err)
 	}
 	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
 	// What the chunk loop could not name: the thread's title row and the
 	// index rows of its imported history. The mapping table cascades with
 	// the thread, but the contentless FTS rows it names do not, so they
@@ -1030,7 +1031,7 @@ func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 	if err := requireRowsAffected(result, fmt.Sprintf("store: delete thread %s", id)); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := s.commitReportingForks(tx); err != nil {
 		return fmt.Errorf("store: commit delete thread %s: %w", id, err)
 	}
 	return nil
