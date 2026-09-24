@@ -670,7 +670,9 @@ make service-artifact-smoke
 
 This manual gate copies the artifacts, runs preflight and staging, boots a
 baseline against disposable state, commits the candidate's trial, and restarts
-it again. Backend identity and SQLite data must survive. Provider discovery uses
+it again. A boot counts as up once `/bootstrap.json` answers 200; `/healthz`
+answers through the migrations, so it is not a readiness signal. Backend
+identity and SQLite data must survive. Provider discovery uses
 a mock; provider homes are empty, external HTTP is blocked, and no service is
 installed. Inputs and live installations remain untouched. The regular Go gate
 compiles this test but skips the real boots when its variables are absent.
