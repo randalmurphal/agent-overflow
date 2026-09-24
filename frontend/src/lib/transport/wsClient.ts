@@ -529,8 +529,7 @@ let fanoutScratchInUse = false;
 // 'starting' means the backend answered its manifest with a starting
 // report (internal/startupprogress): it is up and booting, not failing.
 // The snapshot's `startup` carries the report, and the client asks again
-// every STARTING_POLL_MS without climbing the reconnect ladder, pausing
-// while the document is hidden.
+// every STARTING_POLL_MS without climbing the reconnect ladder.
 // Two states are TERMINAL: the backend answered, the answer will not
 // change while this page sits there, and the automatic ladder stops
 // rather than burn a device's radio and battery on attempts that cannot
@@ -1100,9 +1099,6 @@ export class WSClient {
     if (this.closed) return;
     if (documentHidden() || this.lease === 'background') {
       this.setAwaitingFrameSinceResume(false);
-      // The starting poll pauses while hidden (see enterStarting); the
-      // queued ask stays for demand and for becoming visible.
-      if (documentHidden() && this.statusSnapshot.status === 'starting') this.disarmQueuedAttempt();
       return;
     }
     if (this.ws !== null && this.ws.readyState === WS_OPEN) {
@@ -2787,10 +2783,6 @@ export class WSClient {
   // in flight. A boot that spends minutes migrating connects within
   // STARTING_POLL_MS of becoming ready. The queued attempt is the ordinary
   // one, so demand fires it early exactly as it would a backoff rung.
-  //
-  // A hidden document queues the ask with its timer disarmed: nobody is
-  // reading the progress, and becoming visible fires it at once through
-  // handleLifecycleResume.
   private enterStarting(progress: StartupProgress): void {
     if (this.closed) return;
     this.reconnectAttempt = 0;
@@ -2803,7 +2795,6 @@ export class WSClient {
     });
     if (this.queuedAttempt !== null || this.connectPromise !== null) return;
     this.queueAttempt(STARTING_POLL_MS, STARTING_POLL_MS, () => {});
-    if (documentHidden()) this.disarmQueuedAttempt();
   }
 
   // getBootstrap caches the manifest fetch so a reconnect doesn't re-hit

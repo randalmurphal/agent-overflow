@@ -172,7 +172,7 @@ export function startupStatusText(startup: Pick<TransportStartup, 'detail' | 'up
 /**
  * The step and elapsed time, as "Step 3 of 7 · 0:12 elapsed", or only the
  * parts the report has. The Windows launcher's loading page writes the
- * same line (cmd/agent-overflow-windows/loading.js).
+ * same line (cmd/agent-overflow-windows/picker.go loadingScript).
  */
 export function startupMetaText(startup: Pick<TransportStartup, 'step' | 'steps' | 'elapsedMs'>): string {
   const parts: string[] = [];
