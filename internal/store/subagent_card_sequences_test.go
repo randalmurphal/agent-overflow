@@ -24,9 +24,9 @@ import (
 // took, naming its carrier, another root's, one another prompt names, the
 // root itself, a row that is no carrier, or a carrier not stored yet;
 // completion siblings; summary changes of preview rows, tray rows
-// and other rows; a thread's own copy of a tool call it reads from its
-// imported history or an ancestor, which leaves its parent's tray line
-// as it was; status changes and interrupts; moves; position changes;
+// and other rows; a thread's own copy of a tool call or an anchor it
+// reads from its imported history or an ancestor, which changes no card
+// it serves; status changes and interrupts; moves; position changes;
 // kind, tool and visibility changes; meta changes that settle a
 // background launch, make or re-root a carrier or change a prompt;
 // streaming appends; deletes of prompts, carriers and anchors; the bulk
@@ -35,19 +35,22 @@ import (
 // thread or of a fork, cut at a turn, before a row or not at all, which
 // settle the rows they copy, and any operation above but a position change
 // written in a fork after its cut, which copies the inherited rows it
-// changes; and any of them rolled back
-// by an injected failure, which must leave the rows and the stamps as
-// they were. A sequence may start from an imported chunk whose anchors
-// its writes make local.
+// changes; the first card on a fork's copy of an anchor whose children it
+// inherits, from a database written before the stamps; and any of them
+// rolled back by an injected failure, which must leave the rows and the
+// stamps as they were. A sequence may start from an imported chunk whose
+// anchors its writes make local.
 //
 // After a random subset of operations a random boundary follows: the
 // refresh timer, a card's flush, an agent's settle, the session's end, a
-// store reopen, or a crash that loses every accumulator before the boot
-// pass. Every boundary must end settled, in the thread and in each fork:
-// each row is served what the read-time aggregator computes, each stamp is
-// what a recompute derives, and nothing waits for a flush. At the end
-// every stamp row must equal what restampSubagentAggregatesTx rebuilds on
-// a copy of the database.
+// store reopen, from a database written before the stamps in some, with
+// a batch of v121's backfill after it in some, or a crash that loses
+// every accumulator before the boot pass. Every boundary must end
+// settled, in the thread and in each fork: each row is served what the
+// read-time aggregator computes, each stamp is what a recompute derives,
+// and nothing waits for a flush. At the end the backfill stamps what is
+// left, and every stamp row must equal what restampSubagentAggregatesTx
+// rebuilds on a copy of the database.
 //
 // The shapes stay within what providers write: no row is its own
 // ancestor through parents and transcript roots together. A failing
@@ -135,6 +138,7 @@ func cardSequenceOps() []cardSequenceOpKind {
 		{"teardown", 1, true, (*cardSequence).opTeardown},
 		{"fork", 1, true, (*cardSequence).opFork},
 		{"fork write", 4, true, (*cardSequence).opForkWrite},
+		{"fork copy child", 1, false, (*cardSequence).opForkCopyChild},
 		{"history", 2, true, (*cardSequence).opHistory},
 		{"fold", 1, true, (*cardSequence).opFold},
 		{"codex retire", 1, true, (*cardSequence).opCodexRetire},
@@ -179,6 +183,11 @@ func (q *cardSequence) run(ops int) {
 	q.log("-- end: the session ends")
 	q.closeAll()
 	q.settled("end")
+	if q.listed() {
+		q.log("-- end: the backfill stamps what is left")
+		q.backfill(0)
+		q.settled("the backfill")
+	}
 	for _, thread := range q.threads() {
 		q.assertRebuild(thread)
 	}
@@ -831,38 +840,40 @@ func (q *cardSequence) opSummary(rows []seqRow) (cardSequenceOp, bool) {
 	}}, true
 }
 
-// opLocalize gives the thread its own copy of a tool call it reads from
-// its imported history or an ancestor, the row unchanged, with its
-// parent's card. The cards flush when the operation is built, so the
-// parent serves its settled tray line, and the copy must not change it:
-// the tray reads every arm.
+// opLocalize gives the thread its own copy of a row it reads from its
+// imported history or an ancestor, the row unchanged: a tool call under
+// its parent's card, or an anchor, whose children stay where they are. A
+// fork's copy of an anchor whose children it inherits is the shape a
+// card opened on it after v121 seeds through the lineage's child probe
+// (seedCardStamp). The cards flush when the operation is built, so each
+// serves its settled values, and the copy must change none of them: the
+// tray, the walk and the recompute read every arm.
 func (q *cardSequence) opLocalize(rows []seqRow) (cardSequenceOp, bool) {
-	target, ok := choose(q.rng, where(rows, func(r seqRow) bool { return !isLocal(r) && hasParent(r) && r.r.toolable() }))
+	target, ok := choose(q.rng, where(rows, func(r seqRow) bool {
+		return !isLocal(r) && (hasParent(r) && r.r.toolable() || r.r.anchorable())
+	}))
 	if !ok {
 		return cardSequenceOp{}, false
 	}
 	q.refresh("")
 	card := q.card(target.ParentID)
 	status := target.Status
-	return cardSequenceOp{fmt.Sprintf("the cards flush, UpdateItemFields copies %s under %s unchanged", target.ID, target.ParentID), func() error {
-		before := q.trayLine(target.ParentID)
+	return cardSequenceOp{fmt.Sprintf("the cards flush, UpdateItemFields copies %s under %q unchanged", target.ID, target.ParentID), func() error {
+		before := q.servedCards()
 		if _, err := q.s.UpdateItemFields(q.thread, target.ID, ItemPartialUpdate{Status: &status, SubagentCard: card}); err != nil {
 			return err
 		}
-		if after := q.trayLine(target.ParentID); after != before {
-			return fmt.Errorf("the copy of %s changed the tray line of %s from %s to %s", target.ID, target.ParentID, before, after)
+		if after := q.servedCards(); after != before {
+			return fmt.Errorf("the copy of %s changed the cards the thread serves from\n%s\nto\n%s", target.ID, before, after)
 		}
 		return nil
 	}}, true
 }
 
-// trayLine is the tray line the thread serves for id: its latest tool's
-// summary and position.
-func (q *cardSequence) trayLine(id string) string {
+// servedCards is every card the thread serves, as text.
+func (q *cardSequence) servedCards() string {
 	q.t.Helper()
-	card := subagentCardsForTest(q.t, q.s, q.s.reader(), q.thread)[id]
-	return fmt.Sprintf("%q at %v.%v", card[metaKeySubagentLatestToolSummary],
-		card[metaKeySubagentLatestToolTurn], card[metaKeySubagentLatestToolItem])
+	return fmt.Sprint(subagentCardsForTest(q.t, q.s, q.s.reader(), q.thread))
 }
 
 func (q *cardSequence) opStatus(rows []seqRow) (cardSequenceOp, bool) {
@@ -1175,6 +1186,54 @@ func (q *cardSequence) opForkWrite([]seqRow) (cardSequenceOp, bool) {
 	}}, true
 }
 
+// opForkCopyChild is the first card on a pointer fork's copy of an anchor
+// whose children the fork inherits, in a database written before v121:
+// the fork copies the anchor unchanged, the store reopens from before the
+// stamps, and a child is written under the copy with its card. The copy
+// carries no stamp until the backfill reaches it, so the card seeds it
+// through the lineage arms of the child probe (seedCardStamp).
+func (q *cardSequence) opForkCopyChild([]seqRow) (cardSequenceOp, bool) {
+	fork, ok := choose(q.rng, q.forks)
+	if !ok {
+		return cardSequenceOp{}, false
+	}
+	var anchor seqRow
+	var child Item
+	q.in(fork, func() {
+		rows := q.rows()
+		anchors := where(rows, func(r seqRow) bool {
+			return r.r.anchorable() && r.r.root == "" &&
+				slices.ContainsFunc(rows, func(c seqRow) bool { return !isLocal(c) && c.ParentID == r.ID })
+		})
+		if anchor, ok = choose(q.rng, anchors); !ok {
+			return
+		}
+		id := q.id("c")
+		child = Item{ID: id, ThreadID: fork, Kind: "tool_call", ToolName: "Bash", Status: "completed", Summary: "Bash: " + id,
+			ParentID: anchor.ID, Role: "assistant", Meta: "{}", CreatedAt: q.now(), UpdatedAt: q.now()}
+		child.TurnIndex, child.ItemIndex = appendAt(rows, q.writeTurn())
+	})
+	if !ok {
+		return cardSequenceOp{}, false
+	}
+	desc := fmt.Sprintf("in %s: UpdateItemFields copies %s unchanged, the store reopens from before v121, InsertItem %s with the copy's card",
+		fork, anchor.ID, describe(child))
+	return cardSequenceOp{desc, func() error {
+		var err error
+		q.in(fork, func() {
+			status := anchor.Status
+			if _, err = q.s.UpdateItemFields(fork, anchor.ID, ItemPartialUpdate{Status: &status, SubagentCard: q.card(anchor.ParentID)}); err != nil {
+				return
+			}
+			q.reopen()
+			q.predateStamps()
+			child.SubagentCard = q.card(anchor.ID)
+			err = q.s.InsertItem(child)
+		})
+		return err
+	}}, true
+}
+
 // inFork reports operations pointed at a fork.
 func (q *cardSequence) inFork() bool { return q.thread != q.main }
 
@@ -1398,18 +1457,19 @@ func (q *cardSequence) boundary() {
 		q.closeAll()
 	case 4:
 		name = "the store reopens"
-		if err := q.s.Close(); err != nil {
-			q.t.Fatalf("close: %v", err)
-		}
-		q.s = nil
-		clear(q.cards)
-		var err error
-		if q.s, err = New(q.path); err != nil {
-			q.t.Fatalf("reopen: %v", err)
+		q.reopen()
+		if q.chance(20) {
+			name += " from before v121"
+			q.predateStamps()
 		}
 		if q.chance(50) {
 			name += " and boots"
 			q.boot(summarise)
+		}
+		if q.chance(50) && q.listed() {
+			limit := 1 + q.rng.Intn(4)
+			name += fmt.Sprintf(", and the backfill stamps a batch of %d", limit)
+			q.backfill(limit)
 		}
 	default:
 		name = "a crash, then the boot pass"
@@ -1426,6 +1486,78 @@ func (q *cardSequence) boundary() {
 	}
 	q.log("-- boundary: " + name)
 	q.settled(name)
+}
+
+// predateStamps puts the database where v121 leaves one written before
+// the stamps: no stamp, and every thread with a local tool call listed
+// in subagent_aggregate_backfill. Reads walk a listed thread's unstamped
+// anchors, and a card opened on one with children recomputes it
+// (seedCardStamp), whose child probe reads a pointer fork's lineage for
+// a copy whose children it inherits. It runs on a reopened store, before
+// any card, as the migration does.
+func (q *cardSequence) predateStamps() {
+	q.t.Helper()
+	for _, statement := range []string{
+		`DELETE FROM subagent_aggregates`,
+		`INSERT OR IGNORE INTO subagent_aggregate_backfill(thread_id)
+		 SELECT id FROM threads
+		  WHERE EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id AND items.kind = 'tool_call')`,
+	} {
+		if _, err := q.s.db.Exec(statement); err != nil {
+			q.t.Fatalf("put the database before v121: %v", err)
+		}
+	}
+}
+
+// listed reports whether v121's backfill lists a thread.
+func (q *cardSequence) listed() bool {
+	q.t.Helper()
+	var listed bool
+	if err := q.s.reader().QueryRow(`SELECT EXISTS (SELECT 1 FROM subagent_aggregate_backfill)`).Scan(&listed); err != nil {
+		q.t.Fatalf("read the backfill list: %v", err)
+	}
+	return listed
+}
+
+// backfill is one batch of v121's deferred phase in each listed thread,
+// of at most limit anchors. With limit 0 it runs the phase to its end.
+func (q *cardSequence) backfill(limit int) {
+	q.t.Helper()
+	batch := limit
+	if batch == 0 {
+		batch = subagentBackfillBatch
+	}
+	for _, thread := range q.threads() {
+		for batches := 0; ; batches++ {
+			if batches == 1000 {
+				q.t.Fatalf("the backfill of %s does not end", thread)
+			}
+			result, err := q.s.RecomputeSubagentAggregates(q.t.Context(), thread, batch)
+			if err != nil {
+				q.t.Fatalf("backfill %s: %v", thread, err)
+			}
+			if limit > 0 || !result.Remaining {
+				break
+			}
+		}
+	}
+	if limit == 0 && q.listed() {
+		q.t.Fatal("the backfill ended with a thread listed")
+	}
+}
+
+// reopen closes the store, which drops every card, and opens it again.
+func (q *cardSequence) reopen() {
+	q.t.Helper()
+	if err := q.s.Close(); err != nil {
+		q.t.Fatalf("close: %v", err)
+	}
+	q.s = nil
+	clear(q.cards)
+	var err error
+	if q.s, err = New(q.path); err != nil {
+		q.t.Fatalf("reopen: %v", err)
+	}
 }
 
 // refresh is each thread's refresh timer but skip's.

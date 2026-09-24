@@ -623,6 +623,25 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 		}
 	}
 
+	// The child probe (seedCardStamp, the adopting insert, the legacy
+	// finder) reads the whole timeline by key: the thread's local and
+	// imported arms, and for a pointer fork each ancestor's, through the
+	// lineage.
+	probe := assertBoundedPlan(t, s, "child probe", boundedPlan{}, `SELECT `+aggHasChildSQL("?1", "?2", ""), thread+"-fork", "L")
+	for _, arm := range []struct{ what, line string }{
+		{"local arm", "SEARCH agg_hc USING INDEX idx_items_parent (thread_id=? AND parent_id=?)"},
+		{"imported arm", "SEARCH agg_hc USING INDEX idx_import_history_items_parent_lookup (parent_id=?)"},
+		{"lineage's local arm", "SEARCH items USING INDEX idx_items_parent (thread_id=? AND parent_id=?)"},
+		{"lineage's imported arm", "SEARCH items USING INDEX idx_import_history_items_parent_lookup (parent_id=?)"},
+	} {
+		if n := strings.Count(probe, arm.line); n != 1 {
+			t.Errorf("the child probe reads its %s %d times, want once:\n%s", arm.what, n, probe)
+		}
+	}
+	if n := strings.Count(probe, "SEARCH l USING PRIMARY KEY (thread_id=?)"); n != 2 {
+		t.Errorf("the child probe reads the lineage %d times, want once for each ancestor arm:\n%s", n, probe)
+	}
+
 	// The boot pass reads the running agents through the three partial
 	// indexes, whatever the history holds: each arm scans one, which holds
 	// only the running tool calls, and nothing else.
