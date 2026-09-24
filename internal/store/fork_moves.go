@@ -19,10 +19,10 @@ import (
 // (detachForkDescendantsTx). Each of those paths already holds the forks
 // from the reads it makes, or reads them in the statement that moves them,
 // and records them against the write transaction. The transaction's owner
-// reports them once it commits (commitReportingForks,
-// writeItemsReportingForks) to the function set with OnForkStampsMoved, so
-// a client showing one of those forks re-syncs its window. A write that
-// moves no fork records nothing, and a thread no fork reads runs no
+// reports them once it commits (commitReportingForks, which the item
+// writes' cardTxLocked calls) to the function set with OnForkStampsMoved,
+// so a client showing one of those forks re-syncs its window. A write
+// that moves no fork records nothing, and a thread no fork reads runs no
 // statement for it.
 
 // forkMoveLog holds the forks each open write transaction moved. The paths
@@ -105,25 +105,6 @@ func (s *Store) commitReportingForks(tx *sql.Tx) error {
 	}
 	s.reportForkMoves(takeForkMovesTx(tx))
 	return nil
-}
-
-// writeItemsReportingForks is writeItems for an item write, which can hand
-// rows off to forks: it reports the forks the transaction moved once it
-// has committed, which writeItems does exactly when it returns nil.
-func (s *Store) writeItemsReportingForks(threadID string, card *SubagentCard, label string, fn func(tx *sql.Tx, w *cardWrite) error) error {
-	var written *sql.Tx
-	err := s.writeItems(threadID, card, label, func(tx *sql.Tx, w *cardWrite) error {
-		written = tx
-		return fn(tx, w)
-	})
-	if written == nil {
-		return err
-	}
-	moved := takeForkMovesTx(written)
-	if err == nil {
-		s.reportForkMoves(moved)
-	}
-	return err
 }
 
 // forkReadersOfRowSQL is a JSON array of the forks

@@ -83,7 +83,7 @@ func insertPayloadTx(exec sqlExecutor, threadID string, payload Payload, label s
 // not implicitly here.
 func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
 	applyItemDefaults(&item)
-	return s.writeItemsReportingForks(item.ThreadID, item.SubagentCard, "insert item+payload", func(tx *sql.Tx, w *cardWrite) error {
+	return s.writeItems(item.ThreadID, item.SubagentCard, "insert item+payload", func(tx *sql.Tx, w *cardWrite) error {
 		if err := insertPayloadTx(tx, item.ThreadID, payload, "store: insert payload"); err != nil {
 			return err
 		}
@@ -99,7 +99,7 @@ func (s *Store) InsertItemWithPayload(item Item, payload Payload) error {
 // when you don't need to force a specific index.
 func (s *Store) AppendItemWithPayload(item Item, payload Payload) (int, error) {
 	applyItemDefaults(&item)
-	err := s.writeItemsReportingForks(item.ThreadID, item.SubagentCard, "append item+payload", func(tx *sql.Tx, w *cardWrite) error {
+	err := s.writeItems(item.ThreadID, item.SubagentCard, "append item+payload", func(tx *sql.Tx, w *cardWrite) error {
 		next, err := nextItemIndexTx(tx, item.ThreadID, item.TurnIndex, "store: append item+payload next index")
 		if err != nil {
 			return err

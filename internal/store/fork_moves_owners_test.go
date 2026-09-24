@@ -15,15 +15,7 @@ import (
 // forkMoveReporters commit a transaction and report the fork moves it
 // recorded (fork_moves.go).
 var forkMoveReporters = map[string]bool{
-	"Store.commitReportingForks":     true,
-	"Store.writeItemsReportingForks": true,
-}
-
-// forkMoveReportingWrappers names, for a transaction helper that commits
-// without reporting, the one reporter allowed to hand it a callback that
-// records fork moves.
-var forkMoveReportingWrappers = map[string]string{
-	"Store.writeItems": "Store.writeItemsReportingForks",
+	"Store.commitReportingForks": true,
 }
 
 // TestForkMoveOwnersReport: every transaction that can record a fork move
@@ -75,7 +67,7 @@ func TestForkMoveOwnersReport(t *testing.T) {
 	unreported := g.unreportingCallbackRunners()
 	for _, fn := range g.funcs {
 		for _, call := range fn.callbackCalls {
-			if !unreported[call.callee] || !reaches(call.argRefs) || forkMoveReportingWrappers[call.callee] == fn.name {
+			if !unreported[call.callee] || !reaches(call.argRefs) {
 				continue
 			}
 			violations = append(violations, fn.name+" hands "+call.callee+" a callback that records fork moves; "+call.callee+" commits it without reporting them")

@@ -10,7 +10,7 @@ import (
 func (s *Store) UpdateItemIfRevision(item Item) (Item, bool, error) {
 	var persisted Item
 	var updated bool
-	err := s.writeItemsReportingForks(item.ThreadID, item.SubagentCard, "conditional item update", func(tx *sql.Tx, w *cardWrite) error {
+	err := s.writeItems(item.ThreadID, item.SubagentCard, "conditional item update", func(tx *sql.Tx, w *cardWrite) error {
 		old, err := readMutableSubagentRowTx(tx, item.ThreadID, item.ID, "store: conditional item update")
 		if err != nil {
 			return err

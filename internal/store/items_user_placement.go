@@ -182,7 +182,7 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 // resolving the separate consumption boundary in the metadata transaction.
 func (s *Store) UpdateItemMetaAtBoundary(threadID, itemID, boundaryID string, transform func(string, int) (string, error), updatedAt int64) (Item, error) {
 	var item Item
-	err := s.writeItemsReportingForks(threadID, nil, "confirm user metadata", func(tx *sql.Tx, w *cardWrite) error {
+	err := s.writeItems(threadID, nil, "confirm user metadata", func(tx *sql.Tx, w *cardWrite) error {
 		old, err := readMutableSubagentRowTx(tx, threadID, itemID, "store: confirm user metadata")
 		if err != nil {
 			return err
