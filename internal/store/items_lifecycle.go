@@ -212,6 +212,8 @@ func (s *Store) MarkLiveBackgroundToolCallsInactive(threadID string, updatedAt i
 	if err != nil {
 		return 0, fmt.Errorf("store: mark live background tool calls inactive for thread %s: %w", threadID, err)
 	}
+	// The launches stopped running: a card they kept live resolves again.
+	s.cards.relive(threadID, nil)
 	count, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("store: count inactive background tool calls for thread %s: %w", threadID, err)

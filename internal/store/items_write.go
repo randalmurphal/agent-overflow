@@ -1059,8 +1059,9 @@ func (s *Store) UpdateItemFields(threadID, id string, update ItemPartialUpdate) 
 	query := "UPDATE items SET " + strings.Join(setClauses, ", ") + " WHERE thread_id = ? AND id = ?"
 	var item Item
 	err := s.writeItems(threadID, update.SubagentCard, "update item fields "+threadID+"/"+id, func(tx *sql.Tx, w *cardWrite) error {
-		// Only a summary or a meta can change what the cards read.
-		if update.Summary != nil || update.Meta != nil {
+		// A summary or a meta can change what the cards read, and a
+		// status whether an agent runs.
+		if update.Status != nil || update.Summary != nil || update.Meta != nil {
 			old, err := readMutableSubagentRowTx(tx, threadID, id, "store: update item fields")
 			if err != nil {
 				return err

@@ -106,7 +106,11 @@ an atomic persistence decision; they must not become a business-logic layer.
 - Subagent cards live in `subagent_aggregates`, one row per anchor keyed
   `(thread_id, item_id)`; a local item read merges a clean row's public keys
   into the served meta, and stored meta never holds them: a writer that
-  writes a row back reads it with `GetThreadItemForWrite`. A visible row
+  writes a row back reads it with `GetThreadItemForWrite`. A read walks the
+  anchors no clean row keeps (`decorateSubagentAnchors`). A carrier stored
+  after the imported resume prompt that names it is never stamped
+  (`subagentPromptNamesSQL` reads local prompts) and is served by the walk.
+  A visible row
   with a parent is written with its parent's card (`OpenSubagentCard`,
   `Item.SubagentCard`, `ItemPartialUpdate.SubagentCard`), and a counted
   preview-kind row changes its summary only with it; outside a bulk writer
@@ -123,7 +127,11 @@ an atomic persistence decision; they must not become a business-logic layer.
   transaction (the item write's trigger, or the writer's own bump), so the
   anchor and its completion siblings are served at a new revision. After a
   crash, `RecoverSubagentCards` recomputes the anchors of the agents that
-  were running.
+  were running. A write with a card no running agent covers
+  (`subagentCardLiveSQL`) flushes the thread's cards in its own
+  transaction, and a write that can start or stop an agent makes the cards
+  it concerns read their liveness again (`subagentCards.relive`), so no row
+  the boot pass would not recover waits for a flush.
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by

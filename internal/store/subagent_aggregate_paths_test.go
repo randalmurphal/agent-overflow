@@ -582,6 +582,9 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 		{"restamp", restampSubagentStampSQL, "USING PRIMARY KEY (thread_id=? AND item_id=?)", []any{1, thread, "L"}, boundedPlan{}},
 		{"prompts naming a carrier", subagentPromptNamesSQL, "idx_items_subagent_resume_prompt (thread_id=? AND parent_id=?)",
 			[]any{thread, "R", "L"}, boundedPlan{}},
+		// A card's liveness: its anchor, and the agents resuming it.
+		{"card liveness of the anchor", subagentCardLiveSQL, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", []any{thread, "L"}, boundedPlan{}},
+		{"card liveness through a carrier", subagentCardLiveSQL, "idx_items_transcript_root (thread_id=? AND <expr>=?)", []any{thread, "L"}, boundedPlan{}},
 	} {
 		text := assertBoundedPlan(t, s, tc.name, tc.allowed, tc.query, tc.args...)
 		if !strings.Contains(text, tc.index) {

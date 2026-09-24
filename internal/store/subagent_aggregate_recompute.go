@@ -788,6 +788,15 @@ ON CONFLICT (thread_id, item_id) DO UPDATE SET state = ` + aggDirtyLiteral + `, 
 	strings.Join(subagentAggregateValueColumns, " = NULL, ") + ` = NULL
  WHERE subagent_aggregates.state = ` + aggCleanLiteral
 
+// liveSubagentAgentSQL is one row of liveSubagentAgentsSQL: a running
+// tool call other than a Codex spawn, in the foreground or a live
+// background launch. `a` is the row reference with its trailing dot.
+// TestSubagentCardLivenessIsTheBootPass pins the two to one set.
+func liveSubagentAgentSQL(a string) string {
+	return a + "kind = 'tool_call' AND " + a + "status = 'running' AND " + a + "tool_name <> 'collab_agent'" +
+		" AND (" + a + "is_background = 0 OR COALESCE(json_extract(" + a + "meta, '$.live_background_active'), 1) != 0)"
+}
+
 // liveSubagentAgentsSQL lists the agents that were running when the
 // previous process stopped: running tool calls in the foreground, at the
 // top level and nested, and live background launches, each set read

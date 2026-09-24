@@ -487,12 +487,16 @@ type cardBoundaryForTest struct {
 // plain launch, a nested launch, a §E6 root with two carrier rounds and a
 // wake prompt, a detached launch with its completion sibling, plan_update
 // notifications, and an imported chunk with a local child under an
-// imported launch. A write the card rules follow must change no stamp
-// before its flush, and the flush must keep the stamps it names at their
-// generation, which only a recompute moves, so a rule that stopped
-// working cannot hide behind the recompute. A bulk write after unflushed
-// live writes, and a crash that loses them before the boot pass, must
-// end on the recompute too.
+// imported launch. A write the card rules follow under a running agent
+// must change no stamp before its flush, and the flush must keep the
+// stamps it names at their generation, which only a recompute moves, so a
+// rule that stopped working cannot hide behind the recompute. A write
+// under a chain no running agent covers (a completed launch, an old
+// round's carrier, an imported launch) must reach the stamps in its own
+// transaction. A bulk write after unflushed live writes, and a crash that
+// loses them before the boot pass, must end on the recompute too, and a
+// row written under a completed agent must survive the crash with no
+// boot pass.
 func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	const thread = "t-parity"
 	path := newTestStorePath(t)
@@ -582,7 +586,11 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	// card changed must be served at a new revision, or a client holding
 	// it could prove a stale card fresh: the stamp's own row and every
 	// completion sibling borrowing it.
-	step := func(stage string, keep []string, write func() string) {
+	//
+	// A write under a chain no running agent covers (flushed) reaches the
+	// stamps in its own transaction: they are the recompute before any
+	// flush.
+	runStep := func(stage string, keep []string, flushed bool, write func() string) {
 		t.Helper()
 		boundary := boundaries[steps%len(boundaries)]
 		steps++
@@ -592,7 +600,10 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 		cardsBefore := subagentCardsForTest(t, s, s.reader(), thread)
 		revsBefore := servedRevsForTest(t, s, thread)
 		parent := write()
-		if keep != nil {
+		switch {
+		case flushed:
+			settled(stage + ", before any flush")
+		case keep != nil:
 			if got := subagentStampRowsForTest(t, s, thread); !reflect.DeepEqual(got, stampsBefore) {
 				t.Errorf("%s: the write changed stamp rows before any flush", stage)
 			}
@@ -613,6 +624,14 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 				t.Errorf("%s: %s's card changed %v -> %v at the same revision %d", stage, id, was, card, revsAfter[id])
 			}
 		}
+	}
+	step := func(stage string, keep []string, write func() string) {
+		t.Helper()
+		runStep(stage, keep, false, write)
+	}
+	flushedStep := func(stage string, keep []string, write func() string) {
+		t.Helper()
+		runStep(stage, keep, true, write)
 	}
 	add := func(r stampFixtureRow) func() string {
 		return func() string {
@@ -694,7 +713,7 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 
 	// A nested launch counts toward its parent's card; a grandchild's
 	// card carries every level up its chain.
-	step("nested launch", []string{"L"}, add(stampFixtureRow{id: "N", kind: "tool_call", tool: "Agent", summary: "Agent: nested", parent: "L", status: "running", turn: 1, index: 5}))
+	flushedStep("nested launch", []string{"L"}, add(stampFixtureRow{id: "N", kind: "tool_call", tool: "Agent", summary: "Agent: nested", parent: "L", status: "running", turn: 1, index: 5}))
 	step("nested first child", []string{"L", "N"}, add(stampFixtureRow{id: "N-a1", kind: "assistant_text", summary: "nested work", parent: "N", turn: 1, index: 6}))
 	step("nested tool", []string{"L", "N"}, add(stampFixtureRow{id: "N-b1", kind: "tool_call", tool: "Read", summary: "Read: file", parent: "N", status: "streaming", turn: 1, index: 7}))
 	step("nested tool summary", []string{"L", "N"}, summary("N-b1", "Read: file.go"))
@@ -712,7 +731,7 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	})
 
 	// A §E6 root resumed twice, then woken without a carrier.
-	step("root", nil, add(stampFixtureRow{id: "R", kind: "tool_call", tool: "Agent", summary: "Agent: root", turn: 2}))
+	step("root", nil, add(stampFixtureRow{id: "R", kind: "tool_call", tool: "Agent", summary: "Agent: root", status: "running", turn: 2}))
 	step("root first child", []string{"R"}, add(stampFixtureRow{id: "R-a1", kind: "assistant_text", summary: "round one", parent: "R", turn: 2, index: 1}))
 	step("carrier one", []string{"R"}, add(stampFixtureRow{id: "C1", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", meta: carrierMeta("R"), turn: 3}))
 	step("prompt one", []string{"R", "C1"}, add(stampFixtureRow{id: "P1", kind: "user_text", summary: "again", parent: "R", meta: resumePromptMeta("C1"), turn: 3, index: 1}))
@@ -726,9 +745,9 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	step("wake prompt", []string{"R", "C1", "C2"}, add(stampFixtureRow{id: "W", kind: "user_text", summary: "wake", parent: "R", meta: resumePromptMeta(""), turn: 5}))
 	step("woken child", []string{"R", "C1", "C2"}, add(stampFixtureRow{id: "R-a4", kind: "assistant_text", summary: "woken", parent: "R", turn: 5, index: 1}))
 	// Rows under a carrier itself count toward no card, only its tray.
-	step("text under a carrier", []string{"R", "C1", "C2"}, add(stampFixtureRow{id: "C1-a", kind: "assistant_text", summary: "under the carrier", parent: "C1", turn: 5, index: 2}))
-	step("tool under a carrier", []string{"R", "C1", "C2"}, add(stampFixtureRow{id: "C1-b", kind: "tool_call", tool: "Bash", summary: "Bash: under", parent: "C1", turn: 5, index: 3}))
-	step("tool under a carrier changes", []string{"R", "C1", "C2"}, summary("C1-b", "Bash: under the carrier"))
+	flushedStep("text under a carrier", []string{"R", "C1", "C2"}, add(stampFixtureRow{id: "C1-a", kind: "assistant_text", summary: "under the carrier", parent: "C1", turn: 5, index: 2}))
+	flushedStep("tool under a carrier", []string{"R", "C1", "C2"}, add(stampFixtureRow{id: "C1-b", kind: "tool_call", tool: "Bash", summary: "Bash: under", parent: "C1", turn: 5, index: 3}))
+	flushedStep("tool under a carrier changes", []string{"R", "C1", "C2"}, summary("C1-b", "Bash: under the carrier"))
 
 	// A detached launch and its completion sibling, which carries the
 	// launch's card.
@@ -742,30 +761,30 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 		}
 		return "B"
 	})
-	step("late detached child", []string{"B"}, add(stampFixtureRow{id: "B-a2", kind: "error", summary: "late", parent: "B", turn: 7, index: 5}))
-	step("detached blank tool", []string{"B"}, add(stampFixtureRow{id: "B-b2", kind: "tool_call", tool: "Bash", parent: "B", turn: 7, index: 6}))
+	flushedStep("late detached child", []string{"B"}, add(stampFixtureRow{id: "B-a2", kind: "error", summary: "late", parent: "B", turn: 7, index: 5}))
+	flushedStep("detached blank tool", []string{"B"}, add(stampFixtureRow{id: "B-b2", kind: "tool_call", tool: "Bash", parent: "B", turn: 7, index: 6}))
 	// B-a2 is B's pick and not its tray: its going blank is the preview
 	// rule's alone.
-	step("error pick goes blank", nil, summary("B-a2", "  "))
-	step("error pick gains text again", []string{"B"}, summary("B-a2", "late again"))
+	flushedStep("error pick goes blank", nil, summary("B-a2", "  "))
+	flushedStep("error pick gains text again", []string{"B"}, summary("B-a2", "late again"))
 	// B-b1 is B's tray and not its pick.
-	step("tray goes blank", nil, summary("B-b1", " "))
-	step("tray gains text again", []string{"B"}, summary("B-b1", "Bash: sleep 1"))
+	flushedStep("tray goes blank", nil, summary("B-b1", " "))
+	flushedStep("tray gains text again", []string{"B"}, summary("B-b1", "Bash: sleep 1"))
 
 	// A local child under the imported launch shadows the launch into
 	// the overlay, where it is stamped like a local one.
-	step("child under imported launch", nil, add(stampFixtureRow{id: "imp-local", kind: "tool_call", tool: "Bash", summary: "Bash: local", parent: "imp-launch", turn: 8}))
+	flushedStep("child under imported launch", nil, add(stampFixtureRow{id: "imp-local", kind: "tool_call", tool: "Bash", summary: "Bash: local", parent: "imp-launch", turn: 8}))
 	if gen, mode := subagentStampStateForTest(t, s, thread, "imp-launch"); mode != subagentStampClean {
 		t.Fatalf("shadowed imported launch is mode %d gen %d, want clean", mode, gen)
 	}
-	step("second child under shadowed launch", []string{"imp-launch"}, add(stampFixtureRow{id: "imp-local-2", kind: "assistant_text", summary: "local text", parent: "imp-launch", turn: 8, index: 1}))
+	flushedStep("second child under shadowed launch", []string{"imp-launch"}, add(stampFixtureRow{id: "imp-local-2", kind: "assistant_text", summary: "local text", parent: "imp-launch", turn: 8, index: 1}))
 
 	// Top-level rows no parent chain reaches: a launch inserted after its
 	// children adopts them, and a launch whose meta later names a
 	// transcript root becomes that root's carrier.
 	step("orphan child", nil, add(stampFixtureRow{id: "O-a1", kind: "assistant_text", summary: "early", parent: "O", turn: 9, index: 1}))
 	step("orphan tool", nil, add(stampFixtureRow{id: "O-b1", kind: "tool_call", tool: "Bash", summary: "Bash: early", parent: "O", turn: 9, index: 2}))
-	step("launch adopts its children", nil, add(stampFixtureRow{id: "O", kind: "tool_call", tool: "Agent", summary: "Agent: late", turn: 9}))
+	step("launch adopts its children", nil, add(stampFixtureRow{id: "O", kind: "tool_call", tool: "Agent", summary: "Agent: late", status: "running", turn: 9}))
 	step("orphan's card after its parent arrived", []string{"O"}, add(stampFixtureRow{id: "O-b3", kind: "tool_call", tool: "Bash", summary: "Bash: later", parent: "O", turn: 9, index: 3}))
 	step("second root", nil, add(stampFixtureRow{id: "Q", kind: "tool_call", tool: "Agent", summary: "Agent: second root", turn: 10}))
 	step("launch becomes a carrier", nil, update("O", ItemPartialUpdate{Meta: new(carrierMeta("Q"))}))
@@ -773,14 +792,14 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 
 	// A root resumed before any child arrived: the prompt is its first
 	// child, which opens its transcript and its carrier's round at once.
-	step("childless root", nil, add(stampFixtureRow{id: "S", kind: "tool_call", tool: "Agent", summary: "Agent: quiet", turn: 12}))
+	step("childless root", nil, add(stampFixtureRow{id: "S", kind: "tool_call", tool: "Agent", summary: "Agent: quiet", status: "running", turn: 12}))
 	step("childless root's carrier", nil, add(stampFixtureRow{id: "SC", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", meta: carrierMeta("S"), turn: 13}))
 	step("prompt is the first child", []string{"S", "SC"}, add(stampFixtureRow{id: "SP", kind: "user_text", summary: "go on", parent: "S", meta: resumePromptMeta("SC"), turn: 13, index: 1}))
 	step("childless root's second round", []string{"S", "SC"}, add(stampFixtureRow{id: "S-b2", kind: "tool_call", tool: "Bash", summary: "Bash: go", parent: "S", turn: 13, index: 2}))
 
 	// A prompt stored before a child already written cuts that child's
 	// round: the rounds are recomputed.
-	step("root with late rows", nil, add(stampFixtureRow{id: "U", kind: "tool_call", tool: "Agent", summary: "Agent: late rows", turn: 14}))
+	step("root with late rows", nil, add(stampFixtureRow{id: "U", kind: "tool_call", tool: "Agent", summary: "Agent: late rows", status: "running", turn: 14}))
 	step("late root child", []string{"U"}, add(stampFixtureRow{id: "U-a1", kind: "assistant_text", summary: "first", parent: "U", turn: 14, index: 1}))
 	step("late root newer child", []string{"U"}, add(stampFixtureRow{id: "U-b2", kind: "tool_call", tool: "Bash", summary: "Bash: newer", parent: "U", turn: 14, index: 5}))
 	step("late root carrier", nil, add(stampFixtureRow{id: "UC", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", meta: carrierMeta("U"), turn: 14, index: 6}))
@@ -788,7 +807,7 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	step("child after the out-of-order prompt", []string{"U", "UC"}, add(stampFixtureRow{id: "U-a3", kind: "assistant_text", summary: "after", parent: "U", turn: 14, index: 7}))
 
 	// One carrier named by two prompts: the family is readTime.
-	step("twice-resumed root", nil, add(stampFixtureRow{id: "V", kind: "tool_call", tool: "Agent", summary: "Agent: twice", turn: 15}))
+	step("twice-resumed root", nil, add(stampFixtureRow{id: "V", kind: "tool_call", tool: "Agent", summary: "Agent: twice", status: "running", turn: 15}))
 	step("twice-resumed child", []string{"V"}, add(stampFixtureRow{id: "V-a1", kind: "assistant_text", summary: "v", parent: "V", turn: 15, index: 1}))
 	step("twice-named carrier", nil, add(stampFixtureRow{id: "VC", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", meta: carrierMeta("V"), turn: 16}))
 	step("first prompt naming it", []string{"V", "VC"}, add(stampFixtureRow{id: "VP1", kind: "user_text", summary: "again", parent: "V", meta: resumePromptMeta("VC"), turn: 16, index: 1}))
@@ -798,7 +817,7 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 
 	// A prompt under one root naming another root's carrier: the carrier's
 	// card is that root's round, so this root's rounds are recomputed.
-	step("root naming a foreign carrier", nil, add(stampFixtureRow{id: "X", kind: "tool_call", tool: "Agent", summary: "Agent: x", turn: 18}))
+	step("root naming a foreign carrier", nil, add(stampFixtureRow{id: "X", kind: "tool_call", tool: "Agent", summary: "Agent: x", status: "running", turn: 18}))
 	step("foreign-carrier root child", []string{"X"}, add(stampFixtureRow{id: "X-a1", kind: "assistant_text", summary: "x", parent: "X", turn: 18, index: 1}))
 	step("carrier's own root", nil, add(stampFixtureRow{id: "Y", kind: "tool_call", tool: "Agent", summary: "Agent: y", turn: 18, index: 2}))
 	step("carrier of the other root", nil, add(stampFixtureRow{id: "XC", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", meta: carrierMeta("Y"), turn: 19}))
@@ -810,14 +829,14 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	step("prompt cuts the foreign carrier's round", nil, add(stampFixtureRow{id: "XP2", kind: "user_text", summary: "resume x again", parent: "X", meta: resumePromptMeta("XC2"), turn: 19, index: 3}))
 
 	// A root woken without a carrier has a transcript and no carrier.
-	step("wake-only root", nil, add(stampFixtureRow{id: "Z", kind: "tool_call", tool: "Agent", summary: "Agent: z", turn: 21}))
+	step("wake-only root", nil, add(stampFixtureRow{id: "Z", kind: "tool_call", tool: "Agent", summary: "Agent: z", status: "running", turn: 21}))
 	step("wake-only root child", []string{"Z"}, add(stampFixtureRow{id: "Z-a1", kind: "assistant_text", summary: "z", parent: "Z", turn: 21, index: 1}))
 	step("wake prompt as the only prompt", []string{"Z"}, add(stampFixtureRow{id: "ZW", kind: "user_text", summary: "wake", parent: "Z", meta: resumePromptMeta(""), turn: 22, index: 1}))
 	step("woken root's child", []string{"Z"}, add(stampFixtureRow{id: "Z-b2", kind: "tool_call", tool: "Bash", summary: "Bash: z", parent: "Z", turn: 22, index: 2}))
 
 	// A prompt stored inside a later round moves that round's later rows
 	// to the round it opens.
-	step("root with two rounds", nil, add(stampFixtureRow{id: "K", kind: "tool_call", tool: "Agent", summary: "Agent: k", turn: 24}))
+	step("root with two rounds", nil, add(stampFixtureRow{id: "K", kind: "tool_call", tool: "Agent", summary: "Agent: k", status: "running", turn: 24}))
 	step("two-round root child", []string{"K"}, add(stampFixtureRow{id: "K-a1", kind: "assistant_text", summary: "k", parent: "K", turn: 24, index: 1}))
 	step("first carrier of the two-round root", nil, add(stampFixtureRow{id: "KC1", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", meta: carrierMeta("K"), turn: 25}))
 	step("first prompt of the two-round root", []string{"K", "KC1"}, add(stampFixtureRow{id: "KP1", kind: "user_text", summary: "k again", parent: "K", meta: resumePromptMeta("KC1"), turn: 25, index: 1}))
@@ -827,7 +846,7 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	step("prompt inside the second round", nil, add(stampFixtureRow{id: "KP2", kind: "user_text", summary: "k split", parent: "K", meta: resumePromptMeta("KC2"), turn: 25, index: 4}))
 
 	// A prompt naming its own root: the family is readTime.
-	step("self-resumed root", nil, add(stampFixtureRow{id: "H", kind: "tool_call", tool: "Agent", summary: "Agent: h", turn: 26}))
+	step("self-resumed root", nil, add(stampFixtureRow{id: "H", kind: "tool_call", tool: "Agent", summary: "Agent: h", status: "running", turn: 26}))
 	step("self-resumed root child", []string{"H"}, add(stampFixtureRow{id: "H-a1", kind: "assistant_text", summary: "h", parent: "H", turn: 26, index: 1}))
 	step("prompt naming its own root", nil, add(stampFixtureRow{id: "HP", kind: "user_text", summary: "h again", parent: "H", meta: resumePromptMeta("H"), turn: 27, index: 1}))
 	step("self-resumed round child", nil, add(stampFixtureRow{id: "H-b2", kind: "tool_call", tool: "Bash", summary: "Bash: h", parent: "H", turn: 27, index: 2}))
@@ -835,7 +854,7 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	// A prompt stored before the carrier it names: the carrier arrives
 	// unstamped and is stamped by the recompute its round's first row
 	// makes.
-	step("root resumed before its carrier", nil, add(stampFixtureRow{id: "E", kind: "tool_call", tool: "Agent", summary: "Agent: e", turn: 28}))
+	step("root resumed before its carrier", nil, add(stampFixtureRow{id: "E", kind: "tool_call", tool: "Agent", summary: "Agent: e", status: "running", turn: 28}))
 	step("early-prompt root child", []string{"E"}, add(stampFixtureRow{id: "E-a1", kind: "assistant_text", summary: "e", parent: "E", turn: 28, index: 1}))
 	step("prompt before its carrier", nil, add(stampFixtureRow{id: "EP", kind: "user_text", summary: "e again", parent: "E", meta: resumePromptMeta("EC"), turn: 29, index: 1}))
 	step("late carrier", nil, add(stampFixtureRow{id: "EC", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", meta: carrierMeta("E"), turn: 29, index: 2}))
@@ -847,7 +866,7 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	// opened under it recomputes it.
 	step("unstamped launch with children", nil, func() string {
 		for _, r := range []stampFixtureRow{
-			{id: "G", kind: "tool_call", tool: "Agent", summary: "Agent: legacy", turn: 23},
+			{id: "G", kind: "tool_call", tool: "Agent", summary: "Agent: legacy", status: "running", turn: 23},
 			{id: "G-a1", kind: "assistant_text", summary: "g", parent: "G", turn: 23, index: 1},
 			{id: "G-b2", kind: "tool_call", tool: "Bash", summary: "Bash: g", parent: "G", turn: 23, index: 2},
 		} {
@@ -870,14 +889,16 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	step("top-level row joins a launch", nil, upsert("T-top", func(row *Item) { row.ParentID = "L" }))
 
 	// A bulk write after live writes no flush has written: the revert cut
-	// takes two of them and recomputes the anchors it leaves, and the
-	// accumulators it retired recompute at the next flush.
+	// takes them and a flushed row under the completed L, recomputes the
+	// anchors it leaves, and the accumulators it retired recompute at the
+	// next flush. The rows under completed agents go first: each write
+	// under one flushes every pending accumulator of the thread.
 	step("bulk cut after live writes", nil, func() string {
 		for _, r := range []stampFixtureRow{
 			{id: "L-t30", kind: "tool_call", tool: "Bash", summary: "Bash: cut", parent: "L", turn: 30},
+			{id: "B-t29", kind: "tool_call", tool: "Bash", summary: "Bash: kept", parent: "B", turn: 29, index: 9},
 			{id: "NN-t30", kind: "tool_call", tool: "Bash", summary: "Bash: cut too", parent: "NN", turn: 30, index: 1},
 			{id: "R-t30", kind: "assistant_text", summary: "cut round row", parent: "R", turn: 30, index: 2},
-			{id: "B-t29", kind: "tool_call", tool: "Bash", summary: "Bash: kept", parent: "B", turn: 29, index: 9},
 		} {
 			add(r)()
 		}
@@ -904,7 +925,8 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	// A crash: live writes under running agents, nested and in a resumed
 	// round, that no flush wrote, lost with the process. The boot pass
 	// recomputes every agent that was running. B completed before the
-	// crash, so it is not one of them.
+	// crash, so it is not one of them: the row written under it after its
+	// completion reached its stamp in its own transaction.
 	step("running agents", nil, func() string {
 		for _, r := range []stampFixtureRow{
 			{id: "M", kind: "tool_call", tool: "Agent", summary: "Agent: running", status: "running", turn: 31},
@@ -921,6 +943,7 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	})
 	session.flush()
 	for _, r := range []stampFixtureRow{
+		{id: "B-b9", kind: "tool_call", tool: "Bash", summary: "Bash: after the completion", parent: "B", turn: 32, index: 9},
 		{id: "M2-b2", kind: "tool_call", tool: "Bash", summary: "Bash: lost", parent: "M2", turn: 31, index: 4},
 		{id: "M-b3", kind: "tool_call", tool: "Read", summary: "Read: lost", parent: "M", turn: 31, index: 5},
 		{id: "R-b6", kind: "tool_call", tool: "Grep", summary: "Grep: lost", parent: "R", turn: 32, index: 3},
@@ -934,6 +957,11 @@ func TestSubagentAggregateStampsMatchTheReadTimeAggregator(t *testing.T) {
 	for _, id := range []string{"M", "M2", "R", "RC3"} {
 		if mapsEqual(served[id], walked[id]) {
 			t.Errorf("crash: %s serves %v, which the lost writes should have left stale", id, served[id])
+		}
+	}
+	for _, id := range []string{"B", "B-done"} {
+		if !mapsEqual(served[id], walked[id]) {
+			t.Errorf("crash: %s serves %v, the walk %v: a row no boot pass recovers was left for a flush", id, served[id], walked[id])
 		}
 	}
 	if _, err := s.RecoverSubagentCards(t.Context()); err != nil {
@@ -1295,4 +1323,298 @@ func TestSubagentCardIsRequired(t *testing.T) {
 	insertWithCardForTest(t, s, stampFixtureRow{id: "L-b5", kind: "tool_call", tool: "Bash", summary: "Bash: five", parent: "L", turn: 1, index: 5}.item(thread))
 	assertSubagentStampParity(t, s, thread, "after the card writes", true)
 	assertStampsAreTheRecompute(t, s, thread, "after the card writes")
+}
+
+// TestSubagentCardLivenessIsTheBootPass pins subagentCardLiveSQL to the
+// boot pass: an anchor is live exactly when RecoverSubagentCards marks it
+// from the running agents (liveSubagentAgentsSQL), as a running agent or
+// the transcript root of one, across the columns that decide whether an
+// agent runs, in a thread beside another with its own agents. A root a
+// carrier names with padding is the one difference, on the side that
+// flushes: the boot pass marks it, the probe does not.
+func TestSubagentCardLivenessIsTheBootPass(t *testing.T) {
+	s := newTestStore(t)
+	const thread = "t-card-live"
+	mustCreateThread(t, s, thread)
+	mustCreateThread(t, s, "t-other")
+	meta := func(fields map[string]any) string {
+		t.Helper()
+		encoded, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(encoded)
+	}
+	rows := map[string][]stampFixtureRow{
+		thread: {{id: "P", kind: "tool_call", tool: "Agent", summary: "Agent: parent", turn: 0}},
+		// Another thread's running carrier names a root of this one.
+		"t-other": {{id: "other", kind: "tool_call", tool: "Agent", summary: "Agent: other", status: "running", meta: carrierMeta("r1"), turn: 0}},
+	}
+	// Each combination is an agent (a<n>) and a carrier (c<n>) resuming a
+	// completed root (r<n>) that runs only through it.
+	n := 0
+	for _, tool := range []string{"Agent", "collab_agent", "Bash"} {
+		for _, status := range []string{"running", "completed", "streaming", "errored"} {
+			for _, background := range []bool{false, true} {
+				for _, active := range []any{nil, true, false} {
+					for _, parent := range []string{"", "P"} {
+						n++
+						fields := map[string]any{}
+						if active != nil {
+							fields["live_background_active"] = active
+						}
+						agent := stampFixtureRow{id: fmt.Sprintf("a%d", n), kind: "tool_call", tool: tool, summary: "Agent: a",
+							parent: parent, status: status, background: background, meta: meta(fields), turn: n}
+						root := stampFixtureRow{id: fmt.Sprintf("r%d", n), kind: "tool_call", tool: "Agent", summary: "Agent: r", turn: n, index: 1}
+						fields["transcript_root_id"] = root.id
+						carrier := agent
+						carrier.id, carrier.parent, carrier.index, carrier.meta = fmt.Sprintf("c%d", n), "", 2, meta(fields)
+						rows[thread] = append(rows[thread], agent, root, carrier)
+					}
+				}
+			}
+		}
+	}
+	// A background launch its completion sibling settles (the v74
+	// triggers), and a running carrier naming its root with padding.
+	n++
+	rows[thread] = append(rows[thread],
+		stampFixtureRow{id: "B", kind: "tool_call", tool: "Agent", summary: "Agent: b", status: "running", background: true, turn: n},
+		stampFixtureRow{id: "B-done", kind: "tool_completion", tool: "Agent", summary: "done", background: true, completionOf: "B", turn: n, index: 1},
+		stampFixtureRow{id: "rp", kind: "tool_call", tool: "Agent", summary: "Agent: padded root", turn: n, index: 2},
+		stampFixtureRow{id: "cp", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", status: "running", meta: carrierMeta(" rp "), turn: n, index: 3},
+	)
+	for _, threadID := range slices.Sorted(maps.Keys(rows)) {
+		tx, err := s.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := s.bulkItemWrites(tx, threadID, true)
+		for _, r := range rows[threadID] {
+			item := r.item(threadID)
+			applyItemDefaults(&item)
+			if err := insertItemTx(tx, w, item, "test liveness"); err != nil {
+				t.Fatalf("insert %s/%s: %v", threadID, r.id, err)
+			}
+		}
+		if err := w.finish(); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	marked := make(map[string]bool)
+	query, err := s.reader().Query(liveSubagentAgentsSQL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for query.Next() {
+		var threadID, id, root string
+		if err := query.Scan(&threadID, &id, &root); err != nil {
+			t.Fatal(err)
+		}
+		if threadID != thread {
+			continue
+		}
+		marked[id] = true
+		if root != "" && root != id {
+			marked[root] = true
+		}
+	}
+	if err := errors.Join(query.Err(), query.Close()); err != nil {
+		t.Fatal(err)
+	}
+	var live, idle, throughCarrier int
+	for _, r := range rows[thread] {
+		var got bool
+		if err := s.reader().QueryRow(subagentCardLiveSQL, thread, r.id).Scan(&got); err != nil {
+			t.Fatalf("probe %s: %v", r.id, err)
+		}
+		if r.id == "rp" {
+			if got || !marked[r.id] {
+				t.Errorf("the padded root probes live=%v, the boot pass marks it %v; want false and true", got, marked[r.id])
+			}
+			continue
+		}
+		if got != marked[r.id] {
+			t.Errorf("%s (%s %s background=%v meta=%s) probes live=%v, the boot pass marks it %v",
+				r.id, r.tool, r.status, r.background, r.meta, got, marked[r.id])
+		}
+		switch {
+		case got && strings.HasPrefix(r.id, "r"):
+			throughCarrier++
+		case got:
+			live++
+		default:
+			idle++
+		}
+	}
+	// The grid reaches both answers and the carrier leg; B stopped when
+	// its completion landed.
+	if live == 0 || idle == 0 || throughCarrier == 0 {
+		t.Errorf("live=%d idle=%d through a carrier=%d: the grid does not span the rule", live, idle, throughCarrier)
+	}
+	if marked["B"] {
+		t.Error("the boot pass marks B, whose completion settled it")
+	}
+	if marked["r1"] != marked["c1"] {
+		t.Error("another thread's carrier decided r1")
+	}
+}
+
+// TestSubagentCardResolvesAgainWhenItsAgentStops pins the relive rule: a
+// card kept open across writes reads its liveness again when its agent
+// stops, whichever writer stops it, so a row written under the stopped
+// agent reaches its stamps in its own transaction. A card whose agent
+// still runs keeps accumulating after it.
+func TestSubagentCardResolvesAgainWhenItsAgentStops(t *testing.T) {
+	status := func(id, value string) func(*testing.T, *Store, string) {
+		return func(t *testing.T, s *Store, thread string) {
+			if _, err := s.UpdateItemFields(thread, id, ItemPartialUpdate{Status: &value}); err != nil {
+				t.Fatalf("status of %s: %v", id, err)
+			}
+		}
+	}
+	launch := stampFixtureRow{id: "L", kind: "tool_call", tool: "Agent", summary: "Agent: l", status: "running", turn: 1}
+	background := launch
+	background.background = true
+	for _, tc := range []struct {
+		name string
+		// rows are written in order, each under its parent's session card.
+		rows   []stampFixtureRow
+		parent string
+		stop   func(t *testing.T, s *Store, thread string)
+	}{
+		{"foreground launch completes", []stampFixtureRow{launch}, "L", status("L", "completed")},
+		{"foreground launch interrupted", []stampFixtureRow{launch}, "L", func(t *testing.T, s *Store, thread string) {
+			row, _, err := s.GetThreadItemForWrite(thread, "L")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, changed, err := s.ErrorActiveItemIfRevision(thread, "L", row.Rev, "interrupted", 9_000, nil); err != nil || !changed {
+				t.Fatalf("interrupt L: changed=%v err=%v", changed, err)
+			}
+		}},
+		{"foreground launch force-closed", []stampFixtureRow{launch}, "L", func(t *testing.T, s *Store, thread string) {
+			if _, err := s.ForceCloseRunningToolCallsInTurn(thread, 1, func(string) string { return "closed" }, 9_000); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"background launch gets its completion", []stampFixtureRow{background}, "L", func(t *testing.T, s *Store, thread string) {
+			if _, err := s.AppendCompletionItem(Item{ID: "L", ThreadID: thread},
+				stampFixtureRow{id: "L-done", kind: "tool_completion", tool: "Agent", summary: "done", turn: 3}.item(thread), nil); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"background session torn down", []stampFixtureRow{background}, "L", func(t *testing.T, s *Store, thread string) {
+			if n, err := s.MarkLiveBackgroundToolCallsInactive(thread, 9_000); err != nil || n != 1 {
+				t.Fatalf("mark inactive: %d, %v", n, err)
+			}
+		}},
+		{"carrier of a completed root completes", []stampFixtureRow{
+			{id: "R", kind: "tool_call", tool: "Agent", summary: "Agent: root", turn: 1},
+			{id: "R-a1", kind: "assistant_text", summary: "round one", parent: "R", turn: 1, index: 1},
+			{id: "C", kind: "tool_call", tool: "SendMessage", summary: "Agent: continue", status: "running", meta: carrierMeta("R"), turn: 2},
+			{id: "P", kind: "user_text", summary: "again", parent: "R", meta: resumePromptMeta("C"), turn: 2, index: 1},
+		}, "R", status("C", "completed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			const thread = "t-relive"
+			mustCreateThread(t, s, thread)
+			session := newCardSessionForTest(t, s, thread)
+			write := func(r stampFixtureRow) {
+				t.Helper()
+				item := r.item(thread)
+				item.SubagentCard = session.card(r.parent)
+				if err := s.InsertItem(item); err != nil {
+					t.Fatalf("insert %s: %v", r.id, err)
+				}
+			}
+			// K runs throughout, in a turn no force-close reaches.
+			write(stampFixtureRow{id: "K", kind: "tool_call", tool: "Agent", summary: "Agent: k", status: "running", turn: 5})
+			for _, r := range tc.rows {
+				write(r)
+			}
+			session.flush()
+			stamps := subagentStampRowsForTest(t, s, thread)
+			write(stampFixtureRow{id: "x-1", kind: "tool_call", tool: "Bash", summary: "Bash: one", parent: tc.parent, turn: 4, index: 1})
+			if pending := pendingCardsForTest(s, thread); !slices.Contains(pending, tc.parent) {
+				t.Fatalf("the running agent's write left %v pending, want %s: the card is not live", pending, tc.parent)
+			}
+			if got := subagentStampRowsForTest(t, s, thread); !reflect.DeepEqual(got, stamps) {
+				t.Fatal("the running agent's write changed stamp rows before any flush")
+			}
+
+			tc.stop(t, s, thread)
+			write(stampFixtureRow{id: "x-2", kind: "tool_call", tool: "Bash", summary: "Bash: two", parent: tc.parent, turn: 4, index: 2})
+			if pending := pendingCardsForTest(s, thread); len(pending) > 0 {
+				t.Errorf("the write under the stopped agent left %v pending: the card kept its liveness", pending)
+			}
+			assertSubagentStampParity(t, s, thread, "after the stop", true)
+			assertStampsAreTheRecompute(t, s, thread, "after the stop")
+
+			stamps = subagentStampRowsForTest(t, s, thread)
+			write(stampFixtureRow{id: "K-1", kind: "tool_call", tool: "Bash", summary: "Bash: k", parent: "K", turn: 5, index: 1})
+			if pending := pendingCardsForTest(s, thread); !reflect.DeepEqual(pending, []string{"K"}) {
+				t.Errorf("the running K's write left %v pending, want [K]", pending)
+			}
+			if got := subagentStampRowsForTest(t, s, thread); !reflect.DeepEqual(got, stamps) {
+				t.Error("the running K's write changed stamp rows before any flush")
+			}
+			session.flush()
+			assertSubagentStampParity(t, s, thread, "after the flush", true)
+			assertStampsAreTheRecompute(t, s, thread, "after the flush")
+		})
+	}
+}
+
+// TestSubagentCardInWriteFlushRollsBackWithItsWrite pins the undo of a
+// flush inside an item write: when the flush fails, the write rolls back
+// and the card and its accumulators are what they were before it, so the
+// next write under the card flushes only rows that exist.
+func TestSubagentCardInWriteFlushRollsBackWithItsWrite(t *testing.T) {
+	s := newTestStore(t)
+	const thread = "t-flush-undo"
+	mustCreateThread(t, s, thread)
+	session := newCardSessionForTest(t, s, thread)
+	write := func(r stampFixtureRow) error {
+		t.Helper()
+		item := r.item(thread)
+		item.SubagentCard = session.card(r.parent)
+		return s.InsertItem(item)
+	}
+	for _, r := range []stampFixtureRow{
+		{id: "L", kind: "tool_call", tool: "Agent", summary: "Agent: done", turn: 1},
+		{id: "L-b1", kind: "tool_call", tool: "Bash", summary: "Bash: one", parent: "L", turn: 1, index: 1},
+	} {
+		if err := write(r); err != nil {
+			t.Fatalf("insert %s: %v", r.id, err)
+		}
+	}
+	assertStampsAreTheRecompute(t, s, thread, "the completed agent's first row")
+
+	mustExec(t, s.db, `CREATE TRIGGER fail_flush BEFORE UPDATE ON subagent_aggregates BEGIN SELECT RAISE(ABORT, 'injected flush failure'); END`)
+	err := write(stampFixtureRow{id: "L-b2", kind: "tool_call", tool: "Bash", summary: "Bash: lost", parent: "L", turn: 1, index: 2})
+	if err == nil || !strings.Contains(err.Error(), "injected flush failure") {
+		t.Fatalf("write with a failing flush: %v, want the injected failure", err)
+	}
+	if _, found, err := s.GetThreadItemForWrite(thread, "L-b2"); err != nil || found {
+		t.Fatalf("the failed write stored its row (found=%v err=%v)", found, err)
+	}
+	if pending := pendingCardsForTest(s, thread); len(pending) > 0 {
+		t.Errorf("the failed write left %v pending", pending)
+	}
+	mustExec(t, s.db, `DROP TRIGGER fail_flush`)
+
+	if err := write(stampFixtureRow{id: "L-b3", kind: "tool_call", tool: "Bash", summary: "Bash: three", parent: "L", turn: 1, index: 3}); err != nil {
+		t.Fatalf("insert L-b3: %v", err)
+	}
+	if pending := pendingCardsForTest(s, thread); len(pending) > 0 {
+		t.Errorf("the write after the failure left %v pending", pending)
+	}
+	assertSubagentStampParity(t, s, thread, "after the failed flush", true)
+	assertStampsAreTheRecompute(t, s, thread, "after the failed flush")
 }
