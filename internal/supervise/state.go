@@ -88,6 +88,10 @@ type UpdateRecord struct {
 	// written before this field existed decodes to and is the correct
 	// reading of one: nobody had reported it.
 	Reported bool `json:"reported,omitempty"`
+	// FromSchema is the database's migration version when the update began
+	// its trials, 0 until known. A trial that settles without committing
+	// is remembered for it (FailedTrial).
+	FromSchema int `json:"fromSchema,omitempty"`
 }
 
 // Settled reports whether the record has reached a terminal state.
@@ -211,6 +215,9 @@ func (s State) Validate() error {
 	if record.From != s.ActiveVersion {
 		return fmt.Errorf("supervise: update %q says it started from %q but the active version is %q",
 			record.ID, record.From, s.ActiveVersion)
+	}
+	if record.FromSchema < 0 {
+		return fmt.Errorf("supervise: update %q names schema version %d", record.ID, record.FromSchema)
 	}
 	if record.Attempts < 0 {
 		return fmt.Errorf("supervise: update %q has %d attempts", record.ID, record.Attempts)

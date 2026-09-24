@@ -568,6 +568,10 @@ type launcherApp struct {
 	// launching refuses a picker launch while another launch, including
 	// its update record's recovery, runs.
 	launching atomic.Bool
+	// migrationRetry is the launch the failure page's Retry runs again
+	// (RetryMigration): set when a remembered failed trial stopped that
+	// launch's database upgrade, and taken by the one Retry that runs it.
+	migrationRetry atomic.Pointer[launchTarget]
 	// backendUpdateArgs is what the distro's update record tells the
 	// backend this launch starts (ReconcileDecision.BackendArgs).
 	backendUpdateArgs atomic.Pointer[[]string]
@@ -581,6 +585,12 @@ type launcherApp struct {
 	startupFailure atomic.Pointer[[]byte]
 	// loading is what /loading.json reports while the backend starts.
 	loading loadingStatus
+}
+
+// launchTarget is a launch launchAndShow can run again.
+type launchTarget struct {
+	distro    string
+	transient bool
 }
 
 type launcherExit struct {
@@ -629,10 +639,35 @@ func (a *launcherApp) PickDistro(name string) error {
 	// Picker selections are user intent — persist on success.
 	// launchAndShow owns the WebView URL on every exit path (picker,
 	// connectivity-error, or backend URL), so we don't override it here.
-	if err := a.launchAndShow(name, false); err != nil {
+	if err := a.launchAndShow(name, false, false); err != nil {
 		return err
 	}
 	return nil
+}
+
+// RetryMigration is bound to the failure page a remembered failed database
+// upgrade shows. It runs that launch again, and the upgrade with it, which
+// the failure memory otherwise stops (docs/specs/app-update.md). Only the
+// launch the page was shown for runs, once.
+func (a *launcherApp) RetryMigration() error {
+	a.mu.Lock()
+	already := a.launcher != nil
+	a.mu.Unlock()
+	if already {
+		return errors.New("backend already launched")
+	}
+	if !a.launching.CompareAndSwap(false, true) {
+		return errors.New("a launch is already in progress")
+	}
+	defer a.launching.Store(false)
+	target := a.migrationRetry.Swap(nil)
+	if target == nil {
+		return errors.New("there is no database upgrade to retry")
+	}
+	if w := a.win(); w != nil {
+		w.SetURL("/loading")
+	}
+	return a.launchAndShow(target.distro, target.transient, true)
 }
 
 // validateDistroName ensures `name` matches one of the distros wsl.exe
@@ -659,12 +694,15 @@ func (a *launcherApp) validateDistroName(name string) error {
 // doesn't overwrite the user's saved pick from double-clicking the
 // .exe earlier.
 //
+// retryMigration runs a database upgrade the failure memory would stop:
+// the person pressed Retry on the page it showed (RetryMigration).
+//
 // Outer timeout removed — cold WSL2 boot can exceed any single budget
 // (the WSL VM itself can take 20+ seconds, then 9P startup, then SQLite
 // migrations). Inner phase timeouts (install, bootstrap) bound the
 // user-visible wait per step. If the user wants to abort they close
 // the window; the Wails OnShutdown hook tears the WSL child down.
-func (a *launcherApp) launchAndShow(distro string, transient bool) error {
+func (a *launcherApp) launchAndShow(distro string, transient, retryMigration bool) error {
 	ctx := context.Background()
 
 	// The window is created on the ApplicationStarted handler, which kicks off
@@ -717,7 +755,7 @@ func (a *launcherApp) launchAndShow(distro string, transient bool) error {
 	// Only the refusal itself: one joined to a failed stop leaves a backend
 	// that may still hold the database, and takes the failure page below.
 	if pending, ok := err.(*wsllauncher.MigrationsPendingError); ok {
-		if !a.migrateBeforeLaunch(distro, binPath, pending) {
+		if !a.migrateBeforeLaunch(distro, binPath, pending, transient, retryMigration) {
 			return nil
 		}
 		l, bs, err = a.launchAndProbe(ctx, distro, binPath)
@@ -1494,7 +1532,7 @@ func (a *launcherApp) afterWindow(chosen string, transient bool) {
 		return
 	}
 	defer a.launching.Store(false)
-	if err := a.launchAndShow(chosen, transient); err != nil {
+	if err := a.launchAndShow(chosen, transient, false); err != nil {
 		log.Printf("launch backend: %v", err)
 	}
 }

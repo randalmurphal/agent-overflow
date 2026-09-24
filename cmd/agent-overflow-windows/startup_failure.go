@@ -65,6 +65,48 @@ func startupFailureHTML(err error) []byte {
 // failurePageHTML renders a failure page from fixed copy. action may be
 // empty.
 func failurePageHTML(title, detail, action string) []byte {
+	return renderFailurePage(title, detail, action, "")
+}
+
+// migrationRetryPageHTML is the failure page of a database upgrade the
+// failure memory stopped. Its Retry button calls the launcher's bound
+// RetryMigration the way the picker calls PickDistro: a direct POST to
+// Wails' /wails/runtime endpoint, whose shape (object=0, method=0,
+// args.{call-id,methodName,args}) is Wails v3's CallBinding.
+func migrationRetryPageHTML(title, detail string) []byte {
+	retry := `<p><button id="ao-retry" type="button">Retry the upgrade</button></p>
+<p id="ao-retry-error" hidden></p>
+<script>(function () {
+  "use strict";
+  var method = "` + template.JSEscapeString(boundMethodFQN("RetryMigration")) + `";
+  var button = document.getElementById("ao-retry");
+  var error = document.getElementById("ao-retry-error");
+  button.addEventListener("click", function () {
+    button.disabled = true;
+    error.hidden = true;
+    var callId = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+    fetch("/wails/runtime", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-wails-client-id": "ao-retry-" + callId },
+      body: JSON.stringify({ object: 0, method: 0, args: { "call-id": callId, methodName: method, args: [] } })
+    }).then(function (res) {
+      if (res.ok) return;
+      return res.text().then(function (text) {
+        throw new Error(text || "Retry returned status " + res.status);
+      });
+    }).catch(function (err) {
+      button.disabled = false;
+      error.textContent = "Retry failed: " + (err && err.message ? err.message : err);
+      error.hidden = false;
+    });
+  });
+})();</script>`
+	return renderFailurePage(title, detail, "", retry)
+}
+
+// renderFailurePage renders the page. retry is trusted markup: the Retry
+// control, or empty.
+func renderFailurePage(title, detail, action, retry string) []byte {
 	if action != "" {
 		action = "<p>" + template.HTMLEscapeString(action) + "</p>"
 	}
@@ -75,9 +117,11 @@ html,body{margin:0;min-height:100%%;background:#16161e;color:#c0caf5}
 body{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:32px;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 .card{max-width:640px;font-size:14px;line-height:1.6}h1{font-size:18px;line-height:1.4;color:#f7768e}
 code{background:#1a1b26;color:#7dcfff;padding:1px 6px;border-radius:4px;overflow-wrap:anywhere}
-</style></head><body><main class="card"><h1>%s</h1><p>%s</p>%s
+button{font:inherit;color:#16161e;background:#7aa2f7;border:0;border-radius:6px;padding:6px 14px;cursor:pointer}
+button:disabled{opacity:.6;cursor:default}#ao-retry-error{color:#f7768e}
+</style></head><body><main class="card"><h1>%s</h1><p>%s</p>%s%s
 <p>Startup details: <code>%%APPDATA%%\agent-overflow\launcher.log</code></p></main></body></html>`,
-		template.HTMLEscapeString(title), template.HTMLEscapeString(detail), action))
+		template.HTMLEscapeString(title), template.HTMLEscapeString(detail), action, retry))
 }
 
 // stalledStartupCopy names the phase a starting backend stopped advancing

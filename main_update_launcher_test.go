@@ -281,7 +281,7 @@ func TestLauncherMigrationRunsTheRealCommands(t *testing.T) {
 				Now:  time.Now,
 				Logf: t.Logf,
 			}
-			end := sequence.Migrate(t.Context(), "Ubuntu", stable, "2.0.0")
+			end := sequence.Migrate(t.Context(), wsllauncher.MigrationRequest{Distro: "Ubuntu", Payload: stable, Version: "2.0.0", Schema: 88})
 			if end.Launch != tc.launch || end.Detail != tc.detail {
 				t.Fatalf("Migrate = %+v, want launch=%v %q", end, tc.launch, tc.detail)
 			}
@@ -297,16 +297,46 @@ func TestLauncherMigrationRunsTheRealCommands(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(dir, "runtime", "app-update", "snapshot")); !os.IsNotExist(err) {
 				t.Fatalf("the snapshot survived the settled migration: %v", err)
 			}
-			e.mu.Lock()
-			defer e.mu.Unlock()
+			payloads, calls := e.ran()
 			for _, command := range []string{supervise.UpdateSnapshotCommand, supervise.UpdateTrialRunCommand, supervise.UpdateDiscardCommand} {
-				if got := e.payloads[command]; strings.Join(got, ",") != stable {
+				if got := payloads[command]; strings.Join(got, ",") != stable {
 					t.Errorf("%s ran through %q, want the payload that refused", command, got)
 				}
 			}
-			if len(e.calls) != 0 {
-				t.Errorf("launcher steps = %q; a migration publishes nothing", e.calls)
+			if len(calls) != 0 {
+				t.Errorf("launcher steps = %q; a migration publishes nothing", calls)
+			}
+			failed, remembered, err := supervise.LoadFailedTrial(wsllauncher.FailedTrialPath(recordPath))
+			if err != nil || remembered != !tc.launch {
+				t.Fatalf("failure memory = %+v, found %v, %v; want found %v", failed, remembered, err, !tc.launch)
+			}
+			if tc.launch {
+				return
+			}
+			// The next launch of the same build over the same schema runs
+			// no command; Retry runs the trial again.
+			request := wsllauncher.MigrationRequest{Distro: "Ubuntu", Payload: stable, Version: "2.0.0", Schema: 88}
+			again := sequence.Migrate(t.Context(), request)
+			if payloads, _ = e.ran(); !again.Retry || len(payloads[supervise.UpdateTrialRunCommand]) != 1 || len(payloads[supervise.UpdateSnapshotCommand]) != 1 {
+				t.Fatalf("the next launch = %+v and ran %q; want Retry and no command", again, payloads)
+			}
+			request.Retry = true
+			retried := sequence.Migrate(t.Context(), request)
+			if payloads, _ = e.ran(); retried.Launch || retried.Retry || len(payloads[supervise.UpdateTrialRunCommand]) != 2 {
+				t.Fatalf("Retry = %+v and ran %q; want a second trial, failed like the first", retried, payloads)
 			}
 		})
 	}
+}
+
+// ran is a copy of the payload each update command ran through and of the
+// launcher steps.
+func (e *launcherE2E) ran() (map[string][]string, []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	payloads := make(map[string][]string, len(e.payloads))
+	for command, ran := range e.payloads {
+		payloads[command] = append([]string(nil), ran...)
+	}
+	return payloads, append([]string(nil), e.calls...)
 }

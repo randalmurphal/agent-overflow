@@ -203,6 +203,32 @@ Linux the helper mode runs it (not implemented). A supervised serve host
 keeps its rule: its child only changes through `agent-overflow service
 update`, which runs the trial.
 
+### Failure memory
+
+A migration or update trial that settles rolled back or failed is remembered
+(`supervise.FailedTrial`) by the build it ran and the database's migration
+version when it began, with its reason and its phase: the last progress the
+snapshot or trial command reported before the failure, not its restore
+(`supervise.RecoveryPhase`). The snapshot command reads the version under
+the lock before it copies (`store.ReadSchemaVersion`, the version
+`MigrationsPendingError` reports as `Database`) and reports it; the record
+keeps it (`UpdateRecord.FromSchema`) for later attempts. The memory lives
+beside the durable record, one per record, and a trial that commits removes
+it.
+
+The migration gate reads it before it opens a migration. A memory of the
+same build over the same schema version stops the gate before the snapshot:
+the failure page shows the stored reason and phase with a Retry that runs
+the migration again. A different build or a changed schema version removes
+the memory, and the migration runs. A memory that cannot be read is logged
+and stops nothing; the outcome replaces it. An in-app update is a person's
+request and always runs; its failure replaces the memory and its commit
+removes it. Not remembered: a failure whose schema version is unknown
+(logged), an update interrupted before its first trial, and an update rolled
+back because its new launcher is missing. An update whose trial was
+interrupted at every attempt is remembered by the recovery that rolls it
+back.
+
 ### Interlocks
 
 Existing checks:
@@ -288,7 +314,7 @@ result and is known to start.
 | 2 | L_old | Directive checks and `proceeding` acknowledgement (as now). `StageCopy` copies L_new to `runtime\agent-overflow-update-<id>.exe` and verifies its digest. L_old checks that it can write beside S, then runs `L_new --update-preflight <answer> --update-id <id> --distro <d> --update-stable <path>` (3 min), which installs B_new beside the stable payload, runs its `__service-preflight` through `wsl.exe`, asks it with `__update-space` whether the snapshot its plan will copy fits (`supervise.PlanSnapshot`: the database files plus a margin, less a leftover snapshot the plan reclaims, against the data disk and the host drive), and writes the answer file. A launcher that predates this flow rejects the unknown flag and writes no answer; that target, and the running version again, take the existing swap. A failed or refused answer reports `failed` with its reason; nothing has changed. |
 | 3 | L_old | Writes the record `pending` (From L_old, To L_new) durably, starts `L_new --update-apply <id> --distro <d> --wait-pid <pid> --wait-start <start>` detached, names it in the record as the update's applier by process id and creation time (`wsllauncher.StartApplier`; a launcher it cannot name is killed and the update settles `failed`), and quits through its ordinary shutdown, which stops B_old. |
 | 4 | L_new | Waits for L_old to exit (30 s, as the Wails helper does; otherwise settles `failed` and exits). It waits on a handle to the process with L_old's id whose creation time is `<start>` (`supervise.ProcessRef`), so a reused process id is never waited on. L_new holds no single-instance identity, so a launch of S from L_old's exit to the end of the update claims it, finds L_new named and running in the record, and joins the update (`UpdateSequence.Join`): it names itself in `app-update-<mode>.<distro>.joiner.json`, shows the progress L_new publishes in `app-update-<mode>.<distro>.progress.json` (at most every 500 ms, written to a temporary file and renamed over it; a rename Windows refuses while the joiner reads is written again unless a newer report replaced it), and reconciles once L_new exits. A later launch focuses the joined one. L_new shows the loading page with `updatingTo`; closing the window hides it and the update continues. It hides the window while a joined launch runs, and exits without starting S once the update ends with one running, including while it shows an error page. L_new runs on its own WebView2 profile (`<profile>-update`) without the DevTools port or notifications, which the joined launch owns. It opens at the saved window placement and does not save its own; `window.json` belongs to the ordinary launcher. L_new and every launcher that starts S again pass the distribution with `wsllauncher.DistroArgs`, so a transient `--distro` stays transient and a picked or saved one stays saved. |
-| 5 | L_new, B_new | On the first attempt, `__update-snapshot`, given the free space of the host drive that holds the distribution (`--host-free`): waits up to 30 s for B_old to release `backend.lock` (otherwise the update settles `failed` and S starts), finishes a marked restore, checks free space again, snapshots with progress. |
+| 5 | L_new, B_new | On the first attempt, `__update-snapshot`, given the free space of the host drive that holds the distribution (`--host-free`): waits up to 30 s for B_old to release `backend.lock` (otherwise the update settles `failed` and S starts), finishes a marked restore, reads the database's migration version for the [failure memory](#failure-memory), checks free space again, snapshots with progress. |
 | 6 | L_new | `Retry`, durably. |
 | 7 | L_new, B_new | `__update-trial-run`: takes the lock, requires the snapshot, and before every attempt compares the live database files' sizes and modification times with what the update last left: the snapshot before the first attempt, and after that what the previous attempt recorded when it ended. A mismatch reports `changed`. Runs the trial child with the stall rule and relays its progress. On `prepared` it stops the trial and exits 0. On failure it restores the snapshot marker-first and exits with the reason. If its stdout closes, it stops the trial and exits without restoring, leaving that to recovery. `changed`, or a refusal on the first attempt, settles `failed` without a restore, which would discard another backend's writes; any other end that is not `prepared` or `rolled-back` takes step 8b with a restore. |
 | 8a | L_new | Commit: `Settle(committed)` durably, then `__update-discard`. Invalidate `wsl.json`, rename the staged B_new over the stable path, and record its fingerprint; the trial was a successful boot of those bytes. Copy L_new to `S.new` beside S and replace S with it (`MoveFileEx`, `REPLACE_EXISTING` and `WRITE_THROUGH`). Start S, unless a launch joined the update, and exit. |
@@ -337,6 +363,14 @@ the backend again, which finds nothing pending. Otherwise it shows why on a
 failure page and starts nothing: the backup was restored, or the migration
 did not run, with the recorded reason. A restore that fails leaves the
 record pending for the next launch.
+
+The gate passes the refusal's `Database` version to `Migrate`
+(`wsllauncher.MigrationRequest`), which applies the
+[failure memory](#failure-memory) first. The memory is
+`app-update-<mode>.<distro>.failed-trial.json` beside the record
+(`wsllauncher.FailedTrialPath`). The page's Retry calls the launcher's bound
+`RetryMigration`, which runs the same launch again with
+`MigrationRequest.Retry`.
 
 Isolated profiles (harness, soak, perf) are not gated: their `--soak`
 backend resolves its own data root, which the update commands do not
@@ -494,6 +528,9 @@ Windows:
   backend through its shutdown call, the progress page during `Migrate`,
   the failure page after one that did not commit, and `ReconcileResume` on
   the next launch.
+- The remembered failure's page in WebView2: its Retry button reaching the
+  bound `RetryMigration` through `/wails/runtime`, the loading page during
+  the retried migration, and the window after it.
 
 Linux: `FICLONE` on btrfs and XFS needs root for a loop mount here.
 

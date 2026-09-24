@@ -5,6 +5,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"html/template"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -63,5 +65,56 @@ func TestStartupFailurePageUsesObservedCauseWithoutLeakingErrorContent(t *testin
 				}
 			}
 		})
+	}
+}
+
+// TestMigrationRetryPageCallsRetryMigration: the page a remembered failed
+// upgrade shows escapes its copy and has one Retry button, which calls the
+// bound RetryMigration by the name Wails registers it under. The other
+// failure pages have no button and no script.
+func TestMigrationRetryPageCallsRetryMigration(t *testing.T) {
+	body := string(migrationRetryPageHTML("Title <b>", "Reason: <script>x</script>"))
+	if !strings.Contains(body, "<h1>Title &lt;b&gt;</h1><p>Reason: &lt;script&gt;x&lt;/script&gt;</p>") {
+		t.Fatalf("the copy is not escaped: %s", body)
+	}
+	elem := reflect.TypeOf((*launcherApp)(nil)).Elem()
+	want := `var method = "` + template.JSEscapeString(fmt.Sprintf("%s.%s.RetryMigration", elem.PkgPath(), elem.Name())) + `";`
+	if !strings.Contains(body, want) {
+		t.Fatalf("the page does not call %s: %s", want, body)
+	}
+	if _, ok := reflect.TypeOf(&launcherApp{}).MethodByName("RetryMigration"); !ok {
+		t.Fatal("launcherApp has no bound RetryMigration")
+	}
+	if n := strings.Count(body, `<button id="ao-retry"`); n != 1 {
+		t.Fatalf("the page has %d Retry buttons", n)
+	}
+	if !strings.Contains(body, `"/wails/runtime"`) || !strings.Contains(body, `args: { "call-id": callId, methodName: method, args: [] }`) {
+		t.Fatalf("the Retry call is not Wails' CallBinding shape: %s", body)
+	}
+	for _, page := range [][]byte{failurePageHTML("t", "d", "a"), startupFailureHTML(errLaunchFailed)} {
+		if strings.Contains(string(page), "ao-retry") || strings.Contains(string(page), "<script") {
+			t.Fatalf("a failure page without a remembered upgrade offers Retry: %s", page)
+		}
+	}
+}
+
+// TestRetryMigrationRunsOnlyTheOfferedLaunch: Retry needs the offer the
+// page was shown for and the launch claim, and a refused Retry keeps the
+// offer and releases nothing it did not take.
+func TestRetryMigrationRunsOnlyTheOfferedLaunch(t *testing.T) {
+	a := &launcherApp{}
+	if err := a.RetryMigration(); err == nil || !strings.Contains(err.Error(), "no database upgrade to retry") {
+		t.Fatalf("RetryMigration without an offer = %v", err)
+	}
+	if a.launching.Load() {
+		t.Fatal("a refused Retry kept the launch claim")
+	}
+	a.launching.Store(true)
+	a.migrationRetry.Store(&launchTarget{distro: "Ubuntu"})
+	if err := a.RetryMigration(); err == nil || !strings.Contains(err.Error(), "already in progress") {
+		t.Fatalf("RetryMigration during a launch = %v", err)
+	}
+	if a.migrationRetry.Load() == nil || !a.launching.Load() {
+		t.Fatal("a Retry refused during a launch took the offer or released the claim")
 	}
 }

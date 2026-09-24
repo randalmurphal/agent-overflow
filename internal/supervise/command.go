@@ -94,6 +94,22 @@ type UpdateEvent struct {
 	Progress *startupprogress.Progress `json:"progress,omitempty"`
 	Outcome  UpdateOutcome             `json:"outcome,omitempty"`
 	Reason   string                    `json:"reason,omitempty"`
+	// Schema is the database's migration version, reported by a snapshot
+	// that could read it before it copied (UpdateCommand.SchemaVersion).
+	Schema int `json:"schema,omitempty"`
+}
+
+// The phases a command reports while it undoes or stops work after a
+// failure. They say what the command did next, not where it failed.
+const (
+	phaseRestore   = "update.restore"
+	phaseTrialStop = "update.trial.stop"
+)
+
+// RecoveryPhase reports whether a progress phase is a command's recovery
+// after a failure rather than the step that failed.
+func RecoveryPhase(phase string) bool {
+	return phase == phaseRestore || phase == phaseTrialStop
 }
 
 // WriteUpdateEvent writes one report line.

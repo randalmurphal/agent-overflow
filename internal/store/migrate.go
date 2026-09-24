@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 )
@@ -1866,6 +1867,40 @@ func ensureMigrationTable(db *sql.DB) error {
 		return fmt.Errorf("create migration_versions table: %w", err)
 	}
 	return nil
+}
+
+// ReadSchemaVersion returns the migration version of the existing database
+// at dbPath, 0 when no migration was applied. It is the version
+// MigrationsPendingError reports as Database, read the way that refusal
+// reads it: the one connection writes nothing (query_only), and as the last
+// to close it removes the WAL and shared-memory files the open created, so
+// a database closed cleanly keeps its bytes and its file set. A WAL a
+// stopped backend left is checkpointed into the database on close, as by
+// any open, which keeps its content. The in-app update's snapshot reads it
+// under the data root's lock to name the schema a trial starts from
+// (supervise.FailedTrial).
+func ReadSchemaVersion(dbPath string) (version int, err error) {
+	if _, err := os.Stat(dbPath); err != nil {
+		return 0, fmt.Errorf("store: read the schema version: %w", err)
+	}
+	db, err := sql.Open("sqlite", poolDSN(dbPath, readerConnPragmas))
+	if err != nil {
+		return 0, fmt.Errorf("store: open %s to read its schema version: %w", dbPath, err)
+	}
+	db.SetMaxOpenConns(1)
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("store: close %s after reading its schema version: %w", dbPath, closeErr)
+		}
+	}()
+	var tables int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'migration_versions'`).Scan(&tables); err != nil {
+		return 0, fmt.Errorf("store: probe migration_versions: %w", err)
+	}
+	if tables == 0 {
+		return 0, nil
+	}
+	return currentMigrationVersion(db)
 }
 
 func currentMigrationVersion(db *sql.DB) (int, error) {

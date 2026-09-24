@@ -80,6 +80,10 @@ var ErrNoUpdateRecord = errors.New("wsllauncher: there is no update record")
 // cannot be read or written, or when a commit step fails after the commit
 // became durable; the next launch resumes either. A migration record runs
 // the same steps through the stable payload and has nothing to publish.
+//
+// A trial that commits removes the failure memory; one that settles
+// rolled back or failed is remembered for its target and the schema
+// version its database started from (FailedTrialPath).
 func (s UpdateSequence) Apply(ctx context.Context, id string) (UpdateEnd, error) {
 	record, found, err := supervise.LoadLauncherRecord(s.RecordPath)
 	if err != nil {
@@ -106,6 +110,19 @@ func (s UpdateSequence) Apply(ctx context.Context, id string) (UpdateEnd, error)
 	case supervise.UpdateRolledBack, supervise.UpdateFailed:
 		return UpdateEnd{State: record.Update.State, Reason: record.Update.Reason}, nil
 	}
+	trace := trialTrace{schema: record.Update.FromSchema}
+	end, err := s.runTrials(ctx, record, &trace)
+	if err == nil && (end.State == supervise.UpdateRolledBack || end.State == supervise.UpdateFailed) {
+		s.rememberFailedTrial(record.Update.To, trace, end.Reason)
+	}
+	return end, err
+}
+
+// runTrials is Apply for a pending record: the snapshot on the first
+// attempt, one trial, and the settlement it leads to. trace receives the
+// schema version the snapshot reports and the last progress of the
+// snapshot and trial commands.
+func (s UpdateSequence) runTrials(ctx context.Context, record supervise.LauncherRecord, trace *trialTrace) (UpdateEnd, error) {
 	if record.Update.Attempts >= supervise.TrialAttemptLimit {
 		return s.rollBack(ctx, record, fmt.Sprintf(
 			"the trial was interrupted %d times without finishing", record.Update.Attempts))
@@ -116,7 +133,13 @@ func (s UpdateSequence) Apply(ctx context.Context, id string) (UpdateEnd, error)
 		if free, ok := s.Host.HostFreeBytes(record.Distro); ok {
 			args = append(args, "--host-free", strconv.FormatUint(free, 10))
 		}
-		result, err := s.run(ctx, record, record.TrialPayload(), supervise.UpdateSnapshotCommand, args...)
+		result, err := s.runTraced(ctx, record, trace, supervise.UpdateSnapshotCommand, args...)
+		if result.Schema > 0 {
+			trace.schema = result.Schema
+			update := *record.Update
+			update.FromSchema = result.Schema
+			record.Update = &update
+		}
 		if err != nil {
 			return s.settleFailed(ctx, record, "the database could not be backed up: "+err.Error())
 		}
@@ -136,7 +159,7 @@ func (s UpdateSequence) Apply(ctx context.Context, id string) (UpdateEnd, error)
 		return UpdateEnd{}, err
 	}
 	attempt := record.Update.Attempts
-	result, err := s.run(ctx, record, record.TrialPayload(), supervise.UpdateTrialRunCommand,
+	result, err := s.runTraced(ctx, record, trace, supervise.UpdateTrialRunCommand,
 		"--to", record.Update.To, "--attempt", strconv.Itoa(attempt))
 	if err != nil {
 		// A command stopped for stalling may still report a decided
@@ -158,6 +181,7 @@ func (s UpdateSequence) Apply(ctx context.Context, id string) (UpdateEnd, error)
 		if err := supervise.SaveLauncherRecord(s.RecordPath, record); err != nil {
 			return UpdateEnd{}, err
 		}
+		s.forgetFailedTrial()
 		return s.commit(ctx, record)
 	case supervise.UpdateOutcomeRolledBack:
 		return s.settleRolledBack(ctx, record, result.Reason)
@@ -294,13 +318,17 @@ func (s UpdateSequence) Reconcile(ctx context.Context, fingerprint string) (Reco
 	case update.Attempts < supervise.TrialAttemptLimit && fileExists(record.StagedLauncher):
 		return ReconcileDecision{Action: ReconcileHandOff, Record: record}, nil
 	default:
+		exhausted := update.Attempts >= supervise.TrialAttemptLimit
 		reason := fmt.Sprintf("the trial was interrupted %d times without finishing", update.Attempts)
-		if update.Attempts < supervise.TrialAttemptLimit {
+		if !exhausted {
 			reason = "the update was interrupted and its new launcher is missing"
 		}
 		end, err := s.rollBack(ctx, record, reason)
 		if err != nil {
 			return ReconcileDecision{}, err
+		}
+		if exhausted && end.State == supervise.UpdateRolledBack {
+			s.rememberFailedTrial(update.To, trialTrace{schema: update.FromSchema}, end.Reason)
 		}
 		return s.afterRecovery(end)
 	}
@@ -432,6 +460,19 @@ func (s UpdateSequence) removeStagedPayload(ctx context.Context, record supervis
 func (s UpdateSequence) run(ctx context.Context, record supervise.LauncherRecord, payload, command string, args ...string) (supervise.UpdateEvent, error) {
 	full := append([]string{"--id", record.Update.ID}, args...)
 	return s.Host.RunCommand(ctx, record.Distro, payload, command, full, s.Progress)
+}
+
+// runTraced runs a snapshot or trial command of the record's trial payload,
+// whose failure is remembered: trace keeps the last progress it reports.
+func (s UpdateSequence) runTraced(ctx context.Context, record supervise.LauncherRecord, trace *trialTrace, command string, args ...string) (supervise.UpdateEvent, error) {
+	trace.phase = ""
+	full := append([]string{"--id", record.Update.ID}, args...)
+	return s.Host.RunCommand(ctx, record.Distro, record.TrialPayload(), command, full, func(p startupprogress.Progress) {
+		trace.observe(p)
+		if s.Progress != nil {
+			s.Progress(p)
+		}
+	})
 }
 
 func (s UpdateSequence) step(phase, detail string) {

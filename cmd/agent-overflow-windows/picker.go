@@ -206,6 +206,16 @@ func pickerAssetHandler(distros []wsllauncher.Distro, failurePage func() []byte,
 	})
 }
 
+// boundMethodFQN is the name Wails v3 registers launcherApp's method under:
+// `<pkgPath>.<TypeName>.<MethodName>` (see Bindings.Add in
+// pkg/application/bindings.go). A page that calls the method needs that
+// exact string; it is derived from reflect so a rename of launcherApp
+// does not silently break the page's call.
+func boundMethodFQN(method string) string {
+	t := reflect.TypeOf((*launcherApp)(nil)).Elem()
+	return fmt.Sprintf("%s.%s.%s", t.PkgPath(), t.Name(), method)
+}
+
 // renderPicker injects the distro list into picker.html via a script
 // tag that defines window.__AO_DISTROS__. We deliberately do not use
 // html/template against picker.html — the file is hand-written HTML
@@ -229,15 +239,7 @@ func renderPicker(distros []wsllauncher.Distro) ([]byte, error) {
 		return nil, err
 	}
 
-	// Wails v3 registers bound methods under the FQN
-	// `<pkgPath>.<TypeName>.<MethodName>` (see Bindings.Add in
-	// pkg/application/bindings.go). The picker JS needs that exact
-	// string to reach PickDistro via wails.Call.ByName — derive it from
-	// reflect so a rename of launcherApp doesn't silently break the
-	// picker click handler.
-	t := reflect.TypeOf((*launcherApp)(nil)).Elem()
-	fqn := fmt.Sprintf("%s.%s.PickDistro", t.PkgPath(), t.Name())
-	fqnJSON, err := json.Marshal(fqn)
+	fqnJSON, err := json.Marshal(boundMethodFQN("PickDistro"))
 	if err != nil {
 		return nil, err
 	}

@@ -102,3 +102,88 @@ func TestRefusePendingMigrationsLeavesANewerSchemaToItsOwnRefusal(t *testing.T) 
 		t.Fatalf("open = %v, want a SchemaTooNewError", err)
 	}
 }
+
+// databaseFileSet is each file of the database at path that exists, by
+// digest.
+func databaseFileSet(t *testing.T, path string) map[string][32]byte {
+	t.Helper()
+	files := map[string][32]byte{}
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		if _, err := os.Stat(path + suffix); err == nil {
+			files[suffix] = fileDigest(t, path+suffix)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	return files
+}
+
+// TestReadSchemaVersionReadsWithoutChangingTheDatabase: the version is the
+// one the refusal reports, including committed WAL content a checkpoint has
+// not reached. A database closed cleanly keeps its bytes and its file set,
+// which is what lets the update's restore put back the database as the
+// backend left it. Reading a missing database creates nothing.
+func TestReadSchemaVersionReadsWithoutChangingTheDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-overflow.db")
+	writeHistoryRepairFixture(t, path)
+	before := databaseFileSet(t, path)
+	if got, err := ReadSchemaVersion(path); err != nil || got != 118 {
+		t.Fatalf("ReadSchemaVersion(the v118 fixture) = %d, %v", got, err)
+	}
+	if after := databaseFileSet(t, path); len(after) != len(before) || after[""] != before[""] {
+		t.Fatalf("reading the schema version changed the database's files: %d files before, %d after", len(before), len(after))
+	}
+
+	// A writer that keeps its WAL: the row it commits is only in the WAL.
+	writer, err := sql.Open("sqlite", "file:"+path+"?_pragma=wal_autocheckpoint(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	writer.SetMaxOpenConns(1)
+	if _, err := writer.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Exec(`INSERT INTO migration_versions (version, name) VALUES (119, 'in the WAL')`); err != nil {
+		t.Fatal(err)
+	}
+	// The files as a backend that died leaves them.
+	stopped := filepath.Join(t.TempDir(), "agent-overflow.db")
+	for _, suffix := range []string{"", "-wal"} {
+		data, err := os.ReadFile(path + suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(stopped+suffix, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		if got, err := ReadSchemaVersion(stopped); err != nil || got != 119 {
+			t.Fatalf("ReadSchemaVersion with the row in the WAL = %d, %v; want 119", got, err)
+		}
+	}
+
+	missing := filepath.Join(t.TempDir(), "agent-overflow.db")
+	if _, err := ReadSchemaVersion(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ReadSchemaVersion(a missing database) = %v, want not-exist", err)
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reading a missing database created it: %v", err)
+	}
+
+	empty := filepath.Join(t.TempDir(), "agent-overflow.db")
+	db, err := sql.Open("sqlite", "file:"+empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE unrelated (id INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadSchemaVersion(empty); err != nil || got != 0 {
+		t.Fatalf("ReadSchemaVersion(no migration table) = %d, %v; want 0", got, err)
+	}
+}

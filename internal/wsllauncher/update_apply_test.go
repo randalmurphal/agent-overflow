@@ -31,6 +31,11 @@ type fakeUpdateHost struct {
 	failAt     string
 	// states records the durable record state when each command ran.
 	states map[string]string
+	// schema is the migration version every snapshot reports.
+	schema int
+	// reports are what a command reports before its result, in place of
+	// one report naming the command.
+	reports map[string][]startupprogress.Progress
 }
 
 type fakeAnswer struct {
@@ -69,18 +74,25 @@ func (h *fakeUpdateHost) RunCommand(_ context.Context, distro, payload, command 
 	h.calls = append(h.calls, name+"@"+where+" "+strings.Join(args, " "))
 	h.states[name] = h.durableState()
 	if onProgress != nil {
-		onProgress(startupprogress.Progress{Detail: name})
-	}
-	queue := h.answers[command]
-	if len(queue) == 0 {
-		outcome := supervise.UpdateOutcomeOK
-		if command == supervise.UpdateTrialRunCommand {
-			outcome = supervise.UpdateOutcomePrepared
+		reports, scripted := h.reports[command]
+		if !scripted {
+			reports = []startupprogress.Progress{{Detail: name}}
 		}
-		return supervise.UpdateEvent{Type: supervise.UpdateEventResult, Outcome: outcome}, nil
+		for _, report := range reports {
+			onProgress(report)
+		}
 	}
-	h.answers[command] = queue[1:]
-	return queue[0].event, queue[0].err
+	answer := fakeAnswer{event: supervise.UpdateEvent{Type: supervise.UpdateEventResult, Outcome: supervise.UpdateOutcomeOK}}
+	if command == supervise.UpdateTrialRunCommand {
+		answer.event.Outcome = supervise.UpdateOutcomePrepared
+	}
+	if queue := h.answers[command]; len(queue) > 0 {
+		answer, h.answers[command] = queue[0], queue[1:]
+	}
+	if command == supervise.UpdateSnapshotCommand && answer.event.Schema == 0 {
+		answer.event.Schema = h.schema
+	}
+	return answer.event, answer.err
 }
 
 func (h *fakeUpdateHost) HostFreeBytes(distro string) (uint64, bool) {

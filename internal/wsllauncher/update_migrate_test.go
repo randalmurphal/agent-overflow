@@ -13,6 +13,10 @@ import (
 
 var updateIDArg = regexp.MustCompile(`--id [0-9a-f]{16}`)
 
+// testMigration is a launch of 2.0.0 whose backend refused to migrate a
+// database at schema v118.
+var testMigration = MigrationRequest{Distro: "Ubuntu", Payload: testStable, Version: "2.0.0", Schema: 118}
+
 // migrationCalls is the host's calls with the migration's random id
 // written as <id>.
 func (f *updateFixture) migrationCalls() []string {
@@ -74,7 +78,7 @@ func TestMigrateCommitsThroughTheStablePayload(t *testing.T) {
 	f.host.free, f.host.freeKnown = 5<<30, true
 	var progress []string
 	f.sequence.Progress = func(p startupprogress.Progress) { progress = append(progress, p.Detail) }
-	end := f.sequence.Migrate(t.Context(), "Ubuntu", testStable, "2.0.0")
+	end := f.sequence.Migrate(t.Context(), testMigration)
 	if end != (MigrationEnd{Launch: true}) {
 		t.Fatalf("end = %+v", end)
 	}
@@ -126,7 +130,7 @@ func TestMigrateShowsWhyItDidNotCommit(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newUpdateFixture(t)
 			c.setup(f.host)
-			end := f.sequence.Migrate(t.Context(), "Ubuntu", testStable, "2.0.0")
+			end := f.sequence.Migrate(t.Context(), testMigration)
 			if end.Launch || end.Title != migrationFailedTitle || end.Detail != c.detail {
 				t.Fatalf("end = %+v, want the page %q", end, c.detail)
 			}
@@ -143,7 +147,7 @@ func TestMigrateLeavesAnUnrestoredMigrationForTheNextLaunch(t *testing.T) {
 	f := newUpdateFixture(t)
 	f.host.answer(supervise.UpdateTrialRunCommand, supervise.UpdateOutcomeFailed, "the trial was interrupted")
 	f.host.answer(supervise.UpdateRestoreCommand, supervise.UpdateOutcomeFailed, "restore failed")
-	end := f.sequence.Migrate(t.Context(), "Ubuntu", testStable, "2.0.0")
+	end := f.sequence.Migrate(t.Context(), testMigration)
 	if end.Launch || !strings.Contains(end.Title, "could not be restored") {
 		t.Fatalf("end = %+v", end)
 	}
@@ -180,7 +184,7 @@ func TestMigrateLeavesAnUnrestoredMigrationForTheNextLaunch(t *testing.T) {
 func TestMigrateNeedsNoUpdateInFlight(t *testing.T) {
 	f := newUpdateFixture(t)
 	f.save(supervise.UpdatePending, 1, false)
-	end := f.sequence.Migrate(t.Context(), "Ubuntu", testStable, "2.0.0")
+	end := f.sequence.Migrate(t.Context(), testMigration)
 	if end.Launch || !strings.Contains(end.Title, "could not start the database upgrade") {
 		t.Fatalf("end = %+v", end)
 	}
@@ -191,7 +195,7 @@ func TestMigrateNeedsNoUpdateInFlight(t *testing.T) {
 
 	f = newUpdateFixture(t)
 	f.save(supervise.UpdateCommitted, 1, true)
-	if end := f.sequence.Migrate(t.Context(), "Ubuntu", testStable, "2.0.0"); !end.Launch {
+	if end := f.sequence.Migrate(t.Context(), testMigration); !end.Launch {
 		t.Fatalf("end after a settled update = %+v", end)
 	}
 	f.wantNoRecord()

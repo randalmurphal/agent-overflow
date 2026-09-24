@@ -141,6 +141,57 @@ func TestSnapshotCommandBacksUpUnderTheLock(t *testing.T) {
 	}
 }
 
+// TestSnapshotCommandReportsTheSchemaItBacksUp: the snapshot reads the
+// database's migration version under the lock, before it copies, and
+// reports it whether the copy finished or was refused. A version it cannot
+// read is logged and reported as none.
+func TestSnapshotCommandReportsTheSchemaItBacksUp(t *testing.T) {
+	schemaUnderTheLock := func(r *commandRig, version int, err error) func() (int, error) {
+		return func() (int, error) {
+			if lockable(t, filepath.Join(r.dataDir, "backend.lock")) {
+				t.Error("the schema version was read without the lock")
+			}
+			if present, _ := SnapshotPresent(r.layout); present {
+				t.Error("the schema version was read after the copy")
+			}
+			return version, err
+		}
+	}
+	t.Run("backed up", func(t *testing.T) {
+		r := newCommandRig(t)
+		writeFile(t, r.db, "live")
+		cmd := r.command("u1")
+		cmd.SchemaVersion = schemaUnderTheLock(r, 118, nil)
+		if result := cmd.Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK || result.Schema != 118 {
+			t.Fatalf("result = %+v, want ok with schema 118", result)
+		}
+	})
+	t.Run("refused for space", func(t *testing.T) {
+		r := newCommandRig(t)
+		writeFile(t, r.db, "live")
+		withFreeBytes(t, func(string) (uint64, error) { return 1, nil })
+		cmd := r.command("u1")
+		cmd.SchemaVersion = schemaUnderTheLock(r, 118, nil)
+		if result := cmd.Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeRefused || result.Schema != 118 {
+			t.Fatalf("result = %+v, want refused with schema 118", result)
+		}
+	})
+	t.Run("unreadable", func(t *testing.T) {
+		r := newCommandRig(t)
+		writeFile(t, r.db, "live")
+		var logged []string
+		cmd := r.command("u1")
+		cmd.SchemaVersion = schemaUnderTheLock(r, 0, errors.New("file is not a database"))
+		cmd.Log = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+		if result := cmd.Snapshot(context.Background(), nil); result.Outcome != UpdateOutcomeOK || result.Schema != 0 {
+			t.Fatalf("result = %+v, want ok without a schema", result)
+		}
+		if joined := strings.Join(logged, "\n"); !strings.Contains(joined, "read the database's schema version: file is not a database") {
+			t.Fatalf("log = %q", joined)
+		}
+	})
+}
+
 func TestSnapshotCommandRefusesWithoutChangingAnything(t *testing.T) {
 	t.Run("lock held", func(t *testing.T) {
 		r := newCommandRig(t)
@@ -265,6 +316,13 @@ func TestTrialRunCommandRestoresTheSnapshotWhenTheTrialFails(t *testing.T) {
 	}
 	if !strings.Contains(r.out.details(t), "Restoring the database") {
 		t.Fatal("the restore reported no progress")
+	}
+	// The restore's reports say what the command did after the failure,
+	// so a remembered failure does not name them as where it stopped.
+	for _, event := range r.out.events(t) {
+		if p := event.Progress; p != nil && strings.HasPrefix(p.Detail, "Restoring the database") && !RecoveryPhase(p.Phase) {
+			t.Fatalf("the restore reports phase %q, which RecoveryPhase does not know", p.Phase)
+		}
 	}
 }
 

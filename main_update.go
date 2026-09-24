@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -15,6 +16,7 @@ import (
 	appservice "agent-overflow/internal/app"
 	"agent-overflow/internal/platform"
 	"agent-overflow/internal/startupprogress"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/supervise"
 	"agent-overflow/internal/transport"
 )
@@ -104,12 +106,16 @@ func runUpdateCommand(name string, args []string) int {
 	defer stop()
 
 	out := os.Stdout
+	dataDir := bootSettingsDir()
 	command := supervise.UpdateCommand{
-		DataDir:     bootSettingsDir(),
+		DataDir:     dataDir,
 		UpdateID:    flags.id,
 		Out:         out,
 		AcquireLock: acquireUpdateLock,
-		Log:         log.Printf,
+		SchemaVersion: func() (int, error) {
+			return store.ReadSchemaVersion(filepath.Join(dataDir, supervise.DatabaseFiles()[0]))
+		},
+		Log: log.Printf,
 	}
 	if err := supervise.WriteUpdateEvent(out, command.Started()); err != nil {
 		log.Printf("update: %s: report start: %v", name, err)

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/supervise"
@@ -27,6 +26,18 @@ func RefusePendingMigrationsArgs() []string {
 	return []string{"--" + RefusePendingMigrationsFlag}
 }
 
+// MigrationRequest is one launch's migration: the backend at Payload in
+// Distro, of version Version, refused to migrate its database, which is at
+// migration version Schema.
+type MigrationRequest struct {
+	Distro, Payload, Version string
+	Schema                   int
+	// Retry runs the migration even when the failure memory holds the same
+	// build's failed trial over this schema version: the person asked for
+	// it from the failure page.
+	Retry bool
+}
+
 // MigrationEnd is what a launch does after a migration.
 type MigrationEnd struct {
 	// Launch is true once the migration committed: the backend starts on a
@@ -34,13 +45,16 @@ type MigrationEnd struct {
 	Launch bool
 	// Title and Detail are the failure page's copy when Launch is false.
 	Title, Detail string
+	// Retry is true when the failure memory stopped the migration: the
+	// page offers to run it again (MigrationRequest.Retry).
+	Retry bool
 }
 
 // BeginLauncherMigration records durably that the database of the backend at
-// payload, version version, is migrated through a trial before it starts. A
-// pending record refuses it, as for BeginLauncherUpdate; a settled one is
-// replaced.
-func BeginLauncherMigration(recordPath, distro, payload, version, id string, now time.Time) (supervise.LauncherRecord, error) {
+// payload, version version, at migration version schema, is migrated
+// through a trial before it starts. A pending record refuses it, as for
+// BeginLauncherUpdate; a settled one is replaced.
+func BeginLauncherMigration(recordPath, distro, payload, version string, schema int, id string, now time.Time) (supervise.LauncherRecord, error) {
 	existing, found, err := supervise.LoadLauncherRecord(recordPath)
 	if err != nil {
 		return supervise.LauncherRecord{}, err
@@ -56,6 +70,9 @@ func BeginLauncherMigration(recordPath, distro, payload, version, id string, now
 	if err != nil {
 		return supervise.LauncherRecord{}, err
 	}
+	update := *state.Update
+	update.FromSchema = schema
+	state.Update = &update
 	record := supervise.LauncherRecord{State: state, Distro: distro, StablePayload: payload}
 	if err := supervise.SaveLauncherRecord(recordPath, record); err != nil {
 		return supervise.LauncherRecord{}, err
@@ -63,15 +80,23 @@ func BeginLauncherMigration(recordPath, distro, payload, version, id string, now
 	return record, nil
 }
 
-// Migrate migrates the database of the backend at payload in distro, which
-// refused to migrate it live and has stopped: snapshot, the trial, then
-// commit, or rollback through the same payload. The record exists only
-// while the migration is pending.
-func (s UpdateSequence) Migrate(ctx context.Context, distro, payload, version string) MigrationEnd {
+// Migrate migrates the database of the backend that refused to migrate it
+// live and has stopped: snapshot, the trial, then commit, or rollback
+// through the same payload. The record exists only while the migration is
+// pending. Unless the request is a Retry, a remembered failed trial of the
+// same build over the same schema version stops it before anything runs.
+func (s UpdateSequence) Migrate(ctx context.Context, req MigrationRequest) MigrationEnd {
+	if !req.Retry {
+		if failed, ok := s.rememberedFailure(req.Version, req.Schema); ok {
+			s.logf("updater: the database upgrade of %s over schema v%d failed before (%s); it runs again on Retry",
+				req.Version, req.Schema, failed.Reason)
+			return rememberedMigrationEnd(failed)
+		}
+	}
 	s.step("update.migrate", "Preparing to upgrade the database")
 	id, err := NewUpdateID()
 	if err == nil {
-		_, err = BeginLauncherMigration(s.RecordPath, distro, payload, version, id, s.now())
+		_, err = BeginLauncherMigration(s.RecordPath, req.Distro, req.Payload, req.Version, req.Schema, id, s.now())
 	}
 	if err != nil {
 		s.logf("updater: open the database migration: %v", err)
@@ -80,7 +105,7 @@ func (s UpdateSequence) Migrate(ctx context.Context, distro, payload, version st
 			Detail: "Nothing was started, so the data is left as it is. Details are in the launcher log.",
 		}
 	}
-	s.logf("updater: migration %s: the backend at %s refused to migrate its database live; migrating it through a trial", id, payload)
+	s.logf("updater: migration %s: the backend at %s refused to migrate its database live; migrating it through a trial", id, req.Payload)
 	end, err := s.Apply(ctx, id)
 	return s.finishMigration(id, end, err)
 }
@@ -166,12 +191,9 @@ const migrationFailedTitle = "This version of Agent Overflow could not upgrade t
 
 // reasonSentence ends the page's detail with the recorded reason.
 func reasonSentence(reason string) string {
-	reason = strings.TrimSuffix(strings.TrimSpace(reason), ".")
+	reason = boundedClause(reason)
 	if reason == "" {
 		return "Details are in the launcher log."
-	}
-	if runes := []rune(reason); len(runes) > updateFailedReasonLimit {
-		reason = string(runes[:updateFailedReasonLimit-1]) + "…"
 	}
 	return "Reason: " + reason + ". Details are in the launcher log."
 }

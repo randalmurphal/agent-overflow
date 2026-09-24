@@ -6,7 +6,9 @@
 // through wsl.exe. Covers: a headless boot started with
 // --refuse-pending-migrations answers /bootstrap.json with the 409
 // migrations-pending refusal and leaves the database files as they were;
-// __update-snapshot and __update-trial-run migrate it in the real App trial
+// __update-snapshot reports the schema version the refusal named, which keys
+// the launcher's failure memory; __update-snapshot and __update-trial-run
+// migrate it in the real App trial
 // boot, which reports prepared; the next gated boot finds nothing pending and
 // becomes ready; and __update-restore after a prepared trial puts the
 // fixture's bytes back. Every process runs with a temporary home and fake
@@ -140,6 +142,7 @@ interface UpdateEvent {
   type: 'started' | 'progress' | 'result';
   outcome?: string;
   reason?: string;
+  schema?: number;
   progress?: { phase: string; detail: string };
 }
 
@@ -300,7 +303,7 @@ test('a gated boot refuses a v118 database, a real trial migrates it, and the ne
     // The migration the launcher runs: snapshot, then the real App trial boot.
     const id = newUpdateID();
     const snapshot = await runUpdateCommand(sb, ['__update-snapshot', '--id', id]);
-    expect(result(snapshot.events), snapshot.stderr).toMatchObject({ type: 'result', outcome: 'ok' });
+    expect(result(snapshot.events), snapshot.stderr).toMatchObject({ type: 'result', outcome: 'ok', schema: pending.database });
     const trial = await runUpdateCommand(sb, ['__update-trial-run', '--id', id, '--to', await buildVersion(), '--attempt', '1']);
     expect(result(trial.events), trial.stderr).toMatchObject({ type: 'result', outcome: 'prepared' });
     expect(trial.events.some((event) => event.progress?.phase === 'store.migrate'), trial.stderr).toBe(true);
@@ -339,7 +342,7 @@ test('a restore after a prepared trial puts back the v118 fixture byte for byte'
 
     const id = newUpdateID();
     const snapshot = await runUpdateCommand(sb, ['__update-snapshot', '--id', id]);
-    expect(result(snapshot.events), snapshot.stderr).toMatchObject({ type: 'result', outcome: 'ok' });
+    expect(result(snapshot.events), snapshot.stderr).toMatchObject({ type: 'result', outcome: 'ok', schema: FIXTURE_VERSION });
     const trial = await runUpdateCommand(sb, ['__update-trial-run', '--id', id, '--to', await buildVersion(), '--attempt', '1']);
     expect(result(trial.events), trial.stderr).toMatchObject({ type: 'result', outcome: 'prepared' });
     expect(await schemaVersion(sb)).toBeGreaterThan(FIXTURE_VERSION);

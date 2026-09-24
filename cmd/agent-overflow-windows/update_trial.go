@@ -492,8 +492,11 @@ func (a *launcherApp) reconcileUpdate(distro string, transient bool) bool {
 // refused to migrate its database live and was stopped, so the database is
 // migrated through a snapshot and a trial of that payload before it starts
 // again (wsllauncher.UpdateSequence.Migrate). It returns false when the
-// launch must not continue; the window then shows why.
-func (a *launcherApp) migrateBeforeLaunch(distro, payload string, pending *wsllauncher.MigrationsPendingError) bool {
+// launch must not continue; the window then shows why. A remembered failed
+// trial of this build over this schema version stops the migration unless
+// retry is set; its page offers Retry, which runs this launch again with
+// retry set.
+func (a *launcherApp) migrateBeforeLaunch(distro, payload string, pending *wsllauncher.MigrationsPendingError, transient, retry bool) bool {
 	log.Printf("updater: %v; migrating the database through a trial", pending)
 	dir, ok := wsldistro.WSLConfigDir()
 	if !ok {
@@ -503,7 +506,14 @@ func (a *launcherApp) migrateBeforeLaunch(distro, payload string, pending *wslla
 	}
 	// The refused boot's last report is not the upgrade's.
 	a.loading.clearProgress()
-	end := a.updateSequence(dir, distro).Migrate(context.Background(), distro, payload, payloadVersion)
+	end := a.updateSequence(dir, distro).Migrate(context.Background(), wsllauncher.MigrationRequest{
+		Distro: distro, Payload: payload, Version: payloadVersion, Schema: pending.Database, Retry: retry,
+	})
+	if !end.Launch && end.Retry {
+		a.migrationRetry.Store(&launchTarget{distro: distro, transient: transient})
+		a.showFailurePage(migrationRetryPageHTML(end.Title, end.Detail))
+		return false
+	}
 	if !end.Launch {
 		a.showUpdateFailure(end.Title, end.Detail)
 		return false
@@ -514,7 +524,11 @@ func (a *launcherApp) migrateBeforeLaunch(distro, payload string, pending *wslla
 
 // showUpdateFailure puts a fixed-copy failure page in the window.
 func (a *launcherApp) showUpdateFailure(title, detail string) {
-	page := failurePageHTML(title, detail, "")
+	a.showFailurePage(failurePageHTML(title, detail, ""))
+}
+
+// showFailurePage puts page in the window as the startup failure.
+func (a *launcherApp) showFailurePage(page []byte) {
 	a.startupFailure.Store(&page)
 	if w := a.win(); w != nil {
 		w.SetURL("/startup-error")
