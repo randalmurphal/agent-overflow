@@ -1700,6 +1700,8 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 			},
 		},
 	},
+	{Version: 122, Name: "pending_thread_deletes", SQL: pendingThreadDeletesV122SQL},
+	{Version: 123, Name: "thread_fork_copied", SQL: threadForkCopiedV123SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

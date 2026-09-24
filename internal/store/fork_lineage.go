@@ -454,12 +454,68 @@ func handOffCopyTx(tx *sql.Tx, reader string, rows []inheritedRow) error {
 	return nil
 }
 
-// handOffIDsTx runs before threadID changes, moves, deletes or hides the
-// rows ids names in its timeline, whether it owns them or inherits them.
-// Every thread that reads one of them through threadID gets its own copy
-// first, so a fork's history does not change because a thread it reads
-// from rewrote that thread's own history.
+// forkHoldsCopiesSQL reports whether a thread holds copies of an
+// unfinished materialization (thread_fork_copied). Every item write runs
+// it, so it probes the primary key's prefix.
+const forkHoldsCopiesSQL = `SELECT EXISTS (SELECT 1 FROM thread_fork_copied WHERE thread_id = ?)`
+
+// settleForkCopiesSQL drops the records of the copies a write settles.
+const settleForkCopiesSQL = `DELETE FROM thread_fork_copied WHERE thread_id = ? AND item_id IN (SELECT value FROM json_each(?))`
+
+// settleForkCopiesTx runs before threadID writes a row it keeps: from
+// names the row, or for a new row its parent. Each copy an unfinished
+// materialization recorded on the logical parent chain from them upward
+// becomes threadID's own history, as a card's write makes the inherited
+// anchors on its chain its own (resolveCardTx). The delete of an ancestor
+// then keeps what threadID wrote and the rows it sits under instead of
+// rolling them back (rollBackForkCopiesTx).
+func settleForkCopiesTx(tx *sql.Tx, threadID string, from ...string) error {
+	var holds bool
+	if err := tx.QueryRow(forkHoldsCopiesSQL, threadID).Scan(&holds); err != nil {
+		return fmt.Errorf("store: look for unfinished copies in %s: %w", threadID, err)
+	}
+	if !holds {
+		return nil
+	}
+	var ids []string
+	for _, id := range from {
+		chain, err := subagentChainTx(tx, threadID, id, false)
+		if err != nil {
+			return err
+		}
+		for _, row := range chain {
+			ids = append(ids, row.id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	list, err := jsonList(ids)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(settleForkCopiesSQL, threadID, list); err != nil {
+		return fmt.Errorf("store: settle the rows %s writes: %w", threadID, err)
+	}
+	return nil
+}
+
+// handOffIDsTx runs before threadID changes or moves the rows ids names in
+// its timeline, whether it owns them or inherits them. Every thread that
+// reads one of them through threadID gets its own copy first, so a fork's
+// history does not change because a thread it reads from rewrote that
+// thread's own history. threadID keeps the rows, so the materialized
+// copies they sit on become its own (settleForkCopiesTx).
 func handOffIDsTx(tx *sql.Tx, threadID string, ids []string) error {
+	if err := settleForkCopiesTx(tx, threadID, ids...); err != nil {
+		return err
+	}
+	return handOffRemovedIDsTx(tx, threadID, ids)
+}
+
+// handOffRemovedIDsTx is handOffIDsTx before threadID deletes or hides the
+// rows: nothing stays on the copies above them, so it settles none.
+func handOffRemovedIDsTx(tx *sql.Tx, threadID string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
 	}

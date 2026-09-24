@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 
 	"agent-overflow/internal/threadmode"
 )
@@ -986,19 +985,25 @@ func (s *Store) DeleteThread(id string) error {
 // seconds on a large backlog; pause is where a background sweep yields
 // so user writes interleave. A nil pause is DeleteThread.
 //
-// Draining items before the thread row is safe under the app layer's
-// idempotent-retry model: the thread row is the resumability anchor, and
-// a crash mid-drain leaves a thread a retried delete completes.
-//
-// Forks that read through the thread detach first, in their own
-// transaction, so none of them ever reads a partly drained history. From
-// the start of the delete a fork of the thread is refused
-// (ErrForkSourceDeleted), so that detach covers every fork it has: one
-// admitted before it began has committed by the time the detach's
-// transaction gets the writer connection.
+// The first write marks the row deleting (beginThreadDelete). From its
+// commit the thread is gone to every read through owned_threads, a fork of
+// it is refused (ErrForkSourceDeleted), and no fork that reads through it
+// copies more of its rows (MaterializeForkHistory). The copies unfinished
+// materializations of those forks made of rows they read through it are
+// rolled back next, in paced transactions (rollBackForkCopiesThrough), and
+// then one transaction detaches the forks (detachThreadForks), before any
+// item is drained. The
+// row goes in the last transaction, so a crash or an error in between
+// leaves a marked row, which ListPendingThreadDeletes returns and a
+// repeated DeleteThreadPaced completes.
 func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
-	defer s.threadDeletes.begin(id)()
-	if err := s.detachForkDescendants(id); err != nil {
+	if err := s.beginThreadDelete(id); err != nil {
+		return err
+	}
+	if err := s.rollBackForkCopiesThrough(id, pause); err != nil {
+		return err
+	}
+	if err := s.detachThreadForks(id); err != nil {
 		return err
 	}
 	for {
@@ -1038,36 +1043,46 @@ func (s *Store) DeleteThreadPaced(id string, pause ChunkPause) error {
 	return nil
 }
 
-// threadDeletes counts the DeleteThreadPaced calls in progress per
-// thread. A paced delete spans several transactions, and a fork admitted
-// between them would read rows the drain is removing.
-type threadDeletes struct {
-	mu sync.Mutex
-	n  map[string]int
+// beginThreadDelete is DeleteThreadPaced's first write: it marks id
+// deleting. A fork of id admitted before it has committed by the time
+// this write gets the writer connection, and the detach covers it; one
+// after it reads the mark and is refused. Marking a marked row again is
+// how a repeated delete resumes.
+func (s *Store) beginThreadDelete(id string) error {
+	result, err := s.db.Exec(`UPDATE threads SET deleting = 1 WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("store: mark thread %s deleting: %w", id, err)
+	}
+	return requireRowsAffected(result, fmt.Sprintf("store: delete thread %s", id))
 }
 
-// begin marks id as being deleted until the returned function runs.
-func (d *threadDeletes) begin(id string) (end func()) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.n == nil {
-		d.n = make(map[string]int)
+// detachThreadForks is the transaction that detaches the forks that read
+// through id (detachForkDescendantsTx), after the mark and before any item
+// is drained, so no fork ever reads a partly drained history.
+func (s *Store) detachThreadForks(id string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin detach forks of %s: %w", id, err)
 	}
-	d.n[id]++
-	return func() {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		if d.n[id]--; d.n[id] == 0 {
-			delete(d.n, id)
-		}
+	defer tx.Rollback()
+	defer dropForkMovesTx(tx)
+	if err := s.detachForkDescendantsTx(tx, id); err != nil {
+		return err
 	}
+	if err := s.commitReportingForks(tx); err != nil {
+		return fmt.Errorf("store: commit detach forks of %s: %w", id, err)
+	}
+	return nil
 }
 
-// active reports whether a delete of id is in progress.
-func (d *threadDeletes) active(id string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.n[id] > 0
+// ListPendingThreadDeletes returns the threads whose delete began and did
+// not finish (DeleteThreadPaced), for the app to complete at boot.
+func (s *Store) ListPendingThreadDeletes() ([]string, error) {
+	ids, err := queryIDs(s.reader(), `SELECT id FROM threads WHERE deleting = 1`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list pending thread deletes: %w", err)
+	}
+	return ids, nil
 }
 
 // deleteThreadItemsChunk removes one bounded slice while aggregating the

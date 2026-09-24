@@ -13,7 +13,8 @@
 //
 // A fork that reaches the backend while the delete drains waits for the
 // delete to release the thread's action lock and then finds the source
-// gone; a store delete that holds no action lock refuses the fork itself.
+// gone; during a store delete that holds no action lock it reads the
+// source's deleting mark.
 // Both are unit tested (app_fork_test.go TestForkDuringASourceDeleteIsRefused,
 // fork_lineage_test.go). This level shows the refusal crossing the wire and
 // reaching the user from each entry point, with no fork created.

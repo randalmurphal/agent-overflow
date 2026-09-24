@@ -454,6 +454,13 @@ func updateExistingItem(tx *sql.Tx, w *cardWrite, item Item, old subagentRow) er
 	if err := w.updated(old, row); err != nil {
 		return err
 	}
+	// The caller settled the copies above the row's old place
+	// (handOffIDsTx); a move settles those above its new one.
+	if row.parentID != old.parentID {
+		if err := settleForkCopiesTx(tx, item.ThreadID, row.parentID); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.Exec(itemUpdateSQL,
 		item.TurnIndex, item.Kind, item.Role, item.Status, item.Summary,
 		nilIfEmpty(item.PayloadID), item.InputPayloadID,
@@ -654,7 +661,7 @@ func updateItemMetaTx(tx *sql.Tx, w *cardWrite, old subagentRow, meta string, up
 // transaction: one chain read from its parent.
 func (s *Store) DeleteThreadItem(threadID, itemID string) error {
 	return s.writeItems(threadID, nil, "delete item "+threadID+"/"+itemID, func(tx *sql.Tx, w *cardWrite) error {
-		if err := handOffIDsTx(tx, threadID, []string{itemID}); err != nil {
+		if err := handOffRemovedIDsTx(tx, threadID, []string{itemID}); err != nil {
 			return err
 		}
 		sharedDeleted, err := deleteSharedHistoryItemTx(tx, w, threadID, itemID)

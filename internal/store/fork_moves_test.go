@@ -256,7 +256,7 @@ func TestPacedDeleteReportsEachForkOnce(t *testing.T) {
 }
 
 // TestRetriedDetachLeavesDetachedForksAlone: a delete that fails after its
-// detach leaves the thread, and the retry detaches again. The forks the
+// detach leaves the thread marked, and the retry detaches again. The forks the
 // first detach handled read nothing through the thread and their dividers
 // are marked, so the retry neither marks nor stamps them and reports
 // nothing.
@@ -270,7 +270,10 @@ func TestRetriedDetachLeavesDetachedForksAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	reports := watchForkMoves(s)
-	if err := s.detachForkDescendants("S"); err != nil {
+	if err := s.beginThreadDelete("S"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.detachThreadForks("S"); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := reports.take(), [][]string{{"F", "G", "H"}}; !slices.EqualFunc(got, want, slices.Equal) {

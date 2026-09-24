@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/eventchan"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/store"
@@ -62,7 +63,7 @@ func (a *App) startThreadTransfers() error {
 	if err != nil {
 		return err
 	}
-	jobs, err := threadtransfer.NewJobs(a.lifeCtx(), a.store, admittedTransferRunner{a, source}, admittedTransferRunner{a, destination}, func(err error) string { return err.Error() }, func(row store.ThreadTransfer) {
+	jobs, err := threadtransfer.NewJobs(a.lifeCtx(), a.store, admittedTransferRunner{a, source}, admittedTransferRunner{a, destination}, transferErrorText, func(row store.ThreadTransfer) {
 		a.emit(eventchan.ThreadTransfer, row)
 		if err := a.announceTransferredDraft(row); err != nil {
 			log.Printf("app: announce transferred draft: %v", err)
@@ -247,6 +248,17 @@ func (e appTransferEndpoints) Cancel(ctx context.Context, id string, secret []by
 		return err
 	}
 	return d.Cancel(ctx, id, secret)
+}
+
+// transferErrorText is the text a transfer row shows for a failed
+// attempt: a public error's reviewed sentence, with its cause in the host
+// log, or the error itself.
+func transferErrorText(err error) string {
+	if _, message, ok := errorsx.PublicDetails(err); ok {
+		log.Printf("app: conversation transfer attempt: %v", err)
+		return message
+	}
+	return err.Error()
 }
 
 // Transfer attempts are resumable, but their current file/SQLite commit must

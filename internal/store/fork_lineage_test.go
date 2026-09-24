@@ -315,8 +315,7 @@ func TestPointerForkNeverReadsAPartlyDeletedSource(t *testing.T) {
 
 // TestPointerForkOfADeletingSourceIsRefused: from the start of a paced
 // delete, a fork of the thread is refused, whatever its cut, and leaves no
-// thread behind; so is a fork of the thread once it is gone. A delete that
-// ends, finished or failed, stops refusing.
+// thread behind; so is a fork of the thread once it is gone.
 func TestPointerForkOfADeletingSourceIsRefused(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "S")
@@ -345,23 +344,17 @@ func TestPointerForkOfADeletingSourceIsRefused(t *testing.T) {
 		t.Fatal("the source drained in one chunk; the fixture must span several")
 	}
 	refused("after", ForkCut{})
-	if s.threadDeletes.active("S") {
-		t.Fatal("a finished delete still marks its thread")
-	}
-	if err := s.DeleteThreadPaced("missing", nil); err == nil {
-		t.Fatal("deleting a missing thread succeeded")
-	}
-	if s.threadDeletes.active("missing") {
-		t.Fatal("a failed delete still marks its thread")
+	if err := s.DeleteThreadPaced("missing", nil); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("deleting a missing thread = %v, want sql.ErrNoRows", err)
 	}
 }
 
 // TestPointerForkAdmittedAsTheDeleteBeginsIsDetached: a fork whose
 // transaction is open when the source's delete begins passed the check
-// before the delete marked the source, and the delete's detach waits for
-// the writer connection, so the fork commits first and the delete detaches
-// it: it keeps its own rows, loses the source's, and its divider records
-// the deletion.
+// before the delete marked the source, and the delete's mark waits for the
+// writer connection, so the fork commits first and the detach that follows
+// the mark covers it: it keeps its own rows, loses the source's, and its
+// divider records the deletion.
 func TestPointerForkAdmittedAsTheDeleteBeginsIsDetached(t *testing.T) {
 	s := newTestStore(t)
 	seedForkSource(t, s, "S", []Item{
@@ -376,10 +369,11 @@ func TestPointerForkAdmittedAsTheDeleteBeginsIsDetached(t *testing.T) {
 	summarise := func(summary string) string {
 		if !started {
 			started = true
+			waits := s.db.Stats().WaitCount
 			go func() { deleted <- s.DeleteThreadPaced("S", nil) }()
-			for deadline := time.Now().Add(5 * time.Second); !s.threadDeletes.active("S"); {
+			for deadline := time.Now().Add(5 * time.Second); s.db.Stats().WaitCount == waits; {
 				if time.Now().After(deadline) {
-					t.Fatal("the delete never began")
+					t.Fatal("the delete never waited for the writer connection")
 				}
 				time.Sleep(time.Millisecond)
 			}

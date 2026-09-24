@@ -74,9 +74,6 @@ type Store struct {
 	cards subagentCards
 	// forkStampsMoved is the function OnForkStampsMoved set, or nil.
 	forkStampsMoved atomic.Pointer[func([]string)]
-	// threadDeletes marks the threads a DeleteThreadPaced is removing,
-	// which CreatePointerFork refuses as sources.
-	threadDeletes threadDeletes
 }
 
 // Options configures NewWithOptions.

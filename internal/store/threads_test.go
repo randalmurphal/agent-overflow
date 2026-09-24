@@ -2869,6 +2869,7 @@ var threadColumnsNotWrittenByUpdateThread = map[string]string{
 	"fork_source_title":        "the divider's source title (v120), recorded at fork creation and when the source is deleted",
 	"newest_turn_error_at":     "the Failed pill's write-time aggregate (v121), maintained by the turn-error triggers",
 	"newest_turn_error_turn":   "the same aggregate's newest turn (v121), maintained by the same triggers",
+	"deleting":                 "the pending-delete mark (v122), set by DeleteThreadPaced's first transaction and gone with the row; a stale struct must not revive a thread whose delete has begun",
 }
 
 // TestUpdateThreadColumnGate is the standing version of the six

@@ -249,6 +249,10 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// goroutine returns.
 	a.stopRetentionCleanup()
 	record("stop retention cleanup", nil)
+	// The boot-time completion of interrupted deletes takes the same
+	// path as the sweep, and is joined beside it for the same reasons.
+	a.waitPendingThreadDeletes()
+	record("stop pending thread deletes", nil)
 
 	// Step 3c2: stop the deferred migration run. It writes to SQLite and
 	// its auto_vacuum conversion replaces the database file under both
