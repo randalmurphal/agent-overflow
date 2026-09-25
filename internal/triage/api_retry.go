@@ -14,7 +14,6 @@ package triage
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -210,11 +209,9 @@ func (r *Router) maybeMarkAPIRetryCompleted(threadID string) {
 	existing.Status = statusCompleted
 	existing.UpdatedAt = time.Now().UnixMilli()
 	if err := r.persistItem(existing, nil); err != nil {
-		// Non-fatal — the row stays as running, the next forward-
-		// progress event will retry. Log so a persistent failure is
-		// visible in operator logs. Leave the flag set so we try
-		// again on the next event.
-		log.Printf("triage: mark api_retry completed for thread %s: %v", threadID, err)
+		// Non-fatal: the row stays as running, and the next forward-
+		// progress event retries with the flag still set.
+		r.providerWriteFailed(threadID, "mark api_retry completed for thread "+threadID, err)
 		return
 	}
 	r.clearOpenAPIRetryRow(threadID)

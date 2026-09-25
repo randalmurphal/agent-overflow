@@ -56,7 +56,8 @@ func BuildForkedThread(source Thread) Thread {
 }
 
 // ErrForkChainTooDeep reports a fork whose source already reads through
-// forkLineageMaxDepth levels.
+// forkLineageMaxDepth levels, or a write whose copy for the forks that
+// show a row needs a level for such a reader.
 var ErrForkChainTooDeep = errors.New("store: fork chain is too deep")
 
 // ErrForkSourceDeleted reports a fork whose source is gone or whose

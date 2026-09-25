@@ -155,6 +155,9 @@ Mechanism in
 - A fork is a snapshot of its source at the cut. Nothing the source does
   afterwards (continuing, reverting, being deleted or moved) changes what
   the fork shows, so a fork is never told about its source's writes. A
+  provider report that arrives for the source after the fork was made is
+  the source's fact: the source records it and the fork keeps the row as
+  it was. A
   deleted source's history stays, hidden, until the last fork that shows
   it is deleted. A fork taken while its source is still running a turn
   owns that turn as it stands. The fork's timeline holds no origin row;

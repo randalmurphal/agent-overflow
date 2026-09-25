@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -300,7 +299,7 @@ func (r *Router) flushStreamPersistenceKey(threadID, itemID string) {
 		return
 	}
 	if err := r.flushStreamPersistence(*pending); err != nil {
-		log.Printf("triage: stream persistence flush %s/%s: %v", pending.threadID, pending.itemID, err)
+		r.providerWriteFailed(pending.threadID, fmt.Sprintf("stream persistence flush %s/%s", pending.threadID, pending.itemID), err)
 	}
 }
 
@@ -333,7 +332,7 @@ func (r *Router) flushStreamingThread(threadID string) error {
 	var firstErr error
 	for _, flush := range pending {
 		if err := r.flushStreamPersistence(flush); err != nil {
-			log.Printf("triage: stream persistence flush %s/%s: %v", flush.threadID, flush.itemID, err)
+			r.providerWriteFailed(flush.threadID, fmt.Sprintf("stream persistence flush %s/%s", flush.threadID, flush.itemID), err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -366,7 +365,7 @@ func (r *Router) flushAllStreamPersistence() error {
 	var firstErr error
 	for _, flush := range pending {
 		if err := r.flushStreamPersistence(flush); err != nil {
-			log.Printf("triage: stream persistence flush %s/%s: %v", flush.threadID, flush.itemID, err)
+			r.providerWriteFailed(flush.threadID, fmt.Sprintf("stream persistence flush %s/%s", flush.threadID, flush.itemID), err)
 			if firstErr == nil {
 				firstErr = err
 			}

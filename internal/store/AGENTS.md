@@ -146,9 +146,12 @@ an atomic persistence decision; they must not become a business-logic layer.
   opens, writes with, flushes or closes a card.
 - A pointer fork reads its ancestors' rows in place, and a row, payload,
   append chunk or turn row a fork shows is immutable: the fork triggers
-  refuse the write (`shownHistoryImmutable`). A writer that must remove rows
-  forks show moves them to a holder first (`splitShownRowsTx`), and the
-  delete of a thread forks read keeps it as a holder (`retireToHolderTx`)
+  refuse the write (`shownHistoryImmutable`). A writer that changes a row
+  forks show gives them a copy first (`requireMutableItemTx`,
+  `requireMutablePayloadTx`, `requireMutableTurnTx`), a writer that must
+  remove rows forks show moves them to a holder first (`splitShownRowsTx`),
+  and the delete of a thread forks read keeps it as a holder
+  (`retireToHolderTx`)
   ([ownership](../../docs/architecture/sqlite-store.md#ownership)). Fix a
   refused write at its writer, never by narrowing a guard. A write that
   removes `thread_fork_lineage` rows calls `holdersMayBeReleased` after its

@@ -326,7 +326,7 @@ func (r *Router) Handle(evt provider.ProviderEvent) error {
 	if root := r.carrierRootRewrite(evt.ThreadID, evt.ParentToolUseID); root != "" {
 		evt.ParentToolUseID = root
 	}
-	return r.dispatch(evt)
+	return r.dispatchReportingRefusals(evt)
 }
 
 // HandleSynthetic routes a host-synthesized event exactly like Handle
@@ -339,7 +339,17 @@ func (r *Router) HandleSynthetic(evt provider.ProviderEvent) error {
 	r.inflight.Add(1)
 	defer r.inflight.Done()
 	defer r.fireEventHook(evt)
-	return r.dispatch(evt)
+	return r.dispatchReportingRefusals(evt)
+}
+
+// dispatchReportingRefusals routes evt and gives its thread the error row
+// of a write the store refused (reportShownHistoryRefusal).
+func (r *Router) dispatchReportingRefusals(evt provider.ProviderEvent) error {
+	err := r.dispatch(evt)
+	if reportErr := r.reportShownHistoryRefusal(evt.ThreadID, err); reportErr != nil {
+		err = errors.Join(err, reportErr)
+	}
+	return err
 }
 
 func (r *Router) dispatch(evt provider.ProviderEvent) error {
@@ -521,12 +531,12 @@ func (r *Router) settleStreamingBeforeTimelineBoundary(evt provider.ProviderEven
 			return
 		}
 		if err := r.settleTurnStreaming(evt.ThreadID, turnIndex, statusCompleted, nil); err != nil {
-			log.Printf("triage: settle streaming before %s: %v", boundary, err)
+			r.providerWriteFailed(evt.ThreadID, "settle streaming before "+boundary, err)
 		}
 		return
 	}
 	if err := r.settleStreamingScope(evt.ThreadID, scope); err != nil {
-		log.Printf("triage: settle streaming before %s: %v", boundary, err)
+		r.providerWriteFailed(evt.ThreadID, "settle streaming before "+boundary, err)
 	}
 }
 

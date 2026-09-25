@@ -164,8 +164,9 @@ func deniedToolCallScope(evt provider.ProviderEvent, tool store.Item, found bool
 //     exists; when it does not (fresh session, dropped launch) the
 //     notice row alone is the honest record.
 //
-// Failures are logged, never propagated: the notice row is already
-// persisted and visible, and losing the chip must not fail the event.
+// A failure never fails the event: the notice row is already persisted
+// and visible, and losing the chip must not fail it. A refusal reaches
+// the thread (providerWriteFailed).
 //
 // The row is fetched ONCE by lookupDeniedToolCall, because the caller
 // needs it before the notice is persisted: the notice row inherits the
@@ -199,7 +200,7 @@ func (r *Router) annotateDeniedToolCall(evt provider.ProviderEvent, notice permi
 	item.Decision = decisionDeclined
 	item.UpdatedAt = eventTimestampMillis(evt)
 	if err := r.persistItem(item, nil); err != nil {
-		log.Printf("triage: annotate denied tool call %s: %v", toolUseID, err)
+		r.providerWriteFailed(evt.ThreadID, "annotate denied tool call "+toolUseID, err)
 	}
 }
 

@@ -1,7 +1,7 @@
 package triage
 
 import (
-	"log"
+	"fmt"
 	"sync"
 	"time"
 
@@ -825,7 +825,7 @@ func (r *Router) EagerPersistDeferredFlushSends(threadID string, interruptedTurn
 	for _, snap := range snapshots {
 		persisted, err := r.persistItemWithEmit(snap.item, nil, nil, true)
 		if err != nil {
-			log.Printf("triage: eager persist deferred flush %s/%s: %v", snap.item.ThreadID, snap.item.ID, err)
+			r.providerWriteFailed(snap.item.ThreadID, fmt.Sprintf("eager persist deferred flush %s/%s", snap.item.ThreadID, snap.item.ID), err)
 			r.restorePendingSendDeferred(threadID, snap.item.ID)
 			continue
 		}
@@ -931,7 +931,7 @@ func (r *Router) PromoteQuietFlushSends(threadID string, tok FlushStampToken) []
 		// paths a repositioned row with display-order semantics.
 		item, err := r.store.BumpItemToTurnEnd(threadID, id, itemmeta.MarkPromotedAtInterrupt, time.Now().UnixMilli())
 		if err != nil {
-			log.Printf("triage: promote quiet flush %s/%s: %v", threadID, id, err)
+			r.providerWriteFailed(threadID, fmt.Sprintf("promote quiet flush %s/%s", threadID, id), err)
 			r.unclaimPendingSendAnchor(threadID, id)
 			continue
 		}

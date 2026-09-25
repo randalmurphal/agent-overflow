@@ -407,8 +407,9 @@ fork's own writes move them:
 
 Nothing another thread writes changes what a fork shows. A row, payload
 or turn row a fork shows never changes (`trg_items_shown_update` and its
-siblings refuse the write), an insert below the cut is hidden from the
-fork (`trg_items_fork_snapshot`), a revert or delete moves the rows the
+siblings refuse the write): a source's write to one first gives a holder
+a copy that the fork reads instead. An insert below the cut is hidden from
+the fork (`trg_items_fork_snapshot`), a revert or delete moves the rows the
 fork shows to a holder with their ids, positions and content, and a
 deleted source becomes a holder in place. None of these moves a fork's
 stamps, so a source that continues, reverts or is deleted leaves every
@@ -436,7 +437,8 @@ payload content it holds, so the window stays correct.
 | `CreatePointerFork` | lineage rows, hidden ids and the fork's own rows (settled copies, the rest of a running cut turn) | rev on the fork; source untouched |
 | Revert or delete of rows a fork shows | the rows move to a holder (items UPDATE of `thread_id` under `history_bulk_load`, stamp written once), then the write | **epoch** on the reverting thread; fork stamps unchanged |
 | Delete of a thread forks read | the thread becomes a holder in place (`retireToHolderTx`) | fork stamps unchanged |
-| Any other write to a row, payload or turn row a fork shows | refused (`trg_items_shown_update` and its siblings) | none |
+| Any other write to a row, payload or turn row a fork shows | a holder takes a copy for the forks that show it (`fork_reown.go`), then the write | rev on the writing thread; fork stamps unchanged |
+| A write whose copy needs a fork level past the depth cap | refused (`ErrForkChainTooDeep`) | none |
 | Fork deletes or reverts inherited rows | `bumpForkViewTx` | **epoch** on the fork |
 | Source write past every fork's cut | none on forks | fork stamps unchanged |
 | Import rollback / `DeleteThread` / retention sweep | thread row deleted | tombstone: replica entry dropped by the deleting client directly, and by any other client on the `gone` answer (§5) |

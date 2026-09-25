@@ -20,10 +20,10 @@ import (
 // rows as they were. The mutable-row hooks run it: requireMutableItemTx,
 // requireMutablePayloadTx and requireMutableTurnTx.
 //
-// A write that copies or moves rows to a holder reuses the holder the
-// thread last gave its readers when that holder serves them
-// (reusableHolderTx), so a reader's lineage grows only when a thread that
-// did not read that holder must keep rows.
+// A write that copies or moves rows to a holder reuses the holder that
+// every reader of those rows reads right before the thread, when the
+// thread's rows made it (reusableHolderTx), so a reader's lineage grows
+// only when a reader of the rows does not read that holder.
 
 // shownItemLevelsSQL lists the levels on ?1 through which a thread shows
 // ?1's row ?2 at (?3, ?4): readerShowsItemSQL's lineage rows.

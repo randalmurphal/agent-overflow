@@ -1,9 +1,6 @@
 package store
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
 // shownHistoryFixture: S holds two settled turns. u0 renders payload p,
 // which has an appended chunk, and a0 payload p2; u1 opens turn 1 and run
@@ -98,7 +95,7 @@ func TestShownHistoryGuardsRefuseEveryColumn(t *testing.T) {
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			s := shownHistoryFixture(t)
-			if _, err := s.db.Exec(c.write); err == nil || !strings.Contains(err.Error(), shownHistoryImmutable) {
+			if _, err := s.db.Exec(c.write); !IsShownHistoryRefusal(err) {
 				t.Fatalf("%s = %v, want refused", c.write, err)
 			}
 			mustExec(t, s.db, `DROP TRIGGER `+c.trigger)

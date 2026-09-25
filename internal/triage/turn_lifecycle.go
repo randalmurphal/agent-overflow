@@ -283,7 +283,7 @@ func (r *Router) reconcileTurnIndexCollision(turn store.Turn) (int, bool) {
 			turn.TurnID, turn.ThreadID, turn.TurnIndex, existing.TurnID)
 		if incomingProvider != "" && standingProvider == "" {
 			if err := r.store.BackfillTurnProviderID(existing.TurnID, incomingProvider); err != nil {
-				log.Printf("triage: backfill provider turn id %s onto %s: %v", incomingProvider, existing.TurnID, err)
+				r.providerWriteFailed(turn.ThreadID, fmt.Sprintf("backfill provider turn id %s onto %s", incomingProvider, existing.TurnID), err)
 			}
 		}
 		return existing.TurnIndex, true
@@ -758,7 +758,7 @@ func (r *Router) settleTurnRow(evt provider.ProviderEvent, turnIndex int, now in
 		}
 	}
 	if err := r.store.UpdateTurnCompleted(fields.logicalTurnID, now, fields.stopReason, fields.assistantMessageID, usageJSON, fields.errorMessage); err != nil {
-		log.Printf("triage: update turn %s: %v", fields.logicalTurnID, err)
+		r.providerWriteFailed(evt.ThreadID, "update turn "+fields.logicalTurnID, err)
 	}
 	usageErr := r.appendUsageLedger(evt, fields.logicalTurnID, meta, now)
 	if turnCountsAsThreadActivity(evt) {
@@ -1704,16 +1704,16 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	cleanupAt := time.Now().UnixMilli()
 	if r.HasInFlightTurnOrRound(threadID) {
 		if err := r.synthesizeTruncatedTurnComplete(threadID, cleanupAt); err != nil {
-			log.Printf("triage: synthesize turn-complete on cleanup for thread %s: %v", threadID, err)
+			r.providerWriteFailed(threadID, "synthesize turn-complete on cleanup for thread "+threadID, err)
 		}
 	}
 	if err := r.flushStreamingThread(threadID); err != nil {
-		log.Printf("triage: cleanup flush stream buffers for thread %s: %v", threadID, err)
+		r.providerWriteFailed(threadID, "cleanup flush stream buffers for thread "+threadID, err)
 	}
 	// A row still queued behind a stream is persisted before the queue
 	// goes with the state: no stream of this session settles any more.
 	if err := r.drainAll(threadID); err != nil {
-		log.Printf("triage: cleanup persist queued rows for thread %s: %v", threadID, err)
+		r.providerWriteFailed(threadID, "cleanup persist queued rows for thread "+threadID, err)
 	}
 	// The state below is about to go, and its refresh timer with it.
 	r.flushWireItemRefresh(threadID)

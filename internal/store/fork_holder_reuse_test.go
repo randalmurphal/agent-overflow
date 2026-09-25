@@ -344,13 +344,16 @@ func TestSplitPastTheDepthCapIsRefused(t *testing.T) {
 			return s.UpdateTurnCompleted("c0:0", 9, "late", "", "", "")
 		},
 	} {
-		if err := write(); !errors.Is(err, ErrForkChainTooDeep) {
+		if err := write(); !errors.Is(err, ErrForkChainTooDeep) || !IsShownHistoryRefusal(err) {
 			t.Fatalf("%s past the cap = %v, want ErrForkChainTooDeep", name, err)
 		}
 		requireViews(t, s, views, name)
 		if holders := holderIDs(t, s); len(holders) != 0 {
 			t.Fatalf("%s past the cap left holders %v", name, holders)
 		}
+	}
+	if err := s.UpdateItemMeta("c0", "missing", `{}`); err == nil || IsShownHistoryRefusal(err) {
+		t.Fatalf("a write to a missing row = %v, want an error that is no refusal", err)
 	}
 }
 

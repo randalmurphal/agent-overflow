@@ -144,7 +144,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 		if err := r.persistSubagentFinalProgress(launch, meta.Usage); err != nil {
 			// Never fatal to the notification: the counters are a card
 			// decoration and the stop's sibling is the user-visible signal.
-			log.Printf("triage: persist final subagent progress for %s: %v", launch.ID, err)
+			r.providerWriteFailed(evt.ThreadID, "persist final subagent progress for "+launch.ID, err)
 		}
 	}
 

@@ -9,7 +9,7 @@ import (
 )
 
 // The parts of a split (splitShownRowsTx) that the local rows' move does
-// not carry: imported rows, turn rows and the holder's hides.
+// not carry: imported rows, turn rows, payloads and the holder's hides.
 
 // queryLevels reads lineage rows as (reader, depth, cut turn, cut item).
 func queryLevels(tx *sql.Tx, query string, args ...any) ([]forkLevel, error) {
@@ -262,4 +262,94 @@ func queryInts(q sqlQueryer, query string, args ...any) ([]int, error) {
 		out = append(out, v)
 	}
 	return out, errors.Join(rows.Err(), rows.Close())
+}
+
+// holdPayloadsTx gives holder the payloads of the rows that move: a payload
+// threadID still renders through a row it keeps is copied, any other one
+// moves with its append chunks and edit snapshots. The rows still name
+// threadID's payload until they move, under deferred foreign keys. A
+// payload the holder already holds is the one its rows render, and those
+// that move render it too: every row of threadID that renders a payload a
+// fork shows went to the holder with the payload, and threadID changes
+// the payload only after that (reownShownPayloadTx). threadID's copy goes
+// once no row of threadID renders it.
+func holdPayloadsTx(tx *sql.Tx, threadID, holder string, rows []heldRow, sel string, selArgs []any) ([]string, error) {
+	seen := make(map[string]bool)
+	var move, drop []string
+	// The numbered parameters bind the thread and the payload; each ? of
+	// the two selections takes the next number, so selArgs bind twice.
+	kept := `SELECT EXISTS (SELECT 1 FROM items WHERE thread_id = ?1 AND payload_id = ?2 AND NOT (` + sel + `))
+		    OR EXISTS (SELECT 1 FROM items WHERE thread_id = ?1 AND input_payload_id = ?2 AND NOT (` + sel + `))
+		    OR ` + importedPayloadReferenceSQL("?1", "?2")
+	for _, row := range rows {
+		for _, id := range []string{row.payloadID, row.inputPayloadID} {
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			var local, holds bool
+			if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM payloads WHERE thread_id = ?1 AND id = ?3),
+				    EXISTS (SELECT 1 FROM payloads WHERE thread_id = ?2 AND id = ?3)`, threadID, holder, id).Scan(&local, &holds); err != nil {
+				return nil, fmt.Errorf("store: inspect payload %s/%s: %w", threadID, id, err)
+			}
+			if !local {
+				continue
+			}
+			var shared bool
+			args := append([]any{threadID, id}, selArgs...)
+			args = append(args, selArgs...)
+			if err := tx.QueryRow(kept, args...).Scan(&shared); err != nil {
+				return nil, fmt.Errorf("store: probe payload %s/%s: %w", threadID, id, err)
+			}
+			switch {
+			case holds && !shared:
+				drop = append(drop, id)
+			case holds:
+			case shared:
+				if err := copyPayloadFromTx(tx, holder, threadID, id); err != nil {
+					return nil, err
+				}
+			default:
+				move = append(move, id)
+			}
+		}
+	}
+	if len(move) == 0 {
+		return drop, nil
+	}
+	list, err := jsonList(move)
+	if err != nil {
+		return nil, err
+	}
+	for _, table := range payloadTables {
+		if _, err := tx.Exec(`UPDATE `+table.name+` SET thread_id = ? WHERE thread_id = ? AND `+table.column+
+			` IN (SELECT value FROM json_each(?))`, holder, threadID, list); err != nil {
+			return nil, fmt.Errorf("store: move %s's %s to its holder: %w", threadID, table.name, err)
+		}
+	}
+	return drop, nil
+}
+
+// payloadTables are the tables that hold a payload, its row last.
+var payloadTables = []struct{ name, column string }{
+	{"payload_chunks", "payload_id"}, {"edit_file_snapshots", "payload_id"}, {"payloads", "id"},
+}
+
+// dropPayloadsTx deletes threadID's copies of payloads its holder holds,
+// once no row of threadID renders them (holdPayloadsTx).
+func dropPayloadsTx(tx *sql.Tx, threadID string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	list, err := jsonList(ids)
+	if err != nil {
+		return err
+	}
+	for _, table := range payloadTables {
+		if _, err := tx.Exec(`DELETE FROM `+table.name+` WHERE thread_id = ? AND `+table.column+
+			` IN (SELECT value FROM json_each(?))`, threadID, list); err != nil {
+			return fmt.Errorf("store: drop %s's %s its holder holds: %w", threadID, table.name, err)
+		}
+	}
+	return nil
 }

@@ -444,7 +444,7 @@ func (r *Router) settleStreamingTextAsync(threadID string, turnIndex int, scope,
 	go func() {
 		defer r.settleWG.Done()
 		if err := r.doSettleStreamingText(threadID, scope, itemID, status, finalContent, finalContentPresent, blockMeta); err != nil {
-			log.Printf("triage: async settle text %s/%s: %v", threadID, itemID, err)
+			r.providerWriteFailed(threadID, fmt.Sprintf("async settle text %s/%s", threadID, itemID), err)
 		}
 	}()
 }
@@ -460,7 +460,7 @@ func (r *Router) settleStreamingTextScopeAsync(threadID string, turnIndex int, s
 		go func(itemID string) {
 			defer r.settleWG.Done()
 			if err := r.doSettleStreamingText(threadID, scope, itemID, status, "", false, nil); err != nil {
-				log.Printf("triage: async settle text %s/%s: %v", threadID, itemID, err)
+				r.providerWriteFailed(threadID, fmt.Sprintf("async settle text %s/%s", threadID, itemID), err)
 			}
 		}(ref.itemID)
 	}
@@ -721,7 +721,7 @@ func (r *Router) enrichStreamingPathRefsAndEmit(item store.Item, updatedAt int64
 		return
 	}
 	if err := r.store.UpdateItemMeta(item.ThreadID, item.ID, merged); err != nil {
-		log.Printf("triage: streaming pathlinks UpdateItemMeta %s: %v", item.ID, err)
+		r.providerWriteFailed(item.ThreadID, "streaming pathlinks UpdateItemMeta "+item.ID, err)
 		return
 	}
 	state.lastMerged = merged
@@ -921,7 +921,7 @@ func (r *Router) settleStreamingThinkingAsync(threadID string, turnIndex int, sc
 	go func() {
 		defer r.settleWG.Done()
 		if err := r.doSettleStreamingThinking(threadID, scope, itemID, status, finalContent, finalContentPresent); err != nil {
-			log.Printf("triage: async settle thinking %s/%s: %v", threadID, itemID, err)
+			r.providerWriteFailed(threadID, fmt.Sprintf("async settle thinking %s/%s", threadID, itemID), err)
 		}
 	}()
 }
@@ -937,7 +937,7 @@ func (r *Router) settleStreamingThinkingScopeAsync(threadID string, turnIndex in
 		go func(itemID string) {
 			defer r.settleWG.Done()
 			if err := r.doSettleStreamingThinking(threadID, scope, itemID, status, "", false); err != nil {
-				log.Printf("triage: async settle thinking %s/%s: %v", threadID, itemID, err)
+				r.providerWriteFailed(threadID, fmt.Sprintf("async settle thinking %s/%s", threadID, itemID), err)
 			}
 		}(ref.itemID)
 	}

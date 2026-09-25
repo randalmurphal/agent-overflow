@@ -686,6 +686,6 @@ func (r *Router) DrainUnconfirmedFlushItems(threadID string) []UnconfirmedFlushI
 // claimed every pending entry; a consumed message never returns to the queue.
 func (r *Router) selfHealEchoConsumedFlushRow(threadID string, entry pendingSend) {
 	if err := r.healUserConfirmation(threadID, &entry); err != nil {
-		log.Printf("triage: self-heal confirmation %s/%s: %v", threadID, entry.AOItemID, err)
+		r.providerWriteFailed(threadID, fmt.Sprintf("self-heal confirmation %s/%s", threadID, entry.AOItemID), err)
 	}
 }

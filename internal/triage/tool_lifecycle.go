@@ -2328,7 +2328,7 @@ func (r *Router) settleStashedTerminalForLateLaunch(evt provider.ProviderEvent, 
 	}
 	mergeStashIntoTerminalMeta(&meta, stash)
 	if err := r.writeBackgroundCompletionSibling(evt, meta, true); err != nil {
-		log.Printf("triage: settle stashed terminal for late launch %s/%s: %v", evt.ThreadID, toolUseID, err)
+		r.providerWriteFailed(evt.ThreadID, fmt.Sprintf("settle stashed terminal for late launch %s/%s", evt.ThreadID, toolUseID), err)
 	}
 	return true
 }

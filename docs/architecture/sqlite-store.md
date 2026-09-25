@@ -241,7 +241,11 @@ Each timeline view has lineage arms that apply the cut and hidden-id rules
 hydration, payload arms) add lineage arms only for a thread with lineage rows,
 one pair per level, so a non-fork read's SQL is unchanged. A correlated read,
 whose thread is not known when the SQL is written, reads every level through
-one pair. Inherited rows read `rev = -1`. A payload, its append chunks and its
+one pair. Inherited rows read `rev = -1`. A fork reads an ancestor's turn row
+below that level's cut turn where neither the fork nor a nearer level whose
+cut turn is past the turn holds a row of that turn (`forkTurnVisibleSQL`): a
+nearer level's rows of a turn at or past its cut are not the fork's history.
+A payload, its append chunks and its
 edit snapshots resolve in the nearest thread of the lineage that holds the
 payload id: the thread that owns the row referencing it. A search hit on an
 ancestor row is a hit in every fork that shows the row, so creation writes no
@@ -253,18 +257,25 @@ same views and writes nothing.
 A row, payload, append chunk or turn row a fork shows never changes: the
 fork's history is fixed when the fork is made, and the guards refuse a write
 that would change it ([Triggers and stamps](#triggers-and-stamps)). A thread
-that must stop showing rows its forks read moves them instead
-(`fork_holders.go`), so no fork needs a copy of what it reads and no client
-of a fork learns about another thread's writes:
+that must change or stop showing rows its forks read gives the forks a copy
+or moves the rows first, so no client of a fork learns about another
+thread's writes:
 
 - A fork's own write to an inherited row or payload first takes its own copy
   (`requireMutableItemTx`, `shadowInheritedItemTx`,
   `shadowInheritedPayloadTx`). A copy keeps the row's id, position and content
   and hides the ancestor's row from the copier (`snapshotRowsTx`).
+- A thread's write to its own row, payload or turn row a fork shows, such as
+  a provider report that arrives after its turn settled, first gives a holder
+  a copy that the forks showing it read right before the thread
+  (`fork_reown.go`, through `requireMutableItemTx`, `requireMutablePayloadTx`
+  and `requireMutableTurnTx`). The holder hides the copied ids behind it. The
+  thread then writes its row in place and reads the write; each fork reads
+  the copy, which is the row as it was.
 - A delete or revert of rows forks show (`DeleteThreadItem`,
   `DeleteConversationFromTurn`, `DeleteConversationFromItem`), and the
   replace of a thread a returning transfer brings back, first moves those rows
-  to a new holder (`splitShownRowsTx`). A holder is a hidden thread
+  to a holder (`splitShownRowsTx`). A holder is a hidden thread
   (`threadmode.ModeHolder`) that the forks then read the rows from. The rows,
   their payloads, append chunks, edit snapshots, search rows and imported
   chunk references move with one statement per table, whatever the number of
@@ -278,13 +289,15 @@ of a fork learns about another thread's writes:
   (`trg_items_revive_bg_launch_on_completion_move`), and the holder takes a
   settled copy for the forks. The rows no fork shows are deleted as before.
 - A fork's hide of an inherited row that its own forks show first gives them a
-  holder with a copy of the row (`holdHiddenRowsTx`), because a hide applies
-  to every level behind the hiding thread.
+  holder with a copy of the row (`hideInheritedItemTx`), because a hide
+  applies to every level behind the hiding thread.
 - A fork's revert of inherited rows lowers its cut to the last surviving row
   and copies the inherited rows past it that the revert keeps, such as a
-  promoted anchor's same-turn content (`retractInheritedTx`). The ancestor's
-  rows stay. A level on a holder that now shows the fork nothing goes
-  (`dropEmptyHolderLevelsTx`).
+  promoted anchor's same-turn content (`retractInheritedTx`). A revert that
+  reaches no inherited row the fork shows still lowers the cut to where its
+  history ends, since rows it hides may sit past that point and its next rows
+  go there. The ancestor's rows stay. A level on a holder that now shows the
+  fork nothing goes (`dropEmptyHolderLevelsTx`).
 - The delete of a thread forks read keeps it as a holder in place
   ([Source deletion](#source-deletion)).
 
@@ -296,11 +309,22 @@ marked deleting (`trg_thread_fork_lineage_release`). The store reports every
 committed write that removed lineage rows (`OnHoldersReleased`), and the app
 deletes the released holders through `DeleteThreadPaced`. A holder released
 while no app ran is in `ListPendingThreadDeletes` at the next boot. No sweep
-looks for holders.
+looks for holders. A holder's `fork_source_thread_id` names the thread whose
+rows a split or copy gave it; a retired thread holds its own history and
+names none.
 
-Each holder adds one level to the lineage of the forks that read it. A delete,
-revert or hide that would give a fork more than `forkLineageMaxDepth` levels
-is refused with `ErrForkChainTooDeep`.
+Consecutive splits and copies of one thread's rows share a holder
+(`reusableHolderTx`): when every reader of the rows reads the same holder
+right before the thread, and the thread's rows made it, the rows go to that
+holder and no reader gains a level. Its readers' cuts on it and on the thread
+are equal, or the thread's was lowered by a revert and is the highest of
+them, so the rows read the same for each of its readers; a split takes rows
+at or past the kept end and a copy hides its original, so no row a reader
+shows sits at one of the holder's positions, and a split leaves a row whose id
+or position the holder holds to its caller (`holderHoldsSQL`). A fork's lineage
+grows by a level only when a reader of the rows does not read that holder,
+such as a fork made between two reverts. A write that still needs a level past
+`forkLineageMaxDepth` is refused with `ErrForkChainTooDeep`.
 
 Copies and moves are bulk writes: they carry no subagent card. An inherited
 anchor is read with revision -1 and walked at read time; its copy is served
@@ -352,9 +376,11 @@ copy and reinstalls them.
   whose completion a holder takes, as the completion's delete would.
 
 A write the guards refuse fails with its transaction and returns the error to
-its caller. A provider report that arrives after its turn settled and targets a
-row a fork shows, such as a Codex child's identity after its parent turn
-ended, is refused this way: the fork keeps the row as it was.
+its caller. Writers give the forks their copy first
+([Ownership](#ownership)), so a guard refusal is a defect of its writer.
+`IsShownHistoryRefusal` matches a guard refusal and `ErrForkChainTooDeep`;
+triage gives the thread of a provider report the store refused an error row
+(`reportShownHistoryRefusal`).
 
 A fork's `history_rev` and `history_epoch` are its own counters. What it
 inherits never changes, so only its own writes move them: rows it writes, and a
@@ -395,7 +421,7 @@ the attachments the row references and the thread it copied from owned
 (`ownHeldAttachmentsTx`). A thread's delete releases no attachment a fork
 shows (`ReleasableAttachments`).
 
-### Migrations v120 and v125
+### Fork migrations
 
 v120 creates the fork schema and retires payload snapshots, the previous way
 forks shared payloads. It copies each borrowed payload graph back into the
@@ -406,6 +432,11 @@ v125 replaces copies with ownership transfer. It rebuilds `threads` for the
 `holder` mode, leaves holders out of `owned_threads`, deletes the fork divider
 rows, drops `thread_fork_copied` and `idx_threads_fork_source`, and replaces
 the fork triggers.
+
+v129 clears `fork_source_thread_id` on every holder, since earlier builds kept
+a retired thread's source there and holder reuse reads the column. v130
+applies the turn rule in [Reads](#reads) to `timeline_turns` and the turn
+guards.
 
 ## History repair
 

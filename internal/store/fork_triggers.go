@@ -1,14 +1,28 @@
 package store
 
+import (
+	"errors"
+	"strings"
+)
+
 // Pointer-fork triggers (docs/architecture/sqlite-store.md#triggers-and-stamps).
 //
 // A row a pointer fork shows belongs to the thread that holds it, and the
 // fork's history is fixed when the fork is made. The guards below refuse a
-// write that would change what a fork shows: a thread that must stop
+// write that would change what a fork shows: a thread that changes such a
+// row gives the forks a copy first (fork_reown.go), and one that must stop
 // showing such rows moves them to a holder first (fork_holders.go).
 
 // shownHistoryImmutable is the message every guard raises.
 const shownHistoryImmutable = "history another thread shows is immutable"
+
+// IsShownHistoryRefusal reports whether err is the store refusing a write
+// to history a pointer fork shows: a guard refused it, or the copy the
+// write gives the forks first needs a level past the depth cap
+// (ErrForkChainTooDeep).
+func IsShownHistoryRefusal(err error) bool {
+	return err != nil && (errors.Is(err, ErrForkChainTooDeep) || strings.Contains(err.Error(), shownHistoryImmutable))
+}
 
 // readerShowsItemSQL is true while some thread reads the items row of
 // owner with the given id and position through its lineage: a lineage row
