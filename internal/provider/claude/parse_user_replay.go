@@ -496,6 +496,21 @@ type TaskNotificationFields struct {
 	Status     string
 	OutputFile string
 	Summary    string
+	// Result is a `local_agent` stop's final report, the `<result>`
+	// section after its `<summary>` bell. Commands have none.
+	Result string
+}
+
+// EnvelopeSummary is the `summary` the structured
+// `system/task_notification` envelope carries for the same stop: an
+// agent's final report, which the block holds in `<result>` while its
+// own `<summary>` is only the `Agent "…" finished` bell, and otherwise
+// the block's summary.
+func (f TaskNotificationFields) EnvelopeSummary() string {
+	if f.Result != "" {
+		return f.Result
+	}
+	return f.Summary
 }
 
 // Routable reports whether the notification carries the `<task-id>` that
@@ -549,9 +564,9 @@ func ExtractAllTaskNotificationFields(content string) []TaskNotificationFields {
 //
 // Tags are extracted by shallow substring scan; the upstream wire shape
 // (LocalShellTask.tsx / LocalAgentTask.tsx) keeps the children we read
-// non-nested. Sibling sections an agent notification adds after
-// `<summary>` (`<result>`, `<usage>`, `<worktree>`) are ignored — each
-// child is matched by its own tag.
+// non-nested and XML-escaped. Of the sections an agent notification
+// adds after `<summary>`, `<result>` is read and `<note>`, `<usage>` and
+// `<worktree>` are ignored — each child is matched by its own tag.
 func scanTaskNotification(content string, from int) (TaskNotificationFields, int) {
 	const openPrefix = "<task-notification"
 	const closeTag = "</task-notification>"
@@ -580,6 +595,7 @@ func scanTaskNotification(content string, from int) (TaskNotificationFields, int
 		Status:     extractXMLChild(body, "status"),
 		OutputFile: extractXMLChild(body, "output-file"),
 		Summary:    extractXMLChild(body, "summary"),
+		Result:     extractXMLChild(body, "result"),
 	}
 	return fields, from + closeIdx + len(closeTag)
 }
@@ -609,9 +625,10 @@ func extractXMLChild(body, tag string) string {
 // replayTaskNotificationEvents routes the synthetic-XML
 // `<task-notification>` payload through the shared
 // EventBackgroundTaskNotification builder so triage receives identical
-// inputs whichever wire path Claude chose. The XML wrapper doesn't
-// expose `parent_tool_use_id`; the shared builder falls back to the
-// parser's task_id ↔ tool_use_id map for it.
+// inputs whichever wire path Claude chose: an agent's report rides as
+// the summary, as it does on the structured envelope. The XML wrapper
+// doesn't expose `parent_tool_use_id`; the shared builder falls back to
+// the parser's task_id ↔ tool_use_id map for it.
 //
 // envelopeUUID is the WRAPPING user envelope's own top-level `uuid` —
 // the XML block carries no id of its own, and the envelope is the unit
@@ -626,7 +643,7 @@ func (p *Parser) replayTaskNotificationEvents(threadID string, fields TaskNotifi
 		ToolUseID:  fields.ToolUseID,
 		Status:     fields.Status,
 		OutputFile: fields.OutputFile,
-		Summary:    fields.Summary,
+		Summary:    fields.EnvelopeSummary(),
 		UUID:       envelopeUUID,
 	}, now)}
 }

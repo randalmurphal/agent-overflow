@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"html"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -1204,5 +1205,28 @@ func TestParseUser_Replay_TaskNotificationCarriesEnvelopeUUID(t *testing.T) {
 		if meta["uuid"] != wantUUIDs[i] {
 			t.Fatalf("block %d meta uuid = %v, want %q (meta=%s)", i, meta["uuid"], wantUUIDs[i], evt.Meta)
 		}
+	}
+}
+
+// An agent's `<task-notification>` carries its final report in
+// `<result>` after the `Agent "…" completed` bell in `<summary>`
+// (LocalAgentTask.tsx). The event carries the report as its summary, as
+// the structured system/task_notification envelope does. The CLI
+// escapes the report like every child, so a report can quote the tags.
+func TestParseUser_Replay_AgentTaskNotificationCarriesItsResult(t *testing.T) {
+	parser := NewParser()
+	report := "Found it: `a && b` ends at </result> in the quoted XML.\n\nDone."
+	body := "<task-notification>\n<task-id>task-agent-1</task-id>\n<tool-use-id>tool-agent-1</tool-use-id>\n<output-file>/tmp/agent-1.output</output-file>\n<status>completed</status>\n<summary>Agent \"Explore\" finished</summary>\n<note>A task-notification fires each time this agent stops.</note>\n<result>" + html.EscapeString(report) + "</result>\n<usage><subagent_tokens>10</subagent_tokens><tool_uses>2</tool_uses><duration_ms>30</duration_ms></usage>\n</task-notification>"
+	line := []byte(`{"type":"user","isReplay":true,"uuid":"agent-result","message":{"role":"user","content":` + jsonString(body) + `}}`)
+
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != provider.EventBackgroundTaskNotification {
+		t.Fatalf("expected 1 EventBackgroundTaskNotification, got %+v", events)
+	}
+	if events[0].Content != report {
+		t.Fatalf("Content: got %q, want the report %q", events[0].Content, report)
 	}
 }

@@ -24,12 +24,13 @@ import (
 // records its run (store.MetaKeyParkedCommands and the keys beside it).
 
 // handleAgentStop writes a background agent's stop: a parked sibling for
-// a pause, else the ending sibling, which the notification's report then
-// enriches. The ending sibling merges the host terminal the stop's
-// task_updated stashed; a notification that arrives with none stashed
-// and no sibling written (a TaskOutput read writes one first) is the
-// end on its own, since no bell holds its report for a later writer. A
-// stop the typed status reports as a kill or a failure ends the agent
+// a pause, else the ending sibling. Either lands with the stop's report
+// in its first write (agentStopReport), so a mounted card never gains or
+// changes its answer. The ending sibling merges the host terminal the
+// stop's task_updated stashed; a notification that arrives with none
+// stashed and no sibling written (a TaskOutput read writes one first) is
+// the end on its own, since no bell holds its report for a later writer.
+// A stop the typed status reports as a kill or a failure ends the agent
 // whatever it still owns: its commands die with it.
 func (r *Router) handleAgentStop(evt provider.ProviderEvent, meta backgroundTaskNotificationMeta, launch store.Item) error {
 	if !taskStatusEnds(meta.Status) {
@@ -41,34 +42,107 @@ func (r *Router) handleAgentStop(evt provider.ProviderEvent, meta backgroundTask
 			return r.writeParkedStop(evt, meta, launch, park)
 		}
 	}
+	report, err := newAgentStopReport("tool-call-result:"+launch.ID, launch, meta, evt.Content, eventTimestampMillis(evt))
+	if err != nil {
+		return err
+	}
 	stash, stashed, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, meta.TaskID)
 	if err != nil {
 		return fmt.Errorf("triage: take the stop terminal of %s/%s: %w", evt.ThreadID, meta.TaskID, err)
 	}
-	switch {
-	case stashed:
-		err = r.writeNotificationTerminal(evt, meta, launch, &stash)
-	default:
-		ended, lookupErr := r.rowWrittenOrQueued(evt.ThreadID, ToolCompletionID(launch.ID))
-		if lookupErr != nil {
-			return lookupErr
-		}
-		if !ended {
-			err = r.writeNotificationTerminal(evt, meta, launch, nil)
-		}
+	if stashed {
+		return r.writeNotificationTerminal(evt, meta, launch, &stash, &report)
 	}
+	ended, err := r.rowWrittenOrQueued(evt.ThreadID, ToolCompletionID(launch.ID))
 	if err != nil {
 		return err
 	}
-	if meta.OutputFile == "" {
-		return r.enrichExistingBackgroundCompletionFromNotification(evt, launch, meta, nil, "ready", "")
+	if ended {
+		return r.fillAgentStopReport(evt, ToolCompletionID(launch.ID), report)
 	}
-	// An agent's output_file is never read (backgroundOutputPayload).
-	payload, err := backgroundOutputPayload(launch, meta.OutputFile, agentReportFromNotification(launch, evt.Content), nil, eventTimestampMillis(evt))
-	if err != nil {
-		return err
+	return r.writeNotificationTerminal(evt, meta, launch, nil, &report)
+}
+
+// agentStopReport is how a stop's row records the agent's report: the
+// payload whose preview is the report head (the card's collapsed answer)
+// and the notification state the card reads it by. An agent's
+// output_file is never read (backgroundOutputPayload).
+type agentStopReport struct {
+	payload *store.Payload
+	meta    string
+}
+
+// newAgentStopReport builds a stop's report, on the payload payloadID,
+// from its notification; summary is the envelope's summary, which for an
+// agent is its report (agentReportFromNotification).
+func newAgentStopReport(payloadID string, launch store.Item, meta backgroundTaskNotificationMeta, summary string, now int64) (agentStopReport, error) {
+	var payload *store.Payload
+	outputState := "ready"
+	if report := agentReportFromNotification(launch, summary); report != "" || meta.OutputFile != "" {
+		var err error
+		if payload, err = agentReportPayload(payloadID, meta.OutputFile, report, now); err != nil {
+			return agentStopReport{}, err
+		}
+		outputState = "loaded"
 	}
-	return r.enrichExistingBackgroundCompletionFromNotification(evt, launch, meta, payload, "loaded", "")
+	return agentStopReport{
+		payload: payload,
+		meta:    backgroundNotificationCompletionMeta(meta, payload != nil, outputState, "", ""),
+	}, nil
+}
+
+// fillAgentStopReport handles a notification of a stop whose ending
+// sibling is already written or queued. Either another signal recorded
+// the stop first (a kill's task_updated, a TaskOutput read), or this is
+// the CLI handing the same stop to the model again at its next tool
+// round, whose summary is only the `Agent "…" finished` bell unless the
+// parser lifted the report from its `<result>`. The sibling keeps the
+// report it shows: this can give it the report it was written without,
+// never replace or clear one.
+func (r *Router) fillAgentStopReport(evt provider.ProviderEvent, rowID string, report agentStopReport) error {
+	if !payloadHasPreview(report.payload) {
+		return nil
+	}
+	_, err := r.patchWrittenRow(evt.ThreadID, rowID, func(item *store.Item, payload **store.Payload) bool {
+		if item.Kind != itemKindBackgroundDone || showsAgentStopReport(*item, *payload) {
+			return false
+		}
+		item.PayloadID = report.payload.ID
+		*payload = report.payload
+		item.Meta = mergeBackgroundCompletionItemMeta(item.Meta, report.meta)
+		item.UpdatedAt = eventTimestampMillis(evt)
+		return true
+	})
+	return err
+}
+
+// showsAgentStopReport reports whether a stop's row shows a report as its
+// card's answer: its notification state says loaded and the payload it
+// carries has a preview, the pair the frontend reads
+// (completionAnswerPreview). payload is the one the row's pending write
+// carries, or nil for a stored row, whose payload meta rides on the item.
+func showsAgentStopReport(item store.Item, payload *store.Payload) bool {
+	var meta struct {
+		Loaded bool `json:"notification_output_loaded"`
+	}
+	if json.Unmarshal([]byte(item.Meta), &meta) != nil || !meta.Loaded {
+		return false
+	}
+	if payload != nil && payload.ID == item.PayloadID {
+		return payloadHasPreview(payload)
+	}
+	return payloadMetaHasPreview(item.PayloadMeta)
+}
+
+func payloadHasPreview(payload *store.Payload) bool {
+	return payload != nil && payloadMetaHasPreview(payload.Meta)
+}
+
+func payloadMetaHasPreview(raw string) bool {
+	var meta struct {
+		Preview string `json:"preview"`
+	}
+	return json.Unmarshal([]byte(raw), &meta) == nil && strings.TrimSpace(meta.Preview) != ""
 }
 
 // writeParkedStop writes the parked sibling of the row a paused run
@@ -106,20 +180,13 @@ func (r *Router) writeParkedStop(evt provider.ProviderEvent, meta backgroundTask
 		log.Printf("triage: parked stop turn index %s: %v", id, err)
 	}
 
-	var payload *store.Payload
-	outputState := "ready"
-	if report := agentReportFromNotification(launch, evt.Content); report != "" || meta.OutputFile != "" {
-		if payload, err = agentReportPayload("tool-call-result:"+id, meta.OutputFile, report, now); err != nil {
-			return err
-		}
-		outputState = "loaded"
+	report, err := newAgentStopReport("tool-call-result:"+id, launch, meta, evt.Content, now)
+	if err != nil {
+		return err
 	}
 	terminal := terminalMetaFromNotification(meta)
 	terminal.Source = "task_notification"
-	itemMeta := mergeBackgroundCompletionItemMeta(
-		backgroundCompletionItemMeta(terminal, true),
-		backgroundNotificationCompletionMeta(meta, payload != nil, outputState, "", ""),
-	)
+	itemMeta := mergeBackgroundCompletionItemMeta(backgroundCompletionItemMeta(terminal, true), report.meta)
 	run := map[string]any{
 		store.MetaKeyParkedCommands: park.waiting,
 		store.MetaKeyRunStartedAt:   startedAt,
@@ -154,7 +221,7 @@ func (r *Router) writeParkedStop(evt provider.ProviderEvent, meta backgroundTask
 	}
 	// The row's push announces its launch to the tray when it lands
 	// (appendTrayLaunches), now or at the drain that persists it.
-	return r.deferOrPersist(evt.ThreadID, queuedPersistence{item: stop, payload: payload})
+	return r.deferOrPersist(evt.ThreadID, queuedPersistence{item: stop, payload: report.payload})
 }
 
 // agentRunStart reads when the run that stops now began. The first run

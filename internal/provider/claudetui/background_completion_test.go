@@ -180,6 +180,34 @@ func TestReconstructBackgroundCompletionFromRequestBody(t *testing.T) {
 	}
 }
 
+// An agent's <task-notification> carries its final report in <result>
+// after the `Agent "…" completed` bell (LocalAgentTask.tsx). The rebuilt
+// system/task_notification carries the report as its summary, as the
+// headless envelope does, and a command's keeps its own summary.
+func TestReconstructAgentCompletionCarriesItsResult(t *testing.T) {
+	rp := newReconParser(t)
+
+	agent := "<task-notification>\n<task-id>agent1</task-id>\n<tool-use-id>toolu_agent</tool-use-id>\n<output-file>/tmp/agent1.output</output-file>\n<status>completed</status>\n" +
+		"<summary>Agent \"Explore\" completed</summary>\n<result>The report.\n\nSecond paragraph.</result>\n<usage><total_tokens>10</total_tokens></usage>\n</task-notification>"
+	command := taskNotificationXML("bgtask1", "toolu_bg", "completed", "/tmp/out.txt",
+		`Background command "tick" completed (exit code 0)`)
+	rp.drive("", bgResumeReqBodyMulti(agent, command), endTurnSSE())
+
+	notifs := findKind(rp.out, provider.EventBackgroundTaskNotification)
+	if len(notifs) != 2 {
+		t.Fatalf("EventBackgroundTaskNotification=%d want 2 (kinds %v)", len(notifs), kindsOf(rp.out))
+	}
+	want := map[string]string{
+		"toolu_agent": "The report.\n\nSecond paragraph.",
+		"toolu_bg":    `Background command "tick" completed (exit code 0)`,
+	}
+	for _, notif := range notifs {
+		if notif.Content != want[notif.ItemID] {
+			t.Fatalf("notification %s summary=%q want %q", notif.ItemID, notif.Content, want[notif.ItemID])
+		}
+	}
+}
+
 // TestReconstructBackgroundCompletionFromSystemBundle is the regression test
 // for the reported bug. When a sibling backgrounded command finishes while the
 // agent is blocked on TaskOutput(block=true), the CLI flushes the completions

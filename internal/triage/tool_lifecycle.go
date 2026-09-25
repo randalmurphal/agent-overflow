@@ -951,6 +951,10 @@ type backgroundTaskTerminalMeta struct {
 	// creates carries the caption from its first upsert rather than
 	// gaining it a write later.
 	NotificationSummary string `json:"-"`
+	// AgentReport is INTERNAL too: an agent stop's report
+	// (newAgentStopReport), which its sibling carries from its first
+	// write. writeNotificationTerminal is its only writer.
+	AgentReport *agentStopReport `json:"-"`
 }
 
 func decodeBackgroundTaskTerminalMeta(raw json.RawMessage) backgroundTaskTerminalMeta {
@@ -1449,7 +1453,17 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 	}
 
 	var payload *store.Payload
-	if completion.PayloadID == "" && meta.OutputFile != "" {
+	if meta.AgentReport != nil && (existing == nil || !showsAgentStopReport(*existing, nil)) {
+		// An agent's stop lands with its report, so its card never gains
+		// or changes its answer after it mounts. A sibling that already
+		// shows one keeps it.
+		payload = meta.AgentReport.payload
+		if payload != nil {
+			completion.PayloadID = payload.ID
+		}
+		completion.Meta = mergeBackgroundCompletionItemMeta(completion.Meta, meta.AgentReport.meta)
+	}
+	if payload == nil && completion.PayloadID == "" && meta.OutputFile != "" {
 		report := ""
 		if notificationFound {
 			report = agentReportFromNotification(launch, notification.Summary)

@@ -337,7 +337,7 @@ type parkedStop struct {
 }
 
 // AgentLaunchDescription is the task line an agent launch names its agent
-// by, the launch input's description as agentFinishedBell reads it. A
+// by, the description the CLI's notifications name it by. A
 // resume carrier's own input names the recipient, not the agent, so its
 // stamped description comes first.
 func AgentLaunchDescription(launch store.Item) string {
@@ -365,14 +365,16 @@ func (r *Router) drainTaskNotificationStash(evt provider.ProviderEvent, meta bac
 	if !stashFound {
 		return nil
 	}
-	return r.writeNotificationTerminal(evt, meta, launch, &stash)
+	return r.writeNotificationTerminal(evt, meta, launch, &stash, nil)
 }
 
 // writeNotificationTerminal writes the completion sibling a
 // notification's stop ends launch with, merging the host terminal its
-// task_updated stashed when there is one.
-func (r *Router) writeNotificationTerminal(evt provider.ProviderEvent, meta backgroundTaskNotificationMeta, launch store.Item, stash *store.PendingBackgroundTaskTerminal) error {
+// task_updated stashed when there is one. An agent's stop passes its
+// report, which the sibling carries from its first write.
+func (r *Router) writeNotificationTerminal(evt provider.ProviderEvent, meta backgroundTaskNotificationMeta, launch store.Item, stash *store.PendingBackgroundTaskTerminal, report *agentStopReport) error {
 	terminalMeta := terminalMetaFromNotification(meta)
+	terminalMeta.AgentReport = report
 	// Carry the notification's own summary into the sibling's FIRST
 	// write. This path creates the completion row before the
 	// notification row exists, so leaving the caption to the enrich
@@ -417,8 +419,9 @@ func terminalMetaFromNotification(meta backgroundTaskNotificationMeta) backgroun
 }
 
 // The caller guarantees launch is a resolved backgrounded tool_call
-// (handleBackgroundTaskNotification's gates); a missing sibling row is
-// the no-op path.
+// (handleBackgroundTaskNotification's gates). The sibling is enriched
+// wherever its write waits, stored or queued behind an open stream
+// (patchWrittenRow); a missing sibling row is the no-op path.
 func (r *Router) enrichExistingBackgroundCompletionFromNotification(
 	evt provider.ProviderEvent,
 	launch store.Item,
@@ -427,35 +430,34 @@ func (r *Router) enrichExistingBackgroundCompletionFromNotification(
 	outputState string,
 	readError string,
 ) error {
-	completionID := ToolCompletionID(launch.ID)
-	completion, ok, err := r.store.GetThreadItemForWrite(evt.ThreadID, completionID)
-	if err != nil {
-		return fmt.Errorf("task notification completion lookup %s: %w", completionID, err)
-	}
-	if !ok || completion.Kind != itemKindBackgroundDone {
-		return nil
-	}
-	completion.UpdatedAt = eventTimestampMillis(evt)
-	if payload != nil {
-		completion.PayloadID = payload.ID
-	}
-	completion.Meta = mergeBackgroundCompletionItemMeta(
-		completion.Meta,
-		backgroundNotificationCompletionMeta(
-			meta, payload != nil, outputState, readError,
-			// NO caption on the enrich path. This function only ever
-			// runs against an already-persisted (and likely mounted)
-			// sibling, and a caption materialising here would grow the
-			// card after first render, which the row contract forbids
-			// (frontend chat AGENTS.md §row shell stability). A caption
-			// that misses its one chance (the sibling's first write) is
-			// simply absent — the hide is existence-based either way,
-			// and for output_file tasks a caption is vetoed everywhere
-			// (see captionForSiblingWrite).
-			"",
-		),
-	)
-	return r.maybeDeferOrPersist(evt.ThreadID, completion, payload)
+	_, err := r.patchWrittenRow(evt.ThreadID, ToolCompletionID(launch.ID), func(completion *store.Item, carried **store.Payload) bool {
+		if completion.Kind != itemKindBackgroundDone {
+			return false
+		}
+		completion.UpdatedAt = eventTimestampMillis(evt)
+		if payload != nil {
+			completion.PayloadID = payload.ID
+			*carried = payload
+		}
+		completion.Meta = mergeBackgroundCompletionItemMeta(
+			completion.Meta,
+			backgroundNotificationCompletionMeta(
+				meta, payload != nil, outputState, readError,
+				// NO caption on the enrich path. This function only ever
+				// runs against an already-written (and likely mounted)
+				// sibling, and a caption materialising here would grow the
+				// card after first render, which the row contract forbids
+				// (frontend chat AGENTS.md §row shell stability). A caption
+				// that misses its one chance (the sibling's first write) is
+				// simply absent — the hide is existence-based either way,
+				// and for output_file tasks a caption is vetoed everywhere
+				// (see captionForSiblingWrite).
+				"",
+			),
+		)
+		return true
+	})
+	return err
 }
 
 func (r *Router) resolveBackgroundTaskLaunch(threadID, eventItemIDValue, toolUseID, taskID string) (store.Item, bool, error) {
@@ -1024,18 +1026,31 @@ func formatByteCount(bytes int64) string {
 
 // agentReportFromNotification is the agent's final report as the
 // `task_notification` envelope carries it. For a `local_agent` task the
-// first envelope's `summary` is the agent's final assistant text in
-// full; a later envelope for the same task carries only the CLI's
-// `Agent "<description>" finished` bell, which is not a report. The
-// placeholder a summary-less envelope falls back to is not one either.
+// envelope of a stop the agent ended itself carries its final assistant
+// text in full. The rest are status, not a report: the CLI's
+// `Agent "<description>" <outcome>` line (agentStatusOutcomes) a later
+// envelope for the same stop carries, the bare description the envelope
+// of a stop the host made (a kill) carries, and the placeholder a
+// summary-less envelope falls back to.
 func agentReportFromNotification(launch store.Item, summary string) string {
 	summary = notificationCaptionSummary(summary)
-	if summary == "" || summary == agentFinishedBell(launch) {
+	description := AgentLaunchDescription(launch)
+	if summary == "" || summary == description {
+		return ""
+	}
+	if outcome, ok := strings.CutPrefix(summary, `Agent "`+description+`" `); ok && agentStatusOutcomes[outcome] {
 		return ""
 	}
 	return summary
 }
 
-func agentFinishedBell(launch store.Item) string {
-	return `Agent "` + launchInputIdentity(launch.Meta).Description + `" finished`
+// agentStatusOutcomes are the outcomes the CLI's agent status line
+// names without detail (enqueueAgentNotification, 2.1.280). A failure's
+// line (`failed: <error>`, `was stopped: <error>`) carries the error and
+// stands as its report.
+var agentStatusOutcomes = map[string]bool{
+	"finished":              true,
+	"was stopped":           true,
+	"was stopped by Claude": true,
+	"was stopped by user":   true,
 }

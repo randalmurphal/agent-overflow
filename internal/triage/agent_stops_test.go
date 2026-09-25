@@ -431,3 +431,233 @@ func TestWakeAnnouncesTheAgentAfterItsRow(t *testing.T) {
 		t.Errorf("wake row summary = %q", mustGetItem(t, st, "t1", wakeID).Summary)
 	}
 }
+
+// stopReportShown is the answer a stop's row shows on its card, "" for
+// none: the report head when the row says its notification loaded
+// (showsAgentStopReport), as the frontend reads it.
+func stopReportShown(t *testing.T, row store.Item) string {
+	t.Helper()
+	if !showsAgentStopReport(row, nil) {
+		return ""
+	}
+	var meta struct {
+		Preview string `json:"preview"`
+	}
+	if err := json.Unmarshal([]byte(row.PayloadMeta), &meta); err != nil {
+		t.Fatalf("decode the payload meta of %s: %v", row.ID, err)
+	}
+	return meta.Preview
+}
+
+// stopReportPushes lists the answer each pushed write of row id showed.
+func stopReportPushes(t *testing.T, events []emitted, id string) []string {
+	t.Helper()
+	var shown []string
+	for _, row := range itemUpserts(events) {
+		if row.ID == id {
+			shown = append(shown, stopReportShown(t, row))
+		}
+	}
+	return shown
+}
+
+// assertStopShows checks that the stored ending sibling of launchID, and
+// every push of it in events, shows report: its card mounts with its
+// answer and never changes it.
+func assertStopShows(t *testing.T, st *store.Store, events []emitted, launchID, report string) {
+	t.Helper()
+	id := ToolCompletionID(launchID)
+	pushes := stopReportPushes(t, events, id)
+	if len(pushes) == 0 {
+		t.Fatalf("%s was never pushed", id)
+	}
+	for i, shown := range pushes {
+		if shown != report {
+			t.Fatalf("push %d of %s showed %q, want %q (all pushes: %q)", i, id, shown, report, pushes)
+		}
+	}
+	if shown := stopReportShown(t, mustGetItem(t, st, "t1", id)); shown != report {
+		t.Fatalf("stored %s shows %q, want %q", id, shown, report)
+	}
+}
+
+// An agent's ending sibling lands with its report in its first write:
+// no push of it shows the card without its answer.
+func TestAgentStopLandsWithItsReport(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	parkLaunchAgent(t, router, "t1", "agent", "task-agent", "")
+	parkTerminal(t, router, "t1", "agent", "task-agent")
+	emissions.reset()
+	parkNotify(t, router, "t1", "agent", "task-agent", "The final report.", "u1")
+	assertStopShows(t, st, emissions.snapshot(), "agent", "The final report.")
+}
+
+// A stop that arrives while the main agent streams waits behind the
+// stream, and lands with its report when the stream ends. The report
+// used to be attached by a second write that looked only in the store,
+// missed the queued row and was dropped.
+func TestAgentStopQueuedBehindAStreamKeepsItsReport(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	parkLaunchAgent(t, router, "t1", "agent", "task-agent", "")
+	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: "t1", Content: "Main is talking"})
+	parkTerminal(t, router, "t1", "agent", "task-agent")
+	emissions.reset()
+	parkNotify(t, router, "t1", "agent", "task-agent", "The final report.", "u1")
+	if queued := strings.Join(queuedRows(router, "t1"), ","); queued != ToolCompletionID("agent") {
+		t.Fatalf("queued rows = %q, want the stop behind the main stream", queued)
+	}
+	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta()})
+	router.WaitForPendingSettles()
+	assertStopShows(t, st, emissions.snapshot(), "agent", "The final report.")
+}
+
+// The CLI hands a stop to the model again at its next tool round, and
+// that notice carries only the `Agent "…" finished` bell (or the report
+// again). A later notice of a recorded stop never replaces or clears the
+// report, and writes nothing while there is nothing to add, whether the
+// stop is stored or still queued behind a stream.
+func TestLaterNoticeOfAnAgentStopKeepsItsReport(t *testing.T) {
+	bell := `Agent "Spike agent" finished`
+	t.Run("stored", func(t *testing.T) {
+		router, st, emissions := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 0)
+		parkLaunchAgent(t, router, "t1", "agent", "task-agent", "")
+		parkTerminal(t, router, "t1", "agent", "task-agent")
+		parkNotify(t, router, "t1", "agent", "task-agent", "The final report.", "u1")
+		stored := mustGetItem(t, st, "t1", ToolCompletionID("agent"))
+
+		emissions.reset()
+		parkNotify(t, router, "t1", "agent", "task-agent", bell, "u2")
+		parkNotify(t, router, "t1", "agent", "task-agent", "A different report.", "u3")
+		if pushes := stopReportPushes(t, emissions.snapshot(), ToolCompletionID("agent")); len(pushes) != 0 {
+			t.Fatalf("later notices rewrote the stop: pushes %q", pushes)
+		}
+		again := mustGetItem(t, st, "t1", ToolCompletionID("agent"))
+		if again.Meta != stored.Meta || again.PayloadID != stored.PayloadID || again.PayloadMeta != stored.PayloadMeta || again.UpdatedAt != stored.UpdatedAt {
+			t.Fatalf("later notices changed the stop:\n%+v\n%+v", stored, again)
+		}
+	})
+	// A host terminal stashed after the stop was written merges into the
+	// sibling again with the next notice, which still keeps the report.
+	t.Run("stashed after the stop", func(t *testing.T) {
+		router, st, _ := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 0)
+		parkLaunchAgent(t, router, "t1", "agent", "task-agent", "")
+		parkNotify(t, router, "t1", "agent", "task-agent", "The final report.", "u1")
+		parkTerminal(t, router, "t1", "agent", "task-agent")
+		parkNotify(t, router, "t1", "agent", "task-agent", bell, "u2")
+		if shown := stopReportShown(t, mustGetItem(t, st, "t1", ToolCompletionID("agent"))); shown != "The final report." {
+			t.Fatalf("stop shows %q, want the report it was written with", shown)
+		}
+	})
+	t.Run("queued", func(t *testing.T) {
+		router, st, emissions := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 0)
+		parkLaunchAgent(t, router, "t1", "agent", "task-agent", "")
+		parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: "t1", Content: "Main is talking"})
+		parkTerminal(t, router, "t1", "agent", "task-agent")
+		emissions.reset()
+		parkNotify(t, router, "t1", "agent", "task-agent", "The final report.", "u1")
+		parkNotify(t, router, "t1", "agent", "task-agent", bell, "u2")
+		parkNotify(t, router, "t1", "agent", "task-agent", "A different report.", "u3")
+		parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta()})
+		router.WaitForPendingSettles()
+		assertStopShows(t, st, emissions.snapshot(), "agent", "The final report.")
+	})
+}
+
+// A stop another signal recorded first has no report yet: a kill's
+// task_updated writes the ending sibling before the notification. The
+// notification gives it the report, stored or still queued behind a
+// stream, and a later notice keeps it.
+func TestNoticeGivesAKilledStopItsReport(t *testing.T) {
+	kill := func(t *testing.T, router *Router) {
+		t.Helper()
+		parkHandle(t, router, provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "agent",
+			Meta: parkMeta(t, map[string]any{"task_id": "task-agent", "tool_use_id": "agent", "status": "killed", "is_error": true, "source": "task_updated"}),
+		})
+	}
+	stopped := func(t *testing.T, router *Router, summary, uuid string) {
+		t.Helper()
+		parkHandle(t, router, provider.ProviderEvent{
+			Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1", ItemID: "agent", Content: summary,
+			Meta: parkMeta(t, map[string]any{"task_id": "task-agent", "tool_use_id": "agent", "status": "stopped", "uuid": uuid, "output_file": "/tmp/agent-task-agent.output"}),
+		})
+	}
+	t.Run("stored", func(t *testing.T) {
+		router, st, emissions := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 0)
+		parkLaunchAgent(t, router, "t1", "agent", "task-agent", "")
+		kill(t, router)
+		if shown := stopReportShown(t, mustGetItem(t, st, "t1", ToolCompletionID("agent"))); shown != "" {
+			t.Fatalf("the kill's sibling shows %q before any notification", shown)
+		}
+		emissions.reset()
+		stopped(t, router, "Spike agent", "u0")
+		stopped(t, router, `Agent "Spike agent" was stopped by user`, "u0b")
+		if pushes := stopReportPushes(t, emissions.snapshot(), ToolCompletionID("agent")); len(pushes) != 0 {
+			t.Fatalf("a notice without a report rewrote the stop: pushes %q", pushes)
+		}
+		stopped(t, router, "Partial findings.", "u1")
+		emissions.reset()
+		stopped(t, router, `Agent "Spike agent" was stopped`, "u2")
+		if pushes := stopReportPushes(t, emissions.snapshot(), ToolCompletionID("agent")); len(pushes) != 0 {
+			t.Fatalf("a later notice rewrote the stop: pushes %q", pushes)
+		}
+		if shown := stopReportShown(t, mustGetItem(t, st, "t1", ToolCompletionID("agent"))); shown != "Partial findings." {
+			t.Fatalf("stop shows %q, want the notification's report", shown)
+		}
+		if status := mustGetItem(t, st, "t1", ToolCompletionID("agent")).Status; status != statusKilled {
+			t.Fatalf("stop status = %q, want %q", status, statusKilled)
+		}
+	})
+	t.Run("queued", func(t *testing.T) {
+		router, st, emissions := newTestRouter(t)
+		createTestThread(t, st, "t1")
+		seedOpenTurn(t, router, st, "t1", 0)
+		parkLaunchAgent(t, router, "t1", "agent", "task-agent", "")
+		parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: "t1", Content: "Main is talking"})
+		emissions.reset()
+		kill(t, router)
+		stopped(t, router, "Partial findings.", "u1")
+		if queued := strings.Join(queuedRows(router, "t1"), ","); queued != ToolCompletionID("agent") {
+			t.Fatalf("queued rows = %q, want the one stop behind the main stream", queued)
+		}
+		parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta()})
+		router.WaitForPendingSettles()
+		assertStopShows(t, st, emissions.snapshot(), "agent", "Partial findings.")
+	})
+}
+
+// A notification's summary is an agent's report unless it is status: the
+// CLI's detail-free outcome line, the bare description a kill's
+// envelope carries, or the summary-less placeholder.
+func TestAgentReportFromNotification(t *testing.T) {
+	launch := store.Item{Meta: `{"toolName":"Agent","input":{"description":"Spike agent","prompt":"go"}}`}
+	for _, tc := range []struct{ summary, want string }{
+		{"The final report.", "The final report."},
+		{`Agent "Spike agent" failed: boom`, `Agent "Spike agent" failed: boom`},
+		{`Agent "Spike agent" was stopped: boom`, `Agent "Spike agent" was stopped: boom`},
+		{`Agent "Other agent" finished`, `Agent "Other agent" finished`},
+		{`Agent "Spike agent" finished`, ""},
+		{`Agent "Spike agent" was stopped`, ""},
+		{`Agent "Spike agent" was stopped by user`, ""},
+		{`Agent "Spike agent" was stopped by Claude`, ""},
+		{"Spike agent", ""},
+		{backgroundTaskNotificationPlaceholderSummary, ""},
+		{"  ", ""},
+	} {
+		if got := agentReportFromNotification(launch, tc.summary); got != tc.want {
+			t.Errorf("agentReportFromNotification(%q) = %q, want %q", tc.summary, got, tc.want)
+		}
+	}
+}

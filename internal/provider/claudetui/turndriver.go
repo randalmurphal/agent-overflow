@@ -318,7 +318,7 @@ func (r *reconstructor) emitBackgroundCompletions(messages []json.RawMessage) {
 		}
 		r.seenTaskTerminals[fields.TaskID] = struct{}{}
 		r.emit(taskUpdatedLine(fields.TaskID, fields.ToolUseID, fields.Status))
-		r.emit(taskNotificationLine(fields.TaskID, fields.ToolUseID, fields.Status, fields.OutputFile, fields.Summary))
+		r.emit(taskNotificationLine(fields.TaskID, fields.ToolUseID, fields.Status, fields.OutputFile, fields.EnvelopeSummary()))
 		r.logBgDecision(decisionLog{Event: "bg_completion", TaskID: fields.TaskID, ToolUseID: fields.ToolUseID, Status: fields.Status, Action: "emitted"})
 		return true // process every notification in the body
 	})

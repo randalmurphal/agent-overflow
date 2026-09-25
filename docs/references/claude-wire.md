@@ -953,7 +953,30 @@ A background agent completed a task:
 
 The 5s-subagent-alone scenario (no concurrent foreground tool) emits
 the structured envelope as documented above and never the inline XML.
-The two channels are mutually exclusive in practice.
+For a command the two channels are mutually exclusive in practice. An
+agent's stop can arrive on both: the structured envelope first, then the
+same XML on the `isReplay` echo when the model consumes the queued
+notification at its next tool round.
+
+An agent's block (`enqueueAgentNotification`, 2.1.280) escapes every
+child and adds sections after `<summary>`:
+
+```
+<summary>Agent "<description>" finished</summary>
+<note>…</note>
+<result>the agent's final report</result>
+<usage><subagent_tokens>…</subagent_tokens><tool_uses>…</tool_uses><duration_ms>…</duration_ms></usage>
+```
+
+`<summary>` is a status line, never the report: `finished`,
+`failed: <error>`, `was stopped`, `was stopped by user`,
+`was stopped by Claude`, `was stopped: <error>`, or
+`stopped at its N-turn limit (…)`. The report is `<result>`, absent when
+the agent produced none. The structured envelope carries the report as
+its `summary`; the parser gives the XML path the same shape
+(`TaskNotificationFields.EnvelopeSummary`). A stop the host makes (a
+kill, a wind-down) sends the structured envelope with `status:"stopped"`
+and the task's bare description as `summary`.
 
 `internal/provider/claude/parse_user_replay.go` extracts the inner
 fields out of the suppressed `isReplay` envelope before discarding it

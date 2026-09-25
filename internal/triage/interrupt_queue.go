@@ -83,6 +83,44 @@ func (r *Router) rowWrittenOrQueued(threadID, id string) (bool, error) {
 	return found, nil
 }
 
+// patchWrittenRow applies patch to row id of threadID where its latest
+// write waits: queued behind an open stream, where the row then lands
+// patched in its one write, or in the store, where it is written again.
+// patch gets the row and the payload that write carries (nil for a
+// stored row, whose payload meta rides on the item), and reports whether
+// it changed them. Reports whether the row exists. The drain lock keeps
+// a drain from moving the row from the queue to the store between the
+// two lookups.
+func (r *Router) patchWrittenRow(threadID, id string, patch func(item *store.Item, payload **store.Payload) bool) (bool, error) {
+	lock := r.drainLock(threadID)
+	lock.Lock()
+	r.mu.Lock()
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		for i := len(st.interruptQueue) - 1; i >= 0; i-- {
+			if queued := &st.interruptQueue[i]; queued.item.ID == id {
+				patch(&queued.item, &queued.payload)
+				r.mu.Unlock()
+				lock.Unlock()
+				return true, nil
+			}
+		}
+	}
+	r.mu.Unlock()
+	item, found, err := r.store.GetThreadItemForWrite(threadID, id)
+	lock.Unlock()
+	if err != nil {
+		return false, fmt.Errorf("triage: row lookup %s/%s: %w", threadID, id, err)
+	}
+	if !found {
+		return false, nil
+	}
+	var payload *store.Payload
+	if !patch(&item, &payload) {
+		return true, nil
+	}
+	return true, r.maybeDeferOrPersist(threadID, item, payload)
+}
+
 // hasQueuedInterruptItems reports whether any deferred persists are
 // queued for threadID. The promoted-echo boundary path uses it to
 // decide whether a drain (and a re-bump of the promoted row) is needed

@@ -2721,3 +2721,64 @@ func TestMonitorOutputFileIsReadAsCapturedOutput(t *testing.T) {
 	}
 	assertMonitorOutput(sibling)
 }
+
+// A command's sibling written while the main agent streams waits behind
+// the stream, and the notification's output reaches it there: it lands
+// loaded when the stream ends, not without the output the notification
+// read.
+func TestBackgroundTaskNotification_EnrichesACompletionQueuedBehindAStream(t *testing.T) {
+	router, st, emissions := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+
+	startMeta, _ := json.Marshal(map[string]any{
+		"toolName":      "Bash",
+		"is_background": true,
+		"input":         map[string]any{"command": "sleep 5; echo done"},
+	})
+	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "bg-queued", ItemType: "Bash", Meta: startMeta})
+	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: "t1", Content: "Main is talking"})
+	parkHandle(t, router, provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "bg-queued",
+		Meta: parkMeta(t, map[string]any{"task_id": "task-queued", "tool_use_id": "bg-queued", "status": "completed", "source": "task_output"}),
+	})
+	if queued := strings.Join(queuedRows(router, "t1"), ","); queued != ToolCompletionID("bg-queued") {
+		t.Fatalf("queued rows = %q, want the sibling behind the main stream", queued)
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "queued-output.txt")
+	if err := os.WriteFile(outputPath, []byte("queued output\n"), 0o644); err != nil {
+		t.Fatalf("write output file: %v", err)
+	}
+	parkHandle(t, router, provider.ProviderEvent{
+		Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1", ItemID: "bg-queued",
+		Content: `Background command "sleep 5; echo done" completed`,
+		Meta:    parkMeta(t, map[string]any{"task_id": "task-queued", "tool_use_id": "bg-queued", "status": "completed", "output_file": outputPath}),
+	})
+	emissions.reset()
+	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: normalTurnCompleteMeta()})
+	router.WaitForPendingSettles()
+
+	var pushed []string
+	for _, row := range itemUpserts(emissions.snapshot()) {
+		if row.ID == ToolCompletionID("bg-queued") {
+			state, _ := decodeItemMetaMap(t, row.Meta)["notification_output_state"].(string)
+			pushed = append(pushed, state)
+		}
+	}
+	if len(pushed) == 0 {
+		t.Fatal("the drain never pushed the sibling")
+	}
+	for _, state := range pushed {
+		if state != "loaded" {
+			t.Fatalf("sibling pushes at the drain showed output states %q, want loaded", pushed)
+		}
+	}
+	done := mustGetItem(t, st, "t1", ToolCompletionID("bg-queued"))
+	if done.PayloadID == "" {
+		t.Fatal("the drained sibling has no payload: the notification's output never reached it")
+	}
+	if got := decodeItemMetaMap(t, done.Meta)["notification_output_state"]; got != "loaded" {
+		t.Fatalf("stored notification_output_state = %v, want loaded", got)
+	}
+}

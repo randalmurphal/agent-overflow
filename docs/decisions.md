@@ -212,8 +212,10 @@ Mechanism in
   (ruling 2026-09-23). An agent's rows come from the live stream and the
   session mirror; `transcript_mirror_degraded` is the only degraded
   behavior. The completion preview is the report in the notification
-  `summary`. A command's `output_file` is still read into the bounded
-  `command_output` payload.
+  `summary`, written with the card; a later notification of the same stop
+  can give an answerless card its report but never replaces or clears one
+  (ruling 2026-09-25). A command's `output_file` is still read into the
+  bounded `command_output` payload.
 - Monitor idle-wake: the CLI writes `<task-notification>` to the
   transcript only. A transcript-tail backfill was proposed and declined.
 - A Claude Stop kills every running or parked background agent, from any

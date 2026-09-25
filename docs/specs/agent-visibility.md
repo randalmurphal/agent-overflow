@@ -141,8 +141,15 @@ rings no bell, and nothing hides a stop's card later.
   that turn is written answerless at turn end, and an answer sampled in a
   later turn stays a delivery activity. A Claude background completion
   carries a preview of the agent's final assistant text as the notification
-  `summary` reports it. Completion never reads the sidechain transcript
-  (ruling 2026-09-23); a summary without a report leaves the preview empty.
+  `summary` reports it (`<result>` in the synthetic XML), from the
+  completion's first write, also when that write waits behind an open
+  stream. A later notification of the same stop only gives an answerless
+  completion its report, such as one a kill wrote first; it never replaces
+  or clears one (ruling 2026-09-25). The CLI's status line
+  (`Agent "…" finished`, `… was stopped`) and the bare description a
+  kill's notification carries are not a report. Completion never reads the
+  sidechain transcript (ruling 2026-09-23); a summary without a report
+  leaves the preview empty.
   The agent's rows are the paged child rows the live stream and the session
   mirror wrote, not a copy in the completion payload. The answer itself is a NORMAL
   message, not a special block (ruling 2026-08-23): a Codex child's
