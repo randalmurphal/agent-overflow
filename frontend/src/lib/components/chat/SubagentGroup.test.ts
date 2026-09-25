@@ -262,7 +262,7 @@ describe('<SubagentGroup>', () => {
   it('shows RowError for terminal failed parent statuses', () => {
     const cases = [
       { status: 'errored' as const, expected: 'Agent failed' },
-      { status: 'killed' as const, expected: 'Tool call stopped' },
+      { status: 'killed' as const, expected: 'Agent stopped' },
       { status: 'declined' as const, expected: 'Tool call declined' },
     ];
 
@@ -308,7 +308,7 @@ describe('<SubagentGroup>', () => {
     const stopped = render(SubagentGroupTestHarness, {
       props: { group: mkGroup({ parentId: 'bg', parentItem: launch, completion: completionFor('host_exit') }) },
     });
-    expect(stopped.getByTestId('subagent-group-error').textContent).toContain('Tool call stopped');
+    expect(stopped.getByTestId('subagent-group-error').textContent).toContain('Agent stopped');
   });
 
   it('keeps the status slot wrapper present in both running and completed states', () => {

@@ -332,7 +332,7 @@ func TestClaudeHappyPathTurnsAndInterruptAck(t *testing.T) {
 	// turn — and nothing precedes it, because init is per-turn now.
 	p.send(`{"type":"control_request","request_id":"so-1","request":{"subtype":"interrupt"}}`)
 	ack := p.expectLine(testTimeout)
-	if ack != `{"type":"control_response","response":{"subtype":"success","request_id":"so-1","response":{}}}` {
+	if ack != `{"type":"control_response","response":{"subtype":"success","request_id":"so-1","response":{"still_queued":[]}}}` {
 		t.Fatalf("interrupt ack = %q", ack)
 	}
 
@@ -393,7 +393,7 @@ func TestClaudeInterruptAbortsWaitSignalTurn(t *testing.T) {
 	p.expectLineContaining(`"text":"working"`, testTimeout)
 
 	p.send(`{"type":"control_request","request_id":"stop-1","request":{"subtype":"interrupt"}}`)
-	if got := p.expectLine(testTimeout); got != `{"type":"control_response","response":{"subtype":"success","request_id":"stop-1","response":{}}}` {
+	if got := p.expectLine(testTimeout); got != `{"type":"control_response","response":{"subtype":"success","request_id":"stop-1","response":{"still_queued":[]}}}` {
 		t.Fatalf("interrupt ack = %q", got)
 	}
 	result := p.expectLine(testTimeout)

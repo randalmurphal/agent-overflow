@@ -364,7 +364,7 @@
     if (statusItem.status === 'killed' && completionEndedBySessionDeath(statusMeta)) {
       return SESSION_DIED_ROW_ERROR;
     }
-    return rowErrorForStatus(statusItem.status, 'Agent failed') ?? {
+    return rowErrorForStatus(statusItem.status, 'Agent failed', 'Agent stopped') ?? {
       tone: 'error' as const,
       msg: 'Agent failed',
     };

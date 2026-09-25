@@ -33,6 +33,11 @@ control channel aligned with verified provider behavior.
   scenario file, then the built-in provider fallback.
 - The engine owns common step execution, interrupt state, gate buffering, and
   progress reports. Adapters own provider framing and terminal responses.
+- The Claude adapter follows the background tasks the process announced off
+  the frames it wrote (`claude_tasks.go`) and answers an interrupt with the
+  kill frames the CLI writes for them. A scenario announces a task the way
+  the CLI does (level set, `task_started`, the async ack) and never scripts
+  the kill an interrupt causes.
 - Scope completion and buffered advances to a turn. An advance must never cross
   into the next turn; interruption discards remaining steps and advances.
 - Claude emits `system/init` and replay user echo once per received user turn.

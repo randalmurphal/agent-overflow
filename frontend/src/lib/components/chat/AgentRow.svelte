@@ -185,7 +185,7 @@
   let rowError = $derived(
     completionEndedBySessionDeath(statusItemMeta) && effectiveStatusItem.status === 'killed'
       ? SESSION_DIED_ROW_ERROR
-      : rowErrorWithFallback(effectiveStatusItem, { meta: statusMeta, fallback: 'Agent failed' }),
+      : rowErrorWithFallback(effectiveStatusItem, { meta: statusMeta, fallback: 'Agent failed', stopped: 'Agent stopped' }),
   );
 
   // Same door the card uses: the PANE decides where opening routes (the

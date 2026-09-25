@@ -52,9 +52,18 @@ export const SESSION_DIED_ROW_ERROR: RowErrorData = {
   msg: 'Session ended before the agent finished',
 };
 
-export function rowErrorForStatus(status: ItemStatus, fallback: string): RowErrorData | null {
+/**
+ * `stopped` is the copy for a `killed` row: a provider stop or kill, distinct
+ * from a failure. Agent surfaces pass "Agent stopped"; the default names a
+ * tool call.
+ */
+export function rowErrorForStatus(
+  status: ItemStatus,
+  fallback: string,
+  stopped = 'Tool call stopped',
+): RowErrorData | null {
   if (status === 'declined') return { tone: 'declined', msg: 'Tool call declined' };
-  if (status === 'killed') return { tone: 'error', msg: 'Tool call stopped' };
+  if (status === 'killed') return { tone: 'error', msg: stopped };
   if (status === 'errored') return { tone: 'error', msg: fallback };
   return null;
 }
@@ -71,10 +80,10 @@ export function rowErrorForStatus(status: ItemStatus, fallback: string): RowErro
  */
 export function rowErrorWithFallback(
   item: Pick<Item, 'kind' | 'status' | 'isBackground' | 'payloadMeta'>,
-  options: { meta?: Record<string, unknown> | null; fallback: string },
+  options: { meta?: Record<string, unknown> | null; fallback: string; stopped?: string },
 ): RowErrorData | null {
   if (deriveCompletionStatus(item, { meta: options.meta }) !== 'failure') return null;
-  return rowErrorForStatus(item.status, options.fallback) ?? {
+  return rowErrorForStatus(item.status, options.fallback, options.stopped) ?? {
     tone: 'error',
     msg: options.fallback,
   };

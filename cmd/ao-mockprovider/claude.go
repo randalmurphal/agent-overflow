@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"agent-overflow/internal/harness/control"
 	"agent-overflow/internal/harness/scenario"
@@ -119,6 +120,10 @@ type claudeAdapter struct {
 	// which is the linkage AO verifies a user message against, so a turn
 	// that wrote tool frames must not chain the echo past them.
 	leafUUID string
+
+	// tasks follows the background tasks this process announced, for the
+	// terminals an interrupt owes them (claude_tasks.go).
+	tasks *claudeTaskLedger
 }
 
 func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
@@ -127,6 +132,7 @@ func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
 		w:          w,
 		waiters:    make(map[string]chan bool),
 		mcpServers: claudeMCPServerSpecs(flagValue(args, "--mcp-config")),
+		tasks:      newClaudeTaskLedger(),
 	}
 	w.onLine(a.noteEnvelope)
 	return a
@@ -137,6 +143,7 @@ func newClaudeAdapter(e *engine, w *lineWriter, args []string) *claudeAdapter {
 // own tool traffic) and control/status envelopes do not advance the
 // conversation's resumable message leaf.
 func (a *claudeAdapter) noteEnvelope(line string) {
+	a.tasks.observe(line)
 	if !strings.Contains(line, `"uuid"`) {
 		return
 	}
@@ -278,8 +285,18 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		// is subtype-aware and validates the request's keys; see
 		// writeClaudeControlAck.
 		subtype := claudeControlRequestSubtype(env.Request)
+		if subtype == "interrupt" {
+			// The CLI kills its async agents before it acknowledges the
+			// interrupt, and stops foreground commands after (claude_tasks.go).
+			for _, frame := range a.tasks.killForInterrupt(time.Now()) {
+				a.w.writeLine(frame, 0, 0)
+			}
+		}
 		writeClaudeControlAck(a.w, env.RequestID, subtype, env.Request)
 		if subtype == "interrupt" {
+			for _, frame := range a.tasks.stopForegroundCommands() {
+				a.w.writeLine(frame, 0, 0)
+			}
 			a.e.interruptTurn("")
 		}
 	case "control_response":
@@ -369,7 +386,7 @@ func claudeEnvelopeUUID(line []byte) string {
 // captured from 2.1.170. handleLine writes the interrupt control_response first
 // so AO's parser can correlate that ack with this error_during_execution result.
 func (a *claudeAdapter) sendInterruptedTurn(vars scenario.Vars) {
-	a.w.writeLine(mustJSON(map[string]any{
+	result := map[string]any{
 		"type":               "result",
 		"subtype":            "error_during_execution",
 		"duration_ms":        0,
@@ -386,7 +403,15 @@ func (a *claudeAdapter) sendInterruptedTurn(vars scenario.Vars) {
 		"fast_mode_state":    "off",
 		"uuid":               "mock-interrupt-" + vars["TURN"],
 		"errors":             []string{"[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"},
-	}), 0, 0)
+	}
+	if killed := a.tasks.lastKilledAgents(); killed > 0 {
+		// The turn's subagent_stats report the agents the interrupt killed
+		// (capture A); the kills are the only counts this mock keeps.
+		result["subagent_stats"] = map[string]any{
+			"killed": map[string]any{"parent": 0, "user": 0, "system": killed},
+		}
+	}
+	a.w.writeLine(mustJSON(result), 0, 0)
 }
 
 // writeInit emits the per-turn system/init line. Built with
@@ -570,10 +595,13 @@ var claudeControlRequestKeys = map[string][]string{
 // claudeControlAckPayloads is the success payload each subtype answers
 // with. A subtype absent from this map (but present in
 // claudeControlRequestKeys) answers a bare `{}`, which is what the CLI
-// itself returns for the apply-style requests — set_model, mcp_toggle,
-// interrupt and friends all answer `{subtype:"success"}` with no body,
-// and their callers only interpret success-vs-error.
+// itself returns for the apply-style requests — set_model, mcp_toggle
+// and friends all answer `{subtype:"success"}` with no body, and their
+// callers only interpret success-vs-error. The interrupt ack carries the
+// uuids of queued async user messages the interrupt cancelled
+// (interrupt_receipt_v1, claude-wire.md); this mock queues none.
 var claudeControlAckPayloads = map[string]string{
+	"interrupt":         `{"still_queued":[]}`,
 	"initialize":        claudeInitializeResponsePayload,
 	"get_context_usage": claudeContextUsageResponsePayload,
 	"background_tasks":  claudeBackgroundTasksResponsePayload,

@@ -557,11 +557,24 @@ step boundary.
 An inbound provider interrupt aborts the active scenario in the shared engine.
 It releases a blocked `waitSignal`/indefinite `stall`, skips all remaining
 steps at the next boundary, reports `turn_interrupted`, and then writes the
-provider-native terminal sequence: Claude's successful control ack followed by
+provider-native terminal sequence: Claude's successful control ack
+(`{"still_queued":[]}`) followed by
 `result{subtype:error_during_execution, terminal_reason:aborted_streaming}`;
 Codex's successful RPC response followed by
 `turn/completed{turn.status:interrupted}`. An interrupt received with no active
 or dispatching turn is a no-op and cannot poison the next turn.
+
+The Claude mock also kills the background tasks the session announced, the
+way the CLI does (claude-wire.md §Background task ownership): before the
+ack, every running or parked async agent and the background shells it owns
+get their `background_tasks_changed`, `task_updated{killed}` and
+`task_notification{stopped}` frames; after it, a foreground command still
+running gets `task_notification{stopped}` with `output_file:""`; the main
+thread's own background shells survive, and the result carries
+`subagent_stats.killed.system`. The mock reads the tasks off the frames it
+wrote (`cmd/ao-mockprovider/claude_tasks.go`), scenario emits included, so a
+scenario announces a task exactly as the CLI does and never scripts its
+kill.
 
 The embedded library (`internal/harness/scenario/library/*.json`)
 ships ready-made scripts. `HarnessListScenarios` returns the current

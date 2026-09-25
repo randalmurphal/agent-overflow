@@ -494,6 +494,6 @@ describe('<BackgroundTaskTrayRow> agent run state', () => {
       completion: { ...sessionDied, meta: JSON.stringify({ task_id: 'task-agent', status_source: 'host_exit' }) },
       status: 'completed',
     }), 'claude');
-    expect(stopped.getByTestId('agent-row-error').textContent).toContain('Tool call stopped');
+    expect(stopped.getByTestId('agent-row-error').textContent).toContain('Agent stopped');
   });
 });
