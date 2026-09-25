@@ -273,13 +273,29 @@
     }
   }
 
+  // Worktree directories are named after their branch by default, so the
+  // branch is shown only when it differs from the directory name.
+  function worktreeName(wt: WorktreeListItem): string {
+    return pathBasename(wt.path) || wt.path;
+  }
+
+  function distinctBranch(wt: WorktreeListItem): string {
+    const branch = wt.branch ?? '';
+    return branch === worktreeName(wt) ? '' : branch;
+  }
+
+  function worktreeRowLabel(wt: WorktreeListItem): string {
+    const branch = distinctBranch(wt);
+    return branch ? `${worktreeName(wt)} · ${branch}` : worktreeName(wt);
+  }
+
   async function requestRemove(wt: WorktreeListItem): Promise<void> {
     const ws = workspace;
     if (!ws) return;
     confirm = {
       path: wt.path,
-      label: pathBasename(wt.path) || wt.path,
-      branch: wt.branch ?? '',
+      label: worktreeName(wt),
+      branch: distinctBranch(wt),
       status: null,
       loading: true,
       pending: false,
@@ -485,7 +501,7 @@
             </div>
           {:else}
             <MenuItem
-              label={wt.branch ? `${pathBasename(wt.path) || wt.path} · ${wt.branch}` : pathBasename(wt.path) || wt.path}
+              label={worktreeRowLabel(wt)}
               checked={sameNormalizedPath(currentWorkspace, wt.path) && !stagingNewWorktree}
               disabled={workspaceChangingDisabled}
               title={workspaceChangingDisabled ? disabledReason : undefined}

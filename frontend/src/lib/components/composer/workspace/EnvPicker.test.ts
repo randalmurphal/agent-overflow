@@ -108,6 +108,20 @@ describe('<EnvPicker>', () => {
     });
   });
 
+  it('shows the branch beside a worktree only when it differs from the directory name', async () => {
+    const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
+    setBindingMock('GitListWorktrees', async () => [
+      { path: '/repo', branch: 'main', head: 'abc' },
+      { path: '/tmp/feat', branch: 'feat', head: 'def' },
+      { path: '/tmp/renamed', branch: 'other', head: 'ghi' },
+    ]);
+    const { getByTestId, findByRole } = render(EnvPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
+    await fireEvent.click(getByTestId('env-picker-trigger'));
+
+    expect((await findByRole('menuitem', { name: /^feat/ })).textContent).not.toContain('·');
+    expect((await findByRole('menuitem', { name: /renamed/ })).textContent).toContain('renamed · other');
+  });
+
   it('stages a new worktree without switching immediately', async () => {
     const pane = await buildPane(makeThread({ workspacePath: '/repo', projectPath: '/repo' }));
     setBindingMock('GitListWorktrees', async () => [{ path: '/repo', branch: 'main', head: 'abc' }]);
