@@ -14,6 +14,7 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Folder from '@lucide/svelte/icons/folder';
   import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
+  import GitBranchIcon from '@lucide/svelte/icons/git-branch';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import Icon from '../../primitives/Icon.svelte';
   import { composerTriggerClasses } from '../triggerClasses';
@@ -286,7 +287,7 @@
 
   function worktreeRowLabel(wt: WorktreeListItem): string {
     const branch = distinctBranch(wt);
-    return branch ? `${worktreeName(wt)} · ${branch}` : worktreeName(wt);
+    return branch ? `${branch} · ${worktreeName(wt)}` : worktreeName(wt);
   }
 
   async function requestRemove(wt: WorktreeListItem): Promise<void> {
@@ -388,6 +389,12 @@
   }
 </script>
 
+<!-- The icon trails the branch so every worktree row's text starts at the
+     same column whether or not it shows a branch. -->
+{#snippet branchName(branch: string)}
+  {branch}<span class="ml-1 inline-flex align-[-0.125em] text-fg-hint" aria-hidden="true"><Icon icon={GitBranchIcon} size={12} strokeWidth={2} /></span>
+{/snippet}
+
 {#if !hideTrigger}
 <button
   bind:this={triggerEl}
@@ -447,10 +454,11 @@
               data-testid="env-picker-confirm-row"
             >
               <div class="text-fg truncate">
-                Remove <span class="font-medium">{confirm.label}</span>
+                Remove
                 {#if confirm.branch}
-                  <span class="text-fg-hint">· {confirm.branch}</span>
-                {/if}?
+                  <span class="text-fg-hint">{@render branchName(confirm.branch)} ·</span>
+                {/if}
+                <span class="font-medium">{confirm.label}</span>?
               </div>
               {#if confirm.loading}
                 <div class="mt-1 text-[0.6875rem] text-fg-hint">Checking…</div>
@@ -514,6 +522,9 @@
                 : `Remove worktree ${pathBasename(wt.path) || wt.path}`}
               onAction={() => requestRemove(wt)}
             >
+              {#snippet labelContent()}
+                {#if distinctBranch(wt)}{@render branchName(distinctBranch(wt))}{' · '}{/if}{worktreeName(wt)}
+              {/snippet}
               {#snippet action()}
                 {#if wt.deleteBlocked}
                   <!-- Same pulsing running-dot as the sidebar: a faded

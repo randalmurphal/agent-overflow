@@ -14,6 +14,8 @@
 
   interface BaseProps {
     label: string;
+    /** Rich rendering of `label`; `label` remains the select event detail. */
+    labelContent?: Snippet;
     description?: string;
     icon?: Snippet;
     indicator?: Snippet;
@@ -44,6 +46,7 @@
 
   let {
     label,
+    labelContent,
     description,
     icon,
     indicator,
@@ -179,7 +182,7 @@
       </span>
     {/if}
     <span class="min-w-0 flex-1">
-      <span class="block truncate">{label}</span>
+      <span class="block truncate">{#if labelContent}{@render labelContent()}{:else}{label}{/if}</span>
       {#if description}
         <span class="block truncate text-[0.6875rem] leading-4 text-fg-hint">{description}</span>
       {/if}

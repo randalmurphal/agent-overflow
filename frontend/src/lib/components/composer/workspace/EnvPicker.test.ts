@@ -118,8 +118,12 @@ describe('<EnvPicker>', () => {
     const { getByTestId, findByRole } = render(EnvPicker, { props: { pane, workspaceLock: makeWorkspaceLock() } });
     await fireEvent.click(getByTestId('env-picker-trigger'));
 
-    expect((await findByRole('menuitem', { name: /^feat/ })).textContent).not.toContain('·');
-    expect((await findByRole('menuitem', { name: /renamed/ })).textContent).toContain('renamed · other');
+    const sameRow = await findByRole('menuitem', { name: /^feat/ });
+    expect(sameRow.textContent).not.toContain('·');
+    expect(sameRow.querySelector('.lucide-git-branch')).toBeNull();
+    const renamedRow = await findByRole('menuitem', { name: /renamed/ });
+    expect(renamedRow.textContent?.replace(/\s+/g, ' ')).toContain('other · renamed');
+    expect(renamedRow.querySelector('.lucide-git-branch')).not.toBeNull();
   });
 
   it('stages a new worktree without switching immediately', async () => {
@@ -312,7 +316,7 @@ describe('<EnvPicker>', () => {
     await fireEvent.click(trash);
 
     const confirmRow = await findByTestId('env-picker-confirm-row');
-    expect(confirmRow.textContent ?? '').toMatch(/Remove\s*wt-feature/);
+    expect(confirmRow.textContent ?? '').toMatch(/Remove\s*feat\s*·\s*wt-feature/);
 
     const removeBtn = await findByTestId('env-picker-confirm-remove');
     await fireEvent.click(removeBtn);
