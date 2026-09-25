@@ -3,6 +3,8 @@
 // `unknown` for `result` and `data` because the generated bindings
 // unpack them via Create.* factories on the caller's side, not here.
 
+import type { BootFailure } from './bootFailures';
+
 export interface ServerRPCFrame {
   type: 'rpc';
   id: string;
@@ -102,6 +104,9 @@ export interface ServerHelloFrame {
   /** The lowest Android `versionCode` that bundle's native seams can
    *  run on. A shell below it declines the download and says why. */
   minShellBuild?: number;
+  /** Each boot phase of this backend process that failed without
+   *  stopping the boot (transport/bootFailures.ts). Absent when none did. */
+  bootFailures?: BootFailure[];
 }
 
 export interface ServerSessionEndedFrame {

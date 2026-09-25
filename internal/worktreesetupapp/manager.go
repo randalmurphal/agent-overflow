@@ -554,18 +554,18 @@ func (s *Service) Stop() {
 // boot means the app died with the recipe in flight and the worktree's state
 // is unknown — which is what "failed" means here. Counterpart of the workflow
 // engine's unit sweep.
-func (s *Service) SweepCrashed() {
+func (s *Service) SweepCrashed() error {
 	if s.store == nil {
-		return
+		return nil
 	}
 	swept, err := s.store.SweepRunningThreadWorktreeSetups()
 	if err != nil {
-		log.Printf("app: sweep crashed worktree setups: %v", err)
-		return
+		return fmt.Errorf("worktree setup: sweep crashed setups: %w", err)
 	}
 	if swept > 0 {
 		log.Printf("app: marked %d interrupted worktree setup(s) as failed", swept)
 	}
+	return nil
 }
 
 // WaitThread waits for the currently registered thread run to settle. It

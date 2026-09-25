@@ -592,7 +592,9 @@ func TestWorktreeSetupShutdownLeavesTheSweepToDecide(t *testing.T) {
 		t.Fatalf("retry after stop = %v, want ErrShuttingDown", err)
 	}
 
-	app.sweepCrashedWorktreeSetups()
+	if err := app.sweepCrashedWorktreeSetups(); err != nil {
+		t.Fatalf("sweep crashed worktree setups: %v", err)
+	}
 	got, err = app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("GetThread: %v", err)

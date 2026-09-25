@@ -385,7 +385,14 @@ turn (`internal/store/agent_rows.go`).
   interrupted turn (`MarkUserInterrupt`) and the boot sweep of an
   unfinished turn (§Crash behavior) settle only the rows no agent owns.
   The router's turn boundaries leave an agent's open streams, their
-  counts and its queued rows alone (`agentOwnedStreamScopes`).
+  counts, its queued rows and its open prompts alone
+  (`agentOwnedOpenScopes`).
+- An agent's approval and question prompts are the agent's: a prompt's
+  scope is the agent that asked it, and a decision answered before its
+  tool row exists waits under the same scope. A turn's end drops only
+  the turn's prompts; the agent's end drops its own, each with a
+  `lost` resolution that clears it on every client
+  (`internal/triage/agent_requests.go`).
 - The agent's end settles its rows. Its completion sibling is written
   with `store.UpsertAgentEnd`, which settles every row still open under
   the agent in the same transaction. Before that write the router
@@ -404,6 +411,15 @@ turn (`internal/store/agent_rows.go`).
 Every way an agent ends reaches the same write: its own report, a Stop
 in any later turn (the CLI kills it, §Tray decoupling item 3), the
 session's end and the boot sweep (§Crash recovery).
+
+Builds before agent-owned rows left rows open under agents that had
+ended. Migration v124's deferred phase settles them
+(`internal/store/migration_v124_ended_agent_rows.go`): an agent whose
+latest lifecycle row (the launch or its latest §E6 resume carrier) has
+a completion sibling ends by that sibling's rule; one without a sibling
+whose row predates the migration died with the previous process and
+ends as the boot sweep ends it. A newer lifecycle row is a live
+session's agent, which the phase leaves to its own end.
 
 ### Merge rule
 
@@ -783,6 +799,13 @@ index `idx_turns_inflight`. Without this sweep the null row wedges
 `GetActiveTurn`-guarded flows, most visibly revert, whose "interrupt
 the current turn" error is unsatisfiable when no session exists to
 interrupt.
+
+The boot sweeps (`App.settlePriorInstance`: crashed turns, Codex
+background runtime, orphaned Claude background launches and running
+worktree setups) each run in their own boot phase. A sweep that fails
+does not stop the boot: it is reported as a failed boot phase, which
+every client shows ([startup readiness](transport.md#startup-readiness)),
+and the next start runs it again.
 
 Post-sweep, a `completed_at=null` row during an app run means
 genuinely live provider work. The durable "interrupted" signal that

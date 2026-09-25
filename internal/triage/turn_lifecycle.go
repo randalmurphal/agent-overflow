@@ -501,7 +501,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			// pump logs a returned error and keeps reading) so they surface
 			// the same way the full path's persistErr does.
 			lateStatus := settledTurnStatus(meta)
-			agentScopes, lateErr := r.agentOwnedStreamScopes(evt.ThreadID)
+			agentScopes, lateErr := r.agentOwnedOpenScopes(evt.ThreadID)
 			lateErr = errors.Join(lateErr, r.settleTurnStreaming(evt.ThreadID, turnIndex, lateStatus, agentScopes))
 			lateErr = errors.Join(lateErr, r.forceCloseOrphanToolCalls(evt.ThreadID, turnIndex, now))
 			lateErr = errors.Join(lateErr, r.persistLateTurnPayload(evt, turnIndex, meta))
@@ -517,7 +517,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// The streams and queued rows an agent owns outlive this turn: its
 	// end settles them. A failed ownership read leaves them all to the
 	// turn, as before agents outlived turns, and is reported.
-	agentScopes, scopeErr := r.agentOwnedStreamScopes(evt.ThreadID)
+	agentScopes, scopeErr := r.agentOwnedOpenScopes(evt.ThreadID)
 	if err != nil {
 		persistErr = err
 	} else {
@@ -984,7 +984,7 @@ func (r *Router) AnyInFlightTurnOrRound() bool {
 // streams are the agent's and stay. A failed ownership read forgets them
 // too, as before agents outlived turns, and is returned.
 func (r *Router) setOpenTurn(threadID string, turnIndex int) error {
-	agentScopes, scopeErr := r.agentOwnedStreamScopes(threadID)
+	agentScopes, scopeErr := r.agentOwnedOpenScopes(threadID)
 	r.mu.Lock()
 	st := r.state(threadID)
 	st.openTurn = turnIndex
@@ -1198,7 +1198,7 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 			persistErr = errors.Join(persistErr, err)
 		}
 	}
-	agentScopes, err := r.agentOwnedStreamScopes(threadID)
+	agentScopes, err := r.agentOwnedOpenScopes(threadID)
 	if err != nil {
 		log.Printf("triage: settle queued-echo predecessor streaming %s/%d: %v", threadID, turnIndex, err)
 		persistErr = errors.Join(persistErr, err)
@@ -1359,12 +1359,12 @@ func (r *Router) activeRoundTurnIndex(threadID string) (int, bool) {
 // internal/triage/AGENTS.md "Correlation state" for the full taxonomy):
 //
 //   - **Per-turn flow-control state** swept HERE: openTurns, the turn's
-//     own activeTextBlocks/Thinking, pendingCommandDiffs,
-//     pendingApprovals (and siblings). These maps answer "what's
-//     mid-turn right now." The streaming counts move with the blocks,
-//     and the interrupt queue is drained, not swept: the turn's rows
-//     left it before this runs, and an agent's rows wait for the
-//     agent's own streams.
+//     own activeTextBlocks/Thinking, pendingCommandDiffs, and the
+//     turn's own pendingApprovals (and siblings; dropTurnRequestsLocked).
+//     These maps answer "what's mid-turn right now." The streaming
+//     counts move with the blocks, and the interrupt queue is drained,
+//     not swept: the turn's rows left it before this runs, and an
+//     agent's rows wait for the agent's own streams.
 //   - **Id-allocating counters** (segmentIndexByScope, blockIndexByScope,
 //     errorSeqByScope, compactionSeqByScope, terminalInteractionSeq):
 //     cleared at CleanupThread, with a selective re-init reset in
@@ -1381,8 +1381,8 @@ func (r *Router) activeRoundTurnIndex(threadID string) (int, bool) {
 // activeTextBlocks/Thinking ARE per-turn flow-control (they guard
 // against re-creating a row mid-stream), so the turn's own stay swept
 // here as a safety net for any block that didn't settle through the
-// normal close path. A block in one of agentScopes is an agent's and
-// stays open (agentOwnedStreamScopes).
+// normal close path. A block or prompt in one of agentScopes is an
+// agent's and stays open (agentOwnedOpenScopes).
 func (r *Router) clearOpenTurn(threadID string, agentScopes map[string]bool) {
 	r.mu.Lock()
 	st := r.threadStateIfPresent(threadID)
@@ -1398,23 +1398,7 @@ func (r *Router) clearOpenTurn(threadID string, agentScopes map[string]bool) {
 		// completion never arrived in this turn (interrupted, crashed),
 		// the entry would otherwise leak until CleanupThread.
 		clear(st.pendingCommandDiffs)
-		// pendingApprovals / pendingApprovalItems / pendingUserInputs
-		// are keyed by `<threadID>:<requestID-or-itemID>`. Approvals are
-		// inherently mid-turn — the model issues a control_request, the
-		// user resolves, the model continues. If EventTurnComplete fires
-		// while one of these is still pending, the turn ended without
-		// resolution (subprocess died, fatal error, model declined to
-		// emit the resolved meta). Sweep them so the next turn doesn't
-		// inherit a stale request id.
-		clear(st.pendingApprovals)
-		clear(st.pendingApprovalItems)
-		clear(st.pendingUserInputs)
-		// The answer records go with them: nothing is open to answer any
-		// more, so a surviving record could only refuse a later request
-		// that reused the id.
-		clear(st.answeredRequests)
-		st.pendingApprovalOrder = nil
-		st.pendingUserInputOrder = nil
+		dropTurnRequestsLocked(st, agentScopes)
 	}
 	st.openTurn = 0
 	st.openTurnSet = false
@@ -1480,14 +1464,14 @@ func (r *Router) flipTurnItemsErrored(
 			parents = append(parents, item.ParentID)
 		}
 	}
-	var agentOwned map[string]bool
+	var owners map[string]string
 	if len(parents) > 0 {
-		if agentOwned, err = r.store.AgentOwnedScopes(threadID, parents); err != nil {
+		if owners, err = r.store.AgentOwners(threadID, parents); err != nil {
 			return fmt.Errorf("error flip ownership: %w", err)
 		}
 	}
 	for _, item := range items {
-		if agentOwned[item.ParentID] {
+		if owners[item.ParentID] != "" {
 			// An agent's row: the agent's end settles it.
 			continue
 		}

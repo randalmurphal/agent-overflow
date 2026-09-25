@@ -145,8 +145,9 @@ describe('<TransportStatusBanner>', () => {
     expect(wrapper.className).toContain('bg-surface-1');
     expect(banner.className).not.toContain('min-h-7');
     expect(banner.textContent).toContain('Disconnected from the agent backend.');
-    // Only the bundle notice earns a dismiss; a connection problem is
-    // live state and clears itself (or offers its own recovery buttons).
+    // Only a connected notice (a failed boot phase or a bundle notice)
+    // earns a dismiss; a connection problem is live state and clears
+    // itself (or offers its own recovery buttons).
     expect(queryByTestId('transport-status-dismiss')).toBeNull();
   });
 

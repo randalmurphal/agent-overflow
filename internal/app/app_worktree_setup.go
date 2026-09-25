@@ -85,8 +85,8 @@ func (a *App) stopThreadWorktreeSetups() {
 	a.worktreeSetupService().Stop()
 }
 
-func (a *App) sweepCrashedWorktreeSetups() {
-	a.worktreeSetupService().SweepCrashed()
+func (a *App) sweepCrashedWorktreeSetups() error {
+	return a.worktreeSetupService().SweepCrashed()
 }
 
 func (a *App) cancelWorktreeSetupsForPath(worktreePath string) {

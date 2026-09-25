@@ -279,6 +279,10 @@ type helloFrame struct {
 	BundleID      string `json:"bundleId,omitempty"`
 	BundleVersion string `json:"bundleVersion,omitempty"`
 	MinShellBuild int    `json:"minShellBuild,omitempty"`
+	// BootFailures names each boot phase of this process that failed
+	// without stopping the boot, in order. Absent when none failed. A
+	// client shows them until it dismisses them or the backend restarts.
+	BootFailures []BootFailure `json:"bootFailures,omitempty"`
 }
 
 // MaxReplayChannels caps the number of channels a single replay request

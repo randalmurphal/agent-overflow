@@ -10,6 +10,7 @@ import (
 
 	"agent-overflow/internal/notify"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 // The auto_vacuum conversion is the last step of the store's v119 deferred
@@ -141,7 +142,11 @@ func (a *App) startDeferredMigrations() {
 		if err != nil {
 			log.Printf("app: deferred migrations: %v", err)
 		}
-		host := store.DeferredHost{Pause: a.maintenancePause(ctx), AwaitFileSwap: a.storeFileSwapWait()}
+		host := store.DeferredHost{
+			Pause:         a.maintenancePause(ctx),
+			AwaitFileSwap: a.storeFileSwapWait(),
+			AgentEndRule:  triage.AgentEndRuleFor,
+		}
 		runErr := a.store.RunDeferredMigrations(ctx, host)
 		if ctx.Err() != nil {
 			return

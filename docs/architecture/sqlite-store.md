@@ -101,7 +101,9 @@ app starts `RunDeferredMigrations` at boot, outside the activation gate, and
 joins it at shutdown; the phase runs as paced transactions inside the
 background-maintenance budget. A step that replaces the database file waits
 for the app's `DeferredHost.AwaitFileSwap`, which holds it behind the
-activation gate.
+activation gate. A step that applies a rule the store does not own takes it
+from the host too: v124's settle of ended agents' rows uses
+`DeferredHost.AgentEndRule`, triage's rule, and fails without it.
 
 The gate is `PRAGMA user_version`, the deferred watermark: every phase of a
 migration at or below it has finished. The chain's version rows cannot carry

@@ -122,7 +122,9 @@ bound method runs before `Start` returns (see
 [Startup readiness](../../docs/architecture/transport.md#startup-readiness)).
 `Start` reports each phase through `bootPhase`, whose ids are the
 `boot: phase=` log names, and honors its context between phases and inside
-migrations. The desktop `ServiceStartup` runs `Start` on its own goroutine:
+migrations. A phase that fails without stopping the boot reports through
+`bootPhaseFailed`, which every client shows; a log line alone is not a
+report. The desktop `ServiceStartup` runs `Start` on its own goroutine:
 the window opens during it, `SetStartDone` receives the result, and
 `ServiceShutdown` cancels and joins it. Code the window or shell reaches
 during that time must not assume `Start` finished; check the state it needs,

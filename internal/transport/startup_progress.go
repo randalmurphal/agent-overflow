@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"agent-overflow/internal/startupprogress"
 )
@@ -13,6 +14,21 @@ import (
 // against both (the Windows launcher fails after 30 s without an
 // advance), so it must stay well under that.
 const startupHeartbeatInterval = time.Second
+
+// maxBootFailureErrorRunes bounds the error a boot failure carries, since
+// every hello repeats it.
+const maxBootFailureErrorRunes = 500
+
+// BootFailure is a boot phase that failed without stopping the boot, such
+// as a sweep of the previous instance's residue. Every hello names each
+// one, so a client shows it while this process runs.
+type BootFailure struct {
+	// Phase is the boot phase id (the `boot: phase=` log name).
+	Phase string `json:"phase"`
+	// Detail is the phase's sentence, as its progress report read.
+	Detail string `json:"detail"`
+	Error  string `json:"error"`
+}
 
 // SetStartupProgress replaces the progress a readiness-gated
 // /bootstrap.json reports until MarkReady. A server that never receives
@@ -31,6 +47,14 @@ func (s *Server) writeStartupProgress(w http.ResponseWriter) bool {
 	}
 	startupprogress.Write(w, *p)
 	return true
+}
+
+// bootFailureList is what every hello reports as the boot's failures.
+func (s *Server) bootFailureList() []BootFailure {
+	if f := s.bootFailures.Load(); f != nil {
+		return *f
+	}
+	return nil
 }
 
 // BackendStartingError reports that a backend answered its bootstrap with
@@ -64,12 +88,13 @@ type StartupReporter struct {
 	now      func() time.Time
 	interval time.Duration
 
-	mu      sync.Mutex
-	current startupprogress.Progress
-	open    []startupPhase
-	stop    chan struct{}
-	stopped chan struct{}
-	observe func(p startupprogress.Progress)
+	mu       sync.Mutex
+	current  startupprogress.Progress
+	open     []startupPhase
+	failures []BootFailure
+	stop     chan struct{}
+	stopped  chan struct{}
+	observe  func(p startupprogress.Progress)
 	// sampler finds progress between two heartbeats. It is set before the
 	// reporter is shared and never replaced.
 	sampler *startupprogress.Sampler
@@ -166,6 +191,32 @@ func (r *StartupReporter) BootPhaseDetail(detail string, step, steps int) {
 	inner := &r.open[len(r.open)-1]
 	inner.detail, inner.step, inner.steps = detail, step, steps
 	r.publishLocked()
+}
+
+// BootPhaseFailed reports that the phase the report names, the innermost
+// open one or with none open the last one reported, failed without
+// stopping the boot. The failure reaches every hello from then on, after
+// MarkReady too.
+func (r *StartupReporter) BootPhaseFailed(err error) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failures = append(r.failures, BootFailure{
+		Phase: r.current.Phase, Detail: r.current.Detail,
+		Error: clampRunes(err.Error(), maxBootFailureErrorRunes),
+	})
+	published := append([]BootFailure(nil), r.failures...)
+	r.srv.bootFailures.Store(&published)
+}
+
+// clampRunes cuts s to at most n runes, marking a cut with an ellipsis.
+func clampRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n]) + "…"
 }
 
 // endPhase closes the phase opened at depth and every phase opened inside

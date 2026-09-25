@@ -93,6 +93,53 @@ type revertedConversationCut struct {
 	SettleFailure string
 }
 
+// UserMessageRevertedEvent is the wire payload for the
+// `user_message:reverted` event emitted at the end of a successful
+// conversation revert. Two callers: the Stop/Esc un-send
+// (InterruptAndRevertIfClean) and the edit-and-resend saga
+// (RevertConversationAndResendMessage), which sets DraftPendingResend.
+// The frontend consumes this to truncate its timeline to match the
+// SQLite cut. Idempotent on the frontend: a removal of an
+// already-absent id is a no-op.
+type UserMessageRevertedEvent struct {
+	TurnStartedSequence   uint64 `json:"turnStartedSequence"`
+	TurnCompletedSequence uint64 `json:"turnCompletedSequence"`
+	// Replacement is published with the cut once send preparation and persistence finish.
+	Replacement *store.Item `json:"replacement,omitempty"`
+	// ItemEventSequence fences item frames published before the destructive cut.
+	ItemEventSequence uint64 `json:"itemEventSequence"`
+	ThreadID          string `json:"threadId"`
+	UserItemID        string `json:"userItemId"`
+	TurnIndex         int    `json:"turnIndex"`
+	// KeptAnchorTurnItemIDs lists the anchor turn's SURVIVING items.
+	// Turns after TurnIndex are always fully removed; within the anchor
+	// turn the frontend keeps exactly these ids and drops everything
+	// else, including pane-only rows that were never persisted. Empty
+	// (the common case) means the whole anchor turn is gone: Codex cuts
+	// are always turn-granular, and a Claude anchor that opens its turn
+	// keeps nothing. Non-empty only for Claude item-granular cuts to a
+	// mid-turn anchor (a queued/steered message sharing its turn with an
+	// earlier prompt), where the kept prefix is decided by
+	// DeleteConversationFromItem's promoted-row predicate, carried here
+	// as data so the frontend never re-derives it.
+	KeptAnchorTurnItemIDs []string `json:"keptAnchorTurnItemIds,omitempty"`
+	// HistoryRev / HistoryEpoch are the thread's history stamps AFTER the
+	// cut, read inside the deleting transaction
+	// (docs/architecture/thread-replica-sync.md §3, §4). A client that applies
+	// this event has mirrored the cut exactly, so it may adopt them and
+	// keep its cached window instead of dropping it. Never adopt them on
+	// an event whose removal instruction was not fully applied: an
+	// overstated stamp would show stale content as fresh (§3.4).
+	HistoryRev   int64 `json:"historyRev"`
+	HistoryEpoch int64 `json:"historyEpoch"`
+	// DraftPendingResend identifies a replacement operation. It leaves the
+	// ordinary composer draft alone; only the early un-send rehydrates it.
+	DraftPendingResend bool `json:"draftPendingResend,omitempty"`
+	// ConnectionID attributes replacement recovery to the requesting page load.
+	// Every client applies the cut; only that connection records its local marker.
+	ConnectionID string `json:"connectionId,omitempty"`
+}
+
 func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (cut revertedConversationCut, err error) {
 	if err := a.store.CheckThreadExecutionAccess(args.thread); err != nil {
 		return cut, err

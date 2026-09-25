@@ -18,7 +18,8 @@ import (
 // whichever turn wrote it. A turn's end, a Stop and the crash sweep settle
 // only the rows no agent owns; the agent's end settles its own: its
 // completion sibling is written with store.UpsertAgentEnd, which settles
-// every row the agent left open in the same transaction.
+// every row the agent left open in the same transaction. The agent's open
+// prompts are its own the same way (agent_requests.go).
 
 // agentEnd is what persisting an agent's completion sibling does to the
 // rows the agent left open.
@@ -31,23 +32,31 @@ type agentEnd struct {
 	rule         store.AgentEndRule
 }
 
-// newAgentEnd is the end an agent's completion status makes. A completed
+// AgentEndRuleFor is what an agent's end with a completion sibling of
+// status and source makes of the rows the agent left open. A completed
 // agent's open text completes and a tool call it left running reads as a
 // turn's unresolved tool does. A stopped agent's rows read "stopped"; an
 // agent that failed, or died with its session, leaves them "interrupted",
-// as a crashed turn does.
-func newAgentEnd(rootID, status, source string) agentEnd {
+// as a crashed turn does. The store's v124 phase applies the same rule
+// (store.DeferredHost).
+func AgentEndRuleFor(status, source string) store.AgentEndRule {
 	switch {
 	case status == statusCompleted:
-		return agentEnd{rootID: rootID, streamStatus: statusCompleted,
-			rule: store.AgentEndRule{StreamingCompletes: true, Summarise: ForceCloseSummary}}
+		return store.AgentEndRule{StreamingCompletes: true, Summarise: ForceCloseSummary}
 	case status == statusKilled && source != "session_died":
-		return agentEnd{rootID: rootID, streamStatus: statusErrored,
-			rule: store.AgentEndRule{Summarise: stoppedSummary}}
+		return store.AgentEndRule{Summarise: stoppedSummary}
 	default:
-		return agentEnd{rootID: rootID, streamStatus: statusErrored,
-			rule: store.AgentEndRule{Summarise: interruptedSummary}}
+		return store.AgentEndRule{Summarise: interruptedSummary}
 	}
+}
+
+// newAgentEnd is the end an agent's completion status and source make.
+func newAgentEnd(rootID, status, source string) agentEnd {
+	end := agentEnd{rootID: rootID, streamStatus: statusErrored, rule: AgentEndRuleFor(status, source)}
+	if end.rule.StreamingCompletes {
+		end.streamStatus = statusCompleted
+	}
+	return end
 }
 
 // persistAgentEndLocked writes an agent's completion sibling and ends the
@@ -55,12 +64,14 @@ func newAgentEnd(rootID, status, source string) agentEnd {
 // still holds for the agent's rows settle first, the way a turn's end
 // settles its own; the rows queued behind them persist next, since they
 // precede the end; then the sibling is written with every row still open
-// under the agent settled in its transaction. A failed stream settle does
-// not hold the sibling back: the store settles that row with it.
+// under the agent settled in its transaction. The prompts the agent left
+// open end with it. A failed stream settle does not hold the sibling back:
+// the store settles that row with it.
 func (r *Router) persistAgentEndLocked(item store.Item, payload *store.Payload, end agentEnd) error {
 	threadID := item.ThreadID
 	streamErr := r.settleAgentStreams(threadID, end)
 	queueErr := r.drainQueueLocked(threadID, idleScopeRow)
+	requestErr := r.settleAgentRequests(threadID, end.rootID)
 
 	if item.ParentID != "" {
 		if dropped, reason := r.shouldDropParentID(threadID, item.ID, item.ParentID); dropped {
@@ -70,7 +81,7 @@ func (r *Router) persistAgentEndLocked(item store.Item, payload *store.Payload, 
 	}
 	persisted, settled, err := r.store.UpsertAgentEnd(item, payload, end.rootID, end.rule, time.Now().UnixMilli())
 	if err != nil {
-		return errors.Join(streamErr, queueErr, fmt.Errorf("end agent %s/%s: %w", threadID, end.rootID, err))
+		return errors.Join(streamErr, queueErr, requestErr, fmt.Errorf("end agent %s/%s: %w", threadID, end.rootID, err))
 	}
 	rows := make([]store.Item, 0, 1+len(settled))
 	rows = append(rows, persisted)
@@ -86,7 +97,7 @@ func (r *Router) persistAgentEndLocked(item store.Item, payload *store.Payload, 
 		r.metrics.PayloadsPersisted.Add(context.Background(), 1,
 			metric.WithAttributes(attribute.String("kind", payload.Kind)))
 	}
-	return errors.Join(streamErr, queueErr)
+	return errors.Join(streamErr, queueErr, requestErr)
 }
 
 // settleAgentStreams settles the streams the router holds for the rows
@@ -147,10 +158,10 @@ func (r *Router) takeAgentStream(threadID string, stream store.AgentStream) (act
 	return ref, true
 }
 
-// agentOwnedStreamScopes reports which scopes of the thread's open streams
-// and queued rows an agent owns, for a turn boundary to leave alone. A
-// thread whose streams and rows are all top-level asks the store nothing.
-func (r *Router) agentOwnedStreamScopes(threadID string) (map[string]bool, error) {
+// agentOwnedOpenScopes reports which scopes of the thread's open streams,
+// queued rows and open prompts an agent owns, for a turn boundary to leave
+// alone. A thread whose open work is all top-level asks the store nothing.
+func (r *Router) agentOwnedOpenScopes(threadID string) (map[string]bool, error) {
 	r.mu.Lock()
 	var scopes []string
 	if st := r.threadStateIfPresent(threadID); st != nil {
@@ -174,14 +185,19 @@ func (r *Router) agentOwnedStreamScopes(threadID string) (map[string]bool, error
 		for _, queued := range st.interruptQueue {
 			add(queued.item.ParentID)
 		}
+		eachOpenRequestScopeLocked(st, add)
 	}
 	r.mu.Unlock()
 	if len(scopes) == 0 {
 		return nil, nil
 	}
-	owned, err := r.store.AgentOwnedScopes(threadID, scopes)
+	owners, err := r.store.AgentOwners(threadID, scopes)
 	if err != nil {
-		return nil, fmt.Errorf("agent-owned stream scopes of %s: %w", threadID, err)
+		return nil, fmt.Errorf("agent-owned scopes of %s: %w", threadID, err)
+	}
+	owned := make(map[string]bool, len(owners))
+	for scope, owner := range owners {
+		owned[scope] = owner != ""
 	}
 	return owned, nil
 }

@@ -665,56 +665,13 @@ func (a *App) initSubsystems(dbDir string, st *store.Store) error {
 	// boundaries and record message anchors once the provider echo
 	// confirms the deferred user row. See app_flush_queue.go.
 	a.configureTriageQueueCallbacks()
-	// Settle turn rows the previous app instance left in-flight. An
-	// in-app session death settles its turn via the synthesized
-	// truncated turn-complete, but an app crash leaves completed_at
-	// NULL — which GetActiveTurn reads as "turn still active", wedging
-	// revert behind an interrupt that has nothing to interrupt, and
-	// leaving the turn's streaming items stuck forever. Runs before any
-	// provider session can spawn, so every NULL row is provably crash
-	// residue. See docs/architecture/turn-lifecycle.md §Crash recovery.
-	endPhase := a.bootPhase("app.recover_crashed_turns", "Settling interrupted turns")
-	if settled, err := a.triage.RecoverCrashedTurns(); err != nil {
-		log.Printf("app: recover crashed turns: %v", err)
-	} else if settled > 0 {
-		log.Printf("app: settled %d crashed in-flight turns as interrupted", settled)
-	}
-	endPhase()
-	// Codex child identities are resumable, but live turns and background PTYs
-	// belong to the app-server process. Retire that runtime state before any
-	// provider session can start so the tray never presents prior-process work
-	// as still running.
-	endPhase = a.bootPhase("app.recover_codex_background_runtime", "Settling background agents")
-	a.recoverCodexBackgroundRuntimeOnStartup()
-	endPhase()
-	// Synthesize session_died terminals for backgrounded launches whose
-	// owning Claude session did not survive the previous app instance.
-	// Without this sweep the launches would render as "running" forever
-	// in the chat and the tray, since no live agent will ever observe
-	// their completion. See docs/architecture/turn-lifecycle.md
-	// §Crash recovery.
-	endPhase = a.bootPhase("app.recover_orphaned_background_tasks", "Settling background tasks")
-	recovered, err := a.triage.RecoverOrphanedBackgroundTasks()
-	endPhase()
-	if err != nil {
-		log.Printf("app: recover Claude background launches: %v", err)
-	} else if recovered > 0 {
-		log.Printf("app: recovered %d Claude background launches as session_died", recovered)
-	}
-	// Settle worktree setups the previous instance left mid-recipe. A run
-	// lives only inside a live process, so every 'running' row here is crash
-	// (or shutdown) residue over a worktree whose provisioning state nobody
-	// can vouch for — which is what 'failed' means, and what puts the retry
-	// affordance back in reach.
-	endPhase = a.bootPhase("app.sweep_crashed_worktree_setups", "Settling worktree setups")
-	a.sweepCrashedWorktreeSetups()
-	endPhase()
+	a.settlePriorInstance()
 	// Put back into the composer every message the previous process had
 	// queued and never delivered. Here, beside the other crash sweeps and
 	// before any session can start, so a row cannot belong to something still
 	// running — and it never re-dispatches. See
 	// restoreDurableFlushQueueAtBoot.
-	endPhase = a.bootPhase("app.restore_durable_flush_queue", "Restoring queued messages")
+	endPhase := a.bootPhase("app.restore_durable_flush_queue", "Restoring queued messages")
 	if err := a.restoreReplacementDraftsAtBoot(); err != nil {
 		endPhase()
 		return fmt.Errorf("restore replacement drafts: %w", err)

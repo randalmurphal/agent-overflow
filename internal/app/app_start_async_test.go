@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -26,6 +27,9 @@ type recordingBootProgress struct {
 	ended   []string
 	details []string
 	watched []string
+	open    []string
+	// failed holds "phase: error" for each BootPhaseFailed.
+	failed []string
 }
 
 func newRecordingBootProgress(block string) *recordingBootProgress {
@@ -35,6 +39,7 @@ func newRecordingBootProgress(block string) *recordingBootProgress {
 func (p *recordingBootProgress) BeginBootPhase(phase, _ string) func() {
 	p.mu.Lock()
 	p.begun = append(p.begun, phase)
+	p.open = append(p.open, phase)
 	p.mu.Unlock()
 	if phase == p.block {
 		close(p.reached)
@@ -43,8 +48,27 @@ func (p *recordingBootProgress) BeginBootPhase(phase, _ string) func() {
 	return func() {
 		p.mu.Lock()
 		p.ended = append(p.ended, phase)
+		if i := slices.Index(p.open, phase); i >= 0 {
+			p.open = p.open[:i]
+		}
 		p.mu.Unlock()
 	}
+}
+
+func (p *recordingBootProgress) BootPhaseFailed(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	phase := "(no phase)"
+	if len(p.open) > 0 {
+		phase = p.open[len(p.open)-1]
+	}
+	p.failed = append(p.failed, phase+": "+err.Error())
+}
+
+func (p *recordingBootProgress) failures() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.failed...)
 }
 
 func (p *recordingBootProgress) BootPhaseDetail(detail string, _, _ int) {

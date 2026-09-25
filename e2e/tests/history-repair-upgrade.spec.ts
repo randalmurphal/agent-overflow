@@ -5,8 +5,10 @@
 // thread's rows, an empty payload inside a sealed chunk comes back as an
 // empty blob, a leaked payload is pruned, a legacy background-agent
 // transcript copy is emptied while its meta stays and a Monitor output keeps
-// its data, the watermark advances through v119 and the later phases with no
-// failure recorded, and the repaired thread renders its rows.
+// its data, a row the finished agent left running is settled by v124's phase
+// with the live path's agent end rule, the watermark advances through v119
+// and the later phases with no failure recorded, and the repaired thread
+// renders its rows.
 import { execFile } from 'node:child_process';
 import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -55,10 +57,13 @@ test('an upgrade from v118 repairs stored history in the background', async ({ p
 
     host = await launchHarness({ dataDir: root });
     expect(host.bootstrap.dataDir).toBe(path.dirname(dbPath));
-    await expect.poll(() => watermark(dbPath), { timeout: 60_000 }).toBe(121);
+    await expect.poll(() => watermark(dbPath), { timeout: 60_000 }).toBe(124);
 
     expect(await count(dbPath, `SELECT count(*) AS n FROM deferred_migration_failures`)).toBe(0);
     expect(await count(dbPath, `SELECT count(*) AS n FROM subagent_aggregate_backfill`)).toBe(0);
+    expect(await count(dbPath, `SELECT count(*) AS n FROM agent_end_backfill`)).toBe(0);
+    expect(await query(dbPath, `SELECT status, summary LIKE 'Read: README.md%turn ended with tool unresolved' AS unresolved
+      FROM items WHERE thread_id = 'fixture-transcript' AND id = 'agent-read'`)).toEqual([{ status: 'errored', unresolved: 1 }]);
     expect(await count(dbPath, `SELECT count(*) AS n FROM import_history_chunks`)).toBe(0);
     expect(await count(dbPath, `SELECT count(*) AS n FROM items WHERE thread_id = 'fixture-sealed'`)).toBe(31);
     expect(await query(dbPath, `SELECT typeof(data) AS type, length(data) AS bytes FROM payloads

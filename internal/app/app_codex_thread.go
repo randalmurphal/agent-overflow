@@ -84,8 +84,8 @@ func (a *App) retireCodexBackgroundRuntime(threadID string) error {
 	return a.codexThreadService().RetireBackgroundRuntime(threadID)
 }
 
-func (a *App) recoverCodexBackgroundRuntimeOnStartup() {
-	a.codexThreadService().RecoverBackgroundRuntimeOnStartup()
+func (a *App) recoverCodexBackgroundRuntimeOnStartup() error {
+	return a.codexThreadService().RecoverBackgroundRuntimeOnStartup()
 }
 
 func (a *App) reconcileCodexAfterStart(threadID string) {

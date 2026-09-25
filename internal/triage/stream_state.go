@@ -172,7 +172,7 @@ func (r *Router) decStreamingCounts(threadID, scope string) {
 // (sequencing barrier for the caller) and r.settleWG (shutdown drain).
 //
 // A stream in one of agentScopes is an agent's, not the turn's: a turn's
-// end leaves it open for the agent's end to settle (agentOwnedStreamScopes).
+// end leaves it open for the agent's end to settle (agentOwnedOpenScopes).
 // A nil agentScopes settles every scope, which only a boundary inside a
 // live turn asks for.
 func (r *Router) settleTurnStreaming(threadID string, turnIndex int, status string, agentScopes map[string]bool) error {

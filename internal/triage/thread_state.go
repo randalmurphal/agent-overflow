@@ -316,18 +316,21 @@ type threadState struct {
 	pendingCommandDiffs map[string]pendingCommandInlineDiff
 
 	// Interactive-request state, keyed by requestID, plus the display
-	// order each family renders in. Cleaned at the correlated resolver or
-	// at turn/session boundaries.
+	// order each family renders in; pendingApprovalItems is keyed by the
+	// tool row a decision waits for. Cleaned at the correlated resolver,
+	// at a turn's end for the turn's prompts, at an agent's end for the
+	// agent's (agent_requests.go), and at session teardown.
 	pendingApprovals      map[string]pendingApprovalState
 	pendingApprovalOrder  []string
-	pendingApprovalItems  map[string]string
+	pendingApprovalItems  map[string]approvalDecision
 	pendingUserInputs     map[string]provider.UserInputRequest
 	pendingUserInputOrder []string
 	// answeredRequests holds the request ids this router has forwarded an
 	// answer for. Several clients render the same prompt, so two of them
 	// can answer it; this is what makes the second one a loser rather than
-	// a duplicate write to the provider. Bounded like its siblings: swept
-	// with the pending maps at the turn boundary. See interactive_claim.go.
+	// a duplicate write to the provider. Bounded like its siblings: an
+	// answered prompt's record is swept at the turn boundary, an open
+	// one's goes with its prompt. See interactive_claim.go.
 	answeredRequests map[string]struct{}
 
 	// toolCalls caches the placement (parent, turn) of tool_call rows the

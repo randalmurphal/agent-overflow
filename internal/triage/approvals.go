@@ -116,7 +116,14 @@ func (r *Router) takePendingApproval(threadID, requestID string) (pendingApprova
 	return approval, ok
 }
 
-func (r *Router) rememberApprovalDecision(threadID, itemID, decision string) {
+// approvalDecision is an answer's decision waiting for the tool row it
+// answers, with the scope of the prompt it answered.
+type approvalDecision struct {
+	decision string
+	scope    string
+}
+
+func (r *Router) rememberApprovalDecision(threadID, itemID, decision, scope string) {
 	if threadID == "" || itemID == "" || decision == "" {
 		return
 	}
@@ -124,9 +131,9 @@ func (r *Router) rememberApprovalDecision(threadID, itemID, decision string) {
 	defer r.mu.Unlock()
 	st := r.state(threadID)
 	if st.pendingApprovalItems == nil {
-		st.pendingApprovalItems = make(map[string]string)
+		st.pendingApprovalItems = make(map[string]approvalDecision)
 	}
-	st.pendingApprovalItems[itemID] = decision
+	st.pendingApprovalItems[itemID] = approvalDecision{decision: decision, scope: scope}
 }
 
 func (r *Router) takeApprovalDecision(threadID, itemID string) string {
@@ -136,9 +143,9 @@ func (r *Router) takeApprovalDecision(threadID, itemID string) string {
 	if st == nil {
 		return ""
 	}
-	decision := st.pendingApprovalItems[itemID]
+	remembered := st.pendingApprovalItems[itemID]
 	delete(st.pendingApprovalItems, itemID)
-	return decision
+	return remembered.decision
 }
 
 func (r *Router) peekApprovalDecision(threadID, itemID string) string {
@@ -148,7 +155,7 @@ func (r *Router) peekApprovalDecision(threadID, itemID string) string {
 	if st == nil {
 		return ""
 	}
-	return st.pendingApprovalItems[itemID]
+	return st.pendingApprovalItems[itemID].decision
 }
 
 func decodeApprovalRequest(raw json.RawMessage) provider.ApprovalRequest {
@@ -309,7 +316,13 @@ func (r *Router) handleApprovalResolved(evt provider.ProviderEvent) error {
 		requestID = evt.ItemID
 	}
 
-	pending, _ := r.takePendingApproval(evt.ThreadID, requestID)
+	pending, open := r.takePendingApproval(evt.ThreadID, requestID)
+	if !open {
+		// An answer that raced its prompt's end (the agent that asked
+		// ended, or the turn did). Only an event naming a row other than
+		// the request says which row it answers.
+		pending.Request.RequestID = requestID
+	}
 	itemID := pending.ItemID
 	if itemID == "" {
 		itemID = approvalItemID(evt, pending.Request)
@@ -317,7 +330,7 @@ func (r *Router) handleApprovalResolved(evt provider.ProviderEvent) error {
 
 	var applyErr error
 	if itemID != "" && decision != "" {
-		r.rememberApprovalDecision(evt.ThreadID, itemID, decision)
+		r.rememberApprovalDecision(evt.ThreadID, itemID, decision, pending.Request.ParentToolUseID)
 		// When the user amended the input, overlay it onto the request so
 		// applyApprovalDecision builds the summary against the MODIFIED
 		// input rather than the original. applyApprovalDecision clones

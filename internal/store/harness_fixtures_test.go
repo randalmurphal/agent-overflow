@@ -22,14 +22,19 @@ const (
 	fixtureSealedThread     = "fixture-sealed"
 	fixtureSealedRows       = 30
 	fixtureTranscriptThread = "fixture-transcript"
+	// fixtureStaleAgentRow is a row the fixture's finished background agent
+	// left running, for v124's phase to settle.
+	fixtureStaleAgentRow     = "agent-read"
+	fixtureStaleAgentSummary = "Read: README.md"
 )
 
 // TestHistoryRepairHarnessFixture writes an upgrade's database for the
 // harness: v118's schema, three sealed chunks, an empty payload inside one
-// of them, a payload nothing references, and a background agent's legacy
-// transcript copy beside a Monitor output that keeps its data. It runs only
-// when historyRepairFixtureEnv names an absolute path whose directory exists
-// and which does not exist yet.
+// of them, a payload nothing references, a background agent's legacy
+// transcript copy beside a Monitor output that keeps its data, and a row
+// that finished agent left running. It runs only when
+// historyRepairFixtureEnv names an absolute path whose directory exists and
+// which does not exist yet.
 func TestHistoryRepairHarnessFixture(t *testing.T) {
 	writeHistoryRepairFixture(t, harnessFixturePath(t, historyRepairFixtureEnv))
 }
@@ -81,7 +86,7 @@ func TestHistoryRepairFixtureRepairs(t *testing.T) {
 	if n := countRows(t, s, `SELECT count(*) FROM import_history_chunks WHERE id LIKE 'sealed:%'`); n != 3 {
 		t.Fatalf("fixture has %d sealed chunks, want 3", n)
 	}
-	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{}); err != nil {
+	if err := s.RunDeferredMigrations(context.Background(), DeferredHost{AgentEndRule: agentEndRuleForTest}); err != nil {
 		t.Fatal(err)
 	}
 	if deferredPending(t, s) || deferredWatermarkOf(t, s) != latestDeferredVersion {
@@ -101,6 +106,9 @@ func TestHistoryRepairFixtureRepairs(t *testing.T) {
 	requireEmptyBlob(t, s, "payloads", "thread_id = ? AND id = ?", fixtureTranscriptThread, "p-agent")
 	if got := storedPayload(t, s, fixtureTranscriptThread, "p-monitor"); got.Data != "monitor output" {
 		t.Fatalf("monitor payload = %+v, want its data kept", got)
+	}
+	if got, want := rowStates(t, s, fixtureTranscriptThread)[fixtureStaleAgentRow], "errored:"+unresolvedForTest(fixtureStaleAgentSummary); got != want {
+		t.Fatalf("the finished agent's stale row = %q, want %q", got, want)
 	}
 }
 
@@ -139,6 +147,14 @@ func writeHistoryRepairFixture(t *testing.T, path string) {
 		kind: "tool_call_result", meta: loadedTranscriptMeta, data: "legacy transcript copy"})
 	writeTranscriptCase(t, s, fixtureTranscriptThread, 1, transcriptCase{id: "monitor", tool: "Monitor", background: true,
 		kind: "tool_call_result", meta: loadedTranscriptMeta, data: "monitor output"})
+	// A row the finished agent left running, as builds before v124 did.
+	if _, err := upsertCarded(s, Item{
+		ID: fixtureStaleAgentRow, ThreadID: fixtureTranscriptThread, TurnIndex: 1, Kind: "tool_call", Role: "assistant",
+		Status: "running", ToolName: "Read", Summary: fixtureStaleAgentSummary, ParentID: "agent-launch",
+		Meta: "{}", CreatedAt: 3, UpdatedAt: 3,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}

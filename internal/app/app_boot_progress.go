@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"agent-overflow/internal/store"
@@ -13,10 +14,13 @@ import (
 // `boot: phase=` log names; details are sentences a person reads.
 // WatchBootFiles names files whose size changes count as progress while a
 // phase runs, so a long statement that writes reads as working.
+// BootPhaseFailed records that the innermost open phase failed without
+// stopping the boot; clients show it while this process runs.
 type BootProgress interface {
 	BeginBootPhase(phase, detail string) (end func())
 	BootPhaseDetail(detail string, step, steps int)
 	WatchBootFiles(paths ...string)
+	BootPhaseFailed(err error)
 }
 
 // bootPhase begins a reported boot phase. The returned end reports the
@@ -61,6 +65,15 @@ func (a *App) reportMigration(end *func()) func(store.MigrationStep) {
 			detail += ": " + step.Activity
 		}
 		a.bootPhaseDetail(detail, step.Index, step.Pending)
+	}
+}
+
+// bootPhaseFailed logs err and reports it as the failure of the innermost
+// open boot phase. The boot goes on.
+func (a *App) bootPhaseFailed(err error) {
+	log.Printf("boot: phase failed: %v", err)
+	if a.bootProgress != nil {
+		a.bootProgress.BootPhaseFailed(err)
 	}
 }
 

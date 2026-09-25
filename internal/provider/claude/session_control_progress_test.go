@@ -12,15 +12,24 @@ import (
 	"agent-overflow/internal/provider"
 )
 
-// A control request times out on the read loop's silence, not on the wall
-// clock: the CLI writes an interrupt's kill frames before its ack, and the
-// read loop delivers each one before it reads the ack
-// (DefaultControlRequestTimeout).
+// A control request times out on the read loop's silence: the CLI writes
+// an interrupt's kill frames before its ack, and the read loop delivers
+// each one before it reads the ack (DefaultControlRequestTimeout). Progress
+// never extends the wait past the ceiling (DefaultControlRequestCeiling).
 
-const progressTestTimeout = 300 * time.Millisecond
+const (
+	progressTestTimeout = 300 * time.Millisecond
+	progressTestCeiling = 1500 * time.Millisecond
+)
+
+// Frame counts interruptBurstScript takes for a CLI that never answers.
+const (
+	burstSilent  = -1 // reads the interrupt and writes nothing
+	burstEndless = -2 // writes a kill frame every 50 ms and never acks
+)
 
 // interruptBurstScript answers an interrupt with frames task_updated
-// kill frames, then the ack; with frames < 0 it never answers.
+// kill frames, then the ack, or never answers (burstSilent, burstEndless).
 func interruptBurstScript(frames int) string {
 	return fmt.Sprintf(`#!/bin/sh
 set -u
@@ -28,7 +37,15 @@ frames=%d
 while IFS= read -r line; do
     case "$line" in
         *'"subtype":"interrupt"'*)
-            [ "$frames" -lt 0 ] && continue
+            [ "$frames" -eq -1 ] && continue
+            if [ "$frames" -eq -2 ]; then
+                i=0
+                while :; do
+                    printf '{"type":"system","subtype":"task_updated","task_id":"task-%%s","tool_use_id":"tu-%%s","patch":{"status":"killed"}}\n' "$i" "$i"
+                    i=$((i+1))
+                    sleep 0.05
+                done
+            fi
             reqid=$(printf '%%s' "$line" | sed -n 's/.*"request_id":"\([^"]*\)".*/\1/p')
             i=0
             while [ "$i" -lt "$frames" ]; do
@@ -62,6 +79,7 @@ func newInterruptBurstSession(t *testing.T, frames int, onEvent func(provider.Pr
 		cancel:                cancel,
 		readDone:              make(chan struct{}),
 		controlRequestTimeout: progressTestTimeout,
+		controlRequestCeiling: progressTestCeiling,
 	}
 	go s.readLoop()
 	t.Cleanup(func() { _ = s.Close() })
@@ -91,9 +109,10 @@ func TestInterrupt_ASlowButProgressingBurstIsAcked(t *testing.T) {
 	}
 }
 
-// A CLI that never answers times out after the timeout of silence.
+// A CLI that never answers times out after the timeout of silence, well
+// before the ceiling.
 func TestInterrupt_ASilentCLITimesOut(t *testing.T) {
-	s := newInterruptBurstSession(t, -1, func(provider.ProviderEvent) {})
+	s := newInterruptBurstSession(t, burstSilent, func(provider.ProviderEvent) {})
 	start := time.Now()
 	err := s.Interrupt(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "timeout") {
@@ -101,6 +120,31 @@ func TestInterrupt_ASilentCLITimesOut(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*progressTestTimeout {
 		t.Fatalf("timed out after %s, want near %s", elapsed, progressTestTimeout)
+	}
+}
+
+// A CLI that keeps writing but never acks fails at the ceiling, with an
+// error that names the CLI, though the read loop never goes quiet.
+func TestInterrupt_AnEndlessBurstFailsAtTheCeiling(t *testing.T) {
+	var delivered atomic.Int32
+	s := newInterruptBurstSession(t, burstEndless, func(evt provider.ProviderEvent) {
+		if evt.Kind == provider.EventBackgroundTaskTerminal {
+			delivered.Add(1)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 4*progressTestCeiling)
+	defer cancel()
+	start := time.Now()
+	err := s.Interrupt(ctx)
+	elapsed := time.Since(start)
+	if err == nil || !strings.Contains(err.Error(), "the Claude CLI kept writing") {
+		t.Fatalf("Interrupt after %s = %v, want the ceiling's timeout", elapsed, err)
+	}
+	if elapsed < progressTestCeiling || elapsed > progressTestCeiling+2*progressTestTimeout {
+		t.Fatalf("failed after %s, want near the %s ceiling", elapsed, progressTestCeiling)
+	}
+	if got := delivered.Load(); got < int32(progressTestCeiling/(100*time.Millisecond)) {
+		t.Fatalf("delivered %d kill frames, want a steady stream through the wait", got)
 	}
 }
 

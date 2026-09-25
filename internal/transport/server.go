@@ -555,6 +555,9 @@ type Server struct {
 	// startupProgress is what a not-ready bootstrap reports. Nil until the
 	// boot sets any, which keeps the bare 503 (startup_progress.go).
 	startupProgress atomic.Pointer[startupprogress.Progress]
+	// bootFailures is what every hello reports as the boot's failed phases
+	// (StartupReporter.BootPhaseFailed). Nil while none has failed.
+	bootFailures atomic.Pointer[[]BootFailure]
 	// startupMethods is Config.StartupMethods as a set, fixed at New.
 	startupMethods map[string]bool
 
@@ -2120,6 +2123,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			BundleID:      bundleID,
 			BundleVersion: bundleVersion,
 			MinShellBuild: minShellBuild,
+			BootFailures:  s.bootFailureList(),
 		},
 	}, profile)
 	// Best-effort close. Read errors above already represent a closed

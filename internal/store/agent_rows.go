@@ -24,30 +24,31 @@ func agentOwnerSQL(a string) string {
 	return a + "kind = 'tool_call' AND " + a + "is_background = 1 AND " + a + "tool_name <> 'collab_agent'"
 }
 
-// agentOwnerRowSQL reads what agentOwnedParents asks about one row.
+// agentOwnerRowSQL reads what agentOwners asks about one row.
 const agentOwnerRowSQL = `SELECT parent_id, kind = 'tool_call' AND is_background = 1 AND tool_name <> 'collab_agent'
   FROM items WHERE thread_id = ? AND id = ?`
 
-// agentOwnedParents reports, for each distinct non-empty parent id, whether
-// it or an ancestor is an agent owner: the rows under it are the agent's.
-// It walks each chain up once, by primary key, sharing what earlier walks
-// learned, so the cost is the distinct rows on the chains asked about. A
-// parent id with no row owns nothing. A cycle is an error: the parent_id
-// invariant forbids one.
-func agentOwnedParents(q sqlQueryer, threadID string, parentIDs []string) (map[string]bool, error) {
-	owned := make(map[string]bool, len(parentIDs))
+// agentOwners reports, for each distinct non-empty parent id, the agent
+// that owns the rows under it: the id itself when it is an owner, else its
+// nearest owner ancestor, or "" when no agent owns them. It walks each
+// chain up once, by primary key, sharing what earlier walks learned, so
+// the cost is the distinct rows on the chains asked about. A parent id
+// with no row owns nothing. A cycle is an error: the parent_id invariant
+// forbids one.
+func agentOwners(q sqlQueryer, threadID string, parentIDs []string) (map[string]string, error) {
+	owners := make(map[string]string, len(parentIDs))
 	for _, start := range parentIDs {
 		if start == "" {
 			continue
 		}
-		if _, known := owned[start]; known {
+		if _, known := owners[start]; known {
 			continue
 		}
 		var chain []string
 		seen := make(map[string]bool)
-		result := false
+		result := ""
 		for id := start; id != ""; {
-			if known, ok := owned[id]; ok {
+			if known, ok := owners[id]; ok {
 				result = known
 				break
 			}
@@ -66,16 +67,16 @@ func agentOwnedParents(q sqlQueryer, threadID string, parentIDs []string) (map[s
 				return nil, fmt.Errorf("store: read parent chain of %s/%s at %s: %w", threadID, start, id, err)
 			}
 			if owner {
-				result = true
+				result = id
 				break
 			}
 			id = parentID
 		}
 		for _, id := range chain {
-			owned[id] = result
+			owners[id] = result
 		}
 	}
-	return owned, nil
+	return owners, nil
 }
 
 // withoutAgentOwned drops the rows an agent owns from rows, in order.
@@ -89,24 +90,25 @@ func withoutAgentOwned[T any](q sqlQueryer, threadID string, rows []T, parentOf 
 	if len(parents) == 0 {
 		return rows, nil
 	}
-	owned, err := agentOwnedParents(q, threadID, parents)
+	owners, err := agentOwners(q, threadID, parents)
 	if err != nil {
 		return nil, err
 	}
 	kept := rows[:0]
 	for _, row := range rows {
-		if !owned[parentOf(row)] {
+		if owners[parentOf(row)] == "" {
 			kept = append(kept, row)
 		}
 	}
 	return kept, nil
 }
 
-// AgentOwnedScopes reports which of the given parent ids hold rows an
-// agent owns (agentOwnedParents). Triage asks it at a turn boundary about
-// the scopes of the streams it has open.
-func (s *Store) AgentOwnedScopes(threadID string, scopes []string) (map[string]bool, error) {
-	return agentOwnedParents(s.reader(), threadID, scopes)
+// AgentOwners reports the agent that owns the rows under each of the
+// given parent ids, or "" for a parent id no agent owns (agentOwners).
+// Triage asks it at a turn boundary about the scopes it holds open work
+// in, and at an agent's end about the scopes of its open prompts.
+func (s *Store) AgentOwners(threadID string, scopes []string) (map[string]string, error) {
+	return agentOwners(s.reader(), threadID, scopes)
 }
 
 // AgentEndRule is what an agent's end makes of the rows it left open. A

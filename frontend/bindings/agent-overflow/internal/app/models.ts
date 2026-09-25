@@ -6158,7 +6158,7 @@ export type UpdateAvailability = appupdate$0.UpdateAvailability;
  * UserMessageRevertedEvent is the wire payload for the
  * `user_message:reverted` event emitted at the end of a successful
  * conversation revert. Two callers: the Stop/Esc un-send
- * (InterruptAndRevertIfClean, below) and the edit-and-resend saga
+ * (InterruptAndRevertIfClean) and the edit-and-resend saga
  * (RevertConversationAndResendMessage), which sets DraftPendingResend.
  * The frontend consumes this to truncate its timeline to match the
  * SQLite cut. Idempotent on the frontend: a removal of an
@@ -6185,13 +6185,13 @@ export class UserMessageRevertedEvent {
      * KeptAnchorTurnItemIDs lists the anchor turn's SURVIVING items.
      * Turns after TurnIndex are always fully removed; within the anchor
      * turn the frontend keeps exactly these ids and drops everything
-     * else — including pane-only rows that were never persisted. Empty
+     * else, including pane-only rows that were never persisted. Empty
      * (the common case) means the whole anchor turn is gone: Codex cuts
      * are always turn-granular, and a Claude anchor that opens its turn
      * keeps nothing. Non-empty only for Claude item-granular cuts to a
      * mid-turn anchor (a queued/steered message sharing its turn with an
      * earlier prompt), where the kept prefix is decided by
-     * DeleteConversationFromItem's promoted-row predicate — carried here
+     * DeleteConversationFromItem's promoted-row predicate, carried here
      * as data so the frontend never re-derives it.
      */
     "keptAnchorTurnItemIds"?: string[];
@@ -6202,7 +6202,7 @@ export class UserMessageRevertedEvent {
      * (docs/architecture/thread-replica-sync.md §3, §4). A client that applies
      * this event has mirrored the cut exactly, so it may adopt them and
      * keep its cached window instead of dropping it. Never adopt them on
-     * an event whose removal instruction was not fully applied — an
+     * an event whose removal instruction was not fully applied: an
      * overstated stamp would show stale content as fresh (§3.4).
      */
     "historyRev": number;

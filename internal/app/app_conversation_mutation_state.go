@@ -40,3 +40,12 @@ func (a *App) GetConversationMutationState(threadID, userItemID, sendID string) 
 	}
 	return ConversationMutationState{TurnStartedSequence: a.eventSequence(eventchan.ProviderTurnStarted), TurnCompletedSequence: a.eventSequence(eventchan.ProviderTurnCompleted), UserItemExists: exists, SendAccepted: accepted, HistoryRev: stamp.Rev, ItemEventSequence: a.itemEventSequence()}, nil
 }
+
+func (a *App) itemEventSequence() uint64 { return a.eventSequence(eventchan.ProviderItemEvent) }
+
+func (a *App) eventSequence(channel eventchan.Channel) uint64 {
+	if bus := a.eventBus.Load(); bus != nil {
+		return bus.ChannelSequence(channel)
+	}
+	return 0
+}

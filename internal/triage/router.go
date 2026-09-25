@@ -981,7 +981,7 @@ func ClampErrorSummary(summary string) string {
 func (r *Router) finishFatalProviderError(threadID string, now int64, summary string, meta json.RawMessage) error {
 	// A failed ownership read leaves every stream and queued row to the
 	// turn, as before agents outlived turns, and is reported.
-	agentScopes, scopeErr := r.agentOwnedStreamScopes(threadID)
+	agentScopes, scopeErr := r.agentOwnedOpenScopes(threadID)
 	if err := r.drainTurnQueue(threadID, agentScopes, true); err != nil {
 		return errors.Join(scopeErr, err)
 	}

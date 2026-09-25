@@ -28,6 +28,13 @@ var controlResponsePrefix = []byte(`{"type":"control_response"`)
 // spike observed sub-100ms round-trips on Claude CLI 2.1.112.
 const DefaultControlRequestTimeout = 10 * time.Second
 
+// DefaultControlRequestCeiling bounds the whole wait, progress or not, so
+// a CLI that keeps writing and never answers fails loudly too. A Stop of
+// 100 agents with 3 shells each acks after 1,200 kill frames, which the
+// read loop delivered in 1.5 s (e2e/tests/stop-scale.spec.ts); a minute
+// is far past any reachable burst.
+const DefaultControlRequestCeiling = 60 * time.Second
+
 // controlResponseResult carries the outcome of an outbound control_request
 // round-trip from the read loop back to the waiting caller. Exactly one of
 // errMsg or ok is set: ok=true on subtype=success, errMsg populated on
@@ -125,8 +132,8 @@ func (s *Session) SetInteractionMode(ctx context.Context, mode provider.Interact
 // set_permission_mode). It allocates a request_id, registers the
 // pending response channel, marshals + writes the envelope, and
 // blocks on either ctx.Done, the configured timeout of read-loop
-// silence (DefaultControlRequestTimeout), or the matching
-// control_response. Errors are wrapped with "claude: <opName>: ..."
+// silence (DefaultControlRequestTimeout), the ceiling on the whole wait
+// (DefaultControlRequestCeiling), or the matching control_response. Errors are wrapped with "claude: <opName>: ..."
 // so callers don't repeat the prefix; the raw result is returned for
 // the caller to interpret (success vs error subtype) — usually via
 // interpretControlResponse, except where the caller has additional
@@ -159,8 +166,12 @@ func (s *Session) sendControlRequest(ctx context.Context, opName string, request
 	if timeout <= 0 {
 		timeout = DefaultControlRequestTimeout
 	}
+	ceiling := s.controlRequestCeiling
+	if ceiling <= 0 {
+		ceiling = DefaultControlRequestCeiling
+	}
 	written := time.Now()
-	timer := time.NewTimer(timeout)
+	timer := time.NewTimer(min(timeout, ceiling))
 	defer timer.Stop()
 
 	for {
@@ -169,12 +180,17 @@ func (s *Session) sendControlRequest(ctx context.Context, opName string, request
 			s.releaseControlRequest(requestID)
 			return nil, fmt.Errorf("claude: %s: %w", opName, ctx.Err())
 		case <-timer.C:
+			waited := time.Since(written)
+			if waited >= ceiling {
+				s.releaseControlRequest(requestID)
+				return nil, fmt.Errorf("claude: %s: timeout: the Claude CLI kept writing for %s without answering", opName, ceiling)
+			}
 			if silent := s.readLoopSilence(written); silent < timeout {
-				timer.Reset(timeout - silent)
+				timer.Reset(min(timeout-silent, ceiling-waited))
 				continue
 			}
 			s.releaseControlRequest(requestID)
-			return nil, fmt.Errorf("claude: %s: timeout: no progress from the CLI for %s", opName, timeout)
+			return nil, fmt.Errorf("claude: %s: timeout: no progress from the Claude CLI for %s", opName, timeout)
 		case res, ok := <-ch:
 			// deliverControlResponse already removed the entry under lock;
 			// nothing for us to release here.

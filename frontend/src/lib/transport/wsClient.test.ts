@@ -1030,6 +1030,32 @@ describe('WSClient', () => {
     client.close();
   });
 
+  it('carries the boot phases the backend reports failed and publishes a change in them', async () => {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const seen: string[][] = [];
+    client.onHelloChange((hello) => {
+      if (hello) seen.push((hello.bootFailures ?? []).map((failure) => failure.phase));
+    });
+    client.subscribe('thread:updated', () => {});
+    await flushMicrotasks();
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+
+    const failed = { phase: 'app.recover_crashed_turns', detail: 'Settling interrupted turns', error: 'database is locked' };
+    const hello = { type: 'hello', protocolVersion: 1, capabilities: [], backendId: 'backend-uuid-1', serverTimeMs: 1_000 };
+    ws.pushFrame(hello);
+    expect(client.getHello()?.bootFailures).toEqual([]);
+    ws.pushFrame({ ...hello, bootFailures: [failed, 'not a failure'] });
+    expect(client.getHello()?.bootFailures).toEqual([failed]);
+    ws.pushFrame({ ...hello, serverTimeMs: 2_000, bootFailures: [{ ...failed }] });
+    ws.pushFrame({ ...hello, bootFailures: [{ ...failed, error: 'disk I/O error' }] });
+    ws.pushFrame(hello);
+    expect(seen).toEqual([[], ['app.recover_crashed_turns'], ['app.recover_crashed_turns'], []]);
+
+    client.close();
+  });
+
   // The future-dialect fixture (docs/specs/remote-access.md §9).
   //
   // The swap window — an old bundle live against a just-updated backend

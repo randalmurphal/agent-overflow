@@ -62,6 +62,12 @@ type DeferredHost struct {
 	// it may, ctx.Err() once ctx ends, and any other error when it cannot
 	// tell. Nil means at once.
 	AwaitFileSwap func(ctx context.Context) error
+	// AgentEndRule is what an agent's end with a completion sibling of
+	// status and source makes of the rows it left open: the live path's
+	// rule (triage.AgentEndRuleFor), which v124's phase applies to the
+	// agents earlier builds left open. A run with an agent to settle
+	// fails without it.
+	AgentEndRule func(status, source string) AgentEndRule
 }
 
 // deferredRun is one run of a phase's steps.

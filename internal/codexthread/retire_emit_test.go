@@ -83,8 +83,8 @@ func TestRetireBackgroundRuntimePushesThePageRead(t *testing.T) {
 
 // TestRecoverBackgroundRuntimeOnStartupPushesPastAFailedFlush pins that the
 // startup sweep pushes the rows it retired when the card flush before it
-// fails: the retirement commits either way, and a client holding the rows
-// must not keep showing them as running.
+// fails, and returns the failure: the retirement commits either way, and a
+// client holding the rows must not keep showing them as running.
 func TestRecoverBackgroundRuntimeOnStartupPushesPastAFailedFlush(t *testing.T) {
 	path := storetest.ClonePath(t)
 	st, err := store.New(path)
@@ -149,7 +149,9 @@ func TestRecoverBackgroundRuntimeOnStartupPushesPastAFailedFlush(t *testing.T) {
 		},
 		Session: func(string) (LiveSession, bool) { return LiveSession{}, false },
 	})
-	svc.RecoverBackgroundRuntimeOnStartup()
+	if err := svc.RecoverBackgroundRuntimeOnStartup(); err == nil || !strings.Contains(err.Error(), "injected flush failure") {
+		t.Fatalf("RecoverBackgroundRuntimeOnStartup() = %v, want the flush failure", err)
+	}
 	if len(pushed) != 1 || pushed[0].ID != "B" || pushed[0].Status != "errored" {
 		t.Fatalf("pushed %+v, want the retired B", pushed)
 	}

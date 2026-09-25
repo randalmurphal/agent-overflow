@@ -66,26 +66,29 @@ func rowStates(t *testing.T, s *Store, threadID string) map[string]string {
 
 func stopped(summary string) string { return summary + " (stopped)" }
 
-// TestAgentOwnedParentsFollowsTheChainToTheNearestOwner: the rows under a
+// TestAgentOwnersFollowsTheChainToTheNearestOwner: the rows under a
 // background launch are its agent's, through a foreground agent inside
-// it; a Codex spawn card and a foreground launch own nothing.
-func TestAgentOwnedParentsFollowsTheChainToTheNearestOwner(t *testing.T) {
+// it, and a background launch inside it owns its own; a Codex spawn card
+// and a foreground launch own nothing.
+func TestAgentOwnersFollowsTheChainToTheNearestOwner(t *testing.T) {
 	s := agentRowsFixture(t)
 	if _, err := upsertCarded(s, Item{ID: "spawn", ThreadID: "T", Kind: "tool_call", Role: "assistant", ToolName: "collab_agent",
 		Status: "completed", IsBackground: true, Summary: "spawn", CreatedAt: 1, UpdatedAt: 1}, nil); err != nil {
 		t.Fatal(err)
 	}
-	owned, err := s.AgentOwnedScopes("T", []string{"A", "A-fg", "B", "A-read", "main-read", "spawn", "missing", ""})
+	// B-read first, so B's answer is learned on the way to A-fg-read's.
+	owners, err := s.AgentOwners("T", []string{"B-read", "A-fg-read", "A", "A-fg", "B", "A-read", "main-read", "spawn", "missing", ""})
 	if err != nil {
-		t.Fatalf("AgentOwnedScopes: %v", err)
+		t.Fatalf("AgentOwners: %v", err)
 	}
-	want := map[string]bool{"A": true, "A-fg": true, "B": true, "A-read": true, "main-read": false, "spawn": false, "missing": false}
-	for id, is := range want {
-		if owned[id] != is {
-			t.Errorf("owned[%s] = %v, want %v", id, owned[id], is)
+	want := map[string]string{"B-read": "B", "A-fg-read": "A", "A": "A", "A-fg": "A", "B": "B", "A-read": "A",
+		"main-read": "", "spawn": "", "missing": ""}
+	for id, owner := range want {
+		if got, asked := owners[id]; !asked || got != owner {
+			t.Errorf("owners[%s] = %q (asked %v), want %q", id, got, asked, owner)
 		}
 	}
-	if _, asked := owned[""]; asked {
+	if _, asked := owners[""]; asked {
 		t.Error("the empty scope is the main thread's and is not asked about")
 	}
 }

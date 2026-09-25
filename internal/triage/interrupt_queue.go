@@ -98,7 +98,7 @@ func (r *Router) drainLock(threadID string) *sync.Mutex {
 // suffix (interruptedSummary), except a row that reports background work
 // (reportsBackgroundOutcome), whose status is the work's own. A row an agent owns is the agent's, not the
 // turn's: it waits for its own scope and is never errored here.
-// agentScopes is agentOwnedStreamScopes' answer for the turn's end.
+// agentScopes is agentOwnedOpenScopes' answer for the turn's end.
 func (r *Router) drainTurnQueue(threadID string, agentScopes map[string]bool, truncated bool) error {
 	lock := r.drainLock(threadID)
 	lock.Lock()

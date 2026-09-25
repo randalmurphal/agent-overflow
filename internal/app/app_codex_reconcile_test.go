@@ -524,7 +524,9 @@ func TestStartupRecoveryPreservesCompletedCodexSpawn(t *testing.T) {
 		t.Fatalf("seed completed spawn: %v", err)
 	}
 
-	a.recoverCodexBackgroundRuntimeOnStartup()
+	if err := a.recoverCodexBackgroundRuntimeOnStartup(); err != nil {
+		t.Fatalf("recover Codex background runtime: %v", err)
+	}
 	stored, found, err := st.GetThreadItem(threadID, spawn.ID)
 	if err != nil || !found {
 		t.Fatalf("reload spawn: found=%v err=%v", found, err)

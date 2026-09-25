@@ -65,6 +65,7 @@ import { homeWsUrl } from './homeEndpoint';
 import { refreshGrantedScopes } from './scopes';
 import { randomId } from '../utils/randomId';
 import { ReplayBuffer } from './replayBuffer';
+import { parseBootFailures, sameBootFailures, type BootFailure } from './bootFailures';
 import {
   BackendStartingError,
   sameTransportStartup,
@@ -708,6 +709,9 @@ export interface TransportHello {
   /** The lowest Android `versionCode` the bundle's native seams can run
    *  on, or 0 for "no floor stated". */
   minShellBuild: number;
+  /** Each boot phase of this backend process that failed without
+   *  stopping the boot, in order. Absent or empty when none did. */
+  bootFailures?: readonly BootFailure[];
 }
 
 export interface TransportStatusSnapshot {
@@ -3199,6 +3203,7 @@ export class WSClient {
       // this build cannot read, and 0 — "no floor" — is the neutral
       // value that lets the shell decide on the id alone.
       minShellBuild: Number.isSafeInteger(frame.minShellBuild) ? Number(frame.minShellBuild) : 0,
+      bootFailures: parseBootFailures(frame.bootFailures),
     };
     const previous = this.helloSnapshot;
     this.helloSnapshot = next;
@@ -3507,6 +3512,9 @@ function sameHello(a: TransportHello, b: TransportHello): boolean {
     && a.bundleId === b.bundleId
     && a.bundleVersion === b.bundleVersion
     && a.minShellBuild === b.minShellBuild
+    // A restart whose sweeps fail differently, or no longer fail, is news
+    // the transport strip shows.
+    && sameBootFailures(a.bootFailures ?? [], b.bootFailures ?? [])
     && a.capabilities.length === b.capabilities.length
     && a.capabilities.every((cap, i) => cap === b.capabilities[i]);
 }

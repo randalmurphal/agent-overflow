@@ -163,6 +163,13 @@ Every executable boot binds its listener before `App.Start` and calls
   route, and an off-host upgrade, closes without a response.
 - The attached-backend bootstrap hop and the `--connect` stub pass a far
   backend's starting report on unchanged.
+- A phase can fail without stopping the boot, as a sweep of the previous
+  instance's residue does (`StartupReporter.BootPhaseFailed`). From then
+  on every hello of that process, before and after `MarkReady`, lists it
+  in `bootFailures` as `{phase, detail, error}`. The page's connection
+  strip names each failed phase with its error. A dismissal holds for
+  that launch's failures in that page
+  (`frontend/src/lib/stores/bootFailureNotice.svelte.ts`).
 - Limit: a paired device on another machine cannot see the starting state
   while the store opens. Its session credential and device proof are
   verified against the identity store, which the boot opens after the
@@ -237,8 +244,10 @@ The hello frame carries:
 
 - backend and launch identity;
 - capability flags;
-- the visible channel heads as `replayBaseline`; and
-- connection-specific authorization information.
+- the visible channel heads as `replayBaseline`;
+- connection-specific authorization information; and
+- the boot phases that failed without stopping the boot, as `bootFailures`
+  ([startup readiness](#startup-readiness)).
 
 A new launch invalidates cursors from an earlier sequence space. On reconnect,
 the client asks for replay from its saved per-channel cursors. Live and replay

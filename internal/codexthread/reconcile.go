@@ -80,20 +80,23 @@ func (a *Service) emitRetiredItems(retired []store.Item) {
 	}
 }
 
-func (a *Service) RecoverBackgroundRuntimeOnStartup() {
+// RecoverBackgroundRuntimeOnStartup retires the Codex background runtime
+// state the previous app process left and pushes the rows it retired. A
+// failure can follow a committed retirement (the card flush before it), so
+// the retired rows are pushed either way and the error is returned.
+func (a *Service) RecoverBackgroundRuntimeOnStartup() error {
 	if a == nil || a.store == nil {
-		return
+		return nil
 	}
-	// A failure can follow a committed retirement (the card flush before
-	// it), so the retired rows are emitted either way.
 	retired, err := a.store.RecoverCodexBackgroundRuntime(codexghost.GhostSummary, time.Now().UnixMilli())
-	if err != nil {
-		log.Printf("app: recover Codex background runtime: %v", err)
-	}
 	if len(retired) > 0 {
 		log.Printf("app: retired %d Codex background items from the prior app instance", len(retired))
 	}
 	a.emitRetiredItems(retired)
+	if err != nil {
+		return fmt.Errorf("app: recover Codex background runtime: %w", err)
+	}
+	return nil
 }
 
 // ReconcileOnReopen probes a Codex thread's liveness via

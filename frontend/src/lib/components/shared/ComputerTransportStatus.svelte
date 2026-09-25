@@ -67,6 +67,10 @@
   // (stores/bundleNotice.svelte.ts). Empty on every other client, which
   // is every client that cannot install a bundle.
   import { dismissBundleNotice, getBundleNotice } from '../../stores/bundleNotice.svelte';
+  // A backend whose boot went on past a failed phase, such as a sweep of
+  // the previous instance's residue, says so in every hello. It outranks
+  // the bundle notice: it is about the data this backend serves now.
+  import { dismissBootFailureNotice, getBootFailureNotice } from '../../stores/bootFailureNotice.svelte';
   import { isBackendRecovering, onBackendRecovery } from '../../stores/transportRecovery';
 
   // Tick once per second so the countdown stays in sync. We only mount
@@ -114,6 +118,8 @@
   });
 
   let bundleNotice = $derived(getBundleNotice());
+  let bootFailure = $derived(getBootFailureNotice(backend));
+  let connectedNotice = $derived(bootFailure || bundleNotice);
   let recovering = $state(false);
   $effect(() => {
     const target = backend;
@@ -124,9 +130,10 @@
   });
   let checking = $derived(snapshot.status === 'connected' && snapshot.checkingConnection === true);
   let syncing = $derived(snapshot.status === 'connected' && recovering);
+  let showingBootFailure = $derived(snapshot.status === 'connected' && !checking && !syncing && bootFailure !== '');
 
-  // A connection problem outranks a bundle notice: one is happening now
-  // and the other is about the next launch. The notice keeps the strip
+  // A connection problem outranks a connected notice (a failed boot phase
+  // or a bundle notice): it is happening now. The notice keeps the strip
   // up on its own once the transport is healthy again.
   //
   // A backend that is starting is not a problem, and before this page
@@ -136,7 +143,7 @@
   let starting = $derived(snapshot.status === 'starting');
   let visible = $derived(
     (snapshot.status !== 'connected' && (starting ? hasEverConnected : hasEverConnected || bootGraceExpired))
-      || checking || syncing || bundleNotice !== '',
+      || checking || syncing || connectedNotice !== '',
   );
 
   // A page that mounted while the transport was TERMINAL loaded nothing.
@@ -206,6 +213,9 @@
   });
 
   let bannerClasses = $derived.by(() => {
+    if (showingBootFailure) {
+      return 'bg-error/15 border-error/30 text-error';
+    }
     if (snapshot.status === 'connected' || starting) {
       return 'bg-fg/10 border-fg/20 text-fg-muted';
     }
@@ -248,7 +258,7 @@
     if (removed) return 'This computer was removed. Choose another computer.';
     if (checking) return 'Checking connection…';
     if (syncing) return 'Syncing…';
-    if (snapshot.status === 'connected') return bundleNotice;
+    if (snapshot.status === 'connected') return connectedNotice;
     if (snapshot.status === 'starting') {
       const startup = snapshot.startup;
       if (!startup) return 'Starting…';
@@ -283,13 +293,19 @@
   // not its backend's (the phone shell) is excluded: a passkey is bound
   // to the backend's domain, and the browser refuses the ceremony from
   // any other origin, so the button could only fail.
-  // The one persistent, healthy-transport thing this strip says. Unlike
-  // every connection state it never resolves on its own — the resolution
-  // is a restart the person chooses — so it is the one message that gets
-  // a dismiss. Without it, on a phone the strip sat over the compact
-  // thread header for the rest of the session, eating its taps (found on
-  // the first real-phone run, 2026-09-04).
-  let dismissable = $derived(snapshot.status === 'connected' && !checking && !syncing && bundleNotice !== '');
+  // The persistent, healthy-transport things this strip says. Unlike
+  // every connection state they never resolve on their own: the
+  // resolution is a restart. So they are the messages that get a dismiss.
+  // Without it, on a phone the strip sat over the compact thread header
+  // for the rest of the session, eating its taps (found on the first
+  // real-phone run, 2026-09-04). Dismissing a boot failure leaves any
+  // bundle notice it outranked.
+  let dismissable = $derived(snapshot.status === 'connected' && !checking && !syncing && connectedNotice !== '');
+
+  function handleDismiss(): void {
+    if (bootFailure !== '') dismissBootFailureNotice(backend);
+    else dismissBundleNotice();
+  }
 
   let terminal = $derived(isTerminalConnectionStatus(snapshot.status));
   let signInOffered = $derived(terminal && backend === HOME_BACKEND && !isNativeShell() && !hasHomeEndpoint() && passkeysUsable());
@@ -358,7 +374,7 @@
          unreadable (the two-line clamp still cut the bundle notice on a
          real phone, 2026-09-04). A backend's hostname can be one
          unbreakable token, hence the wrap anywhere. -->
-    <p class="flex-1 min-w-0 [overflow-wrap:anywhere]">{computerName && (snapshot.status !== 'connected' || checking || syncing) ? `${computerName}: ` : ''}{signInError || message}</p>
+    <p class="flex-1 min-w-0 [overflow-wrap:anywhere]">{computerName && (snapshot.status !== 'connected' || checking || syncing || showingBootFailure) ? `${computerName}: ` : ''}{signInError || message}</p>
     {#if signInOffered}
       <button
         type="button"
@@ -404,7 +420,7 @@
     {#if dismissable}
       <button
         type="button"
-        onclick={dismissBundleNotice}
+        onclick={handleDismiss}
         aria-label="Dismiss"
         data-testid="transport-status-dismiss"
         class="text-xs px-1.5 py-0.5 rounded border border-current/30 hover:bg-fg/10 cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
