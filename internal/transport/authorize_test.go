@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -323,8 +324,9 @@ func (s *scopeGateStub) UpdateThreadRuntimeMode(id, mode string) error {
 
 // scopeGateFixture is the integration fixture with the session hooks the
 // enforcement wave added: a connection that names a session, and grants
-// the test controls between calls.
-func scopeGateFixture(t *testing.T, granted *[]string) (string, string) {
+// the test controls between calls. The connection's session watcher reads
+// the grants on its own goroutine, hence the atomic.
+func scopeGateFixture(t *testing.T, granted *atomic.Pointer[[]string]) (string, string) {
 	t.Helper()
 	d := NewDispatcher()
 	if _, err := d.Register(&scopeGateStub{}, RegisterOptions{Package: "main", TypeName: "App"}); err != nil {
@@ -339,7 +341,7 @@ func scopeGateFixture(t *testing.T, granted *[]string) (string, string) {
 		},
 			live: func(string) bool { return true },
 			scopes: func(string) ([]string, string) {
-				return *granted, ""
+				return *granted.Load(), ""
 			},
 		},
 	})
@@ -358,7 +360,8 @@ func scopeGateFixture(t *testing.T, granted *[]string) (string, string) {
 }
 
 func TestScopeGateRefusesOverTheWire(t *testing.T) {
-	granted := []string{string(ScopeThreadsRead)}
+	var granted atomic.Pointer[[]string]
+	granted.Store(&[]string{string(ScopeThreadsRead)})
 	addr, token := scopeGateFixture(t, &granted)
 	conn, _, err := websocket.Dial(context.Background(), "ws://"+addr+"/ws?token="+token, nil)
 	if err != nil {
@@ -379,7 +382,7 @@ func TestScopeGateRefusesOverTheWire(t *testing.T) {
 
 	// The method's OWN refusal — the argument recheck — reaches the wire
 	// with the same code and its message intact.
-	granted = []string{string(ScopeThreadsRead), string(ScopeThreadsOperate)}
+	granted.Store(&[]string{string(ScopeThreadsRead), string(ScopeThreadsOperate)})
 	argRefused := callRPC(t, conn, "UpdateThreadRuntimeMode", "t1", "full-access")
 	if argRefused.Error == nil || argRefused.Error.Code != ErrCodeScopeRequired {
 		t.Fatalf("argument recheck = %#v, want scope_required", argRefused.Error)
