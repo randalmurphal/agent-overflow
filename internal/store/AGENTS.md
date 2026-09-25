@@ -94,9 +94,9 @@ an atomic persistence decision; they must not become a business-logic layer.
   `bumpHistoryRevForItemTx` / `bumpHistoryRevForPayloadTx` so the owning row's
   `rev` moves with the thread stamp; plain `bumpHistoryRevTx` is only for a
   window-visible write with no owning item row. `UpdatePayloadSpans` bumps the
-  holder and the forks that show the payload, not the row's `rev`: spans are a
-  client-version-checked cache. An item-coupled write relies on the item
-  trigger and must not double-bump.
+  thread that holds the payload, not the forks that show it or the row's
+  `rev`: spans are a client-version-checked cache. An item-coupled write
+  relies on the item trigger and must not double-bump.
 - `SyncThreadWindow` reads store identity, stamps, and rows in one read
   transaction so they describe one WAL snapshot.
 - `history_bulk_load` may suppress stamp triggers only in a transaction that
@@ -120,13 +120,13 @@ an atomic persistence decision; they must not become a business-logic layer.
   the committed row in memory and writes it to the stamps at a flush
   (`FlushSubagentCards`, the card's `Close`, `Store.Close`). A write the card
   rules do not follow recomputes the chains it changed in its own
-  transaction. Every bulk writer (import, materialize, pointer-fork copy
-  and hand-off, fork creation) writes without cards: it never copies
+  transaction. Every bulk writer (import, pointer-fork copy and move to a
+  holder, fork creation) writes without cards: it never copies
   `subagent_aggregates` rows or card keys between threads, and before it
   commits it recomputes every local anchor whose subtree it changed, through
   `bulkItemWrites` or with `restampSubagentAggregatesTx` for a thread it
   rebuilt. A pointer-fork writer that changes which rows a fork reads
-  (revert, hide, detach) recomputes the fork's stamped copies. A stamp write
+  (revert, hide) recomputes the fork's stamped copies. A stamp write
   follows a `threads.history_rev` advance in its transaction (the item
   write's trigger, or the writer's own bump), so the anchor and its
   completion siblings are served at a new revision. After a crash,
@@ -142,16 +142,15 @@ an atomic persistence decision; they must not become a business-logic layer.
   first (`sweepItemWrites`). The lock of a thread's cards is taken before
   the writer connection: no caller holds the writer connection when it
   opens, writes with, flushes or closes a card.
-- A pointer fork reads its ancestors' rows in place. A writer that updates,
-  moves, deletes or hides a row another thread can read hands it off to the
-  forks that show it first (`handOffIDsTx`, `handOffRemovedIDsTx`,
-  `handOffPayloadTx`); add the writer to `TestPointerForkSourceRewritesHandOff`
-  ([pointer forks](../../docs/architecture/sqlite-store.md#copies)).
-  A transaction that can move a fork's stamps runs in `writeItems` or
-  `bulkWriteItems`, whose `cardTxLocked` reports them, or commits with
-  `commitReportingForks` and defers `dropForkMovesTx`, so the forks it
-  moved are reported (`fork_moves.go`, enforced from the source by
-  `TestForkMoveOwnersReport`).
+- A pointer fork reads its ancestors' rows in place, and a row, payload,
+  append chunk or turn row a fork shows is immutable: the fork triggers
+  refuse the write (`shownHistoryImmutable`). A writer that must remove rows
+  forks show moves them to a holder first (`splitShownRowsTx`), and the
+  delete of a thread forks read keeps it as a holder (`retireToHolderTx`)
+  ([ownership](../../docs/architecture/sqlite-store.md#ownership)). Fix a
+  refused write at its writer, never by narrowing a guard. A write that
+  removes `thread_fork_lineage` rows calls `holdersMayBeReleased` after its
+  commit, so the app deletes the holders it released.
 - Logical timeline reads include mutable and imported history. Ordered, limited,
   or recursive reads use `timelineArms` or `timelineIDSelection`; do not put
   `ORDER BY`, `LIMIT`, or a recursive step over `timeline_items`. Lookups by

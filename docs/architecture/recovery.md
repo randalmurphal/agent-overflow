@@ -45,7 +45,7 @@ re-forked (or re-pinned) on the next restart.
   selects `thread/resume` over `thread/start` when the ID is non-empty
   (see the method-dispatch switch in `Session.start` in
   `internal/provider/codex/session.go`). Codex has a native
-  `thread/fork` wire method that `app_thread_fork.go` uses at fork
+  `thread/fork` wire method that `app_thread_fork_codex.go` uses at fork
   time; the child thread's first start still goes through plain
   resume on its freshly-assigned id.
 

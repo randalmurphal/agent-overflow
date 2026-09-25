@@ -75,8 +75,8 @@ func (s *Store) NextTurnIndex(threadID string) (int, error) {
 
 // lastTurnIndex reads the newest row through the timeline arms, each an
 // index walk that stops at its first row, and the thread's own turn rows.
-// A fork owns the row of its cut turn and every later one, so its own turn
-// rows are never older than the turns it inherits.
+// A fork owns the row of its cut turn and every later one, so no turn row
+// it inherits is newer than its own.
 func (s *Store) lastTurnIndex(threadID string) (sql.NullInt64, error) {
 	q := s.reader()
 	newest, args, err := timelineArms(q, threadID, timelineSelection{
@@ -321,7 +321,7 @@ func (s *Store) GetThreadItemByPayloadID(threadID, payloadID string) (Item, bool
 	const columns = "items.id AS id, items.updated_at AS updated_at"
 	rows, arms := ownPayloadRowArms(columns), payloadRowArmCount
 	if depth > 0 {
-		rows += "\n		UNION ALL\n		" + inheritedPayloadRowArms(columns, allLevels)
+		rows += "\n		UNION ALL\n		" + inheritedPayloadRowArms(columns, allLevels, "?", "?")
 		arms += payloadRowArmCount
 	}
 	item, found, err := queryOneHydratedTimelineItem(

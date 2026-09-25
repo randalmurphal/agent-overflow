@@ -18,7 +18,7 @@ func TestMigrationV123ForkCopies(t *testing.T) {
 				VALUES(?,?,0,?,'assistant_text','assistant','completed','row','{}',1,1)`, id, item, index)
 		}
 	}
-	migrateFrom(t, db, 122)
+	migrateFromThrough(t, db, 122, 123)
 
 	var withoutRowID bool
 	if err := db.QueryRow(`SELECT sql LIKE '%WITHOUT ROWID%' FROM sqlite_master WHERE type = 'table' AND name = 'thread_fork_copied'`).Scan(&withoutRowID); err != nil || !withoutRowID {

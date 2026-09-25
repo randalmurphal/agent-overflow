@@ -44,7 +44,7 @@ func TestMigrationV120PointerForks(t *testing.T) {
 		"src/p=base chunks=[ chunk] edits=[file:original]",
 	}
 	requireIDs(t, "payloads before", v120PayloadState(t, db, "timeline_payloads", "timeline_payload_chunks", "timeline_edit_file_snapshots"), want)
-	migrateFrom(t, db, 119)
+	migrateFromThrough(t, db, 119, 120)
 	requireIDs(t, "payloads through the views", v120PayloadState(t, db, "timeline_payloads", "timeline_payload_chunks", "timeline_edit_file_snapshots"), want)
 	requireIDs(t, "physical payloads", v120PayloadState(t, db, "payloads", "payload_chunks", "edit_file_snapshots"), want)
 

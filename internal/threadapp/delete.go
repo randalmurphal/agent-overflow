@@ -7,6 +7,7 @@ import (
 	"log"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
 )
 
 // DeletePorts is the explicit boundary from store-owned deletion ordering to
@@ -118,6 +119,13 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 			return err
 		}
 	}
+	// The mark refuses new forks before the attachments go, so the ones
+	// the thread's forks show are known and kept (store.ReleasableAttachments).
+	if threadFound {
+		if err := database.BeginThreadDelete(threadID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("delete thread %s: mark deleting: %w", threadID, err)
+		}
+	}
 	if ports.CleanupAttachments != nil {
 		if err := ports.CleanupAttachments(threadID); err != nil {
 			errs = append(errs, fmt.Errorf("cleanup attachments: %w", err))
@@ -145,7 +153,9 @@ func (s *Service) DeleteTree(threadID string, subtreeLocksHeld bool, ports Delet
 		}
 		return fmt.Errorf("delete thread %s: drop row: %w", threadID, err)
 	}
-	if ports.Deleted != nil {
+	// No client lists a holder: its source's delete reported the thread
+	// gone, and a revert's holder was never shown.
+	if ports.Deleted != nil && thread.Mode != threadmode.ModeHolder {
 		ports.Deleted(thread)
 	}
 	return nil

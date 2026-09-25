@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -40,7 +41,18 @@ func TestDeleteImportedItemDoesNotMaterializeAndCollectsLastReference(t *testing
 	if err != nil || string(data) != "original chunk" {
 		t.Fatalf("source deletion changed fork: %q %v", data, err)
 	}
+	// The source gave the row to a holder; the fork's delete of it leaves the
+	// holder showing it nothing, so the holder is released, and its delete
+	// takes the last reference to the chunk.
+	holders := holderIDs(t, s)
+	if len(holders) != 1 {
+		t.Fatalf("holders = %v", holders)
+	}
 	if err := s.DeleteThreadItem("fork", "item-000"); err != nil {
+		t.Fatal(err)
+	}
+	requireIDs(t, "released holders", releasedHolders(t, s), holders)
+	if err := s.DeleteThread(holders[0]); err != nil {
 		t.Fatal(err)
 	}
 	var chunks, refs, overrides int
@@ -78,8 +90,8 @@ func TestImportedHistoryForkIsolationSearchAndLastReference(t *testing.T) {
 	importedHistoryFixture(t, s, "source", 140)
 	for _, pair := range [][2]string{{"source", "fork"}, {"fork", "grandchild"}} {
 		mustPointerFork(t, s, pair[0], pair[1], ForkCut{})
-		if private := ownRowCount(t, s, pair[1]); private != 1 {
-			t.Fatalf("fork stores %d rows, want only its divider", private)
+		if private := ownRowCount(t, s, pair[1]); private != 0 {
+			t.Fatalf("fork stores %d rows, want none", private)
 		}
 	}
 	if err := s.BuildSearchIndex(context.Background()); err != nil {
@@ -93,42 +105,41 @@ func TestImportedHistoryForkIsolationSearchAndLastReference(t *testing.T) {
 	if len(hits) != 420 || len(identities) != 420 {
 		t.Fatalf("search rebuild changed fork identities: %d hits / %d identities", len(hits), len(identities))
 	}
-	if err := s.UpdateItemMeta("source", "item-000", `{"changed":true}`); err != nil {
-		t.Fatal(err)
+	// The source's imported rows its forks show never change.
+	if err := s.UpdateItemMeta("source", "item-000", `{"changed":true}`); err == nil || !strings.Contains(err.Error(), shownHistoryImmutable) {
+		t.Fatalf("source rewrite of a row its forks show = %v, want refused", err)
 	}
-	if err := s.ReplacePayloadData("source", "item-000", []byte("changed"), "{}", 3); err != nil {
-		t.Fatal(err)
+	if err := s.ReplacePayloadData("source", "item-000", []byte("changed"), "{}", 3); err == nil || !strings.Contains(err.Error(), shownHistoryImmutable) {
+		t.Fatalf("source rewrite of a payload its forks show = %v, want refused", err)
 	}
-	for _, thread := range []string{"fork", "grandchild"} {
-		data, err := s.GetPayloadData(thread, "item-000")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(data) != "original chunk" {
-			t.Fatalf("%s observed source mutation: %q", thread, data)
+	requireOriginal := func(thread, id string) {
+		t.Helper()
+		if data, err := s.GetPayloadData(thread, id); err != nil || string(data) != "original chunk" {
+			t.Fatalf("%s reads %s = %q, %v", thread, id, data, err)
 		}
 	}
-	// History belongs to the source: deleting it takes what the forks read
-	// from it, and they keep only the rows they own.
+	for _, thread := range []string{"source", "fork", "grandchild"} {
+		requireOriginal(thread, "item-000")
+	}
+	// A deleted thread its forks read stays as the holder of what they
+	// read; the last reader's delete releases the holders, and their
+	// deletes release the chunks.
 	if err := s.DeleteThread("source"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.GetPayloadData("grandchild", "item-139"); err == nil {
-		t.Fatal("grandchild still reads the deleted source's history")
-	}
-	// The fork took its own copy of the row the source rewrote, and the
-	// grandchild reads it from the fork until the fork goes too.
-	if data, err := s.GetPayloadData("grandchild", "item-000"); err != nil || string(data) != "original chunk" {
-		t.Fatalf("grandchild lost the fork's copy: %q %v", data, err)
-	}
+	requireOriginal("grandchild", "item-139")
 	if err := s.DeleteThread("fork"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.GetPayloadData("grandchild", "item-000"); err == nil {
-		t.Fatal("grandchild still reads the deleted fork's history")
-	}
+	requireOriginal("grandchild", "item-000")
 	if err := s.DeleteThread("grandchild"); err != nil {
 		t.Fatal(err)
+	}
+	requireIDs(t, "released holders", releasedHolders(t, s), []string{"fork", "source"})
+	for _, id := range []string{"fork", "source"} {
+		if err := s.DeleteThread(id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var chunks int
 	if err := s.db.QueryRow(`SELECT count(*) FROM import_history_chunks`).Scan(&chunks); err != nil {
@@ -146,8 +157,8 @@ func TestImportedHistoryCutsKeepSharedPrefix(t *testing.T) {
 			importedHistoryFixture(t, s, "source", 140)
 			mustPointerFork(t, s, "source", "fork", ForkCut{})
 			// Any materialization of the kept prefix makes this test fail; the
-			// divider moving to the new cut is the fork's only write.
-			if _, err := s.db.Exec(`CREATE TRIGGER reject_history_materialization BEFORE INSERT ON items WHEN NEW.thread_id='fork' AND NEW.id <> 'fork-origin-fork' BEGIN SELECT RAISE(ABORT,'cut materialized history'); END`); err != nil {
+			// lineage cut moving is the fork's only write.
+			if _, err := s.db.Exec(`CREATE TRIGGER reject_history_materialization BEFORE INSERT ON items WHEN NEW.thread_id='fork' BEGIN SELECT RAISE(ABORT,'cut materialized history'); END`); err != nil {
 				t.Fatal(err)
 			}
 			want := 70
@@ -156,8 +167,8 @@ func TestImportedHistoryCutsKeepSharedPrefix(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				// The anchor turn keeps its five rows and the divider at the cut.
-				if len(kept) != 6 {
+				// The anchor turn keeps its five rows.
+				if len(kept) != 5 {
 					t.Fatalf("kept anchor turn has %d rows", len(kept))
 				}
 				want = 75
@@ -189,8 +200,7 @@ func TestImportedHistoryCutsKeepSharedPrefix(t *testing.T) {
 			}
 			mustPointerFork(t, s, "fork", "grandchild", ForkCut{})
 			items = forkRows(t, s, "grandchild")
-			// The grandchild shows the fork's own divider among what it inherits.
-			if len(items) != want+1 {
+			if len(items) != want {
 				t.Fatalf("fork after cut restored deleted history: %d", len(items))
 			}
 		})
@@ -243,8 +253,8 @@ func TestImportedHistorySnapshotRestoreWithPrivateOverride(t *testing.T) {
 	if err := s.DeleteThread("source"); err != nil {
 		t.Fatal(err)
 	}
-	if items := forkRows(t, s, "fork"); len(items) != 0 {
-		t.Fatalf("fork of a deleted source still shows %d of its rows", len(items))
+	if items := forkRows(t, s, "fork"); len(items) != 80 {
+		t.Fatalf("fork of a deleted source shows %d rows, want the 80 it read", len(items))
 	}
 }
 
@@ -324,6 +334,54 @@ func TestImportedDescendantsKeepWireDecorationAndAncestorRevisions(t *testing.T)
 	if len(after) != 1 || after[0].Rev <= before.Rev {
 		t.Fatalf("cut did not stamp retained parent: %+v", after)
 	}
+}
+
+// TestHolderSplitOfImportedChildrenStampsTheirParent: a revert that gives
+// imported children to a holder changes the read of their local parent,
+// which stays: the parent is served at the source's revision after the
+// split with the card of the children it keeps, and the fork's read of
+// the parent does not change.
+func TestHolderSplitOfImportedChildrenStampsTheirParent(t *testing.T) {
+	s := newTestStore(t)
+	launch := Item{ThreadID: "source", ID: "item-000", Kind: "tool_call", ToolName: "Agent", Role: "assistant", Status: "completed", Summary: "agent", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
+	newImportTargetThread(t, s, "source")
+	if err := insertCarded(s, launch); err != nil {
+		t.Fatal(err)
+	}
+	var batch ImportBatch
+	for i := 1; i < 4; i++ {
+		batch.Rows = append(batch.Rows, ImportRow{Item: Item{ThreadID: "source", ID: fmt.Sprintf("item-%03d", i), ItemIndex: i, ParentID: launch.ID, Kind: "assistant_text", Role: "assistant", Status: "completed", Summary: "child", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}})
+	}
+	if err := s.ApplyImportBatch("source", batch); err != nil {
+		t.Fatal(err)
+	}
+	mustPointerFork(t, s, "source", "fork", ForkCut{})
+	forkBefore, err := s.ListWireItems("fork", []string{launch.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.DeleteConversationFromItem("source", "item-002"); err != nil {
+		t.Fatal(err)
+	}
+	if held := holderIDs(t, s); len(held) != 1 {
+		t.Fatalf("holders = %v", held)
+	}
+	after, err := s.ListWireItems("source", []string{launch.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stamp := historyStampOf(t, s, "source"); len(after) != 1 || after[0].Rev != stamp.Rev {
+		t.Fatalf("the parent reads %+v, the source is at %+v", after, stamp)
+	}
+	assertSubagentStampParity(t, s, "source", "after the split", true)
+	forkAfter, err := s.ListWireItems("fork", []string{launch.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(forkBefore, forkAfter) {
+		t.Fatalf("the fork's read of the parent changed:\nbefore %+v\nafter  %+v", forkBefore, forkAfter)
+	}
+	assertSubagentStampParity(t, s, "fork", "after the split", true)
 }
 
 func TestImportedHistoryCutCollectsPrivatePayloadOverrides(t *testing.T) {

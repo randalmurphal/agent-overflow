@@ -48,15 +48,6 @@ func TestMain(m *testing.M) {
 	}
 
 	code := m.Run()
-	// Every write transaction that recorded fork moves (fork_moves.go) has
-	// an owner that reports or drops them; one left here is an owner that
-	// does neither, whose forks were never told.
-	if n := forkMoves.pending.Load(); n != 0 {
-		fmt.Fprintf(os.Stderr, "%d write transactions recorded fork moves that no owner reported\n", n)
-		if code == 0 {
-			code = 1
-		}
-	}
 	if err := os.RemoveAll(dir); err != nil {
 		fmt.Fprintf(os.Stderr, "remove store test template: %v\n", err)
 		if code == 0 {

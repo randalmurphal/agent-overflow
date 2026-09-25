@@ -322,7 +322,6 @@ func (s *Store) AppendPayloadData(threadID, id string, delta []byte, meta string
 		return fmt.Errorf("store: begin append payload data %s: %w", id, err)
 	}
 	defer tx.Rollback()
-	defer dropForkMovesTx(tx)
 
 	if err := appendPayloadDataTx(tx, threadID, id, delta, meta, createdAt); err != nil {
 		return err
@@ -330,7 +329,7 @@ func (s *Store) AppendPayloadData(threadID, id string, delta []byte, meta string
 	if err := bumpHistoryRevForPayloadTx(tx, threadID, id, fmt.Sprintf("store: append payload data %s", id)); err != nil {
 		return err
 	}
-	if err := s.commitReportingForks(tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit append payload data %s: %w", id, err)
 	}
 	return nil
@@ -341,7 +340,7 @@ func (s *Store) AppendPayloadData(threadID, id string, delta []byte, meta string
 // flush window costs one transaction instead of two.
 func appendPayloadDataTx(tx *sql.Tx, threadID, id string, delta []byte, meta string, createdAt int64) error {
 	label := fmt.Sprintf("store: append payload data %s", id)
-	if err := requireMutablePayloadTx(tx, threadID, id, label); err != nil {
+	if err := ensureLocalPayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
 	result, err := tx.Exec(
@@ -395,9 +394,8 @@ func (s *Store) ReplacePayloadData(threadID, id string, data []byte, meta string
 		return fmt.Errorf("store: begin replace payload data %s: %w", id, err)
 	}
 	defer tx.Rollback()
-	defer dropForkMovesTx(tx)
 	label := fmt.Sprintf("store: replace payload data %s", id)
-	if err := requireMutablePayloadTx(tx, threadID, id, label); err != nil {
+	if err := ensureLocalPayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
 
@@ -425,7 +423,7 @@ func (s *Store) ReplacePayloadData(threadID, id string, data []byte, meta string
 	if err := bumpHistoryRevForPayloadTx(tx, threadID, id, fmt.Sprintf("store: replace payload data %s", id)); err != nil {
 		return err
 	}
-	if err := s.commitReportingForks(tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit replace payload data %s: %w", id, err)
 	}
 	return nil
@@ -449,8 +447,7 @@ func (s *Store) UpdatePayloadMeta(threadID, id, meta string) error {
 		return fmt.Errorf("store: begin update payload meta %s: %w", id, err)
 	}
 	defer tx.Rollback()
-	defer dropForkMovesTx(tx)
-	if err := requireMutablePayloadTx(tx, threadID, id, label); err != nil {
+	if err := ensureLocalPayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
 
@@ -467,7 +464,7 @@ func (s *Store) UpdatePayloadMeta(threadID, id, meta string) error {
 	if err := bumpHistoryRevForPayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
-	if err := s.commitReportingForks(tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit update payload meta %s: %w", id, err)
 	}
 	return nil
@@ -484,12 +481,12 @@ func (s *Store) UpdatePayloadMeta(threadID, id, meta string) error {
 // spans ride the item row on the wire (Item.PayloadPreviewSpans), so a
 // backfill genuinely changes what a windowed read returns.
 //
-// It is the one payload mutator that bumps THREADS without stamping the
-// item rows (bumpHistoryRevForPayloadTx explains the split): the holder and
-// every fork that shows the payload's rows. Spans are a derived highlight
-// cache the client version-checks against the payload content it already
-// holds, so a held window whose spans are behind is still a correct window
-// and must not be forced to re-page.
+// It is the one payload mutator that bumps a THREAD without stamping the
+// item rows (bumpHistoryRevForPayloadTx explains the split): the thread
+// that holds the payload, not the forks that show its rows. Spans are a
+// derived highlight cache the client version-checks against the payload
+// content it already holds, so a held window whose spans are behind is
+// still a correct window and must not be forced to re-page.
 //
 // Returns sql.ErrNoRows (wrapped) if no payload matches id — the
 // span worker racing a thread deletion hits this and treats it as a
@@ -501,7 +498,6 @@ func (s *Store) UpdatePayloadSpans(threadID, id, previewSpans, spans string) err
 		return fmt.Errorf("store: begin update payload spans %s: %w", id, err)
 	}
 	defer tx.Rollback()
-	defer dropForkMovesTx(tx)
 	// Spans are a cache of the payload's content, so they are written where
 	// the content lives: a pointer fork's inherited payload gets its spans
 	// on the ancestor's row, and every fork that reads it sees them.
@@ -526,10 +522,7 @@ func (s *Store) UpdatePayloadSpans(threadID, id, previewSpans, spans string) err
 	if err := bumpHistoryRevTx(tx, holder, label); err != nil {
 		return err
 	}
-	if err := bumpPayloadReadersTx(tx, holder, id, label); err != nil {
-		return err
-	}
-	if err := s.commitReportingForks(tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit update payload spans %s: %w", id, err)
 	}
 	return nil

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"agent-overflow/internal/threadmode"
 )
 
 // HistoryStamp is a thread's history invalidation contract
@@ -126,7 +128,7 @@ type ThreadWindowSync struct {
 // An INSERT under the flag stamps only the inserted row. Every bulk-load
 // insert either moves a row that was already visible into `items`, from
 // imported history (localizeImportedItemTx, UnsealThreadHistory) or from a
-// pointer fork's ancestor (copyInheritedRowsTx), or rebuilds a thread whose
+// pointer fork's ancestor (snapshotRowsTx), or rebuilds a thread whose
 // rows the same transaction deleted (a returning transfer), where every row
 // it could stamp was inserted at the same frozen revision. A moved row
 // changes no other row's read: the subagent cards read every arm. The
@@ -479,31 +481,15 @@ func bumpHistoryRevTx(exec sqlExecutor, threadID, label string) error {
 // fallback is the plain thread bump — the same answer as before this column
 // existed. Window verification refuses any window containing an imported row,
 // so the thread stamp is the only signal such a client can use, and it moves.
-//
-// The touch returns the pointer forks trg_items_fork_reader_stamp advances
-// for it, the forks that show the row, and records them against tx
-// (fork_moves.go) in the same statement.
 func bumpHistoryRevForItemTx(tx *sql.Tx, threadID, itemID, label string) error {
 	if itemID == "" {
 		return fmt.Errorf("%s: item id is required to stamp an item revision", label)
 	}
-	if threadID == "" {
-		return fmt.Errorf("%s: thread id is required to advance history_rev", label)
-	}
-	var readers string
-	err := tx.QueryRow(touchItemRowSQL, threadID, itemID).Scan(&readers)
-	if errors.Is(err, sql.ErrNoRows) {
-		return bumpHistoryRevTx(tx, threadID, label)
-	}
-	if err != nil {
-		return fmt.Errorf("%s: stamp item revision: %w", label, err)
-	}
-	return recordForkReadersTx(tx, readers)
+	return touchItemRowsTx(tx, threadID, label, touchItemRowSQL, threadID, itemID)
 }
 
 // touchItemRowSQL is bumpHistoryRevForItemTx's touch.
-var touchItemRowSQL = `UPDATE items SET updated_at = updated_at WHERE thread_id = ? AND id = ?
-RETURNING ` + forkReadersOfRowSQL
+const touchItemRowSQL = `UPDATE items SET updated_at = updated_at WHERE thread_id = ? AND id = ?`
 
 // bumpHistoryRevForPayloadTx is bumpHistoryRevForItemTx for the payload
 // mutators: payload content and meta ride the item rows that reference the
@@ -569,19 +555,20 @@ func touchItemRowsTx(exec sqlExecutor, threadID, label, touchSQL string, args ..
 	return bumpHistoryRevTx(exec, threadID, label)
 }
 
-// readHistoryStampTx reads a thread's stamps. found=false means no thread
-// row — a deleted thread, which SyncThreadWindow reports as `gone`.
+// readHistoryStampTx reads a thread's stamps. found=false means a deleted
+// thread, which SyncThreadWindow reports as `gone`: no thread row, or a
+// holder (fork_holders.go), which is what a deleted thread its forks still
+// read keeps its id as.
 //
-// A pointer fork's stamps are its own. An ancestor's write moves them only
-// when it changes a row the fork shows: the hand-off's copy
-// (copyInheritedRowsStampedTx), an in-place update the fork shows
-// (trg_items_fork_reader_stamp) and spans on a payload it shows
-// (UpdatePayloadSpans). A write after the fork's cut leaves them alone.
+// A pointer fork's stamps are its own. No ancestor write moves them: a row
+// a fork shows never changes (fork_triggers.go), and a revert or delete
+// that takes such a row out of its thread gives it to a holder the fork
+// reads it from (fork_holders.go).
 func readHistoryStampTx(q sqlQueryer, threadID string) (HistoryStamp, bool, error) {
 	var stamp HistoryStamp
 	err := q.QueryRow(
-		`SELECT history_rev, history_epoch FROM threads WHERE id = ?`,
-		threadID,
+		`SELECT history_rev, history_epoch FROM threads WHERE id = ? AND mode <> ?`,
+		threadID, threadmode.ModeHolder,
 	).Scan(&stamp.Rev, &stamp.Epoch)
 	if errors.Is(err, sql.ErrNoRows) {
 		return HistoryStamp{}, false, nil

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -199,11 +200,13 @@ func schemaObjects(t *testing.T, db *sql.DB) []schemaObject {
 
 // downgradeSchema gives db the schema of ref, a database the chain migrated
 // through version, and the migration record and deferred watermark of that
-// version. Rows stay as they are. Only indexes, triggers and views may
-// differ in shape, and a table only by columns a later migration added: they
-// are dropped with their values. Any other table difference is a failure,
-// and a table ref lacks is dropped. It fails unless the two schemas end up
-// identical.
+// version. Rows stay as they are. Indexes, triggers and views may differ in
+// shape. A table may differ by columns a later migration added, which are
+// dropped with their values, and then only in its declaration (a rebuild
+// migration's constraints): it is rebuilt to ref's declaration with its
+// rows, which must satisfy it (rebuildTableAs). A table with other columns
+// is a failure, and a table ref lacks is dropped. It fails unless the two
+// schemas end up identical.
 func downgradeSchema(t *testing.T, db, ref *sql.DB, version int) {
 	t.Helper()
 	want := map[string]schemaObject{}
@@ -230,7 +233,17 @@ func downgradeSchema(t *testing.T, db, ref *sql.DB, version int) {
 				drop(o)
 			case w.SQL != o.SQL && kind == "table":
 				if got := dropAddedColumns(t, db, ref, o.Name); got != w.SQL {
-					t.Fatalf("table %s differs from v%d's; the fixture cannot be downgraded:\n%s\nwant:\n%s", o.Name, version, got, w.SQL)
+					if !slices.Equal(orderedColumnsForTest(t, db, o.Name), orderedColumnsForTest(t, ref, o.Name)) {
+						t.Fatalf("table %s differs from v%d's; the fixture cannot be downgraded:\n%s\nwant:\n%s", o.Name, version, got, w.SQL)
+					}
+					rebuildTableAs(t, db, o.Name, w.SQL)
+					// The rebuild dropped the table's indexes and triggers;
+					// the way up recreates ref's.
+					for other, dependent := range have {
+						if dependent.Table == o.Name && dependent.Type != "table" {
+							delete(have, other)
+						}
+					}
 				}
 			case w.SQL != o.SQL:
 				drop(o)
@@ -265,30 +278,53 @@ func downgradeSchema(t *testing.T, db, ref *sql.DB, version int) {
 	}
 }
 
+// orderedColumnsForTest lists table's columns in order.
+func orderedColumnsForTest(t *testing.T, db *sql.DB, table string) []string {
+	t.Helper()
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?) ORDER BY cid`, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return names
+}
+
+// rebuildTableAs replaces table with one declared by create, ref's exact
+// statement, holding the same rows. db is one connection. The old table is
+// renamed away under legacy_alter_table, so no reference to the name in
+// another table, view or trigger is rewritten, and dropped with its
+// indexes and triggers once its rows are copied; foreign keys are off
+// meanwhile, as in a rebuild migration.
+func rebuildTableAs(t *testing.T, db *sql.DB, table, create string) {
+	t.Helper()
+	columns := `"` + strings.Join(orderedColumnsForTest(t, db, table), `", "`) + `"`
+	old := table + "_downgraded"
+	mustExec(t, db, `PRAGMA foreign_keys = OFF`)
+	mustExec(t, db, `PRAGMA legacy_alter_table = ON`)
+	mustExec(t, db, fmt.Sprintf(`ALTER TABLE "%s" RENAME TO "%s"`, table, old))
+	mustExec(t, db, create)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO "%s" (%s) SELECT %s FROM "%s"`, table, columns, columns, old))
+	mustExec(t, db, fmt.Sprintf(`DROP TABLE "%s"`, old))
+	mustExec(t, db, `PRAGMA legacy_alter_table = OFF`)
+	mustExec(t, db, `PRAGMA foreign_keys = ON`)
+}
+
 // dropAddedColumns drops the columns of table that ref's table lacks, when
 // ref's columns are the leading ones, and returns the table's SQL after.
 func dropAddedColumns(t *testing.T, db, ref *sql.DB, table string) string {
 	t.Helper()
-	columns := func(db *sql.DB) []string {
-		rows, err := db.Query(`SELECT name FROM pragma_table_info(?) ORDER BY cid`, table)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer rows.Close()
-		var names []string
-		for rows.Next() {
-			var name string
-			if err := rows.Scan(&name); err != nil {
-				t.Fatal(err)
-			}
-			names = append(names, name)
-		}
-		if err := rows.Err(); err != nil {
-			t.Fatal(err)
-		}
-		return names
-	}
-	have, want := columns(db), columns(ref)
+	have, want := orderedColumnsForTest(t, db, table), orderedColumnsForTest(t, ref, table)
 	if len(have) > len(want) && slices.Equal(have[:len(want)], want) {
 		for _, name := range have[len(want):] {
 			mustExec(t, db, fmt.Sprintf(`ALTER TABLE "%s" DROP COLUMN "%s"`, table, name))

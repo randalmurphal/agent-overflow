@@ -237,22 +237,20 @@ func (s *Store) SubagentCardPending(threadID, anchorID string) bool {
 	return pending
 }
 
-// cardTxLocked runs one card transaction: drain, fn, commit, the report
-// of the pointer forks it moved (fork_moves.go), and fn's apply once
-// committed. The caller holds t.mu.
+// cardTxLocked runs one card transaction: drain, fn, commit, and fn's
+// apply once committed. The caller holds t.mu.
 func (s *Store) cardTxLocked(t *cardThread, label string, fn func(tx *sql.Tx) (func(), error)) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("store: begin %s in %s: %w", label, t.id, err)
 	}
 	defer tx.Rollback()
-	defer dropForkMovesTx(tx)
 	s.cards.drain(t)
 	apply, err := fn(tx)
 	if err != nil {
 		return err
 	}
-	if err := s.commitReportingForks(tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit %s in %s: %w", label, t.id, err)
 	}
 	if apply != nil {

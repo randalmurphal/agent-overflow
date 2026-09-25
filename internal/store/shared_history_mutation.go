@@ -5,16 +5,6 @@ import (
 	"fmt"
 )
 
-// requireMutablePayloadTx prepares threadID to rewrite a payload's content:
-// the forks that read the payload's rows through threadID take their own
-// copies first, then threadID gets a payload row it may write.
-func requireMutablePayloadTx(tx *sql.Tx, threadID, payloadID, label string) error {
-	if err := handOffPayloadTx(tx, threadID, payloadID); err != nil {
-		return fmt.Errorf("%s hand off payload %s/%s: %w", label, threadID, payloadID, err)
-	}
-	return ensureLocalPayloadTx(tx, threadID, payloadID, label)
-}
-
 // ensureLocalPayloadTx gives one thread a mutable payload row when the
 // requested payload currently comes from immutable imported history or from
 // a pointer fork's ancestor. Copying it is representation-only: the thread
@@ -236,10 +226,11 @@ func setHistoryBulkLoadTx(tx *sql.Tx, threadID string, enabled bool, label strin
 }
 
 // requireMutableItemTx prepares threadID to change one row of its timeline:
-// the forks that read the row through threadID take their own copies first,
-// then threadID gets a row it may write, localized from its imported history
-// or copied from an ancestor when it does not own one. It returns a wrapped
-// sql.ErrNoRows when threadID does not show the row.
+// threadID gets a row it may write, localized from its imported history or
+// copied from an ancestor when it does not own one. It returns a wrapped
+// sql.ErrNoRows when threadID does not show the row. A row of threadID's
+// own that a fork of it shows stays immutable: the write that follows
+// fails at the fork triggers (shownHistoryImmutable).
 func requireMutableItemTx(tx *sql.Tx, threadID, itemID, label string) error {
 	_, err := readMutableSubagentRowTx(tx, threadID, itemID, label)
 	return err

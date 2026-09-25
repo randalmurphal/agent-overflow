@@ -1747,9 +1747,20 @@ func migrateThrough(t *testing.T, target int) *sql.DB {
 // finish the chain first.
 func migrateFrom(t *testing.T, db *sql.DB, after int) {
 	t.Helper()
+	migrateFromThrough(t, db, after, migrations[len(migrations)-1].Version)
+}
+
+// migrateFromThrough applies the chain after version after through version
+// through, for a test of the schema a migration leaves, which later
+// migrations may change.
+func migrateFromThrough(t *testing.T, db *sql.DB, after, through int) {
+	t.Helper()
 	for _, m := range migrations {
 		if m.Version <= after {
 			continue
+		}
+		if m.Version > through {
+			break
 		}
 		apply := applyMigration
 		if m.Rebuild {

@@ -1656,8 +1656,9 @@ func TestSubagentTrayReadsEveryArm(t *testing.T) {
 			}
 		})
 
-		// A source's write hands its old row off to the fork first, with
-		// no write of the fork's own.
+		// A source's delete of a row the fork shows gives it to a holder,
+		// which the fork then reads it from, under the inherited L and
+		// under the fork's own copy of L, with no write of the fork's own.
 		t.Run(fmt.Sprintf("an inherited launch, walked %v", walked), func(t *testing.T) {
 			s := newTestStore(t)
 			const source, fork = "t-source", "t-source-fork"
@@ -1679,19 +1680,22 @@ func TestSubagentTrayReadsEveryArm(t *testing.T) {
 			}
 			run(t, s, []step{
 				{"the fork reads L", nil, map[string]string{source: "Bash: two", fork: "Bash: two"}},
-				{"the source changes L-1, handing it off under the inherited L", func(s *Store) error {
-					return updateFieldsCarded(s, source, "L", "L-1", ItemPartialUpdate{Summary: status("Bash: one again")})
+				{"the source deletes L-1, giving it to a holder under the inherited L", func(s *Store) error {
+					return s.DeleteThreadItem(source, "L-1")
 				}, map[string]string{source: "Bash: two", fork: "Bash: two"}},
 				{"the fork changes L", func(s *Store) error {
 					_, err := s.UpdateItemFields(fork, "L", ItemPartialUpdate{Status: status("errored")})
 					return err
 				}, map[string]string{source: "Bash: two", fork: "Bash: two"}},
-				{"the source changes L-2, handing the tray row off under the fork's L", func(s *Store) error {
-					return updateFieldsCarded(s, source, "L", "L-2", ItemPartialUpdate{Summary: status("Bash: two again")})
-				}, map[string]string{source: "Bash: two again", fork: "Bash: two"}},
+				{"the source writes a tool call under L past the fork's cut", func(s *Store) error {
+					return insertCarded(s, stampFixtureRow{id: "L-4", kind: "tool_call", tool: "Bash", summary: "Bash: four", parent: "L", turn: 2, index: 1}.item(source))
+				}, map[string]string{source: "Bash: four", fork: "Bash: two"}},
+				{"the source deletes L-2, giving the tray row to a holder under the fork's L", func(s *Store) error {
+					return s.DeleteThreadItem(source, "L-2")
+				}, map[string]string{source: "Bash: four", fork: "Bash: two"}},
 				{"the fork writes a tool call under L", func(s *Store) error {
 					return insertCarded(s, stampFixtureRow{id: "L-3", kind: "tool_call", tool: "Bash", summary: "Bash: three", parent: "L", turn: 2, index: 1}.item(fork))
-				}, map[string]string{source: "Bash: two again", fork: "Bash: three"}},
+				}, map[string]string{source: "Bash: four", fork: "Bash: three"}},
 			})
 			if _, mode := subagentStampStateForTest(t, s, fork, "L"); mode != endMode(walked) {
 				t.Errorf("the fork's L ends mode %d, want %d", mode, endMode(walked))

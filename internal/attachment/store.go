@@ -549,11 +549,14 @@ func (s *Store) List(threadID string) ([]store.Attachment, error) {
 // DeleteThreadDir releases this thread's assets and removes its unretained
 // files. Inherited assets retain their canonical provider-visible paths until
 // their final owner is deleted, including when the original thread goes first.
+// The assets of messages the thread's pointer forks show stay owned: the
+// thread keeps them as the holder of those messages
+// (store.ReleasableAttachments).
 func (s *Store) DeleteThreadDir(threadID string) error {
 	if strings.TrimSpace(threadID) == "" {
 		return errors.New("attachment: thread id is required")
 	}
-	owned, err := s.meta.ListAttachments(threadID)
+	owned, err := s.meta.ReleasableAttachments(threadID)
 	if err != nil {
 		return err
 	}

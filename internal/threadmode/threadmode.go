@@ -35,19 +35,26 @@ const (
 	// its lifetime and leaves that mode only through the Keep promotion,
 	// which restores the mode recorded beside it.
 	ModeScratch = "scratch"
+	// ModeHolder is a deleted or superseded history that pointer forks
+	// still read: a deleted source kept for its forks, or the rows a
+	// revert moved out of a thread its forks read through
+	// (docs/architecture/sqlite-store.md#pointer-forks). Hidden from every
+	// listing and never set by a caller; the store creates it and deletes
+	// it when the last fork reading it goes.
+	ModeHolder = "holder"
 )
 
 var legalModes = map[string]struct{}{
 	ModeChat: {}, ModePlan: {}, ModeDiscussion: {},
 	ModeTerminal: {}, ModeWorkflow: {}, ModeWorkflowStudio: {}, ModeWorkflowTriage: {},
-	ModeScratch: {},
+	ModeScratch: {}, ModeHolder: {},
 }
 
 var sagaOwnedModes = map[string]struct{}{
 	ModeDiscussion: {}, ModeWorkflow: {}, ModeWorkflowStudio: {}, ModeWorkflowTriage: {},
 }
 
-var hiddenModes = []string{ModeWorkflow, ModeWorkflowStudio, ModeWorkflowTriage, ModeScratch}
+var hiddenModes = []string{ModeWorkflow, ModeWorkflowStudio, ModeWorkflowTriage, ModeScratch, ModeHolder}
 
 var hiddenModeSet = func() map[string]struct{} {
 	set := make(map[string]struct{}, len(hiddenModes))

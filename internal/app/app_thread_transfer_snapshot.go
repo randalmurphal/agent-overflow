@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"agent-overflow/internal/atomicfile"
-	"agent-overflow/internal/errorsx"
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/itemmeta"
 	"agent-overflow/internal/provider/claude"
@@ -248,7 +247,7 @@ func (a *App) finishTransferSnapshot(ctx context.Context, row store.ThreadTransf
 		}
 	}
 	if err := writeTransferFile(filepath.Join(scratch, "history.ndjson"), func(w io.Writer) error { return a.store.ExportThreadHistoryWith(ctx, row.ThreadID, w, options) }); err != nil {
-		return receipt, transferExportRefusal(err)
+		return receipt, err
 	}
 	encoded, err := json.Marshal(manifest)
 	if err != nil {
@@ -365,18 +364,6 @@ func verifySourceStamps(stamps []transferSourceStamp) error {
 		}
 	}
 	return nil
-}
-
-// transferExportRefusal gives the export of a pointer fork that stopped
-// because a conversation it reads from is being deleted
-// (store.ErrForkSourceDeleting) the sentence the transfer shows. The delete
-// rolls back what the export copied, and the job's next attempt exports
-// the fork as it reads once the delete has detached it.
-func transferExportRefusal(err error) error {
-	if !errors.Is(err, store.ErrForkSourceDeleting) {
-		return err
-	}
-	return errorsx.Public("fork_source_deleting", "A conversation this one was forked from is being deleted. The transfer will continue without its messages once the delete finishes.", err)
 }
 
 func writeTransferFile(filename string, write func(io.Writer) error) (err error) {

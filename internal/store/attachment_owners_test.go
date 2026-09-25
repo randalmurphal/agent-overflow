@@ -1,7 +1,6 @@
 package store
 
 import (
-	"context"
 	"strings"
 	"testing"
 )
@@ -89,15 +88,6 @@ func TestForkAttachmentOwnersFollowCutAndRollback(t *testing.T) {
 	}
 	requireOwnership("hidden", "whole", map[string]bool{"early": true, "late": false})
 
-	// A copy owns what it shows, and keeps it once the source is gone.
-	if err := s.MaterializeForkHistory(context.Background(), "fork"); err != nil {
-		t.Fatal(err)
-	}
-	var direct int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM attachment_owners WHERE thread_id = 'fork'`).Scan(&direct); err != nil || direct != 1 {
-		t.Fatalf("materialized fork owns %d attachments err=%v, want early", direct, err)
-	}
-
 	mustExec(t, s.db, `INSERT INTO turns(turn_id,thread_id,turn_index,started_at,completed_at) VALUES('source:1','source',1,1,2)`)
 	mustExec(t, s.db, `CREATE TRIGGER fail_fork_turn BEFORE INSERT ON turns WHEN NEW.thread_id='failed' BEGIN SELECT RAISE(ABORT,'fail after linking'); END`)
 	failed := makeThread("failed", "claude")
@@ -107,9 +97,54 @@ func TestForkAttachmentOwnersFollowCutAndRollback(t *testing.T) {
 	requireOwnership("failed fork", "failed", map[string]bool{"early": false, "late": false})
 	requireOwnership("source after failed fork", "source", map[string]bool{"early": true, "late": true})
 
+	// The source's delete keeps what its forks show as a holder, with the
+	// attachments those rows reference.
+	releasable, err := s.ReleasableAttachments("source")
+	if err != nil || len(releasable) != 0 {
+		t.Fatalf("attachments the source's delete releases = %+v, %v; its forks show both", releasable, err)
+	}
 	if err := s.DeleteThread("source"); err != nil {
 		t.Fatal(err)
 	}
 	requireOwnership("source deleted", "fork", map[string]bool{"early": true, "late": false})
-	requireOwnership("source deleted", "whole", map[string]bool{"early": false, "late": false})
+	requireOwnership("source deleted", "whole", map[string]bool{"early": true, "late": false})
+	retained, err := s.RetainedAttachmentPaths("source")
+	if err != nil || len(retained) != 2 {
+		t.Fatalf("paths the holder retains = %v, %v", retained, err)
+	}
+}
+
+// TestReleasableAttachmentsKeepWhatForksShow: a thread's delete releases
+// the attachments no pointer fork of it shows: those referenced only by
+// rows at or after its forks' last cut, or all of them with no fork.
+func TestReleasableAttachmentsKeepWhatForksShow(t *testing.T) {
+	s := newTestStore(t)
+	mustCreateThread(t, s, "S")
+	for _, id := range []string{"early", "late"} {
+		if err := s.InsertAttachment(Attachment{ID: id, ThreadID: "S", Kind: AttachmentKindImage, Filename: id + ".png", MimeType: "image/png", RelativePath: "S/" + id + ".png"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for turn, id := range []string{"early", "late"} {
+		if err := insertCarded(s, Item{ID: "m-" + id, ThreadID: "S", TurnIndex: turn, Kind: "user_text", Role: "user", Status: "completed", Meta: `{"attachments":["` + id + `"]}`}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	releasable := func() []string {
+		t.Helper()
+		list, err := s.ReleasableAttachments("S")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, a := range list {
+			ids = append(ids, a.ID)
+		}
+		return ids
+	}
+	requireIDs(t, "releasable without forks", releasable(), []string{"early", "late"})
+	mustPointerFork(t, s, "S", "F", throughTurn(0))
+	requireIDs(t, "releasable past the fork's cut", releasable(), []string{"late"})
+	mustPointerFork(t, s, "S", "G", ForkCut{})
+	requireIDs(t, "releasable with a fork of everything", releasable(), nil)
 }

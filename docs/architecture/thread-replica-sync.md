@@ -260,7 +260,7 @@ reproduce for different bytes.
 Under the flag the insert trigger stamps only the inserted row. Every
 insert into `items` under the flag moves a row a read already showed, from
 imported history (`localizeImportedItemTx`, `UnsealThreadHistory`) or from a
-pointer fork's ancestor (`copyInheritedRowsTx`), or rebuilds a thread whose
+pointer fork's ancestor (`snapshotRowsTx`), or rebuilds a thread whose
 rows the same transaction deleted (a returning transfer). A moved row
 changes no other row's read: the subagent cards read every arm. The
 movers recompute the stamps a move changes, which only local rows hold
@@ -311,8 +311,8 @@ the only way those writers bump:
   tables on read (`decorateProposedPlanItems`).
 
 `UpdatePayloadSpans` is excluded on purpose and keeps the bare
-`bumpHistoryRevTx`, for the holder and for the forks that show the payload
-([Pointer-fork stamps](#pointer-fork-stamps)). Spans are a derived cache with a
+`bumpHistoryRevTx`, for the thread that holds the payload, not the forks that
+show it ([Pointer-fork stamps](#pointer-fork-stamps)). Spans are a derived cache with a
 documented "empty means not computed, ask the highlight RPC" fallback and are
 version-checked against payload content on the client
 (`utils/payloadVersion.ts`), so a window whose spans are behind is still a
@@ -392,48 +392,32 @@ A pointer fork reads the rows before its cut from the threads that own
 them ([sqlite-store.md](sqlite-store.md#pointer-forks)). Its inherited
 rows read `rev = -1`, like imported rows, so a held window that contains
 one is fresh only through a stamp match (§5, step 1). A fork's
-`history_rev` and `history_epoch` are its own counters, and a write moves
-them only when it changes a row the fork shows:
+`history_rev` and `history_epoch` are its own counters, and only the
+fork's own writes move them:
 
-- A hand-off copy. Before an ancestor updates, moves, deletes or hides a
-  row a fork shows, `handOffIDsTx` copies the row into the fork and
-  advances the fork's revision once (`copyInheritedRowsStampedTx`).
-- An in-place update of a shown ancestor row, for a write that must reach
-  every thread showing the row: a revision touch
-  (`bumpHistoryRevForItemTx`) or the divider's `sourceDeleted` mark.
-  `trg_items_fork_reader_stamp` advances the stamps of the forks whose cut
-  follows the row and that do not hide it. It skips an update that changes
-  only `rev`, which is a subagent stamp serving an anchor at a new
-  revision: a fork walks an inherited anchor over its own timeline, where
-  a row past its cut or hidden by it does not appear.
-- `UpdatePayloadSpans` on a payload a fork shows (`bumpPayloadReadersTx`).
-- A change to which inherited rows the fork shows: its own delete or
-  revert of an inherited row, or the detach of a deleted source
-  (`bumpForkViewTx`, revision and epoch).
+- A write to its own rows, including the copy it takes of an inherited
+  row before it writes it (`shadowInheritedItemTx`), through the item
+  triggers.
+- A change to which inherited rows it shows: its own revert or delete of
+  an inherited row (`bumpForkViewTx`, revision and epoch).
 
-A source write past a fork's cut changes nothing the fork shows, and an
-insert below the cut is hidden from the fork (`trg_items_fork_snapshot`),
-so neither moves the fork's stamps: a source continuing its own
-conversation leaves every open fork `fresh`. The readers of a written row
-are found through `idx_thread_fork_lineage_ancestor` by the row's
-position, so the work follows the forks that show the row, and a source
-write past every cut writes no fork row
+Nothing another thread writes changes what a fork shows. A row, payload
+or turn row a fork shows never changes (`trg_items_shown_update` and its
+siblings refuse the write), an insert below the cut is hidden from the
+fork (`trg_items_fork_snapshot`), a revert or delete moves the rows the
+fork shows to a holder with their ids, positions and content, and a
+deleted source becomes a holder in place. None of these moves a fork's
+stamps, so a source that continues, reverts or is deleted leaves every
+open fork `fresh`, and no fork is pushed anything. The writes find the
+forks through `idx_thread_fork_lineage_ancestor` by the row's position,
+so a source write past every cut costs the same for any number of forks
 (`TestSourceWritesCostTheSameForAnyForkCount`).
-`TestForkStampIgnoresSourceWritesPastTheCut` pins both sides of the rule.
+`TestForkStampsIgnoreEverySourceWrite` pins the rule.
 
-A client showing a fork is told when its stamps move. Each path above
-records the forks it moved against its write transaction, from the rows
-it already reads or the statement that moves them, and the transaction's
-owner reports them after the commit (`fork_moves.go`). The app pushes each
-reported fork one `provider:item_event` with action `resync`
-(`app_fork_resync.go`). The client applies the item frames queued ahead
-of it, then re-syncs every window and surface it holds of the fork, as
-for a transport gap that names the thread (`threadWindowRecovery.ts`). A
-write that moves no fork records nothing and runs no extra statement
-(`TestForkMovesCostNoStatement`). Because a fork is a snapshot, the
-re-sync changes what it renders only when its content changed: the detach
-of a deleted source and spans on a payload it shows. After a hand-off or
-a touch it returns the same rows at a new revision.
+Spans on a payload a fork shows are written to the thread that holds the
+payload and advance only that thread's revision. A fork's held window
+may carry older spans; the client version-checks spans against the
+payload content it holds, so the window stays correct.
 
 ### 3.2 Operation → contract map
 
@@ -445,12 +429,12 @@ a touch it returns the same rows at a new revision.
 | `BumpItemToTurnEnd` (reposition) | items UPDATE (index changed) | **epoch** |
 | `DeleteThreadItem`, `DeleteConversationFromTurn`, `DeleteConversationFromItem` | items DELETE | **epoch** |
 | `ReplacePayloadData`, `UpdatePayloadMeta`, `UpdatePayloadSpans` (async span backfill), bare `AppendPayloadData` | explicit, new `threadID` param | rev |
-| `CreatePointerFork` | lineage rows, hidden ids and the fork's own rows (settled copies, divider) | rev on the fork; source untouched |
-| A write that updates, moves, deletes or hides a row a fork shows | hand-off copy into each such fork (`handOffIDsTx`), then the write | the write's own effect on its thread; rev on each fork that showed the row |
-| Revision touch or divider mark of a row forks show | items UPDATE, `trg_items_fork_reader_stamp` | rev on each fork that shows the row |
-| Fork deletes or reverts inherited rows; source deletion detaches forks | `bumpForkViewTx` | **epoch** on the fork |
+| `CreatePointerFork` | lineage rows, hidden ids and the fork's own rows (settled copies, the rest of a running cut turn) | rev on the fork; source untouched |
+| Revert or delete of rows a fork shows | the rows move to a holder (items UPDATE of `thread_id` under `history_bulk_load`, stamp written once), then the write | **epoch** on the reverting thread; fork stamps unchanged |
+| Delete of a thread forks read | the thread becomes a holder in place (`retireToHolderTx`) | fork stamps unchanged |
+| Any other write to a row, payload or turn row a fork shows | refused (`trg_items_shown_update` and its siblings) | none |
+| Fork deletes or reverts inherited rows | `bumpForkViewTx` | **epoch** on the fork |
 | Source write past every fork's cut | none on forks | fork stamps unchanged |
-| Any of the fork rows above, once committed | the writer records the forks it moved; its owner reports them | one `provider:item_event` `resync` per moved fork per transaction |
 | Import rollback / `DeleteThread` / retention sweep | thread row deleted | tombstone: replica entry dropped by the deleting client directly, and by any other client on the `gone` answer (§5) |
 | `RestoreFrom` (harness snapshot) | whole-DB replace | **generation** re-mint (§3.3) |
 | `decorateSubagentAnchors` (stamp read, or the walk for rows the triggers do not keep) | none: no write occurs | covered transitively: its inputs are the anchor's stamp and descendant item rows, whose writes bump rev |
@@ -651,8 +635,8 @@ deletion learns about it from the `gone` answer its next
 deletion event purely to reach the replica would buy nothing: the entry
 it would clear is unpaintable the moment the thread is opened anyway,
 and the cost of the miss is one cold open. A pointer fork of the deleted
-thread is a different thread whose history changed: the detach moves its
-stamps, so it is pushed a `resync` ([Pointer-fork stamps](#pointer-fork-stamps)).
+thread keeps its history, which the deleted thread keeps as a holder, so it
+is told nothing ([Pointer-fork stamps](#pointer-fork-stamps)).
 
 Ordinary `provider:item_event` frames stay unstamped. The streaming
 path gains nothing per the remote-access budget rule

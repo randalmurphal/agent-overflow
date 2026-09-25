@@ -54,8 +54,8 @@ func TestForkThreadClaudePersistsPendingForkStateAndClonesTimeline(t *testing.T)
 	if err != nil {
 		t.Fatalf("ListItems() error = %v", err)
 	}
-	if len(items) != 3 {
-		t.Fatalf("len(fork items) = %d, want the two messages and the divider", len(items))
+	if len(items) != 2 {
+		t.Fatalf("len(fork items) = %d, want the two messages", len(items))
 	}
 	for _, it := range items {
 		if it.ThreadID != forked.ID {
@@ -65,41 +65,6 @@ func TestForkThreadClaudePersistsPendingForkStateAndClonesTimeline(t *testing.T)
 	if items[0].Summary != "first message" || items[1].Summary != "assistant reply" {
 		t.Fatalf("forked item summaries = %q / %q", items[0].Summary, items[1].Summary)
 	}
-	divider := items[2]
-	var origin struct {
-		SourceThreadID string `json:"sourceThreadId"`
-		SourceTitle    string `json:"sourceTitle"`
-		SourceItemID   string `json:"sourceItemId"`
-	}
-	if err := json.Unmarshal([]byte(divider.Meta), &origin); err != nil {
-		t.Fatalf("divider meta %q: %v", divider.Meta, err)
-	}
-	if divider.ToolName != forkDividerToolName || divider.Summary != "Forked from "+source.Title ||
-		origin.SourceThreadID != source.ID || origin.SourceTitle != source.Title || origin.SourceItemID != items[1].ID {
-		t.Fatalf("divider = %+v origin=%+v", divider, origin)
-	}
-}
-
-// forkDividerToolName marks the row a pointer fork shows at its cut
-// (store.CreatePointerFork); the frontend renders it as the fork divider.
-const forkDividerToolName = "fork_origin"
-
-// withoutForkDividers drops the divider rows a fork shows at its cut and at
-// each ancestor fork's, leaving the conversation.
-func withoutForkDividers(items []store.Item) []store.Item {
-	out := make([]store.Item, 0, len(items))
-	for _, it := range items {
-		if it.ToolName != forkDividerToolName {
-			out = append(out, it)
-		}
-	}
-	return out
-}
-
-// forkConversationItems is ListItems without the fork dividers.
-func forkConversationItems(s *store.Store, threadID string) ([]store.Item, error) {
-	items, err := s.ListItems(threadID)
-	return withoutForkDividers(items), err
 }
 
 func TestForkThreadCodexUsesStoredResumeStateWhenSessionInactive(t *testing.T) {
@@ -402,7 +367,7 @@ func TestForkThreadClaudeAtTurnSlicesSessionJSONL(t *testing.T) {
 	}
 
 	// Inherited items: 2 turns × 2 items = 4 (turn 2 dropped).
-	items, err := forkConversationItems(app.store, forked.ID)
+	items, err := app.store.ListItems(forked.ID)
 	if err != nil {
 		t.Fatalf("ListItems(fork): %v", err)
 	}
@@ -699,7 +664,7 @@ func TestForkThreadFromMessageSlicesClaudeSessionByTurnBoundary(t *testing.T) {
 		t.Fatalf("forked session ref = %q, want sliced fork session", forked.SessionRef)
 	}
 	assertClaudeSessionText(t, workspace, forked.SessionRef, []string{"first"}, []string{"second"})
-	items, err := forkConversationItems(app.store, forked.ID)
+	items, err := app.store.ListItems(forked.ID)
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
@@ -803,7 +768,7 @@ func TestForkThreadFromMessageCanForkOlderAnchorAfterClaudeSessionFork(t *testin
 		t.Fatalf("ForkThreadFromMessage after rollback: %v", err)
 	}
 	assertClaudeSessionText(t, workspace, forked.SessionRef, []string{"first"}, []string{"second", "third"})
-	items, err := forkConversationItems(app.store, forked.ID)
+	items, err := app.store.ListItems(forked.ID)
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
@@ -1105,7 +1070,7 @@ func TestForkThread_ExcludesBackgroundRunningRows(t *testing.T) {
 		t.Fatalf("ForkThread: %v", err)
 	}
 
-	forkedItems, err := forkConversationItems(app.store, forked.ID)
+	forkedItems, err := app.store.ListItems(forked.ID)
 	if err != nil {
 		t.Fatalf("ListItems(forked): %v", err)
 	}

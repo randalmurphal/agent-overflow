@@ -216,3 +216,23 @@ func TestScratchModeIsHiddenAndUnsettable(t *testing.T) {
 		t.Error("scratch must not be offered in the mode picker")
 	}
 }
+
+// A holder keeps history pointer forks read after its thread was deleted
+// or reverted. The store owns its lifetime; nothing may create or enter it.
+func TestHolderModeIsHiddenAndUnsettable(t *testing.T) {
+	if !IsLegal(ModeHolder) {
+		t.Fatal("holder must be a legal thread mode")
+	}
+	if !IsHidden(ModeHolder) {
+		t.Error("holder must be hidden from thread lists")
+	}
+	if _, err := ValidateCreate(ModeHolder); err == nil {
+		t.Error("ValidateCreate must refuse creating a holder")
+	}
+	if _, err := ValidateSet(ModeHolder); err == nil {
+		t.Error("ValidateSet must refuse switching into holder")
+	}
+	if IsPostCreationMode(ModeHolder) {
+		t.Error("a holder must not be mutable into another mode")
+	}
+}

@@ -700,13 +700,17 @@ func deleteThreadSearchRowidTx(tx *sql.Tx, rowid int64) error {
 
 // deleteThreadSearchItemsTx removes every index row for the named items, on
 // both arms. Item deletion, conversation truncation and the paced thread
-// delete all call it with the ids they removed.
+// delete all call it with the ids they removed. The ids bind as one JSON
+// array, so a revert of any size is one statement with two parameters.
 func deleteThreadSearchItemsTx(tx *sql.Tx, threadID string, itemIDs []string) error {
 	if len(itemIDs) == 0 {
 		return nil
 	}
-	clause, args := inClause("item_id", itemIDs)
-	return deleteThreadSearchWhereTx(tx, "thread_id = ? AND "+clause, append([]any{threadID}, args...))
+	list, err := jsonList(itemIDs)
+	if err != nil {
+		return err
+	}
+	return deleteThreadSearchWhereTx(tx, "thread_id = ? AND item_id IN (SELECT value FROM json_each(?))", []any{threadID, list})
 }
 
 // deleteItemsAndSearchRowsTx runs an item DELETE that ends in `RETURNING id`

@@ -915,9 +915,9 @@ func TestUnsealThreadHistoryKeepsPointerForkViews(t *testing.T) {
 			for _, thread := range []string{"src", "whole", "cut"} {
 				views[thread] = readRepairView(t, s, thread)
 			}
-			// Each fork shows its inherited rows and its own divider row.
-			if len(views["whole"].Items) != 41 || len(views["cut"].Items) != 21 {
-				t.Fatalf("forks show %d and %d rows, want 41 and 21", len(views["whole"].Items), len(views["cut"].Items))
+			// Each fork shows its inherited rows.
+			if len(views["whole"].Items) != 40 || len(views["cut"].Items) != 20 {
+				t.Fatalf("forks show %d and %d rows, want 40 and 20", len(views["whole"].Items), len(views["cut"].Items))
 			}
 
 			budget := defaultHistoryRepairBudget
@@ -997,9 +997,9 @@ func TestPruneOrphanPayloadsDeletesOnlyUnreferenced(t *testing.T) {
 	if err := s.CreateThread(makeThread("local", "claude")); err != nil {
 		t.Fatal(err)
 	}
-	upsert := func(thread, id, payloadID, inputID string) {
+	upsert := func(thread, id string, turn int, payloadID, inputID string) {
 		t.Helper()
-		item := Item{ID: id, ThreadID: thread, TurnIndex: 0, Kind: "command_result", Role: "assistant", Status: "completed", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
+		item := Item{ID: id, ThreadID: thread, TurnIndex: turn, Kind: "command_result", Role: "assistant", Status: "completed", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
 		payload := &Payload{ID: payloadID, Kind: "command_output", Meta: "{}", Data: []byte("bytes of " + payloadID), CreatedAt: 1}
 		var input *Payload
 		if inputID != "" {
@@ -1011,15 +1011,15 @@ func TestPruneOrphanPayloadsDeletesOnlyUnreferenced(t *testing.T) {
 	}
 	// Referenced by payload_id and input_payload_id, with append chunks and
 	// an edit snapshot of its own.
-	upsert("local", "a", "pa", "pa-in")
+	upsert("local", "a", 0, "pa", "pa-in")
 	if err := s.AppendPayloadData("local", "pa", []byte(" more"), "{}", 2); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PutEditFileSnapshot("local", "pa", "a.go", "package a", 2); err != nil {
 		t.Fatal(err)
 	}
-	upsert("local", "b", "pb1", "")
-	upsert("local", "c", "pc", "")
+	upsert("local", "b", 0, "pb1", "")
+	upsert("local", "c", 0, "pc", "")
 	// Imported rows reference their chunk payloads and local overlays.
 	importedHistoryFixture(t, s, "imported", 2)
 	if err := s.ReplacePayloadData("imported", "item-000", []byte("overlay"), "{}", 3); err != nil {
@@ -1037,39 +1037,41 @@ func TestPruneOrphanPayloadsDeletesOnlyUnreferenced(t *testing.T) {
 		return n
 	}
 
-	// The leak: a re-persisted row names a new payload id. pb1 carries an
-	// append chunk and an edit snapshot that must go with it. The fork reads
-	// row b, so the append first gives the fork row b with its own copy of
-	// pb1.
-	if err := s.AppendPayloadData("local", "pb1", []byte(" chunk"), "{}", 4); err != nil {
+	// The leak: a re-persisted row names a new payload id. pd1, on a row
+	// past the fork's cut, carries an append chunk and an edit snapshot
+	// that must go with it.
+	upsert("local", "d", 1, "pd1", "")
+	if err := s.AppendPayloadData("local", "pd1", []byte(" chunk"), "{}", 4); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutEditFileSnapshot("local", "pb1", "b.go", "package b", 4); err != nil {
+	if err := s.PutEditFileSnapshot("local", "pd1", "d.go", "package d", 4); err != nil {
 		t.Fatal(err)
 	}
-	orphanBytes := storedBytes("local", "pb1") + storedBytes("local", "pa") + storedBytes("local", "pc") + storedBytes("fork", "pb1")
-	upsert("local", "b", "pb2", "")
-	// Rewriting a row the fork reads hands the row and its payload to the
-	// fork first, so the source's pc is left unreferenced.
-	upsert("local", "c", "pc2", "")
-	// A fork row stops naming its copy of pb1.
-	upsert("fork", "b", "pb3", "")
-	// Both sides stop naming pa: the source's rewrite hands the fork row a
-	// and a copy of pa, which the fork's rewrite then leaves unreferenced.
-	upsert("local", "a", "pa2", "pa-in")
-	orphanBytes += storedBytes("fork", "pa")
-	upsert("fork", "a", "pa3", "pa-in")
+	upsert("local", "d", 1, "pd2", "")
+	// A fork's rewrite of a row it reads copies the row with its payloads
+	// and leaves its copy of the old one unreferenced.
+	upsert("fork", "b", 0, "pb3", "")
+	upsert("fork", "a", 0, "pa3", "pa-in")
+	orphanBytes := storedBytes("local", "pd1") + storedBytes("fork", "pb1") + storedBytes("fork", "pa")
+	// The source's delete of a row the fork reads gives the row and its
+	// payload to a holder, which references it.
+	if err := s.DeleteThreadItem("local", "c"); err != nil {
+		t.Fatal(err)
+	}
+	holders := holderIDs(t, s)
+	if len(holders) != 1 {
+		t.Fatalf("holders = %v", holders)
+	}
 
 	kept := map[[2]string]string{
-		{"local", "pa-in"}: "input pa-in", {"local", "pb2"}: "bytes of pb2", {"local", "pc2"}: "bytes of pc2",
-		{"local", "pa2"}: "bytes of pa2",
-		{"fork", "pc"}:   "bytes of pc", {"fork", "pa-in"}: "input pa-in",
-		{"fork", "pb3"}: "bytes of pb3", {"fork", "pa3"}: "bytes of pa3",
+		{"local", "pa"}: "bytes of pa more", {"local", "pa-in"}: "input pa-in", {"local", "pb1"}: "bytes of pb1",
+		{"local", "pd2"}: "bytes of pd2", {holders[0], "pc"}: "bytes of pc", {"fork", "pc"}: "bytes of pc",
+		{"fork", "pa-in"}: "input pa-in", {"fork", "pb3"}: "bytes of pb3", {"fork", "pa3"}: "bytes of pa3",
 		{"imported", "item-000"}: "overlay", {"imported", "item-001"}: "original chunk",
 	}
 	orphans := countOrphanPayloads(t, s)
-	if orphans != (orphanPayloadStats{payloads: 5, bytes: orphanBytes}) {
-		t.Fatalf("orphans = %+v, want 5 payloads, %d bytes", orphans, orphanBytes)
+	if orphans != (orphanPayloadStats{payloads: 3, bytes: orphanBytes}) {
+		t.Fatalf("orphans = %+v, want 3 payloads, %d bytes", orphans, orphanBytes)
 	}
 
 	pruned, err := s.pruneOrphanPayloads(context.Background(), nil, failOnSkip(t))
@@ -1080,7 +1082,7 @@ func TestPruneOrphanPayloadsDeletesOnlyUnreferenced(t *testing.T) {
 		t.Fatalf("pruned = %+v, want %+v", pruned, orphans)
 	}
 	requireCheckpointed(t, s, "prune")
-	for _, gone := range [][2]string{{"local", "pb1"}, {"local", "pa"}, {"local", "pc"}, {"fork", "pb1"}, {"fork", "pa"}} {
+	for _, gone := range [][2]string{{"local", "pd1"}, {"fork", "pb1"}, {"fork", "pa"}} {
 		if n := countRows(t, s, `SELECT count(*) FROM payloads WHERE thread_id=? AND id=?`, gone[0], gone[1]); n != 0 {
 			t.Fatalf("orphan %v survived", gone)
 		}
@@ -1092,9 +1094,13 @@ func TestPruneOrphanPayloadsDeletesOnlyUnreferenced(t *testing.T) {
 		}
 	}
 	for _, table := range []string{"payload_chunks", "edit_file_snapshots"} {
-		if n := countRows(t, s, `SELECT count(*) FROM `+table+` WHERE thread_id IN ('local','fork') AND payload_id IN ('pb1','pa')`); n != 0 {
+		if n := countRows(t, s, `SELECT count(*) FROM `+table+`
+			WHERE (thread_id = 'local' AND payload_id = 'pd1') OR (thread_id = 'fork' AND payload_id IN ('pa', 'pb1'))`); n != 0 {
 			t.Fatalf("%s kept %d rows of pruned payloads", table, n)
 		}
+	}
+	if n := countRows(t, s, `SELECT count(*) FROM payload_chunks WHERE thread_id = 'local' AND payload_id = 'pa'`); n != 1 {
+		t.Fatalf("the source's kept payload has %d append chunks, want 1", n)
 	}
 	if orphans := countOrphanPayloads(t, s); orphans != (orphanPayloadStats{}) {
 		t.Fatalf("orphans after prune = %+v", orphans)
@@ -1106,15 +1112,16 @@ func TestPruneOrphanPayloadsDeletesOnlyUnreferenced(t *testing.T) {
 
 // TestItemWritesLeaveNoOrphanPayloads is the tripwire for payload leaks: the
 // writers that repoint a row's payload or input payload, on a thread and on
-// its fork, leave no payload row that nothing references.
+// its fork, and the source's delete of a row its fork reads, leave no
+// payload row that nothing references.
 func TestItemWritesLeaveNoOrphanPayloads(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("local", "claude")); err != nil {
 		t.Fatal(err)
 	}
-	upsert := func(thread, id, payloadID, inputID string) Item {
+	upsert := func(thread, id string, turn int, payloadID, inputID string) Item {
 		t.Helper()
-		item := Item{ID: id, ThreadID: thread, TurnIndex: 0, Kind: "command_result", Role: "assistant", Status: "completed", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
+		item := Item{ID: id, ThreadID: thread, TurnIndex: turn, Kind: "command_result", Role: "assistant", Status: "completed", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
 		payload := &Payload{ID: payloadID, Kind: "command_output", Meta: "{}", Data: []byte("bytes of " + payloadID), CreatedAt: 1}
 		var input *Payload
 		if inputID != "" {
@@ -1126,40 +1133,53 @@ func TestItemWritesLeaveNoOrphanPayloads(t *testing.T) {
 		}
 		return persisted
 	}
-	upsert("local", "a", "pa", "pa-in")
+	upsert("local", "a", 0, "pa", "pa-in")
 	if err := s.AppendPayloadData("local", "pa", []byte(" more"), "{}", 2); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PutEditFileSnapshot("local", "pa", "a.go", "package a", 2); err != nil {
 		t.Fatal(err)
 	}
-	upsert("local", "b", "pb", "pa-in")
-	upsert("local", "c", "pc", "c-in")
+	upsert("local", "b", 0, "pb", "pa-in")
+	upsert("local", "c", 0, "pc", "c-in")
 	if err := s.CreatePointerFork(makeThread("fork", "claude"), "local", ForkCut{}, testInterruptedSummary, 1); err != nil {
 		t.Fatal(err)
 	}
 
-	upsert("local", "a", "pa2", "pa-in2")
-	upsert("fork", "a", "pa3", "")
-	upsert("local", "c", "pc", "c-in2")
-	b := upsert("local", "b", "pb2", "")
-	b.PayloadID = "pa2"
-	if _, updated, err := s.UpdateItemIfRevision(b); err != nil || !updated {
+	// The source's rows past the fork's cut are its own to rewrite.
+	upsert("local", "d", 1, "pd", "c-in")
+	upsert("local", "d", 1, "pd2", "d-in")
+	e := upsert("local", "e", 1, "pe", "")
+	e.PayloadID = "pd2"
+	if _, updated, err := s.UpdateItemIfRevision(e); err != nil || !updated {
 		t.Fatalf("conditional repoint = %v, %v", updated, err)
 	}
+	// The fork's rewrites of rows it reads copy them first.
+	upsert("fork", "a", 0, "pa3", "")
+	upsert("fork", "c", 0, "pc", "c-in2")
+	// The source's delete of a row the fork reads gives it to a holder.
+	if err := s.DeleteThreadItem("local", "b"); err != nil {
+		t.Fatal(err)
+	}
+	holders := holderIDs(t, s)
+	if len(holders) != 1 {
+		t.Fatalf("holders = %v", holders)
+	}
+	h := holders[0]
 
 	if orphans := countOrphanPayloads(t, s); orphans != (orphanPayloadStats{}) {
 		t.Fatalf("item writes left orphans %+v", orphans)
 	}
-	for _, gone := range [][2]string{{"local", "pa"}, {"local", "pb"}, {"local", "pb2"}, {"local", "c-in"}, {"fork", "pa"}} {
+	for _, gone := range [][2]string{{"local", "pd"}, {"local", "pe"}, {"local", "pb"}, {"fork", "pa"}, {"fork", "c-in"}} {
 		if n := countRows(t, s, `SELECT count(*) FROM payloads WHERE thread_id=? AND id=?`, gone[0], gone[1]); n != 0 {
 			t.Errorf("replaced payload %v survived", gone)
 		}
 	}
 	for key, want := range map[[2]string]string{
-		{"local", "pa2"}: "bytes of pa2", {"local", "pa-in2"}: "input pa-in2", {"local", "pa-in"}: "input pa-in",
-		{"fork", "pa3"}: "bytes of pa3", {"fork", "pa-in"}: "input pa-in", {"fork", "pb"}: "bytes of pb",
-		{"local", "pc"}: "bytes of pc", {"local", "c-in2"}: "input c-in2", {"fork", "c-in"}: "input c-in",
+		{"local", "pa"}: "bytes of pa more", {"local", "pa-in"}: "input pa-in", {"local", "pc"}: "bytes of pc",
+		{"local", "c-in"}: "input c-in", {"local", "pd2"}: "bytes of pd2", {"local", "d-in"}: "input d-in",
+		{"fork", "pa3"}: "bytes of pa3", {"fork", "pc"}: "bytes of pc", {"fork", "c-in2"}: "input c-in2",
+		{"fork", "pb"}: "bytes of pb", {h, "pb"}: "bytes of pb", {h, "pa-in"}: "input pa-in",
 	} {
 		if data, err := s.GetPayloadData(key[0], key[1]); err != nil || string(data) != want {
 			t.Errorf("payload %v = %q, %v; want %q", key, data, err, want)

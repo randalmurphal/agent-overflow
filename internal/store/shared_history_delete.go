@@ -89,18 +89,29 @@ func deleteSharedHistoryTx(tx *sql.Tx, w *cardWrite, threadID, source, predicate
 	if _, err := tx.Exec(`UPDATE threads SET history_rev=history_rev+?,history_epoch=history_epoch+? WHERE id=?`, len(ids), len(ids), threadID); err != nil {
 		return 0, fmt.Errorf("store: stamp shared history cut: %w", err)
 	}
-	// No trigger sees imported rows leave: the local anchors above them
-	// are recomputed by w.
-	for parent := range parents {
-		w.chains = append(w.chains, parent)
-	}
-	for parent := range parents {
-		if _, err := tx.Exec(stampRowsSQL+` WHERE thread_id=?1 AND rev<>(SELECT history_rev FROM threads WHERE id=?1)
- AND id IN (`+stampedRowIDsFor("?1", "?2", "?2")+`)`, threadID, parent); err != nil {
-			return 0, fmt.Errorf("store: stamp shared history cut parent: %w", err)
-		}
+	if err := importedRowsLeftTx(tx, w, threadID, slices.Collect(maps.Keys(parents))); err != nil {
+		return 0, err
 	}
 	return int64(len(ids)), nil
+}
+
+// importedRowsLeftTx runs after imported rows left threadID's timeline,
+// with parents the parents they had, and after the thread stamp moved. No
+// trigger sees imported rows leave: the local anchors above them are
+// recomputed by w, and the rows a read serves them under are stamped at
+// the new revision.
+func importedRowsLeftTx(tx *sql.Tx, w *cardWrite, threadID string, parents []string) error {
+	for _, parent := range parents {
+		if parent == "" {
+			continue
+		}
+		w.chains = append(w.chains, parent)
+		if _, err := tx.Exec(stampRowsSQL+` WHERE thread_id=?1 AND rev<>(SELECT history_rev FROM threads WHERE id=?1)
+ AND id IN (`+stampedRowIDsFor("?1", "?2", "?2")+`)`, threadID, parent); err != nil {
+			return fmt.Errorf("store: stamp the rows above imported rows %s cut: %w", threadID, err)
+		}
+	}
+	return nil
 }
 
 // detachOverriddenChunksTx detaches the named chunk references whose every

@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -534,15 +535,20 @@ func TestHistoryContractProposedPlanRefusesUnknownThread(t *testing.T) {
 // TestHistoryContractForkBumpsForkOnly pins the fork row of §3.2: making
 // a pointer fork and writing to it moves only the fork's stamps. A source
 // write after the fork's cut moves only the source's, since the fork does
-// not read it; a source write to a row the fork shows hands the fork a copy
-// first, which moves the fork's rev. A stamp that moved on a write its
-// thread does not read would make every open pane holding it re-fetch for
-// nothing.
+// not read it; a source write to a row the fork shows is refused, and a
+// source delete of it gives it to a holder, which moves only the source's.
+// A stamp that moved on a write its thread does not read would make every
+// open pane holding it re-fetch for nothing.
 func TestHistoryContractForkBumpsForkOnly(t *testing.T) {
 	s := newTestStore(t)
 	seedContractThread(t, s, "t")
 	if _, err := s.AppendItem(contractItem("t", "i1", 0)); err != nil {
 		t.Fatalf("seed source item: %v", err)
+	}
+	// A settled turn: a fork of a turn its source still runs owns a copy
+	// of the turn's rows (forkRunningTurnRowsTx), and shows none of i1.
+	if err := s.UpdateTurnCompleted("t:0", 1001, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
 	}
 	source := historyStampOf(t, s, "t")
 
@@ -573,11 +579,24 @@ func TestHistoryContractForkBumpsForkOnly(t *testing.T) {
 		t.Fatalf("source write past the cut moved fork stamps %+v -> %+v", target, got)
 	}
 	summary := "edited"
-	if _, err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{Summary: &summary}); err != nil {
-		t.Fatalf("update source row the fork shows: %v", err)
+	source = historyStampOf(t, s, "t")
+	if _, err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{Summary: &summary}); err == nil || !strings.Contains(err.Error(), shownHistoryImmutable) {
+		t.Fatalf("update source row the fork shows = %v, want refused", err)
 	}
-	if got := historyStampOf(t, s, "fork"); got.Rev <= target.Rev || got.Epoch != target.Epoch {
-		t.Fatalf("source write to a row the fork shows left fork stamps %+v -> %+v, want rev up and epoch kept", target, got)
+	if got := historyStampOf(t, s, "fork"); got != target {
+		t.Fatalf("refused source write moved fork stamps %+v -> %+v", target, got)
+	}
+	if got := historyStampOf(t, s, "t"); got != source {
+		t.Fatalf("refused source write moved source stamps %+v -> %+v", source, got)
+	}
+	if err := s.DeleteThreadItem("t", "i1"); err != nil {
+		t.Fatalf("delete source row the fork shows: %v", err)
+	}
+	if got := historyStampOf(t, s, "fork"); got != target {
+		t.Fatalf("source delete of a row the fork shows moved fork stamps %+v -> %+v", target, got)
+	}
+	if got := historyStampOf(t, s, "t"); got.Rev <= source.Rev || got.Epoch <= source.Epoch {
+		t.Fatalf("source delete stamps = %+v -> %+v, want rev and epoch up", source, got)
 	}
 }
 
@@ -629,10 +648,10 @@ func TestHistoryTriggersFireOnRawSQL(t *testing.T) {
 	exec(`DELETE FROM items WHERE id = 'raw'`)
 	assertDelta("raw DELETE", stamp, 1, 1)
 
-	// No store code moves a row between threads, but the trigger must not
-	// depend on that staying true: a cross-thread UPDATE is a delete from
-	// one ordering and an insert into another, so BOTH threads' stamps
-	// advance and both take the epoch bump. The moved row takes its new
+	// The store moves rows between threads only to a holder, under
+	// history_bulk_load, but the trigger must not depend on that: a
+	// cross-thread UPDATE is a delete from one ordering and an insert into
+	// another, so BOTH threads' stamps advance and both take the epoch bump. The moved row takes its new
 	// thread's revision and the launch it left takes the old thread's.
 	seedContractThread(t, s, "t2")
 	exec(`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status, summary, tool_name, created_at, updated_at)

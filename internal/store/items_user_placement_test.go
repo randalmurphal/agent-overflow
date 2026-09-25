@@ -98,8 +98,7 @@ func TestUserPlacementRetryFreezesBoundaryAndRebasesForkAndRevert(t *testing.T) 
 	}
 	// Rebased later anchor still keeps its preceding response, for fork AND revert.
 	mustPointerFork(t, s, "t", "fork", ForkCut{BeforeItemID: "later-anchor"})
-	forkWant := append(append([]string{}, want[:5]...), forkDividerID("fork"))
-	if got := placementIDs(t, s, "fork"); !reflect.DeepEqual(got, forkWant) {
+	if got := placementIDs(t, s, "fork"); !reflect.DeepEqual(got, want[:5]) {
 		t.Fatalf("fork order=%v", got)
 	}
 	if _, _, err := s.DeleteConversationFromItem("t", "later-anchor"); err != nil {

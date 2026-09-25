@@ -1,8 +1,8 @@
 package store
 
 import (
-	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/itemmeta"
@@ -21,34 +21,14 @@ func mustPointerFork(t *testing.T, s *Store, src, dst string, cut ForkCut) {
 
 func throughTurn(turn int) ForkCut { return ForkCut{ThroughTurn: &turn} }
 
-// forkRows lists a thread's timeline without its own fork divider.
+// forkRows lists a thread's timeline.
 func forkRows(t *testing.T, s *Store, threadID string) []Item {
 	t.Helper()
 	rows, err := s.ListItems(threadID)
 	if err != nil {
 		t.Fatalf("ListItems(%s): %v", threadID, err)
 	}
-	out := rows[:0]
-	for _, it := range rows {
-		if it.ID != forkDividerID(threadID) {
-			out = append(out, it)
-		}
-	}
-	return out
-}
-
-// forkDivider reads a fork's divider row and its origin meta.
-func forkDivider(t *testing.T, s *Store, threadID string) (Item, forkOrigin) {
-	t.Helper()
-	item, found, err := s.GetThreadItem(threadID, forkDividerID(threadID))
-	if err != nil || !found {
-		t.Fatalf("divider of %s: found=%v err=%v", threadID, found, err)
-	}
-	var origin forkOrigin
-	if err := json.Unmarshal([]byte(item.Meta), &origin); err != nil {
-		t.Fatalf("divider meta of %s: %v", threadID, err)
-	}
-	return item, origin
+	return rows
 }
 
 // ownRowCount counts the item rows a thread stores itself.
@@ -127,8 +107,8 @@ func rowPositions(rows []Item) []string {
 
 // TestPointerForkInheritsThroughTheCutWithoutCopying pins the fork's shape:
 // the rows before the cut read through from the source under the fork's
-// thread id, the fork stores only its divider, and the divider sits at the
-// cut naming the source and the last row it inherits.
+// thread id, the fork stores no row, and its thread row names the source
+// and the cut.
 func TestPointerForkInheritsThroughTheCutWithoutCopying(t *testing.T) {
 	s := newTestStore(t)
 	var rows []Item
@@ -150,15 +130,15 @@ func TestPointerForkInheritsThroughTheCutWithoutCopying(t *testing.T) {
 			t.Errorf("inherited row %s reads as thread %q, want the fork", it.ID, it.ThreadID)
 		}
 	}
-	if n := ownRowCount(t, s, "sliced"); n != 1 {
-		t.Errorf("fork stores %d rows, want only its divider", n)
+	if n := ownRowCount(t, s, "sliced"); n != 0 {
+		t.Errorf("fork stores %d rows, want none", n)
 	}
-	divider, origin := forkDivider(t, s, "sliced")
-	if divider.TurnIndex != 1 || divider.ItemIndex != 2 || divider.Kind != "notification" || divider.ToolName != forkDividerToolName {
-		t.Errorf("divider = %d:%d %s/%s, want 1:2 notification/%s", divider.TurnIndex, divider.ItemIndex, divider.Kind, divider.ToolName, forkDividerToolName)
-	}
-	if origin != (forkOrigin{Kind: forkDividerToolName, SourceThreadID: "src", SourceTitle: "Thread src", SourceItemID: "a1"}) {
-		t.Errorf("divider origin = %+v", origin)
+	requireIDs(t, "sliced lineage", forkLineage(t, s, "sliced"), []string{"1:src:1:2"})
+	var source, title string
+	var cutTurn, cutItem int
+	if err := s.db.QueryRow(`SELECT fork_source_thread_id, fork_source_title, fork_cut_turn_index, fork_cut_item_index FROM threads WHERE id = 'sliced'`).
+		Scan(&source, &title, &cutTurn, &cutItem); err != nil || source != "src" || title != "Thread src" || cutTurn != 1 || cutItem != 2 {
+		t.Errorf("fork origin = %q %q %d:%d, %v", source, title, cutTurn, cutItem, err)
 	}
 
 	mustPointerFork(t, s, "src", "full", ForkCut{})
@@ -218,8 +198,8 @@ func TestPointerForkHidesLiveBackgroundWorkAndSettlesTheRest(t *testing.T) {
 	if got := dst["Bash: echo done"]; got.Status != "completed" {
 		t.Errorf("completed background row = %+v, want it verbatim", got)
 	}
-	if n := ownRowCount(t, s, "fork"); n != 3 {
-		t.Errorf("fork stores %d rows, want the divider and the two settled copies", n)
+	if n := ownRowCount(t, s, "fork"); n != 2 {
+		t.Errorf("fork stores %d rows, want the two settled copies", n)
 	}
 	assertForkLinksResolve(t, s, "fork")
 
@@ -282,8 +262,8 @@ func TestPointerForkKeepsSettledBackgroundLaunchSubtree(t *testing.T) {
 	if launch := dst["Agent: audit"]; launch.Status != "running" || !launch.IsBackground {
 		t.Errorf("launch = status %q bg=%v, want running background verbatim", launch.Status, launch.IsBackground)
 	}
-	if n := ownRowCount(t, s, "fork"); n != 1 {
-		t.Errorf("fork stores %d rows, want only its divider", n)
+	if n := ownRowCount(t, s, "fork"); n != 0 {
+		t.Errorf("fork stores %d rows, want none", n)
 	}
 	assertForkLinksResolve(t, s, "fork")
 }
@@ -402,10 +382,9 @@ func TestPointerForkHidesWhatHangsOffHiddenRowsInAnyOrder(t *testing.T) {
 }
 
 // TestPointerForkPayloadsStayWithTheirRows pins the payload half: the fork
-// reads an inherited row's payloads from the source, a later rewrite of the
-// payload by the source leaves the fork's history as it was (the fork takes
-// its own copy first), and an edit snapshot is a cache written where the
-// payload lives.
+// reads an inherited row's payloads from the source, the source cannot
+// rewrite a payload its forks show, and an edit snapshot is a cache
+// written where the payload lives.
 func TestPointerForkPayloadsStayWithTheirRows(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "src")
@@ -445,7 +424,7 @@ func TestPointerForkPayloadsStayWithTheirRows(t *testing.T) {
 		}
 	}
 	assertFork("inherited")
-	if n := ownRowCount(t, s, "fork"); n != 1 {
+	if n := ownRowCount(t, s, "fork"); n != 0 {
 		t.Fatalf("reading payloads copied rows: fork stores %d", n)
 	}
 
@@ -453,21 +432,18 @@ func TestPointerForkPayloadsStayWithTheirRows(t *testing.T) {
 	if err := s.PutEditFileSnapshot("other", "p-in", "bar.go", "bar", 2); err != nil {
 		t.Fatal(err)
 	}
-	if n := ownRowCount(t, s, "other"); n != 1 {
+	if n := ownRowCount(t, s, "other"); n != 0 {
 		t.Fatalf("snapshot cache write copied rows: other stores %d", n)
 	}
 	if snapshot, found, err := s.GetEditFileSnapshot("src", "p-in", "bar.go"); err != nil || !found || snapshot != "bar" {
 		t.Fatalf("snapshot not written to the holder: %q found=%v err=%v", snapshot, found, err)
 	}
 
-	if err := s.ReplacePayloadData("src", "p-in", []byte("source changed"), "{}", 3); err != nil {
-		t.Fatal(err)
+	if err := s.ReplacePayloadData("src", "p-in", []byte("source changed"), "{}", 3); err == nil || !strings.Contains(err.Error(), shownHistoryImmutable) {
+		t.Fatalf("source rewrite of a payload its forks show = %v, want refused", err)
 	}
-	if err := s.PutEditFileSnapshot("src", "p-in", "foo.go", "source changed", 3); err != nil {
-		t.Fatal(err)
-	}
-	assertFork("after source rewrite")
-	if data, err := s.GetPayloadData("src", "p-in"); err != nil || string(data) != "source changed" {
+	assertFork("after the refused source rewrite")
+	if data, err := s.GetPayloadData("src", "p-in"); err != nil || string(data) != `{"old_string":"a","new_string":"b"}` {
 		t.Fatalf("source payload = %q err=%v", data, err)
 	}
 }
@@ -643,9 +619,7 @@ func TestPointerForkBeforePlainAnchorKeepsPrefix(t *testing.T) {
 	if got, want := rowPositions(forkRows(t, s, "fork")), []string{"0:0:user", "0:1:assistant", "1:0:user", "1:1:assistant"}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("fork rows = %v, want %v", got, want)
 	}
-	if divider, _ := forkDivider(t, s, "fork"); divider.TurnIndex != 1 || divider.ItemIndex != 2 {
-		t.Errorf("divider at %d:%d, want the anchor's slot 1:2", divider.TurnIndex, divider.ItemIndex)
-	}
+	requireIDs(t, "fork lineage", forkLineage(t, s, "fork"), []string{"1:src:1:2"})
 	turn1, ok, err := s.GetTurnByThreadIndex("fork", 1)
 	if err != nil || !ok {
 		t.Fatalf("fork turn 1: ok=%v err=%v", ok, err)
@@ -827,12 +801,12 @@ func TestPointerForkSettlesRunningTurnAsInterrupted(t *testing.T) {
 		}
 	}
 
-	// An idle source's fork stores nothing but its divider and turn row.
+	// An idle source's fork stores nothing but its turn row.
 	mustCreateThreadForTurn(t, s, "idle")
 	seedItemWithStatus(t, s, "idle", "a0", 0, 0, "assistant_text", "completed", "reply", false)
 	mustPointerFork(t, s, "idle", "idle-fork", ForkCut{})
-	if n := ownRowCount(t, s, "idle-fork"); n != 1 {
-		t.Errorf("idle fork stores %d rows, want its divider", n)
+	if n := ownRowCount(t, s, "idle-fork"); n != 0 {
+		t.Errorf("idle fork stores %d rows, want none", n)
 	}
 }
 

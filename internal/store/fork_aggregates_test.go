@@ -46,57 +46,39 @@ func ownsRow(t *testing.T, s *Store, threadID, id string) bool {
 }
 
 // TestPointerForkCopiedAnchorKeepsItsCard: a fork reads an inherited anchor
-// at read time. When it takes its own copy (a hand-off before the source
-// rewrites the anchor, or the fork's own write), the local copy is served
+// at read time. When its own write takes a copy, the local copy is served
 // from a stamp, so the copy carries one and serves the card it served
 // before.
 func TestPointerForkCopiedAnchorKeepsItsCard(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		write func(t *testing.T, s *Store)
-	}{
-		{"hand-off before a source rewrite", func(t *testing.T, s *Store) {
-			summary := "Agent: A renamed"
-			if _, err := s.UpdateItemFields("S", "A", ItemPartialUpdate{Summary: &summary}); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{"the fork's own rewrite", func(t *testing.T, s *Store) {
-			summary := "Agent: A in the fork"
-			if _, err := s.UpdateItemFields("F", "A", ItemPartialUpdate{Summary: &summary}); err != nil {
-				t.Fatal(err)
-			}
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := newTestStore(t)
-			seedForkAgentSource(t, s, "S")
-			mustPointerFork(t, s, "S", "F", ForkCut{})
-			want, count := forkAnchorCard(t, s, "F")
-			if count != 3 {
-				t.Fatalf("fixture: the fork serves A with %v descendants, want 3 (card %v)", count, want)
-			}
-			if ownsRow(t, s, "F", "A") {
-				t.Fatal("fixture: the fork owns A before the write")
-			}
-
-			tc.write(t, s)
-
-			if !ownsRow(t, s, "F", "A") {
-				t.Fatal("the write did not copy A into the fork")
-			}
-			if _, stamped := subagentStampRowsForTest(t, s, "F")["A"]; !stamped {
-				t.Error("the fork's copy of A carries no stamp")
-			}
-			got, _ := forkAnchorCard(t, s, "F")
-			delete(got, metaKeySubagentLatestChildSummary)
-			delete(want, metaKeySubagentLatestChildSummary)
-			if !reflect.DeepEqual(got, want) {
-				t.Errorf("the copied anchor serves %v, before the copy %v", got, want)
-			}
-			assertSubagentStampParity(t, s, "F", tc.name, true)
-		})
+	s := newTestStore(t)
+	seedForkAgentSource(t, s, "S")
+	mustPointerFork(t, s, "S", "F", ForkCut{})
+	want, count := forkAnchorCard(t, s, "F")
+	if count != 3 {
+		t.Fatalf("fixture: the fork serves A with %v descendants, want 3 (card %v)", count, want)
 	}
+	if ownsRow(t, s, "F", "A") {
+		t.Fatal("fixture: the fork owns A before the write")
+	}
+
+	summary := "Agent: A in the fork"
+	if _, err := s.UpdateItemFields("F", "A", ItemPartialUpdate{Summary: &summary}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !ownsRow(t, s, "F", "A") {
+		t.Fatal("the write did not copy A into the fork")
+	}
+	if _, stamped := subagentStampRowsForTest(t, s, "F")["A"]; !stamped {
+		t.Error("the fork's copy of A carries no stamp")
+	}
+	got, _ := forkAnchorCard(t, s, "F")
+	delete(got, metaKeySubagentLatestChildSummary)
+	delete(want, metaKeySubagentLatestChildSummary)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the copied anchor serves %v, before the copy %v", got, want)
+	}
+	assertSubagentStampParity(t, s, "F", "the fork's own rewrite", true)
 }
 
 // TestPointerForkSettledCopiesKeepTheirCards: fork creation copies and
@@ -130,8 +112,8 @@ func TestPointerForkSettledCopiesKeepTheirCards(t *testing.T) {
 
 // TestPointerForkCardUnderAnInheritedAnchorCopiesIt: the fork's own agent
 // rows under an inherited anchor are written with its card. Opening the
-// card copies the anchor, so the card keeps the copy's stamp and a later
-// hand-off has nothing left to copy under it.
+// card copies the anchor, so the card keeps the copy's stamp, and the
+// source's A is no longer one the fork shows.
 func TestPointerForkCardUnderAnInheritedAnchorCopiesIt(t *testing.T) {
 	s := newTestStore(t)
 	seedForkAgentSource(t, s, "S")
@@ -171,7 +153,8 @@ func TestPointerForkCardUnderAnInheritedAnchorCopiesIt(t *testing.T) {
 // TestPointerForkViewChangesRecomputeCopiedStamps: a fork's stamped copy of
 // an anchor counts children it reads from its source. A write that stops the
 // fork reading some of them (its delete of an inherited child, a revert of
-// inherited rows, the source's deletion) recomputes the copy's stamp.
+// inherited rows) recomputes the copy's stamp. The source's deletion keeps
+// the rows the fork reads, so the stamp stays exact.
 func TestPointerForkViewChangesRecomputeCopiedStamps(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -188,7 +171,7 @@ func TestPointerForkViewChangesRecomputeCopiedStamps(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{"source deletion", 0, func(t *testing.T, s *Store) {
+		{"source deletion", 3, func(t *testing.T, s *Store) {
 			if err := s.DeleteThread("S"); err != nil {
 				t.Fatal(err)
 			}
@@ -258,8 +241,9 @@ func failedPillAfterUnread(t *testing.T, s *Store, threadID string) bool {
 // TestPointerForkTurnErrorsReadTheLineage: a fork of a failed turn reads the
 // error row from its source, so its Failed pill lights like the source's
 // once it is unread. Each write that changes which rows the fork reads from
-// its source recomputes the pair: its delete of the error, a revert of it,
-// the source's deletion. A new turn empties the set.
+// its source recomputes the pair: its delete of the error, a revert of it.
+// The source's deletion keeps what the fork reads. A new turn empties the
+// set.
 func TestPointerForkTurnErrorsReadTheLineage(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -281,7 +265,7 @@ func TestPointerForkTurnErrorsReadTheLineage(t *testing.T) {
 			if err := s.DeleteThread("S"); err != nil {
 				t.Fatal(err)
 			}
-		}, false},
+		}, true},
 		{"new turn", func(t *testing.T, s *Store) {
 			if err := s.InsertTurn(Turn{TurnID: "F:2", ThreadID: "F", TurnIndex: 2, StartedAt: 2}); err != nil {
 				t.Fatal(err)

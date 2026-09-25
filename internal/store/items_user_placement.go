@@ -65,7 +65,6 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 		return nil, fmt.Errorf("store: begin user placement: %w", err)
 	}
 	defer tx.Rollback()
-	defer dropForkMovesTx(tx)
 	// Shifting a turn's suffix moves agent rows too; the anchors above
 	// them are recomputed before the rows are read back.
 	w := s.bulkItemWrites(tx, threadID, false)
@@ -172,7 +171,7 @@ func (s *Store) PlaceUserItemsAfterBoundary(threadID string, turnIndex int, boun
 		}
 		result = append(result, item)
 	}
-	if err := s.commitReportingForks(tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("store: commit user placement: %w", err)
 	}
 	return result, nil

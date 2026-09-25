@@ -22,7 +22,8 @@ var ErrEmptyThreadGroupName = errors.New("store: thread group name is required")
 var ErrThreadGroupGone = errors.New("store: that group no longer exists in this project")
 
 // ErrThreadGone is what a group move reports when a named root thread
-// matched nothing — it was deleted under the caller.
+// matched nothing (it was deleted under the caller), and what execution
+// reports for a deleted thread kept as a holder (CheckThreadExecutionAccess).
 var ErrThreadGone = errors.New("store: that thread no longer exists")
 
 // ErrThreadNotRoot is what a group move reports when a named id is a

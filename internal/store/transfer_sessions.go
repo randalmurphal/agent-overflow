@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 
 	"agent-overflow/internal/keyedlock"
+	"agent-overflow/internal/threadmode"
 )
 
 // TransferSession identifies provider-native execution independently of an AO
@@ -249,8 +251,14 @@ AND previous.direction='outgoing' AND previous.phase IN ('committed','complete')
 
 // CheckThreadExecutionAccess checks both the AO identity and its current native
 // execution identity. A pending fork references history to copy, not a session
-// to resume, and must not inherit its parent's execution tombstone.
+// to resume, and must not inherit its parent's execution tombstone. A holder
+// (fork_holders.go) is history its forks read, not a conversation: a deleted
+// thread its forks still read keeps its id as one, and is gone to anything
+// that would run in it.
 func (s *Store) CheckThreadExecutionAccess(thread Thread) error {
+	if thread.Mode == threadmode.ModeHolder {
+		return fmt.Errorf("store: thread %s: %w", thread.ID, ErrThreadGone)
+	}
 	if thread.ForkPreparing {
 		return ErrForkPreparing
 	}

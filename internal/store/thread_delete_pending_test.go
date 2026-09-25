@@ -7,11 +7,14 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"agent-overflow/internal/threadmode"
 )
 
 // seedPendingDeleteFixture opens a store holding S, a 1200-row thread that
 // drains in several chunks, K, a thread every check finds, and F, a
-// pointer fork of S. S and K both answer "bilby" by title and by message.
+// pointer fork of S's first ten turns, which S keeps as a holder once its
+// delete completes. S and K both answer "bilby" by title and by message.
 func seedPendingDeleteFixture(t *testing.T) *Store {
 	t.Helper()
 	s := openStoreAt(t)
@@ -32,15 +35,16 @@ func seedPendingDeleteFixture(t *testing.T) *Store {
 	mustExec(t, s.db, `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 1199)
 		INSERT INTO items(thread_id,id,turn_index,item_index,kind,role,status,summary,meta,created_at,updated_at)
 		SELECT 'S', 'r' || i, i / 10, i % 10, 'assistant_text', 'assistant', 'completed', 'row', '{}', 1, 1 FROM n`)
-	mustPointerFork(t, s, "S", "F", ForkCut{})
+	mustPointerFork(t, s, "S", "F", throughTurn(9))
 	requireFoundOnlyAt(t, s, []string{"K", "S"})
 	return s
 }
 
 // requireFoundOnlyAt checks that among S and K exactly want, sorted, are
 // listed, read and searched, that S is pending deletion exactly when it is
-// not found and its row remains, and that an S not found refuses forks, and
-// transfers while its row remains.
+// not found and its row remains as other than a holder, that an S not found
+// refuses forks, and transfers while its row remains, and that F reads the
+// rows of S it read throughout.
 func requireFoundOnlyAt(t *testing.T, s *Store, want []string) {
 	t.Helper()
 	pick := func(ids []string) []string {
@@ -103,8 +107,9 @@ func requireFoundOnlyAt(t *testing.T, s *Store, want []string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, rowErr := s.GetThread("S")
-	if got, want := slices.Contains(pending, "S"), gone && rowErr == nil; got != want {
+	row, rowErr := s.GetThread("S")
+	holder := rowErr == nil && row.Mode == threadmode.ModeHolder
+	if got, want := slices.Contains(pending, "S"), gone && rowErr == nil && !holder; got != want {
 		t.Fatalf("ListPendingThreadDeletes = %v, want S pending %v", pending, want)
 	}
 	if !gone {
@@ -127,9 +132,9 @@ func requireFoundOnlyAt(t *testing.T, s *Store, want []string) {
 			t.Errorf("%s of a pending delete = %v, want sql.ErrNoRows", kind, err)
 		}
 	}
-	requireIDs(t, "F lineage", forkLineage(t, s, "F"), nil)
-	if _, origin := forkDivider(t, s, "F"); !origin.SourceDeleted {
-		t.Errorf("F divider = %+v", origin)
+	requireIDs(t, "F lineage", forkLineage(t, s, "F"), []string{"1:S:9:10"})
+	if rows := forkRows(t, s, "F"); len(rows) != 100 || rows[99].ID != "r99" {
+		t.Errorf("F reads %d rows of S", len(rows))
 	}
 }
 
@@ -154,12 +159,11 @@ func reopenAndFinish(t *testing.T, s *Store) {
 	if err := s.DeleteThread("S"); err != nil {
 		t.Fatalf("completing the pending delete = %v", err)
 	}
-	if _, err := s.GetThread("S"); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("S after the completed delete: %v", err)
+	if row, err := s.GetThread("S"); err != nil || row.Mode != threadmode.ModeHolder {
+		t.Fatalf("S after the completed delete: mode %q, %v; want the holder of what F reads", row.Mode, err)
 	}
-	var rows int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM items WHERE thread_id = 'S'`).Scan(&rows); err != nil || rows != 0 {
-		t.Fatalf("S rows after the completed delete = %d, err %v", rows, err)
+	if rows := sourceRows(t, s); rows != 100 {
+		t.Fatalf("S rows after the completed delete = %d, want the 100 F reads", rows)
 	}
 	if pending, err := s.ListPendingThreadDeletes(); err != nil || len(pending) != 0 {
 		t.Fatalf("pending after the completed delete = %v, err %v", pending, err)

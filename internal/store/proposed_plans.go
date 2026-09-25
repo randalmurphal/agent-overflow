@@ -69,14 +69,13 @@ func (s *Store) EnsureProposedPlanStateWithParent(threadID, itemID, explicitPare
 		return ProposedPlanState{}, fmt.Errorf("store: begin ensure proposed plan tx: %w", err)
 	}
 	defer tx.Rollback()
-	defer dropForkMovesTx(tx)
 
 	if state, found, err := getProposedPlanStateQ(tx, threadID, itemID); err != nil {
 		return ProposedPlanState{}, err
 	} else if found {
 		// Nothing was written, so nothing to invalidate: the idempotent
 		// replay path must not advance the contract.
-		return state, s.commitReportingForks(tx)
+		return state, tx.Commit()
 	}
 
 	var version int
@@ -123,7 +122,7 @@ func (s *Store) EnsureProposedPlanStateWithParent(threadID, itemID, explicitPare
 	if err := bumpHistoryRevForItemTx(tx, threadID, itemID, fmt.Sprintf("store: insert proposed plan state %s", itemID)); err != nil {
 		return ProposedPlanState{}, err
 	}
-	if err := s.commitReportingForks(tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return ProposedPlanState{}, fmt.Errorf("store: commit proposed plan state %s: %w", itemID, err)
 	}
 	return state, nil
@@ -186,7 +185,6 @@ func (s *Store) MarkProposedPlanImplemented(threadID, itemID, implementationThre
 		return fmt.Errorf("store: begin mark proposed plan implemented %s/%s: %w", threadID, itemID, err)
 	}
 	defer tx.Rollback()
-	defer dropForkMovesTx(tx)
 
 	res, err := tx.Exec(
 		`UPDATE proposed_plans
@@ -214,7 +212,7 @@ func (s *Store) MarkProposedPlanImplemented(threadID, itemID, implementationThre
 		}
 		if found && state.ImplementedAt > 0 {
 			if state.ImplementedByThreadID == implementationThreadID && state.ImplementedByItemID == implementationItemID {
-				return s.commitReportingForks(tx)
+				return tx.Commit()
 			}
 			return fmt.Errorf("%w: %s on thread %s", ErrProposedPlanAlreadyImplemented, itemID, threadID)
 		}
@@ -223,7 +221,7 @@ func (s *Store) MarkProposedPlanImplemented(threadID, itemID, implementationThre
 	if err := bumpHistoryRevForItemTx(tx, threadID, itemID, fmt.Sprintf("store: mark proposed plan implemented %s", itemID)); err != nil {
 		return err
 	}
-	if err := s.commitReportingForks(tx); err != nil {
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit mark proposed plan implemented %s/%s: %w", threadID, itemID, err)
 	}
 	return nil

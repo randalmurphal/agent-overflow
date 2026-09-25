@@ -1713,6 +1713,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 			},
 		},
 	},
+	{Version: 125, Name: "fork_ownership", SQL: forkOwnershipV125SQL, Rebuild: true},
 }
 
 // MigrationStep describes one pending migration as it begins, or a
@@ -2141,6 +2142,11 @@ func applyRebuildMigrationSteps(ctx context.Context, db *sql.DB, m Migration, ac
 	defer func() {
 		if _, err := conn.ExecContext(context.Background(), "PRAGMA foreign_keys=ON"); err != nil {
 			log.Printf("store: WARNING failed to re-enable foreign_keys after rebuild v%d: %v", m.Version, err)
+		}
+		// A rebuild that renames a table under legacy_alter_table (v125)
+		// resets it itself; a failure between the two leaves it set.
+		if _, err := conn.ExecContext(context.Background(), "PRAGMA legacy_alter_table=OFF"); err != nil {
+			log.Printf("store: WARNING failed to reset legacy_alter_table after rebuild v%d: %v", m.Version, err)
 		}
 	}()
 

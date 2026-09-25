@@ -337,12 +337,11 @@ func awaitTransferPhase(t *testing.T, a *App, id, phase string, recovering ...bo
 	return row
 }
 
-// TestPointerForkTransferDuringASourceDelete: when the source's delete
-// begins between two batches of a pointer fork's export, the attempt fails
-// with the public sentence, which the transfer status shows, and the fork
-// reads what it read. Once the delete has finished, the retried attempt
-// transfers the fork without the source's messages.
-func TestPointerForkTransferDuringASourceDelete(t *testing.T) {
+// TestPointerForkTransferReadsThroughItsDeletedSource: the export of a
+// pointer fork reads the rows it shows where they are, here in the holder
+// its deleted source became, and writes nothing: the fork shows the same
+// rows at the same stamp after it, and the copy carries them all.
+func TestPointerForkTransferReadsThroughItsDeletedSource(t *testing.T) {
 	app, dbPath := newTestAppWithStorePath(t)
 	if err := app.initIdentity("backend-under-test"); err != nil {
 		t.Fatal(err)
@@ -367,7 +366,7 @@ func TestPointerForkTransferDuringASourceDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer raw.Close()
-	// 600 rows: the export's first batch copies 500 of them.
+	// 600 rows: more than one page of the export.
 	if _, err := raw.Exec(`WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 599)
 		INSERT INTO items(thread_id,id,turn_index,item_index,kind,role,status,summary,meta,created_at,updated_at)
 		SELECT ?, 'origin-' || i, i / 10, i % 10, 'assistant_text', 'assistant', 'completed', 'origin row', '{}', 1, 1 FROM n`, origin.ID); err != nil {
@@ -409,13 +408,20 @@ func TestPointerForkTransferDuringASourceDelete(t *testing.T) {
 		return ids
 	}
 	before := forkIDs()
-	if len(before) != 602 {
-		t.Fatalf("the fork reads %d rows, want the origin's 600, its divider and its own", len(before))
+	if len(before) != 601 {
+		t.Fatalf("the fork reads %d rows, want the origin's 600 and its own", len(before))
 	}
-	// The delete's mark, committed with the first batch's copies.
-	if _, err := raw.Exec(`CREATE TRIGGER test_delete_begins_mid_export AFTER INSERT ON thread_fork_copied
-		WHEN (SELECT count(*) FROM thread_fork_copied WHERE thread_id = NEW.thread_id) = 500
-		BEGIN UPDATE threads SET deleting = 1 WHERE id = '` + origin.ID + `'; END`); err != nil {
+	if err := source.DeleteThread(origin.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := forkIDs(); !slices.Equal(got, before) {
+		t.Fatalf("the origin's delete changed the fork to %d rows", len(got))
+	}
+	if held, err := source.store.GetThread(origin.ID); err != nil || held.Mode != "holder" {
+		t.Fatalf("the deleted origin = %+v, %v; want the holder its fork reads", held, err)
+	}
+	stamp, _, err := source.store.ThreadHistoryStamp(fork.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -432,56 +438,27 @@ func TestPointerForkTransferDuringASourceDelete(t *testing.T) {
 	if _, err := source.BindThreadTransferDestination(ctx, fork.ID, offer); err != nil {
 		t.Fatal(err)
 	}
-	const refusal = "A conversation this one was forked from is being deleted. The transfer will continue without its messages once the delete finishes."
-	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(20 * time.Millisecond) {
-		statuses, err := source.GetThreadTransfers()
-		if err != nil {
-			t.Fatal(err)
-		}
-		var status store.ThreadTransfer
-		for _, row := range statuses {
-			if row.ID == operation {
-				status = row
-			}
-		}
-		if status.Error == refusal {
-			break
-		}
-		if status.Error != "" || status.Phase == "complete" || time.Now().After(deadline) {
-			t.Fatalf("transfer status = %s %q, want the refusal", status.Phase, status.Error)
-		}
-	}
+	awaitTransferPhase(t, source, operation, "complete")
+	awaitTransferPhase(t, destination, operation, "complete")
 	if got := forkIDs(); !slices.Equal(got, before) {
-		t.Fatalf("the refused export changed the fork to %d rows", len(got))
+		t.Fatalf("the export changed the fork to %d rows", len(got))
 	}
-
-	if _, err := raw.Exec(`DROP TRIGGER test_delete_begins_mid_export`); err != nil {
-		t.Fatal(err)
+	if after, _, err := source.store.ThreadHistoryStamp(fork.ID); err != nil || after != stamp {
+		t.Fatalf("the export moved the fork's stamp %+v -> %+v, %v", stamp, after, err)
 	}
-	if err := source.DeleteThread(origin.ID); err != nil {
-		t.Fatal(err)
+	var own int
+	if err := raw.QueryRow(`SELECT count(*) FROM items WHERE thread_id = ?`, fork.ID).Scan(&own); err != nil || own != 1 {
+		t.Fatalf("the fork holds %d rows after the export, want its own one: %v", own, err)
 	}
-	if got, want := forkIDs(), []string{"fork-origin-" + fork.ID, "fork-own"}; !slices.Equal(got, want) {
-		t.Fatalf("fork after the origin's delete = %v, want %v", got, want)
-	}
-	var records int
-	if err := raw.QueryRow(`SELECT count(*) FROM thread_fork_copied`).Scan(&records); err != nil || records != 0 {
-		t.Fatalf("records after the origin's delete = %d, %v", records, err)
-	}
-	if err := source.RetryThreadTransfer(operation); err != nil {
-		t.Fatal(err)
-	}
-	awaitTransferPhase(t, source, operation, "complete", true)
-	awaitTransferPhase(t, destination, operation, "complete", true)
 	copied, err := destination.store.ListItems(intent.TargetThreadID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ids []string
-	for _, item := range copied {
-		ids = append(ids, item.ID)
+	ids := make([]string, len(copied))
+	for i, item := range copied {
+		ids[i] = item.ID
 	}
-	if !slices.Contains(ids, "fork-own") || slices.ContainsFunc(ids, func(id string) bool { return strings.HasPrefix(id, "origin-") }) {
-		t.Fatalf("the transferred fork holds %v, want its own rows only", ids)
+	if !slices.Equal(ids, before) {
+		t.Fatalf("the transferred fork holds %d rows, want the %d it showed", len(ids), len(before))
 	}
 }

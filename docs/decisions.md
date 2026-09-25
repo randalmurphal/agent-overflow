@@ -152,6 +152,14 @@ Mechanism in
   and `internal/store/AGENTS.md`. Re-pin-to-bump is deliberately dead.
 - Thread content search matches title and workspace path only. Searching
   message text server-side (t3-code does) is undecided, not rejected.
+- A fork is a snapshot of its source at the cut. Nothing the source does
+  afterwards (continuing, reverting, being deleted or moved) changes what
+  the fork shows, so a fork is never told about its source's writes. A
+  deleted source's history stays, hidden, until the last fork that shows
+  it is deleted. A fork taken while its source is still running a turn
+  owns that turn as it stands. The fork's timeline holds no origin row;
+  the thread row records where it came from
+  ([pointer forks](architecture/sqlite-store.md#pointer-forks)).
 
 ## Subagents and background work
 

@@ -56,7 +56,7 @@ DROP VIEW timeline_payloads;
 DROP VIEW resolved_payloads;
 DROP VIEW timeline_payload_chunks;
 DROP VIEW timeline_edit_file_snapshots;
-` + pointerForkViewsSQL + forkTriggersSQL
+` + pointerForkViewsSQL + forkTriggersV120SQL
 
 // forkLineageMaxDepth caps how many ancestor levels one thread reads through.
 // Each level is one more pair of index-ordered arms in an ordered read, so the
@@ -251,37 +251,9 @@ SELECT turns.turn_id, l.thread_id, turns.turn_index, turns.started_at, turns.com
  WHERE ` + inheritedTurnVisibleSQL + `;
 `
 
-// forkTriggersSQL is the latest DDL for the pointer-fork triggers. Migration
-// v120 installs it and RestoreFrom reinstalls it after the row copy, which
-// runs without these triggers so restored rows are the snapshot's exactly.
-//
-//   - trg_threads_fork_source_delete: deleting a source must detach its
-//     forks first (detachForkDescendantsTx), or they would read a thread
-//     that no longer exists and never learn why.
-//   - trg_items_fork_position / trg_items_fork_position_update: a fork's own
-//     rows sit at or after its cut. The only exception is a row that
-//     replaces an inherited one, which is hidden first.
-//   - trg_items_fork_snapshot: a row an ancestor inserts below a fork's cut
-//     after the fork was made (a background child, a late completion) is
-//     not part of the fork's history, so the fork hides it. A row that
-//     replaces one the inserting thread already showed under the same id
-//     (a copy of a row it inherited, or its own imported row localized) is
-//     the same history and stays visible to the forks.
-//   - trg_items_fork_snapshot_move: the same rule for a row an ancestor
-//     moves from at or after a fork's cut to before it. A move of a row a
-//     fork reads is handed off first (handOffIDsTx), so the fork keeps
-//     its position.
-//   - trg_items_fork_reader_stamp: a fork's stamps are its own, so an
-//     ancestor's write moves them only when the fork shows the written row.
-//     A content change is handed off first, and the fork's copy stamps it.
-//     A write that reaches every thread showing the row updates it in place
-//     (a revision touch, the divider's source-deleted mark); the trigger
-//     advances the stamps of the forks whose cut follows the row and that
-//     do not hide it. The row stamping the history triggers cascade to a
-//     written row's anchors changes rev, not content, and the trigger skips
-//     it: an anchor's decoration reads the fork's own timeline, where a row
-//     after the cut or hidden by the fork does not appear.
-var forkTriggersSQL = `
+// forkTriggersV120SQL is the pointer-fork trigger DDL v120 installed,
+// frozen with it. forkTriggersSQL (fork_triggers.go) is the latest.
+var forkTriggersV120SQL = `
 CREATE TRIGGER trg_threads_fork_source_delete BEFORE DELETE ON threads
 WHEN EXISTS (SELECT 1 FROM thread_fork_lineage WHERE ancestor_id = OLD.id)
 BEGIN
@@ -364,12 +336,8 @@ BEGIN
 END;
 `
 
-// forkReaderLineageSQL selects the lineage rows `l` of the forks that show
-// the items row %[1]s in place: those whose cut follows the row and that do
-// not hide it at their own level or a nearer one. trg_items_fork_reader_stamp
-// advances their stamps with the row OLD, and forkReadersOfRowSQL returns
-// them to the writer that fires it with the row items, so both name the
-// same forks and v120's frozen hash covers the text.
+// forkReaderLineageSQL is v120's frozen text for the lineage rows of the
+// forks that show the items row %[1]s in place.
 const forkReaderLineageSQL = `FROM thread_fork_lineage l
       WHERE l.ancestor_id = %[1]s.thread_id
         AND (l.cut_turn_index, l.cut_item_index) > (%[1]s.turn_index, %[1]s.item_index)
@@ -382,10 +350,3 @@ const forkReaderLineageSQL = `FROM thread_fork_lineage l
             JOIN thread_fork_hidden hidden ON hidden.thread_id = nearer.ancestor_id AND hidden.item_id = %[1]s.id
            WHERE nearer.thread_id = l.thread_id AND nearer.depth < l.depth
         )`
-
-const dropForkTriggersSQL = `DROP TRIGGER IF EXISTS trg_threads_fork_source_delete;
-DROP TRIGGER IF EXISTS trg_items_fork_position;
-DROP TRIGGER IF EXISTS trg_items_fork_position_update;
-DROP TRIGGER IF EXISTS trg_items_fork_snapshot;
-DROP TRIGGER IF EXISTS trg_items_fork_snapshot_move;
-DROP TRIGGER IF EXISTS trg_items_fork_reader_stamp;`

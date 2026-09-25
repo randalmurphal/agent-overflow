@@ -129,9 +129,6 @@ var subagentRowSQL = `SELECT ` + subagentRowColumns("") + ` FROM items WHERE thr
 // readMutableSubagentRowTx is requireMutableItemTx that returns the row as
 // the card rules read it.
 func readMutableSubagentRowTx(tx *sql.Tx, threadID, itemID, label string) (subagentRow, error) {
-	if err := handOffIDsTx(tx, threadID, []string{itemID}); err != nil {
-		return subagentRow{}, fmt.Errorf("%s hand off item %s/%s: %w", label, threadID, itemID, err)
-	}
 	row, err := scanSubagentRow(tx.QueryRow(subagentRowSQL, threadID, itemID))
 	if !errors.Is(err, sql.ErrNoRows) {
 		if err != nil {

@@ -15,7 +15,8 @@ import (
 //
 // This is intentionally separate from DeleteThread: normal deletion keeps the
 // historical usage ledger by product design, while a failed import never
-// successfully created that history in the first place.
+// successfully created that history in the first place. A thread a fork
+// already reads becomes a holder (retireToHolderTx) rather than going.
 func (s *Store) RollbackImportedThread(threadID string) error {
 	if threadID == "" {
 		return fmt.Errorf("store: rollback imported thread: thread id is required")
@@ -25,7 +26,6 @@ func (s *Store) RollbackImportedThread(threadID string) error {
 		return fmt.Errorf("store: begin rollback imported thread %s: %w", threadID, err)
 	}
 	defer tx.Rollback()
-	defer dropForkMovesTx(tx)
 
 	var importSource string
 	if err := tx.QueryRow(
@@ -42,21 +42,31 @@ func (s *Store) RollbackImportedThread(threadID string) error {
 	if _, err := tx.Exec(`DELETE FROM usage_pending WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("store: delete rolled-back pending usage for thread %s: %w", threadID, err)
 	}
-	if err := deleteThreadSearchThreadTx(tx, threadID); err != nil {
-		return err
-	}
-	if err := s.detachForkDescendantsTx(tx, threadID); err != nil {
-		return err
-	}
-	result, err := tx.Exec(`DELETE FROM threads WHERE id = ?`, threadID)
+	reads, err := readsThroughLineageTx(tx, threadID)
 	if err != nil {
-		return fmt.Errorf("store: delete rolled-back imported thread %s: %w", threadID, err)
-	}
-	if err := requireRowsAffected(result, fmt.Sprintf("store: rollback imported thread %s", threadID)); err != nil {
 		return err
 	}
-	if err := s.commitReportingForks(tx); err != nil {
+	retired, err := retireToHolderTx(tx, threadID)
+	if err != nil {
+		return err
+	}
+	if !retired {
+		if err := deleteThreadSearchThreadTx(tx, threadID); err != nil {
+			return err
+		}
+		result, err := tx.Exec(`DELETE FROM threads WHERE id = ?`, threadID)
+		if err != nil {
+			return fmt.Errorf("store: delete rolled-back imported thread %s: %w", threadID, err)
+		}
+		if err := requireRowsAffected(result, fmt.Sprintf("store: rollback imported thread %s", threadID)); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("store: commit rollback imported thread %s: %w", threadID, err)
+	}
+	if reads {
+		s.holdersMayBeReleased()
 	}
 	return nil
 }

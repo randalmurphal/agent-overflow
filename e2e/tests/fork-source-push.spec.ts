@@ -1,28 +1,28 @@
-// A pane showing a pointer fork follows its source without being reopened
+// A pane showing a pointer fork is never told about its source's writes
 // (docs/architecture/thread-replica-sync.md#pointer-fork-stamps). A fork
-// reads the rows before its cut from its source in place. A write that
-// changes what the fork shows moves the fork's stamps; the backend then
-// pushes the fork a `provider:item_event` `resync`, and a client showing
-// the fork re-syncs its window (threadWindowRecovery.ts).
-//
-// One fork pane stays open through both halves:
+// reads the rows before its cut from the thread that holds them, and a row
+// a fork shows never changes: the source's later rows land past the cut or
+// are hidden from the fork, a revert moves the rows the fork shows to a
+// hidden holder, and a deleted source becomes that holder in place. So the
+// fork's rows, stamps and pane stay as they were, and no frame names it.
 //
 //   - The source's agent keeps writing after the fork: a background agent
-//     launched in the forked turn works and completes. The fork is a
-//     snapshot, so none of it reaches the fork. The fork hides a launch
-//     that is still running when it is made (forkUnsettledRowsTx), and the
-//     agent's rows land past the fork's cut, so no spawn row, card or
-//     child row appears in it, its rows stay as they were, and it is
-//     pushed no resync.
-//   - The source is deleted. The fork is pushed one resync, the rows it
-//     read from the source leave the pane and the divider records the
-//     deletion.
+//     launched in the forked turn works and completes. The fork hides the
+//     launch that is still running when it is made (forkUnsettledRowsTx),
+//     and the agent's rows land past the cut, so no spawn row, card or
+//     child row appears in it.
+//   - The source reverts every row the fork shows (edit and resend of its
+//     first message). The source loses them; the fork's pane keeps them.
+//   - The source is deleted. The fork still shows everything it showed, and
+//     the holder that keeps the rows appears in no listing.
 //
-// The store's report of the forks a write moved and the app's emit are
-// unit tested (fork_moves_test.go, app_fork_resync_test.go). This level
-// shows the frame crossing a narrowed connection and the SPA's window
-// following it.
-import { expect, test } from './fixtures.js';
+// The store's ownership transfer and its costs are unit tested
+// (fork_holders_test.go, thread_delete_holder_test.go, fork_cost_test.go),
+// and the holder's collection once its last fork goes is app tested
+// (app_holder_collection_test.go). This level shows no frame crossing to a
+// connection that shows the fork, and the SPA's fork pane unchanged.
+import type { Page } from '@playwright/test';
+import { expect, test, type SeedResult } from './fixtures.js';
 import {
   RESULT_LINE,
   advance,
@@ -42,10 +42,14 @@ import {
   waitForGate,
   type Item,
 } from './agent-visibility-helpers.js';
+import type { HarnessApp } from '../src/harness.js';
+import { plainScenario } from './thread-tools-helpers.js';
 import { readWire, recordWire, type WireLog } from './transport-watch-helpers.js';
 
 const SOURCE_TITLE = 'Fork push source';
+const REVERT_TITLE = 'Fork revert source';
 const WORK_GATE = 'fork-push-work';
+const EDITED = 'Start over with a different question.';
 
 interface ItemEvent {
   action: string;
@@ -58,18 +62,54 @@ interface ThreadEvent {
   id?: string;
 }
 
+interface ThreadRow {
+  id: string;
+}
+
 // A thread title appears in the sidebar and the pane header, and the
 // source's title is a prefix of its fork's.
 const exactly = (title: string) => new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
 
 const rowShape = (rows: Item[]) => rows.map((row) => [row.id, row.kind, row.status, row.summary, row.meta]);
 
+// Every item frame the harness saw for a thread, of any action.
+const framesFor = (harness: HarnessApp, id: string) =>
+  harness.countEvents<ItemEvent>('provider:item_event', (event) => event.threadId === id);
+
 test.beforeEach(async ({ harness }) => {
   // Tool runs render expanded, so a spawn row would render as its own row.
   await harness.rpc('UpdateSettings', { activityRunDefault: 'expanded' });
 });
 
-test('an open fork pane keeps its snapshot while the source’s agent writes and loses the source’s rows when it is deleted', async ({
+// Deletes sourceId through the RPC and waits for the page to receive its
+// `deleted` broadcast, which follows the delete's last write.
+async function deleteSource(harness: HarnessApp, page: Page, sourceId: string) {
+  const sourceGone = harness.waitForEvent<ThreadEvent>(
+    'thread:updated',
+    (event) => event.action === 'deleted' && event.id === sourceId,
+  );
+  const received = page.waitForFunction(
+    (id) =>
+      (window as unknown as { __aoWire: WireLog }).__aoWire.received.some(
+        (event) => event.channel === 'thread:updated' && event.action === 'deleted' && event.threadId === id,
+      ),
+    sourceId,
+  );
+  await harness.rpc('DeleteThread', sourceId);
+  await sourceGone;
+  await received;
+  // The holder the source became is in no listing.
+  const listed = await harness.rpc<ThreadRow[]>('ListThreads');
+  expect(listed.map((thread) => thread.id)).not.toContain(sourceId);
+}
+
+// The page received no item frame for the fork.
+async function expectNoForkFrames(page: Page, forkId: string) {
+  const wire = await readWire(page);
+  expect(wire.received.filter((event) => event.channel === 'provider:item_event' && event.threadId === forkId)).toEqual([]);
+}
+
+test('an open fork pane keeps its snapshot while the source’s agent writes and after the source is deleted', async ({
   harness,
   page,
 }) => {
@@ -118,7 +158,6 @@ test('an open fork pane keeps its snapshot while the source’s agent writes and
   await sidebarRow(fork.title).click();
   await expect(page.getByTestId('chat-header-title')).toHaveText(fork.title);
   const timeline = page.getByTestId('message-timeline-scroll');
-  await expect(page.getByTestId('fork-divider-source')).toContainText(`Forked from ${SOURCE_TITLE}`);
   await expect(timeline.getByText('Ready.', { exact: true })).toBeVisible();
   await expect(timeline.getByText('Launching the reviewer.', { exact: true })).toBeVisible();
   // The source's launch is running; the fork does not show it.
@@ -129,8 +168,8 @@ test('an open fork pane keeps its snapshot while the source’s agent writes and
   expect(forkRows.map(([id]) => id)).not.toContain('tu-outer');
 
   // The source's agent writes a child row and completes. The completion
-  // row's upsert is the barrier: a resync those writes caused would be
-  // emitted in the write's commit, before it.
+  // row's upsert is the barrier: a frame those writes sent the fork would
+  // be emitted in the write's commit, before it.
   const agentDone = harness.waitForEvent<ItemEvent>(
     'provider:item_event',
     (event) =>
@@ -143,48 +182,94 @@ test('an open fork pane keeps its snapshot while the source’s agent writes and
   expect(sourceRows.filter((row) => row.completionOf === 'tu-outer')).toHaveLength(1);
 
   // The fork shows what it showed when it was made.
-  const resyncs = (id: string) =>
-    harness.countEvents<ItemEvent>('provider:item_event', (event) => event.action === 'resync' && event.threadId === id);
-  expect(resyncs(fork.id)).toBe(0);
+  expect(framesFor(harness, fork.id)).toBe(0);
   expect(rowShape(await listItems(harness, fork.id))).toEqual(forkRows);
   await expect(timeline.locator('[data-item-id="tu-outer"]')).toHaveCount(0);
   await expect(timeline.locator('[data-item-id="tu-grep"]')).toHaveCount(0);
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
   await expect(timeline.getByText('Ready.', { exact: true })).toBeVisible();
 
-  // Deleting the source, with the fork pane still open. The source's
-  // `deleted` broadcast follows the delete's last write, so it is the
-  // barrier for the resyncs the delete's transactions pushed.
-  const sourceGone = harness.waitForEvent<ThreadEvent>(
-    'thread:updated',
-    (event) => event.action === 'deleted' && event.id === sourceId,
-  );
-  const received = page.waitForFunction(
-    (id) =>
-      (window as unknown as { __aoWire: WireLog }).__aoWire.received.some(
-        (event) => event.channel === 'thread:updated' && event.action === 'deleted' && event.threadId === id,
-      ),
-    sourceId,
-  );
-  await harness.rpc('DeleteThread', sourceId);
-  await sourceGone;
-  await received;
-  expect(resyncs(fork.id)).toBe(1);
-
-  await expect(page.getByTestId('fork-divider')).toContainText(`Forked from ${SOURCE_TITLE}`);
-  await expect(page.getByTestId('fork-divider-deleted')).toBeVisible();
-  await expect(page.getByTestId('fork-divider-source')).toHaveCount(0);
-  await expect(timeline.getByText('Ready.', { exact: true })).toHaveCount(0);
-  await expect(timeline.getByText('Launching the reviewer.', { exact: true })).toHaveCount(0);
+  // Deleting the source, with the fork pane still open.
+  await deleteSource(harness, page, sourceId);
+  await expect(sidebarRow(SOURCE_TITLE)).toHaveCount(0);
+  expect(framesFor(harness, fork.id)).toBe(0);
+  expect(rowShape(await listItems(harness, fork.id))).toEqual(forkRows);
   await expect(page.getByTestId('chat-header-title')).toHaveText(fork.title);
+  await expect(timeline.getByText('Ready.', { exact: true })).toBeVisible();
+  await expect(timeline.getByText('Launching the reviewer.', { exact: true })).toBeVisible();
+  await expectNoForkFrames(page, fork.id);
+});
 
-  const detached = await listItems(harness, fork.id);
-  const divider = detached.find((row) => row.toolName === 'fork_origin');
-  expect(JSON.parse(divider?.meta ?? '{}')).toMatchObject({ sourceDeleted: true, sourceTitle: SOURCE_TITLE });
-  expect(detached.map((row) => row.summary)).not.toContain('Ready.');
-  // The connection is narrowed to the fork's pane: it was pushed the
-  // fork's one resync and no other.
-  const wire = await readWire(page);
-  const pushedTo = wire.received.filter((event) => event.channel === 'provider:item_event' && event.action === 'resync');
-  expect(pushedTo.map((event) => event.threadId)).toEqual([fork.id]);
+test('an open fork pane keeps the rows its source reverts, then deletes', async ({ harness, page }) => {
+  await harness.rpc('HarnessSetScenario', {
+    // Each session starts the scenario over, so the resend after the
+    // revert is answered with the same text.
+    scenario: plainScenario({ name: 'fork-revert-source', provider: 'claude', texts: ['Descending works too.'], afterTurns: 'repeatLast' }),
+  });
+  const seed = await harness.rpc<SeedResult>('HarnessSeed', {
+    projects: [
+      {
+        name: 'fork-revert-source',
+        repo: { commits: [{ message: 'init', files: { 'README.md': '# fixture\n' } }] },
+        threads: [
+          {
+            title: REVERT_TITLE,
+            provider: 'claude',
+            turns: [
+              { userText: 'How do I sort an array in JS?', items: [{ kind: 'assistant_text', summary: 'Use Array.prototype.sort.' }] },
+              { userText: 'And in reverse?', items: [{ kind: 'assistant_text', summary: 'Reverse the comparator.' }] },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  const sourceId = seed.projects[0].threadIds[0];
+  await recordWire(page);
+  await harness.open(page);
+  const sidebarRow = (title: string) =>
+    page.getByTestId('thread-row-title').filter({ hasText: exactly(title) });
+  // A Claude thread forks once it has a session.
+  await startMock(harness, sourceId);
+  const turnDone = harness.waitForEvent<{ threadId: string }>(
+    'provider:turn_completed',
+    (event) => event.threadId === sourceId,
+  );
+  await harness.rpc('SendMessage', sourceId, 'And descending?', null);
+  await turnDone;
+
+  const fork = await harness.rpc<{ id: string; title: string }>('ForkThread', sourceId, null);
+  const shown = ['How do I sort an array in JS?', 'Use Array.prototype.sort.', 'And in reverse?', 'Reverse the comparator.', 'And descending?', 'Descending works too.'];
+  const forkRows = rowShape(await listItems(harness, fork.id));
+  expect(forkRows.map(([, , , summary]) => summary)).toEqual(expect.arrayContaining(shown));
+  await sidebarRow(fork.title).click();
+  await expect(page.getByTestId('chat-header-title')).toHaveText(fork.title);
+  const timeline = page.getByTestId('message-timeline-scroll');
+  const expectShown = async () => {
+    for (const text of shown) await expect(timeline.getByText(text, { exact: true })).toBeVisible();
+  };
+  await expectShown();
+
+  // The source reverts to its first message and resends it edited: every
+  // row the fork shows leaves the source.
+  const first = (await listItems(harness, sourceId)).find((row) => row.kind === 'user_text' && row.summary === shown[0]);
+  const resent = harness.waitForEvent<{ threadId: string }>(
+    'provider:turn_completed',
+    (event) => event.threadId === sourceId,
+  );
+  await harness.rpc('RevertConversationAndResendMessage', sourceId, first?.id, { content: EDITED });
+  await resent;
+  const sourceSummaries = (await listItems(harness, sourceId)).map((row) => row.summary);
+  expect(sourceSummaries).toEqual([EDITED, 'Descending works too.']);
+  expect(framesFor(harness, fork.id)).toBe(0);
+  expect(rowShape(await listItems(harness, fork.id))).toEqual(forkRows);
+  await expectShown();
+  await expect(timeline.getByText(EDITED, { exact: true })).toHaveCount(0);
+
+  await deleteSource(harness, page, sourceId);
+  await expect(sidebarRow(REVERT_TITLE)).toHaveCount(0);
+  expect(framesFor(harness, fork.id)).toBe(0);
+  expect(rowShape(await listItems(harness, fork.id))).toEqual(forkRows);
+  await expectShown();
+  await expectNoForkFrames(page, fork.id);
 });

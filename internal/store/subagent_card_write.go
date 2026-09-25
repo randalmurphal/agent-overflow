@@ -56,6 +56,10 @@ type cardWrite struct {
 	// stale lists the stamps finish recomputed, once it has.
 	stale   []string
 	touched bool
+	// levelsDropped is set by a write that removed lineage rows, which
+	// can release a holder: writeItems reports it once the write commits
+	// (holdersMayBeReleased).
+	levelsDropped bool
 
 	// t is the thread's cards, when the writer holds their lock
 	// (writeItems, bulkWriteItems): finish then settles what the write
@@ -373,6 +377,9 @@ func (s *Store) itemWriteTx(threadID string, card *SubagentCard, bulk bool, labe
 	})
 	if err != nil && w.undo != nil {
 		w.undo()
+	}
+	if err == nil && w.levelsDropped {
+		s.holdersMayBeReleased()
 	}
 	return err
 }

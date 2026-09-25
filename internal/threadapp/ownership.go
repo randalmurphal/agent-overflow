@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/threadmode"
 )
 
 // LockMutable serializes ordinary edits with transfer reservation. It is
@@ -26,9 +27,24 @@ func (s *Service) LockMutable(ctx context.Context, threadID string) (func(), err
 }
 
 // CheckCleanup permits local cache cleanup after the destination has confirmed
-// a move. It never grants execution or ordinary edits, and never releases a
-// pending handoff's recovery data. Call under the thread action lock.
+// a move, and the delete of a holder: the history a deleted thread's pointer
+// forks read, which nothing runs in and every other operation refuses
+// (store.CheckThreadExecutionAccess). retired reports either: the thread has
+// no provider state here to clean. It never grants execution or ordinary
+// edits, and never releases a pending handoff's recovery data. Call under the
+// thread action lock.
 func (s *Service) CheckCleanup(threadID string) (retired bool, err error) {
+	database, err := s.database("clean up conversation")
+	if err != nil {
+		return false, err
+	}
+	thread, err := database.GetThread(threadID)
+	if err == nil && thread.Mode == threadmode.ModeHolder {
+		return true, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
 	err = s.CheckMutable(threadID)
 	if err == nil {
 		return false, nil
@@ -36,10 +52,6 @@ func (s *Service) CheckCleanup(threadID string) (retired bool, err error) {
 	var moved *store.ThreadTransferError
 	if !errors.As(err, &moved) || !moved.Moved {
 		return false, err
-	}
-	database, dbErr := s.database("clean transferred conversation")
-	if dbErr != nil {
-		return false, dbErr
 	}
 	row, readErr := database.GetThreadTransfer(moved.OperationID)
 	if readErr != nil {

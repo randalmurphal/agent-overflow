@@ -23,6 +23,12 @@ func forkOfRunningAgentAtV120(t *testing.T) *Store {
 	if err := s.InsertTurn(Turn{TurnID: "S:0", ThreadID: "S", TurnIndex: 0, StartedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
+	// The turn row is settled, so F reads A's children through its
+	// lineage: a fork of a turn its source still runs owns a copy of every
+	// row of it (forkRunningTurnRowsTx).
+	if err := s.UpdateTurnCompleted("S:0", 2, "end_turn", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
 	mustPointerFork(t, s, "S", "F", ForkCut{})
 	if !ownsRow(t, s, "F", "A") || ownsRow(t, s, "F", "A-c1") || ownsRow(t, s, "F", "A-c2") || ownsRow(t, s, "F", "err") {
 		t.Fatal("fixture: the fork should own its settled copy of A and inherit A's children and the error")

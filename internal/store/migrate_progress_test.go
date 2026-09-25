@@ -61,20 +61,22 @@ func recordedVersion(t *testing.T, path string) int {
 	return version
 }
 
-// pendingTail is the chain from its last Rebuild migration on, which the
-// fixtures below leave pending: the rebuild is the migration whose parts
-// are reported, and the ordinary migrations after it come along whatever
-// the chain grows to. target is the version the fixture migrates through.
+// pendingTail is the chain from its last Rebuild migration but the final
+// migration on, which the fixtures below leave pending: the rebuild is a
+// migration whose parts are reported, and the tail holds at least one
+// migration after it, which a cancel after the first commit leaves
+// pending, whatever the chain grows to. target is the version the fixture
+// migrates through.
 func pendingTail(t *testing.T) (target int, pending []Migration) {
 	t.Helper()
 	last := -1
-	for i, m := range migrations {
+	for i, m := range migrations[:len(migrations)-1] {
 		if m.Rebuild {
 			last = i
 		}
 	}
 	if last < 1 {
-		t.Fatal("the chain has no rebuild migration after its first")
+		t.Fatal("the chain has no rebuild migration after its first and before its last")
 	}
 	return migrations[last-1].Version, migrations[last:]
 }
@@ -186,7 +188,11 @@ func TestNewWithOptionsCancelledMidChainRollsBack(t *testing.T) {
 	}
 
 	var resumed []MigrationStep
-	st, err := NewWithOptions(path, Options{OnMigration: func(step MigrationStep) { resumed = append(resumed, step) }})
+	st, err := NewWithOptions(path, Options{OnMigration: func(step MigrationStep) {
+		if step.Activity == "" {
+			resumed = append(resumed, step)
+		}
+	}})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}

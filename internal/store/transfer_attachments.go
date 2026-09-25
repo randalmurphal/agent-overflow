@@ -13,15 +13,23 @@ import (
 
 // ThreadTransferAttachments includes attachments inherited through a local
 // fork. Those timeline references still name their original owner, so a plain
-// ListAttachments(threadID) would silently leave their bytes behind.
+// ListAttachments(threadID) would silently leave their bytes behind. A pointer
+// fork's inherited messages reference attachments a thread it reads owns
+// (OwnsAttachment), which travel with the fork.
 func (s *Store) ThreadTransferAttachments(ctx context.Context, threadID string) ([]Attachment, error) {
-	rows, err := s.reader().QueryContext(ctx, `SELECT `+attachmentColumns+` FROM attachments
-WHERE id IN (SELECT attachment_id FROM attachment_owners WHERE thread_id=?) OR (thread_id,id) IN (
- SELECT CASE WHEN ref.type = 'object' THEN COALESCE(NULLIF(json_extract(ref.value,'$.threadId'),''),?) ELSE ? END,
+	rows, err := s.reader().QueryContext(ctx, `WITH refs(thread_id, id) AS (
+ SELECT CASE WHEN ref.type = 'object' THEN COALESCE(NULLIF(json_extract(ref.value,'$.threadId'),''),?1) ELSE ?1 END,
         CASE WHEN ref.type = 'object' THEN json_extract(ref.value,'$.id') WHEN ref.type = 'text' THEN ref.value END
  FROM timeline_items AS items, json_each(CASE WHEN json_valid(items.meta) THEN items.meta ELSE '{}' END,'$.attachments') AS ref
- WHERE items.thread_id = ? AND items.kind = 'user_text'
-) ORDER BY id`, threadID, threadID, threadID, threadID)
+ WHERE items.thread_id = ?1 AND items.kind = 'user_text'
+)
+SELECT `+attachmentColumns+` FROM attachments
+WHERE id IN (SELECT attachment_id FROM attachment_owners WHERE thread_id=?1)
+   OR (thread_id,id) IN (SELECT thread_id, id FROM refs)
+   OR id IN (SELECT refs.id FROM refs
+              JOIN thread_fork_lineage l ON l.thread_id = ?1
+              JOIN attachment_owners o ON o.thread_id = l.ancestor_id AND o.attachment_id = refs.id)
+ORDER BY id`, threadID)
 	if err != nil {
 		return nil, err
 	}

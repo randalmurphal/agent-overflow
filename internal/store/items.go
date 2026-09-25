@@ -176,17 +176,11 @@ var itemInsertAdoptingSQL = itemInsertSQL + ` RETURNING ` + aggHasChildSQL("?2",
 // index write shares this transaction, so a rolled-back insert leaves
 // nothing searchable. w records the row for the subagent cards; a row
 // that may anchor a card or count toward one reports its children in the
-// same statement. A row under a pointer fork's materialized copies makes
-// them the fork's own (settleForkCopiesTx).
+// same statement.
 func insertItemTx(tx *sql.Tx, w *cardWrite, item Item, label string) error {
 	row := subagentRowOf(item)
 	if err := w.check(row); err != nil {
 		return err
-	}
-	if row.parentID != "" {
-		if err := settleForkCopiesTx(tx, item.ThreadID, row.parentID); err != nil {
-			return err
-		}
 	}
 	hasChild := false
 	if row.anchorable() || row.parentID != "" {

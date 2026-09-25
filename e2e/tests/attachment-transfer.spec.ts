@@ -198,10 +198,11 @@ test('a transfer ticket admits one request and says nothing about the rest', asy
 });
 
 // A fork reads the history before its cut, and the images it references,
-// from its source, which keeps owning them. Deleting the source takes that
-// history with it: the fork keeps its own rows and its divider, which
-// records the deletion, and still runs.
-test('a fork shows its source’s images until the source is deleted, then runs without them', async ({ harness, page }) => {
+// from its source, which keeps owning them. Deleting the source keeps that
+// history for the fork: the source becomes a hidden holder that owns the
+// rows and the image, so the fork still shows and serves the image, and
+// still runs.
+test('a fork keeps showing its source’s images after the source is deleted, and runs', async ({ harness, page }) => {
   const { plainScenario } = await import('./thread-tools-helpers.js');
   await harness.rpc('HarnessSetScenario', { scenario: plainScenario({ name: 'fork-attachment', provider: 'claude', texts: ['Image received.', 'Fork continued.'], afterTurns: 'repeatLast' }) });
   const threadId = await seedThread(harness, 'Image fork source');
@@ -227,8 +228,6 @@ test('a fork shows its source’s images until the source is deleted, then runs 
   const expanded = page.getByRole('dialog', { name: FILENAME }).getByRole('img', { name: FILENAME });
   await expect.poll(() => expanded.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(PNG_WIDTH);
   await page.keyboard.press('Escape');
-  // The divider names the source and opens it while the source exists.
-  await expect(page.getByTestId('fork-divider-source')).toContainText('Forked from Image fork source');
   expect(await harness.rpc<AttachmentRow[]>('ListAttachments', fork.id)).toHaveLength(0);
   const ticket = await harness.rpc<string>('MintAttachmentDownloadTicket', fork.id, sourceAttachment.id);
   const response = await fetch(new URL(ticket, harness.url));
@@ -237,16 +236,19 @@ test('a fork shows its source’s images until the source is deleted, then runs 
 
   await page.getByText('Image fork source', { exact: true }).click();
   await harness.rpc('DeleteThread', threadId);
+  await expect(page.getByText('Image fork source', { exact: true })).toHaveCount(0);
   await page.getByText(fork.title, { exact: true }).click();
-  await expect(page.getByTestId('fork-divider')).toContainText('Forked from Image fork source');
-  await expect(page.getByTestId('fork-divider-deleted')).toBeVisible();
-  await expect(page.getByTestId('fork-divider-source')).toHaveCount(0);
-  await expect(page.getByText(/Keep this image in the fork\./)).toHaveCount(0);
-  const detached = await harness.rpc<Array<{ kind: string; summary: string; meta: string }>>('ListItems', fork.id, true);
-  expect(detached.map((item) => [item.kind, item.summary])).toEqual([['notification', 'Forked from Image fork source']]);
-  expect(JSON.parse(detached[0].meta)).toMatchObject({ sourceDeleted: true, sourceTitle: 'Image fork source' });
+  await expect(page.getByText(/Keep this image in the fork\./)).toBeVisible();
+  const kept = await harness.rpc<Array<{ summary: string; meta: string }>>('ListItems', fork.id, true);
+  expect(kept.map((item) => [item.summary, item.meta])).toEqual(forkItems.map((item) => [item.summary, item.meta]));
   expect(await harness.rpc<AttachmentRow[]>('ListAttachments', fork.id)).toHaveLength(0);
-  await expect(harness.rpc('MintAttachmentDownloadTicket', fork.id, sourceAttachment.id)).rejects.toThrow();
+  await page.getByLabel(`Preview ${FILENAME}`).click();
+  await expect.poll(() => expanded.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBe(PNG_WIDTH);
+  await page.keyboard.press('Escape');
+  const keptTicket = await harness.rpc<string>('MintAttachmentDownloadTicket', fork.id, sourceAttachment.id);
+  const keptResponse = await fetch(new URL(keptTicket, harness.url));
+  expect(keptResponse.status).toBe(200);
+  expect(Buffer.from(await keptResponse.arrayBuffer())).toEqual(PNG_BYTES);
   // Claude lazily forks its native session on this first send.
   const continued = harness.waitForEvent('provider:turn_completed');
   await page.getByLabel('Message Input').fill('Continue after the source is gone.');

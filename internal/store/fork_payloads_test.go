@@ -66,9 +66,10 @@ func TestPointerForkReadsPayloadsThroughEveryLevel(t *testing.T) {
 	}
 }
 
-// TestPointerForkPayloadMutationsStayOnTheirSide: a content write on either
-// side leaves the other's history as it was; an edit snapshot is a cache of
-// the edit and is shared where the payload is.
+// TestPointerForkPayloadMutationsStayOnTheirSide: the fork's content write
+// leaves the source's history as it was, and the source cannot rewrite a
+// payload its fork shows; an edit snapshot is a cache of the edit and is
+// shared where the payload is.
 func TestPointerForkPayloadMutationsStayOnTheirSide(t *testing.T) {
 	for _, change := range []string{"append source", "replace source", "edit source", "append fork", "replace fork", "edit fork"} {
 		t.Run(change, func(t *testing.T) {
@@ -88,15 +89,16 @@ func TestPointerForkPayloadMutationsStayOnTheirSide(t *testing.T) {
 			case "edit fork":
 				err = s.PutEditFileSnapshot("fork", "payload", "file", "changed", 3)
 			}
-			if err != nil {
-				t.Fatal(err)
+			refused := change == "append source" || change == "replace source"
+			if refused != (err != nil) || (refused && !strings.Contains(err.Error(), shownHistoryImmutable)) {
+				t.Fatalf("%s = %v, refused %v", change, err, refused)
 			}
 			for _, thread := range []string{"source", "fork"} {
 				want := "base chunk"
-				if change == "append "+thread {
+				if change == "append "+thread && !refused {
 					want += " new"
 				}
-				if change == "replace "+thread {
+				if change == "replace "+thread && !refused {
 					want = "replacement"
 				}
 				requireForkPayload(t, s, thread, want)
@@ -113,30 +115,30 @@ func TestPointerForkPayloadMutationsStayOnTheirSide(t *testing.T) {
 	}
 }
 
-// TestPointerForkPayloadRestore: a snapshot restores the fork's pointer, and
-// the fork's history then belongs to the restored source again.
+// TestPointerForkPayloadRestore: a snapshot restores the fork's pointer: a
+// copy the fork took after the snapshot is gone and it reads the source's
+// payload again, which the source's delete keeps for it.
 func TestPointerForkPayloadRestore(t *testing.T) {
 	s := payloadForkFixture(t)
 	path := filepath.Join(t.TempDir(), "snapshot.sqlite")
 	if err := s.SnapshotTo(path); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ReplacePayloadData("source", "payload", []byte("new"), "{}", 3); err != nil {
+	if err := s.ReplacePayloadData("fork", "payload", []byte("new"), "{}", 3); err != nil {
 		t.Fatal(err)
 	}
+	requireForkPayload(t, s, "fork", "new")
 	if _, err := s.RestoreFrom(path); err != nil {
 		t.Fatal(err)
 	}
 	requireForkPayload(t, s, "fork", "base chunk")
-	if n := ownRowCount(t, s, "fork"); n != 1 {
-		t.Fatalf("restored fork stores %d rows, want only its divider", n)
+	if n := ownRowCount(t, s, "fork"); n != 0 {
+		t.Fatalf("restored fork stores %d rows, want none", n)
 	}
 	if err := s.DeleteThread("source"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.GetPayloadData("fork", "payload"); err == nil {
-		t.Fatal("fork reads the deleted source's payload")
-	}
+	requireForkPayload(t, s, "fork", "base chunk")
 }
 
 // TestPointerForkImportedPayloads: a fork reads the source's imported
@@ -171,6 +173,12 @@ func TestPointerForkImportedPayloads(t *testing.T) {
 		t.Fatalf("fork lost the row it owns: %q %v", got, err)
 	}
 	if err := s.DeleteThread("fork"); err != nil {
+		t.Fatal(err)
+	}
+	// The source's delete kept it as the holder of the rest of what the
+	// fork read; the fork's delete releases it.
+	requireIDs(t, "released holders", releasedHolders(t, s), []string{"source"})
+	if err := s.DeleteThread("source"); err != nil {
 		t.Fatal(err)
 	}
 	var count int
@@ -237,8 +245,8 @@ func TestPointerForkTransferCarriesInheritedBytes(t *testing.T) {
 }
 
 // TestPointerForkDiffReaders: the edit-diff readers resolve a fork's
-// inherited diff rows and their patch payloads, and stop showing them once
-// the source, which owns them, is deleted.
+// inherited diff rows and their patch payloads, which the source's delete
+// keeps for the fork.
 func TestPointerForkDiffReaders(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "source")
@@ -259,8 +267,11 @@ func TestPointerForkDiffReaders(t *testing.T) {
 	if err := s.DeleteThread("source"); err != nil {
 		t.Fatal(err)
 	}
-	if list, err := s.ListEditDiffItems("fork"); err != nil || len(list) != 0 {
+	if list, err := s.ListEditDiffItems("fork"); err != nil || len(list) != 1 {
 		t.Fatalf("list after source deletion=%+v: %v", list, err)
+	}
+	if patches, err := s.ListTurnEditDiffPatches("fork", 0); err != nil || len(patches) != 1 || !bytes.Equal(patches[0].Data, patch) {
+		t.Fatalf("patches after source deletion=%+v: %v", patches, err)
 	}
 }
 

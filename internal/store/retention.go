@@ -1,6 +1,10 @@
 package store
 
-import "fmt"
+import (
+	"fmt"
+
+	"agent-overflow/internal/threadmode"
+)
 
 // ThreadIDsOlderThan returns thread IDs whose updated_at strictly
 // precedes cutoffMs (Unix milliseconds), oldest first. SELECT only —
@@ -9,7 +13,8 @@ import "fmt"
 // logs, checkpoint git refs in the user's repos) that a row-level
 // DELETE in this package would silently skip.
 //
-// Excludes pending edited-message recovery. Archived, pinned, mid-turn and draft threads
+// Excludes pending edited-message recovery and holders, which go when no
+// fork reads them (ListReleasedHolders). Archived, pinned, mid-turn and draft threads
 // match if their updated_at qualifies. The retention policy is
 // intentionally uniform; mid-turn is naturally protected because
 // MarkThreadActivity bumps updated_at on every persisted event, so an
@@ -18,8 +23,8 @@ import "fmt"
 // Uses idx_threads_updated for the range scan + ORDER BY.
 func (s *Store) ThreadIDsOlderThan(cutoffMs int64) ([]string, error) {
 	rows, err := s.reader().Query(
-		`SELECT id FROM threads WHERE updated_at < ? AND NOT EXISTS(SELECT 1 FROM thread_draft_recoveries r WHERE r.thread_id = threads.id) ORDER BY updated_at ASC`,
-		cutoffMs,
+		`SELECT id FROM threads WHERE updated_at < ? AND mode <> ? AND NOT EXISTS(SELECT 1 FROM thread_draft_recoveries r WHERE r.thread_id = threads.id) ORDER BY updated_at ASC`,
+		cutoffMs, threadmode.ModeHolder,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list threads older than %d: %w", cutoffMs, err)

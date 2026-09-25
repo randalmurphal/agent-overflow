@@ -37,9 +37,10 @@ import (
 // written in a fork after its cut, which copies the inherited rows it
 // changes; the first card on a fork's copy of an anchor whose children it
 // inherits, from a database written before the stamps; and any of them
-// rolled back by an injected failure, which must leave the rows and the
-// stamps as they were. A sequence may start from an imported chunk whose
-// anchors its writes make local.
+// rolled back by an injected failure, or refused because it would change
+// a row a fork shows, which must leave the rows and the stamps as they
+// were. A sequence may start from an imported chunk whose anchors its
+// writes make local.
 //
 // After a random subset of operations a random boundary follows: the
 // refresh timer, a card's flush, an agent's settle, the session's end, a
@@ -200,12 +201,61 @@ func (q *cardSequence) log(line string) {
 	q.script = append(q.script, fmt.Sprintf("%3d %s", len(q.script), line))
 }
 
+// exec runs op. A write that would change a row, payload or turn a fork
+// shows is refused whole (fork_triggers.go): it must leave the rows and
+// the stamps as they were, and a boundary follows to check what its cards
+// applied did not outlive it.
 func (q *cardSequence) exec(op cardSequenceOp) {
 	q.t.Helper()
 	q.log(op.desc)
-	if err := op.run(); err != nil {
+	before := q.snapshot()
+	err := op.run()
+	if err != nil && strings.Contains(err.Error(), shownHistoryImmutable) {
+		q.log("    (refused: a fork shows what it changes)")
+		err = q.unchanged(before, "refused")
+		q.boundaryNext = true
+	}
+	if err != nil {
 		q.t.Fatalf("%s: %v", op.desc, err)
 	}
+}
+
+// sequenceSnapshot is every thread's rows and stamp rows.
+type sequenceSnapshot struct {
+	items  map[string][]Item
+	stamps map[string]map[string]string
+}
+
+func (q *cardSequence) snapshot() sequenceSnapshot {
+	q.t.Helper()
+	threads := q.threads()
+	snap := sequenceSnapshot{items: make(map[string][]Item, len(threads)), stamps: make(map[string]map[string]string, len(threads))}
+	for _, thread := range threads {
+		items, err := q.s.ListItems(thread)
+		if err != nil {
+			q.t.Fatalf("list %s: %v", thread, err)
+		}
+		snap.items[thread], snap.stamps[thread] = items, q.stampSnapshot(thread)
+	}
+	return snap
+}
+
+// unchanged reports a thread whose rows or stamps differ from snap after
+// a write that did not commit.
+func (q *cardSequence) unchanged(snap sequenceSnapshot, what string) error {
+	for thread, items := range snap.items {
+		after, err := q.s.ListItems(thread)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(items, after) {
+			return fmt.Errorf("the %s write changed the rows of %s", what, thread)
+		}
+		if got := q.stampSnapshot(thread); !reflect.DeepEqual(got, snap.stamps[thread]) {
+			return fmt.Errorf("the %s write changed the stamps of %s: %v, was %v", what, thread, got, snap.stamps[thread])
+		}
+	}
+	return nil
 }
 
 func (q *cardSequence) id(prefix string) string {
@@ -1340,16 +1390,7 @@ func (q *cardSequence) opFail(rows []seqRow) (cardSequenceOp, bool) {
 	inner := q.pick(rows, true)
 	failure := cardSequenceFailures[q.rng.Intn(len(cardSequenceFailures))]
 	return cardSequenceOp{fmt.Sprintf("under failing %s: %s", failure.name, inner.desc), func() error {
-		threads := q.threads()
-		items := make(map[string][]Item, len(threads))
-		stamps := make(map[string]map[string]string, len(threads))
-		for _, thread := range threads {
-			var err error
-			if items[thread], err = q.s.ListItems(thread); err != nil {
-				return err
-			}
-			stamps[thread] = q.stampSnapshot(thread)
-		}
+		before := q.snapshot()
 		for i, on := range failure.triggers {
 			mustExec(q.t, q.s.db, fmt.Sprintf(`CREATE TRIGGER seq_fail_%d %s BEGIN SELECT RAISE(ABORT, 'injected failure'); END`, i, on))
 		}
@@ -1364,17 +1405,8 @@ func (q *cardSequence) opFail(rows []seqRow) (cardSequenceOp, bool) {
 			return runErr
 		}
 		q.log("    (rolled back)")
-		for _, thread := range threads {
-			after, err := q.s.ListItems(thread)
-			if err != nil {
-				return err
-			}
-			if !reflect.DeepEqual(items[thread], after) {
-				return fmt.Errorf("the rolled-back write changed the rows of %s", thread)
-			}
-			if got := q.stampSnapshot(thread); !reflect.DeepEqual(got, stamps[thread]) {
-				return fmt.Errorf("the rolled-back write changed the stamps of %s: %v, was %v", thread, got, stamps[thread])
-			}
+		if err := q.unchanged(before, "rolled-back"); err != nil {
+			return err
 		}
 		q.boundaryNext = q.chance(70)
 		return nil
@@ -1489,14 +1521,16 @@ func (q *cardSequence) boundary() {
 // anchors, and a card opened on one with children recomputes it
 // (seedCardStamp), whose child probe reads a pointer fork's lineage for
 // a copy whose children it inherits. It runs on a reopened store, before
-// any card, as the migration does.
+// any card, as the migration does. A holder is never listed: holders came
+// after v121, and a holder keeps no stamp (fork_holders.go).
 func (q *cardSequence) predateStamps() {
 	q.t.Helper()
 	for _, statement := range []string{
 		`DELETE FROM subagent_aggregates`,
 		`INSERT OR IGNORE INTO subagent_aggregate_backfill(thread_id)
 		 SELECT id FROM threads
-		  WHERE EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id AND items.kind = 'tool_call')`,
+		  WHERE threads.mode <> 'holder'
+		    AND EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id AND items.kind = 'tool_call')`,
 	} {
 		if _, err := q.s.db.Exec(statement); err != nil {
 			q.t.Fatalf("put the database before v121: %v", err)

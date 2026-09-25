@@ -10,7 +10,8 @@ import (
 // thread it reads history from owns. Inherited messages keep their
 // attachments owned by the thread that sent them, and a fork reads only the
 // ones before its cut; a fork that copies such a message takes ownership
-// with the copy (ownCopiedAttachmentsTx).
+// with the copy (ownRowAttachmentsTx), and a holder owns the ones its rows
+// reference (ownHeldAttachmentsTx).
 //
 // The inherited case runs only for an attachment the thread does not own
 // and one of its ancestors does. It reads the inherited rows whose meta
@@ -83,11 +84,11 @@ func (s *Store) ReleaseAttachment(threadID, id string, removeBytes func() error)
 	return tx.Commit()
 }
 
-// ownCopiedAttachmentsTx makes threadID an owner of the attachments its
+// ownRowAttachmentsTx makes threadID an owner of the attachments its
 // newly copied rows reference and the thread it copied each row from owns,
 // so the files outlive that thread. A reference to another thread's
 // attachment grants nothing, as it did not to the row's owner.
-func ownCopiedAttachmentsTx(tx *sql.Tx, threadID string, rows []inheritedRow) error {
+func ownRowAttachmentsTx(tx *sql.Tx, threadID string, rows []inheritedRow) error {
 	byOwner := make(map[string][]string)
 	var owners []string
 	for _, row := range rows {
@@ -97,26 +98,86 @@ func ownCopiedAttachmentsTx(tx *sql.Tx, threadID string, rows []inheritedRow) er
 		byOwner[row.owner] = append(byOwner[row.owner], row.id)
 	}
 	for _, owner := range owners {
-		ids := byOwner[owner]
-		for start := 0; start < len(ids); start += forkCopyBatch {
-			clause, args := inClause("i.id", ids[start:min(start+forkCopyBatch, len(ids))])
-			if _, err := tx.Exec(`INSERT OR IGNORE INTO attachment_owners(thread_id,attachment_id)
+		list, err := jsonList(byOwner[owner])
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO attachment_owners(thread_id,attachment_id)
  SELECT ?,o.attachment_id FROM items i,
  json_each(CASE WHEN json_valid(i.meta) THEN i.meta ELSE '{}' END,'$.attachments') ref
  JOIN attachment_owners o ON o.thread_id=? AND o.attachment_id=CASE WHEN ref.type='object' THEN json_extract(ref.value,'$.id') WHEN ref.type='text' THEN ref.value END
- WHERE i.thread_id=? AND `+clause, append([]any{threadID, owner, threadID}, args...)...); err != nil {
-				return fmt.Errorf("store: own copied attachments in %s: %w", threadID, err)
-			}
+ WHERE i.thread_id=? AND i.id IN (SELECT value FROM json_each(?))`, threadID, owner, threadID, list); err != nil {
+			return fmt.Errorf("store: own copied attachments in %s: %w", threadID, err)
 		}
 	}
 	return nil
 }
 
+// ownHeldAttachmentsTx makes holder an owner of the attachments its rows,
+// local and imported, reference and owner owns: the rows a split gave it.
+func ownHeldAttachmentsTx(tx *sql.Tx, holder, owner string) error {
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO attachment_owners(thread_id,attachment_id)
+ SELECT ?1,o.attachment_id FROM (
+   SELECT items.meta AS meta FROM items WHERE items.thread_id=?1 AND `+attachmentBearingSQL+`
+   UNION ALL
+   SELECT items.meta FROM thread_import_chunks refs CROSS JOIN import_history_items items ON items.chunk_id=refs.chunk_id
+    WHERE refs.thread_id=?1 AND `+attachmentBearingSQL+` AND `+importedNotOverridden+`
+ ) held,
+ json_each(CASE WHEN json_valid(held.meta) THEN held.meta ELSE '{}' END,'$.attachments') ref
+ JOIN attachment_owners o ON o.thread_id=?2 AND o.attachment_id=CASE WHEN ref.type='object' THEN json_extract(ref.value,'$.id') WHEN ref.type='text' THEN ref.value END`,
+		holder, owner); err != nil {
+		return fmt.Errorf("store: own the attachments holder %s holds: %w", holder, err)
+	}
+	return nil
+}
+
+// ReleasableAttachments lists the attachments threadID owns that no pointer
+// fork of it shows: the ones its delete releases. An attachment a row of its
+// own history before its forks' last cut references stays owned, since the
+// thread keeps that row for them (retireToHolderTx).
+func (s *Store) ReleasableAttachments(threadID string) ([]Attachment, error) {
+	owned, err := s.ListAttachments(threadID)
+	if err != nil || len(owned) == 0 {
+		return owned, err
+	}
+	cut, read, err := maxReaderCutTx(s.reader(), threadID)
+	if err != nil || !read {
+		return owned, err
+	}
+	kept, err := queryIDs(s.reader(), `SELECT DISTINCT CASE WHEN ref.type='object' THEN json_extract(ref.value,'$.id') ELSE ref.value END
+ FROM (
+   SELECT items.meta AS meta FROM items
+    WHERE items.thread_id=?1 AND `+attachmentBearingSQL+` AND (items.turn_index, items.item_index) < (?2, ?3)
+   UNION ALL
+   SELECT items.meta FROM thread_import_chunks refs CROSS JOIN import_history_items items ON items.chunk_id=refs.chunk_id
+    WHERE refs.thread_id=?1 AND `+attachmentBearingSQL+` AND `+importedNotOverridden+`
+      AND (items.turn_index, items.item_index) < (?2, ?3)
+ ) shown,
+ json_each(CASE WHEN json_valid(shown.meta) THEN shown.meta ELSE '{}' END,'$.attachments') ref
+ WHERE ref.type IN ('object','text')`, threadID, cut.turn, cut.item)
+	if err != nil {
+		return nil, fmt.Errorf("store: list the attachments %s's forks show: %w", threadID, err)
+	}
+	keep := make(map[string]bool, len(kept))
+	for _, id := range kept {
+		keep[id] = true
+	}
+	releasable := owned[:0]
+	for _, a := range owned {
+		if !keep[a.ID] {
+			releasable = append(releasable, a)
+		}
+	}
+	return releasable, nil
+}
+
 // RetainedAttachmentPaths names files inside an original thread's directory
-// that another branch still owns. Paths retain their native-provider meaning.
+// that a thread still owns: another branch, or the thread itself as the
+// holder of messages its forks show (ReleasableAttachments). Paths retain
+// their native-provider meaning.
 func (s *Store) RetainedAttachmentPaths(threadID string) ([]string, error) {
 	rows, err := s.reader().Query(`SELECT relative_path FROM attachments a WHERE a.thread_id=? AND EXISTS(
- SELECT 1 FROM attachment_owners o WHERE o.attachment_id=a.id AND o.thread_id<>?)`, threadID, threadID)
+ SELECT 1 FROM attachment_owners o WHERE o.attachment_id=a.id)`, threadID)
 	if err != nil {
 		return nil, err
 	}
