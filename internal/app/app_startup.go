@@ -200,6 +200,10 @@ func (a *App) startUnattendedWork() error {
 	if err := a.startThreadTransfers(); err != nil {
 		return err
 	}
+	// Arm the worktree registry watcher: its sweeps move thread rows and
+	// restart sessions when a checkout was removed outside the app. See
+	// app_worktree_watch.go.
+	a.armWorktreeWatch()
 	// Probe provider binaries once on boot so the thread-level banner can
 	// surface "claude not found" / "codex too old" before the user opens
 	// settings. Runs in a goroutine because DetectProvider spawns subprocesses
@@ -373,6 +377,11 @@ func (a *App) initStores(ctx context.Context) (string, *store.Store, error) {
 		FastStatusFn: a.git.StatusFast,
 		WatchRootsFn: a.git.WatchRoots,
 	})
+	// The worktree registry watcher, built here because nothing that can
+	// create a project row has started yet: the project chokepoints read the
+	// field without a lock. Its first registry read waits for the first
+	// client. See app_worktree_watch.go.
+	a.startWorktreeWatch()
 	a.setSettingsService(settings.NewService(dbDir))
 	// Tiered residency (docs/specs/remote-access.md §6): the user and device
 	// tiers live in ui_state from here on, and whatever settings.json still

@@ -186,6 +186,13 @@ func (a *App) Shutdown(ctx context.Context) error {
 	if a.soundWatcher != nil {
 		record("close sound watcher", a.soundWatcher.Close())
 	}
+	// Joins the reattach sweeps in flight. They take thread locks with the
+	// app context, cancelled above, so a sweep waiting on a lock returns
+	// here rather than after the sessions it would restart are gone.
+	if a.worktreeWatch != nil {
+		a.closeWorktreeWatch()
+		record("close worktree registry watcher", nil)
+	}
 	if a.workflowApplication().Engine() != nil {
 		engineErr := a.workflowApplication().CloseEngine()
 		// No new lifecycle events can arrive after the engine closes. Let the

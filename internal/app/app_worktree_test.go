@@ -2665,3 +2665,57 @@ func TestCopyClaudeSessionForWorkspaceChangeResolvesOverLengthDest(t *testing.T)
 		t.Errorf("source transcript must survive until the caller purges it: %v", statErr)
 	}
 }
+
+// A live CLI appends under the old slug until it exits, so a switch must not
+// move a live session's transcript itself; the restart's start settles it
+// once the old process is stopped. The seams model that: the stop appends
+// the CLI's exit records, the start runs the settle the real start runs
+// first. The destination transcript must hold the exit records, with no
+// second copy left under the source slug.
+func TestSwitchThreadWorkspaceLeavesLiveSessionTranscriptToTheRestart(t *testing.T) {
+	env := setupWorktreeThreadForRelocate(t, "live-switch", string(provider.Claude))
+	const sessionID = "01079734-live-switch"
+	attachSessionToWorktree(t, env, sessionID, "")
+	writeTranscriptContent(t, env.home, env.worktreePath, sessionID, "turn1\n")
+	src := slugTranscriptPath(t, env.home, env.worktreePath, sessionID)
+	env.app.sessionManager().put(env.owner.ID, session{Provider: string(provider.Claude), Token: "token-live-switch"})
+	var movedBeforeStop bool
+	env.app.stopSessionFn = func(string) error {
+		if _, err := os.Stat(src); err != nil {
+			movedBeforeStop = true
+		}
+		file, err := os.OpenFile(src, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		_, err = file.WriteString("cost-state\n")
+		return err
+	}
+	env.app.startSessionFn = func(id string) error {
+		row, err := env.app.store.GetThread(id)
+		if err != nil {
+			return err
+		}
+		env.app.settleClaudeTranscriptForWorkspace(row)
+		return nil
+	}
+
+	if _, err := env.app.switchThreadWorkspace(env.owner.ID, env.repo); err != nil {
+		t.Fatalf("switchThreadWorkspace(->root) error = %v", err)
+	}
+
+	if movedBeforeStop {
+		t.Fatal("the switch moved a live session's transcript before the process stopped")
+	}
+	got, err := os.ReadFile(slugTranscriptPath(t, env.home, env.repo, sessionID))
+	if err != nil {
+		t.Fatalf("transcript not settled under the root slug after the restart: %v", err)
+	}
+	if string(got) != "turn1\ncost-state\n" {
+		t.Errorf("root transcript = %q, want the exit records to follow the file", got)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("a copy remains under the source slug: err=%v", err)
+	}
+}

@@ -233,7 +233,12 @@ func (a *App) attemptAutoReconnect(threadID string) {
 		return
 	}
 	if err := a.ReconnectSession(threadID); err != nil {
+		// The death banner says the session died; this says the recovery
+		// the user did not ask for also failed, and why. Without it the
+		// spawn's own refusal (a workspace that is gone, a resume cursor
+		// the CLI rejects) is a log line nobody reads.
 		log.Printf("app: auto-reconnect after session death failed for %s: %v", threadID, err)
+		a.emitErrorToThread(threadID, "session could not be resumed automatically: "+err.Error())
 	}
 }
 

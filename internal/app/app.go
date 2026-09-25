@@ -54,6 +54,7 @@ import (
 	"agent-overflow/internal/workspacefiles"
 	"agent-overflow/internal/worktreeapp"
 	"agent-overflow/internal/worktreesetupapp"
+	"agent-overflow/internal/worktreewatch"
 )
 
 // ErrShuttingDown is returned from binding entry points once Shutdown has
@@ -113,6 +114,13 @@ type App struct {
 	store       *store.Store
 	git         *gitops.Core
 	gitWatch    *gitwatch.Manager
+	// worktreeWatch observes every project's worktree registry so a checkout
+	// removed outside this process reattaches its threads. Nil in fixtures
+	// that never ran startup; every use is nil-safe. See app_worktree_watch.go.
+	worktreeWatch *worktreewatch.Manager
+	// worktreeWatchArmed opens once the activation gate has: a reattach sweep
+	// acts on rows and sessions, so no project is watched before it.
+	worktreeWatchArmed atomic.Bool
 	// gitApp owns gitwatch wire fan-out and the unattended background-fetch
 	// lifecycle. This shell retains the stable Wails façades and event projection.
 	gitAppOnce sync.Once

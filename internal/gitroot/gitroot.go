@@ -71,11 +71,10 @@ func MainRoot(dir string) (string, bool) {
 // (and a root that is not a checkout at all) yields no paths and no error;
 // only a registry that exists and cannot be read is an error.
 func RegisteredWorktrees(root string) ([]string, error) {
-	commonDir, ok := commonDirOfCheckout(strings.TrimSpace(root))
+	dir, ok := RegistryDir(root)
 	if !ok {
 		return nil, nil
 	}
-	dir := filepath.Join(commonDir, "worktrees")
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -115,6 +114,20 @@ func RegisteredWorktrees(root string) ([]string, error) {
 		paths = append(paths, filepath.Clean(filepath.Dir(pointer)))
 	}
 	return paths, nil
+}
+
+// RegistryDir returns `<commonDir>/worktrees` of the repository at root: the
+// directory git writes one registration into per linked worktree, and the
+// directory a watcher observes to learn that a worktree was added or removed
+// by any process. It need not exist yet (a repository with no linked worktree
+// has none); ok is false only when root is not a checkout at all, in which
+// case there is no registry to name.
+func RegistryDir(root string) (string, bool) {
+	commonDir, ok := commonDirOfCheckout(strings.TrimSpace(root))
+	if !ok {
+		return "", false
+	}
+	return filepath.Join(commonDir, "worktrees"), true
 }
 
 // rootAt answers "is current a working-tree root, and if so, whose main one".

@@ -28,9 +28,13 @@ import (
 // thread:updated for the same reason: sidebar membership is not derivable from
 // the row, because the list holds only non-archived projects.
 
-// broadcastProjectRow emits one changed row.
+// broadcastProjectRow emits one changed row. It is also where the worktree
+// registry watcher learns the project set changed: every binding that
+// creates a project row announces it here, so none has to know the watcher
+// exists (app_worktree_watch.go).
 func (a *App) broadcastProjectRow(action string, row store.Project) {
 	a.emitEvent(eventchan.ProjectUpdated, triage.ProjectUpdateEvent{Action: action, Project: &row})
+	a.syncWorktreeWatch()
 }
 
 // broadcastProjectWrite is the guard every mutation binding routes through:
@@ -55,4 +59,5 @@ func (a *App) broadcastProjectDeleted(projectID string) {
 		Action: triage.ProjectActionDeleted,
 		ID:     projectID,
 	})
+	a.syncWorktreeWatch()
 }

@@ -22,6 +22,8 @@ not being in a repository so callers do not turn stale paths into projects.
 RegisteredWorktrees reads Git registration even when a worktree directory has
 disappeared. Preserve missing entries for cleanup and repair. Parse porcelain
 output as records and do not derive registration from directory scans.
+RegistryDir names the directory those registrations live in; it is what
+`internal/worktreewatch` watches, and it need not exist yet.
 
 Tests use real temporary repositories, linked worktrees, malformed .git files,
 relative gitdirs, missing worktree paths, symlinks, and nested repositories.

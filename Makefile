@@ -176,7 +176,8 @@ test-race:
 # revertable. It SPENDS REAL MODEL TOKENS: one trivial turn per provider, four
 # for the imported-branch scenario, three Haiku turns for the merge scenario,
 # and four answered turns plus one early interrupt per provider for the revert
-# flow. Both CLIs must be installed and authenticated.
+# flow, and two per provider for the external worktree removal scenario.
+# Both CLIs must be installed and authenticated.
 #
 # The `providersmoke` build tag keeps these tests out of `make go-test`.
 # `make verify` compiles them without running any test so production API changes
@@ -188,7 +189,7 @@ test-race:
 #
 # -timeout covers the sum of the in-test deadlines (6m per workflow leg, 3m for
 # the imported-branch scenario, 6m for the merge scenario, 6m per revert leg,
-# 5m for the worktree follow scenario,
+# 5m for the worktree follow scenario, 5m per external-removal leg,
 # plus auth probes) with
 # headroom, so a wedged turn fails through the gate's own diagnostics rather
 # than as a bare test-binary timeout panic.

@@ -625,6 +625,30 @@ func (s *Store) ListThreadWorkspaceRefs() ([]ThreadWorkspaceRef, error) {
 	return refs, rows.Err()
 }
 
+// ListThreadWorkspaceRefsByProject is ListThreadWorkspaceRefs for the rows of
+// one project, archived and hidden rows included: a checkout that vanished
+// under an archived thread must be reattached before the thread is restored.
+func (s *Store) ListThreadWorkspaceRefsByProject(projectID string) ([]ThreadWorkspaceRef, error) {
+	rows, err := s.reader().Query(
+		`SELECT id, workspace_path, COALESCE(worktree_path, '') FROM threads WHERE project_id = ?`,
+		projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list thread workspace refs for project %s: %w", projectID, err)
+	}
+	defer rows.Close()
+
+	var refs []ThreadWorkspaceRef
+	for rows.Next() {
+		var ref ThreadWorkspaceRef
+		if err := rows.Scan(&ref.ID, &ref.WorkspacePath, &ref.WorktreePath); err != nil {
+			return nil, fmt.Errorf("store: scan thread workspace ref: %w", err)
+		}
+		refs = append(refs, ref)
+	}
+	return refs, rows.Err()
+}
+
 // ListThreadWorkspacePaths returns every distinct workspace_path spelling a
 // thread row holds, archived rows included. It exists for one caller,
 // `threadapp.UpdateBranch`, which resolves each spelling against the

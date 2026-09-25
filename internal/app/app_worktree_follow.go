@@ -133,48 +133,10 @@ func (a *App) resolveProviderWorkspaceTarget(project, cwd string) (GitWorkspaceS
 // still attached there is reattached to the project root exactly as
 // RemoveOtherWorktree would have done. The exiting thread itself already
 // followed the move and holds its own lock, so it is excluded from the
-// occupant set rather than locked twice.
+// occupant set rather than locked twice. A failure is reported on the
+// exiting thread, whose tool result this reaction belongs to.
 func (a *App) reclaimProviderRemovedWorktree(project, worktreePath, exitingThreadID string) {
-	worktreePath = strings.TrimSpace(worktreePath)
-	if worktreePath == "" {
-		return
-	}
-	a.cancelWorktreeSetupsForPath(worktreePath)
-	occupants, err := a.threadsReferencingWorkspace(worktreePath)
-	if err != nil {
-		a.emitWireErrorToThread(exitingThreadID, fmt.Sprintf("Claude removed worktree %s, but the threads attached to it could not be listed: %v", worktreePath, err))
-		return
-	}
-	others := make([]string, 0, len(occupants))
-	for _, id := range occupants {
-		if id != exitingThreadID {
-			others = append(others, id)
-		}
-	}
-	if len(others) == 0 {
-		if a.workspaceFiles != nil {
-			a.workspaceFiles.Invalidate(worktreePath)
-		}
-		return
-	}
-	unlocks := make([]func(), 0, len(others))
-	for _, id := range others {
-		unlocks = append(unlocks, a.threadLocks().Lock(id))
-	}
-	defer func() {
-		for i := len(unlocks) - 1; i >= 0; i-- {
-			unlocks[i]()
-		}
-	}()
-	mutable, err := a.mutableWorkspaceThreads(others)
-	if err != nil {
-		a.emitWireErrorToThread(exitingThreadID, fmt.Sprintf("Claude removed worktree %s, but the threads attached to it could not be checked: %v", worktreePath, err))
-		return
-	}
-	for _, id := range mutable {
-		a.cancelThreadWorktreeSetup(id)
-	}
-	if err := a.reattachThreadsFromRemovedWorktree(project, worktreePath, mutable); err != nil {
-		a.emitWireErrorToThread(exitingThreadID, fmt.Sprintf("Claude removed worktree %s, but %v", worktreePath, err))
-	}
+	a.reclaimRemovedWorktree(project, worktreePath, exitingThreadID, func(_ []string, problem string) {
+		a.emitWireErrorToThread(exitingThreadID, fmt.Sprintf("Claude removed worktree %s, but %s", worktreePath, problem))
+	})
 }

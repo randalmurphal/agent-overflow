@@ -449,7 +449,7 @@ func (a *App) reattachThreadsFromRemovedWorktree(project, worktreePath string, m
 			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s update failed: %w", id, err))
 			continue
 		}
-		if !gitops.SameFilesystemPath(previousWorkspace, t.WorkspacePath) {
+		if !gitops.SameFilesystemPath(previousWorkspace, t.WorkspacePath) && !a.hasActiveSession(id) {
 			// Claude resolves --resume against the slug of the current cwd, so
 			// reattaching to the project root strands the transcript under the
 			// deleted worktree's slug — the next resume would fail with "No
@@ -457,8 +457,16 @@ func (a *App) reattachThreadsFromRemovedWorktree(project, worktreePath string, m
 			// clear the session ref or silently start fresh. The reattach is
 			// already committed above and the worktree is gone, so unlike
 			// switch/create/attach this can't be aborted: a hard failure is
-			// surfaced and resume is left to fail loudly. This runs before the
-			// restart below, which re-resolves the session at the new cwd.
+			// surfaced and resume is left to fail loudly.
+			//
+			// Only when no process is alive. A live CLI keeps appending under
+			// the old slug until it exits (conversation rows mid-turn, and
+			// last-prompt / cost-state records at exit), so moving the file
+			// now would strand those rows in a second copy the purge below
+			// has already run past. A live session is restarted below,
+			// immediately or once the thread is quiet, and every start
+			// settles the transcript under the row's workspace after the old
+			// process is fully stopped (settleClaudeTranscriptForWorkspace).
 			moved, err := a.copyClaudeSessionForWorkspaceChange(t, previousWorkspace)
 			if err != nil {
 				sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session relocate failed: %w", id, err))
@@ -472,6 +480,19 @@ func (a *App) reattachThreadsFromRemovedWorktree(project, worktreePath string, m
 		// redundant echo (the binding return already syncs it), which the
 		// pane store treats as idempotent.
 		a.emitEvent(eventchan.ThreadUpdated, triage.ThreadUpdateEvent{Action: triage.ThreadActionFull, Thread: &t})
+		// A thread mid-turn has a process running in a directory that no
+		// longer exists. Restarting it now would cut the turn for nothing:
+		// the process either dies on its own (Node fails on a cwd that was
+		// unlinked, and auto-reconnect then resumes from the healed row) or
+		// finishes the turn. The deferred restart waits for the thread to go
+		// quiet and, like a config change, restarts only if the session it
+		// finds still runs from the old directory. The user-driven removal
+		// never reaches this branch: it refuses while any occupant is busy.
+		if a.threadTurnInFlight(id) {
+			log.Printf("thread %s: worktree %s removed mid-turn; session restarts from %s once the thread is quiet", id, worktreePath, project)
+			a.schedulePendingConfigReconnect(id)
+			continue
+		}
 		if _, err := a.restartSessionIfAffected(id, "workspace"); err != nil {
 			sweepErrs = append(sweepErrs, fmt.Errorf("thread %s session refresh failed: %w", id, err))
 			continue
@@ -796,8 +817,14 @@ func checkoutMoveFrom(thread store.Thread, label string) threadCheckoutMove {
 // switching to a workspace that already exists) so no caller can move one
 // silently: the RPC's return value only ever reaches the client that issued
 // it. It also keeps the ORDER those paths share in one place: relocate the
-// Claude transcript, commit, purge the stale copies, release a setup run for
-// the workspace the thread has left, then restart the session.
+// Claude transcript when no process writes it, commit, purge the stale
+// copies, release a setup run for the workspace the thread has left, then
+// restart the session. A live session's transcript is not touched here: the
+// CLI appends under the old slug until it exits (last-prompt and cost-state
+// records at the very end), so the restart moves it, through the settle
+// every start runs after the old process is fully stopped
+// (settleClaudeTranscriptForWorkspace). Nothing moves a file a process is
+// still writing; the reattach sweep follows the same rule.
 //
 // The PROVIDER-driven move (EnterWorktree / ExitWorktree, see
 // app_worktree_follow.go) bypasses this on purpose: the process already
@@ -811,11 +838,13 @@ func (a *App) commitThreadCheckout(thread store.Thread, move threadCheckoutMove)
 		}
 	}
 	var purge []string
-	if !gitops.SameFilesystemPath(move.previousWorkspace, thread.WorkspacePath) {
+	if !gitops.SameFilesystemPath(move.previousWorkspace, thread.WorkspacePath) && !a.hasActiveSession(threadID) {
 		// Carry the Claude transcript to the target slug BEFORE committing. A
 		// relocation that cannot preserve the conversation refuses the whole
 		// move, leaving the thread resumable from the workspace it is in
-		// rather than silently starting fresh.
+		// rather than silently starting fresh. With a live session the
+		// restart's settle carries it instead, and its failure is surfaced on
+		// the thread with the file left intact under the old slug.
 		moved, err := a.copyClaudeSessionForWorkspaceChange(thread, move.previousWorkspace)
 		if err != nil {
 			rollback()
@@ -950,11 +979,7 @@ func (a *App) cutWorktreeWithCarry(req worktreeCutRequest) (string, error) {
 }
 
 func (a *App) defaultWorktreePath(projectPath, branch string) (string, error) {
-	base := gitops.DefaultWorktreesBaseDir(projectPath)
-	if strings.TrimSpace(a.configDir) != "" {
-		base = filepath.Join(a.configDir, "worktrees", filepath.Base(projectPath))
-	}
-	return gitops.UniqueWorktreePath(filepath.Join(base, gitops.SanitizeWorktreePathSegment(branch)))
+	return gitops.UniqueWorktreePath(filepath.Join(a.worktreesBaseDir(projectPath), gitops.SanitizeWorktreePathSegment(branch)))
 }
 
 func (a *App) worktreeBranchPrefix() string {

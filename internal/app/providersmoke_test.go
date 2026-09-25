@@ -39,6 +39,11 @@
 //     move the thread row and a stopped session resumes from the row's
 //     workspace afterwards. See providersmoke_worktree_test.go.
 //
+//  6. EXTERNAL WORKTREE REMOVAL (both providers), a worktree removed in a
+//     terminal while its session is idle: the registry watcher reattaches the
+//     row and the restarted CLI continues the same conversation from the
+//     project root. See providersmoke_worktree_removal_test.go.
+//
 // Nothing here overrides `claudeBinaryPath` / `codexBinaryPath`: the point is to
 // exercise the exact default binary resolution production uses. There is no
 // t.Skip anywhere in this file either — a manual gate that quietly does nothing

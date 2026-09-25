@@ -144,6 +144,16 @@ Mechanism in
   A directory the row cannot represent (outside the project's worktrees)
   is refused with an error on the thread, not recorded.
   See `docs/references/claude-wire.md` §E10.
+- A worktree removed OUTSIDE the app (a terminal's `git worktree remove`,
+  `rm -rf`, another tool) reattaches its threads to the project root the
+  same way an in-app removal does, detected by a watch on git's worktree
+  registry (`internal/worktreewatch`, `internal/app/app_worktree_watch.go`)
+  that runs for every project whether or not a pane is open. The rules
+  differ from the in-app removal only where the removal already happened:
+  no busy-thread refusal, an idle session restarts from the root and its
+  background tasks show as died like an app restart, a mid-turn session is
+  left running and restarts once the thread is quiet. A project whose root
+  is itself gone is left alone; there is nothing to reattach to.
 - Draft worktree and branch operations are DISK state, not thread state:
   project-scoped RPCs, bound to the thread at send or creation. Accepted
   consequences: an abandoned draft's worktree stays in pickers; a restart
