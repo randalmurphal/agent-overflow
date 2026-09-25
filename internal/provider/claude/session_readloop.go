@@ -54,6 +54,7 @@ func (s *Session) readLoop() {
 			}
 			return
 		}
+		s.noteReadLoopProgress()
 
 		// Leaf tracking happens inside s.parser.ParseLine below, off the
 		// same decoded map the parser builds — no separate unmarshal here.
@@ -166,6 +167,7 @@ func (s *Session) readLoop() {
 				s.leafTracker.markTurnComplete()
 			}
 			s.onEvent(evt)
+			s.noteReadLoopProgress()
 			if evt.Kind == provider.EventUserText {
 				s.verifyReplayParent(evt)
 			}

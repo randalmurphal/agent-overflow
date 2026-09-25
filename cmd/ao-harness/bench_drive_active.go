@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -353,10 +354,7 @@ func interruptBenchTurns(ctx context.Context, client *harnessclient.Client, thre
 	results := make(chan result, len(threadIDs))
 	for _, threadID := range threadIDs {
 		go func(id string) {
-			// The bench ends its own workload; no person is asked to confirm
-			// stopping background agents.
-			_, err := client.Call(ctx, "InterruptTurn", id, true)
-			results <- result{threadID: id, err: err}
+			results <- result{threadID: id, err: interruptBenchTurn(ctx, client, id)}
 		}(threadID)
 	}
 	var errs []error
@@ -367,6 +365,28 @@ func interruptBenchTurns(ctx context.Context, client *harnessclient.Client, thre
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// interruptBenchTurn stops one thread's turn. The bench ends its own
+// workload, so it confirms stopping whatever background agents are live:
+// the Stop names them, as a person's confirmation does.
+func interruptBenchTurn(ctx context.Context, client *harnessclient.Client, threadID string) error {
+	raw, err := client.Call(ctx, "RunningBackgroundAgents", threadID)
+	if err != nil {
+		return fmt.Errorf("list background agents: %w", err)
+	}
+	var agents []struct {
+		TranscriptRootID string `json:"transcriptRootId"`
+	}
+	if err := json.Unmarshal(raw, &agents); err != nil {
+		return fmt.Errorf("decode background agents: %w", err)
+	}
+	confirmed := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		confirmed = append(confirmed, agent.TranscriptRootID)
+	}
+	_, err = client.Call(ctx, "InterruptTurn", threadID, confirmed)
+	return err
 }
 
 // sleepCtx is the only wait shape in this file. A bare time.Sleep would

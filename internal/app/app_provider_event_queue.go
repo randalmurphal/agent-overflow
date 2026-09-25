@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -56,12 +57,16 @@ const (
 	providerEventQueueMaxEvents = 1024
 	providerEventQueueMaxBytes  = 8 << 20
 
-	// providerEventDrainTimeout bounds how long a session stop or app
-	// shutdown waits for events already read from the provider to be
-	// handled. It matches the settle drain and SQLite busy_timeout (5 s):
-	// a queue that cannot drain in that time is stuck behind something no
-	// amount of waiting fixes, and the stop must still complete.
-	providerEventDrainTimeout = 5 * time.Second
+	// providerEventDrainStall bounds how long a session stop or app
+	// shutdown waits for the thread's worker to handle its next event.
+	// A drain waits for every event read before it while the worker keeps
+	// handling them, however long the backlog takes: a Stop of many agents
+	// reads a kill frame for each agent and shell, and each one must be
+	// recorded. It matches the settle drain and SQLite busy_timeout (5 s):
+	// a worker that handles nothing for that long is stuck behind
+	// something no amount of waiting fixes, and the stop must still
+	// complete.
+	providerEventDrainStall = 5 * time.Second
 
 	// providerEventIdleRing is the ring capacity an idle queue keeps, so a
 	// live session's steady stream reuses it. A larger ring, grown by a
@@ -74,8 +79,8 @@ const (
 type providerEventQueues struct {
 	mu     sync.Mutex
 	queues map[string]*providerEventQueue
-	// drainTimeout overrides providerEventDrainTimeout when non-zero.
-	drainTimeout time.Duration
+	// drainStall overrides providerEventDrainStall when non-zero.
+	drainStall time.Duration
 }
 
 type queuedProviderEvent struct {
@@ -145,37 +150,35 @@ func (qs *providerEventQueues) enqueue(threadID string, evt provider.ProviderEve
 }
 
 // drain waits until every event enqueued for threadID before the call has
-// been handled. It returns an error when the drain bound passes first; the
-// events stay queued and are still handled, in order, after drain returns.
+// been handled. It returns an error when the worker handles nothing for
+// the stall bound first; the events stay queued and are still handled, in
+// order, after drain returns.
 func (qs *providerEventQueues) drain(threadID string) error {
 	q := qs.lookup(threadID)
 	if q == nil {
 		return nil
 	}
-	return q.waitHandled(qs.drainBound())
+	return q.waitHandled(qs.drainStallBound())
 }
 
-// drainAll drains every thread's queue within one shared drain bound and
-// reports the threads that did not finish.
+// drainAll drains every thread's queue and reports the threads whose
+// worker stalled. The queues drain concurrently, so the wait is the
+// slowest thread's, not the sum.
 func (qs *providerEventQueues) drainAll() error {
-	timeout := qs.drainBound()
+	stall := qs.drainStallBound()
 	qs.mu.Lock()
 	queues := make([]*providerEventQueue, 0, len(qs.queues))
 	for _, q := range qs.queues {
 		queues = append(queues, q)
 	}
 	qs.mu.Unlock()
-	deadline := time.Now().Add(timeout)
-	var stuck []string
-	for _, q := range queues {
-		if err := q.waitHandled(time.Until(deadline)); err != nil {
-			stuck = append(stuck, q.threadID)
-		}
+	errs := make([]error, len(queues))
+	var wg sync.WaitGroup
+	for i, q := range queues {
+		wg.Go(func() { errs[i] = q.waitHandled(stall) })
 	}
-	if len(stuck) > 0 {
-		return fmt.Errorf("provider events still queued after %s for threads %v", timeout, stuck)
-	}
-	return nil
+	wg.Wait()
+	return errors.Join(errs...)
 }
 
 // retireWhenIdle marks the thread's queue for retirement once it is empty.
@@ -191,11 +194,11 @@ func (qs *providerEventQueues) retireWhenIdle(threadID string) {
 	q.mu.Unlock()
 }
 
-func (qs *providerEventQueues) drainBound() time.Duration {
-	if qs.drainTimeout > 0 {
-		return qs.drainTimeout
+func (qs *providerEventQueues) drainStallBound() time.Duration {
+	if qs.drainStall > 0 {
+		return qs.drainStall
 	}
-	return providerEventDrainTimeout
+	return providerEventDrainStall
 }
 
 func (qs *providerEventQueues) queueFor(threadID string) *providerEventQueue {
@@ -262,11 +265,13 @@ func (qs *providerEventQueues) retireIfIdle(q *providerEventQueue) {
 	q.retired = true
 }
 
-func (q *providerEventQueue) waitHandled(timeout time.Duration) error {
+// waitHandled waits until every event enqueued before the call has been
+// handled, failing when the worker handles none for stall.
+func (q *providerEventQueue) waitHandled(stall time.Duration) error {
 	q.mu.Lock()
-	target := q.enqueued
+	target, progress := q.enqueued, q.handled
 	q.mu.Unlock()
-	timer := time.NewTimer(max(timeout, 0))
+	timer := time.NewTimer(stall)
 	defer timer.Stop()
 	for {
 		q.mu.Lock()
@@ -274,13 +279,17 @@ func (q *providerEventQueue) waitHandled(timeout time.Duration) error {
 			q.mu.Unlock()
 			return nil
 		}
+		if q.handled != progress {
+			progress = q.handled
+			timer.Reset(stall)
+		}
 		pending := target - q.handled
 		wait := q.waitLocked()
 		q.mu.Unlock()
 		select {
 		case <-wait:
 		case <-timer.C:
-			return fmt.Errorf("%d provider event(s) for thread %s not handled within %s", pending, q.threadID, timeout)
+			return fmt.Errorf("%d provider event(s) for thread %s not handled: none handled for %s", pending, q.threadID, stall)
 		}
 	}
 }
@@ -344,9 +353,11 @@ func providerEventSize(evt provider.ProviderEvent) int {
 	return len(evt.Content) + len(evt.Meta) + len(evt.StructuredOutput) + len(evt.Raw)
 }
 
-// drainProviderEvents waits, up to the stop bound, for the thread's events
-// already read from its provider to be handled. A timeout is logged: the
-// remaining events are still handled in order, after the caller moves on.
+// drainProviderEvents waits for the thread's events already read from its
+// provider to be handled, for as long as its worker keeps handling them. A
+// stalled worker is logged and the caller moves on: the remaining events
+// are still handled in order, and a stop's CleanupThread then drops the
+// ones its session emitted (invariant 29), as it drops any later frame.
 func (a *App) drainProviderEvents(threadID, reason string) {
 	if err := a.providerEvents.drain(threadID); err != nil {
 		log.Printf("app: %s: %v", reason, err)

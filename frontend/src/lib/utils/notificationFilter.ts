@@ -1,5 +1,5 @@
-// A `task_notification` row is hidden once a COMPLETED lifecycle
-// sibling with the same task_id exists. The bell's text ("Background
+// A `task_notification` row is hidden once a lifecycle row with the same
+// task_id says the task ended (the rule is below). The bell's text ("Background
 // command … completed (exit code 0)") is the CLI's formulaic
 // restatement of facts the completion card already shows — description
 // and exit code — so rendering both prints one completion twice, and
@@ -8,15 +8,17 @@
 // before the bell arrives, so an absorption-only rule (caption stamped
 // on the sibling's first write) left the bell visible on every waited
 // background command (user ruling 2026-08-22). Existence of the
-// completed sibling is therefore the whole hide predicate. Nothing is
+// sibling is therefore the whole hide predicate. Nothing is
 // lost durably: the notification row stays in SQLite (the backend
 // persists it for the load-bearing `output_file` enrichment side
 // effect in `internal/triage/background_task_notifications.go`) and
 // the caption still renders on the card when the write order let
 // triage stamp it — this filter only suppresses rendering.
 //
-// Only a COMPLETED sibling hides. A running launch keeps its bell, and
-// so do errored/killed ones — the explicit failure ping is wanted.
+// A completion sibling hides the bell whatever its status: the card at
+// the sibling shows how the work ended, a stopped or failed agent
+// included. A tool call hides it only once completed; a running, errored
+// or killed tool call keeps its bell as the explicit failure ping.
 //
 // LOAD-BEARING ASSUMPTION: the completed sibling RENDERS, in place, at
 // the completion point. This filter deletes the only other row that says

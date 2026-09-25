@@ -1322,7 +1322,7 @@ func TestRespondToApprovalNoProviderError(t *testing.T) {
 func TestInterruptTurnMissingSessionIsNoOp(t *testing.T) {
 	app := newTestAppWithStore(t)
 
-	if err := app.InterruptTurn("nonexistent-thread", false); err != nil {
+	if err := app.InterruptTurn("nonexistent-thread", nil); err != nil {
 		t.Fatalf("InterruptTurn(nonexistent) error = %v, want nil", err)
 	}
 }
@@ -1359,7 +1359,7 @@ func TestInterruptTurnHappyPathClaude(t *testing.T) {
 	})
 
 	start := time.Now()
-	err = app.InterruptTurn(thread.ID, false)
+	err = app.InterruptTurn(thread.ID, nil)
 	if err != nil {
 		t.Fatalf("InterruptTurn() error = %v", err)
 	}
@@ -1436,7 +1436,7 @@ func TestInterruptCreatesStoppedSystemError(t *testing.T) {
 		Claude:   sess,
 	})
 
-	if err := app.InterruptTurn(thread.ID, false); err != nil {
+	if err := app.InterruptTurn(thread.ID, nil); err != nil {
 		t.Fatalf("InterruptTurn: %v", err)
 	}
 
@@ -1566,7 +1566,7 @@ func TestInterrupt_LeavesBackgroundTasksRunning(t *testing.T) {
 				Claude:   sess,
 			})
 
-			if err := app.InterruptTurn(thread.ID, false); err != nil {
+			if err := app.InterruptTurn(thread.ID, nil); err != nil {
 				t.Fatalf("InterruptTurn: %v", err)
 			}
 

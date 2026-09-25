@@ -9,6 +9,15 @@ Every subagent a thread spawns is a first-class, inspectable node: visible
 while it runs, attributed for everything it causes, openable as its own
 read-only thread view, for Claude and Codex alike.
 
+The scale bar: a thread runs 1 to 100 subagents with the same per-event
+cost, each able to own background shells and launched in any turn. Every
+agent, and every row it writes, settles through one path however it ends:
+its own report, a Stop in a later turn, the session's end or the boot
+after a crash
+([§Agent-owned rows](../architecture/turn-lifecycle.md#agent-owned-rows)).
+A Stop that would kill agents names them and asks first; an agent launched
+while the question is open is asked about before it is stopped.
+
 ## Approach
 
 Model a thread's agents as a tree keyed on what the store already holds:
@@ -275,6 +284,12 @@ subagent model and the user explicitly authorizes the corresponding change.
       never goes backwards.
 - [ ] A Codex child's answer appears exactly once, as its own message.
 - [ ] Top-level completions notify; nested completions do not.
+- [x] The scale bar holds at 100 Claude agents: launch, stream and
+      settle (`e2e/tests/agent-scale.spec.ts`); a Stop of 100 agents
+      with 3 shells each, launched in an earlier turn, settles every row
+      (`stop-scale.spec.ts`); an agent outlives its parent turn and ends
+      its own rows (`agent-lifecycle.spec.ts`); a restart ends the agents
+      that were running (`agent-restart-recovery.spec.ts`).
 
 ## Migration/removal
 

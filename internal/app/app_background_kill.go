@@ -15,8 +15,10 @@ import (
 // session holds, whichever turn launched it, together with the background
 // shells each agent owns (claude-wire.md §Background task ownership). The
 // two Stop RPCs, InterruptTurn and InterruptAndRevertIfClean, therefore
-// refuse while such agents are live until the caller confirms, and name the
-// agents so the person can see what the stop would cost. The refusal comes
+// refuse while a live agent is one the caller has not confirmed, and name
+// every live agent so the person can see what the stop would cost. A
+// confirmation names the agents it covers: an agent launched while the
+// person was reading the question is refused again. The refusal comes
 // before the call has any effect.
 //
 // Agent thread requests, their cancels and workflow takeovers interrupt
@@ -111,21 +113,43 @@ func (a *App) runningBackgroundAgents(threadID string) ([]BackgroundKillAgent, e
 	return agents, nil
 }
 
-// refuseBackgroundKill returns a backgroundKillRefusal when interrupting
-// sess would kill live background agents on threadID. Only a Claude session
-// is refused: its interrupt is the one that kills async agents.
-func (a *App) refuseBackgroundKill(threadID string, sess session) error {
-	if sess.Claude == nil {
+// agentKillConsent is the set of agents a person's Stop was confirmed to
+// kill, by TranscriptRootID: the agent's first launch, which a resumed
+// round keeps. A nil consent is an interrupt that is not a person's Stop,
+// which is never refused.
+type agentKillConsent struct {
+	confirmed map[string]bool
+}
+
+// personalStop is the consent of a person's Stop that confirmed the agents
+// named by transcriptRootIDs; none confirms no agent.
+func personalStop(transcriptRootIDs []string) *agentKillConsent {
+	confirmed := make(map[string]bool, len(transcriptRootIDs))
+	for _, id := range transcriptRootIDs {
+		confirmed[id] = true
+	}
+	return &agentKillConsent{confirmed: confirmed}
+}
+
+// refuseBackgroundKill returns a backgroundKillRefusal naming every live
+// background agent when interrupting sess would kill one that consent does
+// not cover. Only a Claude session is refused: its interrupt is the one
+// that kills async agents. A confirmed agent that has ended since is no
+// reason to refuse.
+func (a *App) refuseBackgroundKill(threadID string, sess session, consent *agentKillConsent) error {
+	if consent == nil || sess.Claude == nil {
 		return nil
 	}
 	agents, err := a.runningBackgroundAgents(threadID)
 	if err != nil {
 		return fmt.Errorf("interrupt %s: %w", threadID, err)
 	}
-	if len(agents) == 0 {
-		return nil
+	for _, agent := range agents {
+		if !consent.confirmed[agent.TranscriptRootID] {
+			return newBackgroundKillRefusal(agents)
+		}
 	}
-	return newBackgroundKillRefusal(agents)
+	return nil
 }
 
 // backgroundKillRefusal is the public background_agents_running error. The

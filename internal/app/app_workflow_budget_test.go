@@ -493,7 +493,7 @@ func TestUsageLimitCleanupDoesNotRecordAUserInterrupt(t *testing.T) {
 	app.sessionManager().put(thread.ID, session{
 		Provider: string(provider.Codex), Token: "usage-cleanup-token", Codex: sess,
 	})
-	if err := app.InterruptTurn(thread.ID, false); err != nil {
+	if err := app.InterruptTurn(thread.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	items, err := app.store.ListItems(thread.ID)

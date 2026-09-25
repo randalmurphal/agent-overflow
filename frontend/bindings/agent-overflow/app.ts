@@ -2538,15 +2538,17 @@ export function ImportThreadUpdates(threadID: string): $CancellablePromise<app$0
  * flush queue. Both must agree for revert to succeed.
  * 
  * Both branches interrupt the provider, and a Claude interrupt kills the
- * thread's live background agents (app_background_kill.go). Unless
- * confirmBackgroundKill is set, the call refuses with
- * background_agents_running and the agents once it is known to interrupt,
- * before anything is interrupted, reverted or written. That refusal comes
- * ahead of the predicate's own "running background tasks" decline, which a
- * confirmed call still takes to the plain interrupt.
+ * thread's live background agents (app_background_kill.go).
+ * confirmedAgents names, by transcriptRootId, the agents the person
+ * confirmed the Stop may kill. While a live agent is not among them the
+ * call refuses with background_agents_running and every live agent once it
+ * is known to interrupt, before anything is interrupted, reverted or
+ * written. That refusal comes ahead of the predicate's own "running
+ * background tasks" decline, which a confirmed call still takes to the
+ * plain interrupt.
  */
-export function InterruptAndRevertIfClean(threadID: string, opts: app$0.InterruptRevertOptions, confirmBackgroundKill: boolean): $CancellablePromise<app$0.InterruptAndRevertResult> {
-    return $Call.ByID(753394581, threadID, opts, confirmBackgroundKill).then(($result: any) => {
+export function InterruptAndRevertIfClean(threadID: string, opts: app$0.InterruptRevertOptions, confirmedAgents: string[]): $CancellablePromise<app$0.InterruptAndRevertResult> {
+    return $Call.ByID(753394581, threadID, opts, confirmedAgents).then(($result: any) => {
         return $$createType111($result);
     });
 }
@@ -2569,12 +2571,13 @@ export function InterruptAndRevertIfClean(threadID: string, opts: app$0.Interrup
  * the session state is correct even if the timeline marker is missing.
  * 
  * A Claude interrupt also kills the thread's live background agents
- * (app_background_kill.go). Unless confirmBackgroundKill is set, the call
- * refuses with background_agents_running and the agents instead, before
- * anything is cancelled, interrupted or written.
+ * (app_background_kill.go). confirmedAgents names, by transcriptRootId,
+ * the agents the person confirmed the Stop may kill. While a live agent is
+ * not among them the call refuses with background_agents_running and every
+ * live agent instead, before anything is cancelled, interrupted or written.
  */
-export function InterruptTurn(threadID: string, confirmBackgroundKill: boolean): $CancellablePromise<void> {
-    return $Call.ByID(850013031, threadID, confirmBackgroundKill);
+export function InterruptTurn(threadID: string, confirmedAgents: string[]): $CancellablePromise<void> {
+    return $Call.ByID(850013031, threadID, confirmedAgents);
 }
 
 export function IntroduceOwnDevice(targetBackendID: string): $CancellablePromise<app$0.PairingInvite> {

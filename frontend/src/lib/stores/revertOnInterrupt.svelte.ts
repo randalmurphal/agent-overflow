@@ -210,15 +210,18 @@ function clearWorkingPresentation(pane: InterruptPane, threadId: string): Active
   return stopped;
 }
 
-/** InterruptTurn for a Stop whose optimistic clear is `stopped`. */
+/**
+ * InterruptTurn for a Stop whose optimistic clear is `stopped`, confirmed
+ * for the agents in `confirmed` (none for an unconfirmed Stop).
+ */
 async function interruptTurnForStop(
   pane: InterruptPane,
   threadId: string,
-  confirmed: boolean,
+  confirmed: readonly BackgroundKillAgent[],
   stopped: ActiveTurn | null,
 ): Promise<BackgroundKillAgent[] | null> {
   try {
-    await InterruptTurn(threadId, confirmed);
+    await InterruptTurn(threadId, confirmedAgentIds(confirmed));
   } catch (err) {
     const agents = refusedBackgroundAgents(err);
     if (agents !== null) return agents;
@@ -250,7 +253,7 @@ async function runPlainInterrupt(
     : null;
   let agents: BackgroundKillAgent[] | null = null;
   try {
-    agents = await interruptTurnForStop(pane, threadId, false, stopped);
+    agents = await interruptTurnForStop(pane, threadId, [], stopped);
     if (agents !== null) restoreRefusedTurnStop(threadId, stopped);
   } finally {
     finishThreadInterrupt(threadId, interruptToken);
@@ -258,35 +261,51 @@ async function runPlainInterrupt(
   if (agents !== null) await interruptAfterConfirmation(pane, threadId, agents);
 }
 
+/** The ids a confirmation names its agents by: each one's transcript root. */
+function confirmedAgentIds(agents: readonly BackgroundKillAgent[]): string[] {
+  return agents.map((agent) => agent.transcriptRootId);
+}
+
 /**
  * The refused Stop's second half: ask, and on "stop everything" run a Stop
- * of its own with the confirmation set. The refused Stop's transaction is
- * already closed: the question is the person's, not an interrupt in
- * flight, so the composer keeps showing the running turn and its Stop
- * behind the dialog. Nothing is asked when the turn ended before the
- * refusal landed: there is nothing left to stop.
+ * of its own confirmed for the agents the question named. The refused
+ * Stop's transaction is already closed: the question is the person's, not
+ * an interrupt in flight, so the composer keeps showing the running turn
+ * and its Stop behind the dialog. Nothing is asked when the turn ended
+ * before the refusal landed: there is nothing left to stop.
+ *
+ * An agent launched while the person read the question is not covered, so
+ * the confirmed Stop is refused again naming every live agent, and the
+ * person is asked again with that list. A refusal whose list cannot be
+ * read names nothing a confirmation could cover: it is reported, and the
+ * turn keeps running.
  */
 async function interruptAfterConfirmation(
   pane: InterruptPane,
   threadId: string,
   agents: readonly BackgroundKillAgent[],
 ): Promise<void> {
-  if (!isThreadWorking(threadId)) return;
-  const stop = await confirmBackgroundKill(threadId, agents);
-  if (!stop) return;
-  const interruptToken = beginThreadInterrupt(threadId);
-  if (interruptToken === null) return;
-  try {
-    const stopped = clearWorkingPresentation(pane, threadId);
-    const refusedAgain = await interruptTurnForStop(pane, threadId, true, stopped);
-    if (refusedAgain !== null) {
-      // A confirmed Stop is never refused; a backend that does is reporting
-      // a contract breach, and the turn it left running stays on screen.
-      restoreRefusedTurnStop(threadId, stopped);
-      reportNonBenignInterruptError(pane, new Error('confirmed Stop was refused for background agents'));
+  let asked = agents;
+  for (;;) {
+    if (!isThreadWorking(threadId)) return;
+    const stop = await confirmBackgroundKill(threadId, asked);
+    if (!stop) return;
+    const interruptToken = beginThreadInterrupt(threadId);
+    if (interruptToken === null) return;
+    let refused: BackgroundKillAgent[] | null;
+    try {
+      const stopped = clearWorkingPresentation(pane, threadId);
+      refused = await interruptTurnForStop(pane, threadId, asked, stopped);
+      if (refused !== null) restoreRefusedTurnStop(threadId, stopped);
+    } finally {
+      finishThreadInterrupt(threadId, interruptToken);
     }
-  } finally {
-    finishThreadInterrupt(threadId, interruptToken);
+    if (refused === null) return;
+    if (refused.length === 0) {
+      reportNonBenignInterruptError(pane, new Error('Stop was refused for background agents the app could not read'));
+      return;
+    }
+    asked = refused;
   }
 }
 
@@ -371,7 +390,7 @@ async function runEarlyInterrupt(
         terminalChips: undo.snapshot.terminalChips,
         sourceProposedPlan: undo.snapshot.sourceProposedPlan,
       } : undefined,
-    }, false);
+    }, []);
     if (!current()) return;
   } catch (err) {
     if (!current()) return;

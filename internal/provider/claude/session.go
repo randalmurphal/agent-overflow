@@ -205,6 +205,10 @@ type Session struct {
 	// Tests set this to a short window so a non-responsive fake CLI
 	// doesn't stall the suite. Production leaves it zero.
 	controlRequestTimeout time.Duration
+	// readLoopProgress is when the read loop last read a line or delivered
+	// an event, in Unix nanoseconds: a control request times out only on
+	// the read loop's silence (DefaultControlRequestTimeout).
+	readLoopProgress atomic.Int64
 	// controlRequestMu guards pendingControlRequests and controlRequestSeq.
 	controlRequestMu sync.Mutex
 	// pendingControlRequests maps an outbound control_request id to the

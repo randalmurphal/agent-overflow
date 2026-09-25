@@ -153,7 +153,7 @@ func TestStopAfterBackgroundCompletionReRoundKeepsMessage(t *testing.T) {
 	stops := 0
 	app.stopSessionFn = func(string) error { stops++; return nil }
 
-	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, false)
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, nil)
 	if err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestClaudeUnsendRechecksTurnAfterStoppingSession(t *testing.T) {
 		return nil
 	}
 
-	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, false)
+	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, nil)
 	if err != nil {
 		t.Fatalf("interrupt-and-revert: %v", err)
 	}

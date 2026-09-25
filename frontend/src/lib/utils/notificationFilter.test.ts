@@ -199,6 +199,16 @@ describe('filterRedundantNotifications', () => {
     expect(ids(filterRedundantNotifications(items))).toEqual(['launch', 'notif']);
   });
 
+  it('hides a stopped agent’s bell behind its killed completion sibling', () => {
+    // The card at the sibling reads "Agent stopped"; the bell would say it twice.
+    const items = [
+      mkItem({ id: 'launch', kind: 'tool_call', toolName: 'Agent', status: 'running', meta: withTaskId('T6') }),
+      mkItem({ id: 'notif', itemIndex: 1, kind: 'notification', summary: 'Agent "sweep" was stopped', meta: withTaskId('T6') }),
+      mkItem({ id: 'completion', itemIndex: 2, kind: 'tool_completion', status: 'killed', meta: withTaskId('T6') }),
+    ];
+    expect(ids(filterRedundantNotifications(items))).toEqual(['launch', 'completion']);
+  });
+
   it('preserves a notification when the matching tool_call was killed by the user', () => {
     const items = [
       mkItem({ id: 'launch', kind: 'tool_call', status: 'killed', summary: BELL, meta: withTaskId('T5') }),

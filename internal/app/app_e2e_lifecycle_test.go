@@ -594,7 +594,7 @@ func TestE2E_InterruptMidTurn(t *testing.T) {
 		t.Fatalf("partial content = %q", text.Content)
 	}
 
-	if err := app.InterruptTurn(thread.ID, false); err != nil {
+	if err := app.InterruptTurn(thread.ID, nil); err != nil {
 		t.Fatalf("InterruptTurn: %v", err)
 	}
 
@@ -1199,7 +1199,7 @@ func TestE2E_InterruptCancelsPendingApproval(t *testing.T) {
 		t.Fatalf("approval request = %+v", approval)
 	}
 
-	if err := app.InterruptTurn(thread.ID, false); err != nil {
+	if err := app.InterruptTurn(thread.ID, nil); err != nil {
 		t.Fatalf("InterruptTurn: %v", err)
 	}
 
@@ -1595,7 +1595,7 @@ func TestE2E_InterruptTurnWithoutSession(t *testing.T) {
 
 	before := len(bus.allEvents())
 
-	if err := app.InterruptTurn(thread.ID, false); err != nil {
+	if err := app.InterruptTurn(thread.ID, nil); err != nil {
 		t.Fatalf("InterruptTurn without session: err = %v, want nil (silent no-op)", err)
 	}
 

@@ -7,6 +7,7 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -86,6 +87,10 @@ type rollbackConversationLockedArgs struct {
 type revertedConversationCut struct {
 	KeptAnchorTurnItemIDs []string
 	Stamp                 store.HistoryStamp
+	// SettleFailure is the user-facing report of a session-end settle that
+	// failed after the cut committed, or "". The caller reports it once
+	// the cut is published, so no client drops it with the cut turn.
+	SettleFailure string
 }
 
 func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (cut revertedConversationCut, err error) {
@@ -198,6 +203,7 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		// The claude-tui native revert keeps the session live across the cut.
 		a.triage.ForgetToolCallLinks(args.thread.ID)
 	}
+	var settleFailure string
 	if args.thread.Provider == string(provider.Claude) && a.triage != nil {
 		// Deleting a completion sibling whose launch sits before the cut makes
 		// that launch live again (trg_items_revive_bg_launch_on_completion_delete).
@@ -205,10 +211,12 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 		// the process that owned the work is gone and the resumed session will
 		// report the task as unfinished.
 		// The cut has committed, so a failure here must not fail the revert;
-		// an unsettled launch stays in the tray until the next session end.
+		// an unsettled launch stays in the tray until the next session end,
+		// and the caller reports the failure (SettleFailure).
 		settled, err := a.triage.SettleBackgroundLaunchesForSessionEnd(args.thread.ID)
 		if err != nil {
 			log.Printf("app: %s: settle background launches revived by the cut on thread %s: %v", args.errorPrefix, args.thread.ID, err)
+			settleFailure = triage.BackgroundSettleFailureSummary(err)
 		}
 		// A surviving anchor turn is the write head, so the new siblings land
 		// in it. The kept set tells clients which anchor-turn rows to keep, so
@@ -221,7 +229,7 @@ func (a *App) rollbackConversationLocked(args rollbackConversationLockedArgs) (c
 			}
 		}
 	}
-	return revertedConversationCut{KeptAnchorTurnItemIDs: keptAnchorTurnItemIDs, Stamp: stamp}, nil
+	return revertedConversationCut{KeptAnchorTurnItemIDs: keptAnchorTurnItemIDs, Stamp: stamp, SettleFailure: settleFailure}, nil
 }
 
 func (a *App) rollbackProviderConversationToMessage(thread store.Thread, anchor store.MessageAnchor, userItem store.Item) error {

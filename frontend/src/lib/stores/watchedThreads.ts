@@ -16,11 +16,10 @@
 // Deliberately rune-free and source-registered rather than importing the
 // stores it reads. Several surfaces contribute and they sit at different
 // levels (the pane registry, the timeline surface registry whose scoped
-// timelines name their agent's scope, the discussion live-tail routing
-// table that participant CHILD threads have no pane in, and the open
-// background tray), so this module stays a leaf that only knows how to
-// union what it is handed — the same one-way shape panes.svelte.ts uses for
-// its destroyed/mounted observers.
+// timelines name their agent's scope, and the discussion live-tail routing
+// table that participant CHILD threads have no pane in), so this module
+// stays a leaf that only knows how to union what it is handed, the same
+// one-way shape panes.svelte.ts uses for its destroyed/mounted observers.
 //
 // A scope source follows the thread rule read from the other side: a
 // surface that reads a subagent's rows (`parentId` set) names that scope

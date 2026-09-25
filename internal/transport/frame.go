@@ -306,8 +306,8 @@ const MaxWatchThreads = 256
 const MaxWatchThreadIDBytes = 256
 
 // MaxWatchScopes bounds a connection's watched-scope set. A scope is one
-// open agent surface (an agent pane, an expanded card or tray digest, a
-// running agent in the open tray), so a real screen holds a handful. The
+// open agent surface (an agent pane, an expanded card or tray digest), so
+// a real screen holds a handful; the tray's rows name none. The
 // ceiling matches MaxWatchThreads for the same reason: one frame must not
 // make the server build an unbounded map.
 const MaxWatchScopes = 256

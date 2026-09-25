@@ -118,15 +118,17 @@ type UserMessageRevertedEvent struct {
 // flush queue. Both must agree for revert to succeed.
 //
 // Both branches interrupt the provider, and a Claude interrupt kills the
-// thread's live background agents (app_background_kill.go). Unless
-// confirmBackgroundKill is set, the call refuses with
-// background_agents_running and the agents once it is known to interrupt,
-// before anything is interrupted, reverted or written. That refusal comes
-// ahead of the predicate's own "running background tasks" decline, which a
-// confirmed call still takes to the plain interrupt.
+// thread's live background agents (app_background_kill.go).
+// confirmedAgents names, by transcriptRootId, the agents the person
+// confirmed the Stop may kill. While a live agent is not among them the
+// call refuses with background_agents_running and every live agent once it
+// is known to interrupt, before anything is interrupted, reverted or
+// written. That refusal comes ahead of the predicate's own "running
+// background tasks" decline, which a confirmed call still takes to the
+// plain interrupt.
 //
 //ao:scope threads:operate
-func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOptions, confirmBackgroundKill bool) (InterruptAndRevertResult, error) {
+func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOptions, confirmedAgents []string) (InterruptAndRevertResult, error) {
 	if a.shuttingDown.Load() {
 		return InterruptAndRevertResult{}, ErrShuttingDown
 	}
@@ -165,11 +167,9 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 			return InterruptAndRevertResult{Reason: "latest message changed"}, nil
 		}
 	}
-	if !confirmBackgroundKill {
-		if sess, ok := a.sessionManager().get(threadID); ok {
-			if err := a.refuseBackgroundKill(threadID, sess); err != nil {
-				return InterruptAndRevertResult{}, err
-			}
+	if sess, ok := a.sessionManager().get(threadID); ok {
+		if err := a.refuseBackgroundKill(threadID, sess, personalStop(confirmedAgents)); err != nil {
+			return InterruptAndRevertResult{}, err
 		}
 	}
 	if !eligible {
@@ -208,7 +208,19 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		if sess, ok := a.sessionManager().get(threadID); ok {
 			if providerSess := sess.ProviderSession(); providerSess != nil {
 				if err := providerSess.Interrupt(context.Background()); err != nil {
-					log.Printf("app: interrupt-and-revert: provider interrupt: %v", err)
+					if thread.Provider != string(provider.Claude) {
+						// claude-tui: the Esc is the native revert
+						// (rollbackConversationLocked). Without it the TUI
+						// keeps the turn, so AO must not cut its own copy.
+						if markedReverted {
+							a.triage.ClearTurnReverted(threadID)
+						}
+						return InterruptAndRevertResult{}, fmt.Errorf("interrupt-and-revert: provider interrupt: %w", err)
+					}
+					// Headless Claude: the session stop below ends the turn
+					// whatever the interrupt did, and the session-end settle
+					// writes what its kill frames would have.
+					log.Printf("app: interrupt-and-revert: provider interrupt, superseded by the session stop: %v", err)
 				}
 			}
 		}
@@ -274,6 +286,9 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		HistoryEpoch:          cut.Stamp.Epoch,
 	}
 	a.emit(eventchan.UserMessageReverted, cutEvent)
+	if cut.SettleFailure != "" {
+		a.emitErrorToThread(threadID, cut.SettleFailure)
+	}
 
 	return InterruptAndRevertResult{
 		TurnStartedSequence:   cutEvent.TurnStartedSequence,

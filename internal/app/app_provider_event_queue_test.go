@@ -243,12 +243,12 @@ func TestProviderEventQueueBlocksProducerAtItsBoundThenResumes(t *testing.T) {
 	}
 }
 
-// A drain that runs out of time mid-queue abandons only the wait: the events
+// A drain whose worker stalls mid-queue abandons only the wait: the events
 // it was waiting for are still handled, in order, behind the ones already
 // running, and events read after it keep their place.
-func TestProviderEventDrainTimeoutLeavesTheQueueIntact(t *testing.T) {
+func TestProviderEventDrainStallLeavesTheQueueIntact(t *testing.T) {
 	const threadID = "thread-drain-timeout"
-	qs := providerEventQueues{drainTimeout: 50 * time.Millisecond}
+	qs := providerEventQueues{drainStall: 50 * time.Millisecond}
 	rec := &seqRecorder{}
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -284,7 +284,7 @@ func TestProviderEventDrainTimeoutLeavesTheQueueIntact(t *testing.T) {
 		enqueueWithin(t, &qs, threadID, seqEvent(seq, 0), handle)
 	}
 	releaseOnce()
-	qs.drainTimeout = 5 * time.Second
+	qs.drainStall = 5 * time.Second
 	if err := qs.drain(threadID); err != nil {
 		t.Fatalf("second drain: %v", err)
 	}
@@ -496,10 +496,10 @@ func TestStopSessionPersistsEventsReadBeforeTheStop(t *testing.T) {
 	}
 }
 
-// A stop whose drain bound passes logs it and still completes.
-func TestStopSessionLogsADrainThatHitsItsBound(t *testing.T) {
+// A stop whose drain stalls logs it and still completes.
+func TestStopSessionLogsADrainThatStalls(t *testing.T) {
 	app := newTestAppWithTriage(t)
-	app.providerEvents.drainTimeout = 50 * time.Millisecond
+	app.providerEvents.drainStall = 50 * time.Millisecond
 	thread := testThread("thread-stop-drain-bound")
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("CreateThread() error = %v", err)
@@ -533,7 +533,7 @@ func TestStopSessionLogsADrainThatHitsItsBound(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("StopSession waited past its drain bound")
 	}
-	want := "app: stop session: 1 provider event(s) for thread " + thread.ID + " not handled within 50ms"
+	want := "app: stop session: 1 provider event(s) for thread " + thread.ID + " not handled: none handled for 50ms"
 	if !strings.Contains(logs.String(), want) {
 		t.Fatalf("log = %q, want %q", logs.String(), want)
 	}
@@ -590,11 +590,11 @@ func TestShutdownHandlesProviderEventsAlreadyRead(t *testing.T) {
 	}
 }
 
-// A shutdown whose drain bound passes reports it in its error, which the
+// A shutdown whose drain stalls reports it in its error, which the
 // process logs, and still closes the store.
-func TestShutdownReportsADrainThatHitsItsBound(t *testing.T) {
+func TestShutdownReportsADrainThatStalls(t *testing.T) {
 	app := newTestAppWithStore(t)
-	app.providerEvents.drainTimeout = 50 * time.Millisecond
+	app.providerEvents.drainStall = 50 * time.Millisecond
 	const threadID = "thread-shutdown-drain-bound"
 	release := make(chan struct{})
 	releaseOnce := sync.OnceFunc(func() { close(release) })

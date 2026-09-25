@@ -5,9 +5,10 @@ import { TransportError } from './wsClient';
  *
  * A Claude interrupt kills every live async agent the session holds, so
  * the backend's two Stop RPCs (InterruptTurn, InterruptAndRevertIfClean)
- * refuse with `background_agents_running` while such agents are live and
- * the caller has not confirmed (internal/app/app_background_kill.go). The
- * refusal names the agents in the frame's `backgroundAgents` field, the
+ * refuse with `background_agents_running` while a live agent is not one
+ * the caller confirmed by its `transcriptRootId`
+ * (internal/app/app_background_kill.go). The refusal names every live
+ * agent in the frame's `backgroundAgents` field, the
  * way `scope_required` names its scope: a field, because a method error's
  * prose does not survive the wire for a non-loopback caller, and this is
  * what the confirmation shows.

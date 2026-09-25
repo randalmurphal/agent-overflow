@@ -29,17 +29,19 @@ type agentKillFixture struct {
 	app          *App
 	thread       store.Thread
 	interruptLog string
+	// dbPath is the store's file, for a second handle that injects faults.
+	dbPath string
 }
 
 func newAgentKillFixture(t *testing.T, providerName, model string) *agentKillFixture {
 	t.Helper()
-	app := newTestAppWithStore(t)
+	app, dbPath := newTestAppWithStorePath(t)
 	app.triage = triage.NewRouter(app.store, func(eventchan.Channel, any) {})
 	thread, err := createTestThread(t, app, providerName, t.TempDir(), model, "")
 	if err != nil {
 		t.Fatalf("createTestThread: %v", err)
 	}
-	f := &agentKillFixture{app: app, thread: thread, interruptLog: filepath.Join(t.TempDir(), "interrupts.log")}
+	f := &agentKillFixture{app: app, thread: thread, interruptLog: filepath.Join(t.TempDir(), "interrupts.log"), dbPath: dbPath}
 	f.handle(t, provider.ProviderEvent{Kind: provider.EventTurnStart, TurnID: thread.ID + ":turn"}, nil)
 	// A Claude session stands in for every provider: the gate must decide
 	// by the thread, and the recorder is what proves an interrupt was sent.
@@ -247,7 +249,7 @@ func TestInterruptTurn_RefusesWhileAgentsLiveAndProceedsOnConfirm(t *testing.T) 
 	itemsBefore := f.itemCount(t)
 	openTurn := f.app.triage.OpenTurnIndex(f.thread.ID)
 
-	agents := requireRefusal(t, f.app.InterruptTurn(f.thread.ID, false))
+	agents := requireRefusal(t, f.app.InterruptTurn(f.thread.ID, nil))
 	if got := agentIDs(agents); len(got) != 1 || got[0] != "agent=running" {
 		t.Fatalf("refusal agents = %v, want the running agent", got)
 	}
@@ -264,7 +266,7 @@ func TestInterruptTurn_RefusesWhileAgentsLiveAndProceedsOnConfirm(t *testing.T) 
 		t.Fatalf("a refused stop closed the turn: open turn %d, want %d", got, openTurn)
 	}
 
-	if err := f.app.InterruptTurn(f.thread.ID, true); err != nil {
+	if err := f.app.InterruptTurn(f.thread.ID, []string{"agent"}); err != nil {
 		t.Fatalf("confirmed InterruptTurn: %v", err)
 	}
 	if n := f.interrupts(t); n != 1 {
@@ -280,7 +282,7 @@ func TestInterruptTurn_RefusesWhileAgentsLiveAndProceedsOnConfirm(t *testing.T) 
 func TestInterruptTurn_MainThreadShellDoesNotRefuse(t *testing.T) {
 	f := newClaudeAgentKillFixture(t)
 	f.launchShell(t, "main-shell", "task-main-shell", "")
-	if err := f.app.InterruptTurn(f.thread.ID, false); err != nil {
+	if err := f.app.InterruptTurn(f.thread.ID, nil); err != nil {
 		t.Fatalf("InterruptTurn: %v", err)
 	}
 	if n := f.interrupts(t); n != 1 {
@@ -296,7 +298,7 @@ func TestInterruptTurn_RefusesForAParkedAgent(t *testing.T) {
 	f.launchShell(t, "shell", "task-shell", "agent")
 	f.stopAgent(t, "agent", "task-agent")
 
-	agents := requireRefusal(t, f.app.InterruptTurn(f.thread.ID, false))
+	agents := requireRefusal(t, f.app.InterruptTurn(f.thread.ID, nil))
 	if got := agentIDs(agents); len(got) != 1 || got[0] != "agent=parked" {
 		t.Fatalf("refusal agents = %v, want the parked agent", got)
 	}
@@ -316,7 +318,7 @@ func TestInterruptTurn_RefusesForANestedAgent(t *testing.T) {
 		t.Fatalf("top-level background count = %d (%v); the case needs an agent it does not see", count, err)
 	}
 
-	agents := requireRefusal(t, f.app.InterruptTurn(f.thread.ID, false))
+	agents := requireRefusal(t, f.app.InterruptTurn(f.thread.ID, nil))
 	if got := agentIDs(agents); len(got) != 1 || got[0] != "nested=running" {
 		t.Fatalf("refusal agents = %v, want the nested agent", got)
 	}
@@ -335,7 +337,7 @@ func TestInterruptTurn_CodexThreadNeverRefuses(t *testing.T) {
 	if err != nil || len(agents) != 0 {
 		t.Fatalf("RunningBackgroundAgents = %v (%v), want none on a Codex thread", agents, err)
 	}
-	if err := f.app.InterruptTurn(f.thread.ID, false); err != nil {
+	if err := f.app.InterruptTurn(f.thread.ID, nil); err != nil {
 		t.Fatalf("InterruptTurn: %v", err)
 	}
 	if n := f.interrupts(t); n != 1 {
@@ -354,7 +356,7 @@ func TestInterruptTurn_AgentLaunchedWhileWaitingForTheLockIsRefused(t *testing.T
 
 	unlock := f.app.threadLocks().Lock(f.thread.ID)
 	done := make(chan error, 1)
-	go func() { done <- f.app.InterruptTurn(f.thread.ID, false) }()
+	go func() { done <- f.app.InterruptTurn(f.thread.ID, nil) }()
 	// The parked-call cancel runs after the first check and before the lock.
 	waitUntil(t, 5*time.Second, func() bool { return remoteWait.Err() != nil })
 
@@ -386,7 +388,7 @@ func TestInterruptAndRevertIfClean_RefusesWhileAgentsLiveAndProceedsOnConfirm(t 
 	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "never mind")
 	itemsBefore := f.itemCount(t)
 
-	result, err := f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, false)
+	result, err := f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, nil)
 	agents := requireRefusal(t, err)
 	if got := agentIDs(agents); len(got) != 1 || got[0] != "agent=running" {
 		t.Fatalf("refusal agents = %v, want the running agent", got)
@@ -404,7 +406,7 @@ func TestInterruptAndRevertIfClean_RefusesWhileAgentsLiveAndProceedsOnConfirm(t 
 		t.Fatal("a refused un-send stopped the session")
 	}
 
-	result, err = f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, true)
+	result, err = f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, []string{"agent"})
 	if err != nil {
 		t.Fatalf("confirmed InterruptAndRevertIfClean: %v", err)
 	}
@@ -426,7 +428,7 @@ func TestInterruptAndRevertIfClean_MainThreadShellKeepsTheExistingDecline(t *tes
 	f.launchShell(t, "main-shell", "task-main-shell", "")
 	insertUserItem(t, f.app.store, f.thread.ID, "u:1", 1, "never mind")
 
-	result, err := f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, false)
+	result, err := f.app.InterruptAndRevertIfClean(f.thread.ID, InterruptRevertOptions{}, nil)
 	if err != nil {
 		t.Fatalf("InterruptAndRevertIfClean: %v", err)
 	}
@@ -525,7 +527,9 @@ func TestInterruptKillOfAParkedAgentSettlesItAndItsShell(t *testing.T) {
 }
 
 // Both Stop RPCs send the refusal through the real dispatcher as the
-// background_agents_running frame naming the agents, on every origin.
+// background_agents_running frame naming the agents, on every origin,
+// whether the caller confirmed nothing (an empty list or null) or another
+// agent.
 func TestStopRefusalWireFrameNamesTheAgents(t *testing.T) {
 	f := newClaudeAgentKillFixture(t)
 	f.launchAgent(t, "agent", "task-agent", "")
@@ -533,11 +537,18 @@ func TestStopRefusalWireFrameNamesTheAgents(t *testing.T) {
 	if _, err := dispatcher.Register(f.app, transport.RegisterOptions{Package: "main", TypeName: "App", AllowList: transport.NewMethodAllowList()}); err != nil {
 		t.Fatal(err)
 	}
-	calls := map[string][]any{
-		"InterruptTurn":             {f.thread.ID, false},
-		"InterruptAndRevertIfClean": {f.thread.ID, InterruptRevertOptions{}, false},
+	type call struct {
+		name string
+		args []any
 	}
-	for name, args := range calls {
+	var calls []call
+	for _, confirmed := range [][]string{nil, {}, {"another-agent"}} {
+		calls = append(calls,
+			call{"InterruptTurn", []any{f.thread.ID, confirmed}},
+			call{"InterruptAndRevertIfClean", []any{f.thread.ID, InterruptRevertOptions{}, confirmed}})
+	}
+	for _, c := range calls {
+		name, args := c.name, c.args
 		method, ok := dispatcher.LookupName(name)
 		if !ok {
 			t.Fatalf("missing method %s", name)
@@ -553,7 +564,7 @@ func TestStopRefusalWireFrameNamesTheAgents(t *testing.T) {
 		for _, loopback := range []bool{false, true} {
 			_, frame := dispatcher.InvokeForOrigin(context.Background(), method, params, loopback)
 			if frame == nil || frame.Code != transport.ErrCodeBackgroundAgentsRunning {
-				t.Fatalf("%s loopback=%v: frame %+v, want %s", name, loopback, frame, transport.ErrCodeBackgroundAgentsRunning)
+				t.Fatalf("%s %s loopback=%v: frame %+v, want %s", name, params[len(params)-1], loopback, frame, transport.ErrCodeBackgroundAgentsRunning)
 			}
 			if frame.Message != "Stopping now would also stop 1 background agent. Confirm to stop it." {
 				t.Fatalf("%s loopback=%v: message %q", name, loopback, frame.Message)

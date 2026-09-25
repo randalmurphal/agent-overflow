@@ -788,7 +788,7 @@ describe('runInterruptOrRevert with live background agents', () => {
     expect(runInterruptOrRevert(pane, EMPTY_DRAFT)).toBe(false);
     expect(getActiveTurn('thread-1')).toBeNull();
     await settle();
-    expect(calls).toEqual([['thread-1', false]]);
+    expect(calls).toEqual([['thread-1', []]]);
     expect(pendingBackgroundKillConfirmation()).toBeNull();
     expect(isThreadInterruptPending('thread-1')).toBe(false);
   });
@@ -799,14 +799,14 @@ describe('runInterruptOrRevert with live background agents', () => {
     const calls: unknown[][] = [];
     setBindingMock('InterruptTurn', async (...args: unknown[]) => {
       calls.push(args);
-      if (args[1] === false) throw refusal();
+      if ((args[1] as string[]).length === 0) throw refusal();
     });
 
     expect(runInterruptOrRevert(pane, EMPTY_DRAFT)).toBe(false);
     // A listed live agent: no optimistic clear, the refusal is expected.
     expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
     await settle();
-    expect(calls).toEqual([['thread-1', false]]);
+    expect(calls).toEqual([['thread-1', []]]);
     expect(pendingBackgroundKillConfirmation()).toMatchObject({ threadId: 'thread-1', agents: [agent] });
     expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
     // The question is not an interrupt in flight: the composer keeps its
@@ -827,7 +827,7 @@ describe('runInterruptOrRevert with live background agents', () => {
     const calls: unknown[][] = [];
     setBindingMock('InterruptTurn', async (...args: unknown[]) => {
       calls.push(args);
-      if (args[1] === false) throw refusal();
+      if ((args[1] as string[]).length === 0) throw refusal();
     });
 
     runInterruptOrRevert(pane, EMPTY_DRAFT);
@@ -835,7 +835,7 @@ describe('runInterruptOrRevert with live background agents', () => {
     expect(pendingBackgroundKillConfirmation()).not.toBeNull();
     resolveBackgroundKillConfirmation(true);
     await settle();
-    expect(calls).toEqual([['thread-1', false], ['thread-1', true]]);
+    expect(calls).toEqual([['thread-1', []], ['thread-1', ['tu-a']]]);
     expect(getActiveTurn('thread-1')).toBeNull();
     expect(isThreadInterruptPending('thread-1')).toBe(false);
     expect(pane.generalError ?? '').toBe('');
@@ -848,7 +848,7 @@ describe('runInterruptOrRevert with live background agents', () => {
     const calls: unknown[][] = [];
     setBindingMock('InterruptTurn', async (...args: unknown[]) => {
       calls.push(args);
-      if (args[1] === false) throw refusal();
+      if ((args[1] as string[]).length === 0) throw refusal();
     });
 
     runInterruptOrRevert(pane, EMPTY_DRAFT);
@@ -861,7 +861,7 @@ describe('runInterruptOrRevert with live background agents', () => {
     expect(pendingBackgroundKillConfirmation()?.threadId).toBe('thread-1');
     resolveBackgroundKillConfirmation(false);
     await settle();
-    expect(calls).toEqual([['thread-1', false]]);
+    expect(calls).toEqual([['thread-1', []]]);
     expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
   });
 
@@ -888,7 +888,7 @@ describe('runInterruptOrRevert with live background agents', () => {
     const calls: unknown[][] = [];
     setBindingMock('InterruptTurn', async (...args: unknown[]) => {
       calls.push(args);
-      if (args[1] === false) throw refusal();
+      if ((args[1] as string[]).length === 0) throw refusal();
     });
     runInterruptOrRevert(pane, EMPTY_DRAFT);
     await settle();
@@ -933,13 +933,13 @@ describe('runInterruptOrRevert with live background agents', () => {
     expect(pane.items.find((i) => i.id === 'u:0')).toBeUndefined();
     await settle();
     expect(revertCalls).toHaveLength(1);
-    expect(revertCalls[0][2]).toBe(false);
+    expect(revertCalls[0][2]).toEqual([]);
     // The row is back and the person is asked; the un-send is off the table.
     expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
     expect(pendingBackgroundKillConfirmation()?.agents).toEqual([agent]);
     resolveBackgroundKillConfirmation(true);
     await settle();
-    expect(interruptCalls).toEqual([['thread-1', true]]);
+    expect(interruptCalls).toEqual([['thread-1', ['tu-a']]]);
     expect(pane.items.find((i) => i.id === 'u:0')).toBeDefined();
     expect(getActiveTurn('thread-1')).toBeNull();
     expect(isThreadInterruptPending('thread-1')).toBe(false);
@@ -952,7 +952,7 @@ describe('runInterruptOrRevert with live background agents', () => {
     const calls: unknown[][] = [];
     setBindingMock('InterruptTurn', async (...args: unknown[]) => {
       calls.push(args);
-      if (args[1] === false) throw refusal();
+      if ((args[1] as string[]).length === 0) throw refusal();
     });
     runInterrupt(pane);
     expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
@@ -960,8 +960,68 @@ describe('runInterruptOrRevert with live background agents', () => {
     expect(pendingBackgroundKillConfirmation()?.threadId).toBe('thread-1');
     resolveBackgroundKillConfirmation(true);
     await settle();
-    expect(calls).toEqual([['thread-1', false], ['thread-1', true]]);
+    expect(calls).toEqual([['thread-1', []], ['thread-1', ['tu-a']]]);
     expect(getActiveTurn('thread-1')).toBeNull();
+  });
+
+  it('asks again naming both when an agent launched while the question was open, and only that answer stops', async () => {
+    const pane = stoppablePane();
+    replaceSubagentRunStates('thread-1', new Map([['tu-a', { state: 'running', waitingOn: 0, report: null }]]));
+    // A resumed round: the confirmation names it by its transcript root.
+    const later = { launchItemId: 'carrier-b', description: 'later worker', runState: 'running', transcriptRootId: 'tu-b' };
+    const calls: unknown[][] = [];
+    setBindingMock('InterruptTurn', async (...args: unknown[]) => {
+      calls.push(args);
+      const confirmed = args[1] as string[];
+      if (confirmed.length === 0) throw refusal();
+      if (!confirmed.includes('tu-b')) {
+        throw new TransportError('background_agents_running', 'Stopping now would also stop 2 background agents.', {
+          backgroundAgents: [agent, later],
+        });
+      }
+    });
+
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await settle();
+    expect(pendingBackgroundKillConfirmation()?.agents).toEqual([agent]);
+    resolveBackgroundKillConfirmation(true);
+    await settle();
+    // The confirmation named one agent; the backend refused it naming both,
+    // and the turn is back on screen behind the new question.
+    expect(calls).toEqual([['thread-1', []], ['thread-1', ['tu-a']]]);
+    expect(pendingBackgroundKillConfirmation()?.agents).toEqual([agent, later]);
+    expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
+    expect(isThreadInterruptPending('thread-1')).toBe(false);
+    expect(pane.generalError ?? '').toBe('');
+
+    resolveBackgroundKillConfirmation(true);
+    await settle();
+    expect(calls).toEqual([['thread-1', []], ['thread-1', ['tu-a']], ['thread-1', ['tu-a', 'tu-b']]]);
+    expect(pendingBackgroundKillConfirmation()).toBeNull();
+    expect(getActiveTurn('thread-1')).toBeNull();
+    expect(pane.generalError ?? '').toBe('');
+  });
+
+  it('reports a refusal of a confirmed Stop whose agent list cannot be read, and keeps the turn', async () => {
+    const pane = stoppablePane();
+    replaceSubagentRunStates('thread-1', new Map([['tu-a', { state: 'running', waitingOn: 0, report: null }]]));
+    const calls: unknown[][] = [];
+    setBindingMock('InterruptTurn', async (...args: unknown[]) => {
+      calls.push(args);
+      if ((args[1] as string[]).length === 0) throw refusal();
+      throw new TransportError('background_agents_running', 'Stopping now would also stop 1 background agent.', {
+        backgroundAgents: 'unreadable',
+      });
+    });
+
+    runInterruptOrRevert(pane, EMPTY_DRAFT);
+    await settle();
+    resolveBackgroundKillConfirmation(true);
+    await settle();
+    expect(calls).toHaveLength(2);
+    expect(pendingBackgroundKillConfirmation()).toBeNull();
+    expect(getActiveTurn('thread-1')?.turnId).toBe('turn-1');
+    expect(pane.generalError ?? '').not.toBe('');
   });
 
   it('a torn-down thread settles its open question as "keep them" and sends nothing more', async () => {
@@ -970,7 +1030,7 @@ describe('runInterruptOrRevert with live background agents', () => {
     const calls: unknown[][] = [];
     setBindingMock('InterruptTurn', async (...args: unknown[]) => {
       calls.push(args);
-      if (args[1] === false) throw refusal();
+      if ((args[1] as string[]).length === 0) throw refusal();
     });
     runInterruptOrRevert(pane, EMPTY_DRAFT);
     await settle();

@@ -125,13 +125,14 @@ func (a *App) SendMessageWithOptions(ctx context.Context, threadID string, conte
 // the session state is correct even if the timeline marker is missing.
 //
 // A Claude interrupt also kills the thread's live background agents
-// (app_background_kill.go). Unless confirmBackgroundKill is set, the call
-// refuses with background_agents_running and the agents instead, before
-// anything is cancelled, interrupted or written.
+// (app_background_kill.go). confirmedAgents names, by transcriptRootId,
+// the agents the person confirmed the Stop may kill. While a live agent is
+// not among them the call refuses with background_agents_running and every
+// live agent instead, before anything is cancelled, interrupted or written.
 //
 //ao:scope threads:operate
-func (a *App) InterruptTurn(threadID string, confirmBackgroundKill bool) error {
-	_, err := a.interruptTurnAtIndex(context.Background(), threadID, anyOpenTurn, !confirmBackgroundKill)
+func (a *App) InterruptTurn(threadID string, confirmedAgents []string) error {
+	_, err := a.interruptTurnAtIndex(context.Background(), threadID, anyOpenTurn, personalStop(confirmedAgents))
 	return err
 }
 

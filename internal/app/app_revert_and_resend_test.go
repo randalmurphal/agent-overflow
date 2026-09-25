@@ -14,6 +14,7 @@ import (
 	"agent-overflow/internal/attachment"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/testutil"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
@@ -38,7 +39,14 @@ const resendSourceSessionJSONL = `{"type":"user","uuid":"u0","parentUuid":null,"
 // detaches HOME and fails the test if an unmocked spawn slips through.
 func newResendTestApp(t *testing.T) (*App, *capturedEventBus) {
 	t.Helper()
-	app, bus := setupE2EApp(t)
+	return newResendTestAppAt(t, storetest.ClonePath(t))
+}
+
+// newResendTestAppAt is newResendTestApp over the database at dbPath, for a
+// test that injects faults through a second handle.
+func newResendTestAppAt(t *testing.T, dbPath string) (*App, *capturedEventBus) {
+	t.Helper()
+	app, bus := setupE2EAppOn(t, dbPath, t.TempDir())
 	// One ordered log for BOTH App-level emissions (user_message:reverted)
 	// and triage's item stream, so this saga's truncate-before-new-message
 	// ordering is observable in a single sequence.

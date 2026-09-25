@@ -859,7 +859,7 @@ type SendMessageOptions struct {
 // It never refuses on live background agents: its callers, a workflow
 // takeover and an agent request's cancel, are not a person's Stop.
 func (a *App) interruptTurnCtx(ctx context.Context, threadID string) error {
-	_, err := a.interruptTurnAtIndex(ctx, threadID, anyOpenTurn, false)
+	_, err := a.interruptTurnAtIndex(ctx, threadID, anyOpenTurn, nil)
 	return err
 }
 
@@ -874,19 +874,19 @@ const anyOpenTurn = -1
 // whatever is running. It reports whether the interrupt was sent, so a caller
 // that must say what it stopped does not have to guess.
 //
-// refuseAgentKill makes the call return a backgroundKillRefusal while the
-// interrupt would kill live background agents. The check runs before the
+// A person's Stop passes its consent: the call returns a
+// backgroundKillRefusal while the interrupt would kill a live background
+// agent the consent does not cover. Nil is an interrupt that is not a
+// person's Stop, which is never refused. The check runs before the
 // parked-call cancels below and again under the thread action lock, where an
 // agent launched after the first check is still seen before the interrupt.
-func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectTurnIndex int, refuseAgentKill bool) (bool, error) {
+func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectTurnIndex int, consent *agentKillConsent) (bool, error) {
 	if a.shuttingDown.Load() {
 		return false, ErrShuttingDown
 	}
-	if refuseAgentKill {
-		if current, ok := a.sessionManager().get(threadID); ok {
-			if err := a.refuseBackgroundKill(threadID, current); err != nil {
-				return false, err
-			}
+	if current, ok := a.sessionManager().get(threadID); ok {
+		if err := a.refuseBackgroundKill(threadID, current, consent); err != nil {
+			return false, err
 		}
 	}
 	// A tool call parked on a remote command returns at once as backgrounded;
@@ -945,10 +945,8 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 	if providerSess == nil {
 		return false, fmt.Errorf("session has no provider")
 	}
-	if refuseAgentKill {
-		if err := a.refuseBackgroundKill(threadID, sess); err != nil {
-			return false, err
-		}
+	if err := a.refuseBackgroundKill(threadID, sess, consent); err != nil {
+		return false, err
 	}
 	// Sampled BEFORE the interrupt ack: the event worker keeps handling
 	// wire events while it is awaited, so the cut turn can settle in the gap and
@@ -1000,7 +998,10 @@ func (a *App) interruptTurnAtIndex(ctx context.Context, threadID string, expectT
 		// the stopped bookkeeping belongs on the turn the user cut
 		// (round-11, C11-1).
 		if _, err := a.triage.MarkUserInterrupt(threadID, interruptedTurn, stampToken); err != nil {
+			// The provider stopped; the thread's record of the stop did
+			// not land, so its rows can still read as running.
 			log.Printf("app: interrupt turn: mark user interrupt: %v", err)
+			a.emitErrorToThread(threadID, fmt.Sprintf("The turn stopped, but recording the stop failed: %v", err))
 		}
 		a.eagerPersistFlushSendsOnInterrupt(threadID, sess, interruptedTurn, stampToken)
 	}
@@ -1295,6 +1296,7 @@ func (a *App) teardownAndCloseSession(threadID string, sess session) error {
 		// started new launches yet.
 		if _, err := a.triage.SettleBackgroundLaunchesForSessionEnd(threadID); err != nil {
 			log.Printf("app: settle background launches on session close for thread %s: %v", threadID, err)
+			a.emitErrorToThread(threadID, triage.BackgroundSettleFailureSummary(err))
 		}
 	}
 	if sess.Provider != "" {

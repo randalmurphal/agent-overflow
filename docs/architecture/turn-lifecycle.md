@@ -146,7 +146,9 @@ When a turn ends, triage force-closes any `tool_call` rows with
 `status='running' && !is_background && turn_index=currentTurn` to
 `status='errored'` with a synthesized completion. This handles
 provider bugs where a `tool_result` is dropped. Backgrounded
-launches are exempt. They legitimately stay `running`.
+launches are exempt. They legitimately stay `running`. So are the rows a
+background agent owns: the agent's own end settles them
+(§Agent-owned rows).
 
 ## 2. Task lifecycle (Claude only)
 
@@ -360,16 +362,48 @@ already knows.
   files the row under the ROOT on the launch's turn. It is not
   provisional (no transcript row will ever bind it) and it carries no
   `subagent_resume_prompt`, so it never cuts the §E6 round slicing.
-- Settlement: the first stop with no live owned shell, a
-  `task_updated{killed}`, a §E6 rebind onto a parked agent
+- Only a stop whose typed status can be a pause parks: a completed or
+  statusless report. A killed, stopped or failed report ends the agent
+  however many shells it owns (`taskStatusEnds`).
+- Settlement: the first stop with no live owned shell, any ending
+  status above (a Stop's `task_updated{killed}` included), a §E6 rebind
+  onto a parked agent
   (`settleParkedLaunchForRebind`: the bound row settles from its stash
   before the carrier takes over, and the carrier then parks and wakes
   by the same rules), and session end. A `TaskOutput` observation of a
   parked agent settles nothing (`observeBackgroundTaskTerminal`).
 
-Before this (2026-09-08) the first stop settled the launch and the
-parser dropped the wake, so every woken round's rows, bells and
-progress landed under a card already rendered as completed.
+### Agent-owned rows
+
+A background agent owns every row under its transcript root, whichever
+turn wrote it, down to any background launch inside it, which owns its
+own rows. An owner is a background `tool_call` other than a Codex spawn
+card (`collab_agent`); a Codex child's rows are settled by the parent
+turn (`internal/store/agent_rows.go`).
+
+- A turn's end (§Force-close safety net), a Stop's flip of the
+  interrupted turn (`MarkUserInterrupt`) and the boot sweep of an
+  unfinished turn (§Crash behavior) settle only the rows no agent owns.
+  The router's turn boundaries leave an agent's open streams, their
+  counts and its queued rows alone (`agentOwnedStreamScopes`).
+- The agent's end settles its rows. Its completion sibling is written
+  with `store.UpsertAgentEnd`, which settles every row still open under
+  the agent in the same transaction. Before that write the router
+  settles the streams it holds for the agent and persists the rows
+  queued behind them (`persistAgentEndLocked`).
+- The sibling's status decides how the rows read (`newAgentEnd`): a
+  completed agent's open text completes and a running tool call reads
+  as a turn's unresolved tool does; a stopped agent's rows read
+  "stopped"; a failed agent, or one that died with its session
+  (`source="session_died"`), leaves them "interrupted".
+- The interrupt queue drains per scope: a row waits only for the open
+  streams of its own scope, so an agent's rows neither wait for nor end
+  with a turn. A truncated turn does not rewrite a queued completion
+  sibling or bell; their status is the background work's own.
+
+Every way an agent ends reaches the same write: its own report, a Stop
+in any later turn (the CLI kills it, §Tray decoupling item 3), the
+session's end and the boot sweep (§Crash recovery).
 
 ### Merge rule
 
@@ -430,13 +464,16 @@ Implementation:
    flush and yanked it back out on the next
    (bug-report-20260801T024731Z).
 3. **`task_updated` with `status="killed"`** is a deliberate carve-out:
-   `killed` means the CLI ended the process — the user's `stop_task`
-   (the StopClaudeTask binding behind the tray's Stop button), a
-   foreground agent exiting and taking its shells with it, or session
-   close (claude-wire.md §Background task ownership). No agent
+   `killed` means the CLI ended the process: the user's `stop_task`
+   (the StopClaudeTask binding behind the tray's Stop button), a turn
+   interrupt (Stop), which kills every running or parked async agent
+   and the shells each one owns, a foreground agent exiting and taking
+   its shells with it, or session close (claude-wire.md §Background
+   task ownership). No agent
    observation is coming, so triage skips the stash and writes the
    sibling immediately so chat shows the killed badge without waiting
-   for a future turn. When the launch row does not exist yet (a
+   for a future turn. A killed agent's sibling ends the agent
+   (§Agent-owned rows). When the launch row does not exist yet (a
    subagent-owned shell killed before the transcript projection
    persisted its row), the killed terminal is stashed instead and
    drained when the row lands
@@ -461,7 +498,8 @@ drains and merges the real captured outcome; otherwise it falls back to
 killed it at shutdown" is the closest truthful state). Writing the
 sibling is the same terminal step the steady-state observation path
 takes after draining a stash, so the recovery path reuses
-`writeBackgroundCompletionSibling` end-to-end. Idempotent and
+`writeBackgroundCompletionSibling` end-to-end; for an agent that is its
+end, which leaves its open rows "interrupted" (§Agent-owned rows). Idempotent and
 crash-safe: if the process dies mid-sweep, the launch row is still
 `status='running'` with no sibling, so the next boot's sweep finds it
 again.
@@ -486,7 +524,11 @@ die with the CLI process and a resume does not revive them, so every
 still-running backgrounded launch on the closed thread, including nested
 launches that top-level turn settlement does not cover, gets its
 `session_died` sibling immediately instead
-of ticking in the tray until the next app boot. Both the per-thread
+of ticking in the tray until the next app boot. The rows still queued
+behind open streams persist first, before the thread's router state
+goes. A per-thread settle that fails reaches the thread: an error row
+(`BackgroundSettleFailureSummary`) after a session end or a Stop
+un-send's cut, and the result's warning after an edit-and-resend. Both the per-thread
 settle and the boot sweep prune leftover stash rows afterwards
 (thread-scoped and global respectively): a stash whose launch row
 never materialized has no future observer, and the table has no other
@@ -723,7 +765,9 @@ The `turns` row carries:
 A provider crash while the app is alive settles its turn: the session
 teardown synthesizes a truncated turn-complete, which writes
 `completed_at` + `stop_reason='interrupted'` and flips the turn's
-streaming/running items to errored.
+streaming/running items to errored. The rows a background agent owns
+are settled by the session-end settle instead, which ends each agent
+(§Agent-owned rows).
 
 An **app** crash mid-turn skips all of that and leaves the latest
 `turns` row with `completed_at=null` plus stranded streaming/running
@@ -732,8 +776,9 @@ items. `Router.RecoverCrashedTurns` runs once during
 null row is provably crash residue) and performs the same settle the
 in-app path would have: `completed_at=now`,
 `stop_reason='interrupted'`, item flip with the " — interrupted"
-suffix (backgrounded launches exempt, since the background recovery sweep
-below owns those). One transaction, O(crashed rows) via the partial
+suffix (backgrounded launches and the rows a background agent owns are
+exempt, since the background recovery sweep ends each agent with its
+rows, §Agent-owned rows). One transaction, O(crashed rows) via the partial
 index `idx_turns_inflight`. Without this sweep the null row wedges
 `GetActiveTurn`-guarded flows, most visibly revert, whose "interrupt
 the current turn" error is unsatisfiable when no session exists to

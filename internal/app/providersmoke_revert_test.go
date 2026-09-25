@@ -130,7 +130,7 @@ func TestProviderSmokeRevertFlows(t *testing.T) {
 				// live cut, rather than the pre-start fork fallback.
 				waitProviderSmokeRevertAnchor(t, ctx, app, thread.ID, sent.TurnIndex)
 			}
-			undone, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{ExpectedSendID: undoID, Draft: &DraftSnapshot{Content: raw}}, false)
+			undone, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{ExpectedSendID: undoID, Draft: &DraftSnapshot{Content: raw}}, nil)
 			if err != nil || !undone.Reverted {
 				t.Fatalf("early Stop: %+v err=%v", undone, err)
 			}

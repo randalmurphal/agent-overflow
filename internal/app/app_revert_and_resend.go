@@ -240,9 +240,10 @@ func (a *App) RevertConversationAndResendMessage(
 	if err := a.store.DeleteThreadDraftRecovery(threadID, opts.SendID); err != nil {
 		// The message is accepted; return a cleanup outcome without reporting a
 		// failed send. Boot recovery recognizes its SendID and retires the copy.
-		result.Warning = fmt.Sprintf("Message sent; recovery cleanup failed: %v", err)
+		result.Warning = joinWarnings(cut.SettleFailure, fmt.Sprintf("Message sent; recovery cleanup failed: %v", err))
 		return result, nil
 	}
+	result.Warning = cut.SettleFailure
 	return result, nil
 }
 
@@ -357,4 +358,15 @@ func (a *App) restoreReplacementDraftsAtBoot() error {
 		}
 	}
 	return errors.Join(failures...)
+}
+
+// joinWarnings is the one warning line for the non-empty warnings given.
+func joinWarnings(warnings ...string) string {
+	kept := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		if warning != "" {
+			kept = append(kept, warning)
+		}
+	}
+	return strings.Join(kept, " ")
 }

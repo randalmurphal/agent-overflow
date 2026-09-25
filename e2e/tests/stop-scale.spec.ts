@@ -103,11 +103,11 @@ test('Stop kills 100 agents with 3 shells each: acked without a timeout, every r
   await harness.rpc('SendMessage', threadId, 'what next', null);
   await waitForGate(harness, 'never');
 
-  const listed = await harness.rpc<Array<{ launchItemId: string }>>('RunningBackgroundAgents', threadId);
+  const listed = await harness.rpc<Array<{ transcriptRootId: string }>>('RunningBackgroundAgents', threadId);
   expect(listed).toHaveLength(AGENTS);
   const stopped = harness.waitForEvent('provider:turn_completed', undefined, 120_000);
   const started = Date.now();
-  await harness.rpc('InterruptTurn', threadId, true);
+  await harness.rpc('InterruptTurn', threadId, listed.map((agent) => agent.transcriptRootId));
   const acked = Date.now();
   console.log(`stop-scale: ack ${acked - started} ms`);
   await stopped;
