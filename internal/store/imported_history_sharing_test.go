@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
-	"strings"
+	"slices"
 	"testing"
 )
 
@@ -105,12 +105,21 @@ func TestImportedHistoryForkIsolationSearchAndLastReference(t *testing.T) {
 	if len(hits) != 420 || len(identities) != 420 {
 		t.Fatalf("search rebuild changed fork identities: %d hits / %d identities", len(hits), len(identities))
 	}
-	// The source's imported rows its forks show never change.
-	if err := s.UpdateItemMeta("source", "item-000", `{"changed":true}`); err == nil || !strings.Contains(err.Error(), shownHistoryImmutable) {
-		t.Fatalf("source rewrite of a row its forks show = %v, want refused", err)
+	// The source's rewrite of an imported row its forks show lands on its
+	// own copy; the forks keep the row and payload they showed, from a
+	// holder's copy.
+	fork, grandchild := timelineShape(t, s, "fork"), timelineShape(t, s, "grandchild")
+	if err := s.UpdateItemMeta("source", "item-000", `{"changed":true}`); err != nil {
+		t.Fatalf("source rewrite of a row its forks show: %v", err)
 	}
-	if err := s.ReplacePayloadData("source", "item-000", []byte("changed"), "{}", 3); err == nil || !strings.Contains(err.Error(), shownHistoryImmutable) {
-		t.Fatalf("source rewrite of a payload its forks show = %v, want refused", err)
+	if err := s.ReplacePayloadData("source", "item-000", []byte("changed"), "{}", 3); err != nil {
+		t.Fatalf("source rewrite of a payload its forks show: %v", err)
+	}
+	requireShape(t, s, "fork", fork)
+	requireShape(t, s, "grandchild", grandchild)
+	held := holderOf(t, s, "fork")
+	if data, err := s.GetPayloadData("source", "item-000"); err != nil || string(data) != "changed" {
+		t.Fatalf("source reads item-000 = %q, %v", data, err)
 	}
 	requireOriginal := func(thread, id string) {
 		t.Helper()
@@ -118,7 +127,7 @@ func TestImportedHistoryForkIsolationSearchAndLastReference(t *testing.T) {
 			t.Fatalf("%s reads %s = %q, %v", thread, id, data, err)
 		}
 	}
-	for _, thread := range []string{"source", "fork", "grandchild"} {
+	for _, thread := range []string{"fork", "grandchild"} {
 		requireOriginal(thread, "item-000")
 	}
 	// A deleted thread its forks read stays as the holder of what they
@@ -135,8 +144,10 @@ func TestImportedHistoryForkIsolationSearchAndLastReference(t *testing.T) {
 	if err := s.DeleteThread("grandchild"); err != nil {
 		t.Fatal(err)
 	}
-	requireIDs(t, "released holders", releasedHolders(t, s), []string{"fork", "source"})
-	for _, id := range []string{"fork", "source"} {
+	released := []string{held, "fork", "source"}
+	slices.Sort(released)
+	requireIDs(t, "released holders", releasedHolders(t, s), released)
+	for _, id := range released {
 		if err := s.DeleteThread(id); err != nil {
 			t.Fatal(err)
 		}

@@ -97,7 +97,8 @@ func insertLevelTx(tx *sql.Tx, holder string, readers []forkLevel, deepest int) 
 // and not hidden), no turn row below the cut, and no hide of a row a level
 // behind it shows. It is an existence probe below a cut, so it runs only
 // for a holder (dropEmptyHolderLevelsTx), whose rows never change once it
-// holds them.
+// holds them. A holder gains rows only for the readers that read it
+// (reusableHolderTx), so a level found empty and dropped stays right.
 const emptyLevelSQL = `NOT EXISTS (SELECT 1 FROM items
 	 WHERE items.thread_id = l.ancestor_id AND ` + inheritedItemVisibleSQL + `)
  AND NOT EXISTS (SELECT 1 FROM thread_import_chunks refs

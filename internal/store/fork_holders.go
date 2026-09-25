@@ -19,10 +19,11 @@ import (
 // forks then read them from. The rows move once, one statement per table
 // whatever the number of forks, and keep their ids, positions and content,
 // so every fork reads the same timeline before and after and no client is
-// told anything. splitShownRowsTx makes one holder per write; a deleted
-// thread its forks still read becomes a holder itself (retireToHolderTx).
-// A holder no lineage row names any more is marked deleting
-// (trg_thread_fork_lineage_release) and the app deletes it.
+// told anything. splitShownRowsTx gives them to the holder the forks read
+// right before the thread when it serves them all (reusableHolderTx), else
+// to a new one; a deleted thread its forks still read becomes a holder
+// itself (retireToHolderTx). A holder no lineage row names any more is
+// marked deleting (trg_thread_fork_lineage_release) and the app deletes it.
 
 // forkSplit names the rows a write takes out of a thread. Its predicate is
 // written with unqualified item columns and never names thread_id, so it
@@ -70,11 +71,12 @@ func (sp forkSplit) moveSel(cut timelineRow) (string, []any) {
 }
 
 // splitShownRowsTx runs before threadID reverts or deletes the rows sp
-// selects. The rows its readers show move to a new holder, which every
-// reader then reads at the depth it read threadID, with its cut there;
-// the readers read threadID one level further. The rows the readers do
-// not show stay for the caller to remove. w is threadID's write: the
-// rows leave its cards. It returns how many rows it took.
+// selects. The rows its readers show move to a holder, which every reader
+// then reads right before threadID, with its cut there: a new holder the
+// readers read at the depth they read threadID, reading threadID one level
+// further, or the one they already read there (holderForTx). The rows the
+// readers do not show stay for the caller to remove. w is threadID's
+// write: the rows leave its cards. It returns how many rows it took.
 func splitShownRowsTx(tx *sql.Tx, w *cardWrite, threadID string, sp forkSplit) (int, error) {
 	first, found, err := firstOwnRowTx(tx, threadID, sp)
 	if err != nil {
@@ -98,7 +100,7 @@ func splitShownRowsTx(tx *sql.Tx, w *cardWrite, threadID string, sp forkSplit) (
 		}
 	}
 	// The turn rows a reader reads through threadID from keep on: threadID's
-	// own ones below the reader's cut turn (inheritedTurnVisibleSQL). Those
+	// own ones below the reader's cut turn (forkTurnVisibleSQL). Those
 	// threadID inherits the reader reads through the deeper levels as before.
 	var turns []int
 	if sp.keep != nil {
@@ -152,27 +154,27 @@ func splitShownRowsTx(tx *sql.Tx, w *cardWrite, threadID string, sp forkSplit) (
 	return taken, dropLevelsTx(tx, w, threadID, ids)
 }
 
-// holdSplitRowsTx moves the rows sp selects below maxCut to a new holder
-// and gives it to held. The order is load-bearing: the holder's imported
-// chunks attach before it holds a local row or payload (the chunk overlap
-// triggers), its payloads and the launch copies arrive before any reader
-// reads it (trg_payload_chunks_shown_insert), and the readers read it
-// before the rows move, so the launches the move revives in threadID are
-// ones no reader shows there (trg_items_revive_bg_launch_on_completion_move).
+// holdSplitRowsTx moves the rows sp selects below maxCut to a holder and
+// gives it to held. A row whose id or position the holder already holds
+// stays (holderHoldsSQL). The order is load-bearing: a new holder's
+// imported chunks attach before it holds a local row or payload (the chunk
+// overlap triggers), its payloads and the launch copies arrive before any
+// reader reads it (trg_payload_chunks_shown_insert), and the readers read
+// it before the rows move, so the launches the move revives in threadID
+// are ones no reader shows there
+// (trg_items_revive_bg_launch_on_completion_move).
 func holdSplitRowsTx(tx *sql.Tx, w *cardWrite, threadID string, sp forkSplit, held []forkLevel, maxCut timelineRow, turns []int) (int, error) {
-	deepest, err := requireLevelRoomTx(tx, threadID, held)
-	if err != nil {
-		return 0, err
-	}
-	holder, err := createHolderTx(tx, threadID)
+	holder, deepest, reused, err := holderForTx(tx, threadID, held)
 	if err != nil {
 		return 0, err
 	}
 	if _, err := tx.Exec(`PRAGMA defer_foreign_keys = ON`); err != nil {
 		return 0, fmt.Errorf("store: defer foreign keys for %s's holder: %w", threadID, err)
 	}
-	sel, selArgs := sp.moveSel(maxCut)
-	imported, err := holdImportedRowsTx(tx, w, threadID, holder, sp.fromTurn, sel, selArgs)
+	span, spanArgs := sp.moveSel(maxCut)
+	sel := span + " AND NOT " + holderHoldsSQL
+	selArgs := append(append([]any{}, spanArgs...), holderHoldsArgs(holder)...)
+	imported, err := holdImportedRowsTx(tx, w, threadID, holder, reused, sp.fromTurn, sel, selArgs)
 	if err != nil {
 		return 0, err
 	}
@@ -182,21 +184,27 @@ func holdSplitRowsTx(tx *sql.Tx, w *cardWrite, threadID string, sp forkSplit, he
 		return 0, fmt.Errorf("store: read the rows %s's forks read: %w", threadID, err)
 	}
 	if err := withHistoryBulkLoadTx(tx, holder, func() error {
-		return holdSettledLaunchesTx(tx, threadID, holder, moved, sel, selArgs)
+		return holdSettledLaunchesTx(tx, threadID, holder, span, spanArgs)
 	}); err != nil {
 		return 0, err
 	}
-	if err := holdPayloadsTx(tx, threadID, holder, append(moved, imported.localPayloads...), sel, selArgs); err != nil {
+	drop, err := holdPayloadsTx(tx, threadID, holder, append(moved, imported.localPayloads...), sel, selArgs)
+	if err != nil {
 		return 0, err
 	}
-	if err := insertLevelTx(tx, holder, held, deepest); err != nil {
-		return 0, err
+	if !reused {
+		if err := insertLevelTx(tx, holder, held, deepest); err != nil {
+			return 0, err
+		}
 	}
 	if err := withHistoryBulkLoadTx(tx, threadID, func() error {
 		return withHistoryBulkLoadTx(tx, holder, func() error {
 			return moveItemRowsTx(tx, w, threadID, holder, sel, selArgs, len(moved))
 		})
 	}); err != nil {
+		return 0, err
+	}
+	if err := dropPayloadsTx(tx, threadID, drop); err != nil {
 		return 0, err
 	}
 	ids := make([]string, len(moved))
@@ -227,7 +235,7 @@ func holdSplitRowsTx(tx *sql.Tx, w *cardWrite, threadID string, sp forkSplit, he
 			return 0, err
 		}
 	}
-	return len(moved) + len(imported.ids), hideHeldRowsTx(tx, holder, sp.keep)
+	return len(moved) + len(imported.ids), hideHeldRowsTx(tx, holder, append(ids, imported.ids...), sp.keep)
 }
 
 // firstOwnRowTx is the first of threadID's own rows, local or imported,
@@ -354,15 +362,17 @@ func moveItemRowsTx(tx *sql.Tx, w *cardWrite, threadID, holder, sel string, selA
 }
 
 // holdSettledLaunchesTx gives holder a settled copy of each background
-// launch threadID keeps whose completion moves (launchesLosingCompletionTx):
-// the move revives the launch in threadID, and the forks that read the
-// completion from the holder read the launch there, settled, as before.
-func holdSettledLaunchesTx(tx *sql.Tx, threadID, holder string, moved []heldRow, sel string, selArgs []any) error {
-	var targets []string
-	for _, row := range moved {
-		if row.completionOf != "" {
-			targets = append(targets, row.completionOf)
-		}
+// launch threadID keeps whose completions all leave it
+// (launchesLosingCompletionTx): the completions in span move to the holder
+// or, when it holds their id or position, are the caller's to remove.
+// Either revives the launch in threadID, and the forks that read the
+// completion from the holder read the launch there, settled, as before. A
+// launch the holder already holds is the one they read.
+func holdSettledLaunchesTx(tx *sql.Tx, threadID, holder, span string, spanArgs []any) error {
+	targets, err := queryIDs(tx, `SELECT completion_of FROM items WHERE thread_id = ? AND completion_of <> '' AND `+span,
+		append([]any{threadID}, spanArgs...)...)
+	if err != nil {
+		return fmt.Errorf("store: read the completions %s's split takes: %w", threadID, err)
 	}
 	if len(targets) == 0 {
 		return nil
@@ -371,10 +381,11 @@ func holdSettledLaunchesTx(tx *sql.Tx, threadID, holder string, moved []heldRow,
 	if err != nil {
 		return err
 	}
+	args := append([]any{threadID, list}, spanArgs...)
 	launches, err := scanInheritedRows(tx, threadID, `SELECT id, COALESCE(payload_id, ''), COALESCE(input_payload_id, ''), thread_id
 		  FROM items WHERE thread_id = ? AND id IN (SELECT value FROM json_each(?))
 		   AND kind = 'tool_call' AND status = 'running' AND is_background = 1
-		   AND NOT (`+sel+`)`, append([]any{threadID, list}, selArgs...))
+		   AND NOT (`+span+`) AND NOT `+holderHoldsSQL, append(args, holderHoldsArgs(holder)...))
 	if err != nil || len(launches) == 0 {
 		return err
 	}
@@ -382,7 +393,7 @@ func holdSettledLaunchesTx(tx *sql.Tx, threadID, holder string, moved []heldRow,
 	for i, row := range launches {
 		ids[i] = row.id
 	}
-	losing, err := launchesLosingCompletionTx(tx, threadID, ids, "NOT ("+sel+")", selArgs)
+	losing, err := launchesLosingCompletionTx(tx, threadID, ids, "NOT ("+span+")", spanArgs)
 	if err != nil || len(losing) == 0 {
 		return err
 	}
@@ -402,10 +413,15 @@ func holdSettledLaunchesTx(tx *sql.Tx, threadID, holder string, moved []heldRow,
 // holdPayloadsTx gives holder the payloads of the rows that move: a payload
 // threadID still renders through a row it keeps is copied, any other one
 // moves with its append chunks and edit snapshots. The rows still name
-// threadID's payload until they move, under deferred foreign keys.
-func holdPayloadsTx(tx *sql.Tx, threadID, holder string, rows []heldRow, sel string, selArgs []any) error {
+// threadID's payload until they move, under deferred foreign keys. A
+// payload the holder already holds is the one its rows render, and those
+// that move render it too: every row of threadID that renders a payload a
+// fork shows went to the holder with the payload, and threadID changes
+// the payload only after that (reownShownPayloadTx). threadID's copy goes
+// once no row of threadID renders it.
+func holdPayloadsTx(tx *sql.Tx, threadID, holder string, rows []heldRow, sel string, selArgs []any) ([]string, error) {
 	seen := make(map[string]bool)
-	var move []string
+	var move, drop []string
 	// The numbered parameters bind the thread and the payload; each ? of
 	// the two selections takes the next number, so selArgs bind twice.
 	kept := `SELECT EXISTS (SELECT 1 FROM items WHERE thread_id = ?1 AND payload_id = ?2 AND NOT (` + sel + `))
@@ -417,40 +433,68 @@ func holdPayloadsTx(tx *sql.Tx, threadID, holder string, rows []heldRow, sel str
 				continue
 			}
 			seen[id] = true
-			var local, shared bool
-			if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM payloads WHERE thread_id = ? AND id = ?)`, threadID, id).Scan(&local); err != nil {
-				return fmt.Errorf("store: inspect payload %s/%s: %w", threadID, id, err)
+			var local, holds bool
+			if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM payloads WHERE thread_id = ?1 AND id = ?3),
+				    EXISTS (SELECT 1 FROM payloads WHERE thread_id = ?2 AND id = ?3)`, threadID, holder, id).Scan(&local, &holds); err != nil {
+				return nil, fmt.Errorf("store: inspect payload %s/%s: %w", threadID, id, err)
 			}
 			if !local {
 				continue
 			}
+			var shared bool
 			args := append([]any{threadID, id}, selArgs...)
 			args = append(args, selArgs...)
 			if err := tx.QueryRow(kept, args...).Scan(&shared); err != nil {
-				return fmt.Errorf("store: probe payload %s/%s: %w", threadID, id, err)
+				return nil, fmt.Errorf("store: probe payload %s/%s: %w", threadID, id, err)
 			}
-			if shared {
+			switch {
+			case holds && !shared:
+				drop = append(drop, id)
+			case holds:
+			case shared:
 				if err := copyPayloadFromTx(tx, holder, threadID, id); err != nil {
-					return err
+					return nil, err
 				}
-				continue
+			default:
+				move = append(move, id)
 			}
-			move = append(move, id)
 		}
 	}
 	if len(move) == 0 {
-		return nil
+		return drop, nil
 	}
 	list, err := jsonList(move)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	for _, table := range []struct{ name, column string }{
-		{"payloads", "id"}, {"payload_chunks", "payload_id"}, {"edit_file_snapshots", "payload_id"},
-	} {
+	for _, table := range payloadTables {
 		if _, err := tx.Exec(`UPDATE `+table.name+` SET thread_id = ? WHERE thread_id = ? AND `+table.column+
 			` IN (SELECT value FROM json_each(?))`, holder, threadID, list); err != nil {
-			return fmt.Errorf("store: move %s's %s to its holder: %w", threadID, table.name, err)
+			return nil, fmt.Errorf("store: move %s's %s to its holder: %w", threadID, table.name, err)
+		}
+	}
+	return drop, nil
+}
+
+// payloadTables are the tables that hold a payload, its row last.
+var payloadTables = []struct{ name, column string }{
+	{"payload_chunks", "payload_id"}, {"edit_file_snapshots", "payload_id"}, {"payloads", "id"},
+}
+
+// dropPayloadsTx deletes threadID's copies of payloads its holder holds,
+// once no row of threadID renders them (holdPayloadsTx).
+func dropPayloadsTx(tx *sql.Tx, threadID string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	list, err := jsonList(ids)
+	if err != nil {
+		return err
+	}
+	for _, table := range payloadTables {
+		if _, err := tx.Exec(`DELETE FROM `+table.name+` WHERE thread_id = ? AND `+table.column+
+			` IN (SELECT value FROM json_each(?))`, threadID, list); err != nil {
+			return fmt.Errorf("store: drop %s's %s its holder holds: %w", threadID, table.name, err)
 		}
 	}
 	return nil

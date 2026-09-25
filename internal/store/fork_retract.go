@@ -17,12 +17,16 @@ import (
 // inherited rows past that point the revert keeps (a promoted anchor's
 // same-turn content) become the fork's own copies (snapshotRowsTx), with
 // the turn rows the fork then shows. predicate selects the reverted rows
-// with unqualified item columns, all at or after fromTurn. The caller
-// removes its own reverted rows first (splitShownRowsTx, then the delete),
-// so the rows the fork's own forks read stay theirs. The stamps of the
-// fork's copied anchors, whose subtrees can hold the rows that leave, are
-// recomputed by w's finish (forkCopyStampsTx).
-func retractInheritedTx(tx *sql.Tx, w *cardWrite, threadID string, fromTurn int, predicate string, args []any) error {
+// with unqualified item columns, all at or after fromTurn; keep is where
+// the fork's history ends after the revert (forkSplit.keep). A revert of
+// no inherited row the fork shows still moves its cut to keep: rows it
+// hides or replaced with its own may sit past keep, and its next rows go
+// there. The caller removes its own reverted rows first
+// (splitShownRowsTx, then the delete), so the rows the fork's own forks
+// read stay theirs. The stamps of the fork's copied anchors, whose
+// subtrees can hold the rows that leave, are recomputed by w's finish
+// (forkCopyStampsTx).
+func retractInheritedTx(tx *sql.Tx, w *cardWrite, threadID string, fromTurn int, predicate string, args []any, keep timelineRow) error {
 	var depth int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM thread_fork_lineage WHERE thread_id = ?`, threadID).Scan(&depth); err != nil {
 		return fmt.Errorf("store: read fork lineage of %s: %w", threadID, err)
@@ -40,7 +44,10 @@ func retractInheritedTx(tx *sql.Tx, w *cardWrite, threadID string, fromTurn int,
 	var first timelineRow
 	err := tx.QueryRow(query, queryArgs...).Scan(&first.id, &first.turn, &first.item)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		if keep == nothingKept {
+			return unlinkForkTx(tx, w, threadID, nil)
+		}
+		return lowerForkCutTx(tx, w, threadID, keep, nil)
 	}
 	if err != nil {
 		return fmt.Errorf("store: read the first inherited row %s reverts: %w", threadID, err)
@@ -96,15 +103,24 @@ func retractInheritedTx(tx *sql.Tx, w *cardWrite, threadID string, fromTurn int,
 		return err
 	}
 	if !found {
-		// Nothing inherited survives before the first reverted row: the
-		// fork reads no ancestor from here on. Its hides stay, since its
-		// own forks read through them.
-		if _, err := tx.Exec(`DELETE FROM thread_fork_lineage WHERE thread_id = ?`, threadID); err != nil {
-			return fmt.Errorf("store: unlink fork %s: %w", threadID, err)
-		}
-		w.levelsDropped = true
-		return forkViewChangedTx(tx, w, threadID, copies)
+		return unlinkForkTx(tx, w, threadID, copies)
 	}
+	return lowerForkCutTx(tx, w, threadID, cut, copies)
+}
+
+// unlinkForkTx drops the lineage of a fork that shows nothing inherited
+// any more: it reads no ancestor from here on. Its hides stay, since its
+// own forks read through them.
+func unlinkForkTx(tx *sql.Tx, w *cardWrite, threadID string, copies []string) error {
+	if _, err := tx.Exec(`DELETE FROM thread_fork_lineage WHERE thread_id = ?`, threadID); err != nil {
+		return fmt.Errorf("store: unlink fork %s: %w", threadID, err)
+	}
+	w.levelsDropped = true
+	return forkViewChangedTx(tx, w, threadID, copies)
+}
+
+// lowerForkCutTx moves every level of the fork past cut down to it.
+func lowerForkCutTx(tx *sql.Tx, w *cardWrite, threadID string, cut timelineRow, copies []string) error {
 	if _, err := tx.Exec(
 		`UPDATE thread_fork_lineage SET cut_turn_index = ?, cut_item_index = ?
 		  WHERE thread_id = ? AND (cut_turn_index, cut_item_index) > (?, ?)`,
@@ -203,7 +219,7 @@ const readersShowingInheritedSQL = `SELECT r.thread_id, r.depth, r.cut_turn_inde
 // hideInheritedItemTx removes one inherited row from threadID's timeline.
 // It reports false when threadID does not show itemID as inherited. The
 // threads that read the row through threadID keep it: a holder takes a
-// copy for them first (holdHiddenRowsTx).
+// copy for them first (holdCopiesTx).
 func hideInheritedItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) (bool, error) {
 	query, args := inheritedTimelineArms(threadID, allLevels, timelineSelection{
 		Columns: func(string, string) string {
@@ -226,7 +242,7 @@ func hideInheritedItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) (boo
 		return false, fmt.Errorf("store: list the forks of %s that show %s: %w", threadID, itemID, err)
 	}
 	if len(readers) > 0 {
-		if err := holdHiddenRowsTx(tx, threadID, []inheritedRow{row}, readers); err != nil {
+		if err := holdCopiesTx(tx, threadID, []inheritedRow{row}, nil, readers); err != nil {
 			return false, err
 		}
 	}

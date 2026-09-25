@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -107,8 +106,9 @@ func forkWindow(t *testing.T, s *Store, threadID string) []Item {
 // stamps or changes its window. A write after the fork's cut does not
 // reach it, including one whose row stamping reaches a settled row below
 // the cut; a revision touch and spans on a payload the forks show change
-// nothing they read; a revert of rows they show gives the rows to a
-// holder they read in place; and a change to such a row is refused.
+// nothing they read; a change to a row they show gives them a copy in a
+// holder they read in place first; and a revert of rows they show gives
+// the rows to that holder.
 func TestForkStampsIgnoreEverySourceWrite(t *testing.T) {
 	s := newTestStore(t)
 	seedLinearSource(t, s, "S", 3)
@@ -203,10 +203,9 @@ func TestForkStampsIgnoreEverySourceWrite(t *testing.T) {
 			}
 		}},
 		{"a revision touch of a row the forks show", func() { touchItemForTest(t, s, "S", "a1") }},
-		{"a refused source update below the cut", func() {
-			_, err := s.UpdateItemFields("S", "a0", ItemPartialUpdate{Summary: &edited})
-			if err == nil || !strings.Contains(err.Error(), shownHistoryImmutable) {
-				t.Fatalf("a source update of a row the forks show = %v, want refused", err)
+		{"a source update below the cut", func() {
+			if _, err := s.UpdateItemFields("S", "a0", ItemPartialUpdate{Summary: &edited}); err != nil {
+				t.Fatalf("a source update of a row the forks show: %v", err)
 			}
 		}},
 		{"a source revert of rows the forks show", func() {
@@ -222,7 +221,10 @@ func TestForkStampsIgnoreEverySourceWrite(t *testing.T) {
 
 	// Spans are a cache the client version-checks: they move the holder's
 	// stamp alone, whichever thread asks.
+	// The revert gave its rows to the holder the update's copy made: the
+	// same forks read both, right before the source.
 	holder := holderOf(t, s, "F")
+	requireIDs(t, "holders", holderIDs(t, s), []string{holder})
 	before, holderStamp := read(), holderStampOf(t, s, holder)
 	if err := s.UpdatePayloadSpans("F", "pt", `{"preview":1}`, `{"full":1}`); err != nil {
 		t.Fatal(err)

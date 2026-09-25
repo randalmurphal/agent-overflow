@@ -64,7 +64,11 @@ func timelineShape(t *testing.T, s *Store, threadID string) []string {
 			if err != nil {
 				t.Fatalf("payload %s/%s: %v", threadID, it.PayloadID, err)
 			}
-			line += " payload=" + string(data)
+			meta, err := s.GetPayloadMeta(threadID, it.PayloadID)
+			if err != nil {
+				t.Fatalf("payload meta %s/%s: %v", threadID, it.PayloadID, err)
+			}
+			line += " payload=" + string(data) + " " + meta.Meta
 		}
 		out = append(out, line)
 	}
@@ -432,4 +436,32 @@ func searchThreadHits(t *testing.T, s *Store, thread string) []string {
 	}
 	slices.Sort(ids)
 	return ids
+}
+
+// TestForkRevertPastHiddenRowsLowersItsCut: a fork's revert that reverts
+// no inherited row it shows, only rows it hid or replaced with its own,
+// still ends its history there, so its next turn lands where the revert
+// cut it.
+func TestForkRevertPastHiddenRowsLowersItsCut(t *testing.T) {
+	for name, revert := range map[string]func(*Store) error{
+		"from turn": func(s *Store) error { _, _, err := s.DeleteConversationFromTurn("F", 2); return err },
+		"from item": func(s *Store) error { _, _, err := s.DeleteConversationFromItem("F", "u2"); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newTestStore(t)
+			seedTurnedSource(t, s, "S", 3)
+			mustPointerFork(t, s, "S", "F", ForkCut{})
+			if err := s.DeleteThreadItem("F", "a2"); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.UpdateItemMeta("F", "u2", `{"edited":true}`); err != nil {
+				t.Fatal(err)
+			}
+			if err := revert(s); err != nil {
+				t.Fatal(err)
+			}
+			appendSourceTurn(t, s, "F", 2, "next")
+			requireIDs(t, "F rows", itemIDs(forkRows(t, s, "F")), []string{"u0", "a0", "u1", "a1", "next-0", "next-1"})
+		})
+	}
 }

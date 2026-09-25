@@ -221,6 +221,9 @@ func importTurnCompletionsTx(tx *sql.Tx, threadID string, completions []TurnComp
 		if completion.TurnID == "" {
 			return fmt.Errorf("store: import batch for thread %s: turn completion id is required", threadID)
 		}
+		if _, err := requireMutableTurnTx(tx, completion.TurnID, "store: import turn completion"); err != nil {
+			return err
+		}
 		result, err := stmt.Exec(
 			completion.CompletedAt, completion.StopReason, completion.AssistantMessageID,
 			completion.TokenUsageJSON, completion.ErrorMessage, completion.TurnID, threadID,

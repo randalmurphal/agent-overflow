@@ -134,7 +134,7 @@ func (s *Store) DeleteConversationFromTurn(threadID string, fromTurnIndex int) (
 			return err
 		}
 		deleted = int(n+sharedDeleted) + taken
-		if err := retractInheritedTx(tx, w, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex}); err != nil {
+		if err := retractInheritedTx(tx, w, threadID, fromTurnIndex, "turn_index >= ?", []any{fromTurnIndex}, keep); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(
@@ -314,7 +314,7 @@ func deleteConversationFromItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID str
 		fmt.Sprintf("store: delete items from item for thread %s", threadID)); err != nil {
 		return nil, HistoryStamp{}, err
 	}
-	if err := retractInheritedTx(tx, w, threadID, turnIndex, itemPredicate, itemArgs[1:]); err != nil {
+	if err := retractInheritedTx(tx, w, threadID, turnIndex, itemPredicate, itemArgs[1:], keep); err != nil {
 		return nil, HistoryStamp{}, err
 	}
 

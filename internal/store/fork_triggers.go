@@ -28,16 +28,18 @@ func readerShowsItemSQL(owner, id, turn, item string) string {
                       WHERE nearer.thread_id = l.thread_id AND nearer.depth < l.depth))`
 }
 
-// readerShowsTurnSQL is inheritedTurnVisibleSQL seen from the owner: some
+// readerShowsTurnSQL is forkTurnVisibleSQL seen from the owner: some
 // reader reads owner's row of the turn because the turn is below that
-// level's cut and neither the reader nor a nearer level holds its own row.
+// level's cut, the reader holds no row of its own there and no nearer
+// level has one the reader reads.
 func readerShowsTurnSQL(owner, turn string) string {
 	return `EXISTS (SELECT 1 FROM thread_fork_lineage l
    WHERE l.ancestor_id = ` + owner + ` AND l.cut_turn_index > ` + turn + `
      AND NOT EXISTS (SELECT 1 FROM turns held WHERE held.thread_id = l.thread_id AND held.turn_index = ` + turn + `)
      AND NOT EXISTS (SELECT 1 FROM thread_fork_lineage nearer
                        JOIN turns held ON held.thread_id = nearer.ancestor_id AND held.turn_index = ` + turn + `
-                      WHERE nearer.thread_id = l.thread_id AND nearer.depth < l.depth))`
+                      WHERE nearer.thread_id = l.thread_id AND nearer.depth < l.depth
+                        AND nearer.cut_turn_index > ` + turn + `))`
 }
 
 // readerShowsPayloadSQL is true while some thread shows a row of owner
@@ -81,9 +83,9 @@ const turnContentChangedSQL = `(OLD.turn_index IS NOT NEW.turn_index OR OLD.star
       OR OLD.provider_turn_id IS NOT NEW.provider_turn_id)`
 
 // forkTriggersSQL is the latest DDL for the pointer-fork triggers. Migration
-// v125 installs it, with the revive trigger v126 replaces, and RestoreFrom
-// reinstalls it after the row copy, which runs without these triggers so
-// restored rows are the snapshot's exactly.
+// v125 installs it; v126 replaces the revive trigger and v130 the turn
+// guards. RestoreFrom reinstalls it after the row copy, which runs without
+// these triggers so restored rows are the snapshot's exactly.
 //
 //   - trg_threads_fork_source_delete: a thread forks read is never deleted;
 //     its delete keeps it as a holder (DeleteThreadPaced).

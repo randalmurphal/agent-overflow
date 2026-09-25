@@ -419,6 +419,9 @@ func writeItemWithIndexFn(tx *sql.Tx, w *cardWrite, item *Item, indexFn func(*sq
 	if err != nil {
 		return fmt.Errorf("store: upsert item lookup %s: %w", item.ID, err)
 	}
+	if err := reownShownItemTx(tx, item.ThreadID, item.ID); err != nil {
+		return fmt.Errorf("store: upsert item: give the forks of %s their row %s: %w", item.ThreadID, item.ID, err)
+	}
 	item.ItemIndex = old.index
 	item.CreatedAt = createdAt
 	return updateExistingItem(tx, w, *item, old)

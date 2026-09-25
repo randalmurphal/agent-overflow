@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 )
 
@@ -69,7 +68,7 @@ func TestPointerForkOwnsTheSourcesUnsettledTurns(t *testing.T) {
 // writes the source's provider still makes to them (a queued message's
 // fold, its move to the turn's end, a Codex spawn's identity, a settle)
 // change nothing the fork shows. A settled turn's rows stay the source's,
-// and a rewrite of one stays refused.
+// and a rewrite of one gives the fork a copy first.
 func TestPointerForkOfARunningTurnOwnsItsRows(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThread(t, s, "src")
@@ -136,7 +135,14 @@ func TestPointerForkOfARunningTurnOwnsItsRows(t *testing.T) {
 	if got, _, err := s.ThreadHistoryStamp("fork"); err != nil || got != stamp {
 		t.Fatalf("the source's writes moved the fork's stamp %+v -> %+v, %v", stamp, got, err)
 	}
-	if _, err := s.UpdateItemFields("src", "a0", ItemPartialUpdate{Summary: &summary}); err == nil || !strings.Contains(err.Error(), shownHistoryImmutable) {
-		t.Fatalf("a rewrite of the settled turn's row = %v, want refused", err)
+	// A settled turn's row the fork shows goes to it first.
+	if _, err := s.UpdateItemFields("src", "a0", ItemPartialUpdate{Summary: &summary}); err != nil {
+		t.Fatalf("a rewrite of the settled turn's row: %v", err)
+	}
+	if after, err := s.ListItems("fork"); err != nil || !reflect.DeepEqual(after, before) {
+		t.Fatalf("the rewrite changed the fork, %v:\n%+v\nwas\n%+v", err, after, before)
+	}
+	if got, _, err := s.ThreadHistoryStamp("fork"); err != nil || got != stamp {
+		t.Fatalf("the rewrite moved the fork's stamp %+v -> %+v, %v", stamp, got, err)
 	}
 }

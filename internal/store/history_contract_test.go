@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"errors"
-	"strings"
 	"testing"
 )
 
@@ -580,15 +579,18 @@ func TestHistoryContractForkBumpsForkOnly(t *testing.T) {
 	}
 	summary := "edited"
 	source = historyStampOf(t, s, "t")
-	if _, err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{Summary: &summary}); err == nil || !strings.Contains(err.Error(), shownHistoryImmutable) {
-		t.Fatalf("update source row the fork shows = %v, want refused", err)
+	// The fork keeps the row it shows (a holder's copy) and its stamps;
+	// the source's write moves the source's.
+	if _, err := s.UpdateItemFields("t", "i1", ItemPartialUpdate{Summary: &summary}); err != nil {
+		t.Fatalf("update source row the fork shows: %v", err)
 	}
 	if got := historyStampOf(t, s, "fork"); got != target {
-		t.Fatalf("refused source write moved fork stamps %+v -> %+v", target, got)
+		t.Fatalf("source write of a row the fork shows moved fork stamps %+v -> %+v", target, got)
 	}
-	if got := historyStampOf(t, s, "t"); got != source {
-		t.Fatalf("refused source write moved source stamps %+v -> %+v", source, got)
+	if got := historyStampOf(t, s, "t"); got.Rev <= source.Rev || got.Epoch != source.Epoch {
+		t.Fatalf("source update stamps = %+v -> %+v, want rev up and epoch kept", source, got)
 	}
+	source = historyStampOf(t, s, "t")
 	if err := s.DeleteThreadItem("t", "i1"); err != nil {
 		t.Fatalf("delete source row the fork shows: %v", err)
 	}

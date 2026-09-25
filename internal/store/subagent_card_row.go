@@ -130,17 +130,19 @@ var subagentRowSQL = `SELECT ` + subagentRowColumns("") + ` FROM items WHERE thr
 // the card rules read it.
 func readMutableSubagentRowTx(tx *sql.Tx, threadID, itemID, label string) (subagentRow, error) {
 	row, err := scanSubagentRow(tx.QueryRow(subagentRowSQL, threadID, itemID))
-	if !errors.Is(err, sql.ErrNoRows) {
-		if err != nil {
-			return subagentRow{}, fmt.Errorf("%s inspect local item %s/%s: %w", label, threadID, itemID, err)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if err := ownShownItemTx(tx, threadID, itemID, label); err != nil {
+			return subagentRow{}, err
 		}
-		return row, nil
+		if row, err = scanSubagentRow(tx.QueryRow(subagentRowSQL, threadID, itemID)); err != nil {
+			return subagentRow{}, fmt.Errorf("%s read copied item %s/%s: %w", label, threadID, itemID, err)
+		}
+	case err != nil:
+		return subagentRow{}, fmt.Errorf("%s inspect local item %s/%s: %w", label, threadID, itemID, err)
 	}
-	if err := ownShownItemTx(tx, threadID, itemID, label); err != nil {
-		return subagentRow{}, err
-	}
-	if row, err = scanSubagentRow(tx.QueryRow(subagentRowSQL, threadID, itemID)); err != nil {
-		return subagentRow{}, fmt.Errorf("%s read copied item %s/%s: %w", label, threadID, itemID, err)
+	if err := reownShownItemTx(tx, threadID, itemID); err != nil {
+		return subagentRow{}, fmt.Errorf("%s give the forks of %s their row %s: %w", label, threadID, itemID, err)
 	}
 	return row, nil
 }

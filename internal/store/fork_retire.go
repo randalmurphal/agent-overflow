@@ -57,9 +57,11 @@ var holderClearedRows = []struct{ table, column string }{
 // deleting its row, and reports whether it did. The caller has removed the
 // rows past the forks' last cut; the turn rows past it go here. The
 // holder keeps its title and history and nothing else: no project, so no
-// project delete waits for it, no workspace, session, pin, group or
-// parent, and the links other threads had to it are cleared as the
-// delete would have cleared them (ON DELETE SET NULL). It is hidden from
+// project delete waits for it, no workspace, session, pin, group, parent
+// or source (a holder's fork_source_thread_id names the thread whose rows
+// a split gave it, reusableHolderTx), and the links other threads had to
+// it are cleared as the delete would have cleared them (ON DELETE SET
+// NULL). It is hidden from
 // every listing and read (threadmode.ModeHolder, owned_threads). When its
 // last reader goes, trg_thread_fork_lineage_release marks it deleting.
 func retireToHolderTx(tx *sql.Tx, id string) (bool, error) {
@@ -92,7 +94,7 @@ func retireToHolderTx(tx *sql.Tx, id string) (bool, error) {
 		        pending_fork_resume_at = '', fork_preparing = 0, discussion_id = NULL,
 		        parent_thread_id = NULL, forked_from_thread_id = NULL, pinned_at = NULL,
 		        pin_group = NULL, group_id = NULL, archived = 0, live_todo = '',
-		        worktree_setup_state = ''
+		        worktree_setup_state = '', fork_source_thread_id = ''
 		  WHERE id = ?`, threadmode.ModeHolder, id)
 	if err != nil {
 		return false, fmt.Errorf("store: retire thread %s to a holder: %w", id, err)

@@ -101,7 +101,8 @@ func (s *Store) InsertTurn(turn Turn) error {
 // for values they don't have). started_at and turn_index are preserved.
 // Returns sql.ErrNoRows when no row matches the turn_id — triage treats
 // that as a bug because UpdateTurnCompleted is always paired with a
-// prior InsertTurn.
+// prior InsertTurn. A turn row a fork shows goes to the fork first
+// (requireMutableTurnTx).
 func (s *Store) UpdateTurnCompleted(
 	turnID string,
 	completedAt int64,
@@ -110,21 +111,46 @@ func (s *Store) UpdateTurnCompleted(
 	if turnID == "" {
 		return fmt.Errorf("store: update turn completed: turn id is required")
 	}
-	result, err := s.db.Exec(
-		`UPDATE turns
-		    SET completed_at = ?,
-		        stop_reason = ?,
-		        assistant_message_id = ?,
-		        token_usage_json = ?,
-		        error_message = ?
-		  WHERE turn_id = ?`,
-		completedAt, stopReason, assistantMessageID, tokenUsageJSON, errorMessage, turnID,
-	)
+	label := fmt.Sprintf("store: update turn %s", turnID)
+	return s.writeTurn(turnID, label, func(tx *sql.Tx) error {
+		result, err := tx.Exec(
+			`UPDATE turns
+			    SET completed_at = ?,
+			        stop_reason = ?,
+			        assistant_message_id = ?,
+			        token_usage_json = ?,
+			        error_message = ?
+			  WHERE turn_id = ?`,
+			completedAt, stopReason, assistantMessageID, tokenUsageJSON, errorMessage, turnID,
+		)
+		if err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+		return requireRowsAffected(result, label)
+	}, func() error { return fmt.Errorf("%s: %w", label, sql.ErrNoRows) })
+}
+
+// writeTurn runs write on the turn row turnID in one transaction, after
+// the forks that show the row got their copy (requireMutableTurnTx). With
+// no turn of that id it returns missing's result instead.
+func (s *Store) writeTurn(turnID, label string, write func(*sql.Tx) error, missing func() error) error {
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("store: update turn %s: %w", turnID, err)
+		return fmt.Errorf("%s: begin: %w", label, err)
 	}
-	if err := requireRowsAffected(result, fmt.Sprintf("store: update turn %s", turnID)); err != nil {
+	defer tx.Rollback()
+	found, err := requireMutableTurnTx(tx, turnID, label)
+	if err != nil {
 		return err
+	}
+	if !found {
+		return missing()
+	}
+	if err := write(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("%s: commit: %w", label, err)
 	}
 	return nil
 }
@@ -178,7 +204,14 @@ func (s *Store) UpdateTurnLatePayload(turnID string, payload LateTurnPayload) er
 		payload.ErrorMessageOverwrite == "" {
 		return nil
 	}
-	_, err := s.db.Exec(
+	label := fmt.Sprintf("store: update turn %s late payload", turnID)
+	return s.writeTurn(turnID, label, func(tx *sql.Tx) error {
+		return updateTurnLatePayloadTx(tx, turnID, payload, label)
+	}, func() error { return nil })
+}
+
+func updateTurnLatePayloadTx(tx *sql.Tx, turnID string, payload LateTurnPayload, label string) error {
+	_, err := tx.Exec(
 		`UPDATE turns
 		    SET token_usage_json = CASE
 		          WHEN token_usage_json = '' AND ? != '' THEN ?
@@ -204,7 +237,7 @@ func (s *Store) UpdateTurnLatePayload(turnID string, payload LateTurnPayload) er
 		turnID,
 	)
 	if err != nil {
-		return fmt.Errorf("store: update turn %s late payload: %w", turnID, err)
+		return fmt.Errorf("%s: %w", label, err)
 	}
 	return nil
 }
@@ -216,7 +249,8 @@ func (s *Store) UpdateTurnLatePayload(turnID string, payload LateTurnPayload) er
 // misdirected backfill costs nothing. Zero rows affected is a normal
 // outcome (the row already has an id, or was relocated meanwhile), not an
 // error — provider_turn_id is diagnostic identity plus the Codex fork/revert
-// anchor, and both readers tolerate absence.
+// anchor, and both readers tolerate absence. A turn row a fork shows goes
+// to the fork first (requireMutableTurnTx).
 func (s *Store) BackfillTurnProviderID(turnID, providerTurnID string) error {
 	if turnID == "" {
 		return fmt.Errorf("store: backfill turn provider id: turn id is required")
@@ -224,15 +258,21 @@ func (s *Store) BackfillTurnProviderID(turnID, providerTurnID string) error {
 	if providerTurnID == "" {
 		return fmt.Errorf("store: backfill turn provider id %s: provider turn id is required", turnID)
 	}
-	_, err := s.db.Exec(
-		`UPDATE turns SET provider_turn_id = ?
-		  WHERE turn_id = ? AND provider_turn_id = ''`,
-		providerTurnID, turnID,
-	)
-	if err != nil {
+	var missing bool
+	if err := s.reader().QueryRow(`SELECT EXISTS (SELECT 1 FROM turns WHERE turn_id = ? AND provider_turn_id = '')`, turnID).Scan(&missing); err != nil {
 		return fmt.Errorf("store: backfill turn %s provider id: %w", turnID, err)
 	}
-	return nil
+	if !missing {
+		return nil
+	}
+	label := fmt.Sprintf("store: backfill turn %s provider id", turnID)
+	return s.writeTurn(turnID, label, func(tx *sql.Tx) error {
+		if _, err := tx.Exec(`UPDATE turns SET provider_turn_id = ? WHERE turn_id = ? AND provider_turn_id = ''`,
+			providerTurnID, turnID); err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
+		return nil
+	}, func() error { return nil })
 }
 
 // CrashedTurn identifies one turn row that RecoverCrashedTurns settled:
@@ -502,7 +542,7 @@ func (s *Store) ListRecentTurns(threadID string, limit int) ([]Turn, error) {
 		        turns.error_message, turns.provider_turn_id
 		   FROM thread_fork_lineage l
 		   CROSS JOIN turns ON turns.thread_id = l.ancestor_id
-		  WHERE l.thread_id = ? AND `+inheritedTurnVisibleSQL+`
+		  WHERE l.thread_id = ? AND `+forkTurnVisibleSQL+`
 		  ORDER BY turn_index DESC
 		  LIMIT ?`,
 		threadID, threadID, limit,

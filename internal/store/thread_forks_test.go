@@ -2,7 +2,6 @@ package store
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 
 	"agent-overflow/internal/itemmeta"
@@ -465,12 +464,17 @@ func TestPointerForkPayloadsStayWithTheirRows(t *testing.T) {
 		t.Fatalf("snapshot not written to the holder: %q found=%v err=%v", snapshot, found, err)
 	}
 
-	if err := s.ReplacePayloadData("src", "p-in", []byte("source changed"), "{}", 3); err == nil || !strings.Contains(err.Error(), shownHistoryImmutable) {
-		t.Fatalf("source rewrite of a payload its forks show = %v, want refused", err)
+	// The source's rewrite lands on its payload; the forks keep a copy,
+	// with its snapshots, from a holder.
+	if err := s.ReplacePayloadData("src", "p-in", []byte("source changed"), "{}", 3); err != nil {
+		t.Fatalf("source rewrite of a payload its forks show: %v", err)
 	}
-	assertFork("after the refused source rewrite")
-	if data, err := s.GetPayloadData("src", "p-in"); err != nil || string(data) != `{"old_string":"a","new_string":"b"}` {
+	assertFork("after the source rewrite")
+	if data, err := s.GetPayloadData("src", "p-in"); err != nil || string(data) != "source changed" {
 		t.Fatalf("source payload = %q err=%v", data, err)
+	}
+	if snapshot, found, err := s.GetEditFileSnapshot("other", "p-in", "bar.go"); err != nil || !found || snapshot != "bar" {
+		t.Fatalf("other's snapshot after the source rewrite = %q found=%v err=%v", snapshot, found, err)
 	}
 }
 

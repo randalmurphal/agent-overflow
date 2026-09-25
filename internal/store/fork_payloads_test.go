@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -67,9 +68,9 @@ func TestPointerForkReadsPayloadsThroughEveryLevel(t *testing.T) {
 }
 
 // TestPointerForkPayloadMutationsStayOnTheirSide: the fork's content write
-// leaves the source's history as it was, and the source cannot rewrite a
-// payload its fork shows; an edit snapshot is a cache of the edit and is
-// shared where the payload is.
+// leaves the source's history as it was, and the source's leaves the
+// fork's, which keeps a copy of the payload it showed; an edit snapshot is
+// a cache of the edit and is shared where the payload is.
 func TestPointerForkPayloadMutationsStayOnTheirSide(t *testing.T) {
 	for _, change := range []string{"append source", "replace source", "edit source", "append fork", "replace fork", "edit fork"} {
 		t.Run(change, func(t *testing.T) {
@@ -89,16 +90,15 @@ func TestPointerForkPayloadMutationsStayOnTheirSide(t *testing.T) {
 			case "edit fork":
 				err = s.PutEditFileSnapshot("fork", "payload", "file", "changed", 3)
 			}
-			refused := change == "append source" || change == "replace source"
-			if refused != (err != nil) || (refused && !strings.Contains(err.Error(), shownHistoryImmutable)) {
-				t.Fatalf("%s = %v, refused %v", change, err, refused)
+			if err != nil {
+				t.Fatalf("%s: %v", change, err)
 			}
 			for _, thread := range []string{"source", "fork"} {
 				want := "base chunk"
-				if change == "append "+thread && !refused {
+				if change == "append "+thread {
 					want += " new"
 				}
-				if change == "replace "+thread && !refused {
+				if change == "replace "+thread {
 					want = "replacement"
 				}
 				requireForkPayload(t, s, thread, want)
@@ -139,6 +139,60 @@ func TestPointerForkPayloadRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireForkPayload(t, s, "fork", "base chunk")
+}
+
+// TestReusedHolderTakesOverASharedPayload: a revert that moves one of two
+// rows rendering a payload gives the holder a copy; the next revert, into
+// the same holder, moves the other row, and the source keeps no copy of a
+// payload none of its rows renders. The fork reads the payload throughout.
+func TestReusedHolderTakesOverASharedPayload(t *testing.T) {
+	s := newTestStore(t)
+	seedLinearSource(t, s, "S", 1)
+	for turn := 1; turn <= 2; turn++ {
+		user := Item{ID: fmt.Sprintf("u%d", turn), ThreadID: "S", TurnIndex: turn, Kind: "user_text", Role: "user", Status: "completed", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
+		tool := Item{ID: fmt.Sprintf("tool%d", turn), ThreadID: "S", TurnIndex: turn, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "completed", PayloadID: "payload", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}
+		if err := insertCarded(s, user); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		if turn == 1 {
+			err = s.InsertItemWithPayload(tool, Payload{ID: "payload", Kind: "text", Meta: "{}", Data: []byte("base"), CreatedAt: 1})
+		} else {
+			err = insertCarded(s, tool)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AppendPayloadData("S", "payload", []byte(" chunk"), "{}", 2); err != nil {
+		t.Fatal(err)
+	}
+	mustPointerFork(t, s, "S", "F", ForkCut{})
+	view := timelineShape(t, s, "F")
+	if _, _, err := s.DeleteConversationFromTurn("S", 2); err != nil {
+		t.Fatal(err)
+	}
+	requireShape(t, s, "F", view)
+	requireForkPayload(t, s, "F", "base chunk")
+	requireForkPayload(t, s, "S", "base chunk")
+	appendSourceTurn(t, s, "S", 2, "next")
+	if _, _, err := s.DeleteConversationFromTurn("S", 1); err != nil {
+		t.Fatal(err)
+	}
+	requireShape(t, s, "F", view)
+	requireForkPayload(t, s, "F", "base chunk")
+	holders := holderIDs(t, s)
+	if len(holders) != 1 {
+		t.Fatalf("holders = %v, want one", holders)
+	}
+	var left int
+	if err := s.db.QueryRow(`SELECT (SELECT count(*) FROM payloads WHERE thread_id = 'S')
+		+ (SELECT count(*) FROM payload_chunks WHERE thread_id = 'S')`).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 0 {
+		t.Fatalf("S keeps %d payload rows no row of it renders, want none", left)
+	}
 }
 
 // TestPointerForkImportedPayloads: a fork reads the source's imported

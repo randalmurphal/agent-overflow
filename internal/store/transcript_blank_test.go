@@ -267,3 +267,36 @@ func TestBlankLegacyTranscriptCopiesIsPacedAndSkipsAFailingBatch(t *testing.T) {
 		t.Fatalf("%d payloads kept their data after the retry", n)
 	}
 }
+
+// A transcript copy a pointer fork shows is history the fork keeps: the
+// step empties the source's payload after a holder takes a copy for the
+// fork, completes without a failure, and leaves the holder's copy alone on
+// the next run.
+func TestBlankLegacyTranscriptKeepsWhatAForkShows(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("claude", "claude")); err != nil {
+		t.Fatal(err)
+	}
+	writeTranscriptCase(t, s, "claude", 0, transcriptCase{id: "agent", tool: "Agent", background: true, kind: "tool_call_result", meta: loadedTranscriptMeta, data: "agent transcript"})
+	mustPointerFork(t, s, "claude", "fork", ForkCut{})
+	fork, stamp := timelineShape(t, s, "fork"), historyStampOf(t, s, "fork")
+
+	for range 2 {
+		if run, _ := runTranscriptBlank(t, s); run.failures != 0 {
+			t.Fatalf("the step failed %d items: %v", run.failures, run.first)
+		}
+	}
+	if data, err := s.GetPayloadData("claude", "p-agent"); err != nil || len(data) != 0 {
+		t.Fatalf("the source's payload reads %q, %v; want it emptied", data, err)
+	}
+	requireShape(t, s, "fork", fork)
+	if now := historyStampOf(t, s, "fork"); now != stamp {
+		t.Fatalf("the fork's stamp moved %+v -> %+v", stamp, now)
+	}
+	if data, err := s.GetPayloadData("fork", "p-agent"); err != nil || string(data) != "agent transcript" {
+		t.Fatalf("the fork reads %q, %v; want the transcript it showed", data, err)
+	}
+	if holders := holderIDs(t, s); len(holders) != 1 {
+		t.Fatalf("holders = %v, want the one the first run made", holders)
+	}
+}

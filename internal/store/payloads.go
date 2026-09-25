@@ -5,18 +5,23 @@ import (
 	"fmt"
 )
 
-func upsertPayloadTx(exec sqlExecutor, threadID string, payload Payload, label string) error {
-	if _, err := exec.Exec(
+// upsertPayloadTx writes a payload whole. A payload a fork shows through a
+// row of threadID's goes to the forks first (reownShownPayloadTx).
+func upsertPayloadTx(tx *sql.Tx, threadID string, payload Payload, label string) error {
+	if err := reownShownPayloadTx(tx, threadID, payload.ID); err != nil {
+		return fmt.Errorf("%s give the forks of %s their payload: %w", label, threadID, err)
+	}
+	if _, err := tx.Exec(
 		`DELETE FROM payload_chunks WHERE thread_id = ? AND payload_id = ?`, threadID, payload.ID,
 	); err != nil {
 		return fmt.Errorf("%s clear chunks: %w", label, err)
 	}
-	if _, err := exec.Exec(
+	if _, err := tx.Exec(
 		`DELETE FROM edit_file_snapshots WHERE thread_id = ? AND payload_id = ?`, threadID, payload.ID,
 	); err != nil {
 		return fmt.Errorf("%s clear edit snapshots: %w", label, err)
 	}
-	if _, err := exec.Exec(
+	if _, err := tx.Exec(
 		`INSERT INTO payloads (thread_id, id, kind, meta, data, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(thread_id, id) DO UPDATE SET
@@ -340,7 +345,7 @@ func (s *Store) AppendPayloadData(threadID, id string, delta []byte, meta string
 // flush window costs one transaction instead of two.
 func appendPayloadDataTx(tx *sql.Tx, threadID, id string, delta []byte, meta string, createdAt int64) error {
 	label := fmt.Sprintf("store: append payload data %s", id)
-	if err := ensureLocalPayloadTx(tx, threadID, id, label); err != nil {
+	if err := requireMutablePayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
 	result, err := tx.Exec(
@@ -395,7 +400,7 @@ func (s *Store) ReplacePayloadData(threadID, id string, data []byte, meta string
 	}
 	defer tx.Rollback()
 	label := fmt.Sprintf("store: replace payload data %s", id)
-	if err := ensureLocalPayloadTx(tx, threadID, id, label); err != nil {
+	if err := requireMutablePayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
 
@@ -447,7 +452,7 @@ func (s *Store) UpdatePayloadMeta(threadID, id, meta string) error {
 		return fmt.Errorf("store: begin update payload meta %s: %w", id, err)
 	}
 	defer tx.Rollback()
-	if err := ensureLocalPayloadTx(tx, threadID, id, label); err != nil {
+	if err := requireMutablePayloadTx(tx, threadID, id, label); err != nil {
 		return err
 	}
 

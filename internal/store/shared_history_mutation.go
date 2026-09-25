@@ -227,10 +227,9 @@ func setHistoryBulkLoadTx(tx *sql.Tx, threadID string, enabled bool, label strin
 
 // requireMutableItemTx prepares threadID to change one row of its timeline:
 // threadID gets a row it may write, localized from its imported history or
-// copied from an ancestor when it does not own one. It returns a wrapped
-// sql.ErrNoRows when threadID does not show the row. A row of threadID's
-// own that a fork of it shows stays immutable: the write that follows
-// fails at the fork triggers (shownHistoryImmutable).
+// copied from an ancestor when it does not own one, and the forks that
+// show that row get their copy first (reownShownItemTx). It returns a
+// wrapped sql.ErrNoRows when threadID does not show the row.
 func requireMutableItemTx(tx *sql.Tx, threadID, itemID, label string) error {
 	_, err := readMutableSubagentRowTx(tx, threadID, itemID, label)
 	return err

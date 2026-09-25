@@ -247,4 +247,4 @@ UPDATE threads
 
 DROP TABLE v127_parked_stops;
 DROP TABLE v127_changed_rows;
-` + forkTriggersSQL
+` + forkGuardTriggersV125SQL + reviveBgLaunchOnCompletionMoveSQL + forkLineageReleaseTriggerSQL

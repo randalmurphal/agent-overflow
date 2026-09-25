@@ -135,47 +135,6 @@ func TestSourceRevertGivesShownRowsToAHolder(t *testing.T) {
 	}
 }
 
-// TestShownHistoryRewritesAreRefused: a source's own row, payload or turn
-// row a fork shows never changes. The write fails whole and every thread
-// reads as before.
-func TestShownHistoryRewritesAreRefused(t *testing.T) {
-	edited := "edited"
-	for name, rewrite := range map[string]func(*Store) error{
-		"rewrite meta": func(s *Store) error { return s.UpdateItemMeta("S", "u0", `{"changed":true}`) },
-		"rewrite fields": func(s *Store) error {
-			_, err := s.UpdateItemFields("S", "a0", ItemPartialUpdate{Summary: &edited})
-			return err
-		},
-		"move row":        func(s *Store) error { _, err := s.BumpItemToTurnEnd("S", "u1", nil, 5); return err },
-		"append payload":  func(s *Store) error { return s.AppendPayloadData("S", "p", []byte(" more"), "{}", 5) },
-		"replace payload": func(s *Store) error { return s.ReplacePayloadData("S", "p", []byte("new"), "{}", 5) },
-		"fork copy-on-write under its fork": func(s *Store) error {
-			return s.UpdateItemMeta("F", "u0", `{"changed":true}`)
-		},
-		"fork payload copy under its fork": func(s *Store) error {
-			return s.AppendPayloadData("F", "p", []byte(" fork"), "{}", 5)
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			s := forkChainFixture(t)
-			shapes := map[string][]string{}
-			for _, id := range []string{"S", "F", "G"} {
-				shapes[id] = timelineShape(t, s, id)
-			}
-			err := rewrite(s)
-			if err == nil || !strings.Contains(err.Error(), shownHistoryImmutable) {
-				t.Fatalf("rewrite = %v, want refused", err)
-			}
-			for id, shape := range shapes {
-				requireShape(t, s, id, shape)
-			}
-			if n := ownRowCount(t, s, "F"); n != 0 {
-				t.Fatalf("the refused write left F %d rows", n)
-			}
-		})
-	}
-}
-
 // TestSourceRevertReachesADeeperReader: a fork that lowered its cut no
 // longer reads the rows past it, but a fork made from it earlier still does
 // through its own lineage, so the source's delete gives them to a holder
@@ -196,10 +155,17 @@ func TestSourceRevertReachesADeeperReader(t *testing.T) {
 	requireIDs(t, "F lineage", forkLineage(t, s, "F"), []string{"1:S:0:2"})
 	h := holderOf(t, s, "G")
 	requireIDs(t, "holder rows", ownIDs(t, s, h), []string{"a1"})
-	if err := s.UpdateItemMeta("S", "u1", `{"changed":true}`); err == nil || !strings.Contains(err.Error(), shownHistoryImmutable) {
-		t.Fatalf("a rewrite of a row the deeper fork shows = %v, want refused", err)
+	// A rewrite of a row only the deeper fork shows gives it a copy in the
+	// holder it already reads right before the source.
+	if err := s.UpdateItemMeta("S", "u1", `{"changed":true}`); err != nil {
+		t.Fatalf("a rewrite of a row the deeper fork shows: %v", err)
 	}
 	requireShape(t, s, "G", grandchild)
+	requireIDs(t, "holders", holderIDs(t, s), []string{h})
+	requireIDs(t, "holder rows", ownIDs(t, s, h), []string{"u1", "a1"})
+	if u1, found, err := s.GetThreadItem("S", "u1"); err != nil || !found || u1.Meta != `{"changed":true}` {
+		t.Fatalf("the source's u1 = %+v found=%v, %v", u1, found, err)
+	}
 }
 
 // TestForkHideKeepsTheRowForItsForks: a fork's delete of a row it inherits
@@ -288,11 +254,13 @@ func TestSourceRevertMovesTurnRowsWithItems(t *testing.T) {
 		sourceTurns []string
 		// held names the holder's turn rows; "H" stands for the holder.
 		held []string
+		// next is the source's next turn, which takes its id again.
+		next int
 	}{
 		{"revert turns", func(s *Store) error { _, _, err := s.DeleteConversationFromTurn("S", 1); return err },
-			[]string{"0:10:100"}, []string{"S:1", "S:2"}},
+			[]string{"0:10:100"}, []string{"H:1", "H:2"}, 1},
 		{"revert from item", func(s *Store) error { _, _, err := s.DeleteConversationFromItem("S", "a1"); return err },
-			nil, []string{"H:1", "S:2"}},
+			nil, []string{"H:1", "H:2"}, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestStore(t)
@@ -328,6 +296,14 @@ func TestSourceRevertMovesTurnRowsWithItems(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			next := fmt.Sprintf("S:%d", tc.next)
+			if err := s.InsertTurn(Turn{TurnID: next, ThreadID: "S", TurnIndex: tc.next, StartedAt: 50}); err != nil {
+				t.Fatalf("the source's next turn: %v", err)
+			}
+			if turn, found, err := s.GetTurn(next); err != nil || !found || turn.ThreadID != "S" {
+				t.Fatalf("turn %s = %+v found=%v, %v; want the source's", next, turn, found, err)
+			}
+			requireIDs(t, "F turns after the source's next turn", turns("F"), fork)
 			requireIDs(t, "holder turns", ids, tc.held)
 		})
 	}
