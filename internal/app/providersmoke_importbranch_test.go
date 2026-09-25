@@ -145,7 +145,7 @@ func TestProviderSmokeClaudeImportedBranchResume(t *testing.T) {
 
 	// THE production call. materializeImportedClaudeBranch does exactly this
 	// with the leaf it read out of thread_import_state.
-	forkID, forkPath, _, err := sessionfork.WriteForkFileThroughUUID(sessionfork.ForkCut{
+	forkID, forkPath, err := sessionfork.WriteForkFileThroughUUID(sessionfork.ForkCut{
 		SourcePath:   sourcePath,
 		LastKeptUUID: branch.LeafUUID,
 		Title:        providerSmokeForkTitle,

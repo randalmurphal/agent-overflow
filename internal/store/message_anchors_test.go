@@ -172,70 +172,11 @@ func TestDeleteConversationFromTurnCoversDriftedAnchors(t *testing.T) {
 	}
 }
 
-// TestUpdateSessionRefAndRemapProviderIDs pins R6-5 (round 6): the session
-// ref, item meta rewrites, and anchor provider-id rewrites commit in
-// ONE transaction — a failing rewrite rolls back the thread update
-// too, so SessionRef can never move without its uuid remap.
-func TestUpdateSessionRefAndRemapProviderIDs(t *testing.T) {
-	s := newTestStore(t)
-	mustCreateThreadWithUserItems(t, s, "t1")
-	if err := s.UpsertMessageAnchor(MessageAnchor{
-		ThreadID: "t1", UserItemID: "t1-user:0", TurnIndex: 0,
-		ProviderUserMessageID: "old-uuid", ProviderParentUUID: "old-parent", CreatedAt: 0,
-	}); err != nil {
-		t.Fatalf("upsert anchor: %v", err)
-	}
-	if _, err := s.UpdateSessionRefAndRemapProviderIDs("t1", "new-session-ref",
-		[]ItemMetaUpdate{{ItemID: "t1-user:0", Meta: `{"provider_item_id":"new-uuid"}`}},
-		[]MessageAnchorProviderIDsUpdate{{UserItemID: "t1-user:0", ProviderUserMessageID: "new-uuid", ProviderParentUUID: ""}},
-	); err != nil {
-		t.Fatalf("UpdateSessionRefAndRemapProviderIDs: %v", err)
-	}
-	updated, err := s.GetThread("t1")
-	if err != nil {
-		t.Fatalf("GetThread updated: %v", err)
-	}
-	if updated.SessionRef != "new-session-ref" {
-		t.Fatalf("SessionRef = %q, want the new ref", updated.SessionRef)
-	}
-	item, found, err := s.GetThreadItem("t1", "t1-user:0")
-	if err != nil || !found {
-		t.Fatalf("item: found=%v err=%v", found, err)
-	}
-	if item.Meta != `{"provider_item_id":"new-uuid"}` {
-		t.Fatalf("item meta = %q, want the remapped blob", item.Meta)
-	}
-	anchors, err := s.ListMessageAnchors("t1")
-	if err != nil || len(anchors) != 1 {
-		t.Fatalf("anchors: %+v err=%v", anchors, err)
-	}
-	if anchors[0].ProviderUserMessageID != "new-uuid" {
-		t.Fatalf("anchor provider_user_message_id = %q, want remapped", anchors[0].ProviderUserMessageID)
-	}
-	if anchors[0].ProviderParentUUID != "old-parent" {
-		t.Fatalf("anchor provider_parent_uuid = %q, want empty-preserves to keep the stored value", anchors[0].ProviderParentUUID)
-	}
-
-	// A failing item rewrite (unknown id) rolls the WHOLE commit back.
-	_, err = s.UpdateSessionRefAndRemapProviderIDs("t1", "half-committed-ref",
-		[]ItemMetaUpdate{{ItemID: "no-such-item", Meta: `{}`}}, nil)
-	if err == nil {
-		t.Fatal("remap against a missing item must error")
-	}
-	after, err := s.GetThread("t1")
-	if err != nil {
-		t.Fatalf("GetThread after rollback: %v", err)
-	}
-	if after.SessionRef != "new-session-ref" {
-		t.Fatalf("SessionRef = %q after failed remap, want the previous ref (tx rolled back)", after.SessionRef)
-	}
-}
-
 // TestListMessageAnchorsOrdersByItemTimelinePosition pins R9-3 (round
 // 9): an echo-time replace gives an earlier sibling's anchor a LATER
-// created_at than a later sibling's, and list order is consumed as
-// message order (the fork remap) — so it must follow the linked item's
-// (turn_index, item_index), not record time.
+// created_at than a later sibling's, and callers read list order as
+// message order, so it must follow the linked item's (turn_index,
+// item_index), not record time.
 func TestListMessageAnchorsOrdersByItemTimelinePosition(t *testing.T) {
 	s := newTestStore(t)
 	mustCreateThreadWithUserItems(t, s, "t1")

@@ -537,38 +537,6 @@ func TestUpdateSessionRefClearsPendingForkRef(t *testing.T) {
 	}
 }
 
-// TestUpdateSessionRefAndRemapClearsPendingForkPin covers the OTHER
-// session-ref writer: the remap variant a lazy fork's first session
-// init goes through must consume the pin exactly like UpdateSessionRef
-// — a survivor would re-pin the NEXT session start.
-func TestUpdateSessionRefAndRemapClearsPendingForkPin(t *testing.T) {
-	s := newTestStore(t)
-	proj := newTestProject(t, s, "proj-pending-remap", "/tmp/p")
-
-	thread := makeThread("thread-clear-pending-remap", "claude")
-	thread.ProjectID = proj.ID
-	thread.PendingForkRef = "pending-123"
-	thread.PendingForkResumeAt = "leaf-abc"
-	if err := s.CreateThread(thread); err != nil {
-		t.Fatalf("CreateThread() error = %v", err)
-	}
-
-	if _, err := s.UpdateSessionRefAndRemapProviderIDs(thread.ID, "session-789", nil, nil); err != nil {
-		t.Fatalf("UpdateSessionRefAndRemapProviderIDs() error = %v", err)
-	}
-
-	got, err := s.GetThread(thread.ID)
-	if err != nil {
-		t.Fatalf("GetThread() error = %v", err)
-	}
-	if got.SessionRef != "session-789" {
-		t.Fatalf("SessionRef = %q, want %q", got.SessionRef, "session-789")
-	}
-	if got.PendingForkRef != "" || got.PendingForkResumeAt != "" {
-		t.Fatalf("pending fork state = %q@%q after remap writer, want both empty", got.PendingForkRef, got.PendingForkResumeAt)
-	}
-}
-
 // TestUpdateThreadPreservesPendingForkPin is the sixth fossil of the
 // clobber class: the lazy-fork pin is ONE-SHOT state the session-ref
 // writers consume, so a caller renaming a thread from a snapshot it read

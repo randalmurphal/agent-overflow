@@ -1258,9 +1258,10 @@ A revert firing inside that sliver fails safe: the UUID-keyed slice
 returns `ErrMessageNotFound`, and because the transcript ends before the
 anchor's turn, `writeClaudeSessionSlice` clones the full transcript and
 restores the composer draft. A stamped uuid that is missing while the
-transcript continues PAST that turn is a stale stored id (a fork remap
-regression), and the slice refuses rather than guessing an ordinal. See
-`app_conversation_rollback.go` (`writeClaudeSessionSlice`).
+transcript continues PAST that turn names no transcript entry (a Claude
+queue merge AO could not fold), and the slice refuses rather than guessing
+an ordinal. See `app_conversation_rollback_claude.go`
+(`writeClaudeSessionSlice`).
 
 ### Drift
 

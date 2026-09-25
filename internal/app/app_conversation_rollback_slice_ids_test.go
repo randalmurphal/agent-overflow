@@ -1,8 +1,6 @@
 package app
 
 import (
-	"bytes"
-	"log"
 	"strings"
 	"testing"
 
@@ -11,31 +9,31 @@ import (
 	"agent-overflow/internal/usermessage"
 )
 
-// Tests for the rollback-path provider-id remap: every session slice
-// remints every uuid (sessionfork.buildLines), so the rollback must
-// refresh surviving items' `meta.provider_item_id` and surviving
-// message anchors' provider ids or the NEXT rollback silently degrades
-// to the ordinal-walk fallback.
+// Tests for the provider ids a Claude session slice leaves valid: every
+// rollback or fork slice keeps each surviving entry's uuid and parentUuid
+// (sessionfork.buildLines) and changes only the session identity, so the
+// ids SQLite stored against the source resolve in the slice and the next
+// rollback or fork keys its cut on them unchanged.
 
-const remapTestSessionJSONL = `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"remap-source","message":{"role":"user","content":"first"}}
-{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"remap-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
-{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"remap-source","message":{"role":"user","content":"second"}}
-{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"remap-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
-{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"remap-source","message":{"role":"user","content":"third"}}
-{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"remap-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
+const sliceIDsTestSessionJSONL = `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"slice-ids-source","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"slice-ids-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"slice-ids-source","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"slice-ids-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"slice-ids-source","message":{"role":"user","content":"third"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"slice-ids-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
 `
 
-// setupRemapRollbackThread stands up a Claude thread with three user
-// turns, provider-stamped items, and uuid-keyed message anchors for
-// turns 1 and 2 — the shape triage produces during normal operation.
-func setupRemapRollbackThread(t *testing.T, app *App) (store.Thread, string) {
+// setupSliceIDsThread stands up a Claude thread with three user turns,
+// provider-stamped items, and uuid-keyed message anchors for turns 1 and
+// 2: the shape triage produces during normal operation.
+func setupSliceIDsThread(t *testing.T, app *App) (store.Thread, string) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()
-	const sessionID = "remap-source"
-	writeClaudeProjectSession(t, home, workspace, sessionID, remapTestSessionJSONL)
-	thread := createAppTestThread(t, app, "t-remap-rollback", "claude", workspace)
+	const sessionID = "slice-ids-source"
+	writeClaudeProjectSession(t, home, workspace, sessionID, sliceIDsTestSessionJSONL)
+	thread := createAppTestThread(t, app, "t-slice-ids", "claude", workspace)
 	thread.SessionRef = sessionID
 	if err := app.store.UpdateThread(thread); err != nil {
 		t.Fatalf("update thread: %v", err)
@@ -48,23 +46,33 @@ func setupRemapRollbackThread(t *testing.T, app *App) (store.Thread, string) {
 	return thread, workspace
 }
 
-func captureLog(t *testing.T) *bytes.Buffer {
+// userItemBySummary returns threadID's user_text row with the given
+// summary, so fork tests need not assume the id a fork serves a row under.
+func userItemBySummary(t *testing.T, app *App, threadID, summary string) store.Item {
 	t.Helper()
-	var buf bytes.Buffer
-	prev := log.Writer()
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(prev) })
-	return &buf
+	items, err := app.store.ListItems(threadID)
+	if err != nil {
+		t.Fatalf("list items for %s: %v", threadID, err)
+	}
+	for _, it := range items {
+		if it.Kind == "user_text" && it.Summary == summary {
+			return it
+		}
+	}
+	t.Fatalf("thread %s has no user_text %q", threadID, summary)
+	return store.Item{}
 }
 
-// TestConversationRollbackRemapsSurvivingProviderIDs pins the remap
-// itself: after rolling back to "third", the surviving anchor and
-// items must point at the NEW session's reminted uuids, and the
-// follow-up rollback to "second" must take the uuid-keyed path (no
-// ordinal-fallback log).
-func TestConversationRollbackRemapsSurvivingProviderIDs(t *testing.T) {
+// TestConversationRollbackKeepsSurvivingProviderIDs pins the slice's id
+// contract on the rollback path: the rolled-back session holds the
+// source's surviving rows under their original uuids and parents, the
+// stored ids stay as they were, and the follow-up rollback to "second"
+// slices by the stored id. Were the slice to remint uuids, that second
+// rollback would find neither u1 nor its parent a0 and refuse.
+func TestConversationRollbackKeepsSurvivingProviderIDs(t *testing.T) {
 	app := newTestApp(t)
-	thread, workspace := setupRemapRollbackThread(t, app)
+	thread, workspace := setupSliceIDsThread(t, app)
+	sourceRows := readClaudeSessionRows(t, workspace, thread.SessionRef)
 
 	if err := rollbackToMessage(app, thread.ID, "user:2"); err != nil {
 		t.Fatalf("first rollback: %v", err)
@@ -73,64 +81,101 @@ func TestConversationRollbackRemapsSurvivingProviderIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get thread: %v", err)
 	}
-
-	// The new session's leaf scan only succeeds on uuids that exist in
-	// the new file — use it to build the "valid uuid" check.
-	newState, err := claude.ScanSessionLeaf(testProviderProjectsDir(t), afterFirst.SessionRef, workspace)
-	if err != nil {
-		t.Fatalf("scan new session leaf: %v", err)
+	if afterFirst.SessionRef == thread.SessionRef {
+		t.Fatalf("rollback kept session ref %q, want a new slice", afterFirst.SessionRef)
 	}
-	if newState.CanonicalLeafUUID == "" {
-		t.Fatalf("new session has no leaf")
-	}
+	assertClaudeSliceKeepsSourceRows(t, workspace, afterFirst.SessionRef, sourceRows[:4])
 
 	surviving, ok, err := app.store.GetMessageAnchor(thread.ID, "user:1")
 	if err != nil || !ok {
 		t.Fatalf("get surviving anchor: ok=%v err=%v", ok, err)
 	}
-	if surviving.ProviderUserMessageID == "u1" {
-		t.Fatalf("surviving anchor still carries source-session uuid u1 — rollback did not remap")
+	if surviving.ProviderUserMessageID != "u1" || surviving.ProviderParentUUID != "a0" {
+		t.Fatalf("surviving anchor ids = %q/%q, want u1/a0", surviving.ProviderUserMessageID, surviving.ProviderParentUUID)
 	}
-	if surviving.ProviderParentUUID == "a0" {
-		t.Fatalf("surviving anchor parent uuid still a0 — rollback did not remap")
-	}
-
-	items, err := app.store.ListItems(thread.ID)
-	if err != nil {
-		t.Fatalf("list items: %v", err)
-	}
-	for _, it := range items {
-		if it.Kind != "user_text" {
-			continue
+	for id, want := range map[string]string{"user:0": "u0", "user:1": "u1"} {
+		item, found, err := app.store.GetThreadItem(thread.ID, id)
+		if err != nil || !found {
+			t.Fatalf("get item %s: found=%v err=%v", id, found, err)
 		}
-		if id := usermessage.ReadProviderItemID(it.Meta); id == "u0" || id == "u1" {
-			t.Fatalf("item %s still carries source-session uuid %s — rollback did not remap", it.ID, id)
+		if got := usermessage.ReadProviderItemID(item.Meta); got != want {
+			t.Fatalf("item %s provider_item_id = %q, want %q", id, got, want)
 		}
 	}
 
-	// Second rollback must take the uuid-keyed slice. There is no ordinal
-	// fallback behind it any more, so a missed remap surfaces as the slice
-	// refusing outright.
 	if err := rollbackToMessage(app, thread.ID, "user:1"); err != nil {
-		t.Fatalf("second rollback: %v — a remapped anchor must still slice by uuid", err)
+		t.Fatalf("second rollback: %v", err)
 	}
 	afterSecond, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("get thread after second rollback: %v", err)
 	}
-	assertClaudeSessionText(t, workspace, afterSecond.SessionRef, []string{"first"}, []string{"second", "third"})
+	assertClaudeSliceKeepsSourceRows(t, workspace, afterSecond.SessionRef, sourceRows[:2])
+}
+
+// TestConversationRollbackInClaudeForkResolvesStoredID pins revert after
+// fork: the fork's rows carry the source's provider ids, and the fork's
+// slice keeps those uuids, so reverting inside the fork cuts at the stored
+// id.
+func TestConversationRollbackInClaudeForkResolvesStoredID(t *testing.T) {
+	app := newTestApp(t)
+	source, workspace := setupSliceIDsThread(t, app)
+	sourceRows := readClaudeSessionRows(t, workspace, source.SessionRef)
+
+	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:2")
+	if err != nil {
+		t.Fatalf("fork from message: %v", err)
+	}
+	second := userItemBySummary(t, app, fork.ID, "second")
+	if got := usermessage.ReadProviderItemID(second.Meta); got != "u1" {
+		t.Fatalf("fork \"second\" provider_item_id = %q, want the source's u1", got)
+	}
+
+	if err := rollbackToMessage(app, fork.ID, second.ID); err != nil {
+		t.Fatalf("rollback in fork: %v", err)
+	}
+	after, err := app.store.GetThread(fork.ID)
+	if err != nil {
+		t.Fatalf("get fork: %v", err)
+	}
+	if after.SessionRef == fork.SessionRef {
+		t.Fatalf("rollback in fork kept session ref %q, want a new slice", after.SessionRef)
+	}
+	assertClaudeSliceKeepsSourceRows(t, workspace, after.SessionRef, sourceRows[:2])
+}
+
+// TestForkAfterClaudeRollbackResolvesStoredID pins fork after revert: the
+// rollback leaves the surviving anchor's stored ids untouched and its
+// slice keeps those uuids, so a fork from a surviving message cuts the
+// rolled-back session at the stored id.
+func TestForkAfterClaudeRollbackResolvesStoredID(t *testing.T) {
+	app := newTestApp(t)
+	source, workspace := setupSliceIDsThread(t, app)
+	sourceRows := readClaudeSessionRows(t, workspace, source.SessionRef)
+
+	if err := rollbackToMessage(app, source.ID, "user:2"); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:1")
+	if err != nil {
+		t.Fatalf("fork after rollback: %v", err)
+	}
+	assertClaudeSliceKeepsSourceRows(t, workspace, fork.SessionRef, sourceRows[:2])
+	first := userItemBySummary(t, app, fork.ID, "first")
+	if got := usermessage.ReadProviderItemID(first.Meta); got != "u0" {
+		t.Fatalf("fork \"first\" provider_item_id = %q, want the source's u0", got)
+	}
 }
 
 // TestConversationRollbackRefusesStaleIDsInsteadOfOrdinalWalk pins the
-// no-ordinal-fallback rule from the remap side: when BOTH stored uuid
-// copies — the anchor's and the item row's meta stamp (the R5-7 retry
-// candidate) — are absent from a session file that continues past the
-// anchor, AO cannot tell which entry to cut at. The ordinal walk would
-// miscount a CLI-merged queue batch, so the rollback fails and leaves the
-// session and the timeline as they were.
+// no-ordinal-fallback rule: when both stored uuid copies (the item row's
+// meta stamp and the anchor's) are absent from a session file that
+// continues past the anchor, AO cannot tell which entry to cut at. The
+// ordinal walk would miscount a CLI-merged queue batch, so the rollback
+// fails and leaves the session and the timeline as they were.
 func TestConversationRollbackRefusesStaleIDsInsteadOfOrdinalWalk(t *testing.T) {
 	app := newTestApp(t)
-	thread, workspace := setupRemapRollbackThread(t, app)
+	thread, workspace := setupSliceIDsThread(t, app)
 	before, err := app.store.GetThread(thread.ID)
 	if err != nil {
 		t.Fatalf("get thread: %v", err)

@@ -160,9 +160,8 @@ func TestProviderSmokeClaudeCrossDrainMergeFold(t *testing.T) {
 	if _, exists, err := app.store.GetThreadItem(thread.ID, survivor.ID); err != nil || exists {
 		t.Fatalf("survivor row outlived the cut: exists=%v err=%v", exists, err)
 	}
-	// The cut writes a fresh transcript whose entries are re-minted and
-	// restamped onto AO's rows, so the first prompt is matched by its row's
-	// CURRENT uuid, not the one it carried before the cut.
+	// The cut writes a new session file that keeps every entry's uuid, so
+	// the first prompt is matched by the uuid its row still carries.
 	firstUUID = usermessage.ReadProviderItemID(mustProviderSmokeItem(t, app, thread.ID, first.ID).Meta)
 	prompts = readProviderSmokePromptEntries(t, sessionRef(), workspace)
 	if len(prompts) != 2 || prompts[0].uuid != firstUUID || len(prompts[1].texts) != 1 || prompts[1].texts[0] != recall {

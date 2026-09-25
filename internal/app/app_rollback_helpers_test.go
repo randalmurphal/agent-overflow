@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -123,6 +124,64 @@ func assertClaudeSessionText(t *testing.T, workspace, sessionID string, wantPres
 	for _, absent := range wantAbsent {
 		if strings.Contains(text, absent) {
 			t.Fatalf("claude session %q unexpectedly contains %q:\n%s", sessionID, absent, text)
+		}
+	}
+}
+
+// claudeSessionRow is the identity of one Claude transcript row.
+type claudeSessionRow struct {
+	UUID       string
+	ParentUUID string
+	SessionID  string
+}
+
+// readClaudeSessionRows returns the transcript rows of a Claude session
+// file in file order. Session metadata rows (custom-title and the like)
+// are skipped.
+func readClaudeSessionRows(t *testing.T, workspace, sessionID string) []claudeSessionRow {
+	t.Helper()
+	path, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), sessionID, workspace)
+	if err != nil {
+		t.Fatalf("locate claude session %q: %v", sessionID, err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read claude session %s: %v", path, err)
+	}
+	var rows []claudeSessionRow
+	for i, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("claude session %s line %d: %v", path, i+1, err)
+		}
+		kind, _ := entry["type"].(string)
+		if _, transcript := sessionfork.TranscriptTypes[kind]; !transcript {
+			continue
+		}
+		id, _ := entry["uuid"].(string)
+		parent, _ := entry["parentUuid"].(string)
+		session, _ := entry["sessionId"].(string)
+		rows = append(rows, claudeSessionRow{UUID: id, ParentUUID: parent, SessionID: session})
+	}
+	return rows
+}
+
+// assertClaudeSliceKeepsSourceRows asserts that session sliceID holds
+// exactly want's uuids and parent uuids, in order, each row stamped with
+// sliceID as its own session id.
+func assertClaudeSliceKeepsSourceRows(t *testing.T, workspace, sliceID string, want []claudeSessionRow) {
+	t.Helper()
+	got := readClaudeSessionRows(t, workspace, sliceID)
+	if len(got) != len(want) {
+		t.Fatalf("slice %s rows = %+v, want the source's %+v", sliceID, got, want)
+	}
+	for i := range want {
+		if got[i].UUID != want[i].UUID || got[i].ParentUUID != want[i].ParentUUID {
+			t.Errorf("slice %s row %d = %s (parent %q), want source %s (parent %q)",
+				sliceID, i, got[i].UUID, got[i].ParentUUID, want[i].UUID, want[i].ParentUUID)
+		}
+		if got[i].SessionID != sliceID {
+			t.Errorf("slice row %s sessionId = %q, want %q", got[i].UUID, got[i].SessionID, sliceID)
 		}
 	}
 }

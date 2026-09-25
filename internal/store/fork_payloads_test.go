@@ -236,18 +236,6 @@ func TestPointerForkTransferCarriesInheritedBytes(t *testing.T) {
 	requireForkPayload(t, s, "fork", "base chunk")
 }
 
-func TestProviderIDRemapIsAtomic(t *testing.T) {
-	s := payloadForkFixture(t)
-	err := s.RemapProviderIDs("source", []ItemMetaUpdate{{ItemID: "item", Meta: `{"provider_item_id":"new"}`}, {ItemID: "missing", Meta: `{}`}}, nil)
-	if err == nil {
-		t.Fatal("missing row remap succeeded")
-	}
-	item, found, err := s.GetThreadItem("source", "item")
-	if err != nil || !found || item.Meta != "{}" {
-		t.Fatalf("partial remap: %+v %v", item, err)
-	}
-}
-
 // TestPointerForkDiffReaders: the edit-diff readers resolve a fork's
 // inherited diff rows and their patch payloads, and stop showing them once
 // the source, which owns them, is deleted.
@@ -273,39 +261,6 @@ func TestPointerForkDiffReaders(t *testing.T) {
 	}
 	if list, err := s.ListEditDiffItems("fork"); err != nil || len(list) != 0 {
 		t.Fatalf("list after source deletion=%+v: %v", list, err)
-	}
-}
-
-func TestUserMessageMetadataIncludesImportedAndLocalRows(t *testing.T) {
-	s := newTestStore(t)
-	newImportTargetThread(t, s, "source")
-	if err := s.ApplyImportBatch("source", importBatchFixture("source")); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.InsertItem(Item{ThreadID: "source", ID: "local", TurnIndex: 2, Kind: "user_text", Role: "user", Status: "completed", Summary: "next", Meta: `{"provider_item_id":"new"}`}); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := s.ListUserMessageMetadata("source")
-	if err != nil || len(rows) != 2 {
-		t.Fatalf("metadata=%+v: %v", rows, err)
-	}
-	items, err := s.ListItems("source")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, row := range rows {
-		found := false
-		for _, item := range items {
-			if row.ItemID == item.ID {
-				found = true
-				if row.Meta != item.Meta || item.Kind != "user_text" || item.Role != "user" {
-					t.Fatalf("mismatched metadata=%+v item=%+v", row, item)
-				}
-			}
-		}
-		if !found {
-			t.Fatalf("unknown metadata row: %+v", row)
-		}
 	}
 }
 

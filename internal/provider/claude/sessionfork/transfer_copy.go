@@ -19,8 +19,8 @@ import (
 
 // TransferCopy preserves the native message UUIDs, as Claude's own latest-turn
 // --fork-session does. Child IDs are scoped by the root session directory; the
-// entire sidecar tree moves under the new root. Arbitrary-cut forks still use
-// forksession.go's branch transform and message remapping.
+// entire sidecar tree moves under the new root. Arbitrary-cut forks use
+// buildlines.go's branch transform, which preserves message UUIDs too.
 type TransferCopy struct {
 	SessionID string
 	Files     []transferfiles.Source

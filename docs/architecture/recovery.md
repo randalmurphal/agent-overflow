@@ -15,15 +15,14 @@ to hand back.
 |---|---|
 | `session_ref` | The provider-side session ID. For Claude it's the session file basename; for Codex it's the thread id. |
 | `pending_fork_session_ref` | Set on a freshly-forked thread to point at the *source* session. Cleared the first time we start under it. |
-| `pending_fork_resume_at` | The PIN for a lazy Claude fork taken off a LIVE source (migration v69): the source leaf uuid captured when Fork was clicked. Consumed with `pending_fork_session_ref`. Both session-ref writers clear the pair. Empty on an idle-source fork, whose tail IS the cut. |
+| `pending_fork_resume_at` | The PIN for a lazy Claude fork taken off a LIVE source (migration v69): the source leaf uuid captured when Fork was clicked. Consumed with `pending_fork_session_ref`. `UpdateSessionRef` clears the pair. Empty on an idle-source fork, whose tail IS the cut. |
 
 `Router.handleInit` writes `session_ref` via
 `store.UpdateSessionRef` on every `EventInit`. The store-level update
 also clears `pending_fork_session_ref` and `pending_fork_resume_at` in
 the same statement (`Store.UpdateSessionRef` in
-`internal/store/threads.go`, mirrored by
-`UpdateSessionRefAndRemapProviderIDs`) so a pre-committed fork cannot
-get re-forked (or re-pinned) on the next restart.
+`internal/store/threads.go`) so a pre-committed fork cannot get
+re-forked (or re-pinned) on the next restart.
 
 ## Start, Resume, Fork
 

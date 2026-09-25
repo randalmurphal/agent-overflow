@@ -45,8 +45,7 @@ const (
 // skips progress ancestors) — shared rather than reimplemented precisely
 // because an importer walking raw `parentUuid` would break its chain on
 // every progress row. The compaction fallback reads `logicalParentUuid`
-// directly, which is what sessionfork.ResolveLogicalParent does for a
-// plain string value; there is no walk to share.
+// directly; there is no walk to share.
 //
 // Why this does not reuse claudeBranchIndex (sessionleaf_branch.go): that
 // index answers which cursor Claude will accept after resume deserialization
@@ -79,7 +78,7 @@ func BuildBranches(rows []Row, leafTitles map[string]string) ([]Branch, []import
 		case row.UUID == "":
 			continue
 		case row.Type == "progress":
-			// Not conversation content, and ResolveParent already treats
+			// Not conversation content, and ResolveParentUUID already treats
 			// it as transparent — keeping it out of the DAG is what makes
 			// that transparency consistent for children AND leaves.
 			continue
@@ -185,9 +184,9 @@ func resolveParentUUID(row Row, allByUUID map[string]Row, admitted map[string]Ro
 	}
 	// `compact_boundary` rows carry parentUuid:null and chain through
 	// logicalParentUuid to the pre-compact leaf. The backpointer is a
-	// verbatim uuid (ResolveLogicalParent passes an unknown one through),
-	// so membership is checked here — an unresolvable backpointer must
-	// read as "root", not as an edge to a row that does not exist.
+	// verbatim uuid (a fork slice keeps it even when its target was cut
+	// away), so membership is checked here: an unresolvable backpointer
+	// must read as "root", not as an edge to a row that does not exist.
 	if row.LogicalParentUUID != "" {
 		if _, known := admitted[row.LogicalParentUUID]; known {
 			return row.LogicalParentUUID

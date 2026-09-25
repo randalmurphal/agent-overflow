@@ -5,7 +5,6 @@ import (
 
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/triage"
-	"agent-overflow/internal/usermessage"
 )
 
 // EnsureCanFork validates the store-backed preconditions shared by provider
@@ -83,71 +82,4 @@ func (s *Service) ResolveCodexForkAnchor(
 		)
 	}
 	return "", false, nil
-}
-
-// ComputeClaudeProviderIDRemap returns the store updates implied by uuidMap
-// without applying them. The fork saga may apply them under its delete-on-
-// failure cleanup, while rollback commits them atomically with SessionRef.
-func (s *Service) ComputeClaudeProviderIDRemap(
-	threadID string,
-	uuidMap map[string]string,
-) ([]store.ItemMetaUpdate, []store.MessageAnchorProviderIDsUpdate, error) {
-	database, err := s.database("remap claude provider ids")
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(uuidMap) == 0 {
-		return nil, nil, nil
-	}
-	items, err := database.ListUserMessageMetadata(threadID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("remap claude provider ids: list items: %w", err)
-	}
-	var itemUpdates []store.ItemMetaUpdate
-	for _, item := range items {
-		newUUID := uuidMap[usermessage.ReadProviderItemID(item.Meta)]
-		newParent := uuidMap[usermessage.ReadProviderParentUUID(item.Meta)]
-		if newUUID == "" && newParent == "" {
-			continue
-		}
-		newMeta, err := usermessage.MergeProviderIDs(item.Meta, newUUID, newParent)
-		if err != nil {
-			return nil, nil, fmt.Errorf("remap claude provider ids: merge item %s/%s meta: %w", threadID, item.ItemID, err)
-		}
-		if newMeta != item.Meta {
-			itemUpdates = append(itemUpdates, store.ItemMetaUpdate{ItemID: item.ItemID, Meta: newMeta})
-		}
-	}
-	anchors, err := database.ListMessageAnchors(threadID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("remap claude provider ids: list message anchors: %w", err)
-	}
-	var anchorUpdates []store.MessageAnchorProviderIDsUpdate
-	for _, anchor := range anchors {
-		newMessageID := uuidMap[anchor.ProviderUserMessageID]
-		newParent := uuidMap[anchor.ProviderParentUUID]
-		if newMessageID == "" && newParent == "" {
-			continue
-		}
-		anchorUpdates = append(anchorUpdates, store.MessageAnchorProviderIDsUpdate{
-			UserItemID:            anchor.UserItemID,
-			ProviderUserMessageID: newMessageID,
-			ProviderParentUUID:    newParent,
-		})
-	}
-	return itemUpdates, anchorUpdates, nil
-}
-
-// ApplyClaudeProviderIDRemap applies a precomputed remap. Fork calls this only
-// while its cleanup stack still owns the new row.
-func (s *Service) ApplyClaudeProviderIDRemap(threadID string, uuidMap map[string]string) error {
-	database, err := s.database("remap claude provider ids")
-	if err != nil {
-		return err
-	}
-	itemUpdates, anchorUpdates, err := s.ComputeClaudeProviderIDRemap(threadID, uuidMap)
-	if err != nil {
-		return err
-	}
-	return database.RemapProviderIDs(threadID, itemUpdates, anchorUpdates)
 }

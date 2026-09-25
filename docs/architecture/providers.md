@@ -30,7 +30,9 @@ the provider process owns turn state.
   CLI itself copies the transcript at startup. An anchored (fork-at-turn
   / fork-from-message) Claude fork slices the source JSONL up front
   instead (`internal/provider/claude/sessionfork`). Anchors point at
-  rows already on disk, so the slice is exact.
+  rows already on disk, so the slice is exact. Like the CLI's own fork
+  copy, the slice keeps every entry's uuid and changes only the session
+  identity, so provider ids stored against the source stay valid.
 - Forking DURING an active turn is supported and is a snapshot "as if
   interrupted right now": the source is never interrupted and never
   mutated, and only the fork's copies of its running rows are settled
@@ -45,10 +47,10 @@ the provider process owns turn state.
   `--resume-session-at <cursor> --fork-session`, which makes the CLI cut
   its fork copy exactly at the pin even when the source has kept
   streaming since (spike-verified 2.1.237: rows after the cursor are
-  dropped from the fork copy, and source uuids are preserved verbatim, so
-  no provider-id remap is needed). The UNPINNED lazy path is forbidden
-  whenever a live session is registered. It would snapshot the
-  transcript at the fork's first send, minutes or turns later (2026-08-22
+  dropped from the fork copy, and source uuids are preserved verbatim).
+  The UNPINNED lazy path is forbidden whenever a live session is
+  registered. It would snapshot the transcript at the fork's first
+  send, minutes or turns later (2026-08-22
   incident: a fork keyed on the turn row alone deferred unpinned and its
   transcript was cut 44s after its timeline). "Live" is wider than "has
   an open turn row": the Claude CLI closes a turn on `end_turn` and then

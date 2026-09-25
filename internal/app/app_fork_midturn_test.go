@@ -272,9 +272,9 @@ func TestForkThreadClaudeMidTurnTailPinsLazyCut(t *testing.T) {
 		t.Errorf("fork turn 1 = completedAt %v / stopReason %q, want closed + interrupted", forkTurn.CompletedAt, forkTurn.StopReason)
 	}
 
-	// No uuid remap: the CLI's --fork-session copy preserves the source's
-	// uuids verbatim (spike-verified 2.1.237), so the cloned rows keep
-	// pointing at the very uuids the fork copy will hold.
+	// The CLI's --fork-session copy preserves the source's uuids verbatim
+	// (spike-verified 2.1.237), so the fork's rows keep pointing at the
+	// very uuids the fork copy will hold.
 	forkUser := itemBySummaryPrefix(t, forkItems, "second prompt")
 	if got := usermessage.ReadProviderItemID(forkUser.Meta); got != "u1" {
 		t.Errorf("cloned user row provider_item_id = %q, want the source uuid u1 kept verbatim", got)

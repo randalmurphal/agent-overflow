@@ -233,11 +233,9 @@ func ReadProviderParentUUID(metaJSON string) string {
 // MergeProviderItemID returns a JSON-encoded meta blob that preserves
 // every key in `existing` and sets `provider_item_id` to
 // providerItemID. Empty providerItemID returns the original meta
-// unchanged. Three callers: the fork-time UUID remap (rewrites stored
-// wire ids when a Claude session JSONL is forked with fresh uuids), the
-// send path (pre-stamps the app-minted id before the provider echo), and
-// triage's `handle_user_text` flow (folds the echoed id onto the user
-// row). All call it directly — there is no intermediate delegate.
+// unchanged. The send path uses it to pre-stamp the app-minted id before
+// the provider echo; triage's echo stamp uses MergeProviderIDs to write
+// the id and its parent together.
 func MergeProviderItemID(existing, providerItemID string) (string, error) {
 	return MergeProviderIDs(existing, providerItemID, "")
 }

@@ -195,8 +195,8 @@ func TestImportedClaudeBranchGetsItsOwnSessionOnFirstStart(t *testing.T) {
 
 	// The cut file is a complete session whose LAST transcript row is this
 	// branch's leaf — which is what makes it the file's active branch, and so
-	// the one a resume lands on. The row carries the leaf as its fork
-	// provenance because every uuid is reminted.
+	// the one a resume lands on. The cut keeps every uuid, so that row is the
+	// leaf itself.
 	cut := home.claudeSessionPath(materialized.SessionRef)
 	rows := transcriptRows(t, cut)
 	if len(rows) == 0 {
@@ -212,9 +212,8 @@ func TestImportedClaudeBranchGetsItsOwnSessionOnFirstStart(t *testing.T) {
 	if lastTranscript == nil {
 		t.Fatalf("cut session %s has no transcript rows", cut)
 	}
-	provenance, _ := lastTranscript["forkedFrom"].(map[string]any)
-	if provenance["messageUuid"] != "a2a" {
-		t.Fatalf("cut session's last row came from %v, want the branch leaf a2a", provenance["messageUuid"])
+	if lastTranscript["uuid"] != "a2a" {
+		t.Fatalf("cut session's last row is %v, want the branch leaf a2a", lastTranscript["uuid"])
 	}
 	if lastTranscript["sessionId"] != materialized.SessionRef {
 		t.Fatalf("cut session rows claim session %v, want %q",
@@ -222,7 +221,7 @@ func TestImportedClaudeBranchGetsItsOwnSessionOnFirstStart(t *testing.T) {
 	}
 	// The other branch's rows are not in the cut: the slice stops at the leaf.
 	for _, row := range rows {
-		if from, _ := row["forkedFrom"].(map[string]any); from != nil && from["messageUuid"] == "a2b" {
+		if row["uuid"] == "a2b" {
 			t.Fatal("the cut session carried the other branch's leaf; a resume would see both")
 		}
 	}

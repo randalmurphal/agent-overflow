@@ -1,43 +1,49 @@
 package app
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/provider/claude/sessionfork"
 	"agent-overflow/internal/store"
 	"agent-overflow/internal/usermessage"
 )
 
-// TestForkThreadFromMessageRemapsClaudeUUIDs is the structural
-// regression guard for the fork-time UUID remap. Without it, the
-// fork's cloned `items.meta.provider_item_id` columns would continue to
-// reference UUIDs from the SOURCE session — UUIDs that don't exist in the
-// fork's JSONL.
-//
-// The remap is wired into the fork pipeline after `CloneThreadItems` so cloned
-// rows pick up the fork's NEW UUIDs from the same
-// `BuildForkLinesWithUUIDMap` rewrite that produced the JSONL. This test
-// verifies the resulting stored UUIDs match what the JSONL actually contains
-// by looking up each entry via its `forkedFrom.messageUuid` backpointer.
-func TestForkThreadFromMessageRemapsClaudeUUIDs(t *testing.T) {
+// threeTurnClaudeSession is a three-turn Claude transcript under sessionID.
+func threeTurnClaudeSession(sessionID string) string {
+	return `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"` + sessionID + `","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"` + sessionID + `","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
+{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"` + sessionID + `","message":{"role":"user","content":"second"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"` + sessionID + `","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
+{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"` + sessionID + `","message":{"role":"user","content":"third"}}
+{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"` + sessionID + `","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
+`
+}
+
+// assertForkUserProviderIDs asserts each named user_text row of threadID
+// carries the given provider_item_id.
+func assertForkUserProviderIDs(t *testing.T, app *App, threadID string, want map[string]string) {
+	t.Helper()
+	for summary, id := range want {
+		if got := usermessage.ReadProviderItemID(userItemBySummary(t, app, threadID, summary).Meta); got != id {
+			t.Errorf("thread %s %q provider_item_id = %q, want the source's %q", threadID, summary, got, id)
+		}
+	}
+}
+
+// TestForkThreadFromMessageKeepsClaudeUUIDs pins the fork's id contract
+// on the message-keyed path: the fork's slice holds the source's
+// surviving rows under their original uuids and parents, so the provider
+// ids the fork's rows carry from the source name entries in the fork's
+// own transcript.
+func TestForkThreadFromMessageKeepsClaudeUUIDs(t *testing.T) {
 	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := initGitRepo(t)
-	const sessionID = "fork-remap-source"
-	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"fork-remap-source","message":{"role":"user","content":"first"}}
-{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"fork-remap-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
-{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"fork-remap-source","message":{"role":"user","content":"second"}}
-{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"fork-remap-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
-{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"fork-remap-source","message":{"role":"user","content":"third"}}
-{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"fork-remap-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
-`)
-	source := createAppTestThread(t, app, "src-fork-remap", "claude", workspace)
+	const sessionID = "fork-ids-source"
+	writeClaudeProjectSession(t, home, workspace, sessionID, threeTurnClaudeSession(sessionID))
+	source := createAppTestThread(t, app, "src-fork-ids", "claude", workspace)
 	source.SessionRef = sessionID
 	if err := app.store.UpdateThread(source); err != nil {
 		t.Fatalf("update source: %v", err)
@@ -47,44 +53,23 @@ func TestForkThreadFromMessageRemapsClaudeUUIDs(t *testing.T) {
 	insertUserItemWithMeta(t, app.store, source.ID, "user:2", 2, "third", `{"provider_item_id":"u2"}`)
 	seedMessageAnchor(t, app.store, source.ID, "user:1", 1, "u1", "a0")
 	seedMessageAnchor(t, app.store, source.ID, "user:2", 2, "u2", "a1")
+	sourceRows := readClaudeSessionRows(t, workspace, sessionID)
 
 	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:2")
 	if err != nil {
 		t.Fatalf("fork from message: %v", err)
 	}
 
-	oldToNew := readForkUUIDMap(t, workspace, fork.SessionRef)
-	for _, oldUUID := range []string{"u0", "u1", "a0", "a1"} {
-		if oldToNew[oldUUID] == "" {
-			t.Fatalf("fork JSONL missing remap for %q: %v", oldUUID, oldToNew)
-		}
-	}
-	// The dropped user (u2 / a2) MUST NOT appear in the fork JSONL.
-	if oldToNew["u2"] != "" {
-		t.Errorf("fork unexpectedly contains u2: mapped to %q", oldToNew["u2"])
-	}
-
-	items, err := app.store.ListItems(fork.ID)
+	assertClaudeSliceKeepsSourceRows(t, workspace, fork.SessionRef, sourceRows[:4])
+	assertForkUserProviderIDs(t, app, fork.ID, map[string]string{"first": "u0", "second": "u1"})
+	items, err := forkConversationItems(app.store, fork.ID)
 	if err != nil {
 		t.Fatalf("list fork items: %v", err)
 	}
-	// `CloneThreadItems` mints fresh UUIDs for every cloned row, so
-	// the fork's items no longer match the source's "user:0" / "user:1"
-	// IDs. Index by Summary instead — it's stable through cloning.
-	bySummary := map[string]store.Item{}
 	for _, it := range items {
-		if it.Kind == "user_text" {
-			bySummary[it.Summary] = it
+		if it.Summary == "third" {
+			t.Errorf("fork unexpectedly contains \"third\" (we forked from it)")
 		}
-	}
-	if got := usermessage.ReadProviderItemID(bySummary["first"].Meta); got != oldToNew["u0"] {
-		t.Errorf("fork user:0 (\"first\") provider_item_id = %q, want fork-remapped %q", got, oldToNew["u0"])
-	}
-	if got := usermessage.ReadProviderItemID(bySummary["second"].Meta); got != oldToNew["u1"] {
-		t.Errorf("fork user:1 (\"second\") provider_item_id = %q, want fork-remapped %q", got, oldToNew["u1"])
-	}
-	if _, ok := bySummary["third"]; ok {
-		t.Errorf("fork unexpectedly contains \"third\" (we forked from it)")
 	}
 
 	anchors, err := app.store.ListMessageAnchors(fork.ID)
@@ -96,25 +81,18 @@ func TestForkThreadFromMessageRemapsClaudeUUIDs(t *testing.T) {
 	}
 }
 
-// TestForkThreadAtTurnIndexRemapsClaudeUUIDs covers the turn-keyed
+// TestForkThreadAtTurnIndexKeepsClaudeUUIDs covers the turn-keyed
 // `ForkThread` entry point. The slice anchor is computed from the
 // `lookupTurnAnchorClaudeUUID` helper (the user_text at the first
-// turn DROPPED from the fork). Otherwise the remap pipeline is the
-// same as the message-keyed fork.
-func TestForkThreadAtTurnIndexRemapsClaudeUUIDs(t *testing.T) {
+// turn DROPPED from the fork); the id contract is the message-keyed one.
+func TestForkThreadAtTurnIndexKeepsClaudeUUIDs(t *testing.T) {
 	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := initGitRepo(t)
-	const sessionID = "fork-turn-remap"
-	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"fork-turn-remap","message":{"role":"user","content":"first"}}
-{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"fork-turn-remap","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
-{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"fork-turn-remap","message":{"role":"user","content":"second"}}
-{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"fork-turn-remap","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
-{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"fork-turn-remap","message":{"role":"user","content":"third"}}
-{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"fork-turn-remap","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
-`)
-	source := createAppTestThread(t, app, "src-turn-remap", "claude", workspace)
+	const sessionID = "fork-turn-ids"
+	writeClaudeProjectSession(t, home, workspace, sessionID, threeTurnClaudeSession(sessionID))
+	source := createAppTestThread(t, app, "src-turn-ids", "claude", workspace)
 	source.SessionRef = sessionID
 	if err := app.store.UpdateThread(source); err != nil {
 		t.Fatalf("update source: %v", err)
@@ -122,6 +100,7 @@ func TestForkThreadAtTurnIndexRemapsClaudeUUIDs(t *testing.T) {
 	insertUserItemWithMeta(t, app.store, source.ID, "user:0", 0, "first", `{"provider_item_id":"u0"}`)
 	insertUserItemWithMeta(t, app.store, source.ID, "user:1", 1, "second", `{"provider_item_id":"u1"}`)
 	insertUserItemWithMeta(t, app.store, source.ID, "user:2", 2, "third", `{"provider_item_id":"u2"}`)
+	sourceRows := readClaudeSessionRows(t, workspace, sessionID)
 
 	atTurn := 1
 	fork, err := app.ForkThread(t.Context(), source.ID, &atTurn)
@@ -129,54 +108,21 @@ func TestForkThreadAtTurnIndexRemapsClaudeUUIDs(t *testing.T) {
 		t.Fatalf("fork at turn: %v", err)
 	}
 
-	oldToNew := readForkUUIDMap(t, workspace, fork.SessionRef)
-	for _, oldUUID := range []string{"u0", "u1", "a0", "a1"} {
-		if oldToNew[oldUUID] == "" {
-			t.Fatalf("fork JSONL missing remap for %q: %v", oldUUID, oldToNew)
-		}
-	}
-	if oldToNew["u2"] != "" {
-		t.Errorf("fork unexpectedly contains u2: mapped to %q", oldToNew["u2"])
-	}
-
-	items, err := app.store.ListItems(fork.ID)
-	if err != nil {
-		t.Fatalf("list fork items: %v", err)
-	}
-	bySummary := map[string]store.Item{}
-	for _, it := range items {
-		if it.Kind == "user_text" {
-			bySummary[it.Summary] = it
-		}
-	}
-	if got := usermessage.ReadProviderItemID(bySummary["first"].Meta); got != oldToNew["u0"] {
-		t.Errorf("fork \"first\" provider_item_id = %q, want fork-remapped %q", got, oldToNew["u0"])
-	}
-	if got := usermessage.ReadProviderItemID(bySummary["second"].Meta); got != oldToNew["u1"] {
-		t.Errorf("fork \"second\" provider_item_id = %q, want fork-remapped %q", got, oldToNew["u1"])
-	}
+	assertClaudeSliceKeepsSourceRows(t, workspace, fork.SessionRef, sourceRows[:4])
+	assertForkUserProviderIDs(t, app, fork.ID, map[string]string{"first": "u0", "second": "u1"})
 }
 
-// TestForkOfForkRemapStaysCorrect verifies the remap chain holds
-// across two consecutive forks. After fork1 from source and fork2
-// from fork1, fork2's stored UUIDs MUST reference fork2's JSONL
-// UUIDs (not fork1's, and definitely not source's). Without the
-// per-fork remap, fork2's UUIDs would stale-reference fork1's, and
-// a UUID-keyed revert inside fork2 would fall back to the ordinal
-// walk — defeating the structural fix when users chain forks.
-func TestForkOfForkRemapStaysCorrect(t *testing.T) {
+// TestForkOfForkKeepsClaudeUUIDs verifies the id contract across two
+// consecutive forks: fork2, cut from fork1, still holds the source's
+// uuids, so the provider ids inherited through both forks name entries in
+// fork2's own transcript.
+func TestForkOfForkKeepsClaudeUUIDs(t *testing.T) {
 	app := newTestApp(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := initGitRepo(t)
 	const sessionID = "fork-of-fork-source"
-	writeClaudeProjectSession(t, home, workspace, sessionID, `{"type":"user","uuid":"u0","parentUuid":null,"sessionId":"fork-of-fork-source","message":{"role":"user","content":"first"}}
-{"type":"assistant","uuid":"a0","parentUuid":"u0","sessionId":"fork-of-fork-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 0"}]}}
-{"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"fork-of-fork-source","message":{"role":"user","content":"second"}}
-{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"fork-of-fork-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
-{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"fork-of-fork-source","message":{"role":"user","content":"third"}}
-{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"fork-of-fork-source","message":{"role":"assistant","content":[{"type":"text","text":"reply 2"}]}}
-`)
+	writeClaudeProjectSession(t, home, workspace, sessionID, threeTurnClaudeSession(sessionID))
 	source := createAppTestThread(t, app, "src-of-fork", "claude", workspace)
 	source.SessionRef = sessionID
 	if err := app.store.UpdateThread(source); err != nil {
@@ -187,13 +133,12 @@ func TestForkOfForkRemapStaysCorrect(t *testing.T) {
 	insertUserItemWithMeta(t, app.store, source.ID, "user:2", 2, "third", `{"provider_item_id":"u2"}`)
 	seedMessageAnchor(t, app.store, source.ID, "user:1", 1, "u1", "a0")
 	seedMessageAnchor(t, app.store, source.ID, "user:2", 2, "u2", "a1")
+	sourceRows := readClaudeSessionRows(t, workspace, sessionID)
 
 	fork1, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:2")
 	if err != nil {
 		t.Fatalf("fork1: %v", err)
 	}
-	fork1Map := readForkUUIDMap(t, workspace, fork1.SessionRef)
-
 	fork1Anchors, err := app.store.ListMessageAnchors(fork1.ID)
 	if err != nil {
 		t.Fatalf("list fork1 anchors: %v", err)
@@ -207,41 +152,11 @@ func TestForkOfForkRemapStaysCorrect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fork2: %v", err)
 	}
-	fork2Map := readForkUUIDMap(t, workspace, fork2.SessionRef)
-
-	// fork2.JSONL backpointers should point at FORK1's UUIDs (because
-	// fork1 is the immediate source), not source's. Verify by
-	// confirming fork2 cannot resolve "u0" via forkedFrom.messageUuid
-	// (that's fork1's old reference, not the now-current one).
-	if fork2Map["u0"] != "" {
-		t.Errorf("fork2 JSONL references source's u0 directly — expected only fork1's UUID")
+	if fork2.SessionRef == fork1.SessionRef || fork2.SessionRef == sessionID {
+		t.Fatalf("fork2 session ref = %q, want its own slice", fork2.SessionRef)
 	}
-	if fork2Map[fork1Map["u0"]] == "" {
-		t.Fatalf("fork2 JSONL missing fork1→fork2 remap for u0 (fork1 UUID %q): %v", fork1Map["u0"], fork2Map)
-	}
-
-	// fork2 cloned "first" (source user:0) from fork1. Its
-	// meta.provider_item_id was fork1's UUID at clone time; after the
-	// fork2 remap it must be fork2's UUID — i.e. the fork1→fork2
-	// remap of the fork1 UUID.
-	items, err := app.store.ListItems(fork2.ID)
-	if err != nil {
-		t.Fatalf("list fork2 items: %v", err)
-	}
-	var fork2First store.Item
-	for _, it := range items {
-		if it.Kind == "user_text" && it.Summary == "first" {
-			fork2First = it
-			break
-		}
-	}
-	if fork2First.ID == "" {
-		t.Fatalf("fork2 missing \"first\" user_text row")
-	}
-	wantUUID := fork2Map[fork1Map["u0"]]
-	if got := usermessage.ReadProviderItemID(fork2First.Meta); got != wantUUID {
-		t.Errorf("fork2 \"first\" provider_item_id = %q, want fork2-remapped %q (chain: u0 → %q → %q)", got, wantUUID, fork1Map["u0"], wantUUID)
-	}
+	assertClaudeSliceKeepsSourceRows(t, workspace, fork2.SessionRef, sourceRows[:2])
+	assertForkUserProviderIDs(t, app, fork2.ID, map[string]string{"first": "u0"})
 }
 
 // TestForkThreadFromMessageKeepsSharedTurnPrefix — forking a Claude thread
@@ -274,6 +189,7 @@ func TestForkThreadFromMessageKeepsSharedTurnPrefix(t *testing.T) {
 	insertUserItemWithMeta(t, app.store, source.ID, "user:q", 1, "queued", `{"provider_item_id":"uq"}`)
 	insertAssistantTextItem(t, app.store, source.ID, "a:q", 1, "queued reply")
 	seedMessageAnchor(t, app.store, source.ID, "user:q", 1, "uq", "a1")
+	sourceRows := readClaudeSessionRows(t, workspace, sessionID)
 
 	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:q")
 	if err != nil {
@@ -293,24 +209,8 @@ func TestForkThreadFromMessageKeepsSharedTurnPrefix(t *testing.T) {
 		t.Errorf("fork items = %v, want %v", got, want)
 	}
 
-	oldToNew := readForkUUIDMap(t, workspace, fork.SessionRef)
-	for _, oldUUID := range []string{"u0", "a0", "u1", "a1"} {
-		if oldToNew[oldUUID] == "" {
-			t.Fatalf("fork JSONL missing remap for %q: %v", oldUUID, oldToNew)
-		}
-	}
-	if oldToNew["uq"] != "" || oldToNew["aq"] != "" {
-		t.Errorf("fork JSONL kept the queued message or its reply: %v", oldToNew)
-	}
-	bySummary := map[string]store.Item{}
-	for _, it := range items {
-		if it.Kind == "user_text" {
-			bySummary[it.Summary] = it
-		}
-	}
-	if gotID := usermessage.ReadProviderItemID(bySummary["second"].Meta); gotID != oldToNew["u1"] {
-		t.Errorf("fork \"second\" provider_item_id = %q, want fork-remapped %q", gotID, oldToNew["u1"])
-	}
+	assertClaudeSliceKeepsSourceRows(t, workspace, fork.SessionRef, sourceRows[:4])
+	assertForkUserProviderIDs(t, app, fork.ID, map[string]string{"second": "u1"})
 }
 
 // TestForkThreadFromMessageMidTurnZeroKeepsPrefix — a queued message
@@ -337,6 +237,7 @@ func TestForkThreadFromMessageMidTurnZeroKeepsPrefix(t *testing.T) {
 	insertAssistantTextItem(t, app.store, source.ID, "a:0", 0, "reply 0")
 	insertUserItemWithMeta(t, app.store, source.ID, "user:q", 0, "queued", `{"provider_item_id":"uq"}`)
 	seedMessageAnchor(t, app.store, source.ID, "user:q", 0, "uq", "a0")
+	sourceRows := readClaudeSessionRows(t, workspace, sessionID)
 
 	fork, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user:q")
 	if err != nil {
@@ -358,52 +259,7 @@ func TestForkThreadFromMessageMidTurnZeroKeepsPrefix(t *testing.T) {
 	if fork.SessionRef == "" {
 		t.Fatal("mid-turn-0 fork must slice the session, not start fresh")
 	}
-	oldToNew := readForkUUIDMap(t, workspace, fork.SessionRef)
-	if oldToNew["u0"] == "" || oldToNew["a0"] == "" {
-		t.Fatalf("fork JSONL missing turn-0 prefix: %v", oldToNew)
-	}
-	if oldToNew["uq"] != "" {
-		t.Errorf("fork JSONL kept the queued message: %v", oldToNew)
-	}
-}
-
-// readForkUUIDMap walks a forked JSONL and returns a
-// {sourceUUID → forkUUID} map keyed off each entry's
-// `forkedFrom.messageUuid` backpointer (added by `BuildForkLinesWithUUIDMap`).
-// The map covers every transcript entry that survived the slice.
-// Empty when the file is missing or unreadable — the caller should
-// assert non-empty before keying into it.
-func readForkUUIDMap(t *testing.T, workspace, forkSessionRef string) map[string]string {
-	t.Helper()
-	path, err := sessionfork.LocateSessionFile(testProviderProjectsDir(t), forkSessionRef, workspace)
-	if err != nil {
-		t.Fatalf("locate fork session %q: %v", forkSessionRef, err)
-	}
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read fork session %s: %v", path, err)
-	}
-	out := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
-		if line == "" {
-			continue
-		}
-		var entry map[string]any
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-		newUUID, _ := entry["uuid"].(string)
-		forkedFrom, _ := entry["forkedFrom"].(map[string]any)
-		if forkedFrom == nil {
-			continue
-		}
-		oldUUID, _ := forkedFrom["messageUuid"].(string)
-		if oldUUID == "" || newUUID == "" {
-			continue
-		}
-		out[oldUUID] = newUUID
-	}
-	return out
+	assertClaudeSliceKeepsSourceRows(t, workspace, fork.SessionRef, sourceRows[:2])
 }
 
 // TestLookupTurnAnchorClaudeUUIDPicksStampedUserItem locks the helper's
@@ -514,7 +370,7 @@ func TestForkThreadFromMessageHeadHealedFirstPromptStartsFresh(t *testing.T) {
 
 // TestForkThreadFromMessageSynthesizesOnAnchorTurnDrift pins the drift
 // posture after the anchor slimming: an anchor whose cached turn index
-// drifted from its user item (fork remap crash, R8-3 shapes) is
+// drifted from its user item (R8-3 shapes) is
 // DISCARDED and a fresh record is synthesized from the item row — the
 // SQLite clone and the provider cut both derive from the item, so the
 // two histories stay aligned and the fork succeeds.

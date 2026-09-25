@@ -795,7 +795,7 @@ func TestForkThreadFromMessageCanForkOlderAnchorAfterClaudeSessionFork(t *testin
 		t.Fatalf("GetThread: %v", err)
 	}
 	if revertedSource.SessionRef == "" || revertedSource.SessionRef == sessionID {
-		t.Fatalf("source session after rollback = %q, want remapped fork session", revertedSource.SessionRef)
+		t.Fatalf("source session after rollback = %q, want the rolled-back slice", revertedSource.SessionRef)
 	}
 
 	forked, err := app.ForkThreadFromMessage(t.Context(), source.ID, "user-1")

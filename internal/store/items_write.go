@@ -1036,19 +1036,15 @@ func trimTurnSettleToSurvivorsTx(tx *sql.Tx, threadID string, turnIndex int) err
 }
 
 // UpdateItemMeta rewrites only the `meta` column on a single item
-// row, scoped to the owning thread. Used by the fork-time UUID remap
-// in `app_thread_fork.go::remapClaudeProviderIDs` to refresh a fork's
-// `user_text` row's `provider_item_id` after the source session JSONL
-// is forked with fresh uuids. An inherited row is copied into the fork
-// first, so the source keeps its own uuid. Distinct from `UpsertItem`
-// because the remap is a back-fill on the fork's data, not a wire
-// event: it must not bump `updated_at`, must not run the payload upsert
-// path, and must not emit a frontend `item:upsert` notification (no
-// wire correlation occurred).
+// row, scoped to the owning thread. Triage's streaming path-link
+// enrichment uses it to back-fill meta on a row it already wrote. An
+// inherited row is copied into the thread first, so the source keeps its
+// own meta. Distinct from `UpsertItem` because the back-fill is not a
+// wire event: it must not bump `updated_at` or run the payload upsert
+// path, and the caller emits its own narrow meta event.
 //
 // Returns sql.ErrNoRows-wrapped error when (threadID, id) does not
-// match any row so partial fork cleanups can detect drift before
-// committing.
+// match any row.
 func (s *Store) UpdateItemMeta(threadID, id, meta string) error {
 	return s.writeItems(threadID, nil, "update item meta "+threadID+"/"+id, func(tx *sql.Tx, w *cardWrite) error {
 		old, err := readMutableSubagentRowTx(tx, threadID, id, "store: update item meta")

@@ -48,8 +48,7 @@ Facts established by auditing every history-mutating path in
   branch), interrupt force-close (`ForceCloseRunningToolCallsInTurn`),
   Codex runtime retirement (`RecoverCodexBackgroundRuntime`), crash recovery
   (`RecoverCrashedTurns`), and meta merges all rewrite existing rows in
-  place. Some (`UpdateItemMeta`, the fork uuid remap) skip `updated_at`
-  *by design*.
+  place. Some (`UpdateItemMeta`) skip `updated_at` *by design*.
 - **The wire DTO joins mutable payload columns.** `payloadMeta` and
   `payloadPreviewSpans` ride the item row on the wire
   (`internal/store/items.go` `itemColumns`) but live in `payloads`,
@@ -987,7 +986,7 @@ the freshly returned window, so there is nothing stale to page into.
 
 - **Contract transition table (Go)**: one table-driven test per §3.2
   row asserting `(rev, epoch)` deltas across the *sequence* of calls
-  (insert→update→reposition→delete, import→refresh, fork→remap), not
+  (insert→update→reposition→delete, import→refresh), not
   just single states (state coverage is not transition coverage).
   Raw-SQL trigger tests pin the structural guarantee independently of
   any store function.

@@ -1,7 +1,7 @@
 // Claude half of the fork saga (app_thread_fork.go): session-JSONL
-// slicing at a turn / message cut, the mid-turn capture that pins a
-// live-source tail fork's lazy cut, and the provider-id remap that
-// keeps the fork's rows pointing at a slice's reminted uuids.
+// slicing at a turn / message cut and the mid-turn capture that pins a
+// live-source tail fork's lazy cut. A slice keeps every message uuid, so
+// the fork's rows keep the provider ids they carry in the source.
 package app
 
 import (
@@ -96,13 +96,12 @@ func (a *App) forkClaudeThread(source store.Thread, atTurnIndex *int, midTurnCut
 	// immune to synthetic-entry ordinal drift (e.g. /compact). Falls
 	// back to the ordinal walk for legacy rows that pre-date the
 	// stamp.
-	newID, newPath, uuidMap, err := a.writeForkedClaudeSession(srcPath, source.ID, *atTurnIndex)
+	newID, newPath, err := a.writeForkedClaudeSession(srcPath, source.ID, *atTurnIndex)
 	if err != nil {
 		return forkResumeState{}, fmt.Errorf("fork thread: write forked session: %w", err)
 	}
 	return forkResumeState{
 		SessionRef: newID,
-		UUIDMap:    uuidMap,
 		Cleanup: func() error {
 			// Best-effort: a missing file is OK (already cleaned up elsewhere).
 			if err := os.Remove(newPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -243,13 +242,12 @@ func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, anchor store.Me
 	if err != nil {
 		return forkResumeState{}, fmt.Errorf("fork thread from message: locate claude session: %w", err)
 	}
-	newID, newPath, uuidMap, err := a.writeMessageForkedClaudeSession(srcPath, anchor, anchorItem, midTurn)
+	newID, newPath, err := a.writeMessageForkedClaudeSession(srcPath, anchor, anchorItem, midTurn)
 	if err != nil {
 		return forkResumeState{}, fmt.Errorf("fork thread from message: write forked session: %w", err)
 	}
 	return forkResumeState{
 		SessionRef: newID,
-		UUIDMap:    uuidMap,
 		Cleanup: func() error {
 			if err := os.Remove(newPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("fork thread from message cleanup: remove %s: %w", newPath, err)
@@ -263,24 +261,22 @@ func (a *App) forkClaudeThreadBeforeMessage(source store.Thread, anchor store.Me
 // writeClaudeSessionSlice. The slice anchor is the user_text at
 // turn `atTurnIndex+1` — that is the first turn dropped from the
 // fork, so its parent is the end of the last kept turn.
-func (a *App) writeForkedClaudeSession(srcPath, sourceThreadID string, atTurnIndex int) (string, string, map[string]string, error) {
+func (a *App) writeForkedClaudeSession(srcPath, sourceThreadID string, atTurnIndex int) (string, string, error) {
 	anchorUUID := a.lookupTurnAnchorClaudeUUID(sourceThreadID, atTurnIndex+1)
 	logCtx := fmt.Sprintf("fork thread (turn %d)", atTurnIndex+1)
 	// Turn-keyed forks anchor at a turn boundary by construction, so the
-	// ordinal fallback's whole-turn granularity is exact here (and the
-	// mid-turn parent-uuid retry detection never applies — no parent).
-	return writeClaudeSessionSlice(srcPath, []string{anchorUUID}, nil, atTurnIndex, false, logCtx)
+	// ordinal fallback's whole-turn granularity is exact here, and the
+	// already-cut parent retry never applies (there is no parent).
+	return writeClaudeSessionSlice(srcPath, anchorUUID, "", atTurnIndex, false, logCtx)
 }
 
 // writeMessageForkedClaudeSession is the message-keyed-fork call
-// into writeClaudeSessionSlice. The slice anchors are the dropped
-// user message's wire UUID candidates — the anchor row's copy,
-// then the item row's durable meta stamp (claudeSliceAnchorUUIDs);
-// midTurnAnchor comes from the anchor item's position, same as the
-// un-send path.
-func (a *App) writeMessageForkedClaudeSession(srcPath string, anchor store.MessageAnchor, anchorItem store.Item, midTurnAnchor bool) (string, string, map[string]string, error) {
+// into writeClaudeSessionSlice. The slice anchor is the dropped user
+// message's wire uuid (claudeSliceAnchorUUID); midTurnAnchor comes from
+// the anchor item's position, same as the un-send path.
+func (a *App) writeMessageForkedClaudeSession(srcPath string, anchor store.MessageAnchor, anchorItem store.Item, midTurnAnchor bool) (string, string, error) {
 	return writeClaudeSessionSlice(
-		srcPath, claudeSliceAnchorUUIDs(anchor, anchorItem), claudeSliceParentUUIDs(anchor, anchorItem),
+		srcPath, claudeSliceAnchorUUID(anchor, anchorItem), claudeSliceParentUUID(anchor, anchorItem),
 		anchor.TurnIndex-1, midTurnAnchor, "fork thread from message",
 	)
 }
@@ -311,45 +307,6 @@ func (a *App) lookupTurnAnchorClaudeUUID(threadID string, turnIndex int) string 
 		}
 	}
 	return ""
-}
-
-// remapClaudeProviderIDs rewrites every stored provider id that points
-// into the OLD session file to the NEW session's reminted UUIDs:
-// items' `meta.provider_item_id` and message anchors'
-// `provider_user_message_id` / `provider_parent_uuid`. Every fork-slice
-// remints every uuid (sessionfork.buildLines), so any id left pointing
-// at the source session silently degrades the next un-send/fork to the
-// ordinal-walk fallback. Maintains the invariant "stored UUID always
-// matches the active session's JSONL".
-//
-// Callers: the fork pipeline (the fork's items; forks carry no anchor rows
-// — that loop is a no-op there) and rollbackClaudeThreadToMessage
-// (surviving items + anchors of the SAME thread after its
-// SessionRef moves to the slice).
-//
-// uuidMap may have entries beyond just user-message UUIDs (assistant /
-// system entries also remap). Anything unmapped (legacy rows,
-// mismatched ids) is left alone rather than blanking the column —
-// UpdateMessageAnchorProviderIDs's empty-string-preserves contract gives
-// the same semantics on the anchor side.
-//
-// Returns nil when the thread has no Claude-stamped rows (Codex fork,
-// lazy fork-at-tail, fork of a pre-stamp thread).
-//
-// Item and anchor rewrites commit in one transaction. Rollback also moves
-// SessionRef in that transaction via UpdateSessionRefAndRemapProviderIDs.
-func (a *App) remapClaudeProviderIDs(threadID string, uuidMap map[string]string) error {
-	return a.threadApplication().ApplyClaudeProviderIDRemap(threadID, uuidMap)
-}
-
-// computeClaudeProviderIDRemap reads the thread's user rows and
-// message anchors and returns the rewrites uuidMap implies, without
-// applying anything. Shared by remapClaudeProviderIDs (fork pipeline,
-// atomic writes under the saga rollback) and the un-send path (which
-// hands the result to UpdateSessionRefAndRemapProviderIDs so the rewrites
-// commit atomically with the SessionRef move — round-6, R6-5).
-func (a *App) computeClaudeProviderIDRemap(threadID string, uuidMap map[string]string) ([]store.ItemMetaUpdate, []store.MessageAnchorProviderIDsUpdate, error) {
-	return a.threadApplication().ComputeClaudeProviderIDRemap(threadID, uuidMap)
 }
 
 // activeClaudeSession is the Claude sibling of activeCodexSession. The

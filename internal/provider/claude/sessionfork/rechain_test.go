@@ -25,10 +25,10 @@ func readFixture(t *testing.T, path string) string {
 	return string(data)
 }
 
-// parseForkedByOldUUID unmarshals forked output lines and indexes the
-// transcript rows by their forkedFrom.messageUuid (the pre-fork uuid),
-// so assertions can reference fixture row names despite the remint.
-func parseForkedByOldUUID(t *testing.T, lines []string) map[string]map[string]any {
+// parseForkedByUUID unmarshals forked output lines and indexes the
+// transcript rows by uuid. The fork keeps every source uuid, so
+// assertions reference fixture row names directly.
+func parseForkedByUUID(t *testing.T, lines []string) map[string]map[string]any {
 	t.Helper()
 	rows := make(map[string]map[string]any, len(lines))
 	for i, line := range lines {
@@ -36,40 +36,40 @@ func parseForkedByOldUUID(t *testing.T, lines []string) map[string]map[string]an
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			t.Fatalf("line %d: %v", i, err)
 		}
-		ff, _ := e["forkedFrom"].(map[string]any)
-		oldID, _ := ff["messageUuid"].(string)
-		if oldID != "" {
-			rows[oldID] = e
+		typ, _ := e["type"].(string)
+		if _, transcript := TranscriptTypes[typ]; !transcript {
+			continue
 		}
+		id, _ := e["uuid"].(string)
+		rows[id] = e
 	}
 	return rows
 }
 
-func forkedUUID(t *testing.T, rows map[string]map[string]any, oldID string) string {
+// forkedUUID asserts the forked output kept the row with this uuid and
+// returns it.
+func forkedUUID(t *testing.T, rows map[string]map[string]any, id string) string {
 	t.Helper()
-	row, ok := rows[oldID]
-	if !ok {
-		t.Fatalf("forked output missing row for source uuid %q", oldID)
+	if _, ok := rows[id]; !ok {
+		t.Fatalf("forked output missing row %q", id)
 	}
-	u, _ := row["uuid"].(string)
-	return u
+	return id
 }
 
-func forkedParent(t *testing.T, rows map[string]map[string]any, oldID string) string {
+func forkedParent(t *testing.T, rows map[string]map[string]any, id string) string {
 	t.Helper()
-	row, ok := rows[oldID]
+	row, ok := rows[id]
 	if !ok {
-		t.Fatalf("forked output missing row for source uuid %q", oldID)
+		t.Fatalf("forked output missing row %q", id)
 	}
 	p, _ := row["parentUuid"].(string)
 	return p
 }
 
-// assertTailChainVisits walks parentUuid from the forked row for
-// fromOldID and asserts every uuid in wantOldIDs is on that chain —
-// i.e. the active branch from the file tail passes through every kept
-// content row.
-func assertTailChainVisits(t *testing.T, rows map[string]map[string]any, fromOldID string, wantOldIDs ...string) {
+// assertTailChainVisits walks parentUuid from the forked row fromID and
+// asserts every uuid in wantIDs is on that chain, i.e. the active branch
+// from the file tail passes through every kept content row.
+func assertTailChainVisits(t *testing.T, rows map[string]map[string]any, fromID string, wantIDs ...string) {
 	t.Helper()
 	parentByUUID := make(map[string]string, len(rows))
 	for _, row := range rows {
@@ -78,14 +78,14 @@ func assertTailChainVisits(t *testing.T, rows map[string]map[string]any, fromOld
 		parentByUUID[u] = p
 	}
 	visited := make(map[string]bool, len(rows))
-	cur := forkedUUID(t, rows, fromOldID)
+	cur := forkedUUID(t, rows, fromID)
 	for cur != "" && !visited[cur] {
 		visited[cur] = true
 		cur = parentByUUID[cur]
 	}
-	for _, oldID := range wantOldIDs {
-		if !visited[forkedUUID(t, rows, oldID)] {
-			t.Errorf("active branch from %q does not visit %q — kept content is off-branch", fromOldID, oldID)
+	for _, id := range wantIDs {
+		if !visited[forkedUUID(t, rows, id)] {
+			t.Errorf("active branch from %q does not visit %q: kept content is off-branch", fromID, id)
 		}
 	}
 }
@@ -98,11 +98,11 @@ func assertTailChainVisits(t *testing.T, rows map[string]map[string]any, fromOld
 // a2/a3-final off-branch and resume-at hard-failing.
 func TestBuildForkLines_RechainsOffBranchAPIErrorTail(t *testing.T) {
 	src := readFixture(t, apiErrorOffBranchFixture)
-	_, lines, uuidMap, err := BuildForkLinesWithUUIDMap(strings.NewReader(src), "src", "err2", "")
+	_, lines, err := BuildForkLines(strings.NewReader(src), "src", "err2", "")
 	if err != nil {
-		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
+		t.Fatalf("BuildForkLines: %v", err)
 	}
-	rows := parseForkedByOldUUID(t, lines)
+	rows := parseForkedByUUID(t, lines)
 
 	if got, want := forkedParent(t, rows, "err1"), forkedUUID(t, rows, "a3-final"); got != want {
 		t.Errorf("err1 parent = %q, want re-chained to a3-final %q", got, want)
@@ -112,13 +112,13 @@ func TestBuildForkLines_RechainsOffBranchAPIErrorTail(t *testing.T) {
 	}
 	assertTailChainVisits(t, rows, "err2", "err1", "a3-final", "a2", "u2-toolresult", "a1", "u1")
 
-	// The uuidMap covers every kept transcript row (7 of the 8 fixture
-	// rows — u3 is past the slice).
-	if len(uuidMap) != 7 {
-		t.Errorf("uuidMap entries = %d, want 7", len(uuidMap))
+	// Every kept transcript row survives under its own uuid: 7 of the 8
+	// fixture rows, since u3 is past the slice.
+	if len(rows) != 7 {
+		t.Errorf("kept transcript rows = %d, want 7", len(rows))
 	}
-	if _, hasSliced := uuidMap["u3"]; hasSliced {
-		t.Errorf("uuidMap contains u3, which the slice dropped")
+	if _, hasSliced := rows["u3"]; hasSliced {
+		t.Errorf("forked output contains u3, which the slice dropped")
 	}
 }
 
@@ -134,7 +134,7 @@ func TestBuildForkLines_AnchorParentIsAPIErrorRow(t *testing.T) {
 		t.Fatalf("stage fixture: %v", err)
 	}
 
-	newID, newPath, uuidMap, err := WriteForkFileForUserMessageUUID(srcPath, "u3", "")
+	newID, newPath, err := WriteForkFileForUserMessageUUID(srcPath, "u3", "")
 	if err != nil {
 		t.Fatalf("WriteForkFileForUserMessageUUID: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestBuildForkLines_AnchorParentIsAPIErrorRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fork: %v", err)
 	}
-	rows := parseForkedByOldUUID(t, strings.Split(strings.TrimSpace(string(data)), "\n"))
+	rows := parseForkedByUUID(t, strings.Split(strings.TrimSpace(string(data)), "\n"))
 
 	if got, want := forkedParent(t, rows, "err1"), forkedUUID(t, rows, "a3-final"); got != want {
 		t.Errorf("err1 parent = %q, want a3-final %q", got, want)
@@ -161,9 +161,6 @@ func TestBuildForkLines_AnchorParentIsAPIErrorRow(t *testing.T) {
 	if ts, _ := rows["a3-final"]["timestamp"].(string); ts != "2026-06-10T05:49:00.000Z" {
 		t.Errorf("a3-final timestamp = %q, want authored time preserved", ts)
 	}
-	if _, ok := uuidMap["a3-final"]; !ok {
-		t.Errorf("uuidMap missing kept content row a3-final")
-	}
 }
 
 // TestBuildForkLines_RechainsMidFileAPIErrorsKeepsNextTurnChained: a
@@ -173,11 +170,11 @@ func TestBuildForkLines_AnchorParentIsAPIErrorRow(t *testing.T) {
 // resumed context, matching the verified bisect repair.
 func TestBuildForkLines_RechainsMidFileAPIErrorsKeepsNextTurnChained(t *testing.T) {
 	src := readFixture(t, apiErrorOffBranchFixture)
-	_, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(src), "src", "", "")
+	_, lines, err := BuildForkLines(strings.NewReader(src), "src", "", "")
 	if err != nil {
-		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
+		t.Fatalf("BuildForkLines: %v", err)
 	}
-	rows := parseForkedByOldUUID(t, lines)
+	rows := parseForkedByUUID(t, lines)
 
 	if got, want := forkedParent(t, rows, "u3"), forkedUUID(t, rows, "err2"); got != want {
 		t.Errorf("u3 parent = %q, want err2 %q (source chain preserved)", got, want)
@@ -188,8 +185,8 @@ func TestBuildForkLines_RechainsMidFileAPIErrorsKeepsNextTurnChained(t *testing.
 // TestBuildForkLines_CompactBoundarySystemRowNotRechained: compact
 // boundary system rows are legitimate chain ROOTS (parentUuid null,
 // summary user row chains onto them). The re-chain rule is scoped by
-// subtype, so they must pass through untouched — root status preserved,
-// logicalParentUuid still remapped.
+// subtype, so they must pass through untouched: root status and
+// logicalParentUuid both preserved.
 func TestBuildForkLines_CompactBoundarySystemRowNotRechained(t *testing.T) {
 	src := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"src","message":{"role":"user","content":"first"}}
 {"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"reply"}]}}
@@ -197,17 +194,17 @@ func TestBuildForkLines_CompactBoundarySystemRowNotRechained(t *testing.T) {
 {"type":"user","uuid":"cs1","parentUuid":"sys-compact","sessionId":"src","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued..."}}
 {"type":"assistant","uuid":"a2","parentUuid":"cs1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"resumed"}]}}
 `
-	_, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(src), "src", "", "")
+	_, lines, err := BuildForkLines(strings.NewReader(src), "src", "", "")
 	if err != nil {
-		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
+		t.Fatalf("BuildForkLines: %v", err)
 	}
-	rows := parseForkedByOldUUID(t, lines)
+	rows := parseForkedByUUID(t, lines)
 
 	if p, isStr := rows["sys-compact"]["parentUuid"].(string); isStr && p != "" {
 		t.Errorf("compact boundary parent = %q, want preserved null root (re-chain rule leaked past its subtype scope)", p)
 	}
 	if got, want := rows["sys-compact"]["logicalParentUuid"], forkedUUID(t, rows, "a1"); got != want {
-		t.Errorf("compact boundary logicalParentUuid = %v, want remapped a1 %q", got, want)
+		t.Errorf("compact boundary logicalParentUuid = %v, want a1 %q", got, want)
 	}
 	if got, want := forkedParent(t, rows, "cs1"), forkedUUID(t, rows, "sys-compact"); got != want {
 		t.Errorf("compact summary parent = %q, want sys-compact %q", got, want)
@@ -223,11 +220,11 @@ func TestBuildForkLines_OnBranchAPIErrorIsNoop(t *testing.T) {
 {"type":"system","subtype":"api_error","uuid":"err1","parentUuid":"a1","sessionId":"src","level":"error","retryAttempt":1,"error":{"message":"Connection error."}}
 {"type":"user","uuid":"u2","parentUuid":"err1","sessionId":"src","message":{"role":"user","content":"second"}}
 `
-	_, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(src), "src", "", "")
+	_, lines, err := BuildForkLines(strings.NewReader(src), "src", "", "")
 	if err != nil {
-		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
+		t.Fatalf("BuildForkLines: %v", err)
 	}
-	rows := parseForkedByOldUUID(t, lines)
+	rows := parseForkedByUUID(t, lines)
 	if got, want := forkedParent(t, rows, "err1"), forkedUUID(t, rows, "a1"); got != want {
 		t.Errorf("on-branch api_error parent = %q, want unchanged a1 %q", got, want)
 	}
@@ -238,19 +235,19 @@ func TestBuildForkLines_OnBranchAPIErrorIsNoop(t *testing.T) {
 
 // TestBuildForkLines_FirstWritableAPIErrorNotRechained pins the i == 0
 // guard: an api_error landing as the fork's FIRST writable row has no
-// predecessor to chain to — forcing prevWritableNewUUID there would
-// stamp an empty-string parent, which is junk (neither a valid uuid nor
-// the null that marks a root). It keeps ResolveParent's verdict
-// instead: nil, because its stale parent is outside the slice.
+// predecessor to chain to: forcing prevWritableUUID there would stamp
+// an empty-string parent, which is junk (neither a valid uuid nor the
+// null that marks a root). It keeps resolveParent's verdict instead:
+// nil, because its stale parent is outside the slice.
 func TestBuildForkLines_FirstWritableAPIErrorNotRechained(t *testing.T) {
 	src := `{"type":"system","subtype":"api_error","uuid":"err0","parentUuid":"uuid-outside-slice","sessionId":"src","level":"error","retryAttempt":1,"error":{"message":"Connection error."}}
 {"type":"user","uuid":"u1","parentUuid":"err0","sessionId":"src","message":{"role":"user","content":"first"}}
 `
-	_, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(src), "src", "", "")
+	_, lines, err := BuildForkLines(strings.NewReader(src), "src", "", "")
 	if err != nil {
-		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
+		t.Fatalf("BuildForkLines: %v", err)
 	}
-	rows := parseForkedByOldUUID(t, lines)
+	rows := parseForkedByUUID(t, lines)
 	if p, isStr := rows["err0"]["parentUuid"].(string); isStr {
 		t.Errorf("first-writable api_error parent = %q, want null (no predecessor exists to re-chain to)", p)
 	}
@@ -270,11 +267,11 @@ func TestBuildForkLines_AbandonedBranchContentRowsKeepOriginalParents(t *testing
 {"type":"assistant","uuid":"a1-abandoned","parentUuid":"u1","sessionId":"src","message":{"role":"assistant","content":[{"type":"text","text":"abandoned alternative"}]}}
 {"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"src","message":{"role":"user","content":"second"}}
 `
-	_, lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(src), "src", "", "")
+	_, lines, err := BuildForkLines(strings.NewReader(src), "src", "", "")
 	if err != nil {
-		t.Fatalf("BuildForkLinesWithUUIDMap: %v", err)
+		t.Fatalf("BuildForkLines: %v", err)
 	}
-	rows := parseForkedByOldUUID(t, lines)
+	rows := parseForkedByUUID(t, lines)
 	if got, want := forkedParent(t, rows, "a1-abandoned"), forkedUUID(t, rows, "u1"); got != want {
 		t.Errorf("abandoned assistant parent = %q, want original u1 %q (content rows must not be re-chained)", got, want)
 	}
@@ -289,27 +286,18 @@ func TestBuildForkLines_AbandonedBranchContentRowsKeepOriginalParents(t *testing
 // generations, so old broken forks heal once and stay healed.
 func TestBuildForkLines_RechainIdempotentOnForkOfFork(t *testing.T) {
 	src := readFixture(t, apiErrorOffBranchFixture)
-	gen1ID, gen1Lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(src), "src", "err2", "")
+	gen1ID, gen1Lines, err := BuildForkLines(strings.NewReader(src), "src", "err2", "")
 	if err != nil {
 		t.Fatalf("gen1: %v", err)
 	}
-	gen1 := parseForkedByOldUUID(t, gen1Lines)
+	gen1 := parseForkedByUUID(t, gen1Lines)
 
 	gen2Input := strings.Join(gen1Lines, "\n") + "\n"
-	_, gen2Lines, _, err := BuildForkLinesWithUUIDMap(strings.NewReader(gen2Input), gen1ID, "", "")
+	_, gen2Lines, err := BuildForkLines(strings.NewReader(gen2Input), gen1ID, "", "")
 	if err != nil {
 		t.Fatalf("gen2: %v", err)
 	}
-	// gen2 rows' forkedFrom points at gen1 uuids; re-index through gen1's
-	// fixture names.
-	gen2ByGen1UUID := parseForkedByOldUUID(t, gen2Lines)
-	gen2 := make(map[string]map[string]any, len(gen1))
-	for fixtureName, gen1Row := range gen1 {
-		gen1UUID, _ := gen1Row["uuid"].(string)
-		if row, ok := gen2ByGen1UUID[gen1UUID]; ok {
-			gen2[fixtureName] = row
-		}
-	}
+	gen2 := parseForkedByUUID(t, gen2Lines)
 
 	for _, generation := range []map[string]map[string]any{gen1, gen2} {
 		if got, want := forkedParent(t, generation, "err1"), forkedUUID(t, generation, "a3-final"); got != want {

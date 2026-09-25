@@ -328,11 +328,11 @@ func TestConversationRollbackKeepsSharedTurnPrefix(t *testing.T) {
 // consumed the queued message (the trailing assistant entry is the
 // interrupted round's tail), and a timeline whose promoted flush row
 // shares turn 0 with the original prompt. flushProviderID is the
-// anchor's stored wire id — empty models "echo never arrived",
-// non-empty-but-absent models fork-remap drift. flushParentID is the
-// anchor's provider_parent_uuid; "a1" (the transcript's last entry)
-// models a prior rollback whose provider slice committed and remapped
-// before a later step failed.
+// anchor's stored wire id: empty models "echo never arrived",
+// non-empty-but-absent models an id the transcript does not hold.
+// flushParentID is the anchor's provider_parent_uuid; "a1" (the
+// transcript's last entry) models a prior rollback whose provider slice
+// committed before a later step failed.
 func midTurnAnchorFixture(t *testing.T, app *App, threadID, sessionID, flushProviderID, flushParentID string) store.Thread {
 	t.Helper()
 	home := t.TempDir()
@@ -415,7 +415,7 @@ func TestConversationRollbackMidTurnAnchorWithoutUUIDClonesFullTranscript(t *tes
 // TestConversationRollbackMidTurnAnchorStaleUUIDFails pins D2/CT4:
 // a mid-turn anchor carrying a NON-EMPTY provider id that the
 // transcript doesn't contain proves the message WAS consumed (only the
-// echo stamps the id) and the stored id went stale (fork remap drift).
+// echo stamps the id) under an id the transcript does not hold.
 // Cloning the full transcript would resume a session that still
 // contains the rolled-back prompt and its response; slicing ordinally
 // would drop the shared turn's kept prefix. The rollback must FAIL
@@ -461,9 +461,9 @@ func TestConversationRollbackMidTurnAnchorStaleUUIDFails(t *testing.T) {
 
 // TestConversationRollbackMidTurnAnchorRetryAfterPartialFailure pins
 // CT-3 (round 3) and R5-6 (round 5): a rollback whose provider slice
-// COMMITTED (SessionRef repointed, surviving ids remapped) but whose
-// later step failed leaves the anchor's own uuid legitimately absent
-// from the new transcript while its remapped PARENT uuid is present. A
+// COMMITTED (SessionRef repointed) but whose later step failed leaves
+// the anchor's own uuid legitimately absent from the new transcript
+// while its PARENT uuid, which the slice kept, is present. A
 // retry must recognize that state as "already cut here" and finish the
 // rollback — re-slicing THROUGH the parent and truncating SQLite —
 // instead of failing forever on the stale-uuid guard. Through the
@@ -473,9 +473,8 @@ func TestConversationRollbackMidTurnAnchorRetryAfterPartialFailure(t *testing.T)
 	app := newTestApp(t)
 	// The fixture transcript ends at "interrupted tail" (a1) and does NOT
 	// contain the anchor: exactly what a committed prior slice leaves
-	// behind. The anchor carries the post-remap state — its own uuid
-	// stale ("uq-cut", cut away so never remapped), its parent current
-	// ("a1", remapped to the sliced file's id).
+	// behind: the anchor's own uuid ("uq-cut") was cut away, and its
+	// parent ("a1") is the sliced file's last entry.
 	const sessionID = "midturn-retry-session"
 	thread := midTurnAnchorFixture(t, app, "t-midturn-retry", sessionID, "uq-cut", "a1")
 
@@ -586,69 +585,37 @@ func TestConversationRollbackMidTurnAnchorRetryUsesItemMetaParent(t *testing.T) 
 		nil)
 }
 
-// TestClaudeSliceAnchorUUIDs pins CT4-6 (round 4): the slice anchor
-// prefers the anchor row's provider uuid but falls back to the item
-// row's durable meta stamp — the two are written at different moments,
-// and a failed UpdateMessageAnchorProviderIDs after the stamp committed
-// must not misclassify a consumed message into the unconsumed
-// full-clone path.
+// TestClaudeSliceAnchorUUIDs pins CT4-6 (round 4) and R5-8 (round 5):
+// the slice anchor and its parent prefer the item row's durable meta
+// stamp, written in the echo's own transaction, and fall back to the
+// anchor row's copy. The anchor copy is recorded from the item meta and
+// refreshed by a follow-up UpdateMessageAnchorProviderIDs that can fail,
+// so it is never newer than the item's; an empty copy on either side must
+// not misclassify a consumed message into the unconsumed full-clone path.
 func TestClaudeSliceAnchorUUIDs(t *testing.T) {
-	stamped := store.Item{ThreadID: "t1", ID: "flush:0", Meta: `{"provider_item_id":"uq-item"}`}
+	stamped := store.Item{ThreadID: "t1", ID: "flush:0", Meta: `{"provider_item_id":"uq-item","provider_parent_uuid":"up-item"}`}
+	bare := store.Item{ThreadID: "t1", ID: "flush:0", Meta: "{}"}
 	cases := []struct {
-		name     string
-		anchorID string
-		item     store.Item
-		want     []string
+		name       string
+		anchorID   string
+		anchorPar  string
+		item       store.Item
+		wantID     string
+		wantParent string
 	}{
-		{"both copies, anchor first (R5-7 retry order)", "uq-chk", stamped, []string{"uq-chk", "uq-item"}},
-		{"matching copies dedupe", "uq-item", stamped, []string{"uq-item"}},
-		{"item meta fallback (CT4-6)", "", stamped, []string{"uq-item"}},
-		{"both empty", "", store.Item{ThreadID: "t1", ID: "flush:0", Meta: "{}"}, nil},
+		{"item copy wins over a stale anchor copy", "uq-send", "up-send", stamped, "uq-item", "up-item"},
+		{"item copy when the anchor has none (CT4-6)", "", "", stamped, "uq-item", "up-item"},
+		{"anchor copy when the item has none", "uq-anchor", "up-anchor", bare, "uq-anchor", "up-anchor"},
+		{"both empty", "", "", bare, "", ""},
 	}
 	for _, tc := range cases {
-		got := claudeSliceAnchorUUIDs(store.MessageAnchor{ProviderUserMessageID: tc.anchorID}, tc.item)
-		if strings.Join(got, ",") != strings.Join(tc.want, ",") {
-			t.Errorf("%s: claudeSliceAnchorUUIDs = %v, want %v", tc.name, got, tc.want)
+		anchor := store.MessageAnchor{ProviderUserMessageID: tc.anchorID, ProviderParentUUID: tc.anchorPar}
+		if got := claudeSliceAnchorUUID(anchor, tc.item); got != tc.wantID {
+			t.Errorf("%s: claudeSliceAnchorUUID = %q, want %q", tc.name, got, tc.wantID)
 		}
-	}
-}
-
-// TestWriteClaudeSessionSliceRetriesNextAnchorCandidate pins R5-7
-// (round 5): when the first anchor candidate (the anchor row's copy)
-// misses the transcript but the second (the item row's meta stamp) is
-// present, the slice retries and lands on the exact UUID-keyed cut —
-// it must NOT fall through to the ordinal walk or a mid-turn refusal.
-// The split arises because remapClaudeProviderIDs refreshes items
-// before anchors with per-row autocommit: a crash between the
-// loops leaves the anchor copy a generation staler than the item's.
-func TestWriteClaudeSessionSliceRetriesNextAnchorCandidate(t *testing.T) {
-	dir := t.TempDir()
-	srcPath := filepath.Join(dir, "retry-candidate-session.jsonl")
-	jsonl := `{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"retry-candidate-session","message":{"role":"user","content":"first"}}
-{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"retry-candidate-session","message":{"role":"assistant","content":[{"type":"text","text":"first reply"}]}}
-{"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"retry-candidate-session","message":{"role":"user","content":"second"}}
-{"type":"assistant","uuid":"a2","parentUuid":"u2","sessionId":"retry-candidate-session","message":{"role":"assistant","content":[{"type":"text","text":"second reply"}]}}
-`
-	if err := os.WriteFile(srcPath, []byte(jsonl), 0o600); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-
-	_, newPath, _, err := writeClaudeSessionSlice(srcPath, []string{"uq-stale-anchor", "u2"}, nil, 0, false, "test slice")
-	if err != nil {
-		t.Fatalf("slice with stale first candidate: %v", err)
-	}
-	data, err := os.ReadFile(newPath)
-	if err != nil {
-		t.Fatalf("read slice: %v", err)
-	}
-	text := string(data)
-	for _, want := range []string{"first", "first reply"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("slice missing %q:\n%s", want, text)
+		if got := claudeSliceParentUUID(anchor, tc.item); got != tc.wantParent {
+			t.Errorf("%s: claudeSliceParentUUID = %q, want %q", tc.name, got, tc.wantParent)
 		}
-	}
-	if strings.Contains(text, "second") {
-		t.Fatalf("slice kept the cut turn — the item-uuid candidate was not used:\n%s", text)
 	}
 }
 
@@ -768,21 +735,21 @@ func TestConversationRollbackFallbackHandlesCompactBoundary(t *testing.T) {
 // no-ordinal-fallback rule. An anchor DOES carry a
 // ProviderUserMessageID, but that id is absent from the session JSONL
 // while the transcript continues past the anchor's turn. The known cause
-// is a fork remap that left the stored ids stale. AO cannot tell which
+// is a Claude queue merge triage could not fold. AO cannot tell which
 // entry to cut at, and the ordinal walk has no proof that its row count
 // still matches the transcript's prompt count, so the rollback FAILS with
 // a message naming the cause instead of writing a session that
 // contradicts the visible timeline.
 //
-// A CLI queue-boundary merge does not reach here: triage folds those rows
-// into the one the transcript names (claude_merge_fold.go).
+// A CLI queue-boundary merge triage could prove does not reach here: it
+// folds those rows into the one the transcript names (claude_merge_fold.go).
 //
 // Distinct coverage:
 //   - FallbackHandlesCompactBoundary uses an EMPTY uuid, so it never
 //     enters the UUID-keyed branch and still takes the ordinal walk.
 //   - TolerantOfMissingJSONLAnchor also has an absent uuid, but its
-//     transcript ENDS before the anchor's turn, which cannot be a merge
-//     or a remap, so that one clones instead of refusing.
+//     transcript ENDS before the anchor's turn, which cannot be a merge,
+//     so that one clones instead of refusing.
 func TestConversationRollbackRefusesWhenStampedUUIDAbsent(t *testing.T) {
 	app := newTestApp(t)
 	home := t.TempDir()
@@ -816,7 +783,7 @@ func TestConversationRollbackRefusesWhenStampedUUIDAbsent(t *testing.T) {
 	if err == nil {
 		t.Fatal("rollback succeeded; want a refusal for an anchor uuid missing from the transcript")
 	}
-	for _, want := range []string{"drifted-uuid-not-in-jsonl", "fork remap"} {
+	for _, want := range []string{"drifted-uuid-not-in-jsonl", "queue merge"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("rollback error %q does not explain %q", err, want)
 		}
@@ -946,8 +913,8 @@ func TestConversationRollbackRejectsLargerJSONLGap(t *testing.T) {
 	}
 
 	// Same gap with a STAMPED uuid never reaches the walk at all: an id the
-	// transcript lacks while the transcript continues is the CLI-merge /
-	// stale-remap case, which refuses instead of guessing.
+	// transcript lacks while the transcript continues is the unfolded
+	// CLI-merge case, which refuses instead of guessing.
 	if err := app.store.UpdateMessageAnchorProviderIDs(thread.ID, "user:2", "u2-never-persisted", ""); err != nil {
 		t.Fatalf("stamp anchor uuid: %v", err)
 	}

@@ -13,7 +13,6 @@ import (
 	gitops "agent-overflow/internal/git"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/usermessage"
 )
 
 type testModels struct{}
@@ -397,44 +396,31 @@ func TestThreadLocksSerializeSameKeyAndAllowDifferentKeys(t *testing.T) {
 	wait.Wait()
 }
 
-func TestForkStorePolicyAndClaudeRemap(t *testing.T) {
+func TestEnsureCanForkStorePolicy(t *testing.T) {
 	service, database, _ := newServiceFixture(t)
 	thread, err := service.Create(CreateOptions{ProjectID: "project"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	meta, err := usermessage.MergeProviderIDs("", "old-user", "old-parent")
-	if err != nil {
-		t.Fatalf("MergeProviderIDs: %v", err)
+	if err := service.EnsureCanFork(thread, nil); err == nil {
+		t.Fatal("EnsureCanFork on an empty thread = nil, want refusal")
 	}
-	item := store.Item{ID: "user", ThreadID: thread.ID, TurnIndex: 1, Kind: "user_text", Role: "user", Summary: "hello", Meta: meta, CreatedAt: 1}
+	item := store.Item{ID: "user", ThreadID: thread.ID, TurnIndex: 1, Kind: "user_text", Role: "user", Summary: "hello", CreatedAt: 1}
 	if err := database.InsertItem(item); err != nil {
 		t.Fatalf("InsertItem: %v", err)
 	}
-	if err := database.UpsertMessageAnchor(store.MessageAnchor{
-		ThreadID: thread.ID, UserItemID: item.ID, TurnIndex: 1,
-		ProviderUserMessageID: "old-user", ProviderParentUUID: "old-parent", CreatedAt: 1,
-	}); err != nil {
-		t.Fatalf("UpsertMessageAnchor: %v", err)
-	}
 	if err := service.EnsureCanFork(thread, nil); err != nil {
-		t.Fatalf("EnsureCanFork: %v", err)
+		t.Fatalf("EnsureCanFork(nil): %v", err)
 	}
-	if err := service.ApplyClaudeProviderIDRemap(thread.ID, map[string]string{
-		"old-user": "new-user", "old-parent": "new-parent",
-	}); err != nil {
-		t.Fatalf("ApplyClaudeProviderIDRemap: %v", err)
+	for _, turn := range []int{0, 1} {
+		if err := service.EnsureCanFork(thread, &turn); err != nil {
+			t.Fatalf("EnsureCanFork(%d): %v", turn, err)
+		}
 	}
-	got, found, err := database.GetThreadItem(thread.ID, item.ID)
-	if err != nil || !found {
-		t.Fatalf("GetThreadItem = %+v, %v, %v", got, found, err)
-	}
-	if usermessage.ReadProviderItemID(got.Meta) != "new-user" || usermessage.ReadProviderParentUUID(got.Meta) != "new-parent" {
-		t.Fatalf("remapped meta = %s", got.Meta)
-	}
-	anchor, found, err := database.GetMessageAnchor(thread.ID, item.ID)
-	if err != nil || !found || anchor.ProviderUserMessageID != "new-user" || anchor.ProviderParentUUID != "new-parent" {
-		t.Fatalf("remapped anchor = %+v, %v, %v", anchor, found, err)
+	for _, turn := range []int{-1, 2} {
+		if err := service.EnsureCanFork(thread, &turn); err == nil {
+			t.Fatalf("EnsureCanFork(%d) = nil, want refusal", turn)
+		}
 	}
 }
 

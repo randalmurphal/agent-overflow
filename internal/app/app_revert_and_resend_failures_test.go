@@ -170,7 +170,7 @@ func TestRevertAndResendRollbackFailureAfterStagingKeepsCrashCopy(t *testing.T) 
 
 // TestRevertAndResendConvergesOnRetryAfterCommittedProviderCut is the
 // crash window with no clean rollback: the provider cut COMMITTED
-// (session sliced, SessionRef repointed, provider ids remapped) and the
+// (session sliced, SessionRef repointed) and the
 // SQLite truncation did not. The durable state is a timeline that still
 // holds rows the provider transcript no longer has.
 //
@@ -179,7 +179,7 @@ func TestRevertAndResendRollbackFailureAfterStagingKeepsCrashCopy(t *testing.T) 
 // stopped one step short — and then runs the FULL saga on top, which is
 // what the user's retry (or the frontend's) does. Convergence is the
 // contract: writeClaudeSessionSlice must recognize an already-cut
-// transcript through the anchor's remapped parent uuid and re-slice
+// transcript through the anchor's parent uuid and re-slice
 // through it, rather than resurrecting the cut-away prompt with a full
 // clone or failing forever.
 //

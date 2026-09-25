@@ -480,7 +480,7 @@ func TestMergedQueuedBatchIsOneUserPrompt(t *testing.T) {
 	// The last member's uuid anchors a real slice: everything from the
 	// merged entry on is cut, and all three joined texts go with it
 	// because they live in that one entry.
-	newID, newPath, _, err := WriteForkFileForUserMessageUUID(path, "u2c", "")
+	newID, newPath, err := WriteForkFileForUserMessageUUID(path, "u2c", "")
 	if err != nil {
 		t.Fatalf("WriteForkFileForUserMessageUUID(u2c): %v", err)
 	}
@@ -507,7 +507,7 @@ func TestMergedQueuedBatchIsOneUserPrompt(t *testing.T) {
 	// stamped with one of them can never anchor a slice, which is why the
 	// dispatcher joins the batch into one row under one uuid.
 	for _, dropped := range []string{"u2a", "u2b"} {
-		if _, _, _, err := WriteForkFileForUserMessageUUID(path, dropped, ""); !errors.Is(err, ErrMessageNotFound) {
+		if _, _, err := WriteForkFileForUserMessageUUID(path, dropped, ""); !errors.Is(err, ErrMessageNotFound) {
 			t.Errorf("WriteForkFileForUserMessageUUID(%s): got %v, want ErrMessageNotFound", dropped, err)
 		}
 	}

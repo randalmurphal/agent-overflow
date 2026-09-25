@@ -283,9 +283,6 @@ func (a *App) forkThreadAt(ctx context.Context, sourceThreadID string, atTurnInd
 	fork.SessionRef = resume.SessionRef
 	fork.PendingForkRef = resume.PendingForkRef
 	fork.PendingForkResumeAt = resume.PinnedResumeAt
-	if err := a.remapClaudeProviderIDs(fork.ID, resume.UUIDMap); err != nil {
-		return store.Thread{}, errors.Join(err, cleanups.Run())
-	}
 
 	// The pin is one-shot state no whole-row UpdateThread may carry (see
 	// SetThreadForkResume) — and the rest of the fork row was already
@@ -441,9 +438,6 @@ func (a *App) ForkThreadFromMessage(ctx context.Context, sourceThreadID string, 
 	fork.SessionRef = resume.SessionRef
 	fork.PendingForkRef = resume.PendingForkRef
 	fork.PendingForkResumeAt = resume.PinnedResumeAt
-	if err := a.remapClaudeProviderIDs(fork.ID, resume.UUIDMap); err != nil {
-		return store.Thread{}, errors.Join(err, cleanups.Run())
-	}
 
 	// Same narrow write as ForkThread: CreateThread already wrote the row,
 	// and the pin may not ride a whole-row update.
@@ -547,10 +541,6 @@ func (a *App) ensureThreadCanFork(source store.Thread, atTurnIndex *int) error {
 //     fork cuts exactly where the timeline was cut instead of
 //     wherever the source has grown to by first send. Empty on an
 //     anchored fork, which already owns its sliced session file.
-//   - UUIDMap: the source-UUID → fork-UUID rewrite an inline Claude
-//     JSONL slice produced (nil for Codex and both lazy shapes). When
-//     non-nil the caller must run remapClaudeProviderIDs so the fork's
-//     items' meta.provider_item_id points at its NEW uuids.
 //   - Cleanup: undoes provider-side artifacts (a JSONL slice on disk)
 //     when a later fork step fails. Codex thread/fork children cannot
 //     be deleted over JSON-RPC; orphan rollouts are accepted there.
@@ -558,7 +548,6 @@ type forkResumeState struct {
 	SessionRef     string
 	PendingForkRef string
 	PinnedResumeAt string
-	UUIDMap        map[string]string
 	Cleanup        func() error
 }
 

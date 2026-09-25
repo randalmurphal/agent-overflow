@@ -36,11 +36,12 @@ func writeSessionFixture(t *testing.T, jsonl string) string {
 }
 
 // forkedSourceUUIDs runs WriteForkFileForUserMessageUUID and returns
-// the forkedFrom.messageUuid provenance of every transcript row in the
-// fork, in file order (custom-title excluded).
+// the uuid of every transcript row in the fork, in file order
+// (custom-title excluded). The fork keeps source uuids, so these are the
+// fixture's own row names.
 func forkedSourceUUIDs(t *testing.T, srcPath, anchorUUID string) []string {
 	t.Helper()
-	_, newPath, _, err := WriteForkFileForUserMessageUUID(srcPath, anchorUUID, "")
+	_, newPath, err := WriteForkFileForUserMessageUUID(srcPath, anchorUUID, "")
 	if err != nil {
 		t.Fatalf("WriteForkFileForUserMessageUUID: %v", err)
 	}
@@ -57,8 +58,7 @@ func forkedSourceUUIDs(t *testing.T, srcPath, anchorUUID string) []string {
 		if t, _ := e["type"].(string); t == "custom-title" {
 			continue
 		}
-		ff, _ := e["forkedFrom"].(map[string]any)
-		u, _ := ff["messageUuid"].(string)
+		u, _ := e["uuid"].(string)
 		sources = append(sources, u)
 	}
 	return sources

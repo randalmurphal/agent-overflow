@@ -2,24 +2,25 @@
 
 This package reads, forks, relocates, and copies Claude session JSONL plus its
 opaque sidecar subtree. Callers inject the projects root and decide when an
-operation is allowed. This package owns safe parsing, chain selection, UUID
-rewrites, path encoding, and crash-safe file writes.
+operation is allowed. This package owns safe parsing, chain selection,
+session identity rewrites, path encoding, and crash-safe file writes.
 
 ## Reading and fork cuts
 
 Stream JSONL under the 16 MiB line limit. Never load a whole transcript into
 memory or count every `type:"user"` row as a user turn; tool results use that
-type too. Parent traversal must use the shared parent and logical-parent
-resolvers.
+type too. Parent traversal must use the shared `ResolveParentUUID` walk.
 
 Canonicalize workspace paths before computing Claude's project slug. Preserve
 the truncate-and-hash encoding for long paths. Refuse ambiguous or missing
 resume anchors rather than fabricating a session.
 
 `WriteForkFileThroughUUID` takes `ForkCut`; keep path and identity inputs on
-that struct. Remap the new root session identity while preserving message UUID
-chains needed for resume. Deferred `system/api_error` rows are the only rows
-re-chained to their file predecessor. A successful `/compact` echo must rewind
+that struct. A fork cut mints a new session identity and keeps every message
+`uuid` and `logicalParentUuid`, as the CLI's own fork copies do, so ids AO
+stored against the source stay valid without any rewrite. `parentUuid` changes
+only to skip dropped progress rows and to re-chain deferred `system/api_error`
+rows to their file predecessor. A successful `/compact` echo must rewind
 to the compact boundary's `logicalParentUuid`; otherwise timeline rollback
 and provider context diverge.
 

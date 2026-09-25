@@ -31,7 +31,7 @@ import (
 // background launch, make or re-root a carrier or change a prompt;
 // streaming appends; deletes of prompts, carriers and anchors; the bulk
 // writers (revert cut, force-close, background teardown, history block,
-// fold, provider id remap, Codex runtime retirement); pointer forks of the
+// fold, Codex runtime retirement); pointer forks of the
 // thread or of a fork, cut at a turn, before a row or not at all, which
 // settle the rows they copy, and any operation above but a position change
 // written in a fork after its cut, which copies the inherited rows it
@@ -1032,12 +1032,7 @@ func (q *cardSequence) opMeta(rows []seqRow) (cardSequenceOp, bool) {
 		}
 	}
 	desc := fmt.Sprintf("meta of %s: %s", target.ID, how)
-	switch q.rng.Intn(3) {
-	case 0:
-		return cardSequenceOp{"RemapProviderIDs " + desc, func() error {
-			return q.s.RemapProviderIDs(q.thread, []ItemMetaUpdate{{ItemID: target.ID, Meta: meta}}, nil)
-		}}, true
-	case 1:
+	if q.rng.Intn(2) == 0 {
 		return cardSequenceOp{"UpdateItemMetaMerge " + desc, func() error {
 			_, _, err := q.s.UpdateItemMetaMerge(q.thread, target.ID, func(string) (string, error) { return meta, nil }, q.now())
 			return err

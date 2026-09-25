@@ -2410,15 +2410,6 @@ func TestSubagentCardStopWritesWhatItsAgentKeptLive(t *testing.T) {
 			}},
 		{name: "meta update settles the launch", rows: []stampFixtureRow{background}, parent: "L",
 			stop: meta(func(s *Store, thread, meta string) error { return s.UpdateItemMeta(thread, "L", meta) })},
-		{name: "provider id remap settles the launch", rows: []stampFixtureRow{background}, parent: "L",
-			stop: meta(func(s *Store, thread, meta string) error {
-				return s.RemapProviderIDs(thread, []ItemMetaUpdate{{ItemID: "L", Meta: meta}}, nil)
-			})},
-		{name: "session ref remap settles the launch", rows: []stampFixtureRow{background}, parent: "L",
-			stop: meta(func(s *Store, thread, meta string) error {
-				_, err := s.UpdateSessionRefAndRemapProviderIDs(thread, "ref-2", []ItemMetaUpdate{{ItemID: "L", Meta: meta}}, nil)
-				return err
-			})},
 		{name: "Codex runtime retired", provider: "codex", rows: []stampFixtureRow{background}, parent: "L",
 			stop: func(t *testing.T, s *Store, thread string, _ func(string) *SubagentCard) {
 				if retired, err := s.RetireCodexBackgroundRuntime(thread, summarise, 9_000); err != nil || len(retired) != 1 {

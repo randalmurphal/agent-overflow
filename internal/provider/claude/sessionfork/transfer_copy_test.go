@@ -170,5 +170,19 @@ func TestTransferCopyPinnedPrefixNeverIncludesParentFuture(t *testing.T) {
 		if err != nil || !strings.Contains(string(data), "saved answer") || strings.Contains(string(data), "parent future") || strings.Count(string(data), "\n") != 2 {
 			t.Fatalf("wrong prefix: %s %v", data, err)
 		}
+		// The cut keeps every message identity and parent chain; only the
+		// root session id moves to the copy's.
+		want := []struct{ uuid, parent string }{{"kept", ""}, {"pin", "kept"}}
+		for i, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			var row map[string]any
+			if err := json.Unmarshal([]byte(line), &row); err != nil {
+				t.Fatalf("copied line %d: %v", i, err)
+			}
+			parent, _ := row["parentUuid"].(string)
+			if row["uuid"] != want[i].uuid || parent != want[i].parent || row["sessionId"] != copy.SessionID {
+				t.Fatalf("copied line %d = uuid %v parent %q session %v, want uuid %s parent %q session %s",
+					i, row["uuid"], parent, row["sessionId"], want[i].uuid, want[i].parent, copy.SessionID)
+			}
+		}
 	}
 }

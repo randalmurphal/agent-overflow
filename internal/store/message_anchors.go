@@ -86,11 +86,11 @@ func (s *Store) GetMessageAnchor(threadID, userItemID string) (MessageAnchor, bo
 	return a, true, nil
 }
 
-// ListMessageAnchors returns the thread's anchors in timeline order —
-// (turn_index, item_index) of each anchor's user item, not created_at:
-// echo-time replaces and interrupt-batch writes make created_at
-// non-monotonic against the timeline, and consumers (the fork remap)
-// read the order as message order.
+// ListMessageAnchors returns the thread's anchors in timeline order:
+// (turn_index, item_index) of each anchor's user item, not created_at.
+// Echo-time replaces and interrupt-batch writes make created_at
+// non-monotonic against the timeline, and callers read the order as
+// message order.
 func (s *Store) ListMessageAnchors(threadID string) ([]MessageAnchor, error) {
 	rows, err := s.reader().Query(
 		`SELECT `+messageAnchorColumnsQualified+` FROM message_anchors a
@@ -120,9 +120,8 @@ func (s *Store) ListMessageAnchors(threadID string) ([]MessageAnchor, error) {
 
 // UpdateMessageAnchorProviderIDs stamps provider-echo identity onto an
 // anchor. Empty-string args preserve the stored value; both-empty is a
-// no-op. Callers (triage echo replay, the fork remap) rely on the
-// preserve contract — an echo that carries only one id must not blank
-// the other.
+// no-op. The send echo relies on the preserve contract: an echo that
+// carries only one id must not blank the other.
 func (s *Store) UpdateMessageAnchorProviderIDs(threadID, userItemID, providerUserMessageID, providerParentUUID string) error {
 	if threadID == "" || userItemID == "" {
 		return fmt.Errorf("store: update message anchor provider ids requires thread and user item id")

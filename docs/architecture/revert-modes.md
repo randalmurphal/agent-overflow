@@ -94,16 +94,18 @@ Provider-side rollback differs by provider:
   slices the current Claude JSONL through the end of the turn before
   the selected message using `internal/provider/claude/sessionfork`,
   then points `threads.session_ref` at the new session file. The slice
-  boundary is resolved in trust order: the anchor's provider uuid when
-  the transcript contains it, then the anchor's parent uuid, else the
-  anchor's `turn_index`. Turn 0 clears the Claude session entirely.
+  keeps every surviving entry's uuid, so the provider ids AO stored stay
+  valid in it. The slice boundary is resolved in trust order: the
+  anchor's provider uuid when the transcript contains it, then the
+  anchor's parent uuid (a retry after the slice already committed), else
+  the anchor's `turn_index`. Turn 0 clears the Claude session entirely.
   A row that HAS a stamped provider uuid the transcript does not contain
   does not fall through to the turn index: the ordinal walk has no proof
   its row count still matches the transcript's prompt count and could cut
   a turn too far back, so the rollback fails naming the known cause, a
-  stale fork remap. The one exception is a transcript that ends before
-  the anchor's turn, which is a session that died before persisting the
-  prompt and is cloned whole.
+  Claude queue merge AO could not fold. The one exception is a
+  transcript that ends before the anchor's turn, which is a session that
+  died before persisting the prompt and is cloned whole.
 
   Every queued batch is one row with one uuid, so it slices exactly: a
   batch AO dispatched as one joined message is joined at dispatch
