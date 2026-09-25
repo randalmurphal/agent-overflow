@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"agent-overflow/internal/eventchan"
 )
@@ -26,6 +27,19 @@ const DefaultRingCapacity = 8192
 // large frames (terminal output) keeps what fits in it rather than
 // DefaultRingCapacity of them. The newest frame is always retained.
 const RingByteBudget = 16 << 20
+
+// RingRetainFor bounds how long a RetentionDefault ring retains a frame.
+// The ring serves reconnects, and the client's reconnect backoff caps at
+// 5 s on loopback and 30 s remote (frontend/src/lib/transport/wsClient.ts
+// RECONNECT_MAX_LOCAL_MS and RECONNECT_MAX_REMOTE_MS), so an older frame
+// serves no reconnect the client attempts on its own. A cursor below a
+// released frame replays as gap:true. A latest-only ring's frame does not
+// age: it is the channel's current value.
+const RingRetainFor = 5 * time.Minute
+
+// RingSweepEvery is how often the bus releases aged frames from every
+// ring, so a channel that stops emitting does not keep its last burst.
+const RingSweepEvery = 30 * time.Second
 
 // DefaultSubscriberBuffer sizes a subscriber's delivery channel: how far
 // a connected client may fall behind live fanout before the channel is
@@ -54,6 +68,8 @@ const DefaultSubscriberBuffer = 1024
 //     client must treat that as a dropped event and the late seq N as a
 //     duplicate, corrupting the stream even though the server lost nothing.
 //   - Replay holds an RLock for the duration of the per-channel walk.
+//   - The sweeper goroutine takes mu every RingSweepEvery to release
+//     aged frames from every ring. Close stops it and waits for it.
 //   - subList is a maintained slice mirroring subs map membership so
 //     Emit doesn't allocate-and-copy a snapshot per call. Updated
 //     inside Subscribe / Subscriber.Close under the same mu. Slice
@@ -90,6 +106,13 @@ type EventBus struct {
 	ringBytes int
 	subBuf    int
 	closed    atomic.Bool
+	// now is the bus clock, time.Now outside tests. epoch is its reading
+	// at construction; ring stamps are durations since it (clock).
+	now   func() time.Time
+	epoch time.Time
+	// stopSweep ends the sweeper; sweepDone closes when it has returned.
+	stopSweep chan struct{}
+	sweepDone chan struct{}
 }
 
 // ring is a bounded circular buffer keyed by per-channel seq.
@@ -98,7 +121,8 @@ type EventBus struct {
 // arrive — most channels never see more than a handful of events, so
 // preallocating capacity slots per channel would waste the bulk of
 // the bus's steady-state memory. It evicts its oldest entries to stay
-// within capacity entries and byteBudget wire bytes.
+// within capacity entries and byteBudget wire bytes, and an aging ring
+// also releases entries older than RingRetainFor.
 type ring struct {
 	head     int
 	count    int
@@ -108,6 +132,12 @@ type ring struct {
 	bytes      int
 	byteBudget int
 	backing    []Event
+	// stamps[i] is the emit time of backing[i] (EventBus.clock). The two
+	// share length and head: grow copies both, and releaseAged frees both.
+	stamps []int64
+	// ages is whether entries older than RingRetainFor are released:
+	// RetentionDefault channels only.
+	ages bool
 	// dropped is the head at the last DropRetained. A cursor below it
 	// missed nothing: that history was discarded, not evicted.
 	dropped uint64
@@ -122,7 +152,24 @@ type ring struct {
 // ring. Small on purpose: quiet channels stay small forever.
 const ringInitialCapacity = 16
 
+// newRing sizes channel's ring from its retention (event_channels.go):
+// capacity is the depth of a RetentionDefault ring.
 func newRing(channel string, capacity, byteBudget int) *ring {
+	r := &ring{capacity: capacity, byteBudget: byteBudget}
+	switch channelRetention(channel) {
+	case RetentionEphemeral:
+		// Seed-style cache warmers and one-shot directives: sequence
+		// tracking only, no replay retention.
+		r.capacity = 0
+	case RetentionLatestOnly:
+		// Whole-state frames: the newest one supersedes all prior ones,
+		// so retain exactly it. It never ages, because it is the
+		// channel's current value and Replay serves it instead of a gap.
+		r.capacity = 1
+	case RetentionDefault:
+		// Full-depth reconnect buffer.
+		r.ages = true
+	}
 	// json.Marshal of a string cannot fail (invalid UTF-8 is replaced),
 	// and matches exactly how the reflection encoder renders the
 	// ServerFrame Channel field, HTML escaping included.
@@ -131,7 +178,8 @@ func newRing(channel string, capacity, byteBudget int) *ring {
 	prefix = append(prefix, eventFramePrefix...)
 	prefix = append(prefix, name...)
 	prefix = append(prefix, eventSeqKey...)
-	return &ring{capacity: capacity, byteBudget: byteBudget, envPrefix: prefix}
+	r.envPrefix = prefix
+	return r
 }
 
 const (
@@ -160,15 +208,17 @@ func (r *ring) appendEventWire(seq uint64, data []byte) []byte {
 	return append(wire, '}')
 }
 
-// append stores e at the tail, first evicting the oldest entries until
-// e fits within capacity and the byte budget, and growing the backing up
-// to capacity. Amortized O(1). The newest entry is kept even when it
-// alone exceeds the byte budget. A zero-capacity ring (ephemeral
-// channels) tracks sequence only and retains nothing.
-func (r *ring) append(e Event) {
+// append stores e, emitted at now (EventBus.clock), at the tail. It first
+// releases aged entries, then evicts the oldest entries until e fits
+// within capacity and the byte budget, and grows the backing up to
+// capacity. Amortized O(1). The newest entry is kept even when it alone
+// exceeds the byte budget. A zero-capacity ring (ephemeral channels)
+// tracks sequence only and retains nothing.
+func (r *ring) append(e Event, now int64) {
 	if r.capacity == 0 {
 		return
 	}
+	r.releaseAged(now)
 	size := len(e.WireBytes)
 	for r.count > 0 && (r.count == r.capacity || r.bytes+size > r.byteBudget) {
 		r.evictOldest()
@@ -176,10 +226,31 @@ func (r *ring) append(e Event) {
 	if r.count == len(r.backing) {
 		r.grow()
 	}
-	r.backing[(r.head+r.count)%len(r.backing)] = e
+	slot := (r.head + r.count) % len(r.backing)
+	r.backing[slot] = e
+	r.stamps[slot] = now
 	r.count++
 	r.bytes += size
 	r.seq = e.Seq
+}
+
+// releaseAged evicts the entries emitted more than RingRetainFor before
+// now, oldest first, stopping at the first younger one. An aging ring
+// left empty also frees its backing arrays, so a burst's grown backing
+// is not kept; grow starts over from a nil backing. seq and dropped are
+// unchanged: a cursor below a released entry missed it, and replayAfter
+// answers that cursor with a gap.
+func (r *ring) releaseAged(now int64) {
+	if !r.ages {
+		return
+	}
+	cutoff := now - int64(RingRetainFor)
+	for r.count > 0 && r.stamps[r.head] < cutoff {
+		r.evictOldest()
+	}
+	if r.count == 0 && r.backing != nil {
+		r.backing, r.stamps, r.head = nil, nil, 0
+	}
 }
 
 // evictOldest drops the head entry and releases its frame.
@@ -190,16 +261,19 @@ func (r *ring) evictOldest() {
 	r.count--
 }
 
-// grow re-linearizes the ring into a larger backing array (head back
-// to 0). Doubling bounded by capacity; at most log2(capacity) growths
-// over a channel's lifetime.
+// grow re-linearizes the ring into larger backing and stamp arrays (head
+// back to 0). Doubling bounded by capacity; at most log2(capacity)
+// growths between releases of an empty backing.
 func (r *ring) grow() {
 	newCap := min(max(2*len(r.backing), ringInitialCapacity), r.capacity)
 	fresh := make([]Event, newCap)
+	stamps := make([]int64, newCap)
 	for i := range r.count {
-		fresh[i] = r.backing[(r.head+i)%len(r.backing)]
+		j := (r.head + i) % len(r.backing)
+		fresh[i] = r.backing[j]
+		stamps[i] = r.stamps[j]
 	}
-	r.backing = fresh
+	r.backing, r.stamps = fresh, stamps
 	r.head = 0
 }
 
@@ -225,7 +299,11 @@ func (r *ring) replayAfter(lastSeq uint64) (events []Event, hadGap bool) {
 		return nil, true
 	}
 	if r.count == 0 {
-		return nil, false
+		// An ephemeral ring retains nothing, so its frames were never
+		// history. A retaining ring is empty after DropRetained, whose
+		// floor already raised lastSeq to the head, or after aging
+		// released every frame above the cursor.
+		return nil, r.capacity > 0 && lastSeq < r.seq
 	}
 	oldest := r.backing[r.head].Seq
 	if lastSeq+1 < oldest {
@@ -289,18 +367,63 @@ type Event struct {
 }
 
 // NewEventBus returns a new bus with the given per-channel capacity.
-// Pass 0 to use DefaultRingCapacity.
+// Pass 0 to use DefaultRingCapacity. The bus runs a sweeper goroutine
+// until Close.
 func NewEventBus(capacity int) *EventBus {
+	return newEventBus(capacity, time.Now)
+}
+
+// newEventBus is NewEventBus reading the given clock; tests inject one.
+func newEventBus(capacity int, now func() time.Time) *EventBus {
 	if capacity <= 0 {
 		capacity = DefaultRingCapacity
 	}
-	return &EventBus{
+	b := &EventBus{
 		rings:     make(map[string]*ring),
 		subs:      make(map[*Subscriber]struct{}),
 		subList:   nil,
 		capacity:  capacity,
 		ringBytes: RingByteBudget,
 		subBuf:    DefaultSubscriberBuffer,
+		now:       now,
+		epoch:     now(),
+		stopSweep: make(chan struct{}),
+		sweepDone: make(chan struct{}),
+	}
+	go b.runSweeper()
+	return b
+}
+
+// clock reads the bus clock as nanoseconds since epoch. Readings of
+// time.Now carry the monotonic clock, so their difference is elapsed
+// time and a wall-clock step does not age frames early or hold them late.
+func (b *EventBus) clock() int64 {
+	return int64(b.now().Sub(b.epoch))
+}
+
+// runSweeper releases aged frames every RingSweepEvery until Close.
+func (b *EventBus) runSweeper() {
+	defer close(b.sweepDone)
+	tick := time.NewTicker(RingSweepEvery)
+	defer tick.Stop()
+	for {
+		select {
+		case <-b.stopSweep:
+			return
+		case <-tick.C:
+			b.sweepAged()
+		}
+	}
+}
+
+// sweepAged releases every ring's frames older than RingRetainFor. Only
+// aging rings hold frames it can release.
+func (b *EventBus) sweepAged() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.clock()
+	for _, r := range b.rings {
+		r.releaseAged(now)
 	}
 }
 
@@ -391,21 +514,7 @@ func (b *EventBus) EmitScoped(typedChannel eventchan.Channel, entityKey, entityS
 			// remote-only "events stopped arriving" mystery.
 			log.Printf("transport: event channel %q has no ChannelPolicy row; delivering to loopback connections only (add a row in event_channels.go)", channel)
 		}
-		capacity := b.capacity
-		switch channelRetention(channel) {
-		case RetentionEphemeral:
-			// Seed-style cache warmers and one-shot directives:
-			// sequence tracking only, no replay retention (see
-			// event_channels.go).
-			capacity = 0
-		case RetentionLatestOnly:
-			// Whole-state frames: the newest one supersedes all prior
-			// ones, so retain exactly it (see event_channels.go).
-			capacity = 1
-		case RetentionDefault:
-			// Full-depth ring.
-		}
-		r = newRing(channel, capacity, b.ringBytes)
+		r = newRing(channel, b.capacity, b.ringBytes)
 		b.rings[channel] = r
 	}
 	r.seq++
@@ -431,7 +540,9 @@ func (b *EventBus) EmitScoped(typedChannel eventchan.Channel, entityKey, entityS
 	// does and has nothing else to read the frame's address from.
 	ringEvt := evt
 	ringEvt.Data = nil
-	r.append(ringEvt)
+	// Stamped under mu, so stamps rise in ring order and releaseAged can
+	// stop at the first young frame.
+	r.append(ringEvt, b.clock())
 
 	// deliver is non-blocking. Keeping fanout under mu makes sequence
 	// assignment, ring append, and live delivery one ordered operation. A
@@ -744,12 +855,16 @@ func replayGapMarker(channel string, seq uint64) Event {
 	return gap
 }
 
-// Close stops accepting new emissions and signals every subscriber.
-// Idempotent — late callers see closed==true and bail.
+// Close stops accepting new emissions, stops the sweeper and waits for it
+// to return, and signals every subscriber. Idempotent — late callers see
+// closed==true and bail.
 func (b *EventBus) Close() {
 	if !b.closed.CompareAndSwap(false, true) {
 		return
 	}
+	// Outside mu: a sweep in progress holds it until it finishes.
+	close(b.stopSweep)
+	<-b.sweepDone
 	b.mu.Lock()
 	subs := b.subList
 	b.subs = nil

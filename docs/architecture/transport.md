@@ -262,7 +262,11 @@ without a gap. The harness measures that burst at about 150 frames/s on
 `provider:item_event`, the busiest channel
 (`e2e/tests/transport-replay-burst.spec.ts`), and
 `eventbus_ring_budget_test.go` pins the bounds to the budget. One ring serves
-every thread, so threads bursting at once share the window.
+every thread, so threads bursting at once share the window. A frame on a
+default-retention channel is also released once it is older than
+`RingRetainFor`, by the next emit on that channel or by the bus sweep every
+`RingSweepEvery`, so a quiet channel does not keep its last burst. A cursor
+below a released frame receives `gap:true`.
 
 ### Gap markers
 

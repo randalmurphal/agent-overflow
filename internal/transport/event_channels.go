@@ -115,7 +115,8 @@ type Retention uint8
 
 const (
 	// RetentionDefault gives the channel a ring of EventBus.capacity
-	// (DefaultRingCapacity) frames within RingByteBudget bytes.
+	// (DefaultRingCapacity) frames within RingByteBudget bytes, each
+	// released once it is older than RingRetainFor.
 	RetentionDefault Retention = iota
 	// RetentionEphemeral gives the channel a ZERO-capacity ring: Emit still
 	// assigns a monotonic seq and live subscribers still get the frame, but
@@ -130,12 +131,12 @@ const (
 	// replay against a stale instruction.
 	RetentionEphemeral
 	// RetentionLatestOnly gives the channel a capacity-1 ring: the newest
-	// frame fully supersedes every prior one, so retain exactly it. Replay
-	// delivers that single newest frame and never an eviction-side gap
-	// marker — "missed" frames are superseded state, not lost history. (A
-	// cursor ABOVE the head still gaps: that client holds another server's
-	// sequence space, and the newest frame's lower seq would read to it as
-	// a duplicate.)
+	// frame fully supersedes every prior one, so retain exactly it, however
+	// old. Replay delivers that single newest frame and never an
+	// eviction-side gap marker — "missed" frames are superseded state, not
+	// lost history. (A cursor ABOVE the head still gaps: that client holds
+	// another server's sequence space, and the newest frame's lower seq
+	// would read to it as a duplicate.)
 	//
 	// MEMBERSHIP RULE: the channel must be UNKEYED — one global state, not
 	// per-thread / per-workspace / per-server payloads multiplexed onto one

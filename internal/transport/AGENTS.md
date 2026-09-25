@@ -92,6 +92,7 @@ producer into a remote steering path. Keep the backend registry and frontend
 channel mirrors aligned through their cross-language tests.
 
 The per-channel ring is a bounded reconnect buffer. It is not durable history.
+Default-retention rings also release frames older than `RingRetainFor`.
 A cursor outside the current sequence space receives `gap:true`; clients then
 reload authoritative state. Include `seq` even when it is zero. A full
 subscriber buffer records the affected channel and announces the loss on the
