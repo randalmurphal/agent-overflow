@@ -610,7 +610,7 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 	for depth, viewer := range []string{thread, thread + "-fork"} {
 		for what, selection := range map[string]timelineSelection{
 			"latest direct tool":     latestDirectSubagentToolSelection("L"),
-			"latest subagent report": latestSubagentReportSelection("L"),
+			"latest subagent report": latestSubagentReportSelection("L", 0),
 		} {
 			tray, trayArgs, err := timelineArms(s.reader(), viewer, selection)
 			if err != nil {

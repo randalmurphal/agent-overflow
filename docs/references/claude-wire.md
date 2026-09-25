@@ -2202,8 +2202,11 @@ with the shell's notification as the prompt:
 No `tool_use_id`. The level set re-adds the agent. The woken round's
 sidechain rows carry `parent_tool_use_id` = the ORIGINAL launch (the
 transcript root, as in §E6), its `task_progress` ticks name the
-launch, and its closing `task_updated` / `task_notification` again
-carry the bound tool_use. This repeats for every owned shell that
+launch, and its closing `task_updated` / `task_notification` name no
+`tool_use_id`: the parser binds them to the bound tool_use through its
+task map, and triage resolves them by `task_id`
+(`Store.FindToolCallItemByTaskID`) when a fresh parser has lost that
+map. This repeats for every owned shell that
 outlives a stop: fixture A wakes twice. The sidechain JSONL records
 the wake as a `type:user, isMeta:true, origin:{kind:"task-notification"}`
 row whose content is `[SYSTEM NOTIFICATION - NOT USER INPUT]` plus the
@@ -2233,55 +2236,55 @@ ever binds the wake prompt.
 - A FOREGROUND agent is unchanged: its exit kills its shells (§Background
   task ownership), so there is nothing to park.
 
-**AO's park model (triage).** A background agent launch is PARKED when
-its transcript root has a live backgrounded direct child that is a
+**AO's park model (triage, `agent_stops.go`).** Every stop of a
+background agent's run writes a completion-shaped `tool_completion`
+sibling at the write head, `completion_of` = the row that started the
+run: the launch, or a §E6 resume carrier. A stop is PARKED when the
+agent's transcript root has a live backgrounded direct child that is a
 shell or a watch task (`launchParkedOn` counts them, over
-`Store.ListLiveBackgroundChildLaunches`). A parked agent's stop keeps
-the stash (`pending_background_task_terminals`), writes NO
-`tool_completion` sibling, still persists usage, and writes a one-line
-`notification` row with no payload: `<agent> reported and is waiting on
-N background commands` (the report is already the round's last
-`assistant_text` under the root). The final stop's bell carries the
-report as before; the frontend hides every bell for the task once the
-completed sibling lands. The wake drops the stash and persists the parser's wake row
-under the ROOT on the launch's turn, opening the woken round. The
-launch settles (sibling written) on the first stop with no live owned
-shell, on `task_updated{killed}`, on a §E6 rebind (the parked bound
-row settles from its stash before the carrier takes over), and on
-session end. A `TaskOutput` observation of a parked agent settles
-nothing. Timeline rows therefore stay immutable (a "completed" card
-never grows), the tray keeps the agent for as long as the CLI's level
-set does, and every woken round's rows land under the launch that is
-still open. Before this (2026-09-08), the first stop settled the
-launch and the wake `task_started` was dropped at the parser's
-`tool_use_id` guard, so each woken round's tools, bells and progress
-piled onto a card that read "completed".
+`Store.ListLiveBackgroundChildLaunches`) and its typed status is not a
+kill or a failure (`taskStatusEnds`). A parked stop keeps the stash
+(`pending_background_task_terminals`) for the wake and writes a sibling
+with `items.status = 'parked'` (`complete:<launch>:parked:<uuid>`). The
+sibling carries the report head as its payload's `preview`, the stop's
+usage, and in `meta` the run it closes: `parked_commands` (N),
+`parked_report_item_id` (the newest direct `assistant_text` under the
+root written since the run began, when there is one), `run_started_at`
+and `run_woke`. The keys are mirrored in
+`frontend/src/lib/utils/parkedStop.ts` and pinned by
+`TestParkedStopMetaKeysMatchFrontendMirror`. A parked sibling settles
+nothing and ends nothing: the settle triggers pass over it and the
+agent end (`agent_end.go`) fires only for the ending sibling.
+
+The wake drops the stash and persists the parser's wake row under the
+ROOT on the launch's turn, opening the next run. The ending sibling is
+written on the first stop with no live owned shell, on
+`task_updated{killed}`, and on session end; a `TaskOutput` observation
+of a parked agent writes nothing. A §E6 rebind of a parked agent
+retires the rows it was bound to (`RetireParkedAgentLaunches`): their
+parked sibling already records the run, and the carrier's runs write
+their own stops. A wake is written in a later millisecond than the stop
+it follows, and a stop in a later millisecond than the wake before it
+(`writeWakePromptRow`, `writeParkedStop`), since the tray and the cards
+order the two by creation time. No agent stop writes a `notification`
+row. Timeline rows therefore stay immutable (each stop's card reads the
+same after later runs), the tray keeps the agent for as long as the
+CLI's level set does, and every woken run's rows land under the launch
+that is still open.
 
 **Served run state.** `ListLiveBackgroundTasks` decorates each
 background agent launch it returns (`DecorateAgentRunStates`) with
-`subagentRunState`: `done` or `ended` (a completion sibling exists;
+`subagentRunState`: `done` or `ended` (an ending sibling exists;
 `ended` when its `status_source` is `session_died`), else `parked` when
-the task's terminal is stashed, else `running`. A parked launch also
-carries `subagentParkedCommands` (N above) and, once the agent has
-written one, `subagentParkedReportId` and `subagentParkedReportPreview`:
-the id and the first 512 characters (`SubagentReportPreviewRunes`) of
-the root's newest direct `assistant_text` row, the newest report
-across wakes. These keys are never stored and never pushed on the
-launch row, so a park or a wake does not move its `rev`; the stash
-write, the parked bell and the wake each emit
-`provider:background_tasks_changed` instead. Between a final stop's
-`task_updated` and its notification a read says `parked` on zero
-commands; the sibling write that follows nudges again.
-
-The parked bell's own `meta` carries the same report link, stamped once
-at write time (`parkedBellMeta`): `kind: "parked_agent"`,
-`parked_commands` (N as a number) and, when the agent has written a
-report, `parked_report_item_id` and `parked_report_preview` (the same
-row and 512-rune head). The timeline renders the bell with the preview
-and loads the full row by id (`GetThreadItem`) on demand; the keys are
-mirrored in `frontend/src/lib/utils/parkedAgentBell.ts` and pinned by
-`TestParkedAgentBellMetaKeysMatchFrontendMirror`. A parked bell written
-before this meta existed renders as its one line.
+the launch's newest stop is a parked sibling no wake has followed
+(`Store.CurrentParkedStop`), else `running`. A parked launch also
+carries what that sibling recorded: `subagentParkedCommands` (N) and,
+when the run wrote a report, `subagentParkedReportId` and
+`subagentParkedReportPreview` (the sibling's payload `preview`). These
+keys are never stored and never pushed on the launch row, so a park or
+a wake does not move its `rev`; the parked sibling write and the wake
+each emit `provider:background_tasks_changed` instead. Parked siblings
+never enter the live list themselves.
 
 ### E7: Monitor watch-task launch ack
 

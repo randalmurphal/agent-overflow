@@ -182,7 +182,7 @@ export function taskStartedLine(
   taskId: string,
   toolUseId: string,
   description: string,
-  opts: { taskType?: string; ownedBySubagent?: boolean } = {},
+  opts: { taskType?: string; ownedBySubagent?: boolean; prompt?: string } = {},
 ): string {
   const envelope: Json = {
     type: 'system',
@@ -194,7 +194,31 @@ export function taskStartedLine(
     task_type: opts.taskType ?? 'local_agent',
   };
   if (opts.ownedBySubagent) envelope.owned_by_subagent = true;
+  if (opts.prompt) envelope.prompt = opts.prompt;
   return j(envelope);
+}
+
+/**
+ * A SendMessage resume of an idle async agent (claude-wire.md §E6): the
+ * resuming tool_use, the rebind `task_started` that binds the agent's task
+ * to it with the message as its prompt, and the ack, which carries no
+ * async marker. The resuming tool_use becomes the round's carrier.
+ */
+export function agentResumeLines(
+  messageId: string,
+  carrierToolUseId: string,
+  taskId: string,
+  description: string,
+  message: string,
+): string[] {
+  const ack = `Agent "${taskId}" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes.`;
+  return [
+    toolUseLine(messageId, carrierToolUseId, 'SendMessage', { to: taskId, summary: 'follow up', message }),
+    taskStartedLine(taskId, carrierToolUseId, description, { prompt: message }),
+    toolResultLine(carrierToolUseId, [{ type: 'text', text: JSON.stringify({ success: true, message: ack, resumedAgentId: taskId }) }], {
+      toolUseResult: { success: true, message: ack, resumedAgentId: taskId },
+    }),
+  ];
 }
 
 /**
@@ -278,11 +302,12 @@ export function taskNotificationLine(
     type: 'system',
     subtype: 'task_notification',
     task_id: taskId,
-    tool_use_id: toolUseId,
     status: 'completed',
     summary,
     uuid: opts.uuid ?? `notify-${taskId}`,
   };
+  // A woken agent's later stops name no tool_use (claude-wire.md §E6b).
+  if (toolUseId) envelope.tool_use_id = toolUseId;
   if (opts.outputFile) envelope.output_file = opts.outputFile;
   if (opts.usage) envelope.usage = opts.usage;
   return j(envelope);

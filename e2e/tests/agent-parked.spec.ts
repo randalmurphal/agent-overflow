@@ -8,15 +8,16 @@
 //             store keeps its launch open) and says so: the parked
 //             indicator, "Waiting on N background command(s)" in place of
 //             the live activity line, the report's head beneath it. The
-//             timeline gets the parked bell with the same report head and
-//             the full report on demand; no card, no completion sibling.
-//   woken   - the row is a running background agent again; the bell stays.
-//   final   - the card lands at the completion sibling, the tray empties,
-//             and every bell of the task (parked and final) is hidden.
+//             stop writes a parked sibling, and the timeline shows the
+//             agent's card at it: the parked indicator, the report head,
+//             and the full report on demand. No bell.
+//   woken   - the row is a running background agent again; the parked
+//             card stays as it was.
+//   final   - a second card lands at the ending sibling and the tray
+//             empties. The agent never rings a bell.
 //
-// The served run state rides ListLiveBackgroundTasks; the bell's report
-// link is stamped on the notification row at write time (triage
-// parkedBellMeta) and the full row loads by id (GetThreadItem).
+// The served run state rides ListLiveBackgroundTasks and is read from the
+// parked sibling; the full report loads by id (GetThreadItem).
 import { test, expect } from './fixtures.js';
 import {
   RESULT_LINE,
@@ -43,7 +44,7 @@ const REPORT_HEAD = 'Found the race in fork_moves.go: the log is keyed by transa
 const REPORT = `${REPORT_HEAD}\n\nWaiting for the gate run to finish before I confirm the fix.`;
 const SHELL_DONE = 'Background command "sleep 60; echo LONG" completed (exit code 0)';
 
-test('a parked background agent shows its state and report on the tray and the bell, then wakes and settles', async ({
+test('a parked background agent shows its state and report on the tray and its parked card, then wakes and settles', async ({
   harness,
   page,
 }) => {
@@ -65,7 +66,8 @@ test('a parked background agent shows its state and report on the tray and the b
       ]),
       // Round 1: the agent starts its shell, reports, and stops parked. Every
       // agent notification names its output file, as the CLI's do; the
-      // envelope's summary is the report and the file is never read.
+      // envelope's summary is the round's last message, its report, and
+      // the file is never read.
       { waitSignal: { name: 'park' } },
       emit([
         ...textLines('msg-s1', 'Starting the gate run.', 'tu-bg'),
@@ -75,7 +77,7 @@ test('a parked background agent shows its state and report on the tray and the b
         backgroundTasksChangedLine([agent, shell]),
         ...textLines('msg-s3', REPORT, 'tu-bg'),
         taskUpdatedLine('task-bg', { status: 'completed', end_time: 1787419835322 }),
-        taskNotificationLine('task-bg', 'tu-bg', 'WAITING', {
+        taskNotificationLine('task-bg', 'tu-bg', REPORT, {
           outputFile: '${CWD}/gate-output.jsonl',
           usage: { total_tokens: 12000, tool_uses: 1, duration_ms: 2100 },
           uuid: 'park-1',
@@ -131,34 +133,38 @@ test('a parked background agent shows its state and report on the tray and the b
   await waitForGate(harness, 'park');
   await advance(harness, mockId, 'park');
 
-  // The store: the stop is stashed, no sibling, and the bell names the
-  // report row it links.
-  const parkedBellId = 'task-notification:task-bg:park-1';
+  // The store: the stop is a parked sibling of the launch that names the
+  // run's report row and carries its head. No bell.
+  const parkedStopId = 'complete:tu-bg:parked:park-1';
   await expect
     .poll(async () => {
       const items = await listItems(harness, threadId);
-      const bell = items.find((i) => i.id === parkedBellId);
-      if (!bell) return null;
-      const meta = itemMeta(bell);
+      const stop = items.find((i) => i.id === parkedStopId);
+      if (!stop) return null;
+      const meta = itemMeta(stop);
       const report = items.find((i) => i.id === meta.parked_report_item_id);
       return {
-        summary: bell.summary,
-        kind: meta.kind,
+        kind: stop.kind,
+        status: stop.status,
+        completionOf: stop.completionOf,
         commands: meta.parked_commands,
-        preview: meta.parked_report_preview,
+        preview: JSON.parse(stop.payloadMeta ?? '{}').preview,
         reportParent: report?.parentId ?? null,
         reportText: report?.summary ?? null,
-        siblings: items.filter((i) => i.completionOf === 'tu-bg').length,
+        siblings: items.filter((i) => i.completionOf === 'tu-bg').map((i) => i.status),
+        bells: items.filter((i) => i.kind === 'notification' && itemMeta(i).task_id === 'task-bg').length,
       };
     })
     .toEqual({
-      summary: 'Agent "gate watcher" reported and is waiting on 1 background command',
-      kind: 'parked_agent',
+      kind: 'tool_completion',
+      status: 'parked',
+      completionOf: 'tu-bg',
       commands: 1,
-      preview: REPORT,
+      preview: REPORT.replace('\n\n', '  '),
       reportParent: 'tu-bg',
       reportText: REPORT,
-      siblings: 0,
+      siblings: ['parked'],
+      bells: 0,
     });
 
   // The tray: the agent row is parked, the shell it waits on sits under it.
@@ -174,20 +180,22 @@ test('a parked background agent shows its state and report on the tray and the b
   // The parked agent is not running; its shell is.
   await expect(page.getByTestId('activity-rail-background-running-label')).toHaveText('1 running');
 
-  // The timeline: no card, the parked bell with the report head, and the
-  // full report on demand. The spawn row is untouched.
-  await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
-  const bell = timeline.getByTestId('parked-agent-bell');
-  await expect(bell).toHaveCount(1);
-  await expect(bell).toContainText('Agent "gate watcher" reported and is waiting on 1 background command');
-  await expect(bell.getByTestId('parked-agent-bell-preview')).toHaveText(REPORT);
-  await expect(bell.getByTestId('parked-agent-bell-report')).toHaveCount(0);
-  await bell.getByTestId('parked-agent-bell-report-toggle').click();
-  await expect(bell).toHaveAttribute('data-expanded', 'true');
-  await expect(bell.getByTestId('parked-agent-bell-report')).toContainText('Waiting for the gate run to finish before I confirm the fix.');
-  await expect(bell.getByTestId('parked-agent-bell-error')).toHaveCount(0);
-  await bell.getByTestId('parked-agent-bell-report-toggle').click();
-  await expect(bell.getByTestId('parked-agent-bell-preview')).toHaveText(REPORT);
+  // The timeline: the agent's card at the parked sibling, with the report
+  // head, and the full report on demand. The spawn row is untouched.
+  const cards = timeline.getByTestId('subagent-group');
+  await expect(cards).toHaveCount(1);
+  const parkedCard = cards.nth(0);
+  await expect(parkedCard).toHaveAttribute('data-anchor-id', parkedStopId);
+  await expect(parkedCard.getByTestId('subagent-group-status')).toHaveAttribute('data-state', 'parked');
+  await expect(parkedCard.getByTestId('subagent-group-parked-status')).toHaveText('Reported, waiting on 1 background command');
+  await expect(parkedCard.getByTestId('subagent-group-preview')).toHaveText(REPORT);
+  await expect(parkedCard.getByTestId('subagent-group-parked-report')).toHaveCount(0);
+  await parkedCard.getByTestId('subagent-group-toggle').click();
+  await expect(parkedCard.getByTestId('subagent-group-parked-report')).toContainText('Waiting for the gate run to finish before I confirm the fix.');
+  await expect(parkedCard.getByTestId('subagent-group-parked-report-error')).toHaveCount(0);
+  await parkedCard.getByTestId('subagent-group-toggle').click();
+  await expect(parkedCard.getByTestId('subagent-group-parked-report')).toHaveCount(0);
+  await expect(timeline.getByTestId('notification-row')).toHaveCount(0);
   await expect(timeline.locator('[data-item-id="tu-bg"]').getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
 
   // --- Woken ----------------------------------------------------------
@@ -205,17 +213,21 @@ test('a parked background agent shows its state and report on the tray and the b
       return items.filter((i) => i.parentId === 'tu-bg' && itemMeta(i).subagent_wake_prompt === true).length;
     })
     .toBe(1);
-  await expect(bell).toHaveCount(1);
-  await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
+  // The parked card is history of the first run: it reads the same.
+  await expect(cards).toHaveCount(1);
+  await expect(parkedCard.getByTestId('subagent-group-parked-status')).toHaveText('Reported, waiting on 1 background command');
 
   // --- Final ----------------------------------------------------------
   await waitForGate(harness, 'final');
   await advance(harness, mockId, 'final');
-  const card = timeline.getByTestId('subagent-group');
-  await expect(card).toHaveCount(1);
-  await expect(card).toHaveAttribute('data-background', 'true');
-  await expect(card.getByTestId('subagent-group-preview')).toContainText('Gate passed; the fix holds.');
-  await expect(timeline.getByTestId('parked-agent-bell')).toHaveCount(0);
+  await expect(cards).toHaveCount(2);
+  const finalCard = cards.nth(1);
+  await expect(finalCard).toHaveAttribute('data-anchor-id', 'complete:tu-bg');
+  await expect(finalCard).toHaveAttribute('data-background', 'true');
+  await expect(finalCard.getByTestId('subagent-group-preview')).toContainText('Gate passed; the fix holds.');
+  await expect(finalCard.getByTestId('subagent-group-parked-status')).toHaveCount(0);
+  await expect(parkedCard).toHaveAttribute('data-anchor-id', parkedStopId);
+  await expect(parkedCard.getByTestId('subagent-group-preview')).toHaveText(REPORT);
   await expect(timeline.getByTestId('notification-row')).toHaveCount(0);
   await expect(page.getByTestId('activity-rail-background-toggle')).toHaveCount(0);
   await expect
@@ -223,11 +235,11 @@ test('a parked background agent shows its state and report on the tray and the b
       const items = await listItems(harness, threadId);
       return {
         siblings: items.filter((i) => i.completionOf === 'tu-bg').map((i) => i.status),
-        bells: items.filter((i) => i.kind === 'notification' && itemMeta(i).task_id === 'task-bg').map((i) => i.id).sort(),
+        bells: items.filter((i) => i.kind === 'notification' && itemMeta(i).task_id === 'task-bg').map((i) => i.id),
       };
     })
     .toEqual({
-      siblings: ['completed'],
-      bells: ['task-notification:task-bg:final-1', parkedBellId],
+      siblings: ['parked', 'completed'],
+      bells: [],
     });
 });

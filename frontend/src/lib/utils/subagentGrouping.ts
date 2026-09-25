@@ -31,11 +31,8 @@ import { isCommandAgentResult } from './commandAgentResult';
 
 export const MAX_DEPTH = 3;
 const PREVIEW_MAX_CHARS = 160;
-// The head of a summary the preview reads. A parked agent's served report
-// preview is this long (SubagentReportPreviewRunes in
-// internal/store/subagent_report.go); mirror_pins_test.go fails if the two
-// drift.
-export const PREVIEW_SCAN_CHARS = 512;
+// The head of a summary the preview reads.
+const PREVIEW_SCAN_CHARS = 512;
 
 // Bounds the whitespace-collapse pass to what a capped preview can show.
 function previewScanWindow(summary: string): string {

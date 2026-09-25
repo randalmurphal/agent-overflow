@@ -177,8 +177,8 @@ func TestStopKillsAnEarlierTurnsAgentWithEveryRowStopped(t *testing.T) {
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "tu-a-shell", ParentToolUseID: "tu-a",
 		Meta: parkMeta(t, map[string]any{"task_id": "task-a-shell", "tool_use_id": "tu-a-shell", "parent_tool_use_id": "tu-a", "status": "killed", "source": "task_updated"}),
 	})
-	if queued := strings.Join(queuedRows(router, "t1"), ","); queued != "complete:tu-a,task-notification:task-a:stop-task-a,complete:tu-a-shell" {
-		t.Fatalf("queued rows = %s, want the agent's sibling and bell, then the shell's sibling", queued)
+	if queued := strings.Join(queuedRows(router, "t1"), ","); queued != "complete:tu-a,complete:tu-a-shell" {
+		t.Fatalf("queued rows = %s, want the agent's sibling, then the shell's sibling", queued)
 	}
 	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTurnComplete, ThreadID: "t1", TurnComplete: &provider.TruncatedTurnCompleteMeta{}})
 	router.WaitForPendingSettles()
@@ -198,10 +198,13 @@ func TestStopKillsAnEarlierTurnsAgentWithEveryRowStopped(t *testing.T) {
 	if len(texts) != 1 || texts[0].Status != statusErrored || !isStopped(texts[0].Summary) {
 		t.Fatalf("agent text = %+v, want errored and stopped", texts)
 	}
-	for _, bell := range findItemsByKind(t, st, "t1", itemKindNotification) {
-		if strings.Contains(bell.Meta, notificationKindParkedAgent) {
-			t.Fatalf("a killed agent parked: %+v", bell)
+	for _, stop := range findItemsByKind(t, st, "t1", itemKindBackgroundDone) {
+		if stop.Status == store.ItemStatusParked {
+			t.Fatalf("a killed agent parked: %+v", stop)
 		}
+	}
+	if bells := findItemsByKind(t, st, "t1", itemKindNotification); len(bells) != 0 {
+		t.Fatalf("an agent's stop rang a bell: %+v", bells)
 	}
 	if open := openRows(t, st, "t1"); len(open) != 0 {
 		t.Fatalf("rows left open: %v", open)

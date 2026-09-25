@@ -175,10 +175,10 @@ const agentLatestLifecycleSQL = `SELECT id, created_at, turn_index FROM (
 ) ORDER BY turn_index DESC, item_index DESC LIMIT 1`
 
 // latestCompletionSQL reads the status and source of row ?2's latest
-// completion sibling.
+// ending completion sibling. A parked stop (agent_stops.go) ends nothing.
 const latestCompletionSQL = `SELECT status,
        CASE WHEN json_valid(meta) THEN COALESCE(json_extract(meta, '$.status_source'), '') ELSE '' END
-  FROM items WHERE thread_id = ? AND completion_of = ? AND completion_of <> ''
+  FROM items WHERE thread_id = ? AND completion_of = ? AND completion_of <> '' AND status <> 'parked'
  ORDER BY turn_index DESC, item_index DESC LIMIT 1`
 
 // endedAgentEnd reports whether agent ownerID has ended and, when it has,

@@ -4,9 +4,9 @@ package triage
 // stops while one of its owned background shells is still running is
 // idle, not done: the CLI wakes it when the shell reports, and its stop
 // looks exactly like a final stop on the wire (task_updated{completed} +
-// task_notification). Before 2026-09-08 triage settled the launch at that
-// first stop, and every woken round's rows, bells and counters then landed
-// under a card the reader had been told was done.
+// task_notification). The stop writes a parked sibling (agent_stops.go),
+// which settles nothing; the stop with no shell running writes the ending
+// sibling.
 //
 // Every sequence here is the router.Handle shape the parser produces for
 // the 2026-09-08 captures (local_agent_owned_shell_wake_20260908.ndjson and
@@ -14,22 +14,35 @@ package triage
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
 )
 
+// parkClock stamps the park helpers' events; pinParkClock fixes it.
+var parkClock = time.Now
+
+// pinParkClock stamps every park helper event with at until the test ends.
+func pinParkClock(t *testing.T, at time.Time) {
+	t.Helper()
+	parkClock = func() time.Time { return at }
+	t.Cleanup(func() { parkClock = time.Now })
+}
+
 func parkHandle(t *testing.T, router *Router, evt provider.ProviderEvent) {
 	t.Helper()
-	evt.Timestamp = time.Now()
+	evt.Timestamp = parkClock()
 	if err := router.Handle(evt); err != nil {
 		t.Fatalf("handle %s %s: %v", evt.Kind, evt.ItemID, err)
 	}
 }
+
+// nextMillisecond waits out the current millisecond. The store bounds an
+// agent's runs by creation time (Store.LatestSubagentReport), and a real
+// run lasts far longer than one.
+func nextMillisecond() { time.Sleep(2 * time.Millisecond) }
 
 func parkMeta(t *testing.T, fields map[string]any) json.RawMessage {
 	t.Helper()
@@ -129,18 +142,63 @@ func parkStashed(t *testing.T, st *store.Store, threadID, taskID string) bool {
 	return found
 }
 
+// parkCompletions maps each launch to its ENDING sibling.
 func parkCompletions(t *testing.T, st *store.Store, threadID string) map[string]store.Item {
 	t.Helper()
 	out := map[string]store.Item{}
 	for _, it := range findItemsByKind(t, st, threadID, itemKindBackgroundDone) {
-		out[it.CompletionOf] = it
+		if it.Status != store.ItemStatusParked {
+			out[it.CompletionOf] = it
+		}
 	}
 	return out
 }
 
+// parkedStops lists launchID's parked siblings in write order.
+func parkedStops(t *testing.T, st *store.Store, threadID, launchID string) []store.Item {
+	t.Helper()
+	var out []store.Item
+	for _, it := range findItemsByKind(t, st, threadID, itemKindBackgroundDone) {
+		if it.CompletionOf == launchID && it.Status == store.ItemStatusParked {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// liveLaunches is the tray's set of launch ids.
+func liveLaunches(t *testing.T, st *store.Store, threadID string) map[string]bool {
+	t.Helper()
+	items, err := st.ListLiveBackgroundTasks(threadID, 0)
+	if err != nil {
+		t.Fatalf("list live background tasks: %v", err)
+	}
+	out := map[string]bool{}
+	for _, it := range items {
+		if it.CompletionOf == "" {
+			out[it.ID] = true
+		}
+	}
+	return out
+}
+
+// assertNoAgentBells fails on a notification row of any of the agent
+// tasks: an agent's stop is its sibling, never a bell.
+func assertNoAgentBells(t *testing.T, st *store.Store, threadID string, agentTaskIDs ...string) {
+	t.Helper()
+	for _, bell := range findItemsByKind(t, st, threadID, itemKindNotification) {
+		taskID, _ := decodeItemMetaMap(t, bell.Meta)["task_id"].(string)
+		for _, agentTaskID := range agentTaskIDs {
+			if taskID == agentTaskID {
+				t.Errorf("an agent's stop rang a bell: %s %q", bell.ID, bell.Summary)
+			}
+		}
+	}
+}
+
 // A stop with an owned shell still running is a pause: the stash stays,
-// no sibling is written, the bell rings, and the launch stays live.
-func TestParkedAgent_StopWithLiveShellKeepsStashAndWritesNoSibling(t *testing.T) {
+// a parked sibling records it, and the launch stays live.
+func TestParkedAgent_StopWithLiveShellWritesAParkedSibling(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -153,43 +211,27 @@ func TestParkedAgent_StopWithLiveShellKeepsStashAndWritesNoSibling(t *testing.T)
 		t.Error("the parked agent's terminal must stay stashed for the wake to drop")
 	}
 	if dones := parkCompletions(t, st, "t1"); len(dones) != 0 {
-		t.Errorf("no completion sibling may be written at a pause, got %v", dones)
+		t.Errorf("no ending sibling may be written at a pause, got %v", dones)
 	}
-	bells := findItemsByKind(t, st, "t1", itemKindNotification)
-	if len(bells) != 1 {
-		t.Fatalf("the stop still rings the bell once, got %d rows", len(bells))
+	stops := parkedStops(t, st, "t1", "agent")
+	if len(stops) != 1 {
+		t.Fatalf("the stop writes one parked sibling, got %d", len(stops))
 	}
-	if want := `Agent "Spike agent" reported and is waiting on 1 background command`; bells[0].Summary != want {
-		t.Errorf("parked bell = %q, want %q", bells[0].Summary, want)
+	launch := mustGetItem(t, st, "t1", "agent")
+	if stop := stops[0]; stop.Kind != itemKindBackgroundDone || stop.Role != "assistant" || !stop.IsBackground ||
+		stop.ToolName != launch.ToolName || stop.Summary != launch.Summary+" -> parked" {
+		t.Errorf("parked sibling = %s/%s %q tool %q background=%v, want a completion-shaped sibling of %q", stop.Kind, stop.Role, stop.Summary, stop.ToolName, stop.IsBackground, launch.Summary)
 	}
-	// No report row under the root yet: the bell is a parked bell on one
-	// command and names no report.
-	meta := decodeItemMetaMap(t, bells[0].Meta)
-	if meta["kind"] != notificationKindParkedAgent || meta[metaKeyParkedCommands] != float64(1) {
-		t.Errorf("parked bell meta = %v, want kind %q on 1 command", meta, notificationKindParkedAgent)
-	}
-	if _, has := meta[metaKeyParkedReportItemID]; has {
-		t.Errorf("parked bell meta = %v, want no report link before the agent wrote one", meta)
-	}
-	if _, has := meta[metaKeyParkedReportPreview]; has {
-		t.Errorf("parked bell meta = %v, want no report preview before the agent wrote one", meta)
-	}
-	running, err := st.ListRunningBackgroundToolCalls("t1")
-	if err != nil {
-		t.Fatalf("running: %v", err)
-	}
-	ids := map[string]bool{}
-	for _, it := range running {
-		ids[it.ID] = true
-	}
-	if !ids["agent"] || !ids["shell"] {
-		t.Errorf("both the parked agent and its shell stay live, got %v", ids)
+	assertNoAgentBells(t, st, "t1", "task-agent")
+	live := liveLaunches(t, st, "t1")
+	if !live["agent"] || !live["shell"] {
+		t.Errorf("both the parked agent and its shell stay live, got %v", live)
 	}
 }
 
 // The full cycle: park, shell reports, wake drops the stash and opens the
-// woken round under the root, the next stop with no live shell settles.
-func TestParkedAgent_WakeOpensRoundAndFinalStopSettles(t *testing.T) {
+// woken run under the root, the next stop with no live shell ends it.
+func TestParkedAgent_WakeOpensRunAndFinalStopSettles(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -210,10 +252,7 @@ func TestParkedAgent_WakeOpensRoundAndFinalStopSettles(t *testing.T) {
 	if parkStashed(t, st, "t1", "task-agent") {
 		t.Error("the wake must drop the parked terminal: that stop was a pause")
 	}
-	launch, _, err := st.GetThreadItem("t1", "agent")
-	if err != nil {
-		t.Fatalf("launch: %v", err)
-	}
+	launch := mustGetItem(t, st, "t1", "agent")
 	prompt, found, err := st.GetThreadItem("t1", provider.SubagentWakePromptItemID("shell"))
 	if err != nil || !found {
 		t.Fatalf("wake prompt row missing: found=%v err=%v", found, err)
@@ -227,8 +266,11 @@ func TestParkedAgent_WakeOpensRoundAndFinalStopSettles(t *testing.T) {
 	}
 	for _, absent := range []string{provider.MetaSubagentResumePromptKey, provider.MetaSubagentPromptProvisionalKey, provider.MetaTranscriptRootIDKey} {
 		if _, has := promptMeta[absent]; has {
-			t.Errorf("wake prompt must not carry %s: it is not a §E6 round and nothing binds it", absent)
+			t.Errorf("wake prompt must not carry %s: it is not a §E6 run and nothing binds it", absent)
 		}
+	}
+	if stop := parkedStops(t, st, "t1", "agent")[0]; prompt.CreatedAt <= stop.CreatedAt {
+		t.Errorf("wake at %d does not follow the stop it wakes from at %d", prompt.CreatedAt, stop.CreatedAt)
 	}
 	// A re-delivered wake is a no-op.
 	parkWake(t, router, "t1", "agent", "task-agent", "shell", "task-shell", nil)
@@ -239,14 +281,15 @@ func TestParkedAgent_WakeOpensRoundAndFinalStopSettles(t *testing.T) {
 	parkStop(t, router, "t1", "agent", "task-agent", "WOKE", "u2")
 	dones := parkCompletions(t, st, "t1")
 	if len(dones) != 2 || dones["agent"].Status != statusCompleted || !dones["agent"].IsBackground {
-		t.Fatalf("the stop with no live shell settles the agent, got %v", dones)
+		t.Fatalf("the stop with no live shell ends the agent, got %v", dones)
 	}
 	if parkStashed(t, st, "t1", "task-agent") {
 		t.Error("the final stop drains the stash")
 	}
-	if bells := findItemsByKind(t, st, "t1", itemKindNotification); len(bells) != 2 {
-		t.Errorf("one bell per stop, got %d", len(bells))
+	if stops := parkedStops(t, st, "t1", "agent"); len(stops) != 1 {
+		t.Errorf("the final stop writes no parked sibling: got %d", len(stops))
 	}
+	assertNoAgentBells(t, st, "t1", "task-agent")
 }
 
 // A nested async AGENT is a top-level task of its own and never wakes its
@@ -262,15 +305,19 @@ func TestParkedAgent_NestedAsyncAgentChildDoesNotPark(t *testing.T) {
 
 	dones := parkCompletions(t, st, "t1")
 	if dones["parent"].ID == "" {
-		t.Fatalf("the parent settles at its stop despite the running child agent, got %v", dones)
+		t.Fatalf("the parent ends at its stop despite the running child agent, got %v", dones)
+	}
+	if stops := parkedStops(t, st, "t1", "parent"); len(stops) != 0 {
+		t.Errorf("the parent parked on its child agent: %v", stops)
 	}
 	if parkStashed(t, st, "t1", "task-parent") {
-		t.Error("a settled stop drains its stash")
+		t.Error("an ending stop drains its stash")
 	}
 }
 
-// A user stop on a parked agent is final: task_updated{killed} settles it
-// as stopped (capture E: the CLI sends no agent notification after it).
+// A user stop on a parked agent is final: task_updated{killed} ends it as
+// stopped (capture E: the CLI sends no agent notification after it). The
+// parked sibling stays as the record of the run before it.
 func TestParkedAgent_KillSettlesAsStopped(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -287,13 +334,16 @@ func TestParkedAgent_KillSettlesAsStopped(t *testing.T) {
 	if dones["agent"].Status != statusKilled {
 		t.Fatalf("kill while parked = %v, want a stopped sibling", dones)
 	}
+	if stops := parkedStops(t, st, "t1", "agent"); len(stops) != 1 {
+		t.Errorf("the kill kept %d parked siblings, want the one", len(stops))
+	}
 	if parkStashed(t, st, "t1", "task-agent") {
 		t.Error("the kill consumes the parked stash")
 	}
 }
 
-// A TaskOutput observation of a parked agent reads a pause: no sibling,
-// stash kept.
+// A TaskOutput observation of a parked agent reads a pause: no ending
+// sibling, stash kept.
 func TestParkedAgent_TaskOutputObservationDoesNotSettle(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -315,10 +365,11 @@ func TestParkedAgent_TaskOutputObservationDoesNotSettle(t *testing.T) {
 }
 
 // A §E6 SendMessage rebind onto a parked agent (capture C) ends the parked
-// row's round: it settles from its stash before the carrier takes over.
-// The carrier then parks and wakes like the root did, with the wake row
-// still filed under the ROOT.
-func TestParkedAgent_RebindSettlesTheParkedRowAndCarrierParksInTurn(t *testing.T) {
+// row's run: its parked sibling records it, so the rebind takes the row
+// out of the live set and writes nothing. The carrier then parks and
+// wakes like the root did, with the wake row still filed under the ROOT,
+// and the root never gets a second card.
+func TestParkedAgent_RebindRetiresTheParkedRowAndCarrierParksInTurn(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -336,12 +387,14 @@ func TestParkedAgent_RebindSettlesTheParkedRowAndCarrierParksInTurn(t *testing.T
 		Kind: provider.EventToolStart, ThreadID: "t1", ItemID: "carrier",
 		Meta: parkMeta(t, map[string]any{"task_id": "task-agent", "task_type": "local_agent", "resumes_tool_use_id": "root", "description": "Spike root", "subagent_type": "general-purpose", "transcript_root_id": "root"}),
 	})
-	dones := parkCompletions(t, st, "t1")
-	if dones["root"].Status != statusCompleted {
-		t.Fatalf("the rebind settles the parked root from its stash, got %v", dones)
+	if dones := parkCompletions(t, st, "t1"); dones["root"].ID != "" {
+		t.Fatalf("the rebind wrote the parked root an ending sibling: %v", dones["root"])
+	}
+	if live := liveLaunches(t, st, "t1"); live["root"] {
+		t.Errorf("the rebind left the parked root live: %v", live)
 	}
 	if parkStashed(t, st, "t1", "task-agent") {
-		t.Error("the rebind consumes the parked stash")
+		t.Error("the rebind drops the parked root's stash")
 	}
 	parkHandle(t, router, provider.ProviderEvent{
 		Kind: provider.EventUserText, ThreadID: "t1", ItemID: provider.SubagentOpeningPromptItemID("carrier"), Role: "user",
@@ -353,10 +406,13 @@ func TestParkedAgent_RebindSettlesTheParkedRowAndCarrierParksInTurn(t *testing.T
 		Content: `{"success":true,"message":"Resuming agent","resumedAgentId":"task-agent"}`, Meta: parkMeta(t, map[string]any{"is_background": true}),
 	})
 
-	// Round 2 stops with the shell still live: the CARRIER parks.
+	// The carrier's run stops with the shell still live: the CARRIER parks.
 	parkStop(t, router, "t1", "carrier", "task-agent", "GOT-MESSAGE", "u2")
 	if dones := parkCompletions(t, st, "t1"); dones["carrier"].ID != "" {
 		t.Fatalf("the carrier must park like the root did, got %v", dones)
+	}
+	if stops := parkedStops(t, st, "t1", "carrier"); len(stops) != 1 {
+		t.Fatalf("the carrier's stop wrote %d parked siblings of its own, want 1", len(stops))
 	}
 	if !parkStashed(t, st, "t1", "task-agent") {
 		t.Error("the carrier's stop stays stashed")
@@ -378,9 +434,20 @@ func TestParkedAgent_RebindSettlesTheParkedRowAndCarrierParksInTurn(t *testing.T
 	}
 
 	parkStop(t, router, "t1", "carrier", "task-agent", "WOKE", "u3")
-	dones = parkCompletions(t, st, "t1")
-	if len(dones) != 3 || dones["carrier"].Status != statusCompleted {
-		t.Fatalf("root, shell and carrier each settle once, got %v", dones)
+	dones := parkCompletions(t, st, "t1")
+	if len(dones) != 2 || dones["carrier"].Status != statusCompleted || dones["shell"].ID == "" {
+		t.Fatalf("the shell and the carrier each end once and the root never, got %v", dones)
+	}
+	if stops := parkedStops(t, st, "t1", "root"); len(stops) != 1 {
+		t.Errorf("the root keeps its one parked sibling, got %d", len(stops))
+	}
+
+	// The session's end settles nothing the rebind retired.
+	if _, err := router.SettleBackgroundLaunchesForSessionEnd("t1"); err != nil {
+		t.Fatalf("session-end settle: %v", err)
+	}
+	if dones := parkCompletions(t, st, "t1"); dones["root"].ID != "" {
+		t.Errorf("the session's end wrote the retired root a sibling: %v", dones["root"])
 	}
 }
 
@@ -400,123 +467,5 @@ func TestParkedAgent_SessionEndSettlesFromStash(t *testing.T) {
 	dones := parkCompletions(t, st, "t1")
 	if dones["agent"].Status != statusCompleted || dones["shell"].ID == "" {
 		t.Fatalf("session end settles the parked agent (completed, from its stash) and kills the shell, got %v", dones)
-	}
-}
-
-// parkNotify is the stop's notification alone, with an output_file so a
-// bell that carries the report gets its payload.
-func parkNotify(t *testing.T, router *Router, threadID, boundID, taskID, summary, uuid string) {
-	t.Helper()
-	parkHandle(t, router, provider.ProviderEvent{
-		Kind: provider.EventBackgroundTaskNotification, ThreadID: threadID, ItemID: boundID, Content: summary,
-		Meta: parkMeta(t, map[string]any{"task_id": taskID, "tool_use_id": boundID, "status": "completed", "uuid": uuid, "output_file": "/tmp/agent-" + taskID + ".output"}),
-	})
-}
-
-// Both stops of a two-round parked agent. The parked stop's bell is one
-// line naming the commands the agent waits on, with no report payload,
-// and the tray is nudged after it (the stash write before it nudged
-// already, so the nudge is counted from the notification alone). The
-// final stop's bell is unchanged: the report as its summary and payload
-// preview. Both bells carry the task_id, which is what the frontend's
-// redundant-notification filter hides them by once the sibling lands.
-func TestParkedAgent_ParkedStopRingsOneLineAndTheFinalStopKeepsTheReport(t *testing.T) {
-	router, st, emissions := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	seedOpenTurn(t, router, st, "t1", 0)
-	parkLaunchAgent(t, router, "t1", "agent", "task-agent", "")
-	parkLaunchShell(t, router, "t1", "shell", "task-shell", "agent")
-	parkLaunchShell(t, router, "t1", "shell-2", "task-shell-2", "agent")
-
-	// The round's report precedes the stop on the wire: the root's newest
-	// direct assistant_text is what the parked bell links.
-	seedAgentReport(t, st, "t1", "agent", "report-old", "First look: nothing yet.")
-	seedAgentReport(t, st, "t1", "agent", "report-1", "Waiting for the gate to finish.")
-	parkHandle(t, router, provider.ProviderEvent{
-		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "agent",
-		Meta: parkMeta(t, map[string]any{"task_id": "task-agent", "tool_use_id": "agent", "status": "completed", "source": "task_updated"}),
-	})
-	emissions.reset()
-	parkNotify(t, router, "t1", "agent", "task-agent", "Waiting for the gate to finish.", "u1")
-
-	parked := mustGetItem(t, st, "t1", nextTaskNotificationID("task-agent", "u1"))
-	if want := `Agent "Spike agent" reported and is waiting on 2 background commands`; parked.Summary != want {
-		t.Errorf("parked bell = %q, want %q", parked.Summary, want)
-	}
-	if parked.PayloadID != "" {
-		t.Errorf("parked bell payload = %q, want none: the report is the round's own row", parked.PayloadID)
-	}
-	meta := decodeItemMetaMap(t, parked.Meta)
-	if meta["task_id"] != "task-agent" || meta["output_file_state"] != "ready" {
-		t.Errorf("parked bell meta = %v, want the task_id and a ready state", meta)
-	}
-	if meta["kind"] != notificationKindParkedAgent || meta[metaKeyParkedCommands] != float64(2) {
-		t.Errorf("parked bell meta = %v, want kind %q on 2 commands", meta, notificationKindParkedAgent)
-	}
-	if meta[metaKeyParkedReportItemID] != "report-1" || meta[metaKeyParkedReportPreview] != "Waiting for the gate to finish." {
-		t.Errorf("parked bell meta = %v, want the newest report row linked with its preview", meta)
-	}
-	if got := countEvents(emissions.snapshot(), eventchan.ProviderBackgroundTasksChanged.String()); got != 1 {
-		t.Errorf("parked notification nudged the tray %d times, want 1", got)
-	}
-	if dones := parkCompletions(t, st, "t1"); len(dones) != 0 {
-		t.Fatalf("a parked stop writes no sibling, got %v", dones)
-	}
-
-	parkShellDone(t, router, "t1", "shell", "task-shell", "agent")
-	parkShellDone(t, router, "t1", "shell-2", "task-shell-2", "agent")
-	parkWake(t, router, "t1", "agent", "task-agent", "shell", "task-shell", nil)
-	parkHandle(t, router, provider.ProviderEvent{
-		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "agent",
-		Meta: parkMeta(t, map[string]any{"task_id": "task-agent", "tool_use_id": "agent", "status": "completed", "source": "task_updated"}),
-	})
-	parkNotify(t, router, "t1", "agent", "task-agent", "Round 2 report: the gate passed.", "u2")
-
-	final := mustGetItem(t, st, "t1", nextTaskNotificationID("task-agent", "u2"))
-	if final.Summary != "Round 2 report: the gate passed." {
-		t.Errorf("final bell = %q, want the report", final.Summary)
-	}
-	if final.PayloadID == "" {
-		t.Fatal("final bell carries no payload, want the report preview")
-	}
-	payload, err := st.GetPayloadMeta("t1", final.PayloadID)
-	if err != nil {
-		t.Fatalf("final bell payload: %v", err)
-	}
-	if !strings.Contains(payload.Meta, `"preview":"Round 2 report: the gate passed."`) {
-		t.Errorf("final bell payload meta = %s, want the report preview", payload.Meta)
-	}
-	if meta := decodeItemMetaMap(t, final.Meta); meta["task_id"] != "task-agent" {
-		t.Errorf("final bell meta = %v, want the task_id", meta)
-	}
-	dones := parkCompletions(t, st, "t1")
-	if dones["agent"].Status != statusCompleted || decodeItemMetaMap(t, dones["agent"].Meta)["task_id"] != "task-agent" {
-		t.Fatalf("the final stop settles the agent with its task_id, got %v", dones)
-	}
-	// The parked bell is untouched by the final stop.
-	if again := mustGetItem(t, st, "t1", parked.ID); again.Summary != parked.Summary || again.PayloadID != "" {
-		t.Errorf("parked bell after the final stop = %q payload %q", again.Summary, again.PayloadID)
-	}
-}
-
-// A resume carrier's own input names the recipient, so its parked bell
-// names the agent from the carrier's stamped description.
-func TestParkedAgent_CarrierParkedBellNamesTheAgent(t *testing.T) {
-	router, st, _ := newTestRouter(t)
-	createTestThread(t, st, "t1")
-	seedOpenTurn(t, router, st, "t1", 0)
-	parkLaunchAgent(t, router, "t1", "root", "task-agent", "")
-	parkStop(t, router, "t1", "root", "task-agent", "ROUND 1", "u1")
-
-	resumeAgent(t, router, "t1", "carrier", map[string]any{
-		"task_id": "task-agent", "task_type": "local_agent", "resumes_tool_use_id": "root",
-		"description": "Spike root", "subagent_type": "general-purpose", provider.MetaTranscriptRootIDKey: "root",
-	})
-	parkLaunchShell(t, router, "t1", "shell", "task-shell", "root")
-	parkStop(t, router, "t1", "carrier", "task-agent", "ROUND 2", "u2")
-
-	bell := mustGetItem(t, st, "t1", nextTaskNotificationID("task-agent", "u2"))
-	if want := `Agent "Spike root" reported and is waiting on 1 background command`; bell.Summary != want {
-		t.Errorf("carrier parked bell = %q, want %q", bell.Summary, want)
 	}
 }

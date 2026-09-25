@@ -6,7 +6,7 @@ package store
 // (invariant 24): its terminal state is a SIBLING row that names it
 // through `completion_of`. "Live" is therefore not expressible as a
 // status, and every reader spells it as
-// `running AND live_background_active != 0 AND NOT EXISTS <completion
+// `running AND live_background_active != 0 AND NOT EXISTS <ending
 // sibling>`. That third term is the one a partial index cannot carry —
 // it is correlated — so before these triggers the partial "live"
 // indexes (`idx_items_live_background`, `idx_items_running_bg_tool_calls`)
@@ -38,7 +38,103 @@ package store
 // fact about a row whose user-visible content did not change, and the
 // tray/timeline clock retention off the completion sibling's
 // `created_at`.
+//
+// A PARKED stop (status 'parked', claude-wire.md §E6b) is a sibling that
+// does not settle: the agent paused and wakes again. None of the four
+// triggers counts one, so a parked agent's launch stays live until its
+// ending sibling lands, and deleting a parked sibling revives nothing.
 const backgroundSettleTriggersSQL = `CREATE TRIGGER trg_items_settle_bg_launch_on_completion
+AFTER INSERT ON items
+WHEN NEW.completion_of <> '' AND NEW.status <> 'parked'
+BEGIN
+  UPDATE items
+     SET meta = json_set(
+           CASE WHEN json_valid(meta) THEN meta ELSE '{}' END,
+           '$.live_background_active',
+           json('false')
+         )
+   WHERE thread_id = NEW.thread_id
+     AND id = NEW.completion_of
+     AND kind = 'tool_call'
+     AND status = 'running'
+     AND is_background = 1
+     AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0;
+END;
+
+CREATE TRIGGER trg_items_settle_bg_launch_on_launch_insert
+AFTER INSERT ON items
+WHEN NEW.kind = 'tool_call'
+ AND NEW.status = 'running'
+ AND NEW.is_background = 1
+ AND COALESCE(json_extract(NEW.meta, '$.live_background_active'), 1) != 0
+ AND EXISTS (
+   SELECT 1 FROM items c
+    WHERE c.thread_id = NEW.thread_id
+      AND c.completion_of = NEW.id
+      AND c.completion_of <> ''
+      AND c.status <> 'parked'
+ )
+BEGIN
+  UPDATE items
+     SET meta = json_set(
+           CASE WHEN json_valid(meta) THEN meta ELSE '{}' END,
+           '$.live_background_active',
+           json('false')
+         )
+   WHERE thread_id = NEW.thread_id
+     AND id = NEW.id;
+END;
+
+CREATE TRIGGER trg_items_settle_bg_launch_on_update
+AFTER UPDATE ON items
+WHEN NEW.kind = 'tool_call'
+ AND NEW.status = 'running'
+ AND NEW.is_background = 1
+ AND COALESCE(json_extract(NEW.meta, '$.live_background_active'), 1) != 0
+ AND EXISTS (
+   SELECT 1 FROM items c
+    WHERE c.thread_id = NEW.thread_id
+      AND c.completion_of = NEW.id
+      AND c.completion_of <> ''
+      AND c.status <> 'parked'
+ )
+BEGIN
+  UPDATE items
+     SET meta = json_set(
+           CASE WHEN json_valid(meta) THEN meta ELSE '{}' END,
+           '$.live_background_active',
+           json('false')
+         )
+   WHERE thread_id = NEW.thread_id
+     AND id = NEW.id;
+END;
+
+CREATE TRIGGER trg_items_revive_bg_launch_on_completion_delete
+AFTER DELETE ON items
+WHEN OLD.completion_of <> '' AND OLD.status <> 'parked'
+BEGIN
+  UPDATE items
+     SET meta = json_remove(meta, '$.live_background_active')
+   WHERE thread_id = OLD.thread_id
+     AND id = OLD.completion_of
+     AND kind = 'tool_call'
+     AND status = 'running'
+     AND is_background = 1
+     AND json_valid(meta)
+     AND json_extract(meta, '$.live_background_active') = 0
+     AND NOT EXISTS (
+       SELECT 1 FROM items c
+        WHERE c.thread_id = OLD.thread_id
+          AND c.completion_of = OLD.completion_of
+          AND c.completion_of <> ''
+          AND c.status <> 'parked'
+     );
+END;`
+
+// backgroundSettleTriggersV74SQL is the text migration v74 installed,
+// before a parked stop existed. v74's hash freezes it; migration v126
+// replaces it with backgroundSettleTriggersSQL.
+const backgroundSettleTriggersV74SQL = `CREATE TRIGGER trg_items_settle_bg_launch_on_completion
 AFTER INSERT ON items
 WHEN NEW.completion_of <> ''
 BEGIN
@@ -138,7 +234,8 @@ DROP TRIGGER IF EXISTS trg_items_settle_bg_launch_on_update;
 DROP TRIGGER IF EXISTS trg_items_revive_bg_launch_on_completion_delete;`
 
 // backgroundSettleTriggerMigrationVersion is the chain version that
-// installs the triggers and backfills history. Named once so the
+// installs the triggers and backfills history; parkedStopMigrationVersion
+// reinstalls them parked-aware. Named once so the
 // migration entry, the rebuild tripwire, and the backfill test cannot
 // disagree about it — the number is the one thing a merge can change.
 const backgroundSettleTriggerMigrationVersion = 74

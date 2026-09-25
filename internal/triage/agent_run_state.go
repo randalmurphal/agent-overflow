@@ -25,16 +25,6 @@ const (
 	subagentRunEnded   = "ended"
 )
 
-// A parked stop's bell (parkedBellMeta) is stored history that names the
-// round's report. The frontend mirrors these keys in
-// frontend/src/lib/utils/parkedAgentBell.ts (mirror_pins_test.go).
-const (
-	notificationKindParkedAgent = "parked_agent"
-	metaKeyParkedCommands       = "parked_commands"
-	metaKeyParkedReportItemID   = "parked_report_item_id"
-	metaKeyParkedReportPreview  = "parked_report_preview"
-)
-
 // The served run states of an agent launch that has not settled.
 const (
 	AgentRunRunning = subagentRunRunning
@@ -60,25 +50,20 @@ func AgentRunState(item store.Item) string {
 
 // DecorateAgentRunStates adds the run state to every background agent
 // launch (IsSubagentTranscriptLaunch) in a Store.ListLiveBackgroundTasks
-// read. It is the park model's own state, one keyed lookup per launch:
+// read, from the launch's stops (agent_stops.go):
 //
-//   - a completion sibling settles the launch: "ended" when a session
-//     death wrote it (status_source session_died), "done" otherwise. The
-//     list returns a settled launch together with its sibling, so the
-//     sibling is read from the list;
-//   - else a stashed terminal for its task parks it: a parked stop keeps
-//     the stash until the wake drops it (persistWakePromptRow). A parked
-//     launch also serves the background commands at its transcript root
-//     it waits on (launchParkedOn's count) and its newest report there;
+//   - an ending sibling settles the launch: "ended" when a session death
+//     wrote it (status_source session_died), "done" otherwise. The list
+//     returns a settled launch together with that sibling;
+//   - else the launch is parked while its newest stop is a parked sibling
+//     no wake has followed (Store.CurrentParkedStop). A parked launch also
+//     serves what that sibling records: the background commands it waits
+//     on and its run's report, by row id with the head of its text;
 //   - else it is running.
-//
-// Between a final stop's task_updated and its notification the stash is
-// present and no sibling exists yet, so a read in that window says parked
-// on zero commands; the sibling write that follows nudges the tray.
 func (r *Router) DecorateAgentRunStates(threadID string, items []store.Item) ([]store.Item, error) {
 	var siblings map[string]store.Item
 	for _, item := range items {
-		if item.CompletionOf != "" {
+		if item.CompletionOf != "" && item.Status != store.ItemStatusParked {
 			if siblings == nil {
 				siblings = make(map[string]store.Item)
 			}
@@ -109,37 +94,48 @@ func (r *Router) agentRunState(threadID string, launch store.Item, siblings map[
 		}
 		return map[string]any{metaKeySubagentRunState: subagentRunDone}, nil
 	}
-	running := map[string]any{metaKeySubagentRunState: subagentRunRunning}
-	taskID := TaskIDFromItemMeta(launch.Meta)
-	if taskID == "" {
-		return running, nil
-	}
-	if _, stashed, err := r.store.GetPendingBackgroundTerminal(threadID, taskID); err != nil {
-		return nil, fmt.Errorf("triage: run state stash %s/%s: %w", threadID, taskID, err)
-	} else if !stashed {
-		return running, nil
-	}
 	root, err := r.transcriptRootOrSelf(threadID, launch)
 	if err != nil {
 		return nil, err
 	}
-	waiting, err := r.commandsParkingAt(threadID, root.ID)
+	stop, parked, err := r.store.CurrentParkedStop(threadID, launch.ID, root.ID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("triage: run state stop %s/%s: %w", threadID, launch.ID, err)
+	}
+	if !parked {
+		return map[string]any{metaKeySubagentRunState: subagentRunRunning}, nil
+	}
+	var recorded struct {
+		Commands int    `json:"parked_commands"`
+		ReportID string `json:"parked_report_item_id"`
+	}
+	if err := json.Unmarshal([]byte(stop.Meta), &recorded); err != nil {
+		return nil, fmt.Errorf("triage: decode parked stop %s/%s: %w", threadID, stop.ID, err)
 	}
 	fields := map[string]any{
 		metaKeySubagentRunState:       subagentRunParked,
-		metaKeySubagentParkedCommands: waiting,
+		metaKeySubagentParkedCommands: recorded.Commands,
 	}
-	report, found, err := r.store.LatestSubagentReport(threadID, root.ID)
-	if err != nil {
-		return nil, err
-	}
-	if found {
-		fields[metaKeySubagentParkedReportID] = report.ID
-		fields[metaKeySubagentParkedReportPreview] = report.Preview
+	if recorded.ReportID != "" {
+		fields[metaKeySubagentParkedReportID] = recorded.ReportID
+		fields[metaKeySubagentParkedReportPreview] = stopReportPreview(stop.PayloadMeta)
 	}
 	return fields, nil
+}
+
+// stopReportPreview reads the `preview` an agent stop's payload carries
+// (agentReportPayload), or "".
+func stopReportPreview(meta string) string {
+	if !strings.Contains(meta, `"preview"`) {
+		return ""
+	}
+	var decoded struct {
+		Preview string `json:"preview"`
+	}
+	if json.Unmarshal([]byte(meta), &decoded) != nil {
+		return ""
+	}
+	return decoded.Preview
 }
 
 // completionStatusSource reads the terminal source a completion sibling

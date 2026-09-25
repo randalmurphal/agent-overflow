@@ -59,6 +59,30 @@ func (r *Router) deferOrPersist(threadID string, queued queuedPersistence) error
 	return r.persistAgentEndLocked(queued.item, queued.payload, *queued.end)
 }
 
+// rowWrittenOrQueued reports whether row id of threadID is persisted or
+// queued behind an open stream (deferOrPersist). The drain lock keeps a
+// drain from holding the row between the two reads.
+func (r *Router) rowWrittenOrQueued(threadID, id string) (bool, error) {
+	lock := r.drainLock(threadID)
+	lock.Lock()
+	defer lock.Unlock()
+	r.mu.Lock()
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		for _, queued := range st.interruptQueue {
+			if queued.item.ID == id {
+				r.mu.Unlock()
+				return true, nil
+			}
+		}
+	}
+	r.mu.Unlock()
+	_, found, err := r.store.GetThreadItem(threadID, id)
+	if err != nil {
+		return false, fmt.Errorf("triage: row lookup %s/%s: %w", threadID, id, err)
+	}
+	return found, nil
+}
+
 // hasQueuedInterruptItems reports whether any deferred persists are
 // queued for threadID. The promoted-echo boundary path uses it to
 // decide whether a drain (and a re-bump of the promoted row) is needed
@@ -179,6 +203,11 @@ func (r *Router) drainQueueLocked(threadID string, decide func(*threadState, que
 				err = r.persistAgentEndLocked(item, next.queued.payload, *next.queued.end)
 			} else {
 				err = r.persistItem(item, next.queued.payload)
+				if err == nil && item.Status == store.ItemStatusParked {
+					// The tray reads a pause from its sibling
+					// (DecorateAgentRunStates), so it reads again.
+					r.emitBackgroundTasksChangedNudge(threadID)
+				}
 			}
 			if err != nil {
 				log.Printf("triage: drain persist failed for item %s on thread %s: %v", item.ID, threadID, err)

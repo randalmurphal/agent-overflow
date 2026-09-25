@@ -11,8 +11,8 @@
 //              `task_updated{killed}` and `task_notification{stopped}`
 //              before the kill frames of the shells it owns. Every row
 //              under each agent settles as stopped, the agent ends killed
-//              and never parked, its card reads "Agent stopped", and the
-//              tray empties.
+//              with no parked sibling and no bell, its card reads "Agent
+//              stopped", and the tray empties.
 import { test, expect } from './fixtures.js';
 import {
   RESULT_LINE,
@@ -196,7 +196,7 @@ test('Stop kills agents launched in an earlier turn: every row under each settle
       return {
         unsettled: unsettled(items),
         siblings: items.filter((i) => i.completionOf).map((i) => `${i.completionOf}:${i.status}`).sort(),
-        parkedBells: items.filter((i) => itemMeta(i).kind === 'parked_agent').map((i) => i.id),
+        agentBells: items.filter((i) => i.kind === 'notification' && agents.some((a) => itemMeta(i).task_id === a.taskId)).map((i) => i.id),
         agentRows: agents
           .flatMap((a) =>
             items
@@ -209,7 +209,7 @@ test('Stop kills agents launched in an earlier turn: every row under each settle
     .toEqual({
       unsettled: [],
       siblings: agents.flatMap((a) => [`${a.tu}:killed`, `${a.shellTu}:killed`]).sort(),
-      parkedBells: [],
+      agentBells: [],
       agentRows: agents
         .flatMap((a) => [`${a.tu}:assistant_text:errored:true`, `${a.tu}:tool_call:errored:true`])
         .sort(),

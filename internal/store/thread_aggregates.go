@@ -165,6 +165,11 @@ func (s *Store) GetThreadProposedPlanItem(threadID, itemID string) (Item, bool, 
 // reachable in the app; where it did occur, showing the pair together
 // is what the "age out together" rule above asks for anyway.
 //
+// A parked stop (agent_stops.go) is not one of the completions: it does
+// not settle its launch, which stays in the set as a live row, and the
+// tray reads the pause from the run state triage serves on the launch
+// (triage.DecorateAgentRunStates).
+//
 // Thread-scoped. Live launches surface regardless of turn_index.
 // Ordering is (turn_index, item_index) so launches precede completions.
 // liveBackgroundTasksSQL is the tray query. Built once, not per call:
@@ -198,6 +203,7 @@ var liveBackgroundTasksSQL = `WITH RECURSIVE bg(id) AS (
 		     WHERE c.thread_id = ?
 		       AND c.completion_of <> ''
 		       AND c.created_at >= ?
+		       AND c.status <> 'parked'
 		       AND EXISTS (
 		         SELECT 1 FROM items l
 		          WHERE l.thread_id = c.thread_id
@@ -221,6 +227,7 @@ var liveBackgroundTasksSQL = `WITH RECURSIVE bg(id) AS (
 		     WHERE c.thread_id = ?
 		       AND c.completion_of <> ''
 		       AND c.created_at >= ?
+		       AND c.status <> 'parked'
 		),
 		-- Each candidate's chain upward through visible rows, stopping at
 		-- the first seed row: the rows the old descendant walk would have
@@ -253,6 +260,7 @@ var liveBackgroundTasksSQL = `WITH RECURSIVE bg(id) AS (
 		     WHERE c.thread_id = ?
 		       AND c.completion_of <> ''
 		       AND c.created_at >= ?
+		       AND c.status <> 'parked'
 		)
 		SELECT ` + itemColumns + `
 		   FROM cand
@@ -274,12 +282,14 @@ var liveBackgroundTasksSQL = `WITH RECURSIVE bg(id) AS (
 		               AND c.completion_of = items.id
 		               AND c.completion_of <> ''
 		               AND c.created_at >= ?
+		               AND c.status <> 'parked'
 		          )
 		        )
 		      )
 		      OR (
 		        items.completion_of <> ''
 		        AND items.created_at >= ?
+		        AND items.status <> 'parked'
 		        AND items.completion_of IN (SELECT id FROM anchors)
 		      )
 		    )

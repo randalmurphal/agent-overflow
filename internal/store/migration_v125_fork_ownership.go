@@ -166,7 +166,7 @@ WHERE threads.deleting = 0 AND threads.mode <> 'holder' AND COALESCE((
     FROM thread_transfers WHERE thread_id = threads.id AND phase <> 'canceled'
     ORDER BY rowid DESC LIMIT 1
 ), 1) = 1;
-` + forkTriggersSQL
+` + forkGuardTriggersSQL + reviveBgLaunchOnCompletionMoveV125SQL + forkLineageReleaseTriggerSQL
 
 // dropForkTriggersV120SQL is the trigger list v120 installed.
 const dropForkTriggersV120SQL = `DROP TRIGGER trg_threads_fork_source_delete;

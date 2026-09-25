@@ -237,7 +237,8 @@ export interface Item {
     | "completed"
     | "errored"
     | "declined"
-    | "killed";
+    | "killed"
+    | "parked";
   summary: string;
   payloadId?: string;
   payloadKind?: string;

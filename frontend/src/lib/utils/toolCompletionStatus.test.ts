@@ -25,6 +25,13 @@ describe('deriveCompletionStatus', () => {
     expect(deriveCompletionStatus(makeItem({ status: 'streaming' }))).toBeNull();
   });
 
+  it('returns null for a parked stop, even with an error flag: a pause has no verdict', () => {
+    expect(deriveCompletionStatus(makeItem({ kind: 'tool_completion', status: 'parked' }))).toBeNull();
+    expect(deriveCompletionStatus(makeItem({
+      kind: 'tool_completion', status: 'parked', payloadMeta: JSON.stringify({ is_error: true }),
+    }))).toBeNull();
+  });
+
   it('returns success for a clean inline tool_call completion', () => {
     expect(deriveCompletionStatus(makeItem({ status: 'completed' }))).toBe('success');
   });

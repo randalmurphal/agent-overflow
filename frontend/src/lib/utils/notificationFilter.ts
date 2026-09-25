@@ -1,45 +1,37 @@
-// A `task_notification` row is hidden once a lifecycle row with the same
-// task_id says the task ended (the rule is below). The bell's text ("Background
-// command … completed (exit code 0)") is the CLI's formulaic
-// restatement of facts the completion card already shows — description
-// and exit code — so rendering both prints one completion twice, and
-// the common agentic wait pattern (bg Bash + a blocking TaskOutput)
-// made that the NORMAL case: the TaskOutput drain writes the sibling
-// before the bell arrives, so an absorption-only rule (caption stamped
-// on the sibling's first write) left the bell visible on every waited
-// background command (user ruling 2026-08-22). Existence of the
-// sibling is therefore the whole hide predicate. Nothing is
-// lost durably: the notification row stays in SQLite (the backend
-// persists it for the load-bearing `output_file` enrichment side
-// effect in `internal/triage/background_task_notifications.go`) and
-// the caption still renders on the card when the write order let
-// triage stamp it — this filter only suppresses rendering.
+// Hides a plain background COMMAND's bell once its completion renders, and
+// never touches an agent's rows.
 //
-// A completion sibling hides the bell whatever its status: the card at
-// the sibling shows how the work ended, a stopped or failed agent
-// included. A tool call hides it only once completed; a running, errored
-// or killed tool call keeps its bell as the explicit failure ping.
+// A command's `task_notification` bell ("Background command … completed
+// (exit code 0)") is the CLI's formulaic restatement of facts the
+// completion card already shows, so rendering both prints one completion
+// twice. The common agentic wait pattern (bg Bash + a blocking TaskOutput)
+// writes the sibling before the bell arrives, so existence of a rendered
+// lifecycle row with the bell's task_id that says the command ended is the
+// whole hide predicate (user ruling 2026-08-22): a completion sibling
+// whatever its status, or a tool call once completed. A running, errored
+// or killed tool call keeps its bell as the explicit failure ping. Nothing
+// is lost durably: the row stays in SQLite, and this filter only
+// suppresses rendering.
 //
-// LOAD-BEARING ASSUMPTION: the completed sibling RENDERS, in place, at
+// An agent's rows (the Agent and Task tools and a §E6 resume carrier's
+// SendMessage) are never hidden and never hide anything: every stop of an
+// agent is its own completion sibling and card (docs/specs/
+// agent-visibility.md, §Agent runs and stops), triage writes an agent no
+// bell, and an agent bell older builds left with no sibling to cover it is
+// the only record of that report.
+//
+// LOAD-BEARING ASSUMPTION: the completion sibling RENDERS, in place, at
 // the completion point. This filter deletes the only other row that says
-// "the task finished", so anything downstream that folds the sibling
-// away — the subagent grouping folds it onto the launch card as the
-// card's status source — must keep the sibling's own row as well. It
-// did not, once (2026-08-22): the fold also dropped the sibling from the
-// node array, and a finished agent left no trace in the main transcript.
-// `backgroundCompletionVisibility.test.ts` runs this filter and the
-// grouping in production order and counts rows; keep it green.
+// "the task finished". `backgroundCompletionVisibility.test.ts` runs this
+// filter and the grouping in production order and counts rows; keep it
+// green.
 //
-// A WATCH task (Claude's Monitor — claude-wire.md §E7) is the one
-// exception, and it is not a special case so much as a different shape:
-// a Monitor fires one notification per output event of the stream it
-// watches, so those rows are the interim history rather than one
-// redundant bell, and its terminal lifecycle row means only "the stream
-// ended". Suppressing them on that signal erased the entire history at
-// the exact moment the run finished. Triage stamps `meta.watch_task`
-// onto each notification at write time (copied from the launch row,
-// which the keep-running flip marks) precisely so this decision does not
-// depend on the launch row still being in the rendered window.
+// A WATCH task's notifications (Claude's Monitor, claude-wire.md §E7) are
+// exempt: a Monitor fires one per output event of the stream it watches,
+// so those rows are its history, and its terminal lifecycle row means only
+// "the stream ended". Triage stamps `meta.watch_task` onto each at write
+// time so the decision does not depend on the launch row being in the
+// rendered window.
 //
 // Operates on the flat `pane.items` array before subagent grouping so a
 // hidden notification never enters the rendered tree, including when the
@@ -48,20 +40,30 @@
 import type { Item } from '../types/models';
 import { extractClaudeTaskID, isClaudeWatchTaskNotification } from './claudeTaskMeta';
 
+/** An agent's row, by the tool the row records. */
+function isAgentRow(item: Item): boolean {
+  const tool = (item.toolName ?? '').trim();
+  return tool === 'Agent' || tool === 'Task' || tool === 'SendMessage';
+}
+
+function isCommandBell(item: Item): boolean {
+  return item.kind === 'notification' && !isAgentRow(item);
+}
+
 export function filterRedundantNotifications(
   items: readonly Item[],
   rendersLifecycle: (item: Item) => boolean = () => true,
 ): readonly Item[] {
-  // Hot path: no notifications → nothing to filter, return the original
+  // Hot path: no command bells → nothing to filter, return the original
   // array reference so downstream `$derived` chains see no change.
-  if (!items.some((it) => it.kind === 'notification')) return items;
+  if (!items.some(isCommandBell)) return items;
 
   const completedTaskIDs = new Set<string>();
   for (const it of items) {
     const isCompletedLifecycle =
       it.kind === 'tool_completion' ||
       (it.kind === 'tool_call' && it.status === 'completed');
-    if (!isCompletedLifecycle || !rendersLifecycle(it)) continue;
+    if (!isCompletedLifecycle || isAgentRow(it) || !rendersLifecycle(it)) continue;
     const id = extractClaudeTaskID(it);
     if (id) completedTaskIDs.add(id);
   }
@@ -69,7 +71,7 @@ export function filterRedundantNotifications(
 
   const out: Item[] = [];
   for (const it of items) {
-    if (it.kind === 'notification' && !isClaudeWatchTaskNotification(it)) {
+    if (isCommandBell(it) && !isClaudeWatchTaskNotification(it)) {
       const id = extractClaudeTaskID(it);
       if (id && completedTaskIDs.has(id)) continue;
     }

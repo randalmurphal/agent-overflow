@@ -11,7 +11,6 @@
   import CommandResultRow from './CommandResultRow.svelte';
   import GeneratedImageMessage from './GeneratedImageMessage.svelte';
   import NotificationRow from './NotificationRow.svelte';
-  import ParkedAgentBell from './ParkedAgentBell.svelte';
   import SessionDiedNotification from './SessionDiedNotification.svelte';
   import TerminalInteractionRow from './TerminalInteractionRow.svelte';
   import ThinkingBlock from './ThinkingBlock.svelte';
@@ -116,8 +115,6 @@
   {:else if displayItem.kind === 'notification'}
     {#if notificationKind === 'session_died'}
       <SessionDiedNotification item={displayItem} />
-    {:else if notificationKind === 'parked_agent'}
-      <ParkedAgentBell item={displayItem} />
     {:else}
       <NotificationRow item={displayItem} />
     {/if}

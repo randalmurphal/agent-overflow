@@ -137,10 +137,11 @@ func forkRunningTurnRowsTx(tx *sql.Tx, forkID, sourceID string, plan forkCut, se
 }
 
 // launchesLosingCompletionTx returns the candidates, settled background
-// launches of threadID's timeline, that no completion row matching kept
-// completes (a predicate on unqualified item columns, with keptArgs). A
-// history that keeps such a launch without its completion would show it
-// settled by a completion it does not have. Fork creation hides the
+// launches of threadID's timeline, that no ending completion row matching
+// kept completes (a predicate on unqualified item columns, with keptArgs);
+// a parked stop completes nothing (agent_stops.go). A history that keeps
+// such a launch without its completion would show it settled by a
+// completion it does not have. Fork creation hides the
 // launch from the fork (forkUnsettledRowsTx); a split gives the holder a
 // settled copy for the forks that read the completion there, and the
 // thread that keeps the launch revives it
@@ -151,7 +152,7 @@ func launchesLosingCompletionTx(tx *sql.Tx, threadID string, candidates []string
 		query, args, err := timelineArms(tx, threadID, timelineSelection{
 			Columns:   func(string, string) string { return "1" },
 			KeyFirst:  true,
-			Where:     "items.completion_of <> '' AND items.completion_of = ? AND (" + kept + ")",
+			Where:     "items.completion_of <> '' AND items.completion_of = ? AND items.status <> '" + ItemStatusParked + "' AND (" + kept + ")",
 			WhereArgs: append([]any{id}, keptArgs...),
 		})
 		if err != nil {

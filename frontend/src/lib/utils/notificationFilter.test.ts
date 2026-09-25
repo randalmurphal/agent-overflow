@@ -96,22 +96,44 @@ describe('filterRedundantNotifications', () => {
     expect(ids(filterRedundantNotifications(items))).toEqual(['launch', 'completion']);
   });
 
-  // A two-round parked agent rings a one-line bell at its parked stop and
-  // the report bell at its final stop, both under the launch's task_id
-  // (claude-wire.md §E6b). The parked bell shows while the agent waits;
-  // the completion sibling the final stop writes hides both.
-  it('keeps a parked agent\u2019s bell until its completion sibling lands, then hides both bells', () => {
-    const launch = mkItem({ id: 'launch', kind: 'tool_call', toolName: 'Agent', status: 'running', meta: withTaskId('A1') });
-    const parked = mkItem({
-      id: 'parked', itemIndex: 1, kind: 'notification',
-      summary: 'Agent "Spike agent" reported and is waiting on 2 background commands', meta: withTaskId('A1'),
-    });
-    const wake = mkItem({ id: 'wake', itemIndex: 2, kind: 'user_text', role: 'user', parentId: 'launch' });
-    const final = mkItem({ id: 'final', itemIndex: 3, kind: 'notification', summary: 'Round 2 report', meta: withTaskId('A1') });
-    const waiting = [launch, parked, wake];
-    expect(filterRedundantNotifications(waiting)).toBe(waiting);
-    const completion = mkItem({ id: 'completion', itemIndex: 4, kind: 'tool_completion', meta: withCaption('A1', 'Round 2 report') });
-    expect(ids(filterRedundantNotifications([launch, parked, wake, final, completion]))).toEqual(['launch', 'wake', 'completion']);
+  // Every stop of an agent is its own sibling and card; an agent bell an
+  // older build left is the only record of that report, so the filter
+  // never hides one, whatever the agent's lifecycle rows say.
+  it.each(['Agent', 'Task', 'SendMessage'])('never hides a %s bell behind the agent\'s ending sibling', (toolName) => {
+    const items = [
+      mkItem({ id: 'launch', kind: 'tool_call', toolName, status: 'running', meta: withTaskId('A1') }),
+      mkItem({ id: 'report', itemIndex: 1, kind: 'notification', toolName, summary: 'Round 1 report', meta: withTaskId('A1') }),
+      mkItem({ id: 'parked', itemIndex: 2, kind: 'tool_completion', toolName, status: 'parked', meta: withTaskId('A1') }),
+      mkItem({ id: 'completion', itemIndex: 3, kind: 'tool_completion', toolName, meta: withCaption('A1', 'Round 1 report') }),
+    ];
+    expect(filterRedundantNotifications(items)).toBe(items);
+  });
+
+  it('keeps an agent bell stored without a tool name: agent lifecycle rows hide nothing', () => {
+    const items = [
+      mkItem({ id: 'launch', kind: 'tool_call', toolName: 'Agent', status: 'completed', meta: withTaskId('A2') }),
+      mkItem({ id: 'report', itemIndex: 1, kind: 'notification', summary: 'Agent report', meta: withTaskId('A2') }),
+      mkItem({ id: 'completion', itemIndex: 2, kind: 'tool_completion', toolName: 'Agent', meta: withTaskId('A2') }),
+    ];
+    expect(filterRedundantNotifications(items)).toBe(items);
+  });
+
+  it('keeps an agent bell whatever other lifecycle row shares its task id', () => {
+    const items = [
+      mkItem({ id: 'report', kind: 'notification', toolName: 'Agent', summary: 'Agent report', meta: withTaskId('A4') }),
+      mkItem({ id: 'other', itemIndex: 1, kind: 'tool_completion', toolName: 'Bash', meta: withTaskId('A4') }),
+    ];
+    expect(ids(filterRedundantNotifications(items))).toEqual(['report', 'other']);
+  });
+
+  it('hides a command bell beside an agent bell in the same thread', () => {
+    const items = [
+      mkItem({ id: 'agent', kind: 'tool_completion', toolName: 'Agent', meta: withTaskId('A3') }),
+      mkItem({ id: 'agent-bell', itemIndex: 1, kind: 'notification', toolName: 'Agent', summary: 'report', meta: withTaskId('A3') }),
+      mkItem({ id: 'cmd', itemIndex: 2, kind: 'tool_completion', toolName: 'Bash', meta: withTaskId('B3') }),
+      mkItem({ id: 'cmd-bell', itemIndex: 3, kind: 'notification', toolName: 'Bash', summary: BELL, meta: withTaskId('B3') }),
+    ];
+    expect(ids(filterRedundantNotifications(items))).toEqual(['agent', 'agent-bell', 'cmd']);
   });
 
   it('hides a notification whose text equals the completion row summary', () => {
@@ -197,16 +219,6 @@ describe('filterRedundantNotifications', () => {
       mkItem({ id: 'notif', itemIndex: 1, kind: 'notification', summary: BELL, meta: withTaskId('T4') }),
     ];
     expect(ids(filterRedundantNotifications(items))).toEqual(['launch', 'notif']);
-  });
-
-  it('hides a stopped agent’s bell behind its killed completion sibling', () => {
-    // The card at the sibling reads "Agent stopped"; the bell would say it twice.
-    const items = [
-      mkItem({ id: 'launch', kind: 'tool_call', toolName: 'Agent', status: 'running', meta: withTaskId('T6') }),
-      mkItem({ id: 'notif', itemIndex: 1, kind: 'notification', summary: 'Agent "sweep" was stopped', meta: withTaskId('T6') }),
-      mkItem({ id: 'completion', itemIndex: 2, kind: 'tool_completion', status: 'killed', meta: withTaskId('T6') }),
-    ];
-    expect(ids(filterRedundantNotifications(items))).toEqual(['launch', 'completion']);
   });
 
   it('preserves a notification when the matching tool_call was killed by the user', () => {

@@ -68,10 +68,11 @@ func mustJSON(t *testing.T, value any) string {
 	return string(encoded)
 }
 
-// A two-round parked agent through the park model: running, parked on
-// its live shell with its report, running again after the wake, parked
-// with the newer report, and done at the final stop. The launch row
-// stores none of it, and a park does not move its revision.
+// A two-run parked agent through the park model: running, parked on its
+// live shell with its report, running again after the wake, parked with
+// the newer report, and done at the final stop. The state is read from
+// the stops: the launch row stores none of it, and a park does not move
+// its revision. The preview is the head of the report the stop carried.
 func TestAgentRunStateFollowsTheParkModel(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -85,10 +86,10 @@ func TestAgentRunStateFollowsTheParkModel(t *testing.T) {
 		t.Errorf("a background shell has no run state, got %v", states["shell"])
 	}
 
-	seedAgentReport(t, st, "t1", "agent", "report-1", "  Round one: waiting on the gate.  ")
+	seedAgentReport(t, st, "t1", "agent", "report-1", "Round one: waiting on the gate.")
 	router.DrainWireItemRefresh()
 	before := mustGetItem(t, st, "t1", "agent")
-	parkStop(t, router, "t1", "agent", "task-agent", "WAITING", "u1")
+	parkStop(t, router, "t1", "agent", "task-agent", "  Round one: waiting on the gate.  ", "u1")
 	router.DrainWireItemRefresh()
 	if after := mustGetItem(t, st, "t1", "agent"); after.Rev != before.Rev {
 		t.Errorf("the park moved the launch's rev from %d to %d", before.Rev, after.Rev)
@@ -100,13 +101,14 @@ func TestAgentRunStateFollowsTheParkModel(t *testing.T) {
 		metaKeySubagentParkedReportPreview: "Round one: waiting on the gate.",
 	})
 
+	nextMillisecond()
 	parkShellDone(t, router, "t1", "shell", "task-shell", "agent")
 	parkWake(t, router, "t1", "agent", "task-agent", "shell", "task-shell", nil)
 	assertRunState(t, runStates(t, router, st, "t1")["agent"], map[string]any{metaKeySubagentRunState: subagentRunRunning})
 
 	parkLaunchShell(t, router, "t1", "shell-2", "task-shell-2", "agent")
 	seedAgentReport(t, st, "t1", "agent", "report-2", "Round two: waiting again.")
-	parkStop(t, router, "t1", "agent", "task-agent", "WAITING AGAIN", "u2")
+	parkStop(t, router, "t1", "agent", "task-agent", "Round two: waiting again.", "u2")
 	assertRunState(t, runStates(t, router, st, "t1")["agent"], map[string]any{
 		metaKeySubagentRunState:            subagentRunParked,
 		metaKeySubagentParkedCommands:      1,
@@ -117,15 +119,13 @@ func TestAgentRunStateFollowsTheParkModel(t *testing.T) {
 	parkShellDone(t, router, "t1", "shell-2", "task-shell-2", "agent")
 	parkWake(t, router, "t1", "agent", "task-agent", "shell-2", "task-shell-2", nil)
 	// The final stop's task_updated stashes before its notification: a
-	// read between the two says parked on nothing, and the sibling the
+	// read between the two says running, and the sibling the
 	// notification writes settles it.
 	parkHandle(t, router, provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskTerminal, ThreadID: "t1", ItemID: "agent",
 		Meta: parkMeta(t, map[string]any{"task_id": "task-agent", "tool_use_id": "agent", "status": "completed", "source": "task_updated"}),
 	})
-	if got := runStates(t, router, st, "t1")["agent"]; got[metaKeySubagentRunState] != subagentRunParked || got[metaKeySubagentParkedCommands] != float64(0) {
-		t.Errorf("between the final stop's terminal and notification = %v, want parked on 0", got)
-	}
+	assertRunState(t, runStates(t, router, st, "t1")["agent"], map[string]any{metaKeySubagentRunState: subagentRunRunning})
 	parkHandle(t, router, provider.ProviderEvent{
 		Kind: provider.EventBackgroundTaskNotification, ThreadID: "t1", ItemID: "agent", Content: "DONE",
 		Meta: parkMeta(t, map[string]any{"task_id": "task-agent", "tool_use_id": "agent", "status": "completed", "uuid": "u3"}),
@@ -157,9 +157,9 @@ func TestAgentRunStateEndsAtSessionDeath(t *testing.T) {
 	assertRunState(t, runStates(t, router, st, "t1")["agent"], map[string]any{metaKeySubagentRunState: subagentRunEnded})
 }
 
-// A resume carrier parks on the commands and serves the report at its
-// transcript root, where every round's rows are; the root it rebound from
-// settled at the rebind.
+// A resume carrier parks at its own sibling on the commands and serves
+// the report at its transcript root, where every run's rows are; the root
+// it resumed ended before it.
 func TestAgentRunStateOfAParkedCarrierReadsItsRoot(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
@@ -174,7 +174,7 @@ func TestAgentRunStateOfAParkedCarrierReadsItsRoot(t *testing.T) {
 	parkLaunchShell(t, router, "t1", "shell", "task-shell", "root")
 	parkLaunchShell(t, router, "t1", "shell-2", "task-shell-2", "root")
 	seedAgentReport(t, st, "t1", "root", "report-2", "Round two report")
-	parkStop(t, router, "t1", "carrier", "task-agent", "ROUND 2", "u2")
+	parkStop(t, router, "t1", "carrier", "task-agent", "Round two report", "u2")
 
 	states := runStates(t, router, st, "t1")
 	assertRunState(t, states["root"], map[string]any{metaKeySubagentRunState: subagentRunDone})
@@ -184,4 +184,29 @@ func TestAgentRunStateOfAParkedCarrierReadsItsRoot(t *testing.T) {
 		metaKeySubagentParkedReportID:      "report-2",
 		metaKeySubagentParkedReportPreview: "Round two report",
 	})
+}
+
+// A SendMessage rebind onto a parked agent retires the parked launch, so
+// the tray serves one row for the agent: the carrier, running.
+func TestAgentRunStateAfterARebindOntoAParkedAgent(t *testing.T) {
+	router, st, _ := newTestRouter(t)
+	createTestThread(t, st, "t1")
+	seedOpenTurn(t, router, st, "t1", 0)
+	parkLaunchAgent(t, router, "t1", "root", "task-agent", "")
+	parkLaunchShell(t, router, "t1", "shell", "task-shell", "root")
+	parkStop(t, router, "t1", "root", "task-agent", "ROUND 1", "u1")
+	assertRunState(t, runStates(t, router, st, "t1")["root"], map[string]any{
+		metaKeySubagentRunState:       subagentRunParked,
+		metaKeySubagentParkedCommands: 1,
+	})
+
+	resumeAgent(t, router, "t1", "carrier", map[string]any{
+		"task_id": "task-agent", "task_type": "local_agent", "resumes_tool_use_id": "root",
+		"description": "Spike root", "subagent_type": "general-purpose", provider.MetaTranscriptRootIDKey: "root",
+	})
+	states := runStates(t, router, st, "t1")
+	if _, served := states["root"]; served {
+		t.Errorf("the tray still serves the retired root: %v", states["root"])
+	}
+	assertRunState(t, states["carrier"], map[string]any{metaKeySubagentRunState: subagentRunRunning})
 }

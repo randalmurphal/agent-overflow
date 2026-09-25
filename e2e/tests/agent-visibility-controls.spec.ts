@@ -22,6 +22,7 @@ import {
   backgroundTasksChangedLine,
   claudeScenario,
   emit,
+  itemMeta,
   listItems,
   permissionDeniedLine,
   seedAgentThread,
@@ -283,16 +284,15 @@ test('backgrounding a running inline agent returns the turn and the mirror conti
   // the launch row — a backgrounded agent's live ticks are gone by then.
   await expect(pane.getByTestId('workspace-strip-usage')).toHaveText('24.1k');
 
-  // The mirrored rows belong to the agent, not the main thread. The
-  // notification row carries the same text as its summary (the wire's
-  // local_agent summary is the report) and is the thread's bell, not a
-  // transcript row.
+  // The mirrored rows belong to the agent, not the main thread, and the
+  // stop rings no bell: its report is the completion's preview.
   await expect
     .poll(async () => {
       const items = await listItems(harness, threadId);
-      return items
-        .filter((i) => i.kind !== 'notification' && i.summary?.includes('Mirrored:'))
-        .map((i) => i.parentId ?? '');
+      return {
+        mirrored: items.filter((i) => i.kind !== 'tool_completion' && i.summary?.includes('Mirrored:')).map((i) => i.parentId ?? ''),
+        bells: items.filter((i) => i.kind === 'notification' && itemMeta(i).task_id === 'task-sweep').length,
+      };
     })
-    .toEqual(['tu-agent']);
+    .toEqual({ mirrored: ['tu-agent'], bells: 0 });
 });

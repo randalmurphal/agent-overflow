@@ -23,9 +23,9 @@ export interface SubagentRunState {
   /** Parked: the live background commands at the agent's transcript root. */
   waitingOn: number;
   /**
-   * Parked: the agent's newest report, by row id for the full row, with the
-   * head of its text (`PREVIEW_SCAN_CHARS` long, the card preview's scan
-   * window). Null when the agent has written no report yet.
+   * Parked: the run's report, by row id for the full row, with the head the
+   * parked stop recorded (the preview its card shows). Null when the run
+   * wrote no report.
    */
   report: { id: string; preview: string } | null;
 }

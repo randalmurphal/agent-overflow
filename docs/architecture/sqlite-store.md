@@ -485,8 +485,9 @@ Five trigger families ride `items`:
 - Imported-history triggers enforce the immutable-base and mutable-overlay
   rules.
 - Background-settlement triggers maintain
-  `items.meta.live_background_active` as completion siblings arrive, disappear,
-  or race with launch materialization.
+  `items.meta.live_background_active` as ending completion siblings arrive,
+  disappear, or race with launch materialization. A `parked` sibling
+  settles nothing (`background_settle_triggers.go`).
 - Turn-error triggers, also on `turns`, `thread_import_chunks` and
   `thread_import_item_overrides`, keep the thread row's Failed-pill aggregate
   (`thread_turn_error_aggregate.go`). They do not consult

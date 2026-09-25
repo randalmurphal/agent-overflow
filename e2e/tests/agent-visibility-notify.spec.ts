@@ -1,24 +1,16 @@
-// Agent visibility — the NOTIFICATION criterion
-// (docs/specs/agent-visibility.md § "Success criteria", item 7, Q11):
+// Agent visibility, the NOTIFICATION criterion
+// (docs/specs/agent-visibility.md § "Success criteria", Q11):
 //
-//   Top-level completions notify; nested completions do not.
+//   A top-level agent's stop is a card in the main timeline; a nested
+//   one's is inside its parent's card. No agent stop rings a bell.
 //
 // Two backgrounded agents finish in the same turn: one launched by the
-// main thread, one launched by that agent. Only the first is entitled to
-// a bell; the second updates its card and says nothing.
-//
-// SURFACE NOTE. The bell IS the persisted `notification` row — nothing
-// sends an OS notification for a background completion (`notifyOS` has
-// three callers, none of them this path), and the row is deliberately
-// hidden from the timeline once its completed lifecycle sibling exists
-// (utils/notificationFilter.ts, user ruling 2026-08-22), which for an
-// agent is always. So the BELL is asserted where it lives rather than in
-// the DOM. What IS asserted in the DOM is the row the bell's hiding
-// depends on: the top-level completion sibling, at which the agent's CARD
-// renders (the launch row is the immutable spawn record — ruling
-// 2026-08-23). An earlier version of this spec asserted only SQLite,
-// which is how the grouping pass dropping that row shipped unnoticed
-// (2026-08-22).
+// main thread, one launched by that agent. Each stop is its completion
+// sibling, and the agent's CARD renders at it (the launch row is the
+// immutable spawn record, ruling 2026-08-23). Nothing sends an OS
+// notification for a background completion (`notifyOS` has three
+// callers, none of them this path), so the store is checked for bells and
+// the DOM for the card at the top-level sibling.
 import { test, expect } from './fixtures.js';
 import {
   RESULT_LINE,
@@ -40,7 +32,7 @@ import {
   waitForGate,
 } from './agent-visibility-helpers.js';
 
-test('a top-level background completion writes a bell and a nested one does not', async ({
+test('a background agent rings no bell at any depth: its card sits at the completion point', async ({
   harness,
   page,
 }) => {
@@ -92,35 +84,28 @@ test('a top-level background completion writes a bell and a nested one does not'
   await harness.rpc('SendMessage', threadId, 'run both', null);
   await harness.waitForEvent('provider:turn_completed');
 
-  // --- One bell, and it belongs to the top-level launch -------------
+  // --- Two completion siblings, no bell -------------------------------
   await expect
     .poll(async () => {
       const items = await listItems(harness, threadId);
-      // Both agents must have settled first, or "no nested bell" would
-      // just mean "not yet".
+      // Both agents must have settled first, or "no bell" would just mean
+      // "not yet".
       const settled = items.filter(
         (i) => i.completionOf === 'tu-top' || i.completionOf === 'tu-nested',
       );
       if (settled.length !== 2) return null;
-      return items
-        .filter((i) => i.kind === 'notification')
-        .map((i) => ({
-          id: i.id,
-          taskId: itemMeta(i).task_id,
-          parentId: i.parentId ?? '',
-        }));
+      return {
+        siblings: settled.map((i) => `${i.completionOf}:${i.status}:${i.parentId ?? ''}`).sort(),
+        bells: items.filter((i) => i.kind === 'notification').map((i) => `${i.id}:${itemMeta(i).task_id}`),
+      };
     })
-    .toEqual([
-      {
-        id: 'task-notification:task-top:notify-task-top',
-        taskId: 'task-top',
-        parentId: '',
-      },
-    ]);
+    .toEqual({
+      siblings: ['tu-nested:completed:tu-top', 'tu-top:completed:'],
+      bells: [],
+    });
 
   // --- The completion is IN the transcript, where it completed --------
-  // The bell is hidden on the strength of the completion rendering. The
-  // launch row stays where it was as the immutable spawn record — label,
+  // The launch row stays where it was as the immutable spawn record: label,
   // the backgrounded indicator icon (no text pill), the open-in-pane
   // door, no duration — and the agent's CARD sits at the completion point, after
   // the turn's prose: status, duration, tool count, the transcript.
@@ -155,8 +140,7 @@ test('a top-level background completion writes a bell and a nested one does not'
   await expect(timeline.locator('[data-item-id="complete:tu-nested"]')).toHaveCount(0);
 
   // --- The nested agent stays out of the inline digest ---------------
-  // "Nested completions do not notify" covers the bell; the nested
-  // agent's card is also absent HERE by design — the digest never
+  // The nested agent's card is absent HERE by design: the digest never
   // recursively embeds child agents (ed6d2b40). Its transcript lives in
   // the agent pane, reached through the top agent's pane.
   await topCard.getByTestId('subagent-group-toggle').first().click();

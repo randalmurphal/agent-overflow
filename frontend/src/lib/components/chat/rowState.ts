@@ -1,9 +1,10 @@
 import type { Item } from '../../types/models';
 import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
 
-// `parked` is never derived from a row: a parked background agent's launch
-// row stays `running` (claude-wire.md §E6b), and only the served run state
-// (stores/subagentRunState.svelte.ts) tells a host to show it.
+// `parked` is a parked stop's own status (claude-wire.md §E6b): the sibling
+// a background agent's paused run writes. Its launch row stays `running`,
+// and a live surface reads a current pause from the served run state
+// (stores/subagentRunState.svelte.ts).
 export type IndicatorState = 'running' | 'backgrounded' | 'parked' | 'error' | 'declined' | null;
 
 type ItemStatus = Item['status'];
@@ -30,6 +31,7 @@ export function indicatorStateForItem(
     return 'backgrounded';
   }
   if (item.status === 'running' || item.status === 'streaming') return 'running';
+  if (item.status === 'parked') return 'parked';
   if (item.status === 'declined') return 'declined';
   if (item.status === 'errored' || item.status === 'killed') return 'error';
   return deriveCompletionStatus(item, { meta: options.meta }) === 'failure' ? 'error' : null;

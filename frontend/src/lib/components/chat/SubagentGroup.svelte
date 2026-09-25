@@ -32,6 +32,9 @@
   //   - expanded body is a capped, virtualized DIGEST of the node's tool
   //     calls and final text. Thinking, intermediate text, and child-agent
   //     navigation live in the agent pane.
+  //   - a PARKED stop's card (utils/parkedStop.ts) says the agent reported
+  //     and what it waits on, shows its run's duration and report head,
+  //     and expands to the full report above the run's digest.
   //   - open-in-pane button; a background button while a foreground
   //     Claude agent runs (Q9).
 
@@ -54,7 +57,6 @@
     type TimelineNode,
   } from '../../utils/subagentGrouping';
   import {
-    agentScopeRootId,
     claudeResumeCarrierIdentity,
     completionAnswerPreview,
     codexSubagentLaunchInfo,
@@ -65,28 +67,21 @@
     subagentLaunchInfo,
     type SubagentLaunchContext,
   } from '../../utils/subagentLaunch';
+  import { parkedStopFromItem, parkedStopSentence } from '../../utils/parkedStop';
   import { liveSubagentProgress } from '../../stores/subagentProgress.svelte';
   import {
     formatToolUses,
     resolveSubagentProgress,
   } from '../../utils/subagentProgress';
-  import { BackgroundClaudeTask } from '../../stores/bindings';
   import { threadHasScope } from '../../transport/entityScopes';
   import TranscriptDisclosureHeader from './TranscriptDisclosureHeader.svelte';
   import ToolRowStatusIndicator from './ToolRowStatusIndicator.svelte';
   import RowError from './RowError.svelte';
-  import {
-    completionEndedBySessionDeath,
-    indicatorStateForItem,
-    rowErrorForStatus,
-    SESSION_DIED_ROW_ERROR,
-  } from './rowState';
+  import { indicatorStateForItem } from './rowState';
+  import { subagentCardOutputError, subagentCardRowError, subagentCardSpan } from './subagentCardStatus';
   import { preservePaneScrollAnchor } from './preserveScrollAnchor';
-  import Icon from '../primitives/Icon.svelte';
-  import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
-  import SendToBack from '@lucide/svelte/icons/send-to-back';
-  import AgentDigestTimeline from './AgentDigestTimeline.svelte';
-  import SubagentDigestBody from './SubagentDigestBody.svelte';
+  import SubagentCardActions from './SubagentCardActions.svelte';
+  import SubagentGroupBody from './SubagentGroupBody.svelte';
   import { displayModelLabel } from '../../utils/modelLabels';
 
   let {
@@ -176,9 +171,10 @@
     ?? completionItem?.completionLaunch
     ?? group.parent);
   let statusItem = $derived(completionItem ?? parent);
-  // The finished agent's answer line, read off the completion record this
-  // card sits at (Codex FINAL_ANSWER, Claude output-file report).
+  // The report line, read off the stop this card sits at (Codex
+  // FINAL_ANSWER, Claude output-file report, a parked stop's report head).
   let completionAnswer = $derived(completionAnswerPreview(parent, completionItem));
+  let parkedStop = $derived(parkedStopFromItem(completionItem));
   // The main timeline holds no child rows, so a collapsed card's count and
   // preview come from the backend decoration on the live anchor, which
   // triage re-pushes as the children are written.
@@ -279,36 +275,7 @@
       && threadHasScope('threads:operate', parent.threadId)
       && (parentToolName === 'Agent' || parentToolName === 'Task'),
   );
-  let backgrounding = $state(false);
   let backgroundError = $state('');
-
-  async function moveToBackground(event: MouseEvent): Promise<void> {
-    event.stopPropagation();
-    if (backgrounding) return;
-    backgrounding = true;
-    backgroundError = '';
-    try {
-      await BackgroundClaudeTask(parent.threadId, parent.id);
-    } catch (err) {
-      // The CLI's refusal ("no matching foreground task") is a real
-      // answer the user needs to see — the row keeps streaming.
-      backgroundError = err instanceof Error ? err.message : String(err);
-    } finally {
-      backgrounding = false;
-    }
-  }
-
-  // One door: the PANE decides where opening routes. The base ThreadPane
-  // opens/rescopes its agent companion (the trail restarts — the
-  // from-outside rule); the agent pane's scoped facade overrides
-  // `openAgentPane` to pushScope, so descending INSIDE the pane grows the
-  // breadcrumb (spec Q4b). Rows never talk to the companion store.
-  function openInPane(event: MouseEvent): void {
-    event.stopPropagation();
-    // Scope = transcript root (a resume carrier's rows live under the
-    // original launch); the crumb label stays this card's agent name.
-    pane?.openAgentPane(agentScopeRootId(parent), agentTitle);
-  }
 
   let previewText = $derived.by<string>(() => {
     // The live activity line is the freshest statement of what the agent
@@ -332,22 +299,6 @@
   // not model.
   const clock = createSharedNowClock(() => isRunning);
 
-  let elapsedLabel = $derived.by<string>(() => {
-    const start = Number(parseJsonObject(completionItem?.meta)?.codex_execution_started_at ?? parent.createdAt);
-    if (Number.isFinite(start) && start > 0) {
-      // Start at the launch, end at whatever carries the terminal — for a
-      // background agent that is the completion sibling, whose updatedAt is
-      // when the task actually reported back.
-      const end = isRunning ? clock.now : statusItem.updatedAt;
-      if (Number.isFinite(end) && end > start) {
-        return formatElapsedSeconds(Math.floor((end - start) / 1_000));
-      }
-    }
-    // A settled row with unusable timestamps (an imported session) still
-    // has the provider's own wall-clock report in the persisted progress.
-    return progress.durationMs !== null ? formatDurationMs(progress.durationMs) : '';
-  });
-
   let completionStatus = $derived(
     deriveCompletionStatus(statusItem, { meta: statusPayloadMeta }),
   );
@@ -357,29 +308,22 @@
   let statusMeta = $derived(
     completionItem ? parseJsonObject(completionItem.meta) : parentMeta,
   );
-  let rowError = $derived.by(() => {
-    if (completionStatus !== 'failure') return null;
-    // A sibling the session's death wrote: the agent was neither stopped
-    // by the user nor failed, so "stopped" would misreport what happened.
-    if (statusItem.status === 'killed' && completionEndedBySessionDeath(statusMeta)) {
-      return SESSION_DIED_ROW_ERROR;
+
+  let elapsedLabel = $derived.by<string>(() => {
+    const { start, end } = subagentCardSpan({
+      parent, statusItem, completionMeta: completionItem ? statusMeta : null,
+      parkedStop, running: isRunning, now: isRunning ? clock.now : 0,
+    });
+    if (Number.isFinite(start) && start > 0 && Number.isFinite(end) && end > start) {
+      return formatElapsedSeconds(Math.floor((end - start) / 1_000));
     }
-    return rowErrorForStatus(statusItem.status, 'Agent failed', 'Agent stopped') ?? {
-      tone: 'error' as const,
-      msg: 'Agent failed',
-    };
+    // A settled row with unusable timestamps (an imported session) still
+    // has the provider's own wall-clock report in the persisted progress.
+    return progress.durationMs !== null ? formatDurationMs(progress.durationMs) : '';
   });
 
-  // A failed output-file read (triage stamps notification_output_state/error
-  // on the completion sibling, output_file_state/error on older rows). A
-  // silently incomplete card body reads exactly like a complete one, so
-  // the failure renders inline.
-  let outputBackfillError = $derived.by(() => {
-    const state = statusMeta?.notification_output_state ?? statusMeta?.output_file_state;
-    if (state !== 'error') return '';
-    const error = statusMeta?.notification_output_error ?? statusMeta?.output_file_error;
-    return typeof error === 'string' && error ? error : 'Task output could not be read.';
-  });
+  let rowError = $derived(subagentCardRowError(statusItem, completionStatus, statusMeta));
+  let outputBackfillError = $derived(subagentCardOutputError(statusMeta));
 
   let entryCountLabel = $derived.by(() => {
     if (descendantCount === 0) return '';
@@ -400,9 +344,11 @@
   // chat history), and a forked Skill publishes its synthetic answer as a
   // top-level sourced result. The mirrored assistant row stays in the
   // agent pane so the main timeline never duplicates the answer above and
-  // below the activity boundary.
+  // below the activity boundary. A parked card shows its run's report above
+  // the digest, so the digest drops it.
+  let parkedReportId = $derived(parkedStop?.reportItemId ?? '');
   let keepFinalText = $derived(
-    parentMeta?.directCommandResult !== true && (isRunning || completionStatus !== 'failure'),
+    parentMeta?.directCommandResult !== true && !parkedReportId && (isRunning || completionStatus !== 'failure'),
   );
 </script>
 
@@ -421,6 +367,8 @@
     style="margin-left: {indentRem}rem"
     data-testid="subagent-group"
     data-tool-kind="robot"
+    data-anchor-id={group.anchor.id}
+    data-status={statusItem.status}
     data-background={isBackgroundNode ? 'true' : undefined}
   >
     {#snippet cardMetrics()}
@@ -452,6 +400,11 @@
       {/if}
     {/snippet}
     {#snippet cardDetails()}
+      {#if parkedStop}
+        <span class="block truncate text-[0.6875rem] italic text-fg-subtle" data-testid="subagent-group-parked-status">
+          {parkedStopSentence(parkedStop)}
+        </span>
+      {/if}
       {#if previewText}
         <button
           type="button"
@@ -469,7 +422,7 @@
     <TranscriptDisclosureHeader
       agentLayout
       metrics={toolCountLabel || tokensLabel || entryCountLabel ? cardMetrics : undefined}
-      details={previewText ? cardDetails : undefined}
+      details={previewText || parkedStop ? cardDetails : undefined}
       expanded={expanded}
       expandable={!navigationOnly}
       controls={groupDomId}
@@ -499,31 +452,7 @@
       </span>
       {/snippet}
       {#snippet actions()}
-        {#if canBackground}
-          <button
-            type="button"
-            onclick={moveToBackground}
-            disabled={backgrounding}
-            title="Move to background"
-            aria-label="Move agent to background"
-            data-testid="subagent-group-background-button"
-            class="opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 compact:opacity-100 rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer disabled:cursor-default disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-          >
-            <Icon icon={SendToBack} size={12} />
-          </button>
-        {/if}
-        {#if pane}
-          <button
-            type="button"
-            onclick={openInPane}
-            title="Open in agent pane"
-            aria-label="Open {agentTitle} in agent pane"
-            data-testid="subagent-group-open-pane"
-            class={[navigationOnly ? 'opacity-100' : 'opacity-0 group-hover/tool:opacity-100 focus-visible:opacity-100 compact:opacity-100', 'rounded p-0.5 text-text-secondary hover:text-text-primary cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50'].join(' ')}
-          >
-            <Icon icon={PanelRightOpen} size={12} />
-          </button>
-        {/if}
+        <SubagentCardActions {pane} {parent} {agentTitle} {canBackground} {navigationOnly} bind:backgroundError />
         <ToolHeaderMeta
           statusSlotTestId="subagent-group-status-slot"
           duration={{ testId: 'subagent-group-duration', label: elapsedLabel }}
@@ -531,7 +460,7 @@
           {#snippet status()}
             <ToolRowStatusIndicator
               item={statusItem}
-              state={isRunning || completionStatus === 'failure' ? indicatorState : null}
+              state={isRunning || parkedStop || completionStatus === 'failure' ? indicatorState : null}
               testId="subagent-group-status"
             />
           {/snippet}
@@ -555,21 +484,10 @@
       </div>
     {/if}
 
-    {#if expanded && pane}
-      <AgentDigestTimeline {pane} scopeId={agentScopeRootId(parent)} id={groupDomId}
-        viewKey={`card:${group.groupKey}`} digestItemId={completionItem?.id ?? parent.id}
-        {keepFinalText} live={isRunning} />
-    {:else if expanded}
-      <SubagentDigestBody
-        id={groupDomId}
-        children={group.children}
-        {descendantCount}
-        {entryCountLabel}
-        {keepFinalText}
-        live={isRunning}
-        depth={depth + 1}
-        {renderNode}
-      />
+    {#if expanded}
+      <SubagentGroupBody {pane} {group} {parent} {completionItem} id={groupDomId}
+        reportItemId={parkedReportId} {descendantCount} {entryCountLabel} {keepFinalText}
+        live={isRunning} {depth} {renderNode} />
     {/if}
   </div>
 {/if}

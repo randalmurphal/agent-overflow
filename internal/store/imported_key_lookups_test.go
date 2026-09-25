@@ -328,8 +328,15 @@ func keyedLookups(th string) []keyedLookup {
 		{name: "LatestSubagentReport", run: func(t *testing.T, s *Store) {
 			// The seeded launches have no text child: the plan is what
 			// this pins, and an answer would be wrong.
-			if report, found, err := s.LatestSubagentReport(th, "launch-1"); err != nil || found {
+			if report, found, err := s.LatestSubagentReport(th, "launch-1", 0); err != nil || found {
 				t.Errorf("report of launch-1 = %+v found=%v err=%v, want none", report, found, err)
+			}
+		}},
+		{name: "NewestTaskStop", run: func(t *testing.T, s *Store) {
+			// The seeded completions carry no task id: the plan is what
+			// this pins, and an answer would be wrong.
+			if stop, found, err := s.NewestTaskStop(th, "task-1"); err != nil || found {
+				t.Errorf("newest stop of task-1 = %+v found=%v err=%v, want none", stop, found, err)
 			}
 		}},
 		{name: "resolveTimelineScope", run: func(t *testing.T, s *Store) {

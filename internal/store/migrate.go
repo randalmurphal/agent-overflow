@@ -1422,7 +1422,7 @@ CREATE TABLE provider_thread_cost (
 CREATE INDEX idx_items_completion_created
     ON items(thread_id, created_at) WHERE completion_of <> '';
 
-` + backgroundSettleTriggersSQL,
+` + backgroundSettleTriggersV74SQL,
 	},
 	{
 		Version: 75,
@@ -1714,6 +1714,8 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 		},
 	},
 	{Version: 125, Name: "fork_ownership", SQL: forkOwnershipV125SQL, Rebuild: true},
+	{Version: parkedStopMigrationVersion, Name: "parked_agent_stops", SQL: parkedAgentStopsV126SQL, Fix: widenItemsStatusCheck},
+	{Version: 127, Name: "parked_agent_bells", SQL: parkedAgentStopsV127SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

@@ -91,7 +91,7 @@ func (s *Store) resolveTimelineScope(q sqlQueryer, threadID string, selection Ti
 	}
 	completions, args, err := timelineKeyedIDSelection(q, threadID,
 		"items.turn_index AS turn_index, items.item_index AS item_index",
-		`items.completion_of <> '' AND items.completion_of = ?`, []any{context.Lifecycle.ID},
+		`items.completion_of <> '' AND items.completion_of = ? AND items.status <> 'parked'`, []any{context.Lifecycle.ID},
 		"turn_index DESC, item_index DESC", 1)
 	if err != nil {
 		return scope, err

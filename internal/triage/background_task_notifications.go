@@ -51,10 +51,12 @@ func decodeBackgroundTaskNotificationMeta(raw json.RawMessage) backgroundTaskNot
 }
 
 // handleBackgroundTaskNotification processes Claude
-// `system/task_notification` envelopes. The notification row is the
-// "agent attention signal" surface (invariant 21 — kept distinct from
-// the lifecycle row); whether and where it leads to a tool_completion
-// sibling depends on the stash table.
+// `system/task_notification` envelopes. For a background command or watch
+// task the notification row is the "attention signal" surface (invariant
+// 21, kept distinct from the lifecycle row); whether and where it leads
+// to a tool_completion sibling depends on the stash table. A background
+// agent's notification is one of its stops, which writes a sibling and no
+// notification row (handleAgentStop).
 //
 // Three cases:
 //
@@ -77,22 +79,19 @@ func decodeBackgroundTaskNotificationMeta(raw json.RawMessage) backgroundTaskNot
 //     output_file=""): notification row only. Per invariant 21,
 //     task_notification is not a lifecycle source.
 //
-// The notification row write itself is unconditional. A command's row
-// moves loading → loaded / error as its output_file is read; an agent's
-// row is written loaded, because its file is never read.
+// The notification row write itself is unconditional for a top-level
+// task. It moves loading → loaded / error as its output_file is read.
 //
 // The stash drain runs BEFORE the notification row persists, and the
-// order is user-visible: the frontend hides this notification row (the
-// agent's full report text) only once a completed lifecycle row with
-// the same task_id exists (filterRedundantNotifications), and a
-// backgrounded launch is deliberately held at `running` until the
-// sibling lands. Notification-first meant one wire flush where the
-// report mounted as a full-width timeline row and then vanished when
-// the sibling arrived — a multi-thousand-pixel content flash and
-// scroll clamp at the tail (bug-report-20260801T024731Z). Sibling-first
-// turns case 1 into case 2 on the frontend: the notification arrives
-// already suppressed, and the enrichment calls attach the output-file
-// payload onto the just-written sibling.
+// order is user-visible: the frontend hides a command's notification row
+// only once a completed lifecycle row with the same task_id exists
+// (filterRedundantNotifications), and a backgrounded launch is
+// deliberately held at `running` until the sibling lands.
+// Notification-first meant one wire flush where the row mounted and then
+// vanished when the sibling arrived, a content flash and scroll clamp at
+// the tail. Sibling-first turns case 1 into case 2 on the frontend: the
+// notification arrives already suppressed, and the enrichment calls
+// attach the output-file payload onto the just-written sibling.
 func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) error {
 	meta := decodeBackgroundTaskNotificationMeta(evt.Meta)
 	if meta.TaskID == "" {
@@ -144,7 +143,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	if meta.Usage != (provider.SubagentProgressMeta{}) {
 		if err := r.persistSubagentFinalProgress(launch, meta.Usage); err != nil {
 			// Never fatal to the notification: the counters are a card
-			// decoration and the bell is the user-visible signal.
+			// decoration and the stop's sibling is the user-visible signal.
 			log.Printf("triage: persist final subagent progress for %s: %v", launch.ID, err)
 		}
 	}
@@ -167,21 +166,14 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	// at: the rows below read it.
 	r.settleSubagentCard(evt.ThreadID, launch.ID)
 
-	// Sibling first — see the ordering note in the function comment.
-	// Unless the stop is a PAUSE: a parked agent keeps its stash, and the
-	// wake that follows drops it (persistWakePromptRow). A stop the typed
-	// status reports as a kill or a failure ends the agent whatever it
-	// still owns: its shells die with it.
-	var park parkedStop
-	if !taskStatusEnds(meta.Status) {
-		if park, err = r.launchParkedOn(evt.ThreadID, launch); err != nil {
-			return err
-		}
+	// An agent's stop is its sibling, never a bell (agent_stops.go).
+	if IsSubagentTranscriptLaunch(launch) {
+		return r.handleAgentStop(evt, meta, launch)
 	}
-	if park.waiting == 0 {
-		if err := r.drainTaskNotificationStash(evt, meta, launch); err != nil {
-			return err
-		}
+
+	// Sibling first: see the ordering note in the function comment.
+	if err := r.drainTaskNotificationStash(evt, meta, launch); err != nil {
+		return err
 	}
 
 	now := eventTimestampMillis(evt)
@@ -211,12 +203,6 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	// and the completion sibling is enriched with the payload and output
 	// state, which is what its card renders.
 	//
-	// A parked agent rings it at every stop (each envelope has its own
-	// uuid, so each stop is its own row) and the frontend hides all of
-	// them together once the completion sibling finally lands. A parked
-	// stop's bell is one line (parkedAgentBell) that links the round's
-	// report (parkedBellMeta); the final stop's carries the report.
-	//
 	// A watch task is exempt regardless of depth. Its notification rows
 	// are not a bell at all: they ARE its event history (claude-wire.md
 	// §E7 — one row per observed output event, exempt from the frontend's
@@ -225,15 +211,6 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	writeBell := strings.TrimSpace(launch.ParentID) == "" || watchTask
 
 	summary := stringsxFirst(evt.Content, backgroundTaskNotificationPlaceholderSummary)
-	var parkedFields json.RawMessage
-	if park.waiting > 0 {
-		summary = parkedAgentBell(launch, park.waiting)
-		if writeBell {
-			if parkedFields, err = r.parkedBellMeta(evt.ThreadID, park); err != nil {
-				return err
-			}
-		}
-	}
 	notification := store.Item{
 		ID:        nextTaskNotificationID(meta.TaskID, meta.UUID),
 		ThreadID:  evt.ThreadID,
@@ -273,33 +250,13 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 			return nil
 		}
 		notification.Meta = backgroundNotificationItemMeta(meta, state, readError, watchTask)
-		if parkedFields != nil {
-			notification.Meta = mergeItemMetaJSON(notification.Meta, parkedFields)
-		}
 		return r.maybeDeferOrPersist(evt.ThreadID, notification, payload)
-	}
-
-	// A parked stop is not the agent's end, so its bell carries no
-	// report payload: the report is already the round's last
-	// assistant_text row under the transcript root, which the bell's meta
-	// names (parkedBellMeta) for the timeline to load on demand, and the
-	// final stop's bell carries the agent's result. The tray derives the
-	// park from the live list (Store.ListLiveBackgroundTasks), so it is
-	// told to read it again.
-	if park.waiting > 0 {
-		if err := persistBell("ready", "", nil); err != nil {
-			return err
-		}
-		r.emitBackgroundTasksChangedNudge(evt.ThreadID)
-		return nil
 	}
 
 	var notificationPayload *store.Payload
 	outputState := "ready"
 	readErrorString := ""
-	switch {
-	case meta.OutputFile == "":
-	case !IsSubagentTranscriptLaunch(launch):
+	if meta.OutputFile != "" {
 		// A command's or a watch task's output_file is read, so the bell
 		// and the sibling show it loading first.
 		if err := persistBell("loading", "", nil); err != nil {
@@ -317,14 +274,6 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 			outputState = "loaded"
 			notificationPayload = payload
 		}
-	default:
-		// An agent's output_file is never read (backgroundOutputPayload).
-		payload, err := backgroundOutputPayload(launch, meta.OutputFile, agentReportFromNotification(launch, evt.Content), nil, now)
-		if err != nil {
-			return err
-		}
-		outputState = "loaded"
-		notificationPayload = payload
 	}
 	if err := persistBell(outputState, readErrorString, notificationPayload); err != nil {
 		return err
@@ -341,9 +290,9 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 // (claude-wire.md §E6b); its `task_updated{completed}` and
 // `task_notification` are indistinguishable from a final stop's, so the
 // live children are the only evidence. The stash written at the stop is
-// left standing for the wake to drop, and no completion sibling is
-// written: settling here is what put every later round's rows under a
-// card the reader had been told was done (2026-09-08).
+// left standing for the wake to drop, and the stop's sibling is a parked
+// one (writeParkedStop), which settles nothing: every later run's rows
+// land under a launch that is still open.
 //
 // Children are read at the transcript ROOT, because that is where every
 // round's rows are parented (a carrier has no subtree). A shell or a
@@ -387,33 +336,6 @@ type parkedStop struct {
 	rootID  string
 }
 
-// parkedBellMeta is the parked bell's own meta: its kind, the command
-// count as a number, and the round's report, the root's newest direct
-// assistant_text (Store.LatestSubagentReport, the same row the served run
-// state names), as the row id plus a preview head. The bell is written
-// once and never updated, and the report row precedes the stop, so this
-// is exact at write time; the timeline renders the preview at rest and
-// loads the full row by id on demand.
-func (r *Router) parkedBellMeta(threadID string, park parkedStop) (json.RawMessage, error) {
-	fields := map[string]any{
-		"kind":                notificationKindParkedAgent,
-		metaKeyParkedCommands: park.waiting,
-	}
-	report, found, err := r.store.LatestSubagentReport(threadID, park.rootID)
-	if err != nil {
-		return nil, err
-	}
-	if found {
-		fields[metaKeyParkedReportItemID] = report.ID
-		fields[metaKeyParkedReportPreview] = report.Preview
-	}
-	encoded, err := json.Marshal(fields)
-	if err != nil {
-		return nil, fmt.Errorf("triage: encode parked bell meta for %s/%s: %w", threadID, park.rootID, err)
-	}
-	return encoded, nil
-}
-
 // commandsParkingAt counts the live background commands under a
 // transcript root that an agent stopping now would wait on.
 func (r *Router) commandsParkingAt(threadID, rootID string) (int, error) {
@@ -439,17 +361,6 @@ func AgentLaunchDescription(launch store.Item) string {
 		return description
 	}
 	return launchInputIdentity(launch.Meta).Description
-}
-
-// parkedAgentBell is a parked stop's bell text.
-func parkedAgentBell(launch store.Item, waiting int) string {
-	description := AgentLaunchDescription(launch)
-	commands := "commands"
-	if waiting == 1 {
-		commands = "command"
-	}
-	return fmt.Sprintf(`Agent "%s" reported and is waiting on %d background %s`,
-		truncatePreview(description, 80), waiting, commands)
 }
 
 // IsSubagentTranscriptLaunch reports whether a launch is an agent, whose
@@ -490,7 +401,13 @@ func (r *Router) drainTaskNotificationStash(evt provider.ProviderEvent, meta bac
 	if !stashFound {
 		return nil
 	}
+	return r.writeNotificationTerminal(evt, meta, launch, &stash)
+}
 
+// writeNotificationTerminal writes the completion sibling a
+// notification's stop ends launch with, merging the host terminal its
+// task_updated stashed when there is one.
+func (r *Router) writeNotificationTerminal(evt provider.ProviderEvent, meta backgroundTaskNotificationMeta, launch store.Item, stash *store.PendingBackgroundTaskTerminal) error {
 	terminalMeta := terminalMetaFromNotification(meta)
 	// Carry the notification's own summary into the sibling's FIRST
 	// write. This path creates the completion row before the
@@ -507,7 +424,9 @@ func (r *Router) drainTaskNotificationStash(evt provider.ProviderEvent, meta bac
 	if !launchIsWatchTask(launch) && meta.OutputFile == "" {
 		terminalMeta.NotificationSummary = notificationCaptionSummary(evt.Content)
 	}
-	mergeStashIntoTerminalMeta(&terminalMeta, stash)
+	if stash != nil {
+		mergeStashIntoTerminalMeta(&terminalMeta, *stash)
+	}
 	terminalMeta.Source = "task_notification"
 
 	syntheticEvt := provider.ProviderEvent{
@@ -592,7 +511,7 @@ func (r *Router) resolveBackgroundTaskLaunch(threadID, eventItemIDValue, toolUse
 	if taskID == "" {
 		return store.Item{}, false, nil
 	}
-	launch, found, err := r.findToolCallByTaskID(threadID, taskID)
+	launch, found, err := r.store.FindToolCallItemByTaskID(threadID, taskID)
 	if err != nil {
 		return store.Item{}, false, fmt.Errorf("background task launch task_id lookup %s: %w", taskID, err)
 	}
@@ -711,6 +630,12 @@ func backgroundOutputPayload(launch store.Item, outputFile, report string, exitC
 		}, nil
 	}
 
+	return agentReportPayload(payloadID, outputFile, report, now)
+}
+
+// agentReportPayload is the payload of an agent's stop: its output_file,
+// unread, and the head of its report as the preview.
+func agentReportPayload(payloadID, outputFile, report string, now int64) (*store.Payload, error) {
 	meta := map[string]any{"outputFile": outputFile, "outputFileState": "loaded"}
 	if preview := truncatePreview(report, 240); preview != "" {
 		meta["preview"] = preview

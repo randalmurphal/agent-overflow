@@ -682,6 +682,7 @@ const threadBusyPredicateSQL = `(
              WHERE completion.thread_id = launch.thread_id
                AND completion.completion_of = launch.id
                AND completion.completion_of <> ''
+               AND completion.status <> 'parked'
           )
      )
    )`

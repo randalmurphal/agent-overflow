@@ -365,9 +365,10 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 			launchByID[item.ID] = item
 		case "tool_completion":
 			// A Codex wait carrier's completion is a wait group, not an
-			// agent card (aggBorrowsCardSQL); its launch is walked as a
+			// agent card, and a parked stop records one run
+			// (aggBorrowsCardSQL); a wait carrier's launch is walked as a
 			// tool_call if it ever anchors anything.
-			if item.CompletionOf != "" && item.ToolName != "wait_agent" {
+			if item.CompletionOf != "" && item.ToolName != "wait_agent" && item.Status != ItemStatusParked {
 				completionLaunchIDs = append(completionLaunchIDs, item.CompletionOf)
 			}
 		}
@@ -417,7 +418,7 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 	for i := range items {
 		item := items[i]
 		if item.Kind != "tool_completion" || item.CompletionOf == "" ||
-			item.ToolName == "collab_agent" || item.ToolName == "wait_agent" {
+			item.ToolName == "collab_agent" || item.ToolName == "wait_agent" || item.Status == ItemStatusParked {
 			continue
 		}
 		launch, ok := launchByID[item.CompletionOf]

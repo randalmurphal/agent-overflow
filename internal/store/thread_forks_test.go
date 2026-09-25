@@ -290,6 +290,32 @@ func TestPointerForkHidesLaunchWhoseSiblingIsBeyondTheCut(t *testing.T) {
 	assertForkLinksResolve(t, s, "fork")
 }
 
+// A parked stop settles nothing, so one inside the cut does not keep a
+// launch whose ending sibling is beyond it: the launch and its parked stop
+// hide together.
+func TestPointerForkHidesLaunchWhoseOnlyStopInsideTheCutIsParked(t *testing.T) {
+	s := newTestStore(t)
+	seedForkSource(t, s, "src", []Item{
+		{ID: "user-0", TurnIndex: 1, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "go audit"},
+		{ID: "bg-launch", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: audit"},
+		{ID: "bg-launch-parked", TurnIndex: 2, ItemIndex: 0, Kind: "tool_completion", Role: "assistant", Status: ItemStatusParked, IsBackground: true, CompletionOf: "bg-launch", ToolName: "Agent", Summary: "Agent: audit -> parked"},
+		{ID: "user-1", TurnIndex: 2, ItemIndex: 1, Kind: "user_text", Role: "user", Summary: "and then"},
+		{ID: "bg-launch-done", TurnIndex: 3, ItemIndex: 0, Kind: "tool_completion", Role: "assistant", Status: "completed", IsBackground: true, CompletionOf: "bg-launch", ToolName: "Agent", Summary: "Agent: audit -> done"},
+	})
+	mustPointerFork(t, s, "src", "fork", throughTurn(2))
+
+	dst := forkRowsBySummary(t, s, "fork")
+	for _, gone := range []string{"Agent: audit", "Agent: audit -> parked"} {
+		if _, ok := dst[gone]; ok {
+			t.Errorf("row %q shown although the launch's ending sibling is beyond the cut", gone)
+		}
+	}
+	if len(dst) != 2 {
+		t.Errorf("fork rows = %d, want 2 (user-0 + user-1)", len(dst))
+	}
+	assertForkLinksResolve(t, s, "fork")
+}
+
 // TestPointerForkHidesNestedRunningLaunchOnly: a live launch nested under a
 // finished one takes only its own subtree with it.
 func TestPointerForkHidesNestedRunningLaunchOnly(t *testing.T) {

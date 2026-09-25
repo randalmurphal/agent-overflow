@@ -416,35 +416,33 @@ func TestBackgroundTaskNotification_StashedTerminalThenNotificationWritesSibling
 		t.Fatalf("sibling.meta.tool_use_id = %v, want bg-subagent", doneMeta["tool_use_id"])
 	}
 
-	// Notification row also written (subagent is is_background=true).
-	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
-	if len(notifications) != 1 {
-		t.Fatalf("expected 1 notification row alongside the sibling, got %d", len(notifications))
+	// An agent's stop rings no bell: the sibling is its card.
+	if notifications := findItemsByKind(t, st, "t1", itemKindNotification); len(notifications) != 0 {
+		t.Fatalf("an agent's stop wrote %d notification rows, want none", len(notifications))
 	}
 }
 
 // TestBackgroundTaskNotification_SiblingEmitsBeforeNotificationRow pins
-// the wire ORDER of the two rows the stash-drain path writes. The
-// frontend hides the notification row (whose summary is the agent's
-// full report text) only once a completed lifecycle row with the same
-// task_id exists (filterRedundantNotifications), and a backgrounded
-// launch is deliberately held at `running` until the sibling lands — so
-// a notification-first emission renders the entire report as a
-// full-width timeline row for one flush and then rips it back out when
-// the sibling arrives, clamping the reader's scroll position
-// (bug-report-20260801T024731Z). The `tool_completion` sibling upsert
-// must reach the frontend before the notification row's first upsert.
+// the wire ORDER of the two rows the stash-drain path writes for a
+// background command. The frontend hides the command's bell only once a
+// completed lifecycle row with the same task_id exists
+// (filterRedundantNotifications), and a backgrounded launch is
+// deliberately held at `running` until the sibling lands, so a
+// notification-first emission renders the bell for one flush and then
+// rips it back out when the sibling arrives, clamping the reader's scroll
+// position (bug-report-20260801T024731Z). The `tool_completion` sibling
+// upsert must reach the frontend before the notification row's first
+// upsert.
 func TestBackgroundTaskNotification_SiblingEmitsBeforeNotificationRow(t *testing.T) {
 	router, st, emissions := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
 
 	startMeta, _ := json.Marshal(map[string]any{
-		"toolName":      "Agent",
+		"toolName":      "Bash",
 		"is_background": true,
 		"input": map[string]any{
-			"description":       "Background audit",
-			"prompt":            "audit then report",
+			"command":           "make audit",
 			"run_in_background": true,
 		},
 	})
@@ -452,7 +450,7 @@ func TestBackgroundTaskNotification_SiblingEmitsBeforeNotificationRow(t *testing
 		Kind:      provider.EventToolStart,
 		ThreadID:  "t1",
 		ItemID:    "bg-subagent",
-		ItemType:  "Agent",
+		ItemType:  "Bash",
 		Meta:      startMeta,
 		Timestamp: time.Now(),
 	}); err != nil {
@@ -497,7 +495,7 @@ func TestBackgroundTaskNotification_SiblingEmitsBeforeNotificationRow(t *testing
 		ThreadID:  "t1",
 		ItemID:    "bg-subagent",
 		Meta:      notificationMeta,
-		Content:   `Agent "Background audit" completed: <several thousand pixels of final report>`,
+		Content:   `Background command "make audit" completed (exit code 0)`,
 		Timestamp: time.Now(),
 	}); err != nil {
 		t.Fatalf("task_notification: %v", err)
@@ -537,8 +535,8 @@ func TestBackgroundTaskNotification_SiblingEmitsBeforeNotificationRow(t *testing
 // delivers BOTH the structured `system/task_notification` envelope AND
 // the synthetic `<task-notification>` XML echo for the same task_id
 // (e.g. a future wire change that overlaps the channels). The router
-// must produce exactly one `tool_completion` sibling row and exactly
-// one notification row, regardless of how many notification events
+// must produce exactly one `tool_completion` sibling row and no
+// notification row, regardless of how many notification events
 // arrive on the same task_id. The stash is one-shot via
 // `RemovePendingBackgroundTerminal`; the second notification finds it
 // empty and no-ops the sibling write.
@@ -601,9 +599,8 @@ func TestBackgroundTaskNotification_StashedTerminalThenNotificationIsIdempotent(
 	if len(dones) != 1 {
 		t.Fatalf("expected exactly 1 sibling after duplicate notifications, got %d (idempotency broken)", len(dones))
 	}
-	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
-	if len(notifications) != 1 {
-		t.Fatalf("expected exactly 1 notification row (id keyed by task_id), got %d", len(notifications))
+	if notifications := findItemsByKind(t, st, "t1", itemKindNotification); len(notifications) != 0 {
+		t.Fatalf("an agent's stops wrote %d notification rows, want none", len(notifications))
 	}
 }
 
@@ -1097,8 +1094,8 @@ func TestBackgroundTaskNotification_AsyncAgentLaunchStillGetsSibling(t *testing.
 		t.Fatalf("task_notification: %v", err)
 	}
 
-	if notifications := findItemsByKind(t, st, "t1", itemKindNotification); len(notifications) != 1 {
-		t.Fatalf("expected 1 notification row for the backgrounded launch, got %d", len(notifications))
+	if notifications := findItemsByKind(t, st, "t1", itemKindNotification); len(notifications) != 0 {
+		t.Fatalf("the backgrounded agent's stop wrote %d notification rows, want none", len(notifications))
 	}
 
 	dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
@@ -1394,9 +1391,9 @@ func TestBackgroundTaskNotification_ResumeCarrierBecomesBackgroundCarrier(t *tes
 		t.Fatalf("expected exactly 2 tool_completion siblings total (one per round), got %d: %+v", len(dones), dones)
 	}
 
-	// The task_id-keyed notification row is upserted, not duplicated.
-	if notifications := findItemsByKind(t, st, "t1", itemKindNotification); len(notifications) != 1 {
-		t.Fatalf("expected 1 notification row (task_id-keyed, upserted across rounds), got %d", len(notifications))
+	// Neither run's stop rings a bell: each sibling is its card.
+	if notifications := findItemsByKind(t, st, "t1", itemKindNotification); len(notifications) != 0 {
+		t.Fatalf("the agent's stops wrote %d notification rows, want none", len(notifications))
 	}
 
 	// The original launch ROW itself is untouched by round 2 — same

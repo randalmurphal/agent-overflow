@@ -128,10 +128,10 @@ func (s *Store) FindTurnItem(threadID string, turnIndex int, kind string) (Item,
 // The query is O(log N) thanks to the partial expression indexes
 // idx_items_meta_task_id and idx_import_history_items_task_lookup, which
 // materialise json_extract(meta, '$.task_id') for the narrow subset of
-// rows that actually carry a task_id. The kind filter stays in Go-space rather
-// than the index because every row this function cares about is a
-// tool_call by construction (only that kind sets task_id in meta), and
-// adding kind to the index would bloat it for no planner benefit.
+// rows that actually carry a task_id. The task's completion siblings, its
+// bells and an agent's wake rows carry the task_id too, and are newer than
+// the tool call, so the kind is filtered over the handful of rows one
+// task_id matches.
 //
 // Empty taskID returns (Item{}, false, nil) so callers can short-circuit
 // without a DB round-trip.
@@ -141,7 +141,7 @@ func (s *Store) FindToolCallItemByTaskID(threadID, taskID string) (Item, bool, e
 	}
 	selection, args, err := timelineKeyedIDSelection(s.reader(), threadID,
 		"items.updated_at AS updated_at",
-		"json_extract(items.meta, '$.task_id') = ?", []any{taskID},
+		"json_extract(items.meta, '$.task_id') = ? AND items.kind = 'tool_call'", []any{taskID},
 		"updated_at DESC", 1)
 	if err != nil {
 		return Item{}, false, err

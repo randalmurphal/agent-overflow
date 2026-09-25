@@ -160,12 +160,14 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 	}
 
 	if metaUpdateOnly {
-		// A §E6 rebind is the end of the PREVIOUS binding's last round:
-		// a parked agent (launchParkedOn) settles onto the row it was
-		// bound to before the carrier takes over. Before the row work,
-		// and regardless of whether the carrier row exists yet.
+		// A §E6 rebind is the end of the PREVIOUS binding's last run: a
+		// parked row it was bound to leaves the live set before the
+		// carrier takes over. Before the row work, and regardless of
+		// whether the carrier row exists yet.
 		if meta.TaskID != "" && isResumeCarrierMeta(meta) {
-			r.settleParkedLaunchForRebind(evt, itemID, meta.TaskID)
+			if err := r.retireParkedLaunchesForRebind(evt.ThreadID, itemID, meta.TaskID); err != nil {
+				return store.Item{}, false, err
+			}
 		}
 		if !found {
 			// No existing row to annotate YET. For a subagent-owned
@@ -1048,7 +1050,11 @@ func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta ba
 	// across reconnect, look up the persisted launch via the
 	// items.meta.task_id index.
 	if toolUseID == "" {
-		if launch, found, err := r.findToolCallByTaskID(evt.ThreadID, meta.TaskID); err == nil && found {
+		launch, found, err := r.store.FindToolCallItemByTaskID(evt.ThreadID, meta.TaskID)
+		if err != nil {
+			return fmt.Errorf("triage: resolve the launch of task %s/%s: %w", evt.ThreadID, meta.TaskID, err)
+		}
+		if found {
 			toolUseID = launch.ID
 		}
 	}
@@ -2181,32 +2187,6 @@ func TaskIDFromItemMeta(metaJSON string) string {
 	return ""
 }
 
-// findToolCallByTaskID resolves the tool_call row on the thread whose
-// persisted items.meta JSON carries a matching task_id. Used by the
-// background completion router when the adapter's in-memory
-// task_id ↔ tool_use_id map has been lost (reconnect with a fresh
-// parser). Delegates to the store's indexed query (partial expression
-// index idx_items_meta_task_id) so the lookup is O(log N) instead of the
-// former O(items) scan + per-row JSON unmarshal.
-//
-// The store query does not filter by kind — the partial index already
-// narrows to rows carrying a task_id, which today are only ever
-// tool_call rows. The explicit kind guard below stays as a defence in
-// depth so a future unrelated kind that adopts task_id can't silently
-// be mistaken for a background tool completion. Returns (Item{}, false,
-// nil) when no row matches so callers can log-and-drop without
-// surfacing a user error.
-func (r *Router) findToolCallByTaskID(threadID, taskID string) (store.Item, bool, error) {
-	item, found, err := r.store.FindToolCallItemByTaskID(threadID, taskID)
-	if err != nil || !found {
-		return store.Item{}, false, err
-	}
-	if item.Kind != itemKindToolCall {
-		return store.Item{}, false, nil
-	}
-	return item, true, nil
-}
-
 // mergeItemMetaCorrelationFields merges optional correlation fields
 // itemMetaCorrelationFields is the meta-only correlation payload triage
 // merges into an existing tool_call row. Empty fields mean "leave the
@@ -2362,33 +2342,33 @@ func (r *Router) settleStashedTerminalForLateLaunch(evt provider.ProviderEvent, 
 	return true
 }
 
-// settleParkedLaunchForRebind closes a PARKED agent's round when a §E6
-// rebind moves its lifecycle onto a new carrier. A parked agent
-// (launchParkedOn) still holds the completed terminal of its last stop in
-// the stash, because that stop was read as a pause. The rebind says the
-// next round belongs to the carrier, so for the row the stash names the
-// pause WAS the end: settle it now, the way a late launch settles against
-// its stash, and the row's card renders at that stop. A stash naming the
-// carrier itself (a re-delivered rebind) or no stash at all (the agent
-// had settled, or was never parked) is left alone. A stash with no
-// tool_use_id is left for the session-end settle: resolving it by task_id
-// would find the ORIGINAL launch, which on a third round is not the row
-// that parked.
-func (r *Router) settleParkedLaunchForRebind(evt provider.ProviderEvent, carrierID, taskID string) {
-	stash, found, err := r.store.GetPendingBackgroundTerminal(evt.ThreadID, taskID)
+// retireParkedLaunchesForRebind ends a PARKED agent's run when a §E6
+// rebind moves its task onto a new carrier. The run's parked sibling
+// already records its stop (agent_stops.go), so the rows the task was
+// bound to that are parked leave the live set and nothing else is
+// written; the carrier's run writes its own stops. The stash the parked
+// stop kept for the wake is the previous binding's and goes too, so the
+// gates that read it do not take the carrier's run for an exited task. A
+// stash naming the carrier itself (a re-delivered rebind) is left alone.
+func (r *Router) retireParkedLaunchesForRebind(threadID, carrierID, taskID string) error {
+	retired, err := r.store.RetireParkedAgentLaunches(threadID, taskID, carrierID)
 	if err != nil {
-		log.Printf("triage: inspect parked terminal on rebind %s/%s: %v", evt.ThreadID, taskID, err)
-		return
+		return fmt.Errorf("triage: retire the parked rows of %s/%s: %w", threadID, taskID, err)
 	}
-	boundID := strings.TrimSpace(stash.ToolUseID)
-	if !found || boundID == "" || boundID == carrierID {
-		return
+	stash, stashed, err := r.store.GetPendingBackgroundTerminal(threadID, taskID)
+	if err != nil {
+		return fmt.Errorf("triage: inspect the parked terminal of %s/%s: %w", threadID, taskID, err)
 	}
-	r.settleStashedTerminalForLateLaunch(provider.ProviderEvent{
-		ThreadID:  evt.ThreadID,
-		ItemID:    boundID,
-		Timestamp: evt.Timestamp,
-	}, boundID, taskID)
+	dropped := false
+	if stashed && strings.TrimSpace(stash.ToolUseID) != carrierID {
+		if _, dropped, err = r.store.TakePendingBackgroundTerminal(threadID, taskID); err != nil {
+			return fmt.Errorf("triage: drop the parked terminal of %s/%s: %w", threadID, taskID, err)
+		}
+	}
+	if len(retired) > 0 || dropped {
+		r.emitBackgroundTasksChangedNudge(threadID)
+	}
+	return nil
 }
 
 // setStringFieldIfChanged writes value into parsed[key] when the

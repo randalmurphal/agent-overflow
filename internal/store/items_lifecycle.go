@@ -8,9 +8,10 @@ import (
 )
 
 // noCompletionSiblingSQL is the "this launch has not been settled yet" probe:
-// no row in the same thread names it through `completion_of`. Twelve of the
-// queries in this file ask exactly that question, and they used to spell it
-// out twelve times.
+// no row in the same thread names it through `completion_of` except a
+// parked stop, which is a pause and settles nothing (claude-wire.md §E6b).
+// Twelve of the queries in this file ask exactly that question, and they
+// used to spell it out twelve times.
 //
 // **The trailing `c.completion_of <> (empty)` term is redundant and
 // load-bearing.** The
@@ -34,6 +35,7 @@ const noCompletionSiblingSQL = `NOT EXISTS (
 	       WHERE c.thread_id = items.thread_id
 	         AND c.completion_of = items.id
 	         AND c.completion_of <> ''
+	         AND c.status <> 'parked'
 	    )`
 
 // noCompletionSiblingIndexedSQL is the same probe with the index named
@@ -46,6 +48,7 @@ const noCompletionSiblingIndexedSQL = `NOT EXISTS (
 	       WHERE c.thread_id = items.thread_id
 	         AND c.completion_of = items.id
 	         AND c.completion_of <> ''
+	         AND c.status <> 'parked'
 	    )`
 
 // liveBackgroundLaunchSQL is the top-level live background launch: a

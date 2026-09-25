@@ -236,11 +236,12 @@ var servedItemJoin = subagentServedJoinSQL("items.")
 
 // aggBorrowsCardSQL is a completion row that renders its launch's card
 // (decorateSubagentAnchors): any completion but a Codex spawn's, whose
-// card is its own snapshot, or a Codex wait carrier's. Only an anchor
-// lends one.
+// card is its own snapshot, a Codex wait carrier's, or a parked stop's,
+// which records one run and must not follow the launch's card as later
+// runs grow it (agent_stops.go). Only an anchor lends one.
 func aggBorrowsCardSQL(a string) string {
 	return "(" + a + "kind = 'tool_completion' AND " + a + "completion_of <> '' AND " +
-		a + "tool_name NOT IN ('wait_agent', 'collab_agent'))"
+		a + "tool_name NOT IN ('wait_agent', 'collab_agent') AND " + a + "status <> '" + ItemStatusParked + "')"
 }
 
 // aggBlankSQL is subagentPreviewBlank spelled for SQL trim(): the same

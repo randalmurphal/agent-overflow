@@ -2,8 +2,8 @@ package triage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
 	"strings"
 
 	"agent-overflow/internal/provider"
@@ -154,37 +154,48 @@ func (r *Router) persistResumePromptRow(evt provider.ProviderEvent, meta userTex
 //
 // The stash drop runs even when the prompt is empty: liveness is the
 // load-bearing half. An existing row (a re-delivered envelope) is left
-// alone.
+// alone. The reaper and the workspace lock read the stash, and the tray
+// reads the wake row (Store.CurrentParkedStop), so either change nudges
+// them once both are written.
 func (r *Router) persistWakePromptRow(evt provider.ProviderEvent, meta userTextMeta) error {
+	var dropErr error
+	dropped := false
 	if taskID := strings.TrimSpace(meta.text("task_id")); taskID != "" {
-		if _, dropped, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, taskID); err != nil {
-			log.Printf("triage: drop parked terminal on wake %s/%s: %v", evt.ThreadID, taskID, err)
-		} else if dropped {
-			// The reaper and the workspace lock read the stash; tell
-			// them the answer changed.
-			r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+		_, took, err := r.store.TakePendingBackgroundTerminal(evt.ThreadID, taskID)
+		if err != nil {
+			dropErr = fmt.Errorf("triage: drop parked terminal on wake %s/%s: %w", evt.ThreadID, taskID, err)
 		}
+		dropped = took
 	}
+	wrote, err := r.writeWakePromptRow(evt, meta)
+	if dropped || wrote {
+		r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+	}
+	return errors.Join(dropErr, err)
+}
 
+// writeWakePromptRow writes the wake's prompt row and reports whether it
+// wrote one.
+func (r *Router) writeWakePromptRow(evt provider.ProviderEvent, meta userTextMeta) (bool, error) {
 	prompt := strings.TrimSpace(evt.Content)
 	itemID := strings.TrimSpace(evt.ItemID)
 	parentID := eventParentID(evt)
 	if prompt == "" || itemID == "" || parentID == "" {
-		return nil
+		return false, nil
 	}
 	if _, found, err := r.store.GetThreadItem(evt.ThreadID, itemID); err != nil {
-		return fmt.Errorf("triage: inspect wake prompt %s/%s: %w", evt.ThreadID, itemID, err)
+		return false, fmt.Errorf("triage: inspect wake prompt %s/%s: %w", evt.ThreadID, itemID, err)
 	} else if found {
-		return nil
+		return false, nil
 	}
 
 	rootID, err := r.promptScopeRoot(evt.ThreadID, strings.TrimSpace(meta.text(provider.MetaTranscriptRootIDKey)), parentID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	turnIndex, err := r.turnIndexForScope(evt.ThreadID, rootID)
 	if err != nil {
-		return fmt.Errorf("triage: wake prompt turn index %s/%s: %w", evt.ThreadID, rootID, err)
+		return false, fmt.Errorf("triage: wake prompt turn index %s/%s: %w", evt.ThreadID, rootID, err)
 	}
 
 	fields := map[string]any{
@@ -198,10 +209,22 @@ func (r *Router) persistWakePromptRow(evt provider.ProviderEvent, meta userTextM
 	}
 	metaBytes, err := json.Marshal(fields)
 	if err != nil {
-		return fmt.Errorf("triage: encode wake prompt meta: %w", err)
+		return false, fmt.Errorf("triage: encode wake prompt meta: %w", err)
 	}
+	// The wake follows the stop it wakes from, the task's newest: the
+	// launch's, or a §E6 carrier's, whose stop does not complete the root
+	// the wake is filed under. The tray and the cards order the two by
+	// creation time (Store.CurrentParkedStop, the frontend's per-stop card
+	// rows), so the wake is written after the stop's millisecond.
 	now := eventTimestampMillis(evt)
-	return r.persistItem(store.Item{
+	stop, stopped, err := r.store.NewestTaskStop(evt.ThreadID, strings.TrimSpace(meta.text("task_id")))
+	if err != nil {
+		return false, err
+	}
+	if stopped && stop.CreatedAt >= now {
+		now = stop.CreatedAt + 1
+	}
+	err = r.persistItem(store.Item{
 		ID:        itemID,
 		ThreadID:  evt.ThreadID,
 		TurnIndex: turnIndex,
@@ -214,6 +237,7 @@ func (r *Router) persistWakePromptRow(evt provider.ProviderEvent, meta userTextM
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, nil)
+	return err == nil, err
 }
 
 func subagentPromptFromInput(input json.RawMessage) (string, error) {

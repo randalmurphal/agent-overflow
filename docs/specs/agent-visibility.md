@@ -63,6 +63,34 @@ belongs to the pane and background tray, independently of historical events.
 The Codex spawn contract may change only if Codex fundamentally changes its
 subagent model and the user explicitly authorizes the corresponding change.
 
+## Agent runs and stops
+
+A Claude background agent works in runs. The launch, or a §E6 resume
+carrier ([claude-wire.md](../references/claude-wire.md)), starts the first
+run of its row, and a wake (§E6b) starts each later one. Every stop of a
+run writes a completion-shaped sibling of that row at the write head
+(`tool_completion`, `completion_of` the launch or the carrier):
+
+- A parked stop, where the agent reported while a background command it
+  started still runs, writes a sibling with status `parked`. It settles
+  nothing: the row stays live, the tray reads the pause from the sibling,
+  and the wake starts the next run. The sibling carries the run's report
+  head as its payload preview, the report row's id, the commands the run
+  waits on, when the run began, whether a wake began it, and the usage the
+  stop reported.
+- The final stop writes the ending sibling (`completed`, `killed`,
+  `errored`), which settles the row.
+
+The card renders at each sibling and covers that run: the rows since the
+row's previous stop. A parked card shows the `parked` indicator,
+"Reported, waiting on N background command(s)" ("Reported again" for a
+woken run), the run's duration, and the report head collapsed; expanded,
+it shows the full report, loaded by id, above the run's digest. Ending
+cards read as other completion cards do. A resume carrier's runs write
+their own siblings, so its cards follow the launch's, and nothing keyed on
+the task id merges the runs of a launch and its carriers. An agent's stop
+rings no bell, and nothing hides a stop's card later.
+
 ## Key decisions
 
 - Card = today's inline subagent card for every kind. Awaited vs background
@@ -190,11 +218,13 @@ subagent model and the user explicitly authorizes the corresponding change.
   approval itself shows ONLY in the composer's approval UI, with no pill
   on the card, awaited or background (user ruling 2026-08-23 reverses
   Q10b).
-- The bell is the timeline `notification` row and nothing else (no
-  toast, no OS notification), and it fires for top-level nodes only;
-  nested completions render without a bell (Q11). A parked async
-  agent (claude-wire.md §E6b) rings it at every stop, and the frontend
-  hides all of them together once the completed sibling lands.
+- An agent's stops ring no bell at any depth: each is a card at its
+  sibling, in the main timeline for a top-level agent and inside the
+  parent's card for a nested one (Q11). A background command's bell is
+  the timeline `notification` row and nothing else (no toast, no OS
+  notification); it fires for top-level commands only, and the timeline
+  hides it once the command's completion renders
+  (`utils/notificationFilter.ts`, which never touches an agent's rows).
 - A DETACHED launch (async ack, `run_in_background`, a Codex spawn, a
   SendMessage resume carrier, or backgrounded mid-flight:
   `launchRunsDetached`) keeps the launch row it had before this feature,
@@ -216,16 +246,12 @@ subagent model and the user explicitly authorizes the corresponding change.
   direct tool call as its activity line. A parked agent (claude-wire.md
   §E6b) is not running and the tray says so: the `parked` indicator,
   "Waiting on N background command(s)" in place of the activity line,
-  and the head of the report it sent; its parked bell carries the same
-  report head and opens the full report in place (`ParkedAgentBell`),
-  so what the agent told the main thread is on the timeline while no
-  card exists. The bell is hidden on the strength of the completion
-  rendering (`utils/notificationFilter.ts`), which is why the card sits
-  at the sibling rather than folding it onto a card at the launch (the
-  fold-and-drop version left the transcript with no trace of the agent
-  finishing, regression 2026-08-22; tripwire
-  `utils/backgroundCompletionVisibility.test.ts`). Awaited launches are
-  unchanged: one card at the launch, completing in place.
+  and the head of the report it sent, read from its parked stop
+  ([§Agent runs and stops](#agent-runs-and-stops)), whose card is on
+  the timeline. The card sits at the sibling rather than folding it onto
+  a card at the launch, so every stop leaves its trace where it happened
+  (tripwire `utils/backgroundCompletionVisibility.test.ts`). Awaited
+  launches are unchanged: one card at the launch, completing in place.
 - Row actions (open-in-pane, background, stop) render before the
   status / duration / timestamp columns on every row so the timestamp
   column stays aligned (`ToolHeaderMeta`'s `actions` slot; chat
@@ -283,7 +309,9 @@ subagent model and the user explicitly authorizes the corresponding change.
       cumulative spend (fresh input + cache writes + all output), which
       never goes backwards.
 - [ ] A Codex child's answer appears exactly once, as its own message.
-- [ ] Top-level completions notify; nested completions do not.
+- [ ] Every stop of a top-level agent is a card in the main timeline and a
+      nested agent's is inside its parent's card; no agent stop rings a
+      bell.
 - [x] The scale bar holds at 100 Claude agents: launch, stream and
       settle (`e2e/tests/agent-scale.spec.ts`); a Stop of 100 agents
       with 3 shells each, launched in an earlier turn, settles every row

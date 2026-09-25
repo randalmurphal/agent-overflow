@@ -1921,6 +1921,61 @@ describe('groupItemsBySubagent — launch kinds', () => {
     expect(roundThreeLeaves).toHaveLength(0);
   });
 
+  // Every stop of a run is a sibling of the row that started the run: the
+  // launch for round 1, the carrier for a resume. A parked stop's card owns
+  // the rows of its run; the wake that follows opens the next one.
+  it('gives each stop of the launch and of a carrier its own card with its own run', () => {
+    const agentMeta = toolMeta({ toolName: 'Agent', input: { subagent_type: 'general-purpose' } });
+    const carrierMeta = toolMeta({ task_id: 'a1', transcript_root_id: 'toolu_root', subagent_type: 'general-purpose' });
+    const wakeMeta = toolMeta({ subagent_wake_prompt: true });
+    const row = (id: string, itemIndex: number, createdAt: number, fields: Partial<Item> = {}) => mkItem({
+      id, itemIndex, createdAt, kind: 'tool_call', toolName: 'Bash', parentId: 'toolu_root', summary: id, ...fields,
+    });
+    const stop = (id: string, of: string, toolName: string, itemIndex: number, createdAt: number, status: Item['status']) => mkItem({
+      id, itemIndex, createdAt, kind: 'tool_completion', toolName, isBackground: true, completionOf: of, status, summary: `${id} -> ${status}`,
+    });
+    const nodes = groupItemsBySubagent([
+      row('toolu_root', 0, 100, { toolName: 'Agent', isBackground: true, status: 'running', parentId: undefined, meta: agentMeta }),
+      row('round1-tool', 1, 110),
+      stop('complete:toolu_root:parked:p1', 'toolu_root', 'Agent', 2, 112, 'parked'),
+      row('wake-1', 3, 113, { kind: 'user_text', role: 'user', toolName: undefined, meta: wakeMeta }),
+      row('round1b-tool', 4, 115),
+      stop('complete:toolu_root', 'toolu_root', 'Agent', 5, 120, 'completed'),
+      row('toolu_resume', 6, 200, { toolName: 'SendMessage', isBackground: true, status: 'running', parentId: undefined, meta: carrierMeta }),
+      row('user:subagent-prompt:toolu_resume', 7, 200, {
+        kind: 'user_text', role: 'user', toolName: undefined,
+        meta: toolMeta({ subagent_resume_prompt: true, resume_carrier_id: 'toolu_resume' }),
+      }),
+      row('round2-tool', 8, 210),
+      stop('complete:toolu_resume:parked:p2', 'toolu_resume', 'SendMessage', 9, 212, 'parked'),
+      row('wake-2', 10, 213, { kind: 'user_text', role: 'user', toolName: undefined, meta: wakeMeta }),
+      row('round2b-tool', 11, 215),
+      stop('complete:toolu_resume', 'toolu_resume', 'SendMessage', 12, 230, 'completed'),
+    ]);
+
+    expect(nodes.map((node) => timelineNodeItemId(node))).toEqual([
+      'toolu_root',
+      'complete:toolu_root:parked:p1',
+      'complete:toolu_root',
+      'toolu_resume',
+      'complete:toolu_resume:parked:p2',
+      'complete:toolu_resume',
+    ]);
+    const cards = [nodes[1], nodes[2], nodes[4], nodes[5]].map((node) => expectGroup(node));
+    expect(cards.map((card) => [card.parent.id, card.completion?.id])).toEqual([
+      ['toolu_root', 'complete:toolu_root:parked:p1'],
+      ['toolu_root', 'complete:toolu_root'],
+      ['toolu_resume', 'complete:toolu_resume:parked:p2'],
+      ['toolu_resume', 'complete:toolu_resume'],
+    ]);
+    expect(cards.map((card) => card.children.map((child) => timelineNodeItemId(child)))).toEqual([
+      ['round1-tool'],
+      ['wake-1', 'round1b-tool'],
+      ['user:subagent-prompt:toolu_resume', 'round2-tool'],
+      ['wake-2', 'round2b-tool'],
+    ]);
+  });
+
   it('keeps an ordinary SendMessage a leaf and does not adopt rows under it', () => {
     const nodes = groupItemsBySubagent([
       mkItem({

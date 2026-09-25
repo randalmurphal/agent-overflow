@@ -350,11 +350,12 @@ already knows.
   has a live backgrounded direct child that is a shell or a watch task
   (`Store.ListLiveBackgroundChildLaunches`). A nested async AGENT does
   not park its parent; the CLI never wakes for one.
-- A parked stop keeps the stash and writes no sibling. It writes a
-  one-line bell with no payload naming the commands the agent waits on;
-  the final stop's bell carries the report, and the frontend hides every
-  bell for the task once the completed sibling lands. Usage still folds
-  onto the launch. The live list serves the launch's run state
+- A parked stop keeps the stash and writes a `parked` sibling of the
+  row that started the run (`writeParkedStop`, `agent_stops.go`): the
+  report head, the report row's id, the commands the agent waits on and
+  the stop's usage. It settles nothing and ends nothing. No agent stop
+  writes a bell. The live list serves the launch's run state from its
+  newest stop
   ([claude-wire.md §E6b](../references/claude-wire.md#e6b-waking-a-parked-async-agent-task_started-without-tool_use_id)).
 - The wake is one `EventUserText` from the parser
   (`user:subagent-wake:<shell tool_use_id>`, meta
@@ -365,13 +366,17 @@ already knows.
 - Only a stop whose typed status can be a pause parks: a completed or
   statusless report. A killed, stopped or failed report ends the agent
   however many shells it owns (`taskStatusEnds`).
-- Settlement: the first stop with no live owned shell, any ending
-  status above (a Stop's `task_updated{killed}` included), a §E6 rebind
-  onto a parked agent
-  (`settleParkedLaunchForRebind`: the bound row settles from its stash
-  before the carrier takes over, and the carrier then parks and wakes
-  by the same rules), and session end. A `TaskOutput` observation of a
-  parked agent settles nothing (`observeBackgroundTaskTerminal`).
+- The ending sibling: the first stop with no live owned shell, any
+  ending status above (a Stop's `task_updated{killed}` included), and
+  session end. A §E6 rebind onto a parked agent writes no sibling for
+  the bound row, whose parked stop already records its run
+  (`retireParkedLaunchesForRebind`); the carrier's runs then park, wake
+  and end by the same rules. A `TaskOutput` observation of a parked
+  agent writes nothing (`observeBackgroundTaskTerminal`).
+- A wake is written in a later millisecond than the stop it follows,
+  and a stop in a later millisecond than the wake before it: the tray
+  (`Store.CurrentParkedStop`) and the cards order the two by creation
+  time.
 
 ### Agent-owned rows
 
@@ -393,8 +398,8 @@ turn (`internal/store/agent_rows.go`).
   the turn's prompts; the agent's end drops its own, each with a
   `lost` resolution that clears it on every client
   (`internal/triage/agent_requests.go`).
-- The agent's end settles its rows. Its completion sibling is written
-  with `store.UpsertAgentEnd`, which settles every row still open under
+- The agent's end settles its rows. Its ending sibling (never a parked
+  one) is written with `store.UpsertAgentEnd`, which settles every row still open under
   the agent in the same transaction. Before that write the router
   settles the streams it holds for the agent and persists the rows
   queued behind them (`persistAgentEndLocked`).
@@ -462,7 +467,8 @@ Implementation:
    `TaskOutput` `tool_result` (the model explicitly polled), drains
    the stash via `TakePendingBackgroundTerminal` and, **only when the
    launch is actually backgrounded** (`launch.IsBackground`) **and not
-   parked** (§Parking above), writes
+   parked** (§Parking above: a parked stop keeps the stash and writes
+   its `parked` sibling instead), writes
    the `tool_completion` sibling at the current write head and emits
    `provider:background_task_state{state:"drained"}`. An INLINE launch
    (see above) still drains the stash (the drain is the required
@@ -473,12 +479,11 @@ Implementation:
    drain, the tray surfaces both rows joined together until they age
    out via retention. When the `task_notification` event itself performs
    the drain, the sibling is written (and reaches the wire) **before**
-   the notification row: the frontend hides the report-bearing
+   the notification row: the frontend hides a background command's
    notification row only once a completed lifecycle row with the same
    `task_id` exists (`notificationFilter.ts`), so notification-first
-   emission flashed the agent's full report into the timeline for one
-   flush and yanked it back out on the next
-   (bug-report-20260801T024731Z).
+   emission would show the bell for one flush and remove it on the
+   next. An agent's stop writes no notification row.
 3. **`task_updated` with `status="killed"`** is a deliberate carve-out:
    `killed` means the CLI ended the process: the user's `stop_task`
    (the StopClaudeTask binding behind the tray's Stop button), a turn

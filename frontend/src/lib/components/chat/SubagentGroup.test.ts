@@ -1,6 +1,7 @@
-import { describe, expect, it, beforeAll } from 'vitest';
+import { describe, expect, it, beforeAll, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import SubagentGroupTestHarness from './SubagentGroupTestHarness.svelte';
+import { setBindingMock } from '../../../test/mocks/bindings-app';
 import { withoutNestedAgentCards } from '../../utils/subagentDigest';
 import type { Item } from '../../types/models';
 import type { SubagentGroupNode, TimelineLeaf, TimelineNode } from '../../utils/subagentGrouping';
@@ -762,4 +763,127 @@ describe('<SubagentGroup>', () => {
     expect(queryByTestId('leaf')).toBeNull();
   });
 
+});
+
+// A parked stop's card (utils/parkedStop.ts): the card of one run of a
+// background agent that reported and waits on background commands.
+describe('<SubagentGroup> at a parked stop', () => {
+  const report = mkItem({
+    id: 'text:agent:report-1',
+    kind: 'assistant_text',
+    parentId: 'bg',
+    summary: 'Found the race in **fork_moves.go**.\n\nThe log is keyed by transaction.',
+  });
+
+  function parkedCard(meta: Record<string, unknown> = {}, children: TimelineNode[] = []): SubagentGroupNode {
+    const launch = {
+      ...mkAgentParent('bg', { status: 'running', isBackground: true, input: { description: 'gate watcher', subagent_type: 'Explore' } }),
+      createdAt: 1_000,
+      updatedAt: 1_000,
+    };
+    const stop = mkItem({
+      id: 'complete:bg:parked:u1',
+      kind: 'tool_completion',
+      toolName: 'Agent',
+      status: 'parked',
+      isBackground: true,
+      completionOf: 'bg',
+      completionLaunch: launch,
+      createdAt: 61_000,
+      updatedAt: 99_000,
+      payloadMeta: JSON.stringify({ preview: 'Found the race in **fork_moves.go**.' }),
+      meta: JSON.stringify({
+        task_id: 'task-bg',
+        notification_output_loaded: true,
+        parked_commands: 1,
+        parked_report_item_id: report.id,
+        run_started_at: 31_000,
+        ...meta,
+      }),
+    });
+    return mkGroup({ parentId: 'bg', parentItem: launch, anchor: stop, groupKey: stop.id, completion: stop, children, descendantCount: children.length });
+  }
+
+  it('says the agent reported, what it waits on, the report head and its run’s duration', () => {
+    const { getByTestId, queryByTestId } = render(SubagentGroupTestHarness, { props: { group: parkedCard() } });
+    const card = getByTestId('subagent-group');
+    expect(card).toHaveAttribute('data-anchor-id', 'complete:bg:parked:u1');
+    expect(card).toHaveAttribute('data-status', 'parked');
+    const status = getByTestId('subagent-group-status');
+    expect(status).toHaveAttribute('data-state', 'parked');
+    expect(status.querySelector('[data-testid="indicator"]')?.getAttribute('aria-label')).toBe('Parked');
+    expect(getByTestId('subagent-group-parked-status').textContent?.trim()).toBe('Reported, waiting on 1 background command');
+    expect(getByTestId('subagent-group-preview').textContent?.trim()).toBe('Found the race in **fork_moves.go**.');
+    // From the run's start to the stop, not from the launch or to a later update.
+    expect(getByTestId('subagent-group-duration').textContent?.trim()).toBe('30s');
+    expect(queryByTestId('subagent-group-error')).toBeNull();
+  });
+
+  it('says "Reported again" for a woken run and pluralizes the commands', () => {
+    const { getByTestId } = render(SubagentGroupTestHarness, {
+      props: { group: parkedCard({ run_woke: true, parked_commands: 2 }) },
+    });
+    expect(getByTestId('subagent-group-parked-status').textContent?.trim()).toBe('Reported again, waiting on 2 background commands');
+  });
+
+  it('expands to the full report above the run’s digest, which drops the report text', async () => {
+    const read = setBindingMock('GetThreadItem', vi.fn(async () => report));
+    const { getByRole, getByTestId, queryByTestId, getAllByTestId } = render(SubagentGroupTestHarness, {
+      props: { group: parkedCard({}, [mkToolLeaf('tool-1', 'Bash: gate run 1'), mkLeaf('text-1', 'Found the race')]) },
+    });
+    expect(read).not.toHaveBeenCalled();
+
+    await fireEvent.click(getByRole('button', { name: /^Toggle / }));
+    await waitFor(() => expect(getByTestId('subagent-group-parked-report').textContent).toContain('The log is keyed by transaction.'));
+    expect(read).toHaveBeenCalledWith('thread-1', report.id);
+    const region = getByTestId('subagent-group-parked-report-region');
+    expect(region.compareDocumentPosition(getByTestId('subagent-group-body')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(getAllByTestId('leaf').map((el) => el.getAttribute('data-id'))).toEqual(['tool-1']);
+
+    await fireEvent.click(getByRole('button', { name: /^Toggle / }));
+    expect(queryByTestId('subagent-group-parked-report')).toBeNull();
+  });
+
+  it('shows a failed report load with a retry, and a report row that no longer exists', async () => {
+    const read = setBindingMock('GetThreadItem', vi.fn()
+      .mockRejectedValueOnce(new Error('backend unreachable'))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(report));
+    const { getByRole, getByTestId, queryByTestId } = render(SubagentGroupTestHarness, { props: { group: parkedCard() } });
+
+    await fireEvent.click(getByRole('button', { name: /^Toggle / }));
+    await waitFor(() => expect(getByTestId('subagent-group-parked-report-error').textContent).toContain('backend unreachable'));
+    expect(queryByTestId('subagent-group-parked-report')).toBeNull();
+
+    await fireEvent.click(getByTestId('subagent-group-parked-report-retry'));
+    await waitFor(() => expect(getByTestId('subagent-group-parked-report-error').textContent).toContain('no longer in this thread'));
+
+    await fireEvent.click(getByTestId('subagent-group-parked-report-retry'));
+    await waitFor(() => expect(getByTestId('subagent-group-parked-report')).toBeInTheDocument());
+    expect(queryByTestId('subagent-group-parked-report-error')).toBeNull();
+    expect(read).toHaveBeenCalledTimes(3);
+  });
+
+  it('shows no report region for a run that wrote no report, and keeps the digest’s text', async () => {
+    const read = setBindingMock('GetThreadItem', vi.fn(async () => report));
+    const { getByRole, queryByTestId, getAllByTestId } = render(SubagentGroupTestHarness, {
+      props: { group: parkedCard({ parked_report_item_id: undefined }, [mkToolLeaf('tool-1', 'Bash: gate run 1'), mkLeaf('text-1', 'prose')]) },
+    });
+    await fireEvent.click(getByRole('button', { name: /^Toggle / }));
+    expect(queryByTestId('subagent-group-parked-report-region')).toBeNull();
+    expect(getAllByTestId('leaf').map((el) => el.getAttribute('data-id'))).toEqual(['tool-1', 'text-1']);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('leaves an ending card as it was: no parked sentence, no indicator', () => {
+    const group = parkedCard();
+    const ended = { ...group.completion!, id: 'complete:bg', status: 'completed' as const, meta: JSON.stringify({ task_id: 'task-bg', notification_output_loaded: true }) };
+    const { getByTestId, queryByTestId } = render(SubagentGroupTestHarness, {
+      props: { group: { ...group, anchor: ended, completion: ended, groupKey: ended.id } },
+    });
+    expect(queryByTestId('subagent-group-parked-status')).toBeNull();
+    expect(queryByTestId('subagent-group-status')).toBeNull();
+    expect(getByTestId('subagent-group')).toHaveAttribute('data-status', 'completed');
+    expect(getByTestId('subagent-group-duration').textContent?.trim()).toBe('1m 38s');
+  });
 });

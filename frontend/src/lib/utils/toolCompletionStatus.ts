@@ -29,6 +29,8 @@ export function deriveCompletionStatus(
 ): CompletionStatus {
   if (item.kind === 'tool_call' && item.isBackground === true) return null;
   if (item.status === 'streaming' || item.status === 'running') return null;
+  // A parked stop is a pause of a background agent's run, not its end.
+  if (item.status === 'parked') return null;
   if (item.status === 'errored' || item.status === 'killed' || item.status === 'declined') {
     return 'failure';
   }

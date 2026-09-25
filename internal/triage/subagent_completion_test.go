@@ -151,11 +151,12 @@ func childIDs(items []store.Item) []string {
 }
 
 // ---------------------------------------------------------------------
-// Q11: the bell is top-level only.
+// Q11: an agent's stop is its card, never a bell.
 // ---------------------------------------------------------------------
 
-// A top-level agent's notification IS the thread's bell, so it persists.
-func TestTaskNotificationWritesTheBellForATopLevelLaunch(t *testing.T) {
+// A top-level agent's notification writes its completion sibling, whose
+// card is the timeline record, and no bell.
+func TestTaskNotificationWritesNoBellForATopLevelAgent(t *testing.T) {
 	router, st, _ := newTestRouter(t)
 	createTestThread(t, st, "t1")
 	seedOpenTurn(t, router, st, "t1", 0)
@@ -164,9 +165,8 @@ func TestTaskNotificationWritesTheBellForATopLevelLaunch(t *testing.T) {
 	stashAgentTerminal(t, router, "t1", "agent-top", "task-top")
 	notifyAgent(t, router, "t1", "agent-top", "task-top", "", nil)
 
-	notifications := findItemsByKind(t, st, "t1", itemKindNotification)
-	if len(notifications) != 1 {
-		t.Fatalf("expected 1 notification row for a top-level launch, got %d", len(notifications))
+	if notifications := findItemsByKind(t, st, "t1", itemKindNotification); len(notifications) != 0 {
+		t.Fatalf("a top-level agent's stop wrote %d notification rows, want none", len(notifications))
 	}
 	if dones := findItemsByKind(t, st, "t1", itemKindBackgroundDone); len(dones) != 1 {
 		t.Fatalf("expected 1 completion sibling, got %d", len(dones))

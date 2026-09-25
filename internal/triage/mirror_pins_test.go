@@ -6,13 +6,12 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 
-	"agent-overflow/internal/store"
+	"agent-overflow/internal/provider"
 )
 
 // repoRelativePath resolves a repo-relative path from this source file's own
@@ -171,23 +170,6 @@ func TestAgentRunStateMetaKeysMatchFrontendMirror(t *testing.T) {
 	}
 }
 
-// A parked agent's served report preview is the head the card's preview
-// rule scans, so the card renders it as it would the full row.
-func TestSubagentReportPreviewMatchesTheCardScanWindow(t *testing.T) {
-	const frontend = "frontend/src/lib/utils/subagentGrouping.ts"
-	source, err := os.ReadFile(repoRelativePath(t, frontend))
-	if err != nil {
-		t.Fatalf("read %s: %v", frontend, err)
-	}
-	match := regexp.MustCompile(`(?m)^export const PREVIEW_SCAN_CHARS = (\d+);$`).FindSubmatch(source)
-	if match == nil {
-		t.Fatalf("%s no longer declares export const PREVIEW_SCAN_CHARS", frontend)
-	}
-	if got, want := string(match[1]), strconv.Itoa(store.SubagentReportPreviewRunes); got != want {
-		t.Errorf("%s PREVIEW_SCAN_CHARS = %s, store.SubagentReportPreviewRunes = %s", frontend, got, want)
-	}
-}
-
 // The Codex adapter puts a `userMessage` echo's `clientId` on the event meta
 // under its own unexported constant, and triage reads it back by name to
 // decide which pending send an echo belongs to. Two spellings of one key with
@@ -207,28 +189,36 @@ func TestUserEchoClientIDKeyMatchesTheProviderConstant(t *testing.T) {
 	}
 }
 
-// A parked stop's bell names the round's report in stored meta; the
-// timeline reads those keys back by name.
-func TestParkedAgentBellMetaKeysMatchFrontendMirror(t *testing.T) {
-	const backend = "internal/triage/agent_run_state.go"
-	const frontend = "frontend/src/lib/utils/parkedAgentBell.ts"
-	backendValues := goStringConstants(t, backend)
+// A parked stop's sibling records its run in stored meta and its status;
+// the timeline reads both back by name.
+func TestParkedStopMetaKeysMatchFrontendMirror(t *testing.T) {
+	const frontend = "frontend/src/lib/utils/parkedStop.ts"
 	frontendSource, err := os.ReadFile(repoRelativePath(t, frontend))
 	if err != nil {
 		t.Fatalf("read %s: %v", frontend, err)
 	}
-	for _, name := range []string{
-		"notificationKindParkedAgent",
-		"metaKeyParkedCommands",
-		"metaKeyParkedReportItemID",
-		"metaKeyParkedReportPreview",
+	for backend, names := range map[string][]string{
+		"internal/triage/agent_stops.go": {"metaKeyParkedCommands", "metaKeyParkedReportItemID", "metaKeyRunStartedAt", "metaKeyRunWoke"},
+		"internal/store/agent_stops.go":  {"ItemStatusParked"},
 	} {
-		value, ok := backendValues[name]
-		if !ok || value == "" {
-			t.Fatalf("%s no longer declares %s", backend, name)
+		backendValues := goStringConstants(t, backend)
+		for _, name := range names {
+			value, ok := backendValues[name]
+			if !ok || value == "" {
+				t.Fatalf("%s no longer declares %s", backend, name)
+			}
+			if !strings.Contains(string(frontendSource), `'`+value+`'`) {
+				t.Errorf("%s does not mirror %s = %q", frontend, name, value)
+			}
 		}
-		if !strings.Contains(string(frontendSource), `'`+value+`'`) {
-			t.Errorf("%s does not mirror %s = %q", frontend, name, value)
-		}
+	}
+}
+
+// The store finds an agent's wakes by the marker the parser writes on the
+// wake row, under its own spelling: the store does not import provider.
+func TestStoreWakeMarkerMatchesTheProviderKey(t *testing.T) {
+	const rel = "internal/store/agent_stops.go"
+	if got := goStringConstants(t, rel)["wakePromptMetaKey"]; got != provider.MetaSubagentWakePromptKey {
+		t.Fatalf("%s wakePromptMetaKey = %q, provider.MetaSubagentWakePromptKey = %q", rel, got, provider.MetaSubagentWakePromptKey)
 	}
 }

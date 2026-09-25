@@ -14,7 +14,10 @@ Conversation history has stable, thread-local identity and ordering:
 - New `turn_index` values are allocated under the thread action lock. Background
   child work remains attached to the turn that launched it.
 - `parent_id` names a `tool_call`. A `tool_completion` names one background
-  `tool_call` through `completion_of`, with at most one completion per launch.
+  `tool_call` through `completion_of`, with at most one ending completion per
+  launch. A background agent's run that pauses adds a `parked` completion of
+  the same launch at each pause; a parked completion settles nothing
+  ([agent runs and stops](../specs/agent-visibility.md#agent-runs-and-stops)).
 
 The schema, constraints, and indexes are documented in
 [`sqlite-store.md`](sqlite-store.md). Message placement and the distinction
