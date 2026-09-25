@@ -460,7 +460,7 @@ visible-row rule holds at every count.
 
 Subagent child rows never enter the main pane. Its item stream drops a
 row outside the window's scope, so the pane keeps no per-child state. A
-collapsed card reads its entry count and preview from the backend
+collapsed card reads its descendant count and preview from the backend
 decoration on its launch row (`decoratedSubagentAggregates`), which triage
 re-pushes after the children are written (`internal/triage/wire_items.go`).
 Inline cards and agent panes own independent paged scopes and receive live

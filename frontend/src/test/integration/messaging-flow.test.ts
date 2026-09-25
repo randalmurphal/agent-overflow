@@ -634,6 +634,17 @@ describe('App integration — messaging flow', () => {
       '[data-testid="command-output-status"]',
     );
     expect(launchStatus?.getAttribute('data-state')).toBe('backgrounded');
+
+    // 5. The store's settle trigger clears the launch's liveness bit and the
+    // anchor refresh pushes the launch row as stored. Its dots turn off; the
+    // row stays where it is.
+    const timelineRow = '[data-item-id="bg-launch"]';
+    const launchSlot = document.querySelector(`${timelineRow} [data-testid="command-output-status-slot"]`);
+    expect(launchSlot?.querySelector('[data-testid="command-output-status"]')?.getAttribute('data-state')).toBe('backgrounded');
+    emitItemEventUpsert({ ...launchItem, meta: JSON.stringify({ live_background_active: false }), rev: 2 });
+    await flush();
+    await waitFor(() => expect(document.querySelector(`${timelineRow} [data-testid="command-output-status"]`)).toBeNull());
+    expect(document.querySelector(`${timelineRow} [data-testid="command-output-status-slot"]`)).toBe(launchSlot);
   });
 
   // Multi-result-per-turn cascade: the backend emits one

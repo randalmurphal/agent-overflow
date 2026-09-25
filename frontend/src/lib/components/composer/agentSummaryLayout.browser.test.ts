@@ -117,9 +117,10 @@ it('inline agent metrics stay visible and previews align at narrow and wide widt
         const card = view.getByTestId('subagent-group');
         const name = view.getByTestId('subagent-group-label');
         const preview = view.getByTestId('subagent-group-preview');
-        for (const id of ['label', 'tools', 'tokens', 'count', 'preview', 'duration']) {
+        for (const id of ['label', 'tools', 'tokens', 'preview', 'duration']) {
           expectInside(view.getByTestId(`subagent-group-${id}`), card);
         }
+        expect(view.queryByTestId('subagent-group-count')).toBeNull();
         expect(Math.abs(name.getBoundingClientRect().left - preview.getBoundingClientRect().left)).toBeLessThan(1);
         if (width < 576) expect(view.getByTestId('subagent-group-tools').getBoundingClientRect().top).toBeGreaterThanOrEqual(name.getBoundingClientRect().bottom);
       }

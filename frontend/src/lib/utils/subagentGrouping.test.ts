@@ -1922,9 +1922,9 @@ describe('groupItemsBySubagent — launch kinds', () => {
   });
 
   // Every stop of a run is a sibling of the row that started the run: the
-  // launch for round 1, the carrier for a resume. A parked stop's card owns
-  // the rows of its run; the wake that follows opens the next one.
-  it('gives each stop of the launch and of a carrier its own card with its own run', () => {
+  // launch for round 1, the carrier for a resume. Each stop's card is the
+  // agent as of that stop: every row of its round up to the stop.
+  it('gives each stop of the launch and of a carrier its own card with every row up to it', () => {
     const agentMeta = toolMeta({ toolName: 'Agent', input: { subagent_type: 'general-purpose' } });
     const carrierMeta = toolMeta({ task_id: 'a1', transcript_root_id: 'toolu_root', subagent_type: 'general-purpose' });
     const wakeMeta = toolMeta({ subagent_wake_prompt: true });
@@ -1970,9 +1970,9 @@ describe('groupItemsBySubagent — launch kinds', () => {
     ]);
     expect(cards.map((card) => card.children.map((child) => timelineNodeItemId(child)))).toEqual([
       ['round1-tool'],
-      ['wake-1', 'round1b-tool'],
+      ['round1-tool', 'wake-1', 'round1b-tool'],
       ['user:subagent-prompt:toolu_resume', 'round2-tool'],
-      ['wake-2', 'round2b-tool'],
+      ['user:subagent-prompt:toolu_resume', 'round2-tool', 'wake-2', 'round2b-tool'],
     ]);
   });
 
@@ -3023,6 +3023,45 @@ describe('groupItemsBySubagent — immutable completion cards across repeated ex
     expect(expectGroup(nodes[2]).anchor.id).toBe('complete:spawn-1:delivery:bbb');
     expect(nodes.filter((node) => node.kind === 'group')).toHaveLength(2);
     expectNoDuplicateKeys(nodes);
+  });
+
+  it('slices a bound-less Codex delivery after the previous one; a Claude ending card starts at the launch', () => {
+    const child = (id: string, parentId: string, createdAt: number) =>
+      mkItem({ id, parentId, itemIndex: createdAt, createdAt, kind: 'tool_call', toolName: 'Bash' });
+    const codexSpawnRow = { ...codexSpawn('spawn-1', 0), createdAt: 0 };
+    const codex = groupItemsBySubagent([
+      codexSpawnRow,
+      child('codex-a', 'spawn-1', 1),
+      delivery('spawn-1', 'aaa', 2, { createdAt: 2, updatedAt: 2 }),
+      child('codex-b', 'spawn-1', 3),
+      delivery('spawn-1', 'bbb', 4, { createdAt: 4, updatedAt: 4 }),
+    ]);
+    const codexCards = codex.filter((node) => node.kind === 'group').map(expectGroup);
+    expect(codexCards.map((card) => card.children.map((c) => expectLeaf(c).item.id))).toEqual([
+      ['codex-a'],
+      ['codex-b'],
+    ]);
+
+    const claudeLaunch = mkItem({
+      id: 'agent-1', itemIndex: 0, createdAt: 0, kind: 'tool_call', toolName: 'Agent', isBackground: true,
+      status: 'running', meta: toolMeta({ toolName: 'Agent', input: { description: 'investigate' } }),
+    });
+    const claudeStop = (id: string, createdAt: number, status: Item['status']) => mkItem({
+      id, itemIndex: createdAt, createdAt, kind: 'tool_completion', toolName: 'Agent', isBackground: true,
+      completionOf: 'agent-1', status,
+    });
+    const claude = groupItemsBySubagent([
+      claudeLaunch,
+      child('claude-a', 'agent-1', 1),
+      claudeStop('complete:agent-1:parked:p1', 2, 'parked'),
+      child('claude-b', 'agent-1', 3),
+      claudeStop('complete:agent-1', 4, 'completed'),
+    ]);
+    const claudeCards = claude.filter((node) => node.kind === 'group').map(expectGroup);
+    expect(claudeCards.map((card) => card.children.map((c) => expectLeaf(c).item.id))).toEqual([
+      ['claude-a'],
+      ['claude-a', 'claude-b'],
+    ]);
   });
 
   it('leaves an awaited launch anchored on itself, key unchanged', () => {

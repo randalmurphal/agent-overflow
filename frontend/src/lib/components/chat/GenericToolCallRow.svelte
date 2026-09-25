@@ -214,7 +214,7 @@
       && (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming'),
   );
 
-  let indicatorState = $derived(indicatorStateForItem(projectedStatusItem, { meta: statusMeta }));
+  let indicatorState = $derived(indicatorStateForItem(projectedStatusItem, { payloadMeta: statusMeta }));
   // Claude's SendMessage ack, stamped by triage as `send_reply`: the one
   // line the CLI's own TUI prints under the call ("Message queued for
   // …", "No agent named …"). Red as the row error when the CLI refused

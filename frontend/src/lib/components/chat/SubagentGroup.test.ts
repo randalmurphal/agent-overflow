@@ -127,7 +127,7 @@ function mkGroup(
 }
 
 describe('<SubagentGroup>', () => {
-  it('renders collapsed by default with the agent label, entry count, and robot icon', () => {
+  it('renders collapsed by default with the agent label and robot icon, and no row count', () => {
     const group = mkGroup({
       parentId: 'p1',
       parentItem: mkAgentParent('p1', {
@@ -145,11 +145,9 @@ describe('<SubagentGroup>', () => {
 
     expect(getByTestId('subagent-group').getAttribute('data-tool-kind')).toBe('robot');
     expect(getByTestId('subagent-group-label').textContent).toContain('Explore');
-    expect(getByTestId('subagent-group-count').textContent).toContain('2 entries');
-    expect(getByTestId('subagent-group-count')).toHaveAttribute(
-      'aria-label',
-      '2 timeline entries inside this subagent group',
-    );
+    // Tools and tokens only: the descendant count drives loading, never a label.
+    expect(queryByTestId('subagent-group-count')).toBeNull();
+    expect(getByTestId('subagent-group').textContent).not.toMatch(/\bentr(y|ies)\b/);
     expect(queryByTestId('leaf')).toBeNull();
   });
 
@@ -728,23 +726,8 @@ describe('<SubagentGroup>', () => {
       props: { group },
     });
     await fireEvent.click(getByRole('button', { name: /^Toggle / }));
-    expect(getByTestId('subagent-group-loading').textContent).toContain('Loading 4 entries');
+    expect(getByTestId('subagent-group-loading').textContent?.trim()).toBe('Loading…');
     expect(queryByText(/No child entries captured/i)).not.toBeInTheDocument();
-  });
-
-  it('singular / plural entry count agreement', () => {
-    const one = mkGroup({ parentId: 'p', children: [mkLeaf('c1')], descendantCount: 1 });
-    const { getByTestId, unmount } = render(SubagentGroupTestHarness, { props: { group: one } });
-    expect(getByTestId('subagent-group-count').textContent).toContain('1 entry');
-    unmount();
-
-    const many: SubagentGroupNode = mkGroup({
-      parentId: 'p2',
-      children: [mkLeaf('a'), mkLeaf('b'), mkLeaf('c')] as TimelineNode[],
-      descendantCount: 3,
-    });
-    const second = render(SubagentGroupTestHarness, { props: { group: many } });
-    expect(second.getByTestId('subagent-group-count').textContent).toContain('3 entries');
   });
 
   it('grandchild (depth >= 3) renders as marker only — no recursive card', () => {
@@ -758,7 +741,7 @@ describe('<SubagentGroup>', () => {
     });
     expect(queryByTestId('subagent-group')).toBeNull();
     expect(queryByRole('button')).toBeNull();
-    expect(queryByTestId('subagent-group-marker')).not.toBeNull();
+    expect(queryByTestId('subagent-group-marker')?.textContent).not.toMatch(/\d|entr/);
     expect(getByText(/Spawned subagent/i)).toBeInTheDocument();
     expect(queryByTestId('leaf')).toBeNull();
   });
@@ -804,7 +787,7 @@ describe('<SubagentGroup> at a parked stop', () => {
     return mkGroup({ parentId: 'bg', parentItem: launch, anchor: stop, groupKey: stop.id, completion: stop, children, descendantCount: children.length });
   }
 
-  it('says the agent reported, what it waits on, the report head and its run’s duration', () => {
+  it('says the agent reported, what it waits on, the report head and the time since launch', () => {
     const { getByTestId, queryByTestId } = render(SubagentGroupTestHarness, { props: { group: parkedCard() } });
     const card = getByTestId('subagent-group');
     expect(card).toHaveAttribute('data-anchor-id', 'complete:bg:parked:u1');
@@ -814,8 +797,9 @@ describe('<SubagentGroup> at a parked stop', () => {
     expect(status.querySelector('[data-testid="indicator"]')?.getAttribute('aria-label')).toBe('Parked');
     expect(getByTestId('subagent-group-parked-status').textContent?.trim()).toBe('Reported, waiting on 1 background command');
     expect(getByTestId('subagent-group-preview').textContent?.trim()).toBe('Found the race in **fork_moves.go**.');
-    // From the run's start to the stop, not from the launch or to a later update.
-    expect(getByTestId('subagent-group-duration').textContent?.trim()).toBe('30s');
+    // From the launch to the stop's own row: not from the run's start
+    // (run_started_at) and not to a later update of the stop.
+    expect(getByTestId('subagent-group-duration').textContent?.trim()).toBe('1m 0s');
     expect(queryByTestId('subagent-group-error')).toBeNull();
   });
 

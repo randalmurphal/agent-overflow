@@ -55,6 +55,31 @@ describe('<CollabToolRow> immutable spawn and standalone activity', () => {
     expect(queryByTestId('collab-tool-row-interactions')).toBeNull();
   });
 
+  it('renders a spawn row the same, with no indicator, whatever its stored liveness bit says', async () => {
+    // A Claude background launch's dots turn off when the store settles it;
+    // a Codex spawn row is `completed` and never had them.
+    const pane = await buildPane(makeThread({ provider: 'codex' }));
+    const spawn = (active: boolean) => makeItem({
+      id: 'launch-1',
+      kind: 'tool_call',
+      status: 'completed',
+      toolName: 'collab_agent',
+      isBackground: true,
+      meta: JSON.stringify({
+        live_background_active: active,
+        input: { tool: 'spawn_agent', taskName: '/root/reviewer', receiverThreadIds: ['child-1'] },
+      }),
+    });
+    const { container, rerender, queryByTestId } = render(ToolCallCard, { props: { pane, item: spawn(true) } });
+    const before = container.innerHTML;
+    expect(queryByTestId('indicator')).toBeNull();
+
+    await rerender({ pane, item: spawn(false) });
+
+    expect(queryByTestId('indicator')).toBeNull();
+    expect(container.innerHTML).toBe(before);
+  });
+
   it('renders outbound and inbound communication as independent activity rows', async () => {
     const pane = await buildPane(makeThread({ provider: 'codex' }));
     const sent = makeItem({

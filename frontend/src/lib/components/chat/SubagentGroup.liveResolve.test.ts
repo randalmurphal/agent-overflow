@@ -3,7 +3,7 @@
 // `SubagentGroupNode` is a STRUCTURAL snapshot: the timeline rebuilds it
 // when the item window changes shape, not when an item's content moves.
 // Everything on this card that moves inside a turn — anchor status, the
-// entry count, the latest-action preview — is therefore re-read from the
+// descendant count, the latest-action preview — is therefore re-read from the
 // pane by the card itself, the same row-boundary resolution `TimelineLeaf`
 // and `ReadGroupRow` use. Before that, the projection patched fresh refs
 // into the node centrally, which made every streaming tick of every group
@@ -103,11 +103,10 @@ describe('<SubagentGroup> live resolution against the pane', () => {
     expect(indicatorState(container)).toBe('error');
   });
 
-  it('shows the count and preview each anchor re-upsert decorates, never a streamed child', async () => {
+  it('shows the preview each anchor re-upsert decorates, never a streamed child', async () => {
     const launch = agentLaunch();
     const { pane, group } = await setup([launch]);
     const { queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
-    expect(queryByTestId('subagent-group-count')).toBeNull();
     expect(queryByTestId('subagent-group-preview')).toBeNull();
 
     // A streamed child is another scope's row: the main window drops it
@@ -118,20 +117,17 @@ describe('<SubagentGroup> live resolution against the pane', () => {
     }));
     await tick();
     expect(pane.getItemById('child:1')).toBeUndefined();
-    expect(queryByTestId('subagent-group-count')).toBeNull();
     expect(queryByTestId('subagent-group-preview')).toBeNull();
 
     // Triage re-pushes the anchor once the child is written.
     pane.upsertItem({ ...launch, meta: decorated(1, 'reading alpha.ts'), rev: 2, updatedAt: 6 });
     await tick();
-    expect(queryByTestId('subagent-group-count')?.textContent).toContain('1 entry');
     expect(queryByTestId('subagent-group-preview')?.textContent).toContain('reading alpha.ts');
 
     pane.upsertItem({ ...launch, meta: decorated(3, 'read beta.ts'), rev: 3, updatedAt: 7 });
     await tick();
     expect(group.parent.meta, 'node must stay stale for this to prove anything').toBeUndefined();
     expect(group.descendantCount).toBe(0);
-    expect(queryByTestId('subagent-group-count')?.textContent).toContain('3 entries');
     expect(queryByTestId('subagent-group-preview')?.textContent).toContain('read beta.ts');
     expect(queryByTestId('subagent-group-preview')?.textContent).not.toContain('alpha');
   });
@@ -151,7 +147,6 @@ describe('<SubagentGroup> live resolution against the pane', () => {
       meta: JSON.stringify({ subagentDescendantCount: 3 }), updatedAt: 8,
     });
     await tick();
-    expect(queryByTestId('subagent-group-count')?.textContent).toContain('3 entries');
     expect(queryByTestId('subagent-group-preview')).toBeNull();
 
     // A write that carries no decoration at all falls back to the node's.
@@ -162,14 +157,13 @@ describe('<SubagentGroup> live resolution against the pane', () => {
     expect(queryByTestId('subagent-group-preview')?.textContent).toContain('reading alpha.ts');
   });
 
-  it('picks up an entry-count decoration that lands without a structural rebuild', async () => {
-    const { pane, group } = await setup([
-      agentLaunch({ meta: JSON.stringify({ subagentDescendantCount: 1 }) }),
-      makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'one' }),
-    ]);
-    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
-    expect(group.descendantCount).toBe(1);
-    expect(getByTestId('subagent-group-count').textContent).toContain('1 entry');
+  // The descendant count is never shown; it confirms activity, so a running
+  // card with rows and no preview says it is initializing.
+  it('picks up a descendant-count decoration that lands without a structural rebuild', async () => {
+    const { pane, group } = await setup([agentLaunch()]);
+    const { queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(group.descendantCount).toBe(0);
+    expect(queryByTestId('subagent-group-preview')).toBeNull();
 
     pane.applyItemMeta({
       threadId: 'thread-1', itemId: 'agent:1', kind: 'tool_call',
@@ -177,29 +171,31 @@ describe('<SubagentGroup> live resolution against the pane', () => {
     });
     await tick();
 
-    expect(getByTestId('subagent-group-count').textContent).toContain('7 entries');
+    expect(group.descendantCount, 'node must stay stale for this to prove anything').toBe(0);
+    expect(queryByTestId('subagent-group-preview')?.textContent?.trim()).toBe('Initializing...');
+    expect(queryByTestId('subagent-group-count')).toBeNull();
   });
 
-  it('holds the entry count when a later write drops the decoration', async () => {
+  it('holds the descendant count when a later write drops the decoration', async () => {
     // Transition coverage for the card's `Math.max`: decoration present →
     // absent must land on the node's own count, never on zero. Here the
     // node was itself built while the decoration existed, so it already
     // carries 7; the assertion is that the card does not regress to zero
-    // and does not blank the label.
+    // and does not drop the placeholder.
     const { pane, group } = await setup([
       agentLaunch({ meta: JSON.stringify({ subagentDescendantCount: 7 }) }),
       makeItem({ id: 'child:1', itemIndex: 1, parentId: 'agent:1', status: 'running', summary: 'one' }),
     ]);
     const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
     expect(group.descendantCount).toBe(7);
-    expect(getByTestId('subagent-group-count').textContent).toContain('7 entries');
+    expect(getByTestId('subagent-group-preview').textContent?.trim()).toBe('Initializing...');
 
     pane.applyItemMeta({
       threadId: 'thread-1', itemId: 'agent:1', kind: 'tool_call', meta: '', updatedAt: 9,
     });
     await tick();
 
-    expect(getByTestId('subagent-group-count').textContent).toContain('7 entries');
+    expect(getByTestId('subagent-group-preview').textContent?.trim()).toBe('Initializing...');
   });
 });
 
@@ -533,7 +529,7 @@ describe('<SubagentGroup> settled background agent counters', () => {
     resetSubagentProgressForTest();
   });
 
-  it('reads the final numbers and entry count off the completion sibling, never the launch row', async () => {
+  it('reads the final numbers off the completion sibling, never the launch row, and shows no row count', async () => {
     // A detached launch's row is the immutable spawn event
     // (docs/specs/agent-visibility.md §Immutable agent history): triage
     // persists the final counters onto the `complete:<id>` sibling and the
@@ -564,10 +560,10 @@ describe('<SubagentGroup> settled background agent counters', () => {
       }),
     ]);
     expect(group.anchor.id).toBe('complete:agent:1');
-    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    const { getByTestId, queryByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
     expect(getByTestId('subagent-group-tools').textContent?.trim()).toBe('9 tools');
     expect(getByTestId('subagent-group-tokens').textContent?.trim()).toBe('61.0k tokens');
-    expect(getByTestId('subagent-group-count').textContent).toContain('14 entries');
+    expect(queryByTestId('subagent-group-count')).toBeNull();
   });
 
   it('shows a Codex execution card’s tool count and tokens off its completion', async () => {

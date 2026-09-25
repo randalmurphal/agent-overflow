@@ -106,13 +106,15 @@ test('a background agent rings no bell at any depth: its card sits at the comple
 
   // --- The completion is IN the transcript, where it completed --------
   // The launch row stays where it was as the immutable spawn record: label,
-  // the backgrounded indicator icon (no text pill), the open-in-pane
-  // door, no duration — and the agent's CARD sits at the completion point, after
-  // the turn's prose: status, duration, tool count, the transcript.
+  // no text pill, the open-in-pane door, no duration. Its backgrounded
+  // indicator is off once the launch settled. The agent's CARD sits at the
+  // completion point, after the turn's prose: status, duration, tool
+  // count, the transcript.
   const timeline = page.getByTestId('message-timeline-scroll');
   const spawnRow = timeline.locator('[data-item-id="tu-top"]');
   await expect(spawnRow.getByTestId('agent-row-preview')).toContainText('Top Runner');
-  await expect(spawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
+  await expect(spawnRow.getByTestId('agent-row-status')).toHaveCount(0);
+  await expect(spawnRow.getByTestId('agent-row-status-slot')).toHaveCount(1);
   await expect(spawnRow.getByText('background', { exact: true })).toHaveCount(0);
   await expect(spawnRow.getByTestId('agent-row-duration')).toHaveText('');
   await expect(spawnRow.getByTestId('agent-row-open-pane')).toHaveCount(1);
@@ -151,17 +153,18 @@ test('a background agent rings no bell at any depth: its card sits at the comple
   // immutable agent row the main timeline gets, door included.
   const nestedSpawnRow = topBody.locator('[data-item-id="tu-nested"]');
   await expect(nestedSpawnRow.getByTestId('agent-row-preview')).toContainText('Nested Runner');
-  await expect(nestedSpawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
+  await expect(nestedSpawnRow.getByTestId('agent-row-status')).toHaveCount(0);
 });
 
-// The card that lands at the completion sibling must know how many rows
-// its transcript has WITHOUT a page read: while the agent ran collapsed,
-// the pane folded its settled rows out of memory, and a completed card
-// reads its saved aggregates rather than the live fold. Those aggregates
-// are stamped on the sibling at write time (triage
-// completionMetaWithSubagentAggregates). A bare sibling rendered "No
-// child entries captured" for a 144-row transcript (2026-09-17).
-test('a background agent’s card lands with its entry count and hydrates on expand', async ({
+// The card that lands at the completion sibling must know its transcript
+// has rows WITHOUT a page read: while the agent ran collapsed, the pane
+// folded its settled rows out of memory, and a completed card reads its
+// saved aggregates rather than the live fold. Those aggregates are stamped
+// on the sibling at write time (triage completionMetaWithSubagentAggregates).
+// A bare sibling rendered "No child entries captured" for a 144-row
+// transcript (2026-09-17). The count is never shown: the card header names
+// tools and tokens only.
+test('a background agent’s card lands knowing its rows and hydrates on expand', async ({
   harness,
   page,
 }) => {
@@ -213,7 +216,8 @@ test('a background agent’s card lands with its entry count and hydrates on exp
   await harness.waitForEvent('provider:turn_completed');
 
   const timeline = page.getByTestId('message-timeline-scroll');
-  await expect(timeline.locator('[data-item-id="tu-bg"]').getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
+  const spawnRow = timeline.locator('[data-item-id="tu-bg"]');
+  await expect(spawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
 
   await waitForGate(harness, 'stream');
@@ -233,8 +237,13 @@ test('a background agent’s card lands with its entry count and hydrates on exp
   await advance(harness, mockId, 'settle');
   const card = timeline.getByTestId('subagent-group').first();
   await expect(card).toHaveAttribute('data-background', 'true');
-  await expect(card.getByTestId('subagent-group-count')).toHaveText('4 entries');
+  await expect(card.getByTestId('subagent-group-count')).toHaveCount(0);
+  await expect(card.getByTestId('subagent-group-tools')).toHaveText('1 tool');
   await expect(card.getByTestId('subagent-group-preview')).toContainText('Shard reviewed: nothing drifted.');
+  // The mounted launch row takes the one change it ever shows: its
+  // indicator turns off once the settled launch is pushed.
+  await expect(spawnRow.getByTestId('agent-row-status')).toHaveCount(0);
+  await expect(spawnRow.getByTestId('agent-row-preview')).toContainText('Shard Reviewer');
   await expect(card.getByTestId('subagent-group-output-error')).toHaveCount(0);
 
   // Expanding hydrates the folded rows back from the store.

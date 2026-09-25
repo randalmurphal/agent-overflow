@@ -218,7 +218,7 @@
   });
   let indicatorState = $derived(
     indicatorStateForItem(effectiveStatusItem, {
-      meta: statusMeta ?? (meta as unknown as Record<string, unknown> | undefined),
+      payloadMeta: statusMeta ?? (meta as unknown as Record<string, unknown> | undefined),
     }),
   );
   // Dev-server affordance (internal/triage/dev_server_url.go), two stages.

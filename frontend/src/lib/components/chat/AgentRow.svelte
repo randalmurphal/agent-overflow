@@ -4,12 +4,13 @@
   //   - The launch row of a DETACHED Claude launch (`launchRunsDetached`:
   //     the §E5 async ack, run_in_background, a SendMessage resume
   //     carrier, or backgrounded mid-flight). This is the pre-card
-  //     background launch row, unchanged by the agent-visibility work
-  //     except for the open-in-pane door (user ruling 2026-08-23, the
-  //     one approved change): robot icon, label, model, description, the
-  //     `backgrounded` indicator the status rule gives a running
-  //     background launch (rowState.ts), the launch time. No ticker (the
-  //     launch stays `running` forever) and no text pill (c58f9b55).
+  //     background launch row: robot icon, label, model, description, the
+  //     `backgrounded` indicator, the launch time. No ticker (the launch
+  //     stays `running` forever) and no text pill (c58f9b55). Two approved
+  //     changes, and no others: the open-in-pane door (user ruling
+  //     2026-08-23), and the indicator in ToolHeaderMeta's status slot
+  //     turning off once, when the launch settles, read from the row's own
+  //     stored liveness bit (rowState.ts, ruling 2026-09-25).
   //     Everything the agent does shows on its card at the completion
   //     point (`SubagentGroupNode.anchor`); this row never reads the
   //     completion sibling.
@@ -125,7 +126,7 @@
   let summaryMeta = $derived(parseJsonObject(effectiveDisplayItem.payloadMeta));
   let displayMeta = $derived(parseJsonObject(effectiveDisplayItem.meta));
   let itemMeta = $derived(parseJsonObject(item.meta));
-  let statusMeta = $derived(parseJsonObject(effectiveStatusItem.payloadMeta));
+  let statusPayloadMeta = $derived(parseJsonObject(effectiveStatusItem.payloadMeta));
   let agentToolName = $derived(effectiveDisplayItem.toolName === 'Task' ? 'Agent' : (effectiveDisplayItem.toolName ?? 'Agent'));
   let agentInputObject = $derived(readClaudeSubagentInput(summaryMeta, displayMeta));
   // A §E6 resume carrier's identity (type / model / description) lives in
@@ -154,7 +155,7 @@
   let time = $derived(formatTimeOfDay(effectiveStatusItem.createdAt));
 
   // A backgrounded launch never leaves `running`, so it gets no elapsed
-  // ticker; its indicator is the static `backgrounded` dot.
+  // ticker; its indicator is the `backgrounded` dots until it settles.
   let isBackgroundedLaunch = $derived(
     effectiveStatusItem.kind === 'tool_call' && effectiveStatusItem.isBackground === true,
   );
@@ -177,7 +178,7 @@
     return typeof error === 'string' && error ? error : 'Task output could not be read.';
   });
   let indicatorState = $derived(
-    indicatorOverride ?? indicatorStateForItem(effectiveStatusItem, { meta: statusMeta }),
+    indicatorOverride ?? indicatorStateForItem(effectiveStatusItem, { payloadMeta: statusPayloadMeta }),
   );
   // A completion the session's death wrote is neither a failure nor a
   // user's stop; its own line says what happened.
@@ -185,7 +186,7 @@
   let rowError = $derived(
     completionEndedBySessionDeath(statusItemMeta) && effectiveStatusItem.status === 'killed'
       ? SESSION_DIED_ROW_ERROR
-      : rowErrorWithFallback(effectiveStatusItem, { meta: statusMeta, fallback: 'Agent failed', stopped: 'Agent stopped' }),
+      : rowErrorWithFallback(effectiveStatusItem, { meta: statusPayloadMeta, fallback: 'Agent failed', stopped: 'Agent stopped' }),
   );
 
   // Same door the card uses: the PANE decides where opening routes (the

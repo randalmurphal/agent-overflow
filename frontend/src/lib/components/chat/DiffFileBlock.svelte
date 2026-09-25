@@ -155,7 +155,7 @@
   let showHeaderMeta = $derived(statusItem !== undefined || timestampSlot !== undefined);
   let statusPayloadMeta = $derived(parseJsonObject(statusItem?.payloadMeta));
   let indicatorState = $derived(
-    statusItem ? indicatorStateForItem(statusItem, { meta: statusPayloadMeta }) : null,
+    statusItem ? indicatorStateForItem(statusItem, { payloadMeta: statusPayloadMeta }) : null,
   );
   let rowError = $derived(
     statusItem

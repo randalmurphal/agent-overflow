@@ -183,7 +183,7 @@ describe('background completion visibility (filter + grouping, production order)
     expect(outer.children[2].kind).toBe('group');
   });
 
-  it('a parked agent: a card at every stop with its own run, and an older build’s agent bell stays', () => {
+  it('a parked agent: a card at every stop with every row up to it, and an older build’s agent bell stays', () => {
     const meta = JSON.stringify({ task_id: 'T7', toolName: 'Agent', input: { description: 'gate watcher' } });
     const stop = (id: string, itemIndex: number, status: 'parked' | 'completed') => mkItem({
       id, itemIndex, kind: 'tool_completion', toolName: 'Agent', isBackground: true, completionOf: 'agent', status, meta,
@@ -215,7 +215,11 @@ describe('background completion visibility (filter + grouping, production order)
       if (card.kind !== 'group') throw new Error('expected every stop to be a card');
       return card.children.map((child) => timelineNodeItemId(child));
     });
-    expect(runs).toEqual([['run-1-tool'], ['wake-1', 'run-2-tool'], ['wake-2', 'run-3-tool']]);
+    expect(runs).toEqual([
+      ['run-1-tool'],
+      ['run-1-tool', 'wake-1', 'run-2-tool'],
+      ['run-1-tool', 'wake-1', 'run-2-tool', 'wake-2', 'run-3-tool'],
+    ]);
   });
 
   it('a nested parked agent: each of its stops is a card inside the parent card', () => {
@@ -252,7 +256,7 @@ describe('background completion visibility (filter + grouping, production order)
       if (card.kind !== 'group') throw new Error('expected every nested stop to be a card');
       return card.children.map((child) => timelineNodeItemId(child));
     });
-    expect(innerRuns).toEqual([['inner-run-1'], ['inner-wake', 'inner-run-2']]);
+    expect(innerRuns).toEqual([['inner-run-1'], ['inner-run-1', 'inner-wake', 'inner-run-2']]);
   });
 
   it('a watch task keeps its bells: they are the history, not a redundant ping', () => {

@@ -77,6 +77,94 @@ func TestTimelineDigestExecutionBoundaries(t *testing.T) {
 	}
 }
 
+// A Claude card is the agent as of the stop it sits at: the digest at a
+// parked stop holds every row up to the park, and the digest at the ending
+// stop holds every row up to the end, the parked run's rows included.
+func TestTimelineDigestClaudeCardCoversEveryRowUpToItsStop(t *testing.T) {
+	s := newTestStore(t)
+	const thread = "digest"
+	newImportTargetThread(t, s, thread)
+	rows := []Item{
+		{ID: "root", Kind: "tool_call", ToolName: "Agent", Status: "running", IsBackground: true},
+		{ID: "prompt", Kind: "user_text", ParentID: "root", Status: "completed"},
+		{ID: "tool1", Kind: "tool_call", ToolName: "Bash", ParentID: "root", Status: "completed"},
+		{ID: "report", Kind: "assistant_text", ParentID: "root", Status: "completed"},
+		{ID: "parked", Kind: "tool_completion", ToolName: "Agent", CompletionOf: "root", Status: ItemStatusParked, IsBackground: true},
+		{ID: "wake", Kind: "user_text", ParentID: "root", Status: "completed", Meta: `{"subagent_wake_prompt":true}`},
+		{ID: "tool2", Kind: "tool_call", ToolName: "Bash", ParentID: "root", Status: "completed"},
+		{ID: "answer", Kind: "assistant_text", ParentID: "root", Status: "completed"},
+		{ID: "done", Kind: "tool_completion", ToolName: "Agent", CompletionOf: "root", Status: "completed", IsBackground: true},
+		{ID: "late", Kind: "tool_call", ToolName: "Bash", ParentID: "root", Status: "completed"},
+	}
+	for i, row := range rows {
+		row.ThreadID, row.ItemIndex, row.CreatedAt, row.Role = thread, i, int64(i+1), "assistant"
+		if err := insertCarded(s, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		anchor string
+		want   []string
+		answer string
+	}{
+		{"parked", []string{"prompt", "tool1", "report"}, "report"},
+		{"done", []string{"prompt", "tool1", "tool2", "answer"}, "answer"},
+	} {
+		page, err := s.ListThreadSliceAround(context.Background(), thread, "", 40, 30, TimelineSelection{ScopeRootID: "root", DigestItemID: tc.anchor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(itemIDs(page.Items), tc.want) {
+			t.Fatalf("%s: %v, want %v", tc.anchor, itemIDs(page.Items), tc.want)
+		}
+		if d := page.Scope.Digest; d == nil || d.PromptID != "prompt" || d.AnswerID != tc.answer {
+			t.Fatalf("%s: digest context %+v, want prompt %q and answer %q", tc.anchor, d, "prompt", tc.answer)
+		}
+	}
+}
+
+// A Codex completion without saved execution bounds (a mailbox delivery)
+// covers the rows since the launch's previous completion, while a Claude
+// ending card from the same row shape covers every row from the launch.
+func TestTimelineDigestBoundlessCodexCompletionStartsAfterThePreviousOne(t *testing.T) {
+	for _, launch := range []Item{
+		{ID: "root", Kind: "tool_call", ToolName: "collab_agent", Status: "completed", IsBackground: true, Meta: `{"input":{"tool":"spawn_agent"}}`},
+		{ID: "root", Kind: "tool_call", ToolName: "Agent", Status: "running", IsBackground: true},
+	} {
+		t.Run(launch.ToolName, func(t *testing.T) {
+			s := newTestStore(t)
+			const thread = "digest"
+			newImportTargetThread(t, s, thread)
+			rows := []Item{
+				launch,
+				{ID: "tool1", Kind: "tool_call", ToolName: "Bash", ParentID: "root", Status: "completed"},
+				{ID: "answer1", Kind: "assistant_text", ParentID: "root", Status: "completed"},
+				{ID: "done1", Kind: "tool_completion", ToolName: launch.ToolName, CompletionOf: "root", Status: "completed", IsBackground: true},
+				{ID: "tool2", Kind: "tool_call", ToolName: "Bash", ParentID: "root", Status: "completed"},
+				{ID: "answer2", Kind: "assistant_text", ParentID: "root", Status: "completed"},
+				{ID: "done2", Kind: "tool_completion", ToolName: launch.ToolName, CompletionOf: "root", Status: "completed", IsBackground: true},
+			}
+			for i, row := range rows {
+				row.ThreadID, row.ItemIndex, row.CreatedAt, row.Role = thread, i, int64(i+1), "assistant"
+				if err := insertCarded(s, row); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := []string{"tool2", "answer2"}
+			if launch.ToolName != "collab_agent" {
+				want = []string{"tool1", "tool2", "answer2"}
+			}
+			page, err := s.ListThreadSliceAround(context.Background(), thread, "", 40, 30, TimelineSelection{ScopeRootID: "root", DigestItemID: "done2"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(itemIDs(page.Items), want) {
+				t.Fatalf("done2: %v, want %v", itemIDs(page.Items), want)
+			}
+		})
+	}
+}
+
 func TestTimelineDigestCodexCompletionDoesNotGrow(t *testing.T) {
 	s := newTestStore(t)
 	newImportTargetThread(t, s, "digest")

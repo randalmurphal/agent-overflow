@@ -1,5 +1,6 @@
 import type { Item } from '../../types/models';
 import { deriveCompletionStatus } from '../../utils/toolCompletionStatus';
+import { parseJsonObject } from '../../utils/parseJsonObject';
 
 // `parked` is a parked stop's own status (claude-wire.md §E6b): the sibling
 // a background agent's paused run writes. Its launch row stays `running`,
@@ -10,7 +11,8 @@ export type IndicatorState = 'running' | 'backgrounded' | 'parked' | 'error' | '
 type ItemStatus = Item['status'];
 
 interface IndicatorOptions {
-  meta?: Record<string, unknown> | null;
+  /** The status row's parsed payload meta: a completion's failure signals. */
+  payloadMeta?: Record<string, unknown> | null;
 }
 
 export interface RowErrorData {
@@ -19,8 +21,17 @@ export interface RowErrorData {
   tone: 'error' | 'declined';
 }
 
+/**
+ * A background launch row keeps status `running` for good; its outcome is a
+ * completion sibling. Its `backgrounded` dots show until the launch settles
+ * and then turn off once: the one change a launch row shows after it is
+ * written (docs/specs/agent-visibility.md#immutable-agent-history). Settled
+ * is the store's `live_background_active` bit on the row's own `meta`,
+ * set false at the ending sibling or the session's death and not at a
+ * parked stop. No live state is read.
+ */
 export function indicatorStateForItem(
-  item: Pick<Item, 'kind' | 'status' | 'isBackground' | 'payloadMeta'>,
+  item: Pick<Item, 'kind' | 'status' | 'isBackground' | 'payloadMeta' | 'meta'>,
   options: IndicatorOptions = {},
 ): IndicatorState {
   if (
@@ -28,13 +39,17 @@ export function indicatorStateForItem(
     item.isBackground === true &&
     (item.status === 'running' || item.status === 'streaming')
   ) {
-    return 'backgrounded';
+    return backgroundLaunchSettled(item) ? null : 'backgrounded';
   }
   if (item.status === 'running' || item.status === 'streaming') return 'running';
   if (item.status === 'parked') return 'parked';
   if (item.status === 'declined') return 'declined';
   if (item.status === 'errored' || item.status === 'killed') return 'error';
-  return deriveCompletionStatus(item, { meta: options.meta }) === 'failure' ? 'error' : null;
+  return deriveCompletionStatus(item, { meta: options.payloadMeta }) === 'failure' ? 'error' : null;
+}
+
+function backgroundLaunchSettled(item: Pick<Item, 'meta'>): boolean {
+  return parseJsonObject(item.meta)?.live_background_active === false;
 }
 
 /**

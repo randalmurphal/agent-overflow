@@ -113,7 +113,7 @@
   let bodyDomId = $derived(chatRowDomId(pane, 'advisor-row-body', item.id));
 let hasExpandableBody = $derived(Boolean(item.payloadId));
 
-  let indicatorState = $derived(indicatorStateForItem(item, { meta: summaryMeta }));
+  let indicatorState = $derived(indicatorStateForItem(item, { payloadMeta: summaryMeta }));
   let rowError = $derived(
     rowErrorWithFallback(item, { meta: summaryMeta, fallback: 'Advisor call failed' }),
   );

@@ -7,9 +7,12 @@ import (
 	"strings"
 )
 
-// TimelineDigestContext fixes an inline card to its execution while the agent
-// pane remains a continuous transcript. Bounds are exclusive at After and
-// Before; completion timestamps are inclusive at CompletedAt.
+// TimelineDigestContext fixes an inline card to the stop it sits at while the
+// agent pane remains a continuous transcript. A Codex card covers its saved
+// execution, or without saved bounds the rows since its previous completion;
+// a Claude card covers every row of its launch up to its stop. Bounds are
+// exclusive at After, Before and StartedAfter; the stop's timestamp is
+// inclusive at CompletedAt.
 type TimelineDigestContext struct {
 	After        *TimelineCursor `json:"after,omitempty"`
 	Before       *TimelineCursor `json:"before,omitempty"`
@@ -99,16 +102,18 @@ func (s *Store) resolveTimelineDigest(q sqlQueryer, threadID string, scope *time
 			d.Before = &TimelineCursor{TurnIndex: launch.TurnIndex, ItemIndex: *meta.End + 1}
 		} else {
 			d.CompletedAt = &anchor.CreatedAt
-			previous, args, err := timelineArms(q, threadID, timelineSelection{Columns: func(string, string) string { return "items.created_at" }, KeyFirst: true, Where: "items.completion_of <> '' AND items.completion_of=? AND (+items.turn_index,items.item_index)<(?,?)", WhereArgs: []any{launch.ID, anchor.TurnIndex, anchor.ItemIndex}})
-			if err != nil {
-				return err
-			}
-			var started sql.NullInt64
-			if err := q.QueryRow("SELECT MAX(created_at) FROM ("+previous+")", args...).Scan(&started); err != nil {
-				return err
-			}
-			if started.Valid {
-				d.StartedAfter = &started.Int64
+			if launch.ToolName == "collab_agent" {
+				previous, args, err := timelineArms(q, threadID, timelineSelection{Columns: func(string, string) string { return "items.created_at" }, KeyFirst: true, Where: "items.completion_of <> '' AND items.completion_of=? AND (+items.turn_index,items.item_index)<(?,?)", WhereArgs: []any{launch.ID, anchor.TurnIndex, anchor.ItemIndex}})
+				if err != nil {
+					return err
+				}
+				var started sql.NullInt64
+				if err := q.QueryRow("SELECT MAX(created_at) FROM ("+previous+")", args...).Scan(&started); err != nil {
+					return err
+				}
+				if started.Valid {
+					d.StartedAfter = &started.Int64
+				}
 			}
 		}
 	}

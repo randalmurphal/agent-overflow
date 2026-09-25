@@ -2066,9 +2066,12 @@ export class TimelineCursor {
 }
 
 /**
- * TimelineDigestContext fixes an inline card to its execution while the agent
- * pane remains a continuous transcript. Bounds are exclusive at After and
- * Before; completion timestamps are inclusive at CompletedAt.
+ * TimelineDigestContext fixes an inline card to the stop it sits at while the
+ * agent pane remains a continuous transcript. A Codex card covers its saved
+ * execution, or without saved bounds the rows since its previous completion;
+ * a Claude card covers every row of its launch up to its stop. Bounds are
+ * exclusive at After, Before and StartedAfter; the stop's timestamp is
+ * inclusive at CompletedAt.
  */
 export class TimelineDigestContext {
     "after"?: TimelineCursor | null;

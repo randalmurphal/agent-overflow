@@ -72,7 +72,7 @@ export function createTimelineRowProjection(
   // when the item window changes shape (a `timelineRevision` bump), and
   // what it produces is a SNAPSHOT. Every row component resolves its own
   // current items against the store — `TimelineLeaf` and `ReadGroupRow`
-  // by id, `SubagentGroup` for its parent / entry count / latest-action
+  // by id, `SubagentGroup` for its parent / descendant count / latest-action
   // preview, `WaitGroup` through the leaves it renders — so ordinary
   // streaming never rebuilds the virtualizer data array.
   //

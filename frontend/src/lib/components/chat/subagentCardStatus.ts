@@ -2,7 +2,7 @@
 // at: its failure line, a failed output read, and the time it covers.
 import type { Item } from '../../types/models';
 import type { CompletionStatus } from '../../utils/toolCompletionStatus';
-import type { ParkedStop } from '../../utils/parkedStop';
+import { PARKED_STOP_STATUS } from '../../utils/parkedStop';
 import {
   completionEndedBySessionDeath,
   rowErrorForStatus,
@@ -42,24 +42,20 @@ export function subagentCardOutputError(statusMeta: Record<string, unknown> | nu
 }
 
 /**
- * The span a card's duration covers, in epoch ms. A parked card covers its
- * own run, from the launch or the wake that started it to the stop. Any
- * other card starts at the launch (a Codex execution at its own start) and
- * ends at what carries the terminal: for a background agent the stop's
- * sibling, whose updatedAt is when the task reported back. A running card
- * ends now.
+ * The span a card's duration covers, in epoch ms. Every card starts at the
+ * launch (a Codex execution at its own start). A parked card ends at its
+ * stop's own row. Any other card ends at what carries the terminal: for a
+ * background agent the stop's sibling, whose updatedAt is when the task
+ * reported back. A running card ends now.
  */
 export function subagentCardSpan(card: {
   parent: Pick<Item, 'createdAt'>;
-  statusItem: Pick<Item, 'createdAt' | 'updatedAt'>;
+  statusItem: Pick<Item, 'status' | 'createdAt' | 'updatedAt'>;
   completionMeta: Record<string, unknown> | null;
-  parkedStop: ParkedStop | null;
   running: boolean;
   now: number;
 }): { start: number; end: number } {
-  if (card.parkedStop) {
-    return { start: card.parkedStop.runStartedAt || card.parent.createdAt, end: card.statusItem.createdAt };
-  }
   const start = Number(card.completionMeta?.codex_execution_started_at ?? card.parent.createdAt);
+  if (card.statusItem.status === PARKED_STOP_STATUS) return { start, end: card.statusItem.createdAt };
   return { start, end: card.running ? card.now : card.statusItem.updatedAt };
 }

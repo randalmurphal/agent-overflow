@@ -5,9 +5,11 @@
 // Later messages and executions never update an earlier completed card.
 // See docs/specs/agent-visibility.md#immutable-agent-history.
 //
-// Completion cards slice child rows to their saved execution bounds. The
-// separate agent pane retains the continuous transcript. Claude resume carriers
-// slice their transcript root at provider-established resume prompts.
+// A Codex completion card slices child rows to its saved execution bounds, or
+// without them to the rows since its previous completion; a Claude completion
+// card covers every row up to its stop. The separate agent pane retains the
+// continuous transcript. Claude resume carriers slice their transcript root at
+// provider-established resume prompts.
 // Wait carriers group the completions they explicitly observed. Nested agent
 // cards recurse to MAX_DEPTH; deeper descendants render as leaves.
 // A pane window holds only rows of its own scope, so the main timeline loads
@@ -20,6 +22,7 @@ import { userMessageIdentity } from './userMessageIdentity';
 import { parseJsonObject } from './parseJsonObject';
 import {
   claudeResumeTranscriptRootId,
+  isCodexSubagentLaunchItem,
   isPotentialSubagentLaunch,
   launchRunsDetached,
   subagentDescendantCountFromMeta,
@@ -512,7 +515,7 @@ export function* renderedItemIdsWithin(
 /**
  * Count every descendant (recursive) under a group node. Nested group
  * children contribute their own `descendantCount`, which is ratcheted
- * against their decoration, so an outer card's entry counter stays
+ * against their decoration, so an outer card's descendant count stays
  * honest when an inner agent's transcript is not loaded.
  */
 function countDescendants(children: TimelineNode[]): number {
@@ -520,7 +523,7 @@ function countDescendants(children: TimelineNode[]): number {
   for (const child of children) {
     if (child.kind === 'activity_run') {
       // A run is a presentation wrapper, not a descendant: count through it
-      // so a card's entry counter is unchanged by how its rows are grouped.
+      // so a card's descendant count is unchanged by how its rows are grouped.
       n += countDescendants(child.children);
       continue;
     }
@@ -547,7 +550,7 @@ function subagentGroupNode(
    * The launch's background completion sibling, when one has loaded. Folded
    * onto the node as its status source; the FOLD adds nothing to the
    * counts or the preview (a finished agent with an empty transcript must
-   * not wedge its body on "Loading 1 entries…").
+   * not wedge its body on "Loading…").
    */
   completion?: Item,
 ): SubagentGroupNode {
@@ -1390,8 +1393,11 @@ export function groupItemsBySubagent(
   }
 
   /**
-   * The card for launch `item`, positioned at `anchor` (the launch itself
-   * for an awaited launch, its completion sibling for a detached one).
+   * The rows of launch `item` that the card at `anchor` shows: all of them
+   * at the launch itself (an awaited launch). At a completion sibling, a
+   * Codex card shows its execution's saved bounds, or without them the rows
+   * since its previous completion; a Claude card is a snapshot of the agent
+   * as of its stop, every row up to it.
    */
   function executionChildren(children: Item[] | undefined, item: Item, anchor: Item): Item[] | undefined {
     if (!children || anchor.id === item.id) return children;
@@ -1401,7 +1407,7 @@ export function groupItemsBySubagent(
     if (typeof lower === 'number' && typeof upper === 'number') {
       return children.filter(child => child.itemIndex > lower && child.itemIndex <= upper);
     }
-    const previous = previousCompletionByID.get(anchor.id);
+    const previous = isCodexSubagentLaunchItem(item) ? previousCompletionByID.get(anchor.id) : undefined;
     return children.filter(child => child.createdAt <= anchor.createdAt && (!previous || child.createdAt > previous.createdAt));
   }
 

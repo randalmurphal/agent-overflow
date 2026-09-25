@@ -3,7 +3,7 @@ import { render, fireEvent, waitFor } from '@testing-library/svelte';
 import AgentRow from './AgentRow.svelte';
 import GenericToolCallRow from './GenericToolCallRow.svelte';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
-import { makeItem } from '../../../test/helpers/chat';
+import { buildPane, makeItem } from '../../../test/helpers/chat';
 import { createPayloadExpansion } from '../../utils/payloadExpansion.svelte';
 import type { Item } from '../../types/models';
 import {
@@ -534,6 +534,86 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
     expect(getByTestId('agent-row-output-error').textContent).toContain(
       'output file vanished before read',
     );
+  });
+});
+
+// A background launch row is history: the one change it shows after it is
+// written is its `backgrounded` dots turning off once the store settles the
+// launch (docs/specs/agent-visibility.md#immutable-agent-history).
+describe('<AgentRow> background launch indicator', () => {
+  function launch(meta: Record<string, unknown> = {}): Item {
+    return makeItem({
+      id: 'toolu_bg',
+      kind: 'tool_call',
+      status: 'running',
+      isBackground: true,
+      toolName: 'Agent',
+      summary: 'Agent: gate watcher',
+      createdAt: 1_000,
+      meta: JSON.stringify({ task_id: 'task-bg', subagent_model: 'claude-opus-4-7', ...meta }),
+      payloadMeta: JSON.stringify({
+        toolName: 'Agent',
+        input: { subagent_type: 'Explore', description: 'gate watcher', run_in_background: true },
+      }),
+    });
+  }
+  const doorPane = () => makeFakePane({
+    getItemById: () => undefined,
+    openAgentPane: () => {},
+  } as Partial<import('../../stores/thread.svelte').ThreadPane>);
+
+  function indicator(container: HTMLElement): string | null {
+    return container.querySelector('[data-testid="agent-row-status"] [data-testid="indicator"]')?.getAttribute('data-state') ?? null;
+  }
+
+  it('shows the dots while the launch is live and none once its stored bit settles it', () => {
+    for (const live of [launch(), launch({ live_background_active: true })]) {
+      const view = render(AgentRow, { props: { pane: doorPane(), item: live } });
+      expect(indicator(view.container)).toBe('backgrounded');
+      view.unmount();
+    }
+    const settled = render(AgentRow, { props: { pane: doorPane(), item: launch({ live_background_active: false }) } });
+    expect(settled.queryByTestId('agent-row-status')).toBeNull();
+    expect(settled.getByTestId('agent-row-status-slot')).toBeInTheDocument();
+  });
+
+  it('keeps a parked agent’s launch row on its dots', async () => {
+    // A parked stop does not settle the launch: the store leaves the bit
+    // set, and the launch row never reads the parked sibling.
+    const row = launch({ live_background_active: true });
+    const parked = makeItem({
+      id: 'complete:toolu_bg:parked:u1',
+      itemIndex: 3,
+      kind: 'tool_completion',
+      status: 'parked',
+      isBackground: true,
+      toolName: 'Agent',
+      completionOf: 'toolu_bg',
+      createdAt: 61_000,
+      meta: JSON.stringify({ task_id: 'task-bg', parked_commands: 1 }),
+    });
+    const pane = await buildPane(undefined, [row, parked]);
+    expect(pane.getItemById(parked.id)).toBeDefined();
+    const { container } = render(AgentRow, { props: { pane, item: pane.getItemById(row.id) ?? row } });
+    expect(indicator(container)).toBe('backgrounded');
+  });
+
+  it('changes nothing on the row but the indicator when the launch settles', async () => {
+    const { container, rerender, getByTestId } = render(AgentRow, {
+      props: { pane: doorPane(), item: launch({ live_background_active: true }) },
+    });
+    const row = getByTestId('agent-row');
+    const slot = getByTestId('agent-row-status-slot');
+    const status = getByTestId('agent-row-status');
+    const before = container.innerHTML;
+    expect(before).toContain(status.outerHTML);
+
+    await rerender({ pane: doorPane(), item: launch({ live_background_active: false }) });
+
+    expect(getByTestId('agent-row')).toBe(row);
+    expect(getByTestId('agent-row-status-slot')).toBe(slot);
+    expect(slot.childElementCount).toBe(0);
+    expect(container.innerHTML).toBe(before.replace(status.outerHTML, ''));
   });
 });
 

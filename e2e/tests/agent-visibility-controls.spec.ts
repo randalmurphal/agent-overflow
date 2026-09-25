@@ -280,6 +280,9 @@ test('backgrounding a running inline agent returns the turn and the mirror conti
   // notification summary.
   await expect(settledCard.getByTestId('subagent-group-preview')).toContainText(MIRROR_TEXT);
   await expect(pane.getByTestId('agent-pane-working')).toHaveCount(0);
+  // The spawn row's indicator turns off once the launch settles.
+  await expect(spawnRow.getByTestId('agent-row-status')).toHaveCount(0);
+  await expect(spawnRow.getByTestId('agent-row-open-pane')).toHaveCount(1);
   // The notification's `usage` is the whole run's, and it persists onto
   // the launch row — a backgrounded agent's live ticks are gone by then.
   await expect(pane.getByTestId('workspace-strip-usage')).toHaveText('24.1k');

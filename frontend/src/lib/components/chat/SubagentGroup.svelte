@@ -32,9 +32,11 @@
   //   - expanded body is a capped, virtualized DIGEST of the node's tool
   //     calls and final text. Thinking, intermediate text, and child-agent
   //     navigation live in the agent pane.
-  //   - a PARKED stop's card (utils/parkedStop.ts) says the agent reported
-  //     and what it waits on, shows its run's duration and report head,
-  //     and expands to the full report above the run's digest.
+  //   - a Claude card is the agent as of the stop it sits at: its
+  //     duration runs from the launch to that stop and its digest holds
+  //     every row up to it. A PARKED stop's card (utils/parkedStop.ts)
+  //     also says the agent reported and what it waits on, shows the
+  //     report head, and expands to the full report above the digest.
   //   - open-in-pane button; a background button while a foreground
   //     Claude agent runs (Q9).
 
@@ -151,7 +153,7 @@
   // Resolve at the row boundary, exactly like `TimelineLeaf` — the node
   // tree is a STRUCTURAL snapshot rebuilt per `timelineRevision`, so
   // everything on this card that moves inside a turn (parent status,
-  // entry count, the latest-action preview) is read from the store here
+  // descendant count, the latest-action preview) is read from the store here
   // rather than patched into the node upstream. Doing it upstream made
   // every streaming tick of every group descendant rebuild the whole
   // projection — grouping, run wrapping and the virtualizer's data array
@@ -303,7 +305,7 @@
     deriveCompletionStatus(statusItem, { meta: statusPayloadMeta }),
   );
   let indicatorState = $derived(
-    indicatorStateForItem(statusItem, { meta: statusPayloadMeta }),
+    indicatorStateForItem(statusItem, { payloadMeta: statusPayloadMeta }),
   );
   let statusMeta = $derived(
     completionItem ? parseJsonObject(completionItem.meta) : parentMeta,
@@ -312,7 +314,7 @@
   let elapsedLabel = $derived.by<string>(() => {
     const { start, end } = subagentCardSpan({
       parent, statusItem, completionMeta: completionItem ? statusMeta : null,
-      parkedStop, running: isRunning, now: isRunning ? clock.now : 0,
+      running: isRunning, now: isRunning ? clock.now : 0,
     });
     if (Number.isFinite(start) && start > 0 && Number.isFinite(end) && end > start) {
       return formatElapsedSeconds(Math.floor((end - start) / 1_000));
@@ -325,15 +327,6 @@
   let rowError = $derived(subagentCardRowError(statusItem, completionStatus, statusMeta));
   let outputBackfillError = $derived(subagentCardOutputError(statusMeta));
 
-  let entryCountLabel = $derived.by(() => {
-    if (descendantCount === 0) return '';
-    return `${descendantCount} ${descendantCount === 1 ? 'entry' : 'entries'}`;
-  });
-  let entryCountAriaLabel = $derived.by(() => {
-    if (descendantCount === 0) return '';
-    return `${descendantCount} ${descendantCount === 1 ? 'timeline entry' : 'timeline entries'} inside this subagent group`;
-  });
-
   // ---- Expanded-body digest (spec Q2; user ruling 2026-08-23) --------
   // The allowlist lives in utils/subagentDigest.ts and the body in
   // SubagentDigestBody, shared with the background tray row. What this
@@ -344,7 +337,7 @@
   // chat history), and a forked Skill publishes its synthetic answer as a
   // top-level sourced result. The mirrored assistant row stays in the
   // agent pane so the main timeline never duplicates the answer above and
-  // below the activity boundary. A parked card shows its run's report above
+  // below the activity boundary. A parked card shows the run's report above
   // the digest, so the digest drops it.
   let parkedReportId = $derived(parkedStop?.reportItemId ?? '');
   let keepFinalText = $derived(
@@ -359,7 +352,7 @@
     data-testid="subagent-group-marker"
   >
     <span aria-hidden="true">↳</span>
-    <span>Spawned subagent…{entryCountLabel ? ` (${entryCountLabel})` : ''}</span>
+    <span>Spawned subagent…</span>
   </div>
 {:else}
   <div
@@ -389,15 +382,6 @@
           {tokensLabel}
         </span>
       {/if}
-      {#if entryCountLabel}
-        <span
-          class="shrink-0 text-[0.625rem] text-fg-hint opacity-70 transition-opacity group-hover/tool:opacity-100"
-          data-testid="subagent-group-count"
-          aria-label={entryCountAriaLabel}
-        >
-          {entryCountLabel}
-        </span>
-      {/if}
     {/snippet}
     {#snippet cardDetails()}
       {#if parkedStop}
@@ -421,7 +405,7 @@
     {/snippet}
     <TranscriptDisclosureHeader
       agentLayout
-      metrics={toolCountLabel || tokensLabel || entryCountLabel ? cardMetrics : undefined}
+      metrics={toolCountLabel || tokensLabel ? cardMetrics : undefined}
       details={previewText || parkedStop ? cardDetails : undefined}
       expanded={expanded}
       expandable={!navigationOnly}
@@ -486,7 +470,7 @@
 
     {#if expanded}
       <SubagentGroupBody {pane} {group} {parent} {completionItem} id={groupDomId}
-        reportItemId={parkedReportId} {descendantCount} {entryCountLabel} {keepFinalText}
+        reportItemId={parkedReportId} {descendantCount} {keepFinalText}
         live={isRunning} {depth} {renderNode} />
     {/if}
   </div>

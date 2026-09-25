@@ -41,7 +41,7 @@
   let statusItem = $derived(statusProjection?.item ?? null);
   let statusMeta = $derived(statusProjection?.meta ?? null);
   let indicatorState = $derived(
-    statusItem ? indicatorStateForItem(statusItem, { meta: statusMeta }) : null,
+    statusItem ? indicatorStateForItem(statusItem, { payloadMeta: statusMeta }) : null,
   );
   let rowError = $derived(
     statusItem
@@ -116,7 +116,7 @@
     for (let i = members.length - 1; i >= 0; i -= 1) {
       const member = members[i];
       const meta = parseJsonObject(member.payloadMeta);
-      const state = indicatorStateForItem(member, { meta });
+      const state = indicatorStateForItem(member, { payloadMeta: meta });
       if (state === 'error' || state === 'declined') return { item: member, meta };
     }
     const first = members[0];

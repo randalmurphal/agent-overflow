@@ -10,7 +10,6 @@
     id,
     children,
     descendantCount,
-    entryCountLabel,
     keepFinalText,
     live,
     depth,
@@ -23,7 +22,6 @@
     children: readonly TimelineNode[];
     /** How many rows the agent has in total, loaded or not. */
     descendantCount: number;
-    entryCountLabel: string;
     keepFinalText: boolean;
     live: boolean;
     /** Depth the digest rows render at (the host's depth + 1). */
@@ -46,7 +44,7 @@
   {#if children.length === 0}
     {#if descendantCount > 0}
       <p class="text-xs text-text-secondary italic" data-testid="subagent-group-loading">
-        Loading {entryCountLabel}…
+        Loading…
       </p>
     {:else}
       <p class="text-xs text-text-secondary italic">No child entries captured.</p>

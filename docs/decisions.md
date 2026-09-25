@@ -167,9 +167,25 @@ Mechanism in
 ## Subagents and background work
 
 - Rulings: `docs/specs/agent-visibility.md`. In short: the launch row is
-  unchanged except the open-pane door; every detached execution gets one card
-  at its completion; the card body is an allowlist; approvals show only in
-  the composer, never as a card or tray pill.
+  unchanged except the open-pane door and the indicator rule below; every
+  detached execution gets one card at its completion; the card body is an
+  allowlist; approvals show only in the composer, never as a card or tray
+  pill.
+- Rows above the write head never change on screen (ruling 2026-09-25). The
+  one exception: a Claude background launch row's `backgrounded` indicator
+  turns off once, when the launch settles as its stored
+  `live_background_active` bit records, and never turns on again; a parked
+  stop does not settle it, and a later run is a new row with its own
+  indicator. Nothing else on an older row reads live state. A revert that
+  removes an agent's result leaves its launch with no result card; the
+  store owns that case. Every Claude agent card is the agent as of the stop
+  it sits at: the numbers reported there, the duration from the launch to
+  that stop, and every row up to it. A Codex card keeps its execution: its
+  saved bounds, or without them the rows since the previous completion.
+  Card headers, the depth-cap marker and the tray show tools and tokens,
+  never a row count. Mechanism:
+  [immutable agent history](specs/agent-visibility.md#immutable-agent-history)
+  and [agent runs and stops](specs/agent-visibility.md#agent-runs-and-stops).
 - A Codex child's answer is a normal message; never a special final-answer
   block. Its token figure is the child's cumulative spend
   (`childAgentTokenSpend`); Claude's `task_progress` total is latest input

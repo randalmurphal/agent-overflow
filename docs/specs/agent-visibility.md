@@ -49,12 +49,25 @@ profile arrives on the child's `thread/started` and a metadata-only
 spawns never take the first, and the runtime state riding on the same
 update stays on the live projection.
 
+The liveness bit has one visible effect: a Claude background launch
+row's (agent or tool) `backgrounded` indicator turns off once, when the
+launch settles, and never turns on again (ruling 2026-09-25). The row
+reads the stored `live_background_active` bit in its own `meta`, which the
+store sets false at the ending sibling or the session's death and leaves
+set through a parked stop (`components/chat/rowState.ts`). Nothing on an
+older row reads live state. A later run is a new row (a §E6 resume
+carrier) with its own indicator. Codex spawn rows are `completed` and
+never show it.
+
 The background tray represents the current execution. When that execution
 finishes, its background entry disappears and a new completion item is added
 at the completion's timeline position. Subsequent executions have distinct
 completion items. Messages and signals appear where they happen; they do not
 reactivate, enrich or attach themselves to earlier completed items. Each
-completion card retains only its execution's history and settled values.
+completion card is a snapshot as of its stop: a Codex card holds its
+execution's history (its saved bounds, or without them the rows since the
+previous completion) and settled values, a Claude card every row up to the
+stop ([§Agent runs and stops](#agent-runs-and-stops)).
 
 The separate agent pane contains the agent's continuous history across
 executions, including correctly scoped nested-agent activity. Live status
@@ -81,12 +94,14 @@ run writes a completion-shaped sibling of that row at the write head
 - The final stop writes the ending sibling (`completed`, `killed`,
   `errored`), which settles the row.
 
-The card renders at each sibling and covers that run: the rows since the
-row's previous stop. A parked card shows the `parked` indicator,
+The card renders at each sibling and is the agent as of that stop
+(ruling 2026-09-25): the numbers the stop reported, the duration from the
+row's launch to the stop, and every row from the launch, or a carrier's
+resume, up to the stop. A parked card also shows the `parked` indicator,
 "Reported, waiting on N background command(s)" ("Reported again" for a
-woken run), the run's duration, and the report head collapsed; expanded,
-it shows the full report, loaded by id, above the run's digest. Ending
-cards read as other completion cards do. A resume carrier's runs write
+woken run), and the report head collapsed; expanded, it shows the full
+report, loaded by id, above the digest. Ending cards read as other
+completion cards do. A resume carrier's runs write
 their own siblings, so its cards follow the launch's, and nothing keyed on
 the task id merges the runs of a launch and its carriers. An agent's stop
 rings no bell, and nothing hides a stop's card later.
@@ -97,8 +112,10 @@ rings no bell, and nothing hides a stop's card later.
   changes placement and tray membership, not a card pill. Its expanded
   digest is capped, virtualized, and faded at the top.
 - Agent cards and tray rows show name, state indicator, elapsed, tool count,
-  tokens and activity. Narrow rows put metrics on a separate line; names and
-  activity truncate. Activity aligns with the name without a tree connector.
+  tokens and activity, never a row count; the depth-cap marker shows none
+  either (ruling 2026-09-25). Narrow rows put metrics on a separate line;
+  names and activity truncate. Activity aligns with the name without a
+  tree connector.
   A tray agent row's header expands its digest in place, the same digest
   as the card, and its open button opens the agent pane at every width.
   The tray never scrolls the timeline. Transcript launch rows retain their
@@ -239,8 +256,10 @@ rings no bell, and nothing hides a stop's card later.
   a Claude background launch is the compact agent row (robot icon,
   label, model, description, the `backgrounded` indicator, launch time;
   no ticker, no text pill, see c58f9b55), a Codex `spawn_agent` launch is
-  the collab `launched` row. Neither changes after the spawn and neither
-  is ever a card. Each execution's card (status, duration, tool count,
+  the collab `launched` row. Neither changes after the spawn except the
+  Claude row's indicator turning off at settle
+  ([§Immutable agent history](#immutable-agent-history)), and neither is
+  ever a card. Each execution's card (status, duration, tool count,
   tokens, the expandable transcript, open-in-pane) renders AT its
   completion sibling (`SubagentGroupNode.anchor`): top-level, inside the
   parent card for a nested node, or under the `wait_agent` group that

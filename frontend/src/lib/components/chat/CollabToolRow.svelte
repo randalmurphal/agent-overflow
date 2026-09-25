@@ -206,7 +206,7 @@
       tool !== 'wait_agent' &&
       (effectiveStatusItem.status === 'running' || effectiveStatusItem.status === 'streaming'),
   );
-  let indicatorState = $derived(indicatorStateForItem(effectiveStatusItem, { meta: statusPayloadMeta }));
+  let indicatorState = $derived(indicatorStateForItem(effectiveStatusItem, { payloadMeta: statusPayloadMeta }));
   let rowError = $derived.by(() => {
     if (badgeStatus !== 'failure') return null;
     return rowErrorForStatus(effectiveStatusItem.status, 'Agent operation failed') ?? {

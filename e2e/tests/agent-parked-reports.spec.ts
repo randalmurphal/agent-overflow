@@ -11,8 +11,12 @@
 //   cards    - after the final stop the timeline shows a card at every
 //              stop, in order: two parked cards with their report heads,
 //              then the final card; the resumed run adds its own parked
-//              card and final card after the resume. No row is hidden
-//              and no agent bell is written.
+//              card and final card after the resume. Each card's digest
+//              holds every row of its round up to its stop. No row is
+//              hidden and no agent bell is written.
+//   launch   - a launch row's indicator shows until its launch settles
+//              at the ending stop, then stays off; the resume's row has
+//              its own.
 //   parked   - a parked card says so: the parked indicator and "Reported,
 //              waiting on 1 background command" ("Reported again" for a
 //              woken run), the report head collapsed, and the full
@@ -172,6 +176,20 @@ async function cardAnchors(timeline: Locator): Promise<Array<{ anchor: string | 
   );
 }
 
+// The gate-run shells a card's expanded digest holds, in order. Leaves the
+// card collapsed.
+async function digestShells(card: Locator): Promise<string[]> {
+  await card.getByTestId('subagent-group-toggle').click();
+  const body = card.getByTestId('subagent-group-body');
+  await expect(body.locator('[data-item-id^="tu-shell-"]').first()).toBeVisible();
+  const ids = await body.locator('[data-item-id^="tu-shell-"]').evaluateAll((rows) =>
+    rows.map((row) => row.getAttribute('data-item-id') ?? ''),
+  );
+  await card.getByTestId('subagent-group-toggle').click();
+  await expect(body).toHaveCount(0);
+  return ids;
+}
+
 async function gate(harness: HarnessApp, mockId: string, name: string): Promise<void> {
   await waitForGate(harness, name);
   await advance(harness, mockId, name);
@@ -289,6 +307,17 @@ test('every stop of a background agent is a card at its own position, and a resu
     await parked1.getByTestId('subagent-group-toggle').click();
     await expect(parked1.getByTestId('subagent-group-parked-report')).toHaveCount(0);
 
+    // Each card is the agent as of its stop: its digest holds every row of
+    // the round up to that stop, the earlier runs' included.
+    expect(await digestShells(parked1)).toEqual(['tu-shell-1']);
+    expect(await digestShells(parked2)).toEqual(['tu-shell-1', 'tu-shell-2']);
+    expect(await digestShells(final1)).toEqual(['tu-shell-1', 'tu-shell-2']);
+
+    // The launch settled at the ending stop: its row's indicator is off.
+    const launchRow = timeline.locator('[data-item-id="tu-bg"]');
+    await expect(launchRow.getByTestId('agent-row-status')).toHaveCount(0);
+    await expect(launchRow.getByTestId('agent-row-preview')).toContainText('gate watcher');
+
     // --- The resume after completion is a run of its own ----------------
     const turn2 = harness.waitForEvent('provider:turn_completed');
     await harness.rpc('SendMessage', threadId, 'check it again', null);
@@ -297,10 +326,17 @@ test('every stop of a background agent is a card at its own position, and a resu
     await gate(harness, mockId, 'park-3');
     await expectTrayParked(page, 'tu-resume', REPORT_3_HEAD);
     await expect(cards).toHaveCount(4);
+    // The resume is a new row with its own indicator, on through its park;
+    // the settled launch's stays off.
+    const resumeRow = timeline.locator('[data-item-id="tu-resume"]');
+    await expect(resumeRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
+    await expect(launchRow.getByTestId('agent-row-status')).toHaveCount(0);
     await gate(harness, mockId, 'wake-3');
     await expectTrayRunning(page, 'tu-resume');
     await gate(harness, mockId, 'final-2');
     await expect(cards).toHaveCount(5);
+    await expect(resumeRow.getByTestId('agent-row-status')).toHaveCount(0);
+    await expect(launchRow.getByTestId('agent-row-status')).toHaveCount(0);
 
     items = await listItems(harness, threadId);
     const stops = agentStops(items);
@@ -318,6 +354,9 @@ test('every stop of a background agent is a card at its own position, and a resu
     await expect(parked3.getByTestId('subagent-group-parked-status')).toHaveText('Reported, waiting on 1 background command');
     await expect(parked3.getByTestId('subagent-group-preview')).toContainText(REPORT_3_HEAD);
     await expect(cards.nth(4).getByTestId('subagent-group-preview')).toHaveText(FINAL_2);
+    // The resume's cards cover its own round, from the resume to the stop.
+    expect(await digestShells(parked3)).toEqual(['tu-shell-3']);
+    expect(await digestShells(cards.nth(4))).toEqual(['tu-shell-3']);
     // The first run's cards read the same after the resume.
     await expect(cards.nth(0).getByTestId('subagent-group-preview')).toContainText(REPORT_1_HEAD);
     await expect(cards.nth(2).getByTestId('subagent-group-preview')).toHaveText(FINAL_1);

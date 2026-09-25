@@ -6,7 +6,8 @@ import { parseJsonObject } from './parseJsonObject';
 // reports and stops while background commands it started still run. Its
 // card renders at the sibling like any other stop's. Stored history,
 // written once. Keep these values mirrored with internal/store/agent_stops.go;
-// mirror_pins_test.go enforces the cross-language contract.
+// mirror_pins_test.go enforces the cross-language contract. The card reads
+// no run start: its duration runs from the launch (subagentCardStatus.ts).
 export const PARKED_STOP_STATUS = 'parked';
 
 export const PARKED_STOP_META = {
@@ -33,8 +34,6 @@ export interface ParkedStop {
   waitingOn: number;
   /** The run's report: the transcript root's newest assistant_text row at the stop, or '' when the run wrote none. */
   reportItemId: string;
-  /** When the run began (the launch, or the wake that started it); 0 when unrecorded. */
-  runStartedAt: number;
   /** A wake started the run: the agent reported before. */
   woke: boolean;
 }
@@ -45,11 +44,9 @@ export function parkedStopFromItem(item: Pick<Item, 'status' | 'meta'> | null | 
   const meta = parseJsonObject(item.meta);
   const waitingOn = meta?.[PARKED_STOP_META.commands];
   const reportItemId = meta?.[PARKED_STOP_META.reportItemId];
-  const runStartedAt = meta?.[PARKED_STOP_META.runStartedAt];
   return {
     waitingOn: typeof waitingOn === 'number' && waitingOn > 0 ? waitingOn : 0,
     reportItemId: typeof reportItemId === 'string' ? reportItemId : '',
-    runStartedAt: typeof runStartedAt === 'number' && Number.isFinite(runStartedAt) && runStartedAt > 0 ? runStartedAt : 0,
     woke: meta?.[PARKED_STOP_META.runWoke] === true,
   };
 }

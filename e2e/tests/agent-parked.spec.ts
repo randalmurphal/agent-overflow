@@ -13,8 +13,10 @@
 //             and the full report on demand. No bell.
 //   woken   - the row is a running background agent again; the parked
 //             card stays as it was.
-//   final   - a second card lands at the ending sibling and the tray
-//             empties. The agent never rings a bell.
+//   final   - a second card lands at the ending sibling, its digest
+//             holding every row up to the end, the tray empties and the
+//             launch row's indicator turns off. The agent never rings a
+//             bell.
 //
 // The served run state rides ListLiveBackgroundTasks and is read from the
 // parked sibling; the full report loads by id (GetThreadItem).
@@ -193,6 +195,7 @@ test('a parked background agent shows its state and report on the tray and its p
   await parkedCard.getByTestId('subagent-group-toggle').click();
   await expect(parkedCard.getByTestId('subagent-group-parked-report')).toContainText('Waiting for the gate run to finish before I confirm the fix.');
   await expect(parkedCard.getByTestId('subagent-group-parked-report-error')).toHaveCount(0);
+  await expect(parkedCard.getByTestId('subagent-group-body').locator('[data-item-id="tu-shell"]')).toBeVisible();
   await parkedCard.getByTestId('subagent-group-toggle').click();
   await expect(parkedCard.getByTestId('subagent-group-parked-report')).toHaveCount(0);
   await expect(timeline.getByTestId('notification-row')).toHaveCount(0);
@@ -228,6 +231,18 @@ test('a parked background agent shows its state and report on the tray and its p
   await expect(finalCard.getByTestId('subagent-group-parked-status')).toHaveCount(0);
   await expect(parkedCard).toHaveAttribute('data-anchor-id', parkedStopId);
   await expect(parkedCard.getByTestId('subagent-group-preview')).toHaveText(REPORT);
+  // The final card is the agent as of its end: its digest holds the parked
+  // run's shell too, and the answer.
+  await finalCard.getByTestId('subagent-group-toggle').click();
+  const finalBody = finalCard.getByTestId('subagent-group-body');
+  await expect(finalBody.locator('[data-item-id="tu-shell"]')).toBeVisible();
+  await expect(finalBody.getByText('Gate passed; the fix holds.')).toBeVisible();
+  await finalCard.getByTestId('subagent-group-toggle').click();
+  // The launch settled: its indicator turns off, and nothing else on the
+  // row changes.
+  const launchRow = timeline.locator('[data-item-id="tu-bg"]');
+  await expect(launchRow.getByTestId('agent-row-status')).toHaveCount(0);
+  await expect(launchRow.getByTestId('agent-row-preview')).toContainText('gate watcher');
   await expect(timeline.getByTestId('notification-row')).toHaveCount(0);
   await expect(page.getByTestId('activity-rail-background-toggle')).toHaveCount(0);
   await expect

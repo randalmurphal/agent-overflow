@@ -74,7 +74,7 @@ test('a completion forms its card when its launch is outside the shipped activit
   await expect(run.getByTestId('activity-run-later')).toHaveCount(0);
   await expect(page.getByText('Activity moved while it was loading', { exact: true })).toHaveCount(0);
   await expect(card.getByTestId('subagent-group-tools')).toContainText('2 tools');
-  await expect(card.getByTestId('subagent-group-count')).toContainText('4 entries');
+  await expect(card.getByTestId('subagent-group-count')).toHaveCount(0);
 
   // The digest hydrates from the store without the launch row: the
   // opening prompt, the two Reads and the answer.

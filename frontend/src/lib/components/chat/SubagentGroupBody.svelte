@@ -20,7 +20,6 @@
     id,
     reportItemId,
     descendantCount,
-    entryCountLabel,
     keepFinalText,
     live,
     depth,
@@ -35,7 +34,6 @@
     /** A parked stop's report row, shown above the digest; '' for none. */
     reportItemId: string;
     descendantCount: number;
-    entryCountLabel: string;
     keepFinalText: boolean;
     live: boolean;
     /** Depth of the card; the digest rows render one deeper. */
@@ -56,7 +54,6 @@
     {id}
     children={group.children}
     {descendantCount}
-    {entryCountLabel}
     {keepFinalText}
     {live}
     depth={depth + 1}

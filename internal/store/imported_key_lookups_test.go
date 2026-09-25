@@ -483,12 +483,24 @@ func TestImportedLookupsDoNotEnumerateChunks(t *testing.T) {
 
 // The local arm of a keyed or turn read must use its key's index, not walk
 // the thread: the latest turn edit snapshot is found from the turn's rows,
-// and a digest's previous completion through the completion key.
+// and a Codex digest's previous completion through the completion key.
 func TestKeyedReadsUseTheirLocalKeyIndex(t *testing.T) {
 	s := newTestStore(t)
 	seedKeyedLookupThread(t, s)
 	if err := s.PutEditFileSnapshot(keyedThreadID, "diff-payload-1", "f", "b\n", 1); err != nil {
 		t.Fatal(err)
+	}
+	const at = int64(1_700_000_004_000)
+	for i, item := range []Item{
+		{ID: "codex-launch", Kind: "tool_call", ToolName: "collab_agent", IsBackground: true, Meta: `{"input":{"tool":"spawn_agent"}}`},
+		{ID: "codex-child", Kind: "tool_call", ToolName: "Bash", ParentID: "codex-launch"},
+		{ID: "codex-done-1", Kind: "tool_completion", ToolName: "collab_agent", CompletionOf: "codex-launch", IsBackground: true},
+		{ID: "codex-done-2", Kind: "tool_completion", ToolName: "collab_agent", CompletionOf: "codex-launch", IsBackground: true},
+	} {
+		item.ThreadID, item.TurnIndex, item.ItemIndex, item.Role, item.Status, item.CreatedAt = keyedThreadID, 4, 2+i, "assistant", "completed", at+int64(2+i)
+		if err := insertCarded(s, item); err != nil {
+			t.Fatal(err)
+		}
 	}
 	rec := recordStatements(t, s)
 	for _, tc := range []struct {
@@ -509,9 +521,9 @@ func TestKeyedReadsUseTheirLocalKeyIndex(t *testing.T) {
 			forbidden: []string{"MATERIALIZE", "AUTOMATIC", "idx_items_payload_id"},
 		},
 		{
-			name: "digest previous completion",
+			name: "codex digest previous completion",
 			run: func() {
-				if _, err := s.resolveTimelineScope(s.reader(), keyedThreadID, TimelineSelection{ScopeRootID: "launch-1", DigestItemID: "done-1"}); err != nil {
+				if _, err := s.resolveTimelineScope(s.reader(), keyedThreadID, TimelineSelection{ScopeRootID: "codex-launch", DigestItemID: "codex-done-2"}); err != nil {
 					t.Error(err)
 				}
 			},

@@ -105,7 +105,7 @@
   const wrapClass = $derived(getSettings().diffWordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre');
   const resultMeta = $derived(meta as unknown as Record<string, unknown>);
   const completionStatus = $derived(deriveCompletionStatus(item, { meta: resultMeta }));
-  const indicatorState = $derived(indicatorStateForItem(item, { meta: resultMeta }));
+  const indicatorState = $derived(indicatorStateForItem(item, { payloadMeta: resultMeta }));
   const rowError = $derived.by(() => {
     if (completionStatus !== 'failure') return null;
     return rowErrorForStatus(item.status, 'Tool output failed') ?? {

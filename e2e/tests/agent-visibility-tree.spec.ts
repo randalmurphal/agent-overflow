@@ -351,8 +351,10 @@ test('a depth-2 background agent nests under its parent card and indents in the 
   const outerBody = outerCard.getByTestId('subagent-group-body').first();
   await expect(outerBody).toBeVisible();
   await expect(outerBody.getByTestId('subagent-group')).toHaveCount(0);
-  // The inner launch renders as its spawn ROW inside the body, door and all.
+  // The inner launch renders as its spawn ROW inside the body, door and
+  // all. Both launches settled, so neither row shows its indicator.
   const innerSpawnRow = outerBody.locator('[data-item-id="tu-inner"]');
   await expect(innerSpawnRow.getByTestId('agent-row-preview')).toContainText('Inner Scanner');
-  await expect(innerSpawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
+  await expect(innerSpawnRow.getByTestId('agent-row-status')).toHaveCount(0);
+  await expect(outerSpawnRow.getByTestId('agent-row-status')).toHaveCount(0);
 });
