@@ -200,6 +200,7 @@ type bootFlags struct {
 	window             *bool
 	mockProvider       *string
 	mockForge          *string
+	scanScopePIDs      *pidList
 	resetTransportPort *bool
 	updatingTo         *string
 	updateFailedTo     *string
@@ -209,6 +210,29 @@ type bootFlags struct {
 	waitStart          *string
 }
 
+// pidList is a repeatable flag of process ids; each use may also be a
+// comma-separated list.
+type pidList []int
+
+func (p *pidList) String() string {
+	fields := make([]string, len(*p))
+	for i, pid := range *p {
+		fields[i] = strconv.Itoa(pid)
+	}
+	return strings.Join(fields, ",")
+}
+
+func (p *pidList) Set(value string) error {
+	for _, field := range strings.Split(value, ",") {
+		pid, err := strconv.Atoi(strings.TrimSpace(field))
+		if err != nil || pid <= 0 {
+			return fmt.Errorf("%q is not a process id", field)
+		}
+		*p = append(*p, pid)
+	}
+	return nil
+}
+
 // newBootFlagSet declares every flag this binary's boot modes take. The flag
 // set is independent of the Wails CLI's argument parsing — Wails' alpha builds
 // shell out to subprocesses with custom flags and we don't want our flags to
@@ -216,7 +240,11 @@ type bootFlags struct {
 func newBootFlagSet() (*flag.FlagSet, bootFlags) {
 	flagSet := flag.NewFlagSet("agent-overflow", flag.ContinueOnError)
 	flagSet.SetOutput(os.Stderr)
+	scanScopePIDs := &pidList{}
+	flagSet.Var(scanScopePIDs, "scan-scope-pid",
+		"harness/soak mode only: a further process whose tree dev-server discovery may look at; repeatable or comma-separated. Discovery always looks at this backend's own tree and nothing outside the given trees.")
 	return flagSet, bootFlags{
+		scanScopePIDs:      scanScopePIDs,
 		listen:             flagSet.String("listen", "", "transport bind address (e.g. 127.0.0.1:0). Empty honors saved network settings (default: loopback with a stable automatic port)."),
 		printURLFD:         flagSet.String("print-url-fd", "", "run headless and write {port,token} to this file descriptor as JSON. Falls back to a stdout sentinel when the fd isn't open."),
 		connect:            flagSet.String("connect", "", "remote client mode: attach the desktop window to a backend instead of booting a local one. Takes a pairing link (pairs this device, then attaches), a backend this device is already paired with (its id, its endpoint, or host:port), or ws://host:port/?token=<value> for a backend on this machine. Skips local execution boot."),
@@ -317,6 +345,9 @@ type cliFlags struct {
 	// ao-mockforge binary it runs in place of gh and glab (default: next
 	// to this executable).
 	mockForge string
+	// scanScopePIDs are the processes whose trees an isolated boot's
+	// dev-server discovery may look at (app.IsolationConfig.ScanScopePIDs).
+	scanScopePIDs []int
 	// resetTransportPort discards the persisted transport port before
 	// binding, so this boot adopts a fresh one. See
 	// main_transport_port.go for the pin it clears and
@@ -365,6 +396,7 @@ func parseFlags(args []string) (cliFlags, error) {
 		window:                 *values.window,
 		mockProvider:           *values.mockProvider,
 		mockForge:              *values.mockForge,
+		scanScopePIDs:          *values.scanScopePIDs,
 		resetTransportPort:     *values.resetTransportPort,
 		updatingTo:             strings.TrimSpace(*values.updatingTo),
 		updateFailure: appupdate.LauncherFailure{
@@ -515,6 +547,9 @@ func parseFlags(args []string) (cliFlags, error) {
 	}
 	if out.mockForge != "" && !out.harness && !out.soak {
 		return cliFlags{}, errors.New("--mock-forge requires --harness or --soak")
+	}
+	if len(out.scanScopePIDs) > 0 && !out.harness && !out.soak {
+		return cliFlags{}, errors.New("--scan-scope-pid requires --harness or --soak")
 	}
 	if out.connect != "" && out.resetTransportPort {
 		// --connect boots no local transport, so there is no pin to

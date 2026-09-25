@@ -199,6 +199,8 @@ func TestSoakScenarioIsShipped(t *testing.T) {
 // provider pins would still let a scenario write into a real repository.
 // forgeCLIs is the same rule for gh and glab: a mode without it runs the
 // developer's real forge CLIs, logged in, against the network.
+// scanScope is the same rule for dev-server discovery: a mode without
+// it dials every listener on the machine.
 func TestMockedBootModesShareOneIsolationHelper(t *testing.T) {
 	pins := []string{
 		"providerBinaryOverride",
@@ -208,6 +210,7 @@ func TestMockedBootModesShareOneIsolationHelper(t *testing.T) {
 		"mockEngine",
 		"isolatedWorkspaceRoot",
 		"forgeCLIs",
+		"scanScope",
 	}
 	assignment := make([]*regexp.Regexp, len(pins))
 	for i, pin := range pins {

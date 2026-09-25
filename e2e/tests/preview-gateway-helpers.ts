@@ -20,11 +20,11 @@
 // this suite exists to catch.
 //
 // THE FAKE DEV SERVER IS A LISTENER IN THIS PROCESS, and that is what
-// makes the flow real rather than staged. The harness backend runs on
-// this same machine, so `internal/devscan`'s /proc walk finds the
-// listener on its own — it is not injected, and no scanner is faked. It
-// belongs to the Playwright node process, which is nothing the backend
-// spawned, so nothing attributes it to a thread: it is a `seen`
+// makes the flow real rather than staged. `launchHarness` scopes the
+// backend's scan to this process's tree, so `internal/devscan`'s /proc
+// walk finds the listener on its own: it is not injected, and no scanner
+// is faked. It belongs to the Playwright node process, which is nothing
+// the backend spawned, so nothing attributes it to a thread: it is a `seen`
 // candidate, which is precisely the state the "not shared / Allow port"
 // affordance exists for. Allowing it by hand is the flow the suite is
 // about.

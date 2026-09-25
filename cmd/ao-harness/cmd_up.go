@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 
 	"agent-overflow/internal/appdirs"
 	"agent-overflow/internal/harness/governor"
@@ -41,6 +43,12 @@ func runUp(e *env, args []string) error {
 	keepHome := flags.Bool("keep-home", false, "leave $HOME real for child processes; backend provider state stays isolated")
 	memoryLimit := flags.Uint64("memory-limit-bytes", governor.DefaultCeilingBytes, "hard per-instance memory limit covering the backend and descendants (default 2 GiB)")
 	timeout := flags.Duration("timeout", harnessclient.DefaultLaunchTimeout, "how long to wait for the bootstrap line")
+	var scanScope []int
+	flags.Func("scan-scope-pid", "a further process whose tree the backend's dev-server discovery may look at; repeatable or comma-separated (default: only the backend's own tree)", func(value string) error {
+		pids, err := parsePIDList(value)
+		scanScope = append(scanScope, pids...)
+		return err
+	})
 	rest, err := e.parse(flags, args)
 	if err != nil {
 		return err
@@ -103,6 +111,7 @@ func runUp(e *env, args []string) error {
 		Window:           *window,
 		DevAssetsURL:     *devAssets,
 		KeepHome:         *keepHome,
+		ScanScopePIDs:    scanScope,
 		Timeout:          *timeout,
 		Detach:           true,
 		StdoutPath:       filepath.Join(logDir, backendStdoutLog),
@@ -171,6 +180,20 @@ func runUp(e *env, args []string) error {
 	e.printf("  data dir  %s\n", bs.DataDir)
 	e.printf("  stderr    %s\n", stderrPath)
 	return nil
+}
+
+// parsePIDList reads one --scan-scope-pid value. The backend re-checks it;
+// this refusal comes before `up` creates anything.
+func parsePIDList(value string) ([]int, error) {
+	var pids []int
+	for _, field := range strings.Split(value, ",") {
+		pid, err := strconv.Atoi(strings.TrimSpace(field))
+		if err != nil || pid <= 0 {
+			return nil, fmt.Errorf("%q is not a process id", field)
+		}
+		pids = append(pids, pid)
+	}
+	return pids, nil
 }
 
 func windowSuffix(window bool) string {

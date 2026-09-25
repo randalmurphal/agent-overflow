@@ -141,9 +141,8 @@ func runSoak(flags cliFlags) {
 	// Same helper, same pins. The browser opt-in is refused here whenever
 	// --autopilot is armed: that is what makes this instance a soak rather
 	// than the (attended) Windows harness, which rides the same wire flag.
-	appService, nativeWindow := newIsolatedProviderApp(paths, isolationOptions{
-		RealBrowserEngine: realBrowserEngineRequested(flags),
-	})
+	// The dev-server scan pin is the harness's too; see isolationOptions.
+	appService, nativeWindow := newIsolatedProviderApp(paths, isolationOptionsFor(flags))
 	h := newHarness(appService, paths, nativeWindow)
 	// This shell is launcher-spawned, so it takes the same window-close
 	// door the production headless boot does. The request lands on the

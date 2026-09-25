@@ -10,5 +10,9 @@ Discovers local development servers for preview routing. It combines attributed 
 - Preserve source and status in results; callers need to distinguish discovery, configuration, and observation.
 - Keep enumeration platform-specific. Unsupported platforms return a clear capability result.
 - Bound scan concurrency, probe time, response reads, result count, and retained observations.
+- `NewScoped` limits a scanner to the process trees of its root pids. A
+  listener outside every tree, or with an unknown pid, is never probed or
+  listed. Both enumerators return the parent map the scope walks. `New`
+  scans the whole machine; automated instances must not use it.
 
 The package discovers and probes only. Authentication, remote routing, settings persistence, and browser launch belong elsewhere.

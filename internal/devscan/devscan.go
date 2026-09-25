@@ -140,6 +140,11 @@ type Scanner struct {
 	// the enumerators that shell out.
 	procRoot string
 
+	// scope is the set of root pids whose process trees this scanner may
+	// look at, or nil for the whole machine. A listener outside every
+	// tree, or one whose pid is unknown, is never probed and never listed.
+	scope map[int]struct{}
+
 	probe *prober
 	now   func() time.Time
 
@@ -163,6 +168,21 @@ type graceEntry struct {
 // loopback.
 func New() *Scanner { return newScanner("/proc", time.Now) }
 
+// NewScoped returns a Scanner that sees only listeners held by one of
+// roots or by a descendant of one, so an automated instance never dials a
+// service outside the processes it was told to look at. With no roots it
+// sees nothing.
+func NewScoped(roots ...int) *Scanner { return New().scopedTo(roots) }
+
+// scopedTo restricts s to the process trees of roots.
+func (s *Scanner) scopedTo(roots []int) *Scanner {
+	s.scope = make(map[int]struct{}, len(roots))
+	for _, pid := range roots {
+		s.scope[pid] = struct{}{}
+	}
+	return s
+}
+
 // newScanner is the injected form both New and the tests build.
 func newScanner(procRoot string, now func() time.Time) *Scanner {
 	return &Scanner{
@@ -184,6 +204,9 @@ func (s *Scanner) Scan(ctx context.Context, owners []Owner, allowed []int) ([]De
 	listeners, parents, err := enumerateListeners(s.procRoot)
 	if err != nil {
 		return nil, err
+	}
+	if s.scope != nil {
+		listeners = inScope(listeners, parents, s.scope)
 	}
 
 	allowedSet := make(map[int]struct{}, len(allowed))
@@ -263,6 +286,36 @@ func (s *Scanner) Scan(ctx context.Context, owners []Owner, allowed []int) ([]De
 	servers = appendMissingAllowed(servers, allowed)
 	sort.Slice(servers, func(i, j int) bool { return servers[i].Port < servers[j].Port })
 	return servers, nil
+}
+
+// inScope keeps the listeners held by a scope root or a descendant of
+// one. A listener whose pid is unknown (0) cannot be placed in any tree,
+// so it is out.
+func inScope(listeners []listener, parents map[int]int, roots map[int]struct{}) []listener {
+	kept := listeners[:0]
+	for _, l := range listeners {
+		if descendsFromRoot(l.PID, parents, roots) {
+			kept = append(kept, l)
+		}
+	}
+	return kept
+}
+
+// descendsFromRoot walks pid's recorded parent chain looking for a root,
+// with the same depth bound attribution uses. An unknown pid (0) matches
+// nothing, even a root of 0.
+func descendsFromRoot(pid int, parents map[int]int, roots map[int]struct{}) bool {
+	for depth := 0; depth < maxAncestorDepth && pid > 0; depth++ {
+		if _, ok := roots[pid]; ok {
+			return true
+		}
+		next, ok := parents[pid]
+		if !ok || next == pid {
+			return false
+		}
+		pid = next
+	}
+	return false
 }
 
 // applyGrace records the attributed ports this scan saw and re-adds the

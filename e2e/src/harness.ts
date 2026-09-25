@@ -77,6 +77,10 @@ export async function launchHarness(opts: LaunchOptions = {}): Promise<HarnessAp
   const args = ['--harness', '--data-dir', dataDir];
   if (mockProvider) args.push('--mock-provider', mockProvider);
   if (mockForge) args.push('--mock-forge', mockForge);
+  // Dev-server discovery looks only at this process's tree, where a
+  // suite's fake listeners live, and at the backend's own. Nothing else on
+  // the machine is dialled.
+  if (!opts.savedRelease) args.push('--scan-scope-pid', String(process.pid));
 
   const child = spawnContained(binary, args, {
     memoryLimitBytes: opts.memoryLimitBytes ?? FALLBACK_MEMORY_LIMIT_BYTES,

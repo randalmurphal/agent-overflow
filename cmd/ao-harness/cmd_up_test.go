@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -86,6 +88,26 @@ func TestUpAcceptsAScratchRootThatDoesNotExistYet(t *testing.T) {
 // MkdirAll a log directory into a root the backend was about to refuse,
 // so a mistyped --data-dir left a half-made tree inside the real config
 // root and then failed with a message about the boot.
+// A scan scope that names no process is a usage error, raised before the
+// data root is touched.
+func TestUpRefusesAScanScopeThatIsNotAProcessID(t *testing.T) {
+	for _, value := range []string{"0", "-3", "41,", "self"} {
+		root := filepath.Join(t.TempDir(), "fresh")
+		e, _, _ := testEnv(t.TempDir())
+		err := runUp(e, []string{"--data-dir", root, "--scan-scope-pid", value})
+		if _, ok := errors.AsType[usageErr](err); !ok {
+			t.Fatalf("--scan-scope-pid %q: err = %v, want a usage error", value, err)
+		}
+		if _, statErr := os.Stat(root); statErr == nil {
+			t.Fatalf("--scan-scope-pid %q: up created %s before refusing", value, root)
+		}
+	}
+	pids, err := parsePIDList("41, 42")
+	if err != nil || !slices.Equal(pids, []int{41, 42}) {
+		t.Fatalf("parsePIDList(\"41, 42\") = %v, %v", pids, err)
+	}
+}
+
 func TestUpCreatesNothingInsideARootItRefuses(t *testing.T) {
 	_, appData := configRootFixture(t)
 

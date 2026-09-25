@@ -22,6 +22,7 @@ test('a saved release upgrades without losing conversations, pins, or drafts', a
   try {
     app = await launchHarness({
       binary: baseline,
+      savedRelease: true,
       mockProvider: fileURLToPath(new URL('../../bin/ao-mockprovider', import.meta.url)),
       dataDir,
     });

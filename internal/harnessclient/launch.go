@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,6 +63,10 @@ type LaunchOptions struct {
 	// processes. The backend's provider state remains pinned under the data
 	// root. Child processes can still read the developer's real home.
 	KeepHome bool
+	// ScanScopePIDs are further processes whose trees the backend's
+	// dev-server discovery may look at (--scan-scope-pid). Empty leaves
+	// discovery to the backend's own tree.
+	ScanScopePIDs []int
 	// ExtraArgs are appended verbatim after the mode flags.
 	ExtraArgs []string
 	// Env entries are appended to the parent environment.
@@ -173,6 +178,9 @@ func Launch(ctx context.Context, opts LaunchOptions) (*Launched, error) {
 	}
 	if opts.MockForge != "" {
 		args = append(args, "--mock-forge", opts.MockForge)
+	}
+	for _, pid := range opts.ScanScopePIDs {
+		args = append(args, "--scan-scope-pid", strconv.Itoa(pid))
 	}
 	args = append(args, opts.ExtraArgs...)
 

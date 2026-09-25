@@ -106,9 +106,7 @@ func runHarness(flags cliFlags) {
 		}
 	}
 
-	appService, nativeWindow := newIsolatedProviderApp(paths, isolationOptions{
-		RealBrowserEngine: realBrowserEngineRequested(flags),
-	})
+	appService, nativeWindow := newIsolatedProviderApp(paths, isolationOptionsFor(flags))
 	h := newHarness(appService, paths, nativeWindow)
 	// The control server must listen before App.Start: it publishes its
 	// address/token through App.providerExtraEnv (write-once before
@@ -227,9 +225,9 @@ func holdHarnessStartup(ctx context.Context, begin func(phase, detail string) (e
 	}
 }
 
-// isolationOptions carries the ONE isolation decision a mocked boot mode
-// is allowed to make for itself. The provider-safety pins are
-// deliberately absent: they are unconditional in every mode, which is what
+// isolationOptions carries the isolation decisions a mocked boot mode is
+// allowed to make for itself. The provider-safety pins are deliberately
+// absent: they are unconditional in every mode, which is what
 // TestMockedBootModesShareOneIsolationHelper proves. Anything added here
 // must be defaulted SAFE by its zero value, so a caller that forgets to
 // fill it in gets the pinned behaviour.
@@ -238,6 +236,20 @@ type isolationOptions struct {
 	// whatever real engine its deployment has. Zero value keeps the pin.
 	// Only realBrowserEngineRequested may set it.
 	RealBrowserEngine bool
+	// ScanScopePIDs lets dev-server discovery also look at these
+	// processes' trees (--scan-scope-pid). Zero value scans only this
+	// backend's own tree, which is what every launcher-hosted --soak
+	// instance gets.
+	ScanScopePIDs []int
+}
+
+// isolationOptionsFor is the one mapping from boot flags to isolation
+// options, shared by --harness and --soak.
+func isolationOptionsFor(flags cliFlags) isolationOptions {
+	return isolationOptions{
+		RealBrowserEngine: realBrowserEngineRequested(flags),
+		ScanScopePIDs:     flags.scanScopePIDs,
+	}
 }
 
 // newIsolatedProviderApp builds the App for a boot mode whose providers
@@ -274,6 +286,8 @@ func newIsolatedProviderApp(paths harnessPaths, opts isolationOptions) (*App, *i
 		WorkspaceRoot: paths.DataRoot,
 		// gh and glab; see internal/git/forge_cli.go.
 		ForgeCLI: paths.MockForge,
+		// Dev-server discovery; see internal/app/app_preview.go.
+		ScanScopePIDs: opts.ScanScopePIDs,
 	})
 	window := &isolatedNativeWindow{}
 	appservice.SetBrowserNativeWindow(appService.App, window.pointer)

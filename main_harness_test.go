@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"unsafe"
@@ -306,6 +307,54 @@ func TestZeroIsolationOptionsKeepTheFakeBrowserEngine(t *testing.T) {
 	}
 }
 
+// --scan-scope-pid is repeatable and takes comma lists, accepts only
+// process ids, and belongs to the isolated boots.
+func TestParseFlagsScanScopePIDs(t *testing.T) {
+	for _, mode := range []string{"--harness", "--soak"} {
+		flags, err := parseFlags([]string{mode, "--data-dir", "/tmp/x", "--scan-scope-pid", "41,42", "--scan-scope-pid", "43"})
+		if err != nil {
+			t.Fatalf("%s: parseFlags: %v", mode, err)
+		}
+		if !slices.Equal(flags.scanScopePIDs, []int{41, 42, 43}) {
+			t.Fatalf("%s: scanScopePIDs = %v, want [41 42 43]", mode, flags.scanScopePIDs)
+		}
+	}
+	for _, args := range [][]string{
+		{"--harness", "--data-dir", "/tmp/x", "--scan-scope-pid", "0"},
+		{"--harness", "--data-dir", "/tmp/x", "--scan-scope-pid", "-4"},
+		{"--harness", "--data-dir", "/tmp/x", "--scan-scope-pid", "41,"},
+		{"--harness", "--data-dir", "/tmp/x", "--scan-scope-pid", "self"},
+		{"--scan-scope-pid", "41"},
+		{"--frontend", "--scan-scope-pid", "41"},
+	} {
+		if _, err := parseFlags(args); err == nil {
+			t.Errorf("parseFlags(%q) accepted it", args)
+		}
+	}
+}
+
+// Both isolated boot modes build their options through one function, so
+// neither can drop the scan scope the other honours. Without one the
+// options refuse every scan.
+func TestIsolationOptionsCarryTheScanScope(t *testing.T) {
+	t.Setenv(diagenv.HarnessRealBrowser, "")
+	for _, flags := range []cliFlags{
+		{harness: true, scanScopePIDs: []int{41}},
+		{soak: true, scanScopePIDs: []int{41}},
+		{soak: true, autopilot: true, scanScopePIDs: []int{41}},
+	} {
+		if got := isolationOptionsFor(flags).ScanScopePIDs; !slices.Equal(got, []int{41}) {
+			t.Errorf("isolationOptionsFor(%+v).ScanScopePIDs = %v, want [41]", flags, got)
+		}
+	}
+	if got := isolationOptionsFor(cliFlags{harness: true}).ScanScopePIDs; len(got) != 0 {
+		t.Errorf("no --scan-scope-pid produced scope %v", got)
+	}
+	if (isolationOptions{}).ScanScopePIDs != nil {
+		t.Fatal("zero isolationOptions carries a scan scope; the safe default must be the zero value")
+	}
+}
+
 // The opt-in has to reach the WSL backend, which runs on the far side of
 // two WSLENV hops (`make harness-wsl`). diagenv.Passthrough is hop 2, the
 // one the launcher owns; DEV_WSL_FWD_VARS is hop 1, from the WSL shell to
@@ -355,7 +404,7 @@ func TestBrowserWindowGetterIsInstalledBeforeAppStart(t *testing.T) {
 			t.Fatalf("read %s: %v", path, err)
 		}
 		text := string(source)
-		build := strings.Index(text, "newIsolatedProviderApp(paths, isolationOptions{")
+		build := strings.Index(text, "newIsolatedProviderApp(paths, isolationOptionsFor(flags))")
 		startApp := strings.Index(text, "appService.Start(bootCtx)")
 		if build < 0 || startApp < 0 || build > startApp {
 			t.Fatalf("%s: newIsolatedProviderApp=%d App.Start=%d; the browser window getter must be installed before startup", path, build, startApp)

@@ -8,6 +8,9 @@ states its own coverage; do not maintain a duplicate spec catalog here.
 ## Shared infrastructure
 
 - `src/harness.ts` owns backend launch and the TypeScript harness wire client.
+  Each backend's dev-server scan is scoped to the launching worker's process
+  tree and its own, so a fake dev server must listen in the worker or a
+  descendant of it.
 - `tests/fixtures.ts` owns the worker backend and per-test reset. Before reset,
   wait until the previous context's page registration is gone; a leaked page is
   a test failure.

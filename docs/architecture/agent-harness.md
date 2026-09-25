@@ -36,7 +36,7 @@ belonging to the profile being launched.
 
 ```
 make harness                    # build + run at a per-checkout /tmp root (reused)
-bin/agent-overflow --harness --data-dir <scratch> [--mock-provider <path>] [--mock-forge <path>] [--listen 127.0.0.1:0]
+bin/agent-overflow --harness --data-dir <scratch> [--mock-provider <path>] [--mock-forge <path>] [--scan-scope-pid <pid>] [--listen 127.0.0.1:0]
 ```
 
 `--harness` is the only way the harness surface exists: the `Harness`
@@ -128,6 +128,14 @@ Boot performs, in order (`prepareHarness`):
    directory. Seeded repos (`<dataRoot>/workspaces`) and app-made
    worktrees (`<dataDir>/worktrees`) are inside; a real checkout added
    through the UI, a seed by explicit path, or an unrelocated store is not.
+
+Dev-server discovery is pinned the same way (`IsolationConfig.ScanScopePIDs`).
+It probes only listeners in the backend's own process tree, which holds its
+providers and terminals, and in any tree named by `--scan-scope-pid`
+(repeatable or comma-separated). The e2e client passes its worker's pid so a
+suite's fake dev server is in scope; `ao-harness up --scan-scope-pid`
+forwards one. `make harness`, the windowed harnesses and the Windows launcher
+pass none and see only their own tree.
 
 Then the mock-provider control server starts (before `App.Start`, so
 every provider spawn inherits its env), the transport comes up, and

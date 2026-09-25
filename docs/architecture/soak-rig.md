@@ -63,6 +63,7 @@ isolation pins are applied:
 | `fileKeychainOverride` | no OS keychain |
 | `backgroundFetchDisabled` | no network on a run that lasts hours |
 | `isolatedWorkspaceRoot` | no project path or session cwd outside the data root, so a mock scenario cannot write into a real checkout |
+| `scanScope` | dev-server discovery probes only listeners in the backend's own process tree and under any `--scan-scope-pid`; the Windows launcher passes none, so a launcher-hosted instance sees only its own tree |
 
 `TestMockedBootModesShareOneIsolationHelper` (`main_soak_test.go`)
 scans the repo-root Go sources and fails if any of those pins is

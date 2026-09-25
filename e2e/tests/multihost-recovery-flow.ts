@@ -46,7 +46,7 @@ export function multihostRecoveryFlow(): void {
   // mock executable. All homes/state still belong to launchHarness.
   const baseline = process.env.AO_E2E_RECOVERY_BASELINE;
   if (baseline && !isAbsolute(baseline)) throw new Error('AO_E2E_RECOVERY_BASELINE must name an absolute saved-release binary path');
-  const firstOptions = baseline ? { binary: baseline, mockProvider: fileURLToPath(new URL('../../bin/ao-mockprovider', import.meta.url)) } : {};
+  const firstOptions = baseline ? { binary: baseline, savedRelease: true, mockProvider: fileURLToPath(new URL('../../bin/ao-mockprovider', import.meta.url)) } : {};
   test(`one host can restart during a turn without stranding either computer${baseline ? ' (saved release host; graceful restart)' : ''}`, async ({ page }) => {
     test.setTimeout(120_000);
     page.setDefaultTimeout(10_000);

@@ -35,6 +35,12 @@ type IsolationConfig struct {
 	// forge CLI invocation fails with a named error instead of reaching
 	// the real CLI on PATH.
 	ForgeCLI string
+	// ScanScopePIDs are further processes whose trees dev-server discovery
+	// may look at (devscan.NewScoped). The scope always includes this
+	// backend's own tree, which holds the providers and terminals it
+	// spawns, so an isolated boot never dials a listener outside the
+	// processes it was given.
+	ScanScopePIDs []int
 }
 
 // ConfigureIsolation applies every mocked-provider safety pin before Start.
@@ -50,6 +56,7 @@ func ConfigureIsolation(a *App, config IsolationConfig) {
 	a.browser.mockEngine = config.MockBrowserEngine
 	a.isolatedWorkspaceRoot = config.WorkspaceRoot
 	a.forgeCLIs = isolatedForgeCLIs{isolated: true, fake: config.ForgeCLI}
+	a.preview.scanScope = isolatedScanScope(config.ScanScopePIDs)
 	a.downloadsIsolated = true
 }
 

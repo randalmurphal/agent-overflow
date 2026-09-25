@@ -64,6 +64,10 @@ type previewState struct {
 	// App, because the probe memo and the grace deadlines are its state.
 	// A fixture may install its own; see previewScanner.
 	scanner devServerScanner
+	// scanScope is an isolated boot's scan roots, set only by
+	// ConfigureIsolation (IsolationConfig.ScanScopePIDs). Nil outside an
+	// isolated boot.
+	scanScope []int
 	// halted is why discovery stopped, once it has. Every error a scan
 	// can return comes from the ENUMERATOR — this platform has no way to
 	// look, or the socket tables cannot be read — and neither answer
@@ -342,22 +346,44 @@ func (refusingScanner) Scan(context.Context, []devscan.Owner, []int) ([]devscan.
 		"tests must not scan this machine's listening ports; assign app.preview.scanner a fake")
 }
 
+// isolatedScanScope builds an isolated boot's scan roots from
+// IsolationConfig.ScanScopePIDs: the positive pids given, plus this
+// backend's own, so the scope is never empty.
+func isolatedScanScope(pids []int) []int {
+	roots := make([]int, 0, len(pids)+1)
+	for _, pid := range pids {
+		if pid > 0 {
+			roots = append(roots, pid)
+		}
+	}
+	return append(roots, os.Getpid())
+}
+
 // previewScanner returns the App's one scanner, building it on first
 // use. An install that never looks at a dev server never allocates it.
-//
-// testing.Testing() is false in every production process, so the refusal
-// costs an ordinary run nothing.
 func (a *App) previewScanner() devServerScanner {
 	a.preview.mu.Lock()
 	defer a.preview.mu.Unlock()
 	if a.preview.scanner == nil {
-		if testing.Testing() {
-			a.preview.scanner = refusingScanner{}
-		} else {
-			a.preview.scanner = devscan.New()
-		}
+		a.preview.scanner = newPreviewScanner(a.preview.scanScope, testing.Testing())
 	}
 	return a.preview.scanner
+}
+
+// newPreviewScanner picks this process's scanner from the isolated scan
+// scope (nil outside an isolated boot). A test binary always refuses,
+// isolated or not: a scoped scan of the test's own process would still
+// dial its httptest servers. testing.Testing() is false in every
+// production process, so the refusal costs an ordinary run nothing.
+func newPreviewScanner(scope []int, testBinary bool) devServerScanner {
+	switch {
+	case testBinary:
+		return refusingScanner{}
+	case scope == nil:
+		return devscan.New()
+	default:
+		return devscan.NewScoped(scope...)
+	}
 }
 
 // previewHalted returns why discovery stopped, once it has, so the

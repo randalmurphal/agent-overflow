@@ -126,6 +126,7 @@ func TestLaunchReadsTheBootstrapLineAndSpellsTheModeFlags(t *testing.T) {
 	opts := fakeBackendOpts(t, "linger", dataRoot)
 	opts.Env = append(opts.Env, fakeBackendArgvEnv+"="+argvFile)
 	opts.MockProvider = "/opt/bin/ao-mockprovider"
+	opts.ScanScopePIDs = []int{41, 42}
 
 	launched, err := Launch(context.Background(), opts)
 	if err != nil {
@@ -149,7 +150,10 @@ func TestLaunchReadsTheBootstrapLineAndSpellsTheModeFlags(t *testing.T) {
 		t.Fatalf("decode argv: %v", err)
 	}
 	got := strings.Join(argv, " ")
-	for _, want := range []string{"--harness", "--data-dir " + instanceinfo.NormalizeSystemPath(dataRoot), "--mock-provider /opt/bin/ao-mockprovider"} {
+	for _, want := range []string{
+		"--harness", "--data-dir " + instanceinfo.NormalizeSystemPath(dataRoot), "--mock-provider /opt/bin/ao-mockprovider",
+		"--scan-scope-pid 41 --scan-scope-pid 42",
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("argv %q is missing %q", got, want)
 		}

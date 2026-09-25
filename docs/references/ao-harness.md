@@ -217,7 +217,7 @@ ao-harness monitor cleanup --run-id frame-check --file /tmp/frame-check.json
 ao-harness monitor last
 ```
 
-`bench` operates on and resets the selected borrowed harness. Use `run --plan` for a fresh managed run. `up --soak` starts soak backend mode but does not start the Windows launcher. `up --keep-home` exposes the real home only to child processes; backend provider state remains isolated. `up` applies a hard 2 GiB memory limit by default; use `--memory-limit-bytes` to set another positive limit within host capacity.
+`bench` operates on and resets the selected borrowed harness. Use `run --plan` for a fresh managed run. `up --soak` starts soak backend mode but does not start the Windows launcher. `up --keep-home` exposes the real home only to child processes; backend provider state remains isolated. `up --scan-scope-pid` adds processes whose trees the backend's dev-server discovery may look at; without it discovery sees only the backend's own tree. `up` applies a hard 2 GiB memory limit by default; use `--memory-limit-bytes` to set another positive limit within host capacity.
 
 ## Output
 

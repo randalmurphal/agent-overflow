@@ -57,6 +57,49 @@ func TestPreviewScannerRefusesToScanInsideATestBinary(t *testing.T) {
 	}
 }
 
+// An isolated boot is the production binary, so testing.Testing() does
+// not protect it: its scope decides. The scope is always this backend's
+// own tree, which holds its providers and terminals, plus any valid pids
+// it was given.
+func TestConfigureIsolationScopesTheDevServerScan(t *testing.T) {
+	self := os.Getpid()
+	for _, tc := range []struct {
+		name      string
+		scope     []int
+		wantRoots []int
+	}{
+		{"no scope", nil, []int{self}},
+		{"only non-positive pids", []int{0, -3}, []int{self}},
+		{"a scope", []int{4242, 0}, []int{4242, self}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := &App{}
+			ConfigureIsolation(app, IsolationConfig{ScanScopePIDs: tc.scope})
+			if got := app.preview.scanScope; !slices.Equal(got, tc.wantRoots) {
+				t.Fatalf("scan scope = %v, want %v", got, tc.wantRoots)
+			}
+			if _, ok := newPreviewScanner(app.preview.scanScope, false).(*devscan.Scanner); !ok {
+				t.Fatalf("an isolated production boot did not get a scoped devscan.Scanner")
+			}
+		})
+	}
+}
+
+// A test binary refuses whatever it configured, and only an ordinary
+// process that is not isolated scans the whole machine. Nothing here
+// calls Scan on a real scanner.
+func TestNewPreviewScannerRefusesInEveryTestBinary(t *testing.T) {
+	for _, scope := range [][]int{nil, {os.Getpid()}, {4242, os.Getpid()}} {
+		scanner := newPreviewScanner(scope, true)
+		if _, ok := scanner.(refusingScanner); !ok {
+			t.Errorf("scope %v in a test binary built %#v, want the refusal", scope, scanner)
+		}
+	}
+	if _, ok := newPreviewScanner(nil, false).(*devscan.Scanner); !ok {
+		t.Error("an ordinary process did not get the real scanner")
+	}
+}
+
 func TestGetDevServersScansOnDemand(t *testing.T) {
 	scanner := &fakeScanner{servers: []devscan.DevServer{
 		{Port: 5173, ThreadID: "thread-a", Allowed: true, Source: devscan.SourceAttributed, Listening: true},

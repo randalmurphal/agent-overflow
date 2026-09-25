@@ -25,6 +25,11 @@ export interface HarnessBootstrap {
 export interface LaunchOptions {
   /** Backend binary. Default: $AO_HARNESS_BIN, else <repo>/bin/agent-overflow. */
   binary?: string;
+  /**
+   * `binary` is a saved release that predates `--scan-scope-pid`, so the
+   * launch omits it and that release scans as it always did.
+   */
+  savedRelease?: boolean;
   /** ao-mockprovider path. Default: $AO_MOCKPROVIDER, else next to the binary. */
   mockProvider?: string;
   /** ao-mockforge path. Default: $AO_MOCKFORGE, else next to the binary. */
