@@ -388,6 +388,19 @@ export class HarnessApp {
   }
 
   /**
+   * The highest seq this client has received on a channel, or 0. This
+   * client states no watch set, so it is sent every frame, and on an
+   * entity-filtered channel this is the head a narrowed page trails.
+   */
+  lastSeq(channel: string): number {
+    let seq = 0;
+    for (const ev of this.eventLog) {
+      if (ev.channel === channel && ev.seq > seq) seq = ev.seq;
+    }
+    return seq;
+  }
+
+  /**
    * Wait for an `mcpCall` step's outcome: the report the mock posts after
    * a REAL MCP tools/call against a server this app configured. Returns
    * the event so a spec can read `report.result` / `report.isError`, the

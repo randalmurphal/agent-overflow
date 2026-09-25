@@ -470,7 +470,9 @@ type ClientFrame struct {
 //   - "event": pushed event. Channel + Seq + Data carry the payload. Gap
 //     is true when the client's replay request fell outside the in-memory
 //     ring — the client should re-fetch via list endpoints rather than
-//     rely on the (truncated) history.
+//     rely on the (truncated) history. Watermark is true on a frame with
+//     no Data that advances the client's cursor on Channel to Seq past
+//     frames this connection elected not to receive (watermarkEvent).
 //   - "batch": coalesced pushed events in the batchFrame envelope below.
 //   - "replay": completion marker sent after a replay request. Replay and
 //     live pushes can interleave, so strict-order consumers buffer until it.
@@ -491,6 +493,8 @@ type ServerFrame struct {
 	Gap     bool            `json:"gap,omitempty"`
 	// GapThreads rides a Gap frame only; see Event.GapThreads.
 	GapThreads []string `json:"gapThreads,omitempty"`
+	// Watermark marks a cursor-only event frame; see Event.Watermark.
+	Watermark bool `json:"watermark,omitempty"`
 }
 
 // FrameError is the server's RPC or session-ended error envelope. Code is
@@ -636,17 +640,19 @@ var ErrAlreadyHandled = errors.New("already handled")
 
 // batchEventEntry is one event inside a batch frame. It carries the
 // subset of Event fields the client needs to dispatch: channel, seq,
-// data, and the gap flag with its thread attribution. Since batch frames
-// are spliced from pre-encoded event envelopes (spliceBatchFrame), each
-// entry on the wire additionally carries an inert `"type":"event"` field
-// that every consumer ignores; this struct remains the consumer-side parse
-// shape (tests and the wsllauncher notification client decode through it).
+// data, the gap flag with its thread attribution, and the watermark
+// flag. Since batch frames are spliced from pre-encoded event envelopes
+// (spliceBatchFrame), each entry on the wire additionally carries an inert
+// `"type":"event"` field that every consumer ignores; this struct remains
+// the consumer-side parse shape (tests and the wsllauncher notification
+// client decode through it).
 type batchEventEntry struct {
 	Channel    string          `json:"channel"`
 	Seq        uint64          `json:"seq"`
 	Data       json.RawMessage `json:"data"`
 	Gap        bool            `json:"gap,omitempty"`
 	GapThreads []string        `json:"gapThreads,omitempty"`
+	Watermark  bool            `json:"watermark,omitempty"`
 }
 
 // batchFrame is the server-side envelope for coalesced event delivery.

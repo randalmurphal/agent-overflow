@@ -597,12 +597,22 @@ func TestServer_EventSubscriptionFiltersLiveDelivery(t *testing.T) {
 // replay request and its completion marker.
 type replayResult struct {
 	// events are the replayed entries in wire order, flattened across
-	// batch frames.
-	events []batchEventEntry
+	// batch frames. Watermarks are collected apart, in watermarks.
+	events     []batchEventEntry
+	watermarks []batchEventEntry
 	// batchFrames / eventFrames count the wire frames the entries
 	// arrived in, so a test can pin the batching contract itself.
 	batchFrames int
 	eventFrames int
+}
+
+// add files one replayed entry under events or watermarks.
+func (r *replayResult) add(entry batchEventEntry) {
+	if entry.Watermark {
+		r.watermarks = append(r.watermarks, entry)
+		return
+	}
+	r.events = append(r.events, entry)
 }
 
 // requestReplay writes a replay frame and drains the response up to and
@@ -640,11 +650,12 @@ func requestReplay(t *testing.T, conn *websocket.Conn, lastSeqByChannel map[stri
 			return out
 		case frameTypeEvent:
 			out.eventFrames++
-			out.events = append(out.events, batchEventEntry{
-				Channel: probe.Channel,
-				Seq:     probe.Seq,
-				Data:    probe.Data,
-				Gap:     probe.Gap,
+			out.add(batchEventEntry{
+				Channel:   probe.Channel,
+				Seq:       probe.Seq,
+				Data:      probe.Data,
+				Gap:       probe.Gap,
+				Watermark: probe.Watermark,
 			})
 		case frameTypeBatch:
 			var batch batchFrame
@@ -652,7 +663,9 @@ func requestReplay(t *testing.T, conn *websocket.Conn, lastSeqByChannel map[stri
 				t.Fatalf("decode batch frame: %v", err)
 			}
 			out.batchFrames++
-			out.events = append(out.events, batch.Events...)
+			for _, entry := range batch.Events {
+				out.add(entry)
+			}
 		}
 	}
 }

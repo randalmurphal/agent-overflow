@@ -41,6 +41,15 @@ const RingRetainFor = 5 * time.Minute
 // ring, so a channel that stops emitting does not keep its last burst.
 const RingSweepEvery = 30 * time.Second
 
+// WatermarkEvery is how often a connection's pump sends watermarks for
+// the frames its subscriber withheld (Subscriber.takeWithheld). When a
+// connection drops, the client's cursor trails the newest frame withheld
+// from it by at most WatermarkEvery. Of RingRetainFor's 5 minutes that
+// leaves 4.5 minutes for the outage and the reconnect backoff (capped at
+// 30 s for a remote client, 5 s for a local one), within which the
+// reconnect replays without an age gap.
+const WatermarkEvery = 30 * time.Second
+
 // DefaultSubscriberBuffer sizes a subscriber's delivery channel: how far
 // a connected client may fall behind live fanout before the channel is
 // gapped for it. The replay ring serves a client that is not connected.
@@ -355,12 +364,18 @@ func (r *ring) replayAfter(lastSeq uint64) (events []Event, hadGap bool) {
 // key, the keys outnumbered MaxWatchThreads, or the frame is a replay
 // marker, whose lost frames the ring no longer holds. It never names
 // scopes: a loss recovers every surface of the thread.
+//
+// Watermark marks a per-connection frame with no Data (watermarkEvent): it
+// tells the client that every frame on Channel at or below Seq that it is
+// entitled to has been delivered, so the client may advance its cursor to
+// Seq. It is never emitted on the bus or retained in a ring.
 type Event struct {
 	Channel     string
 	Seq         uint64
 	Data        json.RawMessage
 	Gap         bool
 	GapThreads  []string
+	Watermark   bool
 	WireBytes   []byte
 	EntityKey   string
 	EntityScope string
@@ -573,6 +588,7 @@ func encodeEventFrame(evt Event) ([]byte, error) {
 		Data       json.RawMessage `json:"data,omitempty"`
 		Gap        bool            `json:"gap,omitempty"`
 		GapThreads []string        `json:"gapThreads,omitempty"`
+		Watermark  bool            `json:"watermark,omitempty"`
 	}{
 		Type:       frameTypeEvent,
 		Channel:    evt.Channel,
@@ -580,6 +596,7 @@ func encodeEventFrame(evt Event) ([]byte, error) {
 		Data:       evt.Data,
 		Gap:        evt.Gap,
 		GapThreads: evt.GapThreads,
+		Watermark:  evt.Watermark,
 	}
 	return json.Marshal(frame)
 }
@@ -855,6 +872,18 @@ func replayGapMarker(channel string, seq uint64) Event {
 	return gap
 }
 
+// watermarkEvent builds the per-connection frame that advances a client's
+// cursor on channel to seq: {"type":"event","channel":…,"seq":…,
+// "watermark":true}, with no data. Pre-encoded like replayGapMarker, so
+// the pump's single-event fast path and spliceBatchFrame carry it as is.
+func watermarkEvent(channel string, seq uint64) Event {
+	mark := Event{Channel: channel, Seq: seq, Watermark: true}
+	if wire, err := encodeEventFrame(mark); err == nil {
+		mark.WireBytes = wire
+	}
+	return mark
+}
+
 // Close stops accepting new emissions, stops the sweeper and waits for it
 // to return, and signals every subscriber. Idempotent — late callers see
 // closed==true and bail.
@@ -925,6 +954,13 @@ type Subscriber struct {
 	// mutex (Emit's fanout is its sole call site), so no extra locking.
 	// See the EventBus doc comment for the announce protocol.
 	gapped map[string]map[string]struct{}
+	// withheld maps a channel to the newest seq deliver withheld from this
+	// subscriber by the connection's own election (its watch set or its
+	// background lease) since the pump last took it. The pump turns each
+	// entry into a watermark (takeWithheld). deliver writes it under the
+	// bus mutex and the pump takes it without, hence withheldMu.
+	withheldMu sync.Mutex
+	withheld   map[string]uint64
 }
 
 type subscriberChannelFilter map[string]struct{}
@@ -1097,7 +1133,16 @@ func (s *Subscriber) deliver(e Event) {
 	// exempted for these channels for the same reason
 	// (frontend/src/lib/transport/entityFilteredChannels.ts). A frame
 	// withheld by scope takes this branch too.
+	//
+	// This branch and the lease branch below are the only withholds that
+	// record a watermark (noteWithheld): the connection is entitled to the
+	// channel and elected not to receive this frame now. The three filters
+	// above mark nothing, because their channels never reach this
+	// connection's cursor: hello's baseline and handleReplay apply the same
+	// visibility filter, and a connection that subscribed to named channels
+	// keeps cursors for those channels only.
 	if !s.watches(e.Channel, e.EntityKey, e.EntityScope) {
+		s.noteWithheld(e)
 		return
 	}
 	// The last of the withholding filters, and ahead of gap accounting for
@@ -1107,6 +1152,7 @@ func (s *Subscriber) deliver(e Event) {
 	// connection that never leased background, which short-circuits the
 	// map probe away on the fanout hot path.
 	if s.background.Load() && backgroundWithheldChannel(e.Channel) {
+		s.noteWithheld(e)
 		return
 	}
 	if len(s.gapped) > 0 {
@@ -1125,6 +1171,10 @@ func (s *Subscriber) deliver(e Event) {
 			out = stamped
 		}
 	}
+	// Delivered or dropped, this frame's seq is above the channel's mark:
+	// a delivered one moves the client's cursor past the mark itself, and
+	// a dropped one must not be passed by it.
+	s.clearWithheld(e.Channel)
 	select {
 	case s.ch <- out:
 		if out.Gap {
@@ -1139,6 +1189,49 @@ func (s *Subscriber) deliver(e Event) {
 			s.noteDrop(e)
 		}
 	}
+}
+
+// noteWithheld records e as the newest frame on its channel this
+// subscriber elected not to receive, for the pump's next watermark. Runs
+// only from deliver, under the bus mutex, so s.gapped is safe to read.
+//
+// A watermark must never advance the cursor past a frame this connection
+// LOST. A dropped frame is recovered by replay from the cursor, and a mark
+// past it would skip it silently once this subscriber, and the gapped set
+// that still announces the loss, is gone. So nothing is recorded while the
+// channel has an unannounced loss, and deliver clears the mark on every
+// frame that reaches the enqueue attempt (clearWithheld), delivered or
+// dropped.
+func (s *Subscriber) noteWithheld(e Event) {
+	if _, lost := s.gapped[e.Channel]; lost {
+		return
+	}
+	s.withheldMu.Lock()
+	if s.withheld == nil {
+		s.withheld = make(map[string]uint64)
+	}
+	s.withheld[e.Channel] = e.Seq
+	s.withheldMu.Unlock()
+}
+
+// clearWithheld drops channel's mark; see noteWithheld.
+func (s *Subscriber) clearWithheld(channel string) {
+	s.withheldMu.Lock()
+	delete(s.withheld, channel)
+	s.withheldMu.Unlock()
+}
+
+// takeWithheld hands the pump every mark recorded since the last call and
+// starts a new set. Nil when there are none, without allocating.
+func (s *Subscriber) takeWithheld() map[string]uint64 {
+	s.withheldMu.Lock()
+	marks := s.withheld
+	s.withheld = nil
+	s.withheldMu.Unlock()
+	if len(marks) == 0 {
+		return nil
+	}
+	return marks
 }
 
 // noteDrop records a frame this subscriber could not take. The channel's

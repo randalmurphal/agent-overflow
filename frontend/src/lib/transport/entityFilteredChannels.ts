@@ -10,7 +10,10 @@
 // (`eventsTransportGap.ts`), which on a narrowed channel would fire for
 // every frame addressed to a thread this client is not watching. So the
 // heuristic is exempted for exactly these channels, and only while a watch
-// filter is actually armed on the connection.
+// filter is actually armed on the connection. The server's watermark frames
+// keep the cursor within WatermarkEvery of the head, but the exemption
+// stays: watermarks are periodic, so frames withheld since the last one
+// still leave a skip.
 //
 // The scope filter (`TranscriptScopeFiltered` in that table, only
 // `provider:item_event`) withholds a watched thread's subagent rows by the

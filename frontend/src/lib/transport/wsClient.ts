@@ -3273,7 +3273,21 @@ export class WSClient {
     data: unknown;
     gap?: boolean;
     gapThreads?: string[];
+    watermark?: boolean;
   }): void {
+    if (evt.watermark === true) {
+      // A watermark carries no data. It says every frame up to its seq on
+      // this channel that this connection may receive has already been
+      // sent, and the rest were withheld by the watch set or the lease. The
+      // server sends one every WatermarkEvery while it withholds frames, so
+      // the cursor the next reconnect sends stays inside the replay ring's
+      // age limit and replays instead of gapping. Forward only: a frame
+      // that arrived first may already have moved the cursor past it. It is
+      // not an event and reports no loss, so nothing is dispatched.
+      const cursor = this.lastSeqByChannel.get(evt.channel);
+      if (cursor === undefined || evt.seq > cursor.seq) this.recordChannelSeq(evt.channel, evt.seq);
+      return;
+    }
     if (evt.gap === true) {
       // A gap marker is a resync instruction, not a data event, so it
       // is honoured BEFORE the dedup check and its seq is adopted in

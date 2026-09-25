@@ -7,9 +7,10 @@
 // the property under test is precisely what goes over the wire.
 //
 // Shared by transport-watch-narrowing.spec.ts (the frame the client sends),
-// transport-watch-badge-carriers.spec.ts (the frames it is answered with)
-// and transport-watch-scopes.spec.ts (the subagent rows a scope admits),
-// because they need the SAME recorder, some on more than one page.
+// transport-watch-badge-carriers.spec.ts (the frames it is answered with),
+// transport-watch-scopes.spec.ts (the subagent rows a scope admits) and
+// transport-watermark.spec.ts (the cursor a reconnect asks from), because
+// they need the SAME recorder, some on more than one page.
 import type { Page } from '@playwright/test';
 
 /** One frame the page sent, in send order. */
@@ -26,6 +27,7 @@ export interface SentFrame {
 /** One event the page received, in arrival order. */
 export interface ReceivedEvent {
   channel: string;
+  seq: number;
   threadId: string;
   /**
    * `provider:item_event` only: which action the frame carried. The lease
@@ -40,9 +42,21 @@ export interface ReceivedEvent {
   bytes: number;
 }
 
+/** One watermark the page received: a cursor-only event, with no data. */
+export interface ReceivedWatermark {
+  channel: string;
+  seq: number;
+  /** Index into `WireLog.sockets` of the socket it arrived on. */
+  socket: number;
+}
+
 export interface WireLog {
   sent: SentFrame[];
+  /** Events with data. Watermarks are kept apart, in `watermarks`. */
   received: ReceivedEvent[];
+  watermarks: ReceivedWatermark[];
+  /** Each socket's hello `replayBaseline`, in socket order. */
+  hellos: Array<Record<string, number>>;
   /** `sent.length` when each socket was constructed, one per connection. */
   sockets: number[];
   /** Ids of the reply frames the page received, in arrival order. */
@@ -63,11 +77,15 @@ export async function recordWire(page: Page): Promise<void> {
       __aoWireSocket?: WebSocket;
       WebSocket: typeof WebSocket;
     };
-    const log: WireLog = { sent: [], received: [], sockets: [], replies: [], receivedBytes: 0, receivedMessages: 0 };
+    const log: WireLog = {
+      sent: [], received: [], watermarks: [], hellos: [], sockets: [], replies: [], receivedBytes: 0, receivedMessages: 0,
+    };
     scope.__aoWire = log;
 
-    const note = (frame: Record<string, unknown>) => {
-      if (frame.type === 'event') {
+    const note = (frame: Record<string, unknown>, socket: number) => {
+      if (frame.type === 'event' && frame.watermark === true) {
+        log.watermarks.push({ channel: String(frame.channel ?? ''), seq: Number(frame.seq), socket });
+      } else if (frame.type === 'event') {
         // `threadId` is the entity key nearly every per-thread channel
         // carries. `thread:updated` — the wildcard carrier the badge spec
         // reads — names its subject three ways depending on the action:
@@ -78,6 +96,7 @@ export async function recordWire(page: Page): Promise<void> {
         const thread = (data.thread ?? {}) as Record<string, unknown>;
         const entry: ReceivedEvent = {
           channel: String(frame.channel ?? ''),
+          seq: Number(frame.seq),
           threadId: String(data.threadId ?? data.id ?? thread.id ?? ''),
           bytes: JSON.stringify(frame).length,
         };
@@ -91,7 +110,9 @@ export async function recordWire(page: Page): Promise<void> {
         }
         log.received.push(entry);
       } else if (frame.type === 'batch' && Array.isArray(frame.events)) {
-        for (const entry of frame.events as Array<Record<string, unknown>>) note(entry);
+        for (const entry of frame.events as Array<Record<string, unknown>>) note(entry, socket);
+      } else if (frame.type === 'hello') {
+        log.hellos.push({ ...((frame.replayBaseline ?? {}) as Record<string, number>) });
       } else if (typeof frame.id === 'string' && frame.id !== '') {
         log.replies.push(frame.id);
       }
@@ -101,6 +122,7 @@ export async function recordWire(page: Page): Promise<void> {
     class RecordingWebSocket extends Base {
       constructor(url: string | URL, protocols?: string | string[]) {
         super(url, protocols);
+        const socket = log.sockets.length;
         log.sockets.push(log.sent.length);
         // The page's live socket, so a spec can put a frame on the wire the
         // SPA has no caller for yet. The lease spec is the one user: the
@@ -112,7 +134,7 @@ export async function recordWire(page: Page): Promise<void> {
           log.receivedBytes += event.data.length;
           log.receivedMessages += 1;
           try {
-            note(JSON.parse(event.data) as Record<string, unknown>);
+            note(JSON.parse(event.data) as Record<string, unknown>, socket);
           } catch {
             // Not a frame this spec reads about; the app still gets it.
           }

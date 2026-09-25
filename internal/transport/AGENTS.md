@@ -99,6 +99,12 @@ subscriber buffer records the affected channel and announces the loss on the
 next deliverable frame. Latest-only channels instead let the next value
 supersede the dropped one.
 
+Frames withheld by the watch set or lease are answered with per-connection
+`watermark:true` event frames every `WatermarkEvery`, so the client cursor
+keeps up with the head. A watermark follows every lower-seq frame queued for
+the connection, is never recorded past an unannounced loss, and never enters a
+ring.
+
 Live frames and replay may interleave. Preserve per-channel ordering and the
 replay completion marker. Entity and scope filters run before drop accounting:
 an event a client chose not to watch is not a transport gap, and gap

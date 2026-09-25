@@ -43,6 +43,12 @@ export interface ServerEventFrame {
   /** On a gap only: the threads whose frames the server dropped
    *  (internal/transport Event.GapThreads). Absent when unattributed. */
   gapThreads?: string[];
+  /** A cursor-only frame with no `data` (internal/transport
+   *  Event.Watermark): every frame up to `seq` on this channel that this
+   *  connection is entitled to has already been sent, and the rest were
+   *  withheld by its watch set or lease. Advances the cursor, dispatches
+   *  nothing. */
+  watermark?: boolean;
 }
 
 export interface ServerBatchFrame {
@@ -53,6 +59,7 @@ export interface ServerBatchFrame {
     data: unknown;
     gap?: boolean;
     gapThreads?: string[];
+    watermark?: boolean;
   }>;
 }
 

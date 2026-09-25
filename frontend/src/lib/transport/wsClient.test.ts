@@ -5348,3 +5348,122 @@ describe('WSClient under a shell origin', () => {
     client.close();
   });
 });
+
+// Watermark frames (internal/transport Event.Watermark): a cursor-only
+// event the server sends for frames it withheld from this connection, so
+// the cursor a reconnect sends stays near the head of a channel the client
+// receives only part of.
+describe('watermark frames', () => {
+  const ITEMS = 'provider:item_event';
+  const SEEDS = 'highlight:seed';
+
+  beforeEach(() => {
+    MockWebSocket.reset();
+    sessionStorage.clear();
+    __resetRunModeForTest();
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+  });
+
+  afterEach(() => {
+    __resetRunModeForTest();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  async function open() {
+    const client = createWSClient({ WebSocketCtor: FakeCtor, bootstrap });
+    const seen: Array<{ channel: string; data: unknown }> = [];
+    const gaps: unknown[] = [];
+    const diagnostics = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    client.setDiagnosticsSink(diagnostics);
+    client.subscribe(transportGapChannel, (data) => gaps.push(data));
+    for (const channel of [ITEMS, SEEDS]) client.subscribe(channel, (data) => seen.push({ channel, data }));
+    await vi.advanceTimersByTimeAsync(0);
+    const ws = MockWebSocket.instances[0]!;
+    ws.acceptOpen();
+    await flushMicrotasks();
+    return { client, ws, seen, gaps, diagnostics, warn };
+  }
+
+  // Drops ws and returns the next socket with the cursors its replay frame asked from.
+  async function reconnect(ws: MockWebSocket) {
+    const count = MockWebSocket.instances.length;
+    ws.triggerClose();
+    await vi.advanceTimersByTimeAsync(125);
+    const next = MockWebSocket.instances[count]!;
+    next.acceptOpen();
+    await flushMicrotasks();
+    const replay = next.sent.find((frame) => frame.type === 'replay')!;
+    return { next, cursors: replay.lastSeqByChannel as Record<string, number> };
+  }
+
+  it('advances the cursor forward only and dispatches nothing', async () => {
+    const { client, ws, seen, gaps, diagnostics, warn } = await open();
+    ws.pushFrame({ type: 'event', channel: ITEMS, seq: 3, data: 'a' });
+    ws.pushFrame({ type: 'event', channel: ITEMS, seq: 9, watermark: true });
+    // Below the cursor, as when a frame moved it first: left alone.
+    ws.pushFrame({ type: 'batch', events: [{ channel: ITEMS, seq: 6, watermark: true }] });
+    // A channel with no cursor yet takes the watermark's seq.
+    ws.pushFrame({ type: 'batch', events: [{ channel: SEEDS, seq: 4, watermark: true }] });
+
+    expect(seen).toEqual([{ channel: ITEMS, data: 'a' }]);
+    expect(gaps).toEqual([]);
+    expect(diagnostics).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    const { cursors } = await reconnect(ws);
+    expect(cursors).toMatchObject({ [ITEMS]: 9, [SEEDS]: 4 });
+    client.close();
+  });
+
+  // No watch set is armed, so the forward-skip heuristic is live on every
+  // channel: only the cursor the watermark moved keeps the next frame
+  // contiguous.
+  it('keeps the next live frame after a watermark from reading as a drop', async () => {
+    const { client, ws, seen, gaps } = await open();
+    ws.pushFrame({ type: 'event', channel: SEEDS, seq: 3, data: 's3' });
+    ws.pushFrame({ type: 'event', channel: SEEDS, seq: 9, watermark: true });
+    ws.pushFrame({ type: 'event', channel: SEEDS, seq: 10, data: 's10' });
+
+    expect(gaps).toEqual([]);
+    expect(seen.map((event) => event.data)).toEqual(['s3', 's10']);
+    client.close();
+  });
+
+  it('waits in the replay buffer and applies in seq order', async () => {
+    const { client, ws, seen, gaps } = await open();
+    ws.pushFrame({ type: 'event', channel: ITEMS, seq: 10, data: 'e10' });
+    const { next } = await reconnect(ws);
+    // The live pump's watermark can reach the new socket ahead of the
+    // replay answer carrying the frames below it.
+    next.pushFrame({ type: 'event', channel: ITEMS, seq: 20, watermark: true });
+    next.pushFrame({ type: 'batch', events: [
+      { channel: ITEMS, seq: 11, data: 'e11' },
+      { channel: ITEMS, seq: 12, data: 'e12' },
+    ] });
+    expect(seen.map((event) => event.data)).toEqual(['e10']);
+    next.pushFrame({ type: 'replay' });
+
+    expect(seen.map((event) => event.data)).toEqual(['e10', 'e11', 'e12']);
+    expect(gaps).toEqual([]);
+    const { cursors } = await reconnect(next);
+    expect(cursors[ITEMS]).toBe(20);
+    client.close();
+  });
+
+  it('accepts a watermark without data and rejects one without seq', async () => {
+    const { client, ws } = await open();
+    ws.pushFrame({ type: 'event', channel: ITEMS, watermark: true });
+    ws.pushFrame({ type: 'batch', events: [
+      { channel: SEEDS, watermark: true },
+      { channel: ITEMS, seq: 7, watermark: true },
+    ] });
+
+    expect(client.getUnknownInputStats().kinds).toEqual({ 'event-shape': 2 });
+    const { cursors } = await reconnect(ws);
+    expect(cursors[ITEMS]).toBe(7);
+    expect(cursors[SEEDS]).toBeUndefined();
+    client.close();
+  });
+});

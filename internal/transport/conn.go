@@ -937,6 +937,20 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 	// One reusable chunk: writeBatchFrame serialises into fresh bytes
 	// before returning, so nothing retains the Event slice afterwards.
 	chunk := make([]Event, 0, min(len(missed), DefaultCoalesceMaxEvents))
+	add := func(e Event) {
+		chunk = append(chunk, e)
+		if len(chunk) == DefaultCoalesceMaxEvents {
+			h.writeBatchFrame(ctx, chunk)
+			chunk = chunk[:0]
+		}
+	}
+	// withheld is the newest replayed seq the watch filter held back, per
+	// channel (Replay returns each channel in seq order). The live pump's
+	// watermarks cover only frames emitted while this connection is
+	// subscribed, so without one here the cursor would stay below frames
+	// withheld during the outage until they aged out of the ring, and the
+	// next reconnect would gap.
+	var withheld map[string]uint64
 	for _, e := range missed {
 		if !h.eventVisible(e.Channel) {
 			continue
@@ -952,13 +966,22 @@ func (h *connHandler) handleReplay(ctx context.Context, frame ClientFrame) {
 		// a frame this filter drops produces no event and no gap marker. The
 		// scope rule applies here exactly as it does live.
 		if !h.sub.watches(e.Channel, e.EntityKey, e.EntityScope) {
+			if withheld == nil {
+				withheld = make(map[string]uint64)
+			}
+			withheld[e.Channel] = e.Seq
 			continue
 		}
-		chunk = append(chunk, e)
-		if len(chunk) == DefaultCoalesceMaxEvents {
-			h.writeBatchFrame(ctx, chunk)
-			chunk = chunk[:0]
-		}
+		// Replay returns each channel's frames together and in seq order,
+		// so a delivered frame moves the cursor past every mark before it.
+		delete(withheld, e.Channel)
+		add(e)
+	}
+	// After every replayed frame: Replay returns a channel's whole range
+	// above the cursor or a gap marker instead, so each entitled frame at or
+	// below the watermark is already in this replay.
+	for channel, seq := range withheld {
+		add(watermarkEvent(channel, seq))
 	}
 	// Trailing partial chunk; writeBatchFrame no-ops on an empty slice
 	// and falls through to a plain event frame for a single event.
@@ -996,6 +1019,9 @@ func (h *connHandler) pumpEvents(ctx context.Context) {
 	deltas := deltaCoalescer{window: leaseDeltaWindow, emit: buf.add}
 	defer deltas.stop()
 
+	watermarks := time.NewTicker(WatermarkEvery)
+	defer watermarks.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -1015,35 +1041,82 @@ func (h *connHandler) pumpEvents(ctx context.Context) {
 			deltas.flushAll()
 		case <-buf.timerC():
 			buf.flushNow()
+		case <-watermarks.C:
+			h.sendWatermarks(buf, &deltas)
 		case e := <-h.sub.Events():
-			// Correctness gate. Enqueue-time filtering (Subscriber
-			// SetOriginLoopback / SetScopeFilter) already keeps
-			// invisible frames out of the buffer; this backstop covers
-			// any event enqueued before the filters were armed.
-			if !h.eventVisible(e.Channel) {
-				continue
-			}
-			// The lease is read here, per event, rather than mirrored from
-			// the nudge: the read loop's store then strictly precedes every
-			// event the pump has not yet taken, so a lease applies to
-			// exactly the frames emitted after the client stated it. A
-			// mirror would apply it to "the frames after the pump noticed",
-			// which is a different and unpredictable set.
-			if h.leaseBackground.Load() {
-				// Absorbed into a pending merge, or handed back unchanged
-				// with everything that had to precede it already emitted.
-				if deltas.intercept(e) {
-					continue
-				}
-			} else {
-				// Resumed since the last event. Whatever the window still
-				// holds goes out AHEAD of this frame: its seq is lower, and
-				// a client drops any frame at or below its channel cursor,
-				// so a late merge is lost text rather than late text. No-op
-				// (one length check) on every connection that never leased.
-				deltas.flushAll()
-			}
-			buf.add(e)
+			h.pumpEvent(e, buf, &deltas)
+		}
+	}
+}
+
+// pumpEvent moves one event from the subscriber queue toward the wire.
+// Both the pump's event branch and sendWatermarks' drain run it, so a
+// drained event takes exactly the path a live one does.
+func (h *connHandler) pumpEvent(e Event, buf *coalesceBuffer, deltas *deltaCoalescer) {
+	// Correctness gate. Enqueue-time filtering (Subscriber
+	// SetOriginLoopback / SetScopeFilter) already keeps
+	// invisible frames out of the buffer; this backstop covers
+	// any event enqueued before the filters were armed.
+	if !h.eventVisible(e.Channel) {
+		return
+	}
+	// The lease is read here, per event, rather than mirrored from
+	// the nudge: the read loop's store then strictly precedes every
+	// event the pump has not yet taken, so a lease applies to
+	// exactly the frames emitted after the client stated it. A
+	// mirror would apply it to "the frames after the pump noticed",
+	// which is a different and unpredictable set.
+	if h.leaseBackground.Load() {
+		// Absorbed into a pending merge, or handed back unchanged
+		// with everything that had to precede it already emitted.
+		if deltas.intercept(e) {
+			return
+		}
+	} else {
+		// Resumed since the last event. Whatever the window still
+		// holds goes out AHEAD of this frame: its seq is lower, and
+		// a client drops any frame at or below its channel cursor,
+		// so a late merge is lost text rather than late text. No-op
+		// (one length check) on every connection that never leased.
+		deltas.flushAll()
+	}
+	buf.add(e)
+}
+
+// sendWatermarks turns the subscriber's withheld marks into watermark
+// frames, so the client's cursor on a channel it elected not to receive
+// in full keeps within WatermarkEvery of the head.
+//
+// Ordering. A mark M was recorded under the bus mutex after every accepted
+// frame with a lower seq on its channel was enqueued, and takeWithheld
+// happens after that, so those frames are among the ones queued when it
+// returns. Moving exactly that many queued events to buf first, then the
+// held lease merges, puts every lower-seq frame ahead of the watermark on
+// the wire; anything enqueued later has a higher seq. A client drops a
+// frame at or below its cursor, so a watermark ahead of a lower-seq frame
+// would lose that frame.
+//
+// The watermark goes through buf, never writeFrame or writeRaw: the
+// keepalive goroutine writes too, and only buf is ordered against the
+// events this pump buffers.
+func (h *connHandler) sendWatermarks(buf *coalesceBuffer, deltas *deltaCoalescer) {
+	marks := h.sub.takeWithheld()
+	if marks == nil {
+		return
+	}
+drain:
+	for range len(h.sub.Events()) {
+		select {
+		case e := <-h.sub.Events():
+			h.pumpEvent(e, buf, deltas)
+		default:
+			break drain
+		}
+	}
+	deltas.flushAll()
+	for channel, seq := range marks {
+		if h.eventVisible(channel) {
+			buf.add(watermarkEvent(channel, seq))
 		}
 	}
 }
@@ -1076,9 +1149,9 @@ func (h *connHandler) writeBatchFrame(ctx context.Context, events []Event) {
 
 // spliceBatchFrame assembles {"type":"batch","events":[...]} by joining
 // each event's pre-encoded WireBytes with commas. Every WireBytes is a
-// complete {"type":"event",channel,seq,data,gap?} object, and all batch
-// consumers (wsClient handleFrame, the wsllauncher notification client,
-// the e2e harness dispatcher) read only channel/seq/data/gap from each
+// complete {"type":"event",channel,seq,data?,gap?,watermark?} object, and
+// all batch consumers (wsClient handleFrame, the wsllauncher notification
+// client, the e2e harness dispatcher) read only the event fields from each
 // entry, so the inert extra "type" field is tolerated — the one wire
 // difference vs the retired per-batch re-marshal. Events lacking
 // WireBytes are practically absent (Emit always pre-encodes, and

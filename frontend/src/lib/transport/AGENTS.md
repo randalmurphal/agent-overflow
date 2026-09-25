@@ -66,6 +66,8 @@ Honor explicit gaps before deduplication because a restart marker may have a
 lower sequence than the old cursor. Forward skips on entity-filtered channels
 are not inferred as gaps after this client has sent a watch set; withheld frames
 legitimately consume sequence numbers. Explicit server gaps still recover.
+A `watermark:true` event carries no data: it moves the channel cursor forward
+only, dispatches nothing, and passes through the replay buffer like any event.
 
 Watches (threads and subagent scopes) are absolute per connection and are sent
 before replay on reconnect. `setWatchedThreadsEverywhere` splits known thread

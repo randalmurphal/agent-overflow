@@ -268,6 +268,37 @@ default-retention channel is also released once it is older than
 `RingSweepEvery`, so a quiet channel does not keep its last burst. A cursor
 below a released frame receives `gap:true`.
 
+### Cursors and watermarks
+
+A client's cursor on a channel is the highest `seq` it has accounted for:
+the last frame or watermark it received. A frame withheld by the watch set or
+the lease still consumes its channel's `seq`, so a client that receives only
+part of a channel would otherwise keep a cursor at its own last frame while
+other threads stream, and its next reconnect would receive `gap:true` once
+the frames above that cursor aged out or were evicted.
+
+A watermark is an event frame with `watermark:true` and no `data`, for
+example `{"type":"event","channel":"provider:item_event","seq":42,"watermark":true}`.
+It states that every frame up to `seq` on that channel that the connection
+may receive has already been sent. The subscriber records, per channel, the
+newest frame it withheld through the watch set or the lease. Every
+`WatermarkEvery` (30 s) the connection sends those marks behind every frame
+already queued for it. A mark is not recorded while the channel has an
+unannounced loss, and any frame that reaches the delivery attempt, delivered
+or dropped, clears it, so a watermark never moves a cursor past a lost frame.
+Channels withheld by origin, grant or channel subscription get no watermark:
+the hello baseline and replay omit channels hidden by origin or grant, and a
+client that subscribes to named channels keeps cursors for those only.
+Replay ends with a watermark for each channel whose newest replayed frame the
+watch set withheld. Watermarks are per connection; they are never stored in a
+ring or sent to another client.
+
+The client moves its cursor forward to a watermark's `seq`, never back, and
+dispatches nothing. During replay it buffers watermarks with other events and
+applies them in sequence order. When a connection drops, its cursor therefore
+trails the newest withheld frame by at most 30 s, which leaves 4.5 minutes of
+`RingRetainFor` for the outage and the reconnect backoff.
+
 ### Gap markers
 
 `gap:true` instructs a client to reload authoritative state. It is returned
@@ -315,7 +346,8 @@ scope of a watched thread; `[]` admits root rows only. An oversized, empty or
 malformed entry refuses the whole frame with `bad_params` and leaves the
 previous sets in place. No other channel carries a scope.
 
-Withheld frames are not transport loss and do not produce gap markers. Scope
+Withheld frames are not transport loss and do not produce gap markers; they
+produce [watermarks](#cursors-and-watermarks). Scope
 filtering runs before drop accounting, in live delivery and in replay alike,
 and gap attribution names threads, never scopes. The frontend therefore
 disables inferred forward-gap handling only for registered entity-filtered
