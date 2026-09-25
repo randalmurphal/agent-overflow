@@ -79,7 +79,7 @@ func (r *Router) captureUserConfirmation(threadID string, pending *pendingSend, 
 	defer drain.Unlock()
 	queued := r.hasQueuedInterruptItems(threadID)
 	if queued {
-		if err := r.drainInterruptQueueLocked(threadID, false); err != nil {
+		if err := r.drainAllLocked(threadID); err != nil {
 			plan.CaptureError = err
 			return
 		}

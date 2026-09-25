@@ -356,6 +356,8 @@ func (s *Store) sweepCrashedTurns(summarise func(string) string, now int64) ([]C
 // Backgrounded tool_call launches are EXEMPT (invariant 24), matching
 // triage's flipTurnItemsErrored: their disposition belongs to the
 // background recovery sweep, which writes completion siblings instead.
+// So is every row a background agent owns (agent_rows.go): the sweep's
+// completion sibling settles those with it (UpsertAgentEnd).
 // Nothing else on the row is touched — `decision` included. An
 // approval that never resolved is only answerable while triage holds
 // its pending request in memory, so the status flip is the whole
@@ -389,6 +391,12 @@ func (s *Store) flipCrashedTurnItemsTx(tx *sql.Tx, c CrashedTurn, summarise func
 		return fmt.Errorf("store: stranded item rows err: %w", err)
 	}
 	rows.Close()
+	// An agent's rows are settled with its session_died completion
+	// (Router.RecoverOrphanedBackgroundTasks), whichever turn wrote them.
+	flips, err = withoutAgentOwned(tx, threadID, flips, func(f subagentRow) string { return f.parentID })
+	if err != nil {
+		return fmt.Errorf("store: stranded item ownership %s/%d: %w", threadID, c.TurnIndex, err)
+	}
 
 	w := s.sweepItemWrites(tx, threadID)
 	for _, f := range flips {

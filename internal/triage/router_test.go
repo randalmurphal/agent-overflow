@@ -3493,7 +3493,8 @@ func TestUnscopedErrorSplitsScopedAssistantTextAroundVisibleErrorRow(t *testing.
 //
 //  1. flip every streaming/running item in the turn to errored
 //  2. persist the error row
-//  3. drain any queued completions as errored
+//  3. drain the queued rows: the turn's own errored, a background
+//     completion with the outcome its task reported
 //  4. synthesize TurnComplete with TruncatedTurnCompleteMeta when no wire
 //     TurnComplete is expected
 //
@@ -3572,7 +3573,7 @@ func TestFatalErrorOrderingMatchesSpec(t *testing.T) {
 	// order. We care specifically about:
 	//   - the flipped streaming text item (Kind=assistant_text, Status=errored)
 	//   - the new error row (Kind=error)
-	//   - the drained background_done row (Kind=background_done, Status=errored)
+	//   - the drained background_done row, with its task's own outcome
 	upserts := filterItemEventUpserts(emissions.snapshot())
 	var sequence []string
 	for _, item := range upserts {
@@ -3581,7 +3582,10 @@ func TestFatalErrorOrderingMatchesSpec(t *testing.T) {
 			sequence = append(sequence, "flip_text")
 		case item.Kind == "error":
 			sequence = append(sequence, "create_error")
-		case item.Kind == itemKindBackgroundDone && item.Status == "errored":
+		case item.Kind == itemKindBackgroundDone:
+			if item.Status != statusCompleted {
+				t.Errorf("drained background_done status = %q, want the task's own %q", item.Status, statusCompleted)
+			}
 			sequence = append(sequence, "drain_bg_done")
 		}
 	}

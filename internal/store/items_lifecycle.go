@@ -261,10 +261,11 @@ func (s *Store) MarkLiveBackgroundToolCallsInactive(threadID string, updatedAt i
 // summariser returns the same string when the suffix is already
 // present). updatedAt is stamped on every flipped row.
 //
-// Backgrounded tool_call rows (is_background=1) are exempt — they
-// legitimately outlive the turn per invariant 24. Rows in other
-// statuses (streaming text/thinking, already-settled tool_calls) are
-// left alone — this accessor is the narrow force-close path, not the
+// Backgrounded tool_call rows (is_background=1) are exempt, since they
+// outlive the turn per invariant 24, and so is every row a background
+// agent owns (agent_rows.go), which its agent's end settles. Rows in
+// other statuses (streaming text/thinking, already-settled tool_calls)
+// are left alone: this accessor is the narrow force-close path, not the
 // broader flip-everything-to-errored path owned by
 // flipTurnItemsErrored.
 func (s *Store) ForceCloseRunningToolCallsInTurn(
@@ -317,6 +318,12 @@ func forceCloseRunningToolCallsTx(tx *sql.Tx, w *cardWrite, turnIndex int, summa
 	}
 	rows.Close()
 
+	// A row an agent owns outlives the turn that wrote it: the agent's
+	// end settles it (UpsertAgentEnd).
+	flipped, err = withoutAgentOwned(tx, threadID, flipped, func(it Item) string { return it.ParentID })
+	if err != nil {
+		return nil, fmt.Errorf("store: force-close ownership for thread %s turn %d: %w", threadID, turnIndex, err)
+	}
 	if len(flipped) == 0 {
 		return nil, nil
 	}

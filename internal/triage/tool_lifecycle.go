@@ -2,6 +2,7 @@ package triage
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -1118,21 +1119,21 @@ func (r *Router) stashBackgroundTaskTerminal(evt provider.ProviderEvent, meta ba
 // after drain but before sibling write leaves the launch as a stashless
 // orphan that the next boot's sweep recovers with status="killed".
 //
-// Returns the count of recovered launches; logs but does not propagate
-// per-launch errors so one bad row can't poison the whole sweep.
+// Returns the count of recovered launches and every failure, joined: one
+// bad row does not stop the sweep, and the caller reports what failed.
 func (r *Router) RecoverOrphanedBackgroundTasks() (int, error) {
 	launches, err := r.store.ListRecoverableClaudeBackgroundLaunches()
 	if err != nil {
 		return 0, fmt.Errorf("triage: list recoverable Claude bg launches: %w", err)
 	}
-	recovered := r.settleOrphanedBackgroundLaunches(launches)
+	recovered, settleErr := r.settleOrphanedBackgroundLaunches(launches)
 	// Any stash row the sweep did not consume belongs to a task with no
 	// launch row (a subagent-private shell); at boot no observer for it
 	// can ever arrive, and the table has no other prune.
 	if err := r.store.DeleteAllPendingBackgroundTerminals(); err != nil {
-		log.Printf("triage: prune stranded background-terminal stashes: %v", err)
+		settleErr = errors.Join(settleErr, fmt.Errorf("triage: prune stranded background-terminal stashes: %w", err))
 	}
-	return recovered, nil
+	return recovered, settleErr
 }
 
 // SettleBackgroundLaunchesForSessionEnd is the per-thread, live-app
@@ -1155,27 +1156,29 @@ func (r *Router) RecoverOrphanedBackgroundTasks() (int, error) {
 //
 // Leftover stash rows for the thread are pruned afterwards: with the
 // owning process gone, a stash whose launch row never materialized has
-// no future observer.
+// no future observer. Failures are joined and returned for the caller to
+// put in front of the user.
 func (r *Router) SettleBackgroundLaunchesForSessionEnd(threadID string) (int, error) {
 	launches, err := r.store.ListRecoverableClaudeBackgroundLaunchesForThread(threadID)
 	if err != nil {
 		return 0, fmt.Errorf("triage: list recoverable Claude bg launches for thread %s: %w", threadID, err)
 	}
-	settled := r.settleOrphanedBackgroundLaunches(launches)
+	settled, settleErr := r.settleOrphanedBackgroundLaunches(launches)
 	if err := r.store.DeletePendingBackgroundTerminalsForThread(threadID); err != nil {
-		log.Printf("triage: prune background-terminal stashes for thread %s: %v", threadID, err)
+		settleErr = errors.Join(settleErr, fmt.Errorf("triage: prune background-terminal stashes for thread %s: %w", threadID, err))
 	}
-	return settled, nil
+	return settled, settleErr
 }
 
 // settleOrphanedBackgroundLaunches writes a session_died completion
 // sibling for each launch, draining each launch's terminal stash when
 // one exists. Shared by boot recovery (all threads) and the session-end
-// settle (one thread); per-launch errors are logged, never propagated,
-// so one bad row can't poison the sweep.
-func (r *Router) settleOrphanedBackgroundLaunches(launches []store.Item) int {
+// settle (one thread). Every launch is attempted; the failures are
+// joined and returned.
+func (r *Router) settleOrphanedBackgroundLaunches(launches []store.Item) (int, error) {
 	now := time.Now().UnixMilli()
 	recovered := 0
+	var errs []error
 	for _, launch := range launches {
 		// task_id may be empty: claude-tui launches carry is_background
 		// without a task_id (no task_started reconstruction). The sibling
@@ -1197,7 +1200,9 @@ func (r *Router) settleOrphanedBackgroundLaunches(launches []store.Item) int {
 		if taskID != "" {
 			stash, found, err := r.store.TakePendingBackgroundTerminal(launch.ThreadID, taskID)
 			if err != nil {
-				log.Printf("triage: drain stranded background-terminal stash %s/%s: %v", launch.ThreadID, taskID, err)
+				// The sibling is still written, as "killed": the host's
+				// outcome is what could not be read.
+				errs = append(errs, fmt.Errorf("drain background-terminal stash %s/%s: %w", launch.ThreadID, taskID, err))
 			}
 			if found {
 				stashFound = true
@@ -1210,12 +1215,12 @@ func (r *Router) settleOrphanedBackgroundLaunches(launches []store.Item) int {
 			meta.Status = "killed"
 		}
 		if err := r.writeBackgroundCompletionSibling(syntheticEvt, meta, stashFound); err != nil {
-			log.Printf("triage: synthesise session_died sibling %s/%s: %v", launch.ThreadID, launch.ID, err)
+			errs = append(errs, fmt.Errorf("write session_died sibling %s/%s: %w", launch.ThreadID, launch.ID, err))
 			continue
 		}
 		recovered++
 	}
-	return recovered
+	return recovered, errors.Join(errs...)
 }
 
 // observeBackgroundTaskTerminal handles the agent-observation half
@@ -1243,8 +1248,9 @@ func (r *Router) observeBackgroundTaskTerminal(evt provider.ProviderEvent, meta 
 	// An agent OBSERVATION (TaskOutput) of a parked agent reads a pause,
 	// not the end: the agent still wakes when its shell reports. Keep the
 	// stash for the wake and write nothing, as the notification path does
-	// (launchParkedOn). A kill is never a pause.
-	if meta.Source != "task_updated" && meta.Status != statusKilled {
+	// (launchParkedOn). A kill or a failure is never a pause
+	// (taskStatusEnds).
+	if meta.Source != "task_updated" && !taskStatusEnds(meta.Status) {
 		launch, found, err := r.resolveBackgroundTaskLaunch(evt.ThreadID, evt.ItemID, meta.ToolUseID, meta.TaskID)
 		if err != nil {
 			return err
@@ -1463,7 +1469,18 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 	// grow its counters a patch later.
 	completion.Meta, _ = r.completionMetaWithFinalProgress(launch, completion.Meta)
 
-	if err := r.maybeDeferOrPersist(evt.ThreadID, completion, payload); err != nil {
+	// An agent's sibling ends the agent: the rows it left open under its
+	// transcript root settle with it (agent_end.go).
+	queued := queuedPersistence{item: completion, payload: payload}
+	if IsSubagentTranscriptLaunch(launch) {
+		root, err := r.transcriptRootOrSelf(evt.ThreadID, launch)
+		if err != nil {
+			return fmt.Errorf("bg task terminal transcript root %s: %w", completionID, err)
+		}
+		end := newAgentEnd(root.ID, completion.Status, meta.Source)
+		queued.end = &end
+	}
+	if err := r.deferOrPersist(evt.ThreadID, queued); err != nil {
 		return err
 	}
 	r.TakeSubagentProgress(launch.ThreadID, launch.ID)

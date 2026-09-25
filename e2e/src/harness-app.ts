@@ -25,6 +25,8 @@ interface WireEvent {
   data: unknown;
   /** Set once a waitForEvent call has accepted this event. */
   consumed?: boolean;
+  /** When this client received the event, in Date.now() milliseconds. */
+  receivedAt?: number;
 }
 
 /**
@@ -278,6 +280,7 @@ export class HarnessApp {
   }
 
   private dispatchEvent(ev: WireEvent): void {
+    ev.receivedAt = Date.now();
     this.eventLog.push(ev);
     if (this.eventLog.length > 10_000) this.eventLog.shift();
     for (const waiter of this.eventWaiters) waiter(ev);
@@ -370,6 +373,18 @@ export class HarnessApp {
     return this.eventLog.filter(
       (ev) => ev.channel === channel && (!predicate || predicate(ev.data as T)),
     ).length;
+  }
+
+  /**
+   * When each remembered event on a channel arrived, in Date.now()
+   * milliseconds, consumed or not. The timing half of a load spec: the
+   * log keeps the last 10,000 events, so a spec reads it before a burst
+   * larger than that could push its events out.
+   */
+  eventTimes<T = unknown>(channel: string, predicate?: (data: T) => boolean): number[] {
+    return this.eventLog
+      .filter((ev) => ev.channel === channel && (!predicate || predicate(ev.data as T)))
+      .map((ev) => ev.receivedAt ?? 0);
   }
 
   /**

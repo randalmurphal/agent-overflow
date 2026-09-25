@@ -274,7 +274,7 @@ func TestCodexDeferredCompletionKeepsFirstOutcomeDuringParentStop(t *testing.T) 
 	if err := r.maybeDeferOrPersist("t1", later, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.drainInterruptQueueLocked("t1", true); err != nil {
+	if err := r.drainTurnQueue("t1", nil, true); err != nil {
 		t.Fatal(err)
 	}
 	saved, found, err := st.GetThreadItem("t1", first.ID)

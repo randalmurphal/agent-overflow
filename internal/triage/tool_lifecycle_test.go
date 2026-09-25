@@ -2249,7 +2249,7 @@ func TestHandleEventBackgroundTaskTerminal_AppendsToLatestPersistedTurn(t *testi
 	}); err != nil {
 		t.Fatalf("seed launch: %v", err)
 	}
-	router.clearOpenTurn("t1")
+	router.clearOpenTurn("t1", nil)
 
 	if err := st.InsertTurn(store.Turn{
 		TurnID:    "turn-3",

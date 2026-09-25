@@ -86,18 +86,16 @@ type threadState struct {
 	// replaceCommandOutput rewrite). Never acquire streamFlushMu while
 	// holding r.mu.
 	//
-	// streamFlushMu and the per-thread drain lock
-	// (threadIdentity.drainLock) are DISJOINT: no path holds one while
-	// acquiring the other, and neither is ordered against the other.
-	// The near-miss is doSettleStreamingText, which flushes this buffer
-	// under streamFlushMu and then drains the interrupt queue under the
-	// drain lock — but the drain is a `defer r.finishSettle(...)`, so it
-	// runs after flushStreamingItem has already released streamFlushMu,
-	// and the drain's own persistItem path never reaches a flush funnel.
-	// cleanupThread has the same shape in the other direction: it calls
-	// flushStreamingThread (streamFlushMu, released on return) BEFORE it
-	// takes the flush anchor. Keep it that way — nesting them would
-	// create the first order to get wrong.
+	// The per-thread drain lock (threadIdentity.drainLock) is taken
+	// BEFORE streamFlushMu: persisting an agent's end under the drain
+	// lock settles the agent's streams, which flushes them
+	// (persistAgentEndLocked). Never take the drain lock while holding
+	// streamFlushMu. doSettleStreamingText flushes this buffer under
+	// streamFlushMu and then drains the interrupt queue, but the drain
+	// is a `defer r.finishSettle(...)`, so it runs after
+	// flushStreamingItem has released streamFlushMu. cleanupThread calls
+	// flushStreamingThread (streamFlushMu, released on return) before it
+	// takes the flush anchor and the drain lock.
 	streamPersistBuffers map[string]*streamPersistBuffer
 	// streamingPathRefsLast carries the live-stream pathRefs state per
 	// streaming assistant_text row: the incremental pathlinks scanner
@@ -107,7 +105,7 @@ type threadState struct {
 	// snapshot that lets unchanged windows skip the meta JSON
 	// round-trip, the SQLite UPDATE, and the action:"meta" emission.
 	// Keyed by itemID; cleared at doSettleStreamingText and
-	// clearActiveStreamBlocksForTurnLocked so a torn-down streaming row
+	// dropTurnStreamsLocked so a torn-down streaming row
 	// can't leak its last-seen state into the next turn.
 	streamingPathRefsLast map[string]*streamingPathRefsState
 
@@ -405,8 +403,8 @@ type threadIdentity struct {
 	// slice keeps them (round-7, R7-3). Queue APPENDS need no covering:
 	// they happen only on the serial provider read loop, which is busy
 	// running the echo. Lock order: taken after the thread's flush anchor
-	// (echo path), before r.mu; never replaced (same reasoning as
-	// anchorLock).
+	// (echo path), before streamFlushMu and r.mu; never replaced (same
+	// reasoning as anchorLock).
 	drainLock sync.Mutex
 
 	// claimedFlushItems holds batch items mid-handoff between the

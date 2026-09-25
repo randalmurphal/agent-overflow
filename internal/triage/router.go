@@ -98,9 +98,8 @@ type Router struct {
 	// the authoritative Replace snapshot lands would append a duplicate
 	// output tail after the rewrite. Lock order: streamFlushMu first,
 	// r.mu nested inside. Never acquire streamFlushMu while holding r.mu.
-	// It is DISJOINT from the per-thread anchor/drain locks — see the
-	// threadState.streamPersistBuffers doc for why that holds and which
-	// two call sites keep it holding.
+	// The per-thread anchor and drain locks are taken before it; see the
+	// threadState.streamPersistBuffers doc.
 	streamFlushMu sync.Mutex
 	// unknownSessionStatusLogged throttles the "unknown session-status
 	// content" log to one line per distinct value. EventSessionStatus
@@ -521,7 +520,7 @@ func (r *Router) settleStreamingBeforeTimelineBoundary(evt provider.ProviderEven
 			log.Printf("triage: settle streaming before %s: %v", boundary, err)
 			return
 		}
-		if err := r.settleTurnStreaming(evt.ThreadID, turnIndex, statusCompleted); err != nil {
+		if err := r.settleTurnStreaming(evt.ThreadID, turnIndex, statusCompleted, nil); err != nil {
 			log.Printf("triage: settle streaming before %s: %v", boundary, err)
 		}
 		return
@@ -882,7 +881,8 @@ func (r *Router) handleError(evt provider.ProviderEvent) error {
 	// Fatal ordering, per chat-rewrite spec §"Live provider-crash flip":
 	//   1. flip every streaming/running item in the active turn → errored
 	//   2. create the error row
-	//   3. drain any queued completions as errored
+	//   3. drain the turn's queued rows as errored (drainTurnQueue; a
+	//      background task's outcome row keeps the outcome it reported)
 	//   4. synthesize EventTurnComplete with TruncatedTurnCompleteMeta if no wire
 	//      TurnComplete is expected (subprocess exit case) — not needed
 	//      for a fatal EventError on an otherwise-alive session.
@@ -979,10 +979,13 @@ func ClampErrorSummary(summary string) string {
 }
 
 func (r *Router) finishFatalProviderError(threadID string, now int64, summary string, meta json.RawMessage) error {
-	if err := r.drainInterruptQueue(threadID, true); err != nil {
-		return err
+	// A failed ownership read leaves every stream and queued row to the
+	// turn, as before agents outlived turns, and is reported.
+	agentScopes, scopeErr := r.agentOwnedStreamScopes(threadID)
+	if err := r.drainTurnQueue(threadID, agentScopes, true); err != nil {
+		return errors.Join(scopeErr, err)
 	}
-	r.clearOpenTurn(threadID)
+	r.clearOpenTurn(threadID, agentScopes)
 	r.finishTurnSpan(threadID, providerErrorTurnOutcome(summary))
 
 	// Synthesize a truncated TurnComplete only when no wire
@@ -995,10 +998,10 @@ func (r *Router) finishFatalProviderError(threadID string, now int64, summary st
 	// indicator flips off even without a wire event.
 	if !fatalExpectsWireTurnComplete(meta) {
 		if err := r.synthesizeTruncatedTurnComplete(threadID, now); err != nil {
-			return err
+			return errors.Join(scopeErr, err)
 		}
 	}
-	return nil
+	return scopeErr
 }
 
 // APIErrorEnum extracts the Claude `assistant.error` enum string from

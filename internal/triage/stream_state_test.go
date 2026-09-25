@@ -509,7 +509,7 @@ func TestDrainInterruptQueueContinuesAfterPersistError(t *testing.T) {
 		}
 		router.mu.Unlock()
 
-		if err := router.drainInterruptQueue("t1", false); err == nil {
+		if err := router.drainAll("t1"); err == nil {
 			t.Fatal("expected first persist error to propagate")
 		}
 
@@ -537,8 +537,14 @@ func TestDrainInterruptQueueContinuesAfterPersistError(t *testing.T) {
 		createTestThread(t, st, "t1")
 		insertToolCallItem(t, st, "t1", "launch-ok", "Bash", "Bash", statusRunning)
 
-		valid := validDrainCompletion("complete:launch-ok", "launch-ok", 11, 2)
-		valid.item.Status = statusCompleted // drain must flip this to errored
+		// A turn row the truncated turn cut: the drain must error it.
+		read := queuedPersistence{item: store.Item{
+			ID: "tu-read", ThreadID: "t1", TurnIndex: 0, ItemIndex: 11,
+			Kind: itemKindToolCall, Role: "assistant", Status: statusCompleted,
+			ToolName: "Read", Summary: "Read README.md", CreatedAt: 2, UpdatedAt: 2,
+		}}
+		// A background task's own outcome: never rewritten by the turn.
+		done := validDrainCompletion("complete:launch-ok", "launch-ok", 12, 3)
 		router.mu.Lock()
 		router.state("t1").interruptQueue = []queuedPersistence{
 			{item: store.Item{
@@ -547,23 +553,25 @@ func TestDrainInterruptQueueContinuesAfterPersistError(t *testing.T) {
 				Role: "assistant", Status: statusCompleted,
 				Summary: "bad", CreatedAt: 1, UpdatedAt: 1,
 			}},
-			valid,
+			read,
+			done,
 		}
 		router.mu.Unlock()
 
-		if err := router.drainInterruptQueue("t1", true); err == nil {
+		if err := router.drainTurnQueue("t1", nil, true); err == nil {
 			t.Fatal("expected first persist error to propagate")
 		}
 
-		done := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
-		if len(done) != 1 || done[0].ID != "complete:launch-ok" {
-			t.Fatalf("expected only complete:launch-ok, got %+v", done)
+		got, found, err := st.GetThreadItem("t1", "tu-read")
+		if err != nil || !found {
+			t.Fatalf("turn row after drain: found=%v err=%v", found, err)
 		}
-		if done[0].Status != statusErrored {
-			t.Errorf("forceErrored not applied to later item: status=%q, want %q", done[0].Status, statusErrored)
+		if got.Status != statusErrored || !isInterrupted(got.Summary) {
+			t.Errorf("forceErrored not applied to the later turn row: %q %q", got.Status, got.Summary)
 		}
-		if !strings.Contains(done[0].Summary, "— interrupted") {
-			t.Errorf("forceErrored suffix missing: summary=%q", done[0].Summary)
+		completions := findItemsByKind(t, st, "t1", itemKindBackgroundDone)
+		if len(completions) != 1 || completions[0].Status != statusCompleted || completions[0].Summary != done.item.Summary {
+			t.Errorf("a background outcome kept its own status and summary, got %+v", completions)
 		}
 	})
 }

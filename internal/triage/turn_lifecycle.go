@@ -55,7 +55,9 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 		ProviderTurnID: strings.TrimSpace(evt.TurnID),
 	})
 
-	r.setOpenTurn(evt.ThreadID, turnIndex)
+	// A failed ownership read is reported once the turn is open: the turn
+	// starts either way.
+	openErr := r.setOpenTurn(evt.ThreadID, turnIndex)
 	r.openTurnSpan(evt, turnIndex)
 
 	// Open the first wire round for this logical turn. Frontend
@@ -71,7 +73,7 @@ func (r *Router) handleTurnStart(evt provider.ProviderEvent) error {
 	}
 	r.setOpenRoundSnapshot(snapshot)
 	r.emit(eventchan.ProviderTurnStarted, TurnStartedEvent(snapshot))
-	return nil
+	return openErr
 }
 
 // resolveTurnIndexOnStart picks the right turn index for an incoming
@@ -499,13 +501,9 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			// pump logs a returned error and keeps reading) so they surface
 			// the same way the full path's persistErr does.
 			lateStatus := settledTurnStatus(meta)
-			var lateErr error
-			if settleErr := r.settleTurnStreaming(evt.ThreadID, turnIndex, lateStatus); settleErr != nil {
-				lateErr = settleErr
-			}
-			if fcErr := r.forceCloseOrphanToolCalls(evt.ThreadID, turnIndex, now); fcErr != nil && lateErr == nil {
-				lateErr = fcErr
-			}
+			agentScopes, lateErr := r.agentOwnedStreamScopes(evt.ThreadID)
+			lateErr = errors.Join(lateErr, r.settleTurnStreaming(evt.ThreadID, turnIndex, lateStatus, agentScopes))
+			lateErr = errors.Join(lateErr, r.forceCloseOrphanToolCalls(evt.ThreadID, turnIndex, now))
 			lateErr = errors.Join(lateErr, r.persistLateTurnPayload(evt, turnIndex, meta))
 			r.FlushUsageEmitThrottle(evt.ThreadID)
 			return lateErr
@@ -516,6 +514,10 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	if truncated {
 		flushQueueAtBoundary = false
 	}
+	// The streams and queued rows an agent owns outlive this turn: its
+	// end settles them. A failed ownership read leaves them all to the
+	// turn, as before agents outlived turns, and is reported.
+	agentScopes, scopeErr := r.agentOwnedStreamScopes(evt.ThreadID)
 	if err != nil {
 		persistErr = err
 	} else {
@@ -529,12 +531,12 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 		// non-truncated completions we keep the original order —
 		// settle → (idle-drain persists normally) → forced drain no-op.
 		if truncated {
-			if err := r.drainInterruptQueue(evt.ThreadID, true); err != nil {
+			if err := r.drainTurnQueue(evt.ThreadID, agentScopes, true); err != nil {
 				persistErr = err
 			}
 		}
 		if persistErr == nil {
-			if err := r.settleTurnStreaming(evt.ThreadID, turnIndex, settledTurnStatus(meta)); err != nil {
+			if err := r.settleTurnStreaming(evt.ThreadID, turnIndex, settledTurnStatus(meta), agentScopes); err != nil {
 				persistErr = err
 			}
 		}
@@ -548,7 +550,7 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 			// that settled outside settleTurnStreaming's idle-drain
 			// window (rare but possible). For the truncated path the
 			// queue is already empty so this is a cheap no-op.
-			if err := r.drainInterruptQueue(evt.ThreadID, truncated); err != nil {
+			if err := r.drainTurnQueue(evt.ThreadID, agentScopes, truncated); err != nil {
 				persistErr = err
 			}
 		}
@@ -587,9 +589,9 @@ func (r *Router) handleTurnComplete(evt provider.ProviderEvent) error {
 	// Anchor recording does NOT happen here. Message anchors are
 	// recorded by app_send.go before provider stdin/RPC dispatch so
 	// the anchor maps directly to "before this user message".
-	persistErr = errors.Join(persistErr, r.settleTurnRow(evt, turnIndex, now, meta, persistErr))
+	persistErr = errors.Join(persistErr, r.settleTurnRow(evt, turnIndex, now, meta, persistErr), scopeErr)
 
-	r.clearOpenTurn(evt.ThreadID)
+	r.clearOpenTurn(evt.ThreadID, agentScopes)
 	r.finishTurnSpan(evt.ThreadID, completedTurnOutcome(meta, persistErr))
 	r.FlushUsageEmitThrottle(evt.ThreadID)
 
@@ -977,7 +979,12 @@ func (r *Router) AnyInFlightTurnOrRound() bool {
 	return false
 }
 
-func (r *Router) setOpenTurn(threadID string, turnIndex int) {
+// setOpenTurn opens turnIndex. A stream an earlier turn left open is over
+// once another turn starts, and is forgotten with its count; an agent's
+// streams are the agent's and stay. A failed ownership read forgets them
+// too, as before agents outlived turns, and is returned.
+func (r *Router) setOpenTurn(threadID string, turnIndex int) error {
+	agentScopes, scopeErr := r.agentOwnedStreamScopes(threadID)
 	r.mu.Lock()
 	st := r.state(threadID)
 	st.openTurn = turnIndex
@@ -991,9 +998,7 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) {
 	}
 	st.segmentIndexByScope[key] = -1
 	st.blockIndexByScope[key] = -1
-	r.clearActiveStreamBlocksForTurnLocked(st, turnIndex)
-	st.streamingItemCount = 0
-	clear(st.streamingScopeCounts)
+	r.dropTurnStreamsLocked(threadID, st, turnIndex, true, agentScopes)
 	delete(st.errorSeqByScope, key)
 	// Clear the settled marker so a re-init (Claude resend system.init
 	// after an interrupt; Codex resend turn/started) can settle the
@@ -1002,6 +1007,7 @@ func (r *Router) setOpenTurn(threadID string, turnIndex int) {
 	// there and the second complete returns early.
 	delete(st.settledTurns, turnIndex)
 	r.mu.Unlock()
+	return scopeErr
 }
 
 // openQueuedEchoTurn establishes logical turn `turnIndex` when a queued
@@ -1192,7 +1198,12 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 			persistErr = errors.Join(persistErr, err)
 		}
 	}
-	if err := r.settleTurnStreaming(threadID, turnIndex, statusCompleted); err != nil {
+	agentScopes, err := r.agentOwnedStreamScopes(threadID)
+	if err != nil {
+		log.Printf("triage: settle queued-echo predecessor streaming %s/%d: %v", threadID, turnIndex, err)
+		persistErr = errors.Join(persistErr, err)
+	}
+	if err := r.settleTurnStreaming(threadID, turnIndex, statusCompleted, agentScopes); err != nil {
 		log.Printf("triage: settle queued-echo predecessor streaming %s/%d: %v", threadID, turnIndex, err)
 		persistErr = errors.Join(persistErr, err)
 	}
@@ -1204,35 +1215,6 @@ func (r *Router) settleQueuedEchoPredecessor(threadID string, turnIndex int, com
 	r.finishTurnSpan(threadID, completedTurnOutcome(turnCompleteMeta{
 		StopReason: stopReason,
 	}, persistErr))
-}
-
-// clearActiveStreamBlocksForTurnLocked drops one turn's streaming
-// bookkeeping from the thread's state. Caller holds r.mu.
-func (r *Router) clearActiveStreamBlocksForTurnLocked(st *threadState, turnIndex int) {
-	if st == nil {
-		return
-	}
-	prefix := fmt.Sprintf("%d|", turnIndex)
-	deleteByPrefix(st.activeTextBlocks, prefix)
-	deleteByPrefix(st.activeThinkingBlocks, prefix)
-	deleteByPrefix(st.activeTextBlockRefs, prefix)
-	deleteByPrefix(st.activeThinkingBlockRefs, prefix)
-	// NOTE: this routine used to also sweep streamPersistBuffers with the
-	// same "<threadID>|<turnIndex>|" prefix, but those are keyed by ITEM
-	// ID ("text:<turn>:<n>", a provider tool id, ...), never by
-	// "<turn>|…", so the loop could never match an entry. It is dropped
-	// rather than re-pointed: buffers are extracted at their own settle
-	// (flushStreamingItem) and swept wholesale at session teardown, and
-	// dropping a live buffer at a turn boundary WITHOUT flushing it would
-	// discard streamed bytes SQLite has not seen. Surfaced, not changed.
-	//
-	// streamingPathRefsLast is keyed by itemID. Assistant_text ids carry
-	// the turn index in their suffix (TextItemID →
-	// "text:<turnIndex>:[scope:]<n>"), so the prefix "text:<turnIndex>:"
-	// sweeps every entry this turn allocated — scoped (subagent)
-	// variants share the same turn-index segment because scope appears
-	// AFTER it.
-	deleteByPrefix(st.streamingPathRefsLast, "text:"+fmt.Sprintf("%d:", turnIndex))
 }
 
 // claimTurnSettlement records that handleTurnComplete has begun logical-turn
@@ -1376,10 +1358,13 @@ func (r *Router) activeRoundTurnIndex(threadID string) (int, bool) {
 // Three distinct lifecycles intersect here and MUST stay separate (see
 // internal/triage/AGENTS.md "Correlation state" for the full taxonomy):
 //
-//   - **Per-turn flow-control state** swept HERE: openTurns,
-//     interruptQueue, streamingItemCounts, activeTextBlocks/Thinking,
-//     pendingCommandDiffs, pendingApprovals (and siblings). These maps
-//     answer "what's mid-turn right now."
+//   - **Per-turn flow-control state** swept HERE: openTurns, the turn's
+//     own activeTextBlocks/Thinking, pendingCommandDiffs,
+//     pendingApprovals (and siblings). These maps answer "what's
+//     mid-turn right now." The streaming counts move with the blocks,
+//     and the interrupt queue is drained, not swept: the turn's rows
+//     left it before this runs, and an agent's rows wait for the
+//     agent's own streams.
 //   - **Id-allocating counters** (segmentIndexByScope, blockIndexByScope,
 //     errorSeqByScope, compactionSeqByScope, terminalInteractionSeq):
 //     cleared at CleanupThread, with a selective re-init reset in
@@ -1394,10 +1379,11 @@ func (r *Router) activeRoundTurnIndex(threadID string) (int, bool) {
 //     re-settle) and CleanupThread.
 //
 // activeTextBlocks/Thinking ARE per-turn flow-control (they guard
-// against re-creating a row mid-stream), so they stay swept here as a
-// safety net for any block that didn't settle through the normal close
-// path.
-func (r *Router) clearOpenTurn(threadID string) {
+// against re-creating a row mid-stream), so the turn's own stay swept
+// here as a safety net for any block that didn't settle through the
+// normal close path. A block in one of agentScopes is an agent's and
+// stays open (agentOwnedStreamScopes).
+func (r *Router) clearOpenTurn(threadID string, agentScopes map[string]bool) {
 	r.mu.Lock()
 	st := r.threadStateIfPresent(threadID)
 	if st == nil {
@@ -1405,7 +1391,7 @@ func (r *Router) clearOpenTurn(threadID string) {
 		return
 	}
 	if st.openTurnSet {
-		r.clearActiveStreamBlocksForTurnLocked(st, st.openTurn)
+		r.dropTurnStreamsLocked(threadID, st, st.openTurn, false, agentScopes)
 		// pendingCommandDiffs is keyed by `<threadID>:<itemID>` and
 		// stages an inline-diff preview between EventToolStart and
 		// EventToolComplete for command_execution rows. If the matching
@@ -1432,9 +1418,6 @@ func (r *Router) clearOpenTurn(threadID string) {
 	}
 	st.openTurn = 0
 	st.openTurnSet = false
-	st.interruptQueue = nil
-	st.streamingItemCount = 0
-	clear(st.streamingScopeCounts)
 	// openAPIRetryRows tracks "thread has a running api_retry row that
 	// still needs flipping". By turn-end the row was either flipped
 	// already or the turn closed without forward progress; either way
@@ -1475,7 +1458,9 @@ func (r *Router) markTurnItemsErrored(threadID string, turnIndex int, now int64)
 // legitimately outlives the launching turn, and the sibling
 // tool_completion row (written by EventBackgroundTaskTerminal) is the
 // thing that carries the interrupted/stopped marker when the task
-// settles. Mirrors the exemption in forceCloseOrphanToolCalls.
+// settles. Mirrors the exemption in forceCloseOrphanToolCalls. So is
+// every row a background agent owns: the agent's end settles it
+// (agent_end.go).
 func (r *Router) flipTurnItemsErrored(
 	threadID string,
 	turnIndex int,
@@ -1489,7 +1474,23 @@ func (r *Router) flipTurnItemsErrored(
 	if err != nil {
 		return fmt.Errorf("error flip list turn items: %w", err)
 	}
+	var parents []string
 	for _, item := range items {
+		if (item.Status == statusRunning || item.Status == statusStreaming) && item.ParentID != "" {
+			parents = append(parents, item.ParentID)
+		}
+	}
+	var agentOwned map[string]bool
+	if len(parents) > 0 {
+		if agentOwned, err = r.store.AgentOwnedScopes(threadID, parents); err != nil {
+			return fmt.Errorf("error flip ownership: %w", err)
+		}
+	}
+	for _, item := range items {
+		if agentOwned[item.ParentID] {
+			// An agent's row: the agent's end settles it.
+			continue
+		}
 		for (item.Status == statusRunning || item.Status == statusStreaming) && !(item.IsBackground && item.Kind == itemKindToolCall) {
 			var persisted store.Item
 			var changed bool
@@ -1724,6 +1725,11 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	}
 	if err := r.flushStreamingThread(threadID); err != nil {
 		log.Printf("triage: cleanup flush stream buffers for thread %s: %v", threadID, err)
+	}
+	// A row still queued behind a stream is persisted before the queue
+	// goes with the state: no stream of this session settles any more.
+	if err := r.drainAll(threadID); err != nil {
+		log.Printf("triage: cleanup persist queued rows for thread %s: %v", threadID, err)
 	}
 	// The state below is about to go, and its refresh timer with it.
 	r.flushWireItemRefresh(threadID)

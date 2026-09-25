@@ -15,11 +15,6 @@ import (
 	"agent-overflow/internal/store"
 )
 
-type queuedPersistence struct {
-	item    store.Item
-	payload *store.Payload
-}
-
 type activeStreamBlock struct {
 	threadID  string
 	turnIndex int
@@ -154,113 +149,6 @@ func (r *Router) decStreamingCounts(threadID, scope string) {
 	}
 }
 
-// hasActiveStreamingItemForScope reports whether a streaming text or
-// thinking block is open (or mid-settle) in the given scope on this
-// thread. It mirrors hasActiveStreamingItem's decrement-at-finishSettle
-// timing at scope granularity, so a same-scope completion still queues
-// across an async settle (preserving FIFO), while a different-scope
-// completion does not wait.
-func (r *Router) hasActiveStreamingItemForScope(threadID, scope string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	st := r.threadStateIfPresent(threadID)
-	return st != nil && st.streamingScopeCounts[scope] > 0
-}
-
-// maybeDeferOrPersist enforces invariant 11: a NEW row created mid-stream
-// must defer its item_index until the stream it interrupts settles, so it
-// can't render above the still-streaming tail (which took its lower index
-// at segment start). The defer is SAME-scope only — keyed on the item's
-// ParentID. A main-scope completion deferring behind a concurrent
-// subagent-scope stream drained past later main text (thread 4d82b192
-// turn 18: "Report CPU model -> done" landed after "First back").
-func (r *Router) maybeDeferOrPersist(threadID string, item store.Item, payload *store.Payload) error {
-	if !r.hasActiveStreamingItemForScope(threadID, item.ParentID) {
-		return r.persistItem(item, payload)
-	}
-
-	r.mu.Lock()
-	st := r.state(threadID)
-	st.interruptQueue = append(st.interruptQueue, queuedPersistence{
-		item:    item,
-		payload: payload,
-	})
-	r.mu.Unlock()
-	return nil
-}
-
-// hasQueuedInterruptItems reports whether any deferred persists are
-// queued for threadID. The promoted-echo boundary path uses it to
-// decide whether a drain (and a re-bump of the promoted row) is needed
-// before sampling the turn's max item_index (round-6, R6-2).
-func (r *Router) hasQueuedInterruptItems(threadID string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	st := r.threadStateIfPresent(threadID)
-	return st != nil && len(st.interruptQueue) > 0
-}
-
-func (r *Router) drainInterruptQueueIfIdle(threadID string) {
-	if r.hasActiveStreamingItem(threadID) {
-		return
-	}
-	if err := r.drainInterruptQueue(threadID, false); err != nil {
-		// drainInterruptQueue logs per-item failures itself; the idle
-		// drain has no upstream caller to surface the aggregate to, so
-		// swallow it here.
-		return
-	}
-}
-
-// drainLock returns threadID's drain mutex, creating its identity record
-// on first use. Identity records are never deleted (see the
-// threadIdentity.drainLock doc).
-func (r *Router) drainLock(threadID string) *sync.Mutex {
-	return &r.identity(threadID).drainLock
-}
-
-// drainInterruptQueue persists every queued item for the thread, under
-// the thread's drain lock so the pop-to-persisted span is atomic
-// against the promoted-echo boundary sample (round-7, R7-3).
-func (r *Router) drainInterruptQueue(threadID string, forceErrored bool) error {
-	lock := r.drainLock(threadID)
-	lock.Lock()
-	defer lock.Unlock()
-	return r.drainInterruptQueueLocked(threadID, forceErrored)
-}
-
-// drainInterruptQueueLocked is the drain body; the caller must hold the
-// thread's drain lock. The queue is handed off before iteration
-// (cleared from the map under r.mu), so an early return on persist
-// failure would silently strand the remaining items. We log each
-// failure and return the first error once the full queue has been
-// attempted.
-func (r *Router) drainInterruptQueueLocked(threadID string, forceErrored bool) error {
-	r.mu.Lock()
-	var queue []queuedPersistence
-	if st := r.threadStateIfPresent(threadID); st != nil {
-		queue, st.interruptQueue = st.interruptQueue, nil
-	}
-	r.mu.Unlock()
-
-	var firstErrr error
-	for _, queued := range queue {
-		item := queued.item
-		if forceErrored && !(item.ToolName == "collab_agent" && item.Kind == itemKindBackgroundDone) {
-			item.Status = statusErrored
-			item.Summary = interruptedSummary(item.Summary)
-			item.UpdatedAt = time.Now().UnixMilli()
-		}
-		if err := r.persistItem(item, queued.payload); err != nil {
-			log.Printf("triage: drain persist failed for item %s on thread %s: %v", item.ID, threadID, err)
-			if firstErrr == nil {
-				firstErrr = err
-			}
-		}
-	}
-	return firstErrr
-}
-
 // settleTurnStreaming collects every active streaming scope in
 // (threadID, turnIndex) and settles them in parallel before returning.
 // Used by handleTurnComplete; the synchronous wait barrier ensures the
@@ -282,18 +170,23 @@ func (r *Router) drainInterruptQueueLocked(threadID string, forceErrored bool) e
 // from O(N × per-block SQLite time) to ~O(per-block SQLite time).
 // Each goroutine is tracked by BOTH the per-turn local WaitGroup
 // (sequencing barrier for the caller) and r.settleWG (shutdown drain).
-func (r *Router) settleTurnStreaming(threadID string, turnIndex int, status string) error {
+//
+// A stream in one of agentScopes is an agent's, not the turn's: a turn's
+// end leaves it open for the agent's end to settle (agentOwnedStreamScopes).
+// A nil agentScopes settles every scope, which only a boundary inside a
+// live turn asks for.
+func (r *Router) settleTurnStreaming(threadID string, turnIndex int, status string, agentScopes map[string]bool) error {
 	r.mu.Lock()
 	textKeys := make([]string, 0)
 	thinkingKeys := make([]string, 0)
 	if st := r.threadStateIfPresent(threadID); st != nil {
 		for key, ref := range st.activeTextBlockRefs {
-			if ref.turnIndex == turnIndex && st.activeTextBlocks[key] {
+			if ref.turnIndex == turnIndex && st.activeTextBlocks[key] && !agentScopes[ref.scope] {
 				textKeys = append(textKeys, key)
 			}
 		}
 		for key, ref := range st.activeThinkingBlockRefs {
-			if ref.turnIndex == turnIndex && st.activeThinkingBlocks[key] {
+			if ref.turnIndex == turnIndex && st.activeThinkingBlocks[key] && !agentScopes[ref.scope] {
 				thinkingKeys = append(thinkingKeys, key)
 			}
 		}
@@ -454,6 +347,13 @@ func (r *Router) doSettleStreamingText(threadID, scope, itemID, status, finalCon
 	// represents a streaming slot that just closed; without the drain,
 	// queued non-streaming rows behind the lock would leak.
 	defer r.finishSettle(threadID, scope)
+	return r.settleStreamingTextRow(threadID, itemID, status, interruptedSummary, finalContent, finalContentPresent, blockMeta)
+}
+
+// settleStreamingTextRow is doSettleStreamingText without the count
+// release and drain, which its caller owns. An errored row's summary is
+// summarise of its text.
+func (r *Router) settleStreamingTextRow(threadID, itemID, status string, summarise func(string) string, finalContent string, finalContentPresent bool, blockMeta json.RawMessage) error {
 	// The live-stream path-refs cache only exists for streaming rows.
 	// Clear it AFTER flushStreamingItem so the final-flush emit still
 	// sees the prior hash and short-circuits in the common case where
@@ -489,7 +389,7 @@ func (r *Router) doSettleStreamingText(threadID, scope, itemID, status, finalCon
 		r.assistantTextStream(threadID, itemID, pathRefSource, true)
 	}
 	if status == statusErrored {
-		item.Summary = interruptedSummary(item.Summary)
+		item.Summary = summarise(item.Summary)
 	}
 	now := time.Now().UnixMilli()
 	item.Meta = mergeItemMetaJSON(item.Meta, blockMeta)
@@ -716,7 +616,7 @@ func extractPathRefsFromTexts(workspacePath string, sources []string) []pathlink
 // for a single (threadID, itemID). Called when a streaming row
 // transitions out of streaming state (doSettleStreamingText) so the
 // cache doesn't outlive the row. Per-thread sweeps in
-// CleanupThread / clearActiveStreamBlocksForTurnLocked
+// CleanupThread / dropTurnStreamsLocked
 // cover the broader teardown paths.
 func (r *Router) clearStreamingPathRefs(threadID, itemID string) {
 	if threadID == "" || itemID == "" {
@@ -969,7 +869,13 @@ func (r *Router) takeFirstActiveThinkingBlock(threadID string, turnIndex int, sc
 // perceived end-of-thinking freeze.
 func (r *Router) doSettleStreamingThinking(threadID, scope, itemID, status, finalContent string, finalContentPresent bool) error {
 	defer r.finishSettle(threadID, scope)
+	return r.settleStreamingThinkingRow(threadID, itemID, status, interruptedSummary, finalContent, finalContentPresent)
+}
 
+// settleStreamingThinkingRow is doSettleStreamingThinking without the
+// count release and drain, which its caller owns. An errored row's
+// summary is summarise of its preview.
+func (r *Router) settleStreamingThinkingRow(threadID, itemID, status string, summarise func(string) string, finalContent string, finalContentPresent bool) error {
 	if err := r.flushStreamingItem(threadID, itemID); err != nil {
 		return err
 	}
@@ -995,7 +901,7 @@ func (r *Router) doSettleStreamingThinking(threadID, scope, itemID, status, fina
 		}
 	}
 	if status == statusErrored {
-		summary := interruptedSummary(item.Summary)
+		summary := summarise(item.Summary)
 		update.Summary = &summary
 	}
 	return r.persistItemFieldsAndPatch(item, update)

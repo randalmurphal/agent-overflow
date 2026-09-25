@@ -135,6 +135,32 @@ export function textLines(
   ];
 }
 
+/** The opening of a streamed text block that is still streaming: the
+ * message and block starts and a first delta, with no stop. */
+export function openTextLines(messageId: string, text: string, parentToolUseId?: string): string[] {
+  return textLines(messageId, text, parentToolUseId).slice(0, 3);
+}
+
+/** The rest of a block openTextLines began: one more delta and the
+ * stops. A top-level block also gets the coalesced envelope carrying the
+ * whole text. A scoped block does not: the CLI delivers a subagent's text
+ * whole, never streamed, so its stream events carry no item id to match
+ * an envelope against, and a scoped stream here stands for any row an
+ * agent holds open. */
+export function finishTextLines(
+  messageId: string,
+  delta: string,
+  fullText: string,
+  parentToolUseId?: string,
+): string[] {
+  const p = parentToolUseId ? { parent_tool_use_id: parentToolUseId } : {};
+  const rest = textLines(messageId, fullText, parentToolUseId).slice(3);
+  return [
+    j({ type: 'stream_event', event: 'content_block_delta', ...p, data: { type: 'content_block_delta', delta: { type: 'text_delta', text: delta } } }),
+    ...(parentToolUseId ? rest.slice(0, 2) : rest),
+  ];
+}
+
 /** Streamed thinking block, same framing contract as textLines. */
 export function thinkingLines(
   messageId: string,
@@ -345,6 +371,17 @@ export function claudeScenario(name: string, steps: ScenarioStep[]): unknown {
     turns: [{ label: name, steps }],
     // These scenarios script exactly one turn; a stray second send must
     // not replay the whole agent fan-out on top of the first.
+    afterTurns: 'silent',
+  };
+}
+
+/** A Claude scenario of several turns, each consumed by one user message. */
+export function claudeTurnsScenario(name: string, turns: ScenarioStep[][]): unknown {
+  return {
+    version: 1,
+    name,
+    provider: 'claude',
+    turns: turns.map((steps, i) => ({ label: `${name}-${i + 1}`, steps })),
     afterTurns: 'silent',
   };
 }

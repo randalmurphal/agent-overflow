@@ -88,6 +88,9 @@ func (r *Router) handleSessionDied(evt provider.ProviderEvent) error {
 	// launched new shells yet.
 	if settled, err := r.SettleBackgroundLaunchesForSessionEnd(evt.ThreadID); err != nil {
 		log.Printf("triage: settle background launches on session_died for thread %s: %v", evt.ThreadID, err)
+		if reportErr := r.persistProviderErrorItem(evt.ThreadID, turnIndex, BackgroundSettleFailureSummary(err), nil, "", "", now); reportErr != nil {
+			log.Printf("triage: report background settle failure on session_died for thread %s: %v", evt.ThreadID, reportErr)
+		}
 	} else if settled > 0 {
 		log.Printf("triage: settled %d background launches on session_died for thread %s", settled, evt.ThreadID)
 	}
@@ -172,4 +175,12 @@ func (r *Router) logUnknownSessionStatusOnce(content string) {
 	r.unknownSessionStatusLogged[key] = struct{}{}
 	r.mu.Unlock()
 	log.Printf("triage: unknown session-status content %q — dropping", key)
+}
+
+// BackgroundSettleFailureSummary is the thread error row a failed
+// session-end settle of background work leaves, so the user learns that
+// some of the ended session's agents or commands may still read as
+// running.
+func BackgroundSettleFailureSummary(err error) string {
+	return "Background work from the ended session could not all be settled: " + err.Error()
 }

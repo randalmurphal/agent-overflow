@@ -398,7 +398,7 @@ func TestCleanupThreadClassifiesDetachedOrphanSpan(t *testing.T) {
 
 	// Simulate the defensive cleanup state: the live turn/round bookkeeping
 	// is already gone, but its span still needs a terminal classification.
-	r.clearOpenTurn("thread-1")
+	r.clearOpenTurn("thread-1", nil)
 	r.takeOpenRound("thread-1")
 	r.CleanupThread("thread-1")
 

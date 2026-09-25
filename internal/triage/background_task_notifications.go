@@ -169,10 +169,14 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 
 	// Sibling first — see the ordering note in the function comment.
 	// Unless the stop is a PAUSE: a parked agent keeps its stash, and the
-	// wake that follows drops it (persistWakePromptRow).
-	park, err := r.launchParkedOn(evt.ThreadID, launch)
-	if err != nil {
-		return err
+	// wake that follows drops it (persistWakePromptRow). A stop the typed
+	// status reports as a kill or a failure ends the agent whatever it
+	// still owns: its shells die with it.
+	var park parkedStop
+	if !taskStatusEnds(meta.Status) {
+		if park, err = r.launchParkedOn(evt.ThreadID, launch); err != nil {
+			return err
+		}
 	}
 	if park.waiting == 0 {
 		if err := r.drainTaskNotificationStash(evt, meta, launch); err != nil {
@@ -329,7 +333,9 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 }
 
 // launchParkedOn reports how many background commands a background
-// agent's stop is waiting on; a non-zero count makes the stop a PAUSE. An
+// agent's stop is waiting on; a non-zero count makes the stop a PAUSE.
+// Callers ask only about a stop whose typed status can be a pause
+// (taskStatusEnds). An
 // async agent that stops while one of its OWNED background shells is still
 // running goes idle, and the CLI wakes it when the shell reports
 // (claude-wire.md §E6b); its `task_updated{completed}` and
@@ -359,6 +365,18 @@ func (r *Router) launchParkedOn(threadID string, launch store.Item) (parkedStop,
 		return parkedStop{}, err
 	}
 	return parkedStop{waiting: waiting, rootID: root.ID}, nil
+}
+
+// taskStatusEnds reports a typed task status that ends the task however
+// many shells it owns: a kill or a failure (the CLI's `killed`, the SDK's
+// `stopped`, and the failure spellings NormalizeTaskTerminalStatus folds).
+// Only a completed report, or a statusless one, can be a pause.
+func taskStatusEnds(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "killed", "stopped", "failed", "error", "errored", "interrupted":
+		return true
+	}
+	return false
 }
 
 // parkedStop is what launchParkedOn learned about a background agent's

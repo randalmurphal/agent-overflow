@@ -1195,11 +1195,13 @@ func TestDuplicateFatalErrorStillDrainsInterruptQueue(t *testing.T) {
 	if len(done) != 1 {
 		t.Fatalf("background_done rows = %+v, want one drained row", done)
 	}
-	if done[0].Status != statusErrored {
-		t.Fatalf("background_done status = %q, want %q", done[0].Status, statusErrored)
+	// The task's own outcome, not the turn's interruption
+	// (reportsBackgroundOutcome).
+	if done[0].Status != statusCompleted {
+		t.Fatalf("background_done status = %q, want %q", done[0].Status, statusCompleted)
 	}
-	if !strings.Contains(done[0].Summary, "— interrupted") {
-		t.Fatalf("background_done summary = %q, want interrupted suffix", done[0].Summary)
+	if isInterrupted(done[0].Summary) {
+		t.Fatalf("background_done summary = %q took the turn's interrupted suffix", done[0].Summary)
 	}
 
 	errors := findItemsByKind(t, st, "t1", "error")
