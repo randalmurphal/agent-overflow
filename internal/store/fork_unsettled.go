@@ -74,7 +74,7 @@ func forkUnsettledRowsTx(tx *sql.Tx, sourceID string, plan forkCut) (hidden, set
 		}
 	}
 	losing, err := launchesLosingCompletionTx(tx, sourceID, settled,
-		"(turn_index, item_index) < (?, ?)", []any{plan.turn, plan.item})
+		"(+turn_index, +item_index) < (?, ?)", []any{plan.turn, plan.item})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -146,27 +146,63 @@ func forkRunningTurnRowsTx(tx *sql.Tx, forkID, sourceID string, plan forkCut, se
 // settled copy for the forks that read the completion there, and the
 // thread that keeps the launch revives it
 // (trg_items_revive_bg_launch_on_completion_move).
+//
+// It is one statement over every candidate (launchesCompletedSQL): a
+// statement per candidate walked the timeline range once each, which a
+// fork of a thread with hundreds of settled launches paid in seconds.
 func launchesLosingCompletionTx(tx *sql.Tx, threadID string, candidates []string, kept string, keptArgs []any) ([]string, error) {
-	var losing []string
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	list, err := jsonList(candidates)
+	if err != nil {
+		return nil, err
+	}
+	query, args, err := launchesCompletedSQL(tx, threadID, kept, keptArgs)
+	if err != nil {
+		return nil, err
+	}
+	completed, err := queryIDs(tx, query, append([]any{list}, args...)...)
+	if err != nil {
+		return nil, fmt.Errorf("store: read the completions of %s's launches: %w", threadID, err)
+	}
+	done := make(map[string]bool, len(completed))
+	for _, id := range completed {
+		done[id] = true
+	}
+	losing := make([]string, 0, len(candidates)-len(done))
 	for _, id := range candidates {
-		query, args, err := timelineArms(tx, threadID, timelineSelection{
-			Columns:   func(string, string) string { return "1" },
-			KeyFirst:  true,
-			Where:     "items.completion_of <> '' AND items.completion_of = ? AND items.status <> '" + ItemStatusParked + "' AND (" + kept + ")",
-			WhereArgs: append([]any{id}, keptArgs...),
-		})
-		if err != nil {
-			return nil, err
-		}
-		var completed bool
-		if err := tx.QueryRow(`SELECT EXISTS(`+query+`)`, args...).Scan(&completed); err != nil {
-			return nil, fmt.Errorf("store: read completion of %s/%s: %w", threadID, id, err)
-		}
-		if !completed {
+		if !done[id] {
 			losing = append(losing, id)
 		}
 	}
 	return losing, nil
+}
+
+// launchesCompletedSQL renders the launches among a JSON list of candidate
+// ids, bound first as cand(launch), a name no item column shares so kept
+// may name item columns unqualified, that a row of threadID's timeline matching kept
+// completes, other than a parked stop; a launch with several such rows
+// is returned once per row. The candidates are the row source of every
+// arm, so each arm probes its completion index per candidate
+// (idx_items_completion_of, idx_import_history_items_completion_lookup)
+// rather than walking the thread's timeline. kept therefore MUST write
+// its position columns with unary plus (+turn_index, +item_index) so the
+// planner cannot take the position range as the arm's index instead;
+// TestLosingCompletionReadProbesTheCompletionIndex pins the plans of both
+// callers.
+func launchesCompletedSQL(q sqlQueryer, threadID, kept string, keptArgs []any) (string, []any, error) {
+	query, args, err := timelineArms(q, threadID, timelineSelection{
+		Columns:   func(string, string) string { return "cand.launch" },
+		Source:    "cand",
+		KeyFirst:  true,
+		Where:     "items.completion_of <> '' AND items.completion_of = cand.launch AND items.status <> '" + ItemStatusParked + "' AND (" + kept + ")",
+		WhereArgs: keptArgs,
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return "WITH cand(launch) AS (SELECT value FROM json_each(?))\n" + query, args, nil
 }
 
 // forkUnsettledRowsSQL reads the running and streaming rows of a source's

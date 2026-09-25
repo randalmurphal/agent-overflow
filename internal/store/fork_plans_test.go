@@ -105,3 +105,48 @@ func assertEveryItemsArmWalksAnIndex(t *testing.T, s *Store, what, query string,
 		}
 	}
 }
+
+// TestLosingCompletionReadProbesTheCompletionIndex pins the one statement
+// launchesLosingCompletionTx runs for every candidate, for both callers'
+// kept predicates: each arm is driven from the candidate list and probes
+// its completion index per candidate. The stat-less planner would rather
+// walk the thread's position range once per candidate, which a fork of a
+// thread with hundreds of settled launches paid in seconds; the unary
+// plus on the position columns is what keeps it off that index.
+func TestLosingCompletionReadProbesTheCompletionIndex(t *testing.T) {
+	s := forkChainFixture(t)
+	split := forkSplit{fromTurn: 1, where: "id = ?", args: []any{"x"}}
+	span, spanArgs := split.moveSel(timelineRow{turn: 9, item: 0})
+	for _, c := range []struct {
+		name string
+		kept string
+		args []any
+	}{
+		{"fork creation", "(+turn_index, +item_index) < (?, ?)", []any{9, 0}},
+		{"split", "NOT (" + span + ")", spanArgs},
+	} {
+		query, args, err := launchesCompletedSQL(s.db, "G", c.kept, c.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan := explainPlan(t, s, query, append([]any{`["a","b"]`}, args...)...)
+		text := planText(plan)
+		for _, row := range plan {
+			if strings.HasPrefix(row.detail, "SCAN ") && !strings.Contains(row.detail, "json_each") {
+				t.Errorf("%s scans: %s\n%s", c.name, row.detail, text)
+			}
+			if strings.Contains(row.detail, "USE TEMP B-TREE") {
+				t.Errorf("%s sorts: %s\n%s", c.name, row.detail, text)
+			}
+		}
+		// G reads itself, F and S: three local arms and three imported.
+		for index, want := range map[string]int{
+			"SEARCH items USING INDEX idx_items_completion_of (thread_id=? AND completion_of=?)":    3,
+			"SEARCH items USING INDEX idx_import_history_items_completion_lookup (completion_of=?)": 3,
+		} {
+			if n := strings.Count(text, index); n != want {
+				t.Errorf("%s probes %s %d times, want %d\n%s", c.name, index, n, want, text)
+			}
+		}
+	}
+}

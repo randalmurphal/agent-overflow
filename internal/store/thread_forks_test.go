@@ -872,3 +872,43 @@ func TestCreatePointerForkRefusesMalformedRequests(t *testing.T) {
 		t.Fatalf("fork row: %v", err)
 	}
 }
+
+// TestPointerForkSettlesEachLaunchByItsOwnCompletion: the settled launches
+// below a cut are judged together, each by its own completion. One whose
+// completion sits inside the cut shows; one whose completion is beyond it
+// hides, and so does one that only a parked stop precedes the cut for. A
+// fork of a fork judges the same rows through its lineage.
+func TestPointerForkSettlesEachLaunchByItsOwnCompletion(t *testing.T) {
+	s := newTestStore(t)
+	seedForkSource(t, s, "src", []Item{
+		{ID: "user-0", TurnIndex: 1, ItemIndex: 0, Kind: "user_text", Role: "user", Summary: "go"},
+		{ID: "a", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: a"},
+		{ID: "b", TurnIndex: 1, ItemIndex: 2, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: b"},
+		{ID: "c", TurnIndex: 1, ItemIndex: 3, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: c"},
+		{ID: "a-done", TurnIndex: 1, ItemIndex: 4, Kind: "tool_completion", Role: "assistant", Status: "completed", IsBackground: true, CompletionOf: "a", ToolName: "Agent", Summary: "Agent: a -> done"},
+		{ID: "c-parked", TurnIndex: 2, ItemIndex: 0, Kind: "tool_completion", Role: "assistant", Status: ItemStatusParked, IsBackground: true, CompletionOf: "c", ToolName: "Agent", Summary: "Agent: c -> parked"},
+		{ID: "user-1", TurnIndex: 2, ItemIndex: 1, Kind: "user_text", Role: "user", Summary: "and then"},
+		{ID: "b-done", TurnIndex: 3, ItemIndex: 0, Kind: "tool_completion", Role: "assistant", Status: "completed", IsBackground: true, CompletionOf: "b", ToolName: "Agent", Summary: "Agent: b -> done"},
+		{ID: "c-done", TurnIndex: 3, ItemIndex: 1, Kind: "tool_completion", Role: "assistant", Status: "completed", IsBackground: true, CompletionOf: "c", ToolName: "Agent", Summary: "Agent: c -> done"},
+	})
+	mustPointerFork(t, s, "src", "whole", ForkCut{})
+	mustPointerFork(t, s, "src", "fork", throughTurn(2))
+	mustPointerFork(t, s, "whole", "chained", throughTurn(2))
+	for _, fork := range []string{"fork", "chained"} {
+		dst := forkRowsBySummary(t, s, fork)
+		for _, shown := range []string{"go", "Agent: a", "Agent: a -> done", "and then"} {
+			if _, ok := dst[shown]; !ok {
+				t.Errorf("%s hides %q, whose completion is inside the cut", fork, shown)
+			}
+		}
+		for _, hidden := range []string{"Agent: b", "Agent: c", "Agent: c -> parked"} {
+			if _, ok := dst[hidden]; ok {
+				t.Errorf("%s shows %q, whose completion is beyond the cut", fork, hidden)
+			}
+		}
+		if len(dst) != 4 {
+			t.Errorf("%s rows = %d, want 4", fork, len(dst))
+		}
+		assertForkLinksResolve(t, s, fork)
+	}
+}
