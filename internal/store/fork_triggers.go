@@ -116,11 +116,11 @@ const turnContentChangedSQL = `(OLD.turn_index IS NOT NEW.turn_index OR OLD.star
       OR OLD.token_usage_json IS NOT NEW.token_usage_json OR OLD.error_message IS NOT NEW.error_message
       OR OLD.provider_turn_id IS NOT NEW.provider_turn_id)`
 
-// forkTriggersSQL is the latest DDL for the pointer-fork triggers. Migration
-// v125 installs it; v126 replaces the revive trigger, v130 the turn guards
-// and v131 the payload guards. RestoreFrom reinstalls it after the row copy,
-// which runs without these triggers so restored rows are the snapshot's
-// exactly.
+// forkTriggersSQL is the latest DDL for the pointer-fork triggers: the set
+// migration v125 installed, with v130's turn guards and v131's payload
+// guards, less the revive trigger v133 dropped. RestoreFrom reinstalls it
+// after the row copy, which runs without these triggers so restored rows
+// are the snapshot's exactly.
 //
 //   - trg_threads_fork_source_delete: a thread forks read is never deleted;
 //     its delete keeps it as a holder (DeleteThreadPaced).
@@ -147,15 +147,9 @@ const turnContentChangedSQL = `(OLD.turn_index IS NOT NEW.turn_index OR OLD.star
 //     (fixShownHistoryTx).
 //   - trg_thread_fork_lineage_release: a holder no lineage row names any
 //     more is marked deleting, for the app to delete (ListPendingThreadDeletes).
-//   - trg_items_revive_bg_launch_on_completion_move: a completion a holder
-//     takes leaves the thread as a delete would, so the launch it settled
-//     there revives (trg_items_revive_bg_launch_on_completion_delete). A
-//     parked stop settled nothing (agent_stops.go), so its move revives
-//     nothing, and it does not keep a launch whose ending sibling moved
-//     settled.
-var forkTriggersSQL = forkGuardTriggersSQL + reviveBgLaunchOnCompletionMoveSQL + forkLineageReleaseTriggerSQL
+var forkTriggersSQL = forkGuardTriggersSQL + forkLineageReleaseTriggerSQL
 
-// forkGuardTriggersSQL is forkTriggersSQL before the revive trigger.
+// forkGuardTriggersSQL is forkTriggersSQL before the lineage release trigger.
 var forkGuardTriggersSQL = `
 CREATE TRIGGER trg_threads_fork_source_delete BEFORE DELETE ON threads
 WHEN EXISTS (SELECT 1 FROM thread_fork_lineage WHERE ancestor_id = OLD.id)
@@ -288,57 +282,7 @@ END;
 
 `
 
-// reviveBgLaunchOnCompletionMoveSQL is the latest revive-on-move trigger.
-// Migration v126 installs it in place of v125's.
-const reviveBgLaunchOnCompletionMoveSQL = `CREATE TRIGGER trg_items_revive_bg_launch_on_completion_move AFTER UPDATE OF thread_id ON items
-WHEN OLD.completion_of <> '' AND OLD.status <> '` + ItemStatusParked + `' AND OLD.thread_id IS NOT NEW.thread_id
-BEGIN
-  UPDATE items
-     SET meta = json_remove(meta, '$.live_background_active')
-   WHERE thread_id = OLD.thread_id
-     AND id = OLD.completion_of
-     AND kind = 'tool_call'
-     AND status = 'running'
-     AND is_background = 1
-     AND json_valid(meta)
-     AND json_extract(meta, '$.live_background_active') = 0
-     AND NOT EXISTS (
-       SELECT 1 FROM items c
-        WHERE c.thread_id = OLD.thread_id
-          AND c.completion_of = OLD.completion_of
-          AND c.completion_of <> ''
-          AND c.status <> '` + ItemStatusParked + `'
-     );
-END;
-
-`
-
-// reviveBgLaunchOnCompletionMoveV125SQL is the revive-on-move trigger
-// v125 installed, before a parked stop existed. v125's hash freezes it.
-const reviveBgLaunchOnCompletionMoveV125SQL = `CREATE TRIGGER trg_items_revive_bg_launch_on_completion_move AFTER UPDATE OF thread_id ON items
-WHEN OLD.completion_of <> '' AND OLD.thread_id IS NOT NEW.thread_id
-BEGIN
-  UPDATE items
-     SET meta = json_remove(meta, '$.live_background_active')
-   WHERE thread_id = OLD.thread_id
-     AND id = OLD.completion_of
-     AND kind = 'tool_call'
-     AND status = 'running'
-     AND is_background = 1
-     AND json_valid(meta)
-     AND json_extract(meta, '$.live_background_active') = 0
-     AND NOT EXISTS (
-       SELECT 1 FROM items c
-        WHERE c.thread_id = OLD.thread_id
-          AND c.completion_of = OLD.completion_of
-          AND c.completion_of <> ''
-     );
-END;
-
-`
-
-// forkLineageReleaseTriggerSQL is forkTriggersSQL after the revive
-// trigger.
+// forkLineageReleaseTriggerSQL is forkTriggersSQL after the guards.
 const forkLineageReleaseTriggerSQL = `CREATE TRIGGER trg_thread_fork_lineage_release AFTER DELETE ON thread_fork_lineage
 WHEN NOT EXISTS (SELECT 1 FROM thread_fork_lineage WHERE ancestor_id = OLD.ancestor_id)
 BEGIN
@@ -360,5 +304,4 @@ DROP TRIGGER IF EXISTS trg_payload_chunks_shown_update;
 DROP TRIGGER IF EXISTS trg_payload_chunks_shown_delete;
 DROP TRIGGER IF EXISTS trg_turns_shown_update;
 DROP TRIGGER IF EXISTS trg_turns_shown_delete;
-DROP TRIGGER IF EXISTS trg_items_revive_bg_launch_on_completion_move;
 DROP TRIGGER IF EXISTS trg_thread_fork_lineage_release;`

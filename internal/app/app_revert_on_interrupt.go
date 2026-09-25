@@ -238,9 +238,6 @@ func (a *App) InterruptAndRevertIfClean(threadID string, opts InterruptRevertOpt
 		HistoryEpoch:          cut.Stamp.Epoch,
 	}
 	a.emit(eventchan.UserMessageReverted, cutEvent)
-	if cut.SettleFailure != "" {
-		a.emitErrorToThread(threadID, cut.SettleFailure)
-	}
 
 	return InterruptAndRevertResult{
 		TurnStartedSequence:   cutEvent.TurnStartedSequence,

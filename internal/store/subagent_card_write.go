@@ -49,11 +49,10 @@ type cardWrite struct {
 	// stops name the agents the write stopped and the transcript roots
 	// they kept live.
 	stops []string
-	// settled and revived name the launches of the completion siblings
-	// the write inserted, whose trigger settles the launch, and of those
-	// it deleted or re-pointed, whose trigger may revive it: finish reads
-	// each launch's transcript root and records both (launches).
-	settled, revived []string
+	// settled names the launches of the completion siblings the write
+	// inserted, whose trigger settles the launch: finish reads each
+	// launch's transcript root and records both (launches).
+	settled []string
 	// placed are the counted rows the write inserted, moved or made
 	// counted under a parent, whose readers may read them other than the
 	// stamps above them count (markPlacedAnchorsTx).
@@ -144,9 +143,6 @@ func (w *cardWrite) updated(old, row subagentRow) error {
 	if old.running() && (!row.running() || old.root != row.root) {
 		w.stops = append(w.stops, old.id, old.root)
 	}
-	if old.completionOf != row.completionOf {
-		w.revived = append(w.revived, old.completionOf, row.completionOf)
-	}
 	structural := (old.counts() || row.counts()) && (old.parentID != row.parentID ||
 		old.turn != row.turn || old.index != row.index || old.visible() != row.visible() ||
 		old.kind != row.kind || old.toolName != row.toolName ||
@@ -181,9 +177,6 @@ func (w *cardWrite) updated(old, row subagentRow) error {
 // deleted records a deleted row: its chain loses it and its subtree, a
 // prompt's carrier loses its round, and its own stamp goes with it.
 func (w *cardWrite) deleted(old subagentRow) {
-	if old.completionOf != "" {
-		w.revived = append(w.revived, old.completionOf)
-	}
 	if old.anchorable() {
 		w.relive = append(w.relive, old.id, old.root)
 	}
@@ -241,17 +234,17 @@ func (w *cardWrite) finish() error {
 	return w.settle()
 }
 
-// launches records the agents the write's completion siblings settle or
-// revive: each launch and the transcript root it keeps live, read once
-// per launch, as the cards they decide. A thread whose cards hold nothing
-// has no card to tell, and reads nothing.
+// launches records the agents the write's completion siblings settle:
+// each launch and the transcript root it keeps live, read once per
+// launch, as the cards they decide. A thread whose cards hold nothing has
+// no card to tell, and reads nothing.
 func (w *cardWrite) launches() error {
-	settled, revived := w.settled, w.revived
-	w.settled, w.revived = nil, nil
-	if len(settled)+len(revived) == 0 || (w.t == nil && !w.s.cards.holds(w.threadID)) {
+	settled := w.settled
+	w.settled = nil
+	if len(settled) == 0 || (w.t == nil && !w.s.cards.holds(w.threadID)) {
 		return nil
 	}
-	read := make(map[string][]string, len(settled)+len(revived))
+	read := make(map[string][]string, len(settled))
 	agents := func(id string) ([]string, error) {
 		if got, ok := read[id]; ok || id == "" {
 			return got, nil
@@ -274,13 +267,6 @@ func (w *cardWrite) launches() error {
 		}
 		w.relive = append(w.relive, ids...)
 		w.stops = append(w.stops, ids...)
-	}
-	for _, id := range revived {
-		ids, err := agents(id)
-		if err != nil {
-			return err
-		}
-		w.relive = append(w.relive, ids...)
 	}
 	return nil
 }

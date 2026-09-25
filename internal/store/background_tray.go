@@ -73,12 +73,12 @@ const BackgroundTaskRetentionMillis = 2000
 // This is the DISPLAY query only. The reaper and queue gates in
 // items_lifecycle.go (HasRunningTopLevelForegroundToolCall,
 // HasLiveBackgroundToolCall, HasQueueBlockingBackgroundToolCall,
-// CountLiveRunningBackgroundToolCalls,
 // MarkLiveBackgroundToolCallsInactive) and paging.go's
 // topLevelItemsFilter KEEP the empty-`parent_id` term: whether the tray SHOWS a
 // nested background Bash and whether that Bash blocks the flush queue
-// or survives a session teardown are different questions, and the
-// second one is still answered at the top level only.
+// are different questions, and the second one is still answered at the
+// top level only. CountLiveRunningBackgroundToolCalls counts every depth:
+// a session stop kills a nested launch too.
 //
 // Codex subagents are different: the chat-history spawn card is completed
 // immediately while the child thread keeps running. App.ListLiveBackgroundTasks

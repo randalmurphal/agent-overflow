@@ -204,45 +204,6 @@ func TestForkHideKeepsTheRowForItsForks(t *testing.T) {
 	requireIDs(t, "released", releasedHolders(t, s), []string{h})
 }
 
-// TestSourceRevertKeepsSettledLaunchesForItsForks: a background launch the
-// source keeps whose completion its forks show goes with the completion as
-// a settled copy. The move revives the launch in the source, as a delete of
-// the completion would, and the forks still read it settled.
-func TestSourceRevertKeepsSettledLaunchesForItsForks(t *testing.T) {
-	s := newTestStore(t)
-	seedForkSource(t, s, "S", []Item{
-		{ID: "u0", TurnIndex: 0, ItemIndex: 0, Kind: "user_text", Role: "user", Status: "completed", Summary: "go", Meta: "{}"},
-		{ID: "launch", TurnIndex: 0, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Bash", Summary: "Bash", Meta: "{}"},
-		{ID: "u1", TurnIndex: 1, ItemIndex: 0, Kind: "user_text", Role: "user", Status: "completed", Summary: "more", Meta: "{}"},
-		{ID: "done", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "completed", CompletionOf: "launch", ToolName: "Bash", Summary: "done", Meta: "{}"},
-	})
-	settled := func(thread string) bool {
-		t.Helper()
-		var active any
-		if err := s.db.QueryRow(`SELECT json_extract(meta, '$.live_background_active') FROM items WHERE thread_id = ? AND id = 'launch'`, thread).Scan(&active); err != nil {
-			t.Fatal(err)
-		}
-		return active != nil && fmt.Sprint(active) == "0"
-	}
-	if !settled("S") {
-		t.Fatal("the completion did not settle the launch")
-	}
-	mustPointerFork(t, s, "S", "F", ForkCut{})
-	fork := timelineShape(t, s, "F")
-	if _, _, err := s.DeleteConversationFromTurn("S", 1); err != nil {
-		t.Fatal(err)
-	}
-	requireShape(t, s, "F", fork)
-	if settled("S") {
-		t.Fatal("the launch the source keeps stayed settled without its completion")
-	}
-	h := holderOf(t, s, "F")
-	requireIDs(t, "holder rows", ownIDs(t, s, h), []string{"launch", "u1", "done"})
-	if !settled(h) {
-		t.Fatal("the holder's copy of the launch is not settled")
-	}
-}
-
 // TestSourceRevertMovesTurnRowsWithItems: the turn rows a fork reads
 // through the source go to the holder with the rows: a turn the source
 // reverts moves, and one it keeps part of, and may settle again, is copied.

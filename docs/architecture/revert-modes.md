@@ -77,12 +77,14 @@ missing or drifted anchor is synthesized from the item's persisted meta
 provider rollback and cache truncation. Early un-send also restores a prompt
 draft; edit/resend owns separate durable recovery. Background-task guards remain
 in the entry points. Early Stop declines rollback while tasks run; older-message
-replacement requires explicit consent to stop them.
+replacement requires explicit consent to stop them. The guards count every live
+background launch the session stop kills, nested launches under an ended agent
+included (`CountLiveRunningBackgroundToolCalls`).
 
-A Claude cut can delete the completion row of a background launch that stays in
-the kept history, which makes the launch live again. The Claude rollback settles
-such launches after the cut as the session-end settle would, since the stopped
-session no longer owns the work and the resumed CLI reports it as unfinished.
+A cut can delete the completion row of a background launch that stays in the
+kept history. The launch stays settled with no result card, and nothing writes
+it another completion
+([background settlement](sqlite-store.md#schema-owned-invariants)).
 
 Provider-side rollback differs by provider:
 

@@ -2599,13 +2599,9 @@ func TestCompletionSiblingProbesUseIndex(t *testing.T) {
 		},
 		{
 			// CountLiveRunningBackgroundToolCalls.
-			name: "INDEXED BY count",
-			query: `SELECT COUNT(*)
-			   FROM items INDEXED BY idx_items_live_background
-			  WHERE thread_id = ?
-			    AND ` + liveBackgroundLaunchSQL + `
-			    AND ` + noCompletionSiblingIndexedSQL,
-			args: []any{"thread-plan"},
+			name:  "INDEXED BY count",
+			query: countLiveBackgroundLaunchesSQL,
+			args:  []any{"thread-plan"},
 		},
 		{
 			// HasLiveCodexSubagentLaunch / CountLiveCodexSubagentLaunches.

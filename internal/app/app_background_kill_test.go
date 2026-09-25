@@ -307,15 +307,16 @@ func TestInterruptTurn_RefusesForAParkedAgent(t *testing.T) {
 	}
 }
 
-// A background agent under a foreground agent is invisible to the
-// top-level background count, and the interrupt still kills it.
+// A background agent under a foreground agent dies with the interrupt, so
+// the interrupt refuses for it, and the stop count a revert confirms
+// counts it too.
 func TestInterruptTurn_RefusesForANestedAgent(t *testing.T) {
 	f := newClaudeAgentKillFixture(t)
 	f.handle(t, provider.ProviderEvent{Kind: provider.EventToolStart, ItemID: "foreground", ItemType: "Agent"},
 		map[string]any{"toolName": "Agent", "input": map[string]any{"description": "Agent foreground", "prompt": "delegate"}})
 	f.launchAgent(t, "nested", "task-nested", "foreground")
-	if count, err := f.app.countRunningBackgroundTasks(f.thread.ID); err != nil || count != 0 {
-		t.Fatalf("top-level background count = %d (%v); the case needs an agent it does not see", count, err)
+	if count, err := f.app.countRunningBackgroundTasks(f.thread.ID); err != nil || count != 1 {
+		t.Fatalf("running background tasks = %d (%v), want the nested agent", count, err)
 	}
 
 	agents := requireRefusal(t, f.app.InterruptTurn(f.thread.ID, nil))

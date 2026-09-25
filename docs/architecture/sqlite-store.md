@@ -288,9 +288,10 @@ thread's writes:
   point. The turn rows the readers read from the revert point on move with the
   items; one the thread keeps is copied. A payload the thread still renders
   through a row it keeps is copied. A background launch the thread keeps whose
-  completion moved revives in the thread
-  (`trg_items_revive_bg_launch_on_completion_move`), and the holder takes a
-  settled copy for the forks. The rows no fork shows are deleted as before.
+  completion moved stays settled in the thread
+  ([schema-owned invariants](#schema-owned-invariants)), and the holder takes
+  a copy for the forks that read the completion there. The rows no fork shows
+  are deleted as before.
 - A fork's hide of an inherited row that its own forks show first gives them a
   holder with a copy of the row (`hideInheritedItemTx`), because a hide
   applies to every level behind the hiding thread.
@@ -404,8 +405,6 @@ copy and reinstalls them.
   delete keeps it as a holder.
 - `trg_thread_fork_lineage_release` marks a holder deleting when its last
   lineage row goes.
-- `trg_items_revive_bg_launch_on_completion_move` revives a background launch
-  whose completion a holder takes, as the completion's delete would.
 
 A write the guards refuse fails with its transaction and returns the error to
 its caller. Writers give the forks their copy first
@@ -550,10 +549,13 @@ Five trigger families ride `items`:
   `payload_id` or `input_payload_id`.
 - Imported-history triggers enforce the immutable-base and mutable-overlay
   rules.
-- Background-settlement triggers maintain
-  `items.meta.live_background_active` as ending completion siblings arrive,
-  disappear, or race with launch materialization. A `parked` sibling
-  settles nothing (`background_settle_triggers.go`).
+- Background-settlement triggers set `items.meta.live_background_active`
+  false when an ending completion sibling arrives, including before its
+  launch row materializes. A `parked` sibling settles nothing. A launch
+  settles once: when its ending sibling is deleted or moved, as by a
+  conversation cut that keeps the launch or a holder that takes the
+  sibling, the launch stays settled with no result
+  (`background_settle_triggers.go`).
 - Turn-error triggers, also on `turns`, `thread_import_chunks` and
   `thread_import_item_overrides`, keep the thread row's Failed-pill aggregate
   (`thread_turn_error_aggregate.go`). They do not consult
@@ -563,7 +565,9 @@ A background `tool_call` remains `status = 'running'`; its terminal state is a
 sibling row whose `completion_of` names the launch. The stored liveness flag
 allows partial indexes to select genuinely live launches without a correlated
 subquery. Tray display includes nested work by background ancestry, while queue
-and reaper gates intentionally consider top-level work. These are separate
+and reaper gates intentionally consider top-level work. The count a stop
+confirms (`CountLiveRunningBackgroundToolCalls`) includes nested launches, which
+a session stop kills and an agent's end does not settle. These are separate
 queries with separate semantics.
 
 ## Writes and events

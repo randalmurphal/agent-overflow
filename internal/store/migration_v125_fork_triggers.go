@@ -305,3 +305,27 @@ BEGIN
 END;
 
 `
+
+// reviveBgLaunchOnCompletionMoveV125SQL is the revive-on-move trigger
+// v125 installed, before a parked stop existed, frozen with it.
+const reviveBgLaunchOnCompletionMoveV125SQL = `CREATE TRIGGER trg_items_revive_bg_launch_on_completion_move AFTER UPDATE OF thread_id ON items
+WHEN OLD.completion_of <> '' AND OLD.thread_id IS NOT NEW.thread_id
+BEGIN
+  UPDATE items
+     SET meta = json_remove(meta, '$.live_background_active')
+   WHERE thread_id = OLD.thread_id
+     AND id = OLD.completion_of
+     AND kind = 'tool_call'
+     AND status = 'running'
+     AND is_background = 1
+     AND json_valid(meta)
+     AND json_extract(meta, '$.live_background_active') = 0
+     AND NOT EXISTS (
+       SELECT 1 FROM items c
+        WHERE c.thread_id = OLD.thread_id
+          AND c.completion_of = OLD.completion_of
+          AND c.completion_of <> ''
+     );
+END;
+
+`

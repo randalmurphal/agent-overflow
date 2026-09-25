@@ -429,8 +429,7 @@ func TestPointerForkRowTriggersProbeTheLineage(t *testing.T) {
 		"trg_items_fork_snapshot", "trg_items_fork_snapshot_move", "trg_threads_fork_source_delete",
 		"trg_items_shown_update", "trg_items_shown_delete", "trg_payloads_shown_update",
 		"trg_payload_chunks_shown_insert", "trg_payload_chunks_shown_update", "trg_payload_chunks_shown_delete",
-		"trg_turns_shown_update", "trg_turns_shown_delete", "trg_thread_fork_lineage_release",
-		"trg_items_revive_bg_launch_on_completion_move") {
+		"trg_turns_shown_update", "trg_turns_shown_delete", "trg_thread_fork_lineage_release") {
 		if triggers[name] == "" {
 			t.Fatalf("trigger %s is missing", name)
 		}

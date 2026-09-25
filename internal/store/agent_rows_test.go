@@ -141,6 +141,51 @@ func TestUpsertAgentEndSettlesTheAgentsOpenRowsInItsTransaction(t *testing.T) {
 	}
 }
 
+// TestAgentsEndLeavesItsBackgroundLaunchesLiveForTheStopCount: an agent's
+// end settles none of the background launches inside it, so they stay
+// live under an ended agent. The count a stop confirms (a revert, a
+// session restart) holds them; the flush queue's gate stays top-level.
+func TestAgentsEndLeavesItsBackgroundLaunchesLiveForTheStopCount(t *testing.T) {
+	s := agentRowsFixture(t)
+	count := func() int {
+		t.Helper()
+		n, err := s.CountLiveRunningBackgroundToolCalls("T")
+		if err != nil {
+			t.Fatalf("CountLiveRunningBackgroundToolCalls: %v", err)
+		}
+		return n
+	}
+	if n := count(); n != 3 {
+		t.Fatalf("live background launches before A's end = %d, want A, A-shell and B", n)
+	}
+	sibling := Item{ID: "complete:A", ThreadID: "T", Kind: "tool_completion", Role: "assistant",
+		Status: "completed", Summary: "A done", CompletionOf: "A", IsBackground: true, CreatedAt: 2, UpdatedAt: 2}
+	if _, _, err := s.UpsertAgentEnd(sibling, nil, "A", AgentEndRule{StreamingCompletes: true, Summarise: stopped}, 5); err != nil {
+		t.Fatalf("UpsertAgentEnd: %v", err)
+	}
+	assertSettled(t, s, "T", "A")
+	assertLive(t, s, "T", "A-shell")
+	assertLive(t, s, "T", "B")
+	if n := count(); n != 2 {
+		t.Fatalf("live background launches after A's end = %d, want A-shell and B", n)
+	}
+	if blocking, err := s.HasQueueBlockingBackgroundToolCall("T"); err != nil || blocking {
+		t.Fatalf("HasQueueBlockingBackgroundToolCall = %v, %v; want false: only top-level work blocks the queue", blocking, err)
+	}
+	recoverable, err := s.ListRecoverableClaudeBackgroundLaunchesForThread("T")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, item := range recoverable {
+		ids = append(ids, item.ID)
+	}
+	slices.Sort(ids)
+	if !slices.Equal(ids, []string{"A-shell", "B"}) {
+		t.Fatalf("launches a session end settles = %v, want A-shell and B", ids)
+	}
+}
+
 // TestUpsertAgentEndCompletesStreamingRowsOfAFinishedAgent: an agent that
 // reported leaves its open text completed as it stands and its open tool
 // calls errored.

@@ -70,10 +70,11 @@ a claim that the tool is currently executing.
 Because the row never leaves `running`, its LIVENESS is carried by
 `meta.live_background_active`, and since migration v74 the schema keeps
 that flag rather than the write paths: `items` triggers stamp it false
-the moment a completion sibling exists — including when the launch row
-arrives after its sibling, and when a later write replaces the launch's
-meta wholesale — and restore it if the sibling is deleted. The Claude teardown
-writers also retire this flag; what
+the moment a completion sibling exists, including when the launch row
+arrives after its sibling and when a later write replaces the launch's
+meta wholesale. A settled launch stays settled when its sibling is
+deleted or moved ([sqlite-store.md](sqlite-store.md#schema-owned-invariants)).
+The Claude teardown writers also retire this flag; what
 changed is that "a completion exists" no longer has to be re-derived by
 every reader. That is what lets the tray's read be two index seeks
 instead of a walk of every launch the thread has ever backgrounded. DDL
@@ -537,18 +538,15 @@ after a restart.
 The same settle also runs per thread while the app is alive:
 `Router.SettleBackgroundLaunchesForSessionEnd` fires from
 `teardownAndCloseSession` (user stop, idle reaper, config restart) and
-from `handleSessionDied` (unexpected process death), and after a Claude
-conversation rollback whose cut revived a launch
-([revert-modes.md](revert-modes.md#rollback-sequence)). Background shells
+from `handleSessionDied` (unexpected process death). Background shells
 die with the CLI process and a resume does not revive them, so every
 still-running backgrounded launch on the closed thread, including nested
 launches that top-level turn settlement does not cover, gets its
 `session_died` sibling immediately instead
 of ticking in the tray until the next app boot. The rows still queued
 behind open streams persist first, before the thread's router state
-goes. A per-thread settle that fails reaches the thread: an error row
-(`BackgroundSettleFailureSummary`) after a session end or a Stop
-un-send's cut, and the result's warning after an edit-and-resend. Both the per-thread
+goes. A per-thread settle that fails reaches the thread as an error row
+(`BackgroundSettleFailureSummary`). Both the per-thread
 settle and the boot sweep prune leftover stash rows afterwards
 (thread-scoped and global respectively): a stash whose launch row
 never materialized has no future observer, and the table has no other

@@ -185,6 +185,26 @@ func TestRevertAndResendRefusesUnconfirmedBackgroundKill(t *testing.T) {
 	assertRevertAndResendRejected(t, app, thread.ID, "user:1", false, "running background tasks must be killed", 3)
 }
 
+// TestRevertAndResendRefusesUnconfirmedKillOfANestedLaunch: a background
+// launch inside an agent outlives the agent's end, and the session stop a
+// revert makes kills it. The consent gate counts it with the agent ended.
+func TestRevertAndResendRefusesUnconfirmedKillOfANestedLaunch(t *testing.T) {
+	app := newTestApp(t)
+	thread := createAppTestThread(t, app, "t-bg-refuse-nested", "claude", t.TempDir())
+	insertUserItem(t, app.store, thread.ID, "user:0", 0, "first")
+	insertUserItem(t, app.store, thread.ID, "user:1", 1, "second")
+	insertRunningBackgroundToolCall(t, app.store, thread.ID, "agent:0", 0, 1)
+	appendTurnRow(t, app.store, store.Item{ID: "shell:0", ThreadID: thread.ID, TurnIndex: 0, ItemIndex: 2, Kind: "tool_call",
+		Status: "running", ToolName: "Bash", IsBackground: true, ParentID: "agent:0", Meta: "{}"})
+	appendTurnRow(t, app.store, store.Item{ID: "complete:agent:0", ThreadID: thread.ID, TurnIndex: 0, ItemIndex: 3,
+		Kind: "tool_completion", IsBackground: true, CompletionOf: "agent:0"})
+	if count, err := app.countRunningBackgroundTasks(thread.ID); err != nil || count != 1 {
+		t.Fatalf("running background tasks = %d (%v), want the nested launch", count, err)
+	}
+
+	assertRevertAndResendRejected(t, app, thread.ID, "user:1", false, "running background tasks must be killed", 5)
+}
+
 // assertRevertAndResendRejected drives a rejected call and asserts the
 // three properties every guard shares: the wanted error, no
 // `user_message:reverted` emission, and a conversation left exactly as

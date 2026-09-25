@@ -144,8 +144,8 @@ func forkRunningTurnRowsTx(tx *sql.Tx, forkID, sourceID string, plan forkCut, se
 // completion it does not have. Fork creation hides the
 // launch from the fork (forkUnsettledRowsTx); a split gives the holder a
 // settled copy for the forks that read the completion there, and the
-// thread that keeps the launch revives it
-// (trg_items_revive_bg_launch_on_completion_move).
+// thread that keeps the launch keeps it settled with no completion
+// (background_settle_triggers.go).
 //
 // It is one statement over every candidate (launchesCompletedSQL): a
 // statement per candidate walked the timeline range once each, which a

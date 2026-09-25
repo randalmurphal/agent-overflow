@@ -166,16 +166,26 @@ func (s *Store) HasQueueBlockingBackgroundToolCall(threadID string) (bool, error
 	return exists != 0, nil
 }
 
+// countLiveBackgroundLaunchesSQL counts a thread's live background
+// launches at every depth, through idx_items_running_bg_tool_calls, whose
+// terms it spells out so the planner can prove the index.
+const countLiveBackgroundLaunchesSQL = `SELECT COUNT(*)
+   FROM items INDEXED BY idx_items_running_bg_tool_calls
+  WHERE thread_id = ?
+    AND kind = 'tool_call'
+    AND status = 'running'
+    AND is_background = 1
+    AND COALESCE(json_extract(meta, '$.live_background_active'), 1) != 0
+    AND ` + noCompletionSiblingIndexedSQL
+
+// CountLiveRunningBackgroundToolCalls counts the live background launches
+// a session stop kills: every depth, since a background launch inside an
+// agent owns its own rows and outlives the agent's end (agent_rows.go). It
+// is the count a revert, a session restart and a workspace change confirm;
+// the flush queue and the reaper keep their top-level gates.
 func (s *Store) CountLiveRunningBackgroundToolCalls(threadID string) (int, error) {
 	var count int
-	if err := s.reader().QueryRow(
-		`SELECT COUNT(*)
-		   FROM items INDEXED BY idx_items_live_background
-		  WHERE thread_id = ?
-		    AND `+liveBackgroundLaunchSQL+`
-		    AND `+noCompletionSiblingIndexedSQL,
-		threadID,
-	).Scan(&count); err != nil {
+	if err := s.reader().QueryRow(countLiveBackgroundLaunchesSQL, threadID).Scan(&count); err != nil {
 		return 0, fmt.Errorf("store: count live running background tool calls for thread %s: %w", threadID, err)
 	}
 	return count, nil

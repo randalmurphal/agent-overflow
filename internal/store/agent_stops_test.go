@@ -42,9 +42,10 @@ func liveTaskIDs(t *testing.T, s *Store, threadID string) []string {
 	return ids
 }
 
-// A parked sibling is a pause: no trigger settles its launch on it, and
-// removing it revives nothing. Only the ending sibling settles, and the
-// readers that ask "has this launch settled" answer from the ending one.
+// A parked sibling is a pause: no trigger settles its launch on it. Only
+// the ending sibling settles, and the readers that ask "has this launch
+// settled" answer from the ending one. A settled launch stays settled
+// whichever of its siblings goes.
 func TestParkedStopSettlesNothing(t *testing.T) {
 	s := settleTriggerStore(t)
 	seedLaunchWithMeta(t, s, "t", "launch", 0, `{"task_id":"task-1"}`)
@@ -81,8 +82,6 @@ func TestParkedStopSettlesNothing(t *testing.T) {
 		t.Errorf("live tasks = %v, want the settled launch with its ending sibling", ids)
 	}
 
-	// Deleting the parked sibling revives nothing; deleting the ending
-	// one does, though a parked sibling remains.
 	seedParkedStop(t, s, "t", "parked-2", "launch", 3, 2500)
 	if err := s.DeleteThreadItem("t", "parked-2"); err != nil {
 		t.Fatalf("delete parked: %v", err)
@@ -91,7 +90,10 @@ func TestParkedStopSettlesNothing(t *testing.T) {
 	if err := s.DeleteThreadItem("t", "complete:launch"); err != nil {
 		t.Fatalf("delete completion: %v", err)
 	}
-	assertLive(t, s, "t", "launch")
+	assertSettled(t, s, "t", "launch")
+	if n, err := s.CountLiveRunningBackgroundToolCalls("t"); err != nil || n != 0 {
+		t.Errorf("CountLiveRunningBackgroundToolCalls after the ending sibling went = %d, %v; want 0", n, err)
+	}
 }
 
 // A parked sibling records one run and borrows no card, so its insert

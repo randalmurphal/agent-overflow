@@ -159,11 +159,8 @@ func splitShownRowsTx(tx *sql.Tx, w *cardWrite, threadID string, sp forkSplit) (
 // gives it to held. A row whose id or position the holder already holds
 // stays (holderHoldsSQL). The order is load-bearing: a new holder's
 // imported chunks attach before it holds a local row or payload (the chunk
-// overlap triggers), its payloads and the launch copies arrive before any
-// reader reads it (trg_payload_chunks_shown_insert), and the readers read
-// it before the rows move, so the launches the move revives in threadID
-// are ones no reader shows there
-// (trg_items_revive_bg_launch_on_completion_move).
+// overlap triggers), and its payloads and the launch copies arrive before
+// any reader reads it (trg_payload_chunks_shown_insert).
 func holdSplitRowsTx(tx *sql.Tx, w *cardWrite, threadID string, sp forkSplit, held []forkLevel, maxCut timelineRow, turns []int) (int, error) {
 	holder, deepest, reused, err := holderForTx(tx, threadID, held)
 	if err != nil {
@@ -385,10 +382,10 @@ func moveItemRowsTx(tx *sql.Tx, w *cardWrite, threadID, holder, sel string, selA
 // launch threadID keeps whose completions all leave it
 // (launchesLosingCompletionTx): the completions in span move to the holder
 // or, when it holds their id or position, are the caller's to remove.
-// Either revives the launch in threadID, and the forks that read the
-// completion from the holder read the launch there, settled, as before. A
-// launch the holder already holds is the one they read. It returns the
-// ids of the copies.
+// Either leaves the launch in threadID settled with no completion
+// (background_settle_triggers.go); the forks that read the completion from
+// the holder read the launch there, with it. A launch the holder already
+// holds is the one they read. It returns the ids of the copies.
 func holdSettledLaunchesTx(tx *sql.Tx, threadID, holder, span string, spanArgs []any) ([]string, error) {
 	targets, err := queryIDs(tx, `SELECT completion_of FROM items WHERE thread_id = ? AND completion_of <> '' AND `+span,
 		append([]any{threadID}, spanArgs...)...)

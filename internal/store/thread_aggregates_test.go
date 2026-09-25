@@ -684,7 +684,8 @@ func TestListLiveBackgroundTasks_NestedAgentUnderBackgroundLaunch(t *testing.T) 
 		t.Fatalf("ids: got %v, want %v", collectIDs(got), want)
 	}
 
-	// The gates stay top-level: none of this blocks the flush queue.
+	// The nested launches are foreground: none of this blocks the flush
+	// queue or counts as background work a stop would kill.
 	blocking, err := s.HasLiveBackgroundToolCall("t")
 	if err != nil {
 		t.Fatalf("has live background: %v", err)
@@ -697,7 +698,7 @@ func TestListLiveBackgroundTasks_NestedAgentUnderBackgroundLaunch(t *testing.T) 
 		t.Fatalf("count live background: %v", err)
 	}
 	if count != 1 {
-		t.Fatalf("live background count = %d, want 1 (top level only)", count)
+		t.Fatalf("live background count = %d, want 1 (the nested launches are foreground)", count)
 	}
 }
 

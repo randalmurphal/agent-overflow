@@ -12,7 +12,6 @@ import (
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/provider/claudetui"
 	"agent-overflow/internal/store"
-	"agent-overflow/internal/store/storetest"
 	"agent-overflow/internal/triage"
 )
 
@@ -62,27 +61,6 @@ func TestStopSessionReportsAFailedBackgroundSettle(t *testing.T) {
 	rows := threadErrorRows(t, f.app.store, f.thread.ID, "Background work from the ended session could not all be settled")
 	if len(rows) != 1 || !strings.Contains(rows[0], "injected sibling write failure") {
 		t.Fatalf("error rows = %q, want one naming the failed settle", rows)
-	}
-}
-
-// The cut revives a launch whose completion it deleted; the settle that
-// ends it again fails after the cut committed, and the saga's warning says
-// so.
-func TestRevertAndResendWarnsOfASettleThatFailedAfterTheCut(t *testing.T) {
-	dbPath := storetest.ClonePath(t)
-	app, _ := newResendTestAppAt(t, dbPath)
-	thread, _ := seedResendThread(t, app, "t-resend-settle-fails")
-	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 9)
-	appendTurnRow(t, app.store, store.Item{ID: "complete:bg:0", ThreadID: thread.ID, TurnIndex: 1, ItemIndex: 5, Kind: "tool_completion", IsBackground: true, CompletionOf: "bg:0"})
-	execOnFile(t, dbPath, `CREATE TRIGGER fail_resettle BEFORE INSERT ON items WHEN NEW.completion_of = 'bg:0' BEGIN SELECT RAISE(ABORT, 'injected sibling write failure'); END`)
-
-	result, err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"})
-	if err != nil || result.Failure != "" {
-		t.Fatalf("revert and resend: err=%v failure=%q", err, result.Failure)
-	}
-	if !strings.HasPrefix(result.Warning, "Background work from the ended session could not all be settled") ||
-		!strings.Contains(result.Warning, "injected sibling write failure") {
-		t.Fatalf("warning = %q, want the failed settle", result.Warning)
 	}
 }
 
@@ -145,39 +123,5 @@ func TestInterruptAndRevertIfCleanClaudeTUIKeepsTheMessageWhenTheEscFails(t *tes
 	turnEvent(provider.EventTurnComplete, &provider.WireTurnCompleteMeta{StopReason: "end_turn"})
 	if len(completions) != 1 || completions[0].RevertedUserMessage {
 		t.Fatalf("completions = %+v, want one completion not marked reverted", completions)
-	}
-}
-
-// A headless Claude un-send settles background work again after its cut.
-// The cut has committed by then, so a failed settle reports to the thread
-// instead of failing the un-send.
-func TestClaudeUnsendReportsASettleThatFailedAfterTheCut(t *testing.T) {
-	app, dbPath := newTestAppWithStorePath(t)
-	app.triage = triage.NewRouter(app.store, app.emit)
-	thread := createAppTestThread(t, app, "unsend-settle-fails", "claude", t.TempDir())
-	thread.SessionRef = "live-session"
-	if err := app.store.UpdateThread(thread); err != nil {
-		t.Fatalf("update thread: %v", err)
-	}
-	insertUserItem(t, app.store, thread.ID, "u:0", 0, "hello")
-	if err := app.triage.Handle(provider.ProviderEvent{Kind: provider.EventTurnStart, ThreadID: thread.ID, TurnID: "turn-0", Timestamp: time.Now()}); err != nil {
-		t.Fatalf("turn start: %v", err)
-	}
-	app.stopSessionFn = func(string) error { return nil }
-	// A terminal stash the settle prunes, and a store that refuses the prune.
-	if err := app.store.UpsertPendingBackgroundTerminal(store.PendingBackgroundTaskTerminal{
-		ThreadID: thread.ID, TaskID: "task-gone", ToolUseID: "gone", Status: "completed", Source: "task_updated", CreatedAt: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("upsert pending terminal: %v", err)
-	}
-	execOnFile(t, dbPath, `CREATE TRIGGER fail_prune BEFORE DELETE ON pending_background_task_terminals BEGIN SELECT RAISE(ABORT, 'injected prune failure'); END`)
-
-	result, err := app.InterruptAndRevertIfClean(thread.ID, InterruptRevertOptions{}, nil)
-	if err != nil || !result.Reverted {
-		t.Fatalf("InterruptAndRevertIfClean = %+v, %v; want the message un-sent", result, err)
-	}
-	rows := threadErrorRows(t, app.store, thread.ID, "Background work from the ended session could not all be settled")
-	if len(rows) != 1 || !strings.Contains(rows[0], "injected prune failure") {
-		t.Fatalf("error rows = %q, want one naming the failed settle", rows)
 	}
 }

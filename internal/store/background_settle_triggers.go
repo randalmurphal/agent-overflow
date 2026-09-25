@@ -15,10 +15,18 @@ package store
 // threads, 494 on one thread) and every seed that started from them
 // walked the whole thread.
 //
-// These four triggers move the correlated half onto the launch row at
+// These three triggers move the correlated half onto the launch row at
 // write time, so `live_background_active != 0` on a running background
-// launch means "no session teardown AND no completion sibling" and the
+// launch means "no session teardown and no ending sibling ever" and the
 // partial indexes hold only genuinely live rows.
+//
+// A launch settles once. Nothing sets the flag back: a launch whose
+// ending sibling is deleted or moved stays settled. A rollback whose cut
+// removes the sibling and keeps the launch leaves it as history with no
+// result, and a holder that takes the sibling (fork_holders.go) leaves it
+// settled in the thread that keeps it. Migration v133 dropped the
+// triggers that revived such a launch
+// (`trg_items_revive_bg_launch_on_completion_delete`, `_move`).
 //
 // Readers keep their existing predicates. The no-completion-sibling
 // term is now redundant with the flag, but it is the documented
@@ -29,9 +37,9 @@ package store
 // Recursion: SQLite's `recursive_triggers` is OFF by default and this
 // store never turns it on (`dsn.go` carries no such pragma), so a
 // trigger's own UPDATE fires nothing further. The chain would terminate
-// anyway — every WHEN clause requires `live_background_active != 0`
-// (or, for the revive trigger, `= 0`), which the trigger's own UPDATE
-// makes false — so the property does not depend on the pragma.
+// anyway — every WHEN clause requires `live_background_active != 0`,
+// which the trigger's own UPDATE makes false — so the property does not
+// depend on the pragma.
 // `TestBackgroundSettleTriggersDoNotRecurse` pins it either way.
 //
 // `updated_at` is deliberately NOT touched: settlement is a derived
@@ -40,9 +48,9 @@ package store
 // `created_at`.
 //
 // A PARKED stop (status 'parked', claude-wire.md §E6b) is a sibling that
-// does not settle: the agent paused and wakes again. None of the four
+// does not settle: the agent paused and wakes again. None of the
 // triggers counts one, so a parked agent's launch stays live until its
-// ending sibling lands, and deleting a parked sibling revives nothing.
+// ending sibling lands.
 const backgroundSettleTriggersSQL = `CREATE TRIGGER trg_items_settle_bg_launch_on_completion
 AFTER INSERT ON items
 WHEN NEW.completion_of <> '' AND NEW.status <> 'parked'
@@ -107,33 +115,11 @@ BEGIN
          )
    WHERE thread_id = NEW.thread_id
      AND id = NEW.id;
-END;
-
-CREATE TRIGGER trg_items_revive_bg_launch_on_completion_delete
-AFTER DELETE ON items
-WHEN OLD.completion_of <> '' AND OLD.status <> 'parked'
-BEGIN
-  UPDATE items
-     SET meta = json_remove(meta, '$.live_background_active')
-   WHERE thread_id = OLD.thread_id
-     AND id = OLD.completion_of
-     AND kind = 'tool_call'
-     AND status = 'running'
-     AND is_background = 1
-     AND json_valid(meta)
-     AND json_extract(meta, '$.live_background_active') = 0
-     AND NOT EXISTS (
-       SELECT 1 FROM items c
-        WHERE c.thread_id = OLD.thread_id
-          AND c.completion_of = OLD.completion_of
-          AND c.completion_of <> ''
-          AND c.status <> 'parked'
-     );
 END;`
 
 // backgroundSettleTriggersV74SQL is the text migration v74 installed,
 // before a parked stop existed. v74's hash freezes it; migration v126
-// replaces it with backgroundSettleTriggersSQL.
+// replaced it (backgroundSettleTriggersV126SQL).
 const backgroundSettleTriggersV74SQL = `CREATE TRIGGER trg_items_settle_bg_launch_on_completion
 AFTER INSERT ON items
 WHEN NEW.completion_of <> ''
@@ -219,7 +205,7 @@ BEGIN
      );
 END;`
 
-// dropBackgroundSettleTriggersSQL removes the four triggers above.
+// dropBackgroundSettleTriggersSQL removes the three triggers above.
 // `RestoreFrom` brackets its whole-database row copy with it for the
 // same reason it brackets the history-rev triggers: the snapshot's rows
 // were already settled by the triggers that were live when it was
@@ -230,8 +216,7 @@ END;`
 // the build if one forgets.
 const dropBackgroundSettleTriggersSQL = `DROP TRIGGER IF EXISTS trg_items_settle_bg_launch_on_completion;
 DROP TRIGGER IF EXISTS trg_items_settle_bg_launch_on_launch_insert;
-DROP TRIGGER IF EXISTS trg_items_settle_bg_launch_on_update;
-DROP TRIGGER IF EXISTS trg_items_revive_bg_launch_on_completion_delete;`
+DROP TRIGGER IF EXISTS trg_items_settle_bg_launch_on_update;`
 
 // backgroundSettleTriggerMigrationVersion is the chain version that
 // installs the triggers and backfills history; parkedStopMigrationVersion
@@ -247,7 +232,6 @@ var backgroundSettleTriggerNames = []string{
 	"trg_items_settle_bg_launch_on_completion",
 	"trg_items_settle_bg_launch_on_launch_insert",
 	"trg_items_settle_bg_launch_on_update",
-	"trg_items_revive_bg_launch_on_completion_delete",
 }
 
 // backfillSettledBackgroundLaunchesSQL stamps every pre-existing

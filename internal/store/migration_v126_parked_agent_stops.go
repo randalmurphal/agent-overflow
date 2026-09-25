@@ -11,7 +11,7 @@ import (
 // row of its own: a completion-shaped sibling with status 'parked'.
 //
 //   - v126 admits the status and reinstalls the background settle
-//     triggers, which from now on settle a launch only on an ending
+//     triggers, which from then on settle a launch only on an ending
 //     sibling (background_settle_triggers.go). The items CHECK is widened
 //     in place (widenItemsStatusCheck): a loosened CHECK holds for every
 //     stored row, so the table is not rebuilt.
@@ -19,10 +19,11 @@ import (
 //     parked siblings at their positions, and deletes the agent bells a
 //     completion sibling covers, which the frontend used to hide. It
 //     reinstalls the pointer-fork triggers, whose revive-on-move trigger
-//     now passes over a parked stop like the settle triggers do.
+//     passed over a parked stop like the settle triggers do, until v133
+//     dropped it.
 const parkedStopMigrationVersion = 126
 
-const parkedAgentStopsV126SQL = dropBackgroundSettleTriggersSQL + "\n" + backgroundSettleTriggersSQL
+const parkedAgentStopsV126SQL = dropBackgroundSettleTriggersV126SQL + "\n" + backgroundSettleTriggersV126SQL
 
 // itemsStatusCheckOpen opens the items status CHECK in the table's DDL.
 const itemsStatusCheckOpen = "CHECK(status IN ("
@@ -112,7 +113,7 @@ func widenStatusCheckDDL(ddl string) (string, error) {
 // and each fork that showed a converted or deleted row takes a new epoch.
 //
 // Every bell carries a task_id, so both scans read idx_items_meta_task_id.
-var parkedAgentStopsV127SQL = dropForkTriggersSQL + `
+var parkedAgentStopsV127SQL = dropForkTriggersV127SQL + `
 CREATE TEMP TABLE v127_parked_stops (
     thread_id      TEXT    NOT NULL,
     id             TEXT    NOT NULL,
@@ -247,4 +248,4 @@ UPDATE threads
 
 DROP TABLE v127_parked_stops;
 DROP TABLE v127_changed_rows;
-` + forkGuardTriggersV125SQL + reviveBgLaunchOnCompletionMoveSQL + forkLineageReleaseTriggerSQL
+` + forkGuardTriggersV125SQL + reviveBgLaunchOnCompletionMoveV127SQL + forkLineageReleaseTriggerSQL

@@ -234,8 +234,8 @@ func TestParkedBellMigrationConvertsBellsInPlace(t *testing.T) {
 	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_items_revive_bg_launch_on_completion_move'`).Scan(&revive); err != nil {
 		t.Fatal(err)
 	}
-	if revive+";" != strings.TrimSpace(reviveBgLaunchOnCompletionMoveSQL) {
-		t.Fatalf("revive-on-move trigger after v127:\n%s\nwant:\n%s", revive, reviveBgLaunchOnCompletionMoveSQL)
+	if revive+";" != strings.TrimSpace(reviveBgLaunchOnCompletionMoveV127SQL) {
+		t.Fatalf("revive-on-move trigger after v127:\n%s\nwant:\n%s", revive, reviveBgLaunchOnCompletionMoveV127SQL)
 	}
 
 	type want struct {
@@ -342,50 +342,4 @@ func TestParkedBellMigrationConvertsBellsInPlace(t *testing.T) {
 		t.Fatalf("%d foreign key violations", n)
 	}
 	migrateFrom(t, db, 127)
-}
-
-// An ending sibling a holder takes revives the launch it settled even when
-// a parked stop of the launch stays, and a parked stop a holder takes
-// changes nothing: it settled nothing, so it does not revive a launch a
-// rebind retired (RetireParkedAgentLaunches) either.
-func TestReviveOnMovePassesOverParkedStops(t *testing.T) {
-	db := migrateThrough(t, 127)
-	seedMigrationThread(t, db, "t", "holder")
-	for _, row := range []migrationRow{
-		{id: "A", kind: "tool_call", status: "running", tool: "Agent", background: 1, meta: `{"task_id":"TA"}`, created: 1},
-		{id: "A-parked", kind: "tool_completion", status: ItemStatusParked, completionOf: "A", tool: "Agent", background: 1, item: 1, created: 2},
-		{id: "A-end", kind: "tool_completion", completionOf: "A", tool: "Agent", background: 1, item: 2, created: 3},
-		{id: "B", kind: "tool_call", status: "running", tool: "Agent", background: 1, meta: `{"task_id":"TB"}`, item: 3, created: 4},
-		{id: "B-parked", kind: "tool_completion", status: ItemStatusParked, completionOf: "B", tool: "Agent", background: 1, item: 4, created: 5},
-		{id: "B-end", kind: "tool_completion", completionOf: "B", tool: "Agent", background: 1, item: 5, created: 6},
-		{id: "C", kind: "tool_call", status: "running", tool: "Agent", background: 1, meta: `{"task_id":"TC","live_background_active":false}`, item: 6, created: 7},
-		{id: "C-parked", kind: "tool_completion", status: ItemStatusParked, completionOf: "C", tool: "Agent", background: 1, item: 7, created: 8},
-	} {
-		if err := insertMigrationRow(db, "t", row); err != nil {
-			t.Fatalf("seed %s: %v", row.id, err)
-		}
-	}
-	settled := func(id string) bool {
-		t.Helper()
-		var flag sql.NullInt64
-		if err := db.QueryRow(`SELECT json_extract(meta, '$.live_background_active') FROM items WHERE thread_id = 't' AND id = ?`, id).Scan(&flag); err != nil {
-			t.Fatal(err)
-		}
-		return flag.Valid && flag.Int64 == 0
-	}
-	if !settled("A") || !settled("B") || !settled("C") {
-		t.Fatal("the ending siblings did not settle their launches, or the retired launch is live")
-	}
-	mustExec(t, db, `UPDATE items SET thread_id = 'holder' WHERE thread_id = 't' AND id = 'A-end'`)
-	if settled("A") {
-		t.Error("A stayed settled after its ending sibling moved: the parked stop kept it")
-	}
-	mustExec(t, db, `UPDATE items SET thread_id = 'holder' WHERE thread_id = 't' AND id = 'B-parked'`)
-	if !settled("B") {
-		t.Error("moving B's parked stop revived B")
-	}
-	mustExec(t, db, `UPDATE items SET thread_id = 'holder' WHERE thread_id = 't' AND id = 'C-parked'`)
-	if !settled("C") {
-		t.Error("moving C's parked stop revived the retired C")
-	}
 }

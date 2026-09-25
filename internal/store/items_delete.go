@@ -375,13 +375,8 @@ func deleteConversationFromItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID str
 	return keptAnchorTurnItemIDs, stamp, nil
 }
 
-// ListTurnTimelineItemIDs returns the ids of one turn's timeline rows, mutable
-// and imported, in item order. A caller that writes into a cut's surviving
-// anchor turn after DeleteConversationFromItem re-reads its kept set here.
-func (s *Store) ListTurnTimelineItemIDs(threadID string, turnIndex int) ([]string, error) {
-	return listTurnTimelineItemIDs(s.reader(), threadID, turnIndex)
-}
-
+// listTurnTimelineItemIDs returns the ids of one turn's timeline rows,
+// mutable and imported, in item order.
 func listTurnTimelineItemIDs(q sqlQueryer, threadID string, turnIndex int) ([]string, error) {
 	query, args, err := timelineIDSelection(q, threadID, timelineSelection{Turn: "?", TurnArgs: []any{turnIndex}, OrderBy: "turn_index, item_index"})
 	if err != nil {

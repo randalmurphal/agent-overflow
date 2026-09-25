@@ -252,34 +252,35 @@ func TestClaudeUnsendRechecksTurnAfterStoppingSession(t *testing.T) {
 }
 
 // Editing an earlier message cuts a later turn that holds the completion of
-// a background command launched before the cut. The launch must not come
-// back as running: the session that owned it is gone.
-func TestRevertAndResendSettlesLaunchWhoseCompletionWasCut(t *testing.T) {
+// a background command launched before the cut. The launch stays settled
+// history with no result: the revert writes it no sibling, and a later
+// session end finds nothing to settle.
+func TestRevertAndResendLeavesALaunchWhoseCompletionWasCutSettled(t *testing.T) {
 	app, _ := newResendTestApp(t)
-	thread, _ := seedResendThread(t, app, "t-resend-revived")
+	thread, _ := seedResendThread(t, app, "t-resend-cut-completion")
 	insertRunningBackgroundToolCall(t, app.store, thread.ID, "bg:0", 0, 9)
 	appendTurnRow(t, app.store, store.Item{ID: "complete:bg:0", ThreadID: thread.ID, TurnIndex: 1, ItemIndex: 5, Kind: "tool_completion", IsBackground: true, CompletionOf: "bg:0"})
 	if count, err := app.countRunningBackgroundTasks(thread.ID); err != nil || count != 0 {
 		t.Fatalf("precondition: running background tasks = %d (%v), want 0", count, err)
 	}
 
-	if err := revertAndResendForTest(app, context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"}); err != nil {
-		t.Fatalf("revert and resend: %v", err)
+	result, err := app.RevertConversationAndResendMessage(context.Background(), thread.ID, "user:1", RevertAndResendOptions{Content: "rewritten prompt"})
+	if err != nil || result.Failure != "" || result.Warning != "" {
+		t.Fatalf("revert and resend: err=%v failure=%q warning=%q", err, result.Failure, result.Warning)
 	}
+	assertLaunchSettledWithoutSibling(t, app, thread.ID, "bg:0")
 
-	if count, err := app.countRunningBackgroundTasks(thread.ID); err != nil || count != 0 {
-		t.Fatalf("running background tasks after revert = %d (%v), want 0", count, err)
+	settled, err := app.triage.SettleBackgroundLaunchesForSessionEnd(thread.ID)
+	if err != nil || settled != 0 {
+		t.Fatalf("session-end settle after the revert = %d, %v; want nothing to settle", settled, err)
 	}
-	completion := settledCompletionFor(t, app, thread.ID, "bg:0")
-	if completion.TurnIndex != 0 {
-		t.Fatalf("settle sibling turn = %d, want the last kept turn 0", completion.TurnIndex)
-	}
+	assertLaunchSettledWithoutSibling(t, app, thread.ID, "bg:0")
 }
 
-// When the cut keeps part of the anchor turn, the settle sibling lands in
-// that surviving turn, so the kept set sent to clients must name it or
-// clients drop it as a pre-cut row.
-func TestRevertAndResendKeptSetIncludesSettledSibling(t *testing.T) {
+// When the cut keeps part of the anchor turn, the kept set names exactly
+// the rows that survive: a launch whose completion the cut deleted gets no
+// new sibling there.
+func TestRevertAndResendKeptSetNamesOnlyTheSurvivors(t *testing.T) {
 	app, bus := newResendTestApp(t)
 	workspace := t.TempDir()
 	writeClaudeProjectSession(t, os.Getenv("HOME"), workspace, resendSourceSessionID,
@@ -288,7 +289,7 @@ func TestRevertAndResendKeptSetIncludesSettledSibling(t *testing.T) {
 {"type":"user","uuid":"u1","parentUuid":"a0","sessionId":"source-session","message":{"role":"user","content":"steer"}}
 {"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"source-session","message":{"role":"assistant","content":[{"type":"text","text":"reply 1"}]}}
 `)
-	thread := e2eThread("t-resend-kept-settle", string(provider.Claude), workspace)
+	thread := e2eThread("t-resend-kept-survivors", string(provider.Claude), workspace)
 	thread.SessionRef = resendSourceSessionID
 	if err := app.store.CreateThread(thread); err != nil {
 		t.Fatalf("create thread: %v", err)
@@ -310,33 +311,48 @@ func TestRevertAndResendKeptSetIncludesSettledSibling(t *testing.T) {
 		t.Fatalf("revert and resend: %v", err)
 	}
 
-	completion := settledCompletionFor(t, app, thread.ID, "bg:0")
 	_, ev := findRevertedEvent(t, bus)
-	want := []string{"user:0", "bg:0", "asst:0", completion.ID}
+	want := []string{"user:0", "bg:0", "asst:0"}
 	if !slices.Equal(ev.KeptAnchorTurnItemIDs, want) {
 		t.Fatalf("event kept-set = %v, want %v", ev.KeptAnchorTurnItemIDs, want)
 	}
+	assertLaunchSettledWithoutSibling(t, app, thread.ID, "bg:0")
 }
 
-// settledCompletionFor returns the single completion sibling of launchID,
-// failing unless it is the session-end settle's.
-func settledCompletionFor(t *testing.T, app *App, threadID, launchID string) store.Item {
+// assertLaunchSettledWithoutSibling fails unless launchID is settled, no
+// row names it through completion_of, and neither the stop count nor the
+// tray returns it.
+func assertLaunchSettledWithoutSibling(t *testing.T, app *App, threadID, launchID string) {
 	t.Helper()
 	items, err := app.store.ListItems(threadID)
 	if err != nil {
 		t.Fatalf("list items: %v", err)
 	}
-	var found []store.Item
-	for _, item := range items {
+	var launch *store.Item
+	for i, item := range items {
 		if item.CompletionOf == launchID {
-			found = append(found, item)
+			t.Fatalf("the revert wrote %s a sibling: %+v", launchID, item)
+		}
+		if item.ID == launchID {
+			launch = &items[i]
 		}
 	}
-	if len(found) != 1 {
-		t.Fatalf("completion siblings of %s = %+v, want exactly one", launchID, found)
+	if launch == nil {
+		t.Fatalf("the cut removed the launch %s", launchID)
 	}
-	if !strings.Contains(found[0].Meta, "session_died") {
-		t.Fatalf("completion of %s is not the session-end settle: %+v", launchID, found[0])
+	if !strings.Contains(launch.Meta, `"live_background_active":false`) {
+		t.Fatalf("launch %s meta = %s, want it settled", launchID, launch.Meta)
 	}
-	return found[0]
+	if count, err := app.countRunningBackgroundTasks(threadID); err != nil || count != 0 {
+		t.Fatalf("running background tasks = %d (%v), want 0", count, err)
+	}
+	tray, err := app.ListLiveBackgroundTasks(threadID)
+	if err != nil {
+		t.Fatalf("list tray: %v", err)
+	}
+	for _, row := range tray {
+		if row.ID == launchID || row.CompletionOf == launchID {
+			t.Fatalf("the tray lists %s: %+v", launchID, row)
+		}
+	}
 }

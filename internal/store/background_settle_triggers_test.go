@@ -160,62 +160,31 @@ func TestWholesaleMetaRewriteOfSettledLaunchIsReStamped(t *testing.T) {
 	}
 }
 
-// DeleteConversationFromTurn rolls a thread back past a completion. The
-// launch is live again afterwards, which is what lets the session-end
-// settle and the boot sweep synthesise its terminal exactly as before.
-func TestDeletingTheOnlyCompletionRevivesItsLaunch(t *testing.T) {
-	s := settleTriggerStore(t)
-	seedLaunchWithMeta(t, s, "t", "launch", 0, `{}`)
-	seedCompletionSibling(t, s, "t", "complete:launch", "launch", 1, 2000)
-	assertSettled(t, s, "t", "launch")
-
-	if err := s.DeleteThreadItem("t", "complete:launch"); err != nil {
-		t.Fatalf("delete completion: %v", err)
-	}
-	if _, present := liveFlag(t, s, "t", "launch"); present {
-		t.Fatal("revive left the flag on the row instead of removing it")
-	}
-	assertLive(t, s, "t", "launch")
-}
-
-func TestDeletingOneOfTwoCompletionsLeavesTheLaunchSettled(t *testing.T) {
+// A launch settles once: deleting its ending siblings, one or all, leaves
+// it settled, an explicit live marker a sibling settled included, and
+// leaves a launch a teardown marked inactive alone.
+func TestDeletingEndingSiblingsLeavesTheLaunchSettled(t *testing.T) {
 	s := settleTriggerStore(t)
 	seedLaunchWithMeta(t, s, "t", "launch", 0, `{}`)
 	seedCompletionSibling(t, s, "t", "complete:launch", "launch", 1, 2000)
 	seedCompletionSibling(t, s, "t", "complete:launch:2", "launch", 2, 2500)
-
-	if err := s.DeleteThreadItem("t", "complete:launch"); err != nil {
-		t.Fatalf("delete first completion: %v", err)
+	seedLaunchWithMeta(t, s, "t", "explicit-live", 3, `{"live_background_active":true}`)
+	seedCompletionSibling(t, s, "t", "complete:explicit-live", "explicit-live", 4, 2000)
+	seedLaunchWithMeta(t, s, "t", "torn-down", 5, `{"live_background_active":false}`)
+	for _, id := range []string{"launch", "explicit-live", "torn-down"} {
+		assertSettled(t, s, "t", id)
 	}
-	assertSettled(t, s, "t", "launch")
 
-	if err := s.DeleteThreadItem("t", "complete:launch:2"); err != nil {
-		t.Fatalf("delete second completion: %v", err)
+	for _, sibling := range []string{"complete:launch", "complete:launch:2", "complete:explicit-live"} {
+		if err := s.DeleteThreadItem("t", sibling); err != nil {
+			t.Fatalf("delete %s: %v", sibling, err)
+		}
+		for _, id := range []string{"launch", "explicit-live", "torn-down"} {
+			assertSettled(t, s, "t", id)
+		}
 	}
-	assertLive(t, s, "t", "launch")
-}
-
-// A launch a session teardown marked inactive has no completion sibling,
-// so the delete trigger can never reach it — and the revive only ever
-// removes a flag whose value is exactly false, so an explicit `true`
-// (the Codex projection's live marker) is left alone.
-func TestReviveOnlyTouchesSettledLaunches(t *testing.T) {
-	s := settleTriggerStore(t)
-	seedLaunchWithMeta(t, s, "t", "explicit-live", 0, `{"live_background_active":true}`)
-	seedCompletionSibling(t, s, "t", "complete:explicit-live", "explicit-live", 1, 2000)
-	// The insert trigger settles it; asserting that first is what makes
-	// the delete below a real revive rather than a no-op on a true flag.
-	assertSettled(t, s, "t", "explicit-live")
-
-	seedLaunchWithMeta(t, s, "t", "torn-down", 2, `{"live_background_active":false}`)
-	// A sibling for a DIFFERENT launch: deleting it must not sweep the
-	// torn-down row, which has no sibling of its own.
-	if err := s.DeleteThreadItem("t", "complete:explicit-live"); err != nil {
-		t.Fatalf("delete completion: %v", err)
-	}
-	value, present := liveFlag(t, s, "t", "torn-down")
-	if !present || value {
-		t.Fatalf("torn-down launch flag present=%v value=%v, want the teardown mark intact", present, value)
+	if n, err := s.CountLiveRunningBackgroundToolCalls("t"); err != nil || n != 0 {
+		t.Fatalf("CountLiveRunningBackgroundToolCalls = %d, %v; want 0", n, err)
 	}
 }
 
@@ -330,10 +299,44 @@ func TestBackgroundSettleTriggersDoNotRecurse(t *testing.T) {
 	seedCompletionSibling(t, s, "t", "complete:launch", "launch", 1, 2000)
 	assertSettled(t, s, "t", "launch")
 
-	if err := s.DeleteThreadItem("t", "complete:launch"); err != nil {
-		t.Fatalf("delete completion: %v", err)
+	stale := `{"subagentProgress":{"tokens":1}}`
+	if _, err := s.UpdateItemFields("t", "launch", ItemPartialUpdate{Meta: &stale}); err != nil {
+		t.Fatalf("rewrite the settled launch: %v", err)
 	}
-	assertLive(t, s, "t", "launch")
+	assertSettled(t, s, "t", "launch")
+}
+
+// revivedTriggerNames are the triggers migration v133 dropped, which made
+// a settled launch live again.
+var revivedTriggerNames = []string{
+	"trg_items_revive_bg_launch_on_completion_delete",
+	"trg_items_revive_bg_launch_on_completion_move",
+}
+
+// assertBackgroundSettleTriggerSet fails unless db holds every live
+// settle trigger and neither revive trigger.
+func assertBackgroundSettleTriggerSet(t *testing.T, db *sql.DB) {
+	t.Helper()
+	count := func(name string) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?`, name,
+		).Scan(&n); err != nil {
+			t.Fatalf("find trigger %s: %v", name, err)
+		}
+		return n
+	}
+	for _, name := range backgroundSettleTriggerNames {
+		if n := count(name); n != 1 {
+			t.Errorf("trigger %s count = %d, want 1", name, n)
+		}
+	}
+	for _, name := range revivedTriggerNames {
+		if count(name) != 0 {
+			t.Errorf("trigger %s survived", name)
+		}
+	}
 }
 
 // The triggers are dropped with `items` by any rebuild and dropped by
@@ -342,17 +345,7 @@ func TestBackgroundSettleTriggersDoNotRecurse(t *testing.T) {
 // forgets to re-run it.
 func TestBackgroundSettleTriggersExistAfterTheMigrationChain(t *testing.T) {
 	s := newTestStore(t)
-	for _, name := range backgroundSettleTriggerNames {
-		var count int
-		if err := s.db.QueryRow(
-			`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?`, name,
-		).Scan(&count); err != nil {
-			t.Fatalf("find trigger %s: %v", name, err)
-		}
-		if count != 1 {
-			t.Errorf("trigger %s count = %d, want 1", name, count)
-		}
-	}
+	assertBackgroundSettleTriggerSet(t, s.db)
 }
 
 func TestBackgroundSettleTriggersSurviveSnapshotRestore(t *testing.T) {
@@ -367,16 +360,21 @@ func TestBackgroundSettleTriggersSurviveSnapshotRestore(t *testing.T) {
 		t.Fatalf("RestoreFrom: %v", err)
 	}
 
+	assertBackgroundSettleTriggerSet(t, st.db)
 	// Present is not enough: a trigger scoped to a table the restore
 	// replaced would pass a name check and stamp nothing.
 	seedLaunchWithMeta(t, st, "t1", "launch", 10, `{}`)
 	seedCompletionSibling(t, st, "t1", "complete:launch", "launch", 11, 2000)
 	assertSettled(t, st, "t1", "launch")
+	if err := st.DeleteThreadItem("t1", "complete:launch"); err != nil {
+		t.Fatalf("delete completion: %v", err)
+	}
+	assertSettled(t, st, "t1", "launch")
 }
 
 // A rebuild of `items` drops every trigger on it. Migration v72 shows
 // the shape (drop, rebuild, re-create); this fails the build if a later
-// items rebuild lands without re-installing these four.
+// items rebuild lands without re-installing these three.
 func TestItemsRebuildMigrationsReinstallBackgroundSettleTriggers(t *testing.T) {
 	for _, m := range migrations {
 		if m.Version <= backgroundSettleTriggerMigrationVersion {
