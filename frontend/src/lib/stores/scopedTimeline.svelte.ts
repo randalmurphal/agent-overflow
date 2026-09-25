@@ -258,7 +258,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
   async function read(signal: AbortSignal): Promise<WindowObservation | null> {
     const gen = ++requestGeneration;
     const surfaceGeneration = generation;
-    const windowRequest = window.requestVersion;
+    const windowUnchanged = window.observeWindow();
     const contextAtRead = contextVersion;
     loading = true;
     const touched = new Set<string>();
@@ -271,8 +271,7 @@ export function createScopedTimeline(thread: Thread, selection: TimelineSelectio
     const backend = requireEntityBackend(ownership);
     if (!threadHasScope('threads:read', thread.id)) throw new Error('Thread history access is unavailable');
     const current = () => !disposed && !signal.aborted && generation === surfaceGeneration
-      && requestGeneration === gen && threadBackend(thread.id) === ownership
-      && window.requestVersion === windowRequest && !window.loadingOlder && !window.loadingNewer;
+      && requestGeneration === gen && threadBackend(thread.id) === ownership && windowUnchanged();
     const superseded = () => {
       if (!signal.aborted && !disposed && !gone && generation === surfaceGeneration) contextRefresh.request();
       return null;

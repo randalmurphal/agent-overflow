@@ -120,7 +120,16 @@ export interface ThreadTimelineWindow {
   /** `runParallelLoad`'s load-items error branch: window nulls only, no loading-flag or prune-pending touch. */
   resetAfterLoadError(): void;
   invalidatePendingReads(): void;
-  readonly requestVersion: number;
+  /**
+   * Pin the window a snapshot read describes. The returned check is false
+   * while a page load is in flight and once the window stops being that
+   * one: a page load started or landed (jump, restore, load older/newer),
+   * a snapshot page was installed, a cut or a run-member mount reshaped
+   * it, or pending reads were invalidated. Live row mutations leave it
+   * true; a snapshot reconciles those itself. A read whose check fails
+   * must not apply its page: it reads again against the current window.
+   */
+  observeWindow(): () => boolean;
   /** Streaming upsert dropped newer items below/above the window: re-arm the "load newer" affordance. */
   noteDroppedNewerItems(): void;
   noteDroppedOlderItems(): void;
@@ -328,12 +337,23 @@ export function createThreadTimelineWindow(
    * paging fetches (double-click, keyboard repeat).
    */
   let pagingGeneration = 0;
-  // Recovery must also detect paging that starts or finishes during a snapshot.
-  let observationVersion = 0;
-  async function trackRead<T>(read: () => Promise<T>): Promise<T> {
-    observationVersion++;
-    try { return await read(); }
-    finally { observationVersion++; }
+  /**
+   * Moves whenever the loaded window stops being the one a snapshot read
+   * pinned through `observeWindow`: a page load starts or lands, a cut or
+   * a member mount reshapes the window, or reads are invalidated. Live row
+   * mutations never move it; a snapshot reconciles those against its page.
+   */
+  let windowVersion = 0;
+
+  /** A page load claims the paging generation and the window it will replace. */
+  function beginPageLoad(): number {
+    windowVersion++;
+    return ++pagingGeneration;
+  }
+
+  function observeWindow(): () => boolean {
+    const version = windowVersion;
+    return () => windowVersion === version && loadingOlder === null && loadingNewer === null;
   }
 
   function setLoadedCursors(
@@ -354,6 +374,7 @@ export function createThreadTimelineWindow(
    * fallback source for turn-index-only paged responses.
    */
   function applyWindowMetadataFromPaged(paged: PagedItems): void {
+    windowVersion++;
     const nextItems = options.getItems();
     setLoadedCursors(
       pagedOldestCursor(paged, nextItems),
@@ -572,11 +593,14 @@ export function createThreadTimelineWindow(
   // Shared window swap used by every cut: replace items and cursors, and
   // mark a dropped edge loadable again. The pane's replacement chokepoint
   // synchronizes the reveal gate as part of the commit, so callers cannot
-  // omit it.
+  // omit it. A cut moves the edges an in-flight page load extends, so that
+  // load's page no longer attaches to the window and is refused.
   function commitWindow(
     next: PrunedWindow,
     afterCommit?: () => void,
   ): void {
+    windowVersion++;
+    ++pagingGeneration;
     // Before the swap: a shed row keeps narrow copies of fields that only
     // exist while the `Item` does (§6), so the records have to see both
     // windows while the outgoing rows are still in hand.
@@ -632,6 +656,7 @@ export function createThreadTimelineWindow(
    * pane-side; this method owns only the window bookkeeping.
    */
   function installFromSnapshot(cached: ThreadItemSnapshot): void {
+    windowVersion++;
     setLoadedCursors(
       cached.oldestLoadedCursor ?? oldestCursorFromItems(cached.items),
       cached.newestLoadedCursor ?? newestCursorFromItems(cached.items),
@@ -658,6 +683,7 @@ export function createThreadTimelineWindow(
    * it stays monotonic for the pane's lifetime.
    */
   function resetForFreshThread(): void {
+    windowVersion++;
     oldestLoadedCursor = null;
     newestLoadedCursor = null;
     oldestLoadedTurnIndex = null;
@@ -675,6 +701,7 @@ export function createThreadTimelineWindow(
    * current behavior exactly.
    */
   function resetAfterLoadError(): void {
+    windowVersion++;
     oldestLoadedCursor = null;
     newestLoadedCursor = null;
     oldestLoadedTurnIndex = null;
@@ -685,7 +712,7 @@ export function createThreadTimelineWindow(
 
   function applyConversationCut(boundaryWasLoaded: boolean): void {
     ++pagingGeneration;
-    observationVersion++;
+    windowVersion++;
     if (boundaryWasLoaded || !hasMoreNewer) {
       hasMoreNewer = false;
       const items = options.getItems();
@@ -703,7 +730,7 @@ export function createThreadTimelineWindow(
   }
 
   function mountActivityRunMembers(rows: readonly Item[], dropIds: ReadonlySet<string>): void {
-    observationVersion++;
+    windowVersion++;
     const current = options.getItems();
     const byId = new Map(current.map(item => [item.id, item]));
     const kept = dropIds.size === 0 ? current : current.filter(item => !dropIds.has(item.id));
@@ -802,7 +829,7 @@ export function createThreadTimelineWindow(
 
     const ownership = threadBackend(currentThread.id);
     const gen = options.getSwitchGeneration();
-    const pageGen = ++pagingGeneration;
+    const pageGen = beginPageLoad();
     loadingOlder = pageGen;
     try {
       const paged = await ListItemsBeforeCursor(
@@ -866,6 +893,7 @@ export function createThreadTimelineWindow(
       options.replaceTimelineItems(next, {
         disposeDropped: true,
         afterCommit: () => {
+          windowVersion++;
           setLoadedCursors(nextFloor, nextNewest);
           hasMoreHistory = nextHasMoreHistory;
           if (cut?.droppedTail) hasMoreNewer = true;
@@ -910,7 +938,7 @@ export function createThreadTimelineWindow(
 
     const ownership = threadBackend(currentThread.id);
     const gen = options.getSwitchGeneration();
-    const pageGen = ++pagingGeneration;
+    const pageGen = beginPageLoad();
     const superseded = (): boolean =>
       gen !== options.getSwitchGeneration() || threadBackend(currentThread.id) !== ownership || pageGen !== pagingGeneration;
     let fetched: Item;
@@ -997,7 +1025,7 @@ export function createThreadTimelineWindow(
 
     const ownership = threadBackend(currentThread.id);
     const gen = options.getSwitchGeneration();
-    const pageGen = ++pagingGeneration;
+    const pageGen = beginPageLoad();
     loadingNewer = pageGen;
     try {
       const paged = await ListItemsAfterCursor(
@@ -1056,6 +1084,7 @@ export function createThreadTimelineWindow(
       options.replaceTimelineItems(next, {
         disposeDropped: true,
         afterCommit: () => {
+          windowVersion++;
           setLoadedCursors(nextOldest, nextCeiling);
           hasMoreNewer = nextHasMoreNewer;
           if (cut?.droppedHead) hasMoreHistory = true;
@@ -1083,7 +1112,7 @@ export function createThreadTimelineWindow(
     if (!currentThread) return false;
     const ownership = threadBackend(currentThread.id);
     const gen = options.getSwitchGeneration();
-    const pageGen = ++pagingGeneration;
+    const pageGen = beginPageLoad();
     loadingNewer = pageGen;
     try {
       const paged = await ListThreadSliceAround(
@@ -1154,8 +1183,8 @@ export function createThreadTimelineWindow(
     installFromSnapshot,
     resetForFreshThread,
     resetAfterLoadError,
-    invalidatePendingReads: () => { pagingGeneration++; observationVersion++; },
-    get requestVersion() { return observationVersion; },
+    invalidatePendingReads: () => { pagingGeneration++; windowVersion++; },
+    observeWindow,
     noteDroppedNewerItems,
     noteDroppedOlderItems: () => { hasMoreHistory = true; },
     applyConversationCut,
@@ -1164,9 +1193,9 @@ export function createThreadTimelineWindow(
     pruneToRecentWindowIfNeeded,
     retryDeferredRecentWindowPrune,
     settleRecentWindowPrune,
-    loadOlder: () => trackRead(loadOlder),
-    loadUntilItem: (itemId: string) => trackRead(() => loadUntilItem(itemId)),
-    loadNewer: () => trackRead(loadNewer),
-    loadRecentTail: () => trackRead(loadRecentTail),
+    loadOlder,
+    loadUntilItem,
+    loadNewer,
+    loadRecentTail,
   };
 }

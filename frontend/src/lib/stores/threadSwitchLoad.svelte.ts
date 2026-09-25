@@ -257,6 +257,18 @@ function wireCursor(cursor: TimelineCursorLike | null): TimelineCursor {
 const EMPTY_ID_SET: ReadonlySet<string> = new Set<string>();
 
 /**
+ * How one backend refresh run ended. A superseded run read a window the
+ * pane replaced before its page landed, applied nothing, and leaves its
+ * waiters to the rerun. A settled run answers them, rejecting the ones
+ * that required items with `error` when it has one.
+ */
+type RefreshRunOutcome =
+  | { readonly superseded: true }
+  | { readonly superseded: false; readonly error?: unknown };
+const REFRESH_SETTLED: RefreshRunOutcome = { superseded: false };
+const REFRESH_SUPERSEDED: RefreshRunOutcome = { superseded: true };
+
+/**
  * Owns a thread pane's switch / window-sync / replica pipeline: the
  * outgoing-pane snapshot (L1 + durable write-back), the incoming reset,
    * the staged cache or replica window, the single `SyncThreadWindow` convergence,
@@ -1148,6 +1160,8 @@ export function createThreadSwitchLoad(
       let sentWindow = heldWindow();
       const retained = captureRetainedTimelineWindow(options.getItems(), options.timelineWindow, options.activityRuns,
         !sliceAnchorId && !options.timelineWindow.hasMoreNewer);
+      // The answer describes this window; see the check before it applies.
+      const windowUnchanged = options.timelineWindow.observeWindow();
       let response = await ask(sentStamp, sentWindow);
       if (gen !== options.getSwitchGeneration()) return;
       // The response carries the backend's LIVE generation — the one
@@ -1192,7 +1206,7 @@ export function createThreadSwitchLoad(
       let pageAttested = true;
       if (response.page && !lineageChanged) {
         const retainedPage = await refreshRetainedTimelineWindow({ threadId, page: response.page, retained,
-          shape: timelinePageShape(), isCurrent: () => gen === options.getSwitchGeneration() });
+          shape: timelinePageShape(), isCurrent: () => gen === options.getSwitchGeneration() && windowUnchanged() });
         if (gen !== options.getSwitchGeneration()) return;
         pageAttested = retainedPage === response.page;
         response = { ...response, page: retainedPage };
@@ -1204,6 +1218,16 @@ export function createThreadSwitchLoad(
       const deferredItems = liveState?.deferredItems ?? [];
       if (gen !== options.getSwitchGeneration()) return;
       coldLoadSyncStatus(paneId, response.status);
+      if (response.status !== 'gone' && !windowUnchanged()) {
+        // The window this answer describes was replaced while it was read
+        // (a jump, a page load, a cut). Its page and cursors would land on
+        // the rows that replaced it, and it attests nothing the pane now
+        // holds. A refresh reads the window the pane holds instead.
+        windowAttestation = null;
+        liveState?.apply(() => refreshScheduler.request({ immediate: true }));
+        refreshScheduler.request({ immediate: true });
+        return;
+      }
       // An initial switch reveals only after this sync settles, so its
       // warm gate arms at that boundary. A retry keeps existing rows
       // visible; only a first mount or lineage change re-arms it here.
@@ -1528,16 +1552,23 @@ export function createThreadSwitchLoad(
     // began is answered by it; a request landing mid-run stays queued for
     // the trailing run its own dirty bit guarantees.
     const claimedWaiters = refreshWaiters.splice(0, refreshWaiters.length);
-    let error: unknown;
+    let outcome: RefreshRunOutcome = REFRESH_SETTLED;
     try {
-      error = await runBackendRefresh(token, claimedWaiters.some(waiter => waiter.requireItems));
+      outcome = await runBackendRefresh(token, claimedWaiters.some(waiter => waiter.requireItems));
     } catch (err) {
-      error = err;
+      outcome = { superseded: false, error: err };
       throw err;
     } finally {
-      for (const waiter of claimedWaiters) {
-        if (error && waiter.requireItems) waiter.reject(error);
-        else waiter.resolve();
+      if (outcome.superseded) {
+        // Nothing was applied: the rerun reads the window that replaced
+        // the one this run read, and answers these waiters.
+        refreshWaiters.unshift(...claimedWaiters);
+        refreshScheduler.request();
+      } else {
+        for (const waiter of claimedWaiters) {
+          if (outcome.error && waiter.requireItems) waiter.reject(outcome.error);
+          else waiter.resolve();
+        }
       }
     }
   }
@@ -1548,10 +1579,15 @@ export function createThreadSwitchLoad(
    * between the install and the live-state apply. Pending sends can lack
    * a SQLite row until their wire echo. Streaming rows are persisted from
    * creation; only mutations arriving during the read need retention.
+   *
+   * The page describes the window the run read: its anchor, its retained
+   * floor and the cursors installed with it. When that window is replaced
+   * before the page lands (a jump, a restore, a page load, a cut), the
+   * page is not applied and the run reports itself superseded.
    */
-  async function runBackendRefresh(token: RefreshToken, requireItems: boolean): Promise<unknown> {
+  async function runBackendRefresh(token: RefreshToken, requireItems: boolean): Promise<RefreshRunOutcome> {
     const currentThread = options.getThread();
-    if (!currentThread) return;
+    if (!currentThread) return REFRESH_SETTLED;
     const gen = options.getSwitchGeneration();
     const backend = requireEntityBackend(threadBackend(currentThread.id));
     const refreshIsCurrent = (): boolean =>
@@ -1560,10 +1596,16 @@ export function createThreadSwitchLoad(
       && options.getThread()?.id === currentThread.id;
     if (initialLoad) await initialLoad;
     if (historyRetryPromise) await historyRetryPromise;
-    if (!refreshIsCurrent()) return;
+    if (!refreshIsCurrent()) return REFRESH_SETTLED;
     const replay = awaitBackendReplay(backend);
     if (replay) await replay;
-    if (!refreshIsCurrent()) return;
+    if (!refreshIsCurrent()) return REFRESH_SETTLED;
+    // Pinned in the same synchronous block that reads the anchor and the
+    // retained window below.
+    const windowUnchanged = options.timelineWindow.observeWindow();
+    if (!windowUnchanged()) return REFRESH_SUPERSEDED;
+    const readIsCurrent = (): boolean => refreshIsCurrent() && windowUnchanged();
+    const stopped = (): RefreshRunOutcome => refreshIsCurrent() ? REFRESH_SUPERSEDED : REFRESH_SETTLED;
     const refreshMutations = {
       ids: new Set<string>(),
       removedIds: new Set<string>(),
@@ -1601,7 +1643,7 @@ export function createThreadSwitchLoad(
             Math.min(retainedBudget, SLICE_AROUND_ITEM_BUDGET), shape));
         let remaining = retainedBudget - (paged.items?.filter(item => !item.parentId).length ?? 0);
         while (remaining > 0 && paged.hasMoreOlder && paged.oldestCursor?.itemId) {
-          if (!refreshIsCurrent()) return;
+          if (!readIsCurrent()) return stopped();
           const older = await withBackendTarget(backend, () => ListItemsBeforeCursor(currentThread.id, paged.oldestCursor!, Math.min(remaining, SLICE_AROUND_ITEM_BUDGET), shape));
           if (!older.items?.length) break;
           if (compareCursors(older.oldestCursor, paged.oldestCursor) >= 0) {
@@ -1612,24 +1654,24 @@ export function createThreadSwitchLoad(
             runs: mergeRunStubs(paged.runs, older.runs) };
           remaining -= older.items.filter(item => !item.parentId).length;
         }
-        paged = await refreshRetainedTimelineWindow({ threadId: currentThread.id, page: paged, retained, shape, isCurrent: refreshIsCurrent });
+        paged = await refreshRetainedTimelineWindow({ threadId: currentThread.id, page: paged, retained, shape, isCurrent: readIsCurrent });
       } catch (err) {
-        if (!refreshIsCurrent()) return;
+        if (!readIsCurrent()) return stopped();
         console.error('Failed to refresh thread items after gap:', err);
         reportFrontendDiagnostic(
           'transport: gap refresh failed to fetch items',
           errString(err),
         );
-        return err;
+        return { superseded: false, error: err };
       }
       // Never rejects: fetch failures resolve with empty deferredItems
       // and an apply() that falls back to the interactive-only leg.
       const liveState = await liveStatePromise;
-      if (!refreshIsCurrent()) return;
+      if (!readIsCurrent()) return stopped();
       if (liveState.error && !isPassiveConnectionFailure(liveState.error)) {
         options.setPaneError(`Could not synchronize live conversation state: ${errString(liveState.error)}`, 'general');
       }
-      if (requireItems && liveState.error) return liveState.error;
+      if (requireItems && liveState.error) return { superseded: false, error: liveState.error };
       const snapshot = itemsForThread(
         (paged.items ?? []) as Item[],
         currentThread.id,
@@ -1673,7 +1715,7 @@ export function createThreadSwitchLoad(
         const recent = (await withBackendTarget(backend, () => ListRecentTurns(currentThread.id, 2))) as
           | TurnRow[]
           | null;
-        if (!refreshIsCurrent()) return;
+        if (!refreshIsCurrent()) return REFRESH_SETTLED;
         if (recent && recent.length > 0) {
           const settled = recent.find(
             (row) =>
@@ -1684,9 +1726,10 @@ export function createThreadSwitchLoad(
           }
         }
       } catch (err) {
-        if (!refreshIsCurrent()) return;
+        if (!refreshIsCurrent()) return REFRESH_SETTLED;
         console.error('Failed to refresh recent turns after gap:', err);
       }
+      return REFRESH_SETTLED;
     } finally {
       if (liveMutationDuringRefresh === refreshMutations) {
         liveMutationDuringRefresh = null;
