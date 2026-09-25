@@ -791,8 +791,10 @@ test('thread_status watches a request running on the other computer, and a prefi
   expect(['accepted', 'running']).toContain(row.state);
 
   // Let the remote turn finish: the status wait on this computer ends on
-  // the settlement the poller brings back.
+  // the settlement the poller brings back. A thread that is still working
+  // refuses a send, so each send waits for the caller's previous turn.
   const gate = await awaitGate(remote, 'hold-remote-status', there.path);
+  await awaitTurnCompleted(home, caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'watch it until it finishes', null);
   await advanceGate(remote, gate.mockId, 'hold-remote-status');
 
@@ -813,6 +815,7 @@ test('thread_status watches a request running on the other computer, and a prefi
     computer?: string;
     title?: string;
   }
+  await awaitTurnCompleted(home, caller.threadIds[0]);
   await home.rpc('SendMessage', caller.threadIds[0], 'now read that thread by prefix', null);
   const show = await awaitToolAnswer<ShowAnswer>(home, { tool: 'thread_show', timeoutMs: 90_000 });
   expect(show.isError, show.text).toBe(false);
