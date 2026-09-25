@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -239,20 +241,119 @@ func TestCrashRecoverySettlesOnlyTheTurnsOwnRows(t *testing.T) {
 	}
 }
 
-// TestAgentSubtreeUnsettledSQLWalksTheParentIndex: the subtree walk reads
-// idx_items_parent, so an agent's end costs its own subtree, not the
-// thread.
-func TestAgentSubtreeUnsettledSQLWalksTheParentIndex(t *testing.T) {
-	s := agentRowsFixture(t)
-	var details []string
-	for _, row := range explainPlan(t, s, agentSubtreeUnsettledSQL, "T", "A") {
-		details = append(details, row.detail)
+// seedAgentSubtreeCostThread writes, in one bulk-load transaction,
+// background agent A with 41 open rows (a foreground agent inside it, 20
+// running rows under A and 20 streaming rows under the foreground agent),
+// and `others` completed rows under a second agent Z.
+func seedAgentSubtreeCostThread(t *testing.T, s *Store, thread string, others int) {
+	t.Helper()
+	mustCreateThread(t, s, thread)
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
 	}
-	plan := strings.Join(details, "\n")
-	if strings.Count(plan, "idx_items_parent") < 2 {
-		t.Fatalf("both arms of the walk must read idx_items_parent:\n%s", plan)
+	defer tx.Rollback()
+	if err := setHistoryBulkLoadTx(tx, thread, true, "test seed"); err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(plan, "SCAN items") || strings.Contains(plan, "SCAN c") {
-		t.Fatalf("the walk scans items:\n%s", plan)
+	insert, err := tx.Prepare(`INSERT INTO items (id, thread_id, turn_index, item_index, kind, role, status,
+	    summary, parent_id, is_background, tool_name, created_at, updated_at)
+	  VALUES (?, ?, 0, ?, ?, 'assistant', ?, ?, ?, ?, ?, 1, 1)`)
+	if err != nil {
+		t.Fatal(err)
 	}
+	index := 0
+	row := func(id, parent, kind, status, tool string, background bool) {
+		t.Helper()
+		index++
+		if _, err := insert.Exec(id, thread, index, kind, status, id, parent, background, tool); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	row("A", "", "tool_call", "running", "Agent", true)
+	row("A-fg", "A", "tool_call", "running", "Agent", false)
+	for i := range 20 {
+		row(fmt.Sprintf("A-read-%d", i), "A", "tool_call", "running", "Read", false)
+		row(fmt.Sprintf("A-fg-text-%d", i), "A-fg", "assistant_text", "streaming", "", false)
+	}
+	row("Z", "", "tool_call", "running", "Agent", true)
+	for i := range others {
+		row(fmt.Sprintf("Z-%d", i), "Z", "tool_call", "completed", "Read", false)
+	}
+	if err := insert.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.restampSubagentAggregatesTx(tx, thread); err != nil {
+		t.Fatal(err)
+	}
+	if err := setHistoryBulkLoadTx(tx, thread, false, "test seed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writerReadPagesForTest counts the page-cache lookups of reading every
+// row query returns on the writer connection.
+func writerReadPagesForTest(t *testing.T, s *Store, query string, args ...any) int {
+	t.Helper()
+	writerPagesForTest(t, s, true)
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	for rows.Next() {
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatalf("read rows: %v", err)
+	}
+	return writerPagesForTest(t, s, false)
+}
+
+// TestAgentSubtreeReadsCostTheSubtreeNotTheThread: an agent's subtree
+// reads, and the end that settles it, cost the same whether or not the
+// thread holds 3,000 more rows under another parent. The threads share
+// one database, so every probe descends the same B-trees. The tail
+// thread, written last and sorted last, holds the last page of each,
+// where SQLite seeks without descending from the root, so neither
+// measured thread gets that discount. Reading the other rows once in
+// index order costs about 70 page lookups, and reading them for each
+// queued row about 3,000, so a read's slack is 16; the end, many
+// statements over rows it moves, is allowed a tenth of the latter.
+func TestAgentSubtreeReadsCostTheSubtreeNotTheThread(t *testing.T) {
+	const others = 3000
+	s := newTestStore(t)
+	seedAgentSubtreeCostThread(t, s, "small", 0)
+	seedAgentSubtreeCostThread(t, s, "big", others)
+	seedAgentSubtreeCostThread(t, s, "tail", 1000)
+	compare := func(what string, small, big, slack int) {
+		t.Helper()
+		t.Logf("%s: %d pages beside no other rows, %d beside %d", what, small, big, others)
+		if big > small+slack {
+			t.Errorf("%s touches %d pages beside %d other rows and %d beside none: it reads the thread", what, big, others, small)
+		}
+	}
+	for name, query := range map[string]string{
+		"agentSubtreeUnsettledSQL": agentSubtreeUnsettledSQL,
+		"agentSubtreeStreamingSQL": agentSubtreeStreamingSQL,
+	} {
+		compare(name, writerReadPagesForTest(t, s, query, "small", "A"), writerReadPagesForTest(t, s, query, "big", "A"), 16)
+	}
+	end := func(thread string) int {
+		t.Helper()
+		sibling := Item{ID: "complete:A", ThreadID: thread, Kind: "tool_completion", Role: "assistant",
+			Status: "killed", Summary: "A stopped", CompletionOf: "A", IsBackground: true, CreatedAt: 2, UpdatedAt: 2}
+		var settled []SettledRow
+		pages := storePageAccessesForTest(t, s, "end A in "+thread, func() error {
+			var err error
+			_, settled, err = s.UpsertAgentEnd(sibling, nil, "A", AgentEndRule{Summarise: stopped}, 5)
+			return err
+		})
+		if len(settled) != 41 {
+			t.Errorf("the end of A in %s settled %d rows, want 41", thread, len(settled))
+		}
+		return pages
+	}
+	compare("UpsertAgentEnd", end("small"), end("big"), others/10)
 }

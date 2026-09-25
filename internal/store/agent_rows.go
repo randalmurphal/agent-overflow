@@ -130,15 +130,22 @@ type SettledRow struct {
 
 // agentSubtreeSQL selects cols of the rows agent ?2 owns whose status is
 // in statuses: the rows under it, through every row that is not an owner
-// itself. The walk reads idx_items_parent once per row of the subtree.
+// itself. The walk reads idx_items_parent once per row of the subtree, and
+// each row it found by its key, so its cost is the subtree's.
+//
+// Both joins are CROSS JOINs so the queue is the outer loop. Without
+// sqlite_stat1 the planner puts items on the outer loop of each, searched
+// by thread_id alone: each recursion step then reads every child row of
+// the thread, and the final select every row (or every open row) of the
+// thread.
 func agentSubtreeSQL(cols, statuses string) string {
 	return `WITH RECURSIVE owned(id) AS (
   SELECT id FROM items WHERE thread_id = ?1 AND parent_id = ?2 AND parent_id <> '' AND NOT (` + agentOwnerSQL("") + `)
   UNION ALL
-  SELECT c.id FROM owned JOIN items c ON c.thread_id = ?1 AND c.parent_id = owned.id AND c.parent_id <> ''
+  SELECT c.id FROM owned CROSS JOIN items c ON c.thread_id = ?1 AND c.parent_id = owned.id AND c.parent_id <> ''
    WHERE NOT (` + agentOwnerSQL("c.") + `)
 )
-SELECT ` + cols + ` FROM owned JOIN items i ON i.thread_id = ?1 AND i.id = owned.id
+SELECT ` + cols + ` FROM owned CROSS JOIN items i ON i.thread_id = ?1 AND i.id = owned.id
  WHERE i.status IN (` + statuses + `)
  ORDER BY i.turn_index, i.item_index`
 }

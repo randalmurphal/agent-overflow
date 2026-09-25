@@ -107,7 +107,7 @@ type WorkItemTreeRun struct {
 const workItemTreeCTE = `WITH RECURSIVE tree(id) AS (
     SELECT ?
     UNION
-    SELECT child.id FROM work_items AS child JOIN tree
+    SELECT child.id FROM tree CROSS JOIN work_items AS child
       ON child.parent_item_id = tree.id AND child.parent_item_id <> ''
 )
 `
@@ -125,7 +125,7 @@ const workItemTreeCTE = `WITH RECURSIVE tree(id) AS (
 const workItemTreeDepthCTE = `WITH RECURSIVE tree(id, depth) AS (
     SELECT ?1, 0
     UNION
-    SELECT child.id, tree.depth + 1 FROM work_items AS child JOIN tree
+    SELECT child.id, tree.depth + 1 FROM tree CROSS JOIN work_items AS child
       ON child.parent_item_id = tree.id AND child.parent_item_id <> ''
      WHERE tree.depth <= ?2
 )
@@ -156,7 +156,7 @@ func (s *Store) WorkItemTreeRoot(itemID string, maxDepth int) (WorkItemNode, err
 		     SELECT id, parent_item_id, call_depth, 0 FROM work_items WHERE id = ?1
 		     UNION ALL
 		     SELECT parent.id, parent.parent_item_id, parent.call_depth, ancestors.depth + 1
-		       FROM work_items AS parent JOIN ancestors
+		       FROM ancestors CROSS JOIN work_items AS parent
 		         ON parent.id = ancestors.parent_item_id
 		      WHERE ancestors.parent_item_id <> '' AND ancestors.depth <= ?2
 		 )
