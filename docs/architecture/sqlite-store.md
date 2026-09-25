@@ -301,6 +301,19 @@ thread's writes:
 - The delete of a thread forks read keeps it as a holder in place
   ([Source deletion](#source-deletion)).
 
+A migration's one-time data fix is the exception: it applies to every copy
+of the data it fixes, the rows, payloads and turn rows forks show and the
+holders' copies included, and gives no fork a copy first. A fix removes or
+rewrites content the product decided must not exist, so a copy would keep it
+for the forks and grow the database the fix reclaims. The fix runs its
+statements through `fixShownHistoryTx`, which writes the single
+`shown_history_fix` row before them and deletes it after; the guards its
+statements hit pass while the row exists. The row never commits: the fix
+runs on the single writer connection, so no other write sees it, and a
+rollback removes it with the fix. The payload guards check the row, which
+covers the transcript blank ([History repair](#history-repair)); a fix that
+rewrites rows or turn rows adds the check to their guards in its migration.
+
 A holder's thread row has no project, workspace, session or parent, and
 `owned_threads` leaves it out, so no listing, search, transfer or fork sees
 it, and every operation that would run in it is refused
@@ -360,7 +373,9 @@ copy and reinstalls them.
   spans write and a move to another thread (`thread_id`, a holder taking the
   row) pass. Each probes `idx_thread_fork_lineage_ancestor` by the row's
   position, so a write past every fork's cut costs one probe that finds
-  nothing.
+  nothing. The payload guards also pass every write while
+  `shown_history_fix` holds its row, during a migration's data fix
+  ([Ownership](#ownership)).
 - `trg_items_fork_snapshot` and `trg_items_fork_snapshot_move` hide a row an
   ancestor inserts or moves below a fork's cut after the fork was made, such as
   a late background completion. A row that replaces one the ancestor already
@@ -436,7 +451,8 @@ the fork triggers.
 v129 clears `fork_source_thread_id` on every holder, since earlier builds kept
 a retired thread's source there and holder reuse reads the column. v130
 applies the turn rule in [Reads](#reads) to `timeline_turns` and the turn
-guards.
+guards. v131 creates `shown_history_fix` and reinstalls the payload guards
+with its check.
 
 ## History repair
 
@@ -492,9 +508,11 @@ step selects a `tool_call_result` payload with data and
 names. It sets `data` to an empty blob and clears `spans`, keeping the row,
 meta, preview spans and creation time; item revisions do not move. Monitor and
 command output, payloads only a notification names, and foreground results
-keep their data. A batch is at most 64 payloads and 4 MiB, re-checks the
-selection inside its transaction, and is followed by a passive checkpoint when
-it emptied anything.
+keep their data. The step empties every copy, a payload a pointer fork shows
+and a holder's included, through `fixShownHistoryTx`
+([Ownership](#ownership)). A batch is at most 64 payloads and 4 MiB, re-checks
+the selection inside its transaction, and is followed by a passive checkpoint
+when it emptied anything.
 On the measured copy this is 1,041 `Agent` payloads (1.19 GB) and 141
 `SendMessage` payloads (551 MB). The freed pages go to the freelist, and
 `ReclaimFreeSpace` returns them to the filesystem.

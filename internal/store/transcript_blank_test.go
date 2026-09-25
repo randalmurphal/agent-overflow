@@ -258,6 +258,9 @@ func TestBlankLegacyTranscriptCopiesIsPacedAndSkipsAFailingBatch(t *testing.T) {
 	if n := countRows(t, s, `SELECT count(*) FROM payloads WHERE id LIKE 'p-tail-%' AND length(data) > 0`); n != 0 {
 		t.Fatalf("%d payloads after the failed batch kept their data", n)
 	}
+	if n := countRows(t, s, `SELECT count(*) FROM shown_history_fix`); n != 0 {
+		t.Fatalf("shown_history_fix holds %d rows after the failed batch", n)
+	}
 
 	mustExec(t, s.db, `DROP TRIGGER fail_blank`)
 	if run, _ := runTranscriptBlank(t, s); run.failures != 0 {
@@ -268,35 +271,62 @@ func TestBlankLegacyTranscriptCopiesIsPacedAndSkipsAFailingBatch(t *testing.T) {
 	}
 }
 
-// A transcript copy a pointer fork shows is history the fork keeps: the
-// step empties the source's payload after a holder takes a copy for the
-// fork, completes without a failure, and leaves the holder's copy alone on
-// the next run.
-func TestBlankLegacyTranscriptKeepsWhatAForkShows(t *testing.T) {
+// The step empties every copy of a transcript: the source's payload a
+// pointer fork shows, and the payload a holder took when the source
+// reverted, which the fork still reads. The fork reads the blank. The same
+// write outside the step is refused, and the step's shown_history_fix row
+// does not outlive its transaction. The fork's rows are as they were.
+func TestBlankLegacyTranscriptReachesEveryCopy(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("claude", "claude")); err != nil {
 		t.Fatal(err)
 	}
-	writeTranscriptCase(t, s, "claude", 0, transcriptCase{id: "agent", tool: "Agent", background: true, kind: "tool_call_result", meta: loadedTranscriptMeta, data: "agent transcript"})
+	writeTranscriptCase(t, s, "claude", 0, transcriptCase{id: "shown", tool: "Agent", background: true, kind: "tool_call_result", meta: loadedTranscriptMeta, data: "shown transcript"})
+	writeTranscriptCase(t, s, "claude", 1, transcriptCase{id: "held", tool: "Agent", background: true, kind: "tool_call_result", meta: loadedTranscriptMeta, data: "held transcript"})
 	mustPointerFork(t, s, "claude", "fork", ForkCut{})
-	fork, stamp := timelineShape(t, s, "fork"), historyStampOf(t, s, "fork")
-
-	for range 2 {
-		if run, _ := runTranscriptBlank(t, s); run.failures != 0 {
-			t.Fatalf("the step failed %d items: %v", run.failures, run.first)
+	if _, _, err := s.DeleteConversationFromTurn("claude", 1); err != nil {
+		t.Fatal(err)
+	}
+	holders := holderIDs(t, s)
+	if len(holders) != 1 {
+		t.Fatalf("holders = %v, want the one the revert made", holders)
+	}
+	copies := []struct{ owner, id, data string }{{"claude", "p-shown", "shown transcript"}, {holders[0], "p-held", "held transcript"}}
+	for _, c := range copies {
+		if got := storedPayload(t, s, c.owner, c.id); got.Data != c.data {
+			t.Fatalf("payload %s/%s = %+v, want %q", c.owner, c.id, got, c.data)
+		}
+		if data, err := s.GetPayloadData("fork", c.id); err != nil || string(data) != c.data {
+			t.Fatalf("the fork reads %s as %q, %v; want %q", c.id, data, err, c.data)
+		}
+		_, err := s.db.Exec(`UPDATE payloads SET data = X'', spans = '' WHERE thread_id = ? AND id = ?`, c.owner, c.id)
+		if !IsShownHistoryRefusal(err) {
+			t.Fatalf("emptying %s/%s outside the step = %v, want refused", c.owner, c.id, err)
 		}
 	}
-	if data, err := s.GetPayloadData("claude", "p-agent"); err != nil || len(data) != 0 {
-		t.Fatalf("the source's payload reads %q, %v; want it emptied", data, err)
+	fork := timelineShape(t, s, "fork")
+	for i := range fork {
+		for _, c := range copies {
+			fork[i] = strings.Replace(fork[i], " payload="+c.data+" ", " payload= ", 1)
+		}
+	}
+
+	if run, _ := runTranscriptBlank(t, s); run.failures != 0 {
+		t.Fatalf("the step failed %d items: %v", run.failures, run.first)
+	}
+	for _, c := range copies {
+		if got := storedPayload(t, s, c.owner, c.id); got.Data != "" || got.Spans != "" {
+			t.Fatalf("payload %s/%s = %+v, want it emptied", c.owner, c.id, got)
+		}
+		if data, err := s.GetPayloadData("fork", c.id); err != nil || len(data) != 0 {
+			t.Fatalf("the fork reads %s as %q, %v; want the blank", c.id, data, err)
+		}
 	}
 	requireShape(t, s, "fork", fork)
-	if now := historyStampOf(t, s, "fork"); now != stamp {
-		t.Fatalf("the fork's stamp moved %+v -> %+v", stamp, now)
-	}
-	if data, err := s.GetPayloadData("fork", "p-agent"); err != nil || string(data) != "agent transcript" {
-		t.Fatalf("the fork reads %q, %v; want the transcript it showed", data, err)
-	}
 	if holders := holderIDs(t, s); len(holders) != 1 {
-		t.Fatalf("holders = %v, want the one the first run made", holders)
+		t.Fatalf("holders = %v, want only the revert's", holders)
+	}
+	if n := countRows(t, s, `SELECT count(*) FROM shown_history_fix`); n != 0 {
+		t.Fatalf("shown_history_fix holds %d rows after the step", n)
 	}
 }

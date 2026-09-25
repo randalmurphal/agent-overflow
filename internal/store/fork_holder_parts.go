@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"math"
 	"slices"
 )
 
@@ -218,30 +217,27 @@ func holdTurnsTx(tx *sql.Tx, threadID, holder string, turns []int, turnsKeptThro
 	return nil
 }
 
-// hideHeldRowsTx has holder hide the ids it took (ids) below keep, or all
-// of them when keep is nil: the thread that gave them is still read before
-// keep, and a row it writes there later under one of those ids is not
-// the forks' history (trg_items_fork_snapshot).
-func hideHeldRowsTx(tx *sql.Tx, holder string, ids []string, keep *timelineRow) error {
+// hideHeldRowsTx has holder hide every id it took (ids). A row the thread
+// that gave them writes later under one of those ids is not the history of
+// the holder's readers, wherever it sits: the hide keeps it from them, and
+// a reader that still reads the thread at the row's position takes no hide
+// of its own, which would remove the holder's row from it too
+// (trg_items_fork_snapshot).
+func hideHeldRowsTx(tx *sql.Tx, holder string, ids []string) error {
 	if len(ids) == 0 {
 		return nil
-	}
-	bound := timelineRow{turn: math.MaxInt32, item: math.MaxInt32}
-	if keep != nil {
-		bound = *keep
 	}
 	list, err := jsonList(ids)
 	if err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO thread_fork_hidden (thread_id, item_id)
-		SELECT ?1, id FROM items WHERE thread_id = ?1 AND id IN (SELECT value FROM json_each(?4))
-		   AND (turn_index, item_index) < (?2, ?3)
+		SELECT ?1, id FROM items WHERE thread_id = ?1 AND id IN (SELECT value FROM json_each(?2))
 		UNION ALL
 		SELECT ?1, items.id FROM import_history_items items
 		  CROSS JOIN thread_import_chunks refs ON refs.chunk_id = items.chunk_id AND refs.thread_id = ?1
-		 WHERE items.id IN (SELECT value FROM json_each(?4)) AND (items.turn_index, items.item_index) < (?2, ?3)
-		   AND `+importedNotOverridden, holder, bound.turn, bound.item, list); err != nil {
+		 WHERE items.id IN (SELECT value FROM json_each(?2))
+		   AND `+importedNotOverridden, holder, list); err != nil {
 		return fmt.Errorf("store: hide the rows holder %s holds: %w", holder, err)
 	}
 	return nil

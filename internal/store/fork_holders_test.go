@@ -432,3 +432,27 @@ func TestSplitIsAtomic(t *testing.T) {
 		})
 	}
 }
+
+// TestSourceRowUnderAHeldIDStaysOutOfItsForks: a revert moves the rows its
+// fork shows to a holder, which hides every id it took. A row the source
+// writes later under one of those ids, at a position the fork still reads
+// the source at, is not the fork's history: the fork reads the holder's
+// row and never the source's.
+func TestSourceRowUnderAHeldIDStaysOutOfItsForks(t *testing.T) {
+	s := newTestStore(t)
+	seedLinearSource(t, s, "S", 4)
+	mustPointerFork(t, s, "S", "F", ForkCut{})
+	view := timelineShape(t, s, "F")
+	if _, _, err := s.DeleteConversationFromTurn("S", 2); err != nil {
+		t.Fatal(err)
+	}
+	requireShape(t, s, "F", view)
+	if err := insertCarded(s, Item{ID: "a3", ThreadID: "S", TurnIndex: 0, ItemIndex: 5, Kind: "assistant_text", Role: "assistant",
+		Status: "completed", Summary: "the source's own a3", Meta: "{}", CreatedAt: 1, UpdatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	requireShape(t, s, "F", view)
+	if got := ownIDs(t, s, "S"); !slices.Contains(got, "a3") {
+		t.Fatalf("S rows = %v, want its own a3", got)
+	}
+}

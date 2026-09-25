@@ -235,7 +235,7 @@ func holdSplitRowsTx(tx *sql.Tx, w *cardWrite, threadID string, sp forkSplit, he
 			return 0, err
 		}
 	}
-	return len(moved) + len(imported.ids), hideHeldRowsTx(tx, holder, append(ids, imported.ids...), sp.keep)
+	return len(moved) + len(imported.ids), hideHeldRowsTx(tx, holder, append(ids, imported.ids...))
 }
 
 // firstOwnRowTx is the first of threadID's own rows, local or imported,

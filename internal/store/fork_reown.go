@@ -46,12 +46,15 @@ const shownTurnLevelsSQL = `SELECT l.thread_id, l.depth, l.cut_turn_index, l.cut
                     WHERE nearer.thread_id = l.thread_id AND nearer.depth < l.depth
                       AND nearer.cut_turn_index > ?2)`
 
+// threadReadSQL is true when a lineage row names ?.
+const threadReadSQL = `SELECT EXISTS (SELECT 1 FROM thread_fork_lineage WHERE ancestor_id = ?)`
+
 // threadReadTx reports whether a lineage row names threadID: one probe of
 // idx_thread_fork_lineage_ancestor, all a write to a thread no fork reads
 // pays.
 func threadReadTx(tx *sql.Tx, threadID string) (bool, error) {
 	var read bool
-	if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM thread_fork_lineage WHERE ancestor_id = ?)`, threadID).Scan(&read); err != nil {
+	if err := tx.QueryRow(threadReadSQL, threadID).Scan(&read); err != nil {
 		return false, fmt.Errorf("store: probe the forks of %s: %w", threadID, err)
 	}
 	return read, nil

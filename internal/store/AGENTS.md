@@ -50,6 +50,9 @@ an atomic persistence decision; they must not become a business-logic layer.
   open; the watermark does not pass it. Never fix a one-time state from a
   sweep, timer or standing job
   ([deferred phases](../../docs/architecture/sqlite-store.md#deferred-phases)).
+  A fix applies to every copy of the data, what pointer forks show and
+  holders keep included, through `fixShownHistoryTx`
+  ([ownership](../../docs/architecture/sqlite-store.md#ownership)).
 - New rebuild migrations contain their final SQL directly. The old
   `mustReplaceOnce`, `mustReplaceEvery`, and `mustCutFrom` derivations are
   frozen compatibility code, not a pattern for new migrations.

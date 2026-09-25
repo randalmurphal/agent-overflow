@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // shownHistoryFixture: S holds two settled turns. u0 renders payload p,
 // which has an appended chunk, and a0 payload p2; u1 opens turn 1 and run
@@ -125,6 +128,78 @@ func TestShownHistoryGuardsAllowWhatNoForkShows(t *testing.T) {
 	} {
 		if _, err := s.db.Exec(write); err != nil {
 			t.Errorf("%s = %v, want allowed", write, err)
+		}
+	}
+}
+
+// TestShownHistoryFixStandsDownThePayloadGuards: inside fixShownHistoryTx
+// a write to payload content F shows goes through, which each payload
+// guard refuses outside it. The guards of rows and turn rows stay up.
+func TestShownHistoryFixStandsDownThePayloadGuards(t *testing.T) {
+	for _, c := range []struct {
+		write   string
+		allowed bool
+	}{
+		{`UPDATE payloads SET data = x'', spans = '' WHERE thread_id = 'S' AND id = 'p'`, true},
+		{`UPDATE payloads SET meta = '{"x":1}' WHERE thread_id = 'S' AND id = 'p'`, true},
+		{`INSERT INTO payload_chunks (thread_id, payload_id, chunk_index, start_offset, data, created_at) VALUES ('S', 'p', 9, 99, x'00', 1)`, true},
+		{`UPDATE payload_chunks SET data = x'00' WHERE thread_id = 'S' AND payload_id = 'p'`, true},
+		{`DELETE FROM payload_chunks WHERE thread_id = 'S' AND payload_id = 'p'`, true},
+		{`UPDATE items SET summary = 'edited' WHERE thread_id = 'S' AND id = 'u0'`, false},
+		{`UPDATE turns SET stop_reason = 'error' WHERE turn_id = 'S:0'`, false},
+	} {
+		s := shownHistoryFixture(t)
+		if _, err := s.db.Exec(c.write); !IsShownHistoryRefusal(err) {
+			t.Fatalf("%s = %v, want refused", c.write, err)
+		}
+		tx, err := s.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = fixShownHistoryTx(tx, func() error {
+			_, err := tx.Exec(c.write)
+			return err
+		})
+		if c.allowed && err != nil {
+			t.Errorf("%s in a data fix = %v, want allowed", c.write, err)
+		}
+		if !c.allowed && !IsShownHistoryRefusal(err) {
+			t.Errorf("%s in a data fix = %v, want refused", c.write, err)
+		}
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestShownHistoryFixNeverOutlivesItsTransaction: fixShownHistoryTx
+// deletes its row after the fix whether the fix fails or not, so even a
+// commit after a failed fix leaves the guards standing.
+func TestShownHistoryFixNeverOutlivesItsTransaction(t *testing.T) {
+	s := newTestStore(t)
+	for _, fixErr := range []error{nil, errors.New("fix failed")} {
+		tx, err := s.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		during := 0
+		err = fixShownHistoryTx(tx, func() error {
+			if err := tx.QueryRow(`SELECT count(*) FROM shown_history_fix`).Scan(&during); err != nil {
+				return err
+			}
+			return fixErr
+		})
+		if !errors.Is(err, fixErr) {
+			t.Fatalf("fixShownHistoryTx = %v, want %v", err, fixErr)
+		}
+		if during != 1 {
+			t.Fatalf("the fix ran with %d rows in shown_history_fix, want 1", during)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if n := countRows(t, s, `SELECT count(*) FROM shown_history_fix`); n != 0 {
+			t.Fatalf("after a fix that returned %v, shown_history_fix holds %d rows", fixErr, n)
 		}
 	}
 }

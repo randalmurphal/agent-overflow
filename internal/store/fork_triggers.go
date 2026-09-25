@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -22,6 +24,24 @@ const shownHistoryImmutable = "history another thread shows is immutable"
 // (ErrForkChainTooDeep).
 func IsShownHistoryRefusal(err error) bool {
 	return err != nil && (errors.Is(err, ErrForkChainTooDeep) || strings.Contains(err.Error(), shownHistoryImmutable))
+}
+
+// fixShownHistoryTx runs fix, a migration's one-time data fix, in tx with
+// the guards of shown payload content stood down: a data fix applies to
+// every copy of the data, a payload a fork shows and a holder's included.
+// The guards stand down while shown_history_fix holds a row. It writes the
+// row before fix and deletes it after, whether fix fails or not, so the row
+// never commits; tx runs on the single writer connection, so no other write
+// runs while it is there.
+func fixShownHistoryTx(tx *sql.Tx, fix func() error) error {
+	if _, err := tx.Exec(`INSERT INTO shown_history_fix (id) VALUES (1)`); err != nil {
+		return fmt.Errorf("store: stand down the shown-history guards: %w", err)
+	}
+	fixErr := fix()
+	if _, err := tx.Exec(`DELETE FROM shown_history_fix`); err != nil {
+		return errors.Join(fixErr, fmt.Errorf("store: restore the shown-history guards: %w", err))
+	}
+	return fixErr
 }
 
 // readerShowsItemSQL is true while some thread reads the items row of
@@ -97,9 +117,10 @@ const turnContentChangedSQL = `(OLD.turn_index IS NOT NEW.turn_index OR OLD.star
       OR OLD.provider_turn_id IS NOT NEW.provider_turn_id)`
 
 // forkTriggersSQL is the latest DDL for the pointer-fork triggers. Migration
-// v125 installs it; v126 replaces the revive trigger and v130 the turn
-// guards. RestoreFrom reinstalls it after the row copy, which runs without
-// these triggers so restored rows are the snapshot's exactly.
+// v125 installs it; v126 replaces the revive trigger, v130 the turn guards
+// and v131 the payload guards. RestoreFrom reinstalls it after the row copy,
+// which runs without these triggers so restored rows are the snapshot's
+// exactly.
 //
 //   - trg_threads_fork_source_delete: a thread forks read is never deleted;
 //     its delete keeps it as a holder (DeleteThreadPaced).
@@ -121,7 +142,9 @@ const turnContentChangedSQL = `(OLD.turn_index IS NOT NEW.turn_index OR OLD.star
 //     trg_payloads_shown_update, trg_payload_chunks_shown_*,
 //     trg_turns_shown_update / trg_turns_shown_delete: a row, payload or
 //     turn a fork shows keeps its content. Moving it to another thread
-//     (thread_id) is allowed: that is how a holder takes it.
+//     (thread_id) is allowed: that is how a holder takes it. The payload
+//     guards stand down while a migration's data fix runs
+//     (fixShownHistoryTx).
 //   - trg_thread_fork_lineage_release: a holder no lineage row names any
 //     more is marked deleting, for the app to delete (ListPendingThreadDeletes).
 //   - trg_items_revive_bg_launch_on_completion_move: a completion a holder
@@ -221,26 +244,30 @@ END;
 
 CREATE TRIGGER trg_payloads_shown_update BEFORE UPDATE OF data, meta ON payloads
 WHEN (OLD.data IS NOT NEW.data OR OLD.meta IS NOT NEW.meta)
+ AND NOT EXISTS (SELECT 1 FROM shown_history_fix)
  AND ` + readerShowsPayloadSQL("OLD.thread_id", "OLD.id") + `
 BEGIN
   SELECT RAISE(ABORT, '` + shownHistoryImmutable + `');
 END;
 
 CREATE TRIGGER trg_payload_chunks_shown_insert BEFORE INSERT ON payload_chunks
-WHEN ` + readerShowsPayloadSQL("NEW.thread_id", "NEW.payload_id") + `
+WHEN NOT EXISTS (SELECT 1 FROM shown_history_fix)
+ AND ` + readerShowsPayloadSQL("NEW.thread_id", "NEW.payload_id") + `
 BEGIN
   SELECT RAISE(ABORT, '` + shownHistoryImmutable + `');
 END;
 
 CREATE TRIGGER trg_payload_chunks_shown_update BEFORE UPDATE OF chunk_index, start_offset, data ON payload_chunks
 WHEN (OLD.chunk_index IS NOT NEW.chunk_index OR OLD.start_offset IS NOT NEW.start_offset OR OLD.data IS NOT NEW.data)
+ AND NOT EXISTS (SELECT 1 FROM shown_history_fix)
  AND ` + readerShowsPayloadSQL("OLD.thread_id", "OLD.payload_id") + `
 BEGIN
   SELECT RAISE(ABORT, '` + shownHistoryImmutable + `');
 END;
 
 CREATE TRIGGER trg_payload_chunks_shown_delete BEFORE DELETE ON payload_chunks
-WHEN ` + readerShowsPayloadSQL("OLD.thread_id", "OLD.payload_id") + `
+WHEN NOT EXISTS (SELECT 1 FROM shown_history_fix)
+ AND ` + readerShowsPayloadSQL("OLD.thread_id", "OLD.payload_id") + `
 BEGIN
   SELECT RAISE(ABORT, '` + shownHistoryImmutable + `');
 END;

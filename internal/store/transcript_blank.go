@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log"
 	"time"
-
-	"agent-overflow/internal/threadmode"
 )
 
 // Blanking legacy transcript copies is the second step of migration v119's
@@ -28,18 +26,16 @@ import (
 // background tool_completion of Agent, Task or SendMessage in a Claude
 // thread. A payload no completion names, a Monitor or command completion's
 // output, and a payload without outputFileState "loaded" keep their data.
-// So does a holder's: it is history pointer forks show as they were made.
-// A pointer fork that shows a payload the step empties keeps it
-// (reownShownPayloadTx).
+// The step empties every copy: a payload a pointer fork shows and a
+// holder's too (fixShownHistoryTx), so a fork reads what its source does.
 
 // legacyTranscriptCompletionSQL is true when a completion row c of a Claude
-// thread, not a holder, names payload (thread, id) as a background agent's
-// result.
+// thread names payload (thread, id) as a background agent's result.
 func legacyTranscriptCompletionSQL(thread, payload string) string {
 	return `EXISTS (SELECT 1 FROM items c JOIN threads t ON t.id = c.thread_id
 	 WHERE c.thread_id = ` + thread + ` AND c.payload_id IS NOT NULL AND c.payload_id = ` + payload + `
 	   AND c.completion_of <> '' AND c.kind = 'tool_completion' AND c.is_background = 1
-	   AND c.tool_name IN ('Agent', 'Task', 'SendMessage') AND t.provider = 'claude' AND t.mode <> '` + threadmode.ModeHolder + `')`
+	   AND c.tool_name IN ('Agent', 'Task', 'SendMessage') AND t.provider = 'claude')`
 }
 
 // legacyTranscriptPayloadSQL is true when payload row p still holds a
@@ -141,32 +137,26 @@ func (s *Store) blankLegacyTranscriptBatch(batch []legacyTranscriptPayload) (int
 	}
 	defer tx.Rollback()
 	count, bytes := 0, int64(0)
-	for _, payload := range batch {
-		var legacy bool
-		if err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM payloads p WHERE p.thread_id = ? AND p.id = ? AND `+legacyTranscriptPayloadSQL+`
-   AND `+legacyTranscriptCompletionSQL("p.thread_id", "p.id")+`)`, payload.threadID, payload.id).Scan(&legacy); err != nil {
-			return 0, 0, fmt.Errorf("store: probe transcript copy %s/%s: %w", payload.threadID, payload.id, err)
-		}
-		if !legacy {
-			continue
-		}
-		if err := reownShownPayloadTx(tx, payload.threadID, payload.id); err != nil {
-			return 0, 0, fmt.Errorf("store: give the forks of %s their transcript copy %s: %w", payload.threadID, payload.id, err)
-		}
-		result, err := tx.Exec(`UPDATE payloads AS p SET data = X'', spans = ''
+	if err := fixShownHistoryTx(tx, func() error {
+		for _, payload := range batch {
+			result, err := tx.Exec(`UPDATE payloads AS p SET data = X'', spans = ''
  WHERE p.thread_id = ? AND p.id = ? AND `+legacyTranscriptPayloadSQL+`
    AND `+legacyTranscriptCompletionSQL("p.thread_id", "p.id"), payload.threadID, payload.id)
-		if err != nil {
-			return 0, 0, fmt.Errorf("store: empty transcript copy %s/%s: %w", payload.threadID, payload.id, err)
+			if err != nil {
+				return fmt.Errorf("store: empty transcript copy %s/%s: %w", payload.threadID, payload.id, err)
+			}
+			updated, err := result.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("store: count emptied transcript copy %s/%s: %w", payload.threadID, payload.id, err)
+			}
+			if updated > 0 {
+				count++
+				bytes += payload.bytes
+			}
 		}
-		updated, err := result.RowsAffected()
-		if err != nil {
-			return 0, 0, fmt.Errorf("store: count emptied transcript copy %s/%s: %w", payload.threadID, payload.id, err)
-		}
-		if updated > 0 {
-			count++
-			bytes += payload.bytes
-		}
+		return nil
+	}); err != nil {
+		return 0, 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, 0, fmt.Errorf("store: commit transcript blank: %w", err)

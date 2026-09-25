@@ -3,6 +3,7 @@ package store
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -200,4 +201,46 @@ func forkTurns(t *testing.T, s *Store, threadID string) []string {
 			turn.TokenUsageJSON, turn.ErrorMessage, turn.ProviderTurnID)
 	}
 	return out
+}
+
+// TestReownProbesUseTheirIndexes: before a write to a row or payload of a
+// thread forks read, which every payload append on the streaming flush path
+// is, the store finds what the forks show by index probes: the thread's
+// readers through idx_thread_fork_lineage_ancestor, the rows naming a
+// payload through the two payload indexes and idx_import_history_payloads_id.
+// No statement scans or sorts.
+func TestReownProbesUseTheirIndexes(t *testing.T) {
+	s := forkChainFixture(t)
+	for _, tc := range []struct {
+		name  string
+		query string
+		args  []any
+		want  []string
+	}{
+		{"thread read", threadReadSQL, []any{"S"},
+			[]string{"SEARCH thread_fork_lineage USING COVERING INDEX idx_thread_fork_lineage_ancestor (ancestor_id=?)"}},
+		{"rows naming a payload", ownPayloadRowsSQL, []any{"S", "p"}, []string{
+			"SEARCH items USING INDEX idx_items_payload_id (thread_id=? AND payload_id=?)",
+			"SEARCH items USING INDEX idx_items_input_payload_id (thread_id=? AND input_payload_id=?)",
+			"SEARCH ref_payload USING COVERING INDEX idx_import_history_payloads_id (id=?)",
+		}},
+		{"levels showing a row", shownItemLevelsSQL, []any{"S", "tool", 1, 5},
+			[]string{"SEARCH l USING COVERING INDEX idx_thread_fork_lineage_ancestor (ancestor_id=? AND (cut_turn_index,cut_item_index)>(?,?))"}},
+		{"levels showing a turn", shownTurnLevelsSQL, []any{"S", 1},
+			[]string{"SEARCH l USING COVERING INDEX idx_thread_fork_lineage_ancestor (ancestor_id=? AND cut_turn_index>?)"}},
+	} {
+		plan := explainPlan(t, s, tc.query, tc.args...)
+		details := make([]string, len(plan))
+		for i, row := range plan {
+			details[i] = row.detail
+			if (strings.HasPrefix(row.detail, "SCAN ") && row.detail != "SCAN CONSTANT ROW") || strings.Contains(row.detail, "TEMP B-TREE") {
+				t.Errorf("%s: the plan scans or sorts: %s\n%s", tc.name, row.detail, planText(plan))
+			}
+		}
+		for _, want := range tc.want {
+			if !slices.Contains(details, want) {
+				t.Errorf("%s: the plan does not probe %s\n%s", tc.name, want, planText(plan))
+			}
+		}
+	}
 }
