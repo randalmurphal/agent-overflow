@@ -472,6 +472,7 @@ describe('<ThreadRow> fork lineage affordance', () => {
     setBindingMock('ListThreads', async () => []);
     await refreshThreads();
   });
+  afterEach(resetSidebarForTest);
 
   it('is absent on a top-level (non-forked) thread', async () => {
     const thread = makeThread();
@@ -494,18 +495,25 @@ describe('<ThreadRow> fork lineage affordance', () => {
     expect(forkIndicator.textContent).not.toContain('F');
   });
 
-  it('renders the fork indicator before the title like the left-side row icons', async () => {
+  it('renders the fork indicator in the trailing cluster before the provider icon and time', async () => {
     const parent = makeThread({ id: 'parent', title: 'Original' });
     const forked = makeThread({ id: 'fork', title: 'Derived', forkedFromThreadId: 'parent' });
     setBindingMock('ListThreads', async () => [parent, forked]);
     await refreshThreads();
 
+    setShowProviderIcons(true);
     const pane = createThreadPane();
     const { getByTestId } = render(ThreadRow, { props: { thread: forked, pane } });
     const forkIndicator = getByTestId('thread-row-fork-lineage');
+    const trailing = getByTestId('thread-row-trailing');
     const title = getByTestId('thread-row-title');
+    const provider = getByTestId('thread-row-provider');
+    const time = getByTestId('thread-row-time');
 
-    expect(forkIndicator.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(trailing.contains(forkIndicator)).toBe(true);
+    expect(title.compareDocumentPosition(forkIndicator) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(forkIndicator.compareDocumentPosition(provider) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(forkIndicator.compareDocumentPosition(time) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
   it('surfaces the parent title in the tooltip when the parent is loaded', async () => {

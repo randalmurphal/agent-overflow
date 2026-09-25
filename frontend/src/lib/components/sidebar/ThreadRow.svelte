@@ -502,10 +502,6 @@
     </button>
   {/if}
 
-  {#if thread.forkedFromThreadId}
-    <ThreadRowForkAffordance {forkParent} onJumpToParent={handleJumpToParent} />
-  {/if}
-
   {#if pill}
     <span
       class="w-1.5 h-1.5 rounded-full shrink-0 {pill.dotClass} {pill.pulse ? 'animate-pulse' : ''}"
@@ -572,6 +568,9 @@
     <ThreadRowBadges {thread} />
 
     <div class="flex items-center gap-1 shrink-0 -ml-0.5" data-testid="thread-row-trailing">
+      {#if thread.forkedFromThreadId}
+        <ThreadRowForkAffordance {forkParent} onJumpToParent={handleJumpToParent} />
+      {/if}
       {#if showProviderIcon}
         <span
           class="inline-flex items-center shrink-0"
