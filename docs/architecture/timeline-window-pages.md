@@ -94,10 +94,10 @@ type ActivityRunStub struct {
     UnshippedBefore, UnshippedAfter int // members outside the span, per side
     UnshippedDigest string           // §5, over every unshipped member
     UnshippedGroups []ActivityRunGroup
-    UnshippedPairedLaunchIDs []string // unshipped tool_call rows whose
-                                      // completion is shipped
+    UnshippedPairedLaunchIDs []string // unshipped tool_call rows a
+                                      // shipped completion names
     ShippedSupersededLaunchIDs []string // shipped tool_call rows whose
-                                      // completion is unshipped
+                                      // ending completion is unshipped
     UnshippedFailed bool             // an unshipped member the header must
                                       // report as failed (§4 pairing rule)
     RunningBefore, RunningAfter *ActivityRunGroupKey // newest running
@@ -256,15 +256,20 @@ Group facts the server must produce identically to the client:
   applied in Go, because the client falls THROUGH a present-but-empty
   source and a single `COALESCE` would not.
 - **Pairing.** A `tool_completion` whose `completion_of` is a member of the
-  same run counts zero rows; the launch counts. A launch with a completion
-  in the run contributes nothing to `UnshippedFailed`/running (the
-  completion supersedes it). The two launch lists cover every pair the
+  same run counts zero rows; the launch counts. A launch with an ending
+  completion in the run contributes nothing to `UnshippedFailed`/running
+  (the completion supersedes it). A background agent's `parked` stop
+  ([agent runs and stops](../specs/agent-visibility.md#agent-runs-and-stops))
+  pairs with its launch but supersedes nothing, so a parked or woken
+  agent's launch stays the run's running member (`endsLaunch`,
+  `completionEndsLaunch`). The two launch lists cover every pair the
   shipped span splits: `UnshippedPairedLaunchIDs` names unshipped
-  launches whose completion is shipped, so a loaded completion pairs and
+  launches a shipped completion names, so a loaded completion pairs and
   counts zero; `ShippedSupersededLaunchIDs` names shipped launches whose
-  completion is unshipped, so a loaded launch reads as superseded instead
-  of live. The byte trim (§2.2) moves a launch between the lists as it
-  folds either half, in whichever order the trim reaches them.
+  ending completion is unshipped, so a loaded launch reads as superseded
+  instead of live. Both are derived from the shipped span alone
+  (`setLaunchLists`), so the byte trim (§2.2) recomputes them after it
+  folds, whatever order it reaches a launch and its completions in.
 - **Failed** is `status IN ('errored','killed')`; **running** is
   `status IN ('running','streaming')`, newest wins per side.
 

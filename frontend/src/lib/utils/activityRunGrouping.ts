@@ -32,6 +32,7 @@ import {
   type ActivityRunNode,
   type TimelineNode,
 } from './subagentGrouping';
+import { completionEndsLaunch } from './parkedStop';
 import { isPotentialSubagentLaunch } from './subagentLaunch';
 import { timelineNodeHasRail } from './timelineRail';
 
@@ -124,7 +125,7 @@ export interface ActivityRunIdentity {
     threadId: string,
     /**
      * Items the header summarizes. Usually identical to identity membership,
-     * but a detached launch also depends on its later completion row. Summary
+     * but a detached launch also depends on its later ending completion row. Summary
      * dependencies may belong to more than one run and never participate in
      * identity matching.
      */
@@ -274,7 +275,12 @@ function* activityRunMemberItems(node: TimelineNode): Generator<Item> {
   }
 }
 
-/** Top-level completion relationships visible to this projection pass. */
+/**
+ * Top-level ending completions visible to this projection pass, by launch.
+ * A parked stop is left out: it does not settle its launch
+ * (`completionEndsLaunch`), so the launch stays pending until the ending
+ * completion lands and rebuilds its run.
+ */
 function indexCompletions(
   nodes: readonly TimelineNode[],
   getItem: (id: string) => Item | undefined,
@@ -283,7 +289,7 @@ function indexCompletions(
   const index = (snapshot: Item | undefined): void => {
     if (!snapshot) return;
     const item = getItem(snapshot.id) ?? snapshot;
-    if (item.kind === 'tool_completion' && item.completionOf) {
+    if (item.completionOf && completionEndsLaunch(item)) {
       completions.set(item.completionOf, item);
     }
   };
@@ -347,7 +353,8 @@ interface CachedRunBuild {
    */
   summaryItemIds: string[];
   /**
-   * Member ids that had no completion row when this build ran. A completion
+   * Member ids that had no ending completion row when this build ran (a
+   * parked stop does not count, `indexCompletions`). A completion
    * arriving for one of them adds a summary dependency WITHOUT touching any
    * child node (detached: the completion is its own later row, possibly in
    * a different run), so the hit check re-probes these against the current
@@ -502,7 +509,7 @@ function buildRun(
     pendingCompletionIds = EMPTY_IDS;
   } else {
     // Summary dependencies: each member, plus a detached launch's later
-    // completion row once it exists. The launch stays immutable at
+    // ending completion row once it exists. The launch stays immutable at
     // `running`, so the run summarizes both records while identity keeps
     // belonging only to the launch's position. Iterates the cached row
     // ids rather than a generator — the IteratorResult objects a
@@ -567,7 +574,7 @@ export function groupActivityRuns(
   }
 
   const out: TimelineNode[] = [];
-  // The completion index (launch id → its completion row, withheld nodes
+  // The completion index (launch id → its ending completion row, withheld nodes
   // included so a completion already received from the wire settles its
   // launch header without waiting for the reveal gate) is built LAZILY, on
   // the first run that can actually consume it. A window of plain tool

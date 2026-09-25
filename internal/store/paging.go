@@ -188,6 +188,7 @@ func (p ActivityRunStub) trimShipped(keptIDs map[string]struct{}) (ActivityRunSt
 	p.shipped = p.shipped[firstKept : lastKept+1]
 	p.LoadedFirstItemID = p.shipped[0].id
 	p.LoadedLastItemID = p.shipped[len(p.shipped)-1].id
+	p.setLaunchLists()
 	return p, true
 }
 

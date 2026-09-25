@@ -17,6 +17,18 @@ export const PARKED_STOP_META = {
   runWoke: 'run_woke',
 } as const;
 
+/**
+ * Whether a row is a completion that ENDS its launch: every completion but
+ * a parked stop, which pauses a background agent's run. Any completion
+ * pairs with its launch for an activity run's counts; only an ending one
+ * supersedes the launch's status, so a parked or woken agent's launch is
+ * still the run's running member (internal/store/activity_runs.go
+ * `endsLaunch`).
+ */
+export function completionEndsLaunch(row: { kind: string; completionOf?: string; status?: string }): boolean {
+  return row.kind === 'tool_completion' && !!row.completionOf && row.status !== PARKED_STOP_STATUS;
+}
+
 export interface ParkedStop {
   /** The live background commands the run waited on at the stop. */
   waitingOn: number;

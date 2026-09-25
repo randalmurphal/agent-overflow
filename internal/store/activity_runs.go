@@ -67,6 +67,22 @@ func (r activityScanRow) isRunningStatus() bool {
 	return r.Status == "running" || r.Status == "streaming"
 }
 
+// completionOf names the launch this row completes, "" for any other row.
+func (r activityScanRow) completionOf() string {
+	if r.Kind != toolCompletionKind {
+		return ""
+	}
+	return r.CompletionOf
+}
+
+// endsLaunch reports a completion that ends its launch: every completion
+// but a parked stop, which pauses a background agent's run
+// (agent_stops.go). Any completion pairs with its launch for the counts;
+// only an ending one supersedes the launch's status (§4).
+func (r activityScanRow) endsLaunch() bool {
+	return r.completionOf() != "" && r.Status != ItemStatusParked
+}
+
 func (r activityScanRow) groupKey() ActivityRunGroupKey {
 	return ActivityRunGroupKey{Kind: r.Kind, ToolName: r.ToolName, MCP: r.MCP}
 }
@@ -132,21 +148,21 @@ type ActivityRunStub struct {
 	// members, sorted by (kind, toolName, mcp) so two reads of the same
 	// run produce the same bytes.
 	UnshippedGroups []ActivityRunGroup `json:"unshippedGroups"`
-	// UnshippedPairedLaunchIDs lists unshipped members whose completion
-	// IS shipped, sorted by id. The client holds such a completion
+	// UnshippedPairedLaunchIDs lists unshipped members a shipped
+	// completion names, sorted by id. The client holds such a completion
 	// without its launch; this is how it applies §4's pairing rule to it
 	// and counts it zero.
 	UnshippedPairedLaunchIDs []string `json:"unshippedPairedLaunchIds"`
-	// ShippedSupersededLaunchIDs is the mirror: shipped members whose
-	// completion in this run is NOT shipped, sorted by id. The client
-	// holds such a launch without its completion; this is how it knows
-	// the launch's status is superseded (§4) instead of reading it live.
-	// Together the two lists cover every launch/completion pair the
-	// shipped span splits.
+	// ShippedSupersededLaunchIDs lists shipped members whose ENDING
+	// completion (activityScanRow.endsLaunch) in this run is NOT shipped,
+	// sorted by id. The client holds such a launch without the completion
+	// that ends it; this is how it knows the launch's status is
+	// superseded (§4) instead of reading it live. Together the two lists
+	// cover every launch/completion pair the shipped span splits.
 	ShippedSupersededLaunchIDs []string `json:"shippedSupersededLaunchIds"`
 	// UnshippedFailed reports an unshipped member the header must show as
-	// failed: errored or killed, and not superseded by a completion in
-	// the same run.
+	// failed: errored or killed, and not superseded by an ending
+	// completion in the same run.
 	UnshippedFailed bool `json:"unshippedFailed"`
 	// RunningBefore and RunningAfter name the newest running member on
 	// each side of the shipped span, or nil.
@@ -181,15 +197,15 @@ type activityFoldRow struct {
 	displayRows int
 	failed      bool
 	running     bool
-	// supersededByMember is true when a completion in this run covers
-	// this row's status, so folding it may not report failed or running.
-	// Whether that completion is still shipped when this row folds is
-	// read from the stub's two launch lists at fold time, not fixed here:
-	// a newer-side trim folds the completion before its launch.
+	// supersededByMember is true when an ending completion in this run
+	// covers this row's status, so folding it may not report failed or
+	// running.
 	supersededByMember bool
 	// completionOfMember names the member this row completes, "" when it
-	// completes nothing in this run.
+	// completes nothing in this run. endsMember is true when it ends that
+	// member rather than parking it.
 	completionOfMember string
+	endsMember         bool
 }
 
 // buildActivityRunStub aggregates one run against the members the page
@@ -202,37 +218,26 @@ type activityFoldRow struct {
 func buildActivityRunStub(rows []activityScanRow, shippedFrom, shippedTo int) ActivityRunStub {
 	// Index only launch IDs named by completions. A long run may contain
 	// thousands of other members, none of which pairing needs to retain.
-	var completionTargets map[string]struct{}
+	// The value is whether an ENDING completion names the launch.
+	var completionTargets map[string]bool
 	for _, row := range rows {
-		if row.Kind == toolCompletionKind && row.CompletionOf != "" {
+		if launch := row.completionOf(); launch != "" {
 			if completionTargets == nil {
-				completionTargets = make(map[string]struct{})
+				completionTargets = make(map[string]bool)
 			}
-			completionTargets[row.CompletionOf] = struct{}{}
+			completionTargets[launch] = completionTargets[launch] || row.endsLaunch()
 		}
 	}
-	// A completion supersedes its launch's status, and counts zero rows
-	// itself, only when the launch is a member of the SAME run.
-	var completedMembers map[string]struct{}
+	// A completion counts zero rows itself, and an ending one supersedes
+	// its launch's status, only when the launch is a member of the SAME
+	// run. The value is whether an ending completion supersedes it.
+	var completedMembers map[string]bool
 	for _, row := range rows {
-		if _, ok := completionTargets[row.ID]; ok {
+		if ended, ok := completionTargets[row.ID]; ok {
 			if completedMembers == nil {
-				completedMembers = make(map[string]struct{})
+				completedMembers = make(map[string]bool)
 			}
-			completedMembers[row.ID] = struct{}{}
-		}
-	}
-	var shippedCompletions map[string]struct{}
-	for i := shippedFrom; i < shippedTo; i++ {
-		row := rows[i]
-		if row.Kind != toolCompletionKind || row.CompletionOf == "" {
-			continue
-		}
-		if _, ok := completedMembers[row.CompletionOf]; ok {
-			if shippedCompletions == nil {
-				shippedCompletions = make(map[string]struct{})
-			}
-			shippedCompletions[row.CompletionOf] = struct{}{}
+			completedMembers[row.ID] = ended
 		}
 	}
 
@@ -271,21 +276,16 @@ func buildActivityRunStub(rows []activityScanRow, shippedFrom, shippedTo int) Ac
 			failed:      row.isFailedStatus(),
 			running:     row.isRunningStatus(),
 		}
-		if _, ok := completedMembers[row.ID]; ok {
-			fold.supersededByMember = true
-		}
-		_, completionShipped := shippedCompletions[row.ID]
-		if row.Kind == toolCompletionKind && row.CompletionOf != "" {
-			if _, ok := completedMembers[row.CompletionOf]; ok {
-				fold.completionOfMember = row.CompletionOf
+		fold.supersededByMember = completedMembers[row.ID]
+		if launch := row.completionOf(); launch != "" {
+			if _, ok := completedMembers[launch]; ok {
+				fold.completionOfMember = launch
+				fold.endsMember = row.endsLaunch()
 				fold.displayRows = 0
 			}
 		}
 		if i >= shippedFrom && i < shippedTo {
 			stub.shipped = append(stub.shipped, fold)
-			if fold.supersededByMember && !completionShipped {
-				stub.ShippedSupersededLaunchIDs = append(stub.ShippedSupersededLaunchIDs, fold.id)
-			}
 			continue
 		}
 		digest ^= windowDigestRowHash(WindowDigestRow{ID: fold.id, Rev: fold.rev})
@@ -311,15 +311,51 @@ func buildActivityRunStub(rows []activityScanRow, shippedFrom, shippedTo int) Ac
 		} else {
 			stub.UnshippedAfter++
 		}
-		if completionShipped {
-			stub.UnshippedPairedLaunchIDs = append(stub.UnshippedPairedLaunchIDs, fold.id)
-		}
 	}
 	stub.setUnshippedDigest(digest)
 	stub.UnshippedGroups = sortedActivityRunGroups(groups)
-	sort.Strings(stub.UnshippedPairedLaunchIDs)
-	sort.Strings(stub.ShippedSupersededLaunchIDs)
+	stub.setLaunchLists()
 	return stub
+}
+
+// setLaunchLists derives the two launch lists from the members the stub
+// ships, the only thing they depend on. A completion of any status pairs
+// with its launch for the counts, so an unshipped launch is paired while
+// any completion of it is shipped. Only an ending completion supersedes
+// the launch's status, so a shipped launch is superseded while its ending
+// completion is a member the page does not ship. Deriving both from the
+// shipped span, rather than moving ids between them fold by fold, holds
+// for a launch with several completions: a background agent's parked
+// stops and its ending one.
+func (p *ActivityRunStub) setLaunchLists() {
+	p.UnshippedPairedLaunchIDs = []string{}
+	p.ShippedSupersededLaunchIDs = []string{}
+	// Launch -> whether a shipped completion naming it ends it, for every
+	// launch a shipped completion names.
+	var named map[string]bool
+	for _, fold := range p.shipped {
+		if fold.completionOfMember == "" {
+			continue
+		}
+		if named == nil {
+			named = make(map[string]bool)
+		}
+		named[fold.completionOfMember] = named[fold.completionOfMember] || fold.endsMember
+	}
+	for _, fold := range p.shipped {
+		endShipped, isNamed := named[fold.id]
+		if fold.supersededByMember && !endShipped {
+			p.ShippedSupersededLaunchIDs = append(p.ShippedSupersededLaunchIDs, fold.id)
+		}
+		if isNamed {
+			delete(named, fold.id)
+		}
+	}
+	for launch := range named {
+		p.UnshippedPairedLaunchIDs = append(p.UnshippedPairedLaunchIDs, launch)
+	}
+	sort.Strings(p.UnshippedPairedLaunchIDs)
+	sort.Strings(p.ShippedSupersededLaunchIDs)
 }
 
 // foldShippedMember moves one shipped member back out of the page and
@@ -359,31 +395,6 @@ func (p *ActivityRunStub) foldShippedMember(fold activityFoldRow, older bool) {
 	} else {
 		p.UnshippedAfter++
 	}
-	// The two launch lists are the only record of which half of a split
-	// pair is still shipped, so each fold reads them before it writes.
-	if launch := fold.completionOfMember; launch != "" {
-		if containsSortedString(p.UnshippedPairedLaunchIDs, launch) {
-			// Its launch already folded: both halves are now unshipped.
-			p.UnshippedPairedLaunchIDs = removeSortedString(p.UnshippedPairedLaunchIDs, launch)
-		} else {
-			// Its launch is still shipped and now lacks its completion.
-			p.ShippedSupersededLaunchIDs = insertSortedString(p.ShippedSupersededLaunchIDs, launch)
-		}
-	}
-	if fold.supersededByMember {
-		if containsSortedString(p.ShippedSupersededLaunchIDs, fold.id) {
-			// Its completion already folded: both halves are now unshipped.
-			p.ShippedSupersededLaunchIDs = removeSortedString(p.ShippedSupersededLaunchIDs, fold.id)
-		} else {
-			// Its completion is still shipped and now lacks its launch.
-			p.UnshippedPairedLaunchIDs = insertSortedString(p.UnshippedPairedLaunchIDs, fold.id)
-		}
-	}
-}
-
-func containsSortedString(values []string, value string) bool {
-	at := sort.SearchStrings(values, value)
-	return at < len(values) && values[at] == value
 }
 
 // setUnshippedDigest is the only writer of the stub's digest, so the
@@ -408,26 +419,4 @@ func sortedActivityRunGroups(groups map[ActivityRunGroupKey]int) []ActivityRunGr
 		return out[i].MCP < out[j].MCP
 	})
 	return out
-}
-
-// insertSortedString and removeSortedString never write through the
-// slice they are given: a stub copied by value shares its backing array
-// with the page it came from, and the byte trim edits the copy.
-func insertSortedString(values []string, value string) []string {
-	at := sort.SearchStrings(values, value)
-	if at < len(values) && values[at] == value {
-		return values
-	}
-	out := make([]string, 0, len(values)+1)
-	out = append(out, values[:at]...)
-	out = append(out, value)
-	return append(out, values[at:]...)
-}
-
-func removeSortedString(values []string, value string) []string {
-	at := sort.SearchStrings(values, value)
-	if at >= len(values) || values[at] != value {
-		return values
-	}
-	return append(values[:at:at], values[at+1:]...)
 }

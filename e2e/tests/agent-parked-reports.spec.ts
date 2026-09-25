@@ -19,6 +19,9 @@
 //              report, loaded by id, when expanded.
 //   tray     - between stops the tray shows the agent parked, then
 //              running again after the wake.
+//   chip     - the activity run holding the launch names the agent as
+//              its running member while it is parked and after its
+//              wake, and no longer once the ending stop lands.
 //   restart  - a restart keeps every row.
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -218,11 +221,20 @@ test('every stop of a background agent is a card at its own position, and a resu
     await turn1;
     await openTray(page);
 
+    // The activity run holding the agent's launch names it as its running
+    // member until the ending stop: a parked stop pairs with the launch
+    // but does not settle it.
+    const agentRunChip = timeline.getByTestId('activity-run')
+      .filter({ has: page.getByTestId('subagent-group') })
+      .getByTestId('activity-run-header-running');
+
     await gate(harness, mockId, 'park-1');
     await expectTrayParked(page, 'tu-bg', REPORT_1_HEAD);
     await expect(timeline.getByTestId('subagent-group')).toHaveCount(1);
+    await expect(agentRunChip).toHaveText('Agent');
     await gate(harness, mockId, 'wake-1');
     await expectTrayRunning(page, 'tu-bg');
+    await expect(agentRunChip).toHaveText('Agent');
 
     await gate(harness, mockId, 'park-2');
     await expectTrayParked(page, 'tu-bg', REPORT_2_HEAD);
@@ -234,6 +246,7 @@ test('every stop of a background agent is a card at its own position, and a resu
     const cards = timeline.getByTestId('subagent-group');
     await expect(cards).toHaveCount(3);
     await expect(page.getByTestId('activity-rail-background-toggle')).toHaveCount(0);
+    await expect(agentRunChip).toHaveCount(0);
 
     // The store: one sibling per stop, at the write head, in order, and
     // no bell for the agent.

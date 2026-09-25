@@ -30,6 +30,7 @@ import {
 } from '../utils/fnv1a';
 import { fileChangeDisplayRowCount } from '../utils/fileChangeRows';
 import { parseJsonObject } from '../utils/parseJsonObject';
+import { completionEndsLaunch } from '../utils/parkedStop';
 import { windowDigestRowHash } from './threadWindowDigest';
 import type { ActivityRunSpan } from '../utils/activityRunSpans';
 
@@ -356,12 +357,11 @@ export function stubFacts(record: ActivityRunRecord): ActivityRunStubFacts {
  *
  * `loadedMembers` is the run's surviving loaded members, needed for the
  * pairing facts: whether a shed completion's launch is a member of the
- * run (it then counts zero rows and its launch stops being "paired with a
- * shipped completion"), and whether a shed launch's completion is one of
- * the members the window still holds. A shed launch whose completion is
- * unshipped is named by the stub's `shippedSupersededLaunchIds`; shedding
- * it makes both halves unshipped, so it leaves that list and joins
- * neither.
+ * run (it then counts zero rows), and which unshipped launches a
+ * completion the window still holds names (`unshippedPairedLaunchIds`).
+ * A shed launch whose ending completion is unshipped is named by the
+ * stub's `shippedSupersededLaunchIds`; shedding it makes both halves
+ * unshipped, so it leaves that list.
  *
  * Null when the record cannot state its contribution — dirty, or a stub
  * digest this build cannot parse. The caller must not persist a window it
@@ -383,20 +383,20 @@ export function foldedStub(
   const memberIds = new Set<string>(record.stub.unshippedPairedLaunchIds);
   for (const row of record.shed) memberIds.add(row.id);
   for (const item of loadedMembers) memberIds.add(item.id);
-  // Launch -> the completion covering it, split by whether that completion
-  // is one of the members the window keeps.
+  // Launches an ending completion member supersedes, whether or not the
+  // window keeps that completion. A parked stop supersedes nothing
+  // (`completionEndsLaunch`).
   const completedByMember = new Set<string>(record.stub.shippedSupersededLaunchIds);
-  const completedByLoaded = new Set<string>();
+  // Launches a completion the window keeps names, of any status: they pair.
+  const pairedByLoaded = new Set<string>();
   for (const row of record.shed) {
-    if (row.kind !== 'tool_completion' || row.completionOf === '') continue;
-    if (memberIds.has(row.completionOf)) completedByMember.add(row.completionOf);
+    if (completionEndsLaunch(row) && memberIds.has(row.completionOf)) completedByMember.add(row.completionOf);
   }
   for (const item of loadedMembers) {
-    if (item.kind !== 'tool_completion') continue;
-    const of = item.completionOf ?? '';
+    const of = item.kind === 'tool_completion' ? item.completionOf ?? '' : '';
     if (of === '' || !memberIds.has(of)) continue;
-    completedByMember.add(of);
-    completedByLoaded.add(of);
+    pairedByLoaded.add(of);
+    if (completionEndsLaunch(item)) completedByMember.add(of);
   }
 
   const groups = new Map<string, ActivityRunGroup>();
@@ -406,7 +406,6 @@ export function foldedStub(
   let unshippedBefore = record.stub.unshippedBefore;
   let unshippedFailed = record.stub.unshippedFailed;
   let runningBefore = record.stub.runningBefore;
-  let paired = [...record.stub.unshippedPairedLaunchIds];
   let superseded = [...record.stub.shippedSupersededLaunchIds];
 
   for (const row of record.shed) {
@@ -436,16 +435,17 @@ export function foldedStub(
       }
     }
     unshippedBefore += 1;
-    if (completionOfMember !== '') {
-      paired = paired.filter((id) => id !== completionOfMember);
-    }
     if (superseded.includes(row.id)) {
       superseded = superseded.filter((id) => id !== row.id);
-    } else if (completedByLoaded.has(row.id) && !paired.includes(row.id)) {
-      paired.push(row.id);
     }
   }
-  paired.sort();
+  // The unshipped launches a kept completion names: the stub's own, and
+  // the shed ones. A launch with several completions (a background
+  // agent's parked stops and its ending one) stays paired while any of
+  // them is kept.
+  const paired = [...new Set([...record.stub.unshippedPairedLaunchIds, ...record.shed.map((row) => row.id)])]
+    .filter((id) => pairedByLoaded.has(id))
+    .sort();
 
   return {
     ...record.stub,

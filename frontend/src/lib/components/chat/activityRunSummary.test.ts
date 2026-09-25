@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { activityRunSummary } from './activityRunSummary';
 import type { Item } from '../../types/models';
+import type { ShedRow } from '../../stores/activityRunStubs';
 import { makeItem } from '../../../test/helpers/chat';
 
 let seq = 0;
@@ -288,6 +289,54 @@ describe('attention state', () => {
 
     expect(summary.runningLabel).toBeNull();
     expect(summary.counts.total).toBe(1);
+  });
+
+  it('keeps a parked agent’s launch running: its parked stops pair with it but only the ending stop settles it', () => {
+    const launch = tool('agent-launch', 'Agent', { status: 'running', isBackground: true });
+    const stop = (id: string, status: Item['status']): Item => makeItem({
+      id,
+      kind: 'tool_completion',
+      toolName: 'Agent',
+      completionOf: 'agent-launch',
+      status,
+    });
+    const parked = [launch, stop('complete:agent-launch:parked:u1', 'parked')];
+    expect(activityRunSummary(parked, 'claude').runningLabel).toBe('Agent');
+    expect(activityRunSummary(parked, 'claude').counts.total).toBe(1);
+
+    // Woken and parked again: still the agent's run.
+    const again = [...parked, stop('complete:agent-launch:parked:u2', 'parked')];
+    expect(activityRunSummary(again, 'claude').runningLabel).toBe('Agent');
+    expect(activityRunSummary(again, 'claude').counts.total).toBe(1);
+
+    const ended = activityRunSummary([...again, stop('complete:agent-launch', 'completed')], 'claude');
+    expect(ended.runningLabel).toBeNull();
+    expect(ended.counts.total).toBe(1);
+  });
+
+  it('keeps a shed parked agent’s launch running', () => {
+    const shedRow = (id: string, over: Partial<ShedRow>): ShedRow => ({
+      id, rev: 0, kind: 'tool_call', toolName: 'Agent', status: 'completed', completionOf: '', mcp: '', fileRows: 1, ...over,
+    });
+    const summary = activityRunSummary([tool('t1', 'Bash')], 'claude', {
+      memberCount: 3,
+      unshippedBefore: 2,
+      unshippedAfter: 0,
+      unshippedGroups: [],
+      unshippedPairedLaunchIds: [],
+      shippedSupersededLaunchIds: [],
+      unshippedFailed: false,
+      runningBefore: null,
+      runningAfter: null,
+      shed: [
+        shedRow('agent-launch', { status: 'running' }),
+        shedRow('complete:agent-launch:parked:u1', { kind: 'tool_completion', status: 'parked', completionOf: 'agent-launch' }),
+      ],
+      loadedFirstItemId: 't1',
+      loadedLastItemId: 't1',
+    });
+    expect(summary.runningLabel).toBe('Agent');
+    expect(summary.counts.total).toBe(2);
   });
 
   it('takes failure state from the completion instead of its immutable launch', () => {

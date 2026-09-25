@@ -14,6 +14,7 @@ import { fileChangeDisplayRowCount } from '../../utils/fileChangeRows';
 import { classifyToolName, type ToolKindIcon } from './toolCardHeader';
 import { aoToolPresentation } from './aoTools';
 import { parseJsonObject } from '../../utils/parseJsonObject';
+import { completionEndsLaunch } from '../../utils/parkedStop';
 import type { ActivityRunStubFacts, ShedRow } from '../../stores/activityRunStubs';
 
 /** Shared empty list: most runs are held whole and shed nothing. */
@@ -226,7 +227,10 @@ function isRunningStatus(status: Item['status']): boolean {
  * A `tool_completion` pairs with its call and is not counted separately —
  * one Bash call that finished is one Bash, not two. A completion whose call
  * is outside the run is an orphan and counts under its own presented tool
- * identity, so a run trimmed at the head still reports honestly.
+ * identity, so a run trimmed at the head still reports honestly. Only an
+ * ending completion supersedes its call's status (`completionEndsLaunch`):
+ * a background agent's parked stops pair with its launch, which stays the
+ * run's running member until the agent ends.
  *
  * `stub` is what the pane knows about the members it does NOT hold
  * (docs/architecture/timeline-window-pages.md §4, §6): shed rows, which
@@ -243,23 +247,20 @@ export function activityRunSummary(
   const shed = stub?.shed ?? EMPTY_SHED;
   const presentIds = new Set(items.map((item) => item.id));
   for (const row of shed) presentIds.add(row.id);
+  // Launches an ending completion supersedes.
   const completedCallIds = new Set<string>();
   for (const item of items) {
-    if (item.kind === 'tool_completion' && item.completionOf) {
-      completedCallIds.add(item.completionOf);
-    }
+    if (item.completionOf && completionEndsLaunch(item)) completedCallIds.add(item.completionOf);
   }
   for (const row of shed) {
-    if (row.kind === 'tool_completion' && row.completionOf !== '') {
-      completedCallIds.add(row.completionOf);
-    }
+    if (completionEndsLaunch(row)) completedCallIds.add(row.completionOf);
   }
   // Members the pane does not hold whose completion it DOES hold (§4).
   // The held completion pairs with them and counts zero, exactly as it
   // would if both rows were loaded.
   for (const id of stub?.unshippedPairedLaunchIds ?? []) presentIds.add(id);
-  // And the mirror: held launches whose completion the pane does not
-  // hold. Their status is superseded exactly as if the completion were
+  // And the mirror: held launches whose ending completion the pane does
+  // not hold. Their status is superseded exactly as if the completion were
   // loaded; a detached launch would otherwise read as running forever.
   for (const id of stub?.shippedSupersededLaunchIds ?? []) completedCallIds.add(id);
   // A run can hold hundreds of repeated Bash/Edit rows and this summary
@@ -295,10 +296,10 @@ export function activityRunSummary(
   }
 
   for (const item of items) {
-    // A completion supersedes its immutable call record. Detached agent
-    // launches deliberately remain `running` forever in canonical history,
-    // so considering both statuses would keep a false running indicator after
-    // the completion landed.
+    // An ending completion supersedes its immutable call record. Detached
+    // agent launches deliberately remain `running` forever in canonical
+    // history, so considering both statuses would keep a false running
+    // indicator after the completion landed.
     if (!completedCallIds.has(item.id)) {
       if (isFailedStatus(item.status)) hasFailure = true;
       // Last one wins: the newest active row is what the user wants named.

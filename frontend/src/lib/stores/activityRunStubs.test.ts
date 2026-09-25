@@ -376,6 +376,37 @@ describe('foldedStub', () => {
     expect(folded.unshippedBefore).toBe(2);
   });
 
+  it('keeps a shed parked agent running and paired while a parked stop of it is kept', () => {
+    // a: a background agent's launch; b, d: its parked stops. Shedding a
+    // and b leaves d holding the pairing, and no ending stop settles a.
+    const records: ActivityRunRecords = new Map();
+    const launch = row('a', 0, { toolName: 'Agent', status: 'running', isBackground: true });
+    const parked = (id: string, index: number) =>
+      row(id, index, { kind: 'tool_completion', toolName: 'Agent', completionOf: 'a', status: 'parked' });
+    const rows = [launch, parked('b', 1), row('c', 2), parked('d', 3)];
+    const record = foldPageStub(
+      records,
+      stub({
+        lastItemId: 'd',
+        memberCount: 4,
+        loadedFirstItemId: 'a',
+        loadedLastItemId: 'd',
+        unshippedBefore: 0,
+        unshippedAfter: 0,
+        unshippedDigest: windowDigest([]),
+        unshippedGroups: [],
+      }),
+      span(rows),
+    );
+    shedOlderMembers(record, rows.slice(0, 2), 'c', 'd');
+    const folded = foldedStub(record, rows.slice(2))!;
+    expect(folded.unshippedPairedLaunchIds).toEqual(['a']);
+    expect(folded.shippedSupersededLaunchIds).toEqual([]);
+    expect(folded.runningBefore).toEqual({ kind: 'tool_call', toolName: 'Agent', mcp: '' });
+    // The launch counts once; the shed parked stop pairs and counts zero.
+    expect(folded.unshippedGroups).toEqual([{ kind: 'tool_call', toolName: 'Agent', mcp: '', rows: 1 }]);
+  });
+
   it('states nothing for a dirty record', () => {
     const records: ActivityRunRecords = new Map();
     const record = foldPageStub(records, stub({ loadedLastItemId: 'c' }), span(loaded));

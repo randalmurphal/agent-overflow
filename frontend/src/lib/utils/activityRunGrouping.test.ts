@@ -825,6 +825,23 @@ describe('run build reuse across passes', () => {
     expect(third.summaryItemIds).toBe(second.summaryItemIds);
   });
 
+  it('keeps a parked agent’s launch pending until its ending stop lands', () => {
+    // A parked stop does not settle the launch, so it is no summary
+    // dependency: the run keeps naming the agent, and the ending stop,
+    // wherever it lands, still rebuilds the run.
+    const reg = identity();
+    const launch = tool('a1', 'Agent', { status: 'running' });
+    const parked = leaf({ id: 'p1', kind: 'tool_completion', completionOf: 'a1', status: 'parked' });
+    const first = run(project([launch], { identity: reg, withheld: [parked] }), 0);
+    expect(first.summaryItemIds).toEqual(['a1']);
+    const ending = leaf({ id: 'c1', kind: 'tool_completion', completionOf: 'a1', status: 'completed' });
+    const second = run(
+      project([launch], { identity: reg, withheld: [parked, ending] }),
+      0,
+    );
+    expect(second.summaryItemIds).toEqual(['a1', 'c1']);
+  });
+
   it('lean build: a plain tool run shares one array for members and summary', () => {
     // No member can have an out-of-band completion, so the summary
     // sequence IS the member sequence — building a second array (and the

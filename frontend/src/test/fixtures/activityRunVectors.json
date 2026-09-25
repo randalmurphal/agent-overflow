@@ -979,6 +979,317 @@
           ]
         }
       ]
+    },
+    {
+      "name": "a parked stop pairs with its launch and leaves it running",
+      "why": "A background agent's parked stop (status parked) is a completion of its launch that pauses the agent's run rather than ending it. It pairs with the launch and counts zero rows like any completion, but it does not supersede the launch's status: while the agent is parked or running again after a wake, the run's running member is the launch.",
+      "items": [
+        {
+          "id": "a1",
+          "kind": "tool_call",
+          "toolName": "Agent",
+          "status": "running",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": true,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "a2",
+          "kind": "thinking",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "a3",
+          "kind": "tool_completion",
+          "toolName": "Agent",
+          "status": "parked",
+          "completionOf": "a1",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "a4",
+          "kind": "thinking",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "a5",
+          "kind": "tool_completion",
+          "toolName": "Agent",
+          "status": "parked",
+          "completionOf": "a1",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "a1",
+          "lastItemId": "a5",
+          "memberIds": [
+            "a1",
+            "a2",
+            "a3",
+            "a4",
+            "a5"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "a3"
+              ],
+              "memberCount": 5,
+              "loadedFirstItemId": "a3",
+              "loadedLastItemId": "a3",
+              "unshippedBefore": 2,
+              "unshippedAfter": 2,
+              "unshippedGroups": [
+                {
+                  "kind": "thinking",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 2
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "Agent",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [
+                "a1"
+              ],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": {
+                "kind": "tool_call",
+                "toolName": "Agent",
+                "mcp": ""
+              },
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "a1",
+                "a2",
+                "a3"
+              ],
+              "memberCount": 5,
+              "loadedFirstItemId": "a1",
+              "loadedLastItemId": "a3",
+              "unshippedBefore": 0,
+              "unshippedAfter": 2,
+              "unshippedGroups": [
+                {
+                  "kind": "thinking",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "a4",
+                "a5"
+              ],
+              "memberCount": 5,
+              "loadedFirstItemId": "a4",
+              "loadedLastItemId": "a5",
+              "unshippedBefore": 3,
+              "unshippedAfter": 0,
+              "unshippedGroups": [
+                {
+                  "kind": "thinking",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                },
+                {
+                  "kind": "tool_call",
+                  "toolName": "Agent",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [
+                "a1"
+              ],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": {
+                "kind": "tool_call",
+                "toolName": "Agent",
+                "mcp": ""
+              },
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "only the ending stop supersedes a launch its parked stops pair with",
+      "why": "A launch with parked stops and an ending completion is superseded by the ending one alone: a page that ships the launch and a parked stop but not the ending completion names the launch as superseded, and one that ships a parked stop but not the launch names the launch as paired.",
+      "items": [
+        {
+          "id": "b1",
+          "kind": "tool_call",
+          "toolName": "Agent",
+          "status": "running",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": true,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "b2",
+          "kind": "tool_completion",
+          "toolName": "Agent",
+          "status": "parked",
+          "completionOf": "b1",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "b3",
+          "kind": "thinking",
+          "toolName": "",
+          "status": "completed",
+          "completionOf": "",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        },
+        {
+          "id": "b4",
+          "kind": "tool_completion",
+          "toolName": "Agent",
+          "status": "completed",
+          "completionOf": "b1",
+          "payloadKind": "",
+          "isBackground": false,
+          "meta": "{}",
+          "payloadMeta": ""
+        }
+      ],
+      "runs": [
+        {
+          "firstItemId": "b1",
+          "lastItemId": "b4",
+          "memberIds": [
+            "b1",
+            "b2",
+            "b3",
+            "b4"
+          ],
+          "stubs": [
+            {
+              "shippedIds": [
+                "b1",
+                "b2"
+              ],
+              "memberCount": 4,
+              "loadedFirstItemId": "b1",
+              "loadedLastItemId": "b2",
+              "unshippedBefore": 0,
+              "unshippedAfter": 2,
+              "unshippedGroups": [
+                {
+                  "kind": "thinking",
+                  "toolName": "",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [
+                "b1"
+              ],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "b2",
+                "b3"
+              ],
+              "memberCount": 4,
+              "loadedFirstItemId": "b2",
+              "loadedLastItemId": "b3",
+              "unshippedBefore": 1,
+              "unshippedAfter": 1,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Agent",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [
+                "b1"
+              ],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            },
+            {
+              "shippedIds": [
+                "b3"
+              ],
+              "memberCount": 4,
+              "loadedFirstItemId": "b3",
+              "loadedLastItemId": "b3",
+              "unshippedBefore": 2,
+              "unshippedAfter": 1,
+              "unshippedGroups": [
+                {
+                  "kind": "tool_call",
+                  "toolName": "Agent",
+                  "mcp": "",
+                  "rows": 1
+                }
+              ],
+              "unshippedPairedLaunchIds": [],
+              "shippedSupersededLaunchIds": [],
+              "unshippedFailed": false,
+              "runningBefore": null,
+              "runningAfter": null
+            }
+          ]
+        }
+      ]
     }
   ]
 }
