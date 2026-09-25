@@ -1720,6 +1720,22 @@ describe('setupEventListeners', () => {
     expect(pane.items.find((item) => item.id === 'text-1')?.summary).toBe('stable');
   });
 
+  it('does not re-read a thread window for a resync item event', async () => {
+    const pane = await buildPane(makeThread({ id: 'thread-1' }));
+    const liveState = setBindingMock('GetThreadLiveState', async (threadId: string) => ({
+      threadId, activeTurn: null, queueItems: [], interactive: { approvals: [], userInputs: [] }, todo: null,
+    }));
+    const slice = setBindingMock('ListThreadSliceAround', async () => ({ items: [], hasMoreOlder: false, hasMoreNewer: false }));
+
+    emitWailsEvent('provider:item_event', { action: 'resync', threadId: 'thread-1' });
+    await nextFrame();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(pane.threadId).toBe('thread-1');
+    expect(liveState).not.toHaveBeenCalled();
+    expect(slice).not.toHaveBeenCalled();
+  });
+
   it('updates cached thread rows from thread:updated', async () => {
     setBindingMock('ListThreads', async () => [
       makeThread({
