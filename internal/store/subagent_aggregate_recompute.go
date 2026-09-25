@@ -9,7 +9,25 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"agent-overflow/internal/threadmode"
 )
+
+// subagentStampsFrozen reports a holder (threadmode.ModeHolder). A
+// holder's clean stamps came with its rows from the thread they left and
+// count what its readers read under each anchor, which is not what the
+// holder's own timeline holds, so a recompute would change them; the
+// stamps no read serves were dropped when the rows came
+// (dropUnservedHolderStampsTx). No recompute, recovery or restamp writes
+// or deletes a holder's stamps: each asks here.
+func subagentStampsFrozen(q sqlQueryer, threadID string) (bool, error) {
+	var frozen bool
+	if err := q.QueryRow(`SELECT EXISTS (SELECT 1 FROM threads WHERE id = ? AND mode = ?)`,
+		threadID, threadmode.ModeHolder).Scan(&frozen); err != nil {
+		return false, fmt.Errorf("store: read whether %s holds rows for forks: %w", threadID, err)
+	}
+	return frozen, nil
+}
 
 // subagentStampValues is a stamp as stored, without its generation: what
 // a recompute derives and compares. Its fields after State are
@@ -146,6 +164,9 @@ func computeSubagentStamps(q sqlQueryer, threadID string, seedIDs []string) ([]s
 // (subagentResumeRounds), a family is the same whichever of its members
 // seeds it.
 func computeSubagentFamilies(q sqlQueryer, threadID string, seedIDs []string) ([]subagentFamilyMember, error) {
+	if frozen, err := subagentStampsFrozen(q, threadID); err != nil || frozen {
+		return nil, err
+	}
 	seeds, err := subagentStampTargets(q, threadID, seedIDs)
 	if err != nil {
 		return nil, err
@@ -575,6 +596,9 @@ func recomputeSubagentFamiliesTx(tx *sql.Tx, threadID string, seeds []string, bu
 // already has, it does nothing. It returns every stamp
 // it covered, whose card accumulators the caller retires (cardWrite.finish).
 func (s *Store) recomputeSubagentChainsTx(tx *sql.Tx, threadID string, fromIDs, seeds, unanchor []string, bump func() error) ([]string, error) {
+	if frozen, err := subagentStampsFrozen(tx, threadID); err != nil || frozen {
+		return nil, err
+	}
 	ids := make(map[string]struct{}, len(seeds))
 	for _, id := range seeds {
 		if id != "" {
@@ -912,6 +936,11 @@ func (s *Store) markLiveSubagentChainsDirty() ([]string, error) {
 	threadIDs := slices.Sorted(maps.Keys(from))
 	var marked []string
 	for _, threadID := range threadIDs {
+		if frozen, err := subagentStampsFrozen(tx, threadID); err != nil {
+			return nil, err
+		} else if frozen {
+			continue
+		}
 		var anchors []string
 		seen := make(map[string]bool)
 		for _, id := range from[threadID] {
@@ -956,6 +985,9 @@ func (s *Store) markLiveSubagentChainsDirty() ([]string, error) {
 // transaction, before the thread leaves bulk load, and retires every
 // card accumulator of the thread.
 func (s *Store) restampSubagentAggregatesTx(tx *sql.Tx, threadID string) error {
+	if frozen, err := subagentStampsFrozen(tx, threadID); err != nil || frozen {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM subagent_aggregates WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("store: clear loaded subagent stamps in %s: %w", threadID, err)
 	}

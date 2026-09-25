@@ -158,12 +158,16 @@ func inheritedRowTurnTx(tx *sql.Tx, threadID, itemID string) (int, error) {
 // shows: its stamps move (bumpForkViewTx), its turn-error pair is
 // recomputed, because the change writes no row or turn whose trigger
 // would, and w's finish recomputes the stamps of copies, the copied
-// anchors forkCopyStampsTx listed before the change.
+// anchors forkCopyStampsTx listed before the change, which its readers
+// walk while they show more (markNarrowedCopiesTx).
 func forkViewChangedTx(tx *sql.Tx, w *cardWrite, threadID string, copies []string) error {
 	if err := bumpForkViewTx(tx, threadID); err != nil {
 		return err
 	}
 	if err := recomputeTurnErrorsTx(tx, threadID); err != nil {
+		return err
+	}
+	if err := markNarrowedCopiesTx(tx, threadID, copies); err != nil {
 		return err
 	}
 	w.subtreesChanged(copies)
@@ -223,14 +227,15 @@ const readersShowingInheritedSQL = `SELECT r.thread_id, r.depth, r.cut_turn_inde
 func hideInheritedItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) (bool, error) {
 	query, args := inheritedTimelineArms(threadID, allLevels, timelineSelection{
 		Columns: func(string, string) string {
-			return "items.id, COALESCE(items.payload_id, ''), COALESCE(items.input_payload_id, ''), l.ancestor_id, items.turn_index, items.item_index"
+			return "items.id, COALESCE(items.payload_id, ''), COALESCE(items.input_payload_id, ''), l.ancestor_id, items.turn_index, items.item_index, items.parent_id"
 		},
 		KeyFirst: true,
 		Where:    "items.id = ?", WhereArgs: []any{itemID},
 	})
 	var row inheritedRow
 	var at timelineRow
-	err := tx.QueryRow(query, args...).Scan(&row.id, &row.payloadID, &row.inputPayloadID, &row.owner, &at.turn, &at.item)
+	var parent string
+	err := tx.QueryRow(query, args...).Scan(&row.id, &row.payloadID, &row.inputPayloadID, &row.owner, &at.turn, &at.item, &parent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -251,6 +256,11 @@ func hideInheritedItemTx(tx *sql.Tx, w *cardWrite, threadID, itemID string) (boo
 		return false, err
 	}
 	if err := hideForkRowsTx(tx, threadID, []string{itemID}); err != nil {
+		return false, err
+	}
+	// The stamps above the row count it; threadID shows it no more
+	// (fork_walked.go).
+	if err := markWalkedAncestorsTx(tx, threadID, threadID, []rowParent{{id: itemID, parent: parent}}); err != nil {
 		return false, err
 	}
 	if err := dropEmptyHolderLevelsTx(tx, w, threadID); err != nil {

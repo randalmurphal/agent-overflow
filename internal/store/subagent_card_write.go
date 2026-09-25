@@ -54,6 +54,10 @@ type cardWrite struct {
 	// it deleted or re-pointed, whose trigger may revive it: finish reads
 	// each launch's transcript root and records both (launches).
 	settled, revived []string
+	// placed are the counted rows the write inserted, moved or made
+	// counted under a parent, whose readers may read them other than the
+	// stamps above them count (markPlacedAnchorsTx).
+	placed []placedRow
 	// stale lists the stamps finish recomputed, once it has.
 	stale   []string
 	touched bool
@@ -113,6 +117,7 @@ func (w *cardWrite) inserted(row subagentRow, hasChild bool) {
 	if !row.counts() {
 		return
 	}
+	w.place(row)
 	if w.card == nil {
 		w.chains = append(w.chains, row.parentID)
 		if row.prompt {
@@ -149,6 +154,9 @@ func (w *cardWrite) updated(old, row subagentRow) error {
 	if structural {
 		w.chains = append(w.chains, old.parentID, row.parentID)
 		w.seeds = append(w.seeds, old.carrier, row.carrier)
+		if row.counts() && (!old.counts() || old.parentID != row.parentID || old.turn != row.turn || old.index != row.index) {
+			w.place(row)
+		}
 	}
 	if old.anchorable() != row.anchorable() || old.root != row.root {
 		w.seeds = append(w.seeds, row.id, old.root, row.root)
@@ -201,12 +209,25 @@ func (w *cardWrite) subtreesChanged(ids []string) {
 	w.seeds = append(w.seeds, ids...)
 }
 
-// finish recomputes what the write changed that the rules do not follow,
-// then settles what it leaves in memory (settle). A write that recomputes
-// anything recomputes its noted rows' chains with it, and its card takes
-// no note. A writer without the cards' lock has every accumulator of a
-// stamp it recomputed retired at the next card operation.
+// place records a counted row the write put under its parent at its
+// position.
+func (w *cardWrite) place(row subagentRow) {
+	w.placed = append(w.placed, placedRow{ID: row.id, Parent: row.parentID, Turn: row.turn, Item: row.index})
+}
+
+// finish records the markers the write's placed rows call for
+// (markPlacedAnchorsTx), recomputes what the write changed that the rules
+// do not follow, then settles what it leaves in memory (settle). A write
+// that recomputes anything recomputes its noted rows' chains with it, and
+// its card takes no note. A writer without the cards' lock has every
+// accumulator of a stamp it recomputed retired at the next card
+// operation.
 func (w *cardWrite) finish() error {
+	placed := w.placed
+	w.placed = nil
+	if err := markPlacedAnchorsTx(w.tx, w.threadID, placed); err != nil {
+		return err
+	}
 	if err := w.launches(); err != nil {
 		return err
 	}

@@ -108,7 +108,8 @@ func (s *Store) ApplyImportBatch(threadID string, batch ImportBatch) error {
 
 // touchImportedSubtrees records the chains an import batch adds rows
 // under, for w to recompute. A row whose parent lies outside the batch may
-// hang under a local anchor whose stamp it changes.
+// hang under a local anchor whose stamp it changes, or under an anchor a
+// pointer fork inherits, which w's finish marks (markPlacedAnchorsTx).
 func touchImportedSubtrees(w *cardWrite, rows []ImportRow) {
 	inBatch := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
@@ -122,6 +123,9 @@ func touchImportedSubtrees(w *cardWrite, rows []ImportRow) {
 		}
 		if _, internal := inBatch[parent]; internal {
 			continue
+		}
+		if placed := subagentRowOf(row.Item); placed.counts() {
+			w.place(placed)
 		}
 		if _, dup := seen[parent]; dup {
 			continue

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"agent-overflow/internal/entityid"
@@ -183,8 +184,11 @@ func holdSplitRowsTx(tx *sql.Tx, w *cardWrite, threadID string, sp forkSplit, he
 	if err != nil {
 		return 0, fmt.Errorf("store: read the rows %s's forks read: %w", threadID, err)
 	}
+	var launches []string
 	if err := withHistoryBulkLoadTx(tx, holder, func() error {
-		return holdSettledLaunchesTx(tx, threadID, holder, span, spanArgs)
+		var err error
+		launches, err = holdSettledLaunchesTx(tx, threadID, holder, span, spanArgs)
+		return err
 	}); err != nil {
 		return 0, err
 	}
@@ -219,8 +223,8 @@ func holdSplitRowsTx(tx *sql.Tx, w *cardWrite, threadID string, sp forkSplit, he
 		threadID, list); err != nil {
 		return 0, fmt.Errorf("store: drop the anchors of the rows %s gave its holder: %w", threadID, err)
 	}
-	if _, err := tx.Exec(`DELETE FROM subagent_aggregates WHERE thread_id = ?`, holder); err != nil {
-		return 0, fmt.Errorf("store: drop the cards of the rows %s gave its holder: %w", threadID, err)
+	if err := dropUnservedHolderStampsTx(tx, holder); err != nil {
+		return 0, err
 	}
 	if _, err := tx.Exec(`UPDATE thread_search_rows SET thread_id = ?
 		 WHERE thread_id = ? AND source = '`+ThreadSearchSourceItem+`' AND item_id IN (SELECT value FROM json_each(?))`,
@@ -235,7 +239,23 @@ func holdSplitRowsTx(tx *sql.Tx, w *cardWrite, threadID string, sp forkSplit, he
 			return 0, err
 		}
 	}
-	return len(moved) + len(imported.ids), hideHeldRowsTx(tx, holder, append(ids, imported.ids...))
+	taken := append(ids, imported.ids...)
+	if err := markStraddledAnchorsTx(tx, holder, threadID, append(slices.Clip(taken), launches...)); err != nil {
+		return 0, err
+	}
+	return len(moved) + len(imported.ids), hideHeldRowsTx(tx, holder, taken)
+}
+
+// dropUnservedHolderStampsTx drops the stamps a holder took with its rows
+// that serve no read: dirty and readTime ones. A clean stamp moved with
+// its anchor's rows and counts what the holder's readers read under it
+// (fork_walked.go); nothing recomputes a holder's stamps
+// (subagentStampsFrozen), and a copy the holder takes gets none.
+func dropUnservedHolderStampsTx(tx *sql.Tx, holder string) error {
+	if _, err := tx.Exec(`DELETE FROM subagent_aggregates WHERE thread_id = ? AND state <> `+aggCleanLiteral, holder); err != nil {
+		return fmt.Errorf("store: drop the unserved cards holder %s took: %w", holder, err)
+	}
+	return nil
 }
 
 // firstOwnRowTx is the first of threadID's own rows, local or imported,
@@ -367,19 +387,20 @@ func moveItemRowsTx(tx *sql.Tx, w *cardWrite, threadID, holder, sel string, selA
 // or, when it holds their id or position, are the caller's to remove.
 // Either revives the launch in threadID, and the forks that read the
 // completion from the holder read the launch there, settled, as before. A
-// launch the holder already holds is the one they read.
-func holdSettledLaunchesTx(tx *sql.Tx, threadID, holder, span string, spanArgs []any) error {
+// launch the holder already holds is the one they read. It returns the
+// ids of the copies.
+func holdSettledLaunchesTx(tx *sql.Tx, threadID, holder, span string, spanArgs []any) ([]string, error) {
 	targets, err := queryIDs(tx, `SELECT completion_of FROM items WHERE thread_id = ? AND completion_of <> '' AND `+span,
 		append([]any{threadID}, spanArgs...)...)
 	if err != nil {
-		return fmt.Errorf("store: read the completions %s's split takes: %w", threadID, err)
+		return nil, fmt.Errorf("store: read the completions %s's split takes: %w", threadID, err)
 	}
 	if len(targets) == 0 {
-		return nil
+		return nil, nil
 	}
 	list, err := jsonList(targets)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	args := append([]any{threadID, list}, spanArgs...)
 	launches, err := scanInheritedRows(tx, threadID, `SELECT id, COALESCE(payload_id, ''), COALESCE(input_payload_id, ''), thread_id
@@ -387,7 +408,7 @@ func holdSettledLaunchesTx(tx *sql.Tx, threadID, holder, span string, spanArgs [
 		   AND kind = 'tool_call' AND status = 'running' AND is_background = 1
 		   AND NOT (`+span+`) AND NOT `+holderHoldsSQL, append(args, holderHoldsArgs(holder)...))
 	if err != nil || len(launches) == 0 {
-		return err
+		return nil, err
 	}
 	ids := make([]string, len(launches))
 	for i, row := range launches {
@@ -395,17 +416,19 @@ func holdSettledLaunchesTx(tx *sql.Tx, threadID, holder, span string, spanArgs [
 	}
 	losing, err := launchesLosingCompletionTx(tx, threadID, ids, "NOT ("+span+")", spanArgs)
 	if err != nil || len(losing) == 0 {
-		return err
+		return nil, err
 	}
 	keep := make(map[string]bool, len(losing))
 	for _, id := range losing {
 		keep[id] = true
 	}
 	var copies []inheritedRow
+	var copied []string
 	for _, row := range launches {
 		if keep[row.id] {
 			copies = append(copies, row)
+			copied = append(copied, row.id)
 		}
 	}
-	return snapshotRowsTx(tx, holder, copies)
+	return copied, snapshotRowsTx(tx, holder, copies)
 }

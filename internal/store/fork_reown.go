@@ -214,7 +214,9 @@ func requireMutableTurnTx(tx *sql.Tx, turnID, label string) (bool, error) {
 // the cut it reads threadID at, so every reader shows the same rows and
 // turns before and after, and threadID's are shown by none. The holder is
 // the one readers already read there when it serves them all
-// (reusableHolderTx), else a new one.
+// (reusableHolderTx), else a new one. The copies get no stamp
+// (subagentStampsFrozen), and the anchors above them are marked for the
+// readers (markStraddledAnchorsTx).
 func holdCopiesTx(tx *sql.Tx, threadID string, rows []inheritedRow, turns []int, readers []forkLevel) error {
 	holder, deepest, reused, err := holderForTx(tx, threadID, readers)
 	if err != nil {
@@ -237,8 +239,12 @@ func holdCopiesTx(tx *sql.Tx, threadID string, rows []inheritedRow, turns []int,
 			return fmt.Errorf("store: copy the turns of %s its forks show: %w", threadID, err)
 		}
 	}
-	if _, err := tx.Exec(`DELETE FROM subagent_aggregates WHERE thread_id = ?`, holder); err != nil {
-		return fmt.Errorf("store: drop the cards of the rows %s's holder copied: %w", threadID, err)
+	ids := make([]string, len(rows))
+	for i, row := range rows {
+		ids[i] = row.id
+	}
+	if err := markStraddledAnchorsTx(tx, holder, threadID, ids); err != nil {
+		return err
 	}
 	if reused {
 		return nil

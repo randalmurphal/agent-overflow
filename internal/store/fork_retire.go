@@ -15,13 +15,16 @@ import (
 
 // holderKeptTables are the tables with a foreign key to threads whose rows
 // a holder keeps: the history its readers read, the hides they read it
-// through, the index rows search expands to them, and the attachments
-// their rows show (ReleasableAttachments).
+// through and the anchors they walk (fork_walked.go), the index rows
+// search expands to them, and the attachments their rows show
+// (ReleasableAttachments). Its clean subagent stamps stay with its rows;
+// the stamps no read serves go (dropUnservedHolderStampsTx).
 var holderKeptTables = []string{
 	"attachment_owners",
 	"items",
 	"payloads",
 	"thread_fork_hidden",
+	"thread_fork_walked",
 	"thread_import_chunks",
 	"thread_import_item_overrides",
 	"thread_search_rows",
@@ -77,8 +80,8 @@ func retireToHolderTx(tx *sql.Tx, id string) (bool, error) {
 			return false, fmt.Errorf("store: clear %s of retired thread %s: %w", rows.table, id, err)
 		}
 	}
-	if _, err := tx.Exec(`DELETE FROM subagent_aggregates WHERE thread_id = ?`, id); err != nil {
-		return false, fmt.Errorf("store: clear the cards of retired thread %s: %w", id, err)
+	if err := dropUnservedHolderStampsTx(tx, id); err != nil {
+		return false, err
 	}
 	if err := deleteThreadSearchWhereTx(tx, "thread_id = ? AND item_id = ''", []any{id}); err != nil {
 		return false, err

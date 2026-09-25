@@ -1720,6 +1720,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 129, Name: "holder_sources", SQL: holderSourcesV129SQL},
 	{Version: 130, Name: "fork_turn_visibility", SQL: forkTurnVisibilityV130SQL},
 	{Version: 131, Name: "shown_history_fix", SQL: shownHistoryFixV131SQL},
+	{Version: 132, Name: "fork_walked_anchors", SQL: forkWalkedAnchorsV132SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

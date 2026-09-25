@@ -110,9 +110,10 @@ func servedRevsForTest(t *testing.T, s *Store, threadID string) map[string]int64
 	return out
 }
 
-// walkedSubagentCardsForTest is the reference read: every stamp removed
-// and the thread listed for the backfill, so every anchor goes through the
-// read-time aggregator. The transaction is rolled back.
+// walkedSubagentCardsForTest is the reference read: every stamp of the
+// thread and of each level it reads removed and the thread listed for the
+// backfill, so every anchor goes through the read-time aggregator. The
+// transaction is rolled back.
 func walkedSubagentCardsForTest(t *testing.T, s *Store, threadID string) map[string]subagentCard {
 	t.Helper()
 	tx, err := s.db.Begin()
@@ -120,13 +121,21 @@ func walkedSubagentCardsForTest(t *testing.T, s *Store, threadID string) map[str
 		t.Fatalf("begin walked read: %v", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM subagent_aggregates WHERE thread_id = ?`, threadID); err != nil {
-		t.Fatalf("strip stamps: %v", err)
-	}
+	stripReadStampsForTest(t, tx, threadID)
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO subagent_aggregate_backfill(thread_id) VALUES (?)`, threadID); err != nil {
 		t.Fatalf("list thread: %v", err)
 	}
 	return subagentCardsForTest(t, s, tx, threadID)
+}
+
+// stripReadStampsForTest removes, in tx, the stamps of threadID and of
+// every level it reads, so a read of threadID in tx walks every anchor.
+func stripReadStampsForTest(t *testing.T, tx *sql.Tx, threadID string) {
+	t.Helper()
+	if _, err := tx.Exec(`DELETE FROM subagent_aggregates
+		 WHERE thread_id = ?1 OR thread_id IN (SELECT ancestor_id FROM thread_fork_lineage WHERE thread_id = ?1)`, threadID); err != nil {
+		t.Fatalf("strip stamps: %v", err)
+	}
 }
 
 // assertSubagentStampParity compares every row's served card with the

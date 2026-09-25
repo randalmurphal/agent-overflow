@@ -343,8 +343,20 @@ such as a fork made between two reverts. A write that still needs a level past
 `forkLineageMaxDepth` is refused with `ErrForkChainTooDeep`.
 
 Copies and moves are bulk writes: they carry no subagent card. An inherited
-anchor is read with revision -1 and walked at read time; its copy is served
-from a stamp. A copy changes no card a read serves, since the walk and the
+anchor is read with revision -1. Its card is the clean stamp of the lineage
+level that holds it when every row the stamp counts sits below the fork's
+cut at that level and no marker in `thread_fork_walked`, at the fork or at a
+level it reads, names the anchor or its transcript root. An unmarked
+inherited anchor with no stamp that no level's row names as parent has no
+card, and any other is walked at read time (`inheritedStampReads`). A writer
+that makes a thread show other rows under an anchor than the level holding
+it counts marks the anchor for the thread and its readers: fork creation, a
+copy, a hide, an item write or import that places a counted row under a
+parent the thread does not hold or below a reader's cut that hides it, a
+holder that takes or copies rows whose parent it does not take, and a fork
+whose revert leaves a reader reading more than it does (`fork_walked.go`).
+Markers are only added. A copy is served from its own stamp. A copy
+changes no card a read serves, since the walk and the
 recompute read every arm, but only a local anchor holds a stamp and a round
 counts in a stamp only when its prompt is local. So a copy recomputes the
 stamps it changes, as a localized imported row does
@@ -352,7 +364,9 @@ stamps it changes, as a localized imported row does
 carrier or root a local carrier names, and the root of a copied resume prompt.
 A card opened under an inherited anchor copies it first, so every anchor a
 card keeps is local. A move takes the rows out of the thread's cards; a holder
-keeps no card.
+keeps no card. It keeps the clean stamps that move with its rows and drops
+the rest (`dropUnservedHolderStampsTx`), a copy it takes gets none, and no
+recompute, recovery or restamp writes its stamps (`subagentStampsFrozen`).
 
 The turn-error triggers' recompute reads a fork's inherited rows through the
 lineage arms, so a write to the fork's own rows or turns keeps the errors it

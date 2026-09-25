@@ -120,8 +120,9 @@ func withHistoryBulkLoadTx(tx *sql.Tx, threadID string, body func() error) error
 // (each row's owner): payloads first, because items reference them by
 // foreign key, then keeper's hide of the ids, which masks the originals in
 // every level keeper reads or is read before, then the rows, their search
-// index rows, the cards the copies change (recomputeLocalizedCardsTx) and
-// the ownership of the attachments they show. A copy keeps the row's id,
+// index rows, the cards the copies change (recomputeLocalizedCardsTx), the
+// markers of the anchors above them (markRowAnchorsTx) and the ownership
+// of the attachments they show. A copy keeps the row's id,
 // position and content, so a read returns the same timeline before and
 // after. The caller holds keeper's history_bulk_load and accounts for the
 // stamp.
@@ -193,6 +194,11 @@ func snapshotRowsTx(tx *sql.Tx, keeper string, rows []inheritedRow) error {
 		}
 	}
 	if err := recomputeLocalizedCardsTx(tx, keeper, ids, "store: copy rows:"); err != nil {
+		return err
+	}
+	// The stamps of the levels keeper reads count the originals, not the
+	// copies keeper may change (fork_walked.go).
+	if err := markRowAnchorsTx(tx, keeper, keeper, ids); err != nil {
 		return err
 	}
 	return ownRowAttachmentsTx(tx, keeper, rows)

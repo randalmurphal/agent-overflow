@@ -302,10 +302,14 @@ func (s *Store) IsSubagentLaunch(threadID, itemID string) (bool, error) {
 // A local anchor the history triggers keep stamped (subagent_aggregate_
 // stamps.go) is returned as read: a local item projection already merged
 // its clean stamp, which is this decoration kept at write time, and its
-// local completion sibling's card (subagentServedMetaSQL). An imported
-// completion of a clean launch takes the launch's card here. Only
-// imported, dirty, readTime and unstamped carrier rows are walked, plus the
-// unstamped anchors of a thread whose backfill has not finished.
+// local completion sibling's card (subagentServedMetaSQL). A pointer
+// fork's inherited anchor takes the card of the stamp of the level that
+// holds it when that stamp describes what the fork shows under it
+// (inheritedStampReads). An imported completion of a clean launch, and a
+// completion of a served inherited launch, take the launch's card here.
+// Only imported, dirty, readTime and unstamped carrier rows are walked,
+// the inherited anchors no stamp serves, and the unstamped anchors of a
+// thread whose backfill has not finished.
 //
 // Cost of a walk: the descendant walk plus ONE narrow probe for the
 // resume-prompt rows under the window's walk roots. It runs whenever the
@@ -395,9 +399,11 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 		return nil, err
 	}
 	// walked holds the rows this read decorates; every other row is
-	// returned as read.
+	// returned as read, but for an inherited anchor served from the stamp
+	// of the level that holds it, which takes its card here.
 	walked := make(map[string]struct{}, len(items))
-	for _, item := range items {
+	for i := range items {
+		item := items[i]
 		launch, ok := launchByID[item.ID]
 		if !ok || item.Kind != "tool_call" {
 			continue
@@ -409,6 +415,12 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 		if walk {
 			walked[item.ID] = struct{}{}
 			addAnchor(item.ID, item.Meta)
+			continue
+		}
+		if item.Rev < 0 {
+			if card, ok := walks.card(item.ID); ok {
+				items[i].Meta = mergeSubagentAnchorMeta(item.Meta, card)
+			}
 		}
 	}
 	// anchorByCompletion maps a walked completion row's id to the launch
@@ -438,9 +450,10 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 			addAnchor(launch.ID, launch.Meta)
 			continue
 		}
-		// A local completion's projection merged its clean launch's card;
-		// the imported arm has no stamps to merge from.
-		if item.Rev < 0 {
+		// A local completion's projection merged its local launch's clean
+		// card; an imported or inherited completion, and any completion of
+		// an inherited launch, take the card here.
+		if item.Rev < 0 || launch.Rev < 0 {
 			if card, ok := walks.card(launch.ID); ok {
 				items[i].Meta = mergeSubagentAnchorMeta(item.Meta, card)
 			}
@@ -488,23 +501,32 @@ func (s *Store) decorateSubagentAnchors(q sqlQueryer, threadID string, items []I
 }
 
 // subagentWalkDecider decides, for the anchorable rows of one read,
-// whether the read-time aggregator answers for a row (walks) or its
-// stamp is the read. It reads the stamps of the read's local tool calls
-// in one probe; an unstamped local anchor is walked only while its
-// thread's backfill is pending, which one more probe per read answers.
+// whether the read-time aggregator answers for a row (walks) or a stamp
+// is the read. It reads the stamps of the read's local tool calls in one
+// probe, and those of its inherited ones at the levels that hold them in
+// another (inheritedStampReads); an unstamped local anchor is walked only
+// while its thread's backfill is pending, which one more probe per read
+// answers.
 type subagentWalkDecider struct {
 	q        sqlQueryer
 	threadID string
 	stamps   map[string]subagentStampRead
-	listed   *bool
+	// inherited holds the inherited rows a stamp of the level that holds
+	// them serves; every other inherited anchorable row is walked.
+	inherited map[string]subagentStampRead
+	listed    *bool
 }
 
-// subagentStampRead is what a read needs of a local anchor's stamp: its
-// state and, when clean with a card, the card.
+// subagentStampRead is what a read needs of an anchor's stamp: its state
+// and, when clean, the card and tray it serves. A local row's projection
+// merges its tray (subagentServedMetaSQL); a served inherited row takes
+// it from here.
 type subagentStampRead struct {
 	state   int
 	card    subagentAnchorAggregate
 	hasCard bool
+	tray    latestDirectSubagentTool
+	hasTray bool
 }
 
 // subagentStampReadsSQL reads the stamps of the local rows the JSON array
@@ -513,25 +535,38 @@ const subagentStampReadsSQL = `SELECT item_id, state, descendant_count, latest_c
   FROM subagent_aggregates
  WHERE thread_id = ?1 AND item_id IN (SELECT value FROM json_each(?2))`
 
-// newSubagentWalkDecider reads the stamps of the local tool calls among
-// rows, which must hold every row the decider is later asked about.
+// newSubagentWalkDecider reads the stamps of the tool calls among rows,
+// which must hold every row the decider is later asked about.
 func newSubagentWalkDecider(q sqlQueryer, threadID string, rows map[string]Item) (*subagentWalkDecider, error) {
 	decider := &subagentWalkDecider{q: q, threadID: threadID}
 	ids := make([]string, 0, len(rows))
+	var inherited []inheritedAnchor
 	for id, row := range rows {
-		if row.Rev >= 0 && row.Kind == "tool_call" && row.ToolName != "collab_agent" {
-			ids = append(ids, id)
+		if !SubagentAnchorable(row.Kind, row.ToolName) {
+			continue
 		}
+		if row.Rev >= 0 {
+			ids = append(ids, id)
+			continue
+		}
+		inherited = append(inherited, inheritedAnchor{ID: id, Root: transcriptRootFromMeta(row.Meta)})
 	}
-	if len(ids) == 0 {
-		return decider, nil
+	if len(ids) > 0 {
+		slices.Sort(ids)
+		stamps, err := subagentStampReads(q, threadID, ids)
+		if err != nil {
+			return nil, err
+		}
+		decider.stamps = stamps
 	}
-	slices.Sort(ids)
-	stamps, err := subagentStampReads(q, threadID, ids)
-	if err != nil {
-		return nil, err
+	if len(inherited) > 0 {
+		slices.SortFunc(inherited, func(a, b inheritedAnchor) int { return strings.Compare(a.ID, b.ID) })
+		served, err := inheritedStampReads(q, threadID, inherited)
+		if err != nil {
+			return nil, err
+		}
+		decider.inherited = served
 	}
-	decider.stamps = stamps
 	return decider, nil
 }
 
@@ -555,12 +590,7 @@ func subagentStampReads(q sqlQueryer, threadID string, ids []string) (map[string
 		}
 		if stamp.state == aggStateClean && count.Valid {
 			stamp.hasCard = true
-			stamp.card = subagentAnchorAggregate{
-				descendantCount:           int(count.Int64),
-				latestChildSummary:        summary.String,
-				transcriptDescendantCount: int(transcript.Int64),
-				hasTranscriptCount:        transcript.Valid,
-			}
+			stamp.card = subagentCardOfStamp(count, summary, transcript)
 		}
 		out[id] = stamp
 	}
@@ -570,17 +600,164 @@ func subagentStampReads(q sqlQueryer, threadID string, ids []string) (map[string
 	return out, nil
 }
 
+// subagentCardOfStamp is the card of a clean stamp with a count.
+func subagentCardOfStamp(count sql.NullInt64, summary sql.NullString, transcript sql.NullInt64) subagentAnchorAggregate {
+	return subagentAnchorAggregate{
+		descendantCount:           int(count.Int64),
+		latestChildSummary:        summary.String,
+		transcriptDescendantCount: int(transcript.Int64),
+		hasTranscriptCount:        transcript.Valid,
+	}
+}
+
+// inheritedAnchor is an inherited anchorable row of a read, with the
+// transcript root a resume carrier's round is counted under
+// (transcriptRootFromMeta).
+type inheritedAnchor struct {
+	ID   string `json:"id"`
+	Root string `json:"root"`
+}
+
+// inheritedStampReadsSQL resolves each inherited anchorable row the JSON
+// array ?2 names, as {id, root}, to the lineage levels of fork ?1 whose
+// row of that id the fork shows (inheritedKeyedItemVisibleSQL), each with
+// the level's cut, the level's stamp of the row, whether a marker
+// (fork_walked.go) names the row or its transcript root at the fork or at
+// any level it reads, and, for a row with no stamp, whether a row of a
+// level names it as parent: a local row (idx_items_parent) or an imported
+// row of any thread (idx_import_history_items_parent_lookup). A row of
+// the fork's own under an inherited anchor marks it (markPlacedAnchorsTx).
+// Each id probes the fork's lineage rows, then each level's row, hides
+// and stamp by key; the markers and children are probed by key per level.
+var inheritedStampReadsSQL = `SELECT ids.id, l.depth, l.cut_turn_index, l.cut_item_index,
+       s.item_id IS NOT NULL, COALESCE(s.state, 0),
+       s.descendant_count, s.latest_child_summary, s.transcript_count,
+       s.tool_summary, s.tool_turn, s.tool_item,
+       s.newest_turn, s.newest_item, s.transcript_newest_turn, s.transcript_newest_item,
+       EXISTS (SELECT 1 FROM thread_fork_walked w
+                WHERE w.thread_id = ?1 AND w.item_id IN (ids.id, ids.root))
+    OR EXISTS (SELECT 1 FROM thread_fork_lineage wl
+                 CROSS JOIN thread_fork_walked w ON w.thread_id = wl.ancestor_id AND w.item_id IN (ids.id, ids.root)
+                WHERE wl.thread_id = ?1),
+       CASE WHEN s.item_id IS NULL THEN
+            EXISTS (SELECT 1 FROM thread_fork_lineage cl
+                      CROSS JOIN items c ON c.thread_id = cl.ancestor_id AND c.parent_id = ids.id AND c.parent_id <> ''
+                     WHERE cl.thread_id = ?1)
+         OR EXISTS (SELECT 1 FROM import_history_items c WHERE c.parent_id = ids.id AND c.parent_id <> '')
+       ELSE 0 END
+  FROM (SELECT json_extract(value, '$.id') AS id, json_extract(value, '$.root') AS root FROM json_each(?2)) ids
+  CROSS JOIN thread_fork_lineage l
+  CROSS JOIN items ON items.thread_id = l.ancestor_id AND items.id = ids.id
+  LEFT JOIN subagent_aggregates s ON s.thread_id = items.thread_id AND s.item_id = items.id
+ WHERE l.thread_id = ?1
+   AND ` + inheritedKeyedItemVisibleSQL
+
+// inheritedStampReads returns the rows of inherited that the stamp of the
+// nearest level showing them serves, with that stamp. A stamp counts the
+// rows its level shows, so it serves a fork that shows the same rows under
+// the anchor: it is clean, the newest row it counts and, for a root with
+// rounds, the newest of its whole transcript sit below the fork's cut at
+// that level, and no marker names the row or its transcript root. A clean
+// stamp with nothing to show serves nothing and walks nothing, as a local
+// one does, and so does an unmarked row with no stamp that no row of a
+// level names as parent: its walk finds nothing. An unstamped carrier is
+// walked, as a local one is. A row only imported history holds, or that
+// no clean stamp describes, is walked.
+func inheritedStampReads(q sqlQueryer, threadID string, inherited []inheritedAnchor) (map[string]subagentStampRead, error) {
+	encoded, err := json.Marshal(inherited)
+	if err != nil {
+		return nil, fmt.Errorf("store: encode the inherited anchors of %s: %w", threadID, err)
+	}
+	rows, err := q.Query(inheritedStampReadsSQL, threadID, string(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("store: read inherited subagent stamps for %s: %w", threadID, err)
+	}
+	type levelStamp struct {
+		depth                          int
+		cut                            TimelineCursor
+		stamped, marked, parent        bool
+		state                          int
+		count, transcript              sql.NullInt64
+		summary, toolSummary           sql.NullString
+		toolTurn, toolItem             sql.NullInt64
+		newestTurn, newestItem         sql.NullInt64
+		transcriptTurn, transcriptItem sql.NullInt64
+	}
+	nearest := make(map[string]levelStamp, len(inherited))
+	for rows.Next() {
+		var id string
+		var l levelStamp
+		if err := rows.Scan(&id, &l.depth, &l.cut.TurnIndex, &l.cut.ItemIndex, &l.stamped, &l.state,
+			&l.count, &l.summary, &l.transcript, &l.toolSummary, &l.toolTurn, &l.toolItem,
+			&l.newestTurn, &l.newestItem, &l.transcriptTurn, &l.transcriptItem, &l.marked, &l.parent); err != nil {
+			return nil, errors.Join(fmt.Errorf("store: scan an inherited subagent stamp of %s: %w", threadID, err), rows.Close())
+		}
+		if prior, seen := nearest[id]; !seen || l.depth < prior.depth {
+			nearest[id] = l
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("store: iterate inherited subagent stamps for %s: %w", threadID, err)
+	}
+	carriers := make(map[string]bool)
+	for _, anchor := range inherited {
+		if anchor.Root != "" && anchor.Root != anchor.ID {
+			carriers[anchor.ID] = true
+		}
+	}
+	served := make(map[string]subagentStampRead, len(nearest))
+	for id, l := range nearest {
+		if !l.stamped {
+			if !l.marked && !l.parent && !carriers[id] {
+				served[id] = subagentStampRead{state: aggStateClean}
+			}
+			continue
+		}
+		if l.state != aggStateClean || l.marked ||
+			!positionBelow(l.newestTurn, l.newestItem, l.cut) ||
+			!positionBelow(l.transcriptTurn, l.transcriptItem, l.cut) {
+			continue
+		}
+		stamp := subagentStampRead{state: aggStateClean}
+		if l.count.Valid {
+			stamp.hasCard = true
+			stamp.card = subagentCardOfStamp(l.count, l.summary, l.transcript)
+		}
+		if l.toolSummary.Valid {
+			stamp.hasTray = true
+			stamp.tray = latestDirectSubagentTool{summary: l.toolSummary.String,
+				turnIndex: int(l.toolTurn.Int64), itemIndex: int(l.toolItem.Int64)}
+		}
+		served[id] = stamp
+	}
+	return served, nil
+}
+
+// positionBelow reports whether a stamp's stored position sits before
+// cut. A stamp that stores none counts no row there.
+func positionBelow(turn, item sql.NullInt64, cut TimelineCursor) bool {
+	if !turn.Valid && !item.Valid {
+		return true
+	}
+	if !turn.Valid || !item.Valid {
+		return false
+	}
+	return turn.Int64 < int64(cut.TurnIndex) || (turn.Int64 == int64(cut.TurnIndex) && item.Int64 < int64(cut.ItemIndex))
+}
+
 // walks reports whether the read-time aggregator answers for one row: an
-// anchorable row that is imported, has a dirty or readTime stamp, is an
-// unstamped carrier, or is an unstamped anchor of a thread whose backfill
-// is pending. A row that does not anchor, such as a Codex spawn row a
+// anchorable row that is imported, is inherited and no stamp serves
+// (inheritedStampReads), has a dirty or readTime stamp, is an unstamped
+// carrier, or is an unstamped anchor of a thread whose backfill is
+// pending. A row that does not anchor, such as a Codex spawn row a
 // completion sibling names, is never walked.
 func (d *subagentWalkDecider) walks(item Item) (bool, error) {
 	if !SubagentAnchorable(item.Kind, item.ToolName) {
 		return false, nil
 	}
 	if item.Rev < 0 {
-		return true, nil
+		_, served := d.inherited[item.ID]
+		return !served, nil
 	}
 	if stamp, ok := d.stamps[item.ID]; ok {
 		return stamp.state != aggStateClean, nil
@@ -604,9 +781,19 @@ func (d *subagentWalkDecider) clean(id string) bool {
 	return ok && stamp.state == aggStateClean
 }
 
-// card is a clean stamp's card, when it has one.
+// served is the stamp that serves an inherited row, when one does.
+func (d *subagentWalkDecider) served(id string) (subagentStampRead, bool) {
+	stamp, ok := d.inherited[id]
+	return stamp, ok
+}
+
+// card is the card of a clean local stamp or of the stamp that serves an
+// inherited row, when it has one.
 func (d *subagentWalkDecider) card(id string) (subagentAnchorAggregate, bool) {
-	stamp, ok := d.stamps[id]
+	if stamp, ok := d.stamps[id]; ok {
+		return stamp.card, stamp.hasCard
+	}
+	stamp, ok := d.inherited[id]
 	return stamp.card, ok && stamp.hasCard
 }
 
@@ -902,9 +1089,10 @@ func transcriptRootFromMeta(meta string) string {
 // Direct ownership matters: a nested agent has its own tray row, so its tools
 // must not also appear as the parent's latest activity. A clean stamped
 // launch read through a local item projection already carries the keys
-// (subagentServedMetaSQL); a Codex runtime copy is a spawn row, which is
-// never stamped. The one query handles every other launch in the thread and
-// keeps tray refreshes free of N+1 reads.
+// (subagentServedMetaSQL), and an inherited launch a stamp serves
+// (inheritedStampReads) takes that stamp's; a Codex runtime copy is a
+// spawn row, which is never stamped. The one query handles every other
+// launch in the thread and keeps tray refreshes free of N+1 reads.
 func (s *Store) decorateLatestDirectSubagentTools(q sqlQueryer, threadID string, items []Item) ([]Item, error) {
 	calls := make(map[string]Item, len(items))
 	for _, item := range items {
@@ -917,6 +1105,7 @@ func (s *Store) decorateLatestDirectSubagentTools(q sqlQueryer, threadID string,
 		return nil, err
 	}
 	rootIDs := make([]string, 0, len(calls))
+	var servedTrays map[string]latestDirectSubagentTool
 	for _, item := range items {
 		if _, ok := calls[item.ID]; !ok || item.Kind != "tool_call" {
 			continue
@@ -924,14 +1113,28 @@ func (s *Store) decorateLatestDirectSubagentTools(q sqlQueryer, threadID string,
 		if item.Rev >= 0 && item.ToolName != "collab_agent" && stamps.clean(item.ID) {
 			continue
 		}
+		if item.Rev < 0 {
+			if stamp, served := stamps.served(item.ID); served {
+				if stamp.hasTray {
+					if servedTrays == nil {
+						servedTrays = make(map[string]latestDirectSubagentTool, len(calls))
+					}
+					servedTrays[item.ID] = stamp.tray
+				}
+				continue
+			}
+		}
 		rootIDs = append(rootIDs, item.ID)
 	}
-	if len(rootIDs) == 0 {
+	if len(rootIDs) == 0 && len(servedTrays) == 0 {
 		return items, nil
 	}
 	latestByRoot, err := latestDirectSubagentTools(q, threadID, rootIDs)
 	if err != nil {
 		return nil, err
+	}
+	for id, tray := range servedTrays {
+		latestByRoot[id] = tray
 	}
 	for i := range items {
 		latest, ok := latestByRoot[items[i].ID]

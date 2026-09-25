@@ -112,7 +112,14 @@ an atomic persistence decision; they must not become a business-logic layer.
   `(thread_id, item_id)`; a local item read merges a clean row's public keys
   into the served meta, and stored meta never holds them: a writer that
   writes a row back reads it with `GetThreadItemForWrite`. A read walks the
-  anchors no clean row keeps (`decorateSubagentAnchors`). A carrier stored
+  anchors no clean row keeps (`decorateSubagentAnchors`). A pointer fork
+  reads an inherited anchor from the clean stamp of the lineage level that
+  holds it when every row the stamp counts sits below the fork's cut there
+  and no marker in `thread_fork_walked`, at the fork or a level it reads,
+  names the anchor; an unmarked unstamped one that no level's row names as
+  parent has no card; any other is walked (`inheritedStampReads`). A writer
+  that makes a thread show other rows under an anchor than the level
+  holding it counts records the anchor (`fork_walked.go`). A carrier stored
   after the imported resume prompt that names it is never stamped
   (`subagentPromptNamesSQL` reads local prompts) and is served by the walk.
   A visible row
@@ -128,8 +135,11 @@ an atomic persistence decision; they must not become a business-logic layer.
   `subagent_aggregates` rows or card keys between threads, and before it
   commits it recomputes every local anchor whose subtree it changed, through
   `bulkItemWrites` or with `restampSubagentAggregatesTx` for a thread it
-  rebuilt. A pointer-fork writer that changes which rows a fork reads
-  (revert, hide) recomputes the fork's stamped copies. A stamp write
+  rebuilt. A holder keeps the clean stamps that move with its rows and
+  drops the rest (`dropUnservedHolderStampsTx`); no recompute, recovery or
+  restamp writes a holder's stamps (`subagentStampsFrozen`). A pointer-fork
+  writer that changes which rows a fork reads (revert, hide) recomputes the
+  fork's stamped copies. A stamp write
   follows a `threads.history_rev` advance in its transaction (the item
   write's trigger, or the writer's own bump), so the anchor and its
   completion siblings are served at a new revision. After a crash,

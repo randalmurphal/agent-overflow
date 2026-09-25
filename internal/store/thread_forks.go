@@ -189,6 +189,11 @@ func (s *Store) linkPointerForkTx(tx *sql.Tx, forkID, sourceID string, cut ForkC
 	if err := hideForkRowsTx(tx, forkID, hidden); err != nil {
 		return err
 	}
+	// The source's stamps of the anchors above the hidden rows count rows
+	// the fork does not show (fork_walked.go).
+	if err := markRowAnchorsTx(tx, forkID, sourceID, hidden); err != nil {
+		return err
+	}
 
 	// Rows still running in the source are the source's live work. The
 	// fork owns a copy and settles it exactly as the crash sweep and a user
