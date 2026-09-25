@@ -14,12 +14,17 @@ import (
 // unsettled rows below the cut, read through idx_items_unsettled, and
 // returns every row the fork hides:
 //
-//   - a background launch with no completion inside the cut is live work
-//     of the source's provider process, which the fork's own process can
-//     never finish. It is hidden (the fork shows no ghost row that can
-//     never complete).
-//   - a settled background launch (running forever beside its completion
-//     sibling, invariant 24) is finished history and stays.
+//   - a live background launch is work of the source's provider process,
+//     which the fork's own process can never finish. It is hidden (the
+//     fork shows no ghost row that can never complete).
+//   - a settled background launch whose ending completion lies only beyond
+//     the cut is hidden too: the fork would show it settled by a
+//     completion it does not have (launchesLosingCompletionTx).
+//   - any other settled background launch is finished history and stays:
+//     one running forever beside its completion sibling (invariant 24),
+//     and one settled with no ending completion anywhere, as a cut that
+//     deleted its completion leaves it (background_settle_triggers.go),
+//     which the fork shows as the source does.
 //   - every other running or streaming row is settled in the fork's copy.
 //
 // A background completion lands at the write head, possibly turns after its
@@ -75,6 +80,11 @@ func forkUnsettledRowsTx(tx *sql.Tx, sourceID string, plan forkCut) (hidden, set
 	}
 	losing, err := launchesLosingCompletionTx(tx, sourceID, settled,
 		"(+turn_index, +item_index) < (?, ?)", []any{plan.turn, plan.item})
+	if err != nil {
+		return nil, nil, err
+	}
+	losing, err = launchesCompletedTx(tx, sourceID, losing,
+		"(+turn_index, +item_index) >= (?, ?)", []any{plan.turn, plan.item})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -141,30 +151,15 @@ func forkRunningTurnRowsTx(tx *sql.Tx, forkID, sourceID string, plan forkCut, se
 // kept completes (a predicate on unqualified item columns, with keptArgs);
 // a parked stop completes nothing (agent_stops.go). A history that keeps
 // such a launch without its completion would show it settled by a
-// completion it does not have. Fork creation hides the
-// launch from the fork (forkUnsettledRowsTx); a split gives the holder a
-// settled copy for the forks that read the completion there, and the
-// thread that keeps the launch keeps it settled with no completion
+// completion it does not have. Fork creation hides such a launch whose
+// completion lies beyond the cut (forkUnsettledRowsTx); a split gives the
+// holder a settled copy for the forks that read the completion there, and
+// the thread that keeps the launch keeps it settled with no completion
 // (background_settle_triggers.go).
-//
-// It is one statement over every candidate (launchesCompletedSQL): a
-// statement per candidate walked the timeline range once each, which a
-// fork of a thread with hundreds of settled launches paid in seconds.
 func launchesLosingCompletionTx(tx *sql.Tx, threadID string, candidates []string, kept string, keptArgs []any) ([]string, error) {
-	if len(candidates) == 0 {
-		return nil, nil
-	}
-	list, err := jsonList(candidates)
+	completed, err := launchesCompletedTx(tx, threadID, candidates, kept, keptArgs)
 	if err != nil {
 		return nil, err
-	}
-	query, args, err := launchesCompletedSQL(tx, threadID, kept, keptArgs)
-	if err != nil {
-		return nil, err
-	}
-	completed, err := queryIDs(tx, query, append([]any{list}, args...)...)
-	if err != nil {
-		return nil, fmt.Errorf("store: read the completions of %s's launches: %w", threadID, err)
 	}
 	done := make(map[string]bool, len(completed))
 	for _, id := range completed {
@@ -179,6 +174,34 @@ func launchesLosingCompletionTx(tx *sql.Tx, threadID string, candidates []string
 	return losing, nil
 }
 
+// launchesCompletedTx returns the candidates, in their order, that an
+// ending completion row of threadID's timeline matching kept completes. It
+// is one statement over every candidate (launchesCompletedSQL): a
+// statement per candidate walked the timeline range once each, which a
+// fork of a thread with hundreds of settled launches paid in seconds.
+func launchesCompletedTx(tx *sql.Tx, threadID string, candidates []string, kept string, keptArgs []any) ([]string, error) {
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	list, err := jsonList(candidates)
+	if err != nil {
+		return nil, err
+	}
+	query, args, err := launchesCompletedSQL(tx, threadID, kept, keptArgs)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := queryIDs(tx, query, append([]any{list}, args...)...)
+	if err != nil {
+		return nil, fmt.Errorf("store: read the completions of %s's launches: %w", threadID, err)
+	}
+	found := make(map[string]bool, len(rows))
+	for _, id := range rows {
+		found[id] = true
+	}
+	return slices.DeleteFunc(slices.Clone(candidates), func(id string) bool { return !found[id] }), nil
+}
+
 // launchesCompletedSQL renders the launches among a JSON list of candidate
 // ids, bound first as cand(launch), a name no item column shares so kept
 // may name item columns unqualified, that a row of threadID's timeline matching kept
@@ -189,8 +212,8 @@ func launchesLosingCompletionTx(tx *sql.Tx, threadID string, candidates []string
 // rather than walking the thread's timeline. kept therefore MUST write
 // its position columns with unary plus (+turn_index, +item_index) so the
 // planner cannot take the position range as the arm's index instead;
-// TestLosingCompletionReadProbesTheCompletionIndex pins the plans of both
-// callers.
+// TestLosingCompletionReadProbesTheCompletionIndex pins the plans of every
+// caller.
 func launchesCompletedSQL(q sqlQueryer, threadID, kept string, keptArgs []any) (string, []any, error) {
 	query, args, err := timelineArms(q, threadID, timelineSelection{
 		Columns:   func(string, string) string { return "cand.launch" },

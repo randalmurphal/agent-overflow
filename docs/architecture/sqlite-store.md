@@ -224,7 +224,9 @@ lists the id in `thread_fork_hidden`. The thread row is the fork's only record
 of its origin; no timeline row marks it.
 
 Creation writes the lineage and the ids the fork hides (live background
-launches, rows an item cut excludes, and everything that hangs off either). It
+launches, settled ones whose ending completion lies only beyond the cut, rows
+an item cut excludes, and everything that hangs off any of them). A settled
+launch with no ending completion stays, as the source shows it. It
 copies the rows still running in the source, settled as interrupted, and the
 rest of a cut turn the source is still running (`forkRunningTurnRowsTx`): the
 source's provider keeps changing that turn below the cut (queued messages fold

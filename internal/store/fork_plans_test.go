@@ -107,8 +107,8 @@ func assertEveryItemsArmWalksAnIndex(t *testing.T, s *Store, what, query string,
 }
 
 // TestLosingCompletionReadProbesTheCompletionIndex pins the one statement
-// launchesLosingCompletionTx runs for every candidate, for both callers'
-// kept predicates: each arm is driven from the candidate list and probes
+// launchesCompletedTx runs for every candidate, for each caller's kept
+// predicate: each arm is driven from the candidate list and probes
 // its completion index per candidate. The stat-less planner would rather
 // walk the thread's position range once per candidate, which a fork of a
 // thread with hundreds of settled launches paid in seconds; the unary
@@ -123,6 +123,7 @@ func TestLosingCompletionReadProbesTheCompletionIndex(t *testing.T) {
 		args []any
 	}{
 		{"fork creation", "(+turn_index, +item_index) < (?, ?)", []any{9, 0}},
+		{"fork creation beyond the cut", "(+turn_index, +item_index) >= (?, ?)", []any{9, 0}},
 		{"split", "NOT (" + span + ")", spanArgs},
 	} {
 		query, args, err := launchesCompletedSQL(s.db, "G", c.kept, c.args)

@@ -111,3 +111,53 @@ func TestSourceRevertKeepsItsLaunchSettledWhenAHolderTakesTheCompletion(t *testi
 		})
 	}
 }
+
+// TestMidHistoryForkShowsALaunchSettledWithoutASibling: a fork cut before
+// the source's tail shows a launch a cut left settled with no ending
+// sibling, as the source does: not hidden, read in place, no holder. A
+// launch whose ending sibling lies beyond the fork's cut is still hidden,
+// with the sibling (forkHiddenClosureTx).
+func TestMidHistoryForkShowsALaunchSettledWithoutASibling(t *testing.T) {
+	for _, tc := range settledLaunchCuts {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			seedLaunchCompletedAfterACut(t, s, "S")
+			if err := tc.cut(s, "S"); err != nil {
+				t.Fatalf("cut: %v", err)
+			}
+			for _, it := range []Item{
+				{ID: "u2", TurnIndex: 1, ItemIndex: 0, Kind: "user_text", Role: "user", Status: "completed", Summary: "again", Meta: "{}"},
+				{ID: "later", TurnIndex: 1, ItemIndex: 1, Kind: "tool_call", Role: "assistant", Status: "running", IsBackground: true, ToolName: "Bash", Summary: "Bash", Meta: `{"task_id":"task-2"}`},
+				{ID: "u3", TurnIndex: 2, ItemIndex: 0, Kind: "user_text", Role: "user", Status: "completed", Summary: "last", Meta: "{}"},
+				{ID: "later-done", TurnIndex: 2, ItemIndex: 1, Kind: "tool_completion", Role: "assistant", Status: "completed", IsBackground: true, CompletionOf: "later", ToolName: "Bash", Summary: "done", Meta: "{}"},
+			} {
+				it.ThreadID = "S"
+				it.CreatedAt, it.UpdatedAt = 1, 1
+				if err := insertCarded(s, it); err != nil {
+					t.Fatalf("insert %s: %v", it.ID, err)
+				}
+			}
+			assertSettled(t, s, "S", "launch")
+			assertSettled(t, s, "S", "later")
+
+			mustPointerFork(t, s, "S", "F", throughTurn(1))
+
+			var shown []string
+			for _, it := range forkRows(t, s, "F") {
+				shown = append(shown, it.ID)
+			}
+			requireIDs(t, "fork rows", shown, []string{"u0", "launch", "u2"})
+			assertSettled(t, s, "F", "launch")
+			hidden, err := queryIDs(s.db, `SELECT item_id FROM thread_fork_hidden WHERE thread_id = ? ORDER BY item_id`, "F")
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireIDs(t, "fork hides", hidden, []string{"later", "later-done"})
+			requireIDs(t, "fork's own rows", ownIDs(t, s, "F"), nil)
+			requireIDs(t, "holders", holderIDs(t, s), nil)
+			if ids := liveTaskIDs(t, s, "F"); len(ids) != 0 {
+				t.Fatalf("tray rows of F = %v, want none", ids)
+			}
+		})
+	}
+}
