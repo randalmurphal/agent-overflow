@@ -287,7 +287,8 @@ func TestListLiveBackgroundTasksMatchesThePreSettlementQuery(t *testing.T) {
 // fall back to walking the thread through the timeline index — the 75k
 // page reads this change exists to remove. The nested launches come from
 // their own partial index and a primary-key walk up: no statement reads a
-// parent's children except the launch filter's one-row probe.
+// parent's children except the launch filter's one-row probe
+// (assertTrayPlanReadsNoChildren).
 func TestListLiveBackgroundTasksSeedUsesPartialIndexes(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.CreateThread(makeThread("t", "claude")); err != nil {
@@ -295,24 +296,11 @@ func TestListLiveBackgroundTasksSeedUsesPartialIndexes(t *testing.T) {
 	}
 	seedTrayFixture(t, s)
 
-	rows, err := s.db.Query("EXPLAIN QUERY PLAN "+liveBackgroundTasksSQL,
-		"t", "t", int64(5000), "t", "t", int64(5000), "t", "t", "t", "t", int64(5000), "t", int64(5000), int64(5000))
-	if err != nil {
-		t.Fatalf("explain: %v", err)
-	}
-	defer rows.Close()
+	nodes := trayPlan(t, s, liveBackgroundTasksSQL, "t", int64(5000))
 	var plan strings.Builder
-	for rows.Next() {
-		var id, parent, notused int64
-		var detail string
-		if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
-			t.Fatalf("scan plan: %v", err)
-		}
-		plan.WriteString(detail)
+	for _, node := range nodes {
+		plan.WriteString(node.detail)
 		plan.WriteString("\n")
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate plan: %v", err)
 	}
 	for _, want := range []string{
 		"idx_items_running_bg_tool_calls",
@@ -326,18 +314,65 @@ func TestListLiveBackgroundTasksSeedUsesPartialIndexes(t *testing.T) {
 	if strings.Contains(plan.String(), "idx_items_thread_turn_item_unique") {
 		t.Errorf("the tray query walks the thread's timeline again:\n%s", plan.String())
 	}
-	ctes := map[string]bool{"bg": true, "nested": true, "up": true, "anchors": true, "cand": true}
-	for _, line := range strings.Split(plan.String(), "\n") {
-		if target, ok := strings.CutPrefix(line, "SCAN "); ok && !ctes[strings.Fields(target)[0]] {
+	assertTrayPlanReadsNoChildren(t, nodes, "bg", "nested", "up", "anchors", "cand")
+}
+
+// trayPlanNode is one line of a tray statement's query plan.
+type trayPlanNode struct {
+	id, parent int64
+	detail     string
+}
+
+func trayPlan(t *testing.T, s *Store, query string, args ...any) []trayPlanNode {
+	t.Helper()
+	rows, err := s.db.Query("EXPLAIN QUERY PLAN "+query, args...)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	defer rows.Close()
+	var nodes []trayPlanNode
+	for rows.Next() {
+		var node trayPlanNode
+		var notused int64
+		if err := rows.Scan(&node.id, &node.parent, &notused, &node.detail); err != nil {
+			t.Fatalf("scan plan: %v", err)
+		}
+		nodes = append(nodes, node)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate plan: %v", err)
+	}
+	return nodes
+}
+
+// assertTrayPlanReadsNoChildren fails a tray plan that scans anything but
+// its own CTEs (ctes, and the projection's tray rows), or that reads a
+// parent's children outside the one probe that may: the launch filter's
+// one-row probe (its local arm by the covering index, a pointer fork's
+// lineage arm bounded by the level's cut). A launch's stops and its
+// root's wakes are read from their own indexes (assertTrayRunStateProbes).
+func assertTrayPlanReadsNoChildren(t *testing.T, nodes []trayPlanNode, ctes ...string) {
+	t.Helper()
+	scans := map[string]bool{"tray": true}
+	for _, cte := range ctes {
+		scans[cte] = true
+	}
+	var plan strings.Builder
+	for _, node := range nodes {
+		plan.WriteString(node.detail)
+		plan.WriteString("\n")
+	}
+	for _, node := range nodes {
+		line := node.detail
+		if target, ok := strings.CutPrefix(line, "SCAN "); ok && !scans[strings.Fields(target)[0]] {
 			t.Errorf("the tray query scans %q:\n%s", target, plan.String())
 		}
-		// The launch filter's probe: its local arm by the covering index,
-		// and a pointer fork's lineage arm bounded by the level's cut.
-		if strings.Contains(line, "idx_items_parent") &&
-			!strings.Contains(line, "COVERING INDEX idx_items_parent (thread_id=? AND parent_id=?)") &&
-			!strings.Contains(line, "INDEX idx_items_parent (thread_id=? AND parent_id=? AND turn_index<?)") {
-			t.Errorf("the tray query walks a parent's children: %q\n%s", line, plan.String())
+		if !strings.Contains(line, "idx_items_parent") ||
+			strings.Contains(line, "COVERING INDEX idx_items_parent (thread_id=? AND parent_id=?)") ||
+			strings.Contains(line, "INDEX idx_items_parent (thread_id=? AND parent_id=? AND turn_index<?)") {
+			continue
 		}
+		t.Errorf("the tray query walks a parent's children: %q\n%s", line, plan.String())
 	}
 }
 

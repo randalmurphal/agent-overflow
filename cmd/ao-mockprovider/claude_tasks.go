@@ -39,6 +39,15 @@ import (
 // own, so this ledger writes every kill before the ack and every
 // foreground stop after it.
 //
+// A `control_request{stop_task}` kills the one task it names the same way,
+// before its ack (claude-wire.md §E6b captures B and E of 2026-09-08): an
+// agent with the shells it owns, a parked agent with `task_updated{killed}`
+// and no notification, a shell with `task_updated{killed}` and
+// `task_notification{stopped}`. A running agent's stop_task is written as
+// the interrupt writes that agent's kill; no capture has it on its own. A
+// task that is not running gets the ack alone: the CLI's answer to it is
+// not captured.
+//
 // A task's ownership comes from the frames: a shell belongs to the agent
 // whose launch `tool_use` its own `tool_use` hangs under
 // (`parent_tool_use_id`). A task is background when its `task_started`
@@ -218,34 +227,73 @@ func (l *claudeTaskLedger) killForInterrupt(now time.Time) []string {
 		frames = append(frames, next)
 	}
 	for _, id := range l.order {
-		agent := l.tasks[id]
-		if agent.taskType != "local_agent" || !agent.background || agent.killed {
-			continue
-		}
-		if agent.stopped && !l.ownsLiveShellLocked(agent) {
-			continue
-		}
-		wasRunning := !agent.stopped
-		agent.killed = true
-		l.killedAgents++
-		emitLevelSet()
-		frames = append(frames, taskUpdatedKilledFrame(agent.id, endTime))
-		if wasRunning {
-			frames = append(frames, taskNotificationStoppedFrame(agent, l.outputFilePath(agent.id)))
-		}
-		for _, shellID := range l.order {
-			shell := l.tasks[shellID]
-			if !l.liveShellOwnedByLocked(shell, agent) {
-				continue
-			}
-			shell.killed = true
-			emitLevelSet()
-			frames = append(frames,
-				taskUpdatedKilledFrame(shell.id, endTime),
-				taskNotificationStoppedFrame(shell, l.writeOutputFile(shell.id)))
+		if l.killAgentLocked(l.tasks[id], endTime, emitLevelSet, &frames) {
+			l.killedAgents++
 		}
 	}
 	return frames
+}
+
+// killForStopTask marks the task a stop_task names, with the shells it
+// owns when it is an agent, and returns the frames that report it. The
+// caller writes them before the ack.
+func (l *claudeTaskLedger) killForStopTask(taskID string, now time.Time) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	t := l.tasks[taskID]
+	if t == nil {
+		return nil
+	}
+	endTime := now.UnixMilli()
+	var frames []string
+	levelSet := l.levelSetLocked()
+	emitLevelSet := func() {
+		if next := l.levelSetLocked(); next != levelSet {
+			levelSet = next
+			frames = append(frames, next)
+		}
+	}
+	if t.taskType == "local_agent" {
+		l.killAgentLocked(t, endTime, emitLevelSet, &frames)
+		return frames
+	}
+	if !t.background || t.stopped || t.killed {
+		return nil
+	}
+	t.killed = true
+	emitLevelSet()
+	return append(frames, taskUpdatedKilledFrame(t.id, endTime), taskNotificationStoppedFrame(t, l.writeOutputFile(t.id)))
+}
+
+// killAgentLocked kills a running or parked background agent and the
+// shells it owns, appending the frames that report it, and reports
+// whether it killed one.
+func (l *claudeTaskLedger) killAgentLocked(agent *claudeTask, endTime int64, emitLevelSet func(), frames *[]string) bool {
+	if agent.taskType != "local_agent" || !agent.background || agent.killed {
+		return false
+	}
+	if agent.stopped && !l.ownsLiveShellLocked(agent) {
+		return false
+	}
+	wasRunning := !agent.stopped
+	agent.killed = true
+	emitLevelSet()
+	*frames = append(*frames, taskUpdatedKilledFrame(agent.id, endTime))
+	if wasRunning {
+		*frames = append(*frames, taskNotificationStoppedFrame(agent, l.outputFilePath(agent.id)))
+	}
+	for _, shellID := range l.order {
+		shell := l.tasks[shellID]
+		if !l.liveShellOwnedByLocked(shell, agent) {
+			continue
+		}
+		shell.killed = true
+		emitLevelSet()
+		*frames = append(*frames,
+			taskUpdatedKilledFrame(shell.id, endTime),
+			taskNotificationStoppedFrame(shell, l.writeOutputFile(shell.id)))
+	}
+	return true
 }
 
 // stopForegroundCommands marks every foreground command still running,

@@ -1716,6 +1716,7 @@ CREATE INDEX idx_import_history_items_joined_send_ids
 	{Version: 125, Name: "fork_ownership", SQL: forkOwnershipV125SQL, Rebuild: true},
 	{Version: parkedStopMigrationVersion, Name: "parked_agent_stops", SQL: parkedAgentStopsV126SQL, Fix: widenItemsStatusCheck},
 	{Version: 127, Name: "parked_agent_bells", SQL: parkedAgentStopsV127SQL},
+	{Version: agentStopReadsMigrationVersion, Name: "agent_stop_reads", SQL: agentStopReadsV128SQL},
 }
 
 // MigrationStep describes one pending migration as it begins, or a

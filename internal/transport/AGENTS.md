@@ -107,9 +107,10 @@ open to delivery; an empty scope reads as root scope.
 `watch` frames replace the connection's complete watched-thread set and its
 watched-scope set together and must be re-sent before replay after reconnect.
 An absent scope set admits every scope of a watched thread; `[]` admits only
-root-scope rows. `lease` describes a platform-paused client, not page focus or
-visibility. New connections start active. Flush coalesced item deltas in
-sequence order before pass-through frames or return to active state.
+root-scope rows; `scopeThreads` admits every scope of the threads it names.
+`lease` describes a platform-paused client, not page focus or visibility. New
+connections start active. Flush coalesced item deltas in sequence order before
+pass-through frames or return to active state.
 
 All connections coalesce event frames to bound webview message overhead.
 Non-loopback connections may additionally use compression. Keep memory costs

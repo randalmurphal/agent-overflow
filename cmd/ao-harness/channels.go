@@ -64,6 +64,7 @@ func eventChannelConstants() []eventchan.Channel {
 		eventchan.ProviderAsyncQuestionsChanged,
 		eventchan.ProviderBackgroundTaskState,
 		eventchan.ProviderBackgroundTasksChanged,
+		eventchan.ProviderBackgroundTray,
 		eventchan.ProviderCommandLifecycle,
 		eventchan.ProviderCommands,
 		eventchan.ProviderCompacting,

@@ -5,8 +5,9 @@ package triage
 // began and whether a wake began it. Sequences reuse the park helpers.
 
 import (
+	"encoding/json"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,7 +44,13 @@ func stopPreview(t *testing.T, st *store.Store, stop store.Item) string {
 	if err != nil {
 		t.Fatalf("payload of %s: %v", stop.ID, err)
 	}
-	return stopReportPreview(payload.Meta)
+	var decoded struct {
+		Preview string `json:"preview"`
+	}
+	if err := json.Unmarshal([]byte(payload.Meta), &decoded); err != nil {
+		t.Fatalf("decode the payload of %s: %v", stop.ID, err)
+	}
+	return decoded.Preview
 }
 
 // Two parked runs and the final one. Each parked sibling names its own
@@ -71,18 +78,18 @@ func TestParkedStopRecordsItsRun(t *testing.T) {
 		t.Fatalf("first stop = %q of %q under %q, want parked of the launch at top level", first.Status, first.CompletionOf, first.ParentID)
 	}
 	meta := decodeItemMetaMap(t, first.Meta)
-	if meta["task_id"] != "task-agent" || meta[metaKeyParkedCommands] != float64(2) || meta[metaKeyParkedReportItemID] != "report-1" ||
-		meta[metaKeyRunStartedAt] != float64(launch.CreatedAt) || meta["notification_output_loaded"] != true {
+	if meta["task_id"] != "task-agent" || meta[store.MetaKeyParkedCommands] != float64(2) || meta[store.MetaKeyParkedReportItemID] != "report-1" ||
+		meta[store.MetaKeyRunStartedAt] != float64(launch.CreatedAt) || meta["notification_output_loaded"] != true {
 		t.Errorf("first stop meta = %v, want task-agent, 2 commands, report-1, started at %d, output loaded", meta, launch.CreatedAt)
 	}
-	if _, woke := meta[metaKeyRunWoke]; woke {
+	if _, woke := meta[store.MetaKeyRunWoke]; woke {
 		t.Errorf("the first run was not woken: %v", meta)
 	}
 	if got := stopPreview(t, st, first); got != "Waiting for the gate to finish." {
 		t.Errorf("first stop preview = %q", got)
 	}
-	if got := countEvents(emissions.snapshot(), eventchan.ProviderBackgroundTasksChanged.String()); got != 1 {
-		t.Errorf("the parked stop nudged the tray %d times, want 1", got)
+	if got := countEvents(emissions.snapshot(), eventchan.ProviderBackgroundTasksChanged.String()); got != 0 {
+		t.Errorf("the parked stop sent %d background_tasks_changed nudges, want none: it changes no task's liveness", got)
 	}
 
 	nextMillisecond()
@@ -95,8 +102,8 @@ func TestParkedStopRecordsItsRun(t *testing.T) {
 
 	second := mustGetItem(t, st, "t1", parkedStopID("agent", "u2", 0))
 	meta = decodeItemMetaMap(t, second.Meta)
-	if meta[metaKeyParkedCommands] != float64(1) || meta[metaKeyParkedReportItemID] != "report-2" ||
-		meta[metaKeyRunStartedAt] != float64(wake.CreatedAt) || meta[metaKeyRunWoke] != true {
+	if meta[store.MetaKeyParkedCommands] != float64(1) || meta[store.MetaKeyParkedReportItemID] != "report-2" ||
+		meta[store.MetaKeyRunStartedAt] != float64(wake.CreatedAt) || meta[store.MetaKeyRunWoke] != true {
 		t.Errorf("second stop meta = %v, want 1 command, report-2, woken at %d", meta, wake.CreatedAt)
 	}
 	if second.CreatedAt <= wake.CreatedAt {
@@ -231,7 +238,7 @@ func TestParkedStopOfARunWithoutTextNamesNoReport(t *testing.T) {
 	parkStop(t, router, "t1", "agent", "task-agent", "", "u2")
 
 	meta := decodeItemMetaMap(t, mustGetItem(t, st, "t1", parkedStopID("agent", "u2", 0)).Meta)
-	if _, has := meta[metaKeyParkedReportItemID]; has {
+	if _, has := meta[store.MetaKeyParkedReportItemID]; has {
 		t.Errorf("a run without text named a report: %v", meta)
 	}
 }
@@ -305,10 +312,10 @@ func TestCarrierParkedStopIsTheCarriersOwn(t *testing.T) {
 		t.Errorf("carrier parked sibling = %q, want %q", stops[0].Summary, want)
 	}
 	meta := decodeItemMetaMap(t, stops[0].Meta)
-	if meta[metaKeyRunStartedAt] != float64(carrier.CreatedAt) {
-		t.Errorf("carrier run started at %v, want the carrier's %d", meta[metaKeyRunStartedAt], carrier.CreatedAt)
+	if meta[store.MetaKeyRunStartedAt] != float64(carrier.CreatedAt) {
+		t.Errorf("carrier run started at %v, want the carrier's %d", meta[store.MetaKeyRunStartedAt], carrier.CreatedAt)
 	}
-	if _, has := meta[metaKeyParkedReportItemID]; has {
+	if _, has := meta[store.MetaKeyParkedReportItemID]; has {
 		t.Errorf("the carrier's run named the root's earlier report: %v", meta)
 	}
 	if dones := parkCompletions(t, st, "t1"); dones["root"].Status != statusCompleted || len(parkedStops(t, st, "t1", "root")) != 0 {
@@ -316,29 +323,54 @@ func TestCarrierParkedStopIsTheCarriersOwn(t *testing.T) {
 	}
 }
 
-// nudgeProbe counts the tray nudges a router emits, and how many of them
-// found row rowID already written.
-type nudgeProbe struct {
-	nudges, withRow atomic.Int32
+// trayProbe records each tray frame a router emits naming launchID, with
+// whether row rowID was written when it was emitted.
+type trayProbe struct {
+	mu     sync.Mutex
+	frames []trayProbeFrame
+	nudges int
 }
 
-func (p *nudgeProbe) reset() {
-	p.nudges.Store(0)
-	p.withRow.Store(0)
+type trayProbeFrame struct {
+	frame   BackgroundTrayEvent
+	withRow bool
 }
 
-func newNudgeProbeRouter(t *testing.T, rowID string) (*Router, *store.Store, *nudgeProbe) {
+func (p *trayProbe) reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.frames, p.nudges = nil, 0
+}
+
+// served is the run state the last recorded frame serves launchID at, and
+// whether its row was written when it went out; "" when no frame did.
+func (p *trayProbe) served(launchID string) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := len(p.frames) - 1; i >= 0; i-- {
+		if row, ok := trayRow(p.frames[i].frame, launchID); ok {
+			return store.AgentRunState(row), p.frames[i].withRow
+		}
+	}
+	return "", false
+}
+
+func newTrayProbeRouter(t *testing.T, rowID string) (*Router, *store.Store, *trayProbe) {
 	t.Helper()
 	st := storetest.Clone(t)
 	createTestThread(t, st, "t1")
-	probe := &nudgeProbe{}
-	router := NewRouter(st, func(channel eventchan.Channel, _ any) {
-		if channel != eventchan.ProviderBackgroundTasksChanged {
-			return
-		}
-		probe.nudges.Add(1)
-		if _, found, err := st.GetThreadItem("t1", rowID); err == nil && found {
-			probe.withRow.Add(1)
+	probe := &trayProbe{}
+	router := NewRouter(st, func(channel eventchan.Channel, data any) {
+		switch channel {
+		case eventchan.ProviderBackgroundTasksChanged:
+			probe.mu.Lock()
+			probe.nudges++
+			probe.mu.Unlock()
+		case eventchan.ProviderBackgroundTray:
+			_, found, err := st.GetThreadItem("t1", rowID)
+			probe.mu.Lock()
+			probe.frames = append(probe.frames, trayProbeFrame{frame: data.(BackgroundTrayEvent), withRow: err == nil && found})
+			probe.mu.Unlock()
 		}
 	})
 	t.Cleanup(router.flushAllUsage)
@@ -346,18 +378,23 @@ func newNudgeProbeRouter(t *testing.T, rowID string) (*Router, *store.Store, *nu
 	return router, st, probe
 }
 
-// A parked stop queued behind an open stream nudges the tray when it
-// lands, since the tray reads the pause from it.
-func TestQueuedParkedStopNudgesTheTrayWhenItLands(t *testing.T) {
+// A parked stop queued behind an open stream announces its agent when it
+// lands: the drain's push of the row names the launch, and the frame
+// serves it parked.
+func TestQueuedParkedStopAnnouncesTheAgentWhenItLands(t *testing.T) {
 	stopID := parkedStopID("agent", "u1", 0)
-	router, st, probe := newNudgeProbeRouter(t, stopID)
+	router, st, probe := newTrayProbeRouter(t, stopID)
 	seedOpenTurn(t, router, st, "t1", 0)
 	parkLaunchAgent(t, router, "t1", "agent", "task-agent", "")
 	parkLaunchShell(t, router, "t1", "shell", "task-shell", "agent")
 	parkHandle(t, router, provider.ProviderEvent{Kind: provider.EventTextDelta, ThreadID: "t1", Content: "Waiting on the agent"})
+	probe.reset()
 	parkStop(t, router, "t1", "agent", "task-agent", "WAITING", "u1")
 	if queued := strings.Join(queuedRows(router, "t1"), ","); queued != stopID {
 		t.Fatalf("queued rows = %q, want the parked stop behind the main stream", queued)
+	}
+	if state, _ := probe.served("agent"); state == store.AgentRunParked {
+		t.Fatal("the tray was served the agent parked before its stop landed")
 	}
 
 	probe.reset()
@@ -366,16 +403,16 @@ func TestQueuedParkedStopNudgesTheTrayWhenItLands(t *testing.T) {
 	if got := parkedStops(t, st, "t1", "agent"); len(got) != 1 {
 		t.Fatalf("the queued parked stop did not land: %v", got)
 	}
-	if probe.withRow.Load() == 0 {
-		t.Fatalf("no tray nudge after the queued parked stop landed (%d nudges before it)", probe.nudges.Load())
+	if state, withRow := probe.served("agent"); state != store.AgentRunParked || !withRow {
+		t.Fatalf("after the drain the tray serves the agent %q (row written: %v), want parked from its landed stop", state, withRow)
 	}
 }
 
-// The wake nudges the tray once its row is written, since the tray reads
-// the wake to know the agent runs again.
-func TestWakeNudgesTheTrayAfterItsRow(t *testing.T) {
+// The wake announces its agent once its row is written, serving it
+// running, and nudges the gates that read the stash it dropped once.
+func TestWakeAnnouncesTheAgentAfterItsRow(t *testing.T) {
 	wakeID := provider.SubagentWakePromptItemID("shell")
-	router, st, probe := newNudgeProbeRouter(t, wakeID)
+	router, st, probe := newTrayProbeRouter(t, wakeID)
 	seedOpenTurn(t, router, st, "t1", 0)
 	parkLaunchAgent(t, router, "t1", "agent", "task-agent", "")
 	parkLaunchShell(t, router, "t1", "shell", "task-shell", "agent")
@@ -384,8 +421,11 @@ func TestWakeNudgesTheTrayAfterItsRow(t *testing.T) {
 
 	probe.reset()
 	parkWake(t, router, "t1", "agent", "task-agent", "shell", "task-shell", nil)
-	if probe.nudges.Load() != 1 || probe.withRow.Load() != 1 {
-		t.Fatalf("the wake nudged %d times, %d with its row written; want once, after the row", probe.nudges.Load(), probe.withRow.Load())
+	if state, withRow := probe.served("agent"); state != store.AgentRunRunning || !withRow {
+		t.Fatalf("the wake served the agent %q (row written: %v), want running after its row", state, withRow)
+	}
+	if probe.nudges != 1 {
+		t.Errorf("the wake sent %d background_tasks_changed nudges, want 1 for the stash it dropped", probe.nudges)
 	}
 	if !strings.HasPrefix(mustGetItem(t, st, "t1", wakeID).Summary, "Background command") {
 		t.Errorf("wake row summary = %q", mustGetItem(t, st, "t1", wakeID).Summary)

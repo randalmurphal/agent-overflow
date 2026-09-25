@@ -202,7 +202,8 @@ export const MAX_WATCH_THREADS = 256;
 // Mirrors internal/transport/frame.go MaxWatchThreadIDBytes, which bounds
 // every id a watch set, and so a gap's thread list, can hold.
 const MAX_WATCH_THREAD_ID_LENGTH = 256;
-// Mirrors internal/transport/frame.go MaxWatchScopes.
+// Mirrors internal/transport/frame.go MaxWatchScopes: the pairs one watch
+// frame names. A larger set is stated compactly (composeWatchScopes).
 export const MAX_WATCH_SCOPES = 256;
 
 // sameStringList compares two already-sorted lists elementwise. The watch
@@ -227,34 +228,64 @@ function withinWatchIdBound(id: string): boolean {
 }
 
 // The scope half of a watch: sorted and deduped like the thread half, so the
-// dedup compare is a sequence equality. `null` is a set this client cannot
-// state within the backend's bounds; the frame then omits the field, which
-// the backend reads as "every scope of a watched thread". An empty id names
-// no transcript and is dropped rather than sent: the backend refuses the
-// whole frame for one.
-type WatchScopeSet = { scopes: WatchScope[]; keys: string[] } | null;
+// dedup compare is a sequence equality. Any set is stated: past
+// MAX_WATCH_SCOPES pairs, the threads with the most open scopes are named
+// whole in `scopeThreads`, which admits every scope of a thread, until the
+// pairs left fit; a scope root past the id bound names its thread whole
+// too. The compact form costs those threads' other scopes, never a surface
+// that stops receiving. `null` is a set with a scope thread id past the
+// bound, or more whole threads than MAX_WATCH_THREADS, neither of which a
+// real screen reaches (the watched threads bound both); the frame then
+// omits the field, which the backend reads as "every scope of a watched
+// thread". An empty id names no transcript and is dropped rather than
+// sent: the backend refuses the whole frame for one.
+type WatchScopeSet = { scopes: WatchScope[]; scopeThreads: string[]; keys: string[] } | null;
 
 function composeWatchScopes(scopes: readonly WatchScope[]): WatchScopeSet {
-  const byKey = new Map<string, WatchScope>();
+  const rootsByThread = new Map<string, Set<string>>();
+  const whole = new Set<string>();
   for (const scope of scopes) {
     if (!scope.threadId || !scope.scopeRootId) continue;
-    if (!withinWatchIdBound(scope.threadId) || !withinWatchIdBound(scope.scopeRootId)) return null;
-    byKey.set(`${scope.threadId}\u0000${scope.scopeRootId}`, { threadId: scope.threadId, scopeRootId: scope.scopeRootId });
+    if (!withinWatchIdBound(scope.threadId)) return null;
+    if (!withinWatchIdBound(scope.scopeRootId)) whole.add(scope.threadId);
+    let roots = rootsByThread.get(scope.threadId);
+    if (!roots) rootsByThread.set(scope.threadId, roots = new Set());
+    roots.add(scope.scopeRootId);
   }
-  if (byKey.size > MAX_WATCH_SCOPES) return null;
+  let pairs = 0;
+  for (const [threadId, roots] of rootsByThread) {
+    if (!whole.has(threadId)) pairs += roots.size;
+  }
+  if (pairs > MAX_WATCH_SCOPES) {
+    const heaviest = [...rootsByThread]
+      .filter(([threadId]) => !whole.has(threadId))
+      .sort(([a, aRoots], [b, bRoots]) => bRoots.size - aRoots.size || (a < b ? -1 : a > b ? 1 : 0));
+    for (const [threadId, roots] of heaviest) {
+      if (pairs <= MAX_WATCH_SCOPES) break;
+      whole.add(threadId);
+      pairs -= roots.size;
+    }
+  }
+  if (whole.size > MAX_WATCH_THREADS) return null;
+  const byKey = new Map<string, WatchScope>();
+  for (const [threadId, roots] of rootsByThread) {
+    if (whole.has(threadId)) continue;
+    for (const scopeRootId of roots) byKey.set(`${threadId}\u0000${scopeRootId}`, { threadId, scopeRootId });
+  }
   const keys = [...byKey.keys()].sort();
-  return { scopes: keys.map(key => byKey.get(key)!), keys };
+  return { scopes: keys.map(key => byKey.get(key)!), scopeThreads: [...whole].sort(), keys };
 }
 
 function sameWatchScopes(a: WatchScopeSet, b: WatchScopeSet): boolean {
   if (a === null || b === null) return a === b;
-  return sameStringList(a.keys, b.keys);
+  return sameStringList(a.keys, b.keys) && sameStringList(a.scopeThreads, b.scopeThreads);
 }
 
 function watchFrame(watch: { threads: string[]; scopes: WatchScopeSet }): ClientWatchFrame {
-  return watch.scopes === null
-    ? { type: 'watch', threads: watch.threads }
-    : { type: 'watch', threads: watch.threads, scopes: watch.scopes.scopes };
+  if (watch.scopes === null) return { type: 'watch', threads: watch.threads };
+  return watch.scopes.scopeThreads.length === 0
+    ? { type: 'watch', threads: watch.threads, scopes: watch.scopes.scopes }
+    : { type: 'watch', threads: watch.threads, scopes: watch.scopes.scopes, scopeThreads: watch.scopes.scopeThreads };
 }
 // Native notification activation can arrive before the SPA makes its first
 // WS connection (notably a cold launch from a Windows toast). Seed this
@@ -1279,10 +1310,9 @@ export class WSClient {
    * watching, because a surface that stopped receiving would render
    * wrongly the moment it is looked at.
    *
-   * A scope set past MAX_WATCH_SCOPES, or holding an id past the wire
-   * bound, is not truncated: the frame omits `scopes`, which admits every
-   * scope of the watched threads. Wider delivery costs bytes; a truncated
-   * set would silently stop an open agent view.
+   * A scope set past MAX_WATCH_SCOPES is not truncated: its heaviest
+   * threads are named whole (composeWatchScopes). Wider delivery costs
+   * bytes; a truncated set would silently stop an open agent view.
    *
    * Nothing here is authorization. It reduces what this client asks to be
    * sent; what it is ALLOWED to be sent is the per-connection origin and

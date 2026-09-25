@@ -12,11 +12,12 @@ import (
 // card is flushed. The router keeps one card per parent for a live
 // session and flushes the thread's cards before each anchor push
 // (refreshWireItems: the quiet-point timer, turn completion and
-// teardown), before a first child's anchors are pushed
-// (emitFirstChildAnchors), and before an agent's completion sibling or
-// stop notification is written (settleSubagentCard). A thread without a
-// live session opens a card per write and closes it after, which flushes
-// it.
+// teardown). Before a first child's anchors are pushed
+// (emitFirstChildAnchors) it flushes that child's chain, and before an
+// agent's completion sibling or stop notification is written
+// (settleSubagentCard) the agent's chain: the cards of other agents wait
+// for the quiet point. A thread without a live session opens a card per
+// write and closes it after, which flushes what the card reaches.
 
 // maxSubagentCardsPerThread bounds the cards a thread keeps open. A card
 // costs a few hundred bytes; the parents a session writes under are its
@@ -126,8 +127,8 @@ func (st *threadState) retireSubagentCardsLocked(parentID string) []*subagentCar
 	return idle
 }
 
-// closeSubagentCards closes cards, which flushes their thread. A failed
-// flush keeps the thread's accumulators for its next flush.
+// closeSubagentCards closes cards, which flushes what each reaches. A
+// failed flush keeps the accumulators for the thread's next flush.
 func closeSubagentCards(threadID string, entries []*subagentCardEntry) {
 	for _, entry := range entries {
 		if err := entry.card.Close(); err != nil {
@@ -150,6 +151,18 @@ func (r *Router) flushSubagentCards(threadID string) []string {
 	return changed
 }
 
+// flushSubagentChain writes the pending card accumulators on parentID's
+// chain to their stamps (store.FlushSubagentChain). A failure keeps them
+// for the next flush.
+func (r *Router) flushSubagentChain(threadID, parentID string) {
+	if r.store == nil {
+		return
+	}
+	if _, err := r.store.FlushSubagentChain(threadID, parentID); err != nil {
+		log.Printf("triage: flush the subagent cards of %s/%s: %v", threadID, parentID, err)
+	}
+}
+
 // subagentCardOpen reports whether rows were written under launchID
 // that its stamp may not hold yet: the router keeps a card for it, or the
 // store holds unflushed changes to its stamp (from a nested agent's
@@ -166,11 +179,11 @@ func (r *Router) subagentCardOpen(threadID, launchID string) bool {
 }
 
 // settleSubagentCard runs before an agent's completion sibling or stop
-// notification is written: the thread's cards are flushed, so the
-// sibling reads the card its launch ends with, and the launch's own card
-// leaves the cache. A later row under it opens the card again.
+// notification is written: the launch's chain is flushed, so the sibling
+// reads the card its launch ends with, and the launch's own card leaves
+// the cache. A later row under it opens the card again.
 func (r *Router) settleSubagentCard(threadID, launchID string) {
-	r.flushSubagentCards(threadID)
+	r.flushSubagentChain(threadID, launchID)
 	r.mu.Lock()
 	var idle []*subagentCardEntry
 	if st := r.threadStateIfPresent(threadID); st != nil {

@@ -39,7 +39,7 @@ func TestListThreadProposedPlans_NilNormalization(t *testing.T) {
 }
 
 func TestListLiveBackgroundTasks_RetentionCutoffUsesWallClock(t *testing.T) {
-	// The binding computes `cutoff = now - backgroundTaskRetentionMillis`
+	// The binding computes `cutoff = now - store.BackgroundTaskRetentionMillis`
 	// on each call. A completion whose created_at is within the
 	// window surfaces; one outside doesn't. This test exercises the
 	// cutoff by seeding two completion rows with different ages.

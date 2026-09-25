@@ -143,7 +143,7 @@ func TestCodexLatestToolTrayMetaKeysMatchFrontendMirror(t *testing.T) {
 }
 
 func TestAgentRunStateMetaKeysMatchFrontendMirror(t *testing.T) {
-	const backend = "internal/triage/agent_run_state.go"
+	const backend = "internal/store/background_tray_run_state.go"
 	const frontend = "frontend/src/lib/utils/subagentRunState.ts"
 	backendValues := goStringConstants(t, backend)
 	frontendSource, err := os.ReadFile(repoRelativePath(t, frontend))
@@ -151,14 +151,14 @@ func TestAgentRunStateMetaKeysMatchFrontendMirror(t *testing.T) {
 		t.Fatalf("read %s: %v", frontend, err)
 	}
 	for _, name := range []string{
-		"metaKeySubagentRunState",
-		"metaKeySubagentParkedCommands",
-		"metaKeySubagentParkedReportID",
-		"metaKeySubagentParkedReportPreview",
-		"subagentRunRunning",
-		"subagentRunParked",
-		"subagentRunDone",
-		"subagentRunEnded",
+		"MetaKeySubagentRunState",
+		"MetaKeySubagentParkedCommands",
+		"MetaKeySubagentParkedReportID",
+		"MetaKeySubagentParkedReportPreview",
+		"AgentRunRunning",
+		"AgentRunParked",
+		"AgentRunDone",
+		"AgentRunEnded",
 	} {
 		value, ok := backendValues[name]
 		if !ok || value == "" {
@@ -197,19 +197,15 @@ func TestParkedStopMetaKeysMatchFrontendMirror(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read %s: %v", frontend, err)
 	}
-	for backend, names := range map[string][]string{
-		"internal/triage/agent_stops.go": {"metaKeyParkedCommands", "metaKeyParkedReportItemID", "metaKeyRunStartedAt", "metaKeyRunWoke"},
-		"internal/store/agent_stops.go":  {"ItemStatusParked"},
-	} {
-		backendValues := goStringConstants(t, backend)
-		for _, name := range names {
-			value, ok := backendValues[name]
-			if !ok || value == "" {
-				t.Fatalf("%s no longer declares %s", backend, name)
-			}
-			if !strings.Contains(string(frontendSource), `'`+value+`'`) {
-				t.Errorf("%s does not mirror %s = %q", frontend, name, value)
-			}
+	const backend = "internal/store/agent_stops.go"
+	backendValues := goStringConstants(t, backend)
+	for _, name := range []string{"MetaKeyParkedCommands", "MetaKeyParkedReportItemID", "MetaKeyRunStartedAt", "MetaKeyRunWoke", "ItemStatusParked"} {
+		value, ok := backendValues[name]
+		if !ok || value == "" {
+			t.Fatalf("%s no longer declares %s", backend, name)
+		}
+		if !strings.Contains(string(frontendSource), `'`+value+`'`) {
+			t.Errorf("%s does not mirror %s = %q", frontend, name, value)
 		}
 	}
 }

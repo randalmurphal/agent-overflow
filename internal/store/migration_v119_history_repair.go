@@ -5,7 +5,7 @@ package store
 //
 // An insert under history_bulk_load moves a row a read already showed, or
 // rebuilds a thread the same transaction emptied, so it changes no other
-// row's read (history_sync.go). The insert trigger nevertheless re-stamped
+// row's read (history_rev_triggers.go). The insert trigger nevertheless re-stamped
 // the row's parent chain, carriers and completion siblings. The flag freezes
 // the stamp, so every re-stamp after the first left rev unchanged and fired
 // the update trigger's own walk: moving one 64-row chunk of a launch's

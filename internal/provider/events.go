@@ -140,13 +140,9 @@ const (
 	// provenance. Meta is SubagentBackgroundedMeta.
 	EventSubagentBackgrounded EventKind = "subagent_backgrounded"
 
-	// EventBackgroundTasksChanged is Claude's LEVEL signal for the set of
-	// live background tasks (`system/background_tasks_changed`): the whole
-	// set, REPLACE semantics, emitted on every membership change. Foreground
-	// agents and forked skills are not in it. Consumers swap their set for
-	// the payload rather than pairing start/stop edges, so a missed bookend
-	// cannot wedge a stale running indicator. Meta is
-	// BackgroundTasksChangedMeta.
+	// EventBackgroundTasksChanged is Claude's signal that the set of live
+	// background tasks moved (`system/background_tasks_changed`). It
+	// carries no Meta: the store's rows answer which tasks are live.
 	EventBackgroundTasksChanged EventKind = "background_tasks_changed"
 
 	// EventCodexExecResult is a Codex-only internal signal derived from the
@@ -686,7 +682,7 @@ type SubagentProgressMeta struct {
 	TaskID string `json:"taskId,omitempty"`
 	// ToolUses is the number of tool calls the agent has made so far.
 	ToolUses int `json:"toolUses,omitempty"`
-	// TotalTokens is the agent's own token spend so far — every token it
+	// TotalTokens is the agent's own token spend so far: every token it
 	// caused to be processed, counted ONCE. Never folded into the parent
 	// thread's meter. Re-sending a cached prompt is not spend: a figure
 	// that counts it grows with round count instead of with work, which
@@ -698,7 +694,7 @@ type SubagentProgressMeta struct {
 	// childAgentTokenSpend sums fresh input + cache writes + all output
 	// and the result is MONOTONIC. Claude ships one pre-summed
 	// `{total_tokens}` with no breakdown, and 2.1.237 builds it as LATEST
-	// input plus all output — so Claude's dips when a subagent compacts
+	// input plus all output, so Claude's dips when a subagent compacts
 	// and cannot be made to do otherwise. The two agree until a
 	// compaction (summing each round's fresh input is how the current
 	// context got its size); after one they diverge, Claude low.
@@ -725,24 +721,6 @@ type SubagentProgressMeta struct {
 // EventSubagentBackgrounded. ItemID on the event is the launch tool_use.
 type SubagentBackgroundedMeta struct {
 	TaskID string `json:"taskId,omitempty"`
-}
-
-// BackgroundTaskRef is one member of the live background-task set.
-type BackgroundTaskRef struct {
-	TaskID string `json:"taskId"`
-	// ToolUseID is the launch tool_use the task belongs to when the
-	// parser can resolve it (task_id ↔ tool_use_id map); empty otherwise.
-	ToolUseID   string `json:"toolUseId,omitempty"`
-	TaskType    string `json:"taskType,omitempty"`
-	Description string `json:"description,omitempty"`
-}
-
-// BackgroundTasksChangedMeta is the typed payload for
-// EventBackgroundTasksChanged: the provider's FULL replacement set. An
-// empty Tasks slice is a real answer (nothing is running in the
-// background) and consumers must apply it as such.
-type BackgroundTasksChangedMeta struct {
-	Tasks []BackgroundTaskRef `json:"tasks"`
 }
 
 // MetaUserContentBlockDigestKey carries an `EventUserText` echo's content

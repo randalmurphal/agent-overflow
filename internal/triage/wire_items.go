@@ -1,9 +1,7 @@
 package triage
 
 import (
-	"encoding/json"
 	"log"
-	"strings"
 	"time"
 
 	"agent-overflow/internal/eventchan"
@@ -19,7 +17,7 @@ import (
 // refresh.) Two rules keep every row a client holds at a revision it can
 // prove (docs/architecture/thread-replica-sync.md §3.1):
 //
-//   - a row whose page read is decorated (store.ItemReadNeedsDecoration:
+//   - a row whose page read is decorated (store.ProbeWireItem:
 //     an anchor no clean stamp serves, a completion sibling, a plan) is
 //     pushed as written but marked unstamped, and
 //     noted so the next refresh pushes its page read. The write never
@@ -39,9 +37,9 @@ import (
 //     per write: wireRefreshQuiet after the last push on the thread, at
 //     most wireRefreshMaxWait after the first, and synchronously at turn
 //     completion and session teardown. The one exception is an agent's
-//     first row: the cards are flushed and the anchor whose card it opens
-//     (store.ListFirstChildWireAnchors) is pushed with it, so the card
-//     appears with the agent's first activity.
+//     first row: its chain's cards are flushed and the anchor whose card
+//     it opens (store.ListFirstChildWireAnchors) is pushed with it, so the
+//     card appears with the agent's first activity.
 //
 // A wire row the emitter altered on purpose (blankedStreamingWireRow)
 // carries store.UnstampedItemRev and takes neither path: the settle patch
@@ -75,19 +73,24 @@ func (r *Router) emitItemUpsert(item store.Item) {
 // noted at that revision so the next refresh reads it: the client never
 // holds a provable revision for a row it saw undecorated.
 func (r *Router) emitItemUpserts(threadID string, items []store.Item) {
+	var tray []string
 	for _, item := range items {
 		if item.Rev == store.UnstampedItemRev {
 			r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
 			r.emitFirstChildAnchors(item)
+			tray = appendTrayLaunches(tray, threadID, item, true)
 			continue
 		}
-		if r.itemReadNeedsDecoration(item) {
+		probe := r.probeWireItem(item)
+		if probe.NeedsDecoration {
 			item.Rev = store.UnstampedItemRev
 		}
 		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(item))
 		r.noteWireItemEmitted(threadID, item.ID, item.Rev)
 		r.emitFirstChildAnchors(item)
+		tray = appendTrayLaunches(tray, threadID, item, probe.Anchors)
 	}
+	r.announceTrayLaunches(threadID, tray)
 }
 
 // emitFirstChildAnchors pushes the anchors whose card the written child
@@ -105,23 +108,23 @@ func (r *Router) emitFirstChildAnchors(child store.Item) {
 		return
 	}
 	// The child is in its card, not yet in the stamp the probe reads.
-	r.flushSubagentCards(child.ThreadID)
+	r.flushSubagentChain(child.ThreadID, child.ParentID)
 	anchors, err := r.store.ListFirstChildWireAnchors(child)
 	if err != nil {
 		log.Printf("triage: read first child anchors of %s/%s: %v", child.ThreadID, child.ID, err)
 		return
 	}
-	nudge := false
+	var nested []string
 	for _, anchor := range anchors {
 		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(anchor))
 		r.noteWireItemEmitted(anchor.ThreadID, anchor.ID, anchor.Rev)
-		nudge = nudge || isNestedLiveBackgroundLaunch(anchor)
+		if isNestedTrayCandidate(anchor) {
+			nested = append(nested, anchor.ID)
+		}
 	}
-	// As in refreshWireItems: the tray reads a nested launch's stamp from
-	// the live list.
-	if nudge {
-		r.emitBackgroundTasksChangedNudge(child.ThreadID)
-	}
+	// As in refreshWireItems: the tray does not receive a nested anchor's
+	// push, and its first child is what makes an agent a tray row.
+	r.emitBackgroundTray(child.ThreadID, nested...)
 }
 
 // claimFirstChildProbe records that parentID's first-child probe ran in
@@ -146,16 +149,16 @@ func (r *Router) claimFirstChildProbe(threadID, parentID string) bool {
 	return true
 }
 
-// itemReadNeedsDecoration is the store's probe with a failed probe
-// folded into "needed": the row then goes out unstamped and the refresh
-// decides.
-func (r *Router) itemReadNeedsDecoration(item store.Item) bool {
-	needs, err := r.store.ItemReadNeedsDecoration(item)
+// probeWireItem is the store's probe with a failed probe folded into
+// "needed" and "anchors": the row then goes out unstamped and the refresh
+// decides, and a tray delta reads whether it is a launch.
+func (r *Router) probeWireItem(item store.Item) store.WireItemProbe {
+	probe, err := r.store.ProbeWireItem(item)
 	if err != nil {
 		log.Printf("triage: probe wire row %s/%s: %v", item.ThreadID, item.ID, err)
-		return true
+		return store.WireItemProbe{NeedsDecoration: true, Anchors: true}
 	}
-	return needs
+	return probe
 }
 
 func (r *Router) emitItemRemove(threadID, itemID, kind string) {
@@ -199,17 +202,19 @@ func (r *Router) persistItemFieldsAndPatch(item store.Item, update store.ItemPar
 	if err != nil {
 		return err
 	}
-	if r.itemReadNeedsDecoration(stored) {
+	probe := r.probeWireItem(stored)
+	if probe.NeedsDecoration {
 		stored.Rev = store.UnstampedItemRev
 		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(stored))
 		r.noteWireItemEmitted(stored.ThreadID, stored.ID, stored.Rev)
-		return nil
+	} else {
+		patch := patchFromPartial(update)
+		if update.Meta != nil {
+			patch.Meta = &stored.Meta
+		}
+		r.emitItemPatch(stored.ThreadID, stored.ID, stored.ParentID, stored.Kind, stored.Rev, patch)
 	}
-	patch := patchFromPartial(update)
-	if update.Meta != nil {
-		patch.Meta = &stored.Meta
-	}
-	r.emitItemPatch(stored.ThreadID, stored.ID, stored.ParentID, stored.Kind, stored.Rev, patch)
+	r.announceTrayLaunches(stored.ThreadID, appendTrayLaunches(nil, stored.ThreadID, stored, probe.Anchors))
 	return nil
 }
 
@@ -341,37 +346,18 @@ func (r *Router) refreshWireItems(threadID string, emitted map[string]int64) {
 		log.Printf("triage: refresh wire rows for %s: %v", threadID, err)
 		return
 	}
-	nudge := false
+	var nested []string
 	for _, row := range rows {
 		r.emit(eventchan.ProviderItemEvent, NewItemStreamUpsert(row))
-		nudge = nudge || isNestedLiveBackgroundLaunch(row)
+		if isNestedTrayCandidate(row) {
+			nested = append(nested, row.ID)
+		}
 	}
 	// Every row read here changed after its last push, most often an
 	// anchor its children's writes restamped. A nested launch's push
 	// reaches only a connection watching its parent's scope, and the
-	// background tray watches none: it reads the launch's stamp (its
-	// latest-tool line) from the live list, so the change is announced on
-	// the list's own channel. One nudge per refresh, however many
-	// launches it pushed.
-	if nudge {
-		r.emitBackgroundTasksChangedNudge(threadID)
-	}
-}
-
-// isNestedLiveBackgroundLaunch reports whether a row is a running
-// background launch below the top level that the live list serves: the
-// rows whose pushes the tray does not receive.
-func isNestedLiveBackgroundLaunch(it store.Item) bool {
-	if it.Kind != itemKindToolCall || it.Status != statusRunning || !it.IsBackground || strings.TrimSpace(it.ParentID) == "" {
-		return false
-	}
-	var meta struct {
-		Active *bool `json:"live_background_active"`
-	}
-	if strings.TrimSpace(it.Meta) != "" {
-		if err := json.Unmarshal([]byte(it.Meta), &meta); err != nil {
-			return false
-		}
-	}
-	return meta.Active == nil || *meta.Active
+	// background tray watches none, so its row (its latest-tool line) is
+	// announced on the tray's own channel: one frame per refresh, carrying
+	// the rows of the launches it pushed.
+	r.emitBackgroundTray(threadID, nested...)
 }

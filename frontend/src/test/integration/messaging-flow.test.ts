@@ -520,12 +520,15 @@ describe('App integration — messaging flow', () => {
     const pane = paneMod.getMainPane();
 
     // The activity rail's Background segment sources its rows from ListLiveBackgroundTasks
-    // (thread-scoped, independent of the paged timeline). Install a
+    // (thread-scoped, independent of the paged timeline) and then from the
+    // provider:background_tray deltas the backend sends with each write
+    // that changes them, carrying the changed launch's rows. Install a
     // stateful mock AFTER mount so it isn't overwritten by the
-    // installThreadViewDefaults → empty default. Each
-    // provider:item_event upsert that also mutates `liveBackgroundItems`
-    // lands in the tray after its 100 ms debounced refresh fires.
+    // installThreadViewDefaults → empty default; it answers any read the
+    // tray makes on its own.
     const liveBackgroundItems: Item[] = [];
+    const trayDelta = () =>
+      emitWailsEvent('provider:background_tray', { threadId: 'thread-1', launchIds: ['bg-launch'], rows: [...liveBackgroundItems] });
     setBindingMock('ListLiveBackgroundTasks', async () => [...liveBackgroundItems]);
 
     const startedAt = Date.now();
@@ -559,6 +562,7 @@ describe('App integration — messaging flow', () => {
     };
     liveBackgroundItems.push(launchItem);
     emitItemEventUpsert(launchItem);
+    trayDelta();
     await flush();
 
     const status = await findByTestId('command-output-status');
@@ -582,10 +586,8 @@ describe('App integration — messaging flow', () => {
 
     expect(status.getAttribute('data-state')).toBe('backgrounded');
 
-    // The activity rail's Background segment now renders the launch
-    // — the segment consumes pane.items and only filters by
-    // isBackground/kind/completionOf, so it picks up the launch
-    // regardless of the turn state.
+    // The activity rail's Background segment still renders the launch:
+    // its rows come from the tray's own list, not the turn state.
     const rail = await findByTestId('activity-rail');
     expect(rail).toBeInTheDocument();
     expect((await findByTestId('activity-rail-background-count')).textContent).toBe('1');
@@ -614,14 +616,13 @@ describe('App integration — messaging flow', () => {
     };
     liveBackgroundItems.push(completionItem);
     emitItemEventUpsert(completionItem);
+    trayDelta();
     await flush();
 
     // The activity rail's Background segment pairs launch + completion
     // by completionOf; the count stays at 1 (one logical task), and the
-    // row status flips to completed. Use waitFor so the 100 ms debounced
-    // background refresh has time to pick up the completion. The rail's
-    // Background body defaults to collapsed in production, so expand it
-    // before inspecting the row.
+    // row status flips to completed. The rail's Background body defaults
+    // to collapsed in production, so expand it before inspecting the row.
     expect((await findByTestId('activity-rail-background-count')).textContent).toBe('1');
     await fireEvent.click(await findByTestId('activity-rail-background-toggle'));
     await waitFor(async () => {

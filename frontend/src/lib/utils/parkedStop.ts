@@ -5,8 +5,7 @@ import { parseJsonObject } from './parseJsonObject';
 // completion-shaped sibling, status `parked`, that a run writes when it
 // reports and stops while background commands it started still run. Its
 // card renders at the sibling like any other stop's. Stored history,
-// written once. Keep these values mirrored with
-// internal/triage/agent_stops.go and internal/store/agent_stops.go;
+// written once. Keep these values mirrored with internal/store/agent_stops.go;
 // mirror_pins_test.go enforces the cross-language contract.
 export const PARKED_STOP_STATUS = 'parked';
 

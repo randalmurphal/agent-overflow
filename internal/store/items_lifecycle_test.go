@@ -2640,18 +2640,10 @@ func TestCompletionSiblingProbesUseIndex(t *testing.T) {
 			args: []any{"thread-plan"},
 		},
 		{
-			// ListLiveBackgroundChildLaunches.
-			name: "direct children of one launch",
-			query: `SELECT ` + itemColumnsSansPayload + `
-			   FROM items` + servedItemJoin + `
-			  WHERE items.thread_id = ?
-			    AND items.parent_id = ?
-			    AND items.parent_id <> ''
-			    AND items.kind = 'tool_call'
-			    AND items.status = 'running'
-			    AND items.is_background = 1
-			    AND ` + noCompletionSiblingSQL,
-			args: []any{"thread-plan", "root-plan"},
+			// CountParkingCommands.
+			name:  "live commands under one root",
+			query: countParkingCommandsSQL,
+			args:  []any{"thread-plan", "root-plan"},
 		},
 		{
 			// ListIncompleteCodexSubagentOwnerships.
@@ -2749,13 +2741,14 @@ func TestCompletionSiblingProbesAreNotSpelledInline(t *testing.T) {
 	}
 }
 
-// TestListLiveBackgroundChildLaunchesListsOnlyLiveDirectChildren pins the
-// park predicate's input (triage launchParkedOn): the backgrounded
-// tool_call rows still running DIRECTLY under one launch with no
-// completion sibling. A settled child, a foreground child, a grandchild
-// and another launch's child are all out; the plan probes the parent
-// index rather than the thread's ordering index.
-func TestListLiveBackgroundChildLaunchesListsOnlyLiveDirectChildren(t *testing.T) {
+// TestCountParkingCommandsCountsOnlyLiveDirectCommands pins the park
+// predicate's input (triage launchParkedOn) and the count a parked
+// launch serves: the backgrounded shells and watch tasks still running
+// DIRECTLY under one root with no completion sibling. A settled child, a
+// foreground child, a nested agent, a grandchild and another launch's
+// child are all out; the plan probes the parent index rather than the
+// thread's ordering index.
+func TestCountParkingCommandsCountsOnlyLiveDirectCommands(t *testing.T) {
 	s := newTestStore(t)
 	now := int64(1)
 	if err := s.CreateThread(Thread{
@@ -2782,27 +2775,18 @@ func TestListLiveBackgroundChildLaunchesListsOnlyLiveDirectChildren(t *testing.T
 	seed(Item{ID: "fg-read", ParentID: "root", Status: "running", IsBackground: false, ToolName: "Read", Summary: "Read: x"})
 	seed(Item{ID: "grandchild-shell", ParentID: "live-shell", Status: "running", IsBackground: true, ToolName: "Bash", Summary: "Bash: nested"})
 	seed(Item{ID: "other-shell", ParentID: "other-root", Status: "running", IsBackground: true, ToolName: "Bash", Summary: "Bash: elsewhere"})
+	seed(Item{ID: "nested-agent", ParentID: "root", Status: "running", IsBackground: true, ToolName: "Agent", Summary: "Agent: nested"})
+	seed(Item{ID: "watch", ParentID: "root", Status: "running", IsBackground: true, ToolName: "Monitor", Summary: "Monitor: log",
+		Meta: `{"watch_task":true}`})
 
-	got, err := s.ListLiveBackgroundChildLaunches("t-park", "root")
-	if err != nil {
-		t.Fatalf("ListLiveBackgroundChildLaunches: %v", err)
+	if got, err := s.CountParkingCommands("t-park", "root"); err != nil || got != 2 {
+		t.Fatalf("CountParkingCommands = %d, %v; want live-shell and watch", got, err)
 	}
-	if len(got) != 1 || got[0].ID != "live-shell" || got[0].ToolName != "Bash" {
-		t.Fatalf("got %+v, want exactly live-shell", got)
-	}
-	if got, err := s.ListLiveBackgroundChildLaunches("t-park", ""); err != nil || got != nil {
-		t.Fatalf("empty parent: got %v, %v; want nil, nil", got, err)
+	if got, err := s.CountParkingCommands("t-park", ""); err != nil || got != 0 {
+		t.Fatalf("empty root: got %d, %v; want 0, nil", got, err)
 	}
 
-	assertPlanUses(t, s.db, "idx_items_parent", `EXPLAIN QUERY PLAN SELECT `+itemColumnsSansPayload+`
-	   FROM items`+servedItemJoin+`
-	  WHERE items.thread_id = ?
-	    AND items.parent_id = ?
-	    AND items.parent_id <> ''
-	    AND items.kind = 'tool_call'
-	    AND items.status = 'running'
-	    AND items.is_background = 1
-	    AND `+noCompletionSiblingSQL, "t-park", "root")
+	assertPlanUses(t, s.db, "idx_items_parent", `EXPLAIN QUERY PLAN `+countParkingCommandsSQL, "t-park", "root")
 }
 
 func TestUpsertUnsettledItemPreservesTerminalRowAndPayloadUnderConcurrentReplay(t *testing.T) {

@@ -855,6 +855,91 @@ export class SlashCommand {
 }
 
 /**
+ * SubagentProgressMeta is the typed payload for EventSubagentProgress.
+ * Every counter is cumulative for the agent's whole run, never a delta;
+ * a provider that cannot report a field leaves it zero / empty and the
+ * consumer keeps whatever it already had for that field (Codex reports
+ * only TotalTokens).
+ */
+export class SubagentProgressMeta {
+    /**
+     * TaskID is the provider's own id for the running agent (Claude
+     * task_id; Codex child thread id). Empty when the provider has none.
+     */
+    "taskId"?: string;
+
+    /**
+     * ToolUses is the number of tool calls the agent has made so far.
+     */
+    "toolUses"?: number;
+
+    /**
+     * TotalTokens is the agent's own token spend so far: every token it
+     * caused to be processed, counted ONCE. Never folded into the parent
+     * thread's meter. Re-sending a cached prompt is not spend: a figure
+     * that counts it grows with round count instead of with work, which
+     * is what made a real 42-minute Codex child report 4.5M against
+     * 210k of actual spend.
+     * 
+     * The two providers reach it differently, because only one of them
+     * gives a choice. Codex ships cumulative breakdowns, so
+     * childAgentTokenSpend sums fresh input + cache writes + all output
+     * and the result is MONOTONIC. Claude ships one pre-summed
+     * `{total_tokens}` with no breakdown, and 2.1.237 builds it as LATEST
+     * input plus all output, so Claude's dips when a subagent compacts
+     * and cannot be made to do otherwise. The two agree until a
+     * compaction (summing each round's fresh input is how the current
+     * context got its size); after one they diverge, Claude low.
+     * 
+     * Consumers must therefore NOT assume this only grows. See
+     * triage.mergeSubagentProgress, which takes the newest value here
+     * while the genuinely monotonic counters take the max.
+     */
+    "totalTokens"?: number;
+
+    /**
+     * DurationMs is the agent's wall-clock run time so far.
+     */
+    "durationMs"?: number;
+
+    /**
+     * Activity is the agent's CURRENT activity line (Claude: the
+     * task_progress `description`, which is NOT the launch description).
+     */
+    "activity"?: string;
+
+    /**
+     * LastToolName is the name of the tool the agent used most recently.
+     */
+    "lastToolName"?: string;
+
+    /**
+     * AgentType is the provider's agent/subagent type name when it
+     * reports one (Claude `subagent_type`).
+     */
+    "agentType"?: string;
+
+    /**
+     * Summary is an optional provider-written progress summary.
+     */
+    "summary"?: string;
+
+    /** Creates a new SubagentProgressMeta instance. */
+    constructor($$source: Partial<SubagentProgressMeta> = {}) {
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new SubagentProgressMeta instance from a string or object.
+     */
+    static createFrom($$source: any = {}): SubagentProgressMeta {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new SubagentProgressMeta($$parsedSource as Partial<SubagentProgressMeta>);
+    }
+}
+
+/**
  * UserInputAnswer stores one or more selected answers for a question.
  * It marshals as a string for single-select answers and a string array for
  * multi-select answers to match the frontend contract.

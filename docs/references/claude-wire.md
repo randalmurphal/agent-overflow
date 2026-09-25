@@ -1060,24 +1060,12 @@ Foreground agents and forked skills are NOT in the set; async/backgrounded
 agents and backgrounded Bash are.
 
 **AO emits `EventBackgroundTasksChanged`**
-(`parseBackgroundTasksChangedEvent`) carrying the whole set as
-`provider.BackgroundTasksChangedMeta`. Each member's launch
-`tool_use_id` is resolved through the parser's task map when known
-(the wire member carries only `task_id`, `task_type` and
-`description`); a task whose launch predates this parser instance keeps
-an empty `toolUseId` and triage falls back to the persisted
-`items.meta.task_id`.
-
-The absent-vs-empty distinction is the same one `commands_changed`
-draws, and it decides whether a live indicator can be wedged or wrongly
-cleared:
-
-- `"tasks": []` is a REAL answer (nothing is running in the background)
-  and is forwarded as an allocated empty slice (serialized `[]`,
-  never `null`).
-- An ABSENT `tasks` key says nothing and is dropped. So is a `tasks`
-  value that fails to decode: unreadable is not evidence that nothing
-  is running.
+(`parseBackgroundTasksChangedEvent`) with no payload. AO keeps no copy
+of the set: the store's rows answer which tasks are live, and the tray's
+rows move with the writes that record each task's launch and terminal.
+Every envelope, whatever its `tasks` holds, says the set moved, and
+triage forwards it as the `provider:background_tasks_changed` refetch
+nudge.
 
 Fixtures:
 [`task_progress_20260822.ndjson`](fixtures/claude/task_progress_20260822.ndjson)
@@ -2242,7 +2230,7 @@ sibling at the write head, `completion_of` = the row that started the
 run: the launch, or a §E6 resume carrier. A stop is PARKED when the
 agent's transcript root has a live backgrounded direct child that is a
 shell or a watch task (`launchParkedOn` counts them, over
-`Store.ListLiveBackgroundChildLaunches`) and its typed status is not a
+`Store.CountParkingCommands`) and its typed status is not a
 kill or a failure (`taskStatusEnds`). A parked stop keeps the stash
 (`pending_background_task_terminals`) for the wake and writes a sibling
 with `items.status = 'parked'` (`complete:<launch>:parked:<uuid>`). The
@@ -2272,19 +2260,20 @@ same after later runs), the tray keeps the agent for as long as the
 CLI's level set does, and every woken run's rows land under the launch
 that is still open.
 
-**Served run state.** `ListLiveBackgroundTasks` decorates each
-background agent launch it returns (`DecorateAgentRunStates`) with
-`subagentRunState`: `done` or `ended` (an ending sibling exists;
-`ended` when its `status_source` is `session_died`), else `parked` when
-the launch's newest stop is a parked sibling no wake has followed
-(`Store.CurrentParkedStop`), else `running`. A parked launch also
-carries what that sibling recorded: `subagentParkedCommands` (N) and,
-when the run wrote a report, `subagentParkedReportId` and
-`subagentParkedReportPreview` (the sibling's payload `preview`). These
-keys are never stored and never pushed on the launch row, so a park or
-a wake does not move its `rev`; the parked sibling write and the wake
-each emit `provider:background_tasks_changed` instead. Parked siblings
-never enter the live list themselves.
+**Served run state.** `ListLiveBackgroundTasks` serves each background
+agent launch it returns with its run state, read by the same statement
+(`serveAgentRunStates`), as `subagentRunState`: `done` or `ended` (an
+ending sibling exists; `ended` when its `status_source` is
+`session_died`), else `parked` when the launch's newest stop is a parked
+sibling no wake has followed (the predicate `Store.CurrentParkedStop`
+reads), else `running`. A parked launch also carries what that sibling
+recorded: `subagentParkedCommands` (N) and, when the run wrote a report,
+`subagentParkedReportId` and `subagentParkedReportPreview` (the
+sibling's payload `preview`). These keys are never stored and never
+pushed on the launch row, so a park or a wake does not move its `rev`;
+the parked sibling write and the wake each emit a
+`provider:background_tray` delta carrying the launch's served row
+instead. Parked siblings never enter the live list themselves.
 
 ### E7: Monitor watch-task launch ack
 

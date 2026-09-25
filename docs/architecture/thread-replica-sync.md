@@ -160,6 +160,10 @@ some top-level rows from other rows (`decorateSubagentAnchors`):
   from the root's children, claude-wire.md §E6), and the completion
   siblings of all of those.
 
+A parked sibling (`agent_stops.go`) is in neither sibling leg: it records
+one run and borrows no card, so no write to its launch or under it
+changes its read, and its own insert stamps only itself.
+
 Each leg is an index probe (the primary key, walked once per level of
 the chain by a recursive CTE, `idx_items_completion_of`, and the v100
 partial expression index `idx_items_transcript_root`, keyed on the root
@@ -326,7 +330,7 @@ because a client builds its held window out of the rows it was pushed:
   read back inside its write transaction; the caller's input struct
   carries a pre-trigger value;
 - an upsert of a row whose page read is decorated
-  (`store.ItemReadNeedsDecoration`: a completion sibling, a proposed
+  (`store.ProbeWireItem`: a completion sibling, a proposed
   plan, or an anchor the read walks: dirty, `readTime`, an unstamped
   carrier, or an unstamped anchor of a thread whose backfill is pending)
   sends the write's read-back marked `store.UnstampedItemRev` and notes

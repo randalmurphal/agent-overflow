@@ -24,9 +24,8 @@ type cardThread struct {
 	invalid bool
 	all     bool
 	// relive names the anchors whose agents may have started or stopped
-	// since the last drain; reliveAll covers every card of the thread.
-	relive    map[string]struct{}
-	reliveAll bool
+	// since the last drain.
+	relive map[string]struct{}
 
 	// mu serializes the thread's item writes that hold it, and the card
 	// resolves and flushes. It is taken before the writer connection,
@@ -116,21 +115,16 @@ func (c *subagentCards) holds(threadID string) bool {
 }
 
 // relive records that the agents of anchors ids may have started or
-// stopped running, or with ids nil that any agent of the thread may
-// have: the next card operation makes the cards whose liveness they
-// decide read their chain again (SubagentCard.live). It takes only the
-// registry lock, so a writer holding the connection can call it; a
-// transaction that rolls back after it costs a resolve, never a stale
-// card.
+// stopped running: the next card operation makes the cards whose
+// liveness they decide read their chain again (SubagentCard.live), and
+// no other card. It takes only the registry lock, so a writer holding the
+// connection can call it; a transaction that rolls back after it costs a
+// resolve, never a stale card.
 func (c *subagentCards) relive(threadID string, ids []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	t := c.threads[threadID]
 	if t == nil {
-		return
-	}
-	if ids == nil {
-		t.reliveAll = true
 		return
 	}
 	for _, id := range ids {
@@ -161,17 +155,17 @@ func (c *subagentCards) resetAll() {
 // next flush (retire).
 func (c *subagentCards) drain(t *cardThread) {
 	c.mu.Lock()
-	relive, reliveAll := t.relive, t.reliveAll
-	t.relive, t.reliveAll = nil, false
+	relive := t.relive
+	t.relive = nil
 	if !t.invalid {
 		c.mu.Unlock()
-		t.reresolve(relive, reliveAll)
+		t.reresolve(relive)
 		return
 	}
 	stale, all := t.stale, t.all
 	t.stale, t.invalid, t.all = nil, false, false
 	c.mu.Unlock()
-	t.reresolve(relive, reliveAll)
+	t.reresolve(relive)
 	if all {
 		stale = make(map[string]struct{}, len(t.stamps))
 		for id := range t.stamps {
@@ -214,12 +208,10 @@ func (t *cardThread) unresolve() {
 	}
 }
 
-// reresolve makes the cards whose liveness an anchor in ids decides, or
-// every card with all, read their chain at their next write. The caller
-// holds t.mu.
-func (t *cardThread) reresolve(ids map[string]struct{}, all bool) {
-	if all {
-		t.unresolve()
+// reresolve makes the cards whose liveness an anchor in ids decides read
+// their chain at their next write. The caller holds t.mu.
+func (t *cardThread) reresolve(ids map[string]struct{}) {
+	if len(ids) == 0 {
 		return
 	}
 	for h := range t.handles {
@@ -257,51 +249,95 @@ func (t *cardThread) snapshot(c *SubagentCard) func() {
 	}
 }
 
-// uncovered reports an accumulator or seed holding changes no boot pass
-// would recover once the agents stops names have stopped: one no live
-// card reaches, the cards those agents kept live not counted. all
-// reports that any agent of the thread may have stopped. The caller
-// holds t.mu.
-func (t *cardThread) uncovered(stops []string, all bool) bool {
-	if !t.pending() {
-		return false
-	}
-	if all || len(t.seeds) > 0 {
-		return true
-	}
-	for _, st := range t.stamps {
-		if st.pending() && !t.covered(st, stops) {
-			return true
+// reach adds to into the accumulators card h's rows reach: its levels,
+// a resumed root's last round, and its tray. The caller holds t.mu.
+func (t *cardThread) reach(h *SubagentCard, into map[*cardStamp]struct{}) {
+	for _, st := range h.levels {
+		into[st] = struct{}{}
+		if st.round != nil {
+			into[st.round] = struct{}{}
 		}
 	}
-	return false
+	if h.tray != nil {
+		into[h.tray] = struct{}{}
+	}
 }
 
-// covered reports whether a live card whose agent is not in stops reaches
-// st: the boot pass recovers the stamps a live card reaches
-// (SubagentCard.live). The caller holds t.mu.
-func (t *cardThread) covered(st *cardStamp, stops []string) bool {
+// chain is the set of accumulators on parentID's chain: the reach of
+// every open card for rows under parentID, and parentID's own stamp with
+// its last round when the thread holds it. The caller holds t.mu.
+func (t *cardThread) chain(parentID string) map[*cardStamp]struct{} {
+	into := make(map[*cardStamp]struct{})
+	if st := t.stamps[parentID]; st != nil {
+		into[st] = struct{}{}
+		if st.round != nil {
+			into[st.round] = struct{}{}
+		}
+	}
 	for h := range t.handles {
-		if !h.resolved || !h.live || h.orphan || slices.Contains(stops, h.liveAnchor) {
-			continue
+		if h.parentID == parentID {
+			t.reach(h, into)
 		}
-		if h.tray == st {
-			return true
+	}
+	return into
+}
+
+// stopped is the set of pending accumulators no boot pass recovers once
+// the agents stops names have stopped: those the cards whose liveness
+// they decided reach (SubagentCard.liveAnchor), and those no open card
+// reaches (unreached). The caller holds t.mu.
+func (t *cardThread) stopped(stops []string) map[*cardStamp]struct{} {
+	into := make(map[*cardStamp]struct{})
+	for h := range t.handles {
+		if h.liveAnchor != "" && slices.Contains(stops, h.liveAnchor) {
+			t.reach(h, into)
 		}
-		for _, level := range h.levels {
-			if level == st || level.round == st {
+	}
+	for st := range into {
+		if !st.pending() {
+			delete(into, st)
+		}
+	}
+	t.unreached(into)
+	return into
+}
+
+// reached is the set of accumulators the open cards reach. The caller
+// holds t.mu.
+func (t *cardThread) reached() map[*cardStamp]struct{} {
+	into := make(map[*cardStamp]struct{})
+	for h := range t.handles {
+		t.reach(h, into)
+	}
+	return into
+}
+
+// unreached adds to into the pending accumulators no open card reaches,
+// which no card's own flush writes: a card that closed or read another
+// chain, or a round a recompute replaced, left them. The caller holds
+// t.mu.
+func (t *cardThread) unreached(into map[*cardStamp]struct{}) {
+	reached := t.reached()
+	for _, st := range t.stamps {
+		if _, ok := reached[st]; !ok && st.pending() {
+			into[st] = struct{}{}
+		}
+	}
+}
+
+// pending reports accumulators in only, or any with only nil, or seeds a
+// flush would write. The caller holds t.mu.
+func (t *cardThread) pending(only map[*cardStamp]struct{}) bool {
+	if len(t.seeds) > 0 {
+		return true
+	}
+	if only != nil {
+		for st := range only {
+			if st.pending() {
 				return true
 			}
 		}
-	}
-	return false
-}
-
-// pending reports accumulators or seeds a flush would write. The caller
-// holds t.mu.
-func (t *cardThread) pending() bool {
-	if len(t.seeds) > 0 {
-		return true
+		return false
 	}
 	for _, st := range t.stamps {
 		if st.pending() {
@@ -314,18 +350,7 @@ func (t *cardThread) pending() bool {
 // collect drops the accumulators no card reaches that hold nothing to
 // flush. The caller holds t.mu.
 func (t *cardThread) collect() {
-	reached := make(map[*cardStamp]struct{})
-	for h := range t.handles {
-		for _, st := range h.levels {
-			reached[st] = struct{}{}
-			if st.round != nil {
-				reached[st.round] = struct{}{}
-			}
-		}
-		if h.tray != nil {
-			reached[h.tray] = struct{}{}
-		}
-	}
+	reached := t.reached()
 	for id, st := range t.stamps {
 		if _, ok := reached[st]; !ok && !st.pending() {
 			delete(t.stamps, id)

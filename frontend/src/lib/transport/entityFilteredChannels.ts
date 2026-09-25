@@ -30,7 +30,9 @@
 export const ENTITY_FILTERED_CHANNELS: readonly string[] = [
   'highlight:diff_seed',
   'highlight:seed',
+  'provider:background_tray',
   'provider:item_event',
+  'provider:subagent_progress',
 ];
 
 const entityFilteredSet = new Set(ENTITY_FILTERED_CHANNELS);

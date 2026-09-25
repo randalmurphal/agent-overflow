@@ -740,7 +740,8 @@ as errored with the completion partner.
 
 ### Background tray (frontend derivation)
 
-Pure derivation over `ListLiveBackgroundTasks(threadId)` so old live
+Pure derivation over `ListLiveBackgroundTasks(threadId)` and its
+`provider:background_tray` deltas so old live
 background work does not need to be loaded in the timeline window:
 - Show launch items where `is_background == true && status == 'running'`.
 - Pair with their `tool_completion` partner if present.
@@ -1618,27 +1619,34 @@ Where:
 
 ### Background tray
 
-Backed by `ListLiveBackgroundTasks(threadId)`, not the loaded timeline
-window. Renders running background launches plus pairs whose
-`tool_completion` is younger than 2s. Cap at 3 visible rows +
-"+N more". Tray rows are informational; the launch and completion
-also render inline in chat history.
+Backed by `ListLiveBackgroundTasks(threadId)`, read when the thread opens
+and after a reconnect or a lost frame and otherwise patched by
+`provider:background_tray` deltas, not the loaded timeline window. Renders
+running background launches plus pairs whose `tool_completion` is younger
+than 2s. Cap at 3 visible rows + "+N more". Tray rows are informational;
+the launch and completion also render inline in chat history.
 
 Stop controls follow provider capabilities. Both providers get the same
 two affordances over different primitives, resolved by one helper
-(`trayRowStopTarget`) so a row and the bulk button can never disagree:
+(`trayRowStopTarget`) so a row and the bulk button can never disagree.
+Stop-all is one `StopBackgroundTasks(threadId, launchIds)` call naming the
+running rows it can stop, which returns one result per launch: a failed
+stop shows under its row, and launches that had already ended are
+summarized in one toast. A shell a named agent owns dies with the agent and
+gets no stop of its own. Remote job rows are cancelled beside it, eight at a
+time.
 
 - **Claude**: per-row Stop when the launch meta carries `task_id`
-  (`StopClaudeTask`); Stop-all fans the same call out per id.
+  (`StopClaudeTask`); Stop-all sends `stop_task` per named task.
 - **Codex**: per-row Stop when a yielded unified-exec PTY carries
   `process_id` (`TerminateCodexBackgroundTerminal` →
   `thread/backgroundTerminals/terminate`, available since codex 0.140,
-  below AO's provider floor); Stop-all is the single thread-wide
+  below AO's provider floor); Stop-all runs the single thread-wide
   `thread/backgroundTerminals/clean`. The terminate response's
   `terminated: false` means "matched nothing" and surfaces as an info
   toast, because no `item/completed` follows to change the row.
-- **Codex subagent rows** have no stop control in either place:
-  `close_agent` is a model tool with no client path.
+- **Codex subagent rows**: per-row Stop interrupts the subagent's turn
+  (`StopCodexSubagent`); Stop-all interrupts each named subagent.
 
 A not-yet-yielded Codex command is tray-visible but not stoppable: it is
 not a background terminal yet, so neither primitive can reach it.

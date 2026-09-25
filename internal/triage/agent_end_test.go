@@ -282,7 +282,7 @@ func TestSessionEndPersistsQueuedAgentRowsAndEndsTheAgent(t *testing.T) {
 	if _, err := router.SettleBackgroundLaunchesForSessionEnd("t1"); err != nil {
 		t.Fatalf("session-end settle: %v", err)
 	}
-	if got := parkCompletions(t, st, "t1")["tu-a"]; got.Status != statusKilled || completionStatusSource(got.Meta) != "session_died" {
+	if got := parkCompletions(t, st, "t1")["tu-a"]; got.Status != statusKilled || decodeItemMetaMap(t, got.Meta)["status_source"] != "session_died" {
 		t.Fatalf("agent sibling = %+v, want killed by the session's end", got)
 	}
 	texts := agentTexts(t, st, "t1", "tu-a")

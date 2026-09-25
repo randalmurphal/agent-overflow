@@ -11,16 +11,25 @@ import (
 	"agent-overflow/internal/eventchan"
 )
 
-// DefaultRingCapacity is the per-channel event buffer size. Tuned to
-// cover a few seconds of streaming bursts (item deltas peak around
-// 500/frame) plus a margin for momentary network hiccups. Tests can
-// configure smaller rings to exercise overflow.
-const DefaultRingCapacity = 1000
+// DefaultRingCapacity and RingByteBudget bound a channel's replay ring,
+// and together they are the reconnect budget: a client that reconnects
+// within 30 s of losing its connection replays every channel without a
+// gap while a thread runs 100 agents at the rate the CLI writes them. The
+// harness measures that burst at about 150 frames/s on the busiest
+// channel, provider:item_event (e2e/tests/transport-replay-burst.spec.ts),
+// so the ring holds 55 s of it. One ring serves every thread, so threads
+// bursting at once share the window. Tests can configure smaller rings to
+// exercise overflow.
+const DefaultRingCapacity = 8192
 
-// DefaultSubscriberBuffer sizes a subscriber's delivery channel.
-// Matches DefaultRingCapacity so a slow subscriber and a slow ring
-// drop at the same time — asymmetric values would let the subscriber
-// gap before the ring did, defeating in-window replay on reconnect.
+// RingByteBudget bounds the wire bytes one ring retains, so a channel of
+// large frames (terminal output) keeps what fits in it rather than
+// DefaultRingCapacity of them. The newest frame is always retained.
+const RingByteBudget = 16 << 20
+
+// DefaultSubscriberBuffer sizes a subscriber's delivery channel: how far
+// a connected client may fall behind live fanout before the channel is
+// gapped for it. The replay ring serves a client that is not connected.
 const DefaultSubscriberBuffer = 1024
 
 // EventBus is the in-memory fanout for server-pushed events. Events
@@ -77,8 +86,10 @@ type EventBus struct {
 	subs     map[*Subscriber]struct{}
 	subList  []*Subscriber
 	capacity int
-	subBuf   int
-	closed   atomic.Bool
+	// ringBytes is each ring's byte budget (RingByteBudget).
+	ringBytes int
+	subBuf    int
+	closed    atomic.Bool
 }
 
 // ring is a bounded circular buffer keyed by per-channel seq.
@@ -86,13 +97,17 @@ type EventBus struct {
 // backing array starts small and doubles up to capacity as events
 // arrive — most channels never see more than a handful of events, so
 // preallocating capacity slots per channel would waste the bulk of
-// the bus's steady-state memory.
+// the bus's steady-state memory. It evicts its oldest entries to stay
+// within capacity entries and byteBudget wire bytes.
 type ring struct {
 	head     int
 	count    int
 	seq      uint64
 	capacity int
-	backing  []Event
+	// bytes is the WireBytes the retained entries hold; byteBudget bounds it.
+	bytes      int
+	byteBudget int
+	backing    []Event
 	// dropped is the head at the last DropRetained. A cursor below it
 	// missed nothing: that history was discarded, not evicted.
 	dropped uint64
@@ -107,7 +122,7 @@ type ring struct {
 // ring. Small on purpose: quiet channels stay small forever.
 const ringInitialCapacity = 16
 
-func newRing(channel string, capacity int) *ring {
+func newRing(channel string, capacity, byteBudget int) *ring {
 	// json.Marshal of a string cannot fail (invalid UTF-8 is replaced),
 	// and matches exactly how the reflection encoder renders the
 	// ServerFrame Channel field, HTML escaping included.
@@ -116,7 +131,7 @@ func newRing(channel string, capacity int) *ring {
 	prefix = append(prefix, eventFramePrefix...)
 	prefix = append(prefix, name...)
 	prefix = append(prefix, eventSeqKey...)
-	return &ring{capacity: capacity, envPrefix: prefix}
+	return &ring{capacity: capacity, byteBudget: byteBudget, envPrefix: prefix}
 }
 
 const (
@@ -145,25 +160,34 @@ func (r *ring) appendEventWire(seq uint64, data []byte) []byte {
 	return append(wire, '}')
 }
 
-// append stores e at the tail, growing the backing up to capacity and
-// evicting the oldest entry once full. Amortized O(1). A zero-capacity
-// ring (ephemeral channels) tracks sequence only and retains nothing.
+// append stores e at the tail, first evicting the oldest entries until
+// e fits within capacity and the byte budget, and growing the backing up
+// to capacity. Amortized O(1). The newest entry is kept even when it
+// alone exceeds the byte budget. A zero-capacity ring (ephemeral
+// channels) tracks sequence only and retains nothing.
 func (r *ring) append(e Event) {
 	if r.capacity == 0 {
 		return
 	}
-	if r.count == len(r.backing) && r.count < r.capacity {
+	size := len(e.WireBytes)
+	for r.count > 0 && (r.count == r.capacity || r.bytes+size > r.byteBudget) {
+		r.evictOldest()
+	}
+	if r.count == len(r.backing) {
 		r.grow()
 	}
-	cap := len(r.backing)
-	if r.count < cap {
-		r.backing[(r.head+r.count)%cap] = e
-		r.count++
-	} else {
-		r.backing[r.head] = e
-		r.head = (r.head + 1) % cap
-	}
+	r.backing[(r.head+r.count)%len(r.backing)] = e
+	r.count++
+	r.bytes += size
 	r.seq = e.Seq
+}
+
+// evictOldest drops the head entry and releases its frame.
+func (r *ring) evictOldest() {
+	r.bytes -= len(r.backing[r.head].WireBytes)
+	r.backing[r.head] = Event{}
+	r.head = (r.head + 1) % len(r.backing)
+	r.count--
 }
 
 // grow re-linearizes the ring into a larger backing array (head back
@@ -271,11 +295,12 @@ func NewEventBus(capacity int) *EventBus {
 		capacity = DefaultRingCapacity
 	}
 	return &EventBus{
-		rings:    make(map[string]*ring),
-		subs:     make(map[*Subscriber]struct{}),
-		subList:  nil,
-		capacity: capacity,
-		subBuf:   DefaultSubscriberBuffer,
+		rings:     make(map[string]*ring),
+		subs:      make(map[*Subscriber]struct{}),
+		subList:   nil,
+		capacity:  capacity,
+		ringBytes: RingByteBudget,
+		subBuf:    DefaultSubscriberBuffer,
 	}
 }
 
@@ -380,7 +405,7 @@ func (b *EventBus) EmitScoped(typedChannel eventchan.Channel, entityKey, entityS
 		case RetentionDefault:
 			// Full-depth ring.
 		}
-		r = newRing(channel, capacity)
+		r = newRing(channel, capacity, b.ringBytes)
 		b.rings[channel] = r
 	}
 	r.seq++
@@ -647,7 +672,7 @@ func (b *EventBus) DropRetained() {
 	defer b.mu.Unlock()
 	for _, r := range b.rings {
 		clear(r.backing)
-		r.head, r.count = 0, 0
+		r.head, r.count, r.bytes = 0, 0, 0
 		r.dropped = r.seq
 	}
 }
@@ -825,11 +850,13 @@ func (s *Subscriber) SetChannels(channels []string) {
 //
 // scopes is the one place a nil slice and an empty one differ. Nil states
 // no scope set: every scope of a watched thread is admitted, which is what
-// a client built before scopes keeps receiving. The latch argument above
+// a client that does not narrow by scope receives. The latch argument above
 // does not apply to it, because the widest reading it allows is the watched
 // threads' own rows; a client bug that drops the field costs wire bytes for
-// threads it named, never rows a surface needs.
-func (s *Subscriber) SetWatch(entityIDs []string, scopes []WatchScope) {
+// threads it named, never rows a surface needs. scopeThreads completes a
+// stated set with the threads whose every scope is admitted
+// (frame.go ClientFrame.ScopeThreads).
+func (s *Subscriber) SetWatch(entityIDs []string, scopes []WatchScope, scopeThreads []string) {
 	filter := subscriberWatchFilter{threads: make(map[string]struct{}, len(entityIDs))}
 	for _, id := range entityIDs {
 		filter.threads[id] = struct{}{}
@@ -838,6 +865,10 @@ func (s *Subscriber) SetWatch(entityIDs []string, scopes []WatchScope) {
 		filter.scopes = make(map[WatchScope]struct{}, len(scopes))
 		for _, scope := range scopes {
 			filter.scopes[scope] = struct{}{}
+		}
+		filter.scopeThreads = make(map[string]struct{}, len(scopeThreads))
+		for _, id := range scopeThreads {
+			filter.scopeThreads[id] = struct{}{}
 		}
 	}
 	s.watched.Store(&filter)

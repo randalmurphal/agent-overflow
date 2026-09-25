@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -241,13 +242,13 @@ func TestE2E_Codex_YieldingCommand_ProjectsAsBackgrounded(t *testing.T) {
 
 // --- Codex scenario 4: stop-all → clean RPC + per-terminal command rows ---
 
-// TestE2E_Codex_StopAll_CleanRPC drives the Codex Stop-all primitive.
-// Two live Codex terminals on one thread, one
-// CleanCodexBackgroundTerminals binding call that fires the
+// TestE2E_Codex_StopAll_CleanRPC drives the tray's Stop-all path on a
+// Codex thread. Two live Codex terminals on one thread, one
+// StopBackgroundTasks call naming both that fires the
 // thread/backgroundTerminals/clean RPC, then simulated item/completed
 // events (one per terminated PTY) that persist command rows and clear
-// the live tray. Verifies
-// exactly ONE RPC fired — thread-wide, not per-row.
+// the live tray. Verifies exactly one RPC fired: the primitive is
+// thread-wide, not per row.
 func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 	app, bus := setupE2EApp(t)
 
@@ -299,6 +300,14 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("exec running result %s: %v", id, err)
 		}
+		// A poll of the terminal backgrounds it; Stop All stops only
+		// background terminals.
+		if err := app.triage.Handle(provider.ProviderEvent{
+			Kind: provider.EventTerminalInteraction, ThreadID: thread.ID,
+			Meta: json.RawMessage(`{"process_id":"pid-` + id + `"}`), Timestamp: time.Now(),
+		}); err != nil {
+			t.Fatalf("terminal poll %s: %v", id, err)
+		}
 	}
 	if err := app.triage.Handle(provider.ProviderEvent{
 		Kind: provider.EventTextDelta, ThreadID: thread.ID,
@@ -315,15 +324,14 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("content block stop: %v", err)
 	}
-	waitUntilE2E(t, 3*time.Second, "both launches in live tray", func() bool {
+	waitUntilE2E(t, 3*time.Second, "both background launches in live tray", func() bool {
 		live, err := app.ListLiveBackgroundTasks(thread.ID)
-		return err == nil && len(live) == 2
+		return err == nil && len(live) == 2 && live[0].IsBackground && live[1].IsBackground
 	})
 
 	// Install a fake Codex session whose Clean callback records the
-	// call and returns nil. The binding must see it go through exactly
-	// once — the frontend Stop-all dispatches this ONCE per thread
-	// (not per row) because Codex's primitive is thread-wide.
+	// call and returns nil. Stop-all must fire it exactly once for both
+	// rows, because Codex's primitive is thread-wide.
 	var cleanCalls atomic.Int32
 	fakeSess := codex.NewCleanBackgroundTerminalsTestSession(func(ctx context.Context) error {
 		cleanCalls.Add(1)
@@ -343,8 +351,16 @@ func TestE2E_Codex_StopAll_CleanRPC(t *testing.T) {
 		app.sessionManager().take(thread.ID)
 	})
 
-	if err := app.CleanCodexBackgroundTerminals(thread.ID); err != nil {
-		t.Fatalf("CleanCodexBackgroundTerminals: %v", err)
+	results, err := app.StopBackgroundTasks(thread.ID, []string{"cmd-stop-1", "cmd-stop-2"})
+	if err != nil {
+		t.Fatalf("StopBackgroundTasks: %v", err)
+	}
+	want := []BackgroundTaskStop{
+		{LaunchItemID: "cmd-stop-1", Outcome: BackgroundStopStopping},
+		{LaunchItemID: "cmd-stop-2", Outcome: BackgroundStopStopping},
+	}
+	if !reflect.DeepEqual(results, want) {
+		t.Fatalf("StopBackgroundTasks results = %+v, want %+v", results, want)
 	}
 	if got := cleanCalls.Load(); got != 1 {
 		t.Fatalf("CleanBackgroundTerminals calls = %d, want 1 (thread-wide primitive)", got)

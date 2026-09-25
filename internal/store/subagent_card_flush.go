@@ -40,27 +40,38 @@ ON CONFLICT (thread_id, item_id) DO NOTHING`
 // after the thread, the id, the generation and the values.
 var carrierRootParam = fmt.Sprintf("?%d", 4+len(subagentAggregateValueColumns))
 
-// flushLocked writes the thread's pending accumulators. The caller holds
-// t.mu. A thread with nothing pending runs no transaction. changed, when
+// flushLocked writes the pending accumulators in only, or every pending
+// accumulator of the thread with only nil, and the thread's seeds. The
+// caller holds t.mu. Nothing pending runs no transaction. changed, when
 // not nil, receives the anchors whose stamp changed.
-func (s *Store) flushLocked(t *cardThread, changed *[]string) error {
-	if !t.pending() {
+func (s *Store) flushLocked(t *cardThread, only map[*cardStamp]struct{}, changed *[]string) error {
+	if !t.pending(only) {
 		return nil
 	}
 	return s.cardTxLocked(t, "flush subagent cards", func(tx *sql.Tx) (func(), error) {
-		return s.flushCardsTx(tx, t, changed, subagentBumpOnce(tx, t.id))
+		return s.flushCardsTx(tx, t, only, changed, subagentBumpOnce(tx, t.id))
 	})
 }
 
-// flushCardsTx writes the thread's pending accumulators in tx. bump
-// advances the thread stamp before the first stamp write; a flush inside
-// an item write, whose own rows already did, passes one that does
-// nothing.
-func (s *Store) flushCardsTx(tx *sql.Tx, t *cardThread, changedOut *[]string, bump func() error) (func(), error) {
-	ids := make([]string, 0, len(t.stamps))
-	for id, st := range t.stamps {
-		if st.pending() {
-			ids = append(ids, id)
+// flushCardsTx writes in tx the pending accumulators in only, or every
+// pending accumulator of the thread with only nil, and the thread's
+// seeds. An accumulator a drain retired after only was taken is not in
+// the thread and is skipped. bump advances the thread stamp before the
+// first stamp write; a flush inside an item write, whose own rows already
+// did, passes one that does nothing.
+func (s *Store) flushCardsTx(tx *sql.Tx, t *cardThread, only map[*cardStamp]struct{}, changedOut *[]string, bump func() error) (func(), error) {
+	var ids []string
+	if only == nil {
+		for id, st := range t.stamps {
+			if st.pending() {
+				ids = append(ids, id)
+			}
+		}
+	} else {
+		for st := range only {
+			if st.pending() && t.stamps[st.id] == st {
+				ids = append(ids, st.id)
+			}
 		}
 	}
 	slices.Sort(ids)

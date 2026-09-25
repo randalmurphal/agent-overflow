@@ -49,7 +49,9 @@ be derived from an item row, and rides a wildcard carrier instead —
 `thread:error_notice` for the Failed badge, `thread:updated` for the
 Plan ready badge (a `full` row) and the reader's own message
 (a `patch` carrying only `updatedAt`), and
-`provider:background_tasks_changed` for the workspace-change lock. Emit
+`provider:background_tasks_changed` for the workspace-change lock (a
+payload-free nudge; the tray's rows ride the entity-filtered
+`provider:background_tray`). Emit
 sites for the first three live beside the persists that cause them
 (`emitErrorNotice`, `emitThreadRow`, `bumpThreadActivityForUserText` in
 `router.go`). Adding a new global consumer of an item row is the thing

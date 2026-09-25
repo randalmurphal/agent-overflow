@@ -155,7 +155,7 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 		if err := r.setCodexAgentRuntime(current); err != nil {
 			return store.Item{}, false, err
 		}
-		r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+		r.emitCodexBackgroundChanged(evt.ThreadID)
 		return existing, true, r.persistCodexSpawnIdentity(existing, evt)
 	}
 
@@ -316,9 +316,9 @@ func (r *Router) persistToolCallLaunch(evt provider.ProviderEvent) (store.Item, 
 	// A live Codex agent's tray row reads its latest-tool line (and a
 	// nested agent's membership) from the live list, and this row's push
 	// reaches only a connection watching the agent's scope, which the tray
-	// does not: the list's own channel announces it.
+	// does not: the tray's own channel announces it.
 	if r.codexAgentIsLive(evt.ThreadID, strings.TrimSpace(persisted.ParentID)) {
-		r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+		r.emitBackgroundTrayRefresh(evt.ThreadID)
 	}
 
 	// A held task_id may belong to a shell that ALREADY exited: its
@@ -1478,7 +1478,7 @@ func (r *Router) writeBackgroundCompletionSibling(evt provider.ProviderEvent, me
 	// An agent's sibling ends the agent: the rows it left open under its
 	// transcript root settle with it (agent_end.go).
 	queued := queuedPersistence{item: completion, payload: payload}
-	if IsSubagentTranscriptLaunch(launch) {
+	if store.IsAgentTranscriptLaunch(launch) {
 		root, err := r.transcriptRootOrSelf(evt.ThreadID, launch)
 		if err != nil {
 			return fmt.Errorf("bg task terminal transcript root %s: %w", completionID, err)
@@ -2129,15 +2129,6 @@ func completionPayloadForLaunch(launch store.Item, evt provider.ProviderEvent, m
 	return CompletionPayloadForTool(launch.ID, launch.ToolName, CommandFromLaunch(launch), evt, meta, now)
 }
 
-func isCommandOutputToolName(toolName string) bool {
-	switch strings.TrimSpace(toolName) {
-	case "Bash", "command_execution", "commandExecution", "exec_command":
-		return true
-	default:
-		return false
-	}
-}
-
 func completionPayload(itemID string, evt provider.ProviderEvent, meta ToolCompleteMeta, now int64) *store.Payload {
 	if evt.Content == "" {
 		return nil
@@ -2350,6 +2341,7 @@ func (r *Router) settleStashedTerminalForLateLaunch(evt provider.ProviderEvent, 
 // stop kept for the wake is the previous binding's and goes too, so the
 // gates that read it do not take the carrier's run for an exited task. A
 // stash naming the carrier itself (a re-delivered rebind) is left alone.
+// No push carries the retired rows, so the tray is told they left.
 func (r *Router) retireParkedLaunchesForRebind(threadID, carrierID, taskID string) error {
 	retired, err := r.store.RetireParkedAgentLaunches(threadID, taskID, carrierID)
 	if err != nil {
@@ -2368,6 +2360,7 @@ func (r *Router) retireParkedLaunchesForRebind(threadID, carrierID, taskID strin
 	if len(retired) > 0 || dropped {
 		r.emitBackgroundTasksChangedNudge(threadID)
 	}
+	r.emitBackgroundTray(threadID, retired...)
 	return nil
 }
 

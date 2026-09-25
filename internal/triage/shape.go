@@ -289,7 +289,7 @@ func CompletionPayloadForTool(itemID string, toolName string, command string, ev
 // CompletionPayloadForToolObject is CompletionPayloadForTool for a caller
 // that already decoded the completion envelope.
 func CompletionPayloadForToolObject(itemID string, toolName string, command string, content string, obj map[string]json.RawMessage, meta ToolCompleteMeta, now int64) *store.Payload {
-	if isCommandOutputToolName(toolName) {
+	if store.IsCommandOutputToolName(toolName) {
 		return CommandCompletionPayloadObject(itemID, command, content, obj, meta, now)
 	}
 	return completionPayload(itemID, provider.ProviderEvent{Content: content}, meta, now)

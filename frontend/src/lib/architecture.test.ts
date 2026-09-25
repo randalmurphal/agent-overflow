@@ -212,7 +212,7 @@ const ENTITY_BINDING_ALLOWLIST: Record<string, string> = {};
 // widget — so there is no entity state to share.
 const WAILS_EVENT_ALLOWLIST: Record<string, string> = {
   'lib/components/composer/activityRailBackground.svelte.ts':
-    'background-task events are used only as rate-bounded refetch triggers for this thread; no payload state is kept',
+    'a transport gap on its thread is a rate-bounded refetch trigger for the tray; no payload state is kept (the tray\'s deltas arrive through stores/eventsBackgroundTray.ts)',
   'lib/components/composer/workspace/EnvPicker.svelte':
     'turn/background activity re-fetches the OPEN popover\'s worktree rows; the subscription lives and dies with the popover',
   'lib/components/takecontrol/TakeControlPane.svelte':

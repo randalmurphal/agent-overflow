@@ -60,7 +60,7 @@ func (p connPragma) dsnToken() string {
 //     its transfer transaction ends, then restores this ordinary policy.
 //   - recursive_triggers=0 is SQLite's default, pinned because the item
 //     history triggers depend on it: each one UPDATEs `items` to stamp the
-//     rows it just invalidated (history_sync.go), and only the OFF setting
+//     rows it just invalidated (history_rev_triggers.go), and only the OFF setting
 //     stops that statement re-entering the trigger that issued it. Turning
 //     it on would make an insert recurse through its own parent stamp.
 var writerConnPragmas = []connPragma{

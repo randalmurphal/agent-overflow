@@ -116,7 +116,7 @@ name it. `ListThreadRemoteCommands` returns `RemoteJobRecord` rows that carry
 `computerName` from the source desktop's profiles, so a phone reading the
 transcript learns the name too; `frontend/src/lib/stores/remoteJobs.svelte.ts`
 holds one listing per thread while its rows need it and re-reads it on the
-thread's `provider:background_tasks_changed`. The `remote_run` row is
+thread's `provider:background_tasks_changed` nudge. The `remote_run` row is
 projected from that listing after the call returns: a running receipt shows
 the backgrounded mark with no timer, and a terminal receipt shows the job's
 own state, run time and exit code. Expanding an AO row shows the full text

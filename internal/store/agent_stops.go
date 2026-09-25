@@ -20,27 +20,65 @@ import (
 // ItemStatusParked is the status of a parked stop's sibling.
 const ItemStatusParked = "parked"
 
+// A parked sibling's own meta records its run: triage writes it
+// (writeParkedStop), the tray serves it (serveAgentRunStates) and the
+// frontend mirrors the keys in frontend/src/lib/utils/parkedStop.ts
+// (triage mirror_pins_test.go).
+const (
+	// MetaKeyParkedCommands is the number of background commands the
+	// agent waits on.
+	MetaKeyParkedCommands = "parked_commands"
+	// MetaKeyParkedReportItemID names the run's report: the newest direct
+	// assistant_text under the transcript root written since the run
+	// began (LatestSubagentReport). Absent when it wrote none.
+	MetaKeyParkedReportItemID = "parked_report_item_id"
+	// MetaKeyRunStartedAt is when the run began, in epoch milliseconds:
+	// at the wake that started it, else at the row that started it.
+	MetaKeyRunStartedAt = "run_started_at"
+	// MetaKeyRunWoke is true on a run a wake started.
+	MetaKeyRunWoke = "run_woke"
+)
+
 // wakePromptMetaKey marks the row the parser writes for an agent's wake
 // (provider.MetaSubagentWakePromptKey; triage persistWakePromptRow).
 const wakePromptMetaKey = "subagent_wake_prompt"
 
-// newestStopSQL is a launch's newest completion-shaped sibling, parked or
-// ending, served as a page reads it.
+// wakeFlagSQL is the wake marker test on a row's meta, textually the
+// predicate of idx_items_subagent_wake.
+func wakeFlagSQL(a string) string {
+	return "CASE WHEN json_valid(" + a + "meta) THEN json_extract(" + a + "meta, '$." + wakePromptMetaKey + "') END = 1"
+}
+
+// newestStopIDSQL is the id of a launch's newest completion-shaped
+// sibling, parked or ending. idx_items_completion_of holds a launch's
+// siblings in this order, so the read is one index step whatever the
+// number of stops.
+func newestStopIDSQL(threadExpr, launchExpr string) string {
+	return `SELECT s.id FROM items s INDEXED BY idx_items_completion_of
+	  WHERE s.thread_id = ` + threadExpr + ` AND s.completion_of = ` + launchExpr + ` AND s.completion_of <> ''
+	  ORDER BY s.created_at DESC, s.turn_index DESC, s.item_index DESC
+	  LIMIT 1`
+}
+
+// agentWakesSinceSQL selects the creation times of the wake rows under a
+// transcript root created at or after a time, from idx_items_subagent_wake.
+func agentWakesSinceSQL(threadExpr, rootExpr, sinceExpr string) string {
+	return `SELECT w.created_at FROM items w INDEXED BY idx_items_subagent_wake
+	  WHERE w.thread_id = ` + threadExpr + ` AND w.parent_id = ` + rootExpr + ` AND w.parent_id <> ''
+	    AND w.kind = 'user_text' AND ` + wakeFlagSQL("w.") + `
+	    AND w.created_at >= ` + sinceExpr
+}
+
+// newestStopSQL is a launch's newest stop, served as a page reads it.
 var newestStopSQL = `SELECT ` + itemColumns + `
 	   FROM items
 	   LEFT JOIN payloads ON payloads.thread_id = items.thread_id AND payloads.id = items.payload_id` + servedItemJoin + `
-	  WHERE items.thread_id = ? AND items.completion_of = ? AND items.completion_of <> ''
-	  ORDER BY items.created_at DESC, items.turn_index DESC, items.item_index DESC
-	  LIMIT 1`
+	  WHERE items.thread_id = ?1 AND items.id = (` + newestStopIDSQL("?1", "?2") + `)`
 
 // latestWakeSQL is the creation time of the newest wake row under a
-// transcript root at or after a time. Served by the partial user_text
-// parent index.
-const latestWakeSQL = `SELECT created_at FROM items
-	  WHERE thread_id = ? AND parent_id = ? AND parent_id <> '' AND kind = 'user_text'
-	    AND created_at >= ?
-	    AND CASE WHEN json_valid(meta) THEN json_extract(meta, '$.` + wakePromptMetaKey + `') END = 1
-	  ORDER BY created_at DESC
+// transcript root at or after a time.
+var latestWakeSQL = agentWakesSinceSQL("?1", "?2", "?3") + `
+	  ORDER BY w.created_at DESC
 	  LIMIT 1`
 
 // CurrentParkedStop returns the parked sibling launchID is paused at: its
@@ -48,7 +86,8 @@ const latestWakeSQL = `SELECT created_at FROM items
 // transcript root rootID has followed it. A wake starts the next run, so
 // from then on the agent runs again until that run's own stop. Triage
 // writes each after the row it follows, in a later millisecond (triage
-// writeWakePromptRow, writeParkedStop).
+// writeWakePromptRow, writeParkedStop). The tray serves the same
+// predicate from the same fragments (trayProjectionSQL).
 func (s *Store) CurrentParkedStop(threadID, launchID, rootID string) (Item, bool, error) {
 	type result struct {
 		item  Item

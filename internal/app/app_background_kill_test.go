@@ -502,7 +502,7 @@ func TestInterruptKillOfAParkedAgentSettlesItAndItsShell(t *testing.T) {
 			completions[task.CompletionOf] = task
 		}
 		if task.ID == "agent" {
-			if state := triage.AgentRunState(task); state != "done" {
+			if state := store.AgentRunState(task); state != "done" {
 				t.Errorf("tray run state = %q, want done", state)
 			}
 		}

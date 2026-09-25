@@ -167,7 +167,7 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 	r.settleSubagentCard(evt.ThreadID, launch.ID)
 
 	// An agent's stop is its sibling, never a bell (agent_stops.go).
-	if IsSubagentTranscriptLaunch(launch) {
+	if store.IsAgentTranscriptLaunch(launch) {
 		return r.handleAgentStop(evt, meta, launch)
 	}
 
@@ -302,14 +302,14 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 // caller's `IsBackground` gate already excludes; a background shell has
 // no children and is excluded before the store is asked.
 func (r *Router) launchParkedOn(threadID string, launch store.Item) (parkedStop, error) {
-	if !IsSubagentTranscriptLaunch(launch) {
+	if !store.IsAgentTranscriptLaunch(launch) {
 		return parkedStop{}, nil
 	}
 	root, err := r.transcriptRootOrSelf(threadID, launch)
 	if err != nil {
 		return parkedStop{}, err
 	}
-	waiting, err := r.commandsParkingAt(threadID, root.ID)
+	waiting, err := r.store.CountParkingCommands(threadID, root.ID)
 	if err != nil {
 		return parkedStop{}, err
 	}
@@ -336,22 +336,6 @@ type parkedStop struct {
 	rootID  string
 }
 
-// commandsParkingAt counts the live background commands under a
-// transcript root that an agent stopping now would wait on.
-func (r *Router) commandsParkingAt(threadID, rootID string) (int, error) {
-	children, err := r.store.ListLiveBackgroundChildLaunches(threadID, rootID)
-	if err != nil {
-		return 0, err
-	}
-	waiting := 0
-	for _, child := range children {
-		if isCommandOutputLaunch(child) || launchIsWatchTask(child) {
-			waiting++
-		}
-	}
-	return waiting, nil
-}
-
 // AgentLaunchDescription is the task line an agent launch names its agent
 // by, the launch input's description as agentFinishedBell reads it. A
 // resume carrier's own input names the recipient, not the agent, so its
@@ -361,26 +345,6 @@ func AgentLaunchDescription(launch store.Item) string {
 		return description
 	}
 	return launchInputIdentity(launch.Meta).Description
-}
-
-// IsSubagentTranscriptLaunch reports whether a launch is an agent, whose
-// `output_file` is its sidechain transcript, rather than a task whose
-// `output_file` is captured stdout/stderr (a background Bash, a Monitor
-// watch). Claude names the same field for every task type and backgrounds
-// both kinds, so only the agent's identity tells them apart: the agent
-// tool, "Agent" or "Task" on older CLIs (the parser's isAgentLaunchToolName
-// set), or a §E6 resume carrier, the SendMessage row that runs a resumed
-// agent's round, which the parser stamps with the agent it resumes
-// (isResumeCarrierMeta). backgroundOutputPayload splits on the same test.
-func IsSubagentTranscriptLaunch(launch store.Item) bool {
-	if launch.Kind != itemKindToolCall {
-		return false
-	}
-	switch strings.TrimSpace(launch.ToolName) {
-	case "Agent", "Task":
-		return true
-	}
-	return isResumeCarrierMeta(DecodeToolStartMeta([]byte(launch.Meta)))
 }
 
 // drainTaskNotificationStash drains the pending-background-terminal
@@ -606,7 +570,7 @@ func notificationOutputState(raw string) (string, string) {
 // completion without a preview.
 func backgroundOutputPayload(launch store.Item, outputFile, report string, exitCode *int, now int64) (*store.Payload, error) {
 	payloadID := "tool-call-result:" + launch.ID
-	if !IsSubagentTranscriptLaunch(launch) {
+	if !store.IsAgentTranscriptLaunch(launch) {
 		data, _, err := readClaudeTaskOutputFile(outputFile, claudeCommandOutputFileMaxBytes)
 		if err != nil {
 			return nil, err
@@ -654,7 +618,7 @@ func agentReportPayload(payloadID, outputFile, report string, now int64) (*store
 }
 
 func isCommandOutputLaunch(launch store.Item) bool {
-	return isCommandOutputToolName(launch.ToolName)
+	return store.IsCommandOutputToolName(launch.ToolName)
 }
 
 func CommandFromLaunch(launch store.Item) string {

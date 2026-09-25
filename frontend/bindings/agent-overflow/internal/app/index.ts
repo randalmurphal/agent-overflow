@@ -13,6 +13,7 @@ export {
     AttachmentThumbnail,
     BackendAttachment,
     BackgroundKillAgent,
+    BackgroundTaskStop,
     BackgroundWorkInventory,
     BranchCommit,
     BranchPruneCandidate,

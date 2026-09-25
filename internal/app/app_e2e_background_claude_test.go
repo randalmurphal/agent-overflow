@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -132,11 +133,12 @@ func TestE2E_Claude_SpawnBackground_StopPerRow_KilledStatus(t *testing.T) {
 
 // --- Claude scenario 2: spawn multiple → stop-all ---
 
-// TestE2E_Claude_SpawnMultiple_StopAll drives the Stop-all path from
-// the tray: two backgrounded Bashes on the same thread, two
-// StopClaudeTask calls, both end up status=killed. Each stop_task
-// carries its own task_id — verifies the session's per-request
-// correlation map isn't mixing them up.
+// TestE2E_Claude_SpawnMultiple_StopAll drives the tray's Stop-all path:
+// two backgrounded Bashes on the same thread, one StopBackgroundTasks
+// call naming both, both end up status=killed. The stops run
+// concurrently and each stop_task carries its own task_id and
+// request_id, so the session's per-request correlation map cannot mix
+// them up.
 func TestE2E_Claude_SpawnMultiple_StopAll(t *testing.T) {
 	app, bus := setupE2EApp(t)
 
@@ -180,18 +182,21 @@ func TestE2E_Claude_SpawnMultiple_StopAll(t *testing.T) {
 		return true
 	})
 
-	// Dispatch the two per-row stops (the frontend's Stop-all iterates
-	// Claude rows and fires StopClaudeTask per task_id).
-	if err := app.StopClaudeTask(thread.ID, "task-bg-a"); err != nil {
-		t.Fatalf("StopClaudeTask(a): %v", err)
+	results, err := app.StopBackgroundTasks(thread.ID, []string{"tool-bg-a", "tool-bg-b"})
+	if err != nil {
+		t.Fatalf("StopBackgroundTasks: %v", err)
 	}
-	if err := app.StopClaudeTask(thread.ID, "task-bg-b"); err != nil {
-		t.Fatalf("StopClaudeTask(b): %v", err)
+	want := []BackgroundTaskStop{
+		{LaunchItemID: "tool-bg-a", Outcome: BackgroundStopStopping},
+		{LaunchItemID: "tool-bg-b", Outcome: BackgroundStopStopping},
+	}
+	if !reflect.DeepEqual(results, want) {
+		t.Fatalf("StopBackgroundTasks results = %+v, want %+v", results, want)
 	}
 
-	// Each stop_task must have landed on the CLI with its own task_id
-	// — the session's per-session request_id counter keeps them distinct
-	// so a mixed-up response doesn't kill the wrong task.
+	// Each stop_task must have landed on the CLI with its own task_id:
+	// the session's request_id counter keeps them distinct so a
+	// mixed-up response does not kill the wrong task.
 	lines := capture.Lines(t)
 	seenTaskIDs := map[string]bool{}
 	seenRequestIDs := map[string]bool{}

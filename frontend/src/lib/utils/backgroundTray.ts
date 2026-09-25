@@ -367,3 +367,36 @@ export function deriveTrayTasks(
   for (const root of roots) place(root, 0);
   return ordered;
 }
+
+/**
+ * Apply a `provider:background_tray` delta to a tray snapshot. The delta
+ * answers for every launch it names and every launch one of its rows
+ * belongs to: that launch's rows in the snapshot are replaced by the
+ * delta's, so a named launch with no row leaves. Pairs the tray no longer
+ * shows (their completion aged past `retentionMs`, as in `deriveTrayTasks`)
+ * are dropped on the way, so the snapshot holds only what a list read
+ * would. Returns a new array; `items` is not mutated.
+ */
+export function applyTrayDelta(
+  items: readonly Item[],
+  launchIds: readonly string[],
+  rows: readonly Item[],
+  now: number,
+  retentionMs: number,
+): Item[] {
+  const answered = new Set(launchIds);
+  for (const row of rows) answered.add(row.completionOf || row.id);
+  const expired = new Set<string>();
+  const next: Item[] = [];
+  for (const item of items) {
+    const launchId = item.completionOf || item.id;
+    if (answered.has(launchId)) continue;
+    if (item.completionOf && now - item.createdAt >= retentionMs) {
+      expired.add(item.completionOf);
+      continue;
+    }
+    next.push(item);
+  }
+  const kept = expired.size === 0 ? next : next.filter((item) => !expired.has(item.id));
+  return kept.concat(rows);
+}

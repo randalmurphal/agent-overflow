@@ -285,10 +285,16 @@ func (a *claudeAdapter) handleLine(line []byte) {
 		// is subtype-aware and validates the request's keys; see
 		// writeClaudeControlAck.
 		subtype := claudeControlRequestSubtype(env.Request)
-		if subtype == "interrupt" {
+		switch subtype {
+		case "interrupt":
 			// The CLI kills its async agents before it acknowledges the
 			// interrupt, and stops foreground commands after (claude_tasks.go).
 			for _, frame := range a.tasks.killForInterrupt(time.Now()) {
+				a.w.writeLine(frame, 0, 0)
+			}
+		case "stop_task":
+			// The named task's kill frames precede the ack (claude_tasks.go).
+			for _, frame := range a.tasks.killForStopTask(claudeStopTaskID(env.Request), time.Now()) {
 				a.w.writeLine(frame, 0, 0)
 			}
 		}
@@ -671,6 +677,18 @@ func sortedKeys(fields map[string]json.RawMessage) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// claudeStopTaskID is the task a stop_task request names, or "" for a
+// request the ack's key check refuses.
+func claudeStopTaskID(request json.RawMessage) string {
+	var fields struct {
+		TaskID string `json:"task_id"`
+	}
+	if json.Unmarshal(request, &fields) != nil {
+		return ""
+	}
+	return fields.TaskID
 }
 
 func writeClaudeControlSuccess(w *lineWriter, requestID, payload string) {

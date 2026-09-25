@@ -31,12 +31,13 @@ func TestItemReadIsDecorated(t *testing.T) {
 	}
 }
 
-// TestItemReadNeedsDecoration pins the gate the emitter's hot path
-// relies on: a row the decorator leaves alone (a childless tool call, a
-// clean stamped anchor) may go out as its write read-back, because that
-// read-back is byte-identical to the page read; every other admitted row
-// must be read.
-func TestItemReadNeedsDecoration(t *testing.T) {
+// TestProbeWireItem pins the gate the emitter's hot path relies on: a row
+// the decorator leaves alone (a childless tool call, a clean stamped
+// anchor) may go out as its write read-back, because that read-back is
+// byte-identical to the page read; every other admitted row must be read.
+// It also pins which tool calls may anchor: a stamped or walked one, never
+// a childless call in a thread whose stamps are complete.
+func TestProbeWireItem(t *testing.T) {
 	s := newTestStore(t)
 	seedAnchorThread(t, s)
 	bash := contractItem("t", "bash", 20)
@@ -51,15 +52,19 @@ func TestItemReadNeedsDecoration(t *testing.T) {
 		}
 		return item
 	}
+	anchors := map[string]bool{"nested": true, "launch": true, "carrier": true}
 	check := func(stage string, cases map[string]bool) {
 		t.Helper()
 		for id, want := range cases {
-			got, err := s.ItemReadNeedsDecoration(rowOf(id))
+			probe, err := s.ProbeWireItem(rowOf(id))
 			if err != nil {
 				t.Fatalf("%s %s: %v", stage, id, err)
 			}
-			if got != want {
+			if got := probe.NeedsDecoration; got != want {
 				t.Errorf("%s %s: needs decoration = %v, want %v", stage, id, got, want)
+			}
+			if got := probe.Anchors; got != (anchors[id] || want && rowOf(id).Kind == "tool_call") {
+				t.Errorf("%s %s: anchors = %v, want a stamped or walked tool call to anchor", stage, id, got)
 			}
 			if want {
 				continue
@@ -92,6 +97,7 @@ func TestItemReadNeedsDecoration(t *testing.T) {
 	// still being backfilled: once the thread leaves the list, every
 	// anchor a read decorates carries a stamp.
 	stripSubagentStampsForTest(t, s, "t", "nested")
+	delete(anchors, "nested")
 	check("unlisted", map[string]bool{"bash": false})
 	if _, err := s.db.Exec(`INSERT INTO subagent_aggregate_backfill(thread_id) VALUES ('t')`); err != nil {
 		t.Fatalf("list thread: %v", err)
@@ -270,6 +276,31 @@ func TestListWireItemsBehind(t *testing.T) {
 		}
 		if !hasID(rows, "carrier") {
 			t.Fatalf("launch of the completion not returned: %v", idsOf(rows))
+		}
+	})
+
+	t.Run("a parked sibling refreshes nothing and no write refreshes it", func(t *testing.T) {
+		s := newTestStore(t)
+		seedAnchorThread(t, s)
+		seedParkedStop(t, s, "t", "launch-parked", "launch", 8, 2000)
+		seedParkedStop(t, s, "t", "carrier-parked", "carrier", 9, 2000)
+		rows, err := s.ListWireItemsBehind("t", map[string]int64{"launch-parked": itemRevisionOf(t, s, "t", "launch-parked")})
+		if err != nil {
+			t.Fatalf("behind: %v", err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("a parked sibling refreshed %v, want nothing: it settles nothing", idsOf(rows))
+		}
+		if err := s.UpdateItemMeta("t", "seed", `{"changed":true}`); err != nil {
+			t.Fatalf("update child: %v", err)
+		}
+		rows, err = s.ListWireItemsBehind("t", map[string]int64{"seed": itemRevisionOf(t, s, "t", "seed")})
+		if err != nil {
+			t.Fatalf("behind: %v", err)
+		}
+		want := []string{"carrier", "carrier-end", "completion", "launch"}
+		if got := idsOf(rows); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("behind = %v, want %v without the parked siblings", got, want)
 		}
 	})
 

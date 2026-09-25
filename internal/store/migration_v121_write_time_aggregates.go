@@ -10,7 +10,7 @@ package store
 //     idx_subagent_aggregates_dirty finding a thread's dirty anchors by
 //     key and the triggers that stamp an anchor's items row when its
 //     stamp changes (subagentAggregatesTableSQL,
-//     subagentAggregateTriggersSQL).
+//     subagentAggregateTriggersV121SQL).
 //   - subagent_aggregate_backfill lists the threads whose anchors predate
 //     the stamps. The deferred phase (stampLegacySubagentAnchors) stamps
 //     them in paced RecomputeSubagentAggregates batches and removes each
@@ -21,7 +21,7 @@ package store
 //   - idx_items_running_nested_fg_tool_calls is the tray's nested
 //     candidate set (ListLiveBackgroundTasks): foreground tool calls in
 //     flight below the top level.
-//   - the three history triggers, reinstalled from historyRevTriggersSQL.
+//   - the three history triggers, reinstalled from historyRevTriggersV121SQL.
 //   - threads.newest_turn_error_at and newest_turn_error_turn, their probe
 //     indexes and triggers (threadTurnErrorSchemaSQL). The backfill is one
 //     inline UPDATE: it probes each thread through the same two indexes,
@@ -47,7 +47,7 @@ INSERT INTO subagent_aggregate_backfill(thread_id)
 SELECT id FROM threads
  WHERE EXISTS (SELECT 1 FROM items WHERE items.thread_id = threads.id AND items.kind = 'tool_call');
 
-` + subagentAggregatesTableSQL + subagentAggregateTriggersSQL + `
-` + dropHistoryRevTriggersSQL + historyRevTriggersSQL + `
+` + subagentAggregatesTableSQL + subagentAggregateTriggersV121SQL + `
+` + dropHistoryRevTriggersSQL + historyRevTriggersV121SQL + `
 ` + threadTurnErrorSchemaSQL + `
 `

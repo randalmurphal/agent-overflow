@@ -309,11 +309,13 @@ const MaxWatchThreads = 256
 // ids of a WatchScope.
 const MaxWatchThreadIDBytes = 256
 
-// MaxWatchScopes bounds a connection's watched-scope set. A scope is one
-// open agent surface (an agent pane, an expanded card or tray digest), so
-// a real screen holds a handful; the tray's rows name none. The
-// ceiling matches MaxWatchThreads for the same reason: one frame must not
-// make the server build an unbounded map.
+// MaxWatchScopes bounds the (thread, scope) pairs one watch frame names. A
+// scope is one open agent surface (an agent pane, an expanded card or tray
+// digest); the tray's rows name none. The bound matches MaxWatchThreads for
+// the same reason: one frame must not make the server build an unbounded
+// map. It never limits what a client can watch: a set with more pairs names
+// the threads it views the most scopes of in ScopeThreads instead
+// (ClientFrame.ScopeThreads).
 const MaxWatchScopes = 256
 
 // WatchScope names one transcript scope a connection is viewing: the rows
@@ -409,16 +411,22 @@ type ClientFrame struct {
 	// versus an empty slice:
 	//
 	//   - absent: the client states no scopes, so a watched thread admits
-	//     the rows of every scope. That is every client built before the
-	//     field existed, and the SPA's answer when its scope set exceeds
-	//     MaxWatchScopes: a set it cannot state fails open to delivery, not
-	//     to surfaces that stop receiving.
+	//     the rows of every scope. That is every client that does not
+	//     narrow by scope.
 	//   - `[]`: no scope is being viewed, so a watched thread admits only
 	//     its root-scope rows.
 	//
 	// `omitempty` therefore matters only to a Go sender, which cannot spell
 	// `[]` through this struct; no Go client sends a watch frame.
 	Scopes []WatchScope `json:"scopes,omitempty"`
+	// ScopeThreads completes a stated scope set: the threads whose every
+	// scope this connection receives, as if each of their scopes were
+	// named in Scopes. A client whose open scopes exceed MaxWatchScopes
+	// names its heaviest threads here, so any set it views can be stated
+	// within the bounds; the cost is those threads' other scopes. Bounded
+	// by MaxWatchThreads, each id like a thread id. Read only for a
+	// "watch" frame that states Scopes.
+	ScopeThreads []string `json:"scopeThreads,omitempty"`
 	// Focused carries a presence frame's window-focus bit. Read only for a
 	// frame whose Type is already "presence", where an absent field reads
 	// as false — "not attended", which is the resting state every

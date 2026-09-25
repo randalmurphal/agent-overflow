@@ -702,10 +702,10 @@ function sendScreenPresence(entry: Entry): void {
  * `scopes` split by the same rule, on each scope's thread: a subagent's
  * rows come from the machine that runs its thread.
  *
- * The per-socket bound is each handle's own — `setWatchedThreads` refuses
+ * The per-socket bound is each handle's own: `setWatchedThreads` refuses
  * a thread set past `MAX_WATCH_THREADS` and keeps the previous one, and
- * states no scope set past `MAX_WATCH_SCOPES` — so a split can only ever
- * bring a connection further under them, never over.
+ * states a scope set past `MAX_WATCH_SCOPES` compactly, so a split can
+ * only ever bring a connection further under them, never over.
  */
 export function setWatchedThreadsEverywhere(threadIds: readonly string[], scopes: readonly WatchScope[]): void {
   watchedThreadIds = [...threadIds];

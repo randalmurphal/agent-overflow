@@ -102,14 +102,15 @@ export {
   RespondToUserInput,
   SendPlanRevisionComments,
 
-  // Background tasks (per-item + thread-wide stop primitives). The two
-  // per-row stops are deliberately separate bindings: they take
-  // different id namespaces (Claude task id vs Codex PTY process id) and
-  // drive different provider RPCs, so callers branch on provider.
+  // Background tasks. The per-row stops are deliberately separate
+  // bindings: they take different id namespaces (Claude task id vs Codex
+  // PTY process id vs Codex subagent launch id) and drive different
+  // provider RPCs, so callers branch on provider. Stop All is one
+  // thread-level call naming the launches, with a result per launch.
   StopClaudeTask,
   TerminateCodexBackgroundTerminal,
   StopCodexSubagent,
-  CleanCodexBackgroundTerminals,
+  StopBackgroundTasks,
   // The opposite direction, Claude only: detach a running foreground
   // subagent / Bash from the turn instead of killing it. Keyed by
   // tool_use_id (the launch ROW id), not the task id StopClaudeTask
@@ -670,6 +671,8 @@ export {
 export {
   Settings as NetworkSettings,
 } from '../../../bindings/agent-overflow/internal/network/models.js';
+// One result per launch a Stop All named; read, never constructed.
+export type { BackgroundTaskStop } from '../../../bindings/agent-overflow/internal/app/models.js';
 // Dev-server rows are read-only views of one machine's scan, never
 // constructed by a component.
 export type {

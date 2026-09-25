@@ -164,7 +164,7 @@ func (p *Parser) parseSystem(threadID string, raw map[string]json.RawMessage, no
 		return p.parseTaskProgressEvent(threadID, raw, now)
 
 	case "background_tasks_changed":
-		return p.parseBackgroundTasksChangedEvent(threadID, raw, now)
+		return p.parseBackgroundTasksChangedEvent(threadID, now), nil
 
 	// Explicitly skipped subtypes — no action, no error.
 	case "hook_started", "hook_progress", "hook_response",
@@ -1233,69 +1233,18 @@ func (p *Parser) parseTaskProgressEvent(threadID string, raw map[string]json.Raw
 }
 
 // parseBackgroundTasksChangedEvent handles
-// `system/background_tasks_changed`: the CLI's LEVEL signal for the
-// whole set of live background tasks, re-emitted on every membership
-// change (start, completion, kill, a foreground task being
-// backgrounded). REPLACE semantics — consumers swap their set for this
-// payload rather than pairing start/stop edges, so a missed bookend
-// cannot wedge a stale running indicator.
-//
-// An EMPTY `tasks` array is a real answer ("nothing is running in the
-// background") and must be forwarded. An ABSENT `tasks` key says
-// nothing and is dropped — the same distinction `commands_changed`
-// draws, and for the same reason: a payload-less envelope would
-// otherwise clear a live set.
-//
-// Each member's launch `tool_use_id` is resolved through the parser's
-// task map when known; a task whose launch predates this parser
-// instance carries only its `task_id` and triage falls back to the
-// persisted `items.meta.task_id`. Forked skills and foreground agents
-// are never in the set (claude-wire.md §E9).
-func (p *Parser) parseBackgroundTasksChangedEvent(threadID string, raw map[string]json.RawMessage, now time.Time) ([]provider.ProviderEvent, error) {
-	rawTasks, present := raw["tasks"]
-	if !present {
-		return nil, nil
-	}
-	var wireTasks []struct {
-		TaskID         string `json:"task_id"`
-		TaskIDCamel    string `json:"taskId"`
-		TaskType       string `json:"task_type"`
-		TaskTypeCamel  string `json:"taskType"`
-		Description    string `json:"description"`
-		ToolUseID      string `json:"tool_use_id"`
-		ToolUseIDCamel string `json:"toolUseId"`
-	}
-	if err := json.Unmarshal(rawTasks, &wireTasks); err != nil {
-		// A malformed / non-array `tasks` is not an empty set: applying
-		// it as one would clear the live indicator on a shape we simply
-		// failed to read. Drop it like an absent key.
-		log.Printf("claude: background_tasks_changed has unreadable tasks payload: %v", err)
-		return nil, nil
-	}
-	tasks := make([]provider.BackgroundTaskRef, 0, len(wireTasks))
-	for _, wt := range wireTasks {
-		taskID := firstNonEmpty(wt.TaskID, wt.TaskIDCamel)
-		if taskID == "" {
-			continue
-		}
-		ref := provider.BackgroundTaskRef{
-			TaskID:      taskID,
-			ToolUseID:   firstNonEmpty(wt.ToolUseID, wt.ToolUseIDCamel, p.taskToolUseRef(taskID).ToolUseID),
-			TaskType:    firstNonEmpty(wt.TaskType, wt.TaskTypeCamel),
-			Description: wt.Description,
-		}
-		tasks = append(tasks, ref)
-	}
-	meta, err := json.Marshal(provider.BackgroundTasksChangedMeta{Tasks: tasks})
-	if err != nil {
-		return nil, fmt.Errorf("parse background_tasks_changed: marshal meta: %w", err)
-	}
+// `system/background_tasks_changed`, the CLI's signal that the set of
+// live background tasks moved (a start, a completion, a kill, a
+// foreground task being backgrounded). AO keeps no copy of the set: the
+// store's rows answer which tasks are live, so the event carries no
+// payload and its consumers re-read. Whatever the `tasks` value holds,
+// the envelope still says the set moved.
+func (p *Parser) parseBackgroundTasksChangedEvent(threadID string, now time.Time) []provider.ProviderEvent {
 	return []provider.ProviderEvent{{
 		Kind:      provider.EventBackgroundTasksChanged,
 		ThreadID:  threadID,
-		Meta:      meta,
 		Timestamp: now,
-	}}, nil
+	}}
 }
 
 // parseTaskLifecycleEvent handles `system/task_updated`. A terminal

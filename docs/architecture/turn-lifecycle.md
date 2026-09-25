@@ -177,7 +177,7 @@ lifecycle.
   task completion state. See
   [claude-wire.md §task_notification](../references/claude-wire.md#systemtask_notification).
 
-### Live progress, mid-flight backgrounding, and the level set
+### Live progress, mid-flight backgrounding, and background-task changes
 
 Three additional `system/*` pushes ride the same `task_id` keyspace.
 None of them is a lifecycle transition, and none may be treated as one.
@@ -213,17 +213,16 @@ None of them is a lifecycle transition, and none may be treated as one.
   terminal and must not clear the task's liveness: the §E5 async ack that
   follows still needs to carry `is_background: true`. A patch that DOES
   carry a terminal `status` takes the terminal path above unchanged.
-- **`system/background_tasks_changed`: a LEVEL set, and a tray nudge.**
-  The payload's `tasks` array is the provider's FULL replacement set of
-  currently-backgrounded tasks, not a delta, and the distinction between
-  an ABSENT `tasks` key (no statement, dropped) and an EMPTY array (a
-  real "nothing is backgrounded now") is critical, exactly as it is
-  for `commands_changed`. It emits `EventBackgroundTasksChanged`, which
-  triage forwards on the shared `provider:background_tasks_changed`
-  channel Codex already uses. Consumers treat any frame as a nudge to
-  refresh their tray listing; the set rides along so a consumer that
-  wants reconnect-safe membership can read it without a round trip. It
-  is not a completion source and never mutates a row.
+- **`system/background_tasks_changed`: a change nudge.** The payload's
+  `tasks` array is the provider's full set of backgrounded tasks. AO
+  keeps no copy of it: the store's rows answer which tasks are live, so
+  the parser emits `EventBackgroundTasksChanged` with no payload and
+  triage forwards it as the payload-free `provider:background_tasks_changed`
+  nudge Codex also uses, which the workspace-change lock, the environment
+  picker and the remote-jobs listing refresh on. The tray does not read
+  it: its rows move with the writes that record each task's launch and
+  terminal (`provider:background_tray`). It is not a completion source and
+  never mutates a row.
 
 AO can also DRIVE this transition rather than only observe it:
 `Session.BackgroundTask` sends `control_request{subtype:
@@ -348,7 +347,7 @@ already knows.
 - `launchParkedOn` (`background_task_notifications.go`): the launch is
   a background agent launch (not a watch task) whose transcript ROOT
   has a live backgrounded direct child that is a shell or a watch task
-  (`Store.ListLiveBackgroundChildLaunches`). A nested async AGENT does
+  (`Store.CountParkingCommands`). A nested async AGENT does
   not park its parent; the CLI never wakes for one.
 - A parked stop keeps the stash and writes a `parked` sibling of the
   row that started the run (`writeParkedStop`, `agent_stops.go`): the
@@ -851,7 +850,7 @@ cases only. It must not feed turn detection.
 | Claude `system/task_notification` | `EventBackgroundTaskNotification` (+ `meta.usage` when present) | `provider:item_event` upsert (notification row, backgrounded top-level launches only) | No lifecycle state mutation; the authoritative `usage` folds into the launch row's final `meta.subagentProgress` |
 | Claude `system/task_progress` | `EventSubagentProgress` | `provider:subagent_progress` | LIVE ONLY: merged into an in-memory entry per launch, fanned out, never persisted per tick; final numbers persist on the launch row at its terminal |
 | Claude `system/task_updated` `patch.is_backgrounded` (no status) | `EventSubagentBackgrounded` | `provider:item_event` patch | Flip `is_background` on the LAUNCH row + stamp `meta.subagentBackgroundedAt`; not a terminal, liveness stays armed |
-| Claude `system/background_tasks_changed` | `EventBackgroundTasksChanged` | `provider:background_tasks_changed` | LEVEL set: forwarded as a tray nudge carrying full membership; absent `tasks` key is dropped, empty array is a real empty set; no row written |
+| Claude `system/background_tasks_changed` | `EventBackgroundTasksChanged` (no payload) | `provider:background_tasks_changed` | Forwarded as a payload-free refetch nudge; no row written |
 | Claude `result` | `EventTurnComplete` | `provider:turn_completed` | Update `turns` row, force-close orphans |
 | Codex `item/started` | `EventToolStart` | `provider:item_event` upsert for persisted items | Upsert item row; `unifiedExecStartup` starts stay transient tray state |
 | Codex `item/completed` | `EventToolComplete` | `provider:item_event` upsert for persisted items | Update item row; unifiedExec completion clears live state and only persists while a Codex wire round is active |
@@ -1105,7 +1104,7 @@ counterpart "retry succeeded" wire signal from either provider.
 | `ChatWorkingIndicator` | `pane.activeTurn.startedAt` | Self-ticking timer, appears iff `activeTurn !== null`. |
 | `MessageTimeline` (response divider) | Ordered timeline nodes | Separator rendered before assistant text when tool activity immediately precedes the response in the same turn. |
 | `ToolCallCard` (backgrounded badge) | `item.isBackground && item.status === 'running'` | Renders a `…` status badge on the inline launch row. |
-| `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)` | Shows running launches and pending Codex unifiedExec commands; completed Codex commands leave the live tray when typed completion clears the transient tracker. |
+| `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)`, then `provider:background_tray` deltas | Shows running launches and pending Codex unifiedExec commands; completed Codex commands leave the live tray when typed completion clears the transient tracker. |
 
 ## Anti-patterns (forbidden)
 

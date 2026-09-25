@@ -1831,6 +1831,7 @@ func (r *Router) cleanupThread(threadID string, requireEpoch *uint64) bool {
 	r.persistHeldCodexCompletionsAnswerless(threadID, heldCodexCompletions)
 	r.finishClosedCodexAgents(closedCodexAgents, cleanupAt)
 	r.emit(eventchan.ProviderBackgroundTasksChanged, BackgroundTasksChangedEvent{ThreadID: threadID, ResetCodexAgents: true})
+	r.emitBackgroundTrayRefresh(threadID)
 
 	return true
 }

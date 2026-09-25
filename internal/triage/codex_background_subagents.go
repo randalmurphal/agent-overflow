@@ -442,7 +442,7 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 		}
 	}
 
-	r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+	r.emitCodexBackgroundChanged(evt.ThreadID)
 	return nil
 }
 
@@ -588,7 +588,7 @@ func (r *Router) stampCodexItemBackgrounded(threadID, itemID string) error {
 	if err := r.setCodexAgentRuntime(current); err != nil {
 		return err
 	}
-	r.emitBackgroundTasksChangedNudge(threadID)
+	r.emitCodexBackgroundChanged(threadID)
 	return nil
 }
 

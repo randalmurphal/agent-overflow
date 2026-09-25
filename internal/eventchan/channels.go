@@ -142,6 +142,7 @@ const (
 	ProviderApproval               Channel = "provider:approval"
 	ProviderBackgroundTaskState    Channel = "provider:background_task_state"
 	ProviderBackgroundTasksChanged Channel = "provider:background_tasks_changed"
+	ProviderBackgroundTray         Channel = "provider:background_tray"
 	ProviderCommandLifecycle       Channel = "provider:command_lifecycle"
 	ProviderCommands               Channel = "provider:commands"
 	ProviderCompacting             Channel = "provider:compacting"

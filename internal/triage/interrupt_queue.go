@@ -203,11 +203,6 @@ func (r *Router) drainQueueLocked(threadID string, decide func(*threadState, que
 				err = r.persistAgentEndLocked(item, next.queued.payload, *next.queued.end)
 			} else {
 				err = r.persistItem(item, next.queued.payload)
-				if err == nil && item.Status == store.ItemStatusParked {
-					// The tray reads a pause from its sibling
-					// (DecorateAgentRunStates), so it reads again.
-					r.emitBackgroundTasksChangedNudge(threadID)
-				}
 			}
 			if err != nil {
 				log.Printf("triage: drain persist failed for item %s on thread %s: %v", item.ID, threadID, err)

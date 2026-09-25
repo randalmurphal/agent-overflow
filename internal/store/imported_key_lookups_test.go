@@ -294,12 +294,12 @@ func keyedLookups(th string) []keyedLookup {
 		{name: "MaxItemIndexForTurn", turn: true, run: func(t *testing.T, s *Store) {
 			mustFind[int](t, "max index")(s.MaxItemIndexForTurn(th, 1))
 		}},
-		{name: "ItemReadNeedsDecoration", run: func(t *testing.T, s *Store) {
+		{name: "ProbeWireItem", run: func(t *testing.T, s *Store) {
 			launch, _, err := s.GetThreadItem(th, "launch-1")
 			if err != nil {
 				t.Fatal(err)
 			}
-			must[bool](t, "needs decoration")(s.ItemReadNeedsDecoration(launch))
+			must[WireItemProbe](t, "probe wire item")(s.ProbeWireItem(launch))
 		}},
 		{name: "ListWireItems", run: func(t *testing.T, s *Store) {
 			must[[]Item](t, "wire items")(s.ListWireItems(th, []string{"launch-1", "answer-1"}))

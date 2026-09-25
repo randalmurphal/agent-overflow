@@ -179,6 +179,10 @@ export interface ClientWatchFrame {
   type: 'watch';
   threads: string[];
   scopes?: WatchScope[];
+  /** Threads whose every scope this connection receives: the compact form
+   * of a scope set past the wire's pair bound (internal/transport/frame.go
+   * ClientFrame.ScopeThreads). Sent only beside `scopes`. */
+  scopeThreads?: string[];
 }
 
 /**

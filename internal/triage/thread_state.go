@@ -409,6 +409,11 @@ type threadIdentity struct {
 	// (echo path), before streamFlushMu and r.mu; never replaced (same
 	// reasoning as anchorLock).
 	drainLock sync.Mutex
+	// trayLock serializes, PER THREAD, a background tray delta's read and
+	// emit (background_tray.go), so the thread's frames reach the bus in
+	// the order of the reads they carry. A leaf: nothing else is taken
+	// while it is held. Never replaced (same reasoning as anchorLock).
+	trayLock sync.Mutex
 
 	// claimedFlushItems holds batch items mid-handoff between the
 	// queue delete in tryFlushQueue and the dispatcher's synchronous

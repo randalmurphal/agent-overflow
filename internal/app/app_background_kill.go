@@ -7,6 +7,7 @@ import (
 
 	"agent-overflow/internal/errorsx"
 	"agent-overflow/internal/provider"
+	"agent-overflow/internal/store"
 	"agent-overflow/internal/transport"
 	"agent-overflow/internal/triage"
 )
@@ -46,7 +47,7 @@ type BackgroundKillAgent struct {
 // with the shells it waits on; neither ever wakes.
 func interruptKillsAgent(runState string) bool {
 	switch runState {
-	case triage.AgentRunRunning, triage.AgentRunParked:
+	case store.AgentRunRunning, store.AgentRunParked:
 		return true
 	}
 	return false
@@ -65,7 +66,7 @@ func (a *App) RunningBackgroundAgents(threadID string) ([]BackgroundKillAgent, e
 }
 
 // runningBackgroundAgents reads the answer from the store: the tray's live
-// list with the park model's run states, never a transcript.
+// list with the run states it serves, never a transcript.
 func (a *App) runningBackgroundAgents(threadID string) ([]BackgroundKillAgent, error) {
 	agents := []BackgroundKillAgent{}
 	if a.triage == nil {
@@ -78,20 +79,16 @@ func (a *App) runningBackgroundAgents(threadID string) ([]BackgroundKillAgent, e
 	if thread.Provider != string(provider.Claude) {
 		return agents, nil
 	}
-	cutoff := time.Now().UnixMilli() - backgroundTaskRetentionMillis
+	cutoff := time.Now().UnixMilli() - store.BackgroundTaskRetentionMillis
 	items, err := a.store.ListLiveBackgroundTasks(threadID, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("running background agents: list live background tasks: %w", err)
 	}
-	items, err = a.triage.DecorateAgentRunStates(threadID, items)
-	if err != nil {
-		return nil, fmt.Errorf("running background agents: %w", err)
-	}
 	for _, item := range items {
-		if item.CompletionOf != "" || !triage.IsSubagentTranscriptLaunch(item) {
+		if item.CompletionOf != "" || !store.IsAgentTranscriptLaunch(item) {
 			continue
 		}
-		state := triage.AgentRunState(item)
+		state := store.AgentRunState(item)
 		if !interruptKillsAgent(state) {
 			continue
 		}

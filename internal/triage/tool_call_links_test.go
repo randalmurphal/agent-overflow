@@ -14,6 +14,19 @@ import (
 	"agent-overflow/internal/store/storetest"
 )
 
+// itemEvents returns the provider:item_event emissions in a window, in
+// order: a write to a background launch also sends its tray row, on
+// provider:background_tray.
+func itemEvents(events []emitted) []emitted {
+	var out []emitted
+	for _, e := range events {
+		if e.eventName == eventchan.ProviderItemEvent.String() {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // itemUpserts returns the item upserts in an emission window, in order.
 func itemUpserts(events []emitted) []store.Item {
 	var rows []store.Item
@@ -81,11 +94,14 @@ func TestSubagentToolEventReadsItsRowOnce(t *testing.T) {
 				// The launch lookup and the decoration probe; the first
 				// event also reads agent-2 (its turn) and agent-1 (the
 				// parent chain) once each, and probes agent-2's card,
-				// which its row opens and which goes out with it.
+				// which its row opens and which goes out with it. The
+				// opened card's agent is below the top level, so its row
+				// also goes to the tray: the thread's provider, and the
+				// tray's keyed read of that one launch with its stamp.
 				wantStart := uint64(2)
 				wantPushed := []string{id}
 				if i == 0 {
-					wantStart += 3
+					wantStart += 3 + 3
 					wantPushed = append(wantPushed, "agent-2")
 				}
 				if got := st.ReadCount() - before; got != wantStart {
@@ -334,7 +350,7 @@ func TestStampedAnchorPushedAsStored(t *testing.T) {
 	if err := router.persistItemFieldsAndPatch(stored, store.ItemPartialUpdate{Meta: &meta}); err != nil {
 		t.Fatalf("patch anchor: %v", err)
 	}
-	events := emissions.snapshot()
+	events := itemEvents(emissions.snapshot())
 	patches := filterItemEventPatches(events)
 	stored, _, err = st.GetThreadItem("t1", "agent-1")
 	if err != nil {
@@ -395,7 +411,7 @@ func TestDecoratedRowPushedUnstampedThenRefreshed(t *testing.T) {
 	if err := router.persistItemFieldsAndPatch(current, store.ItemPartialUpdate{Meta: &meta}); err != nil {
 		t.Fatalf("patch anchor: %v", err)
 	}
-	events := emissions.snapshot()
+	events := itemEvents(emissions.snapshot())
 	pushed = itemUpserts(events)
 	if len(events) != 1 || len(pushed) != 1 || pushed[0].Rev != store.UnstampedItemRev || !strings.Contains(pushed[0].Meta, `"marker":1`) {
 		t.Fatalf("field write to a decorated row emitted %+v, want one unstamped upsert of the written row", events)

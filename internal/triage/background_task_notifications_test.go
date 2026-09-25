@@ -2610,7 +2610,8 @@ func TestWatchTaskCompletionSiblingCarriesNoCaption(t *testing.T) {
 // only the carrier the parser stamped as resuming one runs a later round
 // of it. Claude backgrounds commands and Monitor watches through the same
 // task fields (run_in_background, output_file), and a Monitor's input has
-// a description too, so none of those can decide it.
+// a description too, so none of those can decide it. The store reads a
+// carrier by the keys isResumeCarrierMeta reads.
 func TestSubagentTranscriptLaunchIsTheAgentTool(t *testing.T) {
 	const taskFields = `"is_background":true,"output_file":"/tmp/x","input":{"run_in_background":true,"description":"watch"}`
 	for tool, want := range map[string]bool{
@@ -2618,8 +2619,8 @@ func TestSubagentTranscriptLaunchIsTheAgentTool(t *testing.T) {
 		"Monitor": false, "Bash": false, "Skill": false, "SendMessage": false, "": false,
 	} {
 		launch := store.Item{Kind: itemKindToolCall, ToolName: tool, IsBackground: true, Meta: `{` + taskFields + `}`}
-		if got := IsSubagentTranscriptLaunch(launch); got != want {
-			t.Errorf("IsSubagentTranscriptLaunch(%q) = %v, want %v", tool, got, want)
+		if got := store.IsAgentTranscriptLaunch(launch); got != want {
+			t.Errorf("IsAgentTranscriptLaunch(%q) = %v, want %v", tool, got, want)
 		}
 	}
 	for _, stamp := range []string{
@@ -2628,11 +2629,14 @@ func TestSubagentTranscriptLaunchIsTheAgentTool(t *testing.T) {
 	} {
 		carrier := store.Item{Kind: itemKindToolCall, ToolName: "SendMessage", IsBackground: true,
 			Meta: `{` + taskFields + `,` + stamp + `}`}
-		if !IsSubagentTranscriptLaunch(carrier) {
+		if !store.IsAgentTranscriptLaunch(carrier) {
 			t.Errorf("a SendMessage carrier stamped %s is not read as the agent's round", stamp)
 		}
+		if !isResumeCarrierMeta(DecodeToolStartMeta([]byte(carrier.Meta))) {
+			t.Errorf("triage does not resolve a carrier stamped %s", stamp)
+		}
 	}
-	if IsSubagentTranscriptLaunch(store.Item{Kind: itemKindNotification, ToolName: "Agent"}) {
+	if store.IsAgentTranscriptLaunch(store.Item{Kind: itemKindNotification, ToolName: "Agent"}) {
 		t.Error("a notification row is not a launch")
 	}
 }

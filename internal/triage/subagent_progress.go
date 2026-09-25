@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 
 	"agent-overflow/internal/eventchan"
@@ -174,6 +175,29 @@ func (r *Router) TakeSubagentProgress(threadID, itemID string) (provider.Subagen
 		delete(st.subagentProgress, itemID)
 	}
 	return progress, ok
+}
+
+// LiveSubagentProgress returns the thread's live progress entries, one per
+// launch, as the provider:subagent_progress frames last carried them: a
+// client that starts watching the thread reads them instead of waiting
+// for each agent's next tick. UpdatedAt is zero: an entry holds the
+// merged counters, not the time of the tick.
+func (r *Router) LiveSubagentProgress(threadID string) []SubagentProgressEvent {
+	out := []SubagentProgressEvent{}
+	if r == nil {
+		return out
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st := r.threadStateIfPresent(threadID)
+	if st == nil {
+		return out
+	}
+	for itemID, progress := range st.subagentProgress {
+		out = append(out, SubagentProgressEvent{ThreadID: threadID, ItemID: itemID, Progress: progress})
+	}
+	slices.SortFunc(out, func(a, b SubagentProgressEvent) int { return strings.Compare(a.ItemID, b.ItemID) })
+	return out
 }
 
 // PeekSubagentProgress is the read-only companion of TakeSubagentProgress.
@@ -349,21 +373,11 @@ func (r *Router) handleSubagentBackgrounded(evt provider.ProviderEvent) error {
 	return nil
 }
 
-// handleBackgroundTasksChanged forwards the level set. The channel's
-// existing consumers (the activity-rail background controller, the
-// workspace-change lock) refresh their tray listing on any frame; the
-// set rides along so a consumer that wants reconnect-safe membership can
-// swap to it without a round trip.
+// handleBackgroundTasksChanged forwards the provider's level signal as the
+// nudge: its readers refresh on any frame, so it names only the thread.
+// The tray's rows move with the writes that record each task's launch and
+// terminal, which announce them (background_tray.go).
 func (r *Router) handleBackgroundTasksChanged(evt provider.ProviderEvent) error {
-	var meta provider.BackgroundTasksChangedMeta
-	if len(evt.Meta) > 0 {
-		if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-			return fmt.Errorf("triage: decode background tasks changed meta for %s: %w", evt.ThreadID, err)
-		}
-	}
-	if meta.Tasks == nil {
-		meta.Tasks = []provider.BackgroundTaskRef{}
-	}
-	r.emit(eventchan.ProviderBackgroundTasksChanged, BackgroundTasksChangedEvent{ThreadID: evt.ThreadID, Tasks: meta.Tasks})
+	r.emitBackgroundTasksChangedNudge(evt.ThreadID)
 	return nil
 }

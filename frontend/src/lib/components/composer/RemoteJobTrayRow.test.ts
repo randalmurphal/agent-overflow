@@ -6,6 +6,7 @@ import { makeItem } from '../../../test/helpers/chat';
 import { resetBindingMocks, setBindingMock } from '../../../test/mocks/bindings-app';
 import { deriveTrayTasks, trayRemoteJob } from '../../utils/backgroundTray';
 import { resetStagedBackends, stageBackend } from '../../../test/helpers/backends';
+import { getToasts, removeToast } from '../../stores/toast.svelte';
 
 const job = { computerId: 'nexus', requestId: 'job-1', workspace: '/workspace', error: '', warning: '', notification: '' };
 // The projection the desktop writes (app_remote_watch.go remoteTrayItems):
@@ -23,7 +24,10 @@ function remoteTask(input: Record<string, unknown> = {}, remoteJob = job) {
 const chunk = { text: 'epoch 10 complete', error: '', offset: 100, nextOffset: 117, expired: false };
 
 describe('remote jobs in the background tray', () => {
-  beforeEach(resetBindingMocks);
+  beforeEach(() => {
+    resetBindingMocks();
+    for (const toast of [...getToasts()]) removeToast(toast.id);
+  });
   afterEach(resetStagedBackends);
 
   it('presents the job as the remote_run call it came from and holds Stop while the computer is offline', async () => {
@@ -121,7 +125,7 @@ describe('remote jobs in the background tray', () => {
   it.each(['claude', 'codex'] as const)('stops a remote-only job without calling %s provider controls or scrolling', async (provider) => {
     const cancel = setBindingMock('CancelThreadRemoteCommand', async () => ({}));
     const claude = setBindingMock('StopClaudeTask', async () => {});
-    const codex = setBindingMock('CleanCodexBackgroundTerminals', async () => {});
+    const stopAll = setBindingMock('StopBackgroundTasks', async () => []);
     const pane = { requestScrollToItem: vi.fn() };
     const task = remoteTask();
     expect(trayRemoteJob(task)).toEqual(job);
@@ -132,7 +136,7 @@ describe('remote jobs in the background tray', () => {
     await waitFor(() => expect(cancel).toHaveBeenCalledTimes(2));
     expect(cancel).toHaveBeenCalledWith('thread', 'nexus', 'job-1');
     expect(claude).not.toHaveBeenCalled();
-    expect(codex).not.toHaveBeenCalled();
+    expect(stopAll).not.toHaveBeenCalled();
     expect(pane.requestScrollToItem).not.toHaveBeenCalled();
   });
 
@@ -159,12 +163,41 @@ describe('remote jobs in the background tray', () => {
 
   it('Stop All combines provider tasks with remote jobs once each', async () => {
     const cancel = setBindingMock('CancelThreadRemoteCommand', async () => ({}));
-    const cleanup = setBindingMock('CleanCodexBackgroundTerminals', async () => {});
+    const stopAll = setBindingMock('StopBackgroundTasks', async () => [{ launchItemId: 'pty', outcome: 'stopping' }]);
     const tasks = [...deriveTrayTasks([makeItem({ id: 'pty', toolName: 'exec_command', isBackground: true,
       status: 'running', meta: JSON.stringify({ process_id: '12' }) })], Date.now(), 200), remoteTask()];
     const { getByRole } = render(ActivityRailBackgroundBody, { tasks, provider: 'codex', threadId: 'thread', runningCount: 2 });
     await fireEvent.click(getByRole('button', { name: 'Stop All Running Background Tasks' }));
-    await waitFor(() => expect(cleanup).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(stopAll).toHaveBeenCalledTimes(1));
+    expect(stopAll).toHaveBeenCalledWith('thread', ['pty']);
     expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('Stop All cancels remote jobs eight at a time and reports the failures once', async () => {
+    let inFlight = 0;
+    let most = 0;
+    const waiting: Array<() => void> = [];
+    const cancel = setBindingMock('CancelThreadRemoteCommand', (_thread: string, _computer: string, requestId: string) => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      return new Promise((resolve, reject) => {
+        waiting.push(() => {
+          inFlight--;
+          if (requestId === 'job-3' || requestId === 'job-17') reject(new Error(`${requestId} is gone`));
+          else resolve({});
+        });
+      });
+    });
+    const tasks = Array.from({ length: 20 }, (_, i) => remoteTask({}, { ...job, requestId: `job-${i}` }));
+    const { getByRole } = render(ActivityRailBackgroundBody, { tasks, provider: 'claude', threadId: 'thread', runningCount: 20 });
+    await fireEvent.click(getByRole('button', { name: 'Stop All Running Background Tasks' }));
+    while (cancel.mock.calls.length < 20 || waiting.length > 0) {
+      await waitFor(() => expect(waiting.length).toBeGreaterThan(0));
+      waiting.shift()!();
+      await Promise.resolve();
+    }
+    expect(most).toBe(8);
+    expect(new Set(cancel.mock.calls.map((call) => call[2])).size).toBe(20);
+    await waitFor(() => expect(getToasts().map((toast) => toast.message)).toEqual(['Failed to stop 2 tasks: job-3 is gone']));
   });
 });

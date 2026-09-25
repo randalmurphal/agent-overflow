@@ -36,7 +36,7 @@ For Claude resumed async agents, the resume carrier owns that round's lifecycle 
 
 Background classification comes only from typed provider signals documented in the lifecycle reference. Model prose and timing heuristics are not evidence. Live correlation maps must be bounded, cleared on terminal/session teardown, and protected by their owning mutex.
 
-Completion never reads or replays an agent's transcript ([decisions](../../docs/decisions.md#subagents-and-background-work)). A command's `output_file` is the one completion read, bounded to the `command_output` payload. The agent's identity decides which file is a transcript: only an `Agent`/`Task` launch's or its §E6 resume carrier's (`IsSubagentTranscriptLaunch`); a Bash or Monitor launch's is command output whatever its flags.
+Completion never reads or replays an agent's transcript ([decisions](../../docs/decisions.md#subagents-and-background-work)). A command's `output_file` is the one completion read, bounded to the `command_output` payload. The agent's identity decides which file is a transcript: only an `Agent`/`Task` launch's or its §E6 resume carrier's (`store.IsAgentTranscriptLaunch`); a Bash or Monitor launch's is command output whatever its flags.
 
 ## Streaming and exported shapes
 

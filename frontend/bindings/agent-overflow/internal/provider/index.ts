@@ -21,6 +21,7 @@ export {
     RateLimitsSnapshot,
     ReasoningEffortOption,
     SlashCommand,
+    SubagentProgressMeta,
     UserInputQuestion,
     UserInputQuestionOption,
     UserInputRequest,

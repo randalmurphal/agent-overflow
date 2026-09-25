@@ -25,6 +25,8 @@ import { installComputerHydration } from './computerHydration';
 //                              transport-loss end condition a run has no
 //                              other way to learn about)
 //   - eventsReviewComments.ts — inline plan / diff-review comment sets
+//   - eventsBackgroundTray.ts: background tray deltas for the thread's
+//                              tray controller
 //
 // This file itself stays a thin fan-in: channel names, generics, and the
 // teardown order live here; the reaction logic lives in the domain modules.
@@ -146,7 +148,8 @@ import {
   type CompactingStatePayload,
 } from './compactingState.svelte';
 import { applySubagentProgress, clearSubagentProgressForThread } from './subagentProgress.svelte';
-import type { SubagentProgressEvent } from '../types/events';
+import type { BackgroundTrayEvent, SubagentProgressEvent } from '../types/events';
+import { applyBackgroundTrayEvent } from './eventsBackgroundTray';
 import {
   applyProviderCommands,
   type ProviderCommandsPayload,
@@ -491,6 +494,14 @@ export function setupEventListeners(): () => void {
     applySubagentProgress,
   );
 
+  // provider:background_tray: the tray's rows for the launches that
+  // changed, or a request to read the list again. Only a watched thread's
+  // frames arrive; that thread's tray controller applies them.
+  const cancelBackgroundTray = wailsEventOn<BackgroundTrayEvent>(
+    'provider:background_tray',
+    applyBackgroundTrayEvent,
+  );
+
   // provider:commands — the CLI's own list of slash commands it will execute
   // without an API call. Restated wholesale on every session init and every
   // `commands_changed` push, so the newest frame REPLACES the previous one;
@@ -757,6 +768,7 @@ export function setupEventListeners(): () => void {
     cancelFastModeState();
     cancelCompactingState();
     cancelSubagentProgress();
+    cancelBackgroundTray();
     cancelCodexAgentsReset();
     cancelProviderCommands();
     cancelUserMessageReverted();

@@ -2,7 +2,6 @@ package claude
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -87,57 +86,27 @@ func TestParseTaskProgress_NestedAgentCarriesItsParent(t *testing.T) {
 	}
 }
 
-// TestParseBackgroundTasksChanged_AbsentVersusEmpty pins the one
-// distinction that decides whether a live indicator can be wedged or
-// wrongly cleared: `tasks: []` is a real empty set and must be
-// forwarded; an ABSENT `tasks` key says nothing and must be dropped.
-func TestParseBackgroundTasksChanged_AbsentVersusEmpty(t *testing.T) {
-	parser := NewParser()
-
-	absent, err := parser.ParseLine(testThread, []byte(
-		`{"type":"system","subtype":"background_tasks_changed","uuid":"u1"}`))
-	if err != nil {
-		t.Fatalf("parse absent: %v", err)
-	}
-	if len(absent) != 0 {
-		t.Fatalf("an absent tasks key must be dropped, got %+v", absent)
-	}
-
-	empty, err := parser.ParseLine(testThread, []byte(
-		`{"type":"system","subtype":"background_tasks_changed","tasks":[],"uuid":"u2"}`))
-	if err != nil {
-		t.Fatalf("parse empty: %v", err)
-	}
-	if len(empty) != 1 {
-		t.Fatalf("an empty tasks array is a real answer, got %+v", empty)
-	}
-	var meta provider.BackgroundTasksChangedMeta
-	if err := json.Unmarshal(empty[0].Meta, &meta); err != nil {
-		t.Fatalf("decode meta: %v", err)
-	}
-	if meta.Tasks == nil || len(meta.Tasks) != 0 {
-		t.Errorf("Tasks = %+v, want an allocated empty slice", meta.Tasks)
-	}
-	// Serialized as `[]`, never `null` — a consumer that swaps its set
-	// for the payload must not be handed a nil it reads as "unknown".
-	if !strings.Contains(string(empty[0].Meta), `"tasks":[]`) {
-		t.Errorf("meta = %s, want tasks serialized as []", empty[0].Meta)
-	}
-}
-
-// TestParseBackgroundTasksChanged_MalformedPayloadIsDropped guards the
-// other direction: a `tasks` value we cannot read is not evidence that
-// nothing is running, so it must be dropped like an absent key rather
-// than applied as an empty set.
-func TestParseBackgroundTasksChanged_MalformedPayloadIsDropped(t *testing.T) {
-	parser := NewParser()
-	events, err := parser.ParseLine(testThread, []byte(
-		`{"type":"system","subtype":"background_tasks_changed","tasks":"everything"}`))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if len(events) != 0 {
-		t.Fatalf("a malformed tasks payload must be dropped, got %+v", events)
+// TestParseBackgroundTasksChanged_EveryEnvelopeSignals pins that the
+// event carries no set: an absent, empty, populated or unreadable `tasks`
+// value each still says the set moved, and each emits one payload-free
+// event whose consumers re-read the store.
+func TestParseBackgroundTasksChanged_EveryEnvelopeSignals(t *testing.T) {
+	for _, line := range []string{
+		`{"type":"system","subtype":"background_tasks_changed","uuid":"u1"}`,
+		`{"type":"system","subtype":"background_tasks_changed","tasks":[],"uuid":"u2"}`,
+		`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1","task_type":"local_bash"}]}`,
+		`{"type":"system","subtype":"background_tasks_changed","tasks":"everything"}`,
+	} {
+		events, err := NewParser().ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("parse %s: %v", line, err)
+		}
+		if len(events) != 1 || events[0].Kind != provider.EventBackgroundTasksChanged {
+			t.Fatalf("%s: want one background_tasks_changed event, got %+v", line, events)
+		}
+		if events[0].ThreadID != testThread || len(events[0].Meta) != 0 {
+			t.Fatalf("%s: want a payload-free event on the thread, got %+v", line, events[0])
+		}
 	}
 }
 

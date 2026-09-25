@@ -633,7 +633,10 @@ func TestEventBus_DataIsRawJSON(t *testing.T) {
 // a slow subscriber would lose data permanently — even after catching
 // up, no Replay path could recover it.
 func TestEventBus_SlowSubscriberDropsButRingPersists(t *testing.T) {
-	bus := NewEventBus(0) // default ring capacity (1000)
+	// A ring shallower than the emits below, so both edges of the window
+	// are reachable.
+	const ringCapacity = 1000
+	bus := NewEventBus(ringCapacity)
 	defer bus.Close()
 
 	sub := bus.Subscribe()
@@ -657,15 +660,10 @@ func TestEventBus_SlowSubscriberDropsButRingPersists(t *testing.T) {
 		t.Fatalf("subscriber drained %d events, want <= %d (buffer cap)", len(drained), DefaultSubscriberBuffer)
 	}
 
-	// The ring kept every event though — Replay from seq 0 must
-	// surface all `overflow` emits as long as ring capacity wasn't
-	// exceeded. Default ring capacity (1000) is larger than overflow
-	// (1024+10) — wait, let's check. overflow = 1034 > 1000, so the
-	// oldest 34 should be evicted and we'll see a gap marker.
+	// The ring kept the newest ringCapacity events. With 1034 emits the
+	// oldest 34 evicted, so a replay from seq 0 returns a gap marker at
+	// the head (seq=1034) instead of partial history.
 	out := bus.Replay(map[string]uint64{"ch1": 0})
-	// Expected behavior: with a 1000-cap ring and 1034 emits, the
-	// oldest 34 evict and the replay returns a gap marker (seq=1034)
-	// instead of partial history. That's the documented contract.
 	if len(out) != 1 || !out[0].Gap {
 		t.Fatalf("expected gap marker for out-of-window replay, got %d events (gap=%v)", len(out), out[0].Gap)
 	}
@@ -677,10 +675,10 @@ func TestEventBus_SlowSubscriberDropsButRingPersists(t *testing.T) {
 	// everything since then-1) should return the surviving entries
 	// without a gap marker — proving the ring kept N items even though
 	// the subscriber dropped them.
-	survivingStart := uint64(overflow - DefaultRingCapacity)
+	survivingStart := uint64(overflow - ringCapacity)
 	out = bus.Replay(map[string]uint64{"ch1": survivingStart})
-	if len(out) != DefaultRingCapacity {
-		t.Fatalf("in-window replay got %d events, want %d", len(out), DefaultRingCapacity)
+	if len(out) != ringCapacity {
+		t.Fatalf("in-window replay got %d events, want %d", len(out), ringCapacity)
 	}
 	for _, e := range out {
 		if e.Gap {
@@ -1371,7 +1369,7 @@ func TestEventBus_DropAnnouncementNamesDroppedThreads(t *testing.T) {
 	bus.subBuf = 1
 	sub := bus.Subscribe()
 	defer sub.Close()
-	sub.SetWatch([]string{"thread-A", "thread-B", "thread-C"}, nil)
+	sub.SetWatch([]string{"thread-A", "thread-B", "thread-C"}, nil, nil)
 
 	emitItem(t, bus, "thread-A", 1) // fills the buffer
 	emitItem(t, bus, "thread-C", 2) // dropped

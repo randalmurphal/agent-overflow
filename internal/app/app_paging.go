@@ -35,14 +35,6 @@ const (
 	// large enough that one heavy subagent turn collapsing to a single
 	// card doesn't leave the timeline visually empty.
 	sliceAroundDefaultItems = 200
-
-	// backgroundTaskRetentionMillis matches
-	// COMPLETION_RETENTION_MS in BackgroundTaskTray.svelte. Completed
-	// background rows older than this cutoff don't appear in the tray
-	// feed; the backend enforces the same rule so the tray can be a
-	// thin renderer over the server response instead of maintaining
-	// its own time-windowed state.
-	backgroundTaskRetentionMillis = 2000
 )
 
 // TimelinePageOptions keeps transcript selection separate from wire projection.
@@ -188,11 +180,10 @@ func (a *App) ListThreadProposedPlans(threadID string) ([]store.Item, error) {
 // leg lists by BACKGROUNDED ANCESTRY, not top-level-ness (invariant 24):
 // nested background launches and the agent launches between them and a
 // background root are included, so the tray can indent by walking
-// parentId within the result. SQLite rows cover persisted Claude launches;
-// triage serves each Claude background agent's run state on its row
-// (DecorateAgentRunStates), and this list is the only place it is served.
-// The triage router supplies current Codex agent executions and unified-exec
-// tasks independently of immutable chat history.
+// parentId within the result. SQLite rows cover persisted Claude launches,
+// each Claude background agent's with its run state, which the tray reads
+// alone serve. The triage router supplies current Codex agent executions
+// and unified-exec tasks independently of immutable chat history.
 // Pending Codex unifiedExec launches surface here before they are known
 // to be backgrounded.
 //
@@ -202,19 +193,13 @@ func (a *App) ListLiveBackgroundTasks(threadID string) ([]store.Item, error) {
 		return nil, err
 	}
 	now := time.Now().UnixMilli()
-	cutoff := now - backgroundTaskRetentionMillis
+	cutoff := now - store.BackgroundTaskRetentionMillis
 	items, err := a.store.ListLiveBackgroundTasks(threadID, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("list live background tasks: %w", err)
 	}
 
 	if a.triage != nil {
-		// A Claude agent's run state is the park model's, which triage
-		// owns; a Codex agent's runtime copy below carries its own.
-		items, err = a.triage.DecorateAgentRunStates(threadID, items)
-		if err != nil {
-			return nil, fmt.Errorf("decorate background agent run states: %w", err)
-		}
 		items = append(items, a.triage.ListLiveCodexBackgroundTasks(threadID, now, cutoff)...)
 		agents, err := a.store.DecorateCodexAgentTasksForTray(threadID, a.triage.ListLiveCodexAgentTasks(threadID))
 		if err != nil {

@@ -17,7 +17,7 @@ import (
 // revision could prove a window fresh whose card is behind (§3.1).
 //
 // The predicate is the decorators' own admission test, widened to every
-// row they would consider; ItemReadNeedsDecoration narrows it.
+// row they would consider; ProbeWireItem narrows it.
 func ItemReadIsDecorated(item Item) bool {
 	switch item.Kind {
 	case "tool_call":
@@ -28,28 +28,43 @@ func ItemReadIsDecorated(item Item) bool {
 	return item.Role == "assistant" && item.PayloadKind == "proposed_plan"
 }
 
-// ItemReadNeedsDecoration is ItemReadIsDecorated narrowed for tool calls
-// by the row's own stamp (decorateSubagentAnchors' walk decision): a clean
-// stamped anchor and a plain unstamped tool call read as stored, so the
-// write's read-back is the page read. Imported, dirty and readTime rows,
-// unstamped carriers, and unstamped rows of a thread whose backfill is
-// pending still need ListWireItems. Completions and plans always do.
-func (s *Store) ItemReadNeedsDecoration(item Item) (bool, error) {
+// WireItemProbe is what ProbeWireItem reads of a written row.
+type WireItemProbe struct {
+	// NeedsDecoration is ItemReadIsDecorated narrowed for tool calls by
+	// the row's own stamp (decorateSubagentAnchors' walk decision): a
+	// clean stamped anchor and a plain unstamped tool call read as stored,
+	// so the write's read-back is the page read. Imported, dirty and
+	// readTime rows, unstamped carriers, and unstamped rows of a thread
+	// whose backfill is pending still need ListWireItems. Completions and
+	// plans always do.
+	NeedsDecoration bool
+	// Anchors reports a tool call that may anchor subagent rows: it holds
+	// a stamp, or its read walks. Every anchor carries a stamp once its
+	// first child is flushed, so a tool call with neither has no children
+	// and is no agent launch (subagentLaunchFilterFor).
+	Anchors bool
+}
+
+// ProbeWireItem reads what the emitter needs to know of a written row
+// from the row and its own stamp, never its descendants: the writes that
+// call it arrive at tens per second on the provider event path.
+func (s *Store) ProbeWireItem(item Item) (WireItemProbe, error) {
 	if !ItemReadIsDecorated(item) {
-		return false, nil
+		return WireItemProbe{}, nil
 	}
 	if item.Kind != "tool_call" || item.PayloadKind == "proposed_plan" {
-		return true, nil
+		return WireItemProbe{NeedsDecoration: true}, nil
 	}
 	decider, err := newSubagentWalkDecider(s.reader(), item.ThreadID, map[string]Item{item.ID: item})
 	if err != nil {
-		return false, fmt.Errorf("store: decide decoration of %s/%s: %w", item.ThreadID, item.ID, err)
+		return WireItemProbe{}, fmt.Errorf("store: decide decoration of %s/%s: %w", item.ThreadID, item.ID, err)
 	}
 	walk, err := decider.walks(item)
 	if err != nil {
-		return false, fmt.Errorf("store: decide decoration of %s/%s: %w", item.ThreadID, item.ID, err)
+		return WireItemProbe{}, fmt.Errorf("store: decide decoration of %s/%s: %w", item.ThreadID, item.ID, err)
 	}
-	return walk, nil
+	_, stamped := decider.stamps[item.ID]
+	return WireItemProbe{NeedsDecoration: walk, Anchors: walk || stamped}, nil
 }
 
 // firstChildAnchorsSQL selects the clean stamped anchors whose round holds
@@ -129,9 +144,10 @@ func wireItemsSelection(q sqlQueryer, threadID, ids string) (string, []any, erro
 // revision it was last pushed at.
 //
 // The candidate set is the one the history triggers stamped for each
-// write (stampedRowIDsSQL), plus the launch a completion sibling settles
-// (backgroundSettleTriggersSQL rewrites the launch's meta on a completion
-// insert, and the update trigger stamps it from there). A written row is
+// write (stampedRowIDsSQL), plus the launch an ending completion sibling
+// settles (backgroundSettleTriggersSQL rewrites the launch's meta on a
+// completion insert, and the update trigger stamps it from there). A
+// parked sibling settles nothing (agent_stops.go). A written row is
 // returned only when its stored revision has moved past the pushed one:
 // a sibling write stamped it after its own push. A written row that no
 // longer exists contributes nothing; its parent's copy then costs the
@@ -154,11 +170,11 @@ func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) (
 	candidates := make(map[string]struct{})
 	current := make(map[string]int64, len(emitted))
 	for id := range emitted {
-		var parentID, completionOf string
+		var parentID, completionOf, status string
 		var rev int64
 		written, args, err := timelineArms(tx, threadID, timelineSelection{
 			Columns: func(_, revExpr string) string {
-				return "items.parent_id, items.completion_of, " + revExpr
+				return "items.parent_id, items.completion_of, items.status, " + revExpr
 			},
 			KeyFirst: true,
 			Where:    "items.id = ?", WhereArgs: []any{id},
@@ -166,7 +182,7 @@ func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) (
 		if err != nil {
 			return nil, err
 		}
-		err = tx.QueryRow(written, args...).Scan(&parentID, &completionOf, &rev)
+		err = tx.QueryRow(written, args...).Scan(&parentID, &completionOf, &status, &rev)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}
@@ -177,7 +193,7 @@ func (s *Store) ListWireItemsBehind(threadID string, emitted map[string]int64) (
 		if err := collectStampedRowIDs(tx, threadID, id, parentID, candidates); err != nil {
 			return nil, err
 		}
-		if completionOf == "" {
+		if completionOf == "" || status == ItemStatusParked {
 			continue
 		}
 		var launchParent string

@@ -1,12 +1,18 @@
 import { isPendingFlushRow } from '../utils/userMessageMeta';
 import { requireEntityBackend, withBackendTarget } from '../transport/backends';
 import { threadBackend } from '../transport/entityIndex';
-import { codexAgentRevision, hydrateCodexAgents } from './subagentProgress.svelte';
+import {
+  codexAgentRevision,
+  hydrateCodexAgents,
+  hydrateSubagentProgress,
+  subagentProgressRevision,
+} from './subagentProgress.svelte';
 import { threadHasScope } from '../transport/entityScopes';
 import type { Item, Thread } from '../types/models';
 import type {
   PendingInteractiveRequests,
   ProviderSessionAccountEvent,
+  SubagentProgressEvent,
 } from '../types/events';
 import type { ThreadLiveState } from '../../../bindings/agent-overflow/internal/app/models';
 import { GetThreadItem, GetThreadLiveState, ListPendingInteractiveRequests } from './bindings';
@@ -154,6 +160,11 @@ export function createThreadLiveStateHydration(
   ): void {
     if (snapshot.threadId !== threadID) return;
     hydrateCodexAgents(threadID, (snapshot.codexAgents ?? []) as Item[], guard.codexAgentRevisionAtRequest);
+    hydrateSubagentProgress(
+      threadID,
+      (snapshot.subagentProgress ?? []) as SubagentProgressEvent[],
+      guard.subagentProgressRevisionAtRequest,
+    );
     applyActiveTurnSnapshot(snapshot, threadID, guard.activeTurnAtRequest);
 
     if (getQueueRevisionForThread(threadID) === guard.queueRevisionAtRequest) {
@@ -233,6 +244,7 @@ export function createThreadLiveStateHydration(
     const guard: LiveStateHydrationGuard = {
       compactingRevisionAtRequest: compactingRevision(threadID),
       codexAgentRevisionAtRequest: codexAgentRevision(threadID),
+      subagentProgressRevisionAtRequest: subagentProgressRevision(threadID),
       activeTurnAtRequest: getActiveTurn(threadID),
       queueRevisionAtRequest: getQueueRevisionForThread(threadID),
       liveTodoRevisionAtRequest: options.liveTodoState.revision,

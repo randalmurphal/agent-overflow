@@ -9,6 +9,7 @@ import { noteThread } from '../../transport/entityIndex';
 import { __attachBackendForTest, detachBackend } from '../../transport/backends';
 import { applyItemStreamEvent, flushItemEventQueue, resetItemEventQueue } from '../../stores/eventsItemStream';
 import { liveSubagentRunState } from '../../stores/subagentRunState.svelte';
+import { applyBackgroundTrayEvent } from '../../stores/eventsBackgroundTray';
 import { wsClient } from '../../transport/wsClient';
 import type { Item, Project, Thread } from '../../types/models';
 
@@ -43,7 +44,7 @@ describe('background tray recovery', () => {
       expect(pane.hasDraftPlaceholder).toBe(true);
       release = $effect.root(() => createBackgroundController(() => pane, Date.now).mount());
       await flush();
-      emitWailsEvent('provider:background_tasks_changed', { threadId: pane.threadId }, '');
+      applyBackgroundTrayEvent({ threadId: pane.threadId!, refresh: true });
       await flush();
       expect(read).not.toHaveBeenCalled();
       expect(log).not.toHaveBeenCalled();
@@ -101,12 +102,12 @@ describe('background tray recovery', () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       setBindingMock('ListLiveBackgroundTasks', async () => { throw new Error('read failed'); });
-      emitWailsEvent('transport:gap', { channel: 'provider:background_tasks_changed' }, remote);
+      emitWailsEvent('transport:gap', { channel: 'provider:background_tray' }, remote);
       await flush();
       expect(log).toHaveBeenCalled();
       expect(controller.tasks.map((task) => task.rowId)).toEqual(['running']);
       setBindingMock('ListLiveBackgroundTasks', async () => []);
-      emitWailsEvent('transport:gap', { channel: 'provider:background_tasks_changed' }, remote);
+      emitWailsEvent('transport:gap', { channel: 'provider:background_tray' }, remote);
       await flush();
       expect(controller.tasks).toEqual([]);
     } finally { log.mockRestore(); }
@@ -121,16 +122,18 @@ describe('background tray recovery', () => {
     release = $effect.root(() => createBackgroundController(() => pane, Date.now).mount());
     await flush();
     expect(read).toHaveBeenCalledTimes(1);
-    emitWailsEvent('transport:gap', { channel: 'provider:background_tasks_changed' }, '');
+    emitWailsEvent('transport:gap', { channel: 'provider:background_tray' }, '');
     emitWailsEvent('transport:gap', { channel: 'git:status' }, remote);
+    emitWailsEvent('transport:gap', { channel: 'provider:background_tasks_changed' }, remote);
+    emitWailsEvent('transport:gap', { channel: 'provider:background_tray', threads: ['other-thread'] }, remote);
     await flush();
     expect(read).toHaveBeenCalledTimes(1);
-    emitWailsEvent('transport:gap', { channel: 'provider:background_tasks_changed' }, remote);
+    emitWailsEvent('transport:gap', { channel: 'provider:background_tray' }, remote);
     await flush();
     expect(read).toHaveBeenCalledTimes(2);
     release();
     release = () => {};
-    emitWailsEvent('transport:gap', { channel: 'provider:background_task_state' }, remote);
+    emitWailsEvent('transport:gap', { channel: 'provider:background_tray' }, remote);
     __setBackendStatusForTest(remote, { status: 'reconnecting', nextAttemptAt: null });
     __setBackendStatusForTest(remote, { status: 'connected', nextAttemptAt: null });
     await flush();
@@ -212,8 +215,21 @@ describe('tray refresh reasons', () => {
     expect(read).toHaveBeenCalledTimes(1);
   });
 
-  it('reads once per coalesced burst of background launches and terminals, once each when spaced', async () => {
+  it('reads nothing for a Claude thread\u2019s background launches and terminals, which its deltas carry', async () => {
     const { pane, read } = await mountTray([]);
+    const launches = Array.from({ length: 5 }, (_, i) => makeItem({
+      id: `bg-${i}`, kind: 'tool_call', toolName: 'Bash', status: 'running', isBackground: true, itemIndex: i + 1,
+    }));
+    deliver(pane, [...launches, ...launches.map((launch, i) => makeItem({
+      id: `${launch.id}:done`, kind: 'tool_completion', toolName: 'Bash', status: 'completed',
+      isBackground: true, completionOf: launch.id, itemIndex: i + 10,
+    }))]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads once per coalesced burst of a Codex thread\u2019s background launches and terminals, once each when spaced', async () => {
+    const { pane, read } = await mountTray([], makeThread({ provider: 'codex' }));
     const launches = Array.from({ length: 5 }, (_, i) => makeItem({
       id: `bg-${i}`, kind: 'tool_call', toolName: 'Bash', status: 'running', isBackground: true, itemIndex: i + 1,
     }));
@@ -233,10 +249,10 @@ describe('tray refresh reasons', () => {
     expect(read).toHaveBeenCalledTimes(12);
   });
 
-  it('reads when a listed launch settles, and not when it is re-pushed still running', async () => {
+  it('reads when a listed Codex launch settles, and not when it is re-pushed still running', async () => {
     const nested = makeItem({ id: 'nested', kind: 'tool_call', toolName: 'Agent', status: 'running', parentId: 'agent' });
     const flagged = makeItem({ id: 'flagged', kind: 'tool_call', toolName: 'Bash', status: 'running', isBackground: true, itemIndex: 2 });
-    const { pane, read } = await mountTray([agent, nested, flagged]);
+    const { pane, read } = await mountTray([agent, nested, flagged], makeThread({ provider: 'codex' }));
 
     deliver(pane, [{ ...nested, meta: JSON.stringify({ subagentDescendantCount: 3 }), rev: 2 }]);
     await vi.advanceTimersByTimeAsync(1_000);
@@ -314,7 +330,7 @@ describe('tray refresh reasons', () => {
 
   // The tray shows anchor-level data only: it watches no agent scope and
   // takes no child row, open or closed. A Codex agent's latest tool comes
-  // from the list read its tool calls nudge.
+  // from the list read its tool calls ask for.
   it('watches no agent scope with its body open and takes a Codex agent\u2019s latest tool from the nudged read', async () => {
     const scopes: string[] = [];
     vi.spyOn(wsClient, 'setWatchedThreads').mockImplementation((_threads, watched) => {
@@ -338,18 +354,21 @@ describe('tray refresh reasons', () => {
     listed[0] = { ...runtime, meta: latestTool('Read: child.ts', 3) };
     emitWailsEvent('provider:background_tasks_changed', { threadId: pane.threadId }, '');
     await vi.advanceTimersByTimeAsync(1_000);
+    expect(read).toHaveBeenCalledTimes(1);
+    applyBackgroundTrayEvent({ threadId: pane.threadId!, refresh: true });
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(read).toHaveBeenCalledTimes(2);
     expect(activity(controller, 'spawn')).toBe('Read: child.ts');
     expect(scopes).toEqual([]);
   });
 
-  // The backend nudges once per stamp refresh while agents work; the
-  // scheduler holds a steady stream to one read per 400 ms.
-  it('reads at most once per 400 ms under a steady nudge stream', async () => {
+  // A Codex thread's runtime changes ask for a read while its agents
+  // work; the scheduler holds a steady stream to one read per 400 ms.
+  it('reads at most once per 400 ms under a steady refresh stream', async () => {
     const agents = Array.from({ length: 100 }, (_, i) => claudeAgent(`agent-${i}`, latestTool('start', 0)));
     const { pane, read } = await mountTray(agents);
     for (let elapsed = 0; elapsed < 2_000; elapsed += 50) {
-      emitWailsEvent('provider:background_tasks_changed', { threadId: pane.threadId }, '');
+      applyBackgroundTrayEvent({ threadId: pane.threadId!, refresh: true });
       await vi.advanceTimersByTimeAsync(50);
     }
     await vi.advanceTimersByTimeAsync(1_000);
@@ -381,13 +400,14 @@ describe('tray refresh reasons', () => {
     expect(liveSubagentRunState(threadId, 'parked')?.state).toBe('parked');
     expect(read).toHaveBeenCalledTimes(1);
 
-    listed[0] = { ...parked, meta: runState({ subagentRunState: 'running' }) };
-    listed.splice(1, 1);
-    emitWailsEvent('provider:background_tasks_changed', { threadId }, '');
+    applyBackgroundTrayEvent({
+      threadId, launchIds: ['parked', 'working'], rows: [{ ...parked, meta: runState({ subagentRunState: 'running' }) }],
+    });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(liveSubagentRunState(threadId, 'parked')).toEqual({ state: 'running', waitingOn: 0, report: null });
     expect(liveSubagentRunState(threadId, 'working')).toBeNull();
     expect(controller.runningCount).toBe(2);
+    expect(read).toHaveBeenCalledTimes(1);
   });
 
   // The scale this path exists for: every live agent's anchor is re-pushed

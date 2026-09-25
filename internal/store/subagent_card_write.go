@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 )
@@ -43,16 +44,16 @@ type cardWrite struct {
 	// named them before they arrived.
 	carriers []subagentRow
 	// relive names the anchors whose agents the write may have started
-	// or stopped (subagentCards.relive); reliveAll is every agent of the
-	// thread, for a completion sibling written or deleted, whose trigger
-	// settles or revives its launch.
-	relive    []string
-	reliveAll bool
+	// or stopped (subagentCards.relive).
+	relive []string
 	// stops name the agents the write stopped and the transcript roots
-	// they kept live; stopAll is any agent of the thread, for a
-	// completion sibling written, whose trigger settles its launch.
-	stops   []string
-	stopAll bool
+	// they kept live.
+	stops []string
+	// settled and revived name the launches of the completion siblings
+	// the write inserted, whose trigger settles the launch, and of those
+	// it deleted or re-pointed, whose trigger may revive it: finish reads
+	// each launch's transcript root and records both (launches).
+	settled, revived []string
 	// stale lists the stamps finish recomputed, once it has.
 	stale   []string
 	touched bool
@@ -93,7 +94,7 @@ func (w *cardWrite) check(row subagentRow) error {
 // under it, which it adopts: its card and its chain's recompute.
 func (w *cardWrite) inserted(row subagentRow, hasChild bool) {
 	if row.completionOf != "" {
-		w.reliveAll, w.stopAll = true, true
+		w.settled = append(w.settled, row.completionOf)
 	}
 	if row.anchorable() {
 		w.relive = append(w.relive, row.root)
@@ -139,7 +140,7 @@ func (w *cardWrite) updated(old, row subagentRow) error {
 		w.stops = append(w.stops, old.id, old.root)
 	}
 	if old.completionOf != row.completionOf {
-		w.reliveAll = true
+		w.revived = append(w.revived, old.completionOf, row.completionOf)
 	}
 	structural := (old.counts() || row.counts()) && (old.parentID != row.parentID ||
 		old.turn != row.turn || old.index != row.index || old.visible() != row.visible() ||
@@ -173,7 +174,7 @@ func (w *cardWrite) updated(old, row subagentRow) error {
 // prompt's carrier loses its round, and its own stamp goes with it.
 func (w *cardWrite) deleted(old subagentRow) {
 	if old.completionOf != "" {
-		w.reliveAll = true
+		w.revived = append(w.revived, old.completionOf)
 	}
 	if old.anchorable() {
 		w.relive = append(w.relive, old.id, old.root)
@@ -206,17 +207,61 @@ func (w *cardWrite) subtreesChanged(ids []string) {
 // no note. A writer without the cards' lock has every accumulator of a
 // stamp it recomputed retired at the next card operation.
 func (w *cardWrite) finish() error {
-	switch {
-	case w.reliveAll:
-		w.s.cards.relive(w.threadID, nil)
-	case len(w.relive) > 0:
+	if err := w.launches(); err != nil {
+		return err
+	}
+	if len(w.relive) > 0 {
 		w.s.cards.relive(w.threadID, w.relive)
 	}
-	w.relive, w.reliveAll = nil, false
+	w.relive = nil
 	if err := w.recompute(); err != nil {
 		return err
 	}
 	return w.settle()
+}
+
+// launches records the agents the write's completion siblings settle or
+// revive: each launch and the transcript root it keeps live, read once
+// per launch, as the cards they decide. A thread whose cards hold nothing
+// has no card to tell, and reads nothing.
+func (w *cardWrite) launches() error {
+	settled, revived := w.settled, w.revived
+	w.settled, w.revived = nil, nil
+	if len(settled)+len(revived) == 0 || (w.t == nil && !w.s.cards.holds(w.threadID)) {
+		return nil
+	}
+	read := make(map[string][]string, len(settled)+len(revived))
+	agents := func(id string) ([]string, error) {
+		if got, ok := read[id]; ok || id == "" {
+			return got, nil
+		}
+		row, err := scanSubagentRow(w.tx.QueryRow(subagentRowSQL, w.threadID, id))
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			read[id] = []string{id}
+		case err != nil:
+			return nil, fmt.Errorf("store: read the launch %s/%s a completion names: %w", w.threadID, id, err)
+		default:
+			read[id] = []string{id, row.root}
+		}
+		return read[id], nil
+	}
+	for _, id := range settled {
+		ids, err := agents(id)
+		if err != nil {
+			return err
+		}
+		w.relive = append(w.relive, ids...)
+		w.stops = append(w.stops, ids...)
+	}
+	for _, id := range revived {
+		ids, err := agents(id)
+		if err != nil {
+			return err
+		}
+		w.relive = append(w.relive, ids...)
+	}
+	return nil
 }
 
 // recompute is finish's recompute of what the rules do not follow.
@@ -263,21 +308,22 @@ func (w *cardWrite) recompute() error {
 
 // settle keeps what the write leaves in memory recoverable by the boot
 // pass. The notes of a card that is not live, or whose agent the write
-// stopped, and the accumulators the stopped agents kept recoverable that
-// no other live card reaches (uncovered), are written to their stamps in
-// this transaction: settle applies the notes before the commit, and undo
-// puts them back if it does not commit. The rows advanced the thread
-// stamp in it, so the flush adds no bump.
+// stopped, and when it stopped agents the pending accumulators their
+// cards reach or no card reaches (cardThread.stopped), with the thread's
+// seeds, are written to their stamps in this transaction: settle applies
+// the notes before the commit, and undo puts them back if it does not
+// commit. The cards of agents the write did not stop keep theirs for
+// their own flush. The rows advanced the thread stamp in it, so the flush
+// adds no bump.
 func (w *cardWrite) settle() error {
 	stops := slices.DeleteFunc(w.stops, func(id string) bool { return id == "" })
-	all := w.stopAll
-	w.stops, w.stopAll = nil, false
+	w.stops = nil
 	t := w.t
 	if t == nil {
 		// Without the lock, only a thread whose cards hold nothing can
 		// lose no accumulator: a card changes them in a transaction of
 		// its own, and holds the thread's entry until it has applied them.
-		if (len(stops) > 0 || all) && !w.sweep && w.s.cards.holds(w.threadID) {
+		if len(stops) > 0 && !w.sweep && w.s.cards.holds(w.threadID) {
 			return fmt.Errorf("store: a write that stops an agent of %s holds no lock on its subagent cards", w.threadID)
 		}
 		return nil
@@ -285,15 +331,22 @@ func (w *cardWrite) settle() error {
 	noted := len(w.inserts)+len(w.changes) > 0
 	// The notes of a card that stays live reach stamps its agent keeps
 	// recoverable; they are applied once the write commits.
-	kept := !noted || (w.live && !all && !slices.Contains(stops, w.liveAnchor))
-	if kept && (len(stops) == 0 && !all || !t.uncovered(stops, all)) {
+	kept := !noted || (w.live && !slices.Contains(stops, w.liveAnchor))
+	if kept && (len(stops) == 0 || !t.pending(t.stopped(stops))) {
 		return nil
 	}
 	if w.undo == nil {
 		w.undo = t.snapshot(w.card)
 	}
 	w.apply()
-	flushed, err := w.s.flushCardsTx(w.tx, t, nil, func() error { return nil })
+	only := make(map[*cardStamp]struct{})
+	if len(stops) > 0 {
+		only = t.stopped(stops)
+	}
+	if !kept && w.card != nil {
+		t.reach(w.card, only)
+	}
+	flushed, err := w.s.flushCardsTx(w.tx, t, only, nil, func() error { return nil })
 	if err != nil {
 		return err
 	}

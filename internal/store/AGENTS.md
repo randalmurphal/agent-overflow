@@ -132,10 +132,12 @@ an atomic persistence decision; they must not become a business-logic layer.
   completion siblings are served at a new revision. After a crash,
   `RecoverSubagentCards` recomputes the anchors of the agents that were
   running. A write with a card no running agent covers
-  (`subagentCardLiveSQL`), and a write that stops an agent a card relied
-  on, flush the thread's cards in their own transaction
-  (`cardWrite.settle`), so no row the boot pass would not recover waits
-  for a flush. A write that can stop an agent holds the lock of the
+  (`subagentCardLiveSQL`) flushes what that card reaches, and a write that
+  stops agents flushes what their cards reach and what no open card
+  reaches, in its own transaction (`cardWrite.settle`), so no row the boot
+  pass would not recover waits for a flush. Flushes are chain-scoped: the
+  cards of agents a write did not stop keep their accumulators for their
+  own flush (`FlushSubagentChain`, `SubagentCard.Close`). A write that can stop an agent holds the lock of the
   thread's cards (`writeItems`, `bulkWriteItems`); a bulk writer without
   it (`bulkItemWrites`) fails if it stops one while the thread's cards
   hold anything, and the boot sweeps over every thread flush every card

@@ -157,11 +157,16 @@ var (
 	// absence costs a highlight RPC and nothing else. provider:item_event
 	// joined once its six off-pane consumers were re-homed onto wildcard
 	// carriers (thread:error_notice, thread:updated,
-	// provider:background_tasks_changed); its row names them.
+	// provider:background_tasks_changed); its row names them. The tray's
+	// rows (provider:background_tray) and live agent progress
+	// (provider:subagent_progress) are read only by a thread's pane, its
+	// cards, tray and agent panes; a pane that opens reads both whole.
 	frozenEntityFilteredChannels = []string{
 		"highlight:diff_seed",
 		"highlight:seed",
+		"provider:background_tray",
 		"provider:item_event",
+		"provider:subagent_progress",
 	}
 	// Membership narrows a watched thread's frames further, to the
 	// transcript scopes a connection names, so a row joining this list is a

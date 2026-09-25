@@ -144,6 +144,35 @@ func TestConnWatchScopesNarrowLiveDelivery(t *testing.T) {
 	}
 }
 
+// TestConnWatchScopeThreadsAdmitTheWholeThread: a set past MaxWatchScopes is
+// stated by naming a thread whole, which admits every scope of it live and
+// on replay, and a later frame that names the pairs again narrows it back.
+func TestConnWatchScopeThreadsAdmitTheWholeThread(t *testing.T) {
+	f := newServerFixture(t)
+	for _, frame := range scopedFramesUsed {
+		emitScopedItem(t, f, frame)
+	}
+	conn := f.dial(t)
+	sendRawFrame(t, conn, `{"type":"watch","id":"whole","threads":["thread-A"],"scopes":[],"scopeThreads":["thread-A"]}`)
+	replay := requestReplay(t, conn, map[string]uint64{string(eventchan.ProviderItemEvent): 0})
+	var replayed []string
+	for _, entry := range replay.events {
+		replayed = append(replayed, entryLabel(t, entry))
+	}
+	if want := labels(agent2A, agent1A, rootA); !slices.Equal(replayed, want) {
+		t.Fatalf("replayed %v, want %v", replayed, want)
+	}
+	if got, want := emitAndCollect(t, f, conn), labels(agent2A, agent1A, rootA); !slices.Equal(got, want) {
+		t.Fatalf("delivered %v, want %v", got, want)
+	}
+
+	sendRawFrame(t, conn, watchFrame("pairs", `[{"threadId":"thread-A","scopeRootId":"agent-1"}]`))
+	expectAccepted(t, conn, "after-pairs")
+	if got, want := emitAndCollect(t, f, conn), labels(agent1A, rootA); !slices.Equal(got, want) {
+		t.Fatalf("after naming the pairs again: delivered %v, want %v", got, want)
+	}
+}
+
 // TestConnWatchScopesAreAbsolute: each frame replaces the scope set, so an
 // agent view that closes stops its rows and one that opens starts them.
 func TestConnWatchScopesAreAbsolute(t *testing.T) {
@@ -191,6 +220,9 @@ func TestConnWatchScopesRefusalLeavesThePreviousSet(t *testing.T) {
 		{"oversizedScopeRoot", watchFrame("bad", "["+scope("thread-A", long)+"]")},
 		{"oversizedScopeThread", watchFrame("bad", "["+scope(long, "agent-2")+"]")},
 		{"badThreadsWithValidScopes", `{"type":"watch","id":"bad","threads":["thread-A",""],"scopes":[` + scope("thread-A", "agent-2") + `]}`},
+		{"tooManyScopeThreads", `{"type":"watch","id":"bad","threads":["thread-A"],"scopes":[],"scopeThreads":` + threadList(MaxWatchThreads+1) + `}`},
+		{"emptyScopeThreadID", `{"type":"watch","id":"bad","threads":["thread-A"],"scopes":[],"scopeThreads":["thread-A",""]}`},
+		{"oversizedScopeThreadID", `{"type":"watch","id":"bad","threads":["thread-A"],"scopes":[],"scopeThreads":["` + long + `"]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newServerFixture(t)
@@ -209,6 +241,16 @@ func TestConnWatchScopesRefusalLeavesThePreviousSet(t *testing.T) {
 	}
 }
 
+// threadList spells a JSON array of n distinct thread ids, thread-A first.
+func threadList(n int) string {
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%q", fmt.Sprintf("thread-%d", i))
+	}
+	ids[0] = `"thread-A"`
+	return "[" + strings.Join(ids, ",") + "]"
+}
+
 // TestConnWatchScopesAcceptTheBound: exactly MaxWatchScopes is legal, so
 // the bound refuses only what exceeds it.
 func TestConnWatchScopesAcceptTheBound(t *testing.T) {
@@ -223,6 +265,8 @@ func TestConnWatchScopesAcceptTheBound(t *testing.T) {
 	if got, want := emitAndCollect(t, f, conn), labels(agent2A, agent1A, rootA); !slices.Equal(got, want) {
 		t.Fatalf("delivered %v, want %v", got, want)
 	}
+	sendRawFrame(t, conn, `{"type":"watch","id":"whole","threads":["thread-A"],"scopes":[],"scopeThreads":`+threadList(MaxWatchThreads)+`}`)
+	expectAccepted(t, conn, "after-whole")
 }
 
 // TestConnWatchScopesNarrowReplay: a reconnecting client restates its

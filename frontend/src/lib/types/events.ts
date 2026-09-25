@@ -291,6 +291,19 @@ export interface BackgroundTasksChangedEvent {
 }
 
 /**
+ * `provider:background_tray` payload (Go: triage.BackgroundTrayEvent). A
+ * delta answers for the launches in `launchIds` and for every launch a row
+ * in `rows` belongs to: their rows replace the tray's, and a named launch
+ * with no row has left it. `refresh` asks for the whole list instead.
+ */
+export interface BackgroundTrayEvent {
+  threadId: string;
+  launchIds?: string[];
+  rows?: Item[];
+  refresh?: boolean;
+}
+
+/**
  * Tray-state nudge fired when the host-side process state of a
  * Claude background task changes. Two states emitted today:
  *
@@ -652,14 +665,6 @@ export interface SubagentProgressEvent {
   parentId?: string;
   progress: SubagentProgress;
   updatedAt: number;
-}
-
-/** One member of Claude's live background-task level set. */
-export interface BackgroundTaskRef {
-  taskId: string;
-  toolUseId?: string;
-  taskType?: string;
-  description?: string;
 }
 
 /**

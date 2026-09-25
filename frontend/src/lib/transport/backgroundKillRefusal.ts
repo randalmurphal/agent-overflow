@@ -21,7 +21,7 @@ import { TransportError } from './wsClient';
 
 export const BACKGROUND_AGENTS_RUNNING = 'background_agents_running';
 
-/** Served run states a Claude interrupt kills (triage AgentRunState). */
+/** Served run states a Claude interrupt kills (store AgentRunState). */
 export type BackgroundKillRunState = 'running' | 'parked';
 
 /** One live background agent a refused Stop would have killed. */

@@ -16,7 +16,6 @@ import (
 	"unicode/utf8"
 
 	"agent-overflow/internal/errorsx"
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/keyedlock"
 	"agent-overflow/internal/rpcclient"
 	"agent-overflow/internal/store"
@@ -58,7 +57,7 @@ func (a *App) observeRemoteCommand(computerID, requestID, threadID string, recei
 	if err = a.store.ObserveRemoteWatch(computerID, requestID, receipt, "", next); err != nil {
 		return err
 	}
-	a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": threadID})
+	a.emitBackgroundChanged(threadID)
 	return nil
 }
 
@@ -68,7 +67,7 @@ func (a *App) refuseRemoteWatch(computerID, requestID, threadID string, refusal 
 	if err := a.store.RefuseRemoteWatch(computerID, requestID, remoteErrorText(refusal)); err != nil {
 		return err
 	}
-	a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": threadID})
+	a.emitBackgroundChanged(threadID)
 	return nil
 }
 
@@ -283,7 +282,7 @@ func (a *App) checkRemoteWatch(w store.RemoteWatch) {
 		return
 	}
 	if receipt.State != w.Receipt.State || issue != w.Error {
-		a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": w.ThreadID})
+		a.emitBackgroundChanged(w.ThreadID)
 	}
 	if issue != "" || receipt.ID == "" || receipt.State == "running" {
 		return
@@ -531,7 +530,7 @@ func (a *App) cancelThreadRemoteCommands(ctx context.Context, threadID string) e
 		}
 	}
 	if len(rows) > 0 {
-		a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": threadID})
+		a.emitBackgroundChanged(threadID)
 	}
 	return nil
 }

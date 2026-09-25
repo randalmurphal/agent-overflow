@@ -167,9 +167,11 @@ func (c *SubagentCard) Flush() ([]string, error) {
 	return c.s.FlushSubagentCards(c.threadID)
 }
 
-// Close flushes the thread's changed accumulators and releases the card.
-// A failed flush keeps them for the next FlushSubagentCards and is
-// returned; the card is closed either way.
+// Close flushes the changed accumulators the card's rows reach, those no
+// other open card reaches, and the thread's seeds, and releases the card.
+// The other cards' accumulators wait for their own flush. A failed flush
+// keeps them for the next FlushSubagentCards and is returned; the card is
+// closed either way.
 func (c *SubagentCard) Close() error {
 	t := c.t
 	t.mu.Lock()
@@ -179,7 +181,10 @@ func (c *SubagentCard) Close() error {
 	}
 	c.closed = true
 	delete(t.handles, c)
-	err := c.s.flushLocked(t, nil)
+	reach := make(map[*cardStamp]struct{})
+	t.reach(c, reach)
+	t.unreached(reach)
+	err := c.s.flushLocked(t, reach, nil)
 	t.collect()
 	c.s.cards.release(t)
 	return err
@@ -190,6 +195,20 @@ func (c *SubagentCard) Close() error {
 // the anchors whose stamp changed. A thread with nothing pending costs
 // no statement.
 func (s *Store) FlushSubagentCards(threadID string) ([]string, error) {
+	return s.flushSubagentCards(threadID, func(*cardThread) map[*cardStamp]struct{} { return nil })
+}
+
+// FlushSubagentChain is FlushSubagentCards for the accumulators the rows
+// under parentID reach (cardThread.chain): the anchors up its chain, a
+// resumed root's last round, and its tray, with the thread's seeds. The
+// cards of other chains keep theirs for their own flush.
+func (s *Store) FlushSubagentChain(threadID, parentID string) ([]string, error) {
+	return s.flushSubagentCards(threadID, func(t *cardThread) map[*cardStamp]struct{} { return t.chain(parentID) })
+}
+
+// flushSubagentCards flushes the accumulators only picks under the lock,
+// every pending one when it picks nil.
+func (s *Store) flushSubagentCards(threadID string, only func(*cardThread) map[*cardStamp]struct{}) ([]string, error) {
 	t := s.cards.acquire(threadID, false)
 	if t == nil {
 		return nil, nil
@@ -197,7 +216,7 @@ func (s *Store) FlushSubagentCards(threadID string) ([]string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	var changed []string
-	err := s.flushLocked(t, &changed)
+	err := s.flushLocked(t, only(t), &changed)
 	t.collect()
 	s.cards.release(t)
 	return changed, err

@@ -159,32 +159,43 @@ describe('watch scopes', () => {
     client.close();
   });
 
-  it('omits the scope set it cannot state, admitting every scope instead of truncating', async () => {
+  it('states a set past the pair bound by naming its heaviest threads whole', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const { client, ws } = await connectedClient();
       const diagnostics: string[] = [];
       client.setDiagnosticsSink((message) => { diagnostics.push(message); });
+      const agents = (threadId: string, n: number) =>
+        Array.from({ length: n }, (_, i) => scope(threadId, `agent-${i}`));
 
-      const over = Array.from({ length: MAX_WATCH_SCOPES + 1 }, (_, i) => scope('t1', `agent-${i}`));
-      client.setWatchedThreads(['t1'], over);
-      expect(watchFrames(ws)).toEqual([{ type: 'watch', threads: ['t1'] }]);
-      expect(diagnostics).toEqual(['transport: watched-scope set exceeded the wire bound']);
+      // Exactly at the bound is stated pair by pair.
+      client.setWatchedThreads(['t1'], agents('t1', MAX_WATCH_SCOPES));
+      expect(watchFrames(ws)[0]?.scopes).toHaveLength(MAX_WATCH_SCOPES);
+      expect(watchFrames(ws)[0]?.scopeThreads).toBeUndefined();
 
-      // Still unstatable: deduped, and reported once.
-      client.setWatchedThreads(['t1'], over);
-      expect(watchFrames(ws)).toHaveLength(1);
-      expect(diagnostics).toHaveLength(1);
+      // One past it names the heaviest thread whole and keeps the rest.
+      const light = agents('t2', 3);
+      client.setWatchedThreads(['t1', 't2'], [...agents('t1', MAX_WATCH_SCOPES - 2), ...light]);
+      expect(watchFrames(ws)[1]).toEqual({ type: 'watch', threads: ['t1', 't2'], scopes: light, scopeThreads: ['t1'] });
 
-      // Exactly at the bound is stated.
-      client.setWatchedThreads(['t1'], over.slice(0, MAX_WATCH_SCOPES));
-      expect(watchFrames(ws)[1]?.scopes).toHaveLength(MAX_WATCH_SCOPES);
+      // Unchanged: nothing sent. Fewer again: back to pairs.
+      client.setWatchedThreads(['t1', 't2'], [...agents('t1', MAX_WATCH_SCOPES - 2), ...light]);
+      expect(watchFrames(ws)).toHaveLength(2);
+      client.setWatchedThreads(['t1', 't2'], light);
+      expect(watchFrames(ws)[2]).toEqual({ type: 'watch', threads: ['t1', 't2'], scopes: light });
 
-      // An id past the backend's byte bound: multi-byte characters count.
+      // A scope root past the backend's byte bound (multi-byte characters
+      // count) names its thread whole; one at the bound is a pair.
       client.setWatchedThreads(['t1'], [scope('t1', 'é'.repeat(129))]);
-      expect(watchFrames(ws)[2]).toEqual({ type: 'watch', threads: ['t1'] });
+      expect(watchFrames(ws)[3]).toEqual({ type: 'watch', threads: ['t1'], scopes: [], scopeThreads: ['t1'] });
       client.setWatchedThreads(['t1'], [scope('t1', 'é'.repeat(128))]);
-      expect(watchFrames(ws)[3]).toEqual({ type: 'watch', threads: ['t1'], scopes: [scope('t1', 'é'.repeat(128))] });
+      expect(watchFrames(ws)[4]).toEqual({ type: 'watch', threads: ['t1'], scopes: [scope('t1', 'é'.repeat(128))] });
+
+      // A thread id past the bound names nothing the backend accepts: the
+      // set is omitted and reported.
+      client.setWatchedThreads(['t1'], [scope('é'.repeat(129), 'a')]);
+      expect(watchFrames(ws)[5]).toEqual({ type: 'watch', threads: ['t1'] });
+      expect(diagnostics).toEqual(['transport: watched-scope set exceeded the wire bound']);
 
       client.close();
     } finally {

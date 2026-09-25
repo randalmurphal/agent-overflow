@@ -254,6 +254,16 @@ the client asks for replay from its saved per-channel cursors. Live and replay
 frames may interleave, so clients reconcile by sequence and wait for the replay
 completion marker rather than relying on arrival order.
 
+Each ring holds up to `DefaultRingCapacity` frames within `RingByteBudget`
+wire bytes and evicts its oldest frames first; the newest frame is always
+kept. Together the two bounds are the reconnect budget: a client that
+reconnects within 30 s while a thread runs 100 agents replays every channel
+without a gap. The harness measures that burst at about 150 frames/s on
+`provider:item_event`, the busiest channel
+(`e2e/tests/transport-replay-burst.spec.ts`), and
+`eventbus_ring_budget_test.go` pins the bounds to the budget. One ring serves
+every thread, so threads bursting at once share the window.
+
 ### Gap markers
 
 `gap:true` instructs a client to reload authoritative state. It is returned
@@ -287,16 +297,19 @@ Empty or unrecognized entity attribution fails open to delivery.
 
 `scopes` narrows `provider:item_event` further, to the subagent transcripts
 the client is viewing. Each entry is a `{threadId, scopeRootId}` pair, at most
-`MaxWatchScopes` of them, each id bounded like a thread id. The emit funnel
-attributes every item event with its thread and the row's `parentId`, which
-every frame on that channel carries, one row per frame. A frame with an empty
-scope is a root row and follows the thread set. A frame with a scope is
-delivered only when its pair is named, whether or not its thread is. An absent
-`scopes` field admits every scope of a watched thread, which is what a client
-sends when it cannot state its set within the bound; `[]` admits root rows
-only. An oversized, empty or malformed entry refuses the whole frame with
-`bad_params` and leaves the previous sets in place. No other channel carries a
-scope.
+`MaxWatchScopes` of them, each id bounded like a thread id. `scopeThreads`
+completes a stated set: it names threads, at most `MaxWatchThreads`, whose
+every scope is admitted. A client whose pairs exceed `MaxWatchScopes` names
+the threads it views the most scopes of there, so any set it views can be
+stated within the bounds at the cost of those threads' other scopes. The emit
+funnel attributes every item event with its thread and the row's `parentId`,
+which every frame on that channel carries, one row per frame. A frame with an
+empty scope is a root row and follows the thread set. A frame with a scope is
+delivered only when its pair is named or its thread is in `scopeThreads`,
+whether or not its thread is watched. An absent `scopes` field admits every
+scope of a watched thread; `[]` admits root rows only. An oversized, empty or
+malformed entry refuses the whole frame with `bad_params` and leaves the
+previous sets in place. No other channel carries a scope.
 
 Withheld frames are not transport loss and do not produce gap markers. Scope
 filtering runs before drop accounting, in live delivery and in replay alike,
@@ -311,8 +324,11 @@ history read, and re-reads when resolution adds a scope, so rows written
 before the watch applied are recovered from the snapshot. Collapsed subagent
 cards read anchor metadata and `provider:subagent_progress`, which are not
 scope-filtered. The background tray, open or closed, names no scope: it
-reads `ListLiveBackgroundTasks`, which `provider:background_tasks_changed`
-nudges when a running agent's served state or latest tool changes.
+reads `ListLiveBackgroundTasks` when its thread opens and after a reconnect
+or a lost frame, and otherwise applies the rows of the launches that changed
+from `provider:background_tray` deltas, which are filtered by thread.
+`provider:background_tasks_changed` is a payload-free, wildcard refetch nudge
+for readers that must hear about threads no pane shows.
 
 A `lease` frame reports whether the platform has paused the client. It is not
 page visibility, focus, or pane selection. New connections start active.

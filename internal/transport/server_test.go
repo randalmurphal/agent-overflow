@@ -834,7 +834,7 @@ func TestServer_ClientDropsDuringReplay(t *testing.T) {
 	// Payloads big enough that the replay can't complete inside one
 	// write, so the close lands mid-stream.
 	payload := strings.Repeat("x", 8*1024)
-	for i := 0; i < DefaultRingCapacity; i++ {
+	for i := 0; i < 1000; i++ {
 		if _, err := f.bus.Emit("ch1", payload); err != nil {
 			t.Fatalf("emit %d: %v", i, err)
 		}

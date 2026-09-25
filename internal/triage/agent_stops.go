@@ -20,24 +20,8 @@ import (
 // reports, and the wake starts its next run. The stop with none running,
 // or a kill, is the ENDING sibling, which settles the row and ends the
 // agent (writeBackgroundCompletionSibling, agent_end.go). An agent's stop
-// rings no bell: its sibling is its card.
-//
-// A parked sibling's own meta records its run. The frontend mirrors these
-// keys in frontend/src/lib/utils/parkedStop.ts (mirror_pins_test.go).
-const (
-	// metaKeyParkedCommands is the number of background commands the
-	// agent waits on (launchParkedOn).
-	metaKeyParkedCommands = "parked_commands"
-	// metaKeyParkedReportItemID names the run's report: the newest direct
-	// assistant_text under the transcript root written since the run
-	// began (Store.LatestSubagentReport). Absent when it wrote none.
-	metaKeyParkedReportItemID = "parked_report_item_id"
-	// metaKeyRunStartedAt is when the run began, in epoch milliseconds:
-	// at the wake that started it, else at the row that started it.
-	metaKeyRunStartedAt = "run_started_at"
-	// metaKeyRunWoke is true on a run a wake started.
-	metaKeyRunWoke = "run_woke"
-)
+// rings no bell: its sibling is its card. A parked sibling's own meta
+// records its run (store.MetaKeyParkedCommands and the keys beside it).
 
 // handleAgentStop writes a background agent's stop: a parked sibling for
 // a pause, else the ending sibling, which the notification's report then
@@ -137,14 +121,14 @@ func (r *Router) writeParkedStop(evt provider.ProviderEvent, meta backgroundTask
 		backgroundNotificationCompletionMeta(meta, payload != nil, outputState, "", ""),
 	)
 	run := map[string]any{
-		metaKeyParkedCommands: park.waiting,
-		metaKeyRunStartedAt:   startedAt,
+		store.MetaKeyParkedCommands: park.waiting,
+		store.MetaKeyRunStartedAt:   startedAt,
 	}
 	if woke {
-		run[metaKeyRunWoke] = true
+		run[store.MetaKeyRunWoke] = true
 	}
 	if reported {
-		run[metaKeyParkedReportItemID] = reportID
+		run[store.MetaKeyParkedReportItemID] = reportID
 	}
 	encoded, err := json.Marshal(run)
 	if err != nil {
@@ -168,12 +152,9 @@ func (r *Router) writeParkedStop(evt provider.ProviderEvent, meta backgroundTask
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	if err := r.deferOrPersist(evt.ThreadID, queuedPersistence{item: stop, payload: payload}); err != nil {
-		return err
-	}
-	// The tray reads the pause from this row (DecorateAgentRunStates).
-	r.emitBackgroundTasksChangedNudge(evt.ThreadID)
-	return nil
+	// The row's push announces its launch to the tray when it lands
+	// (appendTrayLaunches), now or at the drain that persists it.
+	return r.deferOrPersist(evt.ThreadID, queuedPersistence{item: stop, payload: payload})
 }
 
 // agentRunStart reads when the run that stops now began. The first run

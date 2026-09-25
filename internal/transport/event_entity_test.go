@@ -57,7 +57,7 @@ func TestSubscriberWatchNarrowsOnlyEntityFilteredChannels(t *testing.T) {
 	defer bus.Close()
 	sub := bus.Subscribe()
 	defer sub.Close()
-	sub.SetWatch([]string{"thread-A"}, nil)
+	sub.SetWatch([]string{"thread-A"}, nil, nil)
 
 	if _, err := bus.EmitEntity(eventchan.Channel(filtered), "thread-B", "withheld"); err != nil {
 		t.Fatalf("emit filtered foreign: %v", err)
@@ -92,7 +92,7 @@ func TestSubscriberWatchDeliversUnattributedFrames(t *testing.T) {
 	defer bus.Close()
 	sub := bus.Subscribe()
 	defer sub.Close()
-	sub.SetWatch([]string{"thread-A"}, nil)
+	sub.SetWatch([]string{"thread-A"}, nil, nil)
 
 	if _, err := bus.EmitEntity(eventchan.Channel(filtered), "", "unattributed"); err != nil {
 		t.Fatalf("emit: %v", err)
@@ -112,7 +112,7 @@ func TestSubscriberWatchAcceptsTheEmptySet(t *testing.T) {
 	defer bus.Close()
 	sub := bus.Subscribe()
 	defer sub.Close()
-	sub.SetWatch(nil, nil)
+	sub.SetWatch(nil, nil, nil)
 
 	if _, err := bus.EmitEntity(eventchan.Channel(filtered), "thread-A", "withheld"); err != nil {
 		t.Fatalf("emit filtered: %v", err)
@@ -135,9 +135,9 @@ func TestSubscriberWatchIsAbsoluteAndIdempotent(t *testing.T) {
 	sub := bus.Subscribe()
 	defer sub.Close()
 
-	sub.SetWatch([]string{"thread-A"}, nil)
-	sub.SetWatch([]string{"thread-B"}, nil)
-	sub.SetWatch([]string{"thread-B"}, nil)
+	sub.SetWatch([]string{"thread-A"}, nil, nil)
+	sub.SetWatch([]string{"thread-B"}, nil, nil)
+	sub.SetWatch([]string{"thread-B"}, nil, nil)
 
 	if _, err := bus.EmitEntity(eventchan.Channel(filtered), "thread-A", "gone"); err != nil {
 		t.Fatalf("emit A: %v", err)
@@ -165,7 +165,7 @@ func TestSubscriberWatchWithheldFramesNeverMarkGapped(t *testing.T) {
 	bus.subBuf = 1
 	sub := bus.Subscribe()
 	defer sub.Close()
-	sub.SetWatch([]string{"thread-A"}, nil)
+	sub.SetWatch([]string{"thread-A"}, nil, nil)
 
 	for range 5 {
 		if _, err := bus.EmitEntity(eventchan.Channel(filtered), "thread-B", "foreign"); err != nil {
@@ -204,7 +204,7 @@ func TestSubscriberWatchComposesWithOriginAndScopeFilters(t *testing.T) {
 		sub := bus.Subscribe()
 		defer sub.Close()
 		sub.SetOriginLoopback(true)
-		sub.SetWatch([]string{"thread-A"}, nil)
+		sub.SetWatch([]string{"thread-A"}, nil, nil)
 		if _, err := bus.EmitEntity(filtered, "thread-A", "x"); err != nil {
 			t.Fatalf("emit: %v", err)
 		}
@@ -219,7 +219,7 @@ func TestSubscriberWatchComposesWithOriginAndScopeFilters(t *testing.T) {
 		sub := bus.Subscribe()
 		defer sub.Close()
 		sub.SetScopeFilter(sessionScopeFilter(nil, false))
-		sub.SetWatch([]string{"thread-A"}, nil)
+		sub.SetWatch([]string{"thread-A"}, nil, nil)
 		if _, err := bus.EmitEntity(filtered, "thread-A", "x"); err != nil {
 			t.Fatalf("emit: %v", err)
 		}
@@ -239,7 +239,7 @@ func TestWatchingConnectionIsNotAChannelSubscriber(t *testing.T) {
 	defer bus.Close()
 	sub := bus.Subscribe()
 	defer sub.Close()
-	sub.SetWatch([]string{"thread-A"}, nil)
+	sub.SetWatch([]string{"thread-A"}, nil, nil)
 
 	if got := bus.ChannelSubscriberCount(filtered); got != 0 {
 		t.Fatalf("a watching connection counted as %d channel subscribers, want 0", got)

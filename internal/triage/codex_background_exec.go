@@ -237,7 +237,7 @@ func (r *Router) markCodexUnifiedExecProcessBackgrounded(threadID, processID str
 	}
 	r.mu.Unlock()
 	if changed {
-		r.emitBackgroundTasksChangedNudge(threadID)
+		r.emitCodexBackgroundChanged(threadID)
 	}
 }
 
@@ -475,7 +475,7 @@ func (r *Router) observeCodexUnifiedExecComplete(evt provider.ProviderEvent) (bo
 	if !handled {
 		return false, nil
 	}
-	r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+	r.emitCodexBackgroundChanged(evt.ThreadID)
 	turnIndex, ok := r.activeRoundTurnIndex(evt.ThreadID)
 	if !ok {
 		return true, nil

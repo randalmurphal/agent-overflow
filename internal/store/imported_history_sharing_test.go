@@ -303,9 +303,9 @@ func TestImportedDescendantsKeepWireDecorationAndAncestorRevisions(t *testing.T)
 		t.Fatalf("launch reads: local=%+v imported=%+v", local, imported)
 	}
 	// The bulk load stamped the launch, so its stored row is its read.
-	needs, err := s.ItemReadNeedsDecoration(imported[0])
-	if err != nil || needs {
-		t.Fatalf("stamped launch over imported descendants needs decoration=%v err=%v", needs, err)
+	probe, err := s.ProbeWireItem(imported[0])
+	if err != nil || probe.NeedsDecoration || !probe.Anchors {
+		t.Fatalf("stamped launch over imported descendants probed %+v err=%v, want read as stored and anchoring", probe, err)
 	}
 	local[0].ThreadID, local[0].Rev = "", 0
 	before := imported[0]

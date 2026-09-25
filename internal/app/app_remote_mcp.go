@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"agent-overflow/internal/errorsx"
-	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/gitapp"
 	"agent-overflow/internal/mcpapp"
 	"agent-overflow/internal/mcpargs"
@@ -203,7 +202,7 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 		// The wait's end is what moves a running job into the background:
 		// the tray row changes state without the job itself changing.
 		if backgrounded {
-			a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": access.ThreadID})
+			a.emitBackgroundChanged(access.ThreadID)
 		}
 	}()
 	waitFor := func(command RemoteCommand, options remoteResultOptions) {
@@ -343,7 +342,7 @@ func (a *App) callRemoteMCP(w http.ResponseWriter, ctx context.Context, req thre
 		log.Printf("remote job %s: dismiss delivered completion: %v", requestID, err)
 		return
 	}
-	a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": access.ThreadID})
+	a.emitBackgroundChanged(access.ThreadID)
 }
 
 func remoteTool(name, description string, properties map[string]any, required ...string) map[string]any {

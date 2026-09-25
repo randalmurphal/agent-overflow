@@ -1,15 +1,18 @@
-// Background-tasks controller for the activity rail. Owns the
-// `ListLiveBackgroundTasks` polling, three event subscriptions
-// (`provider:item_event`-derived `onItemUpsert`,
-// `provider:background_tasks_changed`, `provider:background_task_state`),
-// and the rate-bounded refresh they drive (`utils/refreshScheduler` — a plain
-// trailing debounce here starved forever under a live stream and left the pill
-// showing a count nothing had refuted). Every row it shows comes from the list
-// read: it watches no agent scope and reads no child row, open or closed, and
-// the backend nudges a read when an agent's served state or latest tool
-// changes. Exposes reactive `tasks` / `runningCount` for the rail's toggle
-// pill and expanded body and `hasPendingCompletion` for the host's clock
-// gate; a Claude agent's served run state goes to the shared registry
+// Background-tasks controller for the activity rail. Every row it shows is
+// one `ListLiveBackgroundTasks` serves: it reads the list when its thread
+// opens, after a reconnect or a lost frame, and when the backend asks, and
+// otherwise applies `provider:background_tray` deltas
+// (stores/eventsBackgroundTray.ts), which carry the rows of the launches
+// that changed (internal/triage/background_tray.go). A Claude thread's tray
+// therefore costs a delta per change, whatever the thread runs. A Codex
+// thread's tray also lists runtime records no delta carries, so its frames
+// ask for a read, as do its own row pushes. Reads go
+// through a rate-bounded refresh (`utils/refreshScheduler`: a plain trailing
+// debounce here starved forever under a live stream and left the pill
+// showing a count nothing had refuted). It watches no agent scope and reads
+// no child row. Exposes reactive `tasks` / `runningCount` for the rail's
+// toggle pill and expanded body and `hasPendingCompletion` for the host's
+// clock gate; a Claude agent's served run state goes to the shared registry
 // (`stores/subagentRunState.svelte.ts`), which the rows read per launch.
 //
 // Owned by `Composer.svelte`, not the rail: the composer's `railVisible`
@@ -22,19 +25,17 @@
 
 import type { ThreadPane } from '../../stores/thread.svelte';
 import { ListLiveBackgroundTasks } from '../../stores/bindings';
+import { onBackgroundTrayEvent } from '../../stores/eventsBackgroundTray';
 import { onItemUpsert } from '../../stores/eventsItemStream';
 import { wailsEventOn } from '../../stores/wailsEvents';
 import { getTransportStatusFor, onBackendStatusChange } from '../../stores/transportStatus.svelte';
 import { threadBackend } from '../../transport/entityIndex';
 import { backendKeyForOrigin } from '../../transport/backends';
 import { transportGapChannel, type TransportGap } from '../../transport/wsClient';
-import type {
-  BackgroundTaskStateEvent,
-  BackgroundTasksChangedEvent,
-} from '../../types/events';
+import type { BackgroundTrayEvent } from '../../types/events';
 import type { Item } from '../../types/models';
 import { asProviderID, type ProviderID } from '../../types/providers';
-import { deriveTrayTasks, type TrayTask } from '../../utils/backgroundTray';
+import { applyTrayDelta, deriveTrayTasks, type TrayTask } from '../../utils/backgroundTray';
 import { createRefreshScheduler } from '../../utils/refreshScheduler';
 import { createTrayLatestToolProjection } from '../../utils/codexTrayProjection';
 import { subagentRunStateFromMeta, type SubagentRunState } from '../../utils/subagentRunState';
@@ -77,10 +78,16 @@ export function createBackgroundController(
   let listedLaunches = new Map<string, Item>();
   const latestTools = createTrayLatestToolProjection();
 
+  // Deltas applied while a list read is in flight. The read may predate
+  // them, so they are applied again over its answer, in arrival order: the
+  // backend emits a thread's deltas in the order of the reads they carry.
+  let inflightDeltas: BackgroundTrayEvent[] | null = null;
+
   // The listed launches' served run states go to the shared registry
-  // (stores/subagentRunState.svelte.ts). Only a list read serves them, so
-  // each wholesale write replaces the thread's set; a re-push, which
-  // carries a row's other keys over, leaves it alone.
+  // (stores/subagentRunState.svelte.ts). A list read or a delta serves
+  // them, so each write replaces the thread's set, which rewrites only the
+  // launches whose state changed; a re-push, which carries a row's other
+  // keys over, leaves it alone.
   function replaceBackgroundItems(forThreadId: string | null, items: Item[]): void {
     backgroundItems = items;
     listedLaunches = new Map();
@@ -100,26 +107,38 @@ export function createBackgroundController(
     latestTools.reset(items);
   }
 
-  // A tray read is requested only when membership can change: a new
-  // background launch (or, for Codex, a new nested agent), a terminal, a
-  // completion of a listed launch, or a listed launch no longer running.
+  function withDelta(items: readonly Item[], forThreadId: string, evt: BackgroundTrayEvent): Item[] {
+    const rows = (evt.rows ?? []).filter((row) => row.threadId === forThreadId);
+    return applyTrayDelta(items, evt.launchIds ?? [], rows, getNow(), COMPLETION_RETENTION_MS);
+  }
+
   // A listed launch re-pushed while running carries its latest-tool
-  // decoration onto its row in place. A Codex agent's row is its runtime
+  // decoration onto its row in place. On a Claude thread that is all a
+  // push does here: the deltas carry membership and served state. A Codex
+  // thread's tray is read again when membership can change: a new
+  // background launch or nested agent, a completion of a listed launch, or
+  // a listed launch no longer running. A Codex agent's row is its runtime
   // record, not the settled spawn row pushed here, so that push changes
   // nothing. A child's ordinary tool_completion names no listed launch.
   function applyUpsert(item: Item): void {
+    if (provider !== 'codex') {
+      const listed = listedLaunches.get(item.id);
+      if (listed !== undefined && !item.completionOf && item.status === 'running') {
+        backgroundItems = latestTools.applyPushedLaunch(backgroundItems, item);
+      }
+      return;
+    }
     if (item.completionOf) {
       if (item.isBackground || listedLaunches.has(item.completionOf)) refresh.request();
       return;
     }
     const listed = listedLaunches.get(item.id);
     if (listed === undefined) {
-      const nestedCodexAgent = provider === 'codex' && item.parentId && item.kind === 'tool_call'
-        && item.toolName === 'collab_agent';
+      const nestedCodexAgent = item.parentId && item.kind === 'tool_call' && item.toolName === 'collab_agent';
       if (item.isBackground || nestedCodexAgent) refresh.request();
       return;
     }
-    if (provider === 'codex' && listed.toolName === 'collab_agent') return;
+    if (listed.toolName === 'collab_agent') return;
     if (item.status !== 'running') {
       refresh.request();
       return;
@@ -151,15 +170,21 @@ export function createBackgroundController(
       }
       const owner = threadBackend(id);
       if (owner !== undefined && getTransportStatusFor(owner).status !== 'connected') return;
+      const deltas: BackgroundTrayEvent[] = [];
+      inflightDeltas = deltas;
       try {
         const items = (await ListLiveBackgroundTasks(id)) as Item[] | null;
         if (!token.isCurrent() || id !== threadId) return;
-        replaceBackgroundItems(id, (items ?? []).filter((item) => item.threadId === id));
+        let next = (items ?? []).filter((item) => item.threadId === id);
+        for (const evt of deltas) next = withDelta(next, id, evt);
+        replaceBackgroundItems(id, next);
       } catch (err) {
         if (!token.isCurrent() || id !== threadId) return;
         console.error('ActivityRail: ListLiveBackgroundTasks failed:', err);
         // A failed read says nothing about task lifetime. Keep the last
         // snapshot until a successful refresh or a switch to another thread.
+      } finally {
+        if (inflightDeltas === deltas) inflightDeltas = null;
       }
     },
   });
@@ -205,20 +230,15 @@ export function createBackgroundController(
         if (item.threadId !== threadId) return;
         applyUpsert(item);
       });
-      const cancelBackgroundTasksChanged = wailsEventOn<BackgroundTasksChangedEvent>(
-        'provider:background_tasks_changed',
-        (evt) => {
-          if (!evt || evt.threadId !== threadId) return;
+      const cancelBackgroundTray = onBackgroundTrayEvent((evt) => {
+        if (evt.threadId !== threadId) return;
+        if (evt.refresh || provider === 'codex') {
           refresh.request();
-        },
-      );
-      const cancelBackgroundTaskState = wailsEventOn<BackgroundTaskStateEvent>(
-        'provider:background_task_state',
-        (evt) => {
-          if (!evt || evt.threadId !== threadId) return;
-          refresh.request();
-        },
-      );
+          return;
+        }
+        inflightDeltas?.push(evt);
+        replaceBackgroundItems(evt.threadId, withDelta(backgroundItems, evt.threadId, evt));
+      });
       // Remote jobs have no timeline rows to incidentally repair this tray.
       // Recover its own snapshot when its computer reconnects or loses a
       // relevant event, using the same scheduler and ownership index as RPCs.
@@ -229,12 +249,10 @@ export function createBackgroundController(
       });
       const cancelGap = wailsEventOn<TransportGap>(transportGapChannel, (gap, origin) => {
         if (!threadId || threadBackend(threadId) !== backendKeyForOrigin(origin.backendId)) return;
-        if (gap?.channel === 'provider:item_event') {
-          // Every row this tray reads is its own thread's: a loss the
-          // server attributed to other threads cost it nothing.
-          if (gap.threads && !gap.threads.includes(threadId)) return;
-        } else if (gap?.channel !== 'provider:background_tasks_changed'
-          && gap?.channel !== 'provider:background_task_state') return;
+        if (gap?.channel !== 'provider:background_tray' && gap?.channel !== 'provider:item_event') return;
+        // Every row this tray reads is its own thread's: a loss the
+        // server attributed to other threads cost it nothing.
+        if (gap.threads && !gap.threads.includes(threadId)) return;
         refresh.reset();
         refresh.request({ immediate: true });
       });
@@ -242,8 +260,7 @@ export function createBackgroundController(
         cancelStatus();
         cancelGap();
         cancelItemUpsert();
-        cancelBackgroundTasksChanged();
-        cancelBackgroundTaskState();
+        cancelBackgroundTray();
         refresh.dispose();
       };
     },

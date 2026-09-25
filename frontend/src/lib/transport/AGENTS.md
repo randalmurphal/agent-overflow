@@ -70,7 +70,8 @@ legitimately consume sequence numbers. Explicit server gaps still recover.
 Watches (threads and subagent scopes) are absolute per connection and are sent
 before replay on reconnect. `setWatchedThreadsEverywhere` splits known thread
 IDs, and scopes by their thread, by owner and sends unknown owners to every
-attached backend. A scope set past the wire bound is omitted, never truncated.
+attached backend. A scope set past the pair bound names its heaviest threads
+whole in `scopeThreads`; it is never truncated.
 Lease state describes platform suspension, not page visibility, and must be
 restated independently of watches.
 

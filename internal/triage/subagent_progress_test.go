@@ -213,28 +213,23 @@ func TestSubagentBackgroundedStampsLaunchOnce(t *testing.T) {
 	}
 }
 
-func TestBackgroundTasksChangedForwardsTheSet(t *testing.T) {
+// Claude's set moving is a refresh trigger for the thread's listings
+// (workspace lock, remote jobs), not a tray frame: the tray's rows ride
+// provider:background_tray from the writes that moved them.
+func TestBackgroundTasksChangedNudgesTheThread(t *testing.T) {
 	h := newSubagentTestHarness(t)
-	raw, _ := json.Marshal(provider.BackgroundTasksChangedMeta{Tasks: []provider.BackgroundTaskRef{{TaskID: "t1", ToolUseID: "toolu_1", TaskType: "local_agent", Description: "review"}}})
-	if err := h.router.Handle(provider.ProviderEvent{Kind: provider.EventBackgroundTasksChanged, ThreadID: h.threadID, Meta: raw}); err != nil {
+	if err := h.router.Handle(provider.ProviderEvent{Kind: provider.EventBackgroundTasksChanged, ThreadID: h.threadID}); err != nil {
 		t.Fatal(err)
 	}
 	emits := h.emitsNamed("provider:background_tasks_changed")
 	if len(emits) != 1 {
 		t.Fatalf("expected one emit, got %d", len(emits))
 	}
-	payload := emits[0].(BackgroundTasksChangedEvent)
-	if payload.ThreadID != h.threadID || len(payload.Tasks) != 1 || payload.Tasks[0].ToolUseID != "toolu_1" {
+	if payload := emits[0].(BackgroundTasksChangedEvent); payload != (BackgroundTasksChangedEvent{ThreadID: h.threadID}) {
 		t.Fatalf("payload wrong: %+v", payload)
 	}
-	// Empty set is a real answer.
-	raw, _ = json.Marshal(provider.BackgroundTasksChangedMeta{})
-	if err := h.router.Handle(provider.ProviderEvent{Kind: provider.EventBackgroundTasksChanged, ThreadID: h.threadID, Meta: raw}); err != nil {
-		t.Fatal(err)
-	}
-	payload = h.emitsNamed("provider:background_tasks_changed")[1].(BackgroundTasksChangedEvent)
-	if payload.Tasks == nil || len(payload.Tasks) != 0 {
-		t.Fatalf("empty set must be an empty slice: %+v", payload.Tasks)
+	if n := len(h.emitsNamed("provider:background_tray")); n != 0 {
+		t.Fatalf("the set moving emitted %d tray frames, want 0", n)
 	}
 }
 

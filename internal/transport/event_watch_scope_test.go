@@ -107,13 +107,13 @@ func TestSubscriberScopeWatch(t *testing.T) {
 		},
 		{
 			name:  "threadWatcherGetsRootRowsOnly",
-			watch: func(s *Subscriber) { s.SetWatch([]string{"thread-A"}, []WatchScope{}) },
+			watch: func(s *Subscriber) { s.SetWatch([]string{"thread-A"}, []WatchScope{}, nil) },
 			want:  labels(rootA, unkeyed),
 		},
 		{
 			name: "scopeWatcherGetsItsAgentAndNotASibling",
 			watch: func(s *Subscriber) {
-				s.SetWatch([]string{"thread-A"}, []WatchScope{{ThreadID: "thread-A", ScopeRootID: "agent-1"}})
+				s.SetWatch([]string{"thread-A"}, []WatchScope{{ThreadID: "thread-A", ScopeRootID: "agent-1"}}, nil)
 			},
 			// agent1B carries the same scope id under another thread: the
 			// pair is the address, not the id.
@@ -122,18 +122,32 @@ func TestSubscriberScopeWatch(t *testing.T) {
 		{
 			name: "scopeSetWithoutItsThreadStillAdmitsThePair",
 			watch: func(s *Subscriber) {
-				s.SetWatch(nil, []WatchScope{{ThreadID: "thread-B", ScopeRootID: "agent-1"}})
+				s.SetWatch(nil, []WatchScope{{ThreadID: "thread-B", ScopeRootID: "agent-1"}}, nil)
 			},
 			want: labels(agent1B, unkeyed),
 		},
 		{
 			name:  "absentScopeSetAdmitsEveryScopeOfWatchedThreads",
-			watch: func(s *Subscriber) { s.SetWatch([]string{"thread-A"}, nil) },
+			watch: func(s *Subscriber) { s.SetWatch([]string{"thread-A"}, nil, nil) },
 			want:  labels(rootA, agent1A, agent2A, unkeyed),
 		},
 		{
+			name: "scopeThreadAdmitsEveryScopeOfItsThread",
+			watch: func(s *Subscriber) {
+				s.SetWatch([]string{"thread-A"}, []WatchScope{}, []string{"thread-A"})
+			},
+			want: labels(rootA, agent1A, agent2A, unkeyed),
+		},
+		{
+			name: "scopeThreadAndPairsTogether",
+			watch: func(s *Subscriber) {
+				s.SetWatch([]string{"thread-A"}, []WatchScope{{ThreadID: "thread-B", ScopeRootID: "agent-1"}}, []string{"thread-A"})
+			},
+			want: labels(rootA, agent1A, agent2A, agent1B, unkeyed),
+		},
+		{
 			name:  "emptyWatchWithholdsAllAttributedFrames",
-			watch: func(s *Subscriber) { s.SetWatch([]string{}, []WatchScope{}) },
+			watch: func(s *Subscriber) { s.SetWatch([]string{}, []WatchScope{}, nil) },
 			want:  labels(unkeyed),
 		},
 	} {
@@ -162,13 +176,13 @@ func TestSubscriberScopeWatchIsAbsolute(t *testing.T) {
 	sub := bus.Subscribe()
 	defer sub.Close()
 
-	sub.SetWatch([]string{"thread-A"}, []WatchScope{{ThreadID: "thread-A", ScopeRootID: "agent-1"}})
-	sub.SetWatch([]string{"thread-A"}, []WatchScope{{ThreadID: "thread-A", ScopeRootID: "agent-2"}})
+	sub.SetWatch([]string{"thread-A"}, []WatchScope{{ThreadID: "thread-A", ScopeRootID: "agent-1"}}, nil)
+	sub.SetWatch([]string{"thread-A"}, []WatchScope{{ThreadID: "thread-A", ScopeRootID: "agent-2"}}, nil)
 	if got, want := deliveredLabels(t, bus, sub, channel, everyScopedFrame), labels(rootA, agent2A, unkeyed); !slices.Equal(got, want) {
 		t.Fatalf("after replacing agent-1 with agent-2: delivered %v, want %v", got, want)
 	}
 
-	sub.SetWatch([]string{"thread-A"}, []WatchScope{})
+	sub.SetWatch([]string{"thread-A"}, []WatchScope{}, nil)
 	if got, want := deliveredLabels(t, bus, sub, channel, everyScopedFrame), labels(rootA, unkeyed); !slices.Equal(got, want) {
 		t.Fatalf("after closing every agent: delivered %v, want %v", got, want)
 	}
@@ -182,7 +196,7 @@ func TestSubscriberScopeWatchIgnoresScopeOnOtherChannels(t *testing.T) {
 	defer bus.Close()
 	sub := bus.Subscribe()
 	defer sub.Close()
-	sub.SetWatch([]string{"thread-A"}, []WatchScope{})
+	sub.SetWatch([]string{"thread-A"}, []WatchScope{}, nil)
 
 	if got, want := deliveredLabels(t, bus, sub, entityOnlyChannel(t), everyScopedFrame), labels(rootA, agent1A, agent2A, unkeyed); !slices.Equal(got, want) {
 		t.Fatalf("entity-only channel delivered %v, want the thread rule %v", got, want)
@@ -209,7 +223,7 @@ func TestSubscriberScopeWithheldFramesNeverMarkGapped(t *testing.T) {
 	bus.subBuf = 1
 	sub := bus.Subscribe()
 	defer sub.Close()
-	sub.SetWatch([]string{"thread-A"}, []WatchScope{})
+	sub.SetWatch([]string{"thread-A"}, []WatchScope{}, nil)
 
 	for range 5 {
 		if _, err := bus.EmitScoped(eventchan.Channel(channel), "thread-A", "agent-1", "child"); err != nil {
@@ -242,7 +256,7 @@ func TestSubscriberScopeDropNamesOnlyTheThread(t *testing.T) {
 	bus.subBuf = 1
 	sub := bus.Subscribe()
 	defer sub.Close()
-	sub.SetWatch([]string{"thread-A"}, []WatchScope{{ThreadID: "thread-A", ScopeRootID: "agent-1"}})
+	sub.SetWatch([]string{"thread-A"}, []WatchScope{{ThreadID: "thread-A", ScopeRootID: "agent-1"}}, nil)
 
 	emit := func(scope string) {
 		t.Helper()

@@ -27,6 +27,7 @@
   import Icon from '../primitives/Icon.svelte';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
   import BackgroundTaskTrayDigest from './BackgroundTaskTrayDigest.svelte';
+  import RowError from '../chat/RowError.svelte';
 
   interface Props {
     task: TrayTask;
@@ -42,6 +43,9 @@
      * disables the button so a second click can't double-fire the same
      * stop. */
     isStopping: boolean;
+    /** Why the last Stop All could not stop this row, until the row
+     * settles or is stopped again. */
+    stopError?: string;
     provider: ProviderID | null;
     onStop: (rowID: string, stopTarget: string) => void;
     /** The open button's target: open the agent companion scoped to this
@@ -60,6 +64,7 @@
     task,
     stopTarget,
     isStopping,
+    stopError,
     provider,
     onStop,
     onOpenPane,
@@ -280,6 +285,11 @@
       />
     {/if}
   </div>
+  {#if stopError}
+    <div class="px-1 pt-0.5" data-testid="background-task-tray-row-stop-error">
+      <RowError tone="error" msg={`Stop failed: ${stopError}`} />
+    </div>
+  {/if}
   {#if showDigest && pane}
     <BackgroundTaskTrayDigest {pane} {task} id={digestDomId} />
   {/if}

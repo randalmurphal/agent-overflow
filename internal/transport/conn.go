@@ -669,27 +669,32 @@ func (h *connHandler) handleSubscribe(ctx context.Context, frame ClientFrame) {
 // The alternative (a sentinel meaning "everything") would put a wildcard
 // spelling on the wire that a client could send by accident.
 //
-// The scope set rides the same frame and the same rules: bounded by
-// MaxWatchScopes, each id bounded like a thread id, and any bad member
-// refuses the whole frame with both previous sets left standing. An absent
-// scope set is the one exception to "absent equals empty" (frame.go
-// ClientFrame.Scopes).
+// The scope set rides the same frame and the same rules: pairs bounded by
+// MaxWatchScopes and whole-scope threads by MaxWatchThreads, each id
+// bounded like a thread id, and any bad member refuses the whole frame
+// with the previous sets left standing. An absent scope set is the one
+// exception to "absent equals empty" (frame.go ClientFrame.Scopes).
 func (h *connHandler) handleWatch(ctx context.Context, frame ClientFrame) {
-	if !validWatch(frame.Threads, frame.Scopes) {
+	if !validWatch(frame.Threads, frame.Scopes, frame.ScopeThreads) {
 		h.writeError(ctx, frame.ID, &FrameError{Code: ErrCodeBadParams, Message: "invalid entity watch"})
 		return
 	}
-	h.sub.SetWatch(frame.Threads, frame.Scopes)
+	h.sub.SetWatch(frame.Threads, frame.Scopes, frame.ScopeThreads)
 }
 
 // validWatch applies the watch frame's bounds: set sizes, and every id
 // non-empty and at most MaxWatchThreadIDBytes.
-func validWatch(threads []string, scopes []WatchScope) bool {
-	if len(threads) > MaxWatchThreads || len(scopes) > MaxWatchScopes {
+func validWatch(threads []string, scopes []WatchScope, scopeThreads []string) bool {
+	if len(threads) > MaxWatchThreads || len(scopes) > MaxWatchScopes || len(scopeThreads) > MaxWatchThreads {
 		return false
 	}
 	for _, entityID := range threads {
 		if !validWatchID(entityID) {
+			return false
+		}
+	}
+	for _, threadID := range scopeThreads {
+		if !validWatchID(threadID) {
 			return false
 		}
 	}
@@ -912,8 +917,8 @@ func (h *connHandler) callerProof(frame ClientFrame) CallerProof {
 // chunks of DefaultCoalesceMaxEvents. A reconnect during heavy
 // streaming is exactly the moment the client can least afford
 // per-event macrotasks: the ring holds up to DefaultRingCapacity
-// (1000) events, so the un-batched loop handed the worst case the
-// least protection. No timer is involved — the whole backlog is
+// events, so the un-batched loop handed the worst case the least
+// protection. No timer is involved: the whole backlog is
 // already in hand, so chunking is a pure fan-in with no added latency.
 // Chunks preserve the ring's order within each channel. writeMu guards
 // individual wire frames, not the whole replay: live frames may interleave.

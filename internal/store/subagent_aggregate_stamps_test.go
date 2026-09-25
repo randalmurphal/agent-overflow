@@ -1083,8 +1083,8 @@ func TestSubagentAggregateChainedCarrierJoinsItsRootsFamily(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("read completion: found=%v err=%v", found, err)
 	}
-	if needs, err := s.ItemReadNeedsDecoration(completion); err != nil || !needs {
-		t.Fatalf("completion needs decoration = %v (%v); completions always go through the page read", needs, err)
+	if probe, err := s.ProbeWireItem(completion); err != nil || !probe.NeedsDecoration {
+		t.Fatalf("completion needs decoration = %v (%v); completions always go through the page read", probe.NeedsDecoration, err)
 	}
 	if card := subagentCardOf(t, completion.Meta); !mapsEqual(card, subagentCard{"subagentDescendantCount": float64(2)}) {
 		t.Errorf("the completion's read-back is %v, want C1's round under R", card)

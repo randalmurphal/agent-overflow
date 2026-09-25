@@ -4,11 +4,13 @@ import {
   applySubagentProgress,
   codexAgentRevision,
   hydrateCodexAgents,
+  hydrateSubagentProgress,
   liveCodexAgent,
   clearSubagentProgressForThread,
   dropSubagentProgress,
   liveSubagentProgress,
   resetForTest,
+  subagentProgressRevision,
 } from './subagentProgress.svelte';
 
 describe('subagentProgress', () => {
@@ -66,6 +68,55 @@ describe('subagentProgress', () => {
   });
 });
 
+describe('live progress hydration', () => {
+  beforeEach(resetForTest);
+  const tick = (itemId: string, toolUses: number, threadId = 't1') =>
+    ({ threadId, itemId, updatedAt: toolUses, progress: { toolUses } });
+
+  it('installs the snapshot and drops the launches it omits when no tick landed since the read', () => {
+    applySubagentProgress(tick('settled', 4));
+    const revision = subagentProgressRevision('t1');
+    hydrateSubagentProgress('t1', [tick('live', 3)], revision);
+    expect(liveSubagentProgress('t1', 'live')).toEqual({ toolUses: 3, updatedAt: 3 });
+    expect(liveSubagentProgress('t1', 'settled')).toBeUndefined();
+  });
+
+  it('keeps the ticks that landed after the read and fills only what this client lacks', () => {
+    const revision = subagentProgressRevision('t1');
+    applySubagentProgress(tick('a', 9));
+    applySubagentProgress(tick('newer', 2));
+    hydrateSubagentProgress('t1', [tick('a', 1), tick('b', 5)], revision);
+    expect(liveSubagentProgress('t1', 'a')?.toolUses).toBe(9);
+    expect(liveSubagentProgress('t1', 'b')?.toolUses).toBe(5);
+    expect(liveSubagentProgress('t1', 'newer')?.toolUses).toBe(2);
+  });
+
+  it('does not bring back a launch that settled after the read', () => {
+    applySubagentProgress(tick('a', 1));
+    const revision = subagentProgressRevision('t1');
+    dropSubagentProgress('t1', 'a');
+    hydrateSubagentProgress('t1', [tick('a', 1)], revision);
+    expect(liveSubagentProgress('t1', 'a')).toBeUndefined();
+  });
+
+  it('refuses a snapshot read before the thread was cleared', () => {
+    const revision = subagentProgressRevision('t1');
+    clearSubagentProgressForThread('t1');
+    hydrateSubagentProgress('t1', [tick('a', 1)], revision);
+    expect(liveSubagentProgress('t1', 'a')).toBeUndefined();
+    hydrateSubagentProgress('t1', [tick('a', 1)], subagentProgressRevision('t1'));
+    expect(liveSubagentProgress('t1', 'a')?.toolUses).toBe(1);
+  });
+
+  it('keys revisions per thread and ignores another thread\'s entries', () => {
+    const revision = subagentProgressRevision('t1');
+    applySubagentProgress(tick('x', 1, 't2'));
+    hydrateSubagentProgress('t1', [tick('a', 1), tick('b', 1, 't2')], revision);
+    expect(liveSubagentProgress('t1', 'a')?.toolUses).toBe(1);
+    expect(liveSubagentProgress('t2', 'b')).toBeUndefined();
+    expect(liveSubagentProgress('t2', 'x')?.toolUses).toBe(1);
+  });
+});
 
 describe('Codex runtime hydration', () => {
   beforeEach(resetForTest);

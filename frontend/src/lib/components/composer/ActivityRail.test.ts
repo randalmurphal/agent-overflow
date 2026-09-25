@@ -20,9 +20,9 @@ import { resetForTest as resetSendQueue, replaceQueueForThread } from '../../sto
 import { __resetActivityRailUiPrefsForTest, __resetLiveTodoUiPrefsForTest, LIVE_TODO_AUTOHIDE_MS } from '../../stores/liveTodoState.svelte';
 import type { QueueItem } from '../../stores/sendQueue.svelte';
 import { applyItemStreamEvent, flushItemEventQueue } from '../../stores/eventsItemStream';
+import { applyBackgroundTrayEvent } from '../../stores/eventsBackgroundTray';
 import { setCompactLayoutForTest } from '../../stores/layoutMode.svelte';
 import { UsageBucket } from '../../stores/bindings';
-import { emitWailsEvent } from '../../../test/mocks/wailsio-runtime';
 import { TRAY_LATEST_TOOL_META } from '../../utils/codexTrayProjection';
 
 function backgroundLaunch(overrides = {}) {
@@ -66,7 +66,8 @@ describe('<ActivityRail>', () => {
     for (const toast of [...getToasts()]) removeToast(toast.id);
     setBindingMock('ListLiveBackgroundTasks', async () => []);
     setBindingMock('StopClaudeTask', async () => {});
-    setBindingMock('CleanCodexBackgroundTerminals', async () => {});
+    setBindingMock('StopBackgroundTasks', async (_threadId: unknown, launchIds: string[]) =>
+      launchIds.map((launchItemId) => ({ launchItemId, outcome: 'stopping' })));
     setBindingMock('TerminateCodexBackgroundTerminal', async () => true);
   });
 
@@ -644,13 +645,17 @@ describe('<ActivityRail>', () => {
     expect(calls).toEqual([[pane.thread!.id, 'tsk-99']]);
   });
 
-  it('Stop-all on a Claude thread fans out StopClaudeTask per task_id', async () => {
+  it('Stop All on a Claude thread is one StopBackgroundTasks call naming each stoppable launch', async () => {
     const a = backgroundLaunch({ id: 'a', meta: JSON.stringify({ task_id: 'tsk-A' }) });
     const b = backgroundLaunch({ id: 'b', meta: JSON.stringify({ task_id: 'tsk-B' }) });
-    setBindingMock('ListLiveBackgroundTasks', async () => [a, b]);
+    const unnamed = backgroundLaunch({ id: 'no-task-id' });
+    setBindingMock('ListLiveBackgroundTasks', async () => [a, b, unnamed]);
+    let perTask = 0;
+    setBindingMock('StopClaudeTask', async () => { perTask++; });
     const calls: unknown[][] = [];
-    setBindingMock('StopClaudeTask', async (...args: unknown[]) => {
+    setBindingMock('StopBackgroundTasks', async (...args: unknown[]) => {
       calls.push(args);
+      return (args[1] as string[]).map((launchItemId) => ({ launchItemId, outcome: 'stopping' }));
     });
 
     const pane = await buildPane();
@@ -664,13 +669,13 @@ describe('<ActivityRail>', () => {
     await fireEvent.click(await findByTestId('activity-rail-background-stop-all'));
     await tick();
 
-    expect(calls.length).toBe(2);
-    const ids = calls.map((c) => c[1]).sort();
-    expect(ids).toEqual(['tsk-A', 'tsk-B']);
-    for (const c of calls) expect(c[0]).toBe(pane.thread!.id);
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe(pane.thread!.id);
+    expect([...(calls[0][1] as string[])].sort()).toEqual(['a', 'b']);
+    expect(perTask).toBe(0);
   });
 
-  it('Stop-all on a Codex thread calls CleanCodexBackgroundTerminals once and never StopClaudeTask', async () => {
+  it('Stop All on a Codex thread names a terminal with no process id and never calls StopClaudeTask', async () => {
     const exec = backgroundLaunch({
       id: 'exec',
       summary: 'exec_command',
@@ -680,9 +685,12 @@ describe('<ActivityRail>', () => {
     });
     setBindingMock('ListLiveBackgroundTasks', async () => [exec]);
     let claudeCalls = 0;
-    let codexCalls = 0;
+    const codexCalls: unknown[][] = [];
     setBindingMock('StopClaudeTask', async () => { claudeCalls++; });
-    setBindingMock('CleanCodexBackgroundTerminals', async () => { codexCalls++; });
+    setBindingMock('StopBackgroundTasks', async (...args: unknown[]) => {
+      codexCalls.push(args);
+      return [{ launchItemId: 'exec', outcome: 'stopping' }];
+    });
 
     const pane = await buildPane(makeThread({ provider: 'codex' }));
     pane.upsertItem(exec);
@@ -694,7 +702,7 @@ describe('<ActivityRail>', () => {
     await fireEvent.click(await findByTestId('activity-rail-background-stop-all'));
     await tick();
 
-    expect(codexCalls).toBe(1);
+    expect(codexCalls).toEqual([[pane.thread!.id, ['exec']]]);
     expect(claudeCalls).toBe(0);
   });
 
@@ -823,8 +831,11 @@ describe('<ActivityRail>', () => {
       }),
     });
     setBindingMock('ListLiveBackgroundTasks', async () => [spawn]);
-    let codexCalls = 0;
-    setBindingMock('CleanCodexBackgroundTerminals', async () => { codexCalls++; });
+    const stopAllCalls: unknown[][] = [];
+    setBindingMock('StopBackgroundTasks', async (...args: unknown[]) => {
+      stopAllCalls.push(args);
+      return [{ launchItemId: 'spawn-agent', outcome: 'stopping' }];
+    });
     const subagentCalls: unknown[][] = [];
     setBindingMock('StopCodexSubagent', async (...args: unknown[]) => {
       subagentCalls.push(args);
@@ -848,14 +859,11 @@ describe('<ActivityRail>', () => {
     expect(subagentCalls).toEqual([[pane.thread!.id, 'spawn-agent']]);
     await fireEvent.click(await findByTestId('activity-rail-background-stop-all'));
     await tick();
-    expect(subagentCalls).toEqual([
-      [pane.thread!.id, 'spawn-agent'],
-      [pane.thread!.id, 'spawn-agent'],
-    ]);
-    expect(codexCalls).toBe(0);
+    expect(subagentCalls).toEqual([[pane.thread!.id, 'spawn-agent']]);
+    expect(stopAllCalls).toEqual([[pane.thread!.id, ['spawn-agent']]]);
   });
 
-  it('Stop All combines Codex terminal cleanup with targeted subagent stops', async () => {
+  it('Stop All names Codex terminals and subagents in one call', async () => {
     const spawn = backgroundLaunch({
       id: 'spawn-mixed',
       summary: 'spawn_agent: worker',
@@ -870,13 +878,16 @@ describe('<ActivityRail>', () => {
     const terminal = codexBackgroundLaunch({ id: 'terminal-mixed' });
     setBindingMock('ListLiveBackgroundTasks', async () => [spawn, terminal]);
     const subagentCalls: unknown[][] = [];
-    let cleanCalls = 0;
+    const stopAllCalls: unknown[][] = [];
     let terminateCalls = 0;
     setBindingMock('StopCodexSubagent', async (...args: unknown[]) => {
       subagentCalls.push(args);
       return true;
     });
-    setBindingMock('CleanCodexBackgroundTerminals', async () => { cleanCalls++; });
+    setBindingMock('StopBackgroundTasks', async (...args: unknown[]) => {
+      stopAllCalls.push(args);
+      return (args[1] as string[]).map((launchItemId) => ({ launchItemId, outcome: 'stopping' }));
+    });
     setBindingMock('TerminateCodexBackgroundTerminal', async () => {
       terminateCalls++;
       return true;
@@ -890,8 +901,9 @@ describe('<ActivityRail>', () => {
     await fireEvent.click(await findByTestId('activity-rail-background-stop-all'));
     await tick();
 
-    expect(subagentCalls).toEqual([[pane.thread!.id, 'spawn-mixed']]);
-    expect(cleanCalls).toBe(1);
+    expect(stopAllCalls).toHaveLength(1);
+    expect([...(stopAllCalls[0][1] as string[])].sort()).toEqual(['spawn-mixed', 'terminal-mixed']);
+    expect(subagentCalls).toEqual([]);
     expect(terminateCalls).toBe(0);
   });
 
@@ -926,7 +938,8 @@ describe('<ActivityRail>', () => {
   // coalescing delay — and a TRAILING debounce restarts its timer on every
   // one, so the refetch that would have corrected the count never ran at all.
   // The count here must converge while the stream is still going, not after
-  // it stops.
+  // it stops. A Codex thread's tray reads the list on its background
+  // upserts (a Claude thread's applies deltas instead).
   it('corrects the Background count under an unbroken upsert stream', async () => {
     vi.useFakeTimers();
     let live = [
@@ -935,7 +948,7 @@ describe('<ActivityRail>', () => {
       backgroundLaunch({ id: 'bg-3' }),
     ];
     setBindingMock('ListLiveBackgroundTasks', async () => live);
-    const pane = await buildPane();
+    const pane = await buildPane(makeThread({ provider: 'codex' }));
 
     const { getByTestId } = render(ActivityRailHost, { props: { pane } });
     await vi.advanceTimersByTimeAsync(0);
@@ -962,8 +975,8 @@ describe('<ActivityRail>', () => {
 
   // The tray reads no child rows: a Codex agent's activity line is the
   // latest-tool decoration the list read serves on its launch row, which the
-  // backend nudges on each of the agent's direct tool calls
-  // (activityRailBackground.svelte.ts).
+  // backend asks the tray to read again on each of the agent's direct tool
+  // calls (activityRailBackground.svelte.ts).
   it('shows a Codex agent’s latest tool from the nudged list read, not from child pushes', async () => {
     vi.useFakeTimers();
     let fetches = 0;
@@ -1013,9 +1026,9 @@ describe('<ActivityRail>', () => {
     expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Bash: pnpm test');
     expect(fetches).toBe(baseline);
 
-    // The backend's nudge re-reads the list, whose row carries the tool.
+    // The backend's tray frame re-reads the list, whose row carries the tool.
     launch = { ...launch, meta: spawnMeta('Read: newest.ts', 2) };
-    emitWailsEvent('provider:background_tasks_changed', { threadId: pane.threadId }, '');
+    applyBackgroundTrayEvent({ threadId: pane.threadId!, refresh: true });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(fetches).toBe(baseline + 1);
     expect(getByTestId('background-task-tray-row-activity').textContent).toContain('Read: newest.ts');

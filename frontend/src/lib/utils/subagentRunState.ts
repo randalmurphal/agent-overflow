@@ -2,7 +2,7 @@ import { parseJsonObject } from './parseJsonObject';
 
 // A Claude background agent's run state (claude-wire.md §E6b), served on
 // the rows of a `ListLiveBackgroundTasks` read and never stored or pushed.
-// Keep these values mirrored with internal/triage/agent_run_state.go;
+// Keep these values mirrored with internal/store/background_tray_run_state.go;
 // mirror_pins_test.go enforces the cross-language contract.
 export const SUBAGENT_RUN_STATE_META = {
   state: 'subagentRunState',

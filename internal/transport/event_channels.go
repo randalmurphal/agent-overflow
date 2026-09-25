@@ -115,7 +115,7 @@ type Retention uint8
 
 const (
 	// RetentionDefault gives the channel a ring of EventBus.capacity
-	// (DefaultRingCapacity, 1000) frames.
+	// (DefaultRingCapacity) frames within RingByteBudget bytes.
 	RetentionDefault Retention = iota
 	// RetentionEphemeral gives the channel a ZERO-capacity ring: Emit still
 	// assigns a monotonic seq and live subscribers still get the frame, but
@@ -204,12 +204,11 @@ type ChannelPolicy struct {
 	// MEMBERSHIP RULE, and it is narrow: the channel must be a
 	// HIGH-FREQUENCY PAYLOAD CARRIER whose only consumers render the named
 	// thread, and whose absence must degrade to a slower correct path rather
-	// than to missing state. Every low-frequency thread-keyed channel — turn
-	// lifecycle, thread:updated, approvals, usage, subagent progress, todo —
-	// deliberately stays wildcard: the sidebar, the tray and the
-	// thread-status projections read those for threads with no pane open, by
-	// design, and narrowing one would silently stop a badge the user relies
-	// on to decide WHICH thread to open.
+	// than to missing state. Every low-frequency thread-keyed channel (turn
+	// lifecycle, thread:updated, approvals, usage, todo) deliberately stays
+	// wildcard: the sidebar and the thread-status projections read those for
+	// threads with no pane open, by design, and narrowing one would silently
+	// stop a badge the user relies on to decide WHICH thread to open.
 	//
 	// A row here is a CLAIM that nothing off-pane reads the channel. The
 	// claim is established by sweeping the frontend consumers, never assumed
@@ -694,10 +693,28 @@ var channelPolicies = []ChannelPolicy{
 		Audience:  AudienceAny,
 		Retention: RetentionDefault,
 		Scope:     ScopeThreadsRead,
-		Why: "threadId plus a full replacement set of task refs (ids and " +
-			"model-authored descriptions) — no command lines or paths; that " +
-			"loopback-only data rides provider:background_task_state instead. " +
-			"Consumers treat it as a refetch nudge. Keyed per thread.",
+		Why: "A threadId-only refetch nudge: a thread's live background " +
+			"work changed. Its consumers are the workspace-change lock, the " +
+			"environment picker and the remote-jobs listing, which refresh on " +
+			"any frame and must hear about threads no pane shows, so it stays " +
+			"wildcard; the frame is the same few bytes however many tasks the " +
+			"thread runs. The tray reads provider:background_tray instead. " +
+			"Keyed per thread.",
+	},
+	{
+		Channel:        eventchan.ProviderBackgroundTray,
+		Audience:       AudienceAny,
+		Retention:      RetentionDefault,
+		Scope:          ScopeThreadsRead,
+		EntityFiltered: true,
+		Why: "The background tray's delta: the rows ListLiveBackgroundTasks " +
+			"serves for the launches that changed, or a refresh request when " +
+			"the change is in a source the delta does not carry. Scope " +
+			"threads:read because ListLiveBackgroundTasks, the pull half, " +
+			"carries it. EntityFiltered because its one consumer is the tray " +
+			"of a thread a pane shows, and a client that starts watching a " +
+			"thread reads the whole list first. Keyed per thread and launch: " +
+			"never latest-only.",
 	},
 	{
 		Channel:   eventchan.ProviderCommandLifecycle,
@@ -760,7 +777,7 @@ var channelPolicies = []ChannelPolicy{
 			"badge rides thread:error_notice, its Plan ready badge and the " +
 			"user_text sidebar bump ride thread:updated (a `full` row and a " +
 			"`updatedAt` patch respectively), and the workspace-change lock " +
-			"reads provider:background_tasks_changed, which now fires on " +
+			"reads provider:background_tasks_changed, which fires on " +
 			"Claude's exit / drain / orphan-recovery transitions too. What " +
 			"still reads this channel is pane-lifetime or watched-thread " +
 			"scoped: the send-queue flush confirm, the proposedPlans warm " +
@@ -780,8 +797,7 @@ var channelPolicies = []ChannelPolicy{
 			"aggregate, so the child-row consumers are the scoped surfaces " +
 			"(agent pane, expanded card and tray digests), which contribute " +
 			"their scope while mounted, and the open background tray, which " +
-			"contributes its running agents' scopes; tray membership rides " +
-			"provider:background_tasks_changed.",
+			"names no scope: its rows ride provider:background_tray.",
 	},
 	{
 		Channel:   eventchan.ProviderModelFallback,
@@ -891,13 +907,20 @@ var channelPolicies = []ChannelPolicy{
 			"which is per-provider and current.",
 	},
 	{
-		Channel:   eventchan.ProviderSubagentProgress,
-		Audience:  AudienceAny,
-		Retention: RetentionDefault,
-		Scope:     ScopeThreadsRead,
+		Channel:        eventchan.ProviderSubagentProgress,
+		Audience:       AudienceAny,
+		Retention:      RetentionDefault,
+		Scope:          ScopeThreadsRead,
+		EntityFiltered: true,
 		Why: "Subagent tray/progress state; activity and summary are " +
 			"model-authored text, lastToolName names a tool without its " +
-			"arguments. Keyed per thread + launch item: never latest-only.",
+			"arguments. Keyed per thread + launch item: never latest-only. " +
+			"EntityFiltered: one tick per agent tool round, and every reader " +
+			"(the agent card, the agent pane, the tray row) renders a thread " +
+			"a pane shows. A pane that opens reads the thread's live ticks " +
+			"from GetThreadLiveState, and a session without that grant " +
+			"fills in on the agent's next tick. Filtered by thread only: the " +
+			"tray shows every agent's progress without naming a scope.",
 	},
 	{
 		Channel:   eventchan.ProviderTerminalOutput,

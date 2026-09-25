@@ -94,6 +94,47 @@ func TestParkedStopSettlesNothing(t *testing.T) {
 	assertLive(t, s, "t", "launch")
 }
 
+// A parked sibling records one run and borrows no card, so its insert
+// leaves its launch's rev alone, and no write under the launch restamps
+// it: neither the history triggers at the child's insert nor the
+// subagent_aggregates stamp at its card's flush. An ending sibling
+// settles its launch, which moves the launch's rev, and follows the
+// launch's card.
+func TestParkedStopIsStampedOnlyByItsOwnWrites(t *testing.T) {
+	s := settleTriggerStore(t)
+	for i, id := range []string{"parked", "ended"} {
+		if err := s.InsertItem(Item{ID: id, ThreadID: "t", ItemIndex: i, Kind: "tool_call", Role: "assistant",
+			Status: "running", Summary: id, ToolName: "Agent", IsBackground: true, Meta: `{"task_id":"task-` + id + `"}`,
+			CreatedAt: 1000}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	before := itemRevisionOf(t, s, "t", "parked")
+	seedParkedStop(t, s, "t", "parked-stop", "parked", 2, 2000)
+	if got := itemRevisionOf(t, s, "t", "parked"); got != before {
+		t.Errorf("a parked sibling insert moved its launch's rev from %d to %d", before, got)
+	}
+	before = itemRevisionOf(t, s, "t", "ended")
+	seedCompletionSibling(t, s, "t", "ended-stop", "ended", 3, 2000)
+	if got := itemRevisionOf(t, s, "t", "ended"); got == before {
+		t.Errorf("an ending sibling insert left its launch's rev at %d", got)
+	}
+
+	parkedRev, endedRev := itemRevisionOf(t, s, "t", "parked-stop"), itemRevisionOf(t, s, "t", "ended-stop")
+	for i, parent := range []string{"parked", "ended"} {
+		if err := insertCarded(s, Item{ID: parent + "-child", ThreadID: "t", ItemIndex: 4 + i, Kind: "tool_call",
+			Role: "assistant", Status: "completed", Summary: "Read", ToolName: "Read", ParentID: parent, CreatedAt: 3000}); err != nil {
+			t.Fatalf("seed a child of %s: %v", parent, err)
+		}
+	}
+	if got := itemRevisionOf(t, s, "t", "parked-stop"); got != parkedRev {
+		t.Errorf("a write under the launch restamped its parked sibling from %d to %d", parkedRev, got)
+	}
+	if got := itemRevisionOf(t, s, "t", "ended-stop"); got == endedRev {
+		t.Errorf("a write under the launch left its ending sibling at %d", got)
+	}
+}
+
 // A launch whose parked sibling was written before the launch row stays
 // live: the launch-insert trigger counts only an ending sibling.
 func TestLaunchInsertedAfterItsParkedStopStaysLive(t *testing.T) {

@@ -117,16 +117,25 @@ CREATE INDEX idx_subagent_aggregates_dirty
 // being one and a restamp each stamp the rows whose read changed on their
 // own. RestoreFrom brackets its row copy with
 // dropSubagentAggregateTriggersSQL: the copied rows describe the copied
-// items, whose revisions are the snapshot's.
-var subagentAggregateTriggersSQL = `
+// items, whose revisions are the snapshot's. Migration v128 installs it.
+var subagentAggregateTriggersSQL = subagentAggregateTriggersOver(subagentAggregateStampSQL)
+
+// subagentAggregateTriggersV121SQL is the generation migration v121
+// installs, whose sibling stamp reaches parked siblings too. It is frozen
+// with its recorded SQL; v128 replaces it.
+var subagentAggregateTriggersV121SQL = subagentAggregateTriggersOver(subagentAggregateStampAnchorSQL + "\n  " + subagentAggregateStampSiblingsV121SQL)
+
+func subagentAggregateTriggersOver(stamp string) string {
+	return `
 CREATE TRIGGER trg_subagent_aggregates_stamp_insert AFTER INSERT ON subagent_aggregates BEGIN
-  ` + subagentAggregateStampSQL + `
+  ` + stamp + `
 END;
 
 CREATE TRIGGER trg_subagent_aggregates_stamp_update AFTER UPDATE ON subagent_aggregates BEGIN
-  ` + subagentAggregateStampSQL + `
+  ` + stamp + `
 END;
 `
+}
 
 const dropSubagentAggregateTriggersSQL = `DROP TRIGGER IF EXISTS trg_subagent_aggregates_stamp_insert;
 DROP TRIGGER IF EXISTS trg_subagent_aggregates_stamp_update;`
@@ -142,7 +151,14 @@ const subagentAggregateStampAnchorSQL = `UPDATE items SET rev = (SELECT history_
    WHERE thread_id = NEW.thread_id AND id = NEW.item_id
      AND rev IS NOT (SELECT history_rev FROM threads WHERE id = NEW.thread_id);`
 
+// subagentAggregateStampSiblingsSQL passes over a parked sibling, which
+// borrows no card (aggBorrowsCardSQL).
 const subagentAggregateStampSiblingsSQL = `UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = NEW.thread_id)
+   WHERE thread_id = NEW.thread_id AND completion_of = NEW.item_id AND completion_of <> ''
+     AND status <> '` + ItemStatusParked + `'
+     AND rev IS NOT (SELECT history_rev FROM threads WHERE id = NEW.thread_id);`
+
+const subagentAggregateStampSiblingsV121SQL = `UPDATE items SET rev = (SELECT history_rev FROM threads WHERE id = NEW.thread_id)
    WHERE thread_id = NEW.thread_id AND completion_of = NEW.item_id AND completion_of <> ''
      AND rev IS NOT (SELECT history_rev FROM threads WHERE id = NEW.thread_id);`
 

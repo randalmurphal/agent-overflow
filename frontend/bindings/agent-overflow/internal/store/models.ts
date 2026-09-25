@@ -198,27 +198,27 @@ export class ActivityRunStub {
     "unshippedGroups": ActivityRunGroup[];
 
     /**
-     * UnshippedPairedLaunchIDs lists unshipped members whose completion
-     * IS shipped, sorted by id. The client holds such a completion
+     * UnshippedPairedLaunchIDs lists unshipped members a shipped
+     * completion names, sorted by id. The client holds such a completion
      * without its launch; this is how it applies §4's pairing rule to it
      * and counts it zero.
      */
     "unshippedPairedLaunchIds": string[];
 
     /**
-     * ShippedSupersededLaunchIDs is the mirror: shipped members whose
-     * completion in this run is NOT shipped, sorted by id. The client
-     * holds such a launch without its completion; this is how it knows
-     * the launch's status is superseded (§4) instead of reading it live.
-     * Together the two lists cover every launch/completion pair the
-     * shipped span splits.
+     * ShippedSupersededLaunchIDs lists shipped members whose ENDING
+     * completion (activityScanRow.endsLaunch) in this run is NOT shipped,
+     * sorted by id. The client holds such a launch without the completion
+     * that ends it; this is how it knows the launch's status is
+     * superseded (§4) instead of reading it live. Together the two lists
+     * cover every launch/completion pair the shipped span splits.
      */
     "shippedSupersededLaunchIds": string[];
 
     /**
      * UnshippedFailed reports an unshipped member the header must show as
-     * failed: errored or killed, and not superseded by a completion in
-     * the same run.
+     * failed: errored or killed, and not superseded by an ending
+     * completion in the same run.
      */
     "unshippedFailed": boolean;
 

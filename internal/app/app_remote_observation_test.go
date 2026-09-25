@@ -89,15 +89,19 @@ func TestRemoteCommandRepliesImmediatelyUpdateSourceWatch(t *testing.T) {
 			if err != nil || len(items) != 2 || items[1].Kind != "tool_completion" || items[1].Status != "completed" {
 				t.Fatalf("tray still running: %+v %v", items, err)
 			}
-			var changes int
+			var changes, trays int
 			for _, call := range rec.snapshot() {
-				if call.Channel == eventchan.ProviderBackgroundTasksChanged.String() {
+				switch call.Channel {
+				case eventchan.ProviderBackgroundTasksChanged.String():
 					changes++
+				case eventchan.ProviderBackgroundTray.String():
+					trays++
 				}
 			}
-			if changes != 2 {
-				t.Fatalf("want acceptance + completion invalidation, got %d", changes)
+			if changes != 2 || trays != 2 {
+				t.Fatalf("want acceptance + completion invalidation on both channels, got %d nudges and %d tray frames", changes, trays)
 			}
+			emitted := len(rec.snapshot())
 			// Older in-flight status replies cannot move a completed source back
 			// to running or emit a second refresh for unchanged state.
 			if err := source.observeRemoteCommand(input.ComputerID, input.Request.ID, started.SourceThreadID, started); err != nil {
@@ -106,7 +110,7 @@ func TestRemoteCommandRepliesImmediatelyUpdateSourceWatch(t *testing.T) {
 			if err := source.observeRemoteCommand(input.ComputerID, input.Request.ID, started.SourceThreadID, result); err != nil {
 				t.Fatal(err)
 			}
-			if len(rec.snapshot()) != changes {
+			if len(rec.snapshot()) != emitted {
 				t.Fatal("unchanged or stale receipt emitted another refresh")
 			}
 		})

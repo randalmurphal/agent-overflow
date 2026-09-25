@@ -279,3 +279,92 @@ func TestClaudeInterruptKillsAWokenAgent(t *testing.T) {
 	p.closeStdinAndExpectExit(0, testTimeout)
 	validateClaudeFrames(t, p.all)
 }
+
+func stopTaskLine(requestID, taskID string) string {
+	return `{"type":"control_request","request_id":"` + requestID + `","request":{"subtype":"stop_task","task_id":"` + taskID + `"}}`
+}
+
+// endHeldTurn interrupts the held turn so the frames end in a result the
+// app's parser can check.
+func endHeldTurn(t *testing.T, p *mockProc) {
+	t.Helper()
+	p.send(interruptLine)
+	p.expectLineContaining(`"type":"result"`, testTimeout)
+	p.closeStdinAndExpectExit(0, testTimeout)
+	validateClaudeFrames(t, p.all)
+}
+
+func expectStopTaskAck(t *testing.T, line, requestID string) {
+	t.Helper()
+	f := decodeFrame(t, line)
+	if f.Type != "control_response" || f.Response.Subtype != "success" || f.Response.RequestID != requestID {
+		t.Fatalf("want the stop_task ack for %s, got %s", requestID, line)
+	}
+}
+
+// parkedAgentLines park the agent on its owned shell (capture E's start).
+var parkedAgentLines = []string{
+	`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-owned","task_type":"local_bash","description":"sleep 75"}]}`,
+	`{"type":"system","subtype":"task_updated","task_id":"task-agent","patch":{"status":"completed","end_time":1790279985248}}`,
+	`{"type":"system","subtype":"task_notification","task_id":"task-agent","tool_use_id":"tu-agent","status":"completed","output_file":"${CWD}/task-agent.output","summary":"PARKED"}`,
+}
+
+// Capture E: stop_task on a parked agent kills it with task_updated{killed}
+// and no notification, empties the level set, and kills its shell with
+// it, all before the ack. Nothing is left to stop.
+func TestClaudeStopTaskKillsAParkedAgentAndItsShell(t *testing.T) {
+	env := writeScenarioFile(t, claudeHoldScenario("claude-stop-parked", claudeTextBlockLines, claudeAgentLaunchLines, claudeOwnedShellLines, parkedAgentLines), "")
+	p := startMock(t, claudeSessionArgs, env, t.TempDir())
+
+	p.send(userLine)
+	p.expectLineContaining(`"summary":"PARKED"`, testTimeout)
+	p.send(stopTaskLine("stop-1", "task-agent"))
+	expectKilled(t, p.expectLine(testTimeout), "task-agent")
+	expectLevelSet(t, p.expectLine(testTimeout))
+	expectKilled(t, p.expectLine(testTimeout), "task-owned")
+	expectStopped(t, p.expectLine(testTimeout), "task-owned", "tu-owned", "sleep 75")
+	expectStopTaskAck(t, p.expectLine(testTimeout), "stop-1")
+
+	p.send(stopTaskLine("stop-2", "task-owned"))
+	expectStopTaskAck(t, p.expectLine(testTimeout), "stop-2")
+	endHeldTurn(t, p)
+}
+
+// A running agent's stop_task is written as the interrupt writes its kill:
+// the agent killed with its notification, then each shell it owns.
+func TestClaudeStopTaskKillsARunningAgentAndItsShell(t *testing.T) {
+	env := writeScenarioFile(t, claudeHoldScenario("claude-stop-running", claudeTextBlockLines, claudeAgentLaunchLines, claudeOwnedShellLines), "")
+	p := startMock(t, claudeSessionArgs, env, t.TempDir())
+
+	p.send(userLine)
+	p.expectLineContaining(`"task_id":"task-owned"`, testTimeout)
+	p.expectLineContaining(`"tool_use_id":"tu-owned","content"`, testTimeout)
+	p.send(stopTaskLine("stop-1", "task-agent"))
+	expectLevelSet(t, p.expectLine(testTimeout), "task-owned")
+	expectKilled(t, p.expectLine(testTimeout), "task-agent")
+	expectStopped(t, p.expectLine(testTimeout), "task-agent", "tu-agent", "sweep")
+	expectLevelSet(t, p.expectLine(testTimeout))
+	expectKilled(t, p.expectLine(testTimeout), "task-owned")
+	expectStopped(t, p.expectLine(testTimeout), "task-owned", "tu-owned", "sleep 75")
+	expectStopTaskAck(t, p.expectLine(testTimeout), "stop-1")
+	endHeldTurn(t, p)
+}
+
+// Capture B: stop_task on the shell kills the shell alone; the agent that
+// owns it stays in the level set.
+func TestClaudeStopTaskKillsOneShell(t *testing.T) {
+	env := writeScenarioFile(t, claudeHoldScenario("claude-stop-shell", claudeTextBlockLines, claudeAgentLaunchLines, claudeOwnedShellLines), "")
+	p := startMock(t, claudeSessionArgs, env, t.TempDir())
+
+	p.send(userLine)
+	p.expectLineContaining(`"tool_use_id":"tu-owned","content"`, testTimeout)
+	p.send(stopTaskLine("stop-1", "task-owned"))
+	expectLevelSet(t, p.expectLine(testTimeout), "task-agent")
+	expectKilled(t, p.expectLine(testTimeout), "task-owned")
+	expectStopped(t, p.expectLine(testTimeout), "task-owned", "tu-owned", "sleep 75")
+	expectStopTaskAck(t, p.expectLine(testTimeout), "stop-1")
+
+	p.send(stopTaskLine("stop-2", "task-unknown"))
+	expectStopTaskAck(t, p.expectLine(testTimeout), "stop-2")
+	endHeldTurn(t, p)
+}

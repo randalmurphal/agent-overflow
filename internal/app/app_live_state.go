@@ -11,6 +11,7 @@ import (
 	"agent-overflow/internal/itemwire"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 	"agent-overflow/internal/usermessage"
 )
 
@@ -21,13 +22,17 @@ import (
 // threads.live_todo (migration v65) because a todo list outlives the session
 // that reported it and the process that received it.
 type ThreadLiveState struct {
-	CodexAgents            []store.Item         `json:"codexAgents"`
-	ThreadID               string               `json:"threadId"`
-	EffectiveModel         string               `json:"effectiveModel,omitempty"`
-	EffectiveModelRevision uint64               `json:"effectiveModelRevision,omitempty"`
-	ActiveTurn             *LiveStateActiveTurn `json:"activeTurn,omitempty"`
-	QueueItems             []QueuedItem         `json:"queueItems"`
-	FlushedItems           []QueueFlushedItem   `json:"flushedItems"`
+	CodexAgents []store.Item `json:"codexAgents"`
+	// SubagentProgress is every running agent's live progress, which
+	// provider:subagent_progress delivers only to a client watching the
+	// thread: the entries a client missed before it watched.
+	SubagentProgress       []triage.SubagentProgressEvent `json:"subagentProgress"`
+	ThreadID               string                         `json:"threadId"`
+	EffectiveModel         string                         `json:"effectiveModel,omitempty"`
+	EffectiveModelRevision uint64                         `json:"effectiveModelRevision,omitempty"`
+	ActiveTurn             *LiveStateActiveTurn           `json:"activeTurn,omitempty"`
+	QueueItems             []QueuedItem                   `json:"queueItems"`
+	FlushedItems           []QueueFlushedItem             `json:"flushedItems"`
 	// DeferredItems are NON-FLUSH pending-send timeline rows not yet
 	// persisted to SQLite (they persist on their wire echo), in FIFO send
 	// order. A refresh reconciling against a ListThreadSliceAround page
@@ -87,10 +92,11 @@ type LiveStateTodoStep struct {
 func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	threadID = strings.TrimSpace(threadID)
 	state := ThreadLiveState{
-		ThreadID:      threadID,
-		QueueItems:    []QueuedItem{},
-		FlushedItems:  []QueueFlushedItem{},
-		DeferredItems: []store.Item{},
+		ThreadID:         threadID,
+		QueueItems:       []QueuedItem{},
+		FlushedItems:     []QueueFlushedItem{},
+		DeferredItems:    []store.Item{},
+		SubagentProgress: []triage.SubagentProgressEvent{},
 		Interactive: provider.PendingInteractiveRequests{
 			Approvals:  []provider.ApprovalRequest{},
 			UserInputs: []provider.UserInputRequest{},
@@ -115,6 +121,7 @@ func (a *App) GetThreadLiveState(threadID string) (ThreadLiveState, error) {
 	live := a.triage.LiveStateSnapshotForThread(threadID)
 	a.flushDispatch.mu.Unlock()
 	state.CodexAgents = itemwire.ProjectItems(a.triage.CodexAgentRuntimeSnapshot(threadID), true)
+	state.SubagentProgress = a.triage.LiveSubagentProgress(threadID)
 	state.EffectiveModel = live.EffectiveModel
 	state.EffectiveModelRevision = live.EffectiveModelRevision
 	state.CompactingSinceUnixMs = live.CompactingSinceUnixMs

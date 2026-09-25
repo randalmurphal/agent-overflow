@@ -9,7 +9,7 @@ import (
 
 // Replay coverage for the agent-visibility wire surface
 // (docs/specs/agent-visibility.md): the live `system/task_progress`
-// tick, the `system/background_tasks_changed` level set, the
+// tick, the `system/background_tasks_changed` signal, the
 // `background_tasks` control round-trip's non-terminal
 // `patch.is_backgrounded`, a subagent's `can_use_tool` carrying
 // `agent_id`, and the forked-skill completion (§E9).
@@ -34,15 +34,6 @@ func decodeProgress(t *testing.T, evt provider.ProviderEvent) provider.SubagentP
 	var meta provider.SubagentProgressMeta
 	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
 		t.Fatalf("decode subagent progress meta: %v (%s)", err, evt.Meta)
-	}
-	return meta
-}
-
-func decodeBackgroundSet(t *testing.T, evt provider.ProviderEvent) provider.BackgroundTasksChangedMeta {
-	t.Helper()
-	var meta provider.BackgroundTasksChangedMeta
-	if err := json.Unmarshal(evt.Meta, &meta); err != nil {
-		t.Fatalf("decode background tasks changed meta: %v (%s)", err, evt.Meta)
 	}
 	return meta
 }
@@ -110,20 +101,10 @@ func TestReplay_TaskProgressFixture(t *testing.T) {
 		t.Errorf("notification usage = %+v, want %+v", decoded.Usage, want)
 	}
 
-	// The nested backgrounded Bash the agent launched moves the level
-	// set twice: one member, then empty. The empty frame is a real
-	// answer and must survive as an allocated slice, not a nil.
-	sets := filterKinds(events, provider.EventBackgroundTasksChanged)
-	if len(sets) != 2 {
+	// The nested backgrounded Bash the agent launched moves the set
+	// twice: one member, then empty. Each move is one signal.
+	if sets := filterKinds(events, provider.EventBackgroundTasksChanged); len(sets) != 2 {
 		t.Fatalf("expected 2 background_tasks_changed frames, got %d", len(sets))
-	}
-	first := decodeBackgroundSet(t, sets[0])
-	if len(first.Tasks) != 1 || first.Tasks[0].TaskID != "b8tm4jomt" || first.Tasks[0].TaskType != "local_bash" {
-		t.Errorf("first level set = %+v, want the single local_bash task", first.Tasks)
-	}
-	second := decodeBackgroundSet(t, sets[1])
-	if second.Tasks == nil || len(second.Tasks) != 0 {
-		t.Errorf("second level set = %+v, want an allocated empty slice", second.Tasks)
 	}
 
 	// A foreground agent is never "backgrounded mid-flight".
@@ -135,8 +116,8 @@ func TestReplay_TaskProgressFixture(t *testing.T) {
 // TestReplay_BackgroundTasksControlFixture pins the reply half of AO's
 // own `background_tasks` control_request: the CLI's non-terminal
 // `patch:{is_backgrounded:true}` must become EventSubagentBackgrounded
-// on the LAUNCH row, must NOT become a terminal, and the level set that
-// rides with it must resolve the task to the same launch tool_use.
+// on the LAUNCH row, must NOT become a terminal, and the set's move
+// rides with it as one signal.
 func TestReplay_BackgroundTasksControlFixture(t *testing.T) {
 	const (
 		launch = "toolu_016U5CANM15pvGuV83L4Getr"
@@ -165,19 +146,8 @@ func TestReplay_BackgroundTasksControlFixture(t *testing.T) {
 		t.Errorf("expected no background task terminal, got %d: %+v", len(terminals), terminals)
 	}
 
-	sets := filterKinds(events, provider.EventBackgroundTasksChanged)
-	if len(sets) != 1 {
+	if sets := filterKinds(events, provider.EventBackgroundTasksChanged); len(sets) != 1 {
 		t.Fatalf("expected 1 background_tasks_changed frame, got %d", len(sets))
-	}
-	set := decodeBackgroundSet(t, sets[0])
-	if len(set.Tasks) != 1 {
-		t.Fatalf("level set = %+v, want one member", set.Tasks)
-	}
-	if set.Tasks[0].TaskID != taskID || set.Tasks[0].ToolUseID != launch {
-		t.Errorf("level set member = %+v, want task %s resolved to launch %s", set.Tasks[0], taskID, launch)
-	}
-	if set.Tasks[0].TaskType != "local_agent" || set.Tasks[0].Description != "spike2" {
-		t.Errorf("level set member lost its descriptive fields: %+v", set.Tasks[0])
 	}
 
 	// The §E5 async ack that follows still classifies as a background

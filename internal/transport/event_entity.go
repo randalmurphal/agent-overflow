@@ -42,17 +42,18 @@ package transport
 // the entity key. Empty means a root-scope row. A watch frame names, besides
 // its threads, the (thread, scope root) pairs the connection is viewing
 // (frame.go WatchScope). A root-scope frame is admitted by a connection that
-// watches its thread; a scoped frame only by one that watches its pair. So a
-// connection showing a parent thread's pane receives that thread's
-// top-level rows and none of its subagents' rows until it opens a surface
-// for one.
+// watches its thread; a scoped frame only by one that watches its pair, or
+// that names its thread whole (frame.go ClientFrame.ScopeThreads, the
+// compact form of a set past MaxWatchScopes). So a connection showing a
+// parent thread's pane receives that thread's top-level rows and none of
+// its subagents' rows until it opens a surface for one.
 //
 // The three properties above hold for scopes, restated:
 //
 //   - **Wildcard until stated.** A connection that never sent a watch frame
 //     receives everything, and one whose watch frame carries no scope set
-//     (a client built before scopes, or one whose set exceeded
-//     MaxWatchScopes) receives every scope of the threads it watches.
+//     (a client that does not narrow by scope) receives every scope of the
+//     threads it watches.
 //   - **An empty scope attribution is DELIVERED to the thread's watchers.**
 //     It means a root-scope row or a payload the extractor could not
 //     attribute, and both read as root scope. An empty ENTITY key still
@@ -158,16 +159,22 @@ type subscriberWatchFilter struct {
 	// scopes is nil when the watch frame stated no scope set, which admits
 	// every scope of a watched thread; empty when it stated none viewed.
 	scopes map[WatchScope]struct{}
+	// scopeThreads are the threads a stated set admits every scope of.
+	scopeThreads map[string]struct{}
 }
 
 // admits applies the set to one frame on an EntityFiltered channel with a
 // non-empty entity key. A root-scope frame, and any frame on a channel that
 // is not TranscriptScopeFiltered, takes the thread rule; a scoped frame
-// needs its (thread, scope) pair, unless the set stated no scopes.
+// needs its (thread, scope) pair or its thread named whole, unless the set
+// stated no scopes.
 func (f *subscriberWatchFilter) admits(channel, entityKey, entityScope string) bool {
 	if entityScope == "" || f.scopes == nil || !channelTranscriptScopeFiltered(channel) {
 		_, ok := f.threads[entityKey]
 		return ok
+	}
+	if _, ok := f.scopeThreads[entityKey]; ok {
+		return true
 	}
 	_, ok := f.scopes[WatchScope{ThreadID: entityKey, ScopeRootID: entityScope}]
 	return ok

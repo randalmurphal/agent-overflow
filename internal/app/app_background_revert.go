@@ -7,6 +7,7 @@ import (
 	"agent-overflow/internal/eventchan"
 	"agent-overflow/internal/provider"
 	"agent-overflow/internal/store"
+	"agent-overflow/internal/triage"
 )
 
 //ao:scope threads:read
@@ -73,9 +74,17 @@ func (a *App) markConfirmedBackgroundTasksInactiveAfterProviderCleanup(threadID 
 	}
 	now := time.Now().UnixMilli()
 	_, toolCallErr := a.store.MarkLiveBackgroundToolCallsInactive(threadID, now)
-	a.emit(eventchan.ProviderBackgroundTasksChanged, map[string]any{"threadId": threadID})
+	a.emitBackgroundChanged(threadID)
 	if toolCallErr != nil {
 		toolCallErr = fmt.Errorf("%s: clear running background tasks: %w", errorPrefix, toolCallErr)
 	}
 	return toolCallErr
+}
+
+// emitBackgroundChanged announces a change to a thread's live background
+// work that no tray delta carries (a remote job, a teardown's inactive
+// mark): the provider:background_tasks_changed nudge, and a tray refresh.
+func (a *App) emitBackgroundChanged(threadID string) {
+	a.emit(eventchan.ProviderBackgroundTasksChanged, triage.BackgroundTasksChangedEvent{ThreadID: threadID})
+	a.emit(eventchan.ProviderBackgroundTray, triage.BackgroundTrayEvent{ThreadID: threadID, Refresh: true})
 }

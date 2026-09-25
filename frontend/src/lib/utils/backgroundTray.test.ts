@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Item } from '../types/models';
 import { __resetParseJsonObjectCacheForTest } from './parseJsonObject';
 import {
+  applyTrayDelta,
   completionStatusFor,
   deriveTrayTasks,
   trayTaskAgentInfo,
@@ -673,5 +674,28 @@ describe('trayTaskAgentInfo', () => {
       launch: makeItem({ id: 'L2', kind: 'tool_call', toolName: 'Bash', status: 'running' }),
     });
     expect(trayTaskAgentInfo({ ...bash, rowId: 'L2', anchor: bash.launch! })).toBeNull();
+  });
+});
+
+describe('applyTrayDelta', () => {
+  const launch = (id: string, extra: Partial<Item> = {}) => makeItem({ id, isBackground: true, ...extra });
+  const done = (launchId: string, createdAt: number) => makeItem({
+    id: `${launchId}:done`, kind: 'tool_completion', status: 'completed', completionOf: launchId, createdAt,
+  });
+  const ids = (items: Item[]) => items.map((item) => item.id);
+
+  it('replaces every row of an answered launch, named or returned, and keeps the rest', () => {
+    const items = [launch('a'), launch('b'), launch('c'), done('c', 100)];
+    const next = applyTrayDelta(items, ['a', 'c'], [launch('b', { summary: 'new' }), launch('d')], 100, 200);
+    expect(ids(next)).toEqual(['b', 'd']);
+    expect(next[0].summary).toBe('new');
+    expect(ids(items)).toEqual(['a', 'b', 'c', 'c:done']);
+  });
+
+  it('drops the pairs whose completion aged past the retention, as deriveTrayTasks hides them', () => {
+    const items = [launch('old'), done('old', 1_000), launch('fresh'), done('fresh', 1_900), launch('live')];
+    const next = applyTrayDelta(items, [], [], 2_000, 200);
+    expect(ids(next)).toEqual(['fresh', 'fresh:done', 'live']);
+    expect(deriveTrayTasks(next, 2_000, 200)).toEqual(deriveTrayTasks(items, 2_000, 200));
   });
 });

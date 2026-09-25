@@ -64,13 +64,12 @@ import (
 const codexLiveCommandOutputMaxBytes = 1024 * 1024
 
 // BackgroundTasksChangedEvent is the `provider:background_tasks_changed`
-// payload: a refresh nudge for the tray listing, optionally carrying
-// Claude's level set of live background tasks (subagent_progress.go).
-// Tasks is nil for the Codex / app-side nudges, which know no set.
+// payload: a refresh nudge naming the thread whose live background work
+// changed. ResetCodexAgents marks a session teardown, which ends every
+// Codex agent's live progress.
 type BackgroundTasksChangedEvent struct {
-	ResetCodexAgents bool                         `json:"resetCodexAgents,omitempty"`
-	ThreadID         string                       `json:"threadId"`
-	Tasks            []provider.BackgroundTaskRef `json:"tasks,omitempty"`
+	ResetCodexAgents bool   `json:"resetCodexAgents,omitempty"`
+	ThreadID         string `json:"threadId"`
 }
 
 // codexBackgroundState holds the per-thread correlation state for
@@ -129,17 +128,26 @@ func (r *Router) codexBackgroundIfPresent(threadID string) *codexBackgroundState
 	return st.codexBackground
 }
 
-// emitBackgroundTasksChangedNudge sends the set-less refetch nudge on
+// emitBackgroundTasksChangedNudge sends the refetch nudge on
 // provider:background_tasks_changed. Provider-neutral despite living beside
-// the Codex projector: Claude's terminal transitions fire it too, because
-// that channel is the only one carrying them that reaches a remote client
-// (provider:background_task_state is loopback-only, and the item upsert the
-// workspace-change lock used to watch is now narrowed by watch).
+// the Codex projector: Claude's launch and terminal transitions fire it
+// too, because its readers (the workspace-change lock, the environment
+// picker, the remote-jobs listing) must hear about threads no pane shows,
+// and the item upsert the lock used to watch is narrowed by watch. The
+// background tray reads provider:background_tray (background_tray.go).
 func (r *Router) emitBackgroundTasksChangedNudge(threadID string) {
 	if strings.TrimSpace(threadID) == "" {
 		return
 	}
 	r.emit(eventchan.ProviderBackgroundTasksChanged, BackgroundTasksChangedEvent{ThreadID: threadID})
+}
+
+// emitCodexBackgroundChanged announces a change to a Codex thread's live
+// background projection: the nudge, and a tray refresh, because the tray
+// reads the projection's runtime records, which no delta carries.
+func (r *Router) emitCodexBackgroundChanged(threadID string) {
+	r.emitBackgroundTasksChangedNudge(threadID)
+	r.emitBackgroundTrayRefresh(threadID)
 }
 
 func mergeRawJSONObject(left, right json.RawMessage) json.RawMessage {
@@ -191,7 +199,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 			rebindCodexUnifiedExecProcessLocked(state, existing, meta.ProcessID)
 			r.mu.Unlock()
 			if emitChanged {
-				r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+				r.emitCodexBackgroundChanged(evt.ThreadID)
 			}
 			return true
 		}
@@ -217,7 +225,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 		emitChanged = true
 		r.mu.Unlock()
 		if emitChanged {
-			r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+			r.emitCodexBackgroundChanged(evt.ThreadID)
 		}
 		return true
 	case isSpawnAgentCandidate && meta.Tool == "spawn_agent":
@@ -228,7 +236,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 		if _, ok := state.spawnAgent[itemID]; ok {
 			r.mu.Unlock()
 			if emitChanged {
-				r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+				r.emitCodexBackgroundChanged(evt.ThreadID)
 			}
 			return true
 		}
@@ -236,7 +244,7 @@ func (r *Router) observeCodexToolStart(evt provider.ProviderEvent) bool {
 	}
 	r.mu.Unlock()
 	if emitChanged {
-		r.emitBackgroundTasksChangedNudge(evt.ThreadID)
+		r.emitCodexBackgroundChanged(evt.ThreadID)
 	}
 	return isSpawnAgentCandidate && meta.Tool == "spawn_agent"
 }
@@ -251,7 +259,7 @@ func (r *Router) ClearLiveCodexBackgroundTasks(threadID string) {
 		st.codexBackground.agents, st.codexBackground.spawnAgent = prior.agents, prior.spawnAgent
 	}
 	r.mu.Unlock()
-	r.emitBackgroundTasksChangedNudge(threadID)
+	r.emitCodexBackgroundChanged(threadID)
 }
 
 // observeCodexToolComplete handles spawn_agent and wait_agent completion:
@@ -334,6 +342,6 @@ func (r *Router) observeCodexTurnComplete(threadID string) {
 	// completion is written now, answerless (codex_answer_completion.go).
 	r.persistHeldCodexCompletionsAnswerless(threadID, heldCompletions)
 	if spawnChanged {
-		r.emitBackgroundTasksChangedNudge(threadID)
+		r.emitCodexBackgroundChanged(threadID)
 	}
 }
