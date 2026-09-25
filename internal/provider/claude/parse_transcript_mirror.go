@@ -285,7 +285,11 @@ func (p *Parser) parseTranscriptMirror(threadID string, raw map[string]json.RawM
 // that is otherwise dropped because its agent already streams on stdout.
 // The stdout feed never carries a sidechain's `system/compact_boundary` or
 // `isCompactSummary` rows (claude-wire.md §Subagent stream forwarding), so
-// without this the boundary never reaches the thread.
+// without this the boundary never reaches the thread. While a boundary
+// waits for its summary, the tap also forwards attachment rows: the CLI
+// can chain the summary below the boundary through them, and the
+// projector pairs the two through that chain. Other attachments are left
+// undecoded.
 //
 // Failure here is logged and the boundary is dropped rather than failing
 // the parse: completion never reads the transcript, so nothing delivers
@@ -302,6 +306,7 @@ func (p *Parser) tapUnprojectedCompaction(
 		return nil
 	}
 	existing := state.compactionTaps[agentID]
+	awaitingSummary := existing != nil && existing.projector.AwaitingCompactSummary()
 	picked := make([]json.RawMessage, 0, 2)
 	uuids := make([]string, 0, 2)
 	for i, entry := range entries {
@@ -309,16 +314,19 @@ func (p *Parser) tapUnprojectedCompaction(
 			break
 		}
 		fact := facts.entries[i]
-		if !fact.compaction || fact.uuid == "" {
-			continue
-		}
-		if existing != nil {
-			if _, seen := existing.seen[fact.uuid]; seen {
-				continue
+		switch {
+		case fact.compaction && fact.uuid != "":
+			if existing != nil {
+				if _, seen := existing.seen[fact.uuid]; seen {
+					continue
+				}
 			}
+			picked = append(picked, entry)
+			uuids = append(uuids, fact.uuid)
+			awaitingSummary = fact.compactBoundary
+		case fact.attachment && awaitingSummary:
+			picked = append(picked, entry)
 		}
-		picked = append(picked, entry)
-		uuids = append(uuids, fact.uuid)
 	}
 	if len(picked) == 0 {
 		return nil
@@ -527,10 +535,13 @@ const (
 
 type mirrorEntryFact struct {
 	uuid string
-	// compaction marks a `system/compact_boundary` row or its
-	// `isCompactSummary` child — the two row shapes the stdout forwarding
-	// path never carries, and the only ones the compaction tap feeds.
-	compaction bool
+	// compaction marks a `system/compact_boundary` row (compactBoundary)
+	// or its `isCompactSummary` row: the two row shapes the stdout
+	// forwarding path never carries. The compaction tap feeds these, plus
+	// attachment rows while a boundary waits for its summary.
+	compaction      bool
+	compactBoundary bool
+	attachment      bool
 }
 
 func (i mirrorEntryInspection) timestampOr(fallback time.Time) time.Time {
@@ -626,10 +637,12 @@ func inspectMirrorEntries(entries []json.RawMessage) (mirrorEntryInspection, err
 		if err := facts.observeScope(raw.LegacySidechain); err != nil {
 			return mirrorEntryInspection{}, err
 		}
+		boundary := raw.Type == "system" && raw.Subtype == "compact_boundary"
 		facts.entries = append(facts.entries, mirrorEntryFact{
-			uuid: strings.TrimSpace(raw.UUID),
-			compaction: (raw.Type == "system" && raw.Subtype == "compact_boundary") ||
-				raw.IsCompactSummary,
+			uuid:            strings.TrimSpace(raw.UUID),
+			compaction:      boundary || raw.IsCompactSummary,
+			compactBoundary: boundary,
+			attachment:      raw.Type == "attachment",
 		})
 		facts.agentID = firstNonEmpty(facts.agentID,
 			strings.TrimSpace(raw.AgentID), strings.TrimSpace(raw.LegacyAgentID))

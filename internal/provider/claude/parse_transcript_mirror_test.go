@@ -798,6 +798,107 @@ func TestTranscriptMirrorTapPairsCompactionAcrossBatches(t *testing.T) {
 	}
 }
 
+// autoCompactMirrorEntries is one 2.1.280 auto-compaction as sidechain
+// mirror entries: the boundary, the context attachments the CLI re-injects,
+// and the summary chained below the last attachment.
+func autoCompactMirrorEntries(agentID, prefix string) []string {
+	return []string{
+		fmt.Sprintf(`{"type":"system","subtype":"compact_boundary","uuid":"%[2]s-cb","parentUuid":null,"logicalParentUuid":"%[2]s-leaf","agentId":"%[1]s","isSidechain":true,"content":"Conversation compacted","timestamp":"2026-09-22T17:54:44.882Z","compactMetadata":{"trigger":"auto","preTokens":295973,"durationMs":96503}}`, agentID, prefix),
+		fmt.Sprintf(`{"type":"attachment","uuid":"%[2]s-at-1","parentUuid":"%[2]s-cb","agentId":"%[1]s","isSidechain":true,"timestamp":"2026-09-22T17:54:45.066Z","attachment":{"type":"instructions","files":[{"path":"/repo/CLAUDE.md","type":"Project","content":"# Repo"}]}}`, agentID, prefix),
+		fmt.Sprintf(`{"type":"attachment","uuid":"%[2]s-at-2","parentUuid":"%[2]s-at-1","agentId":"%[1]s","isSidechain":true,"timestamp":"2026-09-22T17:54:45.066Z","attachment":{"type":"session_context","context":{"userEmail":"someone@example.com"}}}`, agentID, prefix),
+		fmt.Sprintf(`{"type":"attachment","uuid":"%[2]s-at-3","parentUuid":"%[2]s-at-2","agentId":"%[1]s","isSidechain":true,"timestamp":"2026-09-22T17:54:45.066Z","attachment":{"type":"date","date":"2026-09-22"}}`, agentID, prefix),
+		fmt.Sprintf(`{"type":"user","uuid":"%[2]s-cs","parentUuid":"%[2]s-at-3","agentId":"%[1]s","isSidechain":true,"isCompactSummary":true,"isVisibleInTranscriptOnly":true,"timestamp":"2026-09-22T17:54:44.881Z","message":{"role":"user","content":"summary %[2]s"}}`, agentID, prefix),
+	}
+}
+
+func mirrorBatch(agentID string, entries ...string) string {
+	return fmt.Sprintf(`{"type":"transcript_mirror","filePath":"/tmp/agent-%s.jsonl","entries":[%s]}`, agentID, strings.Join(entries, ","))
+}
+
+func assertFoldedMirrorCompaction(t *testing.T, events []provider.ProviderEvent, boundaryID, launchID, summary string) {
+	t.Helper()
+	var compactions []provider.ProviderEvent
+	for _, event := range events {
+		if event.Kind == provider.EventCompactBoundary {
+			compactions = append(compactions, event)
+		}
+	}
+	if len(compactions) != 1 || compactions[0].ItemID != boundaryID || compactions[0].ParentToolUseID != launchID {
+		t.Fatalf("compactions = %+v, want one %s under %s", compactions, boundaryID, launchID)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(compactions[0].Meta, &meta); err != nil {
+		t.Fatalf("boundary meta: %v", err)
+	}
+	if meta["summary"] != summary || meta["trigger"] != "auto" {
+		t.Fatalf("boundary meta = %v, want summary %q", meta, summary)
+	}
+}
+
+// Claude 2.1.280 chains an auto-compact's summary below the context
+// attachments it re-injects. For a stdout-streaming agent the tap forwards
+// those attachments while the boundary waits, so the summary still folds
+// into one divider, whole or split, including a re-sent attachment. An
+// attachment with no boundary waiting never opens a tap.
+func TestTranscriptMirrorTapPairsSummaryChainedThroughAttachments(t *testing.T) {
+	parser := NewParser()
+	parse := func(line string) []provider.ProviderEvent {
+		t.Helper()
+		events, err := parser.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("ParseLine: %v\n%s", err, line)
+		}
+		return events
+	}
+
+	parse(`{"type":"assistant","message":{"id":"m-parent","role":"assistant","content":[{"type":"tool_use","id":"toolu-chain","name":"Agent","input":{"description":"work","subagent_type":"general-purpose","prompt":"go"}}]}}`)
+	parse(`{"type":"system","subtype":"task_started","task_id":"ag-chain","task_type":"local_agent","tool_use_id":"toolu-chain"}`)
+
+	first := autoCompactMirrorEntries("ag-chain", "c1")
+	if dropped := parse(mirrorBatch("ag-chain", first[1])); len(dropped) != 0 {
+		t.Fatalf("attachment with no boundary waiting emitted events: %+v", dropped)
+	}
+	if tap := parser.transcriptMirror.compactionTaps["ag-chain"]; tap != nil {
+		t.Fatalf("attachment with no boundary waiting opened a compaction tap")
+	}
+
+	assertFoldedMirrorCompaction(t, parse(mirrorBatch("ag-chain", first...)), "c1-cb", "toolu-chain", "summary c1")
+
+	second := autoCompactMirrorEntries("ag-chain", "c2")
+	if held := parse(mirrorBatch("ag-chain", second[0], second[1])); len(held) != 0 {
+		t.Fatalf("boundary emitted before its summary: %+v", held)
+	}
+	if held := parse(mirrorBatch("ag-chain", second[1], second[2], second[3])); len(held) != 0 {
+		t.Fatalf("attachments emitted events: %+v", held)
+	}
+	assertFoldedMirrorCompaction(t, parse(mirrorBatch("ag-chain", second[4])), "c2-cb", "toolu-chain", "summary c2")
+}
+
+// A backgrounded agent streams through its full mirror projection rather
+// than the tap. The 2.1.280 compaction layout folds there too.
+func TestTranscriptMirrorProjectionPairsSummaryChainedThroughAttachments(t *testing.T) {
+	parser := NewParser()
+	parse := func(line string) []provider.ProviderEvent {
+		t.Helper()
+		events, err := parser.ParseLine(testThread, []byte(line))
+		if err != nil {
+			t.Fatalf("ParseLine: %v\n%s", err, line)
+		}
+		return events
+	}
+
+	parse(`{"type":"assistant","message":{"id":"m-parent","role":"assistant","content":[{"type":"tool_use","id":"toolu-bgc","name":"Agent","input":{"description":"work","subagent_type":"Explore","prompt":"go"}}]}}`)
+	parse(`{"type":"system","subtype":"task_started","task_id":"ag-bgc","task_type":"local_agent","tool_use_id":"toolu-bgc"}`)
+	parse(`{"type":"system","subtype":"task_updated","task_id":"ag-bgc","patch":{"is_backgrounded":true}}`)
+
+	entries := append([]string{
+		`{"type":"user","uuid":"u-bgc","agentId":"ag-bgc","isSidechain":true,"timestamp":"2026-09-22T17:50:00Z","message":{"role":"user","content":"go"}}`,
+	}, autoCompactMirrorEntries("ag-bgc", "c3")...)
+	events := parse(mirrorBatch("ag-bgc", entries[:3]...))
+	events = append(events, parse(mirrorBatch("ag-bgc", entries[3:]...))...)
+	assertFoldedMirrorCompaction(t, events, "c3-cb", "toolu-bgc", "summary c3")
+}
+
 // A boundary whose summary never arrives flushes at the task terminal,
 // ahead of the notification, so triage persists it before the transcript
 // replay would re-mint the same uuid.

@@ -2717,13 +2717,15 @@ row never reach parent stdout on either launch path, flag or no flag
 stdout envelopes for either row). They exist only in the agent's
 sidechain JSONL — and in the sidechain `transcript_mirror` feed, which
 carried each pair within ~0.5s of the compaction, boundary and summary
-in one batch (`parentUuid` of the summary = the boundary's uuid, same
-as the on-disk pairing). AO's mirror handling deliberately drops
-batches for stdout-streaming agents to avoid duplicating their deltas;
-the compaction tap (`parse_transcript_mirror.go`) is the carve-out that
-forwards exactly these two row shapes so the divider lands at its real
-position. Nothing else delivers them: completion never reads the
-transcript.
+in one batch (2.1.257). The rows chain as they do on disk
+([compact_boundary ordering](#session-jsonl-compact_boundary-ordering));
+how 2.1.280 batches its attachment layout is unobserved, and nothing
+depends on it. AO's mirror handling deliberately drops batches for
+stdout-streaming agents to avoid duplicating their deltas; the
+compaction tap (`parse_transcript_mirror.go`) is the carve-out that
+forwards these two row shapes, plus attachment rows while a boundary
+waits for its summary, so the divider lands at its real position.
+Nothing else delivers them: completion never reads the transcript.
 
 ### The subagent's opening prompt
 
@@ -4446,11 +4448,28 @@ unforked files.
 ## Session JSONL: compact_boundary ordering
 
 `system/compact_boundary` rows are `parentUuid:null` chain **roots**
-carrying `logicalParentUuid` (the pre-compact leaf). In both production
-samples (auto-compact, 2.1.x) the boundary row is immediately followed
-by the `isCompactSummary:true` user row whose `parentUuid` is the
-boundary's uuid. The pair lands together, so the active-branch tip
-after a compact is the summary row (or later), never the bare boundary.
+carrying `logicalParentUuid` (the pre-compact leaf). The
+`isCompactSummary:true` user row lands in the same write, in one of two
+layouts (local transcripts surveyed 2026-09-25, main and sidechain
+alike):
+
+- **Summary as the boundary's child.** Every compaction through 2.1.257,
+  and a manual `/compact` on 2.1.280: boundary, summary, `isMeta`
+  caveat, `/compact` echo, command stdout, then the re-injected
+  attachments.
+- **Summary below re-injected context.** Auto-compact on 2.1.280 (511
+  samples): boundary, then `instructions` (CLAUDE.md and memory
+  contents), `session_context` and `date` attachment rows, each the
+  previous row's child, then the summary as the last attachment's child.
+  One sample had no `instructions` row. The summary's `timestamp` is
+  ~1ms before the boundary's.
+
+AO pairs a summary with the boundary its `parentUuid` chain reaches
+through attachment rows only (`sessionimport` `indexCompactSummaries`;
+`SidechainProjector` applies it incrementally). Attachments render
+nothing, so skipping them hides no content. Either way the active-branch
+tip after a compact is the summary row (or later), never the bare
+boundary.
 A file-trailing boundary has not been observed (an idle-`/compact`
 synthesis attempt on a tiny session didn't trigger compaction at all);
 if one ever occurs, AO's branch walk finds no content row and resumes

@@ -23,10 +23,10 @@ const (
 // the mirror batches AO otherwise ignores. The stdout forwarding path
 // (`--forward-subagent-text`) never carries a sidechain's
 // `system/compact_boundary` or `isCompactSummary` rows, so without the tap a
-// live compaction never surfaces. The tap feeds ONLY those two row shapes
-// through the same SidechainProjector the full projections use, so the
-// emitted boundary carries the transcript uuid that session import also
-// keys the row by.
+// live compaction never surfaces. The tap feeds those two row shapes, and
+// the attachments chained between them, through the same
+// SidechainProjector the full projections use, so the emitted boundary
+// carries the transcript uuid that session import also keys the row by.
 type mirrorCompactionTap struct {
 	scope     string
 	projector *sessionimport.SidechainProjector
@@ -79,9 +79,10 @@ func (s *transcriptMirrorState) drainCompactionTap(threadID, agentID string) []p
 }
 
 // tapCompactionProviderEvents finalizes a tap projector's output. The tap
-// feeds only boundary and summary rows, both of which project to compaction
-// events; anything else is a converter change this filter must be taught
-// about, surfaced rather than forwarded with a wrong shape.
+// feeds only boundary, summary and attachment rows; the first two project
+// to compaction events and attachments to nothing. Anything else is a
+// converter change this filter must be taught about, surfaced rather than
+// forwarded with a wrong shape.
 func tapCompactionProviderEvents(threadID, agentID string, result sessionimport.ConvertResult) []provider.ProviderEvent {
 	var events []provider.ProviderEvent
 	for _, imported := range result.Events {

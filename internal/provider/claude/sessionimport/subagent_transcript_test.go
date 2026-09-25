@@ -2,6 +2,7 @@ package sessionimport
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -165,6 +166,71 @@ func TestSidechainProjectorFoldsCompactSummaryAcrossMirrorBatches(t *testing.T) 
 	}
 	if len(streamed) != 1 || !strings.Contains(string(streamed[0].Meta), "kept facts") {
 		t.Fatalf("compact projection did not fold summary: %+v", streamed)
+	}
+}
+
+// A subagent compaction pairs the same way live and imported in both CLI
+// layouts: the summary as the boundary's child (2.1.257) and the summary
+// chained below the re-injected context attachments (2.1.280). Every way
+// the mirror can split the rows projects exactly what the joined import
+// produces: one divider carrying the summary.
+func TestSidechainProjectorPairsCompactionLikeTheJoinedImport(t *testing.T) {
+	sidechain := with("isSidechain", true)
+	chained := autoCompactRows("c", "s2", sidechain)
+	layouts := []struct {
+		name       string
+		compaction []map[string]any
+	}{
+		{"summary under boundary", []map[string]any{
+			chained[0],
+			userRow("c-summary", "c-boundary", "Summary of c.", "2026-01-01T00:00:04.999Z", sidechain,
+				with("isCompactSummary", true), with("isVisibleInTranscriptOnly", true)),
+		}},
+		{"summary under attachments", chained},
+	}
+	for _, layout := range layouts {
+		t.Run(layout.name, func(t *testing.T) {
+			fixture := []map[string]any{
+				userRow("s1", "", "the task prompt", "2026-01-01T00:00:02.000Z", sidechain),
+				assistantRow("s2", "s1", "msg_before", []any{textBlock("before")}, "2026-01-01T00:00:03.000Z", sidechain),
+			}
+			fixture = append(fixture, layout.compaction...)
+			fixture = append(fixture, assistantRow("s3", "c-summary", "msg_after", []any{textBlock("after")},
+				"2026-01-01T00:00:06.000Z", sidechain))
+			lines := make([]any, len(fixture))
+			for i := range fixture {
+				lines[i] = fixture[i]
+			}
+			joined := joinedSubagentEvents(t, lines...)
+			assertOneFoldedCompaction(t, "joined import", joined)
+			want := renderEvents(joined)
+
+			for mask := 0; mask < 1<<(len(fixture)-1); mask++ {
+				batches := [][]map[string]any{{fixture[0]}}
+				for i := 1; i < len(fixture); i++ {
+					if mask&(1<<(i-1)) != 0 {
+						batches = append(batches, nil)
+					}
+					batches[len(batches)-1] = append(batches[len(batches)-1], fixture[i])
+				}
+				streamed := projectInBatches(t, batches...)
+				if got := renderEvents(streamed); got != want {
+					t.Fatalf("batch split %b diverged from the joined import:\ngot:\n%s\nwant:\n%s", mask, got, want)
+				}
+				assertOneFoldedCompaction(t, fmt.Sprintf("batch split %b", mask), streamed)
+			}
+		})
+	}
+}
+
+func assertOneFoldedCompaction(t *testing.T, label string, events []importir.Event) {
+	t.Helper()
+	compactions := eventsOfKind(events, provider.EventCompactBoundary)
+	if len(compactions) != 1 || compactions[0].ItemID != "c-boundary" {
+		t.Fatalf("%s: compactions = %s, want one on the boundary", label, renderEvents(compactions))
+	}
+	if meta := decodeMeta(t, compactions[0].Meta); meta["summary"] != "Summary of c." {
+		t.Fatalf("%s: compaction meta = %v, want the folded summary", label, meta)
 	}
 }
 

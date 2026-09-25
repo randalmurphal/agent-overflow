@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"agent-overflow/internal/importir"
@@ -75,6 +76,52 @@ func toolResultRow(uuid, parent, toolUseID, content, ts string, opts ...rowOpt) 
 	return userBlocksRow(uuid, parent, []any{
 		map[string]any{"type": "tool_result", "tool_use_id": toolUseID, "content": content},
 	}, ts, opts...)
+}
+
+// autoCompactRows builds one auto-compaction in the 2.1.280 layout: the
+// boundary chain root, the context attachments the CLI re-injects
+// (instructions, session_context, date), then the summary chained below
+// the last attachment. The summary is stamped 1ms before the boundary, as
+// the CLI writes it. Uuids are prefix-boundary, prefix-instructions,
+// prefix-session-context, prefix-date and prefix-summary.
+func autoCompactRows(prefix, logicalParent string, opts ...rowOpt) []map[string]any {
+	boundary := map[string]any{
+		"type": "system", "subtype": "compact_boundary",
+		"uuid": prefix + "-boundary", "parentUuid": nil, "logicalParentUuid": logicalParent,
+		"isSidechain": false, "content": "Conversation compacted", "level": "info",
+		"timestamp": "2026-01-01T00:00:05.000Z",
+		"compactMetadata": map[string]any{
+			"trigger": "auto", "preTokens": 295973, "durationMs": 96503, "postTokens": 16112,
+		},
+	}
+	attachment := func(name, parent string, body map[string]any) map[string]any {
+		body["type"] = name
+		return map[string]any{
+			"type": "attachment", "uuid": prefix + "-" + strings.ReplaceAll(name, "_", "-"),
+			"parentUuid": parent, "isSidechain": false,
+			"timestamp":  "2026-01-01T00:00:05.184Z",
+			"attachment": body,
+			"rendered":   []any{map[string]any{"content": "<system-reminder>\n" + name + "\n</system-reminder>"}},
+		}
+	}
+	rows := []map[string]any{
+		boundary,
+		attachment("instructions", prefix+"-boundary", map[string]any{
+			"files": []any{map[string]any{"path": "/repo/CLAUDE.md", "type": "Project", "content": "# Repo"}},
+		}),
+		attachment("session_context", prefix+"-instructions", map[string]any{
+			"context": map[string]any{"userEmail": "someone@example.com"},
+		}),
+		attachment("date", prefix+"-session-context", map[string]any{"date": "2026-01-01"}),
+		userRow(prefix+"-summary", prefix+"-date", "Summary of "+prefix+".", "2026-01-01T00:00:04.999Z",
+			with("isCompactSummary", true), with("isVisibleInTranscriptOnly", true)),
+	}
+	for _, row := range rows {
+		for _, opt := range opts {
+			opt(row)
+		}
+	}
+	return rows
 }
 
 // assistantRow builds an `assistant` row carrying the given content blocks.

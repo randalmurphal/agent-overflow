@@ -21,8 +21,12 @@ import (
 type SidechainProjector struct {
 	converter *converter
 	rowIndex  int
-	pending   *Row
-	closed    bool
+	// pending is a compact boundary held for its summary row, and
+	// pendingTip the uuid that summary names as its parent: the boundary
+	// or the last attachment chained below it.
+	pending    *Row
+	pendingTip string
+	closed     bool
 }
 
 // NewSidechainProjector creates an incremental projector scoped to one
@@ -108,35 +112,44 @@ func (p *SidechainProjector) Close() ConvertResult {
 	p.closed = true
 	if p.pending != nil {
 		p.converter.convertRow(*p.pending)
-		p.pending = nil
+		p.pending, p.pendingTip = nil, ""
 	}
 	p.converter.appendDeferredWarnings()
 	return p.drain()
 }
 
+// AwaitingCompactSummary reports whether a compact boundary is held for
+// its summary row.
+func (p *SidechainProjector) AwaitingCompactSummary() bool {
+	return p != nil && p.pending != nil
+}
+
+// push pairs a compact boundary with its summary under the rule
+// indexCompactSummaries documents. Holding only a boundary lets a split
+// mirror batch fold both into one divider without delaying ordinary live
+// rows; the attachments it is held across render nothing.
 func (p *SidechainProjector) push(row Row) {
 	if p.pending != nil {
-		previous := *p.pending
-		// The compact summary is written as the boundary's child. Holding
-		// only a boundary lets a split mirror batch fold both into one
-		// divider without delaying ordinary live rows.
-		if row.IsCompactSummary && row.ParentUUID == previous.UUID {
-			text, isString := contentString(messageOf(row))
-			if !isString {
-				text = blockText(contentBlocks(messageOf(row)))
+		if row.Type == "attachment" {
+			if row.ParentUUID == p.pendingTip {
+				p.pendingTip = row.UUID
 			}
-			p.converter.compactSummaries[previous.UUID] = text
-			p.converter.consumedSummary[row.UUID] = true
-			p.converter.convertRow(previous)
-			p.pending = nil
+			p.converter.convertRow(row)
 			return
 		}
-		p.converter.convertRow(previous)
-		p.pending = nil
+		boundary, tip := *p.pending, p.pendingTip
+		p.pending, p.pendingTip = nil, ""
+		if row.IsCompactSummary && row.ParentUUID == tip {
+			p.converter.compactSummaries[boundary.UUID] = compactSummaryText(row)
+			p.converter.consumedSummary[row.UUID] = true
+			p.converter.convertRow(boundary)
+			return
+		}
+		p.converter.convertRow(boundary)
 	}
 
-	if row.Type == "system" && row.Subtype == "compact_boundary" {
-		p.pending = &row
+	if isCompactBoundary(row) {
+		p.pending, p.pendingTip = &row, row.UUID
 		return
 	}
 	p.converter.convertRow(row)

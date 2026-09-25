@@ -89,6 +89,8 @@ func Convert(chain []Row, opts ConvertOptions) ConvertResult {
 		emittedAgents:        map[string]bool{},
 		backgroundHints:      map[string]bool{},
 		openingPromptByScope: map[string]bool{},
+		compactSummaries:     map[string]string{},
+		consumedSummary:      map[string]bool{},
 	}
 	c.indexCompactSummaries(chain)
 	c.seedClock(chain)
@@ -160,35 +162,68 @@ type converter struct {
 	unavailableGCs int
 }
 
-// indexCompactSummaries pairs each `compact_boundary` row with the
-// `isCompactSummary` user row that follows it. The CLI writes the summary
-// as the boundary's child, so one compaction is one divider row plus one
-// summary body — not two timeline rows.
-func (c *converter) indexCompactSummaries(chain []Row) {
-	c.compactSummaries = map[string]string{}
-	c.consumedSummary = map[string]bool{}
+// indexCompactSummaries pairs each `compact_boundary` row in one
+// transcript with its `isCompactSummary` row, so one compaction is one
+// divider row plus one summary body, not two timeline rows.
+//
+// A summary belongs to the boundary its parentUuid chain reaches through
+// attachment rows only. The CLI writes it as the boundary's child, or,
+// after an auto-compact on 2.1.280, below the context attachments it
+// re-injects (instructions, session_context, date). Attachments render
+// nothing, so skipping them cannot hide content. SidechainProjector.push
+// applies the same rule incrementally.
+func (c *converter) indexCompactSummaries(rows []Row) {
+	var boundaries map[string]bool
+	for _, row := range rows {
+		if row.UUID != "" && isCompactBoundary(row) {
+			if boundaries == nil {
+				boundaries = map[string]bool{}
+			}
+			boundaries[row.UUID] = true
+		}
+	}
+	if len(boundaries) == 0 {
+		return
+	}
+	attachmentParent := map[string]string{}
+	for _, row := range rows {
+		if row.UUID != "" && row.Type == "attachment" {
+			attachmentParent[row.UUID] = row.ParentUUID
+		}
+	}
+	for _, row := range rows {
+		if !row.IsCompactSummary {
+			continue
+		}
+		boundary := row.ParentUUID
+		// Bounded so an attachment parentUuid cycle cannot spin.
+		for steps := 0; !boundaries[boundary] && steps < len(attachmentParent); steps++ {
+			parent, ok := attachmentParent[boundary]
+			if !ok {
+				break
+			}
+			boundary = parent
+		}
+		if !boundaries[boundary] {
+			continue
+		}
+		if _, paired := c.compactSummaries[boundary]; paired {
+			continue
+		}
+		c.compactSummaries[boundary] = compactSummaryText(row)
+		c.consumedSummary[row.UUID] = true
+	}
+}
 
-	summaryByParent := make(map[string]Row, 1)
-	for _, row := range chain {
-		if row.IsCompactSummary && row.ParentUUID != "" {
-			summaryByParent[row.ParentUUID] = row
-		}
+func isCompactBoundary(row Row) bool {
+	return row.Type == "system" && row.Subtype == "compact_boundary"
+}
+
+func compactSummaryText(row Row) string {
+	if text, isString := contentString(messageOf(row)); isString {
+		return text
 	}
-	for _, row := range chain {
-		if row.Type != "system" || row.Subtype != "compact_boundary" {
-			continue
-		}
-		summary, ok := summaryByParent[row.UUID]
-		if !ok {
-			continue
-		}
-		text, isString := contentString(messageOf(summary))
-		if !isString {
-			text = blockText(contentBlocks(messageOf(summary)))
-		}
-		c.compactSummaries[row.UUID] = text
-		c.consumedSummary[summary.UUID] = true
-	}
+	return blockText(contentBlocks(messageOf(row)))
 }
 
 func (c *converter) convertRow(row Row) {
@@ -217,11 +252,7 @@ func (c *converter) convertUser(row Row) {
 		// A summary with no boundary row above it (older writers) is
 		// still the compaction divider for this branch.
 		c.ensureTurn(row)
-		text, ok := contentString(messageOf(row))
-		if !ok {
-			text = blockText(contentBlocks(messageOf(row)))
-		}
-		c.emitCompaction(row, "Conversation compacted", text)
+		c.emitCompaction(row, "Conversation compacted", compactSummaryText(row))
 		return
 	}
 
@@ -377,6 +408,7 @@ func (c *converter) emitSubagent(toolUseID string, parentRow Row) {
 	}
 	c.emittedAgents[toolUseID] = true
 
+	c.indexCompactSummaries(rows)
 	previous := c.subagentScope
 	c.subagentScope = toolUseID
 	for _, row := range rows {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"agent-overflow/internal/importir"
 	"agent-overflow/internal/provider"
@@ -508,6 +509,95 @@ func TestConvertCompactionEmitsOneDividerWithSummary(t *testing.T) {
 		if strings.HasPrefix(e.Content, "Summary:") {
 			t.Errorf("compaction summary leaked as a user message: %s", renderEvents(events))
 		}
+	}
+}
+
+// Claude 2.1.280 chains an auto-compact's summary below the context
+// attachments it re-injects instead of under the boundary itself. Read
+// through the real session loader, it is still one divider carrying the
+// summary.
+func TestConvertCompactionFoldsSummaryChainedThroughAttachments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), sessionA+".jsonl")
+	lines := []any{
+		userRow("u1", "", "before", "2026-01-01T00:00:00.000Z"),
+		assistantRow("a1", "u1", "msg_1", []any{textBlock("long")}, "2026-01-01T00:00:01.000Z"),
+	}
+	for _, row := range autoCompactRows("c", "a1") {
+		lines = append(lines, row)
+	}
+	lines = append(lines, userRow("u2", "c-summary", "carry on", "2026-01-01T00:00:06.000Z"))
+	writeJSONL(t, path, lines...)
+
+	events := loadBranch(t, path, 0, 1).Events
+	boundaries := eventsOfKind(events, provider.EventCompactBoundary)
+	if len(boundaries) != 1 {
+		t.Fatalf("got %d compaction events, want exactly 1: %s", len(boundaries), renderEvents(events))
+	}
+	if boundaries[0].ItemID != "c-boundary" {
+		t.Errorf("compaction itemID = %q, want the boundary row uuid", boundaries[0].ItemID)
+	}
+	meta := decodeMeta(t, boundaries[0].Meta)
+	if meta["summary"] != "Summary of c." || meta["trigger"] != "auto" {
+		t.Errorf("compaction meta = %v, want the folded summary and trigger", meta)
+	}
+	if got := eventsOfKind(events, provider.EventUserText); len(got) != 2 {
+		t.Errorf("got %d user rows, want only the two prompts: %s", len(got), renderEvents(events))
+	}
+}
+
+// Only attachment rows sit between a boundary and the summary it pairs
+// with. A summary below any other row is its own divider rather than
+// guessed onto a boundary.
+func TestConvertCompactionPairsOnlyThroughAttachments(t *testing.T) {
+	events, _ := convertFixture(t, ConvertOptions{},
+		userRow("u1", "", "before", "2026-01-01T00:00:00.000Z"),
+		map[string]any{
+			"type": "system", "subtype": "compact_boundary", "uuid": "b1", "parentUuid": nil,
+			"logicalParentUuid": "u1", "content": "Conversation compacted",
+			"timestamp": "2026-01-01T00:00:01.000Z",
+		},
+		userRow("m1", "b1", "<local-command-caveat>bookkeeping</local-command-caveat>",
+			"2026-01-01T00:00:02.000Z", with("isMeta", true)),
+		userRow("s1", "m1", "Summary.", "2026-01-01T00:00:03.000Z", with("isCompactSummary", true)),
+	)
+	boundaries := eventsOfKind(events, provider.EventCompactBoundary)
+	if len(boundaries) != 2 || boundaries[0].ItemID != "b1" || boundaries[1].ItemID != "s1" {
+		t.Fatalf("compactions = %s, want b1 and a standalone s1", renderEvents(boundaries))
+	}
+	if meta := decodeMeta(t, boundaries[0].Meta); meta["summary"] != nil {
+		t.Errorf("boundary took a summary it does not chain to: %v", meta)
+	}
+}
+
+// Subagent transcripts are not DAG-walked, so a cyclic attachment chain
+// reaches the pairing walk as written. The walk is bounded and leaves the
+// summary standalone.
+func TestConvertSubagentCompactionAttachmentCycleTerminates(t *testing.T) {
+	chain := buildChain(t,
+		userRow("u1", "", "delegate", "2026-01-01T00:00:00.000Z"),
+		assistantRow("a1", "u1", "msg_parent", []any{
+			toolUseBlock("toolu_1", "Agent", map[string]any{"prompt": "delegate"}),
+		}, "2026-01-01T00:00:01.000Z"),
+		toolResultRow("r1", "a1", "toolu_1", "done", "2026-01-01T00:00:09.000Z"),
+	)
+	sub := decodeBranchRows(t,
+		map[string]any{
+			"type": "system", "subtype": "compact_boundary", "uuid": "sb", "parentUuid": nil,
+			"content": "Conversation compacted", "timestamp": "2026-01-01T00:00:02.000Z",
+		},
+		map[string]any{"type": "attachment", "uuid": "x1", "parentUuid": "x2", "timestamp": "2026-01-01T00:00:02.100Z"},
+		map[string]any{"type": "attachment", "uuid": "x2", "parentUuid": "x1", "timestamp": "2026-01-01T00:00:02.100Z"},
+		userRow("ss", "x1", "Summary.", "2026-01-01T00:00:02.200Z", with("isCompactSummary", true)),
+	)
+	done := make(chan ConvertResult, 1)
+	go func() { done <- Convert(chain.Chain, ConvertOptions{Subagents: map[string][]Row{"toolu_1": sub}}) }()
+	select {
+	case result := <-done:
+		if got := eventsOfKind(result.Events, provider.EventCompactBoundary); len(got) != 2 {
+			t.Fatalf("compactions = %s, want the boundary and a standalone summary", renderEvents(got))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pairing walk did not terminate on an attachment cycle")
 	}
 }
 
