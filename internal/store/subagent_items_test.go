@@ -933,13 +933,13 @@ func TestCodexExecutionSnapshotExcludesOtherRunsAndLeavesSpawnUndecorated(t *tes
 	seedToolChildItem(t, s, "t", "first", 0, 1, "spawn", "first task", "completed")
 	seedToolChildItem(t, s, "t", "nested", 0, 2, "first", "nested task", "completed")
 	seedToolChildItem(t, s, "t", "later", 0, 3, "spawn", "later task", "running")
-	meta, err := s.SnapshotSubagentExecutionMeta("t", "spawn", `{}`, 0, 0, 2)
+	meta, tools, err := s.SnapshotSubagentExecutionMeta("t", "spawn", `{}`, 0, 0, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	count, summary, _, _ := decodedSubagentMeta(t, Item{Meta: meta})
-	if count != 2 || summary != "nested task" {
-		t.Fatalf("snapshot: %s", meta)
+	if count != 2 || summary != "nested task" || tools != 1 {
+		t.Fatalf("snapshot: %s tools=%d", meta, tools)
 	}
 	decorated, err := s.decorateSubagentAnchors(s.reader(), "t", []Item{spawn})
 	if err != nil {
@@ -947,6 +947,89 @@ func TestCodexExecutionSnapshotExcludesOtherRunsAndLeavesSpawnUndecorated(t *tes
 	}
 	if decorated[0].Meta != spawn.Meta {
 		t.Fatalf("spawn acquired later history: %s", decorated[0].Meta)
+	}
+}
+
+// A Codex execution's tool count is the tool_call rows directly under the
+// spawn in its turn within the execution's bounds: a nested spawn counts
+// once, and the rows under it, other kinds, other parents, top-level rows
+// and other turns do not. The live seed counts the same rows after a start
+// index and reports the last one it counted.
+func TestCodexExecutionToolCountCountsDirectToolCallsInBounds(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "codex")); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []Item{
+		{ID: "spawn", ThreadID: "t", Kind: "tool_call", Role: "assistant", ToolName: "collab_agent", Status: "completed", CreatedAt: 1, Meta: `{}`},
+		{ID: "other", ThreadID: "t", ItemIndex: 100, Kind: "tool_call", Role: "assistant", ToolName: "collab_agent", Status: "completed", CreatedAt: 1, Meta: `{}`},
+		{ID: "nested", ThreadID: "t", ItemIndex: 3, Kind: "tool_call", Role: "assistant", ToolName: "collab_agent", Status: "completed", ParentID: "spawn", Summary: "spawn nested", CreatedAt: 3, Meta: `{}`},
+		{ID: "top", ThreadID: "t", ItemIndex: 6, Kind: "tool_call", Role: "assistant", ToolName: "Bash", Status: "completed", Summary: "top-level", CreatedAt: 6},
+	} {
+		if err := insertCarded(s, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedToolChildItem(t, s, "t", "call-1", 0, 1, "spawn", "rg TODO", "completed")
+	seedChildItem(t, s, "t", "text-2", 0, 2, "spawn", "thinking aloud", "completed")
+	seedToolChildItem(t, s, "t", "nested-call", 0, 4, "nested", "nested work", "completed")
+	seedToolChildItem(t, s, "t", "other-call", 0, 5, "other", "other work", "completed")
+	seedToolChildItem(t, s, "t", "call-7", 0, 7, "spawn", "pnpm test", "completed")
+	seedToolChildItem(t, s, "t", "later-turn", 1, 0, "spawn", "late", "completed")
+
+	for _, tc := range []struct {
+		start, end, want int
+	}{{0, 6, 2}, {6, 7, 1}, {0, 7, 3}, {7, 50, 0}} {
+		_, tools, err := s.SnapshotSubagentExecutionMeta("t", "spawn", `{}`, 0, tc.start, tc.end)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tools != tc.want {
+			t.Errorf("execution (%d,%d] tools = %d, want %d", tc.start, tc.end, tools, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		after, count, last int
+	}{{0, 3, 7}, {3, 1, 7}, {7, 0, 7}} {
+		count, last, err := s.SubagentExecutionToolCallsAfter("t", "spawn", 0, tc.after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != tc.count || last != tc.last {
+			t.Errorf("after %d = %d calls through %d, want %d through %d", tc.after, count, last, tc.count, tc.last)
+		}
+	}
+}
+
+// A completion without execution bounds covers the rows created since the
+// launch's latest completion, as its digest does; its tool count is the
+// tool_call rows directly under the launch among them.
+func TestSubagentToolCallsSinceCompletionFollowsTheDigestBounds(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateThread(makeThread("t", "codex")); err != nil {
+		t.Fatal(err)
+	}
+	spawn := Item{ID: "spawn", ThreadID: "t", Kind: "tool_call", Role: "assistant", ToolName: "collab_agent", Status: "completed", CreatedAt: 1, Meta: `{}`}
+	if err := insertCarded(s, spawn); err != nil {
+		t.Fatal(err)
+	}
+	seedToolChildItem(t, s, "t", "call-1", 0, 1, "spawn", "rg TODO", "completed")  // created 1
+	seedToolChildItem(t, s, "t", "call-2", 0, 2, "spawn", "rg FIXME", "completed") // created 2
+	nested := Item{ID: "nested", ThreadID: "t", ItemIndex: 3, Kind: "tool_call", Role: "assistant", ToolName: "collab_agent", Status: "completed", ParentID: "spawn", Summary: "spawn nested", CreatedAt: 3, Meta: `{}`}
+	if err := insertCarded(s, nested); err != nil {
+		t.Fatal(err)
+	}
+	seedToolChildItem(t, s, "t", "nested-call", 0, 4, "nested", "nested work", "completed") // created 4
+	if got, err := s.SubagentToolCallsSinceCompletion("t", "spawn", 4); err != nil || got != 3 {
+		t.Fatalf("first completion tools = %d, %v; want 3", got, err)
+	}
+	if err := insertCarded(s, Item{ID: "complete:spawn", ThreadID: "t", TurnIndex: 1, Kind: "tool_completion", Role: "assistant", ToolName: "collab_agent", Status: "completed", CompletionOf: "spawn", CreatedAt: 4, Meta: `{}`}); err != nil {
+		t.Fatal(err)
+	}
+	seedToolChildItem(t, s, "t", "call-5", 0, 5, "spawn", "pnpm test", "completed")        // created 5
+	seedToolChildItem(t, s, "t", "call-late", 0, 9, "spawn", "after the write", "running") // created 9
+	if got, err := s.SubagentToolCallsSinceCompletion("t", "spawn", 8); err != nil || got != 1 {
+		t.Fatalf("second completion tools = %d, %v; want 1", got, err)
 	}
 }
 

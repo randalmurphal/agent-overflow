@@ -570,6 +570,41 @@ describe('<SubagentGroup> settled background agent counters', () => {
     expect(getByTestId('subagent-group-count').textContent).toContain('14 entries');
   });
 
+  it('shows a Codex execution card’s tool count and tokens off its completion', async () => {
+    // Codex reports no tool count: triage counts the execution's own
+    // tool_call rows and stamps them on the completion with the tokens.
+    const { pane, group } = await setup([
+      agentLaunch({
+        toolName: 'collab_agent',
+        status: 'completed',
+        summary: 'Spawn reviewer',
+        isBackground: true,
+        payloadMeta: JSON.stringify({
+          toolName: 'collab_agent',
+          input: { tool: 'spawn_agent', taskName: '/root/reviewer' },
+        }),
+      }),
+      makeItem({
+        id: 'complete:agent:1:turn:A',
+        itemIndex: 1,
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        isBackground: true,
+        completionOf: 'agent:1',
+        status: 'completed',
+        meta: JSON.stringify({
+          codex_execution_child_start_index: 0,
+          codex_execution_child_end_index: 4,
+          subagentProgress: { taskId: 'child-1', toolUses: 3, totalTokens: 3_400 },
+        }),
+      }),
+    ]);
+    expect(group.anchor.id).toBe('complete:agent:1:turn:A');
+    const { getByTestId } = render(SubagentGroupTestHarness, { props: { group, pane } });
+    expect(getByTestId('subagent-group-tools').textContent?.trim()).toBe('3 tools');
+    expect(getByTestId('subagent-group-tokens').textContent?.trim()).toBe('3.4k tokens');
+  });
+
   it('shows nothing for a settled detached agent whose sibling carries no numbers', async () => {
     // The launch row is not a fallback: a sibling without counters means
     // the provider reported none, and a number off the spawn row would be

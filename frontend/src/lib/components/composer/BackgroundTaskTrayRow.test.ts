@@ -388,6 +388,49 @@ describe('<BackgroundTaskTrayRow> doors (agent-visibility)', () => {
       resetForTest();
     }
   });
+
+  it('shows a Codex agent’s tool count live and off its completion once settled', () => {
+    // Codex reports no tool count: triage counts the execution's tool_call
+    // rows, live on the progress tick and final on the completion.
+    const launch = makeItem({
+      id: 'codex-spawn',
+      threadId: 'thread-1',
+      kind: 'tool_call',
+      toolName: 'collab_agent',
+      summary: 'spawn agent',
+      status: 'running',
+      isBackground: true,
+      meta: JSON.stringify({ input: { tool: 'spawn_agent', receiverThreadIds: ['child-1'] } }),
+    });
+    applySubagentProgress({
+      threadId: 'thread-1',
+      itemId: 'codex-spawn',
+      progress: { taskId: 'child-1', toolUses: 2, totalTokens: 3_400 },
+      updatedAt: 1,
+    });
+    try {
+      const running = renderTrayRow(taskFor(launch));
+      expect(running.getByTestId('background-task-tray-row-tools').textContent?.trim()).toBe('2 tools');
+      expect(running.getByTestId('background-task-tray-row-tokens').textContent?.trim()).toBe('3.4k tokens');
+      running.unmount();
+
+      const completion = makeItem({
+        id: 'complete:codex-spawn:turn:A',
+        threadId: 'thread-1',
+        kind: 'tool_completion',
+        toolName: 'collab_agent',
+        completionOf: 'codex-spawn',
+        status: 'completed',
+        isBackground: true,
+        meta: JSON.stringify({ subagentProgress: { taskId: 'child-1', toolUses: 3, totalTokens: 3_900 } }),
+      });
+      const settled = renderTrayRow(taskFor(launch, { completion, status: 'completed' }));
+      expect(settled.getByTestId('background-task-tray-row-tools').textContent?.trim()).toBe('3 tools');
+      expect(settled.getByTestId('background-task-tray-row-tokens').textContent?.trim()).toBe('3.9k tokens');
+    } finally {
+      resetForTest();
+    }
+  });
 });
 
 describe('<BackgroundTaskTrayRow> agent run state', () => {

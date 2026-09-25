@@ -1,10 +1,11 @@
 // Live per-subagent progress counters, from `provider:subagent_progress`.
 //
 // Live session state, never history: Claude emits a `task_progress` tick
-// after every tool round of a running agent and Codex a token-usage
-// frame per child turn. The agent card reads the latest tick while the
-// agent runs (tool count, tokens, elapsed, activity line); once the
-// execution settles, the final numbers live on its completion meta
+// after every tool round of a running agent; for Codex, triage sends a
+// frame per child token-usage update and per tool call the child makes.
+// The agent card reads the latest tick while the agent runs (tool count,
+// tokens, elapsed, activity line); once the execution settles, the final
+// numbers live on its completion meta
 // (`meta.subagentProgress`, persisted by triage at the terminal) and the
 // card reads those instead — see `utils/subagentProgress.ts`.
 //

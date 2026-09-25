@@ -318,6 +318,13 @@ func keyedLookups(th string) []keyedLookup {
 			roots := []string{"launch-1"}
 			must[map[string]subagentAnchorAggregate](t, "aggregates")(subagentAggregatesByRound(q, th, roots, subagentRoundBoundsFor(roots, named, nil)))
 			must[int](t, "completed child index")(s.SubagentCompletedChildIndex(th, "launch-1"))
+			if _, tools, err := s.SnapshotSubagentExecutionMeta(th, "launch-1", "{}", 1, 1, 6); err != nil || tools != 1 {
+				t.Errorf("execution tools of launch-1 = %d, %v; want child-1", tools, err)
+			}
+			if count, last, err := s.SubagentExecutionToolCallsAfter(th, "launch-1", 1, 1); err != nil || count != 1 || last != 2 {
+				t.Errorf("live tools of launch-1 = %d through %d, %v; want child-1", count, last, err)
+			}
+			must[int](t, "tool calls since completion")(s.SubagentToolCallsSinceCompletion(th, "launch-1", 1_800_000_000_000))
 			if tray, err := latestDirectSubagentTools(q, th, []string{"launch-1"}); err != nil || tray["launch-1"].id != "child-1" {
 				t.Errorf("tray of launch-1 = %+v, %v; want child-1", tray, err)
 			}
@@ -510,6 +517,28 @@ func TestKeyedReadsUseTheirLocalKeyIndex(t *testing.T) {
 			},
 			want:      "idx_items_completion_of (thread_id=? AND completion_of=?)",
 			forbidden: []string{"(turn_index,item_index)<"},
+		},
+		{
+			// An execution's tool count ranges over the launch's children
+			// in its turn, not over the thread or the launch's whole subtree.
+			name: "execution tool count",
+			run: func() {
+				if _, _, err := s.SubagentExecutionToolCallsAfter(keyedThreadID, "launch-1", 1, 1); err != nil {
+					t.Error(err)
+				}
+			},
+			want:      "idx_items_parent (thread_id=? AND parent_id=? AND turn_index=? AND item_index>? AND item_index<?)",
+			forbidden: []string{"MATERIALIZE", "AUTOMATIC", "idx_items_thread_turn_item_unique"},
+		},
+		{
+			name: "tool calls since completion",
+			run: func() {
+				if _, err := s.SubagentToolCallsSinceCompletion(keyedThreadID, "launch-1", 1_800_000_000_000); err != nil {
+					t.Error(err)
+				}
+			},
+			want:      "idx_items_parent (thread_id=? AND parent_id=?)",
+			forbidden: []string{"MATERIALIZE", "AUTOMATIC", "idx_items_thread_turn_item_unique"},
 		},
 	} {
 		found := false

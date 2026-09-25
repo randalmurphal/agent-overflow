@@ -345,7 +345,8 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 		}
 	}
 	now := eventTimestampMillis(evt)
-	if active && (runtime.StartedAt == 0 || (turnID != "" && turnID != runtime.TurnID) || (runtime.Status != "running" && runtime.Status != "pendingInit")) {
+	started := active && (runtime.StartedAt == 0 || (turnID != "" && turnID != runtime.TurnID) || (runtime.Status != "running" && runtime.Status != "pendingInit"))
+	if started {
 		runtime.StartedAt = now
 		if runtime.ChildEndIndex > runtime.ChildStartIndex {
 			runtime.ChildStartIndex = runtime.ChildEndIndex
@@ -405,6 +406,13 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 	}
 	launch.item.Meta = mergeItemMetaJSON(launch.item.Meta, fields)
 	launch.item.UpdatedAt = now
+	if started {
+		// Before the runtime write, whose progress frame carries the
+		// new execution's count.
+		if err := r.startCodexExecutionTools(launch.item, runtime.ChildStartIndex); err != nil {
+			return err
+		}
+	}
 	if err := r.setCodexAgentRuntime(launch.item); err != nil {
 		return err
 	}
@@ -415,6 +423,7 @@ func (r *Router) observeCodexSubagentStatus(evt provider.ProviderEvent) error {
 		state.spawnAgent[launch.item.ID] = &spawnAgentTracker{backgrounded: true, hasRunningChildren: true, receiverThreadIDs: launch.meta.ReceiverThreadIDs}
 	} else {
 		delete(state.spawnAgent, launch.item.ID)
+		delete(state.tools, launch.item.ID)
 	}
 	r.mu.Unlock()
 	terminal := status == "completed" || status == "errored" || status == "interrupted" || status == "shutdown" || status == "notFound"
@@ -481,6 +490,9 @@ func (r *Router) observeCodexSpawnChildTerminalInMemory(threadID, launchID strin
 	state := r.codexBackgroundIfPresent(threadID)
 	if state == nil {
 		return
+	}
+	if allTerminal {
+		delete(state.tools, launchID)
 	}
 	tracker := state.spawnAgent[launchID]
 	if tracker == nil {
@@ -585,6 +597,11 @@ func (r *Router) stampCodexItemBackgrounded(threadID, itemID string) error {
 		return nil
 	}
 	current.Meta = mergeItemMetaJSON(current.Meta, json.RawMessage(fmt.Sprintf(`{"live_background_active":true,"codex_runtime":{"status":"running","startedAt":%d}}`, launch.CreatedAt)))
+	// The first execution's start index is zero until a child status
+	// fences it (observeCodexSubagentStatus).
+	if err := r.startCodexExecutionTools(current, 0); err != nil {
+		return err
+	}
 	if err := r.setCodexAgentRuntime(current); err != nil {
 		return err
 	}
@@ -677,11 +694,19 @@ func (r *Router) synthesizeCodexBackgroundCompletion(evt provider.ProviderEvent,
 		if err := json.Unmarshal([]byte(completion.Meta), &bounds); err != nil {
 			return err
 		}
+		// The tool count is read from the stored rows the card's body
+		// covers, never from the live count (codex_execution_tools.go).
+		var tools int
 		if bounds.Start != nil && bounds.End != nil {
-			completion.Meta, err = r.store.SnapshotSubagentExecutionMeta(evt.ThreadID, launchID, completion.Meta, launch.TurnIndex, *bounds.Start, *bounds.End)
+			completion.Meta, tools, err = r.store.SnapshotSubagentExecutionMeta(evt.ThreadID, launchID, completion.Meta, launch.TurnIndex, *bounds.Start, *bounds.End)
 			if err != nil {
 				return fmt.Errorf("snapshot Codex completion aggregates: %w", err)
 			}
+		} else if tools, err = r.store.SubagentToolCallsSinceCompletion(evt.ThreadID, launchID, now); err != nil {
+			return fmt.Errorf("count Codex completion tool calls: %w", err)
+		}
+		if completion.Meta, err = withSubagentToolUses(completion.Meta, tools); err != nil {
+			return fmt.Errorf("stamp Codex completion tool count: %w", err)
 		}
 	}
 

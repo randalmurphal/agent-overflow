@@ -205,7 +205,14 @@ rings no bell, and nothing hides a stop's card later.
 - Live progress is in-memory UI state fed by Claude `task_progress`
   (tool count, tokens, elapsed, activity line) and, for Codex, the
   child thread's `thread/tokenUsage/updated` (unsuppressed into a scoped
-  progress event) plus row counts. Final numbers are captured on the
+  progress event) plus a tool count AO keeps itself. Codex reports no
+  tool count, so an execution's count is its `tool_call` rows directly
+  under the spawn within the execution's bounds, the rows its card body
+  is sliced to. A nested agent's spawn counts as one call; the nested
+  agent's own calls do not, as in Claude's count. The live count adds one
+  per row and starts over with each execution
+  (`internal/triage/codex_execution_tools.go`); the completion's is read
+  from the stored rows when it is written. Final numbers are captured on the
   record that settles the launch: each execution's completion record for
   a detached launch (Codex spawn, Claude background agent; the spawn row
   never receives them), the launch row itself for an awaited Claude agent

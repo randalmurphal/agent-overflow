@@ -18,6 +18,11 @@
 // assembled in `childAgentTokenSpend` off the provider's own cumulative
 // counters, so it never goes backwards when the child compacts. It is NOT
 // `total.totalTokens`, which re-counts the cached prompt every round.
+//
+// Codex reports no tool count. Agent Overflow counts the execution's own
+// tool_call rows under the spawn (internal/triage/codex_execution_tools.go):
+// live on the tray while the child runs, and from the stored rows on the
+// completion card.
 import { test, expect } from './fixtures.js';
 import {
   advance,
@@ -256,11 +261,13 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   // The child's cumulative spend (3400), not the 91.3k that re-counts the
   // cached prompt each round and not the 4.4k latest-input figure.
   await expect(trayRow.getByTestId('background-task-tray-row-tokens')).toHaveText('3.4k tokens');
+  await expect(trayRow.getByTestId('background-task-tray-row-tools')).toHaveCount(0);
 
   // Child tool calls stay in the pane transcript. The live tray keeps only
   // the newest direct call, and the historical spawn row does not grow.
   await waitForGate(harness, 'tools');
   await advance(harness, mockId, 'tools');
+  await expect(trayRow.getByTestId('background-task-tray-row-tools')).toHaveText('2 tools');
   await expect(trayRow.getByTestId('background-task-tray-row-activity')).toContainText('pnpm test');
   await expect(trayRow.getByTestId('background-task-tray-row-activity')).not.toContainText('rg TODO');
   await expect(spawnRow).not.toContainText('pnpm test');
@@ -311,6 +318,7 @@ test('a Codex spawn_agent child keeps its launched row, opens the same pane, and
   await expect(card).toHaveAttribute('data-background', 'true');
   await expect(card.getByTestId('subagent-group-background-button')).toHaveCount(0);
   await expect(card.getByTestId('subagent-group-tokens')).toHaveText('3.4k tokens');
+  await expect(card.getByTestId('subagent-group-tools')).toHaveText('2 tools');
   await expect(card.getByTestId('subagent-group-duration')).toBeVisible();
   await expect(card.getByTestId('subagent-group-open-pane')).toHaveCount(1);
   // The card sits below the launch row, at the completion point.

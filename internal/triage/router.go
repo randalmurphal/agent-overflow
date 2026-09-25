@@ -1383,6 +1383,7 @@ func (r *Router) persistItemWithEmit(item store.Item, payload *store.Payload, in
 		return store.Item{}, err
 	}
 	r.noteToolCallLink(persisted)
+	r.countCodexExecutionToolCall(persisted)
 	// Bump sidebar activity only for user-authored user_text rows.
 	// Provider-injected wire-only context and subagent-internal prompts
 	// are timeline history, not activity that should reshuffle the
@@ -1435,6 +1436,7 @@ func (r *Router) persistItemWithPayloadAppend(item store.Item, payloadID string,
 		return err
 	}
 	r.noteToolCallLink(persisted)
+	r.countCodexExecutionToolCall(persisted)
 	if countsAsActivity {
 		r.bumpThreadActivityForUserText(persisted.ThreadID, persisted.UpdatedAt)
 	}

@@ -680,7 +680,12 @@ type SubagentProgressMeta struct {
 	// TaskID is the provider's own id for the running agent (Claude
 	// task_id; Codex child thread id). Empty when the provider has none.
 	TaskID string `json:"taskId,omitempty"`
-	// ToolUses is the number of tool calls the agent has made so far.
+	// ToolUses is the number of tool calls the agent has made so far, its
+	// own and not those of agents it launched. Claude reports it. Codex
+	// does not; for a Codex child, triage fills it with its count of the
+	// execution's tool_call rows, reset at each execution
+	// (triage/codex_execution_tools.go), so the field means the same for
+	// both providers.
 	ToolUses int `json:"toolUses,omitempty"`
 	// TotalTokens is the agent's own token spend so far: every token it
 	// caused to be processed, counted ONCE. Never folded into the parent

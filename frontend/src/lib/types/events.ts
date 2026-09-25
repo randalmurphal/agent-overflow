@@ -639,7 +639,8 @@ export interface WorktreeSetupStepFrame {
 /**
  * Live counters for one running subagent (Go: provider.SubagentProgressMeta).
  * Cumulative for the agent's whole run; a provider that cannot report a
- * field omits it (Codex reports only totalTokens).
+ * field omits it. Codex reports only totalTokens; triage supplies a Codex
+ * child's toolUses, its own count of the current execution's tool calls.
  */
 export interface SubagentProgress {
   taskId?: string;

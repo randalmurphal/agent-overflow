@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 )
@@ -1250,21 +1251,113 @@ func (s *Store) SubagentCompletedChildIndex(threadID, launchID string) (int, err
 }
 
 // SnapshotSubagentExecutionMeta returns immutable aggregates for one completed
-// execution. The caller persists the result on its new completion item only.
-// Child coordinates belong to the original spawn's AO turn.
-func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, itemMeta string, turnIndex, startIndex, endIndex int) (string, error) {
-	aggregates, err := subagentAggregatesByRound(s.reader(), threadID, []string{launchID}, []subagentRoundBounds{{
-		anchorID: launchID, rootID: launchID,
-		lo: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: startIndex + 1},
-		hi: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: endIndex + 1},
-	}})
-	if err != nil {
-		return "", err
+// execution, and its tool count (subagentExecutionToolCalls over the same
+// bounds). The caller persists the result on its new completion item only.
+// Child coordinates belong to the original spawn's AO turn. Both are read
+// from one snapshot.
+func (s *Store) SnapshotSubagentExecutionMeta(threadID, launchID, itemMeta string, turnIndex, startIndex, endIndex int) (string, int, error) {
+	type snapshot struct {
+		meta  string
+		tools int
 	}
-	aggregate := aggregates[launchID]
-	return mergeReadTimeMeta(itemMeta, map[string]any{
-		metaKeySubagentDescendantCount:    aggregate.descendantCount,
-		metaKeySubagentLatestChildSummary: aggregate.latestChildSummary,
+	got, err := readSnapshot(s.reader(), "subagent execution snapshot", func(q sqlQueryer) (snapshot, error) {
+		aggregates, err := subagentAggregatesByRound(q, threadID, []string{launchID}, []subagentRoundBounds{{
+			anchorID: launchID, rootID: launchID,
+			lo: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: startIndex + 1},
+			hi: &TimelineCursor{TurnIndex: turnIndex, ItemIndex: endIndex + 1},
+		}})
+		if err != nil {
+			return snapshot{}, err
+		}
+		aggregate := aggregates[launchID]
+		meta, err := mergeReadTimeMeta(itemMeta, map[string]any{
+			metaKeySubagentDescendantCount:    aggregate.descendantCount,
+			metaKeySubagentLatestChildSummary: aggregate.latestChildSummary,
+		})
+		if err != nil {
+			return snapshot{}, err
+		}
+		tools, _, err := subagentExecutionToolCalls(q, threadID, launchID, turnIndex, startIndex, int64(endIndex))
+		if err != nil {
+			return snapshot{}, err
+		}
+		return snapshot{meta: meta, tools: tools}, nil
+	})
+	return got.meta, got.tools, err
+}
+
+// SubagentExecutionToolCallsAfter counts the tool_call rows directly under
+// launchID in turnIndex after afterIndex, the rows of an execution that is
+// still running, and returns the highest counted index (afterIndex when
+// there is none). A count kept live from here adds the rows written after
+// that index.
+func (s *Store) SubagentExecutionToolCallsAfter(threadID, launchID string, turnIndex, afterIndex int) (count, last int, err error) {
+	return subagentExecutionToolCalls(s.reader(), threadID, launchID, turnIndex, afterIndex, math.MaxInt64)
+}
+
+// subagentExecutionToolCalls is an execution's tool count: the tool_call
+// rows directly under launchID in turnIndex with item_index in
+// (afterIndex, throughIndex], the rows a Codex completion card's digest
+// shows under the same bounds (resolveTimelineDigest). A nested agent's
+// launch is one of them; the rows under it are not. It also returns the
+// highest counted index, or afterIndex when there is none.
+func subagentExecutionToolCalls(q sqlQueryer, threadID, launchID string, turnIndex, afterIndex int, throughIndex int64) (count, last int, err error) {
+	source, args, err := timelineArms(q, threadID, timelineSelection{
+		Columns:  func(string, string) string { return "items.item_index AS item_index" },
+		KeyFirst: true,
+		Where: `items.parent_id <> '' AND items.parent_id = ? AND items.turn_index = ?
+		   AND items.item_index > ? AND items.item_index <= ? AND items.kind = 'tool_call'`,
+		WhereArgs: []any{launchID, turnIndex, afterIndex, throughIndex},
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	err = q.QueryRow("SELECT COUNT(*), COALESCE(MAX(item_index), ?) FROM ("+source+")", append([]any{afterIndex}, args...)...).Scan(&count, &last)
+	if err != nil {
+		return 0, 0, fmt.Errorf("store: count execution tool calls of %s/%s: %w", threadID, launchID, err)
+	}
+	return count, last, nil
+}
+
+// SubagentToolCallsSinceCompletion counts the tool_call rows directly under
+// launchID created after the launch's latest completion record and at or
+// before completedAt. A completion without execution bounds written at
+// completedAt covers exactly these rows: its digest slices the body by the
+// same timestamps (resolveTimelineDigest), so this is its tool count.
+func (s *Store) SubagentToolCallsSinceCompletion(threadID, launchID string, completedAt int64) (int, error) {
+	return readSnapshot(s.reader(), "subagent tool calls since completion", func(q sqlQueryer) (int, error) {
+		previous, args, err := timelineArms(q, threadID, timelineSelection{
+			Columns:   func(string, string) string { return "items.created_at AS created_at" },
+			KeyFirst:  true,
+			Where:     "items.completion_of <> '' AND items.completion_of = ?",
+			WhereArgs: []any{launchID},
+		})
+		if err != nil {
+			return 0, err
+		}
+		var started sql.NullInt64
+		if err := q.QueryRow("SELECT MAX(created_at) FROM ("+previous+")", args...).Scan(&started); err != nil {
+			return 0, fmt.Errorf("store: read latest completion of %s/%s: %w", threadID, launchID, err)
+		}
+		after := int64(math.MinInt64)
+		if started.Valid {
+			after = started.Int64
+		}
+		calls, args, err := timelineArms(q, threadID, timelineSelection{
+			Columns:  func(string, string) string { return "1 AS one" },
+			KeyFirst: true,
+			Where: `items.parent_id <> '' AND items.parent_id = ? AND items.kind = 'tool_call'
+			   AND items.created_at > ? AND items.created_at <= ?`,
+			WhereArgs: []any{launchID, after, completedAt},
+		})
+		if err != nil {
+			return 0, err
+		}
+		var count int
+		if err := q.QueryRow("SELECT COUNT(*) FROM ("+calls+")", args...).Scan(&count); err != nil {
+			return 0, fmt.Errorf("store: count tool calls since completion of %s/%s: %w", threadID, launchID, err)
+		}
+		return count, nil
 	})
 }
 

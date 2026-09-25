@@ -17,7 +17,8 @@ import (
 // A running subagent's counters — tool count, token spend, elapsed,
 // current activity line — are live UI state, never history: Claude
 // emits a `task_progress` tick after every tool round and Codex a
-// `thread/tokenUsage/updated` per child turn, and persisting each tick
+// `thread/tokenUsage/updated` per child turn (a Codex child's tool count
+// is triage's own, codex_execution_tools.go), and persisting each tick
 // would write a row per round for work the provider already records.
 // Triage therefore holds the LATEST tick per launch in memory, fans it
 // out on `provider:subagent_progress`, and persists only the FINAL
@@ -96,8 +97,15 @@ const subagentProgressCap = 4096
 func (r *Router) mergeLiveSubagentProgress(threadID, itemID string, tick provider.SubagentProgressMeta) provider.SubagentProgressMeta {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	merged := mergeSubagentProgress(r.state(threadID).subagentProgress[itemID], tick)
+	r.putLiveSubagentProgressLocked(threadID, itemID, merged)
+	return merged
+}
+
+// putLiveSubagentProgressLocked stores a launch's live entry. Callers
+// hold r.mu.
+func (r *Router) putLiveSubagentProgressLocked(threadID, itemID string, progress provider.SubagentProgressMeta) {
 	st := r.state(threadID)
-	merged := mergeSubagentProgress(st.subagentProgress[itemID], tick)
 	if len(st.subagentProgress) >= subagentProgressCap {
 		if _, present := st.subagentProgress[itemID]; !present {
 			// Bounded like the parser's task map: a runaway session must
@@ -112,8 +120,7 @@ func (r *Router) mergeLiveSubagentProgress(threadID, itemID string, tick provide
 	if st.subagentProgress == nil {
 		st.subagentProgress = make(map[string]provider.SubagentProgressMeta)
 	}
-	st.subagentProgress[itemID] = merged
-	return merged
+	st.subagentProgress[itemID] = progress
 }
 
 func mergeSubagentProgress(base, tick provider.SubagentProgressMeta) provider.SubagentProgressMeta {
@@ -328,6 +335,21 @@ func persistedSubagentProgress(meta string) provider.SubagentProgressMeta {
 		return provider.SubagentProgressMeta{}
 	}
 	return decoded.Progress
+}
+
+// withSubagentToolUses sets the tool count of the final numbers on a
+// record's meta and keeps its other counters.
+func withSubagentToolUses(meta string, tools int) (string, error) {
+	progress := persistedSubagentProgress(meta)
+	if progress.ToolUses == tools {
+		return meta, nil
+	}
+	progress.ToolUses = tools
+	encoded, err := json.Marshal(map[string]any{subagentProgressMetaKey: progress})
+	if err != nil {
+		return "", err
+	}
+	return mergeItemMetaJSON(meta, encoded), nil
 }
 
 // handleSubagentBackgrounded stamps the launch row as backgrounded

@@ -95,6 +95,9 @@ type codexBackgroundState struct {
 	// pendingAnswer maps launchID → a terminal execution whose completion
 	// row waits for the child's FINAL_ANSWER (codex_answer_completion.go).
 	pendingAnswer map[string]pendingCodexCompletion
+	// tools maps launchID → the running execution's live tool count
+	// (codex_execution_tools.go). An entry lives while its execution runs.
+	tools map[string]codexExecutionTools
 }
 
 func newCodexBackgroundState() *codexBackgroundState {
@@ -104,6 +107,7 @@ func newCodexBackgroundState() *codexBackgroundState {
 		spawnAgent:           make(map[string]*spawnAgentTracker),
 		agents:               make(map[string]store.Item),
 		pendingAnswer:        make(map[string]pendingCodexCompletion),
+		tools:                make(map[string]codexExecutionTools),
 	}
 }
 
@@ -256,7 +260,7 @@ func (r *Router) ClearLiveCodexBackgroundTasks(threadID string) {
 	if st := r.threadStateIfPresent(threadID); st != nil && st.codexBackground != nil {
 		prior := st.codexBackground
 		st.codexBackground = newCodexBackgroundState()
-		st.codexBackground.agents, st.codexBackground.spawnAgent = prior.agents, prior.spawnAgent
+		st.codexBackground.agents, st.codexBackground.spawnAgent, st.codexBackground.tools = prior.agents, prior.spawnAgent, prior.tools
 	}
 	r.mu.Unlock()
 	r.emitCodexBackgroundChanged(threadID)
