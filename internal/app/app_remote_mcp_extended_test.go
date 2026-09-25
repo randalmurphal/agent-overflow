@@ -88,10 +88,13 @@ func TestRemoteMCPExtendedToolsCrossPairedTLS(t *testing.T) {
 	t.Cleanup(destination.app.remoteJobs.Close)
 	thread, token := remoteMCPThread(t, source, "codex")
 	endpoint := remoteMCPEndpoint(t, source, thread, token)
+	// The wait is a tripwire, not the job's expected time: the receipt below
+	// must say succeeded, and a window the job can outrun on a loaded machine
+	// turns that into a backgrounded receipt (seen at 1s under a 20-load host).
 	id := uuid.NewString()
 	run := map[string]any{"computer_id": peer.ID, "project_id": project.ID, "request_id": id,
 		"script": script, "interpreter": []string{"test-interpreter", "--literal flag"},
-		"wait_seconds": 1, "max_output_bytes": 32, "label": "Training checkpoints"}
+		"wait_seconds": 30, "max_output_bytes": 32, "label": "Training checkpoints"}
 	run["label"] = "Training\ncheckpoints"
 	remoteMCPCall(t, endpoint, "remote_run", run, true)
 	if starts.Load() != 0 {
