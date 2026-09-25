@@ -232,3 +232,59 @@ func TestReplayLocalAgentOwnedShellWake(t *testing.T) {
 		t.Errorf("agent terminals/notifications = %d/%d, want 3/3 (one per stop)", agentTerminals, agentNotifications)
 	}
 }
+
+// On 2.1.280 a wake's task_started names the tool_use the task is bound
+// to, and the CLI hands a park to a mid-turn main agent again as XML on
+// the isReplay echo. The wake is still one wake row under the launch, and
+// the copy carries the park's report and its exact usage, which is how
+// triage knows it for a copy (agentStopCopy).
+func TestReplay2_1_280WakeAndStopCopy(t *testing.T) {
+	for _, tc := range []struct {
+		fixture, task, launch, shell string
+		park                         provider.SubagentProgressMeta
+	}{
+		{"local_agent_parked_copy_20260925.ndjson", "ae0560e47928f1770", "toolu_019b6ppXbQQYSo6twwNtbXSK", "toolu_01HpH31rs7JbWuYHbjWqcrQU",
+			provider.SubagentProgressMeta{TotalTokens: 16571, ToolUses: 1, DurationMs: 3309}},
+		{"local_agent_copy_before_wake_20260925.ndjson", "a6e07ce0454cad656", "toolu_01GV1XcazfvitjUCq6kqB6F4", "toolu_01Be3N9Jz3LWALE7XCwMK9jE",
+			provider.SubagentProgressMeta{TotalTokens: 16585, ToolUses: 1, DurationMs: 1895}},
+	} {
+		t.Run(tc.fixture, func(t *testing.T) {
+			events := replayFixture(t, "../../../docs/references/fixtures/claude/"+tc.fixture)
+			var wakes []provider.ProviderEvent
+			type stop struct {
+				summary string
+				usage   provider.SubagentProgressMeta
+			}
+			var stops []stop
+			for _, evt := range events {
+				meta := decodeEventMeta(t, evt)
+				if evt.Kind == provider.EventUserText && meta[provider.MetaSubagentWakePromptKey] == true {
+					wakes = append(wakes, evt)
+				}
+				if evt.Kind == provider.EventBackgroundTaskNotification && meta["task_id"] == tc.task {
+					var decoded struct {
+						Usage provider.SubagentProgressMeta `json:"usage"`
+					}
+					if err := json.Unmarshal(evt.Meta, &decoded); err != nil {
+						t.Fatalf("notification meta: %v", err)
+					}
+					stops = append(stops, stop{evt.Content, decoded.Usage})
+				}
+			}
+			if len(wakes) != 1 || wakes[0].ItemID != provider.SubagentWakePromptItemID(tc.shell) || wakes[0].ParentToolUseID != tc.launch {
+				t.Fatalf("wakes = %+v, want one for %s under %s", wakes, tc.shell, tc.launch)
+			}
+			if len(stops) != 3 {
+				t.Fatalf("agent notifications = %+v, want the park, its copy and the final stop", stops)
+			}
+			for i, want := range []stop{{"PAUSED", tc.park}, {"PAUSED", tc.park}} {
+				if stops[i] != want {
+					t.Fatalf("notification %d = %+v, want %+v", i, stops[i], want)
+				}
+			}
+			if stops[2].summary != "FINAL" || stops[2].usage.DurationMs <= tc.park.DurationMs {
+				t.Fatalf("final stop = %+v, want FINAL with a longer duration than the park", stops[2])
+			}
+		})
+	}
+}

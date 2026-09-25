@@ -325,6 +325,46 @@ func TestReconstructBackgroundStallPingSkipped(t *testing.T) {
 	}
 }
 
+// agentStopXML is one stop of a background agent as the CLI injects it
+// (2.1.280): the status line, the report in <result> and the <usage> that
+// names the stop.
+func agentStopXML(report string, durationMs int) string {
+	return "<task-notification>\n<task-id>agent1</task-id>\n<tool-use-id>toolu_agent</tool-use-id>\n<output-file>/tmp/agent1.output</output-file>\n<status>completed</status>\n" +
+		"<summary>Agent \"Pauser\" finished</summary>\n<result>" + report + "</result>\n" +
+		fmt.Sprintf("<usage><subagent_tokens>16571</subagent_tokens><tool_uses>1</tool_uses><duration_ms>%d</duration_ms></usage>\n</task-notification>", durationMs)
+}
+
+// An agent that parks stops again after it wakes, with the same task_id.
+// Each stop reconstructs its completion once, however often the history
+// repeats it, and carries the stop's usage.
+func TestReconstructAgentStopsDedupByStop(t *testing.T) {
+	rp := newReconParser(t)
+
+	park := agentStopXML("PAUSED", 3309)
+	final := agentStopXML("FINAL", 64370)
+	rp.drive("", bgResumeReqBodyMulti(park), endTurnSSE())
+	rp.drive("", bgResumeReqBodyMulti(park), endTurnSSE())
+	rp.drive("", bgResumeReqBodyMulti(park, final), endTurnSSE())
+	rp.drive("", bgResumeReqBodyMulti(park, final), endTurnSSE())
+
+	notifs := findKind(rp.out, provider.EventBackgroundTaskNotification)
+	if len(notifs) != 2 || notifs[0].Content != "PAUSED" || notifs[1].Content != "FINAL" {
+		t.Fatalf("notifications = %v, want the park and the final stop once each", notifs)
+	}
+	if got := len(findKind(rp.out, provider.EventBackgroundTaskTerminal)); got != 2 {
+		t.Fatalf("EventBackgroundTaskTerminal=%d want 2, one per stop", got)
+	}
+	var meta struct {
+		Usage provider.SubagentProgressMeta `json:"usage"`
+	}
+	if err := json.Unmarshal(notifs[1].Meta, &meta); err != nil {
+		t.Fatalf("notification meta: %v", err)
+	}
+	if want := (provider.SubagentProgressMeta{TotalTokens: 16571, ToolUses: 1, DurationMs: 64370}); meta.Usage != want {
+		t.Fatalf("final stop usage = %+v, want %+v", meta.Usage, want)
+	}
+}
+
 // TestReconstructBackgroundCompletionDedup pins the seen-set: the terminal
 // <task-notification> stays in conversation history and recurs in every later
 // request body, but it must reconstruct the completion exactly once.

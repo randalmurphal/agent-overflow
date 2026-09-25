@@ -33,9 +33,9 @@ type backgroundTaskNotificationMeta struct {
 	// exactly one envelope — this one — and the parser forwards it under
 	// `usage` as a provider.SubagentProgressMeta (parse_system.go
 	// §buildBackgroundTaskNotificationEvent; the key and type are
-	// contract). Zero value when the envelope reported none: the
-	// synthetic-XML channel never carries it, and neither does a
-	// `local_bash` bookend.
+	// contract). Zero value when the envelope reported none, as a
+	// `local_bash` bookend never does. It also names the stop: a copy of
+	// an agent's stop reports the same numbers (agentStopCopy).
 	Usage provider.SubagentProgressMeta `json:"usage"`
 }
 
@@ -126,6 +126,18 @@ func (r *Router) handleBackgroundTaskNotification(evt provider.ProviderEvent) er
 			evt.ThreadID, meta.TaskID, ClampErrorSummary(evt.Content),
 		)
 		return nil
+	}
+
+	// A repeat of an agent's recorded stop writes nothing, its numbers
+	// included.
+	if launch.IsBackground && store.IsAgentTranscriptLaunch(launch) {
+		copied, err := r.agentStopCopy(evt.ThreadID, launch, meta.Usage)
+		if err != nil {
+			return err
+		}
+		if copied {
+			return nil
+		}
 	}
 
 	// The agent's final numbers, before any of the row work below and on
@@ -913,6 +925,9 @@ func backgroundNotificationCompletionMeta(
 	}
 	if meta.ParentToolUseID != "" {
 		fields["parent_tool_use_id"] = meta.ParentToolUseID
+	}
+	if meta.Usage != (provider.SubagentProgressMeta{}) {
+		fields[notificationUsageMetaKey] = meta.Usage
 	}
 	data, err := json.Marshal(fields)
 	if err != nil {

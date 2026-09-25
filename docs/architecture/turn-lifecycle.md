@@ -339,9 +339,9 @@ An async agent that launches a backgrounded Bash and stops before it
 reports is PARKED by the CLI, not done: it stops with the ordinary
 `task_updated{completed}` + `task_notification` pair, and when the
 shell reports the CLI wakes it with a `task_started` carrying the SAME
-`task_id`, the shell's `<task-notification>` as `prompt`, and NO
-`tool_use_id`
-([claude-wire.md §E6b](../references/claude-wire.md#e6b-waking-a-parked-async-agent-task_started-without-tool_use_id)).
+`task_id`, the shell's `<task-notification>` as `prompt`, and no new
+`tool_use_id` (none on 2.1.261, the bound one on 2.1.280)
+([claude-wire.md §E6b](../references/claude-wire.md#e6b-waking-a-parked-async-agent-task_started-with-no-new-tool_use_id)).
 The wire cannot tell a pause from a final stop; AO decides from what it
 already knows.
 
@@ -356,13 +356,20 @@ already knows.
   the stop's usage. It settles nothing and ends nothing. No agent stop
   writes a bell. The live list serves the launch's run state from its
   newest stop
-  ([claude-wire.md §E6b](../references/claude-wire.md#e6b-waking-a-parked-async-agent-task_started-without-tool_use_id)).
+  ([claude-wire.md §E6b](../references/claude-wire.md#e6b-waking-a-parked-async-agent-task_started-with-no-new-tool_use_id)).
 - The wake is one `EventUserText` from the parser
   (`user:subagent-wake:<shell tool_use_id>`, meta
   `subagent_wake_prompt`). `persistWakePromptRow` drops the stash and
   files the row under the ROOT on the launch's turn. It is not
   provisional (no transcript row will ever bind it) and it carries no
   `subagent_resume_prompt`, so it never cuts the §E6 round slicing.
+- A notification whose usage matches the usage the launch's newest stop
+  recorded (`notification_usage`, queued or stored) is a copy of that
+  stop and writes nothing (`agentStopCopy`): the CLI hands a stop to a
+  mid-turn main agent again, and that copy can arrive while the agent is
+  parked or after its shell reported but before the wake. A notification
+  without usage is never a copy. claude-tui dedups its reconstructed
+  stops by the same identity (`taskStopKey`).
 - Only a stop whose typed status can be a pause parks: a completed or
   statusless report. A killed, stopped or failed report ends the agent
   however many shells it owns (`taskStatusEnds`).

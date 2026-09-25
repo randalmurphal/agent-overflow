@@ -57,6 +57,23 @@ behavior. These back parser replay tests and the reference docs in
   further notification, `background_tasks_changed` empties, and its
   owned shell is killed with it (`killed` + `task_notification{stopped}`).
   Nothing wakes.
+- `local_agent_parked_copy_20260925.ndjson`: a background agent on
+  2.1.280 parks on its own backgrounded Bash while the main agent is in
+  a foreground tool call, so the CLI hands the park to the model again
+  as `<task-notification>` XML on the `isReplay` echo, while the shell
+  still runs. The copy's `<result>` and `<usage>` repeat the structured
+  envelope's `summary` and `usage`. The wake `task_started` names the
+  bound tool_use (claude-wire.md §Wake shape). Backs
+  `TestReplay2_1_280WakeAndStopCopy` and triage's
+  `TestAgentStopCopyWhileParkedWritesNoSecondCard`.
+- `local_agent_copy_before_wake_20260925.ndjson`: the same, with the
+  shell reporting before the main agent's tool call returns: the copy
+  arrives after the shell's terminal and before the wake, which waits
+  for the main agent's turn to end. Backs triage's
+  `TestAgentStopCopyBeforeWakeDoesNotEndTheAgent`.
+
+  Both: `system/init` and `rate_limit_event` dropped; host paths
+  synthetic; every other line byte-identical to the capture.
 - `send_message_ack_20260904.ndjson`: two `SendMessage` round-trips on
   2.1.257, a refusal (`to: "A"`, no such agent) and a queued send to a
   live agent by id. Proves the `tool_result` block is `is_error:false`

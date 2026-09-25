@@ -3,6 +3,7 @@ package claudetui
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"agent-overflow/internal/provider/claude"
@@ -114,11 +115,12 @@ type reconstructor struct {
 	userEchoes []pendingUserEcho
 
 	// seenTaskTerminals dedups reconstructed background-task completions by
-	// task_id. A terminal <task-notification> stays in the conversation history,
-	// so it recurs in every later request body; without this we'd re-stash and
-	// re-drain the same completion on each request. One entry per backgrounded
-	// task that completed (bounded by a session's background-task count). Guarded
-	// by the session's recMu (begin/end/interrupt). See emitBackgroundCompletions.
+	// stop (taskStopKey). A terminal <task-notification> stays in the
+	// conversation history, so it recurs in every later request body; without
+	// this we'd re-stash and re-drain the same completion on each request. One
+	// entry per stop of a backgrounded task (bounded by a session's background
+	// stops). Guarded by the session's recMu (begin/end/interrupt). See
+	// emitBackgroundCompletions.
 	seenTaskTerminals map[string]struct{}
 
 	// Subagent correlation (Claude `Agent`/`Task` tool). A subagent's
@@ -301,6 +303,9 @@ var taskNotificationProbe = []byte("<task-notification")
 // stays in history and recurs in every later request body. Covers backgrounded Bash
 // commands and backgrounded agents alike; both share the tag shape.
 //
+// Dedup is by stop, not by task: an agent that parks stops again after it wakes,
+// with the same task_id, and each stop's <usage> names it (taskStopKey).
+//
 // Caller holds the session recMu (beginAgentRequest).
 func (r *reconstructor) emitBackgroundCompletions(messages []json.RawMessage) {
 	eachTaskNotification(messages, func(fields claude.TaskNotificationFields, ok bool) bool {
@@ -312,16 +317,28 @@ func (r *reconstructor) emitBackgroundCompletions(messages []json.RawMessage) {
 			r.logBgDecision(decisionLog{Event: "bg_completion", TaskID: fields.TaskID, ToolUseID: fields.ToolUseID, Status: fields.Status, Action: "skipped-statusless"})
 			return true // statusless stall ping — the task is still running
 		}
-		if _, seen := r.seenTaskTerminals[fields.TaskID]; seen {
+		key := taskStopKey(fields)
+		if _, seen := r.seenTaskTerminals[key]; seen {
 			r.logBgDecision(decisionLog{Event: "bg_completion", TaskID: fields.TaskID, ToolUseID: fields.ToolUseID, Status: fields.Status, Action: "deduped"})
 			return true
 		}
-		r.seenTaskTerminals[fields.TaskID] = struct{}{}
+		r.seenTaskTerminals[key] = struct{}{}
 		r.emit(taskUpdatedLine(fields.TaskID, fields.ToolUseID, fields.Status))
-		r.emit(taskNotificationLine(fields.TaskID, fields.ToolUseID, fields.Status, fields.OutputFile, fields.EnvelopeSummary()))
+		r.emit(taskNotificationLine(fields))
 		r.logBgDecision(decisionLog{Event: "bg_completion", TaskID: fields.TaskID, ToolUseID: fields.ToolUseID, Status: fields.Status, Action: "emitted"})
 		return true // process every notification in the body
 	})
+}
+
+// taskStopKey identifies one stop of a task: its task_id and, for an agent's
+// stop, the `<usage>` it reports, which grows with every stop (the agent's
+// duration runs from its launch). A command stops once, so its task_id alone
+// names its stop.
+func taskStopKey(fields claude.TaskNotificationFields) string {
+	if !fields.UsageSet {
+		return fields.TaskID
+	}
+	return fmt.Sprintf("%s@%d/%d/%d", fields.TaskID, fields.Usage.DurationMs, fields.Usage.ToolUses, fields.Usage.TotalTokens)
 }
 
 // eachTaskNotification invokes fn for every <task-notification> carried by an

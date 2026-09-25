@@ -63,6 +63,37 @@ func (r *Router) handleAgentStop(evt provider.ProviderEvent, meta backgroundTask
 	return r.writeNotificationTerminal(evt, meta, launch, nil, &report)
 }
 
+// notificationUsageMetaKey records, on a stop's row, the usage of the
+// notification that recorded the stop (backgroundNotificationCompletionMeta).
+const notificationUsageMetaKey = "notification_usage"
+
+// agentStopCopy reports whether an agent's notification repeats the stop
+// its newest row records. The CLI hands a stop to the model again when
+// the model is mid-turn, as `<task-notification>` XML on the `isReplay`
+// echo at its next tool round (claude-wire.md §Synthetic-XML), and that
+// copy can arrive while the agent is still parked, or after its command
+// reported but before it woke. The usage a stop reports names it: the
+// copy reports the same numbers, and a later stop reports a longer
+// duration, since the agent's duration runs from its launch. A
+// notification without usage, such as the one a kill sends, is never a
+// copy.
+func (r *Router) agentStopCopy(threadID string, launch store.Item, usage provider.SubagentProgressMeta) (bool, error) {
+	if usage == (provider.SubagentProgressMeta{}) {
+		return false, nil
+	}
+	stop, found, err := r.newestStopRow(threadID, launch.ID)
+	if err != nil || !found {
+		return false, err
+	}
+	var meta struct {
+		Usage provider.SubagentProgressMeta `json:"notification_usage"`
+	}
+	if json.Unmarshal([]byte(stop.Meta), &meta) != nil {
+		return false, nil
+	}
+	return meta.Usage == usage, nil
+}
+
 // agentStopReport is how a stop's row records the agent's report: the
 // payload whose preview is the report head (the card's collapsed answer)
 // and the notification state the card reads it by. An agent's

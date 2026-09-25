@@ -690,30 +690,27 @@ correlation rather than requiring the row to exist.
 For `task_type: "local_agent"`, the envelope also carries:
 - `prompt`: the subagent's initial prompt (non-SDK, observed on the wire)
 
-### Wake shape: no `tool_use_id`
+### Wake shape
 
-A third `task_started` shape, for `local_agent` only, carries NO
-`tool_use_id` at all. It is the CLI WAKING a parked async agent (an
-agent that stopped while a backgrounded shell it launched was still
-running; §E6b): same `task_id` as the launch, `is_backgrounded:true`,
-`spawn_depth`, and a `prompt` holding the shell's `<task-notification>`
-XML. Nothing rebinds; the lifecycle stays on whichever tool_use it was
-last bound to (the launch, or a §E6 carrier). Captured on 2.1.261
-(2026-09-08).
-
-A `local_agent` `task_started` that names the tool_use its task is
-already bound to while carrying a `<task-notification>` prompt is
-unmodeled: no capture shows it as a wake, so the parser writes no wake
-row for it, records no transcript root from it, and logs
-`claude: unmodeled wake shape` with the bound tool_use, the task and the
-tool_uses the prompt names (`traceReannouncedAgentTask`).
+A third `task_started` shape, for `local_agent` only, is the CLI WAKING
+a parked async agent (an agent that stopped while a backgrounded shell
+it launched was still running; §E6b): same `task_id` as the launch,
+`is_backgrounded:true`, `spawn_depth`, and a `prompt` holding the
+shell's `<task-notification>` XML. Nothing rebinds; the lifecycle stays
+on whichever tool_use it was last bound to (the launch, or a §E6
+carrier). 2.1.261 sends it with NO `tool_use_id` (captured 2026-09-08);
+2.1.280 names the tool_use the task is bound to (captured 2026-09-25).
+The parser takes either as the wake: no `tool_use_id`, or the bound one
+with a `<task-notification>` prompt. A re-announce of the bound tool_use
+without one is not a wake. Neither records a transcript root.
 
 ### Parser action
 The adapter emits a meta-update `EventToolStart` carrying
 `task_id` in meta so triage can persist the
 `task_id ↔ tool_use_id` mapping onto the existing `tool_call` row, which
-is needed for reconnect correlation. The wake shape instead emits ONE
-`EventUserText` (`parseTaskWakeEvent`): id
+is needed for reconnect correlation. A wake emits ONE
+`EventUserText` (`parseTaskWakeEvent`), after that meta-update when it
+names the bound tool_use: id
 `user:subagent-wake:<waking shell tool_use_id>`, parent = the bound
 tool_use, content = the notification `<summary>` text, meta
 `subagent_wake_prompt` (never `subagent_resume_prompt`, which is the
@@ -955,8 +952,16 @@ The 5s-subagent-alone scenario (no concurrent foreground tool) emits
 the structured envelope as documented above and never the inline XML.
 For a command the two channels are mutually exclusive in practice. An
 agent's stop can arrive on both: the structured envelope first, then the
-same XML on the `isReplay` echo when the model consumes the queued
-notification at its next tool round.
+same XML on the `isReplay` echo (`origin:{kind:"task-notification"}`)
+when the model consumes the queued notification at its next tool round.
+For a parked stop that copy can arrive while the agent is still parked,
+or after its shell reported but before the wake: the CLI wakes the agent
+only once the main agent's turn ends (fixtures
+`local_agent_parked_copy_20260925.ndjson`,
+`local_agent_copy_before_wake_20260925.ndjson`). The copy's `<usage>`
+matches the envelope's `usage` exactly, and every later stop reports a
+longer `duration_ms` (it runs from the launch), so the usage names the
+stop ([turn lifecycle](../architecture/turn-lifecycle.md#parking-an-async-agent-whose-owned-shell-outlives-its-stop)).
 
 An agent's block (`enqueueAgentNotification`, 2.1.280) escapes every
 child and adds sections after `<summary>`:
@@ -968,7 +973,9 @@ child and adds sections after `<summary>`:
 <usage><subagent_tokens>…</subagent_tokens><tool_uses>…</tool_uses><duration_ms>…</duration_ms></usage>
 ```
 
-`<summary>` is a status line, never the report: `finished`,
+`<usage>` is the structured envelope's `usage`, with the agent's tokens
+as `<subagent_tokens>` (`<total_tokens>` before 2.1.280). `<summary>` is
+a status line, never the report: `finished`,
 `failed: <error>`, `was stopped`, `was stopped by user`,
 `was stopped by Claude`, `was stopped: <error>`, or
 `stopped at its N-turn limit (…)`. The report is `<result>`, absent when
@@ -2186,11 +2193,13 @@ task_started / ack / task_updated / task_notification, twice, where the
 second round's `task_started` and `tool_use_id`s are the resuming
 tool's own).
 
-### E6b: Waking a parked async agent (`task_started` without `tool_use_id`)
+### E6b: Waking a parked async agent (`task_started` with no new `tool_use_id`)
 
 Confirmed by five live spikes against claude 2.1.261 (2026-09-08),
 each checked in under `fixtures/claude/local_agent_*_20260908.ndjson`
-(the README names which is which).
+(the README names which is which), and by two against 2.1.280
+(2026-09-25, `local_agent_*_20260925.ndjson`), where the wake names the
+bound tool_use (§Wake shape).
 
 **The wire.** An async agent (§E5) that launches a backgrounded Bash
 (`owned_by_subagent:true` on the shell's `task_started`) and then
@@ -2210,7 +2219,7 @@ with the shell's notification as the prompt:
 {"type":"system","subtype":"task_started","task_id":"ac1bb517c3154d44b","description":"Spike A","subagent_type":"general-purpose","is_backgrounded":true,"spawn_depth":1,"task_type":"local_agent","prompt":"<task-notification>\n<task-id>b2ken8z52</task-id>\n<tool-use-id>toolu_01C1sBpMABwBJ4cT5J1PhGqR</tool-use-id>\n<output-file>…/tasks/b2ken8z52.output</output-file>\n<status>completed</status>\n<summary>Background command \"sleep 12; echo ONE\" completed (exit code 0)</summary>\n</task-notification>","uuid":"19b80e0f-…"}
 ```
 
-No `tool_use_id`. The level set re-adds the agent. The woken round's
+No `tool_use_id` (2.1.280: the bound one). The level set re-adds the agent. The woken round's
 sidechain rows carry `parent_tool_use_id` = the ORIGINAL launch (the
 transcript root, as in §E6), its `task_progress` ticks name the
 launch, and its closing `task_updated` / `task_notification` name no

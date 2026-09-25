@@ -844,7 +844,9 @@ func (p *Parser) parseTaskStartedEvent(
 		case existingRef.ToolUseID == toolUseID:
 			// The task is already bound to this tool_use: no new
 			// binding, so nothing here names a transcript root. The
-			// bound call may be a carrier.
+			// bound call may be a carrier. With a `<task-notification>`
+			// prompt this is a wake: 2.1.280 names the bound tool_use
+			// where earlier CLIs named none (claude-wire.md §E6b).
 			reannounced = true
 		case existingRef.ToolUseID != "":
 			resumesToolUseID = existingRef.ToolUseID
@@ -886,9 +888,6 @@ func (p *Parser) parseTaskStartedEvent(
 		// bound call is a carrier, never a root.
 		if !isResume && !reannounced {
 			p.rememberTaskTranscriptRoot(taskID, toolUseID)
-		}
-		if reannounced {
-			traceReannouncedAgentTask(threadID, taskID, toolUseID, readRawString(raw["prompt"]))
 		}
 		p.noteMirrorTaskScope(taskID, toolUseID, true)
 	} else if ownedBackgroundTaskStarted(raw) {
@@ -990,6 +989,9 @@ func (p *Parser) parseTaskStartedEvent(
 			events = append(events, *prompt)
 		}
 	}
+	if reannounced && len(ExtractAllTaskNotificationFields(readRawString(raw["prompt"]))) > 0 {
+		events = append(events, p.parseTaskWakeEvent(threadID, taskID, raw, now)...)
+	}
 	return events, nil
 }
 
@@ -1000,10 +1002,11 @@ func (p *Parser) parseTaskStartedEvent(
 // stop — and when the shell reports, the CLI resumes the agent from its
 // transcript with the shell's `<task-notification>` as the prompt. That
 // resume is a `task_started` with the SAME task_id, `task_type:
-// "local_agent"` and NO tool_use_id: unlike a §E6 SendMessage resume,
-// nothing rebinds, the lifecycle stays on the tool_use the task is bound
-// to, and every sidechain row of the woken round keeps naming the
-// transcript root.
+// "local_agent"` and either NO tool_use_id (2.1.261) or the one the task
+// is bound to (2.1.280): unlike a §E6 SendMessage resume, nothing
+// rebinds, the lifecycle stays on the tool_use the task is bound to, and
+// every sidechain row of the woken round keeps naming the transcript
+// root.
 //
 // This envelope is the only record of what woke the agent and the only
 // wire signal that it is live again, so it becomes ONE EventUserText: a
@@ -1101,25 +1104,6 @@ func ownedBackgroundTaskStarted(raw map[string]json.RawMessage) bool {
 		}
 	}
 	return backgrounded
-}
-
-// traceReannouncedAgentTask logs a local_agent task_started that names the
-// tool_use its task is already bound to while carrying a
-// `<task-notification>` prompt. That is the payload of a wake
-// (claude-wire.md §E6b), but every captured wake names no tool_use, so
-// this shape is unmodeled: it writes no wake row and drops no parked
-// terminal. The line names what a capture of it needs.
-func traceReannouncedAgentTask(threadID, taskID, toolUseID, prompt string) {
-	blocks := ExtractAllTaskNotificationFields(prompt)
-	if len(blocks) == 0 {
-		return
-	}
-	waking := make([]string, 0, len(blocks))
-	for _, block := range blocks {
-		waking = append(waking, firstNonEmpty(block.ToolUseID, block.TaskID))
-	}
-	log.Printf("claude: unmodeled wake shape: local_agent task_started re-announces bound tool_use %s for task %s on thread %s with a task-notification prompt for %s; no wake row written",
-		toolUseID, taskID, threadID, strings.Join(waking, ","))
 }
 
 // resumePromptEvent builds the row that says WHAT the model asked a
@@ -1480,8 +1464,8 @@ type backgroundTaskNotificationFields struct {
 	// provider.SubagentProgressMeta so triage can fold it onto the launch
 	// row's persisted final progress without depending on a live tick
 	// having survived. UsageSet distinguishes "the envelope reported all
-	// zeros" from "the envelope reported nothing"; the synthetic
-	// `<task-notification>` XML path never sets it.
+	// zeros" from "the envelope reported nothing". The synthetic
+	// `<task-notification>` XML path sets it from the block's `<usage>`.
 	Usage    provider.SubagentProgressMeta
 	UsageSet bool
 }

@@ -369,8 +369,10 @@ Discriminators, all matching headless:
   `<task-notification>`; a foreground tool returns its result inline as a
   tool_result in the same turn. An inline run therefore never produces a separate
   completion row, which is the desired UX.
-- **Dedup by `task_id`.** The notification persists in conversation history and
-  recurs in every later request body; a per-session seen-set reconstructs it once.
+- **Dedup by stop.** The notification persists in conversation history and
+  recurs in every later request body; a per-session seen-set reconstructs each
+  stop once. A parked agent stops again with the same `task_id`, so an agent's
+  stop is keyed by its `<usage>` too (`taskStopKey`).
 
 Field extraction reuses `claude.ExtractAllTaskNotificationFields`, so the tag
 shape stays drift-free with the shared parser's synthetic-XML path.

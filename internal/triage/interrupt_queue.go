@@ -83,6 +83,32 @@ func (r *Router) rowWrittenOrQueued(threadID, id string) (bool, error) {
 	return found, nil
 }
 
+// newestStopRow is the newest completion-shaped sibling of launchID,
+// parked or ending, where its write waits: queued behind an open stream,
+// else in the store (Store.NewestAgentStop). A queued row is newer than
+// every stored one. The drain lock keeps a drain from moving the row
+// from the queue to the store between the two lookups.
+func (r *Router) newestStopRow(threadID, launchID string) (store.Item, bool, error) {
+	lock := r.drainLock(threadID)
+	lock.Lock()
+	defer lock.Unlock()
+	r.mu.Lock()
+	if st := r.threadStateIfPresent(threadID); st != nil {
+		for i := len(st.interruptQueue) - 1; i >= 0; i-- {
+			if queued := st.interruptQueue[i].item; queued.CompletionOf == launchID && queued.Kind == itemKindBackgroundDone {
+				r.mu.Unlock()
+				return queued, true, nil
+			}
+		}
+	}
+	r.mu.Unlock()
+	stop, found, err := r.store.NewestAgentStop(threadID, launchID)
+	if err != nil {
+		return store.Item{}, false, fmt.Errorf("triage: newest stop of %s/%s: %w", threadID, launchID, err)
+	}
+	return stop, found, nil
+}
+
 // patchWrittenRow applies patch to row id of threadID where its latest
 // write waits: queued behind an open stream, where the row then lands
 // patched in its one write, or in the store, where it is written again.

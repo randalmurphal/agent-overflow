@@ -499,6 +499,11 @@ type TaskNotificationFields struct {
 	// Result is a `local_agent` stop's final report, the `<result>`
 	// section after its `<summary>` bell. Commands have none.
 	Result string
+	// Usage is a `local_agent` stop's `<usage>` counters, the same
+	// numbers the structured envelope's `usage` reports for that stop;
+	// UsageSet says the block carried any. Commands have none.
+	Usage    provider.SubagentProgressMeta
+	UsageSet bool
 }
 
 // EnvelopeSummary is the `summary` the structured
@@ -565,8 +570,8 @@ func ExtractAllTaskNotificationFields(content string) []TaskNotificationFields {
 // Tags are extracted by shallow substring scan; the upstream wire shape
 // (LocalShellTask.tsx / LocalAgentTask.tsx) keeps the children we read
 // non-nested and XML-escaped. Of the sections an agent notification
-// adds after `<summary>`, `<result>` is read and `<note>`, `<usage>` and
-// `<worktree>` are ignored — each child is matched by its own tag.
+// adds after `<summary>`, `<result>` and `<usage>` are read and `<note>`
+// and `<worktree>` are ignored — each child is matched by its own tag.
 func scanTaskNotification(content string, from int) (TaskNotificationFields, int) {
 	const openPrefix = "<task-notification"
 	const closeTag = "</task-notification>"
@@ -597,7 +602,34 @@ func scanTaskNotification(content string, from int) (TaskNotificationFields, int
 		Summary:    extractXMLChild(body, "summary"),
 		Result:     extractXMLChild(body, "result"),
 	}
+	fields.Usage, fields.UsageSet = xmlTaskUsage(body)
 	return fields, from + closeIdx + len(closeTag)
+}
+
+// xmlTaskUsage reads a `<usage>` section's counters, the XML form of the
+// structured envelope's `usage` (readTaskUsage). The agent's tokens are
+// `<subagent_tokens>` (2.1.280), `<total_tokens>` on older CLIs.
+func xmlTaskUsage(body string) (provider.SubagentProgressMeta, bool) {
+	usage := extractXMLChild(body, "usage")
+	if usage == "" {
+		return provider.SubagentProgressMeta{}, false
+	}
+	var counters provider.SubagentProgressMeta
+	var any bool
+	if n, err := strconv.Atoi(extractXMLChild(usage, "tool_uses")); err == nil {
+		counters.ToolUses, any = n, true
+	}
+	tokens := extractXMLChild(usage, "subagent_tokens")
+	if tokens == "" {
+		tokens = extractXMLChild(usage, "total_tokens")
+	}
+	if n, err := strconv.ParseInt(tokens, 10, 64); err == nil {
+		counters.TotalTokens, any = n, true
+	}
+	if n, err := strconv.ParseInt(extractXMLChild(usage, "duration_ms"), 10, 64); err == nil {
+		counters.DurationMs, any = n, true
+	}
+	return counters, any
 }
 
 // extractXMLChild returns the trimmed, entity-decoded inner text of
@@ -626,7 +658,8 @@ func extractXMLChild(body, tag string) string {
 // `<task-notification>` payload through the shared
 // EventBackgroundTaskNotification builder so triage receives identical
 // inputs whichever wire path Claude chose: an agent's report rides as
-// the summary, as it does on the structured envelope. The XML wrapper
+// the summary and its `<usage>` as the usage, as they do on the
+// structured envelope. The XML wrapper
 // doesn't expose `parent_tool_use_id`; the shared builder falls back to
 // the parser's task_id ↔ tool_use_id map for it.
 //
@@ -645,5 +678,7 @@ func (p *Parser) replayTaskNotificationEvents(threadID string, fields TaskNotifi
 		OutputFile: fields.OutputFile,
 		Summary:    fields.EnvelopeSummary(),
 		UUID:       envelopeUUID,
+		Usage:      fields.Usage,
+		UsageSet:   fields.UsageSet,
 	}, now)}
 }

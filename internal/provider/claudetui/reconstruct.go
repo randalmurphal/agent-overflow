@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"strings"
+
+	"agent-overflow/internal/provider/claude"
 )
 
 // reconstruct.go turns the raw Anthropic /v1/messages SSE stream of one agent
@@ -154,13 +156,22 @@ type apiRetryEnvelope struct {
 // drains the stash the task_updated left and writes the tool_completion sibling at
 // the current write head.
 type taskNotificationEnvelope struct {
-	Type       string `json:"type"`    // "system"
-	Subtype    string `json:"subtype"` // "task_notification"
-	TaskID     string `json:"task_id"`
-	ToolUseID  string `json:"tool_use_id,omitempty"`
-	Status     string `json:"status,omitempty"`
-	OutputFile string `json:"output_file,omitempty"`
-	Summary    string `json:"summary,omitempty"`
+	Type       string                 `json:"type"`    // "system"
+	Subtype    string                 `json:"subtype"` // "task_notification"
+	TaskID     string                 `json:"task_id"`
+	ToolUseID  string                 `json:"tool_use_id,omitempty"`
+	Status     string                 `json:"status,omitempty"`
+	OutputFile string                 `json:"output_file,omitempty"`
+	Summary    string                 `json:"summary,omitempty"`
+	Usage      *taskNotificationUsage `json:"usage,omitempty"`
+}
+
+// taskNotificationUsage is the structured envelope's `usage`, which an
+// agent's stop reports.
+type taskNotificationUsage struct {
+	TotalTokens int64 `json:"total_tokens"`
+	ToolUses    int   `json:"tool_uses"`
+	DurationMs  int64 `json:"duration_ms"`
 }
 
 // --- per-turn assembler ---------------------------------------------------
@@ -458,18 +469,26 @@ func taskUpdatedLine(taskID, toolUseID, status string) json.RawMessage {
 }
 
 // taskNotificationLine synthesizes the system/task_notification envelope fed right
-// after taskUpdatedLine, carrying the summary and output_file triage reads onto the
-// tool_completion sibling it writes when it drains the task_updated stash.
-func taskNotificationLine(taskID, toolUseID, status, outputFile, summary string) json.RawMessage {
-	return mustMarshal(taskNotificationEnvelope{
+// after taskUpdatedLine, carrying the summary, output_file and usage triage reads
+// onto the tool_completion sibling it writes when it drains the task_updated stash.
+func taskNotificationLine(fields claude.TaskNotificationFields) json.RawMessage {
+	envelope := taskNotificationEnvelope{
 		Type:       "system",
 		Subtype:    "task_notification",
-		TaskID:     taskID,
-		ToolUseID:  toolUseID,
-		Status:     status,
-		OutputFile: outputFile,
-		Summary:    summary,
-	})
+		TaskID:     fields.TaskID,
+		ToolUseID:  fields.ToolUseID,
+		Status:     fields.Status,
+		OutputFile: fields.OutputFile,
+		Summary:    fields.EnvelopeSummary(),
+	}
+	if fields.UsageSet {
+		envelope.Usage = &taskNotificationUsage{
+			TotalTokens: fields.Usage.TotalTokens,
+			ToolUses:    fields.Usage.ToolUses,
+			DurationMs:  fields.Usage.DurationMs,
+		}
+	}
+	return mustMarshal(envelope)
 }
 
 // compactBoundaryLine synthesizes the system:compact_boundary envelope for a

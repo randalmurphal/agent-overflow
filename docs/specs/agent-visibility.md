@@ -102,7 +102,9 @@ resume, up to the stop. A parked card also shows the `parked` indicator,
 "Reported, waiting on N background command(s)" ("Reported again" for a
 woken run), and the report head collapsed; expanded, it shows the full
 report, loaded by id, above the digest. Ending cards read as other
-completion cards do. A resume carrier's runs write
+completion cards do. A repeat of a stop the CLI sends later, such as the
+copy a mid-turn main agent receives, writes nothing: the stop's usage
+names it ([claude-wire.md](../references/claude-wire.md#synthetic-xml-delivery-channel-concurrent-tool-path)). A resume carrier's runs write
 their own siblings, so its cards follow the launch's, and nothing keyed on
 the task id merges the runs of a launch and its carriers. An agent's stop
 rings no bell, and nothing hides a stop's card later.

@@ -3,7 +3,6 @@ package claude
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 
 	"agent-overflow/internal/provider"
@@ -225,11 +224,12 @@ func TestTaskTranscriptRootsAreBoundedAndReleased(t *testing.T) {
 // recovery carrier toolu_01HSTnk rebinds the task with no prior binding,
 // toolu_011HU resumes it, the CLI then announces toolu_011HU again while
 // the task is bound to it (the round parked and was woken; the envelope
-// carried the waking shell's notification), and toolu_01Gv4d9h resumes
-// it once more. The parser never learned the root, so no carrier may name
-// one: FAILS pre-fix, where the re-announce recorded toolu_011HU as the
-// task's root and toolu_01Gv4d9h and its resume prompt named that
-// carrier.
+// carried the waking shell's notification, the 2.1.280 wake shape), and
+// toolu_01Gv4d9h resumes it once more. The re-announce is the carrier
+// round's wake. The parser never learned the root, so no carrier and no
+// wake may name one: FAILS pre-fix, where the re-announce recorded
+// toolu_011HU as the task's root and toolu_01Gv4d9h and its resume prompt
+// named that carrier.
 func TestParseTaskStarted_ReannouncedCarrierBindingNamesNoRoot(t *testing.T) {
 	const (
 		task     = "aeb391c5ca059d78f"
@@ -263,22 +263,25 @@ func TestParseTaskStarted_ReannouncedCarrierBindingNamesNoRoot(t *testing.T) {
 	stop(recovery, "Round 1 report")
 	resume(round2, "L3 lead review of C5.")
 
-	var reannounced []provider.ProviderEvent
-	out := captureLog(t, func() {
-		reannounced = parse(`{"type":"system","subtype":"task_started","task_id":"` + task + `","tool_use_id":"` + round2 + `","description":"L3 fail-closed tenant session routing","subagent_type":"general-purpose","task_type":"local_agent","is_backgrounded":true,"prompt":"<task-notification>\n<task-id>bflfd5w3i</task-id>\n<tool-use-id>toolu_01PCRUekAgYhLs7cCSLKdHga</tool-use-id>\n<status>completed</status>\n<summary>Background command \"gate\" completed (exit code 0)</summary>\n</task-notification>"}`)
-	})
+	reannounced := parse(`{"type":"system","subtype":"task_started","task_id":"` + task + `","tool_use_id":"` + round2 + `","description":"L3 fail-closed tenant session routing","subagent_type":"general-purpose","task_type":"local_agent","is_backgrounded":true,"prompt":"<task-notification>\n<task-id>bflfd5w3i</task-id>\n<tool-use-id>toolu_01PCRUekAgYhLs7cCSLKdHga</tool-use-id>\n<status>completed</status>\n<summary>Background command \"gate\" completed (exit code 0)</summary>\n</task-notification>"}`)
 	if got := parser.taskTranscriptRoot(task); got != "" {
 		t.Fatalf("taskTranscriptRoot after the re-announce = %q, want none (the bound call is a carrier)", got)
 	}
+	var wakes []provider.ProviderEvent
 	for _, evt := range reannounced {
 		if evt.Kind == provider.EventUserText {
-			t.Fatalf("the re-announce is unmodeled and writes no wake row, got %+v", evt)
+			wakes = append(wakes, evt)
 		}
 	}
-	for _, want := range []string{"unmodeled wake shape", round2, task, testThread, "toolu_01PCRUekAgYhLs7cCSLKdHga"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("re-announce diagnostic %q does not name %q", out, want)
-		}
+	if len(wakes) != 1 || wakes[0].ItemID != provider.SubagentWakePromptItemID("toolu_01PCRUekAgYhLs7cCSLKdHga") || wakes[0].ParentToolUseID != round2 {
+		t.Fatalf("the re-announce should write one wake row under the carrier %s, got %+v", round2, wakes)
+	}
+	var wakeMeta map[string]any
+	if err := json.Unmarshal(wakes[0].Meta, &wakeMeta); err != nil {
+		t.Fatalf("wake meta: %v", err)
+	}
+	if v, ok := wakeMeta["transcript_root_id"]; ok {
+		t.Fatalf("the wake names transcript_root_id = %v, want none: the parser never saw the launch", v)
 	}
 	stop(round2, "Round 2 report")
 
@@ -304,9 +307,8 @@ func TestParseTaskStarted_ReannouncedCarrierBindingNamesNoRoot(t *testing.T) {
 	}
 }
 
-// A re-announce without a notification prompt is not a wake candidate and
-// logs nothing.
-func TestParseTaskStarted_ReannounceWithoutNotificationIsSilent(t *testing.T) {
+// A re-announce without a notification prompt is not a wake.
+func TestParseTaskStarted_ReannounceWithoutNotificationIsNoWake(t *testing.T) {
 	parser := NewParser()
 	if _, err := parser.ParseLine(testThread, []byte(`{"type":"assistant","message":{"id":"msg-1","role":"assistant","content":[{"type":"tool_use","id":"launch-1","name":"Agent","input":{"description":"review"}}]}}`)); err != nil {
 		t.Fatalf("assistant tool_use: %v", err)
@@ -315,13 +317,14 @@ func TestParseTaskStarted_ReannounceWithoutNotificationIsSilent(t *testing.T) {
 	if _, err := parser.ParseLine(testThread, line); err != nil {
 		t.Fatalf("task_started: %v", err)
 	}
-	out := captureLog(t, func() {
-		if _, err := parser.ParseLine(testThread, line); err != nil {
-			t.Fatalf("repeated task_started: %v", err)
+	events, err := parser.ParseLine(testThread, line)
+	if err != nil {
+		t.Fatalf("repeated task_started: %v", err)
+	}
+	for _, evt := range events {
+		if evt.Kind == provider.EventUserText {
+			t.Fatalf("a re-announce without a notification wrote %+v", evt)
 		}
-	})
-	if strings.Contains(out, "unmodeled wake shape") {
-		t.Fatalf("a re-announce without a notification logged %q", out)
 	}
 	if got := parser.taskTranscriptRoot("agent-1"); got != "launch-1" {
 		t.Fatalf("taskTranscriptRoot = %q, want launch-1 (the first binding)", got)
