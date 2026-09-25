@@ -38,9 +38,12 @@ the same text run meanwhile on that connection compiles for the call.
 A statement repeated with a different number of placeholders is a different
 cache entry. Where a hot or bulk path repeats one with lists of varying
 length, bind the list as one JSON array and read it with `json_each`, as the
-history repair's unseal statements do. A compiled `items` insert holds about
-165 KB because it carries the table's triggers; other statements hold 1 to
-65 KB.
+history repair's unseal statements do. A LIMIT is a literal in the SQL text,
+rendered with `strconv.Itoa`, because the planner reads a bound LIMIT when it
+compiles the statement, so each rebind would expire the cached statement and
+its next run would compile it again; OFFSET may bind. A compiled `items`
+insert holds about 165 KB because it carries the table's triggers; other
+statements hold 1 to 65 KB.
 
 Reads that depend on connection-local state, including attached restore
 databases and PRAGMA probes, use `s.db`. Helpers that may run either directly or

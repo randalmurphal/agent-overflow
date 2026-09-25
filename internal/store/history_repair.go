@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"time"
 )
 
@@ -241,13 +242,15 @@ func (s *Store) UnsealThreadHistory(ctx context.Context, threadID string, pause 
 // the fewest references. The query walks idx_thread_import_chunks_turns,
 // named because the planner otherwise takes the (thread_id, chunk_id) key
 // for the sealed range and sorts every reference of the thread. It
-// sorts one turn's references at a time and stops at the row budget.
-const sealedHistoryBatchSQL = `SELECT refs.chunk_id, chunks.item_count
+// sorts one turn's references at a time and stops after limit of them.
+func sealedHistoryBatchSQL(limit int) string {
+	return `SELECT refs.chunk_id, chunks.item_count
  FROM thread_import_chunks refs INDEXED BY idx_thread_import_chunks_turns
  JOIN import_history_chunks chunks ON chunks.id = refs.chunk_id
  WHERE refs.thread_id = ? AND refs.chunk_id >= ? AND refs.chunk_id < ?
  ORDER BY refs.max_turn_index DESC, chunks.item_count
- LIMIT ?`
+ LIMIT ` + strconv.Itoa(limit)
+}
 
 type sealedChunkRef struct {
 	id   string
@@ -266,6 +269,10 @@ type sealedRow struct {
 // transaction has run for the time budget, always at least one piece. It
 // reports whether the thread may still reference a sealed chunk.
 func (s *Store) unsealThreadHistoryBatch(threadID string, budget historyRepairBudget) (UnsealStats, bool, error) {
+	limit := budget.rows + 1
+	if limit <= 0 {
+		return UnsealStats{}, false, fmt.Errorf("store: sealed history batch limit %d is not positive", limit)
+	}
 	start := time.Now()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -273,8 +280,7 @@ func (s *Store) unsealThreadHistoryBatch(threadID string, budget historyRepairBu
 	}
 	defer tx.Rollback()
 
-	limit := budget.rows + 1
-	rows, err := tx.Query(sealedHistoryBatchSQL, threadID, sealedChunkLow, sealedChunkHigh, limit)
+	rows, err := tx.Query(sealedHistoryBatchSQL(limit), threadID, sealedChunkLow, sealedChunkHigh)
 	if err != nil {
 		return UnsealStats{}, false, fmt.Errorf("store: select sealed history batch: %w", err)
 	}
@@ -508,6 +514,15 @@ const payloadStoredBytesSQL = `length(p.data)
  + COALESCE((SELECT sum(length(c.data)) FROM payload_chunks c WHERE c.thread_id = p.thread_id AND c.payload_id = p.id), 0)
  + COALESCE((SELECT sum(length(e.content)) FROM edit_file_snapshots e WHERE e.thread_id = p.thread_id AND e.payload_id = p.id), 0)`
 
+// orphanPayloadScanSQL reads one page of payloads after a key, each with
+// -1 when a row references it and otherwise what deleting it frees.
+var orphanPayloadScanSQL = `SELECT p.thread_id, p.id,
+ CASE WHEN ` + logicalPayloadReferenceSQL("p.thread_id", "p.id") + ` THEN -1 ELSE ` + payloadStoredBytesSQL + ` END
+ FROM payloads p
+ WHERE (p.thread_id, p.id) > (?, ?)
+ ORDER BY p.thread_id, p.id
+ LIMIT ` + strconv.Itoa(orphanPayloadPage)
+
 type orphanPayload struct {
 	threadID string
 	id       string
@@ -520,12 +535,7 @@ type orphanPayload struct {
 func (s *Store) scanOrphanPayloads(ctx context.Context, visit func([]orphanPayload) error) error {
 	afterThread, afterID := "", ""
 	for ctx.Err() == nil {
-		rows, err := s.reader().Query(`SELECT p.thread_id, p.id,
- CASE WHEN `+logicalPayloadReferenceSQL("p.thread_id", "p.id")+` THEN -1 ELSE `+payloadStoredBytesSQL+` END
- FROM payloads p
- WHERE (p.thread_id, p.id) > (?, ?)
- ORDER BY p.thread_id, p.id
- LIMIT ?`, afterThread, afterID, orphanPayloadPage)
+		rows, err := s.reader().Query(orphanPayloadScanSQL, afterThread, afterID)
 		if err != nil {
 			return fmt.Errorf("store: scan orphan payloads: %w", err)
 		}

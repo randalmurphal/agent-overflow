@@ -150,9 +150,10 @@ type timelineSelection struct {
 	// only one that may leave it out.
 	OrderBy string
 
-	// Limit caps the compound. Non-positive renders no LIMIT clause;
-	// a caller whose budget is caller-supplied must reject non-positive
-	// values before it gets here.
+	// Limit caps the compound, rendered as a literal. Zero renders no
+	// LIMIT clause, and timelineArms refuses a negative Limit. A caller
+	// whose budget is caller-supplied must reject zero before it gets
+	// here.
 	Limit int
 }
 
@@ -164,7 +165,7 @@ const everyLineageLevel = -1
 // timelineArms renders sel as the UNION ALL of every physical source of
 // threadID's logical timeline with `ORDER BY … LIMIT …` applied to the
 // compound, and returns the SQL plus its bind values in wire order: per arm
-// the thread id, the turn and the predicate args, then the limit.
+// the thread id, the turn and the predicate args.
 //
 // The sources are the thread's own `items`, its imported history and, for a
 // pointer fork, one local and one imported arm per lineage level
@@ -182,6 +183,9 @@ const everyLineageLevel = -1
 func timelineArms(q sqlQueryer, threadID string, sel timelineSelection) (string, []any, error) {
 	if sel.Thread != "" {
 		return "", nil, fmt.Errorf("store: timeline selection correlated on %s renders through correlatedTimelineArms", sel.Thread)
+	}
+	if sel.Limit < 0 {
+		return "", nil, fmt.Errorf("store: timeline selection limit %d for %s is negative", sel.Limit, threadID)
 	}
 	depth, err := forkLineageDepth(q, threadID)
 	if err != nil {
@@ -346,8 +350,7 @@ func (r *armRenderer) finish() (string, []any) {
 		sql += "\n		 ORDER BY " + r.sel.OrderBy
 	}
 	if r.sel.Limit > 0 {
-		sql += "\n		 LIMIT ?"
-		args = append(args, r.sel.Limit)
+		sql += "\n		 LIMIT " + strconv.Itoa(r.sel.Limit)
 	}
 	return sql, args
 }
@@ -427,11 +430,14 @@ func turnIDSelection(q sqlQueryer, threadID string, turnIndex int) (string, []an
 }
 
 // timelineKeyedIDSelection selects the ids of the few rows a key pins,
-// ordered by orderBy (over result columns of project) and cut to limit.
-// The materialized key rows are ordered afterwards: ordering the arms
-// themselves would invite the local arm to walk its ordering index and
-// test the key per row instead.
+// ordered by orderBy (over result columns of project) and cut to limit,
+// which must be positive. The materialized key rows are ordered
+// afterwards: ordering the arms themselves would invite the local arm to
+// walk its ordering index and test the key per row instead.
 func timelineKeyedIDSelection(q sqlQueryer, threadID string, project, where string, whereArgs []any, orderBy string, limit int) (string, []any, error) {
+	if limit <= 0 {
+		return "", nil, fmt.Errorf("store: keyed timeline selection limit %d for %s is not positive", limit, threadID)
+	}
 	sql, args, err := timelineArms(q, threadID, timelineSelection{
 		Columns:   func(string, string) string { return "items.id AS id, " + project },
 		KeyFirst:  true,
@@ -441,7 +447,7 @@ func timelineKeyedIDSelection(q sqlQueryer, threadID string, project, where stri
 	if err != nil {
 		return "", nil, err
 	}
-	return "WITH keyed AS MATERIALIZED (\n" + sql + "\n) SELECT id FROM keyed ORDER BY " + orderBy + " LIMIT ?", append(args, limit), nil
+	return "WITH keyed AS MATERIALIZED (\n" + sql + "\n) SELECT id FROM keyed ORDER BY " + orderBy + " LIMIT " + strconv.Itoa(limit), args, nil
 }
 
 // turnAggregateQuery renders aggregate(column) over one turn's logical

@@ -153,7 +153,7 @@ func assertSubagentStampParity(t *testing.T, s *Store, threadID, stage string, s
 	if !settled {
 		return
 	}
-	dirty, err := subagentAnchorIDs(s.reader(), subagentDirtyAnchorsSQL, threadID, 100)
+	dirty, err := subagentAnchorIDs(s.reader(), subagentDirtyAnchorsSQL(100), threadID)
 	if err != nil {
 		t.Fatalf("%s: dirty probe: %v", stage, err)
 	}
@@ -167,9 +167,9 @@ func assertSubagentStampParity(t *testing.T, s *Store, threadID, stage string, s
 	if !listed {
 		// A carrier stays unstamped, and walked, until the prompt that
 		// opens its round arrives.
-		unstamped, err := subagentAnchorIDs(s.reader(), `SELECT l.id FROM (`+subagentLegacyAnchorsSQL+`) AS l
+		unstamped, err := subagentAnchorIDs(s.reader(), `SELECT l.id FROM (`+subagentLegacyAnchorsLimitSQL(100)+`) AS l
 		  CROSS JOIN items a ON a.thread_id = ?1 AND a.id = l.id
-		 WHERE NOT `+aggCarrierSQL("a."), threadID, 100)
+		 WHERE NOT `+aggCarrierSQL("a."), threadID)
 		if err != nil {
 			t.Fatalf("%s: legacy probe: %v", stage, err)
 		}

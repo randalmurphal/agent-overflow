@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"agent-overflow/internal/threadmode"
 )
@@ -17,6 +18,13 @@ import (
 // 500-item chunks keep every write transaction in the tens of
 // milliseconds.
 const deleteThreadItemChunk = 500
+
+// deleteThreadItemChunkSQL deletes one chunk of a thread's rows at or
+// after a position, returning their ids.
+var deleteThreadItemChunkSQL = `DELETE FROM items
+		  WHERE rowid IN (SELECT rowid FROM items
+		                   WHERE thread_id = ? AND (turn_index, item_index) >= (?, ?) LIMIT ` +
+	strconv.Itoa(deleteThreadItemChunk) + `) RETURNING id`
 
 // ChunkPause runs between the bounded write chunks of a long delete so a
 // background caller can hand the write lock back to user writes between
@@ -246,11 +254,8 @@ func (s *Store) deleteThreadItemsChunk(id string) (int64, error) {
 	// The search index is paced with the rows it describes: a 38k-item
 	// thread would otherwise pay for its whole index in one statement,
 	// which is the stall this chunking exists to avoid.
-	n, err := deleteItemsAndSearchRowsTx(tx, id,
-		`DELETE FROM items
-		  WHERE rowid IN (SELECT rowid FROM items
-		                   WHERE thread_id = ? AND (turn_index, item_index) >= (?, ?) LIMIT ?) RETURNING id`,
-		[]any{id, cut.turn, cut.item, deleteThreadItemChunk},
+	n, err := deleteItemsAndSearchRowsTx(tx, id, deleteThreadItemChunkSQL,
+		[]any{id, cut.turn, cut.item},
 		fmt.Sprintf("store: delete thread %s items", id),
 	)
 	if err != nil {

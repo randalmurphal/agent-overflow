@@ -287,7 +287,7 @@ func windowEdgeCursorTx(q sqlQueryer, threadID, itemID string, scope timelineSco
 //
 // The limit is validated HERE rather than trusted from the caller: it is
 // the only bound on how much of a thread this statement may walk, and
-// timelineArms renders a non-positive limit as no LIMIT clause at all.
+// timelineArms renders a zero limit as no LIMIT clause at all.
 func windowDigestRowsTx(
 	q sqlQueryer,
 	threadID string,

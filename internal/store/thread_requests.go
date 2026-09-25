@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -558,8 +559,8 @@ func (s *Store) ListThreadRequestsByCaller(callerThreadID string, limit, offset 
 		`SELECT `+threadRequestColumns+` FROM thread_requests
 		  WHERE caller_thread_id = ?
 		  ORDER BY (settled_at IS NULL) DESC, created_at DESC, token ASC
-		  LIMIT ? OFFSET ?`,
-		callerThreadID, limit, offset)
+		  LIMIT `+strconv.Itoa(limit)+` OFFSET ?`,
+		callerThreadID, offset)
 	if err != nil {
 		return nil, fmt.Errorf("store: list thread requests for %s: %w", callerThreadID, err)
 	}
@@ -576,8 +577,8 @@ func (s *Store) ListOpenThreadRequestsForComputer(computerID string, limit int) 
 	rows, err := s.reader().Query(
 		`SELECT `+threadRequestColumns+` FROM thread_requests
 		  WHERE target_computer_id = ? AND settled_at IS NULL
-		  ORDER BY created_at ASC, token ASC LIMIT ?`,
-		computerID, limit)
+		  ORDER BY created_at ASC, token ASC LIMIT `+strconv.Itoa(limit),
+		computerID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list open thread requests for computer %s: %w", computerID, err)
 	}
@@ -594,7 +595,7 @@ func (s *Store) DueThreadReminders(now int64, limit int) ([]ThreadRequest, error
 	rows, err := s.reader().Query(
 		`SELECT `+threadRequestColumns+` FROM thread_requests
 		  WHERE kind = 'remind' AND state = 'accepted' AND due_at <= ?
-		  ORDER BY due_at ASC LIMIT ?`, now, limit)
+		  ORDER BY due_at ASC LIMIT `+strconv.Itoa(limit), now)
 	if err != nil {
 		return nil, fmt.Errorf("store: list due thread reminders: %w", err)
 	}
@@ -615,7 +616,7 @@ func (s *Store) DueThreadRequestPolls(now int64, limit int) ([]ThreadRequest, er
 		    AND target_computer_id <> ''
 		    AND state IN ('unconfirmed','accepted','running','finished')
 		    AND next_check <= ?
-		  ORDER BY next_check ASC LIMIT ?`, now, limit)
+		  ORDER BY next_check ASC LIMIT `+strconv.Itoa(limit), now)
 	if err != nil {
 		return nil, fmt.Errorf("store: list due thread request polls: %w", err)
 	}
@@ -639,7 +640,7 @@ func (s *Store) UndeliveredThreadRequestWakes(now int64, limit int) ([]ThreadReq
 		    AND wake_next_check <= ?
 		    AND ((settled_at IS NOT NULL AND delivered_at IS NULL)
 		      OR (late_reply IS NOT NULL AND late_delivered_at IS NULL))
-		  ORDER BY settled_at ASC, token ASC LIMIT ?`, now, limit)
+		  ORDER BY settled_at ASC, token ASC LIMIT `+strconv.Itoa(limit), now)
 	if err != nil {
 		return nil, fmt.Errorf("store: list undelivered thread request wakes: %w", err)
 	}

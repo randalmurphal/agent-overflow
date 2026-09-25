@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -268,13 +269,14 @@ func (s *Store) GetPairingLink(id string) (PairingLink, error) {
 
 // ListPairingLinksForUser returns one account's links, newest first,
 // settled ones included — the list is also the record of who joined when.
+// A non-positive limit returns no links without reading.
 func (s *Store) ListPairingLinksForUser(userID string, limit int) ([]PairingLink, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
 	rows, err := s.reader().Query(
 		`SELECT `+pairingLinkColumns+` FROM pairing_links
-		  WHERE user_id = ? ORDER BY created_at DESC, id LIMIT ?`, userID, limit)
+		  WHERE user_id = ? ORDER BY created_at DESC, id LIMIT `+strconv.Itoa(limit), userID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list pairing links: %w", err)
 	}

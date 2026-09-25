@@ -190,7 +190,10 @@ an atomic persistence decision; they must not become a business-logic layer.
 - Each pooled connection keeps its recent statements compiled
   (`stmt_cache.go`). Give a statement that a hot or bulk path repeats one SQL
   text: bind a variable-length list as a JSON array read with `json_each`
-  rather than building placeholders per length. See
+  rather than building placeholders per length. Write a LIMIT as a literal
+  in the text (`strconv.Itoa`): the planner reads a bound LIMIT, so every
+  rebind expires the cached statement. OFFSET may bind;
+  `TestStoreSQLNeverBindsLimit` enforces this. See
   [Connections](../../docs/architecture/sqlite-store.md#connections).
 - `TruncateCheckpoint` quiesces readers and reports contention through
   `CheckpointResult.Busy`; checking only the error is insufficient. Quiescing

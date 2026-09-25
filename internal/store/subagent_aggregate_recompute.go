@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -465,12 +466,14 @@ func writeSubagentStampsTx(tx *sql.Tx, threadID string, writes []subagentStampWr
 	return landed, nil
 }
 
-// subagentDirtyAnchorsSQL finds a thread's dirty anchors by
+// subagentDirtyAnchorsSQL finds up to limit of a thread's dirty anchors by
 // idx_subagent_aggregates_dirty.
-var subagentDirtyAnchorsSQL = `SELECT item_id FROM subagent_aggregates
- WHERE thread_id = ? AND state = ` + aggDirtyLiteral + ` LIMIT ?`
+func subagentDirtyAnchorsSQL(limit int) string {
+	return `SELECT item_id FROM subagent_aggregates
+ WHERE thread_id = ? AND state = ` + aggDirtyLiteral + ` LIMIT ` + strconv.Itoa(limit)
+}
 
-// subagentLegacyAnchorsSQL finds a listed thread's anchors that predate
+// subagentLegacyAnchorsSQL finds every anchor of a listed thread that predates
 // the stamps: unstamped local anchorable rows that a read decorates,
 // because they are carriers or have a visible child in its timeline. The
 // candidates are the thread's distinct parent ids, read from the covering
@@ -495,8 +498,13 @@ var subagentLegacyAnchorsSQL = `SELECT a.id FROM (
   ) AS p CROSS JOIN items a
  WHERE a.thread_id = ?1 AND a.id = p.id AND ` + aggAnchorableSQL("a.") + `
    AND NOT EXISTS (SELECT 1 FROM subagent_aggregates s WHERE s.thread_id = a.thread_id AND s.item_id = a.id)
-   AND (` + aggCarrierSQL("a.") + ` OR ` + aggHasChildSQL("a.thread_id", "a.id", "") + `)
- LIMIT ?2`
+   AND (` + aggCarrierSQL("a.") + ` OR ` + aggHasChildSQL("a.thread_id", "a.id", "") + `)`
+
+// subagentLegacyAnchorsLimitSQL is subagentLegacyAnchorsSQL cut to limit
+// anchors.
+func subagentLegacyAnchorsLimitSQL(limit int) string {
+	return subagentLegacyAnchorsSQL + "\n LIMIT " + strconv.Itoa(limit)
+}
 
 func subagentAnchorIDs(q sqlQueryer, query string, args ...any) ([]string, error) {
 	rows, err := q.Query(query, args...)
@@ -642,7 +650,7 @@ type SubagentRecompute struct {
 // read before it recomputes at its next flush rather than write over it.
 func (s *Store) RecomputeSubagentAggregates(ctx context.Context, threadID string, limit int) (SubagentRecompute, error) {
 	if limit <= 0 {
-		return SubagentRecompute{}, fmt.Errorf("store: recompute subagent aggregates for %s: limit must be positive", threadID)
+		return SubagentRecompute{}, fmt.Errorf("store: recompute subagent aggregates for %s: limit %d is not positive", threadID, limit)
 	}
 	var seeds []string
 	var listed bool
@@ -653,14 +661,14 @@ func (s *Store) RecomputeSubagentAggregates(ctx context.Context, threadID string
 			return fmt.Errorf("store: begin subagent recompute read for %s: %w", threadID, err)
 		}
 		defer rtx.Rollback()
-		if seeds, err = subagentAnchorIDs(rtx, subagentDirtyAnchorsSQL, threadID, limit); err != nil {
+		if seeds, err = subagentAnchorIDs(rtx, subagentDirtyAnchorsSQL(limit), threadID); err != nil {
 			return fmt.Errorf("store: select dirty subagent anchors for %s: %w", threadID, err)
 		}
 		if listed, err = subagentBackfillListed(rtx, threadID); err != nil {
 			return err
 		}
 		if listed && len(seeds) < limit {
-			legacy, err := subagentAnchorIDs(rtx, subagentLegacyAnchorsSQL, threadID, limit-len(seeds))
+			legacy, err := subagentAnchorIDs(rtx, subagentLegacyAnchorsLimitSQL(limit-len(seeds)), threadID)
 			if err != nil {
 				return fmt.Errorf("store: select legacy subagent anchors for %s: %w", threadID, err)
 			}
@@ -951,7 +959,7 @@ func (s *Store) restampSubagentAggregatesTx(tx *sql.Tx, threadID string) error {
 	if _, err := tx.Exec(`DELETE FROM subagent_aggregates WHERE thread_id = ?`, threadID); err != nil {
 		return fmt.Errorf("store: clear loaded subagent stamps in %s: %w", threadID, err)
 	}
-	ids, err := subagentAnchorIDs(tx, subagentLegacyAnchorsSQL, threadID, -1)
+	ids, err := subagentAnchorIDs(tx, subagentLegacyAnchorsSQL, threadID)
 	if err != nil {
 		return fmt.Errorf("store: select loaded subagent anchors in %s: %w", threadID, err)
 	}

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"agent-overflow/internal/itemmeta"
@@ -53,6 +54,16 @@ func trimCollabAgentStateMessagesMetaFixup(tx *sql.Tx) error {
 	)
 }
 
+// codexV2CollabPromptScanBatch is how many candidate rows one read of
+// trimCodexV2EncryptedCollabPromptsFixup scans.
+const codexV2CollabPromptScanBatch = 128
+
+// codexV2CollabPromptScanSQL reads one batch of candidate rows after a
+// rowid.
+var codexV2CollabPromptScanSQL = `SELECT rowid, thread_id, id, tool_name, summary, meta FROM items
+			WHERE rowid > ? AND meta LIKE '%"activityKind"%' AND meta LIKE '%"prompt"%'
+			ORDER BY rowid LIMIT ` + strconv.Itoa(codexV2CollabPromptScanBatch)
+
 // trimCodexV2EncryptedCollabPromptsFixup removes opaque model-service
 // ciphertext that older adapters copied from raw MultiAgentV2 function-call
 // arguments into meta.input.prompt. V2 rows are identified by their canonical
@@ -67,17 +78,14 @@ func trimCodexV2EncryptedCollabPromptsFixup(tx *sql.Tx) error {
 		summary  string
 		meta     string
 	}
-	const batchSize = 128
 	var lastRowID int64
 	for {
-		rows, err := tx.Query(`SELECT rowid, thread_id, id, tool_name, summary, meta FROM items
-			WHERE rowid > ? AND meta LIKE '%"activityKind"%' AND meta LIKE '%"prompt"%'
-			ORDER BY rowid LIMIT ?`, lastRowID, batchSize)
+		rows, err := tx.Query(codexV2CollabPromptScanSQL, lastRowID)
 		if err != nil {
 			return fmt.Errorf("scan Codex V2 collaboration prompts: %w", err)
 		}
 
-		updates := make([]update, 0, batchSize)
+		updates := make([]update, 0, codexV2CollabPromptScanBatch)
 		scanned := 0
 		for rows.Next() {
 			var candidate update
@@ -115,7 +123,7 @@ func trimCodexV2EncryptedCollabPromptsFixup(tx *sql.Tx) error {
 				return fmt.Errorf("rewrite Codex V2 collaboration prompt %s/%s: %w", candidate.threadID, candidate.id, err)
 			}
 		}
-		if scanned < batchSize {
+		if scanned < codexV2CollabPromptScanBatch {
 			return nil
 		}
 	}

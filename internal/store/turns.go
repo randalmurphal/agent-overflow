@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 )
 
 // Turn is one row in the turns table — a record of a single user → assistant
@@ -360,8 +361,8 @@ func (s *Store) ListRecentTurns(threadID string, limit int) ([]Turn, error) {
 		   CROSS JOIN turns ON turns.thread_id = l.ancestor_id
 		  WHERE l.thread_id = ? AND `+forkTurnVisibleSQL+`
 		  ORDER BY turn_index DESC
-		  LIMIT ?`,
-		threadID, threadID, limit,
+		  LIMIT `+strconv.Itoa(limit),
+		threadID, threadID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list recent turns for %s: %w", threadID, err)

@@ -1,6 +1,9 @@
 package store
 
-import "fmt"
+import (
+	"fmt"
+	"strconv"
+)
 
 func (s *Store) CreateChannel(ch Channel) error {
 	_, err := s.db.Exec(
@@ -135,13 +138,14 @@ func (s *Store) CountChannelMessagesByType(channelID, fromType string) (int, err
 	return count, nil
 }
 
+// ListChannelMessages returns the channel's messages after afterSeq in
+// sequence order, at most limit of them; a non-positive limit returns all.
 func (s *Store) ListChannelMessages(channelID string, afterSeq, limit int) ([]ChannelMessage, error) {
 	baseQuery := `SELECT id, channel_id, sequence, from_type, from_id, COALESCE(from_role, ''), content, COALESCE(meta, ''), created_at
 		FROM channel_messages WHERE channel_id = ? AND sequence > ? ORDER BY sequence ASC`
 	args := []any{channelID, afterSeq}
 	if limit > 0 {
-		baseQuery += " LIMIT ?"
-		args = append(args, limit)
+		baseQuery += " LIMIT " + strconv.Itoa(limit)
 	}
 
 	rows, err := s.reader().Query(baseQuery, args...)

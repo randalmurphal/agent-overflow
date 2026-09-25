@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -29,7 +30,8 @@ import (
 //
 // An empty prefix matches nothing. A prefix-less listing is
 // ListThreadsByActivity, and answering it here would hand back the whole
-// table under the name of a lookup.
+// table under the name of a lookup. A non-positive limit matches nothing
+// either.
 func (s *Store) ResolveThreadPrefix(prefix string, limit int) ([]Thread, error) {
 	if prefix == "" || limit <= 0 {
 		return nil, nil
@@ -40,12 +42,11 @@ func (s *Store) ResolveThreadPrefix(prefix string, limit int) ([]Thread, error) 
 		conditions = append(conditions, "threads.id < ?")
 		args = append(args, upper)
 	}
-	args = append(args, limit)
 	rows, err := s.reader().Query(
 		`SELECT `+threadColumns+` FROM owned_threads AS threads
 		  WHERE `+strings.Join(conditions, " AND ")+`
 		  ORDER BY threads.id ASC
-		  LIMIT ?`,
+		  LIMIT `+strconv.Itoa(limit),
 		args...,
 	)
 	if err != nil {
@@ -107,13 +108,13 @@ func (s *Store) ListThreadsByActivity(filter ThreadSearchFilter) ([]Thread, erro
 	if offset < 0 {
 		offset = 0
 	}
-	args = append(args, limit, offset)
+	args = append(args, offset)
 
 	rows, err := s.reader().Query(
 		`SELECT `+threadColumns+` FROM owned_threads AS threads
 		  WHERE `+strings.Join(conditions, " AND ")+`
 		  ORDER BY `+threadLastActivityExpr("threads.")+` DESC, threads.id ASC
-		  LIMIT ? OFFSET ?`,
+		  LIMIT `+strconv.Itoa(limit)+` OFFSET ?`,
 		args...,
 	)
 	if err != nil {

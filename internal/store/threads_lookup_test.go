@@ -134,7 +134,7 @@ func TestResolveThreadPrefixWalksTheIdIndex(t *testing.T) {
 		`SELECT `+threadColumns+` FROM owned_threads AS threads
 		  WHERE threads.id >= ? AND threads.id < ?
 		  ORDER BY threads.id ASC
-		  LIMIT ?`, "abcd", "abce", 8)
+		  LIMIT 8`, "abcd", "abce")
 	searched := false
 	for _, row := range plan {
 		if strings.HasPrefix(row.detail, "SCAN threads") {

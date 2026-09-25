@@ -716,9 +716,10 @@ func TestUnsealThreadHistoryMovesLargeChunksInPieces(t *testing.T) {
 
 func TestUnsealThreadHistoryBatchSelectionReadsTurnIndex(t *testing.T) {
 	s := newTestStore(t)
-	args := []any{"t", sealedChunkLow, sealedChunkHigh, historyRepairRows + 1}
-	assertPlanUses(t, s.db, "idx_thread_import_chunks_turns", `EXPLAIN QUERY PLAN `+sealedHistoryBatchSQL, args...)
-	rows, err := s.db.Query(`EXPLAIN QUERY PLAN `+sealedHistoryBatchSQL, args...)
+	query := sealedHistoryBatchSQL(historyRepairRows + 1)
+	args := []any{"t", sealedChunkLow, sealedChunkHigh}
+	assertPlanUses(t, s.db, "idx_thread_import_chunks_turns", `EXPLAIN QUERY PLAN `+query, args...)
+	rows, err := s.db.Query(`EXPLAIN QUERY PLAN `+query, args...)
 	if err != nil {
 		t.Fatal(err)
 	}

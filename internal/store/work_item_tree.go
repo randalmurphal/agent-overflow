@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 // The run TREE's shape, resolved in SQLite rather than walked one round trip at
@@ -221,8 +222,8 @@ func scanWorkItemTreeRuns(
 		 FROM tree JOIN work_items AS w ON w.id = tree.id
 		 GROUP BY tree.id
 		 ORDER BY tree_depth ASC, w.created_at ASC, w.id ASC
-		 LIMIT ?3`,
-		rootID, maxDepth, maxMembers+1,
+		 LIMIT `+strconv.Itoa(maxMembers+1),
+		rootID, maxDepth,
 	)
 	if err != nil {
 		return fmt.Errorf("store: scan work item tree runs %s: %w", rootID, err)

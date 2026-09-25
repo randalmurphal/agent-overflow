@@ -2,6 +2,8 @@ package store
 
 import (
 	"errors"
+	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -16,13 +18,13 @@ type TransferJob struct {
 
 func (s *Store) NextThreadTransferJobs(limit int) ([]TransferJob, error) {
 	if limit < 1 || limit > 128 {
-		return nil, errors.New("transfer: invalid recovery page size")
+		return nil, fmt.Errorf("store: thread transfer jobs limit %d is outside 1..128", limit)
 	}
 	rows, err := s.reader().Query(`SELECT id,direction,phase,error,next_attempt_at,updated_at,retry_count FROM thread_transfers
 WHERE (phase IN ('complete','canceled') AND cleanup_pending = 1) OR
 (phase NOT IN ('complete','canceled') AND
 ((direction = 'outgoing' AND (peer_state IS NOT NULL OR cancel_requested = 1)) OR (direction = 'incoming' AND archive_size > 0)))
-ORDER BY next_attempt_at,created_at,id LIMIT ?`, limit)
+ORDER BY next_attempt_at,created_at,id LIMIT ` + strconv.Itoa(limit))
 	if err != nil {
 		return nil, err
 	}

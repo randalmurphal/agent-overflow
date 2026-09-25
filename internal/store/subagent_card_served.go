@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -11,7 +12,8 @@ import (
 // storedServedKeysSQL finds rows a read serves the subagent stamps to,
 // anchors and borrowing completions, whose stored meta holds a served key
 // (subagentServedKeys), in either arm. A Codex spawn's completion stores
-// its card as a snapshot and is not one of them.
+// its card as a snapshot and is not one of them. The caller appends its
+// limit.
 var storedServedKeysSQL = func() string {
 	holds := func(a string) string {
 		terms := make([]string, 0, len(subagentServedKeys))
@@ -25,8 +27,7 @@ var storedServedKeysSQL = func() string {
 UNION ALL
 SELECT refs.thread_id || '/' || imported.id FROM import_history_items imported
   JOIN thread_import_chunks refs ON refs.chunk_id = imported.chunk_id
- WHERE ` + holds("imported.") + `
-LIMIT ?`
+ WHERE ` + holds("imported.")
 }()
 
 // GetThreadItemForWrite is GetThreadItem for a caller that writes the
@@ -54,9 +55,13 @@ func (s *Store) GetThreadItemForWrite(threadID, id string) (Item, bool, error) {
 // RowsStoringServedSubagentKeys lists up to limit rows, as thread/id,
 // whose stored meta holds a key a read serves from the subagent stamps.
 // There must be none: a writer that stores a meta it read back would
-// freeze a card in the row. storetest asserts it after every test.
+// freeze a card in the row. storetest asserts it after every test. A
+// non-positive limit is an error.
 func (s *Store) RowsStoringServedSubagentKeys(limit int) ([]string, error) {
-	rows, err := s.reader().Query(storedServedKeysSQL, limit)
+	if limit <= 0 {
+		return nil, fmt.Errorf("store: find stored served subagent keys: limit %d is not positive", limit)
+	}
+	rows, err := s.reader().Query(storedServedKeysSQL + "\nLIMIT " + strconv.Itoa(limit))
 	if err != nil {
 		return nil, fmt.Errorf("store: find stored served subagent keys: %w", err)
 	}

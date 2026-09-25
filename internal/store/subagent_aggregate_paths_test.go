@@ -561,10 +561,13 @@ func TestSubagentAggregateStatementPlans(t *testing.T) {
 		args               []any
 		allowed            boundedPlan
 	}{
-		{"dirty selection", subagentDirtyAnchorsSQL, "idx_subagent_aggregates_dirty", []any{thread, 16}, boundedPlan{}},
-		{"legacy selection", subagentLegacyAnchorsSQL, "COVERING INDEX idx_items_parent", []any{thread, 16}, legacy},
-		{"legacy selection's child probe", subagentLegacyAnchorsSQL, "SEARCH agg_hc USING INDEX idx_items_parent (thread_id=? AND parent_id=?)",
-			[]any{thread, 16}, legacy},
+		{"dirty selection", subagentDirtyAnchorsSQL(16), "idx_subagent_aggregates_dirty", []any{thread}, boundedPlan{}},
+		{"legacy selection", subagentLegacyAnchorsLimitSQL(16), "COVERING INDEX idx_items_parent", []any{thread}, legacy},
+		{"legacy selection's child probe", subagentLegacyAnchorsLimitSQL(16), "SEARCH agg_hc USING INDEX idx_items_parent (thread_id=? AND parent_id=?)",
+			[]any{thread}, legacy},
+		{"legacy selection of every anchor", subagentLegacyAnchorsSQL, "COVERING INDEX idx_items_parent", []any{thread}, legacy},
+		{"legacy selection of every anchor's child probe", subagentLegacyAnchorsSQL, "SEARCH agg_hc USING INDEX idx_items_parent (thread_id=? AND parent_id=?)",
+			[]any{thread}, legacy},
 		{"resume rounds", rounds, "idx_items_subagent_resume_prompt (thread_id=? AND parent_id=?)", roundArgs, listed},
 		{"carriers the rounds name", roundCarriers, "sqlite_autoindex_items_1 (thread_id=? AND id=?)", roundCarrierArgs, listed},
 		{"first child anchors", firstChildAnchorsSQL, "SEARCH s USING PRIMARY KEY (thread_id=? AND item_id=?)",

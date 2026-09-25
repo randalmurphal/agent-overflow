@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
 	"agent-overflow/internal/entityid"
@@ -127,12 +128,13 @@ func (s *Store) ListRemoteWatches(threadID string, due int64, limit int) ([]Remo
 	if limit < 1 || limit > 256 {
 		limit = 100
 	}
-	query := `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE thread_id=? ORDER BY (notification='pending') DESC, created_at DESC LIMIT ?`
-	args := []any{threadID, limit}
+	query := `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE thread_id=? ORDER BY (notification='pending') DESC, created_at DESC`
+	args := []any{threadID}
 	if threadID == "" {
-		query = `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE notification='pending' AND next_check<=? ORDER BY next_check LIMIT ?`
-		args = []any{due, limit}
+		query = `SELECT ` + remoteWatchColumns + ` FROM remote_watches WHERE notification='pending' AND next_check<=? ORDER BY next_check`
+		args = []any{due}
 	}
+	query += ` LIMIT ` + strconv.Itoa(limit)
 	rows, err := s.reader().Query(query, args...)
 	if err != nil {
 		return nil, err

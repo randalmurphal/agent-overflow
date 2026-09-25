@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -943,12 +944,13 @@ func (s *Store) pruneAuthAudit() error {
 }
 
 // ListRecentAuthAudit returns the newest entries first, capped at limit.
+// A non-positive limit returns no entries without reading.
 func (s *Store) ListRecentAuthAudit(limit int) ([]AuthAuditEntry, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
 	rows, err := s.reader().Query(
-		`SELECT `+authAuditColumns+` FROM auth_audit ORDER BY at DESC, id DESC LIMIT ?`, limit)
+		`SELECT ` + authAuditColumns + ` FROM auth_audit ORDER BY at DESC, id DESC LIMIT ` + strconv.Itoa(limit))
 	if err != nil {
 		return nil, fmt.Errorf("store: list auth audit: %w", err)
 	}
@@ -958,7 +960,8 @@ func (s *Store) ListRecentAuthAudit(limit int) ([]AuthAuditEntry, error) {
 // ListAuthAuditForDevice returns one device's credential events, newest
 // first. The partial index on (device_id, at) serves it, which is why the
 // non-empty `device_id` term is repeated here: SQLite uses a partial index
-// only when the query's predicates textually imply its WHERE clause.
+// only when the query's predicates textually imply its WHERE clause. A
+// non-positive limit returns no entries without reading.
 func (s *Store) ListAuthAuditForDevice(deviceID string, limit int) ([]AuthAuditEntry, error) {
 	if limit <= 0 || deviceID == "" {
 		return nil, nil
@@ -966,7 +969,7 @@ func (s *Store) ListAuthAuditForDevice(deviceID string, limit int) ([]AuthAuditE
 	rows, err := s.reader().Query(
 		`SELECT `+authAuditColumns+` FROM auth_audit
 		 WHERE device_id = ? AND device_id <> ''
-		 ORDER BY at DESC, id DESC LIMIT ?`, deviceID, limit)
+		 ORDER BY at DESC, id DESC LIMIT `+strconv.Itoa(limit), deviceID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list auth audit for device: %w", err)
 	}

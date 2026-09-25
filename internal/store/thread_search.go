@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -45,6 +46,14 @@ var threadSearchItemKinds = map[string]string{
 // it commits and pauses. Small enough that a 38k-item thread never holds the
 // writer for long, large enough that the walk is not all transaction overhead.
 const threadSearchBuildBatch = 500
+
+// searchBuildItemsBatchSQL reads one build batch of `items` after the
+// cursor, in (thread_id, id) order.
+var searchBuildItemsBatchSQL = `SELECT thread_id, id, kind, status, summary
+		   FROM items
+		  WHERE (thread_id, id) > (?, ?)
+		  ORDER BY thread_id ASC, id ASC
+		  LIMIT ` + strconv.Itoa(threadSearchBuildBatch)
 
 // threadSearchBuildPause is the gap between build batches. The build is
 // background work behind every live write.
@@ -239,7 +248,7 @@ func (s *Store) SearchThreads(query string, filter ThreadSearchFilter) ([]Thread
 		conditions = append(conditions, clause)
 		args = append(args, clauseArgs...)
 	}
-	args = append(args, limit, offset)
+	args = append(args, offset)
 
 	summary, _ := correlatedTimelineArms(timelineSelection{
 		Columns:  func(string, string) string { return "items.summary" },
@@ -282,7 +291,7 @@ func (s *Store) SearchThreads(query string, filter ThreadSearchFilter) ([]Thread
 		   JOIN owned_threads t ON t.id = r.thread_id
 		  WHERE `+strings.Join(conditions, " AND ")+`
 		  ORDER BY r.rank ASC, r.rowid ASC, r.thread_id ASC
-		  LIMIT ? OFFSET ?`,
+		  LIMIT `+strconv.Itoa(limit)+` OFFSET ?`,
 		args...,
 	)
 	if err != nil {
@@ -420,14 +429,7 @@ func (s *Store) buildSearchIndexItems(progress searchBuildProgress) (bool, error
 	}
 	defer tx.Rollback()
 
-	rows, err := tx.Query(
-		`SELECT thread_id, id, kind, status, summary
-		   FROM items
-		  WHERE (thread_id, id) > (?, ?)
-		  ORDER BY thread_id ASC, id ASC
-		  LIMIT ?`,
-		progress.cursorThreadID, progress.cursorItemID, threadSearchBuildBatch,
-	)
+	rows, err := tx.Query(searchBuildItemsBatchSQL, progress.cursorThreadID, progress.cursorItemID)
 	if err != nil {
 		return false, fmt.Errorf("store: read thread search build batch: %w", err)
 	}
