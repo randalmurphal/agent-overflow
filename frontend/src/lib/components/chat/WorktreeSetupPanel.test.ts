@@ -96,6 +96,7 @@ describe('<WorktreeSetupPanel>', () => {
 
       await vi.advanceTimersByTimeAsync(3_000);
       expect(getWorktreeSetup(THREAD)).toBeNull();
+      expect(container.textContent).not.toContain('Worktree ready');
     } finally {
       vi.useRealTimers();
     }

@@ -61,7 +61,15 @@ export interface WorktreeSetupView {
   dismissed: boolean;
 }
 
+/** How long a succeeded run's card stays up before clearing itself. */
+export const SUCCESS_LINGER_MS = 2500;
+
 const views = createKeyedSignalRegistry<WorktreeSetupView | null>(null);
+
+// Pending success auto-dismissals. The store owns them rather than the panel:
+// a run that succeeds while its thread is not on screen has no panel to start
+// a timer, and its view would otherwise survive until the thread is opened.
+const successExpiry = new Map<string, ReturnType<typeof setTimeout>>();
 
 // Keys with a hydration in flight. Presence is what makes an event buffer
 // rather than apply; the array is replayed after the snapshot lands.
@@ -82,13 +90,14 @@ export function getWorktreeSetup(key: string): WorktreeSetupView | null {
  * A retained view is exactly a run worth showing — that is what makes this a
  * null check. In particular a `succeeded` view still counts: it is the success
  * acknowledgement, and unmounting on the state flip would take the panel down
- * before it could show (and then clear) it.
+ * before it could show it.
  */
 export function hasWorktreeSetupSurface(key: string): boolean {
   return views.get(key) !== null;
 }
 
 export function dropWorktreeSetup(key: string): void {
+  cancelSuccessExpiry(key);
   hydrationBuffers.delete(key);
   hydrationTokens.delete(key);
   views.drop(key);
@@ -107,16 +116,27 @@ export function showWorktreeSetup(key: string): void {
 }
 
 /**
- * Clears a settled run's card. Used by the success auto-dismiss: the backend
- * has already dropped its record, so there is nothing to reconcile with.
- * A running or failed run is left alone — neither is the user's to discard by
- * a timeout.
+ * Clears a succeeded run's card SUCCESS_LINGER_MS after the store learns of
+ * it, whether or not a panel is mounted. The backend has already dropped its
+ * record, so there is nothing to reconcile with. The run id and state guard
+ * leave a replacement run, a retry, or a failure alone: neither is the user's
+ * to discard by a timeout.
  */
-export function clearSettledWorktreeSetup(key: string, runId: string): void {
-  const view = views.get(key);
-  if (!view || view.runId !== runId) return;
-  if (view.state === 'running' || view.state === 'failed') return;
-  views.drop(key);
+function scheduleSuccessExpiry(key: string, runId: string): void {
+  cancelSuccessExpiry(key);
+  successExpiry.set(key, setTimeout(() => {
+    successExpiry.delete(key);
+    const view = views.get(key);
+    if (!view || view.runId !== runId || view.state !== 'succeeded') return;
+    views.drop(key);
+  }, SUCCESS_LINGER_MS));
+}
+
+function cancelSuccessExpiry(key: string): void {
+  const timer = successExpiry.get(key);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  successExpiry.delete(key);
 }
 
 /**
@@ -192,7 +212,9 @@ async function hydrateInto(key: string, fetch: () => Promise<unknown>): Promise<
   hydrationBuffers.delete(key);
 
   const dismissed = views.get(key)?.dismissed ?? false;
-  views.set(key, viewFromSnapshot(snapshot, dismissed));
+  const view = viewFromSnapshot(snapshot, dismissed);
+  views.set(key, view);
+  if (view?.state === 'succeeded') scheduleSuccessExpiry(key, view.runId);
   // Replayed as reconciliation, not as live input: a chunk still ahead of the
   // snapshot here must not start another hydration, or a fast-streaming run
   // could re-enter this path indefinitely.
@@ -325,6 +347,7 @@ function finishRun(key: string, evt: WorktreeSetupEvent, replaying: boolean): vo
     // outcome, not the one they dismissed.
     dismissed: state === 'failed' ? false : view.dismissed,
   });
+  if (state === 'succeeded') scheduleSuccessExpiry(key, view.runId);
 }
 
 function normalizeState(state: string | undefined): WorktreeSetupState {
@@ -376,6 +399,8 @@ function normalizeStepStatus(status: string): WorktreeSetupStepStatus {
 
 /** Test isolation only. */
 export function resetWorktreeSetupForTest(): void {
+  for (const timer of successExpiry.values()) clearTimeout(timer);
+  successExpiry.clear();
   hydrationBuffers.clear();
   hydrationTokens.clear();
   nextHydrationToken = 1;

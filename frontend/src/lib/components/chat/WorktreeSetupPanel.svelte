@@ -10,7 +10,8 @@
   // Outcome behaviour is asymmetric on purpose:
   //   - Success dismisses itself after a beat. It is an acknowledgement, not
   //     information the user has to act on, and the backend has already
-  //     dropped the run.
+  //     dropped the run. The store owns that timer, so a run that finishes
+  //     while its thread is off screen never surfaces a stale card later.
   //   - Failure stays, with the failed step highlighted and Retry in reach.
   //     Dismissing it collapses to a one-line bar rather than hiding it: the
   //     worktree is genuinely under-provisioned until something fixes it.
@@ -18,7 +19,6 @@
   import WorktreeSetupSteps from './WorktreeSetupSteps.svelte';
   import { addToast } from '../../stores/toast.svelte';
   import {
-    clearSettledWorktreeSetup,
     dismissWorktreeSetup,
     getWorktreeSetup,
     retryWorktreeSetup,
@@ -28,9 +28,6 @@
 
   // Setup state is owned by the persisted thread that owns the worktree.
   let { setupKey }: { setupKey: string } = $props();
-
-  /** How long a succeeded run's card stays up before clearing itself. */
-  const SUCCESS_LINGER_MS = 2500;
 
   const view = $derived(getWorktreeSetup(setupKey));
   const running = $derived(view?.state === 'running');
@@ -45,19 +42,6 @@
     if (!running) return;
     const timer = setInterval(() => { now = Date.now(); }, 1000);
     return () => clearInterval(timer);
-  });
-
-  // Keyed on the settled FACT, not the view box: the registry replaces the
-  // box wholesale per streaming frame, so an effect reading `view` directly
-  // restarted the linger timer on every trailing frame that arrived after
-  // `succeeded`.
-  const succeededRunId = $derived(view?.state === 'succeeded' ? view.runId : null);
-
-  $effect(() => {
-    const runId = succeededRunId;
-    if (runId === null) return;
-    const timer = setTimeout(() => clearSettledWorktreeSetup(setupKey, runId), SUCCESS_LINGER_MS);
-    return () => clearTimeout(timer);
   });
 
   const elapsedLabel = $derived.by(() => {

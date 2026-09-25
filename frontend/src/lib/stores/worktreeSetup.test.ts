@@ -15,14 +15,15 @@ vi.mock('./bindings', async (importOriginal) => ({
 
 const {
   applyWorktreeSetupEvent,
-  clearSettledWorktreeSetup,
   dismissWorktreeSetup,
+  dropWorktreeSetup,
   getWorktreeSetup,
   hasWorktreeSetupSurface,
   hydrateWorktreeSetup,
   resetWorktreeSetupForTest,
   retryWorktreeSetup,
   showWorktreeSetup,
+  SUCCESS_LINGER_MS,
 } = await import('./worktreeSetup.svelte');
 
 const THREAD = 't1';
@@ -149,33 +150,95 @@ describe('terminal states', () => {
     expect(getWorktreeSetup(THREAD)).toBeNull();
   });
 
-  it('keeps a success only until the panel clears it', () => {
-    applyWorktreeSetupEvent(started());
-    applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'succeeded' });
-    expect(getWorktreeSetup(THREAD)?.state).toBe('succeeded');
-    // Still mounted: unmounting on the state flip would take the panel down
-    // before it could show — and then clear — the acknowledgement.
-    expect(hasWorktreeSetupSurface(THREAD)).toBe(true);
-    clearSettledWorktreeSetup(THREAD, 'run-1');
-    expect(getWorktreeSetup(THREAD)).toBeNull();
-    expect(hasWorktreeSetupSurface(THREAD)).toBe(false);
+  // No panel is ever mounted here: a run that succeeds while its thread is
+  // off screen must still clear, not wait for the thread to be opened.
+  it('clears a success after the linger with no panel mounted', async () => {
+    vi.useFakeTimers();
+    try {
+      applyWorktreeSetupEvent(started());
+      applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'succeeded' });
+      expect(getWorktreeSetup(THREAD)?.state).toBe('succeeded');
+      // Still mounted: unmounting on the state flip would take the panel down
+      // before it could show the acknowledgement.
+      expect(hasWorktreeSetupSurface(THREAD)).toBe(true);
+      await vi.advanceTimersByTimeAsync(SUCCESS_LINGER_MS - 1);
+      expect(getWorktreeSetup(THREAD)?.state).toBe('succeeded');
+      await vi.advanceTimersByTimeAsync(1);
+      expect(getWorktreeSetup(THREAD)).toBeNull();
+      expect(hasWorktreeSetupSurface(THREAD)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('refuses to clear a running or failed run on a timeout', () => {
-    applyWorktreeSetupEvent(started());
-    clearSettledWorktreeSetup(THREAD, 'run-1');
-    expect(getWorktreeSetup(THREAD)?.state).toBe('running');
-    applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'failed' });
-    clearSettledWorktreeSetup(THREAD, 'run-1');
-    expect(getWorktreeSetup(THREAD)?.state).toBe('failed');
+  it('clears a succeeded snapshot after the linger', async () => {
+    vi.useFakeTimers();
+    try {
+      GetThreadWorktreeSetup.mockResolvedValue({
+        runId: 'run-1', state: 'succeeded', worktreePath: '/wt',
+        steps: started().steps, stepStatuses: ['succeeded', 'succeeded'],
+      });
+      await hydrateWorktreeSetup(THREAD);
+      expect(getWorktreeSetup(THREAD)?.state).toBe('succeeded');
+      await vi.advanceTimersByTimeAsync(SUCCESS_LINGER_MS);
+      expect(getWorktreeSetup(THREAD)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('ignores a stale clear from a run that has been replaced', () => {
-    applyWorktreeSetupEvent(started());
-    applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'succeeded' });
-    applyWorktreeSetupEvent(started('run-2'));
-    clearSettledWorktreeSetup(THREAD, 'run-1');
-    expect(getWorktreeSetup(THREAD)?.runId).toBe('run-2');
+  it('never clears a running or failed run on a timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      applyWorktreeSetupEvent(started());
+      await vi.advanceTimersByTimeAsync(SUCCESS_LINGER_MS * 2);
+      expect(getWorktreeSetup(THREAD)?.state).toBe('running');
+      applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'failed' });
+      await vi.advanceTimersByTimeAsync(SUCCESS_LINGER_MS * 2);
+      expect(getWorktreeSetup(THREAD)?.state).toBe('failed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves a run that replaced the succeeded one alone', async () => {
+    vi.useFakeTimers();
+    try {
+      applyWorktreeSetupEvent(started());
+      applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'succeeded' });
+      applyWorktreeSetupEvent(started('run-2'));
+      await vi.advanceTimersByTimeAsync(SUCCESS_LINGER_MS);
+      expect(getWorktreeSetup(THREAD)?.runId).toBe('run-2');
+      expect(getWorktreeSetup(THREAD)?.state).toBe('running');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves a retry started during the linger alone', async () => {
+    vi.useFakeTimers();
+    try {
+      RetryThreadWorktreeSetup.mockResolvedValue(undefined);
+      applyWorktreeSetupEvent(started());
+      applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'succeeded' });
+      await retryWorktreeSetup(THREAD);
+      await vi.advanceTimersByTimeAsync(SUCCESS_LINGER_MS);
+      expect(getWorktreeSetup(THREAD)?.state).toBe('running');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels the pending clear when the key is dropped', async () => {
+    vi.useFakeTimers();
+    try {
+      applyWorktreeSetupEvent(started());
+      applyWorktreeSetupEvent({ phase: 'finished', threadId: THREAD, runId: 'run-1', state: 'succeeded' });
+      dropWorktreeSetup(THREAD);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
