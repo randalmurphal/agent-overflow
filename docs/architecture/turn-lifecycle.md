@@ -1101,7 +1101,7 @@ counterpart "retry succeeded" wire signal from either provider.
 |---|---|---|
 | `ChatWorkingIndicator` | `pane.activeTurn.startedAt` | Self-ticking timer, appears iff `activeTurn !== null`. |
 | `MessageTimeline` (response divider) | Ordered timeline nodes | Separator rendered before assistant text when tool activity immediately precedes the response in the same turn. |
-| Launch row `backgrounded` indicator (`rowState.ts`) | `item.isBackground && item.status === 'running'` and `meta.live_background_active` not `false` | Three dots on the launch row until the launch settles, then none. |
+| Launch row `backgrounded` indicator (`rowState.ts`) | `item.isBackground && item.status === 'running'` and `meta.live_background_active` not `false` | Three dots on the launch row until the launch settles, then the same box with the dots hidden (`settled`). |
 | `BackgroundTaskTray` | `ListLiveBackgroundTasks(threadId)`, then `provider:background_tray` deltas | Shows running launches and pending Codex unifiedExec commands; completed Codex commands leave the live tray when typed completion clears the transient tracker. |
 
 ## Anti-patterns (forbidden)

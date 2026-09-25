@@ -51,8 +51,9 @@ update stays on the live projection.
 
 The liveness bit has one visible effect: a Claude background launch
 row's (agent or tool) `backgrounded` indicator turns off once, when the
-launch settles, and never turns on again (ruling 2026-09-25). The row
-reads the stored `live_background_active` bit in its own `meta`, which the
+launch settles, and never turns on again (ruling 2026-09-25). The
+indicator's box stays with its dots hidden (the `settled` state), so
+nothing on the row moves. The row reads the stored `live_background_active` bit in its own `meta`, which the
 store sets false at the ending sibling or the session's death and leaves
 set through a parked stop (`components/chat/rowState.ts`). Nothing on an
 older row reads live state. A later run is a new row (a §E6 resume

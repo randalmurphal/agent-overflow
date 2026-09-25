@@ -313,9 +313,9 @@ test('every stop of a background agent is a card at its own position, and a resu
     expect(await digestShells(parked2)).toEqual(['tu-shell-1', 'tu-shell-2']);
     expect(await digestShells(final1)).toEqual(['tu-shell-1', 'tu-shell-2']);
 
-    // The launch settled at the ending stop: its row's indicator is off.
+    // The launch settled at the ending stop: its row's dots are hidden.
     const launchRow = timeline.locator('[data-item-id="tu-bg"]');
-    await expect(launchRow.getByTestId('agent-row-status')).toHaveCount(0);
+    await expect(launchRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'settled');
     await expect(launchRow.getByTestId('agent-row-preview')).toContainText('gate watcher');
 
     // --- The resume after completion is a run of its own ----------------
@@ -330,13 +330,13 @@ test('every stop of a background agent is a card at its own position, and a resu
     // the settled launch's stays off.
     const resumeRow = timeline.locator('[data-item-id="tu-resume"]');
     await expect(resumeRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
-    await expect(launchRow.getByTestId('agent-row-status')).toHaveCount(0);
+    await expect(launchRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'settled');
     await gate(harness, mockId, 'wake-3');
     await expectTrayRunning(page, 'tu-resume');
     await gate(harness, mockId, 'final-2');
     await expect(cards).toHaveCount(5);
-    await expect(resumeRow.getByTestId('agent-row-status')).toHaveCount(0);
-    await expect(launchRow.getByTestId('agent-row-status')).toHaveCount(0);
+    await expect(resumeRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'settled');
+    await expect(launchRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'settled');
 
     items = await listItems(harness, threadId);
     const stops = agentStops(items);

@@ -174,7 +174,8 @@ Mechanism in
 - Rows above the write head never change on screen (ruling 2026-09-25). The
   one exception: a Claude background launch row's `backgrounded` indicator
   turns off once, when the launch settles as its stored
-  `live_background_active` bit records, and never turns on again; a parked
+  `live_background_active` bit records, and never turns on again; its box
+  stays, so nothing on the row moves; a parked
   stop does not settle it, and a later run is a new row with its own
   indicator. Nothing else on an older row reads live state. A revert that
   removes an agent's result leaves its launch with no result card; the

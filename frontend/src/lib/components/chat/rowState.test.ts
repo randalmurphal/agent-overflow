@@ -4,8 +4,9 @@ import type { Item } from '../../types/models';
 import { indicatorStateForItem } from './rowState';
 
 // A background launch row's dots turn off once, when the store settles the
-// launch (docs/specs/agent-visibility.md#immutable-agent-history). The input
-// is the row's own stored `live_background_active` bit, nothing else.
+// launch (docs/specs/agent-visibility.md#immutable-agent-history): the
+// `settled` state keeps their box. The input is the row's own stored
+// `live_background_active` bit, nothing else.
 describe('indicatorStateForItem on a background launch row', () => {
   const launch = (meta?: Record<string, unknown>, fields: Partial<Item> = {}): Item => makeItem({
     id: 'bg',
@@ -21,8 +22,8 @@ describe('indicatorStateForItem on a background launch row', () => {
     expect(indicatorStateForItem(launch())).toBe('backgrounded');
     expect(indicatorStateForItem(launch({ task_id: 't1' }))).toBe('backgrounded');
     expect(indicatorStateForItem(launch({ live_background_active: true }))).toBe('backgrounded');
-    expect(indicatorStateForItem(launch({ live_background_active: false }))).toBeNull();
-    expect(indicatorStateForItem(launch({ live_background_active: false }, { status: 'streaming' }))).toBeNull();
+    expect(indicatorStateForItem(launch({ live_background_active: false }))).toBe('settled');
+    expect(indicatorStateForItem(launch({ live_background_active: false }, { status: 'streaming' }))).toBe('settled');
   });
 
   it('reads the row meta, not the payload meta or the options', () => {

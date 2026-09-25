@@ -107,13 +107,13 @@ test('a background agent rings no bell at any depth: its card sits at the comple
   // --- The completion is IN the transcript, where it completed --------
   // The launch row stays where it was as the immutable spawn record: label,
   // no text pill, the open-in-pane door, no duration. Its backgrounded
-  // indicator is off once the launch settled. The agent's CARD sits at the
+  // dots are hidden in their box once the launch settled. The agent's CARD sits at the
   // completion point, after the turn's prose: status, duration, tool
   // count, the transcript.
   const timeline = page.getByTestId('message-timeline-scroll');
   const spawnRow = timeline.locator('[data-item-id="tu-top"]');
   await expect(spawnRow.getByTestId('agent-row-preview')).toContainText('Top Runner');
-  await expect(spawnRow.getByTestId('agent-row-status')).toHaveCount(0);
+  await expect(spawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'settled');
   await expect(spawnRow.getByTestId('agent-row-status-slot')).toHaveCount(1);
   await expect(spawnRow.getByText('background', { exact: true })).toHaveCount(0);
   await expect(spawnRow.getByTestId('agent-row-duration')).toHaveText('');
@@ -153,7 +153,7 @@ test('a background agent rings no bell at any depth: its card sits at the comple
   // immutable agent row the main timeline gets, door included.
   const nestedSpawnRow = topBody.locator('[data-item-id="tu-nested"]');
   await expect(nestedSpawnRow.getByTestId('agent-row-preview')).toContainText('Nested Runner');
-  await expect(nestedSpawnRow.getByTestId('agent-row-status')).toHaveCount(0);
+  await expect(nestedSpawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'settled');
 });
 
 // The card that lands at the completion sibling must know its transcript
@@ -219,6 +219,10 @@ test('a background agent’s card lands knowing its rows and hydrates on expand'
   const spawnRow = timeline.locator('[data-item-id="tu-bg"]');
   await expect(spawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'backgrounded');
   await expect(timeline.getByTestId('subagent-group')).toHaveCount(0);
+  const door = spawnRow.getByTestId('agent-row-open-pane');
+  const slot = spawnRow.getByTestId('agent-row-status-slot');
+  const doorBefore = (await door.boundingBox())!;
+  const slotBefore = (await slot.boundingBox())!;
 
   await waitForGate(harness, 'stream');
   await advance(harness, mockId, 'stream');
@@ -240,10 +244,13 @@ test('a background agent’s card lands knowing its rows and hydrates on expand'
   await expect(card.getByTestId('subagent-group-count')).toHaveCount(0);
   await expect(card.getByTestId('subagent-group-tools')).toHaveText('1 tool');
   await expect(card.getByTestId('subagent-group-preview')).toContainText('Shard reviewed: nothing drifted.');
-  // The mounted launch row takes the one change it ever shows: its
-  // indicator turns off once the settled launch is pushed.
-  await expect(spawnRow.getByTestId('agent-row-status')).toHaveCount(0);
+  // The mounted launch row takes the one change it ever shows: its dots
+  // hide once the settled launch is pushed, in a box that stays, so the
+  // door beside it does not move.
+  await expect(spawnRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'settled');
   await expect(spawnRow.getByTestId('agent-row-preview')).toContainText('Shard Reviewer');
+  expect((await door.boundingBox())!.x).toBe(doorBefore.x);
+  expect((await slot.boundingBox())!.width).toBe(slotBefore.width);
   await expect(card.getByTestId('subagent-group-output-error')).toHaveCount(0);
 
   // Expanding hydrates the folded rows back from the store.

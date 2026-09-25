@@ -241,7 +241,7 @@ test('a parked background agent shows its state and report on the tray and its p
   // The launch settled: its indicator turns off, and nothing else on the
   // row changes.
   const launchRow = timeline.locator('[data-item-id="tu-bg"]');
-  await expect(launchRow.getByTestId('agent-row-status')).toHaveCount(0);
+  await expect(launchRow.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'settled');
   await expect(launchRow.getByTestId('agent-row-preview')).toContainText('gate watcher');
   await expect(timeline.getByTestId('notification-row')).toHaveCount(0);
   await expect(page.getByTestId('activity-rail-background-toggle')).toHaveCount(0);

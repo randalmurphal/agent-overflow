@@ -1,7 +1,9 @@
 <script lang="ts">
+  import type { IndicatorState } from './rowState';
+
   /*
    * Text-free state dot for tool-call / think rows. Single source of
-   * truth for visual run-state on a row: callers pass one of six
+   * truth for visual run-state on a row: callers pass one of seven
    * `state` values and the dot renders the matching visual (or
    * nothing for `null` — the absence of a dot is the positive
    * "idle / success" signal). No text labels, no exit-code chips,
@@ -13,13 +15,14 @@
    *
    * `backgrounded` uses three small staggered dots so a running
    * backgrounded launch is visually distinct from a foreground
-   * running row at a glance.
+   * running row at a glance. `settled` is the same box with the dots
+   * hidden: a launch that settles loses its dots without moving
+   * anything beside them. It is hidden from screen readers, as `null`.
    */
 
-  type State = 'running' | 'backgrounded' | 'parked' | 'error' | 'declined' | null;
-  type NonNullState = Exclude<State, null>;
+  type NonNullState = Exclude<IndicatorState, null>;
 
-  const ARIA_BY_STATE: Record<NonNullState, string> = {
+  const ARIA_BY_STATE: Record<Exclude<NonNullState, 'settled'>, string> = {
     running: 'Running',
     backgrounded: 'Backgrounded',
     parked: 'Parked',
@@ -30,8 +33,9 @@
   // Single-dot states share geometry; only the fill and the pulse flag
   // differ. `parked` is the hollow, still ring: the agent is alive but
   // doing nothing until its background command reports. `backgrounded`
-  // renders separately because its visual is three smaller dots.
-  const SINGLE_DOT_BY_STATE: Record<Exclude<NonNullState, 'backgrounded'>, { bg: string; pulse: boolean }> = {
+  // and `settled` render separately because their box is three smaller
+  // dots.
+  const SINGLE_DOT_BY_STATE: Record<Exclude<NonNullState, 'backgrounded' | 'settled'>, { bg: string; pulse: boolean }> = {
     running: { bg: 'bg-accent', pulse: true },
     parked: { bg: 'border border-accent/70 bg-transparent', pulse: false },
     error: { bg: 'bg-error', pulse: false },
@@ -49,15 +53,16 @@
   interface Props {
     /**
      * Run state. `null` (or absent) renders nothing — that's the
-     * idle / success signal. The five non-null states each map to a
+     * idle / success signal. The six non-null states each map to a
      * specific visual:
      *   - `running`     pulsing accent dot
      *   - `backgrounded` three staggered pulsing accent dots
+     *   - `settled`     the `backgrounded` box, dots hidden
      *   - `parked`      static hollow accent ring
      *   - `error`       static red dot
      *   - `declined`    static amber dot
      */
-    state: State;
+    state: IndicatorState;
     /**
      * Override the aria-label. Defaults to the run-state name so
      * screen readers announce "running" / "errored" / etc. without
@@ -69,8 +74,10 @@
 
   let { state, ariaLabel, class: className = '' }: Props = $props();
 
-  const label = $derived(ariaLabel ?? (state ? ARIA_BY_STATE[state] : ''));
-  const singleDot = $derived(state && state !== 'backgrounded' ? SINGLE_DOT_BY_STATE[state] : null);
+  const label = $derived(ariaLabel ?? (state && state !== 'settled' ? ARIA_BY_STATE[state] : ''));
+  const singleDot = $derived(
+    state && state !== 'backgrounded' && state !== 'settled' ? SINGLE_DOT_BY_STATE[state] : null,
+  );
 </script>
 
 {#if singleDot}
@@ -81,16 +88,18 @@
     role="status"
     aria-label={label}
   ></span>
-{:else if state === 'backgrounded'}
+{:else if state === 'backgrounded' || state === 'settled'}
+  {@const settled = state === 'settled'}
   <span
     class="inline-flex shrink-0 items-center gap-[3px] {className}"
     data-testid="indicator"
-    data-state="backgrounded"
-    role="status"
-    aria-label={label}
+    data-state={state}
+    role={settled ? undefined : 'status'}
+    aria-label={settled ? undefined : label}
+    aria-hidden={settled ? 'true' : undefined}
   >
     {#each BG_DOT_SHIFTS as shiftClass}
-      <span class="h-[3.5px] w-[3.5px] rounded-full bg-accent animate-pulse {shiftClass}"></span>
+      <span class="h-[3.5px] w-[3.5px] rounded-full bg-accent {settled ? 'invisible' : 'animate-pulse'} {shiftClass}"></span>
     {/each}
   </span>
 {/if}

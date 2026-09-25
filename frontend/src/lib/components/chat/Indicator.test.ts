@@ -55,6 +55,31 @@ describe('<Indicator>', () => {
     expect(dots[2].className).toContain('ambient-pulse-s4');
   });
 
+  it('keeps the backgrounded box with its dots hidden when settled', () => {
+    const live = render(Indicator, { props: { state: 'backgrounded' } });
+    const liveBox = live.container.querySelector('[data-testid="indicator"]')!;
+    const { container } = render(Indicator, { props: { state: 'settled' } });
+    const box = container.querySelector('[data-testid="indicator"]')!;
+    expect(box.getAttribute('data-state')).toBe('settled');
+    // Same box: the container's classes and its three dots are the
+    // backgrounded ones, so a row that settles keeps its geometry.
+    expect(box.className).toBe(liveBox.className);
+    const dots = [...box.querySelectorAll('span')];
+    const liveDots = [...liveBox.querySelectorAll('span')];
+    expect(dots).toHaveLength(3);
+    dots.forEach((dot, i) => {
+      const expected = new Set(liveDots[i].classList);
+      expected.delete('animate-pulse');
+      expected.add('invisible');
+      expect(new Set(dot.classList)).toEqual(expected);
+    });
+    // Screen readers get nothing, as for `null`.
+    expect(box.getAttribute('aria-hidden')).toBe('true');
+    expect(box.hasAttribute('role')).toBe(false);
+    expect(box.hasAttribute('aria-label')).toBe(false);
+    expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+
   it('renders a still hollow accent ring when parked', () => {
     const { container } = render(Indicator, { props: { state: 'parked' } });
     const dot = container.querySelector('[data-testid="indicator"]')!;

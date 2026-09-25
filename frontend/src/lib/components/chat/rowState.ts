@@ -5,8 +5,10 @@ import { parseJsonObject } from '../../utils/parseJsonObject';
 // `parked` is a parked stop's own status (claude-wire.md §E6b): the sibling
 // a background agent's paused run writes. Its launch row stays `running`,
 // and a live surface reads a current pause from the served run state
-// (stores/subagentRunState.svelte.ts).
-export type IndicatorState = 'running' | 'backgrounded' | 'parked' | 'error' | 'declined' | null;
+// (stores/subagentRunState.svelte.ts). `settled` is a settled background
+// launch: the `backgrounded` box with its dots hidden. Anything other than
+// the indicator treats it as `null`.
+export type IndicatorState = 'running' | 'backgrounded' | 'settled' | 'parked' | 'error' | 'declined' | null;
 
 type ItemStatus = Item['status'];
 
@@ -25,10 +27,11 @@ export interface RowErrorData {
  * A background launch row keeps status `running` for good; its outcome is a
  * completion sibling. Its `backgrounded` dots show until the launch settles
  * and then turn off once: the one change a launch row shows after it is
- * written (docs/specs/agent-visibility.md#immutable-agent-history). Settled
- * is the store's `live_background_active` bit on the row's own `meta`,
- * set false at the ending sibling or the session's death and not at a
- * parked stop. No live state is read.
+ * written (docs/specs/agent-visibility.md#immutable-agent-history). The
+ * `settled` state keeps the dots' box and hides the dots, so nothing on the
+ * row moves. Settled is the store's `live_background_active` bit on the
+ * row's own `meta`, set false at the ending sibling or the session's death
+ * and not at a parked stop. No live state is read.
  */
 export function indicatorStateForItem(
   item: Pick<Item, 'kind' | 'status' | 'isBackground' | 'payloadMeta' | 'meta'>,
@@ -39,7 +42,7 @@ export function indicatorStateForItem(
     item.isBackground === true &&
     (item.status === 'running' || item.status === 'streaming')
   ) {
-    return backgroundLaunchSettled(item) ? null : 'backgrounded';
+    return backgroundLaunchSettled(item) ? 'settled' : 'backgrounded';
   }
   if (item.status === 'running' || item.status === 'streaming') return 'running';
   if (item.status === 'parked') return 'parked';

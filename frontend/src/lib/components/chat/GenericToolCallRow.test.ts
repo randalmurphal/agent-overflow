@@ -539,7 +539,8 @@ describe('<GenericToolCallRow> editor-link wiring', () => {
 
 // A background launch row is history: the one change it shows after it is
 // written is its `backgrounded` dots turning off once the store settles the
-// launch (docs/specs/agent-visibility.md#immutable-agent-history).
+// launch, their box kept so nothing on the row moves
+// (docs/specs/agent-visibility.md#immutable-agent-history).
 describe('<AgentRow> background launch indicator', () => {
   function launch(meta: Record<string, unknown> = {}): Item {
     return makeItem({
@@ -566,15 +567,18 @@ describe('<AgentRow> background launch indicator', () => {
     return container.querySelector('[data-testid="agent-row-status"] [data-testid="indicator"]')?.getAttribute('data-state') ?? null;
   }
 
-  it('shows the dots while the launch is live and none once its stored bit settles it', () => {
+  it('shows the dots while the launch is live and the settled box once its stored bit settles it', () => {
     for (const live of [launch(), launch({ live_background_active: true })]) {
       const view = render(AgentRow, { props: { pane: doorPane(), item: live } });
       expect(indicator(view.container)).toBe('backgrounded');
       view.unmount();
     }
     const settled = render(AgentRow, { props: { pane: doorPane(), item: launch({ live_background_active: false }) } });
-    expect(settled.queryByTestId('agent-row-status')).toBeNull();
-    expect(settled.getByTestId('agent-row-status-slot')).toBeInTheDocument();
+    expect(indicator(settled.container)).toBe('settled');
+    expect(settled.getByTestId('agent-row-status')).toHaveAttribute('data-state', 'settled');
+    expect(settled.queryByRole('status')).toBeNull();
+    expect(settled.queryByTestId('agent-row-error')).toBeNull();
+    expect(settled.getByTestId('agent-row-duration').textContent?.trim()).toBe('');
   });
 
   it('keeps a parked agent’s launch row on its dots', async () => {
@@ -598,22 +602,73 @@ describe('<AgentRow> background launch indicator', () => {
     expect(indicator(container)).toBe('backgrounded');
   });
 
-  it('changes nothing on the row but the indicator when the launch settles', async () => {
-    const { container, rerender, getByTestId } = render(AgentRow, {
-      props: { pane: doorPane(), item: launch({ live_background_active: true }) },
+  /**
+   * Every difference between two DOM trees of the same shape: element
+   * attributes (classes as added/removed sets) and text. An element is
+   * named by its test id, else its tag.
+   */
+  function domDiff(before: Element, after: Element): string[] {
+    const at = after.getAttribute('data-testid') ?? after.tagName.toLowerCase();
+    if (before.tagName !== after.tagName) return [`${at}: <${before.tagName}> became <${after.tagName}>`];
+    const out: string[] = [];
+    const names = [...new Set([...before.getAttributeNames(), ...after.getAttributeNames()])].sort();
+    for (const name of names) {
+      if (name === 'class') {
+        const was = new Set(before.classList);
+        const now = new Set(after.classList);
+        const removed = [...was].filter((c) => !now.has(c)).map((c) => `-${c}`);
+        const added = [...now].filter((c) => !was.has(c)).map((c) => `+${c}`);
+        if (removed.length || added.length) out.push(`${at} class ${[...removed, ...added].join(' ')}`);
+      } else if (before.getAttribute(name) !== after.getAttribute(name)) {
+        out.push(`${at} ${name}: ${before.getAttribute(name)} -> ${after.getAttribute(name)}`);
+      }
+    }
+    const was = [...before.childNodes];
+    const now = [...after.childNodes];
+    if (was.length !== now.length) return [...out, `${at}: ${was.length} children became ${now.length}`];
+    was.forEach((node, i) => {
+      const other = now[i];
+      if (node.nodeType !== other.nodeType) out.push(`${at}: child ${i} changed type`);
+      else if (node instanceof Element) out.push(...domDiff(node, other as Element));
+      else if (node.textContent !== other.textContent) out.push(`${at}: text ${node.textContent} -> ${other.textContent}`);
     });
-    const row = getByTestId('agent-row');
-    const slot = getByTestId('agent-row-status-slot');
-    const status = getByTestId('agent-row-status');
-    const before = container.innerHTML;
-    expect(before).toContain(status.outerHTML);
+    return out;
+  }
 
-    await rerender({ pane: doorPane(), item: launch({ live_background_active: false }) });
+  // The compact layout is a class on <html> that only stylesheets read; the
+  // markup must be the same in both layouts, and so must the diff.
+  it.each([false, true])('moves nothing on the row when the launch settles (compact: %s)', async (compact) => {
+    document.documentElement.classList.toggle('layout-compact', compact);
+    try {
+      const { container, rerender, getByTestId } = render(AgentRow, {
+        props: { pane: doorPane(), item: launch({ live_background_active: true }) },
+      });
+      const row = getByTestId('agent-row');
+      const box = row.querySelector('[data-testid="agent-row-status"] [data-testid="indicator"]')!;
+      const dots = [...box.children];
+      expect(dots).toHaveLength(3);
+      const before = container.cloneNode(true) as Element;
 
-    expect(getByTestId('agent-row')).toBe(row);
-    expect(getByTestId('agent-row-status-slot')).toBe(slot);
-    expect(slot.childElementCount).toBe(0);
-    expect(container.innerHTML).toBe(before.replace(status.outerHTML, ''));
+      await rerender({ pane: doorPane(), item: launch({ live_background_active: false }) });
+
+      // The same nodes stay mounted, and the only differences are the
+      // dots' visibility and the state the indicator reports.
+      expect(getByTestId('agent-row')).toBe(row);
+      expect(row.querySelector('[data-testid="agent-row-status"] [data-testid="indicator"]')).toBe(box);
+      expect([...box.children]).toEqual(dots);
+      expect(domDiff(before, container)).toEqual([
+        'agent-row-status data-state: backgrounded -> settled',
+        'indicator aria-hidden: null -> true',
+        'indicator aria-label: Backgrounded -> null',
+        'indicator data-state: backgrounded -> settled',
+        'indicator role: status -> null',
+        'span class -animate-pulse +invisible',
+        'span class -animate-pulse +invisible',
+        'span class -animate-pulse +invisible',
+      ]);
+    } finally {
+      document.documentElement.classList.remove('layout-compact');
+    }
   });
 });
 

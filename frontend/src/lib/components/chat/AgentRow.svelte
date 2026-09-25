@@ -10,7 +10,8 @@
   //     changes, and no others: the open-in-pane door (user ruling
   //     2026-08-23), and the indicator in ToolHeaderMeta's status slot
   //     turning off once, when the launch settles, read from the row's own
-  //     stored liveness bit (rowState.ts, ruling 2026-09-25).
+  //     stored liveness bit (rowState.ts, ruling 2026-09-25). Its box stays
+  //     with the dots hidden, so nothing on the row moves.
   //     Everything the agent does shows on its card at the completion
   //     point (`SubagentGroupNode.anchor`); this row never reads the
   //     completion sibling.
